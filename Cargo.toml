@@ -1,0 +1,14 @@
+[workspace]
+members = [
+    "rt",
+    "examples/ping_pong",
+    "examples/name_server",
+]
+
+[workspace.dependencies]
+spawned-rt = { version = "0.1.0", path = "rt" }
+spawned-concurrency = { version = "0.1.0", path = "concurrency" }
+
+thiserror = "2.0.11"
+
+
