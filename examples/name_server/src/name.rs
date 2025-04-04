@@ -1,25 +1,30 @@
 use std::collections::HashMap;
 
-use spawned_concurrency::{GenServerHandler, GenServer, GenServerMsg};
-use spawned_rt::Sender;
+use spawned_concurrency::{GenServerHandle, GenServer, GenServerMsg};
+use spawned_rt::mpsc::Sender;
 
 use crate::messages::{NameServerInMessage as InMessage, NameServerOutMessage as OutMessage};
 
+type NameServerHandle = GenServerHandle<InMessage, OutMessage>;
+type NameServerMessage = GenServerMsg<InMessage, OutMessage>;
 pub struct NameServer {
     state: HashMap<String, String>,
 }
 
 impl NameServer {
-    pub async fn add(server: &mut GenServerHandler<GenServerMsg<InMessage, OutMessage>, OutMessage>, key: String, value: String) {
+    pub async fn add(server: &mut NameServerHandle, key: String, value: String) {
         server.rpc(InMessage::Add { key, value}).await;
     }
 
-    pub async fn find(server: &mut GenServerHandler<GenServerMsg<InMessage, OutMessage>, OutMessage>, key: String) -> OutMessage {
+    pub async fn find(server: &mut NameServerHandle, key: String) -> OutMessage {
         server.rpc(InMessage::Find { key }).await.unwrap()
     }
 }
 
-impl GenServer<InMessage, OutMessage> for NameServer {
+impl GenServer for NameServer {
+    type InMsg = InMessage;
+    type OutMsg = OutMessage;
+
     fn init() -> Self {
         Self { state: HashMap::new() }
     }
@@ -27,17 +32,17 @@ impl GenServer<InMessage, OutMessage> for NameServer {
     async fn handle(
         &mut self,
         message: InMessage,
-        _tx: &Sender<GenServerMsg<InMessage, OutMessage>>,
-    ) -> OutMessage {
+        _tx: &Sender<NameServerMessage>,
+    ) -> Self::OutMsg {
         match message.clone() {
-            InMessage::Add { key, value } => {
+            Self::InMsg::Add { key, value } => {
                 self.state.insert(key, value);
-                OutMessage::Ok
+                Self::OutMsg::Ok
             }
-            InMessage::Find { key } => {
+            Self::InMsg::Find { key } => {
                 match self.state.get(&key) {
-                    Some(value) => OutMessage::Found { value: value.to_string() },
-                    None => OutMessage::NotFound,
+                    Some(value) => Self::OutMsg::Found { value: value.to_string() },
+                    None => Self::OutMsg::NotFound,
                 }
             }
         }

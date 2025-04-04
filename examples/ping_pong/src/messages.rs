@@ -1,4 +1,4 @@
-use spawned_rt::Sender;
+use spawned_rt::mpsc::Sender;
 
 #[derive(Debug, Clone)]
 pub enum Message {

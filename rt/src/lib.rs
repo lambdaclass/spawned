@@ -9,7 +9,9 @@
 
 mod tokio;
 
-pub use crate::tokio::{JoinHandle, Receiver, Runtime, Sender, channel, spawn};
+pub use crate::tokio::mpsc;
+pub use crate::tokio::oneshot;
+pub use crate::tokio::{Runtime, JoinHandle, spawn};
 
 pub fn run<F: Future>(future: F) -> F::Output {
     let rt = Runtime::new().unwrap();

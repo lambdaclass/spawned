@@ -1,5 +1,5 @@
 # Spawned
-Basic (for now) framework for concurrent Rust.
+Simple library for concurrent Rust.
 
 # Goals:
 

@@ -1,58 +1,57 @@
 //! GernServer trait and structs to create an abstraction similar to Erlang gen_server.
 //! See examples/name_server for a usage example.
 
-use spawned_rt::{self as rt, JoinHandle, Receiver, Sender};
+use spawned_rt::{self as rt, JoinHandle, mpsc, oneshot};
 
 #[derive(Debug)]
-pub struct GenServerHandler<T, U> {
-    pub tx: Sender<T>,
-    pub handle: JoinHandle<()>,
-    inner_tx: Sender<U>,
-    inner_rx: Receiver<U>,
+pub struct GenServerHandle<T, U> {
+    pub tx: mpsc::Sender<GenServerMsg<T, U>>,
+    #[allow(unused)]
+    handle: JoinHandle<()>,
 }
 
-impl<T: Send + 'static, U: Send + 'static> GenServerHandler<GenServerMsg<T, U>, U> {
-    pub fn sender(&self) -> Sender<GenServerMsg<T, U>> {
+impl<T: Send + 'static, U: Send + 'static> GenServerHandle<T, U> {
+    pub fn sender(&self) -> mpsc::Sender<GenServerMsg<T, U>> {
         self.tx.clone()
-    }
-
-    pub fn handle(self) -> JoinHandle<()> {
-        self.handle
     }
 
     pub async fn rpc(
         &mut self,
         message: T,
     ) -> Option<U> {
-        let _ = self.tx.send(GenServerMsg { sender: self.inner_tx.clone(), message });
-        self.inner_rx.recv().await
+        let (oneshot_tx, oneshot_rx) = oneshot::channel::<U>();
+        let _ = self.tx.send(GenServerMsg { sender: oneshot_tx, message });
+        oneshot_rx.await.ok()
     }
 }
 
 pub struct GenServerMsg<T, U> {
-    sender: Sender<U>,
+    sender: oneshot::Sender<U>,
     message: T,
 }
 
-pub trait GenServer<T: Send + 'static, U: Send + 'static>
+pub trait GenServer
 where
     Self: Send + Sync + Sized + 'static,
-{   fn start() -> impl Future<Output = GenServerHandler<GenServerMsg<T, U>, U>> + Send {
+{
+    type InMsg: Send + Sync + Sized + 'static;
+    type OutMsg: Send + Sync + Sized + 'static;
+
+    fn start() -> impl Future<Output = GenServerHandle<Self::InMsg, Self::OutMsg>> + Send {
         async {
-            let (tx, mut rx) = rt::channel::<GenServerMsg<T, U>>();
-            let (inner_tx, inner_rx) = rt::channel::<U>();
+            let (tx, mut rx) = mpsc::channel::<GenServerMsg<Self::InMsg, Self::OutMsg>>();
             let tx_clone = tx.clone();
             let handle = rt::spawn(async move {
                 Self::init().run(&tx_clone, &mut rx).await;
             });
-            GenServerHandler { tx, handle, inner_tx, inner_rx }
+            GenServerHandle { tx, handle}
         }
     }
 
     fn run(
         &mut self,
-        tx: &Sender<GenServerMsg<T, U>>,
-        rx: &mut Receiver<GenServerMsg<T, U>>,
+        tx: &mpsc::Sender<GenServerMsg<Self::InMsg, Self::OutMsg>>,
+        rx: &mut mpsc::Receiver<GenServerMsg<Self::InMsg, Self::OutMsg>>,
     ) -> impl Future<Output = ()> + Send {
         async {
             self.main_loop(tx, rx).await;
@@ -61,8 +60,8 @@ where
 
     fn main_loop(
         &mut self,
-        tx: &Sender<GenServerMsg<T, U>>,
-        rx: &mut Receiver<GenServerMsg<T, U>>,
+        tx: &mpsc::Sender<GenServerMsg<Self::InMsg, Self::OutMsg>>,
+        rx: &mut mpsc::Receiver<GenServerMsg<Self::InMsg, Self::OutMsg>>,
     ) -> impl Future<Output = ()> + Send {
         async {
             loop {
@@ -81,8 +80,8 @@ where
 
     fn receive(
         &mut self,
-        tx: &Sender<GenServerMsg<T, U>>,
-        rx: &mut Receiver<GenServerMsg<T, U>>,
+        tx: &mpsc::Sender<GenServerMsg<Self::InMsg, Self::OutMsg>>,
+        rx: &mut mpsc::Receiver<GenServerMsg<Self::InMsg, Self::OutMsg>>,
     ) -> impl std::future::Future<Output = ()> + Send {
         async {
             match rx.recv().await {
@@ -99,7 +98,7 @@ where
 
     fn handle(
         &mut self,
-        message: T,
-        tx: &Sender<GenServerMsg<T, U>>,
-    ) -> impl Future<Output = U> + Send;
+        message: Self::InMsg,
+        tx: &mpsc::Sender<GenServerMsg<Self::InMsg, Self::OutMsg>>,
+    ) -> impl Future<Output = Self::OutMsg> + Send;
 }

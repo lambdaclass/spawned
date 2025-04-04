@@ -1,5 +1,5 @@
 use spawned_concurrency::{self as concurrency, Process, ProcessInfo};
-use spawned_rt::Sender;
+use spawned_rt::mpsc::Sender;
 
 use crate::messages::Message;
 
