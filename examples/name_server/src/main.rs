@@ -12,29 +12,29 @@
 //! {ok,"at home"}
 
 mod messages;
-mod name;
+mod server;
 
 use spawned_concurrency::GenServer as _;
 use spawned_rt as rt;
-use name::NameServer;
+use server::NameServer;
 
 
 fn main() {
     rt::run(async {
         let mut name_server = NameServer::start().await;
         
-        println!("Storing value");
+        tracing::info!("Storing value");
 
         let result = NameServer::add(&mut name_server, "Joe".to_string(), "At Home".to_string()).await;
 
-        println!("Storing value result {result:?}");
+        tracing::info!("Storing value result {result:?}");
 
         let result = NameServer::find(&mut name_server, "Joe".to_string()).await;
 
-        println!("Retrieving value result {result:?}");
+        tracing::info!("Retrieving value result {result:?}");
 
         let result = NameServer::find(&mut name_server, "Bob".to_string()).await;
 
-        println!("Retrieving value result {result:?}");
+        tracing::info!("Retrieving value result {result:?}");
     })
 }

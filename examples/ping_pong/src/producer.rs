@@ -18,7 +18,7 @@ impl Producer {
 
     fn send_ping(&self, tx: &Sender<Message>, consumer: &Sender<Message>) {
         let message = Message::Ping { from: tx.clone() };
-        println!("Producer sent Ping");
+        tracing::info!("Producer sent Ping");
         concurrency::send(consumer, message);
     }
 }
@@ -33,7 +33,7 @@ impl Process<Message> for Producer {
         message: Message,
         tx: &Sender<Message>,
     ) -> Message {
-        println!("Producer received {message:?}");
+        tracing::info!("Producer received {message:?}");
         self.send_ping(tx, &self.consumer);
         message
     }

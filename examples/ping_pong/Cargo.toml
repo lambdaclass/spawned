@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 spawned-rt = { workspace = true }
 spawned-concurrency = { workspace = true }
+tracing = { workspace = true }
 
 [[bin]]
 name = "ping_pong"

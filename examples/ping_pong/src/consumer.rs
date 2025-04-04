@@ -13,10 +13,10 @@ impl Consumer {
 
 impl Process<Message> for Consumer {
     async fn handle(&mut self, message: Message, _tx: &Sender<Message>) -> Message {
-        println!("Consumer received {message:?}");
+        tracing::info!("Consumer received {message:?}");
         match message.clone() {
             Message::Ping { from } => {
-                println!("Consumer sent Pong");
+                tracing::info!("Consumer sent Pong");
                 concurrency::send(&from, Message::Pong);
             }
             Message::Pong => (),

@@ -1,6 +1,5 @@
 //! GernServer trait and structs to create an abstraction similar to Erlang gen_server.
 //! See examples/name_server for a usage example.
-
 use spawned_rt::{self as rt, JoinHandle, mpsc, oneshot};
 
 #[derive(Debug)]
@@ -15,12 +14,12 @@ impl<T: Send + 'static, U: Send + 'static> GenServerHandle<T, U> {
         self.tx.clone()
     }
 
-    pub async fn rpc(
-        &mut self,
-        message: T,
-    ) -> Option<U> {
+    pub async fn rpc(&mut self, message: T) -> Option<U> {
         let (oneshot_tx, oneshot_rx) = oneshot::channel::<U>();
-        let _ = self.tx.send(GenServerMsg { sender: oneshot_tx, message });
+        let _ = self.tx.send(GenServerMsg {
+            sender: oneshot_tx,
+            message,
+        });
         oneshot_rx.await.ok()
     }
 }
@@ -36,6 +35,8 @@ where
 {
     type InMsg: Send + Sync + Sized + 'static;
     type OutMsg: Send + Sync + Sized + 'static;
+    type State: Send;
+    type Error: std::error::Error;
 
     fn start() -> impl Future<Output = GenServerHandle<Self::InMsg, Self::OutMsg>> + Send {
         async {
@@ -44,7 +45,7 @@ where
             let handle = rt::spawn(async move {
                 Self::init().run(&tx_clone, &mut rx).await;
             });
-            GenServerHandle { tx, handle}
+            GenServerHandle { tx, handle }
         }
     }
 
@@ -86,8 +87,19 @@ where
         async {
             match rx.recv().await {
                 Some(GenServerMsg { sender, message }) => {
-                    let response = self.handle(message, tx).await;
-                    let _ = &sender.send(response);
+                    let state = self.state();
+                    match self.handle(message, tx).await {
+                        Ok(response) => {
+                            let _ = &sender.send(response);
+                        },
+                        Err(error) => {
+                            // log error
+                            tracing::trace!("Error in callback, reverting state - Error: '{error:?}'");
+                            // Restore initial state (ie. dismiss any change)
+                            self.set_state(state);
+                        },
+                    }
+                    ;
                 }
                 None => todo!(),
             }
@@ -96,9 +108,13 @@ where
 
     fn init() -> Self;
 
+    fn state(&self) -> Self::State;
+
+    fn set_state(&mut self, state: Self::State);
+
     fn handle(
         &mut self,
         message: Self::InMsg,
         tx: &mpsc::Sender<GenServerMsg<Self::InMsg, Self::OutMsg>>,
-    ) -> impl Future<Output = Self::OutMsg> + Send;
+    ) -> impl Future<Output = Result<Self::OutMsg, Self::Error>> + Send;
 }

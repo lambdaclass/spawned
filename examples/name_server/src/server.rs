@@ -24,26 +24,36 @@ impl NameServer {
 impl GenServer for NameServer {
     type InMsg = InMessage;
     type OutMsg = OutMessage;
+    type Error = std::fmt::Error;
+    type State = HashMap<String, String>;
 
     fn init() -> Self {
         Self { state: HashMap::new() }
+    }
+
+    fn state(&self) -> Self::State {
+        self.state.clone()
+    }
+
+    fn set_state(&mut self, state: Self::State) {
+        self.state = state;
     }
 
     async fn handle(
         &mut self,
         message: InMessage,
         _tx: &Sender<NameServerMessage>,
-    ) -> Self::OutMsg {
+    ) -> Result<Self::OutMsg, Self::Error> {
         match message.clone() {
             Self::InMsg::Add { key, value } => {
                 self.state.insert(key, value);
-                Self::OutMsg::Ok
+                Ok::<Self::OutMsg, Self::Error>(Self::OutMsg::Ok)
             }
             Self::InMsg::Find { key } => {
-                match self.state.get(&key) {
+                Ok(match self.state.get(&key) {
                     Some(value) => Self::OutMsg::Found { value: value.to_string() },
                     None => Self::OutMsg::NotFound,
-                }
+                })
             }
         }
     }

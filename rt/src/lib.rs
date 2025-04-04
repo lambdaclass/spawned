@@ -9,11 +9,30 @@
 
 mod tokio;
 
+use std::str::FromStr;
+
+use tracing_subscriber::filter::Directive;
+use tracing_subscriber::EnvFilter;
+use tracing_subscriber::FmtSubscriber;
+
 pub use crate::tokio::mpsc;
 pub use crate::tokio::oneshot;
 pub use crate::tokio::{Runtime, JoinHandle, spawn};
 
 pub fn run<F: Future>(future: F) -> F::Output {
+    init_tracing();
+
     let rt = Runtime::new().unwrap();
     rt.block_on(future)
+}
+
+fn init_tracing() {
+    let subscriber = FmtSubscriber::builder()
+    .with_env_filter(
+        EnvFilter::builder()
+            .with_default_directive(Directive::from_str("trace").unwrap())
+            .from_env_lossy(),
+    )
+    .finish();
+    tracing::subscriber::set_global_default(subscriber).unwrap();
 }
