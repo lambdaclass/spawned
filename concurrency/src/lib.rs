@@ -6,4 +6,4 @@ mod process;
 mod gen_server;
 
 pub use process::{Process, ProcessInfo, send};
-pub use gen_server::{GenServer, GenServerMsg, GenServerHandle};
+pub use gen_server::{GenServer, GenServerInMsg, GenServerHandle, CallResponse, CastResponse};

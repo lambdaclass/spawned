@@ -3,6 +3,7 @@ members = [
     "rt",
     "examples/ping_pong",
     "examples/name_server",
+    "examples/bank",
 ]
 
 [workspace.dependencies]
