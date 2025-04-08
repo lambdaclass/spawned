@@ -11,5 +11,6 @@ Simple library for concurrent Rust.
 
 - [Erlang](https://www.erlang.org/)
 - [Commonware.xyz](https://commonware.xyz)
+- [Ractor](https://slawlor.github.io/ractor/)
 - [Vale.dev](https://vale.dev/)
 - [Gleam](https://gleam.run/)

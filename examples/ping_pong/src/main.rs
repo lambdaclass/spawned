@@ -1,10 +1,10 @@
 //! Simple example to test concurrency/Process abstraction
-//! 
+//!
 //! Based on an Erlang example:
 //! -module(ping).
-//! 
+//!
 //! -export([ping/1, pong/0, spawn_consumer/0, spawn_producer/1, start/0]).
-//! 
+//!
 //! ping(Pid) ->
 //!     Pid ! {ping, self()},
 //!     receive
@@ -12,7 +12,7 @@
 //!             io:format("Received pong!!!~n"),
 //!             ping(Pid)
 //!     end.
-//! 
+//!
 //! pong() ->
 //!     receive
 //!         {ping, Pid} ->
@@ -22,13 +22,13 @@
 //!         die ->
 //!             ok
 //!         end.
-//! 
+//!
 //! spawn_consumer() ->
 //!     spawn(ping, pong, []).
-//! 
+//!
 //! spawn_producer(Pid) ->
 //!     spawn(ping, ping, [Pid]).
-//! 
+//!
 //! start() ->
 //!     Pid = spawn_consumer(),
 //!     spawn_producer(Pid).
@@ -40,8 +40,8 @@ mod producer;
 use std::{thread, time::Duration};
 
 use consumer::Consumer;
-use spawned_rt as rt;
 use producer::Producer;
+use spawned_rt as rt;
 
 fn main() {
     rt::run(async {

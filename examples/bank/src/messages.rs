@@ -21,4 +21,5 @@ pub enum BankError {
     AlreadyACustomer { who: String },
     NotACustomer { who: String },
     InsufficientBalance { who: String, amount: i32 },
+    ServerError,
 }

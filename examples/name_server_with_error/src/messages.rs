@@ -10,5 +10,6 @@ pub enum NameServerOutMessage {
     Ok,
     Found { value: String },
     NotFound,
-    Error,
+    ServerError,
+    CallbackError,
 }

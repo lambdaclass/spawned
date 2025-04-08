@@ -34,5 +34,18 @@ fn main() {
         let result = NameServer::find(&mut name_server, "Bob".to_string()).await;
 
         tracing::info!("Retrieving value result: {result:?}");
+
+        let result = NameServer::add(
+            &mut name_server,
+            "error".to_string(),
+            "Should not be added".to_string(),
+        )
+        .await;
+
+        tracing::info!("Storing value result: {result:?}");
+
+        let result = NameServer::find(&mut name_server, "error".to_string()).await;
+
+        tracing::info!("Retrieving value result: {result:?}");
     })
 }

@@ -34,14 +34,22 @@ where
         }
     }
 
-    fn run(&mut self, tx: &mpsc::Sender<T>, rx: &mut mpsc::Receiver<T>) -> impl Future<Output = ()> + Send {
+    fn run(
+        &mut self,
+        tx: &mpsc::Sender<T>,
+        rx: &mut mpsc::Receiver<T>,
+    ) -> impl Future<Output = ()> + Send {
         async {
             self.init(tx).await;
             self.main_loop(tx, rx).await;
         }
     }
 
-    fn main_loop(&mut self, tx: &mpsc::Sender<T>, rx: &mut mpsc::Receiver<T>) -> impl Future<Output = ()> + Send {
+    fn main_loop(
+        &mut self,
+        tx: &mpsc::Sender<T>,
+        rx: &mut mpsc::Receiver<T>,
+    ) -> impl Future<Output = ()> + Send {
         async {
             loop {
                 if self.should_stop() {
@@ -61,7 +69,11 @@ where
         async {}
     }
 
-    fn receive(&mut self, tx: &mpsc::Sender<T>, rx: &mut mpsc::Receiver<T>) -> impl std::future::Future<Output = T> + Send {
+    fn receive(
+        &mut self,
+        tx: &mpsc::Sender<T>,
+        rx: &mut mpsc::Receiver<T>,
+    ) -> impl std::future::Future<Output = T> + Send {
         async {
             match rx.recv().await {
                 Some(message) => self.handle(message, tx).await,
@@ -71,7 +83,6 @@ where
     }
 
     fn handle(&mut self, message: T, tx: &mpsc::Sender<T>) -> impl Future<Output = T> + Send;
-       
 }
 
 pub fn send<T>(tx: &mpsc::Sender<T>, message: T)

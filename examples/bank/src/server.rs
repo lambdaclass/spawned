@@ -16,21 +16,31 @@ pub struct Bank {
 
 impl Bank {
     pub async fn stop(server: &mut BankHandle) -> MsgResult {
-        server.call(InMessage::Stop).await
+        server
+            .call(InMessage::Stop)
+            .await
+            .unwrap_or(Err(BankError::ServerError))
     }
 
     pub async fn new_account(server: &mut BankHandle, who: String) -> MsgResult {
-        server.call(InMessage::New { who }).await
+        server
+            .call(InMessage::New { who })
+            .await
+            .unwrap_or(Err(BankError::ServerError))
     }
 
     pub async fn deposit(server: &mut BankHandle, who: String, amount: i32) -> MsgResult {
-        server.call(InMessage::Add { who, amount }).await
+        server
+            .call(InMessage::Add { who, amount })
+            .await
+            .unwrap_or(Err(BankError::ServerError))
     }
 
     pub async fn withdraw(server: &mut BankHandle, who: String, amount: i32) -> MsgResult {
         server
             .call(InMessage::Remove { who, amount })
             .await
+            .unwrap_or(Err(BankError::ServerError))
     }
 }
 
@@ -46,7 +56,15 @@ impl GenServer for Bank {
         }
     }
 
-    async fn handle_call(
+    fn state(&self) -> Self::State {
+        self.state.clone()
+    }
+
+    fn set_state(&mut self, state: Self::State) {
+        self.state = state;
+    }
+
+    fn handle_call(
         &mut self,
         message: InMessage,
         _tx: &Sender<BankHandleMessage>,
@@ -72,10 +90,9 @@ impl GenServer for Bank {
             },
             InMessage::Remove { who, amount } => match self.state.get(&who) {
                 Some(current) => match current < &amount {
-                    true => CallResponse::Reply(Err(BankError::InsufficientBalance {
-                        who,
-                        amount,
-                    })),
+                    true => {
+                        CallResponse::Reply(Err(BankError::InsufficientBalance { who, amount }))
+                    }
                     false => {
                         let new_amount = current - amount;
                         self.state.insert(who.clone(), new_amount);
@@ -91,7 +108,7 @@ impl GenServer for Bank {
         }
     }
 
-    async fn handle_cast(
+    fn handle_cast(
         &mut self,
         _message: InMessage,
         _tx: &Sender<BankHandleMessage>,

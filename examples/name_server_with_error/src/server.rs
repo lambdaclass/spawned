@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 
-use spawned_concurrency::{CallResponse, CastResponse, GenServer, GenServerHandle, GenServerInMsg};
+use spawned_concurrency::{
+    CallResponse, CastResponse, GenServer, GenServerError, GenServerHandle, GenServerInMsg,
+};
 use spawned_rt::mpsc::Sender;
 
 use crate::messages::{NameServerInMessage as InMessage, NameServerOutMessage as OutMessage};
@@ -17,7 +19,8 @@ impl NameServer {
     pub async fn add(server: &mut NameServerHandle, key: String, value: String) -> OutMessage {
         match server.call(InMessage::Add { key, value }).await {
             Ok(_) => OutMessage::Ok,
-            Err(_) => OutMessage::Error,
+            Err(GenServerError::ServerError) => OutMessage::ServerError,
+            Err(GenServerError::CallbackError) => OutMessage::CallbackError,
         }
     }
 
@@ -25,7 +28,7 @@ impl NameServer {
         server
             .call(InMessage::Find { key })
             .await
-            .unwrap_or(OutMessage::Error)
+            .unwrap_or(OutMessage::ServerError)
     }
 }
 
@@ -56,8 +59,12 @@ impl GenServer for NameServer {
     ) -> CallResponse<Self::OutMsg> {
         match message.clone() {
             Self::InMsg::Add { key, value } => {
-                self.state.insert(key, value);
-                CallResponse::Reply(Self::OutMsg::Ok)
+                self.state.insert(key.clone(), value);
+                if key == "error" {
+                    panic!("error!")
+                } else {
+                    CallResponse::Reply(Self::OutMsg::Ok)
+                }
             }
             Self::InMsg::Find { key } => match self.state.get(&key) {
                 Some(value) => CallResponse::Reply(Self::OutMsg::Found {

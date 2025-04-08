@@ -1,8 +1,8 @@
 //! Simple example to test concurrency/Process abstraction.
-//! 
+//!
 //! Based on Joe's Armstrong book: Programming Erlang, Second edition
 //! Section 22.1 - The Road to the Generic Server
-//! 
+//!
 //! Erlang usage example:
 //! 1> my_bank:start().
 //! {ok,<0.33.0>}
@@ -22,15 +22,14 @@
 mod messages;
 mod server;
 
+use server::Bank;
 use spawned_concurrency::GenServer as _;
 use spawned_rt as rt;
-use server::Bank;
-
 
 fn main() {
     rt::run(async {
         let mut name_server = Bank::start().await;
-        
+
         let result = Bank::deposit(&mut name_server, "Joe".to_string(), 10).await;
         tracing::info!("Deposit result {result:?}");
 
@@ -50,6 +49,6 @@ fn main() {
         tracing::info!("Withdraw result {result:?}");
 
         let result = Bank::stop(&mut name_server).await;
-        tracing::info!("Stop result {result:?}");        
+        tracing::info!("Stop result {result:?}");
     })
 }

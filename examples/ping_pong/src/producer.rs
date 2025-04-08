@@ -9,11 +9,7 @@ pub struct Producer {
 
 impl Producer {
     pub async fn spawn_new(consumer: Sender<Message>) -> ProcessInfo<Message> {
-        Self {
-            consumer,
-        }
-        .spawn()
-        .await
+        Self { consumer }.spawn().await
     }
 
     fn send_ping(&self, tx: &Sender<Message>, consumer: &Sender<Message>) {
@@ -28,11 +24,7 @@ impl Process<Message> for Producer {
         self.send_ping(tx, &self.consumer);
     }
 
-    async fn handle(
-        &mut self,
-        message: Message,
-        tx: &Sender<Message>,
-    ) -> Message {
+    async fn handle(&mut self, message: Message, tx: &Sender<Message>) -> Message {
         tracing::info!("Producer received {message:?}");
         self.send_ping(tx, &self.consumer);
         message
