@@ -11,7 +11,7 @@ pub struct GenServerHandle<T, U> {
     handle: JoinHandle<()>,
 }
 
-impl<T: Send + 'static, U: Send + 'static> GenServerHandle<T, U> {
+impl<T: Send, U: Send> GenServerHandle<T, U> {
     pub fn sender(&self) -> mpsc::Sender<GenServerInMsg<T, U>> {
         self.tx.clone()
     }
@@ -56,10 +56,10 @@ pub enum CastResponse {
 
 pub trait GenServer
 where
-    Self: Send + Sync + Sized + 'static,
+    Self: Send + Sized + 'static,
 {
-    type InMsg: Send + Sync + Sized + 'static;
-    type OutMsg: Send + Sync + Sized + 'static;
+    type InMsg: Send + Sized;
+    type OutMsg: Send + Sized;
     type State: Send;
     type Error: Debug;
 
