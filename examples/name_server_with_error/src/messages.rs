@@ -5,7 +5,7 @@ pub enum NameServerInMessage {
 }
 
 #[allow(dead_code)]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum NameServerOutMessage {
     Ok,
     Found { value: String },

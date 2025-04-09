@@ -14,26 +14,32 @@
 mod messages;
 mod server;
 
+use messages::NameServerOutMessage;
 use server::NameServer;
 use spawned_concurrency::GenServer as _;
 use spawned_rt as rt;
 
 fn main() {
     rt::run(async {
-        let mut name_server = NameServer::start().await;
+        let mut name_server = NameServer::start();
 
         let result =
             NameServer::add(&mut name_server, "Joe".to_string(), "At Home".to_string()).await;
-
         tracing::info!("Storing value result: {result:?}");
+        assert_eq!(result, NameServerOutMessage::Ok);
 
         let result = NameServer::find(&mut name_server, "Joe".to_string()).await;
-
         tracing::info!("Retrieving value result: {result:?}");
+        assert_eq!(
+            result,
+            NameServerOutMessage::Found {
+                value: "At Home".to_string()
+            }
+        );
 
         let result = NameServer::find(&mut name_server, "Bob".to_string()).await;
-
         tracing::info!("Retrieving value result: {result:?}");
+        assert_eq!(result, NameServerOutMessage::NotFound);
 
         let result = NameServer::add(
             &mut name_server,
@@ -41,11 +47,15 @@ fn main() {
             "Should not be added".to_string(),
         )
         .await;
-
         tracing::info!("Storing value result: {result:?}");
+        assert_eq!(result, NameServerOutMessage::CallbackError);
 
         let result = NameServer::find(&mut name_server, "error".to_string()).await;
-
         tracing::info!("Retrieving value result: {result:?}");
+        assert_eq!(
+            result,
+            NameServerOutMessage::NotFound,
+            "Value must not be present as there was an error inserting it."
+        );
     })
 }

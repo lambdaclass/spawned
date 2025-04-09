@@ -5,13 +5,11 @@ use spawned_rt::mpsc::Sender;
 
 use crate::messages::{NameServerInMessage as InMessage, NameServerOutMessage as OutMessage};
 
-type NameServerHandle = GenServerHandle<InMessage, OutMessage>;
-type NameServerMessage = GenServerInMsg<InMessage, OutMessage>;
+type NameServerHandle = GenServerHandle<NameServer>;
+type NameServerMessage = GenServerInMsg<NameServer>;
 type NameServerState = HashMap<String, String>;
 
-pub struct NameServer {
-    state: NameServerState,
-}
+pub struct NameServer {}
 
 impl NameServer {
     pub async fn add(server: &mut NameServerHandle, key: String, value: String) -> OutMessage {
@@ -35,31 +33,26 @@ impl GenServer for NameServer {
     type Error = std::fmt::Error;
     type State = NameServerState;
 
-    fn init() -> Self {
-        Self {
-            state: HashMap::new(),
-        }
+    fn new() -> Self {
+        Self {}
     }
 
-    fn state(&self) -> Self::State {
-        self.state.clone()
-    }
-
-    fn set_state(&mut self, state: Self::State) {
-        self.state = state;
+    fn initial_state(&self) -> Self::State {
+        HashMap::new()
     }
 
     fn handle_call(
         &mut self,
         message: InMessage,
         _tx: &Sender<NameServerMessage>,
+        state: &mut Self::State,
     ) -> CallResponse<Self::OutMsg> {
         match message.clone() {
             Self::InMsg::Add { key, value } => {
-                self.state.insert(key, value);
+                state.insert(key, value);
                 CallResponse::Reply(Self::OutMsg::Ok)
             }
-            Self::InMsg::Find { key } => match self.state.get(&key) {
+            Self::InMsg::Find { key } => match state.get(&key) {
                 Some(value) => CallResponse::Reply(Self::OutMsg::Found {
                     value: value.to_string(),
                 }),
@@ -72,6 +65,7 @@ impl GenServer for NameServer {
         &mut self,
         _message: InMessage,
         _tx: &Sender<NameServerMessage>,
+        _state: &mut Self::State,
     ) -> CastResponse {
         CastResponse::NoReply
     }

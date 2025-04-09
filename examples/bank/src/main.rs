@@ -22,33 +22,67 @@
 mod messages;
 mod server;
 
+use messages::{BankError, BankOutMessage};
 use server::Bank;
 use spawned_concurrency::GenServer as _;
 use spawned_rt as rt;
 
 fn main() {
     rt::run(async {
-        let mut name_server = Bank::start().await;
+        let mut name_server = Bank::start();
 
-        let result = Bank::deposit(&mut name_server, "Joe".to_string(), 10).await;
+        let joe = "Joe".to_string();
+
+        let result = Bank::deposit(&mut name_server, joe.clone(), 10).await;
         tracing::info!("Deposit result {result:?}");
+        assert_eq!(result, Err(BankError::NotACustomer { who: joe.clone() }));
 
         let result = Bank::new_account(&mut name_server, "Joe".to_string()).await;
         tracing::info!("New account result {result:?}");
+        assert_eq!(result, Ok(BankOutMessage::Welcome { who: joe.clone() }));
 
         let result = Bank::deposit(&mut name_server, "Joe".to_string(), 10).await;
         tracing::info!("Deposit result {result:?}");
+        assert_eq!(
+            result,
+            Ok(BankOutMessage::Balance {
+                who: joe.clone(),
+                amount: 10
+            })
+        );
 
         let result = Bank::deposit(&mut name_server, "Joe".to_string(), 30).await;
         tracing::info!("Deposit result {result:?}");
+        assert_eq!(
+            result,
+            Ok(BankOutMessage::Balance {
+                who: joe.clone(),
+                amount: 40
+            })
+        );
 
         let result = Bank::withdraw(&mut name_server, "Joe".to_string(), 15).await;
         tracing::info!("Withdraw result {result:?}");
+        assert_eq!(
+            result,
+            Ok(BankOutMessage::WidrawOk {
+                who: joe.clone(),
+                amount: 25
+            })
+        );
 
         let result = Bank::withdraw(&mut name_server, "Joe".to_string(), 45).await;
         tracing::info!("Withdraw result {result:?}");
+        assert_eq!(
+            result,
+            Err(BankError::InsufficientBalance {
+                who: joe,
+                amount: 25
+            })
+        );
 
         let result = Bank::stop(&mut name_server).await;
         tracing::info!("Stop result {result:?}");
+        assert_eq!(result, Ok(BankOutMessage::Stopped));
     })
 }

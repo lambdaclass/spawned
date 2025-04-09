@@ -7,7 +7,7 @@ pub enum BankInMessage {
 }
 
 #[allow(dead_code)]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum BankOutMessage {
     Welcome { who: String },
     Balance { who: String, amount: i32 },
@@ -16,7 +16,7 @@ pub enum BankOutMessage {
 }
 
 #[allow(dead_code)]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum BankError {
     AlreadyACustomer { who: String },
     NotACustomer { who: String },
