@@ -23,7 +23,13 @@ impl<G: GenServer> GenServerHandle<G> {
         let mut gen_server: G = GenServer::new();
         let mut state = gen_server.initial_state();
         let handle = rt::spawn(async move {
-            let _ = gen_server.run(&tx_clone, &mut rx, &mut state).await;
+            if gen_server
+                .run(&tx_clone, &mut rx, &mut state)
+                .await
+                .is_err()
+            {
+                tracing::trace!("GenServer crashed")
+            };
         });
         GenServerHandle { tx, handle }
     }
