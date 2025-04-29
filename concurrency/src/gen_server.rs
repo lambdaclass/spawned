@@ -2,10 +2,12 @@
 //! See examples/name_server for a usage example.
 use std::{
     fmt::Debug,
-    panic::{AssertUnwindSafe, catch_unwind},
+    panic::{catch_unwind, AssertUnwindSafe},
 };
 
-use spawned_rt::{self as rt, JoinHandle, mpsc, oneshot};
+use std::future::Future;
+
+use spawned_rt::{self as rt, mpsc, oneshot, JoinHandle};
 
 use crate::error::GenServerError;
 
@@ -17,14 +19,13 @@ pub struct GenServerHandle<G: GenServer + 'static> {
 }
 
 impl<G: GenServer> GenServerHandle<G> {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(mut initial_state: G::State) -> Self {
         let (tx, mut rx) = mpsc::channel::<GenServerInMsg<G>>();
         let tx_clone = tx.clone();
         let mut gen_server: G = GenServer::new();
-        let mut state = gen_server.initial_state();
         let handle = rt::spawn(async move {
             if gen_server
-                .run(&tx_clone, &mut rx, &mut state)
+                .run(&tx_clone, &mut rx, &mut initial_state)
                 .await
                 .is_err()
             {
@@ -88,8 +89,8 @@ where
 
     fn new() -> Self;
 
-    fn start() -> GenServerHandle<Self> {
-        GenServerHandle::new()
+    fn start(initial_state: Self::State) -> GenServerHandle<Self> {
+        GenServerHandle::new(initial_state)
     }
 
     fn run(
@@ -175,8 +176,6 @@ where
             Ok(keep_running)
         }
     }
-
-    fn initial_state(&self) -> Self::State;
 
     fn handle_call(
         &mut self,

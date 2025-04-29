@@ -48,10 +48,6 @@ impl GenServer for Bank {
     type Error = BankError;
     type State = BankState;
 
-    fn initial_state(&self) -> Self::State {
-        HashMap::new()
-    }
-
     fn new() -> Self {
         Self {}
     }

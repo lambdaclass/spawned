@@ -1,9 +1,12 @@
 [package]
 name = "spawned-rt"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+
+[lib]
+path = "./src/lib.rs"

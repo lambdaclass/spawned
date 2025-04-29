@@ -1,8 +1,11 @@
 [package]
 name = "spawned-concurrency"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
 
 [dependencies]
 spawned-rt = { workspace = true }
 tracing = { workspace = true }
+
+[lib]
+path = "./src/lib.rs"

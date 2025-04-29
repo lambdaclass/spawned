@@ -9,15 +9,16 @@
 
 mod tokio;
 
+use std::future::Future;
 use std::str::FromStr;
 
+use tracing_subscriber::filter::Directive;
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::FmtSubscriber;
-use tracing_subscriber::filter::Directive;
 
 pub use crate::tokio::mpsc;
 pub use crate::tokio::oneshot;
-pub use crate::tokio::{JoinHandle, Runtime, spawn};
+pub use crate::tokio::{spawn, JoinHandle, Runtime};
 
 pub fn run<F: Future>(future: F) -> F::Output {
     init_tracing();
