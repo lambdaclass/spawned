@@ -56,7 +56,7 @@ impl GenServer for Bank {
         Self {}
     }
 
-    fn handle_call(
+    async fn handle_call(
         &mut self,
         message: InMessage,
         _tx: &Sender<BankHandleMessage>,
@@ -102,7 +102,7 @@ impl GenServer for Bank {
         }
     }
 
-    fn handle_cast(
+    async fn handle_cast(
         &mut self,
         _message: InMessage,
         _tx: &Sender<BankHandleMessage>,

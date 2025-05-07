@@ -2,9 +2,9 @@
 //! See examples/name_server for a usage example.
 use std::{
     fmt::Debug,
-    panic::{AssertUnwindSafe, catch_unwind},
+    panic::AssertUnwindSafe,
 };
-
+use futures::future::FutureExt as _;
 use spawned_rt::{self as rt, JoinHandle, mpsc, oneshot};
 
 use crate::error::GenServerError;
@@ -136,9 +136,7 @@ where
             let (keep_running, error) = match message {
                 Some(GenServerInMsg::Call { sender, message }) => {
                     let (keep_running, error, response) =
-                        match catch_unwind(AssertUnwindSafe(|| {
-                            self.handle_call(message, tx, state)
-                        })) {
+                        match AssertUnwindSafe(self.handle_call(message, tx, state)).catch_unwind().await {
                             Ok(response) => match response {
                                 CallResponse::Reply(response) => (true, None, Ok(response)),
                                 CallResponse::Stop(response) => (false, None, Ok(response)),
@@ -154,7 +152,7 @@ where
                     (keep_running, error)
                 }
                 Some(GenServerInMsg::Cast { message }) => {
-                    match catch_unwind(AssertUnwindSafe(|| self.handle_cast(message, tx, state))) {
+                    match AssertUnwindSafe(self.handle_cast(message, tx, state)).catch_unwind().await {
                         Ok(response) => match response {
                             CastResponse::NoReply => (true, None),
                             CastResponse::Stop => (false, None),
@@ -183,12 +181,12 @@ where
         message: Self::InMsg,
         tx: &mpsc::Sender<GenServerInMsg<Self>>,
         state: &mut Self::State,
-    ) -> CallResponse<Self::OutMsg>;
+    ) -> impl std::future::Future<Output = CallResponse<Self::OutMsg>> + Send;
 
     fn handle_cast(
         &mut self,
         _message: Self::InMsg,
         _tx: &mpsc::Sender<GenServerInMsg<Self>>,
         state: &mut Self::State,
-    ) -> CastResponse;
+    ) -> impl std::future::Future<Output = CastResponse> + Send;
 }
