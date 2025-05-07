@@ -6,7 +6,6 @@ members = [
     "examples/name_server_with_error",
     "examples/updater",
     "examples/bank",
-    "examples/rq",
 ]
 
 [workspace.dependencies]

@@ -928,16 +928,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rq"
-version = "0.1.0"
-dependencies = [
- "futures",
- "reqwest",
- "spawned-rt",
- "tokio",
-]
-
-[[package]]
 name = "rustc-demangle"
 version = "0.1.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
