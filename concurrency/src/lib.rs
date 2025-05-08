@@ -4,7 +4,9 @@
 mod error;
 mod gen_server;
 mod process;
+mod time;
 
 pub use error::GenServerError;
 pub use gen_server::{CallResponse, CastResponse, GenServer, GenServerHandle, GenServerInMsg};
 pub use process::{Process, ProcessInfo, send};
+pub use time::send_after;
