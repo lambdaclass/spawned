@@ -1,13 +1,13 @@
 [package]
-name = "ping_pong"
+name = "bank-sync"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-spawned-rt-sync = { workspace = true }
+spawned-rt = { workspace = true }
 spawned-concurrency = { workspace = true }
 tracing = { workspace = true }
 
 [[bin]]
-name = "ping_pong"
+name = "bank-sync"
 path = "src/main.rs"

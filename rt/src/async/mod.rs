@@ -7,11 +7,18 @@
 //! Currently, only a very limited set of tokio functionality is reexported. We may want to
 //! extend this functionality as needed.
 
-mod tracing;
-pub mod sync;
-pub mod r#async;
+mod tokio;
 
-pub use crate::r#async::mpsc;
-pub use crate::sync::sleep;
-pub use crate::sync::oneshot;
-pub use crate::sync::spawn;
+use crate::tracing::init_tracing;
+
+pub use crate::r#async::tokio::mpsc;
+pub use crate::r#async::tokio::sleep;
+pub use crate::r#async::tokio::oneshot;
+pub use crate::r#async::tokio::{JoinHandle, Runtime, Handle, spawn, spawn_blocking};
+
+pub fn run<F: Future>(future: F) -> F::Output {
+    init_tracing();
+
+    let rt = Runtime::new().unwrap();
+    rt.block_on(future)
+}

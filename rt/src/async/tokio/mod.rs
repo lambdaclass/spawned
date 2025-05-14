@@ -4,6 +4,6 @@ pub mod oneshot;
 
 pub use tokio::{
     time::sleep,
-    runtime::Runtime,
-    task::{JoinHandle, spawn},
+    runtime::{Runtime, Handle},
+    task::{JoinHandle, spawn, spawn_blocking},
 };

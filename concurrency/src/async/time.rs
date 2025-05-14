@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use spawned_rt::{self as rt, mpsc::Sender, JoinHandle};
+use spawned_rt::r#async::{self as rt, mpsc::Sender, JoinHandle};
 
 use crate::{GenServer, GenServerInMsg};
 

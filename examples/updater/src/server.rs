@@ -59,8 +59,9 @@ impl GenServer for UpdaterServer {
                     InMessage::Check("url".to_string()),
                 );
                 tracing::info!("Fetching: {url:?}");
+                //let enter = futures::executor::enter();
                 let resp = futures::executor::block_on(req());
-
+                //drop(enter);
                 tracing::info!("Response: {resp:?}");
 
                 CastResponse::NoReply

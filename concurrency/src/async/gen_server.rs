@@ -5,9 +5,9 @@ use std::{
     panic::{AssertUnwindSafe, catch_unwind},
 };
 
-use spawned_rt::{self as rt, JoinHandle, mpsc, oneshot};
+use spawned_rt::r#async::{self as rt, JoinHandle, mpsc, oneshot};
 
-use crate::error::GenServerError;
+use crate::r#async::error::GenServerError;
 
 #[derive(Debug)]
 pub struct GenServerHandle<G: GenServer + 'static> {

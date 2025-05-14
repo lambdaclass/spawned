@@ -28,7 +28,7 @@ use spawned_concurrency::GenServer as _;
 use spawned_rt as rt;
 
 fn main() {
-    rt::run(async {
+    rt::r#async::run(async {
         let mut name_server = Bank::start();
 
         let joe = "Joe".to_string();
