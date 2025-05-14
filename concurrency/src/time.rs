@@ -1,10 +1,8 @@
 use std::time::Duration;
 
-use spawned_rt::{self as rt, mpsc::Sender, JoinHandle};
+use spawned_rt::{self as rt, JoinHandle, mpsc::Sender};
 
 use crate::{GenServer, GenServerInMsg};
-
-
 
 // Sends a message after a given period to the specified GenServer. The task terminates
 // once the send has completed
@@ -18,6 +16,6 @@ where
 {
     rt::spawn(async move {
         rt::sleep(period).await;
-        let _ = tx.send(GenServerInMsg::Cast { message } );
+        let _ = tx.send(GenServerInMsg::Cast { message });
     })
 }

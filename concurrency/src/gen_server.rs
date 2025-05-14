@@ -1,11 +1,8 @@
 //! GernServer trait and structs to create an abstraction similar to Erlang gen_server.
 //! See examples/name_server for a usage example.
-use std::{
-    fmt::Debug,
-    panic::AssertUnwindSafe,
-};
 use futures::future::FutureExt as _;
 use spawned_rt::{self as rt, JoinHandle, mpsc, oneshot};
+use std::{fmt::Debug, panic::AssertUnwindSafe};
 
 use crate::error::GenServerError;
 
@@ -136,7 +133,10 @@ where
             let (keep_running, error) = match message {
                 Some(GenServerInMsg::Call { sender, message }) => {
                     let (keep_running, error, response) =
-                        match AssertUnwindSafe(self.handle_call(message, tx, state)).catch_unwind().await {
+                        match AssertUnwindSafe(self.handle_call(message, tx, state))
+                            .catch_unwind()
+                            .await
+                        {
                             Ok(response) => match response {
                                 CallResponse::Reply(response) => (true, None, Ok(response)),
                                 CallResponse::Stop(response) => (false, None, Ok(response)),
@@ -152,7 +152,10 @@ where
                     (keep_running, error)
                 }
                 Some(GenServerInMsg::Cast { message }) => {
-                    match AssertUnwindSafe(self.handle_cast(message, tx, state)).catch_unwind().await {
+                    match AssertUnwindSafe(self.handle_cast(message, tx, state))
+                        .catch_unwind()
+                        .await
+                    {
                         Ok(response) => match response {
                             CastResponse::NoReply => (true, None),
                             CastResponse::Stop => (false, None),

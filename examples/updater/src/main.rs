@@ -1,7 +1,7 @@
 //! Example to test a recurrent gen_server.
 //!
 //! Just activates periodically and performs an http request
-//! 
+//!
 
 mod messages;
 mod server;
@@ -17,7 +17,8 @@ fn main() {
     rt::run(async {
         let mut update_server = UpdaterServer::start();
 
-        let result = UpdaterServer::check(&mut update_server, "ea".to_string()).await;
+        let result =
+            UpdaterServer::check(&mut update_server, "https://httpbin.org/ip".to_string()).await;
         tracing::info!("Update check done: {result:?}");
         assert_eq!(result, UpdaterOutMessage::Ok);
 

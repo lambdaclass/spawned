@@ -16,8 +16,8 @@ use tracing_subscriber::FmtSubscriber;
 use tracing_subscriber::filter::Directive;
 
 pub use crate::tokio::mpsc;
-pub use crate::tokio::sleep;
 pub use crate::tokio::oneshot;
+pub use crate::tokio::sleep;
 pub use crate::tokio::{JoinHandle, Runtime, spawn};
 
 pub fn run<F: Future>(future: F) -> F::Output {

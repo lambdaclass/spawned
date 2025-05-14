@@ -56,10 +56,10 @@ impl GenServer for UpdaterServer {
                 send_after(
                     Duration::from_millis(1000),
                     tx.clone(),
-                    InMessage::Check("url".to_string()),
+                    InMessage::Check(url.clone()),
                 );
-                tracing::info!("Fetching: {url:?}");
-                let resp = req().await;
+                tracing::info!("Fetching: {url}");
+                let resp = req(url).await;
 
                 tracing::info!("Response: {resp:?}");
 
@@ -69,9 +69,6 @@ impl GenServer for UpdaterServer {
     }
 }
 
-async fn req() -> Result<String, reqwest::Error> {
-    reqwest::get("https://httpbin.org/ip")
-        .await?
-        .text()
-        .await
+async fn req(url: String) -> Result<String, reqwest::Error> {
+    reqwest::get(url).await?.text().await
 }
