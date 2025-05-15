@@ -1,5 +1,5 @@
 [package]
-name = "bank-sync"
+name = "ping_pong_sync"
 version = "0.1.0"
 edition = "2024"
 
@@ -9,5 +9,5 @@ spawned-concurrency = { workspace = true }
 tracing = { workspace = true }
 
 [[bin]]
-name = "bank-sync"
+name = "ping_pong_sync"
 path = "src/main.rs"

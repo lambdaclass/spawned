@@ -4,7 +4,7 @@ use futures::future::FutureExt as _;
 use spawned_rt::r#async::{self as rt, JoinHandle, mpsc, oneshot};
 use std::{fmt::Debug, panic::AssertUnwindSafe};
 
-use crate::r#async::error::GenServerError;
+use super::error::GenServerError;
 
 #[derive(Debug)]
 pub struct GenServerHandle<G: GenServer + 'static> {

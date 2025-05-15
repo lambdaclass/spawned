@@ -1,7 +1,9 @@
 use std::collections::HashMap;
 
-use spawned_concurrency::{CallResponse, CastResponse, GenServer, GenServerHandle, GenServerInMsg};
-use spawned_rt::mpsc::Sender;
+use spawned_concurrency::r#async::{
+    CallResponse, CastResponse, GenServer, GenServerHandle, GenServerInMsg,
+};
+use spawned_rt::r#async::mpsc::Sender;
 
 use crate::messages::{NameServerInMessage as InMessage, NameServerOutMessage as OutMessage};
 

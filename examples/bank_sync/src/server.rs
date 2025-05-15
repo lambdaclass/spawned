@@ -1,7 +1,9 @@
 use std::collections::HashMap;
 
-use spawned_concurrency::{CallResponse, CastResponse, GenServer, GenServerHandle, GenServerInMsg};
-use spawned_rt::mpsc::Sender;
+use spawned_concurrency::sync::{
+    CallResponse, CastResponse, GenServer, GenServerHandle, GenServerInMsg,
+};
+use spawned_rt::sync::mpsc::Sender;
 
 use crate::messages::{BankError, BankInMessage as InMessage, BankOutMessage as OutMessage};
 
@@ -13,31 +15,27 @@ type BankState = HashMap<String, i32>;
 pub struct Bank {}
 
 impl Bank {
-    pub async fn stop(server: &mut BankHandle) -> MsgResult {
+    pub fn stop(server: &mut BankHandle) -> MsgResult {
         server
             .call(InMessage::Stop)
-            .await
             .unwrap_or(Err(BankError::ServerError))
     }
 
-    pub async fn new_account(server: &mut BankHandle, who: String) -> MsgResult {
+    pub fn new_account(server: &mut BankHandle, who: String) -> MsgResult {
         server
             .call(InMessage::New { who })
-            .await
             .unwrap_or(Err(BankError::ServerError))
     }
 
-    pub async fn deposit(server: &mut BankHandle, who: String, amount: i32) -> MsgResult {
+    pub fn deposit(server: &mut BankHandle, who: String, amount: i32) -> MsgResult {
         server
             .call(InMessage::Add { who, amount })
-            .await
             .unwrap_or(Err(BankError::ServerError))
     }
 
-    pub async fn withdraw(server: &mut BankHandle, who: String, amount: i32) -> MsgResult {
+    pub fn withdraw(server: &mut BankHandle, who: String, amount: i32) -> MsgResult {
         server
             .call(InMessage::Remove { who, amount })
-            .await
             .unwrap_or(Err(BankError::ServerError))
     }
 }
@@ -47,10 +45,6 @@ impl GenServer for Bank {
     type OutMsg = MsgResult;
     type Error = BankError;
     type State = BankState;
-
-    fn initial_state(&self) -> Self::State {
-        HashMap::new()
-    }
 
     fn new() -> Self {
         Self {}

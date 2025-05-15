@@ -2,7 +2,12 @@
 members = [
     "rt",
     "examples/bank",
-    "examples/bank-sync",
+    "examples/bank_sync",
+    "examples/name_server",
+    "examples/name_server_with_error",
+    "examples/ping_pong",
+    "examples/ping_pong_sync",
+    "examples/updater",
 ]
 
 [workspace.dependencies]

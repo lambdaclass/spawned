@@ -1,11 +1,11 @@
 pub mod mpsc;
 pub mod oneshot;
 
-pub use std::thread::{sleep, spawn};
+pub use std::thread::{JoinHandle, sleep, spawn};
 
 use crate::tracing::init_tracing;
 
-pub fn run(f: fn()) -> () {
+pub fn run(f: fn()) {
     init_tracing();
 
     f()

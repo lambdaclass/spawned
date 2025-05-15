@@ -10,8 +10,3 @@
 pub mod r#async;
 pub mod sync;
 mod tracing;
-
-pub use crate::sync::mpsc;
-pub use crate::sync::oneshot;
-pub use crate::sync::sleep;
-pub use crate::sync::spawn;
