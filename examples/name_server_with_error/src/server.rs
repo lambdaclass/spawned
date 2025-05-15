@@ -36,10 +36,6 @@ impl GenServer for NameServer {
     type Error = std::fmt::Error;
     type State = NameServerState;
 
-    fn initial_state(&self) -> NameServerState {
-        HashMap::new()
-    }
-
     fn new() -> Self {
         NameServer {}
     }

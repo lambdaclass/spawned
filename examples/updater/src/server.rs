@@ -1,4 +1,4 @@
-use std::{collections::HashMap, time::Duration};
+use std::time::Duration;
 
 use spawned_concurrency::{
     CallResponse, CastResponse, GenServer, GenServerHandle, GenServerInMsg, send_after,
@@ -9,13 +9,17 @@ use crate::messages::{UpdaterInMessage as InMessage, UpdaterOutMessage as OutMes
 
 type UpdateServerHandle = GenServerHandle<UpdaterServer>;
 type UpdateServerMessage = GenServerInMsg<UpdaterServer>;
-type UpdateServerState = HashMap<String, String>;
 
+#[derive(Clone)]
+pub struct UpdateServerState {
+    pub url: String,
+    pub periodicity: Duration,
+}
 pub struct UpdaterServer {}
 
 impl UpdaterServer {
-    pub async fn check(server: &mut UpdateServerHandle, url: String) -> OutMessage {
-        match server.cast(InMessage::Check(url)).await {
+    pub async fn check(server: &mut UpdateServerHandle) -> OutMessage {
+        match server.cast(InMessage::Check).await {
             Ok(_) => OutMessage::Ok,
             Err(_) => OutMessage::Error,
         }
@@ -32,10 +36,6 @@ impl GenServer for UpdaterServer {
         Self {}
     }
 
-    fn initial_state(&self) -> Self::State {
-        HashMap::new()
-    }
-
     async fn handle_call(
         &mut self,
         _message: InMessage,
@@ -49,15 +49,12 @@ impl GenServer for UpdaterServer {
         &mut self,
         message: InMessage,
         tx: &Sender<UpdateServerMessage>,
-        _state: &mut Self::State,
+        state: &mut Self::State,
     ) -> CastResponse {
         match message {
-            Self::InMsg::Check(url) => {
-                send_after(
-                    Duration::from_millis(1000),
-                    tx.clone(),
-                    InMessage::Check(url.clone()),
-                );
+            Self::InMsg::Check => {
+                send_after(state.periodicity, tx.clone(), InMessage::Check);
+                let url = state.url.clone();
                 tracing::info!("Fetching: {url}");
                 let resp = req(url).await;
 

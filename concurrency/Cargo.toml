@@ -7,3 +7,6 @@ edition = "2024"
 spawned-rt = { workspace = true }
 tracing = { workspace = true }
 futures = "0.3.1"
+
+[lib]
+path = "./src/lib.rs"

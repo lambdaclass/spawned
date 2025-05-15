@@ -1,6 +1,6 @@
 #[derive(Debug, Clone)]
 pub enum UpdaterInMessage {
-    Check(String),
+    Check,
 }
 
 #[allow(dead_code)]
