@@ -1,5 +1,5 @@
 //! Tracing initializer
-//! 
+//!
 
 use std::str::FromStr;
 

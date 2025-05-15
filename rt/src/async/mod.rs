@@ -12,8 +12,8 @@ mod tokio;
 use crate::tracing::init_tracing;
 
 pub use crate::r#async::tokio::mpsc;
-pub use crate::r#async::tokio::sleep;
 pub use crate::r#async::tokio::oneshot;
+pub use crate::r#async::tokio::sleep;
 pub use crate::r#async::tokio::{JoinHandle, Runtime, spawn};
 
 pub fn run<F: Future>(future: F) -> F::Output {

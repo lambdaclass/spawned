@@ -7,11 +7,11 @@
 //! Currently, only a very limited set of tokio functionality is reexported. We may want to
 //! extend this functionality as needed.
 
-mod tracing;
-pub mod sync;
 pub mod r#async;
+pub mod sync;
+mod tracing;
 
 pub use crate::sync::mpsc;
-pub use crate::sync::sleep;
 pub use crate::sync::oneshot;
+pub use crate::sync::sleep;
 pub use crate::sync::spawn;
