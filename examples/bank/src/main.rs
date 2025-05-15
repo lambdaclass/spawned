@@ -22,6 +22,8 @@
 mod messages;
 mod server;
 
+use std::collections::HashMap;
+
 use messages::{BankError, BankOutMessage};
 use server::Bank;
 use spawned_concurrency::GenServer as _;
@@ -29,7 +31,7 @@ use spawned_rt as rt;
 
 fn main() {
     rt::r#async::run(async {
-        let mut name_server = Bank::start();
+        let mut name_server = Bank::start(HashMap::new());
 
         let joe = "Joe".to_string();
 

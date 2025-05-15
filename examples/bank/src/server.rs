@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use spawned_concurrency::{CallResponse, CastResponse, GenServer, GenServerHandle, GenServerInMsg};
-use spawned_rt::mpsc::Sender;
+use spawned_rt::r#async::mpsc::Sender;
 
 use crate::messages::{BankError, BankInMessage as InMessage, BankOutMessage as OutMessage};
 
@@ -48,15 +48,11 @@ impl GenServer for Bank {
     type Error = BankError;
     type State = BankState;
 
-    fn initial_state(&self) -> Self::State {
-        HashMap::new()
-    }
-
     fn new() -> Self {
         Self {}
     }
 
-    fn handle_call(
+    async fn handle_call(
         &mut self,
         message: InMessage,
         _tx: &Sender<BankHandleMessage>,
@@ -102,7 +98,7 @@ impl GenServer for Bank {
         }
     }
 
-    fn handle_cast(
+    async fn handle_cast(
         &mut self,
         _message: InMessage,
         _tx: &Sender<BankHandleMessage>,

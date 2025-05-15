@@ -1,11 +1,8 @@
 //! GernServer trait and structs to create an abstraction similar to Erlang gen_server.
 //! See examples/name_server for a usage example.
-use std::{
-    fmt::Debug,
-    panic::{AssertUnwindSafe, catch_unwind},
-};
-
+use futures::future::FutureExt as _;
 use spawned_rt::r#async::{self as rt, JoinHandle, mpsc, oneshot};
+use std::{fmt::Debug, panic::AssertUnwindSafe};
 
 use crate::r#async::error::GenServerError;
 
@@ -17,14 +14,13 @@ pub struct GenServerHandle<G: GenServer + 'static> {
 }
 
 impl<G: GenServer> GenServerHandle<G> {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(mut initial_state: G::State) -> Self {
         let (tx, mut rx) = mpsc::channel::<GenServerInMsg<G>>();
         let tx_clone = tx.clone();
         let mut gen_server: G = GenServer::new();
-        let mut state = gen_server.initial_state();
         let handle = rt::spawn(async move {
             if gen_server
-                .run(&tx_clone, &mut rx, &mut state)
+                .run(&tx_clone, &mut rx, &mut initial_state)
                 .await
                 .is_err()
             {
@@ -88,8 +84,8 @@ where
 
     fn new() -> Self;
 
-    fn start() -> GenServerHandle<Self> {
-        GenServerHandle::new()
+    fn start(initial_state: Self::State) -> GenServerHandle<Self> {
+        GenServerHandle::new(initial_state)
     }
 
     fn run(
@@ -136,9 +132,10 @@ where
             let (keep_running, error) = match message {
                 Some(GenServerInMsg::Call { sender, message }) => {
                     let (keep_running, error, response) =
-                        match catch_unwind(AssertUnwindSafe(|| {
-                            self.handle_call(message, tx, state)
-                        })) {
+                        match AssertUnwindSafe(self.handle_call(message, tx, state))
+                            .catch_unwind()
+                            .await
+                        {
                             Ok(response) => match response {
                                 CallResponse::Reply(response) => (true, None, Ok(response)),
                                 CallResponse::Stop(response) => (false, None, Ok(response)),
@@ -154,7 +151,10 @@ where
                     (keep_running, error)
                 }
                 Some(GenServerInMsg::Cast { message }) => {
-                    match catch_unwind(AssertUnwindSafe(|| self.handle_cast(message, tx, state))) {
+                    match AssertUnwindSafe(self.handle_cast(message, tx, state))
+                        .catch_unwind()
+                        .await
+                    {
                         Ok(response) => match response {
                             CastResponse::NoReply => (true, None),
                             CastResponse::Stop => (false, None),
@@ -176,19 +176,17 @@ where
         }
     }
 
-    fn initial_state(&self) -> Self::State;
-
     fn handle_call(
         &mut self,
         message: Self::InMsg,
         tx: &mpsc::Sender<GenServerInMsg<Self>>,
         state: &mut Self::State,
-    ) -> CallResponse<Self::OutMsg>;
+    ) -> impl std::future::Future<Output = CallResponse<Self::OutMsg>> + Send;
 
     fn handle_cast(
         &mut self,
         _message: Self::InMsg,
         _tx: &mpsc::Sender<GenServerInMsg<Self>>,
         state: &mut Self::State,
-    ) -> CastResponse;
+    ) -> impl std::future::Future<Output = CastResponse> + Send;
 }

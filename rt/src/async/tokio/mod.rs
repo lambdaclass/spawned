@@ -3,7 +3,7 @@ pub mod mpsc;
 pub mod oneshot;
 
 pub use tokio::{
+    runtime::Runtime,
+    task::{JoinHandle, spawn},
     time::sleep,
-    runtime::{Runtime, Handle},
-    task::{JoinHandle, spawn, spawn_blocking},
 };

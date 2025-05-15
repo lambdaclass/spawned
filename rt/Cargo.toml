@@ -8,3 +8,6 @@ tokio = { version = "1", features = ["full"] }
 crossbeam = { version = "0.7.3" }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+
+[lib]
+path = "./src/lib.rs"

@@ -36,15 +36,11 @@ impl GenServer for NameServer {
     type Error = std::fmt::Error;
     type State = NameServerState;
 
-    fn initial_state(&self) -> NameServerState {
-        HashMap::new()
-    }
-
     fn new() -> Self {
         NameServer {}
     }
 
-    fn handle_call(
+    async fn handle_call(
         &mut self,
         message: InMessage,
         _tx: &Sender<NameServerMessage>,
@@ -68,7 +64,7 @@ impl GenServer for NameServer {
         }
     }
 
-    fn handle_cast(
+    async fn handle_cast(
         &mut self,
         _message: InMessage,
         _tx: &Sender<NameServerMessage>,
