@@ -3,7 +3,7 @@ use std::time::Duration;
 use spawned_concurrency::sync::{
     CallResponse, CastResponse, GenServer, GenServerHandle, GenServerInMsg, send_after,
 };
-use spawned_rt::sync::mpsc::Sender;
+use spawned_rt::sync::{block_on, mpsc::Sender};
 
 use crate::messages::{UpdaterInMessage as InMessage, UpdaterOutMessage as OutMessage};
 
@@ -56,7 +56,7 @@ impl GenServer for UpdaterServer {
                 send_after(state.periodicity, tx.clone(), InMessage::Check);
                 let url = state.url.clone();
                 tracing::info!("Fetching: {url}");
-                let resp = req(url);
+                let resp = block_on(req(url));
 
                 tracing::info!("Response: {resp:?}");
 
@@ -66,7 +66,6 @@ impl GenServer for UpdaterServer {
     }
 }
 
-fn req(url: String) -> Result<String, reqwest::Error> {
-    let rt = spawned_rt::r#async::Runtime::new().unwrap();
-    rt.block_on(async { reqwest::get(url).await?.text().await })
+async fn req(url: String) -> Result<String, reqwest::Error> {
+    reqwest::get(url).await?.text().await
 }
