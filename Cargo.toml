@@ -8,6 +8,7 @@ members = [
     "examples/ping_pong",
     "examples/ping_pong_sync",
     "examples/updater",
+    "examples/updater_sync",
 ]
 
 [workspace.dependencies]
