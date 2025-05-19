@@ -17,6 +17,7 @@ use tracing_subscriber::filter::Directive;
 
 pub use crate::tokio::mpsc;
 pub use crate::tokio::oneshot;
+pub use crate::tokio::sleep;
 pub use crate::tokio::{JoinHandle, Runtime, spawn};
 
 pub fn run<F: Future>(future: F) -> F::Output {
@@ -30,7 +31,7 @@ fn init_tracing() {
     let subscriber = FmtSubscriber::builder()
         .with_env_filter(
             EnvFilter::builder()
-                .with_default_directive(Directive::from_str("trace").unwrap())
+                .with_default_directive(Directive::from_str("info").unwrap())
                 .from_env_lossy(),
         )
         .finish();

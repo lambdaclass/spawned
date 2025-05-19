@@ -37,11 +37,7 @@ impl GenServer for NameServer {
         Self {}
     }
 
-    fn initial_state(&self) -> Self::State {
-        HashMap::new()
-    }
-
-    fn handle_call(
+    async fn handle_call(
         &mut self,
         message: InMessage,
         _tx: &Sender<NameServerMessage>,
@@ -61,7 +57,7 @@ impl GenServer for NameServer {
         }
     }
 
-    fn handle_cast(
+    async fn handle_cast(
         &mut self,
         _message: InMessage,
         _tx: &Sender<NameServerMessage>,

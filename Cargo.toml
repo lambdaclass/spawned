@@ -4,6 +4,7 @@ members = [
     "examples/ping_pong",
     "examples/name_server",
     "examples/name_server_with_error",
+    "examples/updater",
     "examples/bank",
 ]
 
