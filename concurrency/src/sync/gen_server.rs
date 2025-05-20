@@ -1,4 +1,4 @@
-//! GernServer trait and structs to create an abstraction similar to Erlang gen_server.
+//! GenServer trait and structs to create an abstraction similar to Erlang gen_server.
 //! See examples/name_server for a usage example.
 use spawned_rt::sync::{self as rt, JoinHandle, mpsc, oneshot};
 use std::{
