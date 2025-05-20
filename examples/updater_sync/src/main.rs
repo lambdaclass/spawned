@@ -10,17 +10,17 @@ use std::{thread, time::Duration};
 
 use messages::UpdaterOutMessage;
 use server::{UpdateServerState, UpdaterServer};
-use spawned_concurrency::r#async::GenServer as _;
-use spawned_rt::r#async as rt;
+use spawned_concurrency::sync::GenServer as _;
+use spawned_rt::sync as rt;
 
 fn main() {
-    rt::run(async {
+    rt::run(|| {
         let mut update_server = UpdaterServer::start(UpdateServerState {
             url: "https://httpbin.org/ip".to_string(),
             periodicity: Duration::from_millis(1000),
         });
 
-        let result = UpdaterServer::check(&mut update_server).await;
+        let result = UpdaterServer::check(&mut update_server);
         tracing::info!("Update check done: {result:?}");
         assert_eq!(result, UpdaterOutMessage::Ok);
 

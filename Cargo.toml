@@ -1,11 +1,14 @@
 [workspace]
 members = [
     "rt",
-    "examples/ping_pong",
+    "examples/bank",
+    "examples/bank_sync",
     "examples/name_server",
     "examples/name_server_with_error",
+    "examples/ping_pong",
+    "examples/ping_pong_sync",
     "examples/updater",
-    "examples/bank",
+    "examples/updater_sync",
 ]
 
 [workspace.dependencies]

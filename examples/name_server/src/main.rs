@@ -18,8 +18,8 @@ use std::collections::HashMap;
 
 use messages::NameServerOutMessage;
 use server::NameServer;
-use spawned_concurrency::GenServer as _;
-use spawned_rt as rt;
+use spawned_concurrency::r#async::GenServer as _;
+use spawned_rt::r#async as rt;
 
 fn main() {
     rt::run(async {

@@ -41,13 +41,13 @@ use std::{thread, time::Duration};
 
 use consumer::Consumer;
 use producer::Producer;
-use spawned_rt::r#async as rt;
+use spawned_rt::sync as rt;
 
 fn main() {
-    rt::run(async {
-        let consumer = Consumer::spawn_new().await;
+    rt::run(|| {
+        let consumer = Consumer::spawn_new();
 
-        Producer::spawn_new(consumer.sender()).await;
+        Producer::spawn_new(consumer.sender());
 
         // giving it some time before ending
         thread::sleep(Duration::from_millis(1));
