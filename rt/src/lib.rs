@@ -9,6 +9,7 @@
 
 mod tokio;
 
+use std::future::Future;
 use std::str::FromStr;
 
 use tracing_subscriber::EnvFilter;

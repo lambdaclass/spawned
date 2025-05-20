@@ -2,7 +2,7 @@
 //! See examples/name_server for a usage example.
 use futures::future::FutureExt as _;
 use spawned_rt::{self as rt, JoinHandle, mpsc, oneshot};
-use std::{fmt::Debug, panic::AssertUnwindSafe};
+use std::{fmt::Debug, future::Future, panic::AssertUnwindSafe};
 
 use crate::error::GenServerError;
 
