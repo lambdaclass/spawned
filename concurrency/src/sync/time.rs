@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use spawned_rt::sync::{self as rt, JoinHandle, mpsc::Sender};
+use spawned_rt::sync::{self as rt, mpsc::Sender, JoinHandle};
 
 use super::gen_server::{GenServer, GenServerInMsg};
 

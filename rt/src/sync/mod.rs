@@ -1,7 +1,10 @@
 pub mod mpsc;
 pub mod oneshot;
 
-pub use std::thread::{JoinHandle, sleep, spawn};
+pub use std::{
+    future::Future,
+    thread::{sleep, spawn, JoinHandle},
+};
 
 use crate::{r#async::Runtime, tracing::init_tracing};
 

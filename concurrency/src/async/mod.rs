@@ -8,5 +8,5 @@ mod time;
 
 pub use error::GenServerError;
 pub use gen_server::{CallResponse, CastResponse, GenServer, GenServerHandle, GenServerInMsg};
-pub use process::{Process, ProcessInfo, send};
+pub use process::{send, Process, ProcessInfo};
 pub use time::send_after;

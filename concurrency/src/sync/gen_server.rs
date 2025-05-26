@@ -1,9 +1,9 @@
 //! GenServer trait and structs to create an abstraction similar to Erlang gen_server.
 //! See examples/name_server for a usage example.
-use spawned_rt::sync::{self as rt, JoinHandle, mpsc, oneshot};
+use spawned_rt::sync::{self as rt, mpsc, oneshot, JoinHandle};
 use std::{
     fmt::Debug,
-    panic::{AssertUnwindSafe, catch_unwind},
+    panic::{catch_unwind, AssertUnwindSafe},
 };
 
 use super::error::GenServerError;

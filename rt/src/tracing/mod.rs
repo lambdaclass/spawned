@@ -3,9 +3,9 @@
 
 use std::str::FromStr;
 
+use tracing_subscriber::filter::Directive;
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::FmtSubscriber;
-use tracing_subscriber::filter::Directive;
 
 pub(crate) fn init_tracing() {
     let subscriber = FmtSubscriber::builder()

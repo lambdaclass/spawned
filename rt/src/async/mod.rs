@@ -14,7 +14,8 @@ use crate::tracing::init_tracing;
 pub use crate::r#async::tokio::mpsc;
 pub use crate::r#async::tokio::oneshot;
 pub use crate::r#async::tokio::sleep;
-pub use crate::r#async::tokio::{JoinHandle, Runtime, spawn};
+pub use crate::r#async::tokio::{spawn, JoinHandle, Runtime};
+use std::future::Future;
 
 pub fn run<F: Future>(future: F) -> F::Output {
     init_tracing();

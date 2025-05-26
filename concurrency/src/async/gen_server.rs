@@ -1,8 +1,8 @@
 //! GenServer trait and structs to create an abstraction similar to Erlang gen_server.
 //! See examples/name_server for a usage example.
 use futures::future::FutureExt as _;
-use spawned_rt::r#async::{self as rt, JoinHandle, mpsc, oneshot};
-use std::{fmt::Debug, panic::AssertUnwindSafe};
+use spawned_rt::r#async::{self as rt, mpsc, oneshot, JoinHandle};
+use std::{fmt::Debug, future::Future, panic::AssertUnwindSafe};
 
 use super::error::GenServerError;
 

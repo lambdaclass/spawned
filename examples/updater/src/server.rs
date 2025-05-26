@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use spawned_concurrency::r#async::{
-    CallResponse, CastResponse, GenServer, GenServerHandle, GenServerInMsg, send_after,
+    send_after, CallResponse, CastResponse, GenServer, GenServerHandle, GenServerInMsg,
 };
 use spawned_rt::r#async::mpsc::Sender;
 
