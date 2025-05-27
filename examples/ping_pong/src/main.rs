@@ -41,7 +41,7 @@ use std::{thread, time::Duration};
 
 use consumer::Consumer;
 use producer::Producer;
-use spawned_rt::r#async as rt;
+use spawned_rt::tasks as rt;
 
 fn main() {
     rt::run(async {

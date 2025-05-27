@@ -57,7 +57,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "bank_sync"
+name = "bank_threads"
 version = "0.1.0"
 dependencies = [
  "spawned-concurrency",
@@ -875,7 +875,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "ping_pong_sync"
+name = "ping_pong_threads"
 version = "0.1.0"
 dependencies = [
  "spawned-concurrency",
@@ -1437,7 +1437,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "updater_sync"
+name = "updater_threads"
 version = "0.1.0"
 dependencies = [
  "futures",

@@ -10,8 +10,8 @@ use std::{thread, time::Duration};
 
 use messages::UpdaterOutMessage;
 use server::{UpdateServerState, UpdaterServer};
-use spawned_concurrency::r#async::GenServer as _;
-use spawned_rt::r#async as rt;
+use spawned_concurrency::tasks::GenServer as _;
+use spawned_rt::tasks as rt;
 
 fn main() {
     rt::run(async {

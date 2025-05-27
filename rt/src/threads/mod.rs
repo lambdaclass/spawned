@@ -6,7 +6,7 @@ pub use std::{
     thread::{sleep, spawn, JoinHandle},
 };
 
-use crate::{r#async::Runtime, tracing::init_tracing};
+use crate::{tasks::Runtime, tracing::init_tracing};
 
 pub fn run(f: fn()) {
     init_tracing();

@@ -1,5 +1,5 @@
 [package]
-name = "bank_sync"
+name = "bank_threads"
 version = "0.1.0"
 edition = "2021"
 
@@ -9,5 +9,5 @@ spawned-concurrency = { workspace = true }
 tracing = { workspace = true }
 
 [[bin]]
-name = "bank_sync"
+name = "bank_threads"
 path = "src/main.rs"

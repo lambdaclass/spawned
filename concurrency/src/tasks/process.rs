@@ -1,7 +1,7 @@
 //! Process trait and struct to create a process abstraction similar to Erlang processes.
 //! See examples/ping_pong for a usage example.
 
-use spawned_rt::r#async::{self as rt, mpsc, JoinHandle};
+use spawned_rt::tasks::{self as rt, mpsc, JoinHandle};
 use std::future::Future;
 
 #[derive(Debug)]

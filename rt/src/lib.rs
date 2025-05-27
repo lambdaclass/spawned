@@ -7,6 +7,6 @@
 //! Currently, only a very limited set of tokio functionality is reexported. We may want to
 //! extend this functionality as needed.
 
-pub mod r#async;
-pub mod sync;
+pub mod tasks;
+pub mod threads;
 mod tracing;

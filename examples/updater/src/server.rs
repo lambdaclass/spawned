@@ -1,9 +1,9 @@
 use std::time::Duration;
 
-use spawned_concurrency::r#async::{
+use spawned_concurrency::tasks::{
     send_after, CallResponse, CastResponse, GenServer, GenServerHandle, GenServerInMsg,
 };
-use spawned_rt::r#async::mpsc::Sender;
+use spawned_rt::tasks::mpsc::Sender;
 
 use crate::messages::{UpdaterInMessage as InMessage, UpdaterOutMessage as OutMessage};
 

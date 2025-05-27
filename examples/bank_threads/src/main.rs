@@ -26,8 +26,8 @@ use std::collections::HashMap;
 
 use messages::{BankError, BankOutMessage};
 use server::Bank;
-use spawned_concurrency::sync::GenServer as _;
-use spawned_rt::sync as rt;
+use spawned_concurrency::threads::GenServer as _;
+use spawned_rt::threads as rt;
 
 fn main() {
     rt::run(|| {

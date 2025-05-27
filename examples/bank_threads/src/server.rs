@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 
-use spawned_concurrency::sync::{
+use spawned_concurrency::threads::{
     CallResponse, CastResponse, GenServer, GenServerHandle, GenServerInMsg,
 };
-use spawned_rt::sync::mpsc::Sender;
+use spawned_rt::threads::mpsc::Sender;
 
 use crate::messages::{BankError, BankInMessage as InMessage, BankOutMessage as OutMessage};
 
