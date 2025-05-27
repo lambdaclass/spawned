@@ -1,3 +1,3 @@
-//! Tokio.rs reexports to prevent tokio dependencies within external code
+//! non-async replacement for mpsc channels
 
 pub use std::sync::mpsc::{channel, Receiver, SendError, Sender};

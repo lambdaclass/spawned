@@ -1,5 +1,5 @@
-//! λ-kit concurrency
-//! Some basic traits and structs to implement À-la-Erlang concurrent code.
+//! spawned concurrency
+//! Runtime tasks-based traits and structs to implement concurrent code à-la-Erlang.
 
 mod error;
 mod gen_server;

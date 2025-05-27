@@ -1,3 +1,3 @@
-//! Tokio.rs reexports to prevent tokio dependencies within external code
+//! non-async replacement for oneshot channels
 
 pub use crossbeam::{crossbeam_channel::unbounded as channel, Receiver, Sender};

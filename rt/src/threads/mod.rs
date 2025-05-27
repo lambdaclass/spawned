@@ -1,3 +1,5 @@
+//! IO-threads based module to support shared behavior with task based version.
+
 pub mod mpsc;
 pub mod oneshot;
 
