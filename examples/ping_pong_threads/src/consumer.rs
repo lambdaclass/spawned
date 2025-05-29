@@ -1,18 +1,18 @@
-use spawned_concurrency::tasks::{self as concurrency, Process, ProcessInfo};
-use spawned_rt::tasks::mpsc::Sender;
+use spawned_concurrency::threads::{self as concurrency, Process, ProcessInfo};
+use spawned_rt::threads::mpsc::Sender;
 
 use crate::messages::Message;
 
 pub struct Consumer {}
 
 impl Consumer {
-    pub async fn spawn_new() -> ProcessInfo<Message> {
-        Self {}.spawn().await
+    pub fn spawn_new() -> ProcessInfo<Message> {
+        Self {}.spawn()
     }
 }
 
 impl Process<Message> for Consumer {
-    async fn handle(&mut self, message: Message, _tx: &Sender<Message>) -> Message {
+    fn handle(&mut self, message: Message, _tx: &Sender<Message>) -> Message {
         tracing::info!("Consumer received {message:?}");
         match message.clone() {
             Message::Ping { from } => {

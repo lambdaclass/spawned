@@ -1,5 +1,5 @@
-use spawned_concurrency::tasks::{self as concurrency, Process, ProcessInfo};
-use spawned_rt::tasks::mpsc::Sender;
+use spawned_concurrency::threads::{self as concurrency, Process, ProcessInfo};
+use spawned_rt::threads::mpsc::Sender;
 
 use crate::messages::Message;
 
@@ -8,8 +8,8 @@ pub struct Producer {
 }
 
 impl Producer {
-    pub async fn spawn_new(consumer: Sender<Message>) -> ProcessInfo<Message> {
-        Self { consumer }.spawn().await
+    pub fn spawn_new(consumer: Sender<Message>) -> ProcessInfo<Message> {
+        Self { consumer }.spawn()
     }
 
     fn send_ping(&self, tx: &Sender<Message>, consumer: &Sender<Message>) {
@@ -20,11 +20,11 @@ impl Producer {
 }
 
 impl Process<Message> for Producer {
-    async fn init(&mut self, tx: &Sender<Message>) {
+    fn init(&mut self, tx: &Sender<Message>) {
         self.send_ping(tx, &self.consumer);
     }
 
-    async fn handle(&mut self, message: Message, tx: &Sender<Message>) -> Message {
+    fn handle(&mut self, message: Message, tx: &Sender<Message>) -> Message {
         tracing::info!("Producer received {message:?}");
         self.send_ping(tx, &self.consumer);
         message

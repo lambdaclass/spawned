@@ -7,6 +7,19 @@
 //! Currently, only a very limited set of tokio functionality is reexported. We may want to
 //! extend this functionality as needed.
 
-pub mod tasks;
-pub mod threads;
-mod tracing;
+mod tokio;
+
+use crate::tracing::init_tracing;
+
+pub use crate::tasks::tokio::mpsc;
+pub use crate::tasks::tokio::oneshot;
+pub use crate::tasks::tokio::sleep;
+pub use crate::tasks::tokio::{spawn, JoinHandle, Runtime};
+use std::future::Future;
+
+pub fn run<F: Future>(future: F) -> F::Output {
+    init_tracing();
+
+    let rt = Runtime::new().unwrap();
+    rt.block_on(future)
+}

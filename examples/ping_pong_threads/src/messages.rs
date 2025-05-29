@@ -1,4 +1,4 @@
-use spawned_rt::tasks::mpsc::Sender;
+use spawned_rt::threads::mpsc::Sender;
 
 #[derive(Debug, Clone)]
 pub enum Message {

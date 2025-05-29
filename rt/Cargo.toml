@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }
+crossbeam = { version = "0.7.3" }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 

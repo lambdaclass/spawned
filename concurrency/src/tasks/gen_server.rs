@@ -1,10 +1,10 @@
-//! GernServer trait and structs to create an abstraction similar to Erlang gen_server.
+//! GenServer trait and structs to create an abstraction similar to Erlang gen_server.
 //! See examples/name_server for a usage example.
 use futures::future::FutureExt as _;
-use spawned_rt::{self as rt, JoinHandle, mpsc, oneshot};
+use spawned_rt::tasks::{self as rt, mpsc, oneshot, JoinHandle};
 use std::{fmt::Debug, future::Future, panic::AssertUnwindSafe};
 
-use crate::error::GenServerError;
+use super::error::GenServerError;
 
 #[derive(Debug)]
 pub struct GenServerHandle<G: GenServer + 'static> {

@@ -1,9 +1,8 @@
 //! Process trait and struct to create a process abstraction similar to Erlang processes.
 //! See examples/ping_pong for a usage example.
 
+use spawned_rt::tasks::{self as rt, mpsc, JoinHandle};
 use std::future::Future;
-
-use spawned_rt::{self as rt, JoinHandle, mpsc};
 
 #[derive(Debug)]
 pub struct ProcessInfo<T> {

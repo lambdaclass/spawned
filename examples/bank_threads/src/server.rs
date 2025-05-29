@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 
-use spawned_concurrency::tasks::{
+use spawned_concurrency::threads::{
     CallResponse, CastResponse, GenServer, GenServerHandle, GenServerInMsg,
 };
-use spawned_rt::tasks::mpsc::Sender;
+use spawned_rt::threads::mpsc::Sender;
 
 use crate::messages::{BankError, BankInMessage as InMessage, BankOutMessage as OutMessage};
 
@@ -15,31 +15,27 @@ type BankState = HashMap<String, i32>;
 pub struct Bank {}
 
 impl Bank {
-    pub async fn stop(server: &mut BankHandle) -> MsgResult {
+    pub fn stop(server: &mut BankHandle) -> MsgResult {
         server
             .call(InMessage::Stop)
-            .await
             .unwrap_or(Err(BankError::ServerError))
     }
 
-    pub async fn new_account(server: &mut BankHandle, who: String) -> MsgResult {
+    pub fn new_account(server: &mut BankHandle, who: String) -> MsgResult {
         server
             .call(InMessage::New { who })
-            .await
             .unwrap_or(Err(BankError::ServerError))
     }
 
-    pub async fn deposit(server: &mut BankHandle, who: String, amount: i32) -> MsgResult {
+    pub fn deposit(server: &mut BankHandle, who: String, amount: i32) -> MsgResult {
         server
             .call(InMessage::Add { who, amount })
-            .await
             .unwrap_or(Err(BankError::ServerError))
     }
 
-    pub async fn withdraw(server: &mut BankHandle, who: String, amount: i32) -> MsgResult {
+    pub fn withdraw(server: &mut BankHandle, who: String, amount: i32) -> MsgResult {
         server
             .call(InMessage::Remove { who, amount })
-            .await
             .unwrap_or(Err(BankError::ServerError))
     }
 }
@@ -54,7 +50,7 @@ impl GenServer for Bank {
         Self {}
     }
 
-    async fn handle_call(
+    fn handle_call(
         &mut self,
         message: InMessage,
         _tx: &Sender<BankHandleMessage>,
@@ -100,7 +96,7 @@ impl GenServer for Bank {
         }
     }
 
-    async fn handle_cast(
+    fn handle_cast(
         &mut self,
         _message: InMessage,
         _tx: &Sender<BankHandleMessage>,

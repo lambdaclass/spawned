@@ -1,9 +1,9 @@
 use std::time::Duration;
 
-use spawned_concurrency::tasks::{
+use spawned_concurrency::threads::{
     send_after, CallResponse, CastResponse, GenServer, GenServerHandle, GenServerInMsg,
 };
-use spawned_rt::tasks::mpsc::Sender;
+use spawned_rt::threads::{block_on, mpsc::Sender};
 
 use crate::messages::{UpdaterInMessage as InMessage, UpdaterOutMessage as OutMessage};
 
@@ -18,8 +18,8 @@ pub struct UpdateServerState {
 pub struct UpdaterServer {}
 
 impl UpdaterServer {
-    pub async fn check(server: &mut UpdateServerHandle) -> OutMessage {
-        match server.cast(InMessage::Check).await {
+    pub fn check(server: &mut UpdateServerHandle) -> OutMessage {
+        match server.cast(InMessage::Check) {
             Ok(_) => OutMessage::Ok,
             Err(_) => OutMessage::Error,
         }
@@ -36,7 +36,7 @@ impl GenServer for UpdaterServer {
         Self {}
     }
 
-    async fn handle_call(
+    fn handle_call(
         &mut self,
         _message: InMessage,
         _tx: &Sender<UpdateServerMessage>,
@@ -45,7 +45,7 @@ impl GenServer for UpdaterServer {
         CallResponse::Reply(OutMessage::Ok)
     }
 
-    async fn handle_cast(
+    fn handle_cast(
         &mut self,
         message: InMessage,
         tx: &Sender<UpdateServerMessage>,
@@ -56,7 +56,7 @@ impl GenServer for UpdaterServer {
                 send_after(state.periodicity, tx.clone(), InMessage::Check);
                 let url = state.url.clone();
                 tracing::info!("Fetching: {url}");
-                let resp = req(url).await;
+                let resp = block_on(req(url));
 
                 tracing::info!("Response: {resp:?}");
 
