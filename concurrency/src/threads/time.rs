@@ -1,14 +1,14 @@
 use std::time::Duration;
 
-use spawned_rt::threads::{self as rt, mpsc::Sender, JoinHandle};
+use spawned_rt::threads::{self as rt, JoinHandle};
 
-use super::gen_server::{GenServer, GenServerInMsg};
+use super::{GenServer, GenServerHandle};
 
 // Sends a message after a given period to the specified GenServer. The task terminates
 // once the send has completed
 pub fn send_after<T>(
     period: Duration,
-    tx: Sender<GenServerInMsg<T>>,
+    mut handle: GenServerHandle<T>,
     message: T::InMsg,
 ) -> JoinHandle<()>
 where
@@ -16,6 +16,6 @@ where
 {
     rt::spawn(move || {
         rt::sleep(period);
-        let _ = tx.send(GenServerInMsg::Cast { message });
+        let _ = handle.cast(message);
     })
 }

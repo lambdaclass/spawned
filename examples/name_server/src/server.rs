@@ -1,14 +1,10 @@
 use std::collections::HashMap;
 
-use spawned_concurrency::tasks::{
-    CallResponse, CastResponse, GenServer, GenServerHandle, GenServerInMsg,
-};
-use spawned_rt::tasks::mpsc::Sender;
+use spawned_concurrency::tasks::{CallResponse, CastResponse, GenServer, GenServerHandle};
 
 use crate::messages::{NameServerInMessage as InMessage, NameServerOutMessage as OutMessage};
 
 type NameServerHandle = GenServerHandle<NameServer>;
-type NameServerMessage = GenServerInMsg<NameServer>;
 type NameServerState = HashMap<String, String>;
 
 pub struct NameServer {}
@@ -42,7 +38,7 @@ impl GenServer for NameServer {
     async fn handle_call(
         &mut self,
         message: InMessage,
-        _tx: &Sender<NameServerMessage>,
+        _handle: &NameServerHandle,
         state: &mut Self::State,
     ) -> CallResponse<Self::OutMsg> {
         match message.clone() {
@@ -62,7 +58,7 @@ impl GenServer for NameServer {
     async fn handle_cast(
         &mut self,
         _message: InMessage,
-        _tx: &Sender<NameServerMessage>,
+        _handle: &NameServerHandle,
         _state: &mut Self::State,
     ) -> CastResponse {
         CastResponse::NoReply
