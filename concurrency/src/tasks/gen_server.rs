@@ -42,7 +42,7 @@ impl<G: GenServer> GenServerHandle<G> {
         self.tx.clone()
     }
 
-    pub async fn call(&mut self, message: G::InMsg) -> Result<G::OutMsg, GenServerError> {
+    pub async fn call(&mut self, message: G::CallMsg) -> Result<G::OutMsg, GenServerError> {
         let (oneshot_tx, oneshot_rx) = oneshot::channel::<Result<G::OutMsg, GenServerError>>();
         self.tx.send(GenServerInMsg::Call {
             sender: oneshot_tx,
@@ -54,7 +54,7 @@ impl<G: GenServer> GenServerHandle<G> {
         }
     }
 
-    pub async fn cast(&mut self, message: G::InMsg) -> Result<(), GenServerError> {
+    pub async fn cast(&mut self, message: G::CastMsg) -> Result<(), GenServerError> {
         tracing::info!("Sending");
         self.tx
             .send(GenServerInMsg::Cast { message })
@@ -65,10 +65,10 @@ impl<G: GenServer> GenServerHandle<G> {
 pub enum GenServerInMsg<A: GenServer> {
     Call {
         sender: oneshot::Sender<Result<A::OutMsg, GenServerError>>,
-        message: A::InMsg,
+        message: A::CallMsg,
     },
     Cast {
-        message: A::InMsg,
+        message: A::CastMsg,
     },
 }
 
@@ -86,7 +86,8 @@ pub trait GenServer
 where
     Self: Send + Sized,
 {
-    type InMsg: Send + Sized;
+    type CallMsg: Send + Sized;
+    type CastMsg: Send + Sized;
     type OutMsg: Send + Sized;
     type State: Clone + Send;
     type Error: Debug;
@@ -188,14 +189,14 @@ where
 
     fn handle_call(
         &mut self,
-        message: Self::InMsg,
+        message: Self::CallMsg,
         handle: &GenServerHandle<Self>,
         state: &mut Self::State,
     ) -> impl std::future::Future<Output = CallResponse<Self::OutMsg>> + Send;
 
     fn handle_cast(
         &mut self,
-        message: Self::InMsg,
+        message: Self::CastMsg,
         handle: &GenServerHandle<Self>,
         state: &mut Self::State,
     ) -> impl std::future::Future<Output = CastResponse> + Send;

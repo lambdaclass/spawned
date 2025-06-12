@@ -25,7 +25,8 @@ impl UpdaterServer {
 }
 
 impl GenServer for UpdaterServer {
-    type InMsg = InMessage;
+    type CallMsg = ();
+    type CastMsg = InMessage;
     type OutMsg = OutMessage;
     type Error = std::fmt::Error;
     type State = UpdateServerState;
@@ -36,7 +37,7 @@ impl GenServer for UpdaterServer {
 
     async fn handle_call(
         &mut self,
-        _message: InMessage,
+        _message: Self::CallMsg,
         _handle: &UpdateServerHandle,
         _state: &mut Self::State,
     ) -> CallResponse<Self::OutMsg> {
@@ -45,12 +46,12 @@ impl GenServer for UpdaterServer {
 
     async fn handle_cast(
         &mut self,
-        message: InMessage,
+        message: Self::CastMsg,
         handle: &UpdateServerHandle,
         state: &mut Self::State,
     ) -> CastResponse {
         match message {
-            Self::InMsg::Check => {
+            Self::CastMsg::Check => {
                 send_after(state.periodicity, handle.clone(), InMessage::Check);
                 let url = state.url.clone();
                 tracing::info!("Fetching: {url}");

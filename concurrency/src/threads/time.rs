@@ -9,7 +9,7 @@ use super::{GenServer, GenServerHandle};
 pub fn send_after<T>(
     period: Duration,
     mut handle: GenServerHandle<T>,
-    message: T::InMsg,
+    message: T::CastMsg,
 ) -> JoinHandle<()>
 where
     T: GenServer + 'static,

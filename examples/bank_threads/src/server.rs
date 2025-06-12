@@ -37,7 +37,8 @@ impl Bank {
 }
 
 impl GenServer for Bank {
-    type InMsg = InMessage;
+    type CallMsg = InMessage;
+    type CastMsg = ();
     type OutMsg = MsgResult;
     type Error = BankError;
     type State = BankState;
@@ -48,7 +49,7 @@ impl GenServer for Bank {
 
     fn handle_call(
         &mut self,
-        message: InMessage,
+        message: Self::CallMsg,
         _handle: &BankHandle,
         state: &mut Self::State,
     ) -> CallResponse<Self::OutMsg> {
@@ -94,7 +95,7 @@ impl GenServer for Bank {
 
     fn handle_cast(
         &mut self,
-        _message: InMessage,
+        _message: Self::CastMsg,
         _handle: &BankHandle,
         _state: &mut Self::State,
     ) -> CastResponse {
