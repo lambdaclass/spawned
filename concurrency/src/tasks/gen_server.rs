@@ -1,7 +1,7 @@
 //! GenServer trait and structs to create an abstraction similar to Erlang gen_server.
 //! See examples/name_server for a usage example.
 use futures::future::FutureExt as _;
-use spawned_rt::tasks::{self as rt, mpsc, oneshot, JoinHandle};
+use spawned_rt::tasks::{self as rt, mpsc, oneshot};
 use std::{fmt::Debug, future::Future, panic::AssertUnwindSafe};
 
 use super::error::GenServerError;
@@ -9,32 +9,40 @@ use super::error::GenServerError;
 #[derive(Debug)]
 pub struct GenServerHandle<G: GenServer + 'static> {
     pub tx: mpsc::Sender<GenServerInMsg<G>>,
-    #[allow(unused)]
-    handle: JoinHandle<()>,
+}
+
+impl<G: GenServer> Clone for GenServerHandle<G> {
+    fn clone(&self) -> Self {
+        Self {
+            tx: self.tx.clone(),
+        }
+    }
 }
 
 impl<G: GenServer> GenServerHandle<G> {
     pub(crate) fn new(mut initial_state: G::State) -> Self {
         let (tx, mut rx) = mpsc::channel::<GenServerInMsg<G>>();
-        let tx_clone = tx.clone();
+        let handle = GenServerHandle { tx };
         let mut gen_server: G = GenServer::new();
-        let handle = rt::spawn(async move {
+        let handle_clone = handle.clone();
+        // Ignore the JoinHandle for now. Maybe we'll use it in the future
+        let _join_handle = rt::spawn(async move {
             if gen_server
-                .run(&tx_clone, &mut rx, &mut initial_state)
+                .run(&handle, &mut rx, &mut initial_state)
                 .await
                 .is_err()
             {
                 tracing::trace!("GenServer crashed")
             };
         });
-        GenServerHandle { tx, handle }
+        handle_clone
     }
 
     pub fn sender(&self) -> mpsc::Sender<GenServerInMsg<G>> {
         self.tx.clone()
     }
 
-    pub async fn call(&mut self, message: G::InMsg) -> Result<G::OutMsg, GenServerError> {
+    pub async fn call(&mut self, message: G::CallMsg) -> Result<G::OutMsg, GenServerError> {
         let (oneshot_tx, oneshot_rx) = oneshot::channel::<Result<G::OutMsg, GenServerError>>();
         self.tx.send(GenServerInMsg::Call {
             sender: oneshot_tx,
@@ -46,7 +54,8 @@ impl<G: GenServer> GenServerHandle<G> {
         }
     }
 
-    pub async fn cast(&mut self, message: G::InMsg) -> Result<(), GenServerError> {
+    pub async fn cast(&mut self, message: G::CastMsg) -> Result<(), GenServerError> {
+        tracing::info!("Sending");
         self.tx
             .send(GenServerInMsg::Cast { message })
             .map_err(|_error| GenServerError::ServerError)
@@ -56,10 +65,10 @@ impl<G: GenServer> GenServerHandle<G> {
 pub enum GenServerInMsg<A: GenServer> {
     Call {
         sender: oneshot::Sender<Result<A::OutMsg, GenServerError>>,
-        message: A::InMsg,
+        message: A::CallMsg,
     },
     Cast {
-        message: A::InMsg,
+        message: A::CastMsg,
     },
 }
 
@@ -77,7 +86,8 @@ pub trait GenServer
 where
     Self: Send + Sized,
 {
-    type InMsg: Send + Sized;
+    type CallMsg: Send + Sized;
+    type CastMsg: Send + Sized;
     type OutMsg: Send + Sized;
     type State: Clone + Send;
     type Error: Debug;
@@ -90,25 +100,25 @@ where
 
     fn run(
         &mut self,
-        tx: &mpsc::Sender<GenServerInMsg<Self>>,
+        handle: &GenServerHandle<Self>,
         rx: &mut mpsc::Receiver<GenServerInMsg<Self>>,
         state: &mut Self::State,
     ) -> impl Future<Output = Result<(), GenServerError>> + Send {
         async {
-            self.main_loop(tx, rx, state).await?;
+            self.main_loop(handle, rx, state).await?;
             Ok(())
         }
     }
 
     fn main_loop(
         &mut self,
-        tx: &mpsc::Sender<GenServerInMsg<Self>>,
+        handle: &GenServerHandle<Self>,
         rx: &mut mpsc::Receiver<GenServerInMsg<Self>>,
         state: &mut Self::State,
     ) -> impl Future<Output = Result<(), GenServerError>> + Send {
         async {
             loop {
-                if !self.receive(tx, rx, state).await? {
+                if !self.receive(handle, rx, state).await? {
                     break;
                 }
             }
@@ -119,12 +129,13 @@ where
 
     fn receive(
         &mut self,
-        tx: &mpsc::Sender<GenServerInMsg<Self>>,
+        handle: &GenServerHandle<Self>,
         rx: &mut mpsc::Receiver<GenServerInMsg<Self>>,
         state: &mut Self::State,
     ) -> impl std::future::Future<Output = Result<bool, GenServerError>> + Send {
         async {
             let message = rx.recv().await;
+            tracing::info!("received");
 
             // Save current state in case of a rollback
             let state_clone = state.clone();
@@ -132,7 +143,7 @@ where
             let (keep_running, error) = match message {
                 Some(GenServerInMsg::Call { sender, message }) => {
                     let (keep_running, error, response) =
-                        match AssertUnwindSafe(self.handle_call(message, tx, state))
+                        match AssertUnwindSafe(self.handle_call(message, handle, state))
                             .catch_unwind()
                             .await
                         {
@@ -151,7 +162,7 @@ where
                     (keep_running, error)
                 }
                 Some(GenServerInMsg::Cast { message }) => {
-                    match AssertUnwindSafe(self.handle_cast(message, tx, state))
+                    match AssertUnwindSafe(self.handle_cast(message, handle, state))
                         .catch_unwind()
                         .await
                     {
@@ -178,15 +189,15 @@ where
 
     fn handle_call(
         &mut self,
-        message: Self::InMsg,
-        tx: &mpsc::Sender<GenServerInMsg<Self>>,
+        message: Self::CallMsg,
+        handle: &GenServerHandle<Self>,
         state: &mut Self::State,
     ) -> impl std::future::Future<Output = CallResponse<Self::OutMsg>> + Send;
 
     fn handle_cast(
         &mut self,
-        _message: Self::InMsg,
-        _tx: &mpsc::Sender<GenServerInMsg<Self>>,
+        message: Self::CastMsg,
+        handle: &GenServerHandle<Self>,
         state: &mut Self::State,
     ) -> impl std::future::Future<Output = CastResponse> + Send;
 }

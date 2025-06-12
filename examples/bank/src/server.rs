@@ -1,15 +1,11 @@
 use std::collections::HashMap;
 
-use spawned_concurrency::tasks::{
-    CallResponse, CastResponse, GenServer, GenServerHandle, GenServerInMsg,
-};
-use spawned_rt::tasks::mpsc::Sender;
+use spawned_concurrency::tasks::{CallResponse, CastResponse, GenServer, GenServerHandle};
 
 use crate::messages::{BankError, BankInMessage as InMessage, BankOutMessage as OutMessage};
 
 type MsgResult = Result<OutMessage, BankError>;
 type BankHandle = GenServerHandle<Bank>;
-type BankHandleMessage = GenServerInMsg<Bank>;
 type BankState = HashMap<String, i32>;
 
 pub struct Bank {}
@@ -45,7 +41,8 @@ impl Bank {
 }
 
 impl GenServer for Bank {
-    type InMsg = InMessage;
+    type CallMsg = InMessage;
+    type CastMsg = ();
     type OutMsg = MsgResult;
     type Error = BankError;
     type State = BankState;
@@ -56,19 +53,19 @@ impl GenServer for Bank {
 
     async fn handle_call(
         &mut self,
-        message: InMessage,
-        _tx: &Sender<BankHandleMessage>,
+        message: Self::CallMsg,
+        _handle: &BankHandle,
         state: &mut Self::State,
     ) -> CallResponse<Self::OutMsg> {
         match message.clone() {
-            InMessage::New { who } => match state.get(&who) {
+            Self::CallMsg::New { who } => match state.get(&who) {
                 Some(_amount) => CallResponse::Reply(Err(BankError::AlreadyACustomer { who })),
                 None => {
                     state.insert(who.clone(), 0);
                     CallResponse::Reply(Ok(OutMessage::Welcome { who }))
                 }
             },
-            InMessage::Add { who, amount } => match state.get(&who) {
+            Self::CallMsg::Add { who, amount } => match state.get(&who) {
                 Some(current) => {
                     let new_amount = current + amount;
                     state.insert(who.clone(), new_amount);
@@ -79,7 +76,7 @@ impl GenServer for Bank {
                 }
                 None => CallResponse::Reply(Err(BankError::NotACustomer { who })),
             },
-            InMessage::Remove { who, amount } => match state.get(&who) {
+            Self::CallMsg::Remove { who, amount } => match state.get(&who) {
                 Some(current) => match current < &amount {
                     true => CallResponse::Reply(Err(BankError::InsufficientBalance {
                         who,
@@ -96,14 +93,14 @@ impl GenServer for Bank {
                 },
                 None => CallResponse::Reply(Err(BankError::NotACustomer { who })),
             },
-            InMessage::Stop => CallResponse::Stop(Ok(OutMessage::Stopped)),
+            Self::CallMsg::Stop => CallResponse::Stop(Ok(OutMessage::Stopped)),
         }
     }
 
     async fn handle_cast(
         &mut self,
-        _message: InMessage,
-        _tx: &Sender<BankHandleMessage>,
+        _message: Self::CastMsg,
+        _handle: &BankHandle,
         _state: &mut Self::State,
     ) -> CastResponse {
         CastResponse::NoReply

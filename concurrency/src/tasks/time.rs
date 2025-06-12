@@ -1,21 +1,21 @@
 use std::time::Duration;
 
-use spawned_rt::tasks::{self as rt, mpsc::Sender, JoinHandle};
+use spawned_rt::tasks::{self as rt, JoinHandle};
 
-use super::{GenServer, GenServerInMsg};
+use super::{GenServer, GenServerHandle};
 
 // Sends a message after a given period to the specified GenServer. The task terminates
 // once the send has completed
 pub fn send_after<T>(
     period: Duration,
-    tx: Sender<GenServerInMsg<T>>,
-    message: T::InMsg,
+    mut handle: GenServerHandle<T>,
+    message: T::CastMsg,
 ) -> JoinHandle<()>
 where
     T: GenServer + 'static,
 {
     rt::spawn(async move {
         rt::sleep(period).await;
-        let _ = tx.send(GenServerInMsg::Cast { message });
+        let _ = handle.cast(message).await;
     })
 }

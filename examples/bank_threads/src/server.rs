@@ -1,15 +1,11 @@
 use std::collections::HashMap;
 
-use spawned_concurrency::threads::{
-    CallResponse, CastResponse, GenServer, GenServerHandle, GenServerInMsg,
-};
-use spawned_rt::threads::mpsc::Sender;
+use spawned_concurrency::threads::{CallResponse, CastResponse, GenServer, GenServerHandle};
 
 use crate::messages::{BankError, BankInMessage as InMessage, BankOutMessage as OutMessage};
 
 type MsgResult = Result<OutMessage, BankError>;
 type BankHandle = GenServerHandle<Bank>;
-type BankHandleMessage = GenServerInMsg<Bank>;
 type BankState = HashMap<String, i32>;
 
 pub struct Bank {}
@@ -41,7 +37,8 @@ impl Bank {
 }
 
 impl GenServer for Bank {
-    type InMsg = InMessage;
+    type CallMsg = InMessage;
+    type CastMsg = ();
     type OutMsg = MsgResult;
     type Error = BankError;
     type State = BankState;
@@ -52,8 +49,8 @@ impl GenServer for Bank {
 
     fn handle_call(
         &mut self,
-        message: InMessage,
-        _tx: &Sender<BankHandleMessage>,
+        message: Self::CallMsg,
+        _handle: &BankHandle,
         state: &mut Self::State,
     ) -> CallResponse<Self::OutMsg> {
         match message.clone() {
@@ -98,8 +95,8 @@ impl GenServer for Bank {
 
     fn handle_cast(
         &mut self,
-        _message: InMessage,
-        _tx: &Sender<BankHandleMessage>,
+        _message: Self::CastMsg,
+        _handle: &BankHandle,
         _state: &mut Self::State,
     ) -> CastResponse {
         CastResponse::NoReply

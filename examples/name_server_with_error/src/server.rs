@@ -1,14 +1,12 @@
 use std::collections::HashMap;
 
 use spawned_concurrency::tasks::{
-    CallResponse, CastResponse, GenServer, GenServerError, GenServerHandle, GenServerInMsg,
+    CallResponse, CastResponse, GenServer, GenServerError, GenServerHandle,
 };
-use spawned_rt::tasks::mpsc::Sender;
 
 use crate::messages::{NameServerInMessage as InMessage, NameServerOutMessage as OutMessage};
 
 type NameServerHandle = GenServerHandle<NameServer>;
-type NameServerMessage = GenServerInMsg<NameServer>;
 type NameServerState = HashMap<String, String>;
 
 pub struct NameServer {}
@@ -31,7 +29,8 @@ impl NameServer {
 }
 
 impl GenServer for NameServer {
-    type InMsg = InMessage;
+    type CallMsg = InMessage;
+    type CastMsg = ();
     type OutMsg = OutMessage;
     type Error = std::fmt::Error;
     type State = NameServerState;
@@ -42,12 +41,12 @@ impl GenServer for NameServer {
 
     async fn handle_call(
         &mut self,
-        message: InMessage,
-        _tx: &Sender<NameServerMessage>,
+        message: Self::CallMsg,
+        _handle: &NameServerHandle,
         state: &mut Self::State,
     ) -> CallResponse<Self::OutMsg> {
         match message.clone() {
-            Self::InMsg::Add { key, value } => {
+            Self::CallMsg::Add { key, value } => {
                 state.insert(key.clone(), value);
                 if key == "error" {
                     panic!("error!")
@@ -55,7 +54,7 @@ impl GenServer for NameServer {
                     CallResponse::Reply(Self::OutMsg::Ok)
                 }
             }
-            Self::InMsg::Find { key } => match state.get(&key) {
+            Self::CallMsg::Find { key } => match state.get(&key) {
                 Some(value) => CallResponse::Reply(Self::OutMsg::Found {
                     value: value.to_string(),
                 }),
@@ -66,8 +65,8 @@ impl GenServer for NameServer {
 
     async fn handle_cast(
         &mut self,
-        _message: InMessage,
-        _tx: &Sender<NameServerMessage>,
+        _message: Self::CastMsg,
+        _handle: &NameServerHandle,
         _state: &mut Self::State,
     ) -> CastResponse {
         CastResponse::NoReply
