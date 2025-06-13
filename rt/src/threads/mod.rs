@@ -20,3 +20,12 @@ pub fn block_on<F: Future>(future: F) -> F::Output {
     let rt = Runtime::new().unwrap();
     rt.block_on(future)
 }
+
+/// Spawn blocking is the same as spawn for pure threaded usage.
+pub fn spawn_blocking<F, R>(f: F) -> JoinHandle<R>
+where
+    F: FnOnce() -> R + Send + 'static,
+    R: Send + 'static,
+{
+    spawn(f)
+}
