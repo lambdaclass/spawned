@@ -55,7 +55,6 @@ impl<G: GenServer> GenServerHandle<G> {
     }
 
     pub async fn cast(&mut self, message: G::CastMsg) -> Result<(), GenServerError> {
-        tracing::info!("Sending");
         self.tx
             .send(GenServerInMsg::Cast { message })
             .map_err(|_error| GenServerError::ServerError)
@@ -135,7 +134,6 @@ where
     ) -> impl std::future::Future<Output = Result<bool, GenServerError>> + Send {
         async {
             let message = rx.recv().await;
-            tracing::info!("received");
 
             // Save current state in case of a rollback
             let state_clone = state.clone();
