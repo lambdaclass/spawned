@@ -19,3 +19,20 @@ where
         let _ = handle.cast(message).await;
     })
 }
+
+// Sends a message to the specified GenServer repeatedly after a given period.
+pub fn send_interval<T>(
+    period: Duration,
+    mut handle: GenServerHandle<T>,
+    message: T::CastMsg,
+) -> JoinHandle<()>
+where
+    T: GenServer + 'static,
+{
+    rt::spawn(async move {
+        loop {
+            rt::sleep(period).await;
+            let _ = handle.cast(message.clone()).await;
+        }
+    })
+}
