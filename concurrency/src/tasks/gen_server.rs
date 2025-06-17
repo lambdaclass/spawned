@@ -233,18 +233,15 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crate::tasks::send_after;
-
     use super::*;
-    use std::thread;
-    use std::time::Duration;
-
-    // We test a scenario with a badly behaved task
+    use crate::tasks::send_after;
+    use std::{process::exit, thread, time::Duration};
     struct BadlyBehavedTask;
 
     #[derive(Clone)]
     pub enum InMessage {
         GetCount,
+        Stop,
     }
     #[derive(Clone)]
     pub enum OutMsg {
@@ -252,7 +249,7 @@ mod tests {
     }
 
     impl GenServer for BadlyBehavedTask {
-        type CallMsg = ();
+        type CallMsg = InMessage;
         type CastMsg = ();
         type OutMsg = ();
         type State = ();
@@ -268,7 +265,7 @@ mod tests {
             _: &GenServerHandle<Self>,
             _: &mut Self::State,
         ) -> CallResponse<Self::OutMsg> {
-            todo!()
+            CallResponse::Stop(())
         }
 
         async fn handle_cast(
@@ -277,21 +274,9 @@ mod tests {
             _: &GenServerHandle<Self>,
             _: &mut Self::State,
         ) -> CastResponse {
-            let orig_thread_id = format!("{:?}", thread::current().id());
-            loop {
-                println!("{:?}: bad still alive", thread::current().id());
-                loop {
-                    // here we loop and sleep until we switch threads, once we do, we never call await again
-                    // blocking all progress on all other tasks forever
-                    let thread_id = format!("{:?}", thread::current().id());
-                    if thread_id == orig_thread_id {
-                        rt::sleep(Duration::from_millis(100)).await;
-                    } else {
-                        break;
-                    }
-                }
-                thread::sleep(Duration::from_secs(10));
-            }
+            rt::sleep(Duration::from_millis(20)).await;
+            thread::sleep(Duration::from_secs(2));
+            CastResponse::Stop
         }
     }
 
@@ -315,11 +300,14 @@ mod tests {
 
         async fn handle_call(
             &mut self,
-            _: Self::CallMsg,
+            message: Self::CallMsg,
             _: &GenServerHandle<Self>,
             state: &mut Self::State,
         ) -> CallResponse<Self::OutMsg> {
-            CallResponse::Reply(OutMsg::Count(state.count))
+            match message {
+                InMessage::GetCount => CallResponse::Reply(OutMsg::Count(state.count)),
+                InMessage::Stop => CallResponse::Stop(OutMsg::Count(state.count)),
+            }
         }
 
         async fn handle_cast(
@@ -335,27 +323,30 @@ mod tests {
         }
     }
 
-    /*     #[test]
-    pub fn badly_behaved_non_thread() {
-        rt::run(async move {
+    #[test]
+    pub fn badly_behaved_thread_non_blocking() {
+        let runtime = rt::Runtime::new().unwrap();
+        runtime.block_on(async move {
             let mut badboy = BadlyBehavedTask::start(());
             let _ = badboy.cast(()).await;
-            let mut goodboy = WellBehavedTask::start(CountState{count: 0});
+            let mut goodboy = WellBehavedTask::start(CountState { count: 0 });
             let _ = goodboy.cast(()).await;
             rt::sleep(Duration::from_secs(1)).await;
             let count = goodboy.call(InMessage::GetCount).await.unwrap();
 
             match count {
                 OutMsg::Count(num) => {
-                    assert!(num == 10);
+                    assert_ne!(num, 10);
                 }
             }
-        })
-    } */
+            goodboy.call(InMessage::Stop).await.unwrap();
+        });
+    }
 
     #[test]
     pub fn badly_behaved_thread() {
-        rt::block_on(async move {
+        let runtime = rt::Runtime::new().unwrap();
+        runtime.block_on(async move {
             let mut badboy = BadlyBehavedTask::start_blocking(());
             let _ = badboy.cast(()).await;
             let mut goodboy = WellBehavedTask::start(CountState { count: 0 });
@@ -365,9 +356,10 @@ mod tests {
 
             match count {
                 OutMsg::Count(num) => {
-                    assert!(num == 10);
+                    assert_eq!(num, 10);
                 }
             }
-        })
+            goodboy.call(InMessage::Stop).await.unwrap();
+        });
     }
 }

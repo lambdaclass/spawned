@@ -96,24 +96,6 @@ impl GenServer for WellBehavedTask {
     }
 }
 
-/*     #[test]
-pub fn badly_behaved_non_thread() {
-    rt::run(async move {
-        let mut badboy = BadlyBehavedTask::start(());
-        let _ = badboy.cast(()).await;
-        let mut goodboy = WellBehavedTask::start(CountState{count: 0});
-        let _ = goodboy.cast(()).await;
-        rt::sleep(Duration::from_secs(1)).await;
-        let count = goodboy.call(InMessage::GetCount).await.unwrap();
-
-        match count {
-            OutMsg::Count(num) => {x
-                assert!(num == 10);
-            }
-        }
-    })
-} */
-
 /// Example of start_blocking to fix issues #8 https://github.com/lambdaclass/spawned/issues/8
 /// Tasks that block can block the entire tokio runtime (and other cooperative multitasking models)
 /// To fix this we implement start_blocking, which under the hood launches a new thread to deal with the issue
