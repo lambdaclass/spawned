@@ -38,6 +38,26 @@ impl<G: GenServer> GenServerHandle<G> {
         handle_clone
     }
 
+    pub(crate) fn new_blocking(mut initial_state: G::State) -> Self {
+        let (tx, mut rx) = mpsc::channel::<GenServerInMsg<G>>();
+        let handle = GenServerHandle { tx };
+        let mut gen_server: G = GenServer::new();
+        let handle_clone = handle.clone();
+        // Ignore the JoinHandle for now. Maybe we'll use it in the future
+        let _join_handle = rt::spawn_blocking(|| {
+            rt::block_on(async move {
+                if gen_server
+                    .run(&handle, &mut rx, &mut initial_state)
+                    .await
+                    .is_err()
+                {
+                    tracing::trace!("GenServer crashed")
+                };
+            })
+        });
+        handle_clone
+    }
+
     pub fn sender(&self) -> mpsc::Sender<GenServerInMsg<G>> {
         self.tx.clone()
     }
@@ -95,6 +115,15 @@ where
 
     fn start(initial_state: Self::State) -> GenServerHandle<Self> {
         GenServerHandle::new(initial_state)
+    }
+
+    /// Tokio tasks depend on a coolaborative multitasking model. "work stealing" can't
+    /// happen if the task is blocking the thread. As such, for sync compute task
+    /// or other blocking tasks need to be in their own separate thread, and the OS
+    /// will manage them through hardware interrupts.
+    /// Start blocking provides such thread.
+    fn start_blocking(initial_state: Self::State) -> GenServerHandle<Self> {
+        GenServerHandle::new_blocking(initial_state)
     }
 
     fn run(
@@ -198,4 +227,137 @@ where
         handle: &GenServerHandle<Self>,
         state: &mut Self::State,
     ) -> impl std::future::Future<Output = CastResponse> + Send;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tasks::send_after;
+    use std::{process::exit, thread, time::Duration};
+    struct BadlyBehavedTask;
+
+    #[derive(Clone)]
+    pub enum InMessage {
+        GetCount,
+        Stop,
+    }
+    #[derive(Clone)]
+    pub enum OutMsg {
+        Count(u64),
+    }
+
+    impl GenServer for BadlyBehavedTask {
+        type CallMsg = InMessage;
+        type CastMsg = ();
+        type OutMsg = ();
+        type State = ();
+        type Error = ();
+
+        fn new() -> Self {
+            Self {}
+        }
+
+        async fn handle_call(
+            &mut self,
+            _: Self::CallMsg,
+            _: &GenServerHandle<Self>,
+            _: &mut Self::State,
+        ) -> CallResponse<Self::OutMsg> {
+            CallResponse::Stop(())
+        }
+
+        async fn handle_cast(
+            &mut self,
+            _: Self::CastMsg,
+            _: &GenServerHandle<Self>,
+            _: &mut Self::State,
+        ) -> CastResponse {
+            rt::sleep(Duration::from_millis(20)).await;
+            thread::sleep(Duration::from_secs(2));
+            CastResponse::Stop
+        }
+    }
+
+    struct WellBehavedTask;
+
+    #[derive(Clone)]
+    struct CountState {
+        pub count: u64,
+    }
+
+    impl GenServer for WellBehavedTask {
+        type CallMsg = InMessage;
+        type CastMsg = ();
+        type OutMsg = OutMsg;
+        type State = CountState;
+        type Error = ();
+
+        fn new() -> Self {
+            Self {}
+        }
+
+        async fn handle_call(
+            &mut self,
+            message: Self::CallMsg,
+            _: &GenServerHandle<Self>,
+            state: &mut Self::State,
+        ) -> CallResponse<Self::OutMsg> {
+            match message {
+                InMessage::GetCount => CallResponse::Reply(OutMsg::Count(state.count)),
+                InMessage::Stop => CallResponse::Stop(OutMsg::Count(state.count)),
+            }
+        }
+
+        async fn handle_cast(
+            &mut self,
+            _: Self::CastMsg,
+            handle: &GenServerHandle<Self>,
+            state: &mut Self::State,
+        ) -> CastResponse {
+            state.count += 1;
+            println!("{:?}: good still alive", thread::current().id());
+            send_after(Duration::from_millis(100), handle.to_owned(), ());
+            CastResponse::NoReply
+        }
+    }
+
+    #[test]
+    pub fn badly_behaved_thread_non_blocking() {
+        let runtime = rt::Runtime::new().unwrap();
+        runtime.block_on(async move {
+            let mut badboy = BadlyBehavedTask::start(());
+            let _ = badboy.cast(()).await;
+            let mut goodboy = WellBehavedTask::start(CountState { count: 0 });
+            let _ = goodboy.cast(()).await;
+            rt::sleep(Duration::from_secs(1)).await;
+            let count = goodboy.call(InMessage::GetCount).await.unwrap();
+
+            match count {
+                OutMsg::Count(num) => {
+                    assert_ne!(num, 10);
+                }
+            }
+            goodboy.call(InMessage::Stop).await.unwrap();
+        });
+    }
+
+    #[test]
+    pub fn badly_behaved_thread() {
+        let runtime = rt::Runtime::new().unwrap();
+        runtime.block_on(async move {
+            let mut badboy = BadlyBehavedTask::start_blocking(());
+            let _ = badboy.cast(()).await;
+            let mut goodboy = WellBehavedTask::start(CountState { count: 0 });
+            let _ = goodboy.cast(()).await;
+            rt::sleep(Duration::from_secs(1)).await;
+            let count = goodboy.call(InMessage::GetCount).await.unwrap();
+
+            match count {
+                OutMsg::Count(num) => {
+                    assert_eq!(num, 10);
+                }
+            }
+            goodboy.call(InMessage::Stop).await.unwrap();
+        });
+    }
 }

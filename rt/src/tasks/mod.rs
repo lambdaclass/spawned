@@ -9,12 +9,14 @@
 
 mod tokio;
 
+use ::tokio::runtime::Handle;
+
 use crate::tracing::init_tracing;
 
 pub use crate::tasks::tokio::mpsc;
 pub use crate::tasks::tokio::oneshot;
 pub use crate::tasks::tokio::sleep;
-pub use crate::tasks::tokio::{spawn, JoinHandle, Runtime};
+pub use crate::tasks::tokio::{spawn, spawn_blocking, JoinHandle, Runtime};
 use std::future::Future;
 
 pub fn run<F: Future>(future: F) -> F::Output {
@@ -22,4 +24,8 @@ pub fn run<F: Future>(future: F) -> F::Output {
 
     let rt = Runtime::new().unwrap();
     rt.block_on(future)
+}
+
+pub fn block_on<F: Future>(future: F) -> F::Output {
+    Handle::current().block_on(future)
 }

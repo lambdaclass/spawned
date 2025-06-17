@@ -98,6 +98,12 @@ where
         GenServerHandle::new(initial_state)
     }
 
+    /// We copy the same interface as tasks, but all threads can work
+    /// while blocking by default
+    fn start_blocking(initial_state: Self::State) -> GenServerHandle<Self> {
+        GenServerHandle::new(initial_state)
+    }
+
     fn run(
         &mut self,
         handle: &GenServerHandle<Self>,
