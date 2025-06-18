@@ -51,14 +51,14 @@ impl<G: GenServer> GenServerHandle<G> {
         })?;
         match oneshot_rx.recv() {
             Ok(result) => result,
-            Err(_) => Err(GenServerError::ServerError),
+            Err(_) => Err(GenServerError::Server),
         }
     }
 
     pub fn cast(&mut self, message: G::CastMsg) -> Result<(), GenServerError> {
         self.tx
             .send(GenServerInMsg::Cast { message })
-            .map_err(|_error| GenServerError::ServerError)
+            .map_err(|_error| GenServerError::Server)
     }
 }
 
@@ -110,9 +110,19 @@ where
         rx: &mut mpsc::Receiver<GenServerInMsg<Self>>,
         state: &mut Self::State,
     ) -> Result<(), GenServerError> {
+        if let Err(err) = self.init(handle, state) {
+            tracing::error!("Initialization failed: {err:?}");
+            return Err(GenServerError::Initialization);
+        }
         self.main_loop(handle, rx, state)?;
         Ok(())
     }
+
+    fn init(
+        &mut self,
+        handle: &GenServerHandle<Self>,
+        state: &mut Self::State,
+    ) -> Result<(), Self::Error>;
 
     fn main_loop(
         &mut self,
@@ -149,7 +159,7 @@ where
                         CallResponse::Reply(response) => (true, None, Ok(response)),
                         CallResponse::Stop(response) => (false, None, Ok(response)),
                     },
-                    Err(error) => (true, Some(error), Err(GenServerError::CallbackError)),
+                    Err(error) => (true, Some(error), Err(GenServerError::Callback)),
                 };
                 // Send response back
                 if sender.send(response).is_err() {

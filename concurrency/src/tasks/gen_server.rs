@@ -70,14 +70,14 @@ impl<G: GenServer> GenServerHandle<G> {
         })?;
         match oneshot_rx.await {
             Ok(result) => result,
-            Err(_) => Err(GenServerError::ServerError),
+            Err(_) => Err(GenServerError::Server),
         }
     }
 
     pub async fn cast(&mut self, message: G::CastMsg) -> Result<(), GenServerError> {
         self.tx
             .send(GenServerInMsg::Cast { message })
-            .map_err(|_error| GenServerError::ServerError)
+            .map_err(|_error| GenServerError::Server)
     }
 }
 
@@ -133,10 +133,20 @@ where
         state: &mut Self::State,
     ) -> impl Future<Output = Result<(), GenServerError>> + Send {
         async {
+            if let Err(err) = self.init(handle, state).await {
+                tracing::error!("Initialization failed: {err:?}");
+                return Err(GenServerError::Initialization);
+            }
             self.main_loop(handle, rx, state).await?;
             Ok(())
         }
     }
+
+    fn init(
+        &mut self,
+        handle: &GenServerHandle<Self>,
+        state: &mut Self::State,
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send;
 
     fn main_loop(
         &mut self,
@@ -178,7 +188,7 @@ where
                                 CallResponse::Reply(response) => (true, None, Ok(response)),
                                 CallResponse::Stop(response) => (false, None, Ok(response)),
                             },
-                            Err(error) => (true, Some(error), Err(GenServerError::CallbackError)),
+                            Err(error) => (true, Some(error), Err(GenServerError::Callback)),
                         };
                     // Send response back
                     if sender.send(response).is_err() {
@@ -233,7 +243,7 @@ where
 mod tests {
     use super::*;
     use crate::tasks::send_after;
-    use std::{process::exit, thread, time::Duration};
+    use std::{thread, time::Duration};
     struct BadlyBehavedTask;
 
     #[derive(Clone)]
@@ -255,6 +265,14 @@ mod tests {
 
         fn new() -> Self {
             Self {}
+        }
+
+        async fn init(
+            &mut self,
+            _handle: &GenServerHandle<Self>,
+            _state: &mut Self::State,
+        ) -> Result<(), Self::Error> {
+            Ok(())
         }
 
         async fn handle_call(
@@ -294,6 +312,14 @@ mod tests {
 
         fn new() -> Self {
             Self {}
+        }
+
+        async fn init(
+            &mut self,
+            _handle: &GenServerHandle<Self>,
+            _state: &mut Self::State,
+        ) -> Result<(), Self::Error> {
+            Ok(())
         }
 
         async fn handle_call(

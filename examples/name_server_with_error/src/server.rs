@@ -15,8 +15,8 @@ impl NameServer {
     pub async fn add(server: &mut NameServerHandle, key: String, value: String) -> OutMessage {
         match server.call(InMessage::Add { key, value }).await {
             Ok(_) => OutMessage::Ok,
-            Err(GenServerError::ServerError) => OutMessage::ServerError,
-            Err(GenServerError::CallbackError) => OutMessage::CallbackError,
+            Err(GenServerError::Callback) => OutMessage::CallbackError,
+            Err(_) => OutMessage::ServerError,
         }
     }
 
@@ -37,6 +37,14 @@ impl GenServer for NameServer {
 
     fn new() -> Self {
         NameServer {}
+    }
+
+    async fn init(
+        &mut self,
+        _handle: &GenServerHandle<Self>,
+        _state: &mut Self::State,
+    ) -> Result<(), Self::Error> {
+        Ok(())
     }
 
     async fn handle_call(
