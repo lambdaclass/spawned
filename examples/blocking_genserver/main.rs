@@ -30,14 +30,6 @@ impl GenServer for BadlyBehavedTask {
         Self {}
     }
 
-    async fn init(
-        &mut self,
-        _handle: &GenServerHandle<Self>,
-        _state: &mut Self::State,
-    ) -> Result<(), Self::Error> {
-        Ok(())
-    }
-
     async fn handle_call(
         &mut self,
         _: Self::CallMsg,
@@ -77,14 +69,6 @@ impl GenServer for WellBehavedTask {
 
     fn new() -> Self {
         Self {}
-    }
-
-    async fn init(
-        &mut self,
-        _handle: &GenServerHandle<Self>,
-        _state: &mut Self::State,
-    ) -> Result<(), Self::Error> {
-        Ok(())
     }
 
     async fn handle_call(

@@ -35,14 +35,6 @@ impl GenServer for UpdaterServer {
         Self {}
     }
 
-    async fn init(
-        &mut self,
-        _handle: &GenServerHandle<Self>,
-        _state: &mut Self::State,
-    ) -> Result<(), Self::Error> {
-        Ok(())
-    }
-
     async fn handle_call(
         &mut self,
         _message: Self::CallMsg,

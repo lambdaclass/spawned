@@ -47,14 +47,6 @@ impl GenServer for Bank {
         Self {}
     }
 
-    fn init(
-        &mut self,
-        _handle: &GenServerHandle<Self>,
-        _state: &mut Self::State,
-    ) -> Result<(), Self::Error> {
-        Ok(())
-    }
-
     fn handle_call(
         &mut self,
         message: Self::CallMsg,

@@ -20,7 +20,7 @@ impl<G: GenServer> Clone for GenServerHandle<G> {
 }
 
 impl<G: GenServer> GenServerHandle<G> {
-    pub(crate) fn new(mut initial_state: G::State) -> Self {
+    pub(crate) fn new(initial_state: G::State) -> Self {
         let (tx, mut rx) = mpsc::channel::<GenServerInMsg<G>>();
         let handle = GenServerHandle { tx };
         let mut gen_server: G = GenServer::new();
@@ -28,7 +28,7 @@ impl<G: GenServer> GenServerHandle<G> {
         // Ignore the JoinHandle for now. Maybe we'll use it in the future
         let _join_handle = rt::spawn(async move {
             if gen_server
-                .run(&handle, &mut rx, &mut initial_state)
+                .run(&handle, &mut rx, initial_state)
                 .await
                 .is_err()
             {
@@ -38,7 +38,7 @@ impl<G: GenServer> GenServerHandle<G> {
         handle_clone
     }
 
-    pub(crate) fn new_blocking(mut initial_state: G::State) -> Self {
+    pub(crate) fn new_blocking(initial_state: G::State) -> Self {
         let (tx, mut rx) = mpsc::channel::<GenServerInMsg<G>>();
         let handle = GenServerHandle { tx };
         let mut gen_server: G = GenServer::new();
@@ -47,7 +47,7 @@ impl<G: GenServer> GenServerHandle<G> {
         let _join_handle = rt::spawn_blocking(|| {
             rt::block_on(async move {
                 if gen_server
-                    .run(&handle, &mut rx, &mut initial_state)
+                    .run(&handle, &mut rx, initial_state)
                     .await
                     .is_err()
                 {
@@ -109,7 +109,7 @@ where
     type CastMsg: Send + Sized;
     type OutMsg: Send + Sized;
     type State: Clone + Send;
-    type Error: Debug;
+    type Error: Debug + Send;
 
     fn new() -> Self;
 
@@ -130,23 +130,29 @@ where
         &mut self,
         handle: &GenServerHandle<Self>,
         rx: &mut mpsc::Receiver<GenServerInMsg<Self>>,
-        state: &mut Self::State,
+        state: Self::State,
     ) -> impl Future<Output = Result<(), GenServerError>> + Send {
         async {
-            if let Err(err) = self.init(handle, state).await {
-                tracing::error!("Initialization failed: {err:?}");
-                return Err(GenServerError::Initialization);
+            match self.init(handle, state).await {
+                Ok(mut new_state) => {
+                    self.main_loop(handle, rx, &mut new_state).await?;
+                    Ok(())
+                }
+                Err(err) => {
+                    tracing::error!("Initialization failed: {err:?}");
+                    Err(GenServerError::Initialization)
+                }
             }
-            self.main_loop(handle, rx, state).await?;
-            Ok(())
         }
     }
 
     fn init(
         &mut self,
-        handle: &GenServerHandle<Self>,
-        state: &mut Self::State,
-    ) -> impl Future<Output = Result<(), Self::Error>> + Send;
+        _handle: &GenServerHandle<Self>,
+        state: Self::State,
+    ) -> impl Future<Output = Result<Self::State, Self::Error>> + Send {
+        async { Ok(state) }
+    }
 
     fn main_loop(
         &mut self,
@@ -267,14 +273,6 @@ mod tests {
             Self {}
         }
 
-        async fn init(
-            &mut self,
-            _handle: &GenServerHandle<Self>,
-            _state: &mut Self::State,
-        ) -> Result<(), Self::Error> {
-            Ok(())
-        }
-
         async fn handle_call(
             &mut self,
             _: Self::CallMsg,
@@ -312,14 +310,6 @@ mod tests {
 
         fn new() -> Self {
             Self {}
-        }
-
-        async fn init(
-            &mut self,
-            _handle: &GenServerHandle<Self>,
-            _state: &mut Self::State,
-        ) -> Result<(), Self::Error> {
-            Ok(())
         }
 
         async fn handle_call(
