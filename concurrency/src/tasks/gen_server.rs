@@ -134,8 +134,8 @@ where
     ) -> impl Future<Output = Result<(), GenServerError>> + Send {
         async {
             match self.init(handle, state).await {
-                Ok(mut new_state) => {
-                    self.main_loop(handle, rx, &mut new_state).await?;
+                Ok(new_state) => {
+                    self.main_loop(handle, rx, new_state).await?;
                     Ok(())
                 }
                 Err(err) => {
@@ -158,13 +158,15 @@ where
         &mut self,
         handle: &GenServerHandle<Self>,
         rx: &mut mpsc::Receiver<GenServerInMsg<Self>>,
-        state: &mut Self::State,
+        mut state: Self::State,
     ) -> impl Future<Output = Result<(), GenServerError>> + Send {
         async {
             loop {
-                if !self.receive(handle, rx, state).await? {
+                let (new_state, cont) = self.receive(handle, rx, state).await?;
+                if !cont {
                     break;
                 }
+                state = new_state;
             }
             tracing::trace!("Stopping GenServer");
             Ok(())
@@ -175,9 +177,9 @@ where
         &mut self,
         handle: &GenServerHandle<Self>,
         rx: &mut mpsc::Receiver<GenServerInMsg<Self>>,
-        state: &mut Self::State,
-    ) -> impl std::future::Future<Output = Result<bool, GenServerError>> + Send {
-        async {
+        mut state: Self::State,
+    ) -> impl std::future::Future<Output = Result<(Self::State, bool), GenServerError>> + Send {
+        async move {
             let message = rx.recv().await;
 
             // Save current state in case of a rollback
@@ -186,7 +188,7 @@ where
             let (keep_running, error) = match message {
                 Some(GenServerInMsg::Call { sender, message }) => {
                     let (keep_running, error, response) =
-                        match AssertUnwindSafe(self.handle_call(message, handle, state))
+                        match AssertUnwindSafe(self.handle_call(message, handle, &mut state))
                             .catch_unwind()
                             .await
                         {
@@ -205,7 +207,7 @@ where
                     (keep_running, error)
                 }
                 Some(GenServerInMsg::Cast { message }) => {
-                    match AssertUnwindSafe(self.handle_cast(message, handle, state))
+                    match AssertUnwindSafe(self.handle_cast(message, handle, &mut state))
                         .catch_unwind()
                         .await
                     {
@@ -224,9 +226,9 @@ where
             if let Some(error) = error {
                 tracing::trace!("Error in callback, reverting state - Error: '{error:?}'");
                 // Restore initial state (ie. dismiss any change)
-                *state = state_clone;
+                state = state_clone;
             };
-            Ok(keep_running)
+            Ok((state, keep_running))
         }
     }
 

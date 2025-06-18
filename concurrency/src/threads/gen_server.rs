@@ -108,8 +108,8 @@ where
         state: Self::State,
     ) -> Result<(), GenServerError> {
         match self.init(handle, state) {
-            Ok(mut new_state) => {
-                self.main_loop(handle, rx, &mut new_state)?;
+            Ok(new_state) => {
+                self.main_loop(handle, rx, new_state)?;
                 Ok(())
             }
             Err(err) => {
@@ -131,12 +131,14 @@ where
         &mut self,
         handle: &GenServerHandle<Self>,
         rx: &mut mpsc::Receiver<GenServerInMsg<Self>>,
-        state: &mut Self::State,
+        mut state: Self::State,
     ) -> Result<(), GenServerError> {
         loop {
-            if !self.receive(handle, rx, state)? {
+            let (new_state, cont) = self.receive(handle, rx, state)?;
+            if !cont {
                 break;
             }
+            state = new_state;
         }
         tracing::trace!("Stopping GenServer");
         Ok(())
@@ -146,8 +148,8 @@ where
         &mut self,
         handle: &GenServerHandle<Self>,
         rx: &mut mpsc::Receiver<GenServerInMsg<Self>>,
-        state: &mut Self::State,
-    ) -> Result<bool, GenServerError> {
+        mut state: Self::State,
+    ) -> Result<(Self::State, bool), GenServerError> {
         let message = rx.recv().ok();
 
         // Save current state in case of a rollback
@@ -156,7 +158,7 @@ where
         let (keep_running, error) = match message {
             Some(GenServerInMsg::Call { sender, message }) => {
                 let (keep_running, error, response) = match catch_unwind(AssertUnwindSafe(|| {
-                    self.handle_call(message, handle, state)
+                    self.handle_call(message, handle, &mut state)
                 })) {
                     Ok(response) => match response {
                         CallResponse::Reply(response) => (true, None, Ok(response)),
@@ -172,7 +174,7 @@ where
             }
             Some(GenServerInMsg::Cast { message }) => {
                 match catch_unwind(AssertUnwindSafe(|| {
-                    self.handle_cast(message, handle, state)
+                    self.handle_cast(message, handle, &mut state)
                 })) {
                     Ok(response) => match response {
                         CastResponse::NoReply => (true, None),
@@ -189,9 +191,9 @@ where
         if let Some(error) = error {
             tracing::trace!("Error in callback, reverting state - Error: '{error:?}'");
             // Restore initial state (ie. dismiss any change)
-            *state = state_clone;
+            state = state_clone;
         };
-        Ok(keep_running)
+        Ok((state, keep_running))
     }
 
     fn handle_call(
