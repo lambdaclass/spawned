@@ -81,23 +81,23 @@ impl<G: GenServer> GenServerHandle<G> {
     }
 }
 
-pub enum GenServerInMsg<A: GenServer> {
+pub enum GenServerInMsg<G: GenServer> {
     Call {
-        sender: oneshot::Sender<Result<A::OutMsg, GenServerError>>,
-        message: A::CallMsg,
+        sender: oneshot::Sender<Result<G::OutMsg, GenServerError>>,
+        message: G::CallMsg,
     },
     Cast {
-        message: A::CastMsg,
+        message: G::CastMsg,
     },
 }
 
-pub enum CallResponse<U> {
-    Reply(U),
-    Stop(U),
+pub enum CallResponse<G: GenServer> {
+    Reply(G::State, G::OutMsg),
+    Stop(G::OutMsg),
 }
 
-pub enum CastResponse {
-    NoReply,
+pub enum CastResponse<G: GenServer> {
+    NoReply(G::State),
     Stop,
 }
 
@@ -177,7 +177,7 @@ where
         &mut self,
         handle: &GenServerHandle<Self>,
         rx: &mut mpsc::Receiver<GenServerInMsg<Self>>,
-        mut state: Self::State,
+        state: Self::State,
     ) -> impl std::future::Future<Output = Result<(Self::State, bool), GenServerError>> + Send {
         async move {
             let message = rx.recv().await;
@@ -185,18 +185,25 @@ where
             // Save current state in case of a rollback
             let state_clone = state.clone();
 
-            let (keep_running, error) = match message {
+            let (keep_running, new_state) = match message {
                 Some(GenServerInMsg::Call { sender, message }) => {
-                    let (keep_running, error, response) =
-                        match AssertUnwindSafe(self.handle_call(message, handle, &mut state))
+                    let (keep_running, new_state, response) =
+                        match AssertUnwindSafe(self.handle_call(message, handle, state))
                             .catch_unwind()
                             .await
                         {
                             Ok(response) => match response {
-                                CallResponse::Reply(response) => (true, None, Ok(response)),
-                                CallResponse::Stop(response) => (false, None, Ok(response)),
+                                CallResponse::Reply(new_state, response) => {
+                                    (true, new_state, Ok(response))
+                                }
+                                CallResponse::Stop(response) => (false, state_clone, Ok(response)),
                             },
-                            Err(error) => (true, Some(error), Err(GenServerError::Callback)),
+                            Err(error) => {
+                                tracing::trace!(
+                                    "Error in callback, reverting state - Error: '{error:?}'"
+                                );
+                                (true, state_clone, Err(GenServerError::Callback))
+                            }
                         };
                     // Send response back
                     if sender.send(response).is_err() {
@@ -204,31 +211,31 @@ where
                             "GenServer failed to send response back, client must have died"
                         )
                     };
-                    (keep_running, error)
+                    (keep_running, new_state)
                 }
                 Some(GenServerInMsg::Cast { message }) => {
-                    match AssertUnwindSafe(self.handle_cast(message, handle, &mut state))
+                    match AssertUnwindSafe(self.handle_cast(message, handle, state))
                         .catch_unwind()
                         .await
                     {
                         Ok(response) => match response {
-                            CastResponse::NoReply => (true, None),
-                            CastResponse::Stop => (false, None),
+                            CastResponse::NoReply(new_state) => (true, new_state),
+                            CastResponse::Stop => (false, state_clone),
                         },
-                        Err(error) => (true, Some(error)),
+                        Err(error) => {
+                            tracing::trace!(
+                                "Error in callback, reverting state - Error: '{error:?}'"
+                            );
+                            (true, state_clone)
+                        }
                     }
                 }
                 None => {
                     // Channel has been closed; won't receive further messages. Stop the server.
-                    (false, None)
+                    (false, state)
                 }
             };
-            if let Some(error) = error {
-                tracing::trace!("Error in callback, reverting state - Error: '{error:?}'");
-                // Restore initial state (ie. dismiss any change)
-                state = state_clone;
-            };
-            Ok((state, keep_running))
+            Ok((new_state, keep_running))
         }
     }
 
@@ -236,15 +243,15 @@ where
         &mut self,
         message: Self::CallMsg,
         handle: &GenServerHandle<Self>,
-        state: &mut Self::State,
-    ) -> impl std::future::Future<Output = CallResponse<Self::OutMsg>> + Send;
+        state: Self::State,
+    ) -> impl std::future::Future<Output = CallResponse<Self>> + Send;
 
     fn handle_cast(
         &mut self,
         message: Self::CastMsg,
         handle: &GenServerHandle<Self>,
-        state: &mut Self::State,
-    ) -> impl std::future::Future<Output = CastResponse> + Send;
+        state: Self::State,
+    ) -> impl std::future::Future<Output = CastResponse<Self>> + Send;
 }
 
 #[cfg(test)]
@@ -279,8 +286,8 @@ mod tests {
             &mut self,
             _: Self::CallMsg,
             _: &GenServerHandle<Self>,
-            _: &mut Self::State,
-        ) -> CallResponse<Self::OutMsg> {
+            _: Self::State,
+        ) -> CallResponse<Self> {
             CallResponse::Stop(())
         }
 
@@ -288,8 +295,8 @@ mod tests {
             &mut self,
             _: Self::CastMsg,
             _: &GenServerHandle<Self>,
-            _: &mut Self::State,
-        ) -> CastResponse {
+            _: Self::State,
+        ) -> CastResponse<Self> {
             rt::sleep(Duration::from_millis(20)).await;
             thread::sleep(Duration::from_secs(2));
             CastResponse::Stop
@@ -318,10 +325,13 @@ mod tests {
             &mut self,
             message: Self::CallMsg,
             _: &GenServerHandle<Self>,
-            state: &mut Self::State,
-        ) -> CallResponse<Self::OutMsg> {
+            state: Self::State,
+        ) -> CallResponse<Self> {
             match message {
-                InMessage::GetCount => CallResponse::Reply(OutMsg::Count(state.count)),
+                InMessage::GetCount => {
+                    let count = state.count;
+                    CallResponse::Reply(state, OutMsg::Count(count))
+                }
                 InMessage::Stop => CallResponse::Stop(OutMsg::Count(state.count)),
             }
         }
@@ -330,12 +340,12 @@ mod tests {
             &mut self,
             _: Self::CastMsg,
             handle: &GenServerHandle<Self>,
-            state: &mut Self::State,
-        ) -> CastResponse {
+            mut state: Self::State,
+        ) -> CastResponse<Self> {
             state.count += 1;
             println!("{:?}: good still alive", thread::current().id());
             send_after(Duration::from_millis(100), handle.to_owned(), ());
-            CastResponse::NoReply
+            CastResponse::NoReply(state)
         }
     }
 

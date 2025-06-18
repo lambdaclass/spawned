@@ -43,22 +43,23 @@ impl GenServer for NameServer {
         &mut self,
         message: Self::CallMsg,
         _handle: &NameServerHandle,
-        state: &mut Self::State,
-    ) -> CallResponse<Self::OutMsg> {
+        mut state: Self::State,
+    ) -> CallResponse<Self> {
         match message.clone() {
             Self::CallMsg::Add { key, value } => {
                 state.insert(key.clone(), value);
                 if key == "error" {
                     panic!("error!")
                 } else {
-                    CallResponse::Reply(Self::OutMsg::Ok)
+                    CallResponse::Reply(state, Self::OutMsg::Ok)
                 }
             }
             Self::CallMsg::Find { key } => match state.get(&key) {
-                Some(value) => CallResponse::Reply(Self::OutMsg::Found {
-                    value: value.to_string(),
-                }),
-                None => CallResponse::Reply(Self::OutMsg::NotFound),
+                Some(result) => {
+                    let value = result.to_string();
+                    CallResponse::Reply(state, Self::OutMsg::Found { value })
+                }
+                None => CallResponse::Reply(state, Self::OutMsg::NotFound),
             },
         }
     }
@@ -67,8 +68,8 @@ impl GenServer for NameServer {
         &mut self,
         _message: Self::CastMsg,
         _handle: &NameServerHandle,
-        _state: &mut Self::State,
-    ) -> CastResponse {
-        CastResponse::NoReply
+        state: Self::State,
+    ) -> CastResponse<Self> {
+        CastResponse::NoReply(state)
     }
 }

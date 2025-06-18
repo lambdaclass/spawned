@@ -78,8 +78,18 @@ fn main() {
         assert_eq!(
             result,
             Err(BankError::InsufficientBalance {
-                who: joe,
+                who: joe.clone(),
                 amount: 25
+            })
+        );
+
+        let result = Bank::withdraw(&mut name_server, "Joe".to_string(), 25).await;
+        tracing::info!("Withdraw result {result:?}");
+        assert_eq!(
+            result,
+            Ok(BankOutMessage::WidrawOk {
+                who: joe,
+                amount: 0
             })
         );
 

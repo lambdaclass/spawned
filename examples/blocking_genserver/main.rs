@@ -34,8 +34,8 @@ impl GenServer for BadlyBehavedTask {
         &mut self,
         _: Self::CallMsg,
         _: &GenServerHandle<Self>,
-        _: &mut Self::State,
-    ) -> CallResponse<Self::OutMsg> {
+        _: Self::State,
+    ) -> CallResponse<Self> {
         CallResponse::Stop(())
     }
 
@@ -43,8 +43,8 @@ impl GenServer for BadlyBehavedTask {
         &mut self,
         _: Self::CastMsg,
         _: &GenServerHandle<Self>,
-        _: &mut Self::State,
-    ) -> CastResponse {
+        _: Self::State,
+    ) -> CastResponse<Self> {
         rt::sleep(Duration::from_millis(20)).await;
         loop {
             println!("{:?}: bad still alive", thread::current().id());
@@ -75,10 +75,13 @@ impl GenServer for WellBehavedTask {
         &mut self,
         message: Self::CallMsg,
         _: &GenServerHandle<Self>,
-        state: &mut Self::State,
-    ) -> CallResponse<Self::OutMsg> {
+        state: Self::State,
+    ) -> CallResponse<Self> {
         match message {
-            InMessage::GetCount => CallResponse::Reply(OutMsg::Count(state.count)),
+            InMessage::GetCount => {
+                let count = state.count;
+                CallResponse::Reply(state, OutMsg::Count(count))
+            }
             InMessage::Stop => CallResponse::Stop(OutMsg::Count(state.count)),
         }
     }
@@ -87,12 +90,12 @@ impl GenServer for WellBehavedTask {
         &mut self,
         _: Self::CastMsg,
         handle: &GenServerHandle<Self>,
-        state: &mut Self::State,
-    ) -> CastResponse {
+        mut state: Self::State,
+    ) -> CastResponse<Self> {
         state.count += 1;
         println!("{:?}: good still alive", thread::current().id());
         send_after(Duration::from_millis(100), handle.to_owned(), ());
-        CastResponse::NoReply
+        CastResponse::NoReply(state)
     }
 }
 

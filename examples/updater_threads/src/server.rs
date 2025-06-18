@@ -40,17 +40,17 @@ impl GenServer for UpdaterServer {
         &mut self,
         _message: Self::CallMsg,
         _handle: &UpdateServerHandle,
-        _state: &mut Self::State,
-    ) -> CallResponse<Self::OutMsg> {
-        CallResponse::Reply(OutMessage::Ok)
+        state: Self::State,
+    ) -> CallResponse<Self> {
+        CallResponse::Reply(state, OutMessage::Ok)
     }
 
     fn handle_cast(
         &mut self,
         message: Self::CastMsg,
         handle: &UpdateServerHandle,
-        state: &mut Self::State,
-    ) -> CastResponse {
+        state: Self::State,
+    ) -> CastResponse<Self> {
         match message {
             Self::CastMsg::Check => {
                 send_after(state.periodicity, handle.clone(), InMessage::Check);
@@ -60,7 +60,7 @@ impl GenServer for UpdaterServer {
 
                 tracing::info!("Response: {resp:?}");
 
-                CastResponse::NoReply
+                CastResponse::NoReply(state)
             }
         }
     }
