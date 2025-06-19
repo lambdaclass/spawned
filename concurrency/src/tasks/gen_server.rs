@@ -146,6 +146,9 @@ where
         }
     }
 
+    /// Initialization function. It's called before main loop. It
+    /// can be overrided on implementations in case initial steps are
+    /// required.
     fn init(
         &mut self,
         _handle: &GenServerHandle<Self>,

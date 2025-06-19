@@ -47,6 +47,16 @@ impl GenServer for Bank {
         Self {}
     }
 
+    // Initializing "main" account with 1000 in balance to test init() callback.
+    fn init(
+        &mut self,
+        _handle: &GenServerHandle<Self>,
+        mut state: Self::State,
+    ) -> Result<Self::State, Self::Error> {
+        state.insert("main".to_string(), 1000);
+        Ok(state)
+    }
+
     fn handle_call(
         &mut self,
         message: Self::CallMsg,
