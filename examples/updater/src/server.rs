@@ -1,8 +1,9 @@
 use std::time::Duration;
 
 use spawned_concurrency::tasks::{
-    send_after, CallResponse, CastResponse, GenServer, GenServerHandle,
+    send_interval, CallResponse, CastResponse, GenServer, GenServerHandle,
 };
+use spawned_rt::tasks::CancellationToken;
 
 use crate::messages::{UpdaterInMessage as InMessage, UpdaterOutMessage as OutMessage};
 
@@ -12,6 +13,7 @@ type UpdateServerHandle = GenServerHandle<UpdaterServer>;
 pub struct UpdateServerState {
     pub url: String,
     pub periodicity: Duration,
+    pub timer_token: Option<CancellationToken>,
 }
 pub struct UpdaterServer {}
 
@@ -26,13 +28,14 @@ impl GenServer for UpdaterServer {
         Self {}
     }
 
-    // Initializing GenServer to start periodic checks
+    // Initializing GenServer to start periodic checks.
     async fn init(
         &mut self,
         handle: &GenServerHandle<Self>,
-        state: Self::State,
+        mut state: Self::State,
     ) -> Result<Self::State, Self::Error> {
-        send_after(state.periodicity, handle.clone(), InMessage::Check);
+        let timer = send_interval(state.periodicity, handle.clone(), InMessage::Check);
+        state.timer_token = Some(timer.cancellation_token);
         Ok(state)
     }
 
@@ -48,18 +51,16 @@ impl GenServer for UpdaterServer {
     async fn handle_cast(
         &mut self,
         message: Self::CastMsg,
-        handle: &UpdateServerHandle,
+        _handle: &UpdateServerHandle,
         state: Self::State,
     ) -> CastResponse<Self> {
         match message {
             Self::CastMsg::Check => {
-                send_after(state.periodicity, handle.clone(), InMessage::Check);
+                //send_after(state.periodicity, handle.clone(), InMessage::Check);
                 let url = state.url.clone();
                 tracing::info!("Fetching: {url}");
                 let resp = req(url).await;
-
                 tracing::info!("Response: {resp:?}");
-
                 CastResponse::NoReply(state)
             }
         }

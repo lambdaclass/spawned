@@ -16,6 +16,7 @@ use crate::tracing::init_tracing;
 pub use crate::tasks::tokio::mpsc;
 pub use crate::tasks::tokio::oneshot;
 pub use crate::tasks::tokio::sleep;
+pub use crate::tasks::tokio::CancellationToken;
 pub use crate::tasks::tokio::{spawn, spawn_blocking, JoinHandle, Runtime};
 use std::future::Future;
 

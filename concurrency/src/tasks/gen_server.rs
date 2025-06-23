@@ -105,8 +105,8 @@ pub trait GenServer
 where
     Self: Send + Sized,
 {
-    type CallMsg: Send + Sized;
-    type CastMsg: Send + Sized;
+    type CallMsg: Clone + Send + Sized + Sync;
+    type CastMsg: Clone + Send + Sized + Sync;
     type OutMsg: Send + Sized;
     type State: Clone + Send;
     type Error: Debug + Send;
