@@ -15,15 +15,6 @@ pub struct UpdateServerState {
 }
 pub struct UpdaterServer {}
 
-impl UpdaterServer {
-    pub async fn check(server: &mut UpdateServerHandle) -> OutMessage {
-        match server.cast(InMessage::Check).await {
-            Ok(_) => OutMessage::Ok,
-            Err(_) => OutMessage::Error,
-        }
-    }
-}
-
 impl GenServer for UpdaterServer {
     type CallMsg = ();
     type CastMsg = InMessage;
@@ -33,6 +24,16 @@ impl GenServer for UpdaterServer {
 
     fn new() -> Self {
         Self {}
+    }
+
+    // Initializing GenServer to start periodic checks
+    async fn init(
+        &mut self,
+        handle: &GenServerHandle<Self>,
+        state: Self::State,
+    ) -> Result<Self::State, Self::Error> {
+        send_after(state.periodicity, handle.clone(), InMessage::Check);
+        Ok(state)
     }
 
     async fn handle_call(
