@@ -47,49 +47,70 @@ impl GenServer for Bank {
         Self {}
     }
 
+    // Initializing "main" account with 1000 in balance to test init() callback.
+    fn init(
+        &mut self,
+        _handle: &GenServerHandle<Self>,
+        mut state: Self::State,
+    ) -> Result<Self::State, Self::Error> {
+        state.insert("main".to_string(), 1000);
+        Ok(state)
+    }
+
     fn handle_call(
         &mut self,
         message: Self::CallMsg,
         _handle: &BankHandle,
-        state: &mut Self::State,
-    ) -> CallResponse<Self::OutMsg> {
+        mut state: Self::State,
+    ) -> CallResponse<Self> {
         match message.clone() {
-            InMessage::New { who } => match state.get(&who) {
-                Some(_amount) => CallResponse::Reply(Err(BankError::AlreadyACustomer { who })),
+            Self::CallMsg::New { who } => match state.get(&who) {
+                Some(_amount) => {
+                    CallResponse::Reply(state, Err(BankError::AlreadyACustomer { who }))
+                }
                 None => {
                     state.insert(who.clone(), 0);
-                    CallResponse::Reply(Ok(OutMessage::Welcome { who }))
+                    CallResponse::Reply(state, Ok(OutMessage::Welcome { who }))
                 }
             },
-            InMessage::Add { who, amount } => match state.get(&who) {
+            Self::CallMsg::Add { who, amount } => match state.get(&who) {
                 Some(current) => {
                     let new_amount = current + amount;
                     state.insert(who.clone(), new_amount);
-                    CallResponse::Reply(Ok(OutMessage::Balance {
-                        who,
-                        amount: new_amount,
-                    }))
+                    CallResponse::Reply(
+                        state,
+                        Ok(OutMessage::Balance {
+                            who,
+                            amount: new_amount,
+                        }),
+                    )
                 }
-                None => CallResponse::Reply(Err(BankError::NotACustomer { who })),
+                None => CallResponse::Reply(state, Err(BankError::NotACustomer { who })),
             },
-            InMessage::Remove { who, amount } => match state.get(&who) {
-                Some(current) => match current < &amount {
-                    true => CallResponse::Reply(Err(BankError::InsufficientBalance {
-                        who,
-                        amount: *current,
-                    })),
+            Self::CallMsg::Remove { who, amount } => match state.get(&who) {
+                Some(&current) => match current < amount {
+                    true => CallResponse::Reply(
+                        state,
+                        Err(BankError::InsufficientBalance {
+                            who,
+                            amount: current,
+                        }),
+                    ),
                     false => {
                         let new_amount = current - amount;
                         state.insert(who.clone(), new_amount);
-                        CallResponse::Reply(Ok(OutMessage::WidrawOk {
-                            who,
-                            amount: new_amount,
-                        }))
+                        CallResponse::Reply(
+                            state,
+                            Ok(OutMessage::WidrawOk {
+                                who,
+                                amount: new_amount,
+                            }),
+                        )
                     }
                 },
-                None => CallResponse::Reply(Err(BankError::NotACustomer { who })),
+                None => CallResponse::Reply(state, Err(BankError::NotACustomer { who })),
             },
-            InMessage::Stop => CallResponse::Stop(Ok(OutMessage::Stopped)),
+            Self::CallMsg::Stop => CallResponse::Stop(Ok(OutMessage::Stopped)),
         }
     }
 
@@ -97,8 +118,8 @@ impl GenServer for Bank {
         &mut self,
         _message: Self::CastMsg,
         _handle: &BankHandle,
-        _state: &mut Self::State,
-    ) -> CastResponse {
-        CastResponse::NoReply
+        state: Self::State,
+    ) -> CastResponse<Self> {
+        CastResponse::NoReply(state)
     }
 }

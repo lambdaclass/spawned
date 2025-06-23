@@ -6,5 +6,4 @@ pub use tokio::{
     runtime::Runtime,
     task::{spawn, spawn_blocking, JoinHandle},
     time::sleep,
-    test,
 };
