@@ -15,14 +15,22 @@ pub fn send_after<T>(
     period: Duration,
     mut handle: GenServerHandle<T>,
     message: T::CastMsg,
-) -> JoinHandle<()>
+) -> TimerHandle
 where
     T: GenServer + 'static,
 {
-    rt::spawn(move || {
+    let cancellation_token = CancellationToken::new();
+    let mut cloned_token = cancellation_token.clone();
+    let join_handle = rt::spawn(move || {
         rt::sleep(period);
-        let _ = handle.cast(message);
-    })
+        if !cloned_token.is_cancelled() {
+            let _ = handle.cast(message);
+        };
+    });
+    TimerHandle {
+        join_handle,
+        cancellation_token,
+    }
 }
 
 // Sends a message to the specified GenServe repeatedly after `Time` milliseconds.
