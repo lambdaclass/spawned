@@ -6,7 +6,10 @@ mod gen_server;
 mod process;
 mod time;
 
+#[cfg(test)]
+mod timer_tests;
+
 pub use error::GenServerError;
 pub use gen_server::{CallResponse, CastResponse, GenServer, GenServerHandle, GenServerInMsg};
 pub use process::{send, Process, ProcessInfo};
-pub use time::send_after;
+pub use time::{send_after, send_interval};
