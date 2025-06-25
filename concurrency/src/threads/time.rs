@@ -41,7 +41,6 @@ pub fn send_interval<T>(
 ) -> TimerHandle
 where
     T: GenServer + 'static,
-    T::CastMsg: Clone,
 {
     let cancellation_token = CancellationToken::new();
     let mut cloned_token = cancellation_token.clone();
