@@ -1,7 +1,6 @@
 //! spawned concurrency
 //! IO threads-based traits and structs to implement concurrent code à-la-Erlang.
 
-mod error;
 mod gen_server;
 mod process;
 mod time;

@@ -1,6 +1,9 @@
 use std::collections::HashMap;
 
-use spawned_concurrency::tasks::{CallResponse, CastResponse, GenServer, GenServerHandle};
+use spawned_concurrency::{
+    messages::Unused,
+    tasks::{CallResponse, GenServer, GenServerHandle},
+};
 
 use crate::messages::{BankError, BankInMessage as InMessage, BankOutMessage as OutMessage};
 
@@ -42,7 +45,7 @@ impl Bank {
 
 impl GenServer for Bank {
     type CallMsg = InMessage;
-    type CastMsg = ();
+    type CastMsg = Unused;
     type OutMsg = MsgResult;
     type Error = BankError;
     type State = BankState;
@@ -116,14 +119,5 @@ impl GenServer for Bank {
             },
             Self::CallMsg::Stop => CallResponse::Stop(Ok(OutMessage::Stopped)),
         }
-    }
-
-    async fn handle_cast(
-        &mut self,
-        _message: Self::CastMsg,
-        _handle: &BankHandle,
-        state: Self::State,
-    ) -> CastResponse<Self> {
-        CastResponse::NoReply(state)
     }
 }
