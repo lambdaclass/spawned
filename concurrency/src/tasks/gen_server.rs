@@ -4,7 +4,7 @@ use futures::future::FutureExt as _;
 use spawned_rt::tasks::{self as rt, mpsc, oneshot};
 use std::{fmt::Debug, future::Future, panic::AssertUnwindSafe};
 
-use super::error::GenServerError;
+use crate::error::GenServerError;
 
 #[derive(Debug)]
 pub struct GenServerHandle<G: GenServer + 'static> {
@@ -93,11 +93,13 @@ pub enum GenServerInMsg<G: GenServer> {
 
 pub enum CallResponse<G: GenServer> {
     Reply(G::State, G::OutMsg),
+    Unused,
     Stop(G::OutMsg),
 }
 
 pub enum CastResponse<G: GenServer> {
     NoReply(G::State),
+    Unused,
     Stop,
 }
 
@@ -181,7 +183,7 @@ where
         handle: &GenServerHandle<Self>,
         rx: &mut mpsc::Receiver<GenServerInMsg<Self>>,
         state: Self::State,
-    ) -> impl std::future::Future<Output = Result<(Self::State, bool), GenServerError>> + Send {
+    ) -> impl Future<Output = Result<(Self::State, bool), GenServerError>> + Send {
         async move {
             let message = rx.recv().await;
 
@@ -200,9 +202,13 @@ where
                                     (true, new_state, Ok(response))
                                 }
                                 CallResponse::Stop(response) => (false, state_clone, Ok(response)),
+                                CallResponse::Unused => {
+                                    tracing::error!("GenServer received unexpected CallMessage");
+                                    (false, state_clone, Err(GenServerError::CallMsgUnused))
+                                }
                             },
                             Err(error) => {
-                                tracing::trace!(
+                                tracing::error!(
                                     "Error in callback, reverting state - Error: '{error:?}'"
                                 );
                                 (true, state_clone, Err(GenServerError::Callback))
@@ -210,7 +216,7 @@ where
                         };
                     // Send response back
                     if sender.send(response).is_err() {
-                        tracing::trace!(
+                        tracing::error!(
                             "GenServer failed to send response back, client must have died"
                         )
                     };
@@ -224,6 +230,10 @@ where
                         Ok(response) => match response {
                             CastResponse::NoReply(new_state) => (true, new_state),
                             CastResponse::Stop => (false, state_clone),
+                            CastResponse::Unused => {
+                                tracing::error!("GenServer received unexpected CastMessage");
+                                (false, state_clone)
+                            }
                         },
                         Err(error) => {
                             tracing::trace!(
@@ -244,17 +254,21 @@ where
 
     fn handle_call(
         &mut self,
-        message: Self::CallMsg,
-        handle: &GenServerHandle<Self>,
-        state: Self::State,
-    ) -> impl std::future::Future<Output = CallResponse<Self>> + Send;
+        _message: Self::CallMsg,
+        _handle: &GenServerHandle<Self>,
+        _state: Self::State,
+    ) -> impl Future<Output = CallResponse<Self>> + Send {
+        async { CallResponse::Unused }
+    }
 
     fn handle_cast(
         &mut self,
-        message: Self::CastMsg,
-        handle: &GenServerHandle<Self>,
-        state: Self::State,
-    ) -> impl std::future::Future<Output = CastResponse<Self>> + Send;
+        _message: Self::CastMsg,
+        _handle: &GenServerHandle<Self>,
+        _state: Self::State,
+    ) -> impl Future<Output = CastResponse<Self>> + Send {
+        async { CastResponse::Unused }
+    }
 }
 
 #[cfg(test)]

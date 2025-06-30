@@ -6,7 +6,7 @@ use std::{
     panic::{catch_unwind, AssertUnwindSafe},
 };
 
-use super::error::GenServerError;
+use crate::error::GenServerError;
 
 #[derive(Debug)]
 pub struct GenServerHandle<G: GenServer + 'static> {
@@ -71,11 +71,13 @@ pub enum GenServerInMsg<G: GenServer> {
 
 pub enum CallResponse<G: GenServer> {
     Reply(G::State, G::OutMsg),
+    Unused,
     Stop(G::OutMsg),
 }
 
 pub enum CastResponse<G: GenServer> {
     NoReply(G::State),
+    Unused,
     Stop,
 }
 
@@ -169,6 +171,10 @@ where
                                 (true, new_state, Ok(response))
                             }
                             CallResponse::Stop(response) => (false, state_clone, Ok(response)),
+                            CallResponse::Unused => {
+                                tracing::error!("GenServer received unexpected CallMessage");
+                                (false, state_clone, Err(GenServerError::CallMsgUnused))
+                            }
                         },
                         Err(error) => {
                             tracing::trace!(
@@ -190,6 +196,10 @@ where
                     Ok(response) => match response {
                         CastResponse::NoReply(new_state) => (true, new_state),
                         CastResponse::Stop => (false, state_clone),
+                        CastResponse::Unused => {
+                            tracing::error!("GenServer received unexpected CastMessage");
+                            (false, state_clone)
+                        }
                     },
                     Err(error) => {
                         tracing::trace!("Error in callback, reverting state - Error: '{error:?}'");
@@ -207,15 +217,19 @@ where
 
     fn handle_call(
         &mut self,
-        message: Self::CallMsg,
-        handle: &GenServerHandle<Self>,
-        state: Self::State,
-    ) -> CallResponse<Self>;
+        _message: Self::CallMsg,
+        _handle: &GenServerHandle<Self>,
+        _state: Self::State,
+    ) -> CallResponse<Self> {
+        CallResponse::Unused
+    }
 
     fn handle_cast(
         &mut self,
-        message: Self::CastMsg,
-        handle: &GenServerHandle<Self>,
-        state: Self::State,
-    ) -> CastResponse<Self>;
+        _message: Self::CastMsg,
+        _handle: &GenServerHandle<Self>,
+        _state: Self::State,
+    ) -> CastResponse<Self> {
+        CastResponse::Unused
+    }
 }

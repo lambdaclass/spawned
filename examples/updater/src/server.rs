@@ -1,7 +1,8 @@
 use std::time::Duration;
 
-use spawned_concurrency::tasks::{
-    send_interval, CallResponse, CastResponse, GenServer, GenServerHandle,
+use spawned_concurrency::{
+    messages::Unused,
+    tasks::{send_interval, CastResponse, GenServer, GenServerHandle},
 };
 use spawned_rt::tasks::CancellationToken;
 
@@ -18,7 +19,7 @@ pub struct UpdateServerState {
 pub struct UpdaterServer {}
 
 impl GenServer for UpdaterServer {
-    type CallMsg = ();
+    type CallMsg = Unused;
     type CastMsg = InMessage;
     type OutMsg = OutMessage;
     type Error = std::fmt::Error;
@@ -37,15 +38,6 @@ impl GenServer for UpdaterServer {
         let timer = send_interval(state.periodicity, handle.clone(), InMessage::Check);
         state.timer_token = Some(timer.cancellation_token);
         Ok(state)
-    }
-
-    async fn handle_call(
-        &mut self,
-        _message: Self::CallMsg,
-        _handle: &UpdateServerHandle,
-        state: Self::State,
-    ) -> CallResponse<Self> {
-        CallResponse::Reply(state, OutMessage::Ok)
     }
 
     async fn handle_cast(

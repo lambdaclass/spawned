@@ -1,6 +1,9 @@
 use std::collections::HashMap;
 
-use spawned_concurrency::tasks::{CallResponse, CastResponse, GenServer, GenServerHandle};
+use spawned_concurrency::{
+    messages::Unused,
+    tasks::{CallResponse, GenServer, GenServerHandle},
+};
 
 use crate::messages::{NameServerInMessage as InMessage, NameServerOutMessage as OutMessage};
 
@@ -27,7 +30,7 @@ impl NameServer {
 
 impl GenServer for NameServer {
     type CallMsg = InMessage;
-    type CastMsg = ();
+    type CastMsg = Unused;
     type OutMsg = OutMessage;
     type Error = std::fmt::Error;
     type State = NameServerState;
@@ -55,14 +58,5 @@ impl GenServer for NameServer {
                 None => CallResponse::Reply(state, Self::OutMsg::NotFound),
             },
         }
-    }
-
-    async fn handle_cast(
-        &mut self,
-        _message: Self::CastMsg,
-        _handle: &NameServerHandle,
-        state: Self::State,
-    ) -> CastResponse<Self> {
-        CastResponse::NoReply(state)
     }
 }
