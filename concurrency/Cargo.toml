@@ -8,5 +8,8 @@ spawned-rt = { workspace = true }
 tracing = { workspace = true }
 futures = "0.3.1"
 
+[dev-dependencies]
+tokio-stream = { version = "0.1.17" }
+
 [lib]
 path = "./src/lib.rs"
