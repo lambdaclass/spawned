@@ -1,11 +1,9 @@
 use std::time::Duration;
 
-use spawned_rt::tasks::{self as rt};
+use spawned_rt::tasks::{self as rt, BroadcastStream, ReceiverStream, UnboundedReceiverStream};
 
 use crate::tasks::{
-    broadcast_receiver_to_stream, receiver_to_stream, spawn_listener,
-    stream::spawn_broadcast_listener, unbounded_receiver_to_stream, CallResponse, CastResponse,
-    GenServer, GenServerHandle,
+    stream::spawn_listener, CallResponse, CastResponse, GenServer, GenServerHandle,
 };
 
 type SummatoryHandle = GenServerHandle<Summatory>;
@@ -65,7 +63,7 @@ pub fn test_sum_numbers_from_stream() {
     let runtime = rt::Runtime::new().unwrap();
     runtime.block_on(async move {
         let mut summatory_handle = Summatory::start(0);
-        let stream = tokio_stream::iter(vec![1u8, 2, 3, 4, 5].into_iter().map(Ok));
+        let stream = tokio_stream::iter(vec![1u8, 2, 3, 4, 5].into_iter().map(Ok::<u8, ()>));
 
         spawn_listener(summatory_handle.clone(), message_builder, stream);
 
@@ -82,7 +80,7 @@ pub fn test_sum_numbers_from_channel() {
     let runtime = rt::Runtime::new().unwrap();
     runtime.block_on(async move {
         let mut summatory_handle = Summatory::start(0);
-        let (tx, rx) = spawned_rt::tasks::mpsc::channel(5);
+        let (tx, rx) = spawned_rt::tasks::mpsc::channel::<Result<u8, ()>>(5);
 
         // Spawn a task to send numbers to the channel
         spawned_rt::tasks::spawn(async move {
@@ -94,7 +92,7 @@ pub fn test_sum_numbers_from_channel() {
         spawn_listener(
             summatory_handle.clone(),
             message_builder,
-            receiver_to_stream(rx),
+            ReceiverStream::new(rx),
         );
 
         // Wait for 1 second so the whole stream is processed
@@ -110,7 +108,7 @@ pub fn test_sum_numbers_from_unbounded_channel() {
     let runtime = rt::Runtime::new().unwrap();
     runtime.block_on(async move {
         let mut summatory_handle = Summatory::start(0);
-        let (tx, rx) = spawned_rt::tasks::mpsc::unbounded_channel();
+        let (tx, rx) = spawned_rt::tasks::mpsc::unbounded_channel::<Result<u8, ()>>();
 
         // Spawn a task to send numbers to the channel
         spawned_rt::tasks::spawn(async move {
@@ -122,7 +120,7 @@ pub fn test_sum_numbers_from_unbounded_channel() {
         spawn_listener(
             summatory_handle.clone(),
             message_builder,
-            unbounded_receiver_to_stream(rx),
+            UnboundedReceiverStream::new(rx),
         );
 
         // Wait for 1 second so the whole stream is processed
@@ -147,8 +145,11 @@ pub fn test_sum_numbers_from_broadcast_channel() {
             }
         });
 
-        let stream = broadcast_receiver_to_stream(rx);
-        spawn_broadcast_listener(summatory_handle.clone(), message_builder, stream);
+        spawn_listener(
+            summatory_handle.clone(),
+            message_builder,
+            BroadcastStream::new(rx),
+        );
 
         // Wait for 1 second so the whole stream is processed
         rt::sleep(Duration::from_secs(1)).await;
