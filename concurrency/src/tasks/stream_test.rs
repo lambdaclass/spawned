@@ -143,7 +143,7 @@ pub fn test_sum_numbers_from_broadcast_channel() {
         // Spawn a task to send numbers to the channel
         spawned_rt::tasks::spawn(async move {
             for i in 1u8..=5 {
-                tx.send(Ok(i)).unwrap();
+                tx.send(i).unwrap();
             }
         });
 

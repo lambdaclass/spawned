@@ -72,25 +72,20 @@ pub fn spawn_broadcast_listener<T, F, S, I>(
     T: GenServer + 'static,
     F: Fn(I) -> T::CastMsg + Send + 'static,
     I: Send,
-    S: Unpin
-        + Send
-        + Stream<Item = Result<Result<I, T::Error>, BroadcastStreamRecvError>>
-        + 'static,
+    S: Unpin + Send + Stream<Item = Result<I, BroadcastStreamRecvError>> + 'static,
 {
     spawned_rt::tasks::spawn(async move {
         loop {
             match stream.next().await {
-                Some(Ok(Ok(item))) => {
-                    let _ = handle.cast(message_builder(item)).await;
-                }
-                Some(Ok(Err(e))) => {
-                    tracing::trace!("Received Error in msg {e:?}");
-                    break;
-                }
-                Some(Err(e)) => {
-                    tracing::trace!("Received Error in msg {e:?}");
-                    break;
-                }
+                Some(item) => match item {
+                    Ok(i) => {
+                        let _ = handle.cast(message_builder(i)).await;
+                    }
+                    Err(e) => {
+                        tracing::trace!("Received Error in msg {e:?}");
+                        break;
+                    }
+                },
                 None => {
                     tracing::trace!("Stream finnished");
                     break;
