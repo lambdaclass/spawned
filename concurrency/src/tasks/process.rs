@@ -6,12 +6,12 @@ use std::future::Future;
 
 #[derive(Debug)]
 pub struct ProcessInfo<T> {
-    pub tx: mpsc::Sender<T>,
+    pub tx: mpsc::UnboundedSender<T>,
     pub handle: JoinHandle<()>,
 }
 
 impl<T> ProcessInfo<T> {
-    pub fn sender(&self) -> mpsc::Sender<T> {
+    pub fn sender(&self) -> mpsc::UnboundedSender<T> {
         self.tx.clone()
     }
 
@@ -26,7 +26,7 @@ where
 {
     fn spawn(mut self) -> impl Future<Output = ProcessInfo<T>> + Send {
         async {
-            let (tx, mut rx) = mpsc::channel::<T>();
+            let (tx, mut rx) = mpsc::unbounded_channel::<T>();
             let tx_clone = tx.clone();
             let handle = rt::spawn(async move {
                 self.run(&tx_clone, &mut rx).await;
@@ -37,8 +37,8 @@ where
 
     fn run(
         &mut self,
-        tx: &mpsc::Sender<T>,
-        rx: &mut mpsc::Receiver<T>,
+        tx: &mpsc::UnboundedSender<T>,
+        rx: &mut mpsc::UnboundedReceiver<T>,
     ) -> impl Future<Output = ()> + Send {
         async {
             self.init(tx).await;
@@ -48,8 +48,8 @@ where
 
     fn main_loop(
         &mut self,
-        tx: &mpsc::Sender<T>,
-        rx: &mut mpsc::Receiver<T>,
+        tx: &mpsc::UnboundedSender<T>,
+        rx: &mut mpsc::UnboundedReceiver<T>,
     ) -> impl Future<Output = ()> + Send {
         async {
             loop {
@@ -66,14 +66,14 @@ where
         false
     }
 
-    fn init(&mut self, _tx: &mpsc::Sender<T>) -> impl Future<Output = ()> + Send {
+    fn init(&mut self, _tx: &mpsc::UnboundedSender<T>) -> impl Future<Output = ()> + Send {
         async {}
     }
 
     fn receive(
         &mut self,
-        tx: &mpsc::Sender<T>,
-        rx: &mut mpsc::Receiver<T>,
+        tx: &mpsc::UnboundedSender<T>,
+        rx: &mut mpsc::UnboundedReceiver<T>,
     ) -> impl std::future::Future<Output = T> + Send {
         async {
             match rx.recv().await {
@@ -83,10 +83,14 @@ where
         }
     }
 
-    fn handle(&mut self, message: T, tx: &mpsc::Sender<T>) -> impl Future<Output = T> + Send;
+    fn handle(
+        &mut self,
+        message: T,
+        tx: &mpsc::UnboundedSender<T>,
+    ) -> impl Future<Output = T> + Send;
 }
 
-pub fn send<T>(tx: &mpsc::Sender<T>, message: T)
+pub fn send<T>(tx: &mpsc::UnboundedSender<T>, message: T)
 where
     T: Send,
 {

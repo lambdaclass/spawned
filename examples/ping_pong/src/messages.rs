@@ -1,7 +1,7 @@
-use spawned_rt::tasks::mpsc::Sender;
+use spawned_rt::tasks::mpsc::UnboundedSender;
 
 #[derive(Debug, Clone)]
 pub enum Message {
-    Ping { from: Sender<Message> },
+    Ping { from: UnboundedSender<Message> },
     Pong,
 }
