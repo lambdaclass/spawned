@@ -1,11 +1,19 @@
 use futures::{Stream, StreamExt};
+use spawned_rt::tasks::{mpsc::Receiver, UnboundedReceiverStream};
 
 use crate::tasks::{GenServer, GenServerHandle};
 
-pub fn spawn_listener<T, F, S, I>(
-    mut handle: GenServerHandle<T>,
-    message_builder: F,
-    mut stream: S)
+/// Converts an unbounded receiver into a stream that can be used with async tasks
+/// This function is useful for integrating with the `spawn_listener` function
+pub fn unbounded_receiver_to_stream<T>(receiver: Receiver<T>) -> UnboundedReceiverStream<T>
+where
+    T: 'static + Clone + Send,
+{
+    UnboundedReceiverStream::new(receiver)
+}
+
+/// Spawns a listener that listens to a stream and sends messages to a GenServer
+pub fn spawn_listener<T, F, S, I>(mut handle: GenServerHandle<T>, message_builder: F, mut stream: S)
 where
     T: GenServer + 'static,
     F: Fn(I) -> T::CastMsg + Send + 'static,
@@ -25,7 +33,7 @@ where
                 None => {
                     tracing::trace!("Stream finnished");
                     break;
-                },
+                }
             }
         }
     });
