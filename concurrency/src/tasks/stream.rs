@@ -1,7 +1,8 @@
 use crate::tasks::{GenServer, GenServerHandle};
 use futures::{Stream, StreamExt};
 
-/// Spawns a listener that listens to a stream and sends messages to a GenServer
+/// Spawns a listener that listens to a stream and sends messages to a GenServer.
+///
 /// Items sent through the stream are required to be wrapped in a Result type.
 pub fn spawn_listener<T, F, S, I, E>(
     mut handle: GenServerHandle<T>,
