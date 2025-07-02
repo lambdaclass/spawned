@@ -7,5 +7,7 @@ pub use tokio::{
     task::{spawn, spawn_blocking, JoinHandle},
     time::sleep,
 };
-pub use tokio_stream::wrappers::{BroadcastStream, ReceiverStream, UnboundedReceiverStream};
+pub use tokio_stream::wrappers::{
+    errors::BroadcastStreamRecvError, BroadcastStream, ReceiverStream, UnboundedReceiverStream,
+};
 pub use tokio_util::sync::CancellationToken;

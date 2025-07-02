@@ -3,7 +3,8 @@ use std::time::Duration;
 use spawned_rt::tasks::{self as rt};
 
 use crate::tasks::{
-    receiver_to_stream, spawn_listener, unbounded_receiver_to_stream, CallResponse, CastResponse,
+    broadcast_receiver_to_stream, receiver_to_stream, spawn_listener,
+    stream::spawn_broadcast_listener, unbounded_receiver_to_stream, CallResponse, CastResponse,
     GenServer, GenServerHandle,
 };
 
@@ -123,6 +124,31 @@ pub fn test_sum_numbers_from_unbounded_channel() {
             message_builder,
             unbounded_receiver_to_stream(rx),
         );
+
+        // Wait for 1 second so the whole stream is processed
+        rt::sleep(Duration::from_secs(1)).await;
+
+        let val = Summatory::get_value(&mut summatory_handle).await.unwrap();
+        assert_eq!(val, 15);
+    })
+}
+
+#[test]
+pub fn test_sum_numbers_from_broadcast_channel() {
+    let runtime = rt::Runtime::new().unwrap();
+    runtime.block_on(async move {
+        let mut summatory_handle = Summatory::start(0);
+        let (tx, rx) = spawned_rt::tasks::mpsc::broadcast_channel(5);
+
+        // Spawn a task to send numbers to the channel
+        spawned_rt::tasks::spawn(async move {
+            for i in 1u8..=5 {
+                tx.send(Ok(i)).unwrap();
+            }
+        });
+
+        let stream = broadcast_receiver_to_stream(rx);
+        spawn_broadcast_listener(summatory_handle.clone(), message_builder, stream);
 
         // Wait for 1 second so the whole stream is processed
         rt::sleep(Duration::from_secs(1)).await;
