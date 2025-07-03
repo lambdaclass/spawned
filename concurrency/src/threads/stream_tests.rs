@@ -60,21 +60,7 @@ fn message_builder(value: u8) -> SummatoryCastMessage {
 }
 
 #[test]
-pub fn test_sum_numbers_from_iter() {
-    let mut summatory_handle = Summatory::start(0);
-    let stream = vec![1u8, 2, 3, 4, 5].into_iter().map(Ok::<u8, ()>);
-
-    spawn_listener_from_iter(summatory_handle.clone(), message_builder, stream);
-
-    // Wait for the stream to finish processing
-    rt::sleep(Duration::from_secs(1));
-
-    let val = Summatory::get_value(&mut summatory_handle).unwrap();
-    assert_eq!(val, 15);
-}
-
-#[test]
-pub fn test_sum_numbers_from_async_stream() {
+pub fn test_sum_numbers_from_stream() {
     // In this example we are converting an async stream into a synchronous one
     // Does this make sense in a real-world scenario?
     let mut summatory_handle = Summatory::start(0);
@@ -92,7 +78,7 @@ pub fn test_sum_numbers_from_async_stream() {
 #[test]
 pub fn test_sum_numbers_from_channel() {
     let mut summatory_handle = Summatory::start(0);
-    let (tx, rx) = rt::mpsc::channel::<Result<u8, ()>>();
+    let (tx, rx) = rt::mpsc::channel::<Result<u8, ()>>(5);
 
     rt::spawn(move || {
         for i in 1..=5 {
@@ -103,6 +89,40 @@ pub fn test_sum_numbers_from_channel() {
     spawn_listener_from_iter(summatory_handle.clone(), message_builder, rx.into_iter());
 
     // Wait for 1 second so the whole stream is processed
+    rt::sleep(Duration::from_secs(1));
+
+    let val = Summatory::get_value(&mut summatory_handle).unwrap();
+    assert_eq!(val, 15);
+}
+
+#[test]
+pub fn test_sum_numbers_from_unbounded_channel() {
+    let mut summatory_handle = Summatory::start(0);
+    let (tx, rx) = rt::mpsc::unbounded_channel::<Result<u8, ()>>();
+
+    rt::spawn(move || {
+        for i in 1..=5 {
+            tx.send(Ok(i)).unwrap();
+        }
+    });
+
+    spawn_listener_from_iter(summatory_handle.clone(), message_builder, rx.into_iter());
+
+    // Wait for 1 second so the whole stream is processed
+    rt::sleep(Duration::from_secs(1));
+
+    let val = Summatory::get_value(&mut summatory_handle).unwrap();
+    assert_eq!(val, 15);
+}
+
+#[test]
+pub fn test_sum_numbers_from_iter() {
+    let mut summatory_handle = Summatory::start(0);
+    let stream = vec![1u8, 2, 3, 4, 5].into_iter().map(Ok::<u8, ()>);
+
+    spawn_listener_from_iter(summatory_handle.clone(), message_builder, stream);
+
+    // Wait for the stream to finish processing
     rt::sleep(Duration::from_secs(1));
 
     let val = Summatory::get_value(&mut summatory_handle).unwrap();

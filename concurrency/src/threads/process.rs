@@ -24,7 +24,7 @@ where
     Self: Send + Sync + Sized + 'static,
 {
     fn spawn(mut self) -> ProcessInfo<T> {
-        let (tx, mut rx) = mpsc::channel::<T>();
+        let (tx, mut rx) = mpsc::unbounded_channel::<T>();
         let tx_clone = tx.clone();
         let handle = rt::spawn(move || self.run(&tx_clone, &mut rx));
         ProcessInfo { tx, handle }
