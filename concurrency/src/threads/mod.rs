@@ -13,5 +13,5 @@ mod timer_tests;
 
 pub use gen_server::{CallResponse, CastResponse, GenServer, GenServerHandle, GenServerInMsg};
 pub use process::{send, Process, ProcessInfo};
-pub use stream::{spawn_listener, stream_to_iter};
+pub use stream::{spawn_listener, spawn_listener_from_iter};
 pub use time::{send_after, send_interval};
