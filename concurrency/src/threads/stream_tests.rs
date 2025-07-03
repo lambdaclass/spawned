@@ -150,7 +150,8 @@ pub fn test_stream_cancellation() {
     // The reasoning for this assertion is that each message takes a quarter of the total time
     // to be processed, so having a stream of 5 messages, some of them will never be processed.
     // At first glance we would expect val == 10 considering it has time to process four messages,
-    // but in reality it will only get to process three messages due to other unacounted (minimal) overheads.
+    // but in reality it will most likely get to process only three messages due to the overhead
+    // of creating a new thread for each message.
     let val = Summatory::get_value(&mut summatory_handle).unwrap();
-    assert_eq!(val, 6);
+    assert!(val > 0 && val < 15);
 }

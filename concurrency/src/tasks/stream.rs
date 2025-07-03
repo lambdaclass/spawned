@@ -1,5 +1,6 @@
 use crate::tasks::{GenServer, GenServerHandle};
 use futures::{Stream, StreamExt};
+use spawned_rt::tasks::{CancellationToken, JoinHandle};
 
 /// Spawns a listener that listens to a stream and sends messages to a GenServer.
 ///
@@ -8,15 +9,23 @@ pub fn spawn_listener<T, F, S, I, E>(
     mut handle: GenServerHandle<T>,
     message_builder: F,
     mut stream: S,
-) where
+) -> (JoinHandle<()>, CancellationToken)
+where
     T: GenServer + 'static,
     F: Fn(I) -> T::CastMsg + Send + 'static,
     I: Send,
     E: std::fmt::Debug + Send,
     S: Unpin + Send + Stream<Item = Result<I, E>> + 'static,
 {
-    spawned_rt::tasks::spawn(async move {
+    let cancelation_token = CancellationToken::new();
+    let cloned_token = cancelation_token.clone();
+    let join_handle = spawned_rt::tasks::spawn(async move {
         loop {
+            if cloned_token.is_cancelled() {
+                tracing::trace!("Received signal to stop listener, stopping");
+                break;
+            }
+
             match stream.next().await {
                 Some(res) => match res {
                     Ok(i) => {
@@ -34,4 +43,5 @@ pub fn spawn_listener<T, F, S, I, E>(
             }
         }
     });
+    (join_handle, cancelation_token)
 }

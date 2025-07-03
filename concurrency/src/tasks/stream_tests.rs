@@ -158,3 +158,40 @@ pub fn test_sum_numbers_from_broadcast_channel() {
         assert_eq!(val, 15);
     })
 }
+
+#[test]
+pub fn test_stream_cancellation() {
+    const RUNNING_TIME: u64 = 1000;
+
+    let runtime = rt::Runtime::new().unwrap();
+    runtime.block_on(async move {
+        let mut summatory_handle = Summatory::start(0);
+        let (tx, rx) = spawned_rt::tasks::mpsc::channel::<Result<u8, ()>>(5);
+
+        // Spawn a task to send numbers to the channel
+        spawned_rt::tasks::spawn(async move {
+            for i in 1..=5 {
+                tx.send(Ok(i)).await.unwrap();
+                rt::sleep(Duration::from_millis(RUNNING_TIME / 4)).await;
+            }
+        });
+
+        let (_handle, cancellation_token) = spawn_listener(
+            summatory_handle.clone(),
+            message_builder,
+            ReceiverStream::new(rx),
+        );
+
+        // Wait for 1 second so the whole stream is processed
+        rt::sleep(Duration::from_millis(RUNNING_TIME)).await;
+
+        cancellation_token.cancel();
+
+        // The reasoning for this assertion is that each message takes a quarter of the total time
+        // to be processed, so having a stream of 5 messages, the last one won't be processed.
+        // We could safely assume that it will get to process 4 messages, but in case of any extenal
+        // slowdown, it could process less.
+        let val = Summatory::get_value(&mut summatory_handle).await.unwrap();
+        assert!(val > 0 && val < 15);
+    })
+}
