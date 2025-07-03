@@ -1,4 +1,4 @@
-use std::{time::Duration, u8};
+use std::time::Duration;
 
 use crate::threads::{
     stream::{spawn_listener, spawn_listener_from_iter},

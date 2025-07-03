@@ -5,6 +5,9 @@ use spawned_rt::tasks::{CancellationToken, JoinHandle};
 /// Spawns a listener that listens to a stream and sends messages to a GenServer.
 ///
 /// Items sent through the stream are required to be wrapped in a Result type.
+///
+/// This function returns a handle to the spawned task and a cancellation token
+/// to stop it.
 pub fn spawn_listener<T, F, S, I, E>(
     mut handle: GenServerHandle<T>,
     message_builder: F,

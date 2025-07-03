@@ -8,6 +8,9 @@ use std::iter;
 /// Spawns a listener that iterates over an iterable and sends messages to a GenServer.
 ///
 /// Items sent through the iterator are required to be wrapped in a Result type.
+///
+/// This function returns a handle to the spawned task and a cancellation token
+/// to stop it.
 pub fn spawn_listener_from_iter<T, F, S, I, E>(
     mut handle: GenServerHandle<T>,
     message_builder: F,
