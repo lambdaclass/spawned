@@ -7,7 +7,7 @@ mod stream;
 mod time;
 
 #[cfg(test)]
-mod stream_test;
+mod stream_tests;
 #[cfg(test)]
 mod timer_tests;
 
