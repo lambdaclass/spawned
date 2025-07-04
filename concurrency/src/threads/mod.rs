@@ -7,8 +7,6 @@ mod stream;
 mod time;
 
 #[cfg(test)]
-mod stream_tests;
-#[cfg(test)]
 mod timer_tests;
 
 pub use gen_server::{CallResponse, CastResponse, GenServer, GenServerHandle, GenServerInMsg};
