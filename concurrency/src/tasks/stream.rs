@@ -1,5 +1,5 @@
 use crate::tasks::{GenServer, GenServerHandle};
-use futures::{Stream, StreamExt};
+use futures::{future::select, Stream, StreamExt};
 use spawned_rt::tasks::{CancellationToken, JoinHandle};
 
 /// Spawns a listener that listens to a stream and sends messages to a GenServer.
@@ -15,7 +15,7 @@ pub fn spawn_listener<T, F, S, I, E>(
 ) -> (JoinHandle<()>, CancellationToken)
 where
     T: GenServer + 'static,
-    F: Fn(I) -> T::CastMsg + Send + 'static,
+    F: Fn(I) -> T::CastMsg + Send + 'static + std::marker::Sync,
     I: Send,
     E: std::fmt::Debug + Send,
     S: Unpin + Send + Stream<Item = Result<I, E>> + 'static,
@@ -23,27 +23,34 @@ where
     let cancelation_token = CancellationToken::new();
     let cloned_token = cancelation_token.clone();
     let join_handle = spawned_rt::tasks::spawn(async move {
-        loop {
-            if cloned_token.is_cancelled() {
-                tracing::trace!("Received signal to stop listener, stopping");
-                break;
-            }
-
-            match stream.next().await {
-                Some(res) => match res {
-                    Ok(i) => {
-                        let _ = handle.cast(message_builder(i)).await;
+        let result = select(
+            Box::pin(cloned_token.cancelled()),
+            Box::pin(async {
+                loop {
+                    match stream.next().await {
+                        Some(Ok(i)) => match handle.cast(message_builder(i)).await {
+                            Ok(_) => tracing::trace!("Message sent successfully"),
+                            Err(e) => {
+                                tracing::error!("Failed to send message: {e:?}");
+                                break;
+                            }
+                        },
+                        Some(Err(e)) => {
+                            tracing::trace!("Received Error in msg {e:?}");
+                            break;
+                        }
+                        None => {
+                            tracing::trace!("Stream finished");
+                            break;
+                        }
                     }
-                    Err(e) => {
-                        tracing::trace!("Received Error in msg {e:?}");
-                        break;
-                    }
-                },
-                None => {
-                    tracing::trace!("Stream finished");
-                    break;
                 }
-            }
+            }),
+        )
+        .await;
+        match result {
+            futures::future::Either::Left(_) => tracing::trace!("Listener cancelled"),
+            futures::future::Either::Right(_) => (), // Stream finished or errored out
         }
     });
     (join_handle, cancelation_token)
