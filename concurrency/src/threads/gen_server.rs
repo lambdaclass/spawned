@@ -1,6 +1,6 @@
 //! GenServer trait and structs to create an abstraction similar to Erlang gen_server.
 //! See examples/name_server for a usage example.
-use spawned_rt::threads::{self as rt, mpsc, oneshot, CancellationToken};
+use spawned_rt::threads::{self as rt, mpsc, oneshot};
 use std::{
     fmt::Debug,
     panic::{catch_unwind, AssertUnwindSafe},
@@ -10,15 +10,12 @@ use crate::error::GenServerError;
 
 pub struct GenServerHandle<G: GenServer + 'static> {
     pub tx: mpsc::Sender<GenServerInMsg<G>>,
-    /// Cancellation token to stop the GenServer
-    cancellation_token: CancellationToken,
 }
 
 impl<G: GenServer> Clone for GenServerHandle<G> {
     fn clone(&self) -> Self {
         Self {
             tx: self.tx.clone(),
-            cancellation_token: self.cancellation_token.clone(),
         }
     }
 }
@@ -26,11 +23,7 @@ impl<G: GenServer> Clone for GenServerHandle<G> {
 impl<G: GenServer> GenServerHandle<G> {
     pub(crate) fn new(initial_state: G::State) -> Self {
         let (tx, mut rx) = mpsc::channel::<GenServerInMsg<G>>();
-        let cancellation_token = CancellationToken::new();
-        let handle = GenServerHandle {
-            tx,
-            cancellation_token,
-        };
+        let handle = GenServerHandle { tx };
         let mut gen_server: G = GenServer::new();
         let handle_clone = handle.clone();
         // Ignore the JoinHandle for now. Maybe we'll use it in the future
@@ -62,14 +55,6 @@ impl<G: GenServer> GenServerHandle<G> {
         self.tx
             .send(GenServerInMsg::Cast { message })
             .map_err(|_error| GenServerError::Server)
-    }
-
-    pub fn cancellation_token(&self) -> CancellationToken {
-        self.cancellation_token.clone()
-    }
-
-    pub fn stop(&mut self) {
-        self.cancellation_token.cancel();
     }
 }
 

@@ -1,4 +1,5 @@
 use crate::threads::{GenServer, GenServerHandle};
+
 use futures::Stream;
 
 /// Spawns a listener that listens to a stream and sends messages to a GenServer.
