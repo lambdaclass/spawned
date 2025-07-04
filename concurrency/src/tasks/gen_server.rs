@@ -7,7 +7,7 @@ use std::{fmt::Debug, future::Future, panic::AssertUnwindSafe};
 use crate::error::GenServerError;
 
 pub struct GenServerHandle<G: GenServer + 'static> {
-    pub tx: mpsc::UnboundedSender<GenServerInMsg<G>>,
+    pub tx: mpsc::Sender<GenServerInMsg<G>>,
     /// Cancellation token to stop the GenServer
     cancellation_token: CancellationToken,
 }
@@ -23,7 +23,7 @@ impl<G: GenServer> Clone for GenServerHandle<G> {
 
 impl<G: GenServer> GenServerHandle<G> {
     pub(crate) fn new(initial_state: G::State) -> Self {
-        let (tx, mut rx) = mpsc::unbounded_channel::<GenServerInMsg<G>>();
+        let (tx, mut rx) = mpsc::channel::<GenServerInMsg<G>>();
         let cancellation_token = CancellationToken::new();
         let handle = GenServerHandle {
             tx,
@@ -45,7 +45,7 @@ impl<G: GenServer> GenServerHandle<G> {
     }
 
     pub(crate) fn new_blocking(initial_state: G::State) -> Self {
-        let (tx, mut rx) = mpsc::unbounded_channel::<GenServerInMsg<G>>();
+        let (tx, mut rx) = mpsc::channel::<GenServerInMsg<G>>();
         let cancellation_token = CancellationToken::new();
         let handle = GenServerHandle {
             tx,
@@ -68,7 +68,7 @@ impl<G: GenServer> GenServerHandle<G> {
         handle_clone
     }
 
-    pub fn sender(&self) -> mpsc::UnboundedSender<GenServerInMsg<G>> {
+    pub fn sender(&self) -> mpsc::Sender<GenServerInMsg<G>> {
         self.tx.clone()
     }
 
@@ -149,7 +149,7 @@ where
     fn run(
         &mut self,
         handle: &GenServerHandle<Self>,
-        rx: &mut mpsc::UnboundedReceiver<GenServerInMsg<Self>>,
+        rx: &mut mpsc::Receiver<GenServerInMsg<Self>>,
         state: Self::State,
     ) -> impl Future<Output = Result<(), GenServerError>> + Send {
         async {
@@ -180,7 +180,7 @@ where
     fn main_loop(
         &mut self,
         handle: &GenServerHandle<Self>,
-        rx: &mut mpsc::UnboundedReceiver<GenServerInMsg<Self>>,
+        rx: &mut mpsc::Receiver<GenServerInMsg<Self>>,
         mut state: Self::State,
     ) -> impl Future<Output = Result<(), GenServerError>> + Send {
         async {
@@ -199,7 +199,7 @@ where
     fn receive(
         &mut self,
         handle: &GenServerHandle<Self>,
-        rx: &mut mpsc::UnboundedReceiver<GenServerInMsg<Self>>,
+        rx: &mut mpsc::Receiver<GenServerInMsg<Self>>,
         state: Self::State,
     ) -> impl Future<Output = Result<(Self::State, bool), GenServerError>> + Send {
         async move {

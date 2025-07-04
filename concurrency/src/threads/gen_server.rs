@@ -25,7 +25,7 @@ impl<G: GenServer> Clone for GenServerHandle<G> {
 
 impl<G: GenServer> GenServerHandle<G> {
     pub(crate) fn new(initial_state: G::State) -> Self {
-        let (tx, mut rx) = mpsc::unbounded_channel::<GenServerInMsg<G>>();
+        let (tx, mut rx) = mpsc::channel::<GenServerInMsg<G>>();
         let cancellation_token = CancellationToken::new();
         let handle = GenServerHandle {
             tx,

@@ -1,5 +1,5 @@
 use spawned_concurrency::tasks::{self as concurrency, Process, ProcessInfo};
-use spawned_rt::tasks::mpsc::UnboundedSender;
+use spawned_rt::tasks::mpsc::Sender;
 
 use crate::messages::Message;
 
@@ -12,7 +12,7 @@ impl Consumer {
 }
 
 impl Process<Message> for Consumer {
-    async fn handle(&mut self, message: Message, _tx: &UnboundedSender<Message>) -> Message {
+    async fn handle(&mut self, message: Message, _tx: &Sender<Message>) -> Message {
         tracing::info!("Consumer received {message:?}");
         match message.clone() {
             Message::Ping { from } => {
