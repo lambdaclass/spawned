@@ -46,7 +46,6 @@ where
     let mut cloned_token = cancellation_token.clone();
     let join_handle = rt::spawn(move || loop {
         rt::sleep(period);
-        // Timer action is ignored if it was either cancelled or the associated GenServer is no longer running.
         if cloned_token.is_cancelled() {
             break;
         } else {

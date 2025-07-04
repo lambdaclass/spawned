@@ -8,6 +8,7 @@ use std::{
 
 use crate::error::GenServerError;
 
+#[derive(Debug)]
 pub struct GenServerHandle<G: GenServer + 'static> {
     pub tx: mpsc::Sender<GenServerInMsg<G>>,
 }
