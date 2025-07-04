@@ -246,3 +246,47 @@ pub fn test_send_after_and_cancellation() {
         assert_eq!(DelayedOutMessage::Count(1), count2);
     });
 }
+
+#[test]
+pub fn test_send_after_gen_server_stop() {
+    let runtime = rt::Runtime::new().unwrap();
+    runtime.block_on(async move {
+        // Start a Delayed
+        let mut repeater = Delayed::start(DelayedState { count: 0 });
+
+        // Set a just once timed message
+        let _ = send_after(
+            Duration::from_millis(100),
+            repeater.clone(),
+            DelayedCastMessage::Inc,
+        );
+
+        // Wait for 200 milliseconds
+        rt::sleep(Duration::from_millis(200)).await;
+
+        // Check count
+        let count = Delayed::get_count(&mut repeater).await.unwrap();
+
+        // Only one message (no repetition)
+        assert_eq!(DelayedOutMessage::Count(1), count);
+
+        // New timer
+        let _ = send_after(
+            Duration::from_millis(100),
+            repeater.clone(),
+            DelayedCastMessage::Inc,
+        );
+
+        // Cancel the new timer before timeout
+        repeater.stop();
+
+        // Wait another 200 milliseconds
+        rt::sleep(Duration::from_millis(200)).await;
+
+        // Check count again
+        let count2 = Delayed::get_count(&mut repeater).await.unwrap();
+
+        // As timer was cancelled, count should remain at 1
+        assert_eq!(DelayedOutMessage::Count(1), count2);
+    });
+}
