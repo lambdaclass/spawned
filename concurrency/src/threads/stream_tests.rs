@@ -78,27 +78,7 @@ pub fn test_sum_numbers_from_stream() {
 #[test]
 pub fn test_sum_numbers_from_channel() {
     let mut summatory_handle = Summatory::start(0);
-    let (tx, rx) = rt::mpsc::channel::<Result<u8, ()>>(5);
-
-    rt::spawn(move || {
-        for i in 1..=5 {
-            tx.send(Ok(i)).unwrap();
-        }
-    });
-
-    spawn_listener_from_iter(summatory_handle.clone(), message_builder, rx.into_iter());
-
-    // Wait for 1 second so the whole stream is processed
-    rt::sleep(Duration::from_secs(1));
-
-    let val = Summatory::get_value(&mut summatory_handle).unwrap();
-    assert_eq!(val, 15);
-}
-
-#[test]
-pub fn test_sum_numbers_from_unbounded_channel() {
-    let mut summatory_handle = Summatory::start(0);
-    let (tx, rx) = rt::mpsc::unbounded_channel::<Result<u8, ()>>();
+    let (tx, rx) = rt::mpsc::channel::<Result<u8, ()>>();
 
     rt::spawn(move || {
         for i in 1..=5 {
