@@ -147,6 +147,8 @@ pub fn test_stream_cancellation() {
     // Wait for the stream to finish processing
     rt::sleep(Duration::from_millis(RUNNING_TIME));
 
+    summatory_handle.stop();
+
     // The reasoning for this assertion is that each message takes a quarter of the total time
     // to be processed, so having a stream of 5 messages, some of them will never be processed.
     // At first glance we would expect val == 10 considering it has time to process four messages,

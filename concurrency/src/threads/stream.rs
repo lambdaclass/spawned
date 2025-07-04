@@ -2,7 +2,6 @@ use crate::threads::{GenServer, GenServerHandle};
 use std::thread::{self, JoinHandle};
 
 use futures::{Stream, StreamExt};
-use spawned_rt::threads::CancellationToken;
 use std::iter;
 
 /// Spawns a listener that iterates over an iterable and sends messages to a GenServer.
@@ -15,7 +14,7 @@ pub fn spawn_listener_from_iter<T, F, S, I, E>(
     mut handle: GenServerHandle<T>,
     message_builder: F,
     iterable: S,
-) -> (JoinHandle<()>, CancellationToken)
+) -> JoinHandle<()>
 where
     T: GenServer + 'static,
     F: Fn(I) -> T::CastMsg + Send + 'static,
@@ -23,11 +22,9 @@ where
     E: std::fmt::Debug + Send + 'static,
     S: Iterator<Item = Result<I, E>> + Send + 'static,
 {
-    let cancelation_token = CancellationToken::new();
-    let mut cloned_token = cancelation_token.clone();
     let join_handle = thread::spawn(move || {
         for res in iterable {
-            if cloned_token.is_cancelled() {
+            if handle.cancellation_token().is_cancelled() {
                 tracing::trace!("Received signal to stop listener, stopping");
                 break;
             }
@@ -44,7 +41,7 @@ where
         }
         tracing::trace!("Stream finished");
     });
-    (join_handle, cancelation_token)
+    join_handle
 }
 
 /// Spawns a listener that listens to a stream and sends messages to a GenServer.
