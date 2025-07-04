@@ -23,7 +23,8 @@ where
     let mut cloned_token = cancellation_token.clone();
     let join_handle = rt::spawn(move || {
         rt::sleep(period);
-        if !cloned_token.is_cancelled() {
+        // Timer action is ignored if it was either cancelled or the associated GenServer is no longer running.
+        if !cloned_token.is_cancelled() && !handle.cancellation_token().is_cancelled() {
             let _ = handle.cast(message);
         };
     });
@@ -46,7 +47,8 @@ where
     let mut cloned_token = cancellation_token.clone();
     let join_handle = rt::spawn(move || loop {
         rt::sleep(period);
-        if cloned_token.is_cancelled() {
+        // Timer action is ignored if it was either cancelled or the associated GenServer is no longer running.
+        if cloned_token.is_cancelled() || handle.cancellation_token().is_cancelled() {
             break;
         } else {
             let _ = handle.cast(message.clone());
