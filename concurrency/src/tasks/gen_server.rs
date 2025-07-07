@@ -94,7 +94,7 @@ impl<G: GenServer> GenServerHandle<G> {
         self.cancellation_token.clone()
     }
 
-    pub fn stop(&mut self) {
+    pub fn teardown(&mut self) {
         self.cancellation_token.cancel();
     }
 }

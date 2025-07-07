@@ -248,7 +248,7 @@ pub fn test_send_after_and_cancellation() {
 }
 
 #[test]
-pub fn test_send_after_gen_server_stop() {
+pub fn test_send_after_gen_server_teardown() {
     let runtime = rt::Runtime::new().unwrap();
     runtime.block_on(async move {
         // Start a Delayed
@@ -278,7 +278,7 @@ pub fn test_send_after_gen_server_stop() {
         );
 
         // Cancel the new timer before timeout
-        repeater.stop();
+        repeater.teardown();
 
         // Wait another 200 milliseconds
         rt::sleep(Duration::from_millis(200)).await;
