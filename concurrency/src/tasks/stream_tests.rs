@@ -11,8 +11,11 @@ type SummatoryHandle = GenServerHandle<Summatory>;
 struct Summatory;
 
 type SummatoryState = u16;
-type SummatoryCastMessage = SummatoryState;
-type SummatoryOutMessage = SummatoryState;
+
+#[derive(Clone)]
+struct UpdateSumatory {
+    added_value: u16,
+}
 
 impl Summatory {
     pub async fn get_value(server: &mut SummatoryHandle) -> Result<SummatoryState, ()> {
@@ -22,8 +25,8 @@ impl Summatory {
 
 impl GenServer for Summatory {
     type CallMsg = (); // We only handle one type of call, so there is no need for a specific message type.
-    type CastMsg = SummatoryCastMessage;
-    type OutMsg = SummatoryOutMessage;
+    type CastMsg = UpdateSumatory;
+    type OutMsg = SummatoryState;
     type State = SummatoryState;
     type Error = ();
 
@@ -37,7 +40,7 @@ impl GenServer for Summatory {
         _handle: &GenServerHandle<Self>,
         state: Self::State,
     ) -> CastResponse<Self> {
-        let new_state = state + message;
+        let new_state = state + message.added_value;
         CastResponse::NoReply(new_state)
     }
 
@@ -53,9 +56,11 @@ impl GenServer for Summatory {
 }
 
 // In this example, the stream sends u8 values, which are converted to the type
-// supported by the GenServer (SummatoryCastMessage / u16).
-fn message_builder(value: u8) -> SummatoryCastMessage {
-    value.into()
+// supported by the GenServer (UpdateSumatory / u16).
+fn message_builder(value: u8) -> UpdateSumatory {
+    UpdateSumatory {
+        added_value: value as u16,
+    }
 }
 
 #[test]
