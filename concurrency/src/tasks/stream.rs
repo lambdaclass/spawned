@@ -48,7 +48,7 @@ where
         )
         .await;
         match result {
-            futures::future::Either::Left(_) => tracing::trace!("Listener cancelled"),
+            futures::future::Either::Left(_) => tracing::trace!("GenServer stopped"),
             futures::future::Either::Right(_) => (), // Stream finished or errored out
         }
     });

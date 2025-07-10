@@ -11,7 +11,6 @@ type SummatoryHandle = GenServerHandle<Summatory>;
 struct Summatory;
 
 type SummatoryState = u16;
-// type SummatoryCastMessage = SummatoryState;
 type SummatoryOutMessage = SummatoryState;
 
 #[derive(Clone)]
