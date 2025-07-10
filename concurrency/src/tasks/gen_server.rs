@@ -93,10 +93,6 @@ impl<G: GenServer> GenServerHandle<G> {
     pub fn cancellation_token(&self) -> CancellationToken {
         self.cancellation_token.clone()
     }
-
-    pub fn teardown(&mut self) {
-        self.cancellation_token.cancel();
-    }
 }
 
 pub enum GenServerInMsg<G: GenServer> {
@@ -186,12 +182,15 @@ where
         async {
             loop {
                 let (new_state, cont) = self.receive(handle, rx, state).await?;
+                state = new_state;
                 if !cont {
                     break;
                 }
-                state = new_state;
             }
             tracing::trace!("Stopping GenServer");
+            if let Err(err) = self.teardown(handle, state).await {
+                tracing::error!("Error during teardown: {err:?}");
+            }
             Ok(())
         }
     }
@@ -286,6 +285,17 @@ where
         _state: Self::State,
     ) -> impl Future<Output = CastResponse<Self>> + Send {
         async { CastResponse::Unused }
+    }
+
+    /// Teardown function. It's called after the stop message is received.
+    /// It can be overrided on implementations in case final steps are required,
+    /// like closing streams, stopping timers, etc.
+    fn teardown(
+        &mut self,
+        _handle: &GenServerHandle<Self>,
+        _state: Self::State,
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send {
+        async { Ok(()) }
     }
 }
 
