@@ -9,6 +9,7 @@ tracing = { workspace = true }
 futures = "0.3.1"
 
 [dev-dependencies]
+# This tokio imports are only used in tests, we should not use them in the library code.
 tokio-stream = { version = "0.1.17" }
 tokio = { version = "1", features = ["full"] }
 
