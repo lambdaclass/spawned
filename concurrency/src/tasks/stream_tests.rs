@@ -3,7 +3,7 @@ use std::time::Duration;
 use spawned_rt::tasks::{self as rt, BroadcastStream, ReceiverStream};
 
 use crate::tasks::{
-    stream::spawn_listener, CallResponse, CastResponse, GenServer, GenServerHandle,
+    send_after, stream::spawn_listener, CallResponse, CastResponse, GenServer, GenServerHandle,
 };
 
 type SummatoryHandle = GenServerHandle<Summatory>;
@@ -11,10 +11,12 @@ type SummatoryHandle = GenServerHandle<Summatory>;
 struct Summatory;
 
 type SummatoryState = u16;
+type SummatoryOutMessage = SummatoryState;
 
 #[derive(Clone)]
-struct UpdateSumatory {
-    added_value: u16,
+enum SummatoryCastMessage {
+    Add(u16),
+    Stop,
 }
 
 impl Summatory {
@@ -25,8 +27,8 @@ impl Summatory {
 
 impl GenServer for Summatory {
     type CallMsg = (); // We only handle one type of call, so there is no need for a specific message type.
-    type CastMsg = UpdateSumatory;
-    type OutMsg = SummatoryState;
+    type CastMsg = SummatoryCastMessage;
+    type OutMsg = SummatoryOutMessage;
     type State = SummatoryState;
     type Error = ();
 
@@ -40,8 +42,13 @@ impl GenServer for Summatory {
         _handle: &GenServerHandle<Self>,
         state: Self::State,
     ) -> CastResponse<Self> {
-        let new_state = state + message.added_value;
-        CastResponse::NoReply(new_state)
+        match message {
+            SummatoryCastMessage::Add(val) => {
+                let new_state = state + val;
+                CastResponse::NoReply(new_state)
+            }
+            SummatoryCastMessage::Stop => CastResponse::Stop,
+        }
     }
 
     async fn handle_call(
@@ -56,11 +63,9 @@ impl GenServer for Summatory {
 }
 
 // In this example, the stream sends u8 values, which are converted to the type
-// supported by the GenServer (UpdateSumatory / u16).
-fn message_builder(value: u8) -> UpdateSumatory {
-    UpdateSumatory {
-        added_value: value as u16,
-    }
+// supported by the GenServer (SummatoryCastMessage / u16).
+fn message_builder(value: u8) -> SummatoryCastMessage {
+    SummatoryCastMessage::Add(value.into())
 }
 
 #[test]
@@ -153,22 +158,34 @@ pub fn test_stream_cancellation() {
             }
         });
 
-        let (_handle, cancellation_token) = spawn_listener(
+        let listener_handle = spawn_listener(
             summatory_handle.clone(),
             message_builder,
             ReceiverStream::new(rx),
         );
 
-        // Wait for 1 second so the whole stream is processed
-        rt::sleep(Duration::from_millis(RUNNING_TIME)).await;
+        // Start a timer to stop the stream after a certain time
+        let summatory_handle_clone = summatory_handle.clone();
+        let _ = send_after(
+            Duration::from_millis(RUNNING_TIME + 10),
+            summatory_handle_clone,
+            SummatoryCastMessage::Stop,
+        );
 
-        cancellation_token.cancel();
+        // Just before the stream is cancelled we retrieve the current value.
+        rt::sleep(Duration::from_millis(RUNNING_TIME)).await;
+        let val = Summatory::get_value(&mut summatory_handle).await.unwrap();
 
         // The reasoning for this assertion is that each message takes a quarter of the total time
         // to be processed, so having a stream of 5 messages, the last one won't be processed.
         // We could safely assume that it will get to process 4 messages, but in case of any extenal
         // slowdown, it could process less.
-        let val = Summatory::get_value(&mut summatory_handle).await.unwrap();
-        assert!(val > 0 && val < 15);
+        assert!((1..=10).contains(&val));
+
+        assert!(listener_handle.await.is_ok());
+
+        // Finnally, we check that the server is stopped, by getting an error when trying to call it.
+        rt::sleep(Duration::from_millis(10)).await;
+        assert!(Summatory::get_value(&mut summatory_handle).await.is_err());
     })
 }
