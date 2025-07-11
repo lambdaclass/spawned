@@ -2,6 +2,8 @@
 name = "spawned-concurrency"
 version = "0.1.0"
 edition = "2021"
+description = "Spawned Concurrency"
+license = "MIT"
 
 [dependencies]
 spawned-rt = { workspace = true }
