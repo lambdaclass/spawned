@@ -60,15 +60,6 @@ impl GenServer for Summatory {
         let current_value = state;
         CallResponse::Reply(state, current_value)
     }
-
-    async fn teardown(
-        &mut self,
-        handle: &GenServerHandle<Self>,
-        _state: Self::State,
-    ) -> Result<(), Self::Error> {
-        handle.cancellation_token().cancel();
-        Ok(())
-    }
 }
 
 // In this example, the stream sends u8 values, which are converted to the type

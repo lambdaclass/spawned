@@ -292,10 +292,14 @@ where
     /// like closing streams, stopping timers, etc.
     fn teardown(
         &mut self,
-        _handle: &GenServerHandle<Self>,
+        handle: &GenServerHandle<Self>,
         _state: Self::State,
     ) -> impl Future<Output = Result<(), Self::Error>> + Send {
-        async { Ok(()) }
+        async {
+            // By default, we just cancel the cancellation token available on all GenServerHandles.
+            handle.cancellation_token().cancel();
+            Ok(())
+        }
     }
 }
 
