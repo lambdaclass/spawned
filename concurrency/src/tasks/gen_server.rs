@@ -188,6 +188,7 @@ where
                 }
             }
             tracing::trace!("Stopping GenServer");
+            handle.cancellation_token().cancel();
             if let Err(err) = self.teardown(handle, state).await {
                 tracing::error!("Error during teardown: {err:?}");
             }
@@ -292,14 +293,10 @@ where
     /// like closing streams, stopping timers, etc.
     fn teardown(
         &mut self,
-        handle: &GenServerHandle<Self>,
+        _handle: &GenServerHandle<Self>,
         _state: Self::State,
     ) -> impl Future<Output = Result<(), Self::Error>> + Send {
-        async {
-            // By default, we just cancel the cancellation token available on all GenServerHandles.
-            handle.cancellation_token().cancel();
-            Ok(())
-        }
+        async { Ok(()) }
     }
 }
 

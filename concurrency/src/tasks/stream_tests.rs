@@ -175,6 +175,7 @@ pub fn test_stream_cancellation() {
         // Just before the stream is cancelled we retrieve the current value.
         rt::sleep(Duration::from_millis(RUNNING_TIME)).await;
         let val = Summatory::get_value(&mut summatory_handle).await.unwrap();
+
         // The reasoning for this assertion is that each message takes a quarter of the total time
         // to be processed, so having a stream of 5 messages, the last one won't be processed.
         // We could safely assume that it will get to process 4 messages, but in case of any extenal
@@ -182,5 +183,10 @@ pub fn test_stream_cancellation() {
         assert!((1..=10).contains(&val));
 
         assert!(listener_handle.await.is_ok());
+
+        // Finnally, we check that the server is stopped, by getting an error when trying to call it.
+        rt::sleep(Duration::from_millis(10)).await;
+        let foo = Summatory::get_value(&mut summatory_handle).await;
+        assert!(Summatory::get_value(&mut summatory_handle).await.is_err());
     })
 }
