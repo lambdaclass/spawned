@@ -1,11 +1,14 @@
-use std::{error::Error as StdError, fmt::Display};
-
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum GenServerError {
+    #[error("Callback Error")]
     Callback,
+    #[error("Initialization error")]
     Initialization,
+    #[error("Server error")]
     Server,
+    #[error("Unsupported Call Messages on this GenServer")]
     CallMsgUnused,
+    #[error("Unsupported Cast Messages on this GenServer")]
     CastMsgUnused,
 }
 
@@ -21,16 +24,13 @@ impl<T> From<spawned_rt::tasks::mpsc::SendError<T>> for GenServerError {
     }
 }
 
-impl Display for GenServerError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Callback => write!(f, "Callback Error"),
-            Self::Initialization => write!(f, "Initialization Error"),
-            Self::Server => write!(f, "Server Error"),
-            Self::CallMsgUnused => write!(f, "Unsupported Call Messages on this GenServer"),
-            Self::CastMsgUnused => write!(f, "Unsupported Cast Messages on this GenServer"),
-        }
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_error_into_std_error() {
+        let error: &dyn std::error::Error = &GenServerError::Callback;
+        assert_eq!(error.to_string(), "Callback Error");
     }
 }
-
-impl StdError for GenServerError {}
