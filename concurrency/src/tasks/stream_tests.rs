@@ -186,7 +186,6 @@ pub fn test_stream_cancellation() {
 
         // Finnally, we check that the server is stopped, by getting an error when trying to call it.
         rt::sleep(Duration::from_millis(10)).await;
-        let foo = Summatory::get_value(&mut summatory_handle).await;
         assert!(Summatory::get_value(&mut summatory_handle).await.is_err());
     })
 }
