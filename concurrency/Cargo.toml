@@ -1,7 +1,9 @@
 [package]
 name = "spawned-concurrency"
-version = "0.1.0"
-edition = "2021"
+description = "Spawned Concurrency"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
 
 [dependencies]
 spawned-rt = { workspace = true }
