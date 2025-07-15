@@ -1,9 +1,9 @@
 [package]
 name = "spawned-rt"
 description = "Spawned Runtime"
-version = { workspace = true }
-edition = { workspace = true }
-license = { workspace = true }
+version.workspace = true
+edition.workspace = true
+license.workspace = true
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }
