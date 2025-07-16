@@ -15,6 +15,7 @@ pub struct UpdateServerState {
     pub url: String,
     pub periodicity: Duration,
 }
+#[derive(Default)]
 pub struct UpdaterServer {}
 
 impl GenServer for UpdaterServer {
@@ -23,10 +24,6 @@ impl GenServer for UpdaterServer {
     type OutMsg = OutMessage;
     type Error = std::fmt::Error;
     type State = UpdateServerState;
-
-    fn new() -> Self {
-        Self {}
-    }
 
     // Initializing GenServer to start periodic checks.
     fn init(

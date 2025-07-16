@@ -120,7 +120,7 @@ pub enum CastResponse<G: GenServer> {
 
 pub trait GenServer
 where
-    Self: Send + Sized,
+    Self: Default + Send + Sized,
 {
     type CallMsg: Clone + Send + Sized + Sync;
     type CastMsg: Clone + Send + Sized + Sync;
@@ -128,7 +128,9 @@ where
     type State: Clone + Send;
     type Error: Debug + Send;
 
-    fn new() -> Self;
+    fn new() -> Self {
+        Self::default()
+    }
 
     fn start(initial_state: Self::State) -> GenServerHandle<Self> {
         GenServerHandle::new(initial_state)
@@ -307,6 +309,8 @@ mod tests {
     use super::*;
     use crate::tasks::send_after;
     use std::{thread, time::Duration};
+
+    #[derive(Default)]
     struct BadlyBehavedTask;
 
     #[derive(Clone)]
@@ -325,10 +329,6 @@ mod tests {
         type OutMsg = ();
         type State = ();
         type Error = ();
-
-        fn new() -> Self {
-            Self {}
-        }
 
         async fn handle_call(
             &mut self,
@@ -351,6 +351,7 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
     struct WellBehavedTask;
 
     #[derive(Clone)]
@@ -364,10 +365,6 @@ mod tests {
         type OutMsg = OutMsg;
         type State = CountState;
         type Error = ();
-
-        fn new() -> Self {
-            Self {}
-        }
 
         async fn handle_call(
             &mut self,
