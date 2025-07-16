@@ -149,6 +149,7 @@ enum DelayedCastMessage {
 #[derive(Clone)]
 enum DelayedCallMessage {
     GetCount,
+    Stop,
 }
 
 #[derive(PartialEq, Debug)]
@@ -165,6 +166,10 @@ impl Delayed {
             .await
             .map_err(|_| ())
     }
+
+    pub async fn stop(server: &mut DelayedHandle) -> Result<DelayedOutMessage, ()> {
+        server.call(DelayedCallMessage::Stop).await.map_err(|_| ())
+    }
 }
 
 impl GenServer for Delayed {
@@ -180,12 +185,17 @@ impl GenServer for Delayed {
 
     async fn handle_call(
         &mut self,
-        _message: Self::CallMsg,
+        message: Self::CallMsg,
         _handle: &DelayedHandle,
         state: Self::State,
     ) -> CallResponse<Self> {
-        let count = state.count;
-        CallResponse::Reply(state, DelayedOutMessage::Count(count))
+        match message {
+            DelayedCallMessage::GetCount => {
+                let count = state.count;
+                CallResponse::Reply(state, DelayedOutMessage::Count(count))
+            }
+            DelayedCallMessage::Stop => CallResponse::Stop(DelayedOutMessage::Count(state.count)),
+        }
     }
 
     async fn handle_cast(
@@ -241,6 +251,47 @@ pub fn test_send_after_and_cancellation() {
 
         // Check count again
         let count2 = Delayed::get_count(&mut repeater).await.unwrap();
+
+        // As timer was cancelled, count should remain at 1
+        assert_eq!(DelayedOutMessage::Count(1), count2);
+    });
+}
+
+#[test]
+pub fn test_send_after_gen_server_teardown() {
+    let runtime = rt::Runtime::new().unwrap();
+    runtime.block_on(async move {
+        // Start a Delayed
+        let mut repeater = Delayed::start(DelayedState { count: 0 });
+
+        // Set a just once timed message
+        let _ = send_after(
+            Duration::from_millis(100),
+            repeater.clone(),
+            DelayedCastMessage::Inc,
+        );
+
+        // Wait for 200 milliseconds
+        rt::sleep(Duration::from_millis(200)).await;
+
+        // Check count
+        let count = Delayed::get_count(&mut repeater).await.unwrap();
+
+        // Only one message (no repetition)
+        assert_eq!(DelayedOutMessage::Count(1), count);
+
+        // New timer
+        let _ = send_after(
+            Duration::from_millis(100),
+            repeater.clone(),
+            DelayedCastMessage::Inc,
+        );
+
+        // Stop the GenServer before timeout
+        let count2 = Delayed::stop(&mut repeater).await.unwrap();
+
+        // Wait another 200 milliseconds
+        rt::sleep(Duration::from_millis(200)).await;
 
         // As timer was cancelled, count should remain at 1
         assert_eq!(DelayedOutMessage::Count(1), count2);
