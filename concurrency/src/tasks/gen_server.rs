@@ -6,6 +6,7 @@ use std::{fmt::Debug, future::Future, panic::AssertUnwindSafe};
 
 use crate::error::GenServerError;
 
+#[derive(Debug)]
 pub struct GenServerHandle<G: GenServer + 'static> {
     pub tx: mpsc::Sender<GenServerInMsg<G>>,
     /// Cancellation token to stop the GenServer
