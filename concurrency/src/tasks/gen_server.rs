@@ -1,20 +1,22 @@
 //! GenServer trait and structs to create an abstraction similar to Erlang gen_server.
 //! See examples/name_server for a usage example.
 use futures::future::FutureExt as _;
-use spawned_rt::tasks::{self as rt, mpsc, oneshot};
+use spawned_rt::tasks::{self as rt, mpsc, oneshot, CancellationToken};
 use std::{fmt::Debug, future::Future, panic::AssertUnwindSafe};
 
 use crate::error::GenServerError;
 
-#[derive(Debug)]
 pub struct GenServerHandle<G: GenServer + 'static> {
     pub tx: mpsc::Sender<GenServerInMsg<G>>,
+    /// Cancellation token to stop the GenServer
+    cancellation_token: CancellationToken,
 }
 
 impl<G: GenServer> Clone for GenServerHandle<G> {
     fn clone(&self) -> Self {
         Self {
             tx: self.tx.clone(),
+            cancellation_token: self.cancellation_token.clone(),
         }
     }
 }
@@ -22,7 +24,11 @@ impl<G: GenServer> Clone for GenServerHandle<G> {
 impl<G: GenServer> GenServerHandle<G> {
     pub(crate) fn new(initial_state: G::State) -> Self {
         let (tx, mut rx) = mpsc::channel::<GenServerInMsg<G>>();
-        let handle = GenServerHandle { tx };
+        let cancellation_token = CancellationToken::new();
+        let handle = GenServerHandle {
+            tx,
+            cancellation_token,
+        };
         let mut gen_server: G = GenServer::new();
         let handle_clone = handle.clone();
         // Ignore the JoinHandle for now. Maybe we'll use it in the future
@@ -40,7 +46,11 @@ impl<G: GenServer> GenServerHandle<G> {
 
     pub(crate) fn new_blocking(initial_state: G::State) -> Self {
         let (tx, mut rx) = mpsc::channel::<GenServerInMsg<G>>();
-        let handle = GenServerHandle { tx };
+        let cancellation_token = CancellationToken::new();
+        let handle = GenServerHandle {
+            tx,
+            cancellation_token,
+        };
         let mut gen_server: G = GenServer::new();
         let handle_clone = handle.clone();
         // Ignore the JoinHandle for now. Maybe we'll use it in the future
@@ -78,6 +88,10 @@ impl<G: GenServer> GenServerHandle<G> {
         self.tx
             .send(GenServerInMsg::Cast { message })
             .map_err(|_error| GenServerError::Server)
+    }
+
+    pub fn cancellation_token(&self) -> CancellationToken {
+        self.cancellation_token.clone()
     }
 }
 
@@ -168,12 +182,16 @@ where
         async {
             loop {
                 let (new_state, cont) = self.receive(handle, rx, state).await?;
+                state = new_state;
                 if !cont {
                     break;
                 }
-                state = new_state;
             }
             tracing::trace!("Stopping GenServer");
+            handle.cancellation_token().cancel();
+            if let Err(err) = self.teardown(handle, state).await {
+                tracing::error!("Error during teardown: {err:?}");
+            }
             Ok(())
         }
     }
@@ -268,6 +286,17 @@ where
         _state: Self::State,
     ) -> impl Future<Output = CastResponse<Self>> + Send {
         async { CastResponse::Unused }
+    }
+
+    /// Teardown function. It's called after the stop message is received.
+    /// It can be overrided on implementations in case final steps are required,
+    /// like closing streams, stopping timers, etc.
+    fn teardown(
+        &mut self,
+        _handle: &GenServerHandle<Self>,
+        _state: Self::State,
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send {
+        async { Ok(()) }
     }
 }
 
