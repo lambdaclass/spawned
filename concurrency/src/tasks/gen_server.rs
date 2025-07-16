@@ -150,13 +150,17 @@ where
         state: Self::State,
     ) -> impl Future<Output = Result<(), GenServerError>> + Send {
         async {
-            match self.init(handle, state).await {
+            match self.init(handle, state.clone()).await {
                 Ok(new_state) => {
                     self.main_loop(handle, rx, new_state).await?;
                     Ok(())
                 }
                 Err(err) => {
                     tracing::error!("Initialization failed: {err:?}");
+                    handle.cancellation_token().cancel();
+                    if let Err(err) = self.teardown(handle, state).await {
+                        tracing::error!("Error during teardown: {err:?}");
+                    }
                     Err(GenServerError::Initialization)
                 }
             }
