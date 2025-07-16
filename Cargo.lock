@@ -1197,7 +1197,7 @@ dependencies = [
 
 [[package]]
 name = "spawned-concurrency"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "futures",
  "spawned-rt",
@@ -1209,7 +1209,7 @@ dependencies = [
 
 [[package]]
 name = "spawned-rt"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "crossbeam",
  "tokio",
