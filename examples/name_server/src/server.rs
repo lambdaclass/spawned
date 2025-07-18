@@ -10,6 +10,7 @@ use crate::messages::{NameServerInMessage as InMessage, NameServerOutMessage as 
 type NameServerHandle = GenServerHandle<NameServer>;
 type NameServerState = HashMap<String, String>;
 
+#[derive(Default)]
 pub struct NameServer {}
 
 impl NameServer {
@@ -34,10 +35,6 @@ impl GenServer for NameServer {
     type OutMsg = OutMessage;
     type Error = std::fmt::Error;
     type State = NameServerState;
-
-    fn new() -> Self {
-        Self {}
-    }
 
     async fn handle_call(
         &mut self,

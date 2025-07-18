@@ -11,6 +11,7 @@ type MsgResult = Result<OutMessage, BankError>;
 type BankHandle = GenServerHandle<Bank>;
 type BankState = HashMap<String, i32>;
 
+#[derive(Default)]
 pub struct Bank {}
 
 impl Bank {
@@ -45,10 +46,6 @@ impl GenServer for Bank {
     type OutMsg = MsgResult;
     type Error = BankError;
     type State = BankState;
-
-    fn new() -> Self {
-        Self {}
-    }
 
     // Initializing "main" account with 1000 in balance to test init() callback.
     fn init(
