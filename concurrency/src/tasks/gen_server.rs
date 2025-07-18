@@ -456,10 +456,16 @@ mod tests {
     const TIMEOUT_DURATION: Duration = Duration::from_millis(100);
 
     #[derive(Default)]
-    struct UnresolvingTask;
+    struct SomeTask;
 
-    impl GenServer for UnresolvingTask {
-        type CallMsg = ();
+    #[derive(Clone)]
+    enum SomeTaskCallMsg {
+        SlowOperation,
+        FastOperation,
+    }
+
+    impl GenServer for SomeTask {
+        type CallMsg = SomeTaskCallMsg;
         type CastMsg = ();
         type OutMsg = ();
         type State = ();
@@ -467,13 +473,22 @@ mod tests {
 
         async fn handle_call(
             &mut self,
-            _message: Self::CallMsg,
+            message: Self::CallMsg,
             _handle: &GenServerHandle<Self>,
             _state: Self::State,
         ) -> CallResponse<Self> {
-            // Simulate a task that we know won't resolve in time
-            rt::sleep(TIMEOUT_DURATION * 2).await;
-            CallResponse::Reply((), ())
+            match message {
+                SomeTaskCallMsg::SlowOperation => {
+                    // Simulate a slow operation that will not resolve in time
+                    rt::sleep(TIMEOUT_DURATION * 2).await;
+                    CallResponse::Reply((), ())
+                }
+                SomeTaskCallMsg::FastOperation => {
+                    // Simulate a fast operation that resolves in time
+                    rt::sleep(TIMEOUT_DURATION / 2).await;
+                    CallResponse::Reply((), ())
+                }
+            }
         }
     }
 
@@ -481,9 +496,15 @@ mod tests {
     pub fn unresolving_task_times_out() {
         let runtime = rt::Runtime::new().unwrap();
         runtime.block_on(async move {
-            let mut unresolving_task = UnresolvingTask::start(());
+            let mut unresolving_task = SomeTask::start(());
+
             let result = unresolving_task
-                .call_with_timeout((), TIMEOUT_DURATION)
+                .call_with_timeout(SomeTaskCallMsg::FastOperation, TIMEOUT_DURATION)
+                .await;
+            assert!(matches!(result, Ok(())));
+
+            let result = unresolving_task
+                .call_with_timeout(SomeTaskCallMsg::SlowOperation, TIMEOUT_DURATION)
                 .await;
             assert!(matches!(result, Err(GenServerError::CallTimeout)));
         });
