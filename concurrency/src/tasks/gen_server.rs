@@ -6,6 +6,8 @@ use std::{fmt::Debug, future::Future, panic::AssertUnwindSafe, time::Duration};
 
 use crate::error::GenServerError;
 
+const DEFAULT_CALL_TIMEOUT: Duration = Duration::from_secs(5);
+
 #[derive(Debug)]
 pub struct GenServerHandle<G: GenServer + 'static> {
     pub tx: mpsc::Sender<GenServerInMsg<G>>,
@@ -74,15 +76,7 @@ impl<G: GenServer> GenServerHandle<G> {
     }
 
     pub async fn call(&mut self, message: G::CallMsg) -> Result<G::OutMsg, GenServerError> {
-        let (oneshot_tx, oneshot_rx) = oneshot::channel::<Result<G::OutMsg, GenServerError>>();
-        self.tx.send(GenServerInMsg::Call {
-            sender: oneshot_tx,
-            message,
-        })?;
-        match oneshot_rx.await {
-            Ok(result) => result,
-            Err(_) => Err(GenServerError::Server),
-        }
+        self.call_with_timeout(message, DEFAULT_CALL_TIMEOUT).await
     }
 
     pub async fn call_with_timeout(
