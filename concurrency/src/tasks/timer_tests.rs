@@ -28,6 +28,7 @@ enum RepeaterOutMessage {
     Count(i32),
 }
 
+#[derive(Default)]
 struct Repeater;
 
 impl Repeater {
@@ -52,10 +53,6 @@ impl GenServer for Repeater {
     type OutMsg = RepeaterOutMessage;
     type State = RepeaterState;
     type Error = ();
-
-    fn new() -> Self {
-        Self
-    }
 
     async fn init(
         &mut self,
@@ -157,6 +154,7 @@ enum DelayedOutMessage {
     Count(i32),
 }
 
+#[derive(Default)]
 struct Delayed;
 
 impl Delayed {
@@ -178,10 +176,6 @@ impl GenServer for Delayed {
     type OutMsg = DelayedOutMessage;
     type State = DelayedState;
     type Error = ();
-
-    fn new() -> Self {
-        Self
-    }
 
     async fn handle_call(
         &mut self,

@@ -83,7 +83,7 @@ pub enum CastResponse<G: GenServer> {
 
 pub trait GenServer
 where
-    Self: Send + Sized,
+    Self: Default + Send + Sized,
 {
     type CallMsg: Clone + Send + Sized;
     type CastMsg: Clone + Send + Sized;
@@ -91,7 +91,9 @@ where
     type State: Clone + Send;
     type Error: Debug;
 
-    fn new() -> Self;
+    fn new() -> Self {
+        Self::default()
+    }
 
     fn start(initial_state: Self::State) -> GenServerHandle<Self> {
         GenServerHandle::new(initial_state)

@@ -16,6 +16,7 @@ pub struct UpdateServerState {
     pub periodicity: Duration,
     pub timer_token: Option<CancellationToken>,
 }
+#[derive(Default)]
 pub struct UpdaterServer {}
 
 impl GenServer for UpdaterServer {
@@ -24,10 +25,6 @@ impl GenServer for UpdaterServer {
     type OutMsg = OutMessage;
     type Error = std::fmt::Error;
     type State = UpdateServerState;
-
-    fn new() -> Self {
-        Self {}
-    }
 
     // Initializing GenServer to start periodic checks.
     async fn init(

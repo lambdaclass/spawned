@@ -6,7 +6,8 @@ use spawned_concurrency::tasks::{
     CallResponse, CastResponse, GenServer, GenServerHandle, send_after,
 };
 
-// We test a scenario with a badly behaved task
+// We test a scenario with a badly behaved task#[derive(Default)]
+#[derive(Default)]
 struct BadlyBehavedTask;
 
 #[derive(Clone)]
@@ -25,10 +26,6 @@ impl GenServer for BadlyBehavedTask {
     type OutMsg = ();
     type State = ();
     type Error = ();
-
-    fn new() -> Self {
-        Self {}
-    }
 
     async fn handle_call(
         &mut self,
@@ -53,6 +50,7 @@ impl GenServer for BadlyBehavedTask {
     }
 }
 
+#[derive(Default)]
 struct WellBehavedTask;
 
 #[derive(Clone)]
@@ -66,10 +64,6 @@ impl GenServer for WellBehavedTask {
     type OutMsg = OutMsg;
     type State = CountState;
     type Error = ();
-
-    fn new() -> Self {
-        Self {}
-    }
 
     async fn handle_call(
         &mut self,

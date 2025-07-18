@@ -8,6 +8,7 @@ use crate::tasks::{
 
 type SummatoryHandle = GenServerHandle<Summatory>;
 
+#[derive(Default)]
 struct Summatory;
 
 type SummatoryState = u16;
@@ -31,10 +32,6 @@ impl GenServer for Summatory {
     type OutMsg = SummatoryOutMessage;
     type State = SummatoryState;
     type Error = ();
-
-    fn new() -> Self {
-        Self
-    }
 
     async fn handle_cast(
         &mut self,
