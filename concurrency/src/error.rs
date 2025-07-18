@@ -10,6 +10,8 @@ pub enum GenServerError {
     CallMsgUnused,
     #[error("Unsupported Cast Messages on this GenServer")]
     CastMsgUnused,
+    #[error("Call to GenServer timed out")]
+    CallTimeout,
 }
 
 impl<T> From<spawned_rt::threads::mpsc::SendError<T>> for GenServerError {
