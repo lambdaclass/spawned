@@ -1,8 +1,8 @@
 //! GenServer trait and structs to create an abstraction similar to Erlang gen_server.
 //! See examples/name_server for a usage example.
 use futures::future::FutureExt as _;
-use spawned_rt::tasks::{self as rt, mpsc, oneshot, CancellationToken};
-use std::{fmt::Debug, future::Future, panic::AssertUnwindSafe};
+use spawned_rt::tasks::{self as rt, mpsc, oneshot, timeout, CancellationToken};
+use std::{fmt::Debug, future::Future, panic::AssertUnwindSafe, time::Duration};
 
 use crate::error::GenServerError;
 
@@ -82,6 +82,24 @@ impl<G: GenServer> GenServerHandle<G> {
         match oneshot_rx.await {
             Ok(result) => result,
             Err(_) => Err(GenServerError::Server),
+        }
+    }
+
+    pub async fn call_with_timeout(
+        &mut self,
+        message: G::CallMsg,
+        duration: Duration,
+    ) -> Result<G::OutMsg, GenServerError> {
+        let (oneshot_tx, oneshot_rx) = oneshot::channel::<Result<G::OutMsg, GenServerError>>();
+        self.tx.send(GenServerInMsg::Call {
+            sender: oneshot_tx,
+            message,
+        })?;
+
+        match timeout(duration, oneshot_rx).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(_)) => Err(GenServerError::Server),
+            Err(_) => Err(GenServerError::CallTimeout),
         }
     }
 
@@ -432,6 +450,42 @@ mod tests {
                 }
             }
             goodboy.call(InMessage::Stop).await.unwrap();
+        });
+    }
+
+    const TIMEOUT_DURATION: Duration = Duration::from_millis(100);
+
+    #[derive(Default)]
+    struct UnresolvingTask;
+
+    impl GenServer for UnresolvingTask {
+        type CallMsg = ();
+        type CastMsg = ();
+        type OutMsg = ();
+        type State = ();
+        type Error = ();
+
+        async fn handle_call(
+            &mut self,
+            _message: Self::CallMsg,
+            _handle: &GenServerHandle<Self>,
+            _state: Self::State,
+        ) -> CallResponse<Self> {
+            // Simulate a task that we know won't resolve in time
+            rt::sleep(TIMEOUT_DURATION * 2).await;
+            CallResponse::Reply((), ())
+        }
+    }
+
+    #[test]
+    pub fn unresolving_task_times_out() {
+        let runtime = rt::Runtime::new().unwrap();
+        runtime.block_on(async move {
+            let mut unresolving_task = UnresolvingTask::start(());
+            let result = unresolving_task
+                .call_with_timeout((), TIMEOUT_DURATION)
+                .await;
+            assert!(matches!(result, Err(GenServerError::CallTimeout)));
         });
     }
 }
