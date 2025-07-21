@@ -402,7 +402,7 @@ mod tests {
     pub fn badly_behaved_thread() {
         let runtime = rt::Runtime::new().unwrap();
         runtime.block_on(async move {
-            let mut badboy = BadlyBehavedTask.start();
+            let mut badboy = BadlyBehavedTask.start_blocking();
             let _ = badboy.cast(()).await;
             let mut goodboy = WellBehavedTask { count: 0 }.start();
             let _ = goodboy.cast(()).await;
