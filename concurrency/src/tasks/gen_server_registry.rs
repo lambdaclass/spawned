@@ -10,18 +10,97 @@ pub enum GenServerRegistryError {
     ServerNotFound,
 }
 
+/// This struct represents a registry for GenServers, allowing
+/// you to register, unregister, and retrieve GenServer handles
+/// by their address.
+///
+/// Besides being useful for managing multiple GenServers,
+/// it also adds the possibility of retrieving a GenServerHandle
+/// globally by its address.
+///
+/// # Example
+///
+/// ```rust
+/// use once_cell::sync::Lazy;
+/// use spawned_concurrency::tasks::{GenServer, GenServerRegistry};
+/// use spawned_rt::tasks::{self as rt};
+/// use std::sync::Mutex;
+///
+/// #[derive(Clone)]
+/// enum BankInMessage {
+///     GetBalance,
+/// }
+///
+/// type BankBalance = i32;
+///
+/// #[derive(Default)]
+/// struct Bank;
+///
+/// impl GenServer for Bank {
+///     type CallMsg = BankInMessage;
+///     type CastMsg = ();
+///     type OutMsg = BankBalance;
+///     type Error = ();
+///     type State = BankBalance;
+///
+///     async fn handle_call(
+///         &mut self,
+///         message: Self::CallMsg,
+///         _handle: &spawned_concurrency::tasks::GenServerHandle<Self>,
+///         state: Self::State,
+///     ) -> spawned_concurrency::tasks::CallResponse<Self> {
+///         match message {
+///             BankInMessage::GetBalance => {
+///                 let balance = state;
+///                 spawned_concurrency::tasks::CallResponse::Reply(state, balance)
+///             }
+///         }
+///     }
+/// }
+///
+/// static GENSERVER_DIRECTORY: Lazy<Mutex<GenServerRegistry<Bank>>> =
+///     Lazy::new(|| Mutex::new(GenServerRegistry::new()));
+///
+/// fn main() {
+///     let runtime = rt::Runtime::new().unwrap();
+///     runtime.block_on(async move {
+///         let some_bank = Bank::start(1000);
+///
+///         GENSERVER_DIRECTORY
+///             .lock()
+///             .unwrap()
+///             .add_entry("some_bank", some_bank.clone())
+///             .unwrap();
+///
+///         somewhere_else().await;
+///     });
+/// }
+///
+/// async fn somewhere_else() {
+///     let mut bank_handle = GENSERVER_DIRECTORY
+///         .lock()
+///         .unwrap()
+///         .get_entry("some_bank")
+///         .unwrap();
+///     let balance = bank_handle.call(BankInMessage::GetBalance).await.unwrap();
+///     println!("Balance: {}", balance)
+/// }
+/// ```
 #[derive(Default)]
 pub struct GenServerRegistry<G: GenServer + 'static> {
     agenda: HashMap<String, GenServerHandle<G>>,
 }
 
 impl<G: GenServer + 'static> GenServerRegistry<G> {
+    /// Creates a new empty GenServer registry.
     pub fn new() -> Self {
         Self {
             agenda: HashMap::new(),
         }
     }
 
+    /// Adds a new entry to the registry.
+    /// Fails if the address is already taken.
     pub fn add_entry(
         &mut self,
         address: &str,
@@ -35,6 +114,8 @@ impl<G: GenServer + 'static> GenServerRegistry<G> {
         Ok(())
     }
 
+    /// Removes an entry from the registry.
+    /// Fails if the address does not exist.
     pub fn remove_entry(
         &mut self,
         address: &str,
@@ -44,6 +125,8 @@ impl<G: GenServer + 'static> GenServerRegistry<G> {
             .ok_or(GenServerRegistryError::ServerNotFound)
     }
 
+    /// Retrieves an entry from the registry.
+    /// Fails if the address does not exist.
     pub fn get_entry(&self, address: &str) -> Result<GenServerHandle<G>, GenServerRegistryError> {
         self.agenda
             .get(address)
@@ -51,16 +134,21 @@ impl<G: GenServer + 'static> GenServerRegistry<G> {
             .ok_or(GenServerRegistryError::ServerNotFound)
     }
 
+    /// Modifies an existing entry in the registry.
+    /// If the address does not exist, it behaves like `add_entry`.
     pub fn change_entry(
         &mut self,
         address: &str,
         server_handle: GenServerHandle<G>,
     ) -> Result<(), GenServerRegistryError> {
-        // This function works like `add_entry`, without checking if the address already exists.
         self.agenda.insert(address.to_string(), server_handle);
         Ok(())
     }
 
+    /// Returns all entries in the registry as a vector.
+    ///
+    /// This is useful for cases where you need to call all
+    /// registered GenServers.
     pub fn all_entries(&self) -> Vec<GenServerHandle<G>> {
         self.agenda.values().cloned().collect()
     }
