@@ -164,21 +164,30 @@ where
         state: Self::State,
     ) -> impl Future<Output = Result<(), GenServerError>> + Send {
         async {
-            let init_result = self
-                .init(handle, state.clone())
-                .await
-                .inspect_err(|err| tracing::error!("Initialization failed: {err:?}"));
-
-            let res = match init_result {
-                Ok(new_state) => self.main_loop(handle, rx, new_state).await,
-                Err(_) => Err(GenServerError::Initialization),
+            let after_init_state = match self.init(handle, state).await {
+                Ok(state) => state,
+                Err(err) => {
+                    tracing::error!("Error during initialization: {err:?}");
+                    handle.cancellation_token().cancel();
+                    return Err(GenServerError::Initialization);
+                }
             };
 
-            handle.cancellation_token().cancel();
-            if let Err(err) = self.teardown(handle, state).await {
+            let final_state = match self.main_loop(handle, rx, after_init_state).await {
+                Ok(state) => state,
+                Err(err) => {
+                    tracing::error!("Error during main loop: {err:?}");
+                    handle.cancellation_token().cancel();
+                    return Err(err);
+                }
+            };
+
+            if let Err(err) = self.teardown(handle, final_state).await {
                 tracing::error!("Error during teardown: {err:?}");
             }
-            res
+
+            handle.cancellation_token().cancel();
+            Ok(())
         }
     }
 
@@ -198,7 +207,7 @@ where
         handle: &GenServerHandle<Self>,
         rx: &mut mpsc::Receiver<GenServerInMsg<Self>>,
         mut state: Self::State,
-    ) -> impl Future<Output = Result<(), GenServerError>> + Send {
+    ) -> impl Future<Output = Result<Self::State, GenServerError>> + Send {
         async {
             loop {
                 let (new_state, cont) = self.receive(handle, rx, state).await?;
@@ -208,7 +217,7 @@ where
                 }
             }
             tracing::trace!("Stopping GenServer");
-            Ok(())
+            Ok(state)
         }
     }
 
@@ -305,8 +314,7 @@ where
     }
 
     /// Teardown function. It's called after the stop message is received.
-    /// It can be overrided on implementations in case final steps are required,
-    /// like closing streams, stopping timers, etc.
+    /// It can be overrided on implementations in case final steps are required.
     fn teardown(
         &mut self,
         _handle: &GenServerHandle<Self>,
