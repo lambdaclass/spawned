@@ -22,14 +22,13 @@ impl<G: GenServer> Clone for GenServerHandle<G> {
 }
 
 impl<G: GenServer> GenServerHandle<G> {
-    pub(crate) fn new(initial_state: G::State) -> Self {
+    pub(crate) fn new(gen_server: G) -> Self {
         let (tx, mut rx) = mpsc::channel::<GenServerInMsg<G>>();
         let handle = GenServerHandle { tx };
-        let mut gen_server: G = GenServer::new();
         let handle_clone = handle.clone();
         // Ignore the JoinHandle for now. Maybe we'll use it in the future
         let _join_handle = rt::spawn(move || {
-            if gen_server.run(&handle, &mut rx, initial_state).is_err() {
+            if gen_server.run(&handle, &mut rx).is_err() {
                 tracing::trace!("GenServer crashed")
             };
         });
@@ -70,50 +69,41 @@ pub enum GenServerInMsg<G: GenServer> {
 }
 
 pub enum CallResponse<G: GenServer> {
-    Reply(G::State, G::OutMsg),
+    Reply(G, G::OutMsg),
     Unused,
     Stop(G::OutMsg),
 }
 
 pub enum CastResponse<G: GenServer> {
-    NoReply(G::State),
+    NoReply(G),
     Unused,
     Stop,
 }
 
-pub trait GenServer
-where
-    Self: Default + Send + Sized,
-{
+pub trait GenServer: Send + Sized + Clone {
     type CallMsg: Clone + Send + Sized;
     type CastMsg: Clone + Send + Sized;
     type OutMsg: Send + Sized;
-    type State: Clone + Send;
     type Error: Debug;
 
-    fn new() -> Self {
-        Self::default()
-    }
-
-    fn start(initial_state: Self::State) -> GenServerHandle<Self> {
-        GenServerHandle::new(initial_state)
+    fn start(self) -> GenServerHandle<Self> {
+        GenServerHandle::new(self)
     }
 
     /// We copy the same interface as tasks, but all threads can work
     /// while blocking by default
-    fn start_blocking(initial_state: Self::State) -> GenServerHandle<Self> {
-        GenServerHandle::new(initial_state)
+    fn start_blocking(self) -> GenServerHandle<Self> {
+        GenServerHandle::new(self)
     }
 
     fn run(
-        &mut self,
+        self,
         handle: &GenServerHandle<Self>,
         rx: &mut mpsc::Receiver<GenServerInMsg<Self>>,
-        state: Self::State,
     ) -> Result<(), GenServerError> {
-        match self.init(handle, state) {
+        match self.init(handle) {
             Ok(new_state) => {
-                self.main_loop(handle, rx, new_state)?;
+                new_state.main_loop(handle, rx)?;
                 Ok(())
             }
             Err(err) => {
@@ -126,48 +116,40 @@ where
     /// Initialization function. It's called before main loop. It
     /// can be overrided on implementations in case initial steps are
     /// required.
-    fn init(
-        &mut self,
-        _handle: &GenServerHandle<Self>,
-        state: Self::State,
-    ) -> Result<Self::State, Self::Error> {
-        Ok(state)
+    fn init(self, _handle: &GenServerHandle<Self>) -> Result<Self, Self::Error> {
+        Ok(self)
     }
 
     fn main_loop(
-        &mut self,
+        mut self,
         handle: &GenServerHandle<Self>,
         rx: &mut mpsc::Receiver<GenServerInMsg<Self>>,
-        mut state: Self::State,
     ) -> Result<(), GenServerError> {
         loop {
-            let (new_state, cont) = self.receive(handle, rx, state)?;
+            let (new_state, cont) = self.receive(handle, rx)?;
             if !cont {
                 break;
             }
-            state = new_state;
+            self = new_state;
         }
         tracing::trace!("Stopping GenServer");
         Ok(())
     }
 
     fn receive(
-        &mut self,
+        self,
         handle: &GenServerHandle<Self>,
         rx: &mut mpsc::Receiver<GenServerInMsg<Self>>,
-        state: Self::State,
-    ) -> Result<(Self::State, bool), GenServerError> {
+    ) -> Result<(Self, bool), GenServerError> {
         let message = rx.recv().ok();
 
         // Save current state in case of a rollback
-        let state_clone = state.clone();
+        let state_clone = self.clone();
 
         let (keep_running, new_state) = match message {
             Some(GenServerInMsg::Call { sender, message }) => {
                 let (keep_running, new_state, response) =
-                    match catch_unwind(AssertUnwindSafe(|| {
-                        self.handle_call(message, handle, state)
-                    })) {
+                    match catch_unwind(AssertUnwindSafe(|| self.handle_call(message, handle))) {
                         Ok(response) => match response {
                             CallResponse::Reply(new_state, response) => {
                                 (true, new_state, Ok(response))
@@ -192,9 +174,7 @@ where
                 (keep_running, new_state)
             }
             Some(GenServerInMsg::Cast { message }) => {
-                match catch_unwind(AssertUnwindSafe(|| {
-                    self.handle_cast(message, handle, state)
-                })) {
+                match catch_unwind(AssertUnwindSafe(|| self.handle_cast(message, handle))) {
                     Ok(response) => match response {
                         CastResponse::NoReply(new_state) => (true, new_state),
                         CastResponse::Stop => (false, state_clone),
@@ -211,26 +191,24 @@ where
             }
             None => {
                 // Channel has been closed; won't receive further messages. Stop the server.
-                (false, state)
+                (false, self)
             }
         };
         Ok((new_state, keep_running))
     }
 
     fn handle_call(
-        &mut self,
+        self,
         _message: Self::CallMsg,
         _handle: &GenServerHandle<Self>,
-        _state: Self::State,
     ) -> CallResponse<Self> {
         CallResponse::Unused
     }
 
     fn handle_cast(
-        &mut self,
+        self,
         _message: Self::CastMsg,
         _handle: &GenServerHandle<Self>,
-        _state: Self::State,
     ) -> CastResponse<Self> {
         CastResponse::Unused
     }
