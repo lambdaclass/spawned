@@ -1200,6 +1200,7 @@ name = "spawned-concurrency"
 version = "0.1.7"
 dependencies = [
  "futures",
+ "once_cell",
  "spawned-rt",
  "thiserror",
  "tokio",
