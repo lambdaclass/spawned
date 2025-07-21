@@ -8,8 +8,10 @@ use crate::tasks::{
 
 type SummatoryHandle = GenServerHandle<Summatory>;
 
-#[derive(Default)]
-struct Summatory;
+#[derive(Default, Clone)]
+struct Summatory {
+    inner: u16,
+}
 
 type SummatoryState = u16;
 type SummatoryOutMessage = SummatoryState;
@@ -30,32 +32,29 @@ impl GenServer for Summatory {
     type CallMsg = (); // We only handle one type of call, so there is no need for a specific message type.
     type CastMsg = SummatoryCastMessage;
     type OutMsg = SummatoryOutMessage;
-    type State = SummatoryState;
     type Error = ();
 
     async fn handle_cast(
-        &mut self,
+        mut self,
         message: Self::CastMsg,
         _handle: &GenServerHandle<Self>,
-        state: Self::State,
     ) -> CastResponse<Self> {
         match message {
             SummatoryCastMessage::Add(val) => {
-                let new_state = state + val;
-                CastResponse::NoReply(new_state)
+                self.inner += val;
+                CastResponse::NoReply(self)
             }
             SummatoryCastMessage::Stop => CastResponse::Stop,
         }
     }
 
     async fn handle_call(
-        &mut self,
+        self,
         _message: Self::CallMsg,
         _handle: &SummatoryHandle,
-        state: Self::State,
     ) -> CallResponse<Self> {
-        let current_value = state;
-        CallResponse::Reply(state, current_value)
+        let current_value = self.inner;
+        CallResponse::Reply(self, current_value)
     }
 }
 
@@ -69,7 +68,7 @@ fn message_builder(value: u8) -> SummatoryCastMessage {
 pub fn test_sum_numbers_from_stream() {
     let runtime = rt::Runtime::new().unwrap();
     runtime.block_on(async move {
-        let mut summatory_handle = Summatory::start(0);
+        let mut summatory_handle = Summatory::default().start();
         let stream = tokio_stream::iter(vec![1u8, 2, 3, 4, 5].into_iter().map(Ok::<u8, ()>));
 
         spawn_listener(summatory_handle.clone(), message_builder, stream);
@@ -86,7 +85,7 @@ pub fn test_sum_numbers_from_stream() {
 pub fn test_sum_numbers_from_channel() {
     let runtime = rt::Runtime::new().unwrap();
     runtime.block_on(async move {
-        let mut summatory_handle = Summatory::start(0);
+        let mut summatory_handle = Summatory::default().start();
         let (tx, rx) = spawned_rt::tasks::mpsc::channel::<Result<u8, ()>>();
 
         // Spawn a task to send numbers to the channel
@@ -114,7 +113,7 @@ pub fn test_sum_numbers_from_channel() {
 pub fn test_sum_numbers_from_broadcast_channel() {
     let runtime = rt::Runtime::new().unwrap();
     runtime.block_on(async move {
-        let mut summatory_handle = Summatory::start(0);
+        let mut summatory_handle = Summatory::default().start();
         let (tx, rx) = tokio::sync::broadcast::channel::<u8>(5);
 
         // Spawn a task to send numbers to the channel
@@ -144,7 +143,7 @@ pub fn test_stream_cancellation() {
 
     let runtime = rt::Runtime::new().unwrap();
     runtime.block_on(async move {
-        let mut summatory_handle = Summatory::start(0);
+        let mut summatory_handle = Summatory::default().start();
         let (tx, rx) = spawned_rt::tasks::mpsc::channel::<Result<u8, ()>>();
 
         // Spawn a task to send numbers to the channel

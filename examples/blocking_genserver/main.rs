@@ -7,7 +7,7 @@ use spawned_concurrency::tasks::{
 };
 
 // We test a scenario with a badly behaved task#[derive(Default)]
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct BadlyBehavedTask;
 
 #[derive(Clone)]
@@ -24,23 +24,20 @@ impl GenServer for BadlyBehavedTask {
     type CallMsg = InMessage;
     type CastMsg = ();
     type OutMsg = ();
-    type State = ();
     type Error = ();
 
     async fn handle_call(
-        &mut self,
+        self,
         _: Self::CallMsg,
         _: &GenServerHandle<Self>,
-        _: Self::State,
     ) -> CallResponse<Self> {
         CallResponse::Stop(())
     }
 
     async fn handle_cast(
-        &mut self,
+        self,
         _: Self::CastMsg,
         _: &GenServerHandle<Self>,
-        _: Self::State,
     ) -> CastResponse<Self> {
         rt::sleep(Duration::from_millis(20)).await;
         loop {
@@ -50,46 +47,40 @@ impl GenServer for BadlyBehavedTask {
     }
 }
 
-#[derive(Default)]
-struct WellBehavedTask;
-
-#[derive(Clone)]
-struct CountState {
-    pub count: u64,
+#[derive(Default, Clone)]
+struct WellBehavedTask {
+    count: u64,
 }
 
 impl GenServer for WellBehavedTask {
     type CallMsg = InMessage;
     type CastMsg = ();
     type OutMsg = OutMsg;
-    type State = CountState;
     type Error = ();
 
     async fn handle_call(
-        &mut self,
+        self,
         message: Self::CallMsg,
         _: &GenServerHandle<Self>,
-        state: Self::State,
     ) -> CallResponse<Self> {
         match message {
             InMessage::GetCount => {
-                let count = state.count;
-                CallResponse::Reply(state, OutMsg::Count(count))
+                let count = self.count;
+                CallResponse::Reply(self, OutMsg::Count(count))
             }
-            InMessage::Stop => CallResponse::Stop(OutMsg::Count(state.count)),
+            InMessage::Stop => CallResponse::Stop(OutMsg::Count(self.count)),
         }
     }
 
     async fn handle_cast(
-        &mut self,
+        mut self,
         _: Self::CastMsg,
         handle: &GenServerHandle<Self>,
-        mut state: Self::State,
     ) -> CastResponse<Self> {
-        state.count += 1;
+        self.count += 1;
         println!("{:?}: good still alive", thread::current().id());
         send_after(Duration::from_millis(100), handle.to_owned(), ());
-        CastResponse::NoReply(state)
+        CastResponse::NoReply(self)
     }
 }
 
@@ -99,9 +90,9 @@ impl GenServer for WellBehavedTask {
 pub fn main() {
     rt::run(async move {
         // If we change BadlyBehavedTask to start instead, it can stop the entire program
-        let mut badboy = BadlyBehavedTask::start_blocking(());
+        let mut badboy = BadlyBehavedTask.start_blocking();
         let _ = badboy.cast(()).await;
-        let mut goodboy = WellBehavedTask::start(CountState { count: 0 });
+        let mut goodboy = WellBehavedTask { count: 0 }.start();
         let _ = goodboy.cast(()).await;
         rt::sleep(Duration::from_secs(1)).await;
         let count = goodboy.call(InMessage::GetCount).await.unwrap();

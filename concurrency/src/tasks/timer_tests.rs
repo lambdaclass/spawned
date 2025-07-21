@@ -7,12 +7,6 @@ use super::send_after;
 type RepeaterHandle = GenServerHandle<Repeater>;
 
 #[derive(Clone)]
-struct RepeaterState {
-    pub(crate) count: i32,
-    pub(crate) cancellation_token: Option<CancellationToken>,
-}
-
-#[derive(Clone)]
 enum RepeaterCastMessage {
     Inc,
     StopTimer,
@@ -28,8 +22,11 @@ enum RepeaterOutMessage {
     Count(i32),
 }
 
-#[derive(Default)]
-struct Repeater;
+#[derive(Default, Clone)]
+struct Repeater {
+    pub(crate) count: i32,
+    pub(crate) cancellation_token: Option<CancellationToken>,
+}
 
 impl Repeater {
     pub async fn stop_timer(server: &mut RepeaterHandle) -> Result<(), ()> {
@@ -51,50 +48,46 @@ impl GenServer for Repeater {
     type CallMsg = RepeaterCallMessage;
     type CastMsg = RepeaterCastMessage;
     type OutMsg = RepeaterOutMessage;
-    type State = RepeaterState;
     type Error = ();
 
     async fn init(
-        &mut self,
+        mut self,
         handle: &RepeaterHandle,
-        mut state: Self::State,
-    ) -> Result<Self::State, Self::Error> {
+    ) -> Result<Self, Self::Error> {
         let timer = send_interval(
             Duration::from_millis(100),
             handle.clone(),
             RepeaterCastMessage::Inc,
         );
-        state.cancellation_token = Some(timer.cancellation_token);
-        Ok(state)
+        self.cancellation_token = Some(timer.cancellation_token);
+        Ok(self)
     }
 
     async fn handle_call(
-        &mut self,
+        self,
         _message: Self::CallMsg,
         _handle: &RepeaterHandle,
-        state: Self::State,
     ) -> CallResponse<Self> {
-        let count = state.count;
-        CallResponse::Reply(state, RepeaterOutMessage::Count(count))
+        let count = self.count;
+        CallResponse::Reply(self, RepeaterOutMessage::Count(count))
     }
 
     async fn handle_cast(
-        &mut self,
+        mut self,
         message: Self::CastMsg,
         _handle: &GenServerHandle<Self>,
-        mut state: Self::State,
     ) -> CastResponse<Self> {
         match message {
             RepeaterCastMessage::Inc => {
-                state.count += 1;
+                self.count += 1;
             }
             RepeaterCastMessage::StopTimer => {
-                if let Some(ct) = state.cancellation_token.clone() {
+                if let Some(ct) = self.cancellation_token.clone() {
                     ct.cancel()
                 };
             }
         };
-        CastResponse::NoReply(state)
+        CastResponse::NoReply(self)
     }
 }
 
@@ -103,10 +96,7 @@ pub fn test_send_interval_and_cancellation() {
     let runtime = rt::Runtime::new().unwrap();
     runtime.block_on(async move {
         // Start a Repeater
-        let mut repeater = Repeater::start(RepeaterState {
-            count: 0,
-            cancellation_token: None,
-        });
+        let mut repeater = Repeater::default().start();
 
         // Wait for 1 second
         rt::sleep(Duration::from_secs(1)).await;
@@ -134,11 +124,6 @@ pub fn test_send_interval_and_cancellation() {
 type DelayedHandle = GenServerHandle<Delayed>;
 
 #[derive(Clone)]
-struct DelayedState {
-    pub(crate) count: i32,
-}
-
-#[derive(Clone)]
 enum DelayedCastMessage {
     Inc,
 }
@@ -154,8 +139,10 @@ enum DelayedOutMessage {
     Count(i32),
 }
 
-#[derive(Default)]
-struct Delayed;
+#[derive(Default, Clone)]
+struct Delayed {
+    pub(crate) count: i32,
+}
 
 impl Delayed {
     pub async fn get_count(server: &mut DelayedHandle) -> Result<DelayedOutMessage, ()> {
@@ -174,36 +161,33 @@ impl GenServer for Delayed {
     type CallMsg = DelayedCallMessage;
     type CastMsg = DelayedCastMessage;
     type OutMsg = DelayedOutMessage;
-    type State = DelayedState;
     type Error = ();
 
     async fn handle_call(
-        &mut self,
+        self,
         message: Self::CallMsg,
         _handle: &DelayedHandle,
-        state: Self::State,
     ) -> CallResponse<Self> {
         match message {
             DelayedCallMessage::GetCount => {
-                let count = state.count;
-                CallResponse::Reply(state, DelayedOutMessage::Count(count))
+                let count = self.count;
+                CallResponse::Reply(self, DelayedOutMessage::Count(count))
             }
-            DelayedCallMessage::Stop => CallResponse::Stop(DelayedOutMessage::Count(state.count)),
+            DelayedCallMessage::Stop => CallResponse::Stop(DelayedOutMessage::Count(self.count)),
         }
     }
 
     async fn handle_cast(
-        &mut self,
+        mut self,
         message: Self::CastMsg,
         _handle: &DelayedHandle,
-        mut state: Self::State,
     ) -> CastResponse<Self> {
         match message {
             DelayedCastMessage::Inc => {
-                state.count += 1;
+                self.count += 1;
             }
         };
-        CastResponse::NoReply(state)
+        CastResponse::NoReply(self)
     }
 }
 
@@ -212,7 +196,7 @@ pub fn test_send_after_and_cancellation() {
     let runtime = rt::Runtime::new().unwrap();
     runtime.block_on(async move {
         // Start a Delayed
-        let mut repeater = Delayed::start(DelayedState { count: 0 });
+        let mut repeater = Delayed::default().start();
 
         // Set a just once timed message
         let _ = send_after(
@@ -256,7 +240,7 @@ pub fn test_send_after_gen_server_teardown() {
     let runtime = rt::Runtime::new().unwrap();
     runtime.block_on(async move {
         // Start a Delayed
-        let mut repeater = Delayed::start(DelayedState { count: 0 });
+        let mut repeater = Delayed::default().start();
 
         // Set a just once timed message
         let _ = send_after(

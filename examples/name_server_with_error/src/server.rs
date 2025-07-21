@@ -11,8 +11,10 @@ use crate::messages::{NameServerInMessage as InMessage, NameServerOutMessage as 
 type NameServerHandle = GenServerHandle<NameServer>;
 type NameServerState = HashMap<String, String>;
 
-#[derive(Default)]
-pub struct NameServer {}
+#[derive(Default, Clone)]
+pub struct NameServer {
+    pub state: NameServerState,
+}
 
 impl NameServer {
     pub async fn add(server: &mut NameServerHandle, key: String, value: String) -> OutMessage {
@@ -36,29 +38,27 @@ impl GenServer for NameServer {
     type CastMsg = Unused;
     type OutMsg = OutMessage;
     type Error = std::fmt::Error;
-    type State = NameServerState;
 
     async fn handle_call(
-        &mut self,
+        mut self,
         message: Self::CallMsg,
         _handle: &NameServerHandle,
-        mut state: Self::State,
     ) -> CallResponse<Self> {
         match message.clone() {
             Self::CallMsg::Add { key, value } => {
-                state.insert(key.clone(), value);
+                self.state.insert(key.clone(), value);
                 if key == "error" {
                     panic!("error!")
                 } else {
-                    CallResponse::Reply(state, Self::OutMsg::Ok)
+                    CallResponse::Reply(self, Self::OutMsg::Ok)
                 }
             }
-            Self::CallMsg::Find { key } => match state.get(&key) {
+            Self::CallMsg::Find { key } => match self.state.get(&key) {
                 Some(result) => {
                     let value = result.to_string();
-                    CallResponse::Reply(state, Self::OutMsg::Found { value })
+                    CallResponse::Reply(self, Self::OutMsg::Found { value })
                 }
-                None => CallResponse::Reply(state, Self::OutMsg::NotFound),
+                None => CallResponse::Reply(self, Self::OutMsg::NotFound),
             },
         }
     }
