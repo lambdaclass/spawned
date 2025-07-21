@@ -10,12 +10,13 @@ spawned-rt = { workspace = true }
 tracing = { workspace = true }
 futures = "0.3.1"
 thiserror = "2.0.12"
-once_cell = "1.21.3"
 
 [dev-dependencies]
 # This tokio imports are only used in tests, we should not use them in the library code.
 tokio-stream = { version = "0.1.17" }
 tokio = { version = "1", features = ["full"] }
+# Used for the `GenServerRegistry` testing.
+once_cell = "1.21.3"
 
 [lib]
 path = "./src/lib.rs"
