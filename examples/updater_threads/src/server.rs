@@ -11,46 +11,38 @@ use crate::messages::{UpdaterInMessage as InMessage, UpdaterOutMessage as OutMes
 type UpdateServerHandle = GenServerHandle<UpdaterServer>;
 
 #[derive(Clone)]
-pub struct UpdateServerState {
+pub struct UpdaterServer {
     pub url: String,
     pub periodicity: Duration,
 }
-#[derive(Default)]
-pub struct UpdaterServer {}
 
 impl GenServer for UpdaterServer {
     type CallMsg = Unused;
     type CastMsg = InMessage;
     type OutMsg = OutMessage;
     type Error = std::fmt::Error;
-    type State = UpdateServerState;
 
     // Initializing GenServer to start periodic checks.
-    fn init(
-        &mut self,
-        handle: &GenServerHandle<Self>,
-        state: Self::State,
-    ) -> Result<Self::State, Self::Error> {
-        send_after(state.periodicity, handle.clone(), InMessage::Check);
-        Ok(state)
+    fn init(self, handle: &GenServerHandle<Self>) -> Result<Self, Self::Error> {
+        send_after(self.periodicity, handle.clone(), InMessage::Check);
+        Ok(self)
     }
 
     fn handle_cast(
-        &mut self,
+        self,
         message: Self::CastMsg,
         handle: &UpdateServerHandle,
-        state: Self::State,
     ) -> CastResponse<Self> {
         match message {
             Self::CastMsg::Check => {
-                send_after(state.periodicity, handle.clone(), InMessage::Check);
-                let url = state.url.clone();
+                send_after(self.periodicity, handle.clone(), InMessage::Check);
+                let url = self.url.clone();
                 tracing::info!("Fetching: {url}");
                 let resp = block_on(req(url));
 
                 tracing::info!("Response: {resp:?}");
 
-                CastResponse::NoReply(state)
+                CastResponse::NoReply(self)
             }
         }
     }

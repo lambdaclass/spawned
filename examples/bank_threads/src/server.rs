@@ -9,10 +9,19 @@ use crate::messages::{BankError, BankInMessage as InMessage, BankOutMessage as O
 
 type MsgResult = Result<OutMessage, BankError>;
 type BankHandle = GenServerHandle<Bank>;
-type BankState = HashMap<String, i32>;
 
-#[derive(Default)]
-pub struct Bank {}
+#[derive(Clone)]
+pub struct Bank {
+    accounts: HashMap<String, i32>,
+}
+
+impl Bank {
+    pub fn new() -> Self {
+        Bank {
+            accounts: HashMap::new(),
+        }
+    }
+}
 
 impl Bank {
     pub fn stop(server: &mut BankHandle) -> MsgResult {
@@ -45,52 +54,42 @@ impl GenServer for Bank {
     type CastMsg = Unused;
     type OutMsg = MsgResult;
     type Error = BankError;
-    type State = BankState;
 
     // Initializing "main" account with 1000 in balance to test init() callback.
-    fn init(
-        &mut self,
-        _handle: &GenServerHandle<Self>,
-        mut state: Self::State,
-    ) -> Result<Self::State, Self::Error> {
-        state.insert("main".to_string(), 1000);
-        Ok(state)
+    fn init(mut self, _handle: &GenServerHandle<Self>) -> Result<Self, Self::Error> {
+        self.accounts.insert("main".to_string(), 1000);
+        Ok(self)
     }
 
-    fn handle_call(
-        &mut self,
-        message: Self::CallMsg,
-        _handle: &BankHandle,
-        mut state: Self::State,
-    ) -> CallResponse<Self> {
+    fn handle_call(mut self, message: Self::CallMsg, _handle: &BankHandle) -> CallResponse<Self> {
         match message.clone() {
-            Self::CallMsg::New { who } => match state.get(&who) {
+            Self::CallMsg::New { who } => match self.accounts.get(&who) {
                 Some(_amount) => {
-                    CallResponse::Reply(state, Err(BankError::AlreadyACustomer { who }))
+                    CallResponse::Reply(self, Err(BankError::AlreadyACustomer { who }))
                 }
                 None => {
-                    state.insert(who.clone(), 0);
-                    CallResponse::Reply(state, Ok(OutMessage::Welcome { who }))
+                    self.accounts.insert(who.clone(), 0);
+                    CallResponse::Reply(self, Ok(OutMessage::Welcome { who }))
                 }
             },
-            Self::CallMsg::Add { who, amount } => match state.get(&who) {
+            Self::CallMsg::Add { who, amount } => match self.accounts.get(&who) {
                 Some(current) => {
                     let new_amount = current + amount;
-                    state.insert(who.clone(), new_amount);
+                    self.accounts.insert(who.clone(), new_amount);
                     CallResponse::Reply(
-                        state,
+                        self,
                         Ok(OutMessage::Balance {
                             who,
                             amount: new_amount,
                         }),
                     )
                 }
-                None => CallResponse::Reply(state, Err(BankError::NotACustomer { who })),
+                None => CallResponse::Reply(self, Err(BankError::NotACustomer { who })),
             },
-            Self::CallMsg::Remove { who, amount } => match state.get(&who) {
+            Self::CallMsg::Remove { who, amount } => match self.accounts.get(&who) {
                 Some(&current) => match current < amount {
                     true => CallResponse::Reply(
-                        state,
+                        self,
                         Err(BankError::InsufficientBalance {
                             who,
                             amount: current,
@@ -98,9 +97,9 @@ impl GenServer for Bank {
                     ),
                     false => {
                         let new_amount = current - amount;
-                        state.insert(who.clone(), new_amount);
+                        self.accounts.insert(who.clone(), new_amount);
                         CallResponse::Reply(
-                            state,
+                            self,
                             Ok(OutMessage::WidrawOk {
                                 who,
                                 amount: new_amount,
@@ -108,7 +107,7 @@ impl GenServer for Bank {
                         )
                     }
                 },
-                None => CallResponse::Reply(state, Err(BankError::NotACustomer { who })),
+                None => CallResponse::Reply(self, Err(BankError::NotACustomer { who })),
             },
             Self::CallMsg::Stop => CallResponse::Stop(Ok(OutMessage::Stopped)),
         }
