@@ -29,6 +29,15 @@ struct Repeater {
 }
 
 impl Repeater {
+    pub fn new(initial_count: i32) -> Self {
+        Repeater {
+            count: initial_count,
+            cancellation_token: None,
+        }
+    }
+}
+
+impl Repeater {
     pub fn stop_timer(server: &mut RepeaterHandle) -> Result<(), ()> {
         server.cast(RepeaterCastMessage::StopTimer).map_err(|_| ())
     }
@@ -81,11 +90,7 @@ impl GenServer for Repeater {
 #[test]
 pub fn test_send_interval_and_cancellation() {
     // Start a Repeater
-    let mut repeater = Repeater {
-        count: 0,
-        cancellation_token: None,
-    }
-    .start();
+    let mut repeater = Repeater::new(0).start();
 
     // Wait for 1 second
     rt::sleep(Duration::from_secs(1));
@@ -132,6 +137,14 @@ struct Delayed {
 }
 
 impl Delayed {
+    pub fn new(initial_count: i32) -> Self {
+        Delayed {
+            count: initial_count,
+        }
+    }
+}
+
+impl Delayed {
     pub fn get_count(server: &mut DelayedHandle) -> Result<DelayedOutMessage, ()> {
         server.call(DelayedCallMessage::GetCount).map_err(|_| ())
     }
@@ -165,7 +178,7 @@ impl GenServer for Delayed {
 #[test]
 pub fn test_send_after_and_cancellation() {
     // Start a Delayed
-    let mut repeater = Delayed { count: 0 }.start();
+    let mut repeater = Delayed::new(0).start();
 
     // Set a just once timed message
     let _ = send_after(
