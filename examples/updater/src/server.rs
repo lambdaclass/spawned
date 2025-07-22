@@ -47,7 +47,6 @@ impl GenServer for UpdaterServer {
     ) -> CastResponse<Self> {
         match message {
             Self::CastMsg::Check => {
-                //send_after(state.periodicity, handle.clone(), InMessage::Check);
                 let url = self.url.clone();
                 tracing::info!("Fetching: {url}");
                 let resp = req(url).await;
