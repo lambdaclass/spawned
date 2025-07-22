@@ -17,6 +17,16 @@ pub struct UpdaterServer {
     pub timer_token: Option<CancellationToken>,
 }
 
+impl UpdaterServer {
+    pub fn new(url: String, periodicity: Duration) -> Self {
+        UpdaterServer {
+            url,
+            periodicity,
+            timer_token: None,
+        }
+    }
+}
+
 impl GenServer for UpdaterServer {
     type CallMsg = Unused;
     type CastMsg = InMessage;
@@ -24,10 +34,7 @@ impl GenServer for UpdaterServer {
     type Error = std::fmt::Error;
 
     // Initializing GenServer to start periodic checks.
-    async fn init(
-        mut self,
-        handle: &GenServerHandle<Self>,
-    ) -> Result<Self, Self::Error> {
+    async fn init(mut self, handle: &GenServerHandle<Self>) -> Result<Self, Self::Error> {
         let timer = send_interval(self.periodicity, handle.clone(), InMessage::Check);
         self.timer_token = Some(timer.cancellation_token);
         Ok(self)

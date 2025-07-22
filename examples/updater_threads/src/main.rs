@@ -8,7 +8,7 @@ mod server;
 
 use std::{thread, time::Duration};
 
-use server::{UpdaterServer};
+use server::UpdaterServer;
 use spawned_concurrency::threads::GenServer as _;
 use spawned_rt::threads as rt;
 
@@ -17,7 +17,8 @@ fn main() {
         UpdaterServer {
             url: "https://httpbin.org/ip".to_string(),
             periodicity: Duration::from_millis(1000),
-        }.start();
+        }
+        .start();
 
         // giving it some time before ending
         thread::sleep(Duration::from_secs(10));

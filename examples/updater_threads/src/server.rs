@@ -23,10 +23,7 @@ impl GenServer for UpdaterServer {
     type Error = std::fmt::Error;
 
     // Initializing GenServer to start periodic checks.
-    fn init(
-        self,
-        handle: &GenServerHandle<Self>,
-    ) -> Result<Self, Self::Error> {
+    fn init(self, handle: &GenServerHandle<Self>) -> Result<Self, Self::Error> {
         send_after(self.periodicity, handle.clone(), InMessage::Check);
         Ok(self)
     }

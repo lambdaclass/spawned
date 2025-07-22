@@ -29,6 +29,15 @@ struct Repeater {
 }
 
 impl Repeater {
+    pub fn new(initial_count: i32) -> Self {
+        Repeater {
+            count: initial_count,
+            cancellation_token: None,
+        }
+    }
+}
+
+impl Repeater {
     pub async fn stop_timer(server: &mut RepeaterHandle) -> Result<(), ()> {
         server
             .cast(RepeaterCastMessage::StopTimer)
@@ -50,10 +59,7 @@ impl GenServer for Repeater {
     type OutMsg = RepeaterOutMessage;
     type Error = ();
 
-    async fn init(
-        mut self,
-        handle: &RepeaterHandle,
-    ) -> Result<Self, Self::Error> {
+    async fn init(mut self, handle: &RepeaterHandle) -> Result<Self, Self::Error> {
         let timer = send_interval(
             Duration::from_millis(100),
             handle.clone(),
@@ -96,7 +102,7 @@ pub fn test_send_interval_and_cancellation() {
     let runtime = rt::Runtime::new().unwrap();
     runtime.block_on(async move {
         // Start a Repeater
-        let mut repeater = Repeater::default().start();
+        let mut repeater = Repeater::new(0).start();
 
         // Wait for 1 second
         rt::sleep(Duration::from_secs(1)).await;
@@ -142,6 +148,14 @@ enum DelayedOutMessage {
 #[derive(Default, Clone)]
 struct Delayed {
     pub(crate) count: i32,
+}
+
+impl Delayed {
+    pub fn new(initial_count: i32) -> Self {
+        Delayed {
+            count: initial_count,
+        }
+    }
 }
 
 impl Delayed {
@@ -196,7 +210,7 @@ pub fn test_send_after_and_cancellation() {
     let runtime = rt::Runtime::new().unwrap();
     runtime.block_on(async move {
         // Start a Delayed
-        let mut repeater = Delayed::default().start();
+        let mut repeater = Delayed::new(0).start();
 
         // Set a just once timed message
         let _ = send_after(
@@ -240,7 +254,7 @@ pub fn test_send_after_gen_server_teardown() {
     let runtime = rt::Runtime::new().unwrap();
     runtime.block_on(async move {
         // Start a Delayed
-        let mut repeater = Delayed::default().start();
+        let mut repeater = Delayed::new(0).start();
 
         // Set a just once timed message
         let _ = send_after(

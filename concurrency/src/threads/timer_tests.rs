@@ -44,10 +44,7 @@ impl GenServer for Repeater {
     type OutMsg = RepeaterOutMessage;
     type Error = ();
 
-    fn init(
-        mut self,
-        handle: &RepeaterHandle,
-    ) -> Result<Self, Self::Error> {
+    fn init(mut self, handle: &RepeaterHandle) -> Result<Self, Self::Error> {
         let timer = send_interval(
             Duration::from_millis(100),
             handle.clone(),
@@ -57,11 +54,7 @@ impl GenServer for Repeater {
         Ok(self)
     }
 
-    fn handle_call(
-        self,
-        _message: Self::CallMsg,
-        _handle: &RepeaterHandle,
-    ) -> CallResponse<Self> {
+    fn handle_call(self, _message: Self::CallMsg, _handle: &RepeaterHandle) -> CallResponse<Self> {
         let count = self.count;
         CallResponse::Reply(self, RepeaterOutMessage::Count(count))
     }
@@ -91,7 +84,8 @@ pub fn test_send_interval_and_cancellation() {
     let mut repeater = Repeater {
         count: 0,
         cancellation_token: None,
-    }.start();
+    }
+    .start();
 
     // Wait for 1 second
     rt::sleep(Duration::from_secs(1));
@@ -134,7 +128,7 @@ enum DelayedOutMessage {
 
 #[derive(Default, Clone)]
 struct Delayed {
-    pub(crate) count: i32
+    pub(crate) count: i32,
 }
 
 impl Delayed {
@@ -149,11 +143,7 @@ impl GenServer for Delayed {
     type OutMsg = DelayedOutMessage;
     type Error = ();
 
-    fn handle_call(
-        self,
-        _message: Self::CallMsg,
-        _handle: &DelayedHandle,
-    ) -> CallResponse<Self> {
+    fn handle_call(self, _message: Self::CallMsg, _handle: &DelayedHandle) -> CallResponse<Self> {
         let count = self.count;
         CallResponse::Reply(self, DelayedOutMessage::Count(count))
     }

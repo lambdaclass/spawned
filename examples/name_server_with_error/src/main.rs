@@ -23,7 +23,10 @@ use spawned_rt::tasks as rt;
 
 fn main() {
     rt::run(async {
-        let mut name_server = NameServer{state: HashMap::new()}.start();
+        let mut name_server = NameServer {
+            inner: HashMap::new(),
+        }
+        .start();
 
         let result =
             NameServer::add(&mut name_server, "Joe".to_string(), "At Home".to_string()).await;

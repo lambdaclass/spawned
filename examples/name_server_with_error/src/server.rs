@@ -9,11 +9,10 @@ use spawned_concurrency::{
 use crate::messages::{NameServerInMessage as InMessage, NameServerOutMessage as OutMessage};
 
 type NameServerHandle = GenServerHandle<NameServer>;
-type NameServerState = HashMap<String, String>;
 
 #[derive(Default, Clone)]
 pub struct NameServer {
-    pub state: NameServerState,
+    pub inner: HashMap<String, String>,
 }
 
 impl NameServer {
@@ -46,14 +45,14 @@ impl GenServer for NameServer {
     ) -> CallResponse<Self> {
         match message.clone() {
             Self::CallMsg::Add { key, value } => {
-                self.state.insert(key.clone(), value);
+                self.inner.insert(key.clone(), value);
                 if key == "error" {
                     panic!("error!")
                 } else {
                     CallResponse::Reply(self, Self::OutMsg::Ok)
                 }
             }
-            Self::CallMsg::Find { key } => match self.state.get(&key) {
+            Self::CallMsg::Find { key } => match self.inner.get(&key) {
                 Some(result) => {
                     let value = result.to_string();
                     CallResponse::Reply(self, Self::OutMsg::Found { value })

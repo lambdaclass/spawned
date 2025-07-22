@@ -30,7 +30,7 @@ use spawned_rt::threads as rt;
 fn main() {
     rt::run(|| {
         // Starting the bank
-        let mut name_server = Bank::default().start();
+        let mut name_server = Bank::new().start();
 
         // Testing initial balance for "main" account
         let result = Bank::withdraw(&mut name_server, "main".to_string(), 15);

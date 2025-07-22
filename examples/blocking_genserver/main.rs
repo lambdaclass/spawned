@@ -6,15 +6,22 @@ use spawned_concurrency::tasks::{
     CallResponse, CastResponse, GenServer, GenServerHandle, send_after,
 };
 
-// We test a scenario with a badly behaved task#[derive(Default)]
+// We test a scenario with a badly behaved task
 #[derive(Default, Clone)]
 struct BadlyBehavedTask;
+
+impl BadlyBehavedTask {
+    pub fn new() -> Self {
+        BadlyBehavedTask
+    }
+}
 
 #[derive(Clone)]
 pub enum InMessage {
     GetCount,
     Stop,
 }
+
 #[derive(Clone)]
 pub enum OutMsg {
     Count(u64),
@@ -26,19 +33,11 @@ impl GenServer for BadlyBehavedTask {
     type OutMsg = ();
     type Error = ();
 
-    async fn handle_call(
-        self,
-        _: Self::CallMsg,
-        _: &GenServerHandle<Self>,
-    ) -> CallResponse<Self> {
+    async fn handle_call(self, _: Self::CallMsg, _: &GenServerHandle<Self>) -> CallResponse<Self> {
         CallResponse::Stop(())
     }
 
-    async fn handle_cast(
-        self,
-        _: Self::CastMsg,
-        _: &GenServerHandle<Self>,
-    ) -> CastResponse<Self> {
+    async fn handle_cast(self, _: Self::CastMsg, _: &GenServerHandle<Self>) -> CastResponse<Self> {
         rt::sleep(Duration::from_millis(20)).await;
         loop {
             println!("{:?}: bad still alive", thread::current().id());
@@ -50,6 +49,14 @@ impl GenServer for BadlyBehavedTask {
 #[derive(Default, Clone)]
 struct WellBehavedTask {
     count: u64,
+}
+
+impl WellBehavedTask {
+    pub fn new(initial_count: u64) -> Self {
+        WellBehavedTask {
+            count: initial_count,
+        }
+    }
 }
 
 impl GenServer for WellBehavedTask {
@@ -90,9 +97,9 @@ impl GenServer for WellBehavedTask {
 pub fn main() {
     rt::run(async move {
         // If we change BadlyBehavedTask to start instead, it can stop the entire program
-        let mut badboy = BadlyBehavedTask.start_blocking();
+        let mut badboy = BadlyBehavedTask::new().start_blocking();
         let _ = badboy.cast(()).await;
-        let mut goodboy = WellBehavedTask { count: 0 }.start();
+        let mut goodboy = WellBehavedTask::new(0).start();
         let _ = goodboy.cast(()).await;
         rt::sleep(Duration::from_secs(1)).await;
         let count = goodboy.call(InMessage::GetCount).await.unwrap();

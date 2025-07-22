@@ -9,11 +9,18 @@ use crate::messages::{BankError, BankInMessage as InMessage, BankOutMessage as O
 
 type MsgResult = Result<OutMessage, BankError>;
 type BankHandle = GenServerHandle<Bank>;
-type BankState = HashMap<String, i32>;
 
 #[derive(Default, Clone)]
 pub struct Bank {
-    accounts: BankState,
+    accounts: HashMap<String, i32>,
+}
+
+impl Bank {
+    pub fn new() -> Self {
+        Bank {
+            accounts: HashMap::new(),
+        }
+    }
 }
 
 impl Bank {
@@ -53,10 +60,7 @@ impl GenServer for Bank {
     type Error = BankError;
 
     // Initializing "main" account with 1000 in balance to test init() callback.
-    async fn init(
-        mut self,
-        _handle: &GenServerHandle<Self>,
-    ) -> Result<Self, Self::Error> {
+    async fn init(mut self, _handle: &GenServerHandle<Self>) -> Result<Self, Self::Error> {
         self.accounts.insert("main".to_string(), 1000);
         Ok(self)
     }
