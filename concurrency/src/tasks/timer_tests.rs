@@ -22,7 +22,7 @@ enum RepeaterOutMessage {
     Count(i32),
 }
 
-#[derive(Default, Clone)]
+#[derive(Clone)]
 struct Repeater {
     pub(crate) count: i32,
     pub(crate) cancellation_token: Option<CancellationToken>,
@@ -145,7 +145,7 @@ enum DelayedOutMessage {
     Count(i32),
 }
 
-#[derive(Default, Clone)]
+#[derive(Clone)]
 struct Delayed {
     pub(crate) count: i32,
 }

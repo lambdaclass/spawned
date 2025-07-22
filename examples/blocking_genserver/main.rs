@@ -7,7 +7,7 @@ use spawned_concurrency::tasks::{
 };
 
 // We test a scenario with a badly behaved task
-#[derive(Default, Clone)]
+#[derive(Clone)]
 struct BadlyBehavedTask;
 
 impl BadlyBehavedTask {
@@ -46,7 +46,7 @@ impl GenServer for BadlyBehavedTask {
     }
 }
 
-#[derive(Default, Clone)]
+#[derive(Clone)]
 struct WellBehavedTask {
     count: u64,
 }

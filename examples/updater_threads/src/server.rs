@@ -10,7 +10,7 @@ use crate::messages::{UpdaterInMessage as InMessage, UpdaterOutMessage as OutMes
 
 type UpdateServerHandle = GenServerHandle<UpdaterServer>;
 
-#[derive(Default, Clone)]
+#[derive(Clone)]
 pub struct UpdaterServer {
     pub url: String,
     pub periodicity: Duration,

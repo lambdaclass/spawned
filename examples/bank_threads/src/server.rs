@@ -10,7 +10,7 @@ use crate::messages::{BankError, BankInMessage as InMessage, BankOutMessage as O
 type MsgResult = Result<OutMessage, BankError>;
 type BankHandle = GenServerHandle<Bank>;
 
-#[derive(Default, Clone)]
+#[derive(Clone)]
 pub struct Bank {
     accounts: HashMap<String, i32>,
 }

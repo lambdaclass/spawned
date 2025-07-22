@@ -8,7 +8,7 @@ use crate::tasks::{
 
 type SummatoryHandle = GenServerHandle<Summatory>;
 
-#[derive(Default, Clone)]
+#[derive(Clone)]
 struct Summatory {
     count: u16,
 }

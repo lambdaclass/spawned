@@ -10,7 +10,7 @@ use crate::messages::{NameServerInMessage as InMessage, NameServerOutMessage as 
 
 type NameServerHandle = GenServerHandle<NameServer>;
 
-#[derive(Default, Clone)]
+#[derive(Clone)]
 pub struct NameServer {
     pub inner: HashMap<String, String>,
 }
