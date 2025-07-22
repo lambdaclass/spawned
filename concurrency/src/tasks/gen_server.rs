@@ -146,7 +146,6 @@ pub trait GenServer: Send + Sized + Clone {
     ) -> impl Future<Output = Result<(), GenServerError>> + Send {
         async {
             let init_result = self
-                .clone()
                 .init(handle)
                 .await
                 .inspect_err(|err| tracing::error!("Initialization failed: {err:?}"));
@@ -157,10 +156,12 @@ pub trait GenServer: Send + Sized + Clone {
             };
 
             handle.cancellation_token().cancel();
-            if let Err(err) = self.teardown(handle).await {
-                tracing::error!("Error during teardown: {err:?}");
+            if let Ok(final_state) = res {
+                if let Err(err) = final_state.teardown(handle).await {
+                    tracing::error!("Error during teardown: {err:?}");
+                }
             }
-            res
+            Ok(())
         }
     }
 
@@ -178,7 +179,7 @@ pub trait GenServer: Send + Sized + Clone {
         mut self,
         handle: &GenServerHandle<Self>,
         rx: &mut mpsc::Receiver<GenServerInMsg<Self>>,
-    ) -> impl Future<Output = Result<(), GenServerError>> + Send {
+    ) -> impl Future<Output = Result<Self, GenServerError>> + Send {
         async {
             loop {
                 let (new_state, cont) = self.receive(handle, rx).await?;
@@ -188,7 +189,7 @@ pub trait GenServer: Send + Sized + Clone {
                 }
             }
             tracing::trace!("Stopping GenServer");
-            Ok(())
+            Ok(self)
         }
     }
 
