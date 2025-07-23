@@ -22,8 +22,6 @@
 mod messages;
 mod server;
 
-use std::collections::HashMap;
-
 use messages::{BankError, BankOutMessage};
 use server::Bank;
 use spawned_concurrency::threads::GenServer as _;
@@ -32,7 +30,7 @@ use spawned_rt::threads as rt;
 fn main() {
     rt::run(|| {
         // Starting the bank
-        let mut name_server = Bank::start(HashMap::new());
+        let mut name_server = Bank::new().start();
 
         // Testing initial balance for "main" account
         let result = Bank::withdraw(&mut name_server, "main".to_string(), 15);

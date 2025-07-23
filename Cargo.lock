@@ -1197,7 +1197,7 @@ dependencies = [
 
 [[package]]
 name = "spawned-concurrency"
-version = "0.1.7"
+version = "0.2.1"
 dependencies = [
  "futures",
  "once_cell",
@@ -1210,7 +1210,7 @@ dependencies = [
 
 [[package]]
 name = "spawned-rt"
-version = "0.1.7"
+version = "0.2.1"
 dependencies = [
  "crossbeam",
  "tokio",
