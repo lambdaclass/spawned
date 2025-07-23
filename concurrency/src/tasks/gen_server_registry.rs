@@ -31,28 +31,33 @@ pub enum GenServerRegistryError {
 ///     GetBalance,
 /// }
 ///
-/// type BankBalance = i32;
 ///
-/// #[derive(Default)]
-/// struct Bank;
+/// #[derive(Clone)]
+/// struct Bank {
+///     balance: i32,
+/// }
+///
+/// impl Bank {
+///     pub fn new(initial_balance: i32) -> Self {
+///         Bank { balance: initial_balance }
+///     }
+/// }
 ///
 /// impl GenServer for Bank {
 ///     type CallMsg = BankInMessage;
 ///     type CastMsg = ();
-///     type OutMsg = BankBalance;
+///     type OutMsg = i32;
 ///     type Error = ();
-///     type State = BankBalance;
 ///
 ///     async fn handle_call(
-///         &mut self,
+///         self,
 ///         message: Self::CallMsg,
 ///         _handle: &spawned_concurrency::tasks::GenServerHandle<Self>,
-///         state: Self::State,
 ///     ) -> spawned_concurrency::tasks::CallResponse<Self> {
 ///         match message {
 ///             BankInMessage::GetBalance => {
-///                 let balance = state;
-///                 spawned_concurrency::tasks::CallResponse::Reply(state, balance)
+///                 let balance = self.balance;
+///                 spawned_concurrency::tasks::CallResponse::Reply(self, balance)
 ///             }
 ///         }
 ///     }
@@ -64,7 +69,7 @@ pub enum GenServerRegistryError {
 /// fn main() {
 ///     let runtime = rt::Runtime::new().unwrap();
 ///     runtime.block_on(async move {
-///         let some_bank = Bank::start(1000);
+///         let some_bank = Bank::new(1000).start();
 ///
 ///         GENSERVER_DIRECTORY
 ///             .lock()
@@ -163,8 +168,16 @@ mod tests {
 
     type AddressedGenServerHandle = GenServerHandle<AddressedGenServer>;
 
-    #[derive(Default)]
-    struct AddressedGenServer;
+    #[derive(Clone)]
+    struct AddressedGenServer {
+        value: u8,
+    }
+
+    impl AddressedGenServer {
+        pub fn new(value: u8) -> Self {
+            AddressedGenServer { value }
+        }
+    }
 
     #[derive(Clone)]
     enum AddressedGenServerCallMessage {
@@ -175,19 +188,17 @@ mod tests {
         type CallMsg = AddressedGenServerCallMessage;
         type CastMsg = ();
         type OutMsg = u8;
-        type State = u8;
         type Error = ();
 
         async fn handle_call(
-            &mut self,
+            self,
             message: Self::CallMsg,
             _handle: &GenServerHandle<Self>,
-            state: Self::State,
         ) -> crate::tasks::CallResponse<Self> {
             match message {
                 AddressedGenServerCallMessage::GetState => {
-                    let out_msg = state;
-                    crate::tasks::CallResponse::Reply(state, out_msg)
+                    let out_msg = self.value;
+                    crate::tasks::CallResponse::Reply(self, out_msg)
                 }
             }
         }
@@ -202,7 +213,7 @@ mod tests {
                 Lazy::new(|| Mutex::new(GenServerRegistry::new()));
 
             // We create the first server and add it to the directory
-            let gen_one_handle = AddressedGenServer::start(1);
+            let gen_one_handle = AddressedGenServer::new(1).start();
             assert!(GENSERVER_DIRECTORY
                 .lock()
                 .unwrap()
@@ -210,7 +221,7 @@ mod tests {
                 .is_ok());
 
             // We create a second server and add it to the directory
-            let gen_two_handle = AddressedGenServer::start(2);
+            let gen_two_handle = AddressedGenServer::new(2).start();
             assert!(GENSERVER_DIRECTORY
                 .lock()
                 .unwrap()
@@ -267,7 +278,7 @@ mod tests {
                 Lazy::new(|| Mutex::new(GenServerRegistry::new()));
 
             // We create the first server and add it to the directory
-            let gen_one_handle = AddressedGenServer::start(1);
+            let gen_one_handle = AddressedGenServer::new(1).start();
             assert!(GENSERVER_DIRECTORY
                 .lock()
                 .unwrap()
@@ -333,7 +344,7 @@ mod tests {
                 Lazy::new(|| Mutex::new(GenServerRegistry::new()));
 
             // We create the server and add it to the directory
-            let gen_one_handle = AddressedGenServer::start(1);
+            let gen_one_handle = AddressedGenServer::new(1).start();
             assert!(GENSERVER_DIRECTORY
                 .lock()
                 .unwrap()
@@ -357,7 +368,7 @@ mod tests {
             );
 
             // We create a new server and change the entry in the directory
-            let gen_two_handle = AddressedGenServer::start(2);
+            let gen_two_handle = AddressedGenServer::new(2).start();
             assert!(GENSERVER_DIRECTORY
                 .lock()
                 .unwrap()
@@ -392,7 +403,7 @@ mod tests {
                 Lazy::new(|| Mutex::new(GenServerRegistry::new()));
 
             // We create the first server and add it to the directory
-            let gen_one_handle = AddressedGenServer::start(1);
+            let gen_one_handle = AddressedGenServer::new(1).start();
             assert!(GENSERVER_DIRECTORY
                 .lock()
                 .unwrap()
@@ -400,7 +411,7 @@ mod tests {
                 .is_ok());
 
             // We create a second server and add it to the directory
-            let gen_two_handle = AddressedGenServer::start(2);
+            let gen_two_handle = AddressedGenServer::new(2).start();
             assert!(GENSERVER_DIRECTORY
                 .lock()
                 .unwrap()
