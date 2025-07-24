@@ -1,3 +1,6 @@
+// Inspired by ractor pid_registry:
+// https://github.com/slawlor/ractor/blob/main/ractor/src/registry/pid_registry.rs
+
 use dashmap::DashMap;
 use once_cell::sync::OnceCell;
 use std::sync::Arc;
@@ -12,9 +15,9 @@ pub enum GenServerRegistryError {
     ServerNotFound,
 }
 
-// Wrapper trait to allow downcasting of `GenServerHandle.
-// Needed as otherwise `GenServerHandle<G>` is sized does
-// not `dyn` compatible.
+// Wrapper trait to allow downcasting of `GenServerHandle`.
+// Needed as otherwise `GenServerHandle<G>` is sized and
+// thus not `dyn` compatible.
 trait AnyGenServerHandle: Send + Sync {
     fn as_any(&self) -> &dyn std::any::Any;
 }
@@ -28,31 +31,33 @@ impl<G: GenServer + 'static> AnyGenServerHandle for GenServerHandle<G> {
 static GENSERVER_REGISTRY: OnceCell<Arc<DashMap<String, Box<dyn AnyGenServerHandle>>>> =
     OnceCell::new();
 
-pub fn add_registry_entry<G: GenServer + 'static>(
-    address: &str,
-    server_handle: GenServerHandle<G>,
-) {
-    let registry = GENSERVER_REGISTRY.get_or_init(|| Arc::new(DashMap::new()));
-    if registry.contains_key(address) {
-        panic!(
-            "A GenServer is already registered at this address: {}",
-            address
-        );
-    }
-    registry.insert(address.to_string(), Box::new(server_handle));
-}
+pub struct GenServerRegistry;
 
-pub fn get_registry_entry<G: GenServer + 'static>(
-    address: &str,
-) -> Result<GenServerHandle<G>, GenServerRegistryError> {
-    let registry = GENSERVER_REGISTRY.get_or_init(|| Arc::new(DashMap::new()));
-    registry
-        .get(address)
-        .ok_or(GenServerRegistryError::ServerNotFound)?
-        .as_any()
-        .downcast_ref::<GenServerHandle<G>>()
-        .cloned()
-        .ok_or(GenServerRegistryError::ServerNotFound)
+impl GenServerRegistry {
+    pub fn add_entry<G: GenServer + 'static>(
+        address: &str,
+        server_handle: GenServerHandle<G>,
+    ) -> Result<(), GenServerRegistryError> {
+        let registry = GENSERVER_REGISTRY.get_or_init(|| Arc::new(DashMap::new()));
+        if registry.contains_key(address) {
+            return Err(GenServerRegistryError::AddressAlreadyTaken);
+        }
+        registry.insert(address.to_string(), Box::new(server_handle));
+        Ok(())
+    }
+
+    pub fn get_entry<G: GenServer + 'static>(
+        address: &str,
+    ) -> Result<GenServerHandle<G>, GenServerRegistryError> {
+        let registry = GENSERVER_REGISTRY.get_or_init(|| Arc::new(DashMap::new()));
+        registry
+            .get(address)
+            .ok_or(GenServerRegistryError::ServerNotFound)?
+            .as_any()
+            .downcast_ref::<GenServerHandle<G>>()
+            .cloned()
+            .ok_or(GenServerRegistryError::ServerNotFound)
+    }
 }
 
 #[cfg(test)]
@@ -148,15 +153,21 @@ mod tests {
             let lettuce_vegetable_basket = VegetableBasket::new("Lettuce", 20).start();
 
             // We can store different GenServer types in the registry
-            add_registry_entry("banana_fruit_basket", banana_fruit_basket.clone());
-            add_registry_entry("lettuce_vegetable_basket", lettuce_vegetable_basket.clone());
+            assert!(GenServerRegistry::add_entry(
+                "banana_fruit_basket",
+                banana_fruit_basket.clone()
+            )
+            .is_ok());
+            assert!(GenServerRegistry::add_entry(
+                "lettuce_vegetable_basket",
+                lettuce_vegetable_basket.clone(),
+            )
+            .is_ok());
 
             // Retrieve the FruitBasket GenServer
             let mut retrieved_fruit_basket: GenServerHandle<FruitBasket> =
-                get_registry_entry("banana_fruit_basket").unwrap();
-            let call_result = retrieved_fruit_basket
-                .call(InMsg::GetCount)
-                .await;
+                GenServerRegistry::get_entry("banana_fruit_basket").unwrap();
+            let call_result = retrieved_fruit_basket.call(InMsg::GetCount).await;
             assert!(call_result.is_ok());
             if let Ok(OutMsg::Count(count)) = call_result {
                 assert_eq!(count, 10);
@@ -166,11 +177,9 @@ mod tests {
 
             // Retrieve the VegetableBasket GenServer
             let mut retrieved_vegetable_basket: GenServerHandle<VegetableBasket> =
-                get_registry_entry("lettuce_vegetable_basket").unwrap();
+                GenServerRegistry::get_entry("lettuce_vegetable_basket").unwrap();
 
-            let call_result = retrieved_vegetable_basket
-                .call(InMsg::GetCount)
-                .await;
+            let call_result = retrieved_vegetable_basket.call(InMsg::GetCount).await;
             assert!(call_result.is_ok());
             if let Ok(OutMsg::Count(count)) = call_result {
                 assert_eq!(count, 20);
