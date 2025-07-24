@@ -13,7 +13,7 @@ mod stream_tests;
 mod timer_tests;
 
 pub use gen_server::{CallResponse, CastResponse, GenServer, GenServerHandle, GenServerInMsg};
-pub use gen_server_registry::GenServerRegistry;
+pub use gen_server_registry::{add_registry_entry, get_registry_entry};
 pub use process::{send, Process, ProcessInfo};
 pub use stream::spawn_listener;
 pub use time::{send_after, send_interval};
