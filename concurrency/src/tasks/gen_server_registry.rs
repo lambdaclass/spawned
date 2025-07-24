@@ -270,6 +270,15 @@ mod tests {
 
             // Now we update the entry for the fruit basket
             let new_banana_fruit_basket = FruitBasket::new("Banana", 15).start();
+
+            // We can't insert the entry directly
+            assert!(GenServerRegistry::add_entry(
+                "banana_fruit_basket",
+                new_banana_fruit_basket.clone()
+            )
+            .is_err());
+
+            // But we can update it
             assert!(GenServerRegistry::update_entry(
                 "banana_fruit_basket",
                 new_banana_fruit_basket
