@@ -4,7 +4,10 @@ use futures::future::FutureExt as _;
 use spawned_rt::tasks::{self as rt, mpsc, oneshot, timeout, CancellationToken};
 use std::{fmt::Debug, future::Future, panic::AssertUnwindSafe, time::Duration};
 
-use crate::error::GenServerError;
+use crate::{
+    error::GenServerError,
+    tasks::InitResult::{NoSuccess, Success},
+};
 
 const DEFAULT_CALL_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -120,6 +123,11 @@ pub enum CastResponse<G: GenServer> {
     Stop,
 }
 
+pub enum InitResult<G: GenServer> {
+    Success(G),
+    NoSuccess(G),
+}
+
 pub trait GenServer: Send + Sized + Clone {
     type CallMsg: Clone + Send + Sized + Sync;
     type CastMsg: Clone + Send + Sized + Sync;
@@ -145,14 +153,18 @@ pub trait GenServer: Send + Sized + Clone {
         rx: &mut mpsc::Receiver<GenServerInMsg<Self>>,
     ) -> impl Future<Output = Result<(), GenServerError>> + Send {
         async {
-            let init_result = self
-                .init(handle)
-                .await
-                .inspect_err(|err| tracing::error!("Initialization failed: {err:?}"));
-
-            let res = match init_result {
-                Ok(new_state) => new_state.main_loop(handle, rx).await,
-                Err(_) => Err(GenServerError::Initialization),
+            let res = match self.init(handle).await {
+                Ok(Success(new_state)) => new_state.main_loop(handle, rx).await,
+                Ok(NoSuccess(intermediate_state)) => {
+                    // new_state is NoSuccess, this means the initialization failed, but the error was handled
+                    // in callback. No need to report the error.
+                    // Just skip main_loop and return the state to teardown the GenServer
+                    Ok(intermediate_state)
+                }
+                Err(err) => {
+                    tracing::error!("Initialization failed with unhandled error: {err:?}");
+                    Err(GenServerError::Initialization)
+                }
             };
 
             handle.cancellation_token().cancel();
@@ -171,8 +183,8 @@ pub trait GenServer: Send + Sized + Clone {
     fn init(
         self,
         _handle: &GenServerHandle<Self>,
-    ) -> impl Future<Output = Result<Self, Self::Error>> + Send {
-        async { Ok(self) }
+    ) -> impl Future<Output = Result<InitResult<Self>, Self::Error>> + Send {
+        async { Ok(Success(self)) }
     }
 
     fn main_loop(
