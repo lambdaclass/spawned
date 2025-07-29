@@ -150,6 +150,7 @@ pub trait GenServer: Send + Sized + Clone {
     type OutMsg: Send + Sized;
     type Error: Debug + Send;
 
+    /// Starts the GenServer, waiting for it to finalize its `init` process.
     fn start(self) -> Result<GenServerHandle<Self>, GenServerError> {
         GenServerHandle::new(self)
     }
@@ -159,6 +160,7 @@ pub trait GenServer: Send + Sized + Clone {
     /// or other blocking tasks need to be in their own separate thread, and the OS
     /// will manage them through hardware interrupts.
     /// Start blocking provides such thread.
+    /// As with `start`, it waits for the GenServer to finalize its `init` process.
     fn start_blocking(self) -> Result<GenServerHandle<Self>, GenServerError> {
         GenServerHandle::new_blocking(self)
     }
@@ -177,11 +179,15 @@ pub trait GenServer: Send + Sized + Clone {
 
             let res = match init_result {
                 Ok(new_state) => {
-                    start_signal_tx.send(true).map_err(|_| GenServerError::Initialization)?;
+                    start_signal_tx
+                        .send(true)
+                        .map_err(|_| GenServerError::Initialization)?;
                     new_state.main_loop(handle, rx).await
-                },
+                }
                 Err(_) => {
-                    start_signal_tx.send(false).map_err(|_| GenServerError::Initialization)?;
+                    start_signal_tx
+                        .send(false)
+                        .map_err(|_| GenServerError::Initialization)?;
                     Err(GenServerError::Initialization)
                 }
             };
