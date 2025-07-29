@@ -243,8 +243,9 @@ pub trait GenServer: Send + Sized + Clone {
 
             let res = match init_result {
                 Ok(new_state) => {
+                    // Notify that the GenServer has started successfully
+                    // in case we have a start signal channel
                     if let Some(start_signal_tx) = start_signal_tx {
-                        // Notify that the GenServer has started successfully
                         start_signal_tx
                             .send(true)
                             .map_err(|_| GenServerError::Initialization)?;
@@ -252,8 +253,9 @@ pub trait GenServer: Send + Sized + Clone {
                     new_state.main_loop(handle, rx).await
                 }
                 Err(_) => {
+                    // Notify that the GenServer failed to start
+                    // in case we have a start signal channel
                     if let Some(start_signal_tx) = start_signal_tx {
-                        // Notify that the GenServer failed to start
                         start_signal_tx
                             .send(false)
                             .map_err(|_| GenServerError::Initialization)?;
