@@ -102,7 +102,7 @@ pub fn test_send_interval_and_cancellation() {
     let runtime = rt::Runtime::new().unwrap();
     runtime.block_on(async move {
         // Start a Repeater
-        let mut repeater = Repeater::new(0).start();
+        let mut repeater = Repeater::new(0).start().unwrap();
 
         // Wait for 1 second
         rt::sleep(Duration::from_secs(1)).await;
@@ -210,7 +210,7 @@ pub fn test_send_after_and_cancellation() {
     let runtime = rt::Runtime::new().unwrap();
     runtime.block_on(async move {
         // Start a Delayed
-        let mut repeater = Delayed::new(0).start();
+        let mut repeater = Delayed::new(0).start().unwrap();
 
         // Set a just once timed message
         let _ = send_after(
@@ -254,7 +254,7 @@ pub fn test_send_after_gen_server_teardown() {
     let runtime = rt::Runtime::new().unwrap();
     runtime.block_on(async move {
         // Start a Delayed
-        let mut repeater = Delayed::new(0).start();
+        let mut repeater = Delayed::new(0).start().unwrap();
 
         // Set a just once timed message
         let _ = send_after(
