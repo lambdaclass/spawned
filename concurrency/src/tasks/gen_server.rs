@@ -500,4 +500,32 @@ mod tests {
             assert!(matches!(result, Err(GenServerError::CallTimeout)));
         });
     }
+
+    #[derive(Clone)]
+    struct FailsOnInitTask;
+
+    impl GenServer for FailsOnInitTask {
+        type CallMsg = ();
+        type CastMsg = ();
+        type OutMsg = ();
+        type Error = ();
+
+        async fn init(self, _handle: &GenServerHandle<Self>) -> Result<Self, Self::Error> {
+            Err(())
+        }
+    }
+
+    #[test]
+    pub fn failing_on_init_task() {
+        let runtime = rt::Runtime::new().unwrap();
+        runtime.block_on(async move {
+            // Attempt to start a GenServer that fails on initialization
+            let result = FailsOnInitTask.start();
+            assert!(matches!(result, Err(GenServerError::Initialization)));
+
+            // Other tasks should start correctly
+            let result = WellBehavedTask { count: 0 }.start();
+            assert!(result.is_ok());
+        });
+    }
 }
