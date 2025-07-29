@@ -601,8 +601,16 @@ mod tests {
             let result = FailsOnInitTask.verified_start();
             assert!(matches!(result, Err(GenServerError::Initialization)));
 
+            // Attempt to start a GenServer (in a blocking way) that fails on initialization
+            let result = FailsOnInitTask.verified_start_blocking();
+            assert!(matches!(result, Err(GenServerError::Initialization)));
+
             // Other tasks should start correctly
             let result = WellBehavedTask { count: 0 }.verified_start();
+            assert!(result.is_ok());
+
+            // They also should start in blocking mode
+            let result = WellBehavedTask { count: 0 }.verified_start_blocking();
             assert!(result.is_ok());
         });
     }
