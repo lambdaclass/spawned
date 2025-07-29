@@ -73,7 +73,7 @@ fn message_builder(value: u8) -> SummatoryCastMessage {
 pub fn test_sum_numbers_from_stream() {
     let runtime = rt::Runtime::new().unwrap();
     runtime.block_on(async move {
-        let mut summatory_handle = Summatory::new(0).start();
+        let mut summatory_handle = Summatory::new(0).start().unwrap();
         let stream = tokio_stream::iter(vec![1u8, 2, 3, 4, 5].into_iter().map(Ok::<u8, ()>));
 
         spawn_listener(summatory_handle.clone(), message_builder, stream);
@@ -90,7 +90,7 @@ pub fn test_sum_numbers_from_stream() {
 pub fn test_sum_numbers_from_channel() {
     let runtime = rt::Runtime::new().unwrap();
     runtime.block_on(async move {
-        let mut summatory_handle = Summatory::new(0).start();
+        let mut summatory_handle = Summatory::new(0).start().unwrap();
         let (tx, rx) = spawned_rt::tasks::mpsc::channel::<Result<u8, ()>>();
 
         // Spawn a task to send numbers to the channel
@@ -118,7 +118,7 @@ pub fn test_sum_numbers_from_channel() {
 pub fn test_sum_numbers_from_broadcast_channel() {
     let runtime = rt::Runtime::new().unwrap();
     runtime.block_on(async move {
-        let mut summatory_handle = Summatory::new(0).start();
+        let mut summatory_handle = Summatory::new(0).start().unwrap();
         let (tx, rx) = tokio::sync::broadcast::channel::<u8>(5);
 
         // Spawn a task to send numbers to the channel
@@ -148,7 +148,7 @@ pub fn test_stream_cancellation() {
 
     let runtime = rt::Runtime::new().unwrap();
     runtime.block_on(async move {
-        let mut summatory_handle = Summatory::new(0).start();
+        let mut summatory_handle = Summatory::new(0).start().unwrap();
         let (tx, rx) = spawned_rt::tasks::mpsc::channel::<Result<u8, ()>>();
 
         // Spawn a task to send numbers to the channel

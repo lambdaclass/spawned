@@ -97,9 +97,9 @@ impl GenServer for WellBehavedTask {
 pub fn main() {
     rt::run(async move {
         // If we change BadlyBehavedTask to start instead, it can stop the entire program
-        let mut badboy = BadlyBehavedTask::new().start_blocking();
+        let mut badboy = BadlyBehavedTask::new().start_blocking().unwrap();
         let _ = badboy.cast(()).await;
-        let mut goodboy = WellBehavedTask::new(0).start();
+        let mut goodboy = WellBehavedTask::new(0).start().unwrap();
         let _ = goodboy.cast(()).await;
         rt::sleep(Duration::from_secs(1)).await;
         let count = goodboy.call(InMessage::GetCount).await.unwrap();

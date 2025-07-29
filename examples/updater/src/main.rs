@@ -19,7 +19,8 @@ fn main() {
             "https://httpbin.org/ip".to_string(),
             Duration::from_millis(1000),
         )
-        .start();
+        .start()
+        .unwrap();
 
         // giving it some time before ending
         thread::sleep(Duration::from_secs(10));

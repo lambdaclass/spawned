@@ -26,7 +26,8 @@ fn main() {
         let mut name_server = NameServer {
             inner: HashMap::new(),
         }
-        .start();
+        .start()
+        .unwrap();
 
         let result =
             NameServer::add(&mut name_server, "Joe".to_string(), "At Home".to_string()).await;
