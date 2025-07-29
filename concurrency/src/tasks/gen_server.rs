@@ -33,14 +33,12 @@ impl<G: GenServer> GenServerHandle<G> {
             cancellation_token,
         };
         let handle_clone = handle.clone();
-
         // Ignore the JoinHandle for now. Maybe we'll use it in the future
         let _join_handle = rt::spawn(async move {
             if gen_server.run(&handle, &mut rx, None).await.is_err() {
                 tracing::trace!("GenServer crashed")
             };
         });
-
         handle_clone
     }
 
@@ -84,7 +82,6 @@ impl<G: GenServer> GenServerHandle<G> {
             cancellation_token,
         };
         let handle_clone = handle.clone();
-
         // Ignore the JoinHandle for now. Maybe we'll use it in the future
         let _join_handle = rt::spawn_blocking(|| {
             rt::block_on(async move {
@@ -93,7 +90,6 @@ impl<G: GenServer> GenServerHandle<G> {
                 };
             })
         });
-
         handle_clone
     }
 
