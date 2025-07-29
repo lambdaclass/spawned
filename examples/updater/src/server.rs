@@ -2,7 +2,10 @@ use std::time::Duration;
 
 use spawned_concurrency::{
     messages::Unused,
-    tasks::{send_interval, CastResponse, GenServer, GenServerHandle},
+    tasks::{
+        send_interval, CastResponse, GenServer, GenServerHandle,
+        InitResult::{self, Success},
+    },
 };
 use spawned_rt::tasks::CancellationToken;
 
@@ -34,10 +37,13 @@ impl GenServer for UpdaterServer {
     type Error = std::fmt::Error;
 
     // Initializing GenServer to start periodic checks.
-    async fn init(mut self, handle: &GenServerHandle<Self>) -> Result<Self, Self::Error> {
+    async fn init(
+        mut self,
+        handle: &GenServerHandle<Self>,
+    ) -> Result<InitResult<Self>, Self::Error> {
         let timer = send_interval(self.periodicity, handle.clone(), InMessage::Check);
         self.timer_token = Some(timer.cancellation_token);
-        Ok(self)
+        Ok(Success(self))
     }
 
     async fn handle_cast(
