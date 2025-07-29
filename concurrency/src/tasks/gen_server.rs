@@ -25,7 +25,26 @@ impl<G: GenServer> Clone for GenServerHandle<G> {
 }
 
 impl<G: GenServer> GenServerHandle<G> {
-    pub(crate) fn new(gen_server: G) -> Result<Self, GenServerError> {
+    pub(crate) fn new(gen_server: G) -> Self {
+        let (tx, mut rx) = mpsc::channel::<GenServerInMsg<G>>();
+        let cancellation_token = CancellationToken::new();
+        let handle = GenServerHandle {
+            tx,
+            cancellation_token,
+        };
+        let handle_clone = handle.clone();
+
+        // Ignore the JoinHandle for now. Maybe we'll use it in the future
+        let _join_handle = rt::spawn(async move {
+            if gen_server.run(&handle, &mut rx, None).await.is_err() {
+                tracing::trace!("GenServer crashed")
+            };
+        });
+
+        handle_clone
+    }
+
+    pub(crate) fn verified_new(gen_server: G) -> Result<Self, GenServerError> {
         let (tx, mut rx) = mpsc::channel::<GenServerInMsg<G>>();
         let cancellation_token = CancellationToken::new();
         let handle = GenServerHandle {
@@ -39,7 +58,7 @@ impl<G: GenServer> GenServerHandle<G> {
         // Ignore the JoinHandle for now. Maybe we'll use it in the future
         let join_handle = rt::spawn(async move {
             if gen_server
-                .run(&handle, &mut rx, &mut start_signal_tx)
+                .run(&handle, &mut rx, Some(&mut start_signal_tx))
                 .await
                 .is_err()
             {
@@ -57,7 +76,28 @@ impl<G: GenServer> GenServerHandle<G> {
         }
     }
 
-    pub(crate) fn new_blocking(gen_server: G) -> Result<Self, GenServerError> {
+    pub(crate) fn new_blocking(gen_server: G) -> Self {
+        let (tx, mut rx) = mpsc::channel::<GenServerInMsg<G>>();
+        let cancellation_token = CancellationToken::new();
+        let handle = GenServerHandle {
+            tx,
+            cancellation_token,
+        };
+        let handle_clone = handle.clone();
+
+        // Ignore the JoinHandle for now. Maybe we'll use it in the future
+        let _join_handle = rt::spawn_blocking(|| {
+            rt::block_on(async move {
+                if gen_server.run(&handle, &mut rx, None).await.is_err() {
+                    tracing::trace!("GenServer crashed")
+                };
+            })
+        });
+
+        handle_clone
+    }
+
+    pub(crate) fn verified_new_blocking(gen_server: G) -> Result<Self, GenServerError> {
         let (tx, mut rx) = mpsc::channel::<GenServerInMsg<G>>();
         let cancellation_token = CancellationToken::new();
         let handle = GenServerHandle {
@@ -67,11 +107,13 @@ impl<G: GenServer> GenServerHandle<G> {
         let handle_clone = handle.clone();
 
         // We create a channel of single use to signal when the GenServer has started.
+        // This channel is used in the verified method, here it's just to keep the API consistent.
+        // The handle is thereby returned immediately, without waiting for the GenServer to start.
         let (mut start_signal_tx, start_signal_rx) = std::sync::mpsc::channel();
         let join_handle = rt::spawn_blocking(|| {
             rt::block_on(async move {
                 if gen_server
-                    .run(&handle, &mut rx, &mut start_signal_tx)
+                    .run(&handle, &mut rx, Some(&mut start_signal_tx))
                     .await
                     .is_err()
                 {
@@ -155,9 +197,14 @@ pub trait GenServer: Send + Sized + Clone {
     type OutMsg: Send + Sized;
     type Error: Debug + Send;
 
-    /// Starts the GenServer, waiting for it to finalize its `init` process.
-    fn start(self) -> Result<GenServerHandle<Self>, GenServerError> {
+    /// Starts the GenServer, without waiting for it to finalize its `init` process.
+    fn start(self) -> GenServerHandle<Self> {
         GenServerHandle::new(self)
+    }
+
+    /// Starts the GenServer, waiting for it to finalize its `init` process.
+    fn verified_start(self) -> Result<GenServerHandle<Self>, GenServerError> {
+        GenServerHandle::verified_new(self)
     }
 
     /// Tokio tasks depend on a coolaborative multitasking model. "work stealing" can't
@@ -165,16 +212,28 @@ pub trait GenServer: Send + Sized + Clone {
     /// or other blocking tasks need to be in their own separate thread, and the OS
     /// will manage them through hardware interrupts.
     /// Start blocking provides such thread.
-    /// As with `start`, it waits for the GenServer to finalize its `init` process.
-    fn start_blocking(self) -> Result<GenServerHandle<Self>, GenServerError> {
+    ///
+    /// As with `start`, it doesn't wait for the GenServer to finalize its `init` process.
+    fn start_blocking(self) -> GenServerHandle<Self> {
         GenServerHandle::new_blocking(self)
+    }
+
+    /// Tokio tasks depend on a coolaborative multitasking model. "work stealing" can't
+    /// happen if the task is blocking the thread. As such, for sync compute task
+    /// or other blocking tasks need to be in their own separate thread, and the OS
+    /// will manage them through hardware interrupts.
+    /// Start blocking provides such thread.
+    ///
+    /// As with `verified_start`, it waits for the GenServer to finalize its `init` process.
+    fn verified_start_blocking(self) -> Result<GenServerHandle<Self>, GenServerError> {
+        GenServerHandle::verified_new_blocking(self)
     }
 
     fn run(
         self,
         handle: &GenServerHandle<Self>,
         rx: &mut mpsc::Receiver<GenServerInMsg<Self>>,
-        start_signal_tx: &mut std::sync::mpsc::Sender<bool>,
+        start_signal_tx: Option<&mut std::sync::mpsc::Sender<bool>>,
     ) -> impl Future<Output = Result<(), GenServerError>> + Send {
         async {
             let init_result = self
@@ -184,15 +243,21 @@ pub trait GenServer: Send + Sized + Clone {
 
             let res = match init_result {
                 Ok(new_state) => {
-                    start_signal_tx
-                        .send(true)
-                        .map_err(|_| GenServerError::Initialization)?;
+                    if let Some(start_signal_tx) = start_signal_tx {
+                        // Notify that the GenServer has started successfully
+                        start_signal_tx
+                            .send(true)
+                            .map_err(|_| GenServerError::Initialization)?;
+                    }
                     new_state.main_loop(handle, rx).await
                 }
                 Err(_) => {
-                    start_signal_tx
-                        .send(false)
-                        .map_err(|_| GenServerError::Initialization)?;
+                    if let Some(start_signal_tx) = start_signal_tx {
+                        // Notify that the GenServer failed to start
+                        start_signal_tx
+                            .send(false)
+                            .map_err(|_| GenServerError::Initialization)?;
+                    }
                     Err(GenServerError::Initialization)
                 }
             };
@@ -421,9 +486,9 @@ mod tests {
     pub fn badly_behaved_thread_non_blocking() {
         let runtime = rt::Runtime::new().unwrap();
         runtime.block_on(async move {
-            let mut badboy = BadlyBehavedTask.start().unwrap();
+            let mut badboy = BadlyBehavedTask.start();
             let _ = badboy.cast(()).await;
-            let mut goodboy = WellBehavedTask { count: 0 }.start().unwrap();
+            let mut goodboy = WellBehavedTask { count: 0 }.start();
             let _ = goodboy.cast(()).await;
             rt::sleep(Duration::from_secs(1)).await;
             let count = goodboy.call(InMessage::GetCount).await.unwrap();
@@ -441,9 +506,9 @@ mod tests {
     pub fn badly_behaved_thread() {
         let runtime = rt::Runtime::new().unwrap();
         runtime.block_on(async move {
-            let mut badboy = BadlyBehavedTask.start_blocking().unwrap();
+            let mut badboy = BadlyBehavedTask.start_blocking();
             let _ = badboy.cast(()).await;
-            let mut goodboy = WellBehavedTask { count: 0 }.start().unwrap();
+            let mut goodboy = WellBehavedTask { count: 0 }.start();
             let _ = goodboy.cast(()).await;
             rt::sleep(Duration::from_secs(1)).await;
             let count = goodboy.call(InMessage::GetCount).await.unwrap();
@@ -498,7 +563,7 @@ mod tests {
     pub fn unresolving_task_times_out() {
         let runtime = rt::Runtime::new().unwrap();
         runtime.block_on(async move {
-            let mut unresolving_task = SomeTask.start().unwrap();
+            let mut unresolving_task = SomeTask.start();
 
             let result = unresolving_task
                 .call_with_timeout(SomeTaskCallMsg::FastOperation, TIMEOUT_DURATION)
@@ -531,11 +596,11 @@ mod tests {
         let runtime = rt::Runtime::new().unwrap();
         runtime.block_on(async move {
             // Attempt to start a GenServer that fails on initialization
-            let result = FailsOnInitTask.start();
+            let result = FailsOnInitTask.verified_start();
             assert!(matches!(result, Err(GenServerError::Initialization)));
 
             // Other tasks should start correctly
-            let result = WellBehavedTask { count: 0 }.start();
+            let result = WellBehavedTask { count: 0 }.verified_start();
             assert!(result.is_ok());
         });
     }

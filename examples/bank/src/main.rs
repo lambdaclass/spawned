@@ -30,7 +30,7 @@ use spawned_rt::tasks as rt;
 fn main() {
     rt::run(async {
         // Starting the bank
-        let mut name_server = Bank::new().start().unwrap();
+        let mut name_server = Bank::new().start();
 
         // Testing initial balance for "main" account
         let result = Bank::withdraw(&mut name_server, "main".to_string(), 15).await;
