@@ -37,7 +37,7 @@ impl<G: GenServer> GenServerHandle<G> {
         // We create a channel of single use to signal when the GenServer has started.
         let (mut start_signal_tx, start_signal_rx) = std::sync::mpsc::channel();
         // Ignore the JoinHandle for now. Maybe we'll use it in the future
-        let _join_handle = rt::spawn(async move {
+        let join_handle = rt::spawn(async move {
             if gen_server
                 .run(&handle, &mut rx, &mut start_signal_tx)
                 .await
@@ -50,7 +50,10 @@ impl<G: GenServer> GenServerHandle<G> {
         // Wait for the GenServer to signal us that it has started
         match start_signal_rx.recv() {
             Ok(true) => Ok(handle_clone),
-            _ => Err(GenServerError::Initialization),
+            _ => {
+                join_handle.abort(); // Abort the task even tho we know it won't run anymore
+                Err(GenServerError::Initialization)
+            }
         }
     }
 
@@ -65,8 +68,7 @@ impl<G: GenServer> GenServerHandle<G> {
 
         // We create a channel of single use to signal when the GenServer has started.
         let (mut start_signal_tx, start_signal_rx) = std::sync::mpsc::channel();
-        // Ignore the JoinHandle for now. Maybe we'll use it in the future
-        let _join_handle = rt::spawn_blocking(|| {
+        let join_handle = rt::spawn_blocking(|| {
             rt::block_on(async move {
                 if gen_server
                     .run(&handle, &mut rx, &mut start_signal_tx)
@@ -81,7 +83,10 @@ impl<G: GenServer> GenServerHandle<G> {
         // Wait for the GenServer to signal us that it has started
         match start_signal_rx.recv() {
             Ok(true) => Ok(handle_clone),
-            _ => Err(GenServerError::Initialization),
+            _ => {
+                join_handle.abort(); // Abort the task even tho we know it won't run anymore
+                Err(GenServerError::Initialization)
+            }
         }
     }
 
