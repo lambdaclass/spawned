@@ -47,7 +47,7 @@ impl<G: GenServer> GenServerHandle<G> {
             };
         });
 
-        // Briefly block until the GenServer signals us that it has started
+        // Wait for the GenServer to signal us that it has started
         match start_signal_rx.recv() {
             Ok(true) => Ok(handle_clone),
             _ => Err(GenServerError::Initialization),
@@ -78,7 +78,7 @@ impl<G: GenServer> GenServerHandle<G> {
             })
         });
 
-        // Briefly block until the GenServer signals us that it has started
+        // Wait for the GenServer to signal us that it has started
         match start_signal_rx.recv() {
             Ok(true) => Ok(handle_clone),
             _ => Err(GenServerError::Initialization),
@@ -177,12 +177,11 @@ pub trait GenServer: Send + Sized + Clone {
 
             let res = match init_result {
                 Ok(new_state) => {
-                    start_signal_tx.send(true).unwrap(); // TODO: REMOVE UNWRAP
+                    start_signal_tx.send(true).map_err(|_| GenServerError::Initialization)?;
                     new_state.main_loop(handle, rx).await
                 },
                 Err(_) => {
-                    // Signal the spawner that the initialization failed
-                    start_signal_tx.send(false).unwrap(); // TODO: REMOVE UNWRAP
+                    start_signal_tx.send(false).map_err(|_| GenServerError::Initialization)?;
                     Err(GenServerError::Initialization)
                 }
             };
