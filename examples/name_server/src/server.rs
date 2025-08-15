@@ -9,7 +9,6 @@ use crate::messages::{NameServerInMessage as InMessage, NameServerOutMessage as 
 
 type NameServerHandle = GenServerHandle<NameServer>;
 
-#[derive(Clone)]
 pub struct NameServer {
     inner: HashMap<String, String>,
 }
@@ -45,21 +44,21 @@ impl GenServer for NameServer {
     type Error = std::fmt::Error;
 
     async fn handle_call(
-        mut self,
+        &mut self,
         message: Self::CallMsg,
         _handle: &NameServerHandle,
     ) -> CallResponse<Self> {
         match message.clone() {
             Self::CallMsg::Add { key, value } => {
                 self.inner.insert(key, value);
-                CallResponse::Reply(self, Self::OutMsg::Ok)
+                CallResponse::Reply(Self::OutMsg::Ok)
             }
             Self::CallMsg::Find { key } => match self.inner.get(&key) {
                 Some(result) => {
                     let value = result.to_string();
-                    CallResponse::Reply(self, Self::OutMsg::Found { value })
+                    CallResponse::Reply(Self::OutMsg::Found { value })
                 }
-                None => CallResponse::Reply(self, Self::OutMsg::NotFound),
+                None => CallResponse::Reply(Self::OutMsg::NotFound),
             },
         }
     }

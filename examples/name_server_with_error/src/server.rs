@@ -10,7 +10,6 @@ use crate::messages::{NameServerInMessage as InMessage, NameServerOutMessage as 
 
 type NameServerHandle = GenServerHandle<NameServer>;
 
-#[derive(Clone)]
 pub struct NameServer {
     pub inner: HashMap<String, String>,
 }
@@ -25,10 +24,7 @@ impl NameServer {
     }
 
     pub async fn find(server: &mut NameServerHandle, key: String) -> OutMessage {
-        server
-            .call(InMessage::Find { key })
-            .await
-            .unwrap_or(OutMessage::ServerError)
+        server.call(InMessage::Find { key }).await.unwrap()
     }
 }
 
@@ -39,7 +35,7 @@ impl GenServer for NameServer {
     type Error = std::fmt::Error;
 
     async fn handle_call(
-        mut self,
+        &mut self,
         message: Self::CallMsg,
         _handle: &NameServerHandle,
     ) -> CallResponse<Self> {
@@ -49,16 +45,22 @@ impl GenServer for NameServer {
                 if key == "error" {
                     panic!("error!")
                 } else {
-                    CallResponse::Reply(self, Self::OutMsg::Ok)
+                    CallResponse::Reply(Self::OutMsg::Ok)
                 }
             }
-            Self::CallMsg::Find { key } => match self.inner.get(&key) {
-                Some(result) => {
-                    let value = result.to_string();
-                    CallResponse::Reply(self, Self::OutMsg::Found { value })
+            Self::CallMsg::Find { key } => {
+                if key == "stop" {
+                    CallResponse::Stop(Self::OutMsg::NotFound)
+                } else {
+                    match self.inner.get(&key) {
+                        Some(result) => {
+                            let value = result.to_string();
+                            CallResponse::Reply(Self::OutMsg::Found { value })
+                        }
+                        None => CallResponse::Reply(Self::OutMsg::NotFound),
+                    }
                 }
-                None => CallResponse::Reply(self, Self::OutMsg::NotFound),
-            },
+            }
         }
     }
 }

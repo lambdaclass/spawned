@@ -26,7 +26,7 @@ fn main() {
         let mut name_server = NameServer {
             inner: HashMap::new(),
         }
-        .start();
+        .start_blocking();
 
         let result =
             NameServer::add(&mut name_server, "Joe".to_string(), "At Home".to_string()).await;
@@ -62,5 +62,11 @@ fn main() {
             NameServerOutMessage::NotFound,
             "Value must not be present as there was an error inserting it."
         );
+
+        let result = NameServer::find(&mut name_server, "stop".to_string()).await;
+        tracing::info!("Retrieving value result: {result:?}");
+
+        let result = NameServer::find(&mut name_server, "Joe".to_string()).await;
+        tracing::info!("Retrieving value result: {result:?}");
     })
 }

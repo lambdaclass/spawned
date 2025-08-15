@@ -13,7 +13,6 @@ use crate::messages::{UpdaterInMessage as InMessage, UpdaterOutMessage as OutMes
 
 type UpdateServerHandle = GenServerHandle<UpdaterServer>;
 
-#[derive(Clone)]
 pub struct UpdaterServer {
     pub url: String,
     pub periodicity: Duration,
@@ -47,17 +46,17 @@ impl GenServer for UpdaterServer {
     }
 
     async fn handle_cast(
-        self,
+        &mut self,
         message: Self::CastMsg,
         _handle: &UpdateServerHandle,
-    ) -> CastResponse<Self> {
+    ) -> CastResponse {
         match message {
             Self::CastMsg::Check => {
                 let url = self.url.clone();
                 tracing::info!("Fetching: {url}");
                 let resp = req(url).await;
                 tracing::info!("Response: {resp:?}");
-                CastResponse::NoReply(self)
+                CastResponse::NoReply
             }
         }
     }

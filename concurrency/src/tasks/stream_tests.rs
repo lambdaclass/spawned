@@ -8,7 +8,6 @@ use crate::tasks::{
 
 type SummatoryHandle = GenServerHandle<Summatory>;
 
-#[derive(Clone)]
 struct Summatory {
     count: u16,
 }
@@ -40,26 +39,26 @@ impl GenServer for Summatory {
     type Error = ();
 
     async fn handle_cast(
-        mut self,
+        &mut self,
         message: Self::CastMsg,
         _handle: &GenServerHandle<Self>,
-    ) -> CastResponse<Self> {
+    ) -> CastResponse {
         match message {
             SummatoryCastMessage::Add(val) => {
                 self.count += val;
-                CastResponse::NoReply(self)
+                CastResponse::NoReply
             }
             SummatoryCastMessage::Stop => CastResponse::Stop,
         }
     }
 
     async fn handle_call(
-        self,
+        &mut self,
         _message: Self::CallMsg,
         _handle: &SummatoryHandle,
     ) -> CallResponse<Self> {
         let current_value = self.count;
-        CallResponse::Reply(self, current_value)
+        CallResponse::Reply(current_value)
     }
 }
 
