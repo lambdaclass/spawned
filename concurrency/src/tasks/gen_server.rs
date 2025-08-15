@@ -194,8 +194,7 @@ pub trait GenServer: Send + Sized {
     ) -> impl Future<Output = Self> + Send {
         async {
             loop {
-                let cont = self.receive(handle, rx).await;
-                if !cont {
+                if !self.receive(handle, rx).await {
                     break;
                 }
             }
@@ -359,14 +358,8 @@ mod tests {
             _: &GenServerHandle<Self>,
         ) -> CallResponse<Self> {
             match message {
-                InMessage::GetCount => {
-                    let count = self.count;
-                    CallResponse::Reply(OutMsg::Count(count))
-                }
-                InMessage::Stop => {
-                    let count = self.count.clone();
-                    CallResponse::Stop(OutMsg::Count(count))
-                }
+                InMessage::GetCount => CallResponse::Reply(OutMsg::Count(self.count)),
+                InMessage::Stop => CallResponse::Stop(OutMsg::Count(self.count)),
             }
         }
 
