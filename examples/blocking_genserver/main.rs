@@ -7,7 +7,6 @@ use spawned_concurrency::tasks::{
 };
 
 // We test a scenario with a badly behaved task
-#[derive(Clone)]
 struct BadlyBehavedTask;
 
 impl BadlyBehavedTask {
@@ -33,11 +32,15 @@ impl GenServer for BadlyBehavedTask {
     type OutMsg = ();
     type Error = ();
 
-    async fn handle_call(self, _: Self::CallMsg, _: &GenServerHandle<Self>) -> CallResponse<Self> {
+    async fn handle_call(
+        &mut self,
+        _: Self::CallMsg,
+        _: &GenServerHandle<Self>,
+    ) -> CallResponse<Self> {
         CallResponse::Stop(())
     }
 
-    async fn handle_cast(self, _: Self::CastMsg, _: &GenServerHandle<Self>) -> CastResponse<Self> {
+    async fn handle_cast(&mut self, _: Self::CastMsg, _: &GenServerHandle<Self>) -> CastResponse {
         rt::sleep(Duration::from_millis(20)).await;
         loop {
             println!("{:?}: bad still alive", thread::current().id());
@@ -46,7 +49,6 @@ impl GenServer for BadlyBehavedTask {
     }
 }
 
-#[derive(Clone)]
 struct WellBehavedTask {
     count: u64,
 }
@@ -66,28 +68,28 @@ impl GenServer for WellBehavedTask {
     type Error = ();
 
     async fn handle_call(
-        self,
+        &mut self,
         message: Self::CallMsg,
         _: &GenServerHandle<Self>,
     ) -> CallResponse<Self> {
         match message {
             InMessage::GetCount => {
                 let count = self.count;
-                CallResponse::Reply(self, OutMsg::Count(count))
+                CallResponse::Reply(OutMsg::Count(count))
             }
             InMessage::Stop => CallResponse::Stop(OutMsg::Count(self.count)),
         }
     }
 
     async fn handle_cast(
-        mut self,
+        &mut self,
         _: Self::CastMsg,
         handle: &GenServerHandle<Self>,
-    ) -> CastResponse<Self> {
+    ) -> CastResponse {
         self.count += 1;
         println!("{:?}: good still alive", thread::current().id());
         send_after(Duration::from_millis(100), handle.to_owned(), ());
-        CastResponse::NoReply(self)
+        CastResponse::NoReply
     }
 }
 

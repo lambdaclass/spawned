@@ -1,11 +1,9 @@
-use crate::tasks::{
-    gen_server::InitResult, send_interval, CallResponse, CastResponse, GenServer, GenServerHandle,
+use super::{
+    send_after, send_interval, CallResponse, CastResponse, GenServer, GenServerHandle, InitResult,
     InitResult::Success,
 };
 use spawned_rt::tasks::{self as rt, CancellationToken};
 use std::time::Duration;
-
-use super::send_after;
 
 type RepeaterHandle = GenServerHandle<Repeater>;
 
@@ -25,7 +23,6 @@ enum RepeaterOutMessage {
     Count(i32),
 }
 
-#[derive(Clone)]
 struct Repeater {
     pub(crate) count: i32,
     pub(crate) cancellation_token: Option<CancellationToken>,
@@ -73,19 +70,19 @@ impl GenServer for Repeater {
     }
 
     async fn handle_call(
-        self,
+        &mut self,
         _message: Self::CallMsg,
         _handle: &RepeaterHandle,
     ) -> CallResponse<Self> {
         let count = self.count;
-        CallResponse::Reply(self, RepeaterOutMessage::Count(count))
+        CallResponse::Reply(RepeaterOutMessage::Count(count))
     }
 
     async fn handle_cast(
-        mut self,
+        &mut self,
         message: Self::CastMsg,
         _handle: &GenServerHandle<Self>,
-    ) -> CastResponse<Self> {
+    ) -> CastResponse {
         match message {
             RepeaterCastMessage::Inc => {
                 self.count += 1;
@@ -96,7 +93,7 @@ impl GenServer for Repeater {
                 };
             }
         };
-        CastResponse::NoReply(self)
+        CastResponse::NoReply
     }
 }
 
@@ -148,7 +145,6 @@ enum DelayedOutMessage {
     Count(i32),
 }
 
-#[derive(Clone)]
 struct Delayed {
     pub(crate) count: i32,
 }
@@ -181,30 +177,30 @@ impl GenServer for Delayed {
     type Error = ();
 
     async fn handle_call(
-        self,
+        &mut self,
         message: Self::CallMsg,
         _handle: &DelayedHandle,
     ) -> CallResponse<Self> {
         match message {
             DelayedCallMessage::GetCount => {
                 let count = self.count;
-                CallResponse::Reply(self, DelayedOutMessage::Count(count))
+                CallResponse::Reply(DelayedOutMessage::Count(count))
             }
             DelayedCallMessage::Stop => CallResponse::Stop(DelayedOutMessage::Count(self.count)),
         }
     }
 
     async fn handle_cast(
-        mut self,
+        &mut self,
         message: Self::CastMsg,
         _handle: &DelayedHandle,
-    ) -> CastResponse<Self> {
+    ) -> CastResponse {
         match message {
             DelayedCastMessage::Inc => {
                 self.count += 1;
             }
         };
-        CastResponse::NoReply(self)
+        CastResponse::NoReply
     }
 }
 

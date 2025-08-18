@@ -733,15 +733,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "name_server_with_error"
-version = "0.1.0"
-dependencies = [
- "spawned-concurrency",
- "spawned-rt",
- "tracing",
-]
-
-[[package]]
 name = "native-tls"
 version = "0.2.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
