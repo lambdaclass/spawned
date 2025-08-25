@@ -315,8 +315,9 @@ impl<F: Future> Future for WarnOnBlocking<F> {
         let pinned_fut = unsafe { self.map_unchecked_mut(|s| &mut s.0) };
         let now = Instant::now();
         let res = pinned_fut.poll(cx);
-        if now.elapsed() > Duration::from_millis(10) {
-            warn!(future = ?type_id, "Blocking operation detected");
+        let elapsed = now.elapsed();
+        if elapsed > Duration::from_millis(10) {
+            warn!(future = ?type_id, elapsed = ?elapsed, "Blocking operation detected");
         }
         res
     }
