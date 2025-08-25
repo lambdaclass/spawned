@@ -43,11 +43,11 @@ impl<G: GenServer> GenServerHandle<G> {
         };
         let handle_clone = handle.clone();
         // Ignore the JoinHandle for now. Maybe we'll use it in the future
-        let _join_handle = rt::spawn(async move {
+        let _join_handle = rt::spawn(WarnOnBlocking(async move {
             if gen_server.run(&handle, &mut rx).await.is_err() {
                 tracing::trace!("GenServer crashed")
             };
-        });
+        }));
         handle_clone
     }
 
@@ -200,7 +200,7 @@ pub trait GenServer: Send + Sized {
     ) -> impl Future<Output = Self> + Send {
         async {
             loop {
-                if !WarnOnBlocking(self.receive(handle, rx)).await {
+                if !self.receive(handle, rx).await {
                     break;
                 }
             }
