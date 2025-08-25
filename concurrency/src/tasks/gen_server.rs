@@ -2,7 +2,13 @@
 //! See examples/name_server for a usage example.
 use futures::future::FutureExt as _;
 use spawned_rt::tasks::{self as rt, mpsc, oneshot, timeout, CancellationToken};
-use std::{fmt::Debug, future::Future, panic::AssertUnwindSafe, time::Duration};
+use std::{
+    fmt::Debug,
+    future::Future,
+    panic::AssertUnwindSafe,
+    time::{Duration, Instant},
+};
+use tracing::warn;
 
 use crate::{
     error::GenServerError,
@@ -194,7 +200,7 @@ pub trait GenServer: Send + Sized {
     ) -> impl Future<Output = Self> + Send {
         async {
             loop {
-                if !self.receive(handle, rx).await {
+                if !WarnOnBlocking(self.receive(handle, rx)).await {
                     break;
                 }
             }
@@ -291,6 +297,25 @@ pub trait GenServer: Send + Sized {
         _handle: &GenServerHandle<Self>,
     ) -> impl Future<Output = Result<(), Self::Error>> + Send {
         async { Ok(()) }
+    }
+}
+
+struct WarnOnBlocking<F: Future>(F);
+
+impl<F: Future> Future for WarnOnBlocking<F> {
+    type Output = F::Output;
+
+    fn poll(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        let pinned_fut = unsafe { self.map_unchecked_mut(|s| &mut s.0) };
+        let now = Instant::now();
+        let res = pinned_fut.poll(cx);
+        if now.elapsed() > Duration::from_millis(10) {
+            warn!("Blocking operation detected");
+        }
+        res
     }
 }
 
