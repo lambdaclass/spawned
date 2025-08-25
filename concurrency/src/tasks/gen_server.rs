@@ -309,11 +309,12 @@ impl<F: Future> Future for WarnOnBlocking<F> {
         self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Self::Output> {
+        let type_id = std::any::type_name::<F>();
         let pinned_fut = unsafe { self.map_unchecked_mut(|s| &mut s.0) };
         let now = Instant::now();
         let res = pinned_fut.poll(cx);
         if now.elapsed() > Duration::from_millis(10) {
-            warn!("Blocking operation detected");
+            warn!(future = ?type_id, "Blocking operation detected");
         }
         res
     }
