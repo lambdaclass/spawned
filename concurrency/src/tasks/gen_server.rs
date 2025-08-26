@@ -43,11 +43,11 @@ impl<G: GenServer> GenServerHandle<G> {
         };
         let handle_clone = handle.clone();
         // Ignore the JoinHandle for now. Maybe we'll use it in the future
-        let _join_handle = rt::spawn(WarnOnBlocking(async move {
+        let _join_handle = rt::spawn(WarnOnBlocking{inner: async move {
             if gen_server.run(&handle, &mut rx).await.is_err() {
                 tracing::trace!("GenServer crashed")
             };
-        }));
+        }});
         handle_clone
     }
 
@@ -300,7 +300,12 @@ pub trait GenServer: Send + Sized {
     }
 }
 
-struct WarnOnBlocking<F: Future>(F);
+pin_project_lite::pin_project! {
+    pub struct WarnOnBlocking<F: Future>{
+        #[pin]
+        inner: F
+    }
+}
 
 impl<F: Future> Future for WarnOnBlocking<F> {
     type Output = F::Output;
@@ -310,11 +315,9 @@ impl<F: Future> Future for WarnOnBlocking<F> {
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Self::Output> {
         let type_id = std::any::type_name::<F>();
-        // SAFETY: we don't ever move the field out of Self
-        // https://doc.rust-lang.org/stable/std/pin/index.html#projections-and-structural-pinning
-        let pinned_fut = unsafe { self.map_unchecked_mut(|s| &mut s.0) };
+        let this = self.project();
         let now = Instant::now();
-        let res = pinned_fut.poll(cx);
+        let res = this.inner.poll(cx);
         let elapsed = now.elapsed();
         if elapsed > Duration::from_millis(10) {
             warn!(future = ?type_id, elapsed = ?elapsed, "Blocking operation detected");
