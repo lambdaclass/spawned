@@ -1191,6 +1191,7 @@ name = "spawned-concurrency"
 version = "0.3.0"
 dependencies = [
  "futures",
+ "pin-project-lite",
  "spawned-rt",
  "thiserror",
  "tokio",
