@@ -12,11 +12,12 @@ members = [
     "examples/updater",
     "examples/updater_threads",
     "examples/blocking_genserver",
+    "examples/busy_genserver_warning",
 ]
 
 [workspace.dependencies]
-spawned-rt = { path = "rt", version = "0.3.0"}
-spawned-concurrency = { path = "concurrency", version = "0.3.0"}
+spawned-rt = { path = "rt", version = "0.3.0" }
+spawned-concurrency = { path = "concurrency", version = "0.3.0" }
 tracing = { version = "0.1.41", features = ["log"] }
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 
