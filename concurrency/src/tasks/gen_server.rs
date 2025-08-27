@@ -1,19 +1,17 @@
 //! GenServer trait and structs to create an abstraction similar to Erlang gen_server.
 //! See examples/name_server for a usage example.
-use futures::future::FutureExt as _;
-use spawned_rt::tasks::{self as rt, mpsc, oneshot, timeout, CancellationToken};
-use std::{
-    fmt::Debug,
-    future::Future,
-    panic::AssertUnwindSafe,
-    time::{Duration, Instant},
-};
-use tracing::warn;
-
 use crate::{
     error::GenServerError,
     tasks::InitResult::{NoSuccess, Success},
 };
+use futures::future::FutureExt as _;
+use spawned_rt::tasks::{self as rt, mpsc, oneshot, timeout, CancellationToken};
+use std::{fmt::Debug, future::Future, panic::AssertUnwindSafe, time::Duration};
+
+#[cfg(feature = "warn-on-block")]
+use std::time::Instant;
+#[cfg(feature = "warn-on-block")]
+use tracing::warn;
 
 const DEFAULT_CALL_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -42,12 +40,20 @@ impl<G: GenServer> GenServerHandle<G> {
             cancellation_token,
         };
         let handle_clone = handle.clone();
-        // Ignore the JoinHandle for now. Maybe we'll use it in the future
-        let _join_handle = rt::spawn(WarnOnBlocking{inner: async move {
+        let inner_future = async move {
             if gen_server.run(&handle, &mut rx).await.is_err() {
                 tracing::trace!("GenServer crashed")
-            };
-        }});
+            }
+        };
+        // Ignore the JoinHandle for now. Maybe we'll use it in the future
+        #[cfg(feature = "warn-on-block")]
+        let _join_handle = rt::spawn(WarnOnBlocking {
+            inner: inner_future,
+        });
+
+        #[cfg(not(feature = "warn-on-block"))]
+        let _join_handle = rt::spawn(inner_future);
+
         handle_clone
     }
 
@@ -300,6 +306,7 @@ pub trait GenServer: Send + Sized {
     }
 }
 
+#[cfg(feature = "warn-on-block")]
 pin_project_lite::pin_project! {
     pub struct WarnOnBlocking<F: Future>{
         #[pin]
@@ -307,6 +314,7 @@ pin_project_lite::pin_project! {
     }
 }
 
+#[cfg(feature = "warn-on-block")]
 impl<F: Future> Future for WarnOnBlocking<F> {
     type Output = F::Output;
 
