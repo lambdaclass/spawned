@@ -45,12 +45,13 @@ impl<G: GenServer> GenServerHandle<G> {
                 tracing::trace!("GenServer crashed")
             }
         };
-        // Ignore the JoinHandle for now. Maybe we'll use it in the future
+
         #[cfg(feature = "warn-on-block")]
         let inner_future = WarnOnBlocking {
             inner: inner_future,
         };
 
+        // Ignore the JoinHandle for now. Maybe we'll use it in the future
         let _join_handle = rt::spawn(inner_future);
 
         handle_clone
