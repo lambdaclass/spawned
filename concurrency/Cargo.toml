@@ -21,4 +21,5 @@ tokio = { version = "1", features = ["full"] }
 path = "./src/lib.rs"
 
 [features]
+# Enable this to log warnings when non-blocking GenServers block the runtime for too much time
 warn-on-block = []
