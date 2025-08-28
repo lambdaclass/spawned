@@ -8,11 +8,6 @@ use futures::future::FutureExt as _;
 use spawned_rt::tasks::{self as rt, mpsc, oneshot, timeout, CancellationToken};
 use std::{fmt::Debug, future::Future, panic::AssertUnwindSafe, time::Duration};
 
-#[cfg(feature = "warn-on-block")]
-use std::time::Instant;
-#[cfg(feature = "warn-on-block")]
-use tracing::warn;
-
 const DEFAULT_CALL_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug)]
@@ -47,9 +42,8 @@ impl<G: GenServer> GenServerHandle<G> {
         };
 
         #[cfg(feature = "warn-on-block")]
-        let inner_future = WarnOnBlocking {
-            inner: inner_future,
-        };
+        // Optionally warn if the GenServer future blocks for too much time
+        let inner_future = warn_on_block::WarnOnBlocking::new(inner_future);
 
         // Ignore the JoinHandle for now. Maybe we'll use it in the future
         let _join_handle = rt::spawn(inner_future);
@@ -307,30 +301,42 @@ pub trait GenServer: Send + Sized {
 }
 
 #[cfg(feature = "warn-on-block")]
-pin_project_lite::pin_project! {
-    pub struct WarnOnBlocking<F: Future>{
-        #[pin]
-        inner: F
-    }
-}
+mod warn_on_block {
+    use super::*;
 
-#[cfg(feature = "warn-on-block")]
-impl<F: Future> Future for WarnOnBlocking<F> {
-    type Output = F::Output;
+    use std::time::Instant;
+    use tracing::warn;
 
-    fn poll(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Self::Output> {
-        let type_id = std::any::type_name::<F>();
-        let this = self.project();
-        let now = Instant::now();
-        let res = this.inner.poll(cx);
-        let elapsed = now.elapsed();
-        if elapsed > Duration::from_millis(10) {
-            warn!(future = ?type_id, elapsed = ?elapsed, "Blocking operation detected");
+    pin_project_lite::pin_project! {
+        pub struct WarnOnBlocking<F: Future>{
+            #[pin]
+            inner: F
         }
-        res
+    }
+
+    impl<F: Future> WarnOnBlocking<F> {
+        pub fn new(inner: F) -> Self {
+            Self { inner }
+        }
+    }
+
+    impl<F: Future> Future for WarnOnBlocking<F> {
+        type Output = F::Output;
+
+        fn poll(
+            self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Self::Output> {
+            let type_id = std::any::type_name::<F>();
+            let this = self.project();
+            let now = Instant::now();
+            let res = this.inner.poll(cx);
+            let elapsed = now.elapsed();
+            if elapsed > Duration::from_millis(10) {
+                warn!(future = ?type_id, elapsed = ?elapsed, "Blocking operation detected");
+            }
+            res
+        }
     }
 }
 
