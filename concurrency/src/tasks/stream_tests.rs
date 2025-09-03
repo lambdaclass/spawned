@@ -194,7 +194,7 @@ pub fn test_stream_skipping_decoding_error() {
     runtime.block_on(async move {
         let mut summatory_handle = Summatory::new(0).start();
         let stream = tokio_stream::iter(vec![
-            Ok::<u8, Error>(1u8),
+            Ok(1),
             Ok(2),
             Ok(3),
             Err(Error::other("oh no!")),
