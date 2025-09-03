@@ -27,6 +27,7 @@ where
             Box::pin(async {
                 loop {
                     match stream.next().await {
+                        // Stream has a new valid Item
                         Some(Ok(i)) => match handle.cast(message_builder(i)).await {
                             Ok(_) => tracing::trace!("Message sent successfully"),
                             Err(e) => {
@@ -34,9 +35,11 @@ where
                                 break;
                             }
                         },
+                        // Stream has new data, but failed to extract the Item,
+                        // probably due to decoding problems.
                         Some(Err(e)) => {
-                            tracing::trace!("Received Error in msg {e:?}");
-                            break;
+                            // log the error but keep listener alive for more valid Items
+                            tracing::error!("Error processing stream: {e:?}");
                         }
                         None => {
                             tracing::trace!("Stream finished");

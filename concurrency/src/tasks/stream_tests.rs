@@ -1,10 +1,8 @@
-use std::time::Duration;
-
-use spawned_rt::tasks::{self as rt, BroadcastStream, ReceiverStream};
-
 use crate::tasks::{
     send_after, stream::spawn_listener, CallResponse, CastResponse, GenServer, GenServerHandle,
 };
+use spawned_rt::tasks::{self as rt, BroadcastStream, ReceiverStream};
+use std::{io::Error, time::Duration};
 
 type SummatoryHandle = GenServerHandle<Summatory>;
 
@@ -187,5 +185,29 @@ pub fn test_stream_cancellation() {
         // Finnally, we check that the server is stopped, by getting an error when trying to call it.
         rt::sleep(Duration::from_millis(10)).await;
         assert!(Summatory::get_value(&mut summatory_handle).await.is_err());
+    })
+}
+
+#[test]
+pub fn test_stream_skipping_decoding_error() {
+    let runtime = rt::Runtime::new().unwrap();
+    runtime.block_on(async move {
+        let mut summatory_handle = Summatory::new(0).start();
+        let stream = tokio_stream::iter(vec![
+            Ok(1),
+            Ok(2),
+            Ok(3),
+            Err(Error::other("oh no!")),
+            Ok(4),
+            Ok(5),
+        ]);
+
+        spawn_listener(summatory_handle.clone(), message_builder, stream);
+
+        // Wait for 1 second so the whole stream is processed
+        rt::sleep(Duration::from_secs(1)).await;
+
+        let val = Summatory::get_value(&mut summatory_handle).await.unwrap();
+        assert_eq!(val, 15);
     })
 }
