@@ -35,8 +35,7 @@ where
                             }
                         },
                         Some(Err(e)) => {
-                            tracing::trace!("Received Error in msg {e:?}");
-                            break;
+                            tracing::trace!("Error in stream: {e:?}");
                         }
                         None => {
                             tracing::trace!("Stream finished");
