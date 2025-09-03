@@ -1,13 +1,8 @@
-use std::{
-    io::{Error, ErrorKind},
-    time::Duration,
-};
-
-use spawned_rt::tasks::{self as rt, BroadcastStream, ReceiverStream};
-
 use crate::tasks::{
     send_after, stream::spawn_listener, CallResponse, CastResponse, GenServer, GenServerHandle,
 };
+use spawned_rt::tasks::{self as rt, BroadcastStream, ReceiverStream};
+use std::{io::Error, time::Duration};
 
 type SummatoryHandle = GenServerHandle<Summatory>;
 
@@ -198,17 +193,14 @@ pub fn test_stream_skipping_decoding_error() {
     let runtime = rt::Runtime::new().unwrap();
     runtime.block_on(async move {
         let mut summatory_handle = Summatory::new(0).start();
-        let stream = tokio_stream::iter(
-            vec![
-                Ok::<u8, Error>(1u8),
-                Ok(2),
-                Ok(3),
-                Err(Error::new(ErrorKind::Other, "Oh no")),
-                Ok(4),
-                Ok(5),
-            ]
-            .into_iter(),
-        );
+        let stream = tokio_stream::iter(vec![
+            Ok::<u8, Error>(1u8),
+            Ok(2),
+            Ok(3),
+            Err(Error::other("oh no!")),
+            Ok(4),
+            Ok(5),
+        ]);
 
         spawn_listener(summatory_handle.clone(), message_builder, stream);
 

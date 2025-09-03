@@ -38,7 +38,7 @@ where
                         // Stream has new data, but failed to extract the Item,
                         // probably due to decoding problems.
                         Some(Err(e)) => {
-                            // log the error but keep listening for more valid Items
+                            // log the error but keep listener alive for more valid Items
                             tracing::error!("Error processing stream: {e:?}");
                         }
                         None => {
