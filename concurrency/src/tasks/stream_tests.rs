@@ -1,8 +1,9 @@
 use crate::tasks::{
     send_after, stream::spawn_listener, CallResponse, CastResponse, GenServer, GenServerHandle,
 };
+use futures::{stream, StreamExt};
 use spawned_rt::tasks::{self as rt, BroadcastStream, ReceiverStream};
-use std::{io::Error, time::Duration};
+use std::time::Duration;
 
 type SummatoryHandle = GenServerHandle<Summatory>;
 
@@ -21,6 +22,7 @@ type SummatoryOutMessage = u16;
 #[derive(Clone)]
 enum SummatoryCastMessage {
     Add(u16),
+    StreamError,
     Stop,
 }
 
@@ -46,6 +48,7 @@ impl GenServer for Summatory {
                 self.count += val;
                 CastResponse::NoReply
             }
+            SummatoryCastMessage::StreamError => CastResponse::Stop,
             SummatoryCastMessage::Stop => CastResponse::Stop,
         }
     }
@@ -60,20 +63,17 @@ impl GenServer for Summatory {
     }
 }
 
-// In this example, the stream sends u8 values, which are converted to the type
-// supported by the GenServer (SummatoryCastMessage / u16).
-fn message_builder(value: u8) -> SummatoryCastMessage {
-    SummatoryCastMessage::Add(value.into())
-}
-
 #[test]
 pub fn test_sum_numbers_from_stream() {
     let runtime = rt::Runtime::new().unwrap();
     runtime.block_on(async move {
         let mut summatory_handle = Summatory::new(0).start();
-        let stream = tokio_stream::iter(vec![1u8, 2, 3, 4, 5].into_iter().map(Ok::<u8, ()>));
+        let stream = stream::iter(vec![1u16, 2, 3, 4, 5].into_iter().map(Ok::<u16, ()>));
 
-        spawn_listener(summatory_handle.clone(), message_builder, stream);
+        spawn_listener(
+            summatory_handle.clone(),
+            stream.filter_map(|result| async move { result.ok().map(SummatoryCastMessage::Add) }),
+        );
 
         // Wait for 1 second so the whole stream is processed
         rt::sleep(Duration::from_secs(1)).await;
@@ -88,7 +88,7 @@ pub fn test_sum_numbers_from_channel() {
     let runtime = rt::Runtime::new().unwrap();
     runtime.block_on(async move {
         let mut summatory_handle = Summatory::new(0).start();
-        let (tx, rx) = spawned_rt::tasks::mpsc::channel::<Result<u8, ()>>();
+        let (tx, rx) = spawned_rt::tasks::mpsc::channel::<Result<u16, ()>>();
 
         // Spawn a task to send numbers to the channel
         spawned_rt::tasks::spawn(async move {
@@ -99,8 +99,8 @@ pub fn test_sum_numbers_from_channel() {
 
         spawn_listener(
             summatory_handle.clone(),
-            message_builder,
-            ReceiverStream::new(rx),
+            ReceiverStream::new(rx)
+                .filter_map(|result| async move { result.ok().map(SummatoryCastMessage::Add) }),
         );
 
         // Wait for 1 second so the whole stream is processed
@@ -116,19 +116,19 @@ pub fn test_sum_numbers_from_broadcast_channel() {
     let runtime = rt::Runtime::new().unwrap();
     runtime.block_on(async move {
         let mut summatory_handle = Summatory::new(0).start();
-        let (tx, rx) = tokio::sync::broadcast::channel::<u8>(5);
+        let (tx, rx) = tokio::sync::broadcast::channel::<u16>(5);
 
         // Spawn a task to send numbers to the channel
         spawned_rt::tasks::spawn(async move {
-            for i in 1u8..=5 {
+            for i in 1u16..=5 {
                 tx.send(i).unwrap();
             }
         });
 
         spawn_listener(
             summatory_handle.clone(),
-            message_builder,
-            BroadcastStream::new(rx),
+            BroadcastStream::new(rx)
+                .filter_map(|result| async move { result.ok().map(SummatoryCastMessage::Add) }),
         );
 
         // Wait for 1 second so the whole stream is processed
@@ -146,7 +146,7 @@ pub fn test_stream_cancellation() {
     let runtime = rt::Runtime::new().unwrap();
     runtime.block_on(async move {
         let mut summatory_handle = Summatory::new(0).start();
-        let (tx, rx) = spawned_rt::tasks::mpsc::channel::<Result<u8, ()>>();
+        let (tx, rx) = spawned_rt::tasks::mpsc::channel::<Result<u16, ()>>();
 
         // Spawn a task to send numbers to the channel
         spawned_rt::tasks::spawn(async move {
@@ -158,8 +158,8 @@ pub fn test_stream_cancellation() {
 
         let listener_handle = spawn_listener(
             summatory_handle.clone(),
-            message_builder,
-            ReceiverStream::new(rx),
+            ReceiverStream::new(rx)
+                .filter_map(|result| async move { result.ok().map(SummatoryCastMessage::Add) }),
         );
 
         // Start a timer to stop the stream after a certain time
@@ -189,20 +189,43 @@ pub fn test_stream_cancellation() {
 }
 
 #[test]
-pub fn test_stream_skipping_decoding_error() {
+pub fn test_halting_on_stream_error() {
     let runtime = rt::Runtime::new().unwrap();
     runtime.block_on(async move {
         let mut summatory_handle = Summatory::new(0).start();
-        let stream = tokio_stream::iter(vec![
-            Ok(1),
-            Ok(2),
-            Ok(3),
-            Err(Error::other("oh no!")),
-            Ok(4),
-            Ok(5),
-        ]);
+        let stream = tokio_stream::iter(vec![Ok(1u16), Ok(2), Ok(3), Err(()), Ok(4), Ok(5)]);
+        let msg_stream = stream.filter_map(|value| async move {
+            match value {
+                Ok(number) => Some(SummatoryCastMessage::Add(number)),
+                Err(_) => Some(SummatoryCastMessage::StreamError),
+            }
+        });
 
-        spawn_listener(summatory_handle.clone(), message_builder, stream);
+        spawn_listener(summatory_handle.clone(), msg_stream);
+
+        // Wait for 1 second so the whole stream is processed
+        rt::sleep(Duration::from_secs(1)).await;
+
+        let result = Summatory::get_value(&mut summatory_handle).await;
+        // GenServer should have been terminated, hence the result should be an error
+        assert!(result.is_err());
+    })
+}
+
+#[test]
+pub fn test_skipping_on_stream_error() {
+    let runtime = rt::Runtime::new().unwrap();
+    runtime.block_on(async move {
+        let mut summatory_handle = Summatory::new(0).start();
+        let stream = tokio_stream::iter(vec![Ok(1u16), Ok(2), Ok(3), Err(()), Ok(4), Ok(5)]);
+        let msg_stream = stream.filter_map(|value| async move {
+            match value {
+                Ok(number) => Some(SummatoryCastMessage::Add(number)),
+                Err(_) => None,
+            }
+        });
+
+        spawn_listener(summatory_handle.clone(), msg_stream);
 
         // Wait for 1 second so the whole stream is processed
         rt::sleep(Duration::from_secs(1)).await;
