@@ -10,6 +10,7 @@ spawned-rt = { workspace = true }
 tracing = { workspace = true }
 futures = "0.3.1"
 thiserror = "2.0.12"
+pin-project-lite = "0.2"
 
 [dev-dependencies]
 # This tokio imports are only used in tests, we should not use them in the library code.
@@ -18,3 +19,7 @@ tokio = { version = "1", features = ["full"] }
 
 [lib]
 path = "./src/lib.rs"
+
+[features]
+# Enable this to log warnings when non-blocking GenServers block the runtime for too much time
+warn-on-block = []
