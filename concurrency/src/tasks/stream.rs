@@ -8,25 +8,19 @@ use spawned_rt::tasks::JoinHandle;
 ///
 /// This function returns a handle to the spawned task and a cancellation token
 /// to stop it.
-pub fn spawn_listener<T, F, S, I>(
-    mut handle: GenServerHandle<T>,
-    message_builder: F,
-    mut stream: S,
-) -> JoinHandle<()>
+pub fn spawn_listener<T, S>(mut handle: GenServerHandle<T>, stream: S) -> JoinHandle<()>
 where
-    T: GenServer + 'static,
-    F: Fn(I) -> T::CastMsg + Send + 'static + Sync,
-    I: Send,
-    S: Unpin + Send + Stream<Item = I> + 'static,
+    T: GenServer,
+    S: Send + Stream<Item = T::CastMsg> + 'static,
 {
     let cancelation_token = handle.cancellation_token();
     let join_handle = spawned_rt::tasks::spawn(async move {
+        let mut pinned_stream = core::pin::pin!(stream);
         let is_cancelled = core::pin::pin!(cancelation_token.cancelled());
         let listener_loop = core::pin::pin!(async {
             loop {
-                match stream.next().await {
-                    // Stream has a new valid Item
-                    Some(i) => match handle.cast(message_builder(i)).await {
+                match pinned_stream.next().await {
+                    Some(msg) => match handle.cast(msg).await {
                         Ok(_) => tracing::trace!("Message sent successfully"),
                         Err(e) => {
                             tracing::error!("Failed to send message: {e:?}");
