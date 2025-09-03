@@ -2,7 +2,7 @@ use crate::tasks::{
     send_after, stream::spawn_listener, CallResponse, CastResponse, GenServer, GenServerHandle,
 };
 use spawned_rt::tasks::{self as rt, BroadcastStream, ReceiverStream};
-use std::{io::Error, time::Duration};
+use std::time::Duration;
 
 type SummatoryHandle = GenServerHandle<Summatory>;
 
@@ -21,6 +21,7 @@ type SummatoryOutMessage = u16;
 #[derive(Clone)]
 enum SummatoryCastMessage {
     Add(u16),
+    StreamError,
     Stop,
 }
 
@@ -46,6 +47,7 @@ impl GenServer for Summatory {
                 self.count += val;
                 CastResponse::NoReply
             }
+            SummatoryCastMessage::StreamError => CastResponse::NoReply,
             SummatoryCastMessage::Stop => CastResponse::Stop,
         }
     }
@@ -62,8 +64,11 @@ impl GenServer for Summatory {
 
 // In this example, the stream sends u8 values, which are converted to the type
 // supported by the GenServer (SummatoryCastMessage / u16).
-fn message_builder(value: u8) -> SummatoryCastMessage {
-    SummatoryCastMessage::Add(value.into())
+fn message_builder<E>(value: Result<u8, E>) -> SummatoryCastMessage {
+    match value {
+        Ok(number) => SummatoryCastMessage::Add(number.into()),
+        Err(_) => SummatoryCastMessage::StreamError,
+    }
 }
 
 #[test]
@@ -193,14 +198,7 @@ pub fn test_stream_skipping_decoding_error() {
     let runtime = rt::Runtime::new().unwrap();
     runtime.block_on(async move {
         let mut summatory_handle = Summatory::new(0).start();
-        let stream = tokio_stream::iter(vec![
-            Ok(1),
-            Ok(2),
-            Ok(3),
-            Err(Error::other("oh no!")),
-            Ok(4),
-            Ok(5),
-        ]);
+        let stream = tokio_stream::iter(vec![Ok(1), Ok(2), Ok(3), Err(()), Ok(4), Ok(5)]);
 
         spawn_listener(summatory_handle.clone(), message_builder, stream);
 
