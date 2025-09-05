@@ -4,6 +4,7 @@ use std::time::Duration;
 use spawned_rt::tasks::{self as rt, CancellationToken, JoinHandle};
 
 use super::{GenServer, GenServerHandle};
+use core::pin::pin;
 
 pub struct TimerHandle {
     pub join_handle: JoinHandle<()>,
@@ -25,19 +26,15 @@ where
     let gen_server_cancellation_token = handle.cancellation_token();
     let join_handle = rt::spawn(async move {
         // Timer action is ignored if it was either cancelled or the associated GenServer is no longer running.
-        let cancel_conditions = select(
-            Box::pin(cloned_token.cancelled()),
-            Box::pin(gen_server_cancellation_token.cancelled()),
-        );
+        let cancel_token_fut = pin!(cloned_token.cancelled());
+        let genserver_cancel_fut = pin!(gen_server_cancellation_token.cancelled());
+        let cancel_conditions = select(cancel_token_fut, genserver_cancel_fut);
 
-        let _ = select(
-            cancel_conditions,
-            Box::pin(async {
-                rt::sleep(period).await;
-                let _ = handle.cast(message.clone()).await;
-            }),
-        )
-        .await;
+        let async_block = pin!(async {
+            rt::sleep(period).await;
+            let _ = handle.cast(message.clone()).await;
+        });
+        let _ = select(cancel_conditions, async_block).await;
     });
     TimerHandle {
         join_handle,
@@ -60,19 +57,15 @@ where
     let join_handle = rt::spawn(async move {
         loop {
             // Timer action is ignored if it was either cancelled or the associated GenServer is no longer running.
-            let cancel_conditions = select(
-                Box::pin(cloned_token.cancelled()),
-                Box::pin(gen_server_cancellation_token.cancelled()),
-            );
+            let cancel_token_fut = pin!(cloned_token.cancelled());
+            let genserver_cancel_fut = pin!(gen_server_cancellation_token.cancelled());
+            let cancel_conditions = select(cancel_token_fut, genserver_cancel_fut);
 
-            let result = select(
-                Box::pin(cancel_conditions),
-                Box::pin(async {
-                    rt::sleep(period).await;
-                    let _ = handle.cast(message.clone()).await;
-                }),
-            )
-            .await;
+            let async_block = pin!(async {
+                rt::sleep(period).await;
+                let _ = handle.cast(message.clone()).await;
+            });
+            let result = select(cancel_conditions, async_block).await;
             match result {
                 futures::future::Either::Left(_) => break,
                 futures::future::Either::Right(_) => (),
