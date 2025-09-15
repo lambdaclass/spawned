@@ -32,7 +32,7 @@ where
 
         let async_block = pin!(async {
             rt::sleep(period).await;
-            let _ = handle.cast(message.clone()).await;
+            let _ = handle.cast(message).await;
         });
         let _ = select(cancel_conditions, async_block).await;
     });
@@ -50,6 +50,7 @@ pub fn send_interval<T>(
 ) -> TimerHandle
 where
     T: GenServer + 'static,
+    T::CastMsg: Clone,
 {
     let cancellation_token = CancellationToken::new();
     let cloned_token = cancellation_token.clone();

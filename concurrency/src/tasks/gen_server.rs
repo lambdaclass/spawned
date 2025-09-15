@@ -135,8 +135,8 @@ pub enum InitResult<G: GenServer> {
 }
 
 pub trait GenServer: Send + Sized {
-    type CallMsg: Clone + Send + Sized + Sync;
-    type CastMsg: Clone + Send + Sized + Sync;
+    type CallMsg: Send + Sized + Sync;
+    type CastMsg: Send + Sized + Sync;
     type OutMsg: Send + Sized;
     type Error: Debug + Send;
 
