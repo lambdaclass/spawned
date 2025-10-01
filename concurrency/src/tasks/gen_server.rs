@@ -41,7 +41,7 @@ impl<G: GenServer> GenServerHandle<G> {
             }
         };
 
-        #[cfg(feature = "warn-on-block")]
+        #[cfg(debug_assertions)]
         // Optionally warn if the GenServer future blocks for too much time
         let inner_future = warn_on_block::WarnOnBlocking::new(inner_future);
 
@@ -300,7 +300,7 @@ pub trait GenServer: Send + Sized {
     }
 }
 
-#[cfg(feature = "warn-on-block")]
+#[cfg(debug_assertions)]
 mod warn_on_block {
     use super::*;
 
