@@ -4,7 +4,7 @@ pub mod oneshot;
 
 pub use tokio::{
     runtime::Runtime,
-    task::{spawn, spawn_blocking, JoinHandle},
+    task::{id as task_id, spawn, spawn_blocking, JoinHandle},
     time::{sleep, timeout},
 };
 pub use tokio_stream::wrappers::{BroadcastStream, UnboundedReceiverStream as ReceiverStream};

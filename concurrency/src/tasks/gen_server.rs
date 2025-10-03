@@ -328,12 +328,13 @@ mod warn_on_block {
             cx: &mut std::task::Context<'_>,
         ) -> std::task::Poll<Self::Output> {
             let type_id = std::any::type_name::<F>();
+            let task_id = rt::task_id();
             let this = self.project();
             let now = Instant::now();
             let res = this.inner.poll(cx);
             let elapsed = now.elapsed();
             if elapsed > Duration::from_millis(10) {
-                warn!(future = ?type_id, elapsed = ?elapsed, "Blocking operation detected");
+                warn!(task = ?task_id, future = ?type_id, elapsed = ?elapsed, "Blocking operation detected");
             }
             res
         }

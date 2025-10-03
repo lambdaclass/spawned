@@ -44,7 +44,7 @@ impl GenServer for BusyWorker {
         _: Self::CastMsg,
         handle: &GenServerHandle<Self>,
     ) -> CastResponse {
-        info!("sleeping");
+        info!(taskid = ?rt::task_id(), "sleeping");
         thread::sleep(Duration::from_millis(542));
         handle.clone().cast(()).await.unwrap();
         // This sleep is needed to yield control to the runtime.
