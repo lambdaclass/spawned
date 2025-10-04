@@ -135,9 +135,9 @@ pub enum InitResult<G: GenServer> {
 }
 
 pub trait GenServer: Send + Sized {
-    type CallMsg: Clone + Send + Sized + Sync;
-    type CastMsg: Clone + Send + Sized + Sync;
-    type OutMsg: Send + Sized;
+    type CallMsg: Send;
+    type CastMsg: Send;
+    type OutMsg: Send;
     type Error: Debug + Send;
 
     fn start(self) -> GenServerHandle<Self> {

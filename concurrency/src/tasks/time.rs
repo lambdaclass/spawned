@@ -32,7 +32,7 @@ where
 
         let async_block = pin!(async {
             rt::sleep(period).await;
-            let _ = handle.cast(message.clone()).await;
+            let _ = handle.cast(message).await;
         });
         let _ = select(cancel_conditions, async_block).await;
     });
@@ -50,6 +50,7 @@ pub fn send_interval<T>(
 ) -> TimerHandle
 where
     T: GenServer + 'static,
+    T::CastMsg: Clone,
 {
     let cancellation_token = CancellationToken::new();
     let cloned_token = cancellation_token.clone();
@@ -61,9 +62,11 @@ where
             let genserver_cancel_fut = pin!(gen_server_cancellation_token.cancelled());
             let cancel_conditions = select(cancel_token_fut, genserver_cancel_fut);
 
-            let async_block = pin!(async {
+            let message_clone = message.clone();
+            let handle_reference = &mut handle;
+            let async_block = pin!(async move {
                 rt::sleep(period).await;
-                let _ = handle.cast(message.clone()).await;
+                let _ = handle_reference.cast(message_clone).await;
             });
             let result = select(cancel_conditions, async_block).await;
             match result {
