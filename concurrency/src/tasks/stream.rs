@@ -1,3 +1,5 @@
+use std::net::SocketAddr;
+
 use crate::tasks::{GenServer, GenServerHandle};
 use futures::{future::select, Stream, StreamExt};
 use spawned_rt::tasks::JoinHandle;
@@ -40,4 +42,26 @@ where
         }
     });
     join_handle
+}
+
+/// Spawns a task that listens to a stream of streams and spawns a GenServer that
+/// handles messages from that stream.
+/// Each GenServer is created using the provided factory function, and spawned
+/// using [`GenServer::start`].
+pub fn spawn_spawner<L, S, T, F>(listener: L, mut factory: F) -> JoinHandle<()>
+where
+    L: Send + Stream<Item = (S, SocketAddr)> + 'static,
+    S: Send + Stream<Item = T::CastMsg> + 'static,
+    T: GenServer + 'static,
+    F: FnMut(SocketAddr) -> T + Send + 'static,
+{
+    spawned_rt::tasks::spawn(async move {
+        let mut listener = core::pin::pin!(listener);
+        // TODO: listener can't be a stream since tokio::net::TcpListener does not implement Stream
+        while let Some((stream, addr)) = listener.next().await {
+            let handle = factory(addr).start();
+            // TODO: handle error
+            spawn_listener(handle, stream).await.unwrap();
+        }
+    })
 }

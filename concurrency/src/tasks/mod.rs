@@ -16,5 +16,5 @@ pub use gen_server::{
     InitResult::NoSuccess, InitResult::Success,
 };
 pub use process::{send, Process, ProcessInfo};
-pub use stream::spawn_listener;
+pub use stream::{spawn_listener, spawn_spawner};
 pub use time::{send_after, send_interval};
