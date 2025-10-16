@@ -332,8 +332,8 @@ pub trait GenServer: Send + Sized {
     }
 }
 
-/// Spawns a task that awaits on a future and sends messages to a GenServer.
-///
+/// Spawns a task that awaits on a future and sends a message to a GenServer
+/// on completion.
 /// This function returns a handle to the spawned task.
 pub fn send_message_on<T, U>(
     handle: GenServerHandle<T>,
