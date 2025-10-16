@@ -4,7 +4,8 @@ use crate::{
     error::GenServerError,
     tasks::InitResult::{NoSuccess, Success},
 };
-use futures::future::FutureExt as _;
+use core::pin::pin;
+use futures::future::{self, FutureExt as _};
 use spawned_rt::{
     tasks::{self as rt, mpsc, oneshot, timeout, CancellationToken, JoinHandle},
     threads,
@@ -346,15 +347,15 @@ where
 {
     let cancelation_token = handle.cancellation_token();
     let mut handle_clone = handle.clone();
-    let join_handle = spawned_rt::tasks::spawn(async move {
-        tracing::info!("Ctrl+C listener started");
-        let is_cancelled = core::pin::pin!(cancelation_token.cancelled());
-        let signal = core::pin::pin!(future);
-        match futures::future::select(is_cancelled, signal).await {
-            futures::future::Either::Left(_) => tracing::error!("GenServer stopped"),
-            futures::future::Either::Right(_) => {
-                tracing::info!("Sending shutdown to PeerTable Server");
-                handle_clone.cast(message).await.unwrap();
+    let join_handle = rt::spawn(async move {
+        let is_cancelled = pin!(cancelation_token.cancelled());
+        let signal = pin!(future);
+        match future::select(is_cancelled, signal).await {
+            future::Either::Left(_) => tracing::error!("GenServer stopped"),
+            future::Either::Right(_) => {
+                if let Err(e) = handle_clone.cast(message).await {
+                    tracing::error!("Failed to send message: {e:?}")
+                }
             }
         }
     });
