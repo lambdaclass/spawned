@@ -5,7 +5,10 @@ use crate::{
     tasks::InitResult::{NoSuccess, Success},
 };
 use futures::future::FutureExt as _;
-use spawned_rt::tasks::{self as rt, mpsc, oneshot, timeout, CancellationToken};
+use spawned_rt::{
+    tasks::{self as rt, mpsc, oneshot, timeout, CancellationToken, JoinHandle},
+    threads,
+};
 use std::{fmt::Debug, future::Future, panic::AssertUnwindSafe, time::Duration};
 
 const DEFAULT_CALL_TIMEOUT: Duration = Duration::from_secs(5);
@@ -27,7 +30,7 @@ impl<G: GenServer> Clone for GenServerHandle<G> {
 }
 
 impl<G: GenServer> GenServerHandle<G> {
-    pub(crate) fn new(gen_server: G) -> Self {
+    fn new(gen_server: G) -> Self {
         let (tx, mut rx) = mpsc::channel::<GenServerInMsg<G>>();
         let cancellation_token = CancellationToken::new();
         let handle = GenServerHandle {
@@ -51,7 +54,7 @@ impl<G: GenServer> GenServerHandle<G> {
         handle_clone
     }
 
-    pub(crate) fn new_blocking(gen_server: G) -> Self {
+    fn new_blocking(gen_server: G) -> Self {
         let (tx, mut rx) = mpsc::channel::<GenServerInMsg<G>>();
         let cancellation_token = CancellationToken::new();
         let handle = GenServerHandle {
@@ -62,6 +65,25 @@ impl<G: GenServer> GenServerHandle<G> {
         // Ignore the JoinHandle for now. Maybe we'll use it in the future
         let _join_handle = rt::spawn_blocking(|| {
             rt::block_on(async move {
+                if let Err(error) = gen_server.run(&handle, &mut rx).await {
+                    tracing::trace!(%error, "GenServer crashed")
+                };
+            })
+        });
+        handle_clone
+    }
+
+    fn new_on_thread(gen_server: G) -> Self {
+        let (tx, mut rx) = mpsc::channel::<GenServerInMsg<G>>();
+        let cancellation_token = CancellationToken::new();
+        let handle = GenServerHandle {
+            tx,
+            cancellation_token,
+        };
+        let handle_clone = handle.clone();
+        // Ignore the JoinHandle for now. Maybe we'll use it in the future
+        let _join_handle = threads::spawn(|| {
+            threads::block_on(async move {
                 if let Err(error) = gen_server.run(&handle, &mut rx).await {
                     tracing::trace!(%error, "GenServer crashed")
                 };
@@ -151,6 +173,15 @@ pub trait GenServer: Send + Sized {
     /// Start blocking provides such thread.
     fn start_blocking(self) -> GenServerHandle<Self> {
         GenServerHandle::new_blocking(self)
+    }
+
+    /// For some "singleton" GenServers that run througout the whole execution of the
+    /// program, it makes sense to run in their own dedicated thread to avoid interference
+    /// with the rest of the tasks' runtime.
+    /// The use of tokio::task::spawm_blocking is not recommended for these scenarios
+    /// as it is a limited thread pool better suited for blocking IO tasks that eventually end
+    fn start_on_thread(self) -> GenServerHandle<Self> {
+        GenServerHandle::new_on_thread(self)
     }
 
     fn run(
@@ -298,6 +329,36 @@ pub trait GenServer: Send + Sized {
     ) -> impl Future<Output = Result<(), Self::Error>> + Send {
         async { Ok(()) }
     }
+}
+
+/// Spawns a task that awaits on a future and sends messages to a GenServer.
+///
+/// This function returns a handle to the spawned task.
+pub fn send_message_on<T, U>(
+    handle: GenServerHandle<T>,
+    future: U,
+    message: T::CastMsg,
+) -> JoinHandle<()>
+where
+    T: GenServer,
+    U: Future + Send + 'static,
+    <U as Future>::Output: Send,
+{
+    let cancelation_token = handle.cancellation_token();
+    let mut handle_clone = handle.clone();
+    let join_handle = spawned_rt::tasks::spawn(async move {
+        tracing::info!("Ctrl+C listener started");
+        let is_cancelled = core::pin::pin!(cancelation_token.cancelled());
+        let signal = core::pin::pin!(future);
+        match futures::future::select(is_cancelled, signal).await {
+            futures::future::Either::Left(_) => tracing::error!("GenServer stopped"),
+            futures::future::Either::Right(_) => {
+                tracing::info!("Sending shutdown to PeerTable Server");
+                handle_clone.cast(message).await.unwrap();
+            }
+        }
+    });
+    join_handle
 }
 
 #[cfg(debug_assertions)]

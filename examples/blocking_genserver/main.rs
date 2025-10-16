@@ -99,7 +99,7 @@ impl GenServer for WellBehavedTask {
 pub fn main() {
     rt::run(async move {
         // If we change BadlyBehavedTask to start instead, it can stop the entire program
-        let mut badboy = BadlyBehavedTask::new().start_blocking();
+        let mut badboy = BadlyBehavedTask::new().start_on_thread();
         let _ = badboy.cast(()).await;
         let mut goodboy = WellBehavedTask::new(0).start();
         let _ = goodboy.cast(()).await;
