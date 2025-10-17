@@ -351,7 +351,7 @@ where
         let is_cancelled = pin!(cancelation_token.cancelled());
         let signal = pin!(future);
         match future::select(is_cancelled, signal).await {
-            future::Either::Left(_) => tracing::error!("GenServer stopped"),
+            future::Either::Left(_) => tracing::debug!("GenServer stopped"),
             future::Either::Right(_) => {
                 if let Err(e) = handle_clone.cast(message).await {
                     tracing::error!("Failed to send message: {e:?}")
