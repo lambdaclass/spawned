@@ -16,12 +16,12 @@ members = [
 ]
 
 [workspace.dependencies]
-spawned-rt = { path = "rt", version = "0.4.2" }
-spawned-concurrency = { path = "concurrency", version = "0.4.2" }
+spawned-rt = { path = "rt", version = "0.4.3" }
+spawned-concurrency = { path = "concurrency", version = "0.4.3" }
 tracing = { version = "0.1.41", features = ["log"] }
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 
 [workspace.package]
-version = "0.4.2"
+version = "0.4.3"
 license = "MIT"
 edition = "2021"
