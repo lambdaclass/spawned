@@ -5,12 +5,12 @@ use crate::{
     tasks::InitResult::{NoSuccess, Success},
 };
 use core::pin::pin;
-use futures::future::{self, FutureExt as _};
+use futures::future;
 use spawned_rt::{
     tasks::{self as rt, mpsc, oneshot, timeout, CancellationToken, JoinHandle},
     threads,
 };
-use std::{fmt::Debug, future::Future, panic::AssertUnwindSafe, time::Duration};
+use std::{fmt::Debug, future::Future, time::Duration};
 
 const DEFAULT_CALL_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -251,24 +251,14 @@ pub trait GenServer: Send + Sized {
 
             let keep_running = match message {
                 Some(GenServerInMsg::Call { sender, message }) => {
-                    let (keep_running, response) =
-                        match AssertUnwindSafe(self.handle_call(message, handle))
-                            .catch_unwind()
-                            .await
-                        {
-                            Ok(response) => match response {
-                                CallResponse::Reply(response) => (true, Ok(response)),
-                                CallResponse::Stop(response) => (false, Ok(response)),
-                                CallResponse::Unused => {
-                                    tracing::error!("GenServer received unexpected CallMessage");
-                                    (false, Err(GenServerError::CallMsgUnused))
-                                }
-                            },
-                            Err(error) => {
-                                tracing::error!("Error in callback: '{error:?}'");
-                                (false, Err(GenServerError::Callback))
-                            }
-                        };
+                    let (keep_running, response) = match self.handle_call(message, handle).await {
+                        CallResponse::Reply(response) => (true, Ok(response)),
+                        CallResponse::Stop(response) => (false, Ok(response)),
+                        CallResponse::Unused => {
+                            tracing::error!("GenServer received unexpected CallMessage");
+                            (false, Err(GenServerError::CallMsgUnused))
+                        }
+                    };
                     // Send response back
                     if sender.send(response).is_err() {
                         tracing::error!(
@@ -278,20 +268,11 @@ pub trait GenServer: Send + Sized {
                     keep_running
                 }
                 Some(GenServerInMsg::Cast { message }) => {
-                    match AssertUnwindSafe(self.handle_cast(message, handle))
-                        .catch_unwind()
-                        .await
-                    {
-                        Ok(response) => match response {
-                            CastResponse::NoReply => true,
-                            CastResponse::Stop => false,
-                            CastResponse::Unused => {
-                                tracing::error!("GenServer received unexpected CastMessage");
-                                false
-                            }
-                        },
-                        Err(error) => {
-                            tracing::trace!("Error in callback: '{error:?}'");
+                    match self.handle_cast(message, handle).await {
+                        CastResponse::NoReply => true,
+                        CastResponse::Stop => false,
+                        CastResponse::Unused => {
+                            tracing::error!("GenServer received unexpected CastMessage");
                             false
                         }
                     }
