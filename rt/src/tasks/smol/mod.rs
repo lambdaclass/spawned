@@ -3,10 +3,9 @@ use futures_lite::future::Future;
 use smol::channel;
 pub use smol::Executor as Runtime;
 pub use smol::Task as JoinHandle;
-use tokio::time::Timeout;
+pub use smol_cancellation_token::CancellationToken;
 
 use crate::tracing::init_tracing;
-use std::future::IntoFuture;
 use std::num::{NonZero, NonZeroU64};
 use std::time::Duration;
 

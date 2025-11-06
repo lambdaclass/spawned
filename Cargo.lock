@@ -1427,6 +1427,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "smol-cancellation-token"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4fa8dbcb0e139642c3b761803f88f3463928fc23c84bfbd1e2aae76f606085c2"
+dependencies = [
+ "event-listener",
+ "pin-project-lite",
+]
+
+[[package]]
 name = "socket2"
 version = "0.5.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1456,6 +1466,7 @@ dependencies = [
  "crossbeam",
  "futures-lite",
  "smol",
+ "smol-cancellation-token",
  "tokio",
  "tokio-stream",
  "tokio-util",
