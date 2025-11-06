@@ -7,21 +7,25 @@
 //! Currently, only a very limited set of tokio functionality is reexported. We may want to
 //! extend this functionality as needed.
 
+mod smol;
 mod tokio;
 
 use ::tokio::runtime::Handle;
 
 use crate::tracing::init_tracing;
+use std::future::Future;
 
 pub use crate::tasks::tokio::mpsc;
 pub use crate::tasks::tokio::oneshot;
 pub use crate::tasks::tokio::sleep;
 pub use crate::tasks::tokio::timeout;
 pub use crate::tasks::tokio::CancellationToken;
-pub use crate::tasks::tokio::{spawn, spawn_blocking, task_id, JoinHandle, Runtime};
 pub use crate::tasks::tokio::{BroadcastStream, ReceiverStream};
-use std::future::Future;
 
+#[cfg(feature = "tokio")]
+pub use crate::tasks::tokio::{spawn, spawn_blocking, task_id, JoinHandle, Runtime};
+
+#[cfg(feature = "tokio")]
 pub fn run<F: Future>(future: F) -> F::Output {
     init_tracing();
 
@@ -29,6 +33,10 @@ pub fn run<F: Future>(future: F) -> F::Output {
     rt.block_on(future)
 }
 
+#[cfg(feature = "tokio")]
 pub fn block_on<F: Future>(future: F) -> F::Output {
     Handle::current().block_on(future)
 }
+
+#[cfg(feature = "smol")]
+pub use crate::tasks::smol::{block_on, run, spawn, spawn_blocking, task_id, JoinHandle, Runtime};

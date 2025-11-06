@@ -21,8 +21,13 @@ pub fn run(f: fn()) {
 }
 
 pub fn block_on<F: Future>(future: F) -> F::Output {
-    let rt = Runtime::new().unwrap();
-    rt.block_on(future)
+    #[cfg(feature = "tokio")]
+    {
+        let rt = Runtime::new().unwrap();
+        rt.block_on(future)
+    }
+    #[cfg(feature = "smol")]
+    crate::tasks::block_on(future)
 }
 
 /// Spawn blocking is the same as spawn for pure threaded usage.
