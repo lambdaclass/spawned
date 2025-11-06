@@ -1454,6 +1454,7 @@ name = "spawned-rt"
 version = "0.4.3"
 dependencies = [
  "crossbeam",
+ "futures-lite",
  "smol",
  "tokio",
  "tokio-stream",

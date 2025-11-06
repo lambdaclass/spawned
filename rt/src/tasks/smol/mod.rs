@@ -1,12 +1,14 @@
+use futures_lite::future::or;
+use futures_lite::future::Future;
 use smol::channel;
 pub use smol::Executor as Runtime;
 pub use smol::Task as JoinHandle;
+use tokio::time::Timeout;
 
 use crate::tracing::init_tracing;
-use std::{
-    future::Future,
-    num::{NonZero, NonZeroU64},
-};
+use std::future::IntoFuture;
+use std::num::{NonZero, NonZeroU64};
+use std::time::Duration;
 
 pub fn run<F: Future>(future: F) -> F::Output {
     init_tracing();
@@ -38,4 +40,23 @@ where
 
 pub fn task_id() -> NonZeroU64 {
     NonZero::new(1).unwrap()
+}
+
+pub async fn timeout<F>(timeout: Duration, future: F) -> Result<F::Output, ()>
+where
+    F: Future + Send + 'static,
+    F::Output: Send + 'static,
+{
+    use futures_lite;
+    let timer = smol::Timer::after(timeout);
+
+    or(async { Ok(future.await) }, async {
+        timer.await;
+        Err(())
+    })
+    .await
+}
+
+pub async fn sleep(time: Duration) {
+    smol::Timer::after(time).await;
 }

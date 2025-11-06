@@ -17,13 +17,13 @@ use std::future::Future;
 
 pub use crate::tasks::tokio::mpsc;
 pub use crate::tasks::tokio::oneshot;
-pub use crate::tasks::tokio::sleep;
-pub use crate::tasks::tokio::timeout;
 pub use crate::tasks::tokio::CancellationToken;
 pub use crate::tasks::tokio::{BroadcastStream, ReceiverStream};
 
 #[cfg(feature = "tokio")]
-pub use crate::tasks::tokio::{spawn, spawn_blocking, task_id, JoinHandle, Runtime};
+pub use crate::tasks::tokio::{
+    sleep, spawn, spawn_blocking, task_id, timeout, JoinHandle, Runtime,
+};
 
 #[cfg(feature = "tokio")]
 pub fn run<F: Future>(future: F) -> F::Output {
@@ -39,4 +39,6 @@ pub fn block_on<F: Future>(future: F) -> F::Output {
 }
 
 #[cfg(feature = "smol")]
-pub use crate::tasks::smol::{block_on, run, spawn, spawn_blocking, task_id, JoinHandle, Runtime};
+pub use crate::tasks::smol::{
+    block_on, run, sleep, spawn, spawn_blocking, task_id, timeout, JoinHandle, Runtime,
+};
