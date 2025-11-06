@@ -1,3 +1,4 @@
+use smol::channel;
 pub use smol::Executor as Runtime;
 pub use smol::Task as JoinHandle;
 
@@ -22,7 +23,9 @@ where
     F: Future + Send + 'static,
     F::Output: Send + 'static,
 {
-    smol::spawn(future)
+    let (sender, receiver) = channel::bounded::<F::Output>(1);
+    smol::spawn(async move { sender.send(future.await).await }).detach();
+    smol::spawn(async move { receiver.recv().await.unwrap() })
 }
 
 pub fn spawn_blocking<F, R>(f: F) -> JoinHandle<R>
