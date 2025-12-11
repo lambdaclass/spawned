@@ -62,6 +62,10 @@ impl<G: GenServer> GenServerHandle<G> {
             .send(GenServerInMsg::Cast { message })
             .map_err(|_error| GenServerError::Server)
     }
+
+    pub fn cancellation_token(&self) -> CancellationToken {
+        self.cancellation_token.clone()
+    }
 }
 
 pub enum GenServerInMsg<G: GenServer> {
