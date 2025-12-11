@@ -34,7 +34,7 @@ where
     spawn(f)
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct CancellationToken {
     is_cancelled: Arc<AtomicBool>,
 }

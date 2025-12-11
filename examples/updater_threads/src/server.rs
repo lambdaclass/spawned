@@ -28,11 +28,7 @@ impl GenServer for UpdaterServer {
         Ok(self)
     }
 
-    fn handle_cast(
-        self,
-        message: Self::CastMsg,
-        handle: &UpdateServerHandle,
-    ) -> CastResponse<Self> {
+    fn handle_cast(&mut self, message: Self::CastMsg, handle: &UpdateServerHandle) -> CastResponse {
         match message {
             Self::CastMsg::Check => {
                 send_after(self.periodicity, handle.clone(), InMessage::Check);
@@ -42,7 +38,7 @@ impl GenServer for UpdaterServer {
 
                 tracing::info!("Response: {resp:?}");
 
-                CastResponse::NoReply(self)
+                CastResponse::NoReply
             }
         }
     }
