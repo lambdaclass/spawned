@@ -61,53 +61,42 @@ impl GenServer for Bank {
         Ok(self)
     }
 
-    fn handle_call(mut self, message: Self::CallMsg, _handle: &BankHandle) -> CallResponse<Self> {
+    fn handle_call(&mut self, message: Self::CallMsg, _handle: &BankHandle) -> CallResponse<Self> {
         match message.clone() {
             Self::CallMsg::New { who } => match self.accounts.get(&who) {
-                Some(_amount) => {
-                    CallResponse::Reply(self, Err(BankError::AlreadyACustomer { who }))
-                }
+                Some(_amount) => CallResponse::Reply(Err(BankError::AlreadyACustomer { who })),
                 None => {
                     self.accounts.insert(who.clone(), 0);
-                    CallResponse::Reply(self, Ok(OutMessage::Welcome { who }))
+                    CallResponse::Reply(Ok(OutMessage::Welcome { who }))
                 }
             },
             Self::CallMsg::Add { who, amount } => match self.accounts.get(&who) {
                 Some(current) => {
                     let new_amount = current + amount;
                     self.accounts.insert(who.clone(), new_amount);
-                    CallResponse::Reply(
-                        self,
-                        Ok(OutMessage::Balance {
-                            who,
-                            amount: new_amount,
-                        }),
-                    )
+                    CallResponse::Reply(Ok(OutMessage::Balance {
+                        who,
+                        amount: new_amount,
+                    }))
                 }
-                None => CallResponse::Reply(self, Err(BankError::NotACustomer { who })),
+                None => CallResponse::Reply(Err(BankError::NotACustomer { who })),
             },
             Self::CallMsg::Remove { who, amount } => match self.accounts.get(&who) {
                 Some(&current) => match current < amount {
-                    true => CallResponse::Reply(
-                        self,
-                        Err(BankError::InsufficientBalance {
-                            who,
-                            amount: current,
-                        }),
-                    ),
+                    true => CallResponse::Reply(Err(BankError::InsufficientBalance {
+                        who,
+                        amount: current,
+                    })),
                     false => {
                         let new_amount = current - amount;
                         self.accounts.insert(who.clone(), new_amount);
-                        CallResponse::Reply(
-                            self,
-                            Ok(OutMessage::WidrawOk {
-                                who,
-                                amount: new_amount,
-                            }),
-                        )
+                        CallResponse::Reply(Ok(OutMessage::WidrawOk {
+                            who,
+                            amount: new_amount,
+                        }))
                     }
                 },
-                None => CallResponse::Reply(self, Err(BankError::NotACustomer { who })),
+                None => CallResponse::Reply(Err(BankError::NotACustomer { who })),
             },
             Self::CallMsg::Stop => CallResponse::Stop(Ok(OutMessage::Stopped)),
         }
