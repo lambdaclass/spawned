@@ -63,16 +63,20 @@ impl GenServer for Repeater {
         Ok(self)
     }
 
-    fn handle_call(self, _message: Self::CallMsg, _handle: &RepeaterHandle) -> CallResponse<Self> {
+    fn handle_call(
+        &mut self,
+        _message: Self::CallMsg,
+        _handle: &RepeaterHandle,
+    ) -> CallResponse<Self> {
         let count = self.count;
-        CallResponse::Reply(self, RepeaterOutMessage::Count(count))
+        CallResponse::Reply(RepeaterOutMessage::Count(count))
     }
 
     fn handle_cast(
-        mut self,
+        &mut self,
         message: Self::CastMsg,
         _handle: &GenServerHandle<Self>,
-    ) -> CastResponse<Self> {
+    ) -> CastResponse {
         match message {
             RepeaterCastMessage::Inc => {
                 self.count += 1;
@@ -83,7 +87,7 @@ impl GenServer for Repeater {
                 };
             }
         };
-        CastResponse::NoReply(self)
+        CastResponse::NoReply
     }
 }
 
@@ -156,22 +160,22 @@ impl GenServer for Delayed {
     type OutMsg = DelayedOutMessage;
     type Error = ();
 
-    fn handle_call(self, _message: Self::CallMsg, _handle: &DelayedHandle) -> CallResponse<Self> {
+    fn handle_call(
+        &mut self,
+        _message: Self::CallMsg,
+        _handle: &DelayedHandle,
+    ) -> CallResponse<Self> {
         let count = self.count;
-        CallResponse::Reply(self, DelayedOutMessage::Count(count))
+        CallResponse::Reply(DelayedOutMessage::Count(count))
     }
 
-    fn handle_cast(
-        mut self,
-        message: Self::CastMsg,
-        _handle: &DelayedHandle,
-    ) -> CastResponse<Self> {
+    fn handle_cast(&mut self, message: Self::CastMsg, _handle: &DelayedHandle) -> CastResponse {
         match message {
             DelayedCastMessage::Inc => {
                 self.count += 1;
             }
         };
-        CastResponse::NoReply(self)
+        CastResponse::NoReply
     }
 }
 
