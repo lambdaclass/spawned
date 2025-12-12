@@ -1197,7 +1197,7 @@ dependencies = [
 
 [[package]]
 name = "spawned-concurrency"
-version = "0.4.2"
+version = "0.4.5"
 dependencies = [
  "futures",
  "pin-project-lite",
@@ -1210,7 +1210,7 @@ dependencies = [
 
 [[package]]
 name = "spawned-rt"
-version = "0.4.2"
+version = "0.4.5"
 dependencies = [
  "crossbeam",
  "tokio",
