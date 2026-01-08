@@ -2116,4 +2116,93 @@ mod integration_tests {
 
         supervisor.stop();
     }
+
+    #[tokio::test]
+    async fn test_supervisor_max_restarts_exceeded() {
+        // Create a supervisor with very low intensity (1 restart per 10 seconds)
+        let counter = Arc::new(AtomicU32::new(0));
+        let spec = SupervisorSpec::new(RestartStrategy::OneForOne)
+            .max_restarts(1, Duration::from_secs(10))
+            .child(crashable_worker("worker1", counter.clone()));
+
+        let mut supervisor = Supervisor::start(spec);
+        sleep(Duration::from_millis(50)).await;
+
+        // First restart should succeed
+        let result = supervisor
+            .call(SupervisorCall::RestartChild("worker1".to_string()))
+            .await
+            .unwrap();
+        assert!(matches!(result, SupervisorResponse::Started(_)));
+
+        // Second restart should fail due to max_restarts exceeded
+        let result = supervisor
+            .call(SupervisorCall::RestartChild("worker1".to_string()))
+            .await
+            .unwrap();
+        assert!(matches!(
+            result,
+            SupervisorResponse::Error(SupervisorError::MaxRestartsExceeded)
+        ));
+
+        supervisor.stop();
+    }
+
+    #[tokio::test]
+    async fn test_supervisor_restart_intensity_resets_after_period() {
+        // Create a supervisor with 2 restarts per 100ms
+        let counter = Arc::new(AtomicU32::new(0));
+        let spec = SupervisorSpec::new(RestartStrategy::OneForOne)
+            .max_restarts(2, Duration::from_millis(100))
+            .child(crashable_worker("worker1", counter.clone()));
+
+        let mut supervisor = Supervisor::start(spec);
+        sleep(Duration::from_millis(50)).await;
+
+        // First restart should succeed
+        let result = supervisor
+            .call(SupervisorCall::RestartChild("worker1".to_string()))
+            .await
+            .unwrap();
+        assert!(matches!(result, SupervisorResponse::Started(_)));
+
+        // Second restart should succeed
+        let result = supervisor
+            .call(SupervisorCall::RestartChild("worker1".to_string()))
+            .await
+            .unwrap();
+        assert!(matches!(result, SupervisorResponse::Started(_)));
+
+        // Third restart should fail (exceeded limit)
+        let result = supervisor
+            .call(SupervisorCall::RestartChild("worker1".to_string()))
+            .await
+            .unwrap();
+        assert!(matches!(
+            result,
+            SupervisorResponse::Error(SupervisorError::MaxRestartsExceeded)
+        ));
+
+        // Wait for the period to reset
+        sleep(Duration::from_millis(150)).await;
+
+        // Now restart should succeed again
+        let result = supervisor
+            .call(SupervisorCall::RestartChild("worker1".to_string()))
+            .await
+            .unwrap();
+        assert!(matches!(result, SupervisorResponse::Started(_)));
+
+        supervisor.stop();
+    }
+
+    #[tokio::test]
+    async fn test_dynamic_supervisor_max_restarts_config() {
+        // Test that DynamicSupervisorSpec properly configures max_restarts
+        let spec = DynamicSupervisorSpec::new()
+            .max_restarts(5, Duration::from_secs(30));
+
+        assert_eq!(spec.max_restarts, 5);
+        assert_eq!(spec.max_seconds, Duration::from_secs(30));
+    }
 }
