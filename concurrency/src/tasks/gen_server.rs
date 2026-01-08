@@ -16,20 +16,81 @@ const DEFAULT_CALL_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Execution backend for GenServer.
 ///
-/// Determines how the GenServer's async loop is executed.
+/// Determines how the GenServer's async loop is executed. Choose based on
+/// the nature of your workload:
+///
+/// # Backend Comparison
+///
+/// | Backend | Execution Model | Best For | Limitations |
+/// |---------|-----------------|----------|-------------|
+/// | `Async` | Tokio task | Non-blocking I/O, async operations | Blocks runtime if sync code runs too long |
+/// | `Blocking` | Tokio blocking pool | Short blocking operations (file I/O, DNS) | Shared pool with limited threads |
+/// | `Thread` | Dedicated OS thread | Long-running blocking work, CPU-heavy tasks | Higher memory overhead per GenServer |
+///
+/// # Examples
+///
+/// ```ignore
+/// // For typical async workloads (HTTP handlers, database queries)
+/// let handle = MyServer::new().start(Backend::Async);
+///
+/// // For occasional blocking operations (file reads, external commands)
+/// let handle = MyServer::new().start(Backend::Blocking);
+///
+/// // For CPU-intensive or permanently blocking services
+/// let handle = MyServer::new().start(Backend::Thread);
+/// ```
+///
+/// # When to Use Each Backend
+///
+/// ## `Backend::Async` (Default)
+/// - **Advantages**: Lightweight, efficient, good for high concurrency
+/// - **Use when**: Your GenServer does mostly async I/O (network, database)
+/// - **Avoid when**: Your code blocks (e.g., `std::thread::sleep`, heavy computation)
+///
+/// ## `Backend::Blocking`
+/// - **Advantages**: Prevents blocking the async runtime, uses tokio's managed pool
+/// - **Use when**: You have occasional blocking operations that complete quickly
+/// - **Avoid when**: You need guaranteed thread availability or long-running blocks
+///
+/// ## `Backend::Thread`
+/// - **Advantages**: Complete isolation, no interference with async runtime
+/// - **Use when**: Long-running blocking work, singleton services, CPU-bound tasks
+/// - **Avoid when**: You need many GenServers (each gets its own OS thread)
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Backend {
     /// Run on tokio async runtime (default).
-    /// Best for non-blocking, async workloads.
+    ///
+    /// Best for non-blocking, async workloads. The GenServer runs as a
+    /// lightweight tokio task, enabling high concurrency with minimal overhead.
+    ///
+    /// **Warning**: If your `handle_call` or `handle_cast` blocks synchronously
+    /// (e.g., `std::thread::sleep`, CPU-heavy loops), it will block the entire
+    /// tokio runtime thread, affecting other tasks.
     #[default]
     Async,
+
     /// Run on tokio's blocking thread pool.
-    /// Use for blocking operations that eventually complete.
-    /// The pool is shared and limited in size.
+    ///
+    /// Use for GenServers that perform blocking operations like:
+    /// - Synchronous file I/O
+    /// - DNS lookups
+    /// - External process calls
+    /// - Short CPU-bound computations
+    ///
+    /// The pool is shared across all `spawn_blocking` calls and has a default
+    /// limit of 512 threads. If the pool is exhausted, new blocking tasks wait.
     Blocking,
+
     /// Run on a dedicated OS thread.
-    /// Use for long-running blocking operations or singleton services
-    /// that should not interfere with the async runtime.
+    ///
+    /// Use for GenServers that:
+    /// - Block indefinitely or for long periods
+    /// - Need guaranteed thread availability
+    /// - Should not compete with other blocking tasks
+    /// - Run CPU-intensive workloads
+    ///
+    /// Each GenServer gets its own thread, providing complete isolation from
+    /// the async runtime. Higher memory overhead (~2MB stack per thread).
     Thread,
 }
 
