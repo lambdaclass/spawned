@@ -643,4 +643,235 @@ mod tests {
             assert!(rx.is_closed())
         });
     }
+
+    // ==================== Backend enum tests ====================
+
+    #[test]
+    pub fn backend_default_is_async() {
+        assert_eq!(Backend::default(), Backend::Async);
+    }
+
+    #[test]
+    pub fn backend_enum_is_copy_and_clone() {
+        let backend = Backend::Async;
+        let copied = backend; // Copy
+        let cloned = backend.clone(); // Clone
+        assert_eq!(backend, copied);
+        assert_eq!(backend, cloned);
+    }
+
+    #[test]
+    pub fn backend_enum_debug_format() {
+        assert_eq!(format!("{:?}", Backend::Async), "Async");
+        assert_eq!(format!("{:?}", Backend::Blocking), "Blocking");
+        assert_eq!(format!("{:?}", Backend::Thread), "Thread");
+    }
+
+    #[test]
+    pub fn backend_enum_equality() {
+        assert_eq!(Backend::Async, Backend::Async);
+        assert_eq!(Backend::Blocking, Backend::Blocking);
+        assert_eq!(Backend::Thread, Backend::Thread);
+        assert_ne!(Backend::Async, Backend::Blocking);
+        assert_ne!(Backend::Async, Backend::Thread);
+        assert_ne!(Backend::Blocking, Backend::Thread);
+    }
+
+    // ==================== Backend functionality tests ====================
+
+    /// Simple counter GenServer for testing all backends
+    struct Counter {
+        count: u64,
+    }
+
+    #[derive(Clone)]
+    enum CounterCall {
+        Get,
+        Increment,
+        Stop,
+    }
+
+    #[derive(Clone)]
+    enum CounterCast {
+        Increment,
+    }
+
+    impl GenServer for Counter {
+        type CallMsg = CounterCall;
+        type CastMsg = CounterCast;
+        type OutMsg = u64;
+        type Error = ();
+
+        async fn handle_call(
+            &mut self,
+            message: Self::CallMsg,
+            _: &GenServerHandle<Self>,
+        ) -> CallResponse<Self> {
+            match message {
+                CounterCall::Get => CallResponse::Reply(self.count),
+                CounterCall::Increment => {
+                    self.count += 1;
+                    CallResponse::Reply(self.count)
+                }
+                CounterCall::Stop => CallResponse::Stop(self.count),
+            }
+        }
+
+        async fn handle_cast(
+            &mut self,
+            message: Self::CastMsg,
+            _: &GenServerHandle<Self>,
+        ) -> CastResponse {
+            match message {
+                CounterCast::Increment => {
+                    self.count += 1;
+                    CastResponse::NoReply
+                }
+            }
+        }
+    }
+
+    #[test]
+    pub fn backend_async_handles_call_and_cast() {
+        let runtime = rt::Runtime::new().unwrap();
+        runtime.block_on(async move {
+            let mut counter = Counter { count: 0 }.start(Backend::Async);
+
+            // Test call
+            let result = counter.call(CounterCall::Get).await.unwrap();
+            assert_eq!(result, 0);
+
+            let result = counter.call(CounterCall::Increment).await.unwrap();
+            assert_eq!(result, 1);
+
+            // Test cast
+            counter.cast(CounterCast::Increment).await.unwrap();
+            rt::sleep(Duration::from_millis(10)).await; // Give time for cast to process
+
+            let result = counter.call(CounterCall::Get).await.unwrap();
+            assert_eq!(result, 2);
+
+            // Stop
+            let final_count = counter.call(CounterCall::Stop).await.unwrap();
+            assert_eq!(final_count, 2);
+        });
+    }
+
+    #[test]
+    pub fn backend_blocking_handles_call_and_cast() {
+        let runtime = rt::Runtime::new().unwrap();
+        runtime.block_on(async move {
+            let mut counter = Counter { count: 0 }.start(Backend::Blocking);
+
+            // Test call
+            let result = counter.call(CounterCall::Get).await.unwrap();
+            assert_eq!(result, 0);
+
+            let result = counter.call(CounterCall::Increment).await.unwrap();
+            assert_eq!(result, 1);
+
+            // Test cast
+            counter.cast(CounterCast::Increment).await.unwrap();
+            rt::sleep(Duration::from_millis(50)).await; // Give time for cast to process
+
+            let result = counter.call(CounterCall::Get).await.unwrap();
+            assert_eq!(result, 2);
+
+            // Stop
+            let final_count = counter.call(CounterCall::Stop).await.unwrap();
+            assert_eq!(final_count, 2);
+        });
+    }
+
+    #[test]
+    pub fn backend_thread_handles_call_and_cast() {
+        let runtime = rt::Runtime::new().unwrap();
+        runtime.block_on(async move {
+            let mut counter = Counter { count: 0 }.start(Backend::Thread);
+
+            // Test call
+            let result = counter.call(CounterCall::Get).await.unwrap();
+            assert_eq!(result, 0);
+
+            let result = counter.call(CounterCall::Increment).await.unwrap();
+            assert_eq!(result, 1);
+
+            // Test cast
+            counter.cast(CounterCast::Increment).await.unwrap();
+            rt::sleep(Duration::from_millis(50)).await; // Give time for cast to process
+
+            let result = counter.call(CounterCall::Get).await.unwrap();
+            assert_eq!(result, 2);
+
+            // Stop
+            let final_count = counter.call(CounterCall::Stop).await.unwrap();
+            assert_eq!(final_count, 2);
+        });
+    }
+
+    #[test]
+    pub fn backend_thread_isolates_blocking_work() {
+        // Similar to badly_behaved_thread but using Backend::Thread
+        let runtime = rt::Runtime::new().unwrap();
+        runtime.block_on(async move {
+            let mut badboy = BadlyBehavedTask.start(Backend::Thread);
+            let _ = badboy.cast(Unused).await;
+            let mut goodboy = WellBehavedTask { count: 0 }.start(ASYNC);
+            let _ = goodboy.cast(Unused).await;
+            rt::sleep(Duration::from_secs(1)).await;
+            let count = goodboy.call(InMessage::GetCount).await.unwrap();
+
+            // goodboy should have run normally because badboy is on a separate thread
+            match count {
+                OutMsg::Count(num) => {
+                    assert_eq!(num, 10);
+                }
+            }
+            goodboy.call(InMessage::Stop).await.unwrap();
+        });
+    }
+
+    #[test]
+    pub fn multiple_backends_concurrent() {
+        let runtime = rt::Runtime::new().unwrap();
+        runtime.block_on(async move {
+            // Start counters on all three backends
+            let mut async_counter = Counter { count: 0 }.start(Backend::Async);
+            let mut blocking_counter = Counter { count: 100 }.start(Backend::Blocking);
+            let mut thread_counter = Counter { count: 200 }.start(Backend::Thread);
+
+            // Increment each
+            async_counter.call(CounterCall::Increment).await.unwrap();
+            blocking_counter.call(CounterCall::Increment).await.unwrap();
+            thread_counter.call(CounterCall::Increment).await.unwrap();
+
+            // Verify each has independent state
+            let async_val = async_counter.call(CounterCall::Get).await.unwrap();
+            let blocking_val = blocking_counter.call(CounterCall::Get).await.unwrap();
+            let thread_val = thread_counter.call(CounterCall::Get).await.unwrap();
+
+            assert_eq!(async_val, 1);
+            assert_eq!(blocking_val, 101);
+            assert_eq!(thread_val, 201);
+
+            // Clean up
+            async_counter.call(CounterCall::Stop).await.unwrap();
+            blocking_counter.call(CounterCall::Stop).await.unwrap();
+            thread_counter.call(CounterCall::Stop).await.unwrap();
+        });
+    }
+
+    #[test]
+    pub fn backend_default_works_in_start() {
+        let runtime = rt::Runtime::new().unwrap();
+        runtime.block_on(async move {
+            // Using Backend::default() should work the same as Backend::Async
+            let mut counter = Counter { count: 42 }.start(Backend::default());
+
+            let result = counter.call(CounterCall::Get).await.unwrap();
+            assert_eq!(result, 42);
+
+            counter.call(CounterCall::Stop).await.unwrap();
+        });
+    }
 }
