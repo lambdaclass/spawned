@@ -15,13 +15,13 @@ impl BadlyBehavedTask {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum InMessage {
     GetCount,
     Stop,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum OutMsg {
     Count(u64),
 }

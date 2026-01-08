@@ -340,7 +340,7 @@ mod tests {
         value: u32,
     }
 
-    #[derive(Clone)]
+    #[derive(Clone, Debug)]
     enum TestCall {
         Get,
         Set(u32),

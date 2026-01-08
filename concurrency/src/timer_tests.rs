@@ -7,13 +7,13 @@ use std::time::Duration;
 
 type RepeaterHandle = GenServerHandle<Repeater>;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 enum RepeaterCastMessage {
     Inc,
     StopTimer,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 enum RepeaterCallMessage {
     GetCount,
 }
@@ -129,12 +129,12 @@ pub fn test_send_interval_and_cancellation() {
 
 type DelayedHandle = GenServerHandle<Delayed>;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 enum DelayedCastMessage {
     Inc,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 enum DelayedCallMessage {
     GetCount,
     Stop,

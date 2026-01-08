@@ -32,7 +32,7 @@ impl Counter {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 enum CounterCall {
     Get,
     Increment,
@@ -40,7 +40,7 @@ enum CounterCall {
     Stop,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 enum CounterCast {
     Reset,
 }

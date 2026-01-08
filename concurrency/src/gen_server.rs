@@ -6,6 +6,7 @@ use crate::{
     pid::{ExitReason, HasPid, Pid},
     process_table::{self, LinkError, SystemMessageSender},
     registry::{self, RegistryError},
+    sys,
     InitResult::{NoSuccess, Success},
 };
 use core::pin::pin;
@@ -14,7 +15,7 @@ use spawned_rt::{
     tasks::{self as rt, mpsc, oneshot, timeout, CancellationToken, JoinHandle},
     threads,
 };
-use std::{fmt::Debug, future::Future, panic::AssertUnwindSafe, sync::Arc, time::Duration};
+use std::{fmt::Debug, future::Future, panic::AssertUnwindSafe, sync::Arc, time::{Duration, Instant}};
 
 const DEFAULT_CALL_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -483,9 +484,9 @@ pub enum InitResult<G: GenServer> {
 }
 
 pub trait GenServer: Send + Sized {
-    type CallMsg: Clone + Send + Sized + Sync;
-    type CastMsg: Clone + Send + Sized + Sync;
-    type OutMsg: Send + Sized;
+    type CallMsg: Clone + Debug + Send + Sized + Sync;
+    type CastMsg: Clone + Debug + Send + Sized + Sync;
+    type OutMsg: Debug + Send + Sized;
     type Error: Debug + Send;
 
     /// Start the GenServer with the specified backend.
@@ -614,6 +615,17 @@ pub trait GenServer: Send + Sized {
         system_rx: &mut mpsc::Receiver<SystemMessage>,
     ) -> impl Future<Output = bool> + Send {
         async move {
+            let pid = handle.pid();
+
+            // Check if process is suspended - if so, wait until resumed
+            while sys::is_suspended(pid) {
+                rt::sleep(Duration::from_millis(10)).await;
+                // Check if cancelled while suspended
+                if handle.cancellation_token().is_cancelled() {
+                    return false;
+                }
+            }
+
             // Use futures::select_biased! to prioritize system messages
             // We pin both futures inline
             let system_fut = pin!(system_rx.recv());
@@ -624,7 +636,11 @@ pub trait GenServer: Send + Sized {
                 system_msg = system_fut.fuse() => {
                     match system_msg {
                         Some(msg) => {
-                            match AssertUnwindSafe(self.handle_info(msg, handle))
+                            // Trace the info message
+                            sys::trace_info(pid, &msg);
+                            let start = Instant::now();
+
+                            let result = match AssertUnwindSafe(self.handle_info(msg, handle))
                                 .catch_unwind()
                                 .await
                             {
@@ -634,9 +650,14 @@ pub trait GenServer: Send + Sized {
                                 },
                                 Err(error) => {
                                     tracing::error!("Error in handle_info: '{error:?}'");
+                                    sys::record_error(pid);
                                     false
                                 }
-                            }
+                            };
+
+                            // Record statistics
+                            sys::record_info(pid, start.elapsed());
+                            result
                         }
                         None => {
                             // System channel closed, continue with regular messages
@@ -648,6 +669,10 @@ pub trait GenServer: Send + Sized {
                 message = message_fut.fuse() => {
                     match message {
                         Some(GenServerInMsg::Call { sender, message }) => {
+                            // Trace the call message
+                            sys::trace_call(pid, &message);
+                            let start = Instant::now();
+
                             let (keep_running, response) =
                                 match AssertUnwindSafe(self.handle_call(message, handle))
                                     .catch_unwind()
@@ -658,14 +683,25 @@ pub trait GenServer: Send + Sized {
                                         CallResponse::Stop(response) => (false, Ok(response)),
                                         CallResponse::Unused => {
                                             tracing::error!("GenServer received unexpected CallMessage");
+                                            sys::record_error(pid);
                                             (false, Err(GenServerError::CallMsgUnused))
                                         }
                                     },
                                     Err(error) => {
                                         tracing::error!("Error in callback: '{error:?}'");
+                                        sys::record_error(pid);
                                         (false, Err(GenServerError::Callback))
                                     }
                                 };
+
+                            // Record statistics
+                            sys::record_call(pid, start.elapsed());
+
+                            // Trace the reply
+                            if let Ok(ref reply) = response {
+                                sys::trace_reply(pid, reply);
+                            }
+
                             // Send response back
                             if sender.send(response).is_err() {
                                 tracing::error!(
@@ -675,7 +711,11 @@ pub trait GenServer: Send + Sized {
                             keep_running
                         }
                         Some(GenServerInMsg::Cast { message }) => {
-                            match AssertUnwindSafe(self.handle_cast(message, handle))
+                            // Trace the cast message
+                            sys::trace_cast(pid, &message);
+                            let start = Instant::now();
+
+                            let result = match AssertUnwindSafe(self.handle_cast(message, handle))
                                 .catch_unwind()
                                 .await
                             {
@@ -684,14 +724,20 @@ pub trait GenServer: Send + Sized {
                                     CastResponse::Stop => false,
                                     CastResponse::Unused => {
                                         tracing::error!("GenServer received unexpected CastMessage");
+                                        sys::record_error(pid);
                                         false
                                     }
                                 },
                                 Err(error) => {
                                     tracing::trace!("Error in callback: '{error:?}'");
+                                    sys::record_error(pid);
                                     false
                                 }
-                            }
+                            };
+
+                            // Record statistics
+                            sys::record_cast(pid, start.elapsed());
+                            result
                         }
                         None => {
                             // Channel has been closed; won't receive further messages. Stop the server.
@@ -830,12 +876,12 @@ mod tests {
 
     struct BadlyBehavedTask;
 
-    #[derive(Clone)]
+    #[derive(Clone, Debug)]
     pub enum InMessage {
         GetCount,
         Stop,
     }
-    #[derive(Clone)]
+    #[derive(Clone, Debug)]
     pub enum OutMsg {
         Count(u64),
     }
@@ -946,7 +992,7 @@ mod tests {
     #[derive(Debug, Default)]
     struct SomeTask;
 
-    #[derive(Clone)]
+    #[derive(Clone, Debug)]
     enum SomeTaskCallMsg {
         SlowOperation,
         FastOperation,
@@ -1082,14 +1128,14 @@ mod tests {
         count: u64,
     }
 
-    #[derive(Clone)]
+    #[derive(Clone, Debug)]
     enum CounterCall {
         Get,
         Increment,
         Stop,
     }
 
-    #[derive(Clone)]
+    #[derive(Clone, Debug)]
     enum CounterCast {
         Increment,
     }
@@ -1561,7 +1607,7 @@ mod tests {
         target: GenServerHandle<Counter>,
     }
 
-    #[derive(Clone)]
+    #[derive(Clone, Debug)]
     enum ForwarderCall {
         GetFromTarget,
         IncrementTarget,
@@ -1873,7 +1919,7 @@ mod tests {
         teardown_called: Arc<Mutex<bool>>,
     }
 
-    #[derive(Clone)]
+    #[derive(Clone, Debug)]
     enum TrackerCall {
         CheckInit,
         Stop,

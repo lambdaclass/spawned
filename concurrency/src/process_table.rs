@@ -87,13 +87,16 @@ pub fn register(pid: Pid, sender: Arc<dyn SystemMessageSender>) {
 
 /// Unregister a process from the table.
 ///
-/// Called when a GenServer terminates. Also cleans up links, monitors, and registry.
+/// Called when a GenServer terminates. Also cleans up links, monitors, registry, and sys state.
 pub fn unregister(pid: Pid, reason: ExitReason) {
     // First, notify linked and monitoring processes
     notify_exit(pid, reason);
 
     // Clean up the registry (remove any registered name for this pid)
     registry::unregister_pid(pid);
+
+    // Clean up sys state (statistics, tracing, suspend)
+    crate::sys::cleanup(pid);
 
     // Then clean up the table
     let mut table = PROCESS_TABLE.write().unwrap();

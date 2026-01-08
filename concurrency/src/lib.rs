@@ -12,6 +12,7 @@ pub mod process_table;
 pub mod registry;
 mod stream;
 pub mod supervisor;
+pub mod sys;
 mod time;
 
 #[cfg(test)]

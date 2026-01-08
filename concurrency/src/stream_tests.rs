@@ -19,7 +19,7 @@ impl Summatory {
 
 type SummatoryOutMessage = u16;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 enum SummatoryCastMessage {
     Add(u16),
     StreamError,
