@@ -1,6 +1,7 @@
 //! spawned concurrency
 //! Runtime traits and structs to implement concurrent code à-la-Erlang.
 
+pub mod application;
 pub mod error;
 mod gen_server;
 pub mod link;
