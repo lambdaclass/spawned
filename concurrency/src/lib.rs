@@ -6,6 +6,7 @@ pub mod link;
 pub mod messages;
 pub mod pid;
 mod process;
+pub mod process_table;
 mod stream;
 mod time;
 
@@ -22,5 +23,6 @@ pub use gen_server::{
 pub use link::{MonitorRef, SystemMessage};
 pub use pid::{ExitReason, HasPid, Pid};
 pub use process::{send, Process, ProcessInfo};
+pub use process_table::LinkError;
 pub use stream::spawn_listener;
 pub use time::{send_after, send_interval};
