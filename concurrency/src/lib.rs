@@ -25,8 +25,8 @@ pub use gen_server::{
 };
 pub use link::{MonitorRef, SystemMessage};
 pub use pid::{ExitReason, HasPid, Pid};
-pub use process::{send, Process, ProcessInfo};
-pub use process_table::LinkError;
+pub use process::{send, Process, ProcessInfo as SpawnInfo};
+pub use process_table::{LinkError, ProcessInfo};
 pub use registry::RegistryError;
 pub use stream::spawn_listener;
 pub use supervisor::{

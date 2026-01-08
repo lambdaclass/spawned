@@ -304,6 +304,103 @@ pub fn get_monitors(pid: Pid) -> Vec<MonitorRef> {
         .unwrap_or_default()
 }
 
+/// Information about a process.
+///
+/// This is the Rust equivalent of Erlang's `process_info/1`.
+/// It provides a snapshot of a process's state for debugging and introspection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProcessInfo {
+    /// The process ID.
+    pub pid: Pid,
+
+    /// Whether the process is currently alive.
+    pub alive: bool,
+
+    /// Whether the process is trapping exits.
+    pub trap_exit: bool,
+
+    /// Processes linked to this one.
+    pub links: Vec<Pid>,
+
+    /// Monitor refs for processes monitoring this one.
+    pub monitored_by: Vec<MonitorRef>,
+
+    /// Monitor refs for processes this one is monitoring.
+    pub monitoring: Vec<MonitorRef>,
+
+    /// The registered name of this process (if any).
+    pub registered_name: Option<String>,
+}
+
+/// Get information about a process.
+///
+/// Returns `None` if the process doesn't exist.
+///
+/// This is the equivalent of Erlang's `process_info/1`.
+///
+/// # Example
+///
+/// ```ignore
+/// if let Some(info) = process_table::process_info(pid) {
+///     println!("Process {} is alive: {}", info.pid, info.alive);
+///     println!("Trap exit: {}", info.trap_exit);
+///     println!("Links: {:?}", info.links);
+///     println!("Monitored by: {:?}", info.monitored_by);
+/// }
+/// ```
+pub fn process_info(pid: Pid) -> Option<ProcessInfo> {
+    let table = PROCESS_TABLE.read().unwrap();
+
+    let entry = table.processes.get(&pid)?;
+
+    let links = table
+        .links
+        .get(&pid)
+        .map(|l| l.iter().copied().collect())
+        .unwrap_or_default();
+
+    let monitored_by = table
+        .monitored_by
+        .get(&pid)
+        .map(|refs| refs.iter().copied().collect())
+        .unwrap_or_default();
+
+    // Find monitors where this pid is the monitoring process
+    let monitoring: Vec<MonitorRef> = table
+        .monitors
+        .iter()
+        .filter(|(_, (monitoring_pid, _))| *monitoring_pid == pid)
+        .map(|(ref_, _)| *ref_)
+        .collect();
+
+    // Get registered name from registry
+    let registered_name = registry::name_of(pid);
+
+    Some(ProcessInfo {
+        pid,
+        alive: entry.sender.is_alive(),
+        trap_exit: entry.trap_exit,
+        links,
+        monitored_by,
+        monitoring,
+        registered_name,
+    })
+}
+
+/// Get a list of all registered process PIDs.
+///
+/// This is useful for debugging and introspection.
+pub fn all_processes() -> Vec<Pid> {
+    let table = PROCESS_TABLE.read().unwrap();
+    table.processes.keys().copied().collect()
+}
+
+/// Get the count of registered processes.
+pub fn process_count() -> usize {
+    let table = PROCESS_TABLE.read().unwrap();
+    table.processes.len()
+}
+
 /// Send an exit signal to a process.
 ///
 /// This is the equivalent of Erlang's `exit(Pid, Reason)`.
@@ -770,5 +867,152 @@ mod tests {
         assert_eq!(kills[0], ExitReason::Shutdown);
 
         unregister(pid, ExitReason::Normal);
+    }
+
+    #[test]
+    fn test_process_info_basic() {
+        let pid = Pid::new();
+        let sender = MockSender::new();
+
+        register(pid, sender);
+
+        let info = process_info(pid).expect("process should exist");
+        assert_eq!(info.pid, pid);
+        assert!(info.alive);
+        assert!(!info.trap_exit);
+        assert!(info.links.is_empty());
+        assert!(info.monitored_by.is_empty());
+        assert!(info.monitoring.is_empty());
+        assert!(info.registered_name.is_none());
+
+        unregister(pid, ExitReason::Normal);
+    }
+
+    #[test]
+    fn test_process_info_nonexistent() {
+        let pid = Pid::new(); // Not registered
+        assert!(process_info(pid).is_none());
+    }
+
+    #[test]
+    fn test_process_info_with_trap_exit() {
+        let pid = Pid::new();
+        let sender = MockSender::new();
+
+        register(pid, sender);
+        set_trap_exit(pid, true);
+
+        let info = process_info(pid).expect("process should exist");
+        assert!(info.trap_exit);
+
+        unregister(pid, ExitReason::Normal);
+    }
+
+    #[test]
+    fn test_process_info_with_links() {
+        let pid1 = Pid::new();
+        let pid2 = Pid::new();
+        let sender1 = MockSender::new();
+        let sender2 = MockSender::new();
+
+        register(pid1, sender1);
+        register(pid2, sender2);
+        link(pid1, pid2).unwrap();
+
+        let info1 = process_info(pid1).expect("process should exist");
+        assert!(info1.links.contains(&pid2));
+
+        let info2 = process_info(pid2).expect("process should exist");
+        assert!(info2.links.contains(&pid1));
+
+        unregister(pid1, ExitReason::Normal);
+        unregister(pid2, ExitReason::Normal);
+    }
+
+    #[test]
+    fn test_process_info_with_monitors() {
+        let pid1 = Pid::new();
+        let pid2 = Pid::new();
+        let sender1 = MockSender::new();
+        let sender2 = MockSender::new();
+
+        register(pid1, sender1);
+        register(pid2, sender2);
+
+        // pid1 monitors pid2
+        let monitor_ref = monitor(pid1, pid2).unwrap();
+
+        // pid2 should show it's being monitored
+        let info2 = process_info(pid2).expect("process should exist");
+        assert!(info2.monitored_by.contains(&monitor_ref));
+
+        // pid1 should show it's monitoring
+        let info1 = process_info(pid1).expect("process should exist");
+        assert!(info1.monitoring.contains(&monitor_ref));
+
+        unregister(pid1, ExitReason::Normal);
+        unregister(pid2, ExitReason::Normal);
+    }
+
+    #[test]
+    fn test_all_processes() {
+        // Note: Due to test parallelism, we can't rely on absolute counts.
+        // Instead, we verify that our processes appear in the list.
+        let pid1 = Pid::new();
+        let pid2 = Pid::new();
+        let sender1 = MockSender::new();
+        let sender2 = MockSender::new();
+
+        register(pid1, sender1);
+        register(pid2, sender2);
+
+        let all = all_processes();
+        assert!(all.contains(&pid1), "pid1 should be in all_processes");
+        assert!(all.contains(&pid2), "pid2 should be in all_processes");
+        assert!(all.len() >= 2, "Should have at least our 2 processes");
+
+        unregister(pid1, ExitReason::Normal);
+        unregister(pid2, ExitReason::Normal);
+
+        // After unregister, our pids should be gone
+        let all_after = all_processes();
+        assert!(!all_after.contains(&pid1), "pid1 should be gone");
+        assert!(!all_after.contains(&pid2), "pid2 should be gone");
+    }
+
+    #[test]
+    fn test_process_count() {
+        // Note: Due to test parallelism, we can't rely on absolute counts.
+        // Instead, we verify relative changes within our own registered processes.
+        let pid1 = Pid::new();
+        let pid2 = Pid::new();
+        let pid3 = Pid::new();
+        let sender1 = MockSender::new();
+        let sender2 = MockSender::new();
+        let sender3 = MockSender::new();
+
+        let before = process_count();
+
+        register(pid1, sender1);
+        register(pid2, sender2);
+        register(pid3, sender3);
+
+        // We added 3 processes
+        let after = process_count();
+        assert!(after >= before + 3, "Should have at least 3 more processes");
+
+        // Verify our processes are in the list
+        let all = all_processes();
+        assert!(all.contains(&pid1));
+        assert!(all.contains(&pid2));
+        assert!(all.contains(&pid3));
+
+        unregister(pid1, ExitReason::Normal);
+        unregister(pid2, ExitReason::Normal);
+        unregister(pid3, ExitReason::Normal);
+
+        // After cleanup, count should be back to before (or close to it)
+        let final_count = process_count();
+        assert!(final_count <= after, "Count should not increase after unregister");
     }
 }
