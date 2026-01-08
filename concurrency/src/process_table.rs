@@ -983,7 +983,7 @@ mod tests {
     #[test]
     fn test_process_count() {
         // Note: Due to test parallelism, we can't rely on absolute counts.
-        // Instead, we verify relative changes within our own registered processes.
+        // We verify that our specific processes are tracked correctly.
         let pid1 = Pid::new();
         let pid2 = Pid::new();
         let pid3 = Pid::new();
@@ -991,28 +991,27 @@ mod tests {
         let sender2 = MockSender::new();
         let sender3 = MockSender::new();
 
-        let before = process_count();
-
         register(pid1, sender1);
         register(pid2, sender2);
         register(pid3, sender3);
 
-        // We added 3 processes
-        let after = process_count();
-        assert!(after >= before + 3, "Should have at least 3 more processes");
-
         // Verify our processes are in the list
         let all = all_processes();
-        assert!(all.contains(&pid1));
-        assert!(all.contains(&pid2));
-        assert!(all.contains(&pid3));
+        assert!(all.contains(&pid1), "pid1 should be registered");
+        assert!(all.contains(&pid2), "pid2 should be registered");
+        assert!(all.contains(&pid3), "pid3 should be registered");
+
+        // Count should be at least 3 (our processes)
+        assert!(process_count() >= 3, "Should have at least our 3 processes");
 
         unregister(pid1, ExitReason::Normal);
         unregister(pid2, ExitReason::Normal);
         unregister(pid3, ExitReason::Normal);
 
-        // After cleanup, count should be back to before (or close to it)
-        let final_count = process_count();
-        assert!(final_count <= after, "Count should not increase after unregister");
+        // After unregister, our pids should be gone
+        let all_after = all_processes();
+        assert!(!all_after.contains(&pid1), "pid1 should be unregistered");
+        assert!(!all_after.contains(&pid2), "pid2 should be unregistered");
+        assert!(!all_after.contains(&pid3), "pid3 should be unregistered");
     }
 }

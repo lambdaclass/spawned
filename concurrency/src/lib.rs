@@ -5,6 +5,7 @@ pub mod error;
 mod gen_server;
 pub mod link;
 pub mod messages;
+pub mod pg;
 pub mod pid;
 mod process;
 pub mod process_table;
@@ -24,6 +25,7 @@ pub use gen_server::{
     GenServerInMsg, InitResult, InitResult::NoSuccess, InitResult::Success,
 };
 pub use link::{MonitorRef, SystemMessage};
+pub use pg::PgError;
 pub use pid::{ExitReason, HasPid, Pid};
 pub use process::{send, Process, ProcessInfo as SpawnInfo};
 pub use process_table::{LinkError, ProcessInfo};
