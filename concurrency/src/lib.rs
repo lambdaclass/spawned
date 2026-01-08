@@ -7,6 +7,7 @@ pub mod messages;
 pub mod pid;
 mod process;
 pub mod process_table;
+pub mod registry;
 mod stream;
 mod time;
 
@@ -24,5 +25,6 @@ pub use link::{MonitorRef, SystemMessage};
 pub use pid::{ExitReason, HasPid, Pid};
 pub use process::{send, Process, ProcessInfo};
 pub use process_table::LinkError;
+pub use registry::RegistryError;
 pub use stream::spawn_listener;
 pub use time::{send_after, send_interval};
