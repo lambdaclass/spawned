@@ -10,6 +10,7 @@ mod process;
 pub mod process_table;
 pub mod registry;
 mod stream;
+pub mod supervisor;
 mod time;
 
 #[cfg(test)]
@@ -28,4 +29,10 @@ pub use process::{send, Process, ProcessInfo};
 pub use process_table::LinkError;
 pub use registry::RegistryError;
 pub use stream::spawn_listener;
+pub use supervisor::{
+    BoxedChildHandle, ChildHandle, ChildInfo, ChildSpec, ChildType, DynamicSupervisor,
+    DynamicSupervisorCall, DynamicSupervisorCast, DynamicSupervisorError, DynamicSupervisorResponse,
+    DynamicSupervisorSpec, RestartStrategy, RestartType, Shutdown, Supervisor, SupervisorCall,
+    SupervisorCast, SupervisorCounts, SupervisorError, SupervisorResponse, SupervisorSpec,
+};
 pub use time::{send_after, send_interval};
