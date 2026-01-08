@@ -544,6 +544,12 @@ impl SupervisorState {
     }
 
     /// Terminate multiple children by IDs (in reverse order for proper cleanup).
+    ///
+    /// Note: This is a non-blocking termination. The cancellation token is
+    /// cancelled but we don't wait for the child to fully exit. This is a
+    /// design trade-off - proper async waiting would require this method
+    /// to be async. In practice, the child will exit shortly after and
+    /// the supervisor will receive a DOWN message.
     fn terminate_children(&mut self, ids: &[String]) {
         // Terminate in reverse order (last started, first terminated)
         for id in ids.iter().rev() {
