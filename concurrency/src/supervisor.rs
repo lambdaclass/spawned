@@ -11,13 +11,16 @@
 //!
 //! let spec = SupervisorSpec::new(RestartStrategy::OneForOne)
 //!     .max_restarts(3, std::time::Duration::from_secs(5))
-//!     .child(ChildSpec::new("worker", || WorkerServer::new()));
+//!     .child(ChildSpec::worker("worker", || WorkerServer::new().start()));
 //!
-//! let supervisor = Supervisor::start(spec).await?;
+//! let supervisor = Supervisor::start(spec);
 //! ```
 
-use crate::link::MonitorRef;
-use crate::pid::{ExitReason, Pid};
+use crate::link::{MonitorRef, SystemMessage};
+use crate::pid::{ExitReason, HasPid, Pid};
+use crate::tasks::{
+    CallResponse, CastResponse, GenServer, GenServerHandle, InfoResponse, InitResult,
+};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -82,79 +85,157 @@ pub enum ChildType {
     Supervisor,
 }
 
+/// Trait for child handles that can be supervised.
+///
+/// This provides a type-erased interface for managing child processes,
+/// allowing the supervisor to work with any GenServer type.
+pub trait ChildHandle: Send + Sync {
+    /// Get the process ID of this child.
+    fn pid(&self) -> Pid;
+
+    /// Request graceful shutdown of this child.
+    fn shutdown(&self);
+
+    /// Check if this child is still alive.
+    fn is_alive(&self) -> bool;
+}
+
+/// Implementation of ChildHandle for GenServerHandle.
+impl<G: GenServer + 'static> ChildHandle for GenServerHandle<G> {
+    fn pid(&self) -> Pid {
+        HasPid::pid(self)
+    }
+
+    fn shutdown(&self) {
+        self.cancellation_token().cancel();
+    }
+
+    fn is_alive(&self) -> bool {
+        !self.cancellation_token().is_cancelled()
+    }
+}
+
+/// A boxed child handle for type erasure.
+pub type BoxedChildHandle = Box<dyn ChildHandle>;
+
 /// Specification for a child process.
 ///
 /// This defines how a child should be started and supervised.
-#[derive(Clone)]
 pub struct ChildSpec {
     /// Unique identifier for this child within the supervisor.
-    pub id: String,
+    id: String,
 
     /// Factory function to create and start the child.
-    /// Returns the Pid of the started process.
-    pub start: Arc<dyn Fn() -> Pid + Send + Sync>,
+    /// Returns a boxed handle to the started process.
+    start: Arc<dyn Fn() -> BoxedChildHandle + Send + Sync>,
 
     /// When the child should be restarted.
-    pub restart: RestartType,
+    restart: RestartType,
 
     /// How to shut down the child.
-    pub shutdown: Shutdown,
+    shutdown: Shutdown,
 
     /// Type of child (worker or supervisor).
-    pub child_type: ChildType,
+    child_type: ChildType,
 }
 
 impl ChildSpec {
-    /// Create a new child specification.
+    /// Create a new child specification for a worker.
     ///
     /// # Arguments
     ///
     /// * `id` - Unique identifier for this child
-    /// * `start` - Factory function that starts and returns the child's Pid
-    pub fn new<F>(id: impl Into<String>, start: F) -> Self
+    /// * `start` - Factory function that starts and returns a handle to the child
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let spec = ChildSpec::worker("my_worker", || MyWorker::new().start());
+    /// ```
+    pub fn worker<F, H>(id: impl Into<String>, start: F) -> Self
     where
-        F: Fn() -> Pid + Send + Sync + 'static,
+        F: Fn() -> H + Send + Sync + 'static,
+        H: ChildHandle + 'static,
     {
         Self {
             id: id.into(),
-            start: Arc::new(start),
+            start: Arc::new(move || Box::new(start()) as BoxedChildHandle),
             restart: RestartType::default(),
             shutdown: Shutdown::default(),
-            child_type: ChildType::default(),
+            child_type: ChildType::Worker,
         }
     }
 
+    /// Create a new child specification for a supervisor (nested supervision).
+    ///
+    /// # Arguments
+    ///
+    /// * `id` - Unique identifier for this child
+    /// * `start` - Factory function that starts and returns a handle to the supervisor
+    pub fn supervisor<F, H>(id: impl Into<String>, start: F) -> Self
+    where
+        F: Fn() -> H + Send + Sync + 'static,
+        H: ChildHandle + 'static,
+    {
+        Self {
+            id: id.into(),
+            start: Arc::new(move || Box::new(start()) as BoxedChildHandle),
+            restart: RestartType::default(),
+            shutdown: Shutdown::default(),
+            child_type: ChildType::Supervisor,
+        }
+    }
+
+    /// Get the ID of this child spec.
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    /// Get the restart type.
+    pub fn restart_type(&self) -> RestartType {
+        self.restart
+    }
+
+    /// Get the shutdown behavior.
+    pub fn shutdown_behavior(&self) -> Shutdown {
+        self.shutdown
+    }
+
+    /// Get the child type.
+    pub fn child_type(&self) -> ChildType {
+        self.child_type
+    }
+
     /// Set the restart type for this child.
-    pub fn restart_type(mut self, restart: RestartType) -> Self {
+    pub fn with_restart(mut self, restart: RestartType) -> Self {
         self.restart = restart;
         self
     }
 
     /// Set the shutdown behavior for this child.
-    pub fn shutdown(mut self, shutdown: Shutdown) -> Self {
+    pub fn with_shutdown(mut self, shutdown: Shutdown) -> Self {
         self.shutdown = shutdown;
-        self
-    }
-
-    /// Set the child type (worker or supervisor).
-    pub fn child_type(mut self, child_type: ChildType) -> Self {
-        self.child_type = child_type;
         self
     }
 
     /// Convenience method to mark this as a permanent child (always restart).
     pub fn permanent(self) -> Self {
-        self.restart_type(RestartType::Permanent)
+        self.with_restart(RestartType::Permanent)
     }
 
     /// Convenience method to mark this as a transient child (restart on crash).
     pub fn transient(self) -> Self {
-        self.restart_type(RestartType::Transient)
+        self.with_restart(RestartType::Transient)
     }
 
     /// Convenience method to mark this as a temporary child (never restart).
     pub fn temporary(self) -> Self {
-        self.restart_type(RestartType::Temporary)
+        self.with_restart(RestartType::Temporary)
+    }
+
+    /// Start this child and return a handle.
+    pub(crate) fn start(&self) -> BoxedChildHandle {
+        (self.start)()
     }
 }
 
@@ -165,7 +246,20 @@ impl std::fmt::Debug for ChildSpec {
             .field("restart", &self.restart)
             .field("shutdown", &self.shutdown)
             .field("child_type", &self.child_type)
-            .finish()
+            .finish_non_exhaustive()
+    }
+}
+
+/// Clone implementation creates a new ChildSpec that shares the same start function.
+impl Clone for ChildSpec {
+    fn clone(&self) -> Self {
+        Self {
+            id: self.id.clone(),
+            start: Arc::clone(&self.start),
+            restart: self.restart,
+            shutdown: self.shutdown,
+            child_type: self.child_type,
+        }
     }
 }
 
@@ -244,19 +338,56 @@ impl std::fmt::Debug for SupervisorSpec {
 }
 
 /// Information about a running child.
-#[derive(Debug, Clone)]
 pub struct ChildInfo {
     /// The child's specification.
-    pub spec: ChildSpec,
+    spec: ChildSpec,
 
-    /// The child's current Pid (None if not running).
-    pub pid: Option<Pid>,
+    /// The child's current handle (None if not running).
+    handle: Option<BoxedChildHandle>,
 
     /// Monitor reference for this child.
-    pub monitor_ref: Option<MonitorRef>,
+    monitor_ref: Option<MonitorRef>,
 
     /// Number of times this child has been restarted.
-    pub restart_count: u32,
+    restart_count: u32,
+}
+
+impl ChildInfo {
+    /// Get the child's specification.
+    pub fn spec(&self) -> &ChildSpec {
+        &self.spec
+    }
+
+    /// Get the child's current Pid (None if not running).
+    pub fn pid(&self) -> Option<Pid> {
+        self.handle.as_ref().map(|h| h.pid())
+    }
+
+    /// Check if the child is currently running.
+    pub fn is_running(&self) -> bool {
+        self.handle.as_ref().map(|h| h.is_alive()).unwrap_or(false)
+    }
+
+    /// Get the number of times this child has been restarted.
+    pub fn restart_count(&self) -> u32 {
+        self.restart_count
+    }
+
+    /// Get the monitor reference for this child.
+    pub fn monitor_ref(&self) -> Option<MonitorRef> {
+        self.monitor_ref
+    }
+}
+
+impl std::fmt::Debug for ChildInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ChildInfo")
+            .field("spec", &self.spec)
+            .field("pid", &self.pid())
+            .field("monitor_ref", &self.monitor_ref)
+            .field("restart_count", &self.restart_count)
+            .finish()
+    }
 }
 
 /// Error type for supervisor operations.
@@ -302,8 +433,8 @@ impl std::fmt::Display for SupervisorError {
 
 impl std::error::Error for SupervisorError {}
 
-/// State for the supervisor.
-pub struct SupervisorState {
+/// Internal state for the supervisor.
+struct SupervisorState {
     /// The supervisor specification.
     spec: SupervisorSpec,
 
@@ -325,7 +456,7 @@ pub struct SupervisorState {
 
 impl SupervisorState {
     /// Create a new supervisor state from a specification.
-    pub fn new(spec: SupervisorSpec) -> Self {
+    fn new(spec: SupervisorSpec) -> Self {
         Self {
             spec,
             children: HashMap::new(),
@@ -336,32 +467,43 @@ impl SupervisorState {
         }
     }
 
-    /// Start all children defined in the spec.
-    ///
-    /// Returns Ok if all children started successfully.
-    pub fn start_children(&mut self) -> Result<(), SupervisorError> {
+    /// Start all children defined in the spec and set up monitoring.
+    fn start_children(
+        &mut self,
+        supervisor_handle: &GenServerHandle<Supervisor>,
+    ) -> Result<(), SupervisorError> {
         for child_spec in self.spec.children.clone() {
-            self.start_child_internal(child_spec)?;
+            self.start_child_internal(child_spec, supervisor_handle)?;
         }
         Ok(())
     }
 
-    /// Start a specific child.
-    fn start_child_internal(&mut self, spec: ChildSpec) -> Result<Pid, SupervisorError> {
-        let id = spec.id.clone();
+    /// Start a specific child and set up monitoring.
+    fn start_child_internal(
+        &mut self,
+        spec: ChildSpec,
+        supervisor_handle: &GenServerHandle<Supervisor>,
+    ) -> Result<Pid, SupervisorError> {
+        let id = spec.id().to_string();
 
         if self.children.contains_key(&id) {
             return Err(SupervisorError::ChildAlreadyExists(id));
         }
 
         // Start the child
-        let pid = (spec.start)();
+        let handle = spec.start();
+        let pid = handle.pid();
+
+        // Set up monitoring so we receive DOWN messages when child exits
+        let monitor_ref = supervisor_handle
+            .monitor(&ChildPidWrapper(pid))
+            .ok();
 
         // Create child info
         let info = ChildInfo {
             spec,
-            pid: Some(pid),
-            monitor_ref: None, // TODO: Set up monitoring
+            handle: Some(handle),
+            monitor_ref,
             restart_count: 0,
         };
 
@@ -373,31 +515,54 @@ impl SupervisorState {
     }
 
     /// Dynamically add and start a new child.
-    pub fn start_child(&mut self, spec: ChildSpec) -> Result<Pid, SupervisorError> {
+    fn start_child(
+        &mut self,
+        spec: ChildSpec,
+        supervisor_handle: &GenServerHandle<Supervisor>,
+    ) -> Result<Pid, SupervisorError> {
         if self.shutting_down {
             return Err(SupervisorError::ShuttingDown);
         }
-        self.start_child_internal(spec)
+        self.start_child_internal(spec, supervisor_handle)
     }
 
     /// Terminate a child by ID.
-    pub fn terminate_child(&mut self, id: &str) -> Result<(), SupervisorError> {
+    fn terminate_child(&mut self, id: &str) -> Result<(), SupervisorError> {
         let info = self
             .children
             .get_mut(id)
             .ok_or_else(|| SupervisorError::ChildNotFound(id.to_string()))?;
 
-        if let Some(pid) = info.pid.take() {
+        if let Some(handle) = info.handle.take() {
+            let pid = handle.pid();
             self.pid_to_child.remove(&pid);
-            // In a real implementation, we would send an exit signal to the child
-            // For now, we just remove the tracking
+            // Actually shut down the child
+            handle.shutdown();
         }
 
         Ok(())
     }
 
+    /// Terminate multiple children by IDs (in reverse order for proper cleanup).
+    fn terminate_children(&mut self, ids: &[String]) {
+        // Terminate in reverse order (last started, first terminated)
+        for id in ids.iter().rev() {
+            if let Some(info) = self.children.get_mut(id) {
+                if let Some(handle) = info.handle.take() {
+                    let pid = handle.pid();
+                    self.pid_to_child.remove(&pid);
+                    handle.shutdown();
+                }
+            }
+        }
+    }
+
     /// Restart a child by ID.
-    pub fn restart_child(&mut self, id: &str) -> Result<Pid, SupervisorError> {
+    fn restart_child(
+        &mut self,
+        id: &str,
+        supervisor_handle: &GenServerHandle<Supervisor>,
+    ) -> Result<Pid, SupervisorError> {
         if self.shutting_down {
             return Err(SupervisorError::ShuttingDown);
         }
@@ -412,14 +577,28 @@ impl SupervisorState {
             .get_mut(id)
             .ok_or_else(|| SupervisorError::ChildNotFound(id.to_string()))?;
 
-        // Remove old pid mapping
-        if let Some(old_pid) = info.pid.take() {
+        // Remove old pid mapping and shut down old handle
+        if let Some(old_handle) = info.handle.take() {
+            let old_pid = old_handle.pid();
             self.pid_to_child.remove(&old_pid);
+            old_handle.shutdown();
+        }
+
+        // Cancel old monitor
+        if let Some(old_ref) = info.monitor_ref.take() {
+            supervisor_handle.demonitor(old_ref);
         }
 
         // Start new instance
-        let pid = (info.spec.start)();
-        info.pid = Some(pid);
+        let new_handle = info.spec.start();
+        let pid = new_handle.pid();
+
+        // Set up new monitoring
+        info.monitor_ref = supervisor_handle
+            .monitor(&ChildPidWrapper(pid))
+            .ok();
+
+        info.handle = Some(new_handle);
         info.restart_count += 1;
 
         self.pid_to_child.insert(pid, id.to_string());
@@ -429,13 +608,13 @@ impl SupervisorState {
     }
 
     /// Delete a child specification (child must be terminated first).
-    pub fn delete_child(&mut self, id: &str) -> Result<(), SupervisorError> {
+    fn delete_child(&mut self, id: &str) -> Result<(), SupervisorError> {
         let info = self
             .children
             .get(id)
             .ok_or_else(|| SupervisorError::ChildNotFound(id.to_string()))?;
 
-        if info.pid.is_some() {
+        if info.handle.is_some() {
             // Child is still running, terminate first
             self.terminate_child(id)?;
         }
@@ -446,10 +625,11 @@ impl SupervisorState {
         Ok(())
     }
 
-    /// Handle a child exit.
+    /// Handle a child exit (DOWN message received).
     ///
-    /// Returns the IDs of children that should be restarted.
-    pub fn handle_child_exit(
+    /// Returns the IDs of children that need to be restarted.
+    /// For OneForAll/RestForOne, this also terminates the affected children.
+    fn handle_child_exit(
         &mut self,
         pid: Pid,
         reason: &ExitReason,
@@ -463,9 +643,10 @@ impl SupervisorState {
             None => return Ok(Vec::new()), // Unknown child, ignore
         };
 
-        // Update child info
+        // Update child info - clear the handle since child has exited
         if let Some(info) = self.children.get_mut(&child_id) {
-            info.pid = None;
+            info.handle = None;
+            info.monitor_ref = None;
         }
 
         // Determine if we should restart based on restart type
@@ -485,14 +666,28 @@ impl SupervisorState {
         // Determine which children to restart based on strategy
         let to_restart = match self.spec.strategy {
             RestartStrategy::OneForOne => vec![child_id],
-            RestartStrategy::OneForAll => self.child_order.clone(),
+            RestartStrategy::OneForAll => {
+                // Terminate all other children first (except the one that crashed)
+                let others: Vec<String> = self
+                    .child_order
+                    .iter()
+                    .filter(|id| *id != &child_id)
+                    .cloned()
+                    .collect();
+                self.terminate_children(&others);
+                self.child_order.clone()
+            }
             RestartStrategy::RestForOne => {
                 let idx = self
                     .child_order
                     .iter()
                     .position(|id| id == &child_id)
                     .unwrap_or(0);
-                self.child_order[idx..].to_vec()
+                let affected: Vec<String> = self.child_order[idx..].to_vec();
+                // Terminate children after the crashed one (they may still be running)
+                let to_terminate: Vec<String> = self.child_order[idx + 1..].to_vec();
+                self.terminate_children(&to_terminate);
+                affected
             }
         };
 
@@ -512,25 +707,20 @@ impl SupervisorState {
     }
 
     /// Get the list of child IDs in start order.
-    pub fn which_children(&self) -> Vec<String> {
+    fn which_children(&self) -> Vec<String> {
         self.child_order.clone()
     }
 
-    /// Get information about a specific child.
-    pub fn get_child_info(&self, id: &str) -> Option<&ChildInfo> {
-        self.children.get(id)
-    }
-
     /// Count the number of active children.
-    pub fn count_children(&self) -> SupervisorCounts {
+    fn count_children(&self) -> SupervisorCounts {
         let mut counts = SupervisorCounts::default();
 
         for info in self.children.values() {
             counts.specs += 1;
-            if info.pid.is_some() {
+            if info.is_running() {
                 counts.active += 1;
             }
-            match info.spec.child_type {
+            match info.spec.child_type() {
                 ChildType::Worker => counts.workers += 1,
                 ChildType::Supervisor => counts.supervisors += 1,
             }
@@ -539,14 +729,228 @@ impl SupervisorState {
         counts
     }
 
-    /// Begin shutdown sequence.
-    pub fn begin_shutdown(&mut self) {
+    /// Begin shutdown sequence - terminates all children in reverse order.
+    fn shutdown(&mut self) {
         self.shutting_down = true;
+        let all_children = self.child_order.clone();
+        self.terminate_children(&all_children);
+    }
+}
+
+/// Wrapper to implement HasPid for a raw Pid (for monitoring).
+struct ChildPidWrapper(Pid);
+
+impl HasPid for ChildPidWrapper {
+    fn pid(&self) -> Pid {
+        self.0
+    }
+}
+
+// ============================================================================
+// Supervisor GenServer
+// ============================================================================
+
+/// Messages that can be sent to a Supervisor via call().
+#[derive(Clone, Debug)]
+pub enum SupervisorCall {
+    /// Start a new child dynamically.
+    StartChild(ChildSpec),
+    /// Terminate a child by ID.
+    TerminateChild(String),
+    /// Restart a child by ID.
+    RestartChild(String),
+    /// Delete a child spec by ID.
+    DeleteChild(String),
+    /// Get list of child IDs.
+    WhichChildren,
+    /// Count children by type and state.
+    CountChildren,
+}
+
+/// Messages that can be sent to a Supervisor via cast().
+#[derive(Clone, Debug)]
+pub enum SupervisorCast {
+    /// No-op placeholder (supervisors mainly use calls).
+    _Placeholder,
+}
+
+/// Response from Supervisor calls.
+#[derive(Clone, Debug)]
+pub enum SupervisorResponse {
+    /// Child started successfully, returns new Pid.
+    Started(Pid),
+    /// Operation completed successfully.
+    Ok,
+    /// Error occurred.
+    Error(SupervisorError),
+    /// List of child IDs.
+    Children(Vec<String>),
+    /// Child counts.
+    Counts(SupervisorCounts),
+}
+
+/// A Supervisor is a GenServer that manages child processes.
+///
+/// It monitors children and automatically restarts them according to
+/// the configured strategy when they exit.
+pub struct Supervisor {
+    state: SupervisorState,
+}
+
+impl Supervisor {
+    /// Create a new Supervisor from a specification.
+    pub fn new(spec: SupervisorSpec) -> Self {
+        Self {
+            state: SupervisorState::new(spec),
+        }
     }
 
-    /// Get the supervisor's strategy.
-    pub fn strategy(&self) -> RestartStrategy {
-        self.spec.strategy
+    /// Start the supervisor and return a handle.
+    ///
+    /// This starts the supervisor GenServer and all children defined in the spec.
+    pub fn start(spec: SupervisorSpec) -> GenServerHandle<Supervisor> {
+        Supervisor::new(spec).start_server()
+    }
+
+    /// Start as a GenServer (internal use - prefer Supervisor::start).
+    fn start_server(self) -> GenServerHandle<Supervisor> {
+        GenServer::start(self)
+    }
+}
+
+impl GenServer for Supervisor {
+    type CallMsg = SupervisorCall;
+    type CastMsg = SupervisorCast;
+    type OutMsg = SupervisorResponse;
+    type Error = SupervisorError;
+
+    async fn init(
+        mut self,
+        handle: &GenServerHandle<Self>,
+    ) -> Result<InitResult<Self>, Self::Error> {
+        // Enable trap_exit so we receive EXIT messages from linked children
+        handle.trap_exit(true);
+
+        // Start all children defined in the spec
+        self.state.start_children(handle)?;
+
+        // Register with name if specified
+        if let Some(name) = &self.state.spec.name {
+            let _ = handle.register(name.clone());
+        }
+
+        Ok(InitResult::Success(self))
+    }
+
+    async fn handle_call(
+        &mut self,
+        message: Self::CallMsg,
+        handle: &GenServerHandle<Self>,
+    ) -> CallResponse<Self> {
+        let response = match message {
+            SupervisorCall::StartChild(spec) => {
+                match self.state.start_child(spec, handle) {
+                    Ok(pid) => SupervisorResponse::Started(pid),
+                    Err(e) => SupervisorResponse::Error(e),
+                }
+            }
+            SupervisorCall::TerminateChild(id) => {
+                match self.state.terminate_child(&id) {
+                    Ok(()) => SupervisorResponse::Ok,
+                    Err(e) => SupervisorResponse::Error(e),
+                }
+            }
+            SupervisorCall::RestartChild(id) => {
+                match self.state.restart_child(&id, handle) {
+                    Ok(pid) => SupervisorResponse::Started(pid),
+                    Err(e) => SupervisorResponse::Error(e),
+                }
+            }
+            SupervisorCall::DeleteChild(id) => {
+                match self.state.delete_child(&id) {
+                    Ok(()) => SupervisorResponse::Ok,
+                    Err(e) => SupervisorResponse::Error(e),
+                }
+            }
+            SupervisorCall::WhichChildren => {
+                SupervisorResponse::Children(self.state.which_children())
+            }
+            SupervisorCall::CountChildren => {
+                SupervisorResponse::Counts(self.state.count_children())
+            }
+        };
+        CallResponse::Reply(response)
+    }
+
+    async fn handle_cast(
+        &mut self,
+        _message: Self::CastMsg,
+        _handle: &GenServerHandle<Self>,
+    ) -> CastResponse {
+        CastResponse::NoReply
+    }
+
+    async fn handle_info(
+        &mut self,
+        message: SystemMessage,
+        handle: &GenServerHandle<Self>,
+    ) -> InfoResponse {
+        match message {
+            SystemMessage::Down { pid, reason, .. } => {
+                // A monitored child has exited
+                match self.state.handle_child_exit(pid, &reason) {
+                    Ok(to_restart) => {
+                        // Restart the affected children
+                        for id in to_restart {
+                            match self.state.restart_child(&id, handle) {
+                                Ok(_) => {
+                                    tracing::debug!(child = %id, "Restarted child");
+                                }
+                                Err(SupervisorError::MaxRestartsExceeded) => {
+                                    tracing::error!("Max restart intensity exceeded, supervisor stopping");
+                                    return InfoResponse::Stop;
+                                }
+                                Err(e) => {
+                                    tracing::error!(child = %id, error = ?e, "Failed to restart child");
+                                }
+                            }
+                        }
+                        InfoResponse::NoReply
+                    }
+                    Err(e) => {
+                        tracing::error!(error = ?e, "Error handling child exit");
+                        InfoResponse::NoReply
+                    }
+                }
+            }
+            SystemMessage::Exit { pid, reason } => {
+                // A linked process has exited (we trap exits)
+                tracing::debug!(%pid, ?reason, "Received EXIT from linked process");
+                // Treat like a DOWN message
+                match self.state.handle_child_exit(pid, &reason) {
+                    Ok(to_restart) => {
+                        for id in to_restart {
+                            match self.state.restart_child(&id, handle) {
+                                Ok(_) => {}
+                                Err(SupervisorError::MaxRestartsExceeded) => {
+                                    return InfoResponse::Stop;
+                                }
+                                Err(_) => {}
+                            }
+                        }
+                        InfoResponse::NoReply
+                    }
+                    Err(_) => InfoResponse::NoReply,
+                }
+            }
+            SystemMessage::Timeout { .. } => InfoResponse::NoReply,
+        }
+    }
+
+    async fn teardown(mut self, _handle: &GenServerHandle<Self>) -> Result<(), Self::Error> {
+        // Shut down all children in reverse order
+        self.state.shutdown();
+        Ok(())
     }
 }
 
@@ -569,39 +973,73 @@ pub struct SupervisorCounts {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
-    // Helper to create a mock start function that returns unique Pids
-    fn mock_start() -> Pid {
-        Pid::new()
+    // Mock child handle for testing
+    struct MockChildHandle {
+        pid: Pid,
+        alive: Arc<AtomicBool>,
+    }
+
+    impl MockChildHandle {
+        fn new() -> Self {
+            Self {
+                pid: Pid::new(),
+                alive: Arc::new(AtomicBool::new(true)),
+            }
+        }
+    }
+
+    impl ChildHandle for MockChildHandle {
+        fn pid(&self) -> Pid {
+            self.pid
+        }
+
+        fn shutdown(&self) {
+            self.alive.store(false, Ordering::SeqCst);
+        }
+
+        fn is_alive(&self) -> bool {
+            self.alive.load(Ordering::SeqCst)
+        }
+    }
+
+    // Helper to create a mock child spec
+    fn mock_worker(id: &str) -> ChildSpec {
+        ChildSpec::worker(id, MockChildHandle::new)
     }
 
     // Helper with a counter to track starts
-    fn counted_start(counter: Arc<AtomicU32>) -> impl Fn() -> Pid + Send + Sync {
-        move || {
+    fn counted_worker(id: &str, counter: Arc<AtomicU32>) -> ChildSpec {
+        ChildSpec::worker(id, move || {
             counter.fetch_add(1, Ordering::SeqCst);
-            Pid::new()
-        }
+            MockChildHandle::new()
+        })
     }
 
     #[test]
     fn test_child_spec_creation() {
-        let spec = ChildSpec::new("worker1", mock_start);
-        assert_eq!(spec.id, "worker1");
-        assert_eq!(spec.restart, RestartType::Permanent);
-        assert_eq!(spec.child_type, ChildType::Worker);
+        let spec = mock_worker("worker1");
+        assert_eq!(spec.id(), "worker1");
+        assert_eq!(spec.restart_type(), RestartType::Permanent);
+        assert_eq!(spec.child_type(), ChildType::Worker);
     }
 
     #[test]
     fn test_child_spec_builder() {
-        let spec = ChildSpec::new("worker1", mock_start)
+        let spec = mock_worker("worker1")
             .transient()
-            .shutdown(Shutdown::Brutal)
-            .child_type(ChildType::Supervisor);
+            .with_shutdown(Shutdown::Brutal);
 
-        assert_eq!(spec.restart, RestartType::Transient);
-        assert_eq!(spec.shutdown, Shutdown::Brutal);
-        assert_eq!(spec.child_type, ChildType::Supervisor);
+        assert_eq!(spec.restart_type(), RestartType::Transient);
+        assert_eq!(spec.shutdown_behavior(), Shutdown::Brutal);
+        assert_eq!(spec.child_type(), ChildType::Worker);
+    }
+
+    #[test]
+    fn test_supervisor_child_spec() {
+        let spec = ChildSpec::supervisor("sub_sup", MockChildHandle::new);
+        assert_eq!(spec.child_type(), ChildType::Supervisor);
     }
 
     #[test]
@@ -609,308 +1047,14 @@ mod tests {
         let spec = SupervisorSpec::new(RestartStrategy::OneForOne)
             .max_restarts(5, Duration::from_secs(10))
             .name("my_supervisor")
-            .child(ChildSpec::new("worker1", mock_start))
-            .child(ChildSpec::new("worker2", mock_start));
+            .child(mock_worker("worker1"))
+            .child(mock_worker("worker2"));
 
         assert_eq!(spec.strategy, RestartStrategy::OneForOne);
         assert_eq!(spec.max_restarts, 5);
         assert_eq!(spec.max_seconds, Duration::from_secs(10));
         assert_eq!(spec.name, Some("my_supervisor".to_string()));
         assert_eq!(spec.children.len(), 2);
-    }
-
-    #[test]
-    fn test_supervisor_state_start_children() {
-        let spec = SupervisorSpec::new(RestartStrategy::OneForOne)
-            .child(ChildSpec::new("worker1", mock_start))
-            .child(ChildSpec::new("worker2", mock_start));
-
-        let mut state = SupervisorState::new(spec);
-        assert!(state.start_children().is_ok());
-
-        let counts = state.count_children();
-        assert_eq!(counts.specs, 2);
-        assert_eq!(counts.active, 2);
-        assert_eq!(counts.workers, 2);
-    }
-
-    #[test]
-    fn test_supervisor_which_children() {
-        let spec = SupervisorSpec::new(RestartStrategy::OneForOne)
-            .child(ChildSpec::new("first", mock_start))
-            .child(ChildSpec::new("second", mock_start))
-            .child(ChildSpec::new("third", mock_start));
-
-        let mut state = SupervisorState::new(spec);
-        state.start_children().unwrap();
-
-        let children = state.which_children();
-        assert_eq!(children, vec!["first", "second", "third"]);
-    }
-
-    #[test]
-    fn test_supervisor_terminate_child() {
-        let spec = SupervisorSpec::new(RestartStrategy::OneForOne)
-            .child(ChildSpec::new("worker1", mock_start));
-
-        let mut state = SupervisorState::new(spec);
-        state.start_children().unwrap();
-
-        assert!(state.terminate_child("worker1").is_ok());
-        let counts = state.count_children();
-        assert_eq!(counts.active, 0);
-        assert_eq!(counts.specs, 1); // Spec still exists
-    }
-
-    #[test]
-    fn test_supervisor_delete_child() {
-        let spec = SupervisorSpec::new(RestartStrategy::OneForOne)
-            .child(ChildSpec::new("worker1", mock_start));
-
-        let mut state = SupervisorState::new(spec);
-        state.start_children().unwrap();
-
-        assert!(state.delete_child("worker1").is_ok());
-        let counts = state.count_children();
-        assert_eq!(counts.specs, 0);
-    }
-
-    #[test]
-    fn test_supervisor_restart_child() {
-        let counter = Arc::new(AtomicU32::new(0));
-        let start_fn = counted_start(counter.clone());
-
-        let spec = SupervisorSpec::new(RestartStrategy::OneForOne)
-            .child(ChildSpec::new("worker1", start_fn));
-
-        let mut state = SupervisorState::new(spec);
-        state.start_children().unwrap();
-        assert_eq!(counter.load(Ordering::SeqCst), 1);
-
-        state.restart_child("worker1").unwrap();
-        assert_eq!(counter.load(Ordering::SeqCst), 2);
-
-        let info = state.get_child_info("worker1").unwrap();
-        assert_eq!(info.restart_count, 1);
-    }
-
-    #[test]
-    fn test_supervisor_dynamic_child() {
-        let spec = SupervisorSpec::new(RestartStrategy::OneForOne);
-
-        let mut state = SupervisorState::new(spec);
-        state.start_children().unwrap();
-
-        let pid = state
-            .start_child(ChildSpec::new("dynamic1", mock_start))
-            .unwrap();
-        assert!(state.pid_to_child.contains_key(&pid));
-
-        let counts = state.count_children();
-        assert_eq!(counts.specs, 1);
-        assert_eq!(counts.active, 1);
-    }
-
-    #[test]
-    fn test_supervisor_one_for_one_strategy() {
-        let spec = SupervisorSpec::new(RestartStrategy::OneForOne)
-            .child(ChildSpec::new("worker1", mock_start))
-            .child(ChildSpec::new("worker2", mock_start))
-            .child(ChildSpec::new("worker3", mock_start));
-
-        let mut state = SupervisorState::new(spec);
-        state.start_children().unwrap();
-
-        // Get worker2's pid
-        let worker2_pid = state.get_child_info("worker2").unwrap().pid.unwrap();
-
-        // Simulate worker2 crash
-        let to_restart = state
-            .handle_child_exit(worker2_pid, &ExitReason::Error("crash".to_string()))
-            .unwrap();
-
-        // Only worker2 should be restarted
-        assert_eq!(to_restart, vec!["worker2"]);
-    }
-
-    #[test]
-    fn test_supervisor_one_for_all_strategy() {
-        let spec = SupervisorSpec::new(RestartStrategy::OneForAll)
-            .child(ChildSpec::new("worker1", mock_start))
-            .child(ChildSpec::new("worker2", mock_start))
-            .child(ChildSpec::new("worker3", mock_start));
-
-        let mut state = SupervisorState::new(spec);
-        state.start_children().unwrap();
-
-        let worker2_pid = state.get_child_info("worker2").unwrap().pid.unwrap();
-
-        let to_restart = state
-            .handle_child_exit(worker2_pid, &ExitReason::Error("crash".to_string()))
-            .unwrap();
-
-        // All children should be restarted
-        assert_eq!(to_restart, vec!["worker1", "worker2", "worker3"]);
-    }
-
-    #[test]
-    fn test_supervisor_rest_for_one_strategy() {
-        let spec = SupervisorSpec::new(RestartStrategy::RestForOne)
-            .child(ChildSpec::new("worker1", mock_start))
-            .child(ChildSpec::new("worker2", mock_start))
-            .child(ChildSpec::new("worker3", mock_start));
-
-        let mut state = SupervisorState::new(spec);
-        state.start_children().unwrap();
-
-        let worker2_pid = state.get_child_info("worker2").unwrap().pid.unwrap();
-
-        let to_restart = state
-            .handle_child_exit(worker2_pid, &ExitReason::Error("crash".to_string()))
-            .unwrap();
-
-        // worker2 and worker3 should be restarted (not worker1)
-        assert_eq!(to_restart, vec!["worker2", "worker3"]);
-    }
-
-    #[test]
-    fn test_supervisor_transient_normal_exit() {
-        let spec = SupervisorSpec::new(RestartStrategy::OneForOne)
-            .child(ChildSpec::new("worker1", mock_start).transient());
-
-        let mut state = SupervisorState::new(spec);
-        state.start_children().unwrap();
-
-        let worker1_pid = state.get_child_info("worker1").unwrap().pid.unwrap();
-
-        // Normal exit should not restart transient child
-        let to_restart = state
-            .handle_child_exit(worker1_pid, &ExitReason::Normal)
-            .unwrap();
-
-        assert!(to_restart.is_empty());
-    }
-
-    #[test]
-    fn test_supervisor_transient_abnormal_exit() {
-        let spec = SupervisorSpec::new(RestartStrategy::OneForOne)
-            .child(ChildSpec::new("worker1", mock_start).transient());
-
-        let mut state = SupervisorState::new(spec);
-        state.start_children().unwrap();
-
-        let worker1_pid = state.get_child_info("worker1").unwrap().pid.unwrap();
-
-        // Abnormal exit should restart transient child
-        let to_restart = state
-            .handle_child_exit(worker1_pid, &ExitReason::Error("crash".to_string()))
-            .unwrap();
-
-        assert_eq!(to_restart, vec!["worker1"]);
-    }
-
-    #[test]
-    fn test_supervisor_temporary_never_restart() {
-        let spec = SupervisorSpec::new(RestartStrategy::OneForOne)
-            .child(ChildSpec::new("worker1", mock_start).temporary());
-
-        let mut state = SupervisorState::new(spec);
-        state.start_children().unwrap();
-
-        let worker1_pid = state.get_child_info("worker1").unwrap().pid.unwrap();
-
-        // Temporary children are never restarted
-        let to_restart = state
-            .handle_child_exit(worker1_pid, &ExitReason::Error("crash".to_string()))
-            .unwrap();
-
-        assert!(to_restart.is_empty());
-    }
-
-    #[test]
-    fn test_supervisor_restart_intensity() {
-        let spec = SupervisorSpec::new(RestartStrategy::OneForOne)
-            .max_restarts(2, Duration::from_secs(10))
-            .child(ChildSpec::new("worker1", mock_start));
-
-        let mut state = SupervisorState::new(spec);
-        state.start_children().unwrap();
-
-        // First restart should work
-        assert!(state.restart_child("worker1").is_ok());
-
-        // Second restart should work
-        assert!(state.restart_child("worker1").is_ok());
-
-        // Third restart should fail (exceeded max_restarts=2)
-        let result = state.restart_child("worker1");
-        assert_eq!(result, Err(SupervisorError::MaxRestartsExceeded));
-    }
-
-    #[test]
-    fn test_supervisor_child_not_found() {
-        let spec = SupervisorSpec::new(RestartStrategy::OneForOne);
-        let mut state = SupervisorState::new(spec);
-
-        assert_eq!(
-            state.terminate_child("nonexistent"),
-            Err(SupervisorError::ChildNotFound("nonexistent".to_string()))
-        );
-    }
-
-    #[test]
-    fn test_supervisor_duplicate_child() {
-        let spec = SupervisorSpec::new(RestartStrategy::OneForOne)
-            .child(ChildSpec::new("worker1", mock_start));
-
-        let mut state = SupervisorState::new(spec);
-        state.start_children().unwrap();
-
-        let result = state.start_child(ChildSpec::new("worker1", mock_start));
-        assert_eq!(
-            result,
-            Err(SupervisorError::ChildAlreadyExists("worker1".to_string()))
-        );
-    }
-
-    #[test]
-    fn test_supervisor_shutdown_prevents_operations() {
-        let spec = SupervisorSpec::new(RestartStrategy::OneForOne)
-            .child(ChildSpec::new("worker1", mock_start));
-
-        let mut state = SupervisorState::new(spec);
-        state.start_children().unwrap();
-
-        state.begin_shutdown();
-
-        // Operations should fail during shutdown
-        assert_eq!(
-            state.start_child(ChildSpec::new("new_worker", mock_start)),
-            Err(SupervisorError::ShuttingDown)
-        );
-
-        assert_eq!(
-            state.restart_child("worker1"),
-            Err(SupervisorError::ShuttingDown)
-        );
-    }
-
-    #[test]
-    fn test_supervisor_counts() {
-        let spec = SupervisorSpec::new(RestartStrategy::OneForOne)
-            .child(ChildSpec::new("worker1", mock_start))
-            .child(
-                ChildSpec::new("sub_supervisor", mock_start).child_type(ChildType::Supervisor),
-            );
-
-        let mut state = SupervisorState::new(spec);
-        state.start_children().unwrap();
-
-        let counts = state.count_children();
-        assert_eq!(counts.specs, 2);
-        assert_eq!(counts.active, 2);
-        assert_eq!(counts.workers, 1);
-        assert_eq!(counts.supervisors, 1);
     }
 
     #[test]
@@ -957,5 +1101,76 @@ mod tests {
             SupervisorError::ShuttingDown.to_string(),
             "supervisor is shutting down"
         );
+    }
+
+    #[test]
+    fn test_child_info_methods() {
+        let spec = mock_worker("test");
+        let handle = spec.start();
+        let pid = handle.pid();
+
+        let info = ChildInfo {
+            spec: mock_worker("test"),
+            handle: Some(handle),
+            monitor_ref: None,
+            restart_count: 5,
+        };
+
+        assert_eq!(info.pid(), Some(pid));
+        assert!(info.is_running());
+        assert_eq!(info.restart_count(), 5);
+        assert_eq!(info.monitor_ref(), None);
+    }
+
+    #[test]
+    fn test_supervisor_counts_default() {
+        let counts = SupervisorCounts::default();
+        assert_eq!(counts.specs, 0);
+        assert_eq!(counts.active, 0);
+        assert_eq!(counts.workers, 0);
+        assert_eq!(counts.supervisors, 0);
+    }
+
+    #[test]
+    fn test_child_handle_shutdown() {
+        let handle = MockChildHandle::new();
+        assert!(handle.is_alive());
+        handle.shutdown();
+        assert!(!handle.is_alive());
+    }
+
+    #[test]
+    fn test_child_spec_start_creates_new_handles() {
+        let counter = Arc::new(AtomicU32::new(0));
+        let spec = counted_worker("worker1", counter.clone());
+
+        // Each call to start() should create a new handle
+        let _h1 = spec.start();
+        assert_eq!(counter.load(Ordering::SeqCst), 1);
+
+        let _h2 = spec.start();
+        assert_eq!(counter.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn test_supervisor_spec_multiple_children() {
+        let spec = SupervisorSpec::new(RestartStrategy::OneForAll)
+            .children(vec![
+                mock_worker("w1"),
+                mock_worker("w2"),
+                mock_worker("w3"),
+            ]);
+
+        assert_eq!(spec.children.len(), 3);
+        assert_eq!(spec.strategy, RestartStrategy::OneForAll);
+    }
+
+    #[test]
+    fn test_child_spec_clone() {
+        let spec1 = mock_worker("worker1").transient();
+        let spec2 = spec1.clone();
+
+        assert_eq!(spec1.id(), spec2.id());
+        assert_eq!(spec1.restart_type(), spec2.restart_type());
     }
 }

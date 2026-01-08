@@ -2,19 +2,19 @@
 //! See examples/name_server for a usage example.
 use crate::{
     error::GenServerError,
-    link::MonitorRef,
-    pid::{HasPid, Pid},
-    process_table::{self, LinkError},
+    link::{MonitorRef, SystemMessage},
+    pid::{ExitReason, HasPid, Pid},
+    process_table::{self, LinkError, SystemMessageSender},
     registry::{self, RegistryError},
     tasks::InitResult::{NoSuccess, Success},
 };
 use core::pin::pin;
-use futures::future::{self, FutureExt as _};
+use futures::future::{self, FutureExt};
 use spawned_rt::{
     tasks::{self as rt, mpsc, oneshot, timeout, CancellationToken, JoinHandle},
     threads,
 };
-use std::{fmt::Debug, future::Future, panic::AssertUnwindSafe, time::Duration};
+use std::{fmt::Debug, future::Future, panic::AssertUnwindSafe, sync::Arc, time::Duration};
 
 const DEFAULT_CALL_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -32,6 +32,8 @@ pub struct GenServerHandle<G: GenServer + 'static> {
     pub tx: mpsc::Sender<GenServerInMsg<G>>,
     /// Cancellation token to stop the GenServer.
     cancellation_token: CancellationToken,
+    /// Channel for system messages (internal use).
+    system_tx: mpsc::Sender<SystemMessage>,
 }
 
 impl<G: GenServer> Clone for GenServerHandle<G> {
@@ -40,6 +42,7 @@ impl<G: GenServer> Clone for GenServerHandle<G> {
             pid: self.pid,
             tx: self.tx.clone(),
             cancellation_token: self.cancellation_token.clone(),
+            system_tx: self.system_tx.clone(),
         }
     }
 }
@@ -50,19 +53,65 @@ impl<G: GenServer> HasPid for GenServerHandle<G> {
     }
 }
 
+/// Internal sender for system messages, implementing SystemMessageSender trait.
+struct GenServerSystemSender {
+    system_tx: mpsc::Sender<SystemMessage>,
+    cancellation_token: CancellationToken,
+}
+
+impl SystemMessageSender for GenServerSystemSender {
+    fn send_down(&self, pid: Pid, monitor_ref: MonitorRef, reason: ExitReason) {
+        let _ = self.system_tx.send(SystemMessage::Down {
+            pid,
+            monitor_ref,
+            reason,
+        });
+    }
+
+    fn send_exit(&self, pid: Pid, reason: ExitReason) {
+        let _ = self.system_tx.send(SystemMessage::Exit { pid, reason });
+    }
+
+    fn kill(&self, _reason: ExitReason) {
+        // Kill the process by cancelling it
+        self.cancellation_token.cancel();
+    }
+
+    fn is_alive(&self) -> bool {
+        !self.cancellation_token.is_cancelled()
+    }
+}
+
 impl<G: GenServer> GenServerHandle<G> {
     fn new(gen_server: G) -> Self {
         let pid = Pid::new();
         let (tx, mut rx) = mpsc::channel::<GenServerInMsg<G>>();
+        let (system_tx, mut system_rx) = mpsc::channel::<SystemMessage>();
         let cancellation_token = CancellationToken::new();
+
+        // Create the system message sender and register with process table
+        let system_sender = Arc::new(GenServerSystemSender {
+            system_tx: system_tx.clone(),
+            cancellation_token: cancellation_token.clone(),
+        });
+        process_table::register(pid, system_sender);
+
         let handle = GenServerHandle {
             pid,
             tx,
             cancellation_token,
+            system_tx,
         };
         let handle_clone = handle.clone();
         let inner_future = async move {
-            if let Err(error) = gen_server.run(&handle, &mut rx).await {
+            let result = gen_server.run(&handle, &mut rx, &mut system_rx).await;
+            // Unregister from process table on exit
+            let exit_reason = match &result {
+                Ok(_) => ExitReason::Normal,
+                Err(_) => ExitReason::Error("GenServer crashed".to_string()),
+            };
+            process_table::unregister(pid, exit_reason);
+            if let Err(error) = result {
                 tracing::trace!(%error, "GenServer crashed")
             }
         };
@@ -80,17 +129,33 @@ impl<G: GenServer> GenServerHandle<G> {
     fn new_blocking(gen_server: G) -> Self {
         let pid = Pid::new();
         let (tx, mut rx) = mpsc::channel::<GenServerInMsg<G>>();
+        let (system_tx, mut system_rx) = mpsc::channel::<SystemMessage>();
         let cancellation_token = CancellationToken::new();
+
+        // Create the system message sender and register with process table
+        let system_sender = Arc::new(GenServerSystemSender {
+            system_tx: system_tx.clone(),
+            cancellation_token: cancellation_token.clone(),
+        });
+        process_table::register(pid, system_sender);
+
         let handle = GenServerHandle {
             pid,
             tx,
             cancellation_token,
+            system_tx,
         };
         let handle_clone = handle.clone();
         // Ignore the JoinHandle for now. Maybe we'll use it in the future
-        let _join_handle = rt::spawn_blocking(|| {
+        let _join_handle = rt::spawn_blocking(move || {
             rt::block_on(async move {
-                if let Err(error) = gen_server.run(&handle, &mut rx).await {
+                let result = gen_server.run(&handle, &mut rx, &mut system_rx).await;
+                let exit_reason = match &result {
+                    Ok(_) => ExitReason::Normal,
+                    Err(_) => ExitReason::Error("GenServer crashed".to_string()),
+                };
+                process_table::unregister(pid, exit_reason);
+                if let Err(error) = result {
                     tracing::trace!(%error, "GenServer crashed")
                 };
             })
@@ -101,17 +166,33 @@ impl<G: GenServer> GenServerHandle<G> {
     fn new_on_thread(gen_server: G) -> Self {
         let pid = Pid::new();
         let (tx, mut rx) = mpsc::channel::<GenServerInMsg<G>>();
+        let (system_tx, mut system_rx) = mpsc::channel::<SystemMessage>();
         let cancellation_token = CancellationToken::new();
+
+        // Create the system message sender and register with process table
+        let system_sender = Arc::new(GenServerSystemSender {
+            system_tx: system_tx.clone(),
+            cancellation_token: cancellation_token.clone(),
+        });
+        process_table::register(pid, system_sender);
+
         let handle = GenServerHandle {
             pid,
             tx,
             cancellation_token,
+            system_tx,
         };
         let handle_clone = handle.clone();
         // Ignore the JoinHandle for now. Maybe we'll use it in the future
-        let _join_handle = threads::spawn(|| {
+        let _join_handle = threads::spawn(move || {
             threads::block_on(async move {
-                if let Err(error) = gen_server.run(&handle, &mut rx).await {
+                let result = gen_server.run(&handle, &mut rx, &mut system_rx).await;
+                let exit_reason = match &result {
+                    Ok(_) => ExitReason::Normal,
+                    Err(_) => ExitReason::Error("GenServer crashed".to_string()),
+                };
+                process_table::unregister(pid, exit_reason);
+                if let Err(error) = result {
                     tracing::trace!(%error, "GenServer crashed")
                 };
             })
@@ -300,6 +381,14 @@ pub enum CastResponse {
     Stop,
 }
 
+/// Response from handle_info callback.
+pub enum InfoResponse {
+    /// Continue running, message was handled.
+    NoReply,
+    /// Stop the GenServer.
+    Stop,
+}
+
 pub enum InitResult<G: GenServer> {
     Success(G),
     NoSuccess(G),
@@ -337,10 +426,11 @@ pub trait GenServer: Send + Sized {
         self,
         handle: &GenServerHandle<Self>,
         rx: &mut mpsc::Receiver<GenServerInMsg<Self>>,
+        system_rx: &mut mpsc::Receiver<SystemMessage>,
     ) -> impl Future<Output = Result<(), GenServerError>> + Send {
         async {
             let res = match self.init(handle).await {
-                Ok(Success(new_state)) => Ok(new_state.main_loop(handle, rx).await),
+                Ok(Success(new_state)) => Ok(new_state.main_loop(handle, rx, system_rx).await),
                 Ok(NoSuccess(intermediate_state)) => {
                     // new_state is NoSuccess, this means the initialization failed, but the error was handled
                     // in callback. No need to report the error.
@@ -377,10 +467,11 @@ pub trait GenServer: Send + Sized {
         mut self,
         handle: &GenServerHandle<Self>,
         rx: &mut mpsc::Receiver<GenServerInMsg<Self>>,
+        system_rx: &mut mpsc::Receiver<SystemMessage>,
     ) -> impl Future<Output = Self> + Send {
         async {
             loop {
-                if !self.receive(handle, rx).await {
+                if !self.receive(handle, rx, system_rx).await {
                     break;
                 }
             }
@@ -393,63 +484,95 @@ pub trait GenServer: Send + Sized {
         &mut self,
         handle: &GenServerHandle<Self>,
         rx: &mut mpsc::Receiver<GenServerInMsg<Self>>,
+        system_rx: &mut mpsc::Receiver<SystemMessage>,
     ) -> impl Future<Output = bool> + Send {
         async move {
-            let message = rx.recv().await;
+            // Use futures::select_biased! to prioritize system messages
+            // We pin both futures inline
+            let system_fut = pin!(system_rx.recv());
+            let message_fut = pin!(rx.recv());
 
-            let keep_running = match message {
-                Some(GenServerInMsg::Call { sender, message }) => {
-                    let (keep_running, response) =
-                        match AssertUnwindSafe(self.handle_call(message, handle))
-                            .catch_unwind()
-                            .await
-                        {
-                            Ok(response) => match response {
-                                CallResponse::Reply(response) => (true, Ok(response)),
-                                CallResponse::Stop(response) => (false, Ok(response)),
-                                CallResponse::Unused => {
-                                    tracing::error!("GenServer received unexpected CallMessage");
-                                    (false, Err(GenServerError::CallMsgUnused))
+            // Select with bias towards system messages
+            futures::select_biased! {
+                system_msg = system_fut.fuse() => {
+                    match system_msg {
+                        Some(msg) => {
+                            match AssertUnwindSafe(self.handle_info(msg, handle))
+                                .catch_unwind()
+                                .await
+                            {
+                                Ok(response) => match response {
+                                    InfoResponse::NoReply => true,
+                                    InfoResponse::Stop => false,
+                                },
+                                Err(error) => {
+                                    tracing::error!("Error in handle_info: '{error:?}'");
+                                    false
                                 }
-                            },
-                            Err(error) => {
-                                tracing::error!("Error in callback: '{error:?}'");
-                                (false, Err(GenServerError::Callback))
                             }
-                        };
-                    // Send response back
-                    if sender.send(response).is_err() {
-                        tracing::error!(
-                            "GenServer failed to send response back, client must have died"
-                        )
-                    };
-                    keep_running
+                        }
+                        None => {
+                            // System channel closed, continue with regular messages
+                            true
+                        }
+                    }
                 }
-                Some(GenServerInMsg::Cast { message }) => {
-                    match AssertUnwindSafe(self.handle_cast(message, handle))
-                        .catch_unwind()
-                        .await
-                    {
-                        Ok(response) => match response {
-                            CastResponse::NoReply => true,
-                            CastResponse::Stop => false,
-                            CastResponse::Unused => {
-                                tracing::error!("GenServer received unexpected CastMessage");
-                                false
+
+                message = message_fut.fuse() => {
+                    match message {
+                        Some(GenServerInMsg::Call { sender, message }) => {
+                            let (keep_running, response) =
+                                match AssertUnwindSafe(self.handle_call(message, handle))
+                                    .catch_unwind()
+                                    .await
+                                {
+                                    Ok(response) => match response {
+                                        CallResponse::Reply(response) => (true, Ok(response)),
+                                        CallResponse::Stop(response) => (false, Ok(response)),
+                                        CallResponse::Unused => {
+                                            tracing::error!("GenServer received unexpected CallMessage");
+                                            (false, Err(GenServerError::CallMsgUnused))
+                                        }
+                                    },
+                                    Err(error) => {
+                                        tracing::error!("Error in callback: '{error:?}'");
+                                        (false, Err(GenServerError::Callback))
+                                    }
+                                };
+                            // Send response back
+                            if sender.send(response).is_err() {
+                                tracing::error!(
+                                    "GenServer failed to send response back, client must have died"
+                                )
+                            };
+                            keep_running
+                        }
+                        Some(GenServerInMsg::Cast { message }) => {
+                            match AssertUnwindSafe(self.handle_cast(message, handle))
+                                .catch_unwind()
+                                .await
+                            {
+                                Ok(response) => match response {
+                                    CastResponse::NoReply => true,
+                                    CastResponse::Stop => false,
+                                    CastResponse::Unused => {
+                                        tracing::error!("GenServer received unexpected CastMessage");
+                                        false
+                                    }
+                                },
+                                Err(error) => {
+                                    tracing::trace!("Error in callback: '{error:?}'");
+                                    false
+                                }
                             }
-                        },
-                        Err(error) => {
-                            tracing::trace!("Error in callback: '{error:?}'");
+                        }
+                        None => {
+                            // Channel has been closed; won't receive further messages. Stop the server.
                             false
                         }
                     }
                 }
-                None => {
-                    // Channel has been closed; won't receive further messages. Stop the server.
-                    false
-                }
-            };
-            keep_running
+            }
         }
     }
 
@@ -467,6 +590,22 @@ pub trait GenServer: Send + Sized {
         _handle: &GenServerHandle<Self>,
     ) -> impl Future<Output = CastResponse> + Send {
         async { CastResponse::Unused }
+    }
+
+    /// Handle system messages (DOWN, EXIT, Timeout).
+    ///
+    /// This is called when:
+    /// - A monitored process exits (receives `SystemMessage::Down`)
+    /// - A linked process exits and trap_exit is enabled (receives `SystemMessage::Exit`)
+    /// - A timer fires (receives `SystemMessage::Timeout`)
+    ///
+    /// Default implementation ignores all system messages.
+    fn handle_info(
+        &mut self,
+        _message: SystemMessage,
+        _handle: &GenServerHandle<Self>,
+    ) -> impl Future<Output = InfoResponse> + Send {
+        async { InfoResponse::NoReply }
     }
 
     /// Teardown function. It's called after the stop message is received.

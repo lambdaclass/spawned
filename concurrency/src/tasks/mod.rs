@@ -13,7 +13,7 @@ mod timer_tests;
 
 pub use gen_server::{
     send_message_on, CallResponse, CastResponse, GenServer, GenServerHandle, GenServerInMsg,
-    InitResult, InitResult::NoSuccess, InitResult::Success,
+    InfoResponse, InitResult, InitResult::NoSuccess, InitResult::Success,
 };
 pub use process::{send, Process, ProcessInfo};
 pub use stream::spawn_listener;
@@ -27,6 +27,7 @@ pub use crate::registry::{self, RegistryError};
 
 // Re-export supervisor types for convenience
 pub use crate::supervisor::{
-    ChildSpec, ChildType, RestartStrategy, RestartType, Shutdown, SupervisorError, SupervisorSpec,
-    SupervisorState,
+    BoxedChildHandle, ChildHandle, ChildInfo, ChildSpec, ChildType, RestartStrategy, RestartType,
+    Shutdown, Supervisor, SupervisorCall, SupervisorCast, SupervisorCounts, SupervisorError,
+    SupervisorResponse, SupervisorSpec,
 };

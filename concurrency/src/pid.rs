@@ -13,7 +13,7 @@ use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Global counter for generating unique Pids.
-/// Monotonically increasing, never reused.
+/// Each call to Pid::new() returns a unique, never-reused ID.
 static NEXT_PID_ID: AtomicU64 = AtomicU64::new(1);
 
 /// A unique process identifier.
@@ -31,7 +31,7 @@ static NEXT_PID_ID: AtomicU64 = AtomicU64::new(1);
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Pid {
     /// Unique identifier on this node.
-    /// Monotonically increasing, never reused within a process lifetime.
+    /// Guaranteed unique within this process lifetime.
     id: u64,
 }
 
@@ -42,7 +42,8 @@ impl Pid {
     /// Each call returns a Pid with a unique id.
     pub(crate) fn new() -> Self {
         Self {
-            id: NEXT_PID_ID.fetch_add(1, Ordering::Relaxed),
+            // SeqCst ensures cross-thread visibility and ordering
+            id: NEXT_PID_ID.fetch_add(1, Ordering::SeqCst),
         }
     }
 

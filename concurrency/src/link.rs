@@ -20,12 +20,18 @@ pub struct MonitorRef(u64);
 impl MonitorRef {
     /// Create a new unique monitor reference.
     pub(crate) fn new() -> Self {
-        Self(NEXT_MONITOR_REF.fetch_add(1, Ordering::Relaxed))
+        Self(NEXT_MONITOR_REF.fetch_add(1, Ordering::SeqCst))
     }
 
     /// Get the raw ID.
     pub fn id(&self) -> u64 {
         self.0
+    }
+}
+
+impl std::fmt::Display for MonitorRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "#Ref<{}>", self.0)
     }
 }
 
@@ -35,7 +41,7 @@ impl MonitorRef {
 /// - A monitored process exits (Down)
 /// - A linked process exits (Exit)
 /// - A timer fires (Timeout)
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum SystemMessage {
     /// A monitored process has exited.
     ///
