@@ -290,10 +290,10 @@ pub enum InitResult<G: GenServer> {
 }
 
 pub trait GenServer: Send + Sized {
-    type CallMsg: Clone + Send + Sized;
-    type CastMsg: Clone + Send + Sized;
+    type CallMsg: Clone + Send + Sized + Sync;
+    type CastMsg: Clone + Send + Sized + Sync;
     type OutMsg: Send + Sized;
-    type Error: Debug;
+    type Error: Debug + Send;
 
     fn start(self) -> GenServerHandle<Self> {
         GenServerHandle::new(self)
@@ -303,6 +303,31 @@ pub trait GenServer: Send + Sized {
     /// while blocking by default
     fn start_blocking(self) -> GenServerHandle<Self> {
         GenServerHandle::new(self)
+    }
+
+    /// Start the GenServer and create a bidirectional link with another process.
+    ///
+    /// This is equivalent to calling `start()` followed by `link()`, but as an
+    /// atomic operation. If the link fails, the GenServer is stopped.
+    fn start_linked(self, other: &impl HasPid) -> Result<GenServerHandle<Self>, LinkError> {
+        let handle = self.start();
+        handle.link(other)?;
+        Ok(handle)
+    }
+
+    /// Start the GenServer and set up monitoring from another process.
+    ///
+    /// This is equivalent to calling `start()` followed by `monitor()`, but as an
+    /// atomic operation. The monitoring process will receive a DOWN message when
+    /// this GenServer exits.
+    fn start_monitored(
+        self,
+        monitor_from: &impl HasPid,
+    ) -> Result<(GenServerHandle<Self>, MonitorRef), LinkError> {
+        let handle = self.start();
+        let monitor_ref = monitor_from.pid();
+        let actual_ref = process_table::monitor(monitor_ref, handle.pid())?;
+        Ok((handle, actual_ref))
     }
 
     fn run(

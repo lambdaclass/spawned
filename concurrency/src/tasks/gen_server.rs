@@ -412,22 +412,63 @@ pub trait GenServer: Send + Sized {
         GenServerHandle::new(self)
     }
 
-    /// Tokio tasks depend on a coolaborative multitasking model. "work stealing" can't
-    /// happen if the task is blocking the thread. As such, for sync compute task
+    /// Tokio tasks depend on a collaborative multitasking model. "Work stealing" can't
+    /// happen if the task is blocking the thread. As such, for sync compute tasks
     /// or other blocking tasks need to be in their own separate thread, and the OS
     /// will manage them through hardware interrupts.
-    /// Start blocking provides such thread.
+    /// `start_blocking` provides such a thread.
     fn start_blocking(self) -> GenServerHandle<Self> {
         GenServerHandle::new_blocking(self)
     }
 
-    /// For some "singleton" GenServers that run througout the whole execution of the
+    /// For some "singleton" GenServers that run throughout the whole execution of the
     /// program, it makes sense to run in their own dedicated thread to avoid interference
     /// with the rest of the tasks' runtime.
-    /// The use of tokio::task::spawm_blocking is not recommended for these scenarios
-    /// as it is a limited thread pool better suited for blocking IO tasks that eventually end
+    /// The use of `tokio::task::spawn_blocking` is not recommended for these scenarios
+    /// as it is a limited thread pool better suited for blocking IO tasks that eventually end.
     fn start_on_thread(self) -> GenServerHandle<Self> {
         GenServerHandle::new_on_thread(self)
+    }
+
+    /// Start the GenServer and create a bidirectional link with another process.
+    ///
+    /// This is equivalent to calling `start()` followed by `link()`, but as an
+    /// atomic operation. If the link fails, the GenServer is stopped.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let parent = ParentServer::new().start();
+    /// let child = ChildServer::new().start_linked(&parent)?;
+    /// // Now if either crashes, the other will be notified
+    /// ```
+    fn start_linked(self, other: &impl HasPid) -> Result<GenServerHandle<Self>, LinkError> {
+        let handle = self.start();
+        handle.link(other)?;
+        Ok(handle)
+    }
+
+    /// Start the GenServer and set up monitoring from another process.
+    ///
+    /// This is equivalent to calling `start()` followed by `monitor()`, but as an
+    /// atomic operation. The monitoring process will receive a DOWN message when
+    /// this GenServer exits.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let supervisor = SupervisorServer::new().start();
+    /// let (worker, monitor_ref) = WorkerServer::new().start_monitored(&supervisor)?;
+    /// // supervisor will receive DOWN message when worker exits
+    /// ```
+    fn start_monitored(
+        self,
+        monitor_from: &impl HasPid,
+    ) -> Result<(GenServerHandle<Self>, MonitorRef), LinkError> {
+        let handle = self.start();
+        let monitor_ref = monitor_from.pid();
+        let actual_ref = process_table::monitor(monitor_ref, handle.pid())?;
+        Ok((handle, actual_ref))
     }
 
     fn run(

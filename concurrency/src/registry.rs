@@ -193,12 +193,17 @@ pub fn clear() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
 
-    // Helper to ensure test isolation
+    // Mutex to serialize tests that need an isolated registry
+    static TEST_MUTEX: Mutex<()> = Mutex::new(());
+
+    // Helper to ensure test isolation - clears registry and holds lock
     fn with_clean_registry<F, R>(f: F) -> R
     where
         F: FnOnce() -> R,
     {
+        let _guard = TEST_MUTEX.lock().unwrap();
         clear();
         let result = f();
         clear();
@@ -325,33 +330,28 @@ mod tests {
 
     #[test]
     fn test_count() {
-        // Note: Due to parallel test execution, we can't rely on absolute counts.
-        // Instead, we verify that registration increases count and unregistration decreases it.
-        let pid1 = Pid::new();
-        let pid2 = Pid::new();
+        // Use with_clean_registry for test isolation
+        with_clean_registry(|| {
+            let pid1 = Pid::new();
+            let pid2 = Pid::new();
 
-        // Use unique names to avoid conflicts with parallel tests
-        let name1 = format!("count_test_{}", pid1.id());
-        let name2 = format!("count_test_{}", pid2.id());
+            let name1 = format!("count_test_{}", pid1.id());
+            let name2 = format!("count_test_{}", pid2.id());
 
-        let count_before = count();
-        register(&name1, pid1).unwrap();
-        let count_after_first = count();
-        assert!(
-            count_after_first > count_before,
-            "Count should increase after registration"
-        );
+            assert_eq!(count(), 0, "Registry should be empty");
 
-        register(&name2, pid2).unwrap();
-        let count_after_second = count();
-        assert!(
-            count_after_second > count_after_first,
-            "Count should increase after second registration"
-        );
+            register(&name1, pid1).unwrap();
+            assert_eq!(count(), 1, "Count should be 1 after first registration");
 
-        // Clean up our registrations
-        unregister(&name1);
-        unregister(&name2);
+            register(&name2, pid2).unwrap();
+            assert_eq!(count(), 2, "Count should be 2 after second registration");
+
+            unregister(&name1);
+            assert_eq!(count(), 1, "Count should be 1 after unregistration");
+
+            unregister(&name2);
+            assert_eq!(count(), 0, "Count should be 0 after all unregistrations");
+        });
     }
 
     #[test]
