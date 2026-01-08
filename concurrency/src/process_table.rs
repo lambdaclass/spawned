@@ -304,6 +304,105 @@ pub fn get_monitors(pid: Pid) -> Vec<MonitorRef> {
         .unwrap_or_default()
 }
 
+/// Send an exit signal to a process.
+///
+/// This is the equivalent of Erlang's `exit(Pid, Reason)`.
+///
+/// The behavior depends on the reason and whether the target process is trapping exits:
+///
+/// - If `reason` is `Kill`: The process is unconditionally terminated, even if it's
+///   trapping exits. This is the "untrappable" kill signal.
+///
+/// - If `reason` is `Normal` and the target is the sender: The process exits normally.
+///
+/// - If `reason` is `Normal` and the target is NOT the sender: The signal is ignored
+///   (a process cannot force another to exit "normally").
+///
+/// - For any other reason:
+///   - If the target is trapping exits: It receives a `SystemMessage::Exit` with
+///     the sender's pid and the reason.
+///   - If the target is NOT trapping exits: The process is killed with the given reason.
+///
+/// # Arguments
+///
+/// * `from` - The pid of the process sending the exit signal
+/// * `to` - The pid of the target process
+/// * `reason` - The exit reason
+///
+/// # Returns
+///
+/// * `Ok(())` - The signal was sent (or ignored for Normal)
+/// * `Err(LinkError::ProcessNotFound)` - The target process doesn't exist
+///
+/// # Example
+///
+/// ```ignore
+/// // Kill a process unconditionally
+/// process_table::exit(my_pid, target_pid, ExitReason::Kill)?;
+///
+/// // Send a custom exit reason (will be trapped if target is trapping)
+/// process_table::exit(my_pid, target_pid, ExitReason::error("shutdown requested"))?;
+/// ```
+pub fn exit(from: Pid, to: Pid, reason: ExitReason) -> Result<(), LinkError> {
+    let table = PROCESS_TABLE.read().unwrap();
+
+    // Check if target exists
+    let entry = table
+        .processes
+        .get(&to)
+        .ok_or(LinkError::ProcessNotFound(to))?;
+
+    match &reason {
+        // Kill is untrappable - always kills the process
+        ExitReason::Kill => {
+            entry.sender.kill(reason);
+        }
+
+        // Normal exit signal to self - exit normally
+        ExitReason::Normal if from == to => {
+            entry.sender.kill(ExitReason::Normal);
+        }
+
+        // Normal exit signal to another process - ignored
+        // (you can't force another process to exit "normally")
+        ExitReason::Normal => {
+            // Do nothing - this is the expected Erlang behavior
+        }
+
+        // Other reasons depend on trap_exit flag
+        _ => {
+            if entry.trap_exit {
+                // Process is trapping exits - send as message
+                entry.sender.send_exit(from, reason);
+            } else {
+                // Process is not trapping - kill it
+                entry.sender.kill(reason);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Send an exit signal to a process without specifying a sender.
+///
+/// This is a convenience wrapper around [`exit`] for when you don't have
+/// a sender pid (e.g., external shutdown requests).
+///
+/// The `from` pid is set to the same as `to`, which means:
+/// - `Normal` will cause the process to exit normally
+/// - Other reasons behave the same as regular `exit`
+///
+/// # Example
+///
+/// ```ignore
+/// // Request a process to shut down
+/// process_table::exit_self(target_pid, ExitReason::Shutdown)?;
+/// ```
+pub fn exit_self(pid: Pid, reason: ExitReason) -> Result<(), LinkError> {
+    exit(pid, pid, reason)
+}
+
 /// Error type for link operations.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LinkError {
@@ -485,5 +584,191 @@ mod tests {
         assert_eq!(downs[0].1, monitor_ref);
 
         unregister(pid1, ExitReason::Normal);
+    }
+
+    #[test]
+    fn test_exit_kill_is_untrappable() {
+        let pid = Pid::new();
+        let sender = MockSender::new();
+        let sender_clone = sender.clone();
+
+        register(pid, sender);
+        set_trap_exit(pid, true); // Even with trap_exit, Kill should work
+
+        // Send Kill signal
+        let result = exit(pid, pid, ExitReason::Kill);
+        assert!(result.is_ok());
+
+        // Should have been killed, not received as message
+        let kills = sender_clone.kill_received.read().unwrap();
+        assert_eq!(kills.len(), 1);
+        assert_eq!(kills[0], ExitReason::Kill);
+
+        let exits = sender_clone.exit_received.read().unwrap();
+        assert!(exits.is_empty());
+
+        unregister(pid, ExitReason::Normal);
+    }
+
+    #[test]
+    fn test_exit_normal_to_self() {
+        let pid = Pid::new();
+        let sender = MockSender::new();
+        let sender_clone = sender.clone();
+
+        register(pid, sender);
+
+        // Send Normal exit to self
+        let result = exit(pid, pid, ExitReason::Normal);
+        assert!(result.is_ok());
+
+        // Should exit normally
+        let kills = sender_clone.kill_received.read().unwrap();
+        assert_eq!(kills.len(), 1);
+        assert_eq!(kills[0], ExitReason::Normal);
+
+        unregister(pid, ExitReason::Normal);
+    }
+
+    #[test]
+    fn test_exit_normal_to_other_is_ignored() {
+        let pid1 = Pid::new();
+        let pid2 = Pid::new();
+        let sender1 = MockSender::new();
+        let sender2 = MockSender::new();
+        let sender2_clone = sender2.clone();
+
+        register(pid1, sender1);
+        register(pid2, sender2);
+
+        // Send Normal exit from pid1 to pid2
+        let result = exit(pid1, pid2, ExitReason::Normal);
+        assert!(result.is_ok());
+
+        // pid2 should NOT be affected (Normal from another process is ignored)
+        let kills = sender2_clone.kill_received.read().unwrap();
+        assert!(kills.is_empty());
+
+        let exits = sender2_clone.exit_received.read().unwrap();
+        assert!(exits.is_empty());
+
+        assert!(sender2_clone.is_alive());
+
+        unregister(pid1, ExitReason::Normal);
+        unregister(pid2, ExitReason::Normal);
+    }
+
+    #[test]
+    fn test_exit_error_kills_non_trapping_process() {
+        let pid1 = Pid::new();
+        let pid2 = Pid::new();
+        let sender1 = MockSender::new();
+        let sender2 = MockSender::new();
+        let sender2_clone = sender2.clone();
+
+        register(pid1, sender1);
+        register(pid2, sender2);
+        // pid2 is NOT trapping exits (default)
+
+        // Send error exit from pid1 to pid2
+        let result = exit(pid1, pid2, ExitReason::error("test error"));
+        assert!(result.is_ok());
+
+        // pid2 should be killed
+        let kills = sender2_clone.kill_received.read().unwrap();
+        assert_eq!(kills.len(), 1);
+        assert_eq!(kills[0], ExitReason::error("test error"));
+
+        unregister(pid1, ExitReason::Normal);
+        unregister(pid2, ExitReason::Normal);
+    }
+
+    #[test]
+    fn test_exit_error_is_trapped_when_trapping() {
+        let pid1 = Pid::new();
+        let pid2 = Pid::new();
+        let sender1 = MockSender::new();
+        let sender2 = MockSender::new();
+        let sender2_clone = sender2.clone();
+
+        register(pid1, sender1);
+        register(pid2, sender2);
+        set_trap_exit(pid2, true); // pid2 IS trapping exits
+
+        // Send error exit from pid1 to pid2
+        let result = exit(pid1, pid2, ExitReason::error("test error"));
+        assert!(result.is_ok());
+
+        // pid2 should receive it as a message, not be killed
+        let kills = sender2_clone.kill_received.read().unwrap();
+        assert!(kills.is_empty());
+
+        let exits = sender2_clone.exit_received.read().unwrap();
+        assert_eq!(exits.len(), 1);
+        assert_eq!(exits[0].0, pid1); // from pid
+        assert_eq!(exits[0].1, ExitReason::error("test error"));
+
+        assert!(sender2_clone.is_alive());
+
+        unregister(pid1, ExitReason::Normal);
+        unregister(pid2, ExitReason::Normal);
+    }
+
+    #[test]
+    fn test_exit_shutdown_behavior() {
+        let pid1 = Pid::new();
+        let pid2 = Pid::new();
+        let sender1 = MockSender::new();
+        let sender2 = MockSender::new();
+        let sender2_clone = sender2.clone();
+
+        register(pid1, sender1);
+        register(pid2, sender2);
+        // pid2 is NOT trapping exits
+
+        // Send Shutdown exit from pid1 to pid2
+        let result = exit(pid1, pid2, ExitReason::Shutdown);
+        assert!(result.is_ok());
+
+        // pid2 should be killed (Shutdown is not special like Normal)
+        let kills = sender2_clone.kill_received.read().unwrap();
+        assert_eq!(kills.len(), 1);
+        assert_eq!(kills[0], ExitReason::Shutdown);
+
+        unregister(pid1, ExitReason::Normal);
+        unregister(pid2, ExitReason::Normal);
+    }
+
+    #[test]
+    fn test_exit_to_nonexistent_process() {
+        let pid1 = Pid::new();
+        let pid2 = Pid::new(); // Not registered
+        let sender1 = MockSender::new();
+
+        register(pid1, sender1);
+
+        let result = exit(pid1, pid2, ExitReason::Kill);
+        assert_eq!(result, Err(LinkError::ProcessNotFound(pid2)));
+
+        unregister(pid1, ExitReason::Normal);
+    }
+
+    #[test]
+    fn test_exit_self_convenience() {
+        let pid = Pid::new();
+        let sender = MockSender::new();
+        let sender_clone = sender.clone();
+
+        register(pid, sender);
+
+        // Use exit_self convenience function
+        let result = exit_self(pid, ExitReason::Shutdown);
+        assert!(result.is_ok());
+
+        let kills = sender_clone.kill_received.read().unwrap();
+        assert_eq!(kills.len(), 1);
+        assert_eq!(kills[0], ExitReason::Shutdown);
+
+        unregister(pid, ExitReason::Normal);
     }
 }
