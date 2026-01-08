@@ -9,6 +9,7 @@
 
 use crate::link::MonitorRef;
 use crate::pid::{ExitReason, Pid};
+use crate::registry;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 
@@ -86,11 +87,13 @@ pub fn register(pid: Pid, sender: Arc<dyn SystemMessageSender>) {
 
 /// Unregister a process from the table.
 ///
-/// Called when a GenServer terminates. Also cleans up links and monitors.
-/// Registry cleanup is handled separately by the registry module.
+/// Called when a GenServer terminates. Also cleans up links, monitors, and registry.
 pub fn unregister(pid: Pid, reason: ExitReason) {
     // First, notify linked and monitoring processes
     notify_exit(pid, reason);
+
+    // Clean up the registry (remove any registered name for this pid)
+    registry::unregister_pid(pid);
 
     // Then clean up the table
     let mut table = PROCESS_TABLE.write().unwrap();
