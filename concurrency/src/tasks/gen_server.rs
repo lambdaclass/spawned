@@ -1090,4 +1090,634 @@ mod tests {
             })?;
         }
     }
+
+    // ==================== Integration tests: Backend equivalence ====================
+    // These tests verify that all backends behave identically
+
+    /// Runs the same test logic on all three backends and collects results
+    async fn run_on_all_backends<F, Fut, T>(test_fn: F) -> (T, T, T)
+    where
+        F: Fn(Backend) -> Fut,
+        Fut: std::future::Future<Output = T>,
+    {
+        let async_result = test_fn(Backend::Async).await;
+        let blocking_result = test_fn(Backend::Blocking).await;
+        let thread_result = test_fn(Backend::Thread).await;
+        (async_result, blocking_result, thread_result)
+    }
+
+    #[test]
+    fn integration_all_backends_get_same_initial_value() {
+        let runtime = rt::Runtime::new().unwrap();
+        runtime.block_on(async move {
+            let (async_val, blocking_val, thread_val) = run_on_all_backends(|backend| async move {
+                let mut counter = Counter { count: 42 }.start(backend);
+                let result = counter.call(CounterCall::Get).await.unwrap();
+                counter.call(CounterCall::Stop).await.unwrap();
+                result
+            })
+            .await;
+
+            assert_eq!(async_val, 42);
+            assert_eq!(blocking_val, 42);
+            assert_eq!(thread_val, 42);
+            assert_eq!(async_val, blocking_val);
+            assert_eq!(blocking_val, thread_val);
+        });
+    }
+
+    #[test]
+    fn integration_all_backends_increment_sequence_identical() {
+        let runtime = rt::Runtime::new().unwrap();
+        runtime.block_on(async move {
+            let test_sequence = |backend| async move {
+                let mut counter = Counter { count: 0 }.start(backend);
+                let mut results = Vec::new();
+
+                // Perform 10 increments and record each result
+                for _ in 0..10 {
+                    let result = counter.call(CounterCall::Increment).await.unwrap();
+                    results.push(result);
+                }
+
+                counter.call(CounterCall::Stop).await.unwrap();
+                results
+            };
+
+            let (async_results, blocking_results, thread_results) =
+                run_on_all_backends(test_sequence).await;
+
+            // Expected sequence: 1, 2, 3, 4, 5, 6, 7, 8, 9, 10
+            let expected: Vec<u64> = (1..=10).collect();
+            assert_eq!(async_results, expected);
+            assert_eq!(blocking_results, expected);
+            assert_eq!(thread_results, expected);
+        });
+    }
+
+    #[test]
+    fn integration_all_backends_interleaved_call_cast_identical() {
+        let runtime = rt::Runtime::new().unwrap();
+        runtime.block_on(async move {
+            let test_interleaved = |backend| async move {
+                let mut counter = Counter { count: 0 }.start(backend);
+
+                // Increment via call
+                counter.call(CounterCall::Increment).await.unwrap();
+                // Increment via cast
+                counter.cast(CounterCast::Increment).await.unwrap();
+                // Wait for cast to process
+                rt::sleep(Duration::from_millis(50)).await;
+                // Increment via call again
+                counter.call(CounterCall::Increment).await.unwrap();
+                // Get final value
+                let final_val = counter.call(CounterCall::Get).await.unwrap();
+                counter.call(CounterCall::Stop).await.unwrap();
+                final_val
+            };
+
+            let (async_val, blocking_val, thread_val) =
+                run_on_all_backends(test_interleaved).await;
+
+            assert_eq!(async_val, 3);
+            assert_eq!(blocking_val, 3);
+            assert_eq!(thread_val, 3);
+        });
+    }
+
+    #[test]
+    fn integration_all_backends_multiple_casts_identical() {
+        let runtime = rt::Runtime::new().unwrap();
+        runtime.block_on(async move {
+            let test_casts = |backend| async move {
+                let mut counter = Counter { count: 0 }.start(backend);
+
+                // Send 20 casts
+                for _ in 0..20 {
+                    counter.cast(CounterCast::Increment).await.unwrap();
+                }
+
+                // Wait for all casts to process
+                rt::sleep(Duration::from_millis(100)).await;
+
+                let final_val = counter.call(CounterCall::Get).await.unwrap();
+                counter.call(CounterCall::Stop).await.unwrap();
+                final_val
+            };
+
+            let (async_val, blocking_val, thread_val) = run_on_all_backends(test_casts).await;
+
+            assert_eq!(async_val, 20);
+            assert_eq!(blocking_val, 20);
+            assert_eq!(thread_val, 20);
+        });
+    }
+
+    // ==================== Integration tests: Cross-backend communication ====================
+
+    /// GenServer that can call another GenServer
+    struct Forwarder {
+        target: GenServerHandle<Counter>,
+    }
+
+    #[derive(Clone)]
+    enum ForwarderCall {
+        GetFromTarget,
+        IncrementTarget,
+        Stop,
+    }
+
+    impl GenServer for Forwarder {
+        type CallMsg = ForwarderCall;
+        type CastMsg = Unused;
+        type OutMsg = u64;
+        type Error = ();
+
+        async fn handle_call(
+            &mut self,
+            message: Self::CallMsg,
+            _: &GenServerHandle<Self>,
+        ) -> CallResponse<Self> {
+            match message {
+                ForwarderCall::GetFromTarget => {
+                    let result = self.target.call(CounterCall::Get).await.unwrap();
+                    CallResponse::Reply(result)
+                }
+                ForwarderCall::IncrementTarget => {
+                    let result = self.target.call(CounterCall::Increment).await.unwrap();
+                    CallResponse::Reply(result)
+                }
+                ForwarderCall::Stop => {
+                    let _ = self.target.call(CounterCall::Stop).await;
+                    CallResponse::Stop(0)
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn integration_async_to_blocking_communication() {
+        let runtime = rt::Runtime::new().unwrap();
+        runtime.block_on(async move {
+            // Counter runs on Blocking backend
+            let counter = Counter { count: 100 }.start(Backend::Blocking);
+            // Forwarder runs on Async backend, calls Counter
+            let mut forwarder = Forwarder { target: counter }.start(Backend::Async);
+
+            let result = forwarder.call(ForwarderCall::GetFromTarget).await.unwrap();
+            assert_eq!(result, 100);
+
+            let result = forwarder
+                .call(ForwarderCall::IncrementTarget)
+                .await
+                .unwrap();
+            assert_eq!(result, 101);
+
+            forwarder.call(ForwarderCall::Stop).await.unwrap();
+        });
+    }
+
+    #[test]
+    fn integration_async_to_thread_communication() {
+        let runtime = rt::Runtime::new().unwrap();
+        runtime.block_on(async move {
+            // Counter runs on Thread backend
+            let counter = Counter { count: 200 }.start(Backend::Thread);
+            // Forwarder runs on Async backend
+            let mut forwarder = Forwarder { target: counter }.start(Backend::Async);
+
+            let result = forwarder.call(ForwarderCall::GetFromTarget).await.unwrap();
+            assert_eq!(result, 200);
+
+            let result = forwarder
+                .call(ForwarderCall::IncrementTarget)
+                .await
+                .unwrap();
+            assert_eq!(result, 201);
+
+            forwarder.call(ForwarderCall::Stop).await.unwrap();
+        });
+    }
+
+    #[test]
+    fn integration_blocking_to_thread_communication() {
+        let runtime = rt::Runtime::new().unwrap();
+        runtime.block_on(async move {
+            // Counter runs on Thread backend
+            let counter = Counter { count: 300 }.start(Backend::Thread);
+            // Forwarder runs on Blocking backend
+            let mut forwarder = Forwarder { target: counter }.start(Backend::Blocking);
+
+            let result = forwarder.call(ForwarderCall::GetFromTarget).await.unwrap();
+            assert_eq!(result, 300);
+
+            let result = forwarder
+                .call(ForwarderCall::IncrementTarget)
+                .await
+                .unwrap();
+            assert_eq!(result, 301);
+
+            forwarder.call(ForwarderCall::Stop).await.unwrap();
+        });
+    }
+
+    #[test]
+    fn integration_thread_to_async_communication() {
+        let runtime = rt::Runtime::new().unwrap();
+        runtime.block_on(async move {
+            // Counter runs on Async backend
+            let counter = Counter { count: 400 }.start(Backend::Async);
+            // Forwarder runs on Thread backend
+            let mut forwarder = Forwarder { target: counter }.start(Backend::Thread);
+
+            let result = forwarder.call(ForwarderCall::GetFromTarget).await.unwrap();
+            assert_eq!(result, 400);
+
+            let result = forwarder
+                .call(ForwarderCall::IncrementTarget)
+                .await
+                .unwrap();
+            assert_eq!(result, 401);
+
+            forwarder.call(ForwarderCall::Stop).await.unwrap();
+        });
+    }
+
+    #[test]
+    fn integration_all_backend_combinations_communicate() {
+        let runtime = rt::Runtime::new().unwrap();
+        runtime.block_on(async move {
+            let backends = [Backend::Async, Backend::Blocking, Backend::Thread];
+
+            for &counter_backend in &backends {
+                for &forwarder_backend in &backends {
+                    let counter = Counter { count: 50 }.start(counter_backend);
+                    let mut forwarder =
+                        Forwarder { target: counter }.start(forwarder_backend);
+
+                    // Test get
+                    let result = forwarder.call(ForwarderCall::GetFromTarget).await.unwrap();
+                    assert_eq!(
+                        result, 50,
+                        "Failed for {:?} -> {:?}",
+                        forwarder_backend, counter_backend
+                    );
+
+                    // Test increment
+                    let result = forwarder
+                        .call(ForwarderCall::IncrementTarget)
+                        .await
+                        .unwrap();
+                    assert_eq!(
+                        result, 51,
+                        "Failed for {:?} -> {:?}",
+                        forwarder_backend, counter_backend
+                    );
+
+                    forwarder.call(ForwarderCall::Stop).await.unwrap();
+                }
+            }
+        });
+    }
+
+    // ==================== Integration tests: Concurrent stress tests ====================
+
+    #[test]
+    fn integration_concurrent_operations_same_backend() {
+        let runtime = rt::Runtime::new().unwrap();
+        runtime.block_on(async move {
+            for backend in [Backend::Async, Backend::Blocking, Backend::Thread] {
+                let counter = Counter { count: 0 }.start(backend);
+
+                // Spawn 10 concurrent tasks that each increment 10 times
+                let handles: Vec<_> = (0..10)
+                    .map(|_| {
+                        let mut handle = counter.clone();
+                        rt::spawn(async move {
+                            for _ in 0..10 {
+                                let _ = handle.call(CounterCall::Increment).await;
+                            }
+                        })
+                    })
+                    .collect();
+
+                // Wait for all tasks
+                for h in handles {
+                    h.await.unwrap();
+                }
+
+                // Final count should be 100 (10 tasks * 10 increments)
+                let mut handle = counter.clone();
+                let final_count = handle.call(CounterCall::Get).await.unwrap();
+                assert_eq!(
+                    final_count, 100,
+                    "Failed for backend {:?}",
+                    backend
+                );
+
+                handle.call(CounterCall::Stop).await.unwrap();
+            }
+        });
+    }
+
+    #[test]
+    fn integration_concurrent_mixed_call_cast() {
+        let runtime = rt::Runtime::new().unwrap();
+        runtime.block_on(async move {
+            for backend in [Backend::Async, Backend::Blocking, Backend::Thread] {
+                let counter = Counter { count: 0 }.start(backend);
+
+                // Spawn tasks doing calls
+                let call_handles: Vec<_> = (0..5)
+                    .map(|_| {
+                        let mut handle = counter.clone();
+                        rt::spawn(async move {
+                            for _ in 0..10 {
+                                let _ = handle.call(CounterCall::Increment).await;
+                            }
+                        })
+                    })
+                    .collect();
+
+                // Spawn tasks doing casts
+                let cast_handles: Vec<_> = (0..5)
+                    .map(|_| {
+                        let mut handle = counter.clone();
+                        rt::spawn(async move {
+                            for _ in 0..10 {
+                                let _ = handle.cast(CounterCast::Increment).await;
+                            }
+                        })
+                    })
+                    .collect();
+
+                // Wait for all
+                for h in call_handles {
+                    h.await.unwrap();
+                }
+                for h in cast_handles {
+                    h.await.unwrap();
+                }
+
+                // Give casts time to process
+                rt::sleep(Duration::from_millis(100)).await;
+
+                let mut handle = counter.clone();
+                let final_count = handle.call(CounterCall::Get).await.unwrap();
+                // 5 call tasks * 10 + 5 cast tasks * 10 = 100
+                assert_eq!(final_count, 100, "Failed for backend {:?}", backend);
+
+                handle.call(CounterCall::Stop).await.unwrap();
+            }
+        });
+    }
+
+    #[test]
+    fn integration_multiple_genservers_different_backends_concurrent() {
+        let runtime = rt::Runtime::new().unwrap();
+        runtime.block_on(async move {
+            // Create one GenServer on each backend
+            let mut async_counter = Counter { count: 0 }.start(Backend::Async);
+            let mut blocking_counter = Counter { count: 0 }.start(Backend::Blocking);
+            let mut thread_counter = Counter { count: 0 }.start(Backend::Thread);
+
+            // Spawn concurrent tasks for each
+            let async_handle = {
+                let mut c = async_counter.clone();
+                rt::spawn(async move {
+                    for _ in 0..50 {
+                        c.call(CounterCall::Increment).await.unwrap();
+                    }
+                })
+            };
+
+            let blocking_handle = {
+                let mut c = blocking_counter.clone();
+                rt::spawn(async move {
+                    for _ in 0..50 {
+                        c.call(CounterCall::Increment).await.unwrap();
+                    }
+                })
+            };
+
+            let thread_handle = {
+                let mut c = thread_counter.clone();
+                rt::spawn(async move {
+                    for _ in 0..50 {
+                        c.call(CounterCall::Increment).await.unwrap();
+                    }
+                })
+            };
+
+            // Wait for all
+            async_handle.await.unwrap();
+            blocking_handle.await.unwrap();
+            thread_handle.await.unwrap();
+
+            // Each should have exactly 50
+            assert_eq!(async_counter.call(CounterCall::Get).await.unwrap(), 50);
+            assert_eq!(blocking_counter.call(CounterCall::Get).await.unwrap(), 50);
+            assert_eq!(thread_counter.call(CounterCall::Get).await.unwrap(), 50);
+
+            async_counter.call(CounterCall::Stop).await.unwrap();
+            blocking_counter.call(CounterCall::Stop).await.unwrap();
+            thread_counter.call(CounterCall::Stop).await.unwrap();
+        });
+    }
+
+    // ==================== Integration tests: Init/Teardown behavior ====================
+
+    struct InitTeardownTracker {
+        init_called: Arc<Mutex<bool>>,
+        teardown_called: Arc<Mutex<bool>>,
+    }
+
+    #[derive(Clone)]
+    enum TrackerCall {
+        CheckInit,
+        Stop,
+    }
+
+    impl GenServer for InitTeardownTracker {
+        type CallMsg = TrackerCall;
+        type CastMsg = Unused;
+        type OutMsg = bool;
+        type Error = ();
+
+        async fn init(
+            self,
+            _handle: &GenServerHandle<Self>,
+        ) -> Result<InitResult<Self>, Self::Error> {
+            *self.init_called.lock().unwrap() = true;
+            Ok(Success(self))
+        }
+
+        async fn handle_call(
+            &mut self,
+            message: Self::CallMsg,
+            _: &GenServerHandle<Self>,
+        ) -> CallResponse<Self> {
+            match message {
+                TrackerCall::CheckInit => {
+                    CallResponse::Reply(*self.init_called.lock().unwrap())
+                }
+                TrackerCall::Stop => CallResponse::Stop(true),
+            }
+        }
+
+        async fn teardown(self, _handle: &GenServerHandle<Self>) -> Result<(), Self::Error> {
+            *self.teardown_called.lock().unwrap() = true;
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn integration_init_called_on_all_backends() {
+        let runtime = rt::Runtime::new().unwrap();
+        runtime.block_on(async move {
+            for backend in [Backend::Async, Backend::Blocking, Backend::Thread] {
+                let init_called = Arc::new(Mutex::new(false));
+                let teardown_called = Arc::new(Mutex::new(false));
+
+                let mut tracker = InitTeardownTracker {
+                    init_called: init_called.clone(),
+                    teardown_called: teardown_called.clone(),
+                }
+                .start(backend);
+
+                // Give time for init to run
+                rt::sleep(Duration::from_millis(50)).await;
+
+                let result = tracker.call(TrackerCall::CheckInit).await.unwrap();
+                assert!(result, "Init not called for {:?}", backend);
+
+                tracker.call(TrackerCall::Stop).await.unwrap();
+            }
+        });
+    }
+
+    #[test]
+    fn integration_teardown_called_on_all_backends() {
+        let runtime = rt::Runtime::new().unwrap();
+        runtime.block_on(async move {
+            for backend in [Backend::Async, Backend::Blocking, Backend::Thread] {
+                let init_called = Arc::new(Mutex::new(false));
+                let teardown_called = Arc::new(Mutex::new(false));
+
+                let mut tracker = InitTeardownTracker {
+                    init_called: init_called.clone(),
+                    teardown_called: teardown_called.clone(),
+                }
+                .start(backend);
+
+                tracker.call(TrackerCall::Stop).await.unwrap();
+
+                // Give time for teardown to run
+                rt::sleep(Duration::from_millis(100)).await;
+
+                assert!(
+                    *teardown_called.lock().unwrap(),
+                    "Teardown not called for {:?}",
+                    backend
+                );
+            }
+        });
+    }
+
+    // ==================== Integration tests: Error handling equivalence ====================
+
+    #[test]
+    fn integration_channel_closed_behavior_identical() {
+        let runtime = rt::Runtime::new().unwrap();
+        runtime.block_on(async move {
+            for backend in [Backend::Async, Backend::Blocking, Backend::Thread] {
+                let mut counter = Counter { count: 0 }.start(backend);
+
+                // Stop the server
+                counter.call(CounterCall::Stop).await.unwrap();
+
+                // Give time for shutdown
+                rt::sleep(Duration::from_millis(50)).await;
+
+                // Further calls should fail
+                let result = counter.call(CounterCall::Get).await;
+                assert!(
+                    result.is_err(),
+                    "Call after stop should fail for {:?}",
+                    backend
+                );
+            }
+        });
+    }
+
+    // ==================== Integration tests: State consistency ====================
+
+    #[test]
+    fn integration_large_state_operations_identical() {
+        let runtime = rt::Runtime::new().unwrap();
+        runtime.block_on(async move {
+            let test_large_operations = |backend| async move {
+                let mut counter = Counter { count: 0 }.start(backend);
+
+                // Perform 1000 increments
+                for _ in 0..1000 {
+                    counter.call(CounterCall::Increment).await.unwrap();
+                }
+
+                let final_val = counter.call(CounterCall::Get).await.unwrap();
+                counter.call(CounterCall::Stop).await.unwrap();
+                final_val
+            };
+
+            let (async_val, blocking_val, thread_val) =
+                run_on_all_backends(test_large_operations).await;
+
+            assert_eq!(async_val, 1000);
+            assert_eq!(blocking_val, 1000);
+            assert_eq!(thread_val, 1000);
+        });
+    }
+
+    #[test]
+    fn integration_alternating_operations_identical() {
+        let runtime = rt::Runtime::new().unwrap();
+        runtime.block_on(async move {
+            let test_alternating = |backend| async move {
+                let mut counter = Counter { count: 100 }.start(backend);
+                let mut results = Vec::new();
+
+                // Alternate between get and increment
+                for i in 0..20 {
+                    if i % 2 == 0 {
+                        results.push(counter.call(CounterCall::Get).await.unwrap());
+                    } else {
+                        results.push(counter.call(CounterCall::Increment).await.unwrap());
+                    }
+                }
+
+                counter.call(CounterCall::Stop).await.unwrap();
+                results
+            };
+
+            let (async_results, blocking_results, thread_results) =
+                run_on_all_backends(test_alternating).await;
+
+            // All backends should produce identical sequence
+            assert_eq!(async_results, blocking_results);
+            assert_eq!(blocking_results, thread_results);
+
+            // Verify expected pattern: get returns current, increment returns new
+            // Pattern: 100, 101, 101, 102, 102, 103, ...
+            let expected: Vec<u64> = (0..20)
+                .map(|i| {
+                    if i % 2 == 0 {
+                        100 + (i / 2) as u64
+                    } else {
+                        100 + (i / 2) as u64 + 1
+                    }
+                })
+                .collect();
+            assert_eq!(async_results, expected);
+        });
+    }
 }
