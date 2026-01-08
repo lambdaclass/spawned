@@ -2166,8 +2166,12 @@ mod tests {
 
     // ==================== Registry Tests ====================
 
+    // Mutex to serialize registry tests
+    static REGISTRY_TEST_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     pub fn genserver_can_register() {
+        let _guard = REGISTRY_TEST_MUTEX.lock().unwrap();
         // Clean registry before test
         crate::registry::clear();
 
@@ -2201,6 +2205,7 @@ mod tests {
 
     #[test]
     pub fn genserver_duplicate_register_fails() {
+        let _guard = REGISTRY_TEST_MUTEX.lock().unwrap();
         // Clean registry before test
         crate::registry::clear();
 
@@ -2231,6 +2236,7 @@ mod tests {
 
     #[test]
     pub fn genserver_unregister_allows_reregister() {
+        let _guard = REGISTRY_TEST_MUTEX.lock().unwrap();
         // Clean registry before test
         crate::registry::clear();
 
