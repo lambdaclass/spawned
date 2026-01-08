@@ -9,7 +9,10 @@ mod time;
 #[cfg(test)]
 mod timer_tests;
 
-pub use gen_server::{CallResponse, CastResponse, GenServer, GenServerHandle, GenServerInMsg};
+pub use gen_server::{
+    CallResponse, CastResponse, GenServer, GenServerHandle, GenServerInMsg, InfoResponse,
+    InitResult,
+};
 pub use process::{send, Process, ProcessInfo};
 pub use stream::spawn_listener;
 pub use time::{send_after, send_interval};

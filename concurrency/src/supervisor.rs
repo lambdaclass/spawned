@@ -1125,9 +1125,6 @@ struct DynamicChildInfo {
     /// The child's current handle.
     handle: BoxedChildHandle,
 
-    /// Monitor reference for this child.
-    monitor_ref: Option<MonitorRef>,
-
     /// Number of restarts for this child.
     restart_count: u32,
 }
@@ -1162,13 +1159,12 @@ impl DynamicSupervisorState {
         let handle = spec.start();
         let pid = handle.pid();
 
-        // Set up monitoring
-        let monitor_ref = supervisor_handle.monitor(&ChildPidWrapper(pid)).ok();
+        // Set up monitoring (we don't store the ref as we track children by pid)
+        let _ = supervisor_handle.monitor(&ChildPidWrapper(pid));
 
         let info = DynamicChildInfo {
             spec,
             handle,
-            monitor_ref,
             restart_count: 0,
         };
 
@@ -1221,12 +1217,11 @@ impl DynamicSupervisorState {
         // Restart the child
         let new_handle = info.spec.start();
         let new_pid = new_handle.pid();
-        let monitor_ref = supervisor_handle.monitor(&ChildPidWrapper(new_pid)).ok();
+        let _ = supervisor_handle.monitor(&ChildPidWrapper(new_pid));
 
         let new_info = DynamicChildInfo {
             spec: info.spec,
             handle: new_handle,
-            monitor_ref,
             restart_count: info.restart_count + 1,
         };
 
@@ -1621,19 +1616,25 @@ mod integration_tests {
         id: String,
     }
 
+    // These enums are defined for completeness and to allow future tests to exercise
+    // worker call/cast paths. Currently, tests operate through the Supervisor API
+    // and don't have direct access to child handles.
     #[derive(Clone, Debug)]
+    #[allow(dead_code)]
     enum WorkerCall {
         GetStartCount,
         GetId,
     }
 
     #[derive(Clone, Debug)]
+    #[allow(dead_code)]
     enum WorkerCast {
         Crash,
         ExitNormal,
     }
 
     #[derive(Clone, Debug)]
+    #[allow(dead_code)]
     enum WorkerResponse {
         StartCount(u32),
         Id(String),
