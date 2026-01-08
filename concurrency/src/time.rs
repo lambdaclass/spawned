@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use spawned_rt::tasks::{self as rt, CancellationToken, JoinHandle};
 
-use super::{GenServer, GenServerHandle};
+use crate::{GenServer, GenServerHandle};
 use core::pin::pin;
 
 pub struct TimerHandle {

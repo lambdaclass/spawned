@@ -1,11 +1,29 @@
 # Spawned examples
-Some examples to test runtime and concurrency:
 
-- ping_pong: Simple example to test Process abstraction using `tasks` implementation.
-- ping_pong_threads: ping_pong example on `threads` implementation.
-- name_server: Simple example to test GenServer abstraction using `tasks` implementation.
-- name_server_with_error: Same name_server example with a deliverate error to check catching mechanism to prevent panicking on callback code.
-- bank: A bit more complex example for GenServer using `tasks` implementation.
-- bank_threads: bank example on `threads` implementation.
-- updater: A "live" process that checks an url periodicaly using `tasks` implementation.
-- updater_threads: updater example on `threads` implementation.
+Examples demonstrating the spawned concurrency library. All examples support
+different backends (`Backend::Async`, `Backend::Blocking`, `Backend::Thread`)
+through the unified GenServer API.
+
+## Examples
+
+- **ping_pong**: Simple example demonstrating the Process abstraction for message passing.
+- **name_server**: Simple GenServer example for key-value storage (based on Armstrong's Erlang book).
+- **bank**: More complex GenServer example with multiple operations and error handling.
+- **updater**: A periodic GenServer that fetches a URL at regular intervals.
+- **blocking_genserver**: Demonstrates handling of blocking operations across backends.
+- **busy_genserver_warning**: Shows debug warnings when GenServer blocks the async runtime.
+
+## Backend Selection
+
+All examples use `Backend::Async` by default, but you can modify them to use:
+
+```rust
+// For async workloads (default)
+let handle = MyServer::new().start(Backend::Async);
+
+// For blocking operations
+let handle = MyServer::new().start(Backend::Blocking);
+
+// For dedicated OS thread
+let handle = MyServer::new().start(Backend::Thread);
+```

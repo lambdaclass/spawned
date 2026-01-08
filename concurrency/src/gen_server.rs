@@ -2,7 +2,7 @@
 //! See examples/name_server for a usage example.
 use crate::{
     error::GenServerError,
-    tasks::InitResult::{NoSuccess, Success},
+    InitResult::{NoSuccess, Success},
 };
 use core::pin::pin;
 use futures::future::{self, FutureExt as _};
@@ -480,7 +480,7 @@ mod warn_on_block {
 mod tests {
 
     use super::*;
-    use crate::{messages::Unused, tasks::send_after};
+    use crate::{messages::Unused, send_after};
     use std::{
         sync::{Arc, Mutex},
         thread,

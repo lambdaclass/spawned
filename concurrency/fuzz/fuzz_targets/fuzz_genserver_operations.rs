@@ -2,7 +2,7 @@
 
 use arbitrary::Arbitrary;
 use libfuzzer_sys::fuzz_target;
-use spawned_concurrency::tasks::{
+use spawned_concurrency::{
     Backend, CallResponse, CastResponse, GenServer, GenServerHandle,
 };
 use spawned_rt::tasks as rt;

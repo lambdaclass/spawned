@@ -1,4 +1,4 @@
-use super::{
+use crate::{
     send_after, send_interval, Backend, CallResponse, CastResponse, GenServer, GenServerHandle,
     InitResult, InitResult::Success,
 };

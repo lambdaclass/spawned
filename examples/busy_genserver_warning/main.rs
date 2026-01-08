@@ -3,7 +3,7 @@ use std::time::Duration;
 use std::{process::exit, thread};
 use tracing::info;
 
-use spawned_concurrency::tasks::{Backend, CallResponse, CastResponse, GenServer, GenServerHandle};
+use spawned_concurrency::{Backend, CallResponse, CastResponse, GenServer, GenServerHandle};
 
 // We test a scenario with a badly behaved task
 struct BusyWorker;
