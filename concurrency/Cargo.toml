@@ -16,3 +16,4 @@ pin-project-lite = "0.2"
 # This tokio imports are only used in tests, we should not use them in the library code.
 tokio-stream = { version = "0.1.17" }
 tokio = { version = "1", features = ["full"] }
+proptest = "1.9.0"

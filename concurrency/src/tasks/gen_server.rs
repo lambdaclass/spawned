@@ -931,4 +931,163 @@ mod tests {
             counter.call(CounterCall::Stop).await.unwrap();
         });
     }
+
+    // ==================== Property-based tests ====================
+
+    use proptest::prelude::*;
+
+    /// Strategy to generate random Backend variants
+    fn backend_strategy() -> impl Strategy<Value = Backend> {
+        prop_oneof![
+            Just(Backend::Async),
+            Just(Backend::Blocking),
+            Just(Backend::Thread),
+        ]
+    }
+
+    proptest! {
+        /// Property: Counter GenServer preserves initial state
+        #[test]
+        fn prop_counter_preserves_initial_state(initial_count in 0u64..10000) {
+            let runtime = rt::Runtime::new().unwrap();
+            runtime.block_on(async move {
+                let mut counter = Counter { count: initial_count }.start(Backend::Async);
+                let result = counter.call(CounterCall::Get).await.unwrap();
+                prop_assert_eq!(result, initial_count);
+                counter.call(CounterCall::Stop).await.unwrap();
+                Ok(())
+            })?;
+        }
+
+        /// Property: N increments result in initial + N
+        #[test]
+        fn prop_increments_are_additive(
+            initial_count in 0u64..1000,
+            num_increments in 0usize..50
+        ) {
+            let runtime = rt::Runtime::new().unwrap();
+            runtime.block_on(async move {
+                let mut counter = Counter { count: initial_count }.start(Backend::Async);
+
+                for _ in 0..num_increments {
+                    counter.call(CounterCall::Increment).await.unwrap();
+                }
+
+                let final_count = counter.call(CounterCall::Get).await.unwrap();
+                prop_assert_eq!(final_count, initial_count + num_increments as u64);
+                counter.call(CounterCall::Stop).await.unwrap();
+                Ok(())
+            })?;
+        }
+
+        /// Property: Get is idempotent (multiple calls return same value)
+        #[test]
+        fn prop_get_is_idempotent(
+            initial_count in 0u64..10000,
+            num_gets in 1usize..10
+        ) {
+            let runtime = rt::Runtime::new().unwrap();
+            runtime.block_on(async move {
+                let mut counter = Counter { count: initial_count }.start(Backend::Async);
+
+                let mut results = Vec::new();
+                for _ in 0..num_gets {
+                    results.push(counter.call(CounterCall::Get).await.unwrap());
+                }
+
+                // All Get calls should return the same value
+                for result in &results {
+                    prop_assert_eq!(*result, initial_count);
+                }
+                counter.call(CounterCall::Stop).await.unwrap();
+                Ok(())
+            })?;
+        }
+
+        /// Property: All backends produce working GenServers
+        #[test]
+        fn prop_all_backends_work(
+            backend in backend_strategy(),
+            initial_count in 0u64..1000
+        ) {
+            let runtime = rt::Runtime::new().unwrap();
+            runtime.block_on(async move {
+                let mut counter = Counter { count: initial_count }.start(backend);
+
+                // Should be able to get initial value
+                let result = counter.call(CounterCall::Get).await.unwrap();
+                prop_assert_eq!(result, initial_count);
+
+                // Should be able to increment
+                let result = counter.call(CounterCall::Increment).await.unwrap();
+                prop_assert_eq!(result, initial_count + 1);
+
+                // Should be able to stop
+                let final_result = counter.call(CounterCall::Stop).await.unwrap();
+                prop_assert_eq!(final_result, initial_count + 1);
+                Ok(())
+            })?;
+        }
+
+        /// Property: Multiple GenServers maintain independent state
+        #[test]
+        fn prop_genservers_have_independent_state(
+            count1 in 0u64..1000,
+            count2 in 0u64..1000,
+            increments1 in 0usize..20,
+            increments2 in 0usize..20
+        ) {
+            let runtime = rt::Runtime::new().unwrap();
+            runtime.block_on(async move {
+                let mut counter1 = Counter { count: count1 }.start(Backend::Async);
+                let mut counter2 = Counter { count: count2 }.start(Backend::Async);
+
+                // Increment each independently
+                for _ in 0..increments1 {
+                    counter1.call(CounterCall::Increment).await.unwrap();
+                }
+                for _ in 0..increments2 {
+                    counter2.call(CounterCall::Increment).await.unwrap();
+                }
+
+                // Verify independence
+                let final1 = counter1.call(CounterCall::Get).await.unwrap();
+                let final2 = counter2.call(CounterCall::Get).await.unwrap();
+
+                prop_assert_eq!(final1, count1 + increments1 as u64);
+                prop_assert_eq!(final2, count2 + increments2 as u64);
+
+                counter1.call(CounterCall::Stop).await.unwrap();
+                counter2.call(CounterCall::Stop).await.unwrap();
+                Ok(())
+            })?;
+        }
+
+        /// Property: Cast followed by Get reflects the cast
+        #[test]
+        fn prop_cast_eventually_processed(
+            initial_count in 0u64..1000,
+            num_casts in 1usize..20
+        ) {
+            let runtime = rt::Runtime::new().unwrap();
+            runtime.block_on(async move {
+                let mut counter = Counter { count: initial_count }.start(Backend::Async);
+
+                // Send casts
+                for _ in 0..num_casts {
+                    counter.cast(CounterCast::Increment).await.unwrap();
+                }
+
+                // Give time for casts to process
+                rt::sleep(Duration::from_millis(100)).await;
+
+                // Verify all casts were processed
+                let final_count = counter.call(CounterCall::Get).await.unwrap();
+                prop_assert_eq!(final_count, initial_count + num_casts as u64);
+
+                counter.call(CounterCall::Stop).await.unwrap();
+                Ok(())
+            })?;
+        }
+    }
 }
