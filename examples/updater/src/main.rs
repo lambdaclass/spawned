@@ -9,7 +9,7 @@ mod server;
 use std::{thread, time::Duration};
 
 use server::UpdaterServer;
-use spawned_concurrency::tasks::GenServer as _;
+use spawned_concurrency::tasks::{Backend, GenServer as _};
 use spawned_rt::tasks as rt;
 
 fn main() {
@@ -19,7 +19,7 @@ fn main() {
             "https://httpbin.org/ip".to_string(),
             Duration::from_millis(1000),
         )
-        .start();
+        .start(Backend::Async);
 
         // giving it some time before ending
         thread::sleep(Duration::from_secs(10));

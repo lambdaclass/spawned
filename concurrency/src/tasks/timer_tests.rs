@@ -1,6 +1,6 @@
 use super::{
-    send_after, send_interval, CallResponse, CastResponse, GenServer, GenServerHandle, InitResult,
-    InitResult::Success,
+    send_after, send_interval, Backend, CallResponse, CastResponse, GenServer, GenServerHandle,
+    InitResult, InitResult::Success,
 };
 use spawned_rt::tasks::{self as rt, CancellationToken};
 use std::time::Duration;
@@ -102,7 +102,7 @@ pub fn test_send_interval_and_cancellation() {
     let runtime = rt::Runtime::new().unwrap();
     runtime.block_on(async move {
         // Start a Repeater
-        let mut repeater = Repeater::new(0).start();
+        let mut repeater = Repeater::new(0).start(Backend::Async);
 
         // Wait for 1 second
         rt::sleep(Duration::from_secs(1)).await;
@@ -209,7 +209,7 @@ pub fn test_send_after_and_cancellation() {
     let runtime = rt::Runtime::new().unwrap();
     runtime.block_on(async move {
         // Start a Delayed
-        let mut repeater = Delayed::new(0).start();
+        let mut repeater = Delayed::new(0).start(Backend::Async);
 
         // Set a just once timed message
         let _ = send_after(
@@ -253,7 +253,7 @@ pub fn test_send_after_gen_server_teardown() {
     let runtime = rt::Runtime::new().unwrap();
     runtime.block_on(async move {
         // Start a Delayed
-        let mut repeater = Delayed::new(0).start();
+        let mut repeater = Delayed::new(0).start(Backend::Async);
 
         // Set a just once timed message
         let _ = send_after(

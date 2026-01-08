@@ -16,12 +16,12 @@ mod server;
 
 use messages::NameServerOutMessage;
 use server::NameServer;
-use spawned_concurrency::tasks::GenServer as _;
+use spawned_concurrency::tasks::{Backend, GenServer as _};
 use spawned_rt::tasks as rt;
 
 fn main() {
     rt::run(async {
-        let mut name_server = NameServer::new().start();
+        let mut name_server = NameServer::new().start(Backend::Async);
 
         let result =
             NameServer::add(&mut name_server, "Joe".to_string(), "At Home".to_string()).await;
