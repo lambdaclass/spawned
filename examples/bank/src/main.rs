@@ -24,13 +24,13 @@ mod server;
 
 use messages::{BankError, BankOutMessage};
 use server::Bank;
-use spawned_concurrency::tasks::GenServer as _;
+use spawned_concurrency::tasks::{Backend, GenServer as _};
 use spawned_rt::tasks as rt;
 
 fn main() {
     rt::run(async {
         // Starting the bank
-        let mut name_server = Bank::new().start();
+        let mut name_server = Bank::new().start(Backend::Async);
 
         // Testing initial balance for "main" account
         let result = Bank::withdraw(&mut name_server, "main".to_string(), 15).await;

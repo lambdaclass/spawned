@@ -3,7 +3,7 @@ use std::time::Duration;
 use std::{process::exit, thread};
 use tracing::info;
 
-use spawned_concurrency::tasks::{CallResponse, CastResponse, GenServer, GenServerHandle};
+use spawned_concurrency::tasks::{Backend, CallResponse, CastResponse, GenServer, GenServerHandle};
 
 // We test a scenario with a badly behaved task
 struct BusyWorker;
@@ -63,8 +63,8 @@ impl GenServer for BusyWorker {
 /// whenever we detect tasks that take too long to run.
 pub fn main() {
     rt::run(async move {
-        // If we change BusyWorker to start_blocking instead, it won't print the warning
-        let mut badboy = BusyWorker::new().start();
+        // If we change BusyWorker to Backend::Blocking instead, it won't print the warning
+        let mut badboy = BusyWorker::new().start(Backend::Async);
         let _ = badboy.cast(()).await;
 
         rt::sleep(Duration::from_secs(5)).await;
