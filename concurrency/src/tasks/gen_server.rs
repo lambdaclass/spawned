@@ -236,6 +236,14 @@ impl<G: GenServer> GenServerHandle<G> {
         self.cancellation_token.clone()
     }
 
+    /// Stop the GenServer by cancelling its token.
+    ///
+    /// This is a convenience method equivalent to `cancellation_token().cancel()`.
+    /// The GenServer will exit and call its `teardown` method.
+    pub fn stop(&self) {
+        self.cancellation_token.cancel();
+    }
+
     // ==================== Linking & Monitoring ====================
 
     /// Create a bidirectional link with another process.
