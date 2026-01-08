@@ -27,7 +27,8 @@ pub use crate::registry::{self, RegistryError};
 
 // Re-export supervisor types for convenience
 pub use crate::supervisor::{
-    BoxedChildHandle, ChildHandle, ChildInfo, ChildSpec, ChildType, RestartStrategy, RestartType,
-    Shutdown, Supervisor, SupervisorCall, SupervisorCast, SupervisorCounts, SupervisorError,
-    SupervisorResponse, SupervisorSpec,
+    BoxedChildHandle, ChildHandle, ChildInfo, ChildSpec, ChildType, DynamicSupervisor,
+    DynamicSupervisorCall, DynamicSupervisorCast, DynamicSupervisorError, DynamicSupervisorResponse,
+    DynamicSupervisorSpec, RestartStrategy, RestartType, Shutdown, Supervisor, SupervisorCall,
+    SupervisorCast, SupervisorCounts, SupervisorError, SupervisorResponse, SupervisorSpec,
 };

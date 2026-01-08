@@ -976,6 +976,427 @@ pub struct SupervisorCounts {
     pub supervisors: usize,
 }
 
+// ============================================================================
+// DynamicSupervisor - for many dynamic children
+// ============================================================================
+
+/// Specification for a DynamicSupervisor.
+#[derive(Debug, Clone)]
+pub struct DynamicSupervisorSpec {
+    /// Maximum number of restarts within the time window.
+    pub max_restarts: u32,
+
+    /// Time window for restart intensity.
+    pub max_seconds: Duration,
+
+    /// Optional maximum number of children.
+    pub max_children: Option<usize>,
+
+    /// Optional name for registration.
+    pub name: Option<String>,
+}
+
+impl Default for DynamicSupervisorSpec {
+    fn default() -> Self {
+        Self {
+            max_restarts: 3,
+            max_seconds: Duration::from_secs(5),
+            max_children: None,
+            name: None,
+        }
+    }
+}
+
+impl DynamicSupervisorSpec {
+    /// Create a new DynamicSupervisorSpec with default values.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Set the maximum restart intensity.
+    pub fn max_restarts(mut self, max_restarts: u32, max_seconds: Duration) -> Self {
+        self.max_restarts = max_restarts;
+        self.max_seconds = max_seconds;
+        self
+    }
+
+    /// Set the maximum number of children.
+    pub fn max_children(mut self, max: usize) -> Self {
+        self.max_children = Some(max);
+        self
+    }
+
+    /// Set the name for registration.
+    pub fn name(mut self, name: impl Into<String>) -> Self {
+        self.name = Some(name.into());
+        self
+    }
+}
+
+/// Messages that can be sent to a DynamicSupervisor via call().
+#[derive(Clone, Debug)]
+pub enum DynamicSupervisorCall {
+    /// Start a new child. Returns the child's Pid.
+    StartChild(ChildSpec),
+    /// Terminate a child by Pid.
+    TerminateChild(Pid),
+    /// Get list of all child Pids.
+    WhichChildren,
+    /// Count children.
+    CountChildren,
+}
+
+/// Messages that can be sent to a DynamicSupervisor via cast().
+#[derive(Clone, Debug)]
+pub enum DynamicSupervisorCast {
+    /// Placeholder - dynamic supervisors mainly use calls.
+    _Placeholder,
+}
+
+/// Response from DynamicSupervisor calls.
+#[derive(Clone, Debug)]
+pub enum DynamicSupervisorResponse {
+    /// Child started successfully.
+    Started(Pid),
+    /// Operation completed successfully.
+    Ok,
+    /// Error occurred.
+    Error(DynamicSupervisorError),
+    /// List of child Pids.
+    Children(Vec<Pid>),
+    /// Child count.
+    Count(usize),
+}
+
+/// Error type for DynamicSupervisor operations.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DynamicSupervisorError {
+    /// Child with this Pid not found.
+    ChildNotFound(Pid),
+    /// Maximum restart intensity exceeded.
+    MaxRestartsExceeded,
+    /// Maximum children limit reached.
+    MaxChildrenReached,
+    /// Supervisor is shutting down.
+    ShuttingDown,
+}
+
+impl std::fmt::Display for DynamicSupervisorError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DynamicSupervisorError::ChildNotFound(pid) => {
+                write!(f, "child with pid {} not found", pid)
+            }
+            DynamicSupervisorError::MaxRestartsExceeded => {
+                write!(f, "maximum restart intensity exceeded")
+            }
+            DynamicSupervisorError::MaxChildrenReached => {
+                write!(f, "maximum number of children reached")
+            }
+            DynamicSupervisorError::ShuttingDown => {
+                write!(f, "dynamic supervisor is shutting down")
+            }
+        }
+    }
+}
+
+impl std::error::Error for DynamicSupervisorError {}
+
+/// Internal state for DynamicSupervisor.
+struct DynamicSupervisorState {
+    /// The supervisor specification.
+    spec: DynamicSupervisorSpec,
+
+    /// Running children indexed by Pid.
+    children: HashMap<Pid, DynamicChildInfo>,
+
+    /// Restart timestamps for rate limiting.
+    restart_times: Vec<Instant>,
+
+    /// Whether we're shutting down.
+    shutting_down: bool,
+}
+
+/// Information about a dynamically started child.
+struct DynamicChildInfo {
+    /// The child's specification (for restart).
+    spec: ChildSpec,
+
+    /// The child's current handle.
+    handle: BoxedChildHandle,
+
+    /// Monitor reference for this child.
+    monitor_ref: Option<MonitorRef>,
+
+    /// Number of restarts for this child.
+    restart_count: u32,
+}
+
+impl DynamicSupervisorState {
+    fn new(spec: DynamicSupervisorSpec) -> Self {
+        Self {
+            spec,
+            children: HashMap::new(),
+            restart_times: Vec::new(),
+            shutting_down: false,
+        }
+    }
+
+    fn start_child(
+        &mut self,
+        spec: ChildSpec,
+        supervisor_handle: &GenServerHandle<DynamicSupervisor>,
+    ) -> Result<Pid, DynamicSupervisorError> {
+        if self.shutting_down {
+            return Err(DynamicSupervisorError::ShuttingDown);
+        }
+
+        // Check max children limit
+        if let Some(max) = self.spec.max_children {
+            if self.children.len() >= max {
+                return Err(DynamicSupervisorError::MaxChildrenReached);
+            }
+        }
+
+        // Start the child
+        let handle = spec.start();
+        let pid = handle.pid();
+
+        // Set up monitoring
+        let monitor_ref = supervisor_handle.monitor(&ChildPidWrapper(pid)).ok();
+
+        let info = DynamicChildInfo {
+            spec,
+            handle,
+            monitor_ref,
+            restart_count: 0,
+        };
+
+        self.children.insert(pid, info);
+        Ok(pid)
+    }
+
+    fn terminate_child(&mut self, pid: Pid) -> Result<(), DynamicSupervisorError> {
+        let info = self
+            .children
+            .remove(&pid)
+            .ok_or(DynamicSupervisorError::ChildNotFound(pid))?;
+
+        info.handle.shutdown();
+        Ok(())
+    }
+
+    fn handle_child_exit(
+        &mut self,
+        pid: Pid,
+        reason: &ExitReason,
+        supervisor_handle: &GenServerHandle<DynamicSupervisor>,
+    ) -> Result<(), DynamicSupervisorError> {
+        if self.shutting_down {
+            self.children.remove(&pid);
+            return Ok(());
+        }
+
+        let info = match self.children.remove(&pid) {
+            Some(info) => info,
+            None => return Ok(()), // Unknown child, ignore
+        };
+
+        // Determine if we should restart based on restart type
+        let should_restart = match info.spec.restart {
+            RestartType::Permanent => true,
+            RestartType::Transient => !reason.is_normal(),
+            RestartType::Temporary => false,
+        };
+
+        if !should_restart {
+            return Ok(());
+        }
+
+        // Check restart intensity
+        if !self.check_restart_intensity() {
+            return Err(DynamicSupervisorError::MaxRestartsExceeded);
+        }
+
+        // Restart the child
+        let new_handle = info.spec.start();
+        let new_pid = new_handle.pid();
+        let monitor_ref = supervisor_handle.monitor(&ChildPidWrapper(new_pid)).ok();
+
+        let new_info = DynamicChildInfo {
+            spec: info.spec,
+            handle: new_handle,
+            monitor_ref,
+            restart_count: info.restart_count + 1,
+        };
+
+        self.children.insert(new_pid, new_info);
+        self.restart_times.push(Instant::now());
+
+        Ok(())
+    }
+
+    fn check_restart_intensity(&mut self) -> bool {
+        let now = Instant::now();
+        let cutoff = now - self.spec.max_seconds;
+        self.restart_times.retain(|t| *t > cutoff);
+        (self.restart_times.len() as u32) < self.spec.max_restarts
+    }
+
+    fn which_children(&self) -> Vec<Pid> {
+        self.children.keys().copied().collect()
+    }
+
+    fn count_children(&self) -> usize {
+        self.children.len()
+    }
+
+    fn shutdown(&mut self) {
+        self.shutting_down = true;
+        for (_, info) in self.children.drain() {
+            info.handle.shutdown();
+        }
+    }
+}
+
+/// A DynamicSupervisor manages a dynamic set of children.
+///
+/// Unlike the regular Supervisor which has predefined children,
+/// DynamicSupervisor is optimized for cases where children are
+/// frequently started and stopped at runtime.
+///
+/// Key differences from Supervisor:
+/// - No predefined children - all started via `start_child`
+/// - Children identified by Pid, not by string ID
+/// - Always uses OneForOne strategy (each child independent)
+/// - Optimized for many children of the same type
+///
+/// # Example
+///
+/// ```ignore
+/// let sup = DynamicSupervisor::start(DynamicSupervisorSpec::new());
+///
+/// // Start children dynamically
+/// let child_spec = ChildSpec::worker("conn", || ConnectionHandler::new().start());
+/// if let DynamicSupervisorResponse::Started(pid) =
+///     sup.call(DynamicSupervisorCall::StartChild(child_spec)).await.unwrap()
+/// {
+///     println!("Started child with pid: {}", pid);
+/// }
+/// ```
+pub struct DynamicSupervisor {
+    state: DynamicSupervisorState,
+}
+
+impl DynamicSupervisor {
+    /// Create a new DynamicSupervisor.
+    pub fn new(spec: DynamicSupervisorSpec) -> Self {
+        Self {
+            state: DynamicSupervisorState::new(spec),
+        }
+    }
+
+    /// Start the DynamicSupervisor and return a handle.
+    pub fn start(spec: DynamicSupervisorSpec) -> GenServerHandle<DynamicSupervisor> {
+        DynamicSupervisor::new(spec).start_server()
+    }
+
+    fn start_server(self) -> GenServerHandle<DynamicSupervisor> {
+        GenServer::start(self)
+    }
+}
+
+impl GenServer for DynamicSupervisor {
+    type CallMsg = DynamicSupervisorCall;
+    type CastMsg = DynamicSupervisorCast;
+    type OutMsg = DynamicSupervisorResponse;
+    type Error = DynamicSupervisorError;
+
+    async fn init(
+        self,
+        handle: &GenServerHandle<Self>,
+    ) -> Result<InitResult<Self>, Self::Error> {
+        handle.trap_exit(true);
+
+        if let Some(name) = &self.state.spec.name {
+            let _ = handle.register(name.clone());
+        }
+
+        Ok(InitResult::Success(self))
+    }
+
+    async fn handle_call(
+        &mut self,
+        message: Self::CallMsg,
+        handle: &GenServerHandle<Self>,
+    ) -> CallResponse<Self> {
+        let response = match message {
+            DynamicSupervisorCall::StartChild(spec) => {
+                match self.state.start_child(spec, handle) {
+                    Ok(pid) => DynamicSupervisorResponse::Started(pid),
+                    Err(e) => DynamicSupervisorResponse::Error(e),
+                }
+            }
+            DynamicSupervisorCall::TerminateChild(pid) => {
+                match self.state.terminate_child(pid) {
+                    Ok(()) => DynamicSupervisorResponse::Ok,
+                    Err(e) => DynamicSupervisorResponse::Error(e),
+                }
+            }
+            DynamicSupervisorCall::WhichChildren => {
+                DynamicSupervisorResponse::Children(self.state.which_children())
+            }
+            DynamicSupervisorCall::CountChildren => {
+                DynamicSupervisorResponse::Count(self.state.count_children())
+            }
+        };
+        CallResponse::Reply(response)
+    }
+
+    async fn handle_cast(
+        &mut self,
+        _message: Self::CastMsg,
+        _handle: &GenServerHandle<Self>,
+    ) -> CastResponse {
+        CastResponse::NoReply
+    }
+
+    async fn handle_info(
+        &mut self,
+        message: SystemMessage,
+        handle: &GenServerHandle<Self>,
+    ) -> InfoResponse {
+        match message {
+            SystemMessage::Down { pid, reason, .. } => {
+                match self.state.handle_child_exit(pid, &reason, handle) {
+                    Ok(()) => InfoResponse::NoReply,
+                    Err(DynamicSupervisorError::MaxRestartsExceeded) => {
+                        tracing::error!("DynamicSupervisor: max restart intensity exceeded");
+                        InfoResponse::Stop
+                    }
+                    Err(e) => {
+                        tracing::error!("DynamicSupervisor error: {:?}", e);
+                        InfoResponse::NoReply
+                    }
+                }
+            }
+            SystemMessage::Exit { pid, reason } => {
+                match self.state.handle_child_exit(pid, &reason, handle) {
+                    Ok(()) => InfoResponse::NoReply,
+                    Err(DynamicSupervisorError::MaxRestartsExceeded) => InfoResponse::Stop,
+                    Err(_) => InfoResponse::NoReply,
+                }
+            }
+            SystemMessage::Timeout { .. } => InfoResponse::NoReply,
+        }
+    }
+
+    async fn teardown(mut self, _handle: &GenServerHandle<Self>) -> Result<(), Self::Error> {
+        self.state.shutdown();
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1540,6 +1961,152 @@ mod integration_tests {
         assert!(matches!(
             result,
             SupervisorResponse::Error(SupervisorError::ChildAlreadyExists(_))
+        ));
+
+        supervisor.stop();
+    }
+
+    // ========================================================================
+    // DynamicSupervisor Integration Tests
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_dynamic_supervisor_start_and_stop_children() {
+        let spec = DynamicSupervisorSpec::new()
+            .max_restarts(5, Duration::from_secs(10));
+
+        let mut supervisor = DynamicSupervisor::start(spec);
+
+        // Initially no children
+        if let DynamicSupervisorResponse::Count(count) =
+            supervisor.call(DynamicSupervisorCall::CountChildren).await.unwrap()
+        {
+            assert_eq!(count, 0);
+        }
+
+        // Start a child
+        let counter1 = Arc::new(AtomicU32::new(0));
+        let child_spec = crashable_worker("dyn_worker1", counter1.clone());
+        let child_pid = if let DynamicSupervisorResponse::Started(pid) =
+            supervisor.call(DynamicSupervisorCall::StartChild(child_spec)).await.unwrap()
+        {
+            pid
+        } else {
+            panic!("Expected Started response");
+        };
+
+        sleep(Duration::from_millis(50)).await;
+        assert_eq!(counter1.load(Ordering::SeqCst), 1, "Child should have started");
+
+        // Count should now be 1
+        if let DynamicSupervisorResponse::Count(count) =
+            supervisor.call(DynamicSupervisorCall::CountChildren).await.unwrap()
+        {
+            assert_eq!(count, 1);
+        }
+
+        // Terminate the child
+        let result = supervisor.call(DynamicSupervisorCall::TerminateChild(child_pid)).await.unwrap();
+        assert!(matches!(result, DynamicSupervisorResponse::Ok));
+
+        sleep(Duration::from_millis(50)).await;
+
+        // Count should be 0 again
+        if let DynamicSupervisorResponse::Count(count) =
+            supervisor.call(DynamicSupervisorCall::CountChildren).await.unwrap()
+        {
+            assert_eq!(count, 0);
+        }
+
+        supervisor.stop();
+    }
+
+    #[tokio::test]
+    async fn test_dynamic_supervisor_multiple_children() {
+        let spec = DynamicSupervisorSpec::new()
+            .max_restarts(10, Duration::from_secs(10));
+
+        let mut supervisor = DynamicSupervisor::start(spec);
+
+        // Start multiple children
+        let mut pids = Vec::new();
+        for i in 0..5 {
+            let counter = Arc::new(AtomicU32::new(0));
+            let child_spec = crashable_worker(&format!("worker_{}", i), counter);
+            if let DynamicSupervisorResponse::Started(pid) =
+                supervisor.call(DynamicSupervisorCall::StartChild(child_spec)).await.unwrap()
+            {
+                pids.push(pid);
+            }
+        }
+
+        sleep(Duration::from_millis(100)).await;
+
+        // Should have 5 active children
+        if let DynamicSupervisorResponse::Count(count) =
+            supervisor.call(DynamicSupervisorCall::CountChildren).await.unwrap()
+        {
+            assert_eq!(count, 5);
+        }
+
+        // WhichChildren should return all pids
+        if let DynamicSupervisorResponse::Children(children) =
+            supervisor.call(DynamicSupervisorCall::WhichChildren).await.unwrap()
+        {
+            assert_eq!(children.len(), 5);
+            for pid in &pids {
+                assert!(children.contains(pid));
+            }
+        }
+
+        supervisor.stop();
+    }
+
+    #[tokio::test]
+    async fn test_dynamic_supervisor_max_children_limit() {
+        let spec = DynamicSupervisorSpec::new()
+            .max_children(2);
+
+        let mut supervisor = DynamicSupervisor::start(spec);
+
+        // Start first child - should succeed
+        let counter1 = Arc::new(AtomicU32::new(0));
+        let result1 = supervisor.call(DynamicSupervisorCall::StartChild(
+            crashable_worker("w1", counter1)
+        )).await.unwrap();
+        assert!(matches!(result1, DynamicSupervisorResponse::Started(_)));
+
+        // Start second child - should succeed
+        let counter2 = Arc::new(AtomicU32::new(0));
+        let result2 = supervisor.call(DynamicSupervisorCall::StartChild(
+            crashable_worker("w2", counter2)
+        )).await.unwrap();
+        assert!(matches!(result2, DynamicSupervisorResponse::Started(_)));
+
+        // Start third child - should fail with MaxChildrenReached
+        let counter3 = Arc::new(AtomicU32::new(0));
+        let result3 = supervisor.call(DynamicSupervisorCall::StartChild(
+            crashable_worker("w3", counter3)
+        )).await.unwrap();
+        assert!(matches!(
+            result3,
+            DynamicSupervisorResponse::Error(DynamicSupervisorError::MaxChildrenReached)
+        ));
+
+        supervisor.stop();
+    }
+
+    #[tokio::test]
+    async fn test_dynamic_supervisor_terminate_nonexistent_child() {
+        let spec = DynamicSupervisorSpec::new();
+        let mut supervisor = DynamicSupervisor::start(spec);
+
+        // Try to terminate a pid that doesn't exist
+        let fake_pid = Pid::new();
+        let result = supervisor.call(DynamicSupervisorCall::TerminateChild(fake_pid)).await.unwrap();
+        assert!(matches!(
+            result,
+            DynamicSupervisorResponse::Error(DynamicSupervisorError::ChildNotFound(_))
         ));
 
         supervisor.stop();

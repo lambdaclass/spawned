@@ -16,7 +16,8 @@ pub use pid::{ExitReason, HasPid, Pid};
 pub use process_table::LinkError;
 pub use registry::RegistryError;
 pub use supervisor::{
-    BoxedChildHandle, ChildHandle, ChildInfo, ChildSpec, ChildType, RestartStrategy, RestartType,
-    Shutdown, Supervisor, SupervisorCall, SupervisorCast, SupervisorCounts, SupervisorError,
-    SupervisorResponse, SupervisorSpec,
+    BoxedChildHandle, ChildHandle, ChildInfo, ChildSpec, ChildType, DynamicSupervisor,
+    DynamicSupervisorCall, DynamicSupervisorCast, DynamicSupervisorError, DynamicSupervisorResponse,
+    DynamicSupervisorSpec, RestartStrategy, RestartType, Shutdown, Supervisor, SupervisorCall,
+    SupervisorCast, SupervisorCounts, SupervisorError, SupervisorResponse, SupervisorSpec,
 };
