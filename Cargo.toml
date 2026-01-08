@@ -13,6 +13,7 @@ members = [
     "examples/updater_threads",
     "examples/blocking_genserver",
     "examples/busy_genserver_warning",
+    "examples/supervisor",
 ]
 
 [workspace.dependencies]
