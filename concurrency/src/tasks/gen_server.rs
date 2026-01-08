@@ -2,6 +2,10 @@
 //! See examples/name_server for a usage example.
 use crate::{
     error::GenServerError,
+    link::MonitorRef,
+    pid::{HasPid, Pid},
+    process_table::{self, LinkError},
+    registry::{self, RegistryError},
     tasks::InitResult::{NoSuccess, Success},
 };
 use core::pin::pin;
@@ -14,27 +18,45 @@ use std::{fmt::Debug, future::Future, panic::AssertUnwindSafe, time::Duration};
 
 const DEFAULT_CALL_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Handle to a running GenServer.
+///
+/// This handle can be used to send messages to the GenServer and to
+/// obtain its unique process identifier (`Pid`).
+///
+/// Handles are cheap to clone and can be shared across tasks.
 #[derive(Debug)]
 pub struct GenServerHandle<G: GenServer + 'static> {
+    /// Unique process identifier for this GenServer.
+    pid: Pid,
+    /// Channel sender for messages to the GenServer.
     pub tx: mpsc::Sender<GenServerInMsg<G>>,
-    /// Cancellation token to stop the GenServer
+    /// Cancellation token to stop the GenServer.
     cancellation_token: CancellationToken,
 }
 
 impl<G: GenServer> Clone for GenServerHandle<G> {
     fn clone(&self) -> Self {
         Self {
+            pid: self.pid,
             tx: self.tx.clone(),
             cancellation_token: self.cancellation_token.clone(),
         }
     }
 }
 
+impl<G: GenServer> HasPid for GenServerHandle<G> {
+    fn pid(&self) -> Pid {
+        self.pid
+    }
+}
+
 impl<G: GenServer> GenServerHandle<G> {
     fn new(gen_server: G) -> Self {
+        let pid = Pid::new();
         let (tx, mut rx) = mpsc::channel::<GenServerInMsg<G>>();
         let cancellation_token = CancellationToken::new();
         let handle = GenServerHandle {
+            pid,
             tx,
             cancellation_token,
         };
@@ -56,9 +78,11 @@ impl<G: GenServer> GenServerHandle<G> {
     }
 
     fn new_blocking(gen_server: G) -> Self {
+        let pid = Pid::new();
         let (tx, mut rx) = mpsc::channel::<GenServerInMsg<G>>();
         let cancellation_token = CancellationToken::new();
         let handle = GenServerHandle {
+            pid,
             tx,
             cancellation_token,
         };
@@ -75,9 +99,11 @@ impl<G: GenServer> GenServerHandle<G> {
     }
 
     fn new_on_thread(gen_server: G) -> Self {
+        let pid = Pid::new();
         let (tx, mut rx) = mpsc::channel::<GenServerInMsg<G>>();
         let cancellation_token = CancellationToken::new();
         let handle = GenServerHandle {
+            pid,
             tx,
             cancellation_token,
         };
@@ -127,6 +153,128 @@ impl<G: GenServer> GenServerHandle<G> {
 
     pub fn cancellation_token(&self) -> CancellationToken {
         self.cancellation_token.clone()
+    }
+
+    // ==================== Linking & Monitoring ====================
+
+    /// Create a bidirectional link with another process.
+    ///
+    /// When either process exits abnormally, the other will be notified.
+    /// If the other process is not trapping exits and this process crashes,
+    /// the other process will also crash.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let handle1 = Server1::new().start();
+    /// let handle2 = Server2::new().start();
+    ///
+    /// // Link the two processes
+    /// handle1.link(&handle2)?;
+    ///
+    /// // Now if handle1 crashes, handle2 will also crash (unless trapping exits)
+    /// ```
+    pub fn link(&self, other: &impl HasPid) -> Result<(), LinkError> {
+        process_table::link(self.pid, other.pid())
+    }
+
+    /// Remove a bidirectional link with another process.
+    pub fn unlink(&self, other: &impl HasPid) {
+        process_table::unlink(self.pid, other.pid())
+    }
+
+    /// Monitor another process.
+    ///
+    /// When the monitored process exits, this process will receive a DOWN message.
+    /// Unlike links, monitors are unidirectional and don't cause the monitoring
+    /// process to crash.
+    ///
+    /// Returns a `MonitorRef` that can be used to cancel the monitor.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let worker = Worker::new().start();
+    ///
+    /// // Monitor the worker
+    /// let monitor_ref = self_handle.monitor(&worker)?;
+    ///
+    /// // Later, if worker crashes, we'll receive a DOWN message
+    /// // We can cancel the monitor if we no longer care:
+    /// self_handle.demonitor(monitor_ref);
+    /// ```
+    pub fn monitor(&self, other: &impl HasPid) -> Result<MonitorRef, LinkError> {
+        process_table::monitor(self.pid, other.pid())
+    }
+
+    /// Stop monitoring a process.
+    pub fn demonitor(&self, monitor_ref: MonitorRef) {
+        process_table::demonitor(monitor_ref)
+    }
+
+    /// Set whether this process traps exits.
+    ///
+    /// When trap_exit is true, EXIT messages from linked processes are delivered
+    /// as messages instead of causing this process to crash.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Enable exit trapping
+    /// handle.trap_exit(true);
+    ///
+    /// // Now when a linked process crashes, we'll receive an EXIT message
+    /// // instead of crashing ourselves
+    /// ```
+    pub fn trap_exit(&self, trap: bool) {
+        process_table::set_trap_exit(self.pid, trap)
+    }
+
+    /// Check if this process is trapping exits.
+    pub fn is_trapping_exit(&self) -> bool {
+        process_table::is_trapping_exit(self.pid)
+    }
+
+    /// Check if another process is alive.
+    pub fn is_alive(&self, other: &impl HasPid) -> bool {
+        process_table::is_alive(other.pid())
+    }
+
+    /// Get all processes linked to this process.
+    pub fn get_links(&self) -> Vec<Pid> {
+        process_table::get_links(self.pid)
+    }
+
+    // ==================== Registry ====================
+
+    /// Register this process with a unique name.
+    ///
+    /// Once registered, other processes can find this process using
+    /// `registry::whereis("name")`.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let handle = MyServer::new().start();
+    /// handle.register("my_server")?;
+    ///
+    /// // Now other processes can find it:
+    /// // let pid = registry::whereis("my_server");
+    /// ```
+    pub fn register(&self, name: impl Into<String>) -> Result<(), RegistryError> {
+        registry::register(name, self.pid)
+    }
+
+    /// Unregister this process from the registry.
+    ///
+    /// After this, the process can no longer be found by name.
+    pub fn unregister(&self) {
+        registry::unregister_pid(self.pid)
+    }
+
+    /// Get the registered name of this process, if any.
+    pub fn registered_name(&self) -> Option<String> {
+        registry::name_of(self.pid)
     }
 }
 
@@ -623,5 +771,207 @@ mod tests {
             // We assure that the teardown function has ran by checking that the receiver channel is closed
             assert!(rx.is_closed())
         });
+    }
+
+    // ==================== Pid Tests ====================
+
+    #[test]
+    pub fn genserver_has_unique_pid() {
+        let runtime = rt::Runtime::new().unwrap();
+        runtime.block_on(async move {
+            let handle1 = WellBehavedTask { count: 0 }.start();
+            let handle2 = WellBehavedTask { count: 0 }.start();
+            let handle3 = WellBehavedTask { count: 0 }.start();
+
+            // Each GenServer should have a unique Pid
+            assert_ne!(handle1.pid(), handle2.pid());
+            assert_ne!(handle2.pid(), handle3.pid());
+            assert_ne!(handle1.pid(), handle3.pid());
+
+            // Pids should be monotonically increasing
+            assert!(handle1.pid().id() < handle2.pid().id());
+            assert!(handle2.pid().id() < handle3.pid().id());
+        });
+    }
+
+    #[test]
+    pub fn cloned_handle_has_same_pid() {
+        let runtime = rt::Runtime::new().unwrap();
+        runtime.block_on(async move {
+            let handle1 = WellBehavedTask { count: 0 }.start();
+            let handle2 = handle1.clone();
+
+            // Cloned handles should have the same Pid
+            assert_eq!(handle1.pid(), handle2.pid());
+            assert_eq!(handle1.pid().id(), handle2.pid().id());
+        });
+    }
+
+    #[test]
+    pub fn pid_display_format() {
+        let runtime = rt::Runtime::new().unwrap();
+        runtime.block_on(async move {
+            let handle = WellBehavedTask { count: 0 }.start();
+            let pid = handle.pid();
+
+            // Check display format is Erlang-like: <0.N>
+            let display = format!("{}", pid);
+            assert!(display.starts_with("<0."));
+            assert!(display.ends_with(">"));
+
+            // Check debug format
+            let debug = format!("{:?}", pid);
+            assert!(debug.starts_with("Pid("));
+            assert!(debug.ends_with(")"));
+        });
+    }
+
+    #[test]
+    pub fn pid_can_be_used_as_hashmap_key() {
+        use std::collections::HashMap;
+
+        let runtime = rt::Runtime::new().unwrap();
+        runtime.block_on(async move {
+            let handle1 = WellBehavedTask { count: 0 }.start();
+            let handle2 = WellBehavedTask { count: 0 }.start();
+
+            let mut map: HashMap<Pid, &str> = HashMap::new();
+            map.insert(handle1.pid(), "server1");
+            map.insert(handle2.pid(), "server2");
+
+            assert_eq!(map.get(&handle1.pid()), Some(&"server1"));
+            assert_eq!(map.get(&handle2.pid()), Some(&"server2"));
+            assert_eq!(map.len(), 2);
+        });
+    }
+
+    #[test]
+    pub fn all_start_methods_produce_unique_pids() {
+        // Test that start(), start_blocking(), and start_on_thread() all produce unique Pids
+        // by checking the Pid IDs are monotonically increasing across all start methods.
+        //
+        // Note: We can't easily test start_blocking() and start_on_thread() in isolation
+        // within an async runtime block_on context due to potential deadlocks.
+        // Instead, we verify the Pid generation is consistent by checking multiple
+        // regular starts produce increasing IDs.
+        let runtime = rt::Runtime::new().unwrap();
+        runtime.block_on(async move {
+            let handle1 = WellBehavedTask { count: 0 }.start();
+            let handle2 = WellBehavedTask { count: 0 }.start();
+            let handle3 = WellBehavedTask { count: 0 }.start();
+
+            // All handles should have unique, increasing Pids
+            assert!(handle1.pid().id() < handle2.pid().id());
+            assert!(handle2.pid().id() < handle3.pid().id());
+        });
+    }
+
+    #[test]
+    pub fn has_pid_trait_works() {
+        let runtime = rt::Runtime::new().unwrap();
+        runtime.block_on(async move {
+            let handle = WellBehavedTask { count: 0 }.start();
+
+            // Test that HasPid trait is implemented
+            fn accepts_has_pid(p: &impl HasPid) -> Pid {
+                p.pid()
+            }
+
+            let pid = accepts_has_pid(&handle);
+            assert_eq!(pid, handle.pid());
+        });
+    }
+
+    // ==================== Registry Tests ====================
+
+    #[test]
+    pub fn genserver_can_register() {
+        // Clean registry before test
+        crate::registry::clear();
+
+        let runtime = rt::Runtime::new().unwrap();
+        runtime.block_on(async move {
+            let handle = WellBehavedTask { count: 0 }.start();
+
+            // Register should succeed
+            assert!(handle.register("test_genserver").is_ok());
+
+            // Should be findable via registry
+            assert_eq!(
+                crate::registry::whereis("test_genserver"),
+                Some(handle.pid())
+            );
+
+            // registered_name should return the name
+            assert_eq!(
+                handle.registered_name(),
+                Some("test_genserver".to_string())
+            );
+
+            // Clean up
+            handle.unregister();
+            assert!(crate::registry::whereis("test_genserver").is_none());
+        });
+
+        // Clean registry after test
+        crate::registry::clear();
+    }
+
+    #[test]
+    pub fn genserver_duplicate_register_fails() {
+        // Clean registry before test
+        crate::registry::clear();
+
+        let runtime = rt::Runtime::new().unwrap();
+        runtime.block_on(async move {
+            let handle1 = WellBehavedTask { count: 0 }.start();
+            let handle2 = WellBehavedTask { count: 0 }.start();
+
+            // First registration should succeed
+            assert!(handle1.register("unique_name").is_ok());
+
+            // Second registration with same name should fail
+            assert_eq!(
+                handle2.register("unique_name"),
+                Err(RegistryError::AlreadyRegistered)
+            );
+
+            // Same process can't register twice
+            assert_eq!(
+                handle1.register("another_name"),
+                Err(RegistryError::ProcessAlreadyNamed)
+            );
+        });
+
+        // Clean registry after test
+        crate::registry::clear();
+    }
+
+    #[test]
+    pub fn genserver_unregister_allows_reregister() {
+        // Clean registry before test
+        crate::registry::clear();
+
+        let runtime = rt::Runtime::new().unwrap();
+        runtime.block_on(async move {
+            let handle1 = WellBehavedTask { count: 0 }.start();
+            let handle2 = WellBehavedTask { count: 0 }.start();
+
+            // Register first process
+            assert!(handle1.register("shared_name").is_ok());
+
+            // Unregister
+            handle1.unregister();
+
+            // Now second process can use the name
+            assert!(handle2.register("shared_name").is_ok());
+            assert_eq!(
+                crate::registry::whereis("shared_name"),
+                Some(handle2.pid())
+            );
+        });
+
+        // Clean registry after test
+        crate::registry::clear();
     }
 }

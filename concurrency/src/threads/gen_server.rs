@@ -7,27 +7,45 @@ use std::{
 };
 
 use crate::error::GenServerError;
+use crate::pid::{HasPid, Pid};
 
+/// Handle to a running GenServer (threads version).
+///
+/// This handle can be used to send messages to the GenServer and to
+/// obtain its unique process identifier (`Pid`).
 #[derive(Debug)]
 pub struct GenServerHandle<G: GenServer + 'static> {
+    /// Unique process identifier for this GenServer.
+    pid: Pid,
+    /// Channel sender for messages to the GenServer.
     pub tx: mpsc::Sender<GenServerInMsg<G>>,
+    /// Cancellation token to stop the GenServer.
     cancellation_token: CancellationToken,
 }
 
 impl<G: GenServer> Clone for GenServerHandle<G> {
     fn clone(&self) -> Self {
         Self {
+            pid: self.pid,
             tx: self.tx.clone(),
             cancellation_token: self.cancellation_token.clone(),
         }
     }
 }
 
+impl<G: GenServer> HasPid for GenServerHandle<G> {
+    fn pid(&self) -> Pid {
+        self.pid
+    }
+}
+
 impl<G: GenServer> GenServerHandle<G> {
     pub(crate) fn new(gen_server: G) -> Self {
+        let pid = Pid::new();
         let (tx, mut rx) = mpsc::channel::<GenServerInMsg<G>>();
         let cancellation_token = CancellationToken::new();
         let handle = GenServerHandle {
+            pid,
             tx,
             cancellation_token,
         };

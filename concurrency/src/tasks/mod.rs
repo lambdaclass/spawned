@@ -18,3 +18,15 @@ pub use gen_server::{
 pub use process::{send, Process, ProcessInfo};
 pub use stream::spawn_listener;
 pub use time::{send_after, send_interval};
+
+// Re-export Pid, link, and registry types for convenience
+pub use crate::link::{MonitorRef, SystemMessage};
+pub use crate::pid::{ExitReason, HasPid, Pid};
+pub use crate::process_table::LinkError;
+pub use crate::registry::{self, RegistryError};
+
+// Re-export supervisor types for convenience
+pub use crate::supervisor::{
+    ChildSpec, ChildType, RestartStrategy, RestartType, Shutdown, SupervisorError, SupervisorSpec,
+    SupervisorState,
+};
