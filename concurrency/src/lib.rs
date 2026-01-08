@@ -8,7 +8,6 @@ pub mod process_table;
 pub mod registry;
 pub mod supervisor;
 pub mod tasks;
-pub mod threads;
 
 // Re-export commonly used types at the crate root
 pub use link::{MonitorRef, SystemMessage};
@@ -21,3 +20,4 @@ pub use supervisor::{
     DynamicSupervisorSpec, RestartStrategy, RestartType, Shutdown, Supervisor, SupervisorCall,
     SupervisorCast, SupervisorCounts, SupervisorError, SupervisorResponse, SupervisorSpec,
 };
+pub use tasks::Backend;

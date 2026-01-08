@@ -3,7 +3,7 @@ use std::time::Duration;
 use std::{process::exit, thread};
 
 use spawned_concurrency::tasks::{
-    CallResponse, CastResponse, GenServer, GenServerHandle, send_after,
+    Backend, CallResponse, CastResponse, GenServer, GenServerHandle, send_after,
 };
 
 // We test a scenario with a badly behaved task
@@ -98,10 +98,10 @@ impl GenServer for WellBehavedTask {
 /// To fix this we implement start_blocking, which under the hood launches a new thread to deal with the issue
 pub fn main() {
     rt::run(async move {
-        // If we change BadlyBehavedTask to start instead, it can stop the entire program
-        let mut badboy = BadlyBehavedTask::new().start_on_thread();
+        // If we change BadlyBehavedTask to Backend::Async instead, it can stop the entire program
+        let mut badboy = BadlyBehavedTask::new().start(Backend::Thread);
         let _ = badboy.cast(()).await;
-        let mut goodboy = WellBehavedTask::new(0).start();
+        let mut goodboy = WellBehavedTask::new(0).start(Backend::Async);
         let _ = goodboy.cast(()).await;
         rt::sleep(Duration::from_secs(1)).await;
         let count = goodboy.call(InMessage::GetCount).await.unwrap();

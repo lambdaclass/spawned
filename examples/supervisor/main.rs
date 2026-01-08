@@ -12,7 +12,7 @@
 
 use spawned_concurrency::messages::Unused;
 use spawned_concurrency::tasks::{
-    CallResponse, GenServer, GenServerHandle, HasPid, InitResult,
+    Backend, CallResponse, GenServer, GenServerHandle, HasPid, InitResult,
 };
 use spawned_rt::tasks as rt;
 
@@ -90,8 +90,8 @@ async fn example_genserver_supervisor() {
     println!("--- Example 1: GenServers that could be supervised ---\n");
 
     // Start workers using GenServer
-    let mut worker1 = Counter::named("worker1").start();
-    let mut worker2 = Counter::named("worker2").start();
+    let mut worker1 = Counter::named("worker1").start(Backend::Async);
+    let mut worker2 = Counter::named("worker2").start(Backend::Async);
 
     println!("Started workers:");
     println!("  worker1 pid: {}", worker1.pid());

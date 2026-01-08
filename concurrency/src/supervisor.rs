@@ -8,10 +8,11 @@
 //!
 //! ```ignore
 //! use spawned_concurrency::supervisor::{Supervisor, SupervisorSpec, ChildSpec, RestartStrategy};
+//! use spawned_concurrency::tasks::Backend;
 //!
 //! let spec = SupervisorSpec::new(RestartStrategy::OneForOne)
 //!     .max_restarts(3, std::time::Duration::from_secs(5))
-//!     .child(ChildSpec::worker("worker", || WorkerServer::new().start()));
+//!     .child(ChildSpec::worker("worker", || WorkerServer::new().start(Backend::Async)));
 //!
 //! let mut supervisor = Supervisor::start(spec);
 //! ```
@@ -19,7 +20,7 @@
 use crate::link::{MonitorRef, SystemMessage};
 use crate::pid::{ExitReason, HasPid, Pid};
 use crate::tasks::{
-    CallResponse, CastResponse, GenServer, GenServerHandle, InfoResponse, InitResult,
+    Backend, CallResponse, CastResponse, GenServer, GenServerHandle, InfoResponse, InitResult,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -150,7 +151,7 @@ impl ChildSpec {
     /// # Example
     ///
     /// ```ignore
-    /// let spec = ChildSpec::worker("my_worker", || MyWorker::new().start());
+    /// let spec = ChildSpec::worker("my_worker", || MyWorker::new().start(Backend::Async));
     /// ```
     pub fn worker<F, H>(id: impl Into<String>, start: F) -> Self
     where
@@ -820,7 +821,7 @@ impl Supervisor {
 
     /// Start as a GenServer (internal use - prefer Supervisor::start).
     fn start_server(self) -> GenServerHandle<Supervisor> {
-        GenServer::start(self)
+        GenServer::start(self, Backend::Async)
     }
 }
 
@@ -1269,10 +1270,12 @@ impl DynamicSupervisorState {
 /// # Example
 ///
 /// ```ignore
+/// use spawned_concurrency::tasks::Backend;
+///
 /// let sup = DynamicSupervisor::start(DynamicSupervisorSpec::new());
 ///
 /// // Start children dynamically
-/// let child_spec = ChildSpec::worker("conn", || ConnectionHandler::new().start());
+/// let child_spec = ChildSpec::worker("conn", || ConnectionHandler::new().start(Backend::Async));
 /// if let DynamicSupervisorResponse::Started(pid) =
 ///     sup.call(DynamicSupervisorCall::StartChild(child_spec)).await.unwrap()
 /// {
@@ -1297,7 +1300,7 @@ impl DynamicSupervisor {
     }
 
     fn start_server(self) -> GenServerHandle<DynamicSupervisor> {
-        GenServer::start(self)
+        GenServer::start(self, Backend::Async)
     }
 }
 
@@ -1604,7 +1607,7 @@ mod tests {
 #[cfg(test)]
 mod integration_tests {
     use super::*;
-    use crate::tasks::{CallResponse, CastResponse, GenServer, GenServerHandle, InitResult};
+    use crate::tasks::{Backend, CallResponse, CastResponse, GenServer, GenServerHandle, InitResult};
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::time::Duration;
     use tokio::time::sleep;
@@ -1697,7 +1700,7 @@ mod integration_tests {
     fn crashable_worker(id: &str, counter: Arc<AtomicU32>) -> ChildSpec {
         let id_owned = id.to_string();
         ChildSpec::worker(id, move || {
-            CrashableWorker::new(id_owned.clone(), counter.clone()).start()
+            CrashableWorker::new(id_owned.clone(), counter.clone()).start(Backend::Async)
         })
     }
 

@@ -18,6 +18,28 @@ use std::{fmt::Debug, future::Future, panic::AssertUnwindSafe, sync::Arc, time::
 
 const DEFAULT_CALL_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Execution backend for GenServer.
+///
+/// This determines how the GenServer's async loop is executed:
+/// - `Async`: Runs on tokio's async runtime (cooperative multitasking)
+/// - `Blocking`: Runs on tokio's blocking thread pool
+/// - `Thread`: Runs on a dedicated OS thread
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Backend {
+    /// Spawns on tokio async runtime (cooperative multitasking).
+    /// Best for: many concurrent actors, I/O-bound work.
+    #[default]
+    Async,
+
+    /// Spawns on tokio's blocking thread pool.
+    /// Best for: blocking I/O operations that eventually complete.
+    Blocking,
+
+    /// Spawns on a dedicated OS thread.
+    /// Best for: CPU-bound work, singleton processes, long-running blocking operations.
+    Thread,
+}
+
 /// Handle to a running GenServer.
 ///
 /// This handle can be used to send messages to the GenServer and to
@@ -408,26 +430,42 @@ pub trait GenServer: Send + Sized {
     type OutMsg: Send + Sized;
     type Error: Debug + Send;
 
-    fn start(self) -> GenServerHandle<Self> {
-        GenServerHandle::new(self)
-    }
-
-    /// Tokio tasks depend on a collaborative multitasking model. "Work stealing" can't
-    /// happen if the task is blocking the thread. As such, for sync compute tasks
-    /// or other blocking tasks need to be in their own separate thread, and the OS
-    /// will manage them through hardware interrupts.
-    /// `start_blocking` provides such a thread.
-    fn start_blocking(self) -> GenServerHandle<Self> {
-        GenServerHandle::new_blocking(self)
-    }
-
-    /// For some "singleton" GenServers that run throughout the whole execution of the
-    /// program, it makes sense to run in their own dedicated thread to avoid interference
-    /// with the rest of the tasks' runtime.
-    /// The use of `tokio::task::spawn_blocking` is not recommended for these scenarios
-    /// as it is a limited thread pool better suited for blocking IO tasks that eventually end.
-    fn start_on_thread(self) -> GenServerHandle<Self> {
-        GenServerHandle::new_on_thread(self)
+    /// Start the GenServer with the specified execution backend.
+    ///
+    /// # Backends
+    ///
+    /// - `Backend::Async`: Runs on tokio's async runtime. Best for many concurrent
+    ///   actors and I/O-bound work. Uses cooperative multitasking.
+    ///
+    /// - `Backend::Blocking`: Runs on tokio's blocking thread pool. Best for
+    ///   blocking I/O operations that eventually complete. The pool is shared
+    ///   and has limited size.
+    ///
+    /// - `Backend::Thread`: Runs on a dedicated OS thread. Best for CPU-bound
+    ///   work, singleton processes, or long-running blocking operations that
+    ///   shouldn't interfere with the async runtime.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // For async I/O work
+    /// let handle = MyServer::new().start(Backend::Async);
+    ///
+    /// // For blocking operations
+    /// let handle = MyServer::new().start(Backend::Blocking);
+    ///
+    /// // For CPU-bound or singleton processes
+    /// let handle = MyServer::new().start(Backend::Thread);
+    ///
+    /// // Using default (Async)
+    /// let handle = MyServer::new().start(Backend::default());
+    /// ```
+    fn start(self, backend: Backend) -> GenServerHandle<Self> {
+        match backend {
+            Backend::Async => GenServerHandle::new(self),
+            Backend::Blocking => GenServerHandle::new_blocking(self),
+            Backend::Thread => GenServerHandle::new_on_thread(self),
+        }
     }
 
     /// Start the GenServer and create a bidirectional link with another process.
@@ -438,12 +476,16 @@ pub trait GenServer: Send + Sized {
     /// # Example
     ///
     /// ```ignore
-    /// let parent = ParentServer::new().start();
-    /// let child = ChildServer::new().start_linked(&parent)?;
+    /// let parent = ParentServer::new().start(Backend::Async);
+    /// let child = ChildServer::new().start_linked(&parent, Backend::Async)?;
     /// // Now if either crashes, the other will be notified
     /// ```
-    fn start_linked(self, other: &impl HasPid) -> Result<GenServerHandle<Self>, LinkError> {
-        let handle = self.start();
+    fn start_linked(
+        self,
+        other: &impl HasPid,
+        backend: Backend,
+    ) -> Result<GenServerHandle<Self>, LinkError> {
+        let handle = self.start(backend);
         handle.link(other)?;
         Ok(handle)
     }
@@ -457,15 +499,16 @@ pub trait GenServer: Send + Sized {
     /// # Example
     ///
     /// ```ignore
-    /// let supervisor = SupervisorServer::new().start();
-    /// let (worker, monitor_ref) = WorkerServer::new().start_monitored(&supervisor)?;
+    /// let supervisor = SupervisorServer::new().start(Backend::Async);
+    /// let (worker, monitor_ref) = WorkerServer::new().start_monitored(&supervisor, Backend::Async)?;
     /// // supervisor will receive DOWN message when worker exits
     /// ```
     fn start_monitored(
         self,
         monitor_from: &impl HasPid,
+        backend: Backend,
     ) -> Result<(GenServerHandle<Self>, MonitorRef), LinkError> {
-        let handle = self.start();
+        let handle = self.start(backend);
         let monitor_ref = monitor_from.pid();
         let actual_ref = process_table::monitor(monitor_ref, handle.pid())?;
         Ok((handle, actual_ref))
@@ -750,6 +793,10 @@ mod tests {
         time::Duration,
     };
 
+    // Helper to reduce verbosity in tests
+    const ASYNC: Backend = Backend::Async;
+    const BLOCKING: Backend = Backend::Blocking;
+
     struct BadlyBehavedTask;
 
     #[derive(Clone)]
@@ -824,9 +871,9 @@ mod tests {
     pub fn badly_behaved_thread_non_blocking() {
         let runtime = rt::Runtime::new().unwrap();
         runtime.block_on(async move {
-            let mut badboy = BadlyBehavedTask.start();
+            let mut badboy = BadlyBehavedTask.start(ASYNC);
             let _ = badboy.cast(Unused).await;
-            let mut goodboy = WellBehavedTask { count: 0 }.start();
+            let mut goodboy = WellBehavedTask { count: 0 }.start(ASYNC);
             let _ = goodboy.cast(Unused).await;
             rt::sleep(Duration::from_secs(1)).await;
             let count = goodboy.call(InMessage::GetCount).await.unwrap();
@@ -844,9 +891,9 @@ mod tests {
     pub fn badly_behaved_thread() {
         let runtime = rt::Runtime::new().unwrap();
         runtime.block_on(async move {
-            let mut badboy = BadlyBehavedTask.start_blocking();
+            let mut badboy = BadlyBehavedTask.start(BLOCKING);
             let _ = badboy.cast(Unused).await;
-            let mut goodboy = WellBehavedTask { count: 0 }.start();
+            let mut goodboy = WellBehavedTask { count: 0 }.start(ASYNC);
             let _ = goodboy.cast(Unused).await;
             rt::sleep(Duration::from_secs(1)).await;
             let count = goodboy.call(InMessage::GetCount).await.unwrap();
@@ -901,7 +948,7 @@ mod tests {
     pub fn unresolving_task_times_out() {
         let runtime = rt::Runtime::new().unwrap();
         runtime.block_on(async move {
-            let mut unresolving_task = SomeTask.start();
+            let mut unresolving_task = SomeTask.start(ASYNC);
 
             let result = unresolving_task
                 .call_with_timeout(SomeTaskCallMsg::FastOperation, TIMEOUT_DURATION)
@@ -951,7 +998,7 @@ mod tests {
         runtime.block_on(async move {
             let (rx, tx) = mpsc::channel::<u8>();
             let sender_channel = Arc::new(Mutex::new(tx));
-            let _task = SomeTaskThatFailsOnInit::new(sender_channel).start();
+            let _task = SomeTaskThatFailsOnInit::new(sender_channel).start(ASYNC);
 
             // Wait a while to ensure the task has time to run and fail
             rt::sleep(Duration::from_secs(1)).await;
@@ -967,9 +1014,9 @@ mod tests {
     pub fn genserver_has_unique_pid() {
         let runtime = rt::Runtime::new().unwrap();
         runtime.block_on(async move {
-            let handle1 = WellBehavedTask { count: 0 }.start();
-            let handle2 = WellBehavedTask { count: 0 }.start();
-            let handle3 = WellBehavedTask { count: 0 }.start();
+            let handle1 = WellBehavedTask { count: 0 }.start(ASYNC);
+            let handle2 = WellBehavedTask { count: 0 }.start(ASYNC);
+            let handle3 = WellBehavedTask { count: 0 }.start(ASYNC);
 
             // Each GenServer should have a unique Pid
             assert_ne!(handle1.pid(), handle2.pid());
@@ -986,7 +1033,7 @@ mod tests {
     pub fn cloned_handle_has_same_pid() {
         let runtime = rt::Runtime::new().unwrap();
         runtime.block_on(async move {
-            let handle1 = WellBehavedTask { count: 0 }.start();
+            let handle1 = WellBehavedTask { count: 0 }.start(ASYNC);
             let handle2 = handle1.clone();
 
             // Cloned handles should have the same Pid
@@ -999,7 +1046,7 @@ mod tests {
     pub fn pid_display_format() {
         let runtime = rt::Runtime::new().unwrap();
         runtime.block_on(async move {
-            let handle = WellBehavedTask { count: 0 }.start();
+            let handle = WellBehavedTask { count: 0 }.start(ASYNC);
             let pid = handle.pid();
 
             // Check display format is Erlang-like: <0.N>
@@ -1020,8 +1067,8 @@ mod tests {
 
         let runtime = rt::Runtime::new().unwrap();
         runtime.block_on(async move {
-            let handle1 = WellBehavedTask { count: 0 }.start();
-            let handle2 = WellBehavedTask { count: 0 }.start();
+            let handle1 = WellBehavedTask { count: 0 }.start(ASYNC);
+            let handle2 = WellBehavedTask { count: 0 }.start(ASYNC);
 
             let mut map: HashMap<Pid, &str> = HashMap::new();
             map.insert(handle1.pid(), "server1");
@@ -1034,19 +1081,14 @@ mod tests {
     }
 
     #[test]
-    pub fn all_start_methods_produce_unique_pids() {
-        // Test that start(), start_blocking(), and start_on_thread() all produce unique Pids
-        // by checking the Pid IDs are monotonically increasing across all start methods.
-        //
-        // Note: We can't easily test start_blocking() and start_on_thread() in isolation
-        // within an async runtime block_on context due to potential deadlocks.
-        // Instead, we verify the Pid generation is consistent by checking multiple
-        // regular starts produce increasing IDs.
+    pub fn all_backends_produce_unique_pids() {
+        // Test that all Backend variants produce unique Pids
+        // by checking the Pid IDs are monotonically increasing across all backends.
         let runtime = rt::Runtime::new().unwrap();
         runtime.block_on(async move {
-            let handle1 = WellBehavedTask { count: 0 }.start();
-            let handle2 = WellBehavedTask { count: 0 }.start();
-            let handle3 = WellBehavedTask { count: 0 }.start();
+            let handle1 = WellBehavedTask { count: 0 }.start(ASYNC);
+            let handle2 = WellBehavedTask { count: 0 }.start(ASYNC);
+            let handle3 = WellBehavedTask { count: 0 }.start(ASYNC);
 
             // All handles should have unique, increasing Pids
             assert!(handle1.pid().id() < handle2.pid().id());
@@ -1058,7 +1100,7 @@ mod tests {
     pub fn has_pid_trait_works() {
         let runtime = rt::Runtime::new().unwrap();
         runtime.block_on(async move {
-            let handle = WellBehavedTask { count: 0 }.start();
+            let handle = WellBehavedTask { count: 0 }.start(ASYNC);
 
             // Test that HasPid trait is implemented
             fn accepts_has_pid(p: &impl HasPid) -> Pid {
@@ -1079,7 +1121,7 @@ mod tests {
 
         let runtime = rt::Runtime::new().unwrap();
         runtime.block_on(async move {
-            let handle = WellBehavedTask { count: 0 }.start();
+            let handle = WellBehavedTask { count: 0 }.start(ASYNC);
 
             // Register should succeed
             assert!(handle.register("test_genserver").is_ok());
@@ -1112,8 +1154,8 @@ mod tests {
 
         let runtime = rt::Runtime::new().unwrap();
         runtime.block_on(async move {
-            let handle1 = WellBehavedTask { count: 0 }.start();
-            let handle2 = WellBehavedTask { count: 0 }.start();
+            let handle1 = WellBehavedTask { count: 0 }.start(ASYNC);
+            let handle2 = WellBehavedTask { count: 0 }.start(ASYNC);
 
             // First registration should succeed
             assert!(handle1.register("unique_name").is_ok());
@@ -1142,8 +1184,8 @@ mod tests {
 
         let runtime = rt::Runtime::new().unwrap();
         runtime.block_on(async move {
-            let handle1 = WellBehavedTask { count: 0 }.start();
-            let handle2 = WellBehavedTask { count: 0 }.start();
+            let handle1 = WellBehavedTask { count: 0 }.start(ASYNC);
+            let handle2 = WellBehavedTask { count: 0 }.start(ASYNC);
 
             // Register first process
             assert!(handle1.register("shared_name").is_ok());

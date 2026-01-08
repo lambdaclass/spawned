@@ -12,8 +12,8 @@ mod stream_tests;
 mod timer_tests;
 
 pub use gen_server::{
-    send_message_on, CallResponse, CastResponse, GenServer, GenServerHandle, GenServerInMsg,
-    InfoResponse, InitResult, InitResult::NoSuccess, InitResult::Success,
+    send_message_on, Backend, CallResponse, CastResponse, GenServer, GenServerHandle,
+    GenServerInMsg, InfoResponse, InitResult, InitResult::NoSuccess, InitResult::Success,
 };
 pub use process::{send, Process, ProcessInfo};
 pub use stream::spawn_listener;
