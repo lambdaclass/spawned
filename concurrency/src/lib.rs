@@ -35,6 +35,7 @@ pub use registry::RegistryError;
 pub use supervisor::{
     BoxedChildHandle, ChildHandle, ChildInfo, ChildSpec, ChildType, DynamicSupervisor,
     DynamicSupervisorCall, DynamicSupervisorCast, DynamicSupervisorError, DynamicSupervisorResponse,
-    DynamicSupervisorSpec, RestartStrategy, RestartType, Shutdown, Supervisor, SupervisorCall,
-    SupervisorCast, SupervisorCounts, SupervisorError, SupervisorResponse, SupervisorSpec,
+    DynamicSupervisorSpec, RestartIntensityTracker, RestartStrategy, RestartType, Shutdown,
+    Supervisor, SupervisorCall, SupervisorCast, SupervisorCounts, SupervisorError,
+    SupervisorResponse, SupervisorSpec,
 };

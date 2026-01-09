@@ -55,6 +55,21 @@ pub enum RestartType {
     Temporary,
 }
 
+impl RestartType {
+    /// Determine if a child should be restarted based on exit reason.
+    ///
+    /// - `Permanent`: Always restart, regardless of exit reason
+    /// - `Transient`: Only restart on abnormal exit (crash)
+    /// - `Temporary`: Never restart
+    pub fn should_restart(self, reason: &ExitReason) -> bool {
+        match self {
+            RestartType::Permanent => true,
+            RestartType::Transient => !reason.is_normal(),
+            RestartType::Temporary => false,
+        }
+    }
+}
+
 /// Child shutdown behavior.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Shutdown {
@@ -71,6 +86,51 @@ pub enum Shutdown {
 impl Default for Shutdown {
     fn default() -> Self {
         Shutdown::Timeout(Duration::from_secs(5))
+    }
+}
+
+/// Tracks restart intensity to prevent restart storms.
+///
+/// Records restart timestamps and checks if more restarts are allowed
+/// within the configured time window. This prevents a failing child
+/// from consuming all resources with rapid restart attempts.
+#[derive(Debug, Clone)]
+pub struct RestartIntensityTracker {
+    /// Maximum restarts allowed within the time window.
+    max_restarts: u32,
+    /// Time window for counting restarts.
+    max_seconds: Duration,
+    /// Timestamps of recent restarts.
+    restart_times: Vec<Instant>,
+}
+
+impl RestartIntensityTracker {
+    /// Create a new tracker with the given limits.
+    pub fn new(max_restarts: u32, max_seconds: Duration) -> Self {
+        Self {
+            max_restarts,
+            max_seconds,
+            restart_times: Vec::new(),
+        }
+    }
+
+    /// Record that a restart occurred.
+    pub fn record_restart(&mut self) {
+        self.restart_times.push(Instant::now());
+    }
+
+    /// Check if another restart is allowed within intensity limits.
+    ///
+    /// Prunes old restart times and returns true if under the limit.
+    pub fn can_restart(&mut self) -> bool {
+        let cutoff = Instant::now() - self.max_seconds;
+        self.restart_times.retain(|t| *t > cutoff);
+        (self.restart_times.len() as u32) < self.max_restarts
+    }
+
+    /// Reset the tracker, clearing all recorded restarts.
+    pub fn reset(&mut self) {
+        self.restart_times.clear();
     }
 }
 
@@ -140,6 +200,21 @@ pub struct ChildSpec {
 }
 
 impl ChildSpec {
+    /// Internal helper to create a child spec with a given type.
+    fn new_with_type<F, H>(id: impl Into<String>, start: F, child_type: ChildType) -> Self
+    where
+        F: Fn() -> H + Send + Sync + 'static,
+        H: ChildHandle + 'static,
+    {
+        Self {
+            id: id.into(),
+            start: Arc::new(move || Box::new(start()) as BoxedChildHandle),
+            restart: RestartType::default(),
+            shutdown: Shutdown::default(),
+            child_type,
+        }
+    }
+
     /// Create a new child specification for a worker.
     ///
     /// # Arguments
@@ -157,13 +232,7 @@ impl ChildSpec {
         F: Fn() -> H + Send + Sync + 'static,
         H: ChildHandle + 'static,
     {
-        Self {
-            id: id.into(),
-            start: Arc::new(move || Box::new(start()) as BoxedChildHandle),
-            restart: RestartType::default(),
-            shutdown: Shutdown::default(),
-            child_type: ChildType::Worker,
-        }
+        Self::new_with_type(id, start, ChildType::Worker)
     }
 
     /// Create a new child specification for a supervisor (nested supervision).
@@ -177,13 +246,7 @@ impl ChildSpec {
         F: Fn() -> H + Send + Sync + 'static,
         H: ChildHandle + 'static,
     {
-        Self {
-            id: id.into(),
-            start: Arc::new(move || Box::new(start()) as BoxedChildHandle),
-            restart: RestartType::default(),
-            shutdown: Shutdown::default(),
-            child_type: ChildType::Supervisor,
-        }
+        Self::new_with_type(id, start, ChildType::Supervisor)
     }
 
     /// Get the ID of this child spec.
