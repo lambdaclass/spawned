@@ -39,3 +39,58 @@ pub use supervisor::{
     Supervisor, SupervisorCall, SupervisorCast, SupervisorCounts, SupervisorError,
     SupervisorResponse, SupervisorSpec,
 };
+
+#[cfg(test)]
+mod backend_tests {
+    use super::Backend;
+
+    #[test]
+    fn test_backend_default() {
+        assert_eq!(Backend::default(), Backend::Async);
+    }
+
+    #[test]
+    fn test_backend_copy() {
+        let backend = Backend::Async;
+        let copied = backend; // Copy
+        assert_eq!(backend, copied);
+    }
+
+    #[test]
+    fn test_backend_clone() {
+        let backend = Backend::Blocking;
+        #[allow(clippy::clone_on_copy)]
+        let cloned = backend.clone(); // Explicit clone to test Clone trait
+        assert_eq!(backend, cloned);
+    }
+
+    #[test]
+    fn test_backend_debug() {
+        assert_eq!(format!("{:?}", Backend::Async), "Async");
+        assert_eq!(format!("{:?}", Backend::Blocking), "Blocking");
+        assert_eq!(format!("{:?}", Backend::Thread), "Thread");
+    }
+
+    #[test]
+    fn test_backend_equality() {
+        assert_eq!(Backend::Async, Backend::Async);
+        assert_eq!(Backend::Blocking, Backend::Blocking);
+        assert_eq!(Backend::Thread, Backend::Thread);
+        assert_ne!(Backend::Async, Backend::Blocking);
+        assert_ne!(Backend::Async, Backend::Thread);
+        assert_ne!(Backend::Blocking, Backend::Thread);
+    }
+
+    #[test]
+    fn test_backend_variants_exhaustive() {
+        // Ensure all variants can be matched
+        let backends = [Backend::Async, Backend::Blocking, Backend::Thread];
+        for backend in backends {
+            match backend {
+                Backend::Async => {}
+                Backend::Blocking => {}
+                Backend::Thread => {}
+            }
+        }
+    }
+}
