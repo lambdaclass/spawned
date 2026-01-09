@@ -16,7 +16,7 @@ mod server;
 
 use messages::NameServerOutMessage;
 use server::NameServer;
-use spawned_concurrency::{Backend, GenServer as _};
+use spawned_concurrency::{Backend, Actor as _};
 use spawned_rt::tasks as rt;
 
 fn main() {

@@ -200,12 +200,12 @@ fn test_child_spec_clone() {
 }
 
 // ============================================================================
-// Integration Tests - Real GenServer supervision
+// Integration Tests - Real Actor supervision
 // ============================================================================
 
 mod integration_tests {
     use super::*;
-    use crate::{Backend, CallResponse, CastResponse, GenServer, GenServerHandle, InitResult};
+    use crate::{Backend, RequestResult, MessageResult, Actor, ActorRef, InitResult};
     use std::time::Duration;
     use tokio::time::sleep;
 
@@ -249,44 +249,44 @@ mod integration_tests {
         }
     }
 
-    impl GenServer for CrashableWorker {
-        type CallMsg = WorkerCall;
-        type CastMsg = WorkerCast;
-        type OutMsg = WorkerResponse;
+    impl Actor for CrashableWorker {
+        type Request = WorkerCall;
+        type Message = WorkerCast;
+        type Reply = WorkerResponse;
         type Error = std::convert::Infallible;
 
         async fn init(
             self,
-            _handle: &GenServerHandle<Self>,
+            _handle: &ActorRef<Self>,
         ) -> Result<InitResult<Self>, Self::Error> {
             // Increment counter each time we start
             self.start_counter.fetch_add(1, Ordering::SeqCst);
             Ok(InitResult::Success(self))
         }
 
-        async fn handle_call(
+        async fn handle_request(
             &mut self,
-            message: Self::CallMsg,
-            _handle: &GenServerHandle<Self>,
-        ) -> CallResponse<Self> {
+            message: Self::Request,
+            _handle: &ActorRef<Self>,
+        ) -> RequestResult<Self> {
             match message {
-                WorkerCall::GetStartCount => CallResponse::Reply(WorkerResponse::StartCount(
+                WorkerCall::GetStartCount => RequestResult::Reply(WorkerResponse::StartCount(
                     self.start_counter.load(Ordering::SeqCst),
                 )),
-                WorkerCall::GetId => CallResponse::Reply(WorkerResponse::Id(self.id.clone())),
+                WorkerCall::GetId => RequestResult::Reply(WorkerResponse::Id(self.id.clone())),
             }
         }
 
-        async fn handle_cast(
+        async fn handle_message(
             &mut self,
-            message: Self::CastMsg,
-            _handle: &GenServerHandle<Self>,
-        ) -> CastResponse {
+            message: Self::Message,
+            _handle: &ActorRef<Self>,
+        ) -> MessageResult {
             match message {
                 WorkerCast::Crash => {
                     panic!("Intentional crash for testing");
                 }
-                WorkerCast::ExitNormal => CastResponse::Stop,
+                WorkerCast::ExitNormal => MessageResult::Stop,
             }
         }
     }

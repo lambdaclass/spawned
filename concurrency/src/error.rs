@@ -1,22 +1,22 @@
 #[derive(Debug, thiserror::Error)]
-pub enum GenServerError {
+pub enum ActorError {
     #[error("Callback Error")]
     Callback,
     #[error("Initialization error")]
     Initialization,
     #[error("Server error")]
     Server,
-    #[error("Call to GenServer timed out")]
+    #[error("Call to Actor timed out")]
     CallTimeout,
 }
 
-impl<T> From<spawned_rt::threads::mpsc::SendError<T>> for GenServerError {
+impl<T> From<spawned_rt::threads::mpsc::SendError<T>> for ActorError {
     fn from(_value: spawned_rt::threads::mpsc::SendError<T>) -> Self {
         Self::Server
     }
 }
 
-impl<T> From<spawned_rt::tasks::mpsc::SendError<T>> for GenServerError {
+impl<T> From<spawned_rt::tasks::mpsc::SendError<T>> for ActorError {
     fn from(_value: spawned_rt::tasks::mpsc::SendError<T>) -> Self {
         Self::Server
     }
@@ -28,7 +28,7 @@ mod tests {
 
     #[test]
     fn test_error_into_std_error() {
-        let error: &dyn std::error::Error = &GenServerError::Callback;
+        let error: &dyn std::error::Error = &ActorError::Callback;
         assert_eq!(error.to_string(), "Callback Error");
     }
 }

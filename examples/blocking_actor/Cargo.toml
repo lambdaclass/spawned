@@ -1,5 +1,5 @@
 [package]
-name = "busy_genserver_warning"
+name = "blocking_actor"
 version = "0.1.0"
 edition = "2024"
 
@@ -9,5 +9,5 @@ spawned-concurrency = { workspace = true }
 tracing = { workspace = true }
 
 [[bin]]
-name = "busy_genserver_warning"
+name = "blocking_actor"
 path = "main.rs"

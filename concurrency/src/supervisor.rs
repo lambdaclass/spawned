@@ -20,9 +20,9 @@
 use crate::link::{MonitorRef, SystemMessage};
 use crate::pid::{ExitReason, HasPid, Pid};
 use crate::{
-    Backend, CallResponse, CastResponse, GenServer, GenServerHandle, InitResult,
+    Backend, RequestResult, MessageResult, Actor, ActorRef, InitResult,
 };
-use crate::gen_server::InfoResponse;
+use crate::actor::InfoResult;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -140,7 +140,7 @@ pub enum ChildType {
 /// Trait for child handles that can be supervised.
 ///
 /// This provides a type-erased interface for managing child processes,
-/// allowing the supervisor to work with any GenServer type.
+/// allowing the supervisor to work with any Actor type.
 pub trait ChildHandle: Send + Sync {
     /// Get the process ID of this child.
     fn pid(&self) -> Pid;
@@ -152,8 +152,8 @@ pub trait ChildHandle: Send + Sync {
     fn is_alive(&self) -> bool;
 }
 
-/// Implementation of ChildHandle for GenServerHandle.
-impl<G: GenServer + 'static> ChildHandle for GenServerHandle<G> {
+/// Implementation of ChildHandle for ActorRef.
+impl<G: Actor + 'static> ChildHandle for ActorRef<G> {
     fn pid(&self) -> Pid {
         HasPid::pid(self)
     }
@@ -526,7 +526,7 @@ impl SupervisorState {
     /// Start all children defined in the spec and set up monitoring.
     fn start_children(
         &mut self,
-        supervisor_handle: &GenServerHandle<Supervisor>,
+        supervisor_handle: &ActorRef<Supervisor>,
     ) -> Result<(), SupervisorError> {
         for child_spec in self.spec.children.clone() {
             self.start_child_internal(child_spec, supervisor_handle)?;
@@ -538,7 +538,7 @@ impl SupervisorState {
     fn start_child_internal(
         &mut self,
         spec: ChildSpec,
-        supervisor_handle: &GenServerHandle<Supervisor>,
+        supervisor_handle: &ActorRef<Supervisor>,
     ) -> Result<Pid, SupervisorError> {
         let id = spec.id().to_string();
 
@@ -574,7 +574,7 @@ impl SupervisorState {
     fn start_child(
         &mut self,
         spec: ChildSpec,
-        supervisor_handle: &GenServerHandle<Supervisor>,
+        supervisor_handle: &ActorRef<Supervisor>,
     ) -> Result<Pid, SupervisorError> {
         if self.shutting_down {
             return Err(SupervisorError::ShuttingDown);
@@ -623,7 +623,7 @@ impl SupervisorState {
     fn restart_child(
         &mut self,
         id: &str,
-        supervisor_handle: &GenServerHandle<Supervisor>,
+        supervisor_handle: &ActorRef<Supervisor>,
     ) -> Result<Pid, SupervisorError> {
         if self.shutting_down {
             return Err(SupervisorError::ShuttingDown);
@@ -786,7 +786,7 @@ impl SupervisorState {
 
 
 // ============================================================================
-// Supervisor GenServer
+// Supervisor Actor
 // ============================================================================
 
 /// Messages that can be sent to a Supervisor via call().
@@ -828,7 +828,7 @@ pub enum SupervisorResponse {
     Counts(SupervisorCounts),
 }
 
-/// A Supervisor is a GenServer that manages child processes.
+/// A Supervisor is a Actor that manages child processes.
 ///
 /// It monitors children and automatically restarts them according to
 /// the configured strategy when they exit.
@@ -846,26 +846,26 @@ impl Supervisor {
 
     /// Start the supervisor and return a handle.
     ///
-    /// This starts the supervisor GenServer and all children defined in the spec.
-    pub fn start(spec: SupervisorSpec) -> GenServerHandle<Supervisor> {
+    /// This starts the supervisor Actor and all children defined in the spec.
+    pub fn start(spec: SupervisorSpec) -> ActorRef<Supervisor> {
         Supervisor::new(spec).start_server()
     }
 
-    /// Start as a GenServer (internal use - prefer Supervisor::start).
-    fn start_server(self) -> GenServerHandle<Supervisor> {
-        GenServer::start(self, Backend::Async)
+    /// Start as a Actor (internal use - prefer Supervisor::start).
+    fn start_server(self) -> ActorRef<Supervisor> {
+        Actor::start(self, Backend::Async)
     }
 }
 
-impl GenServer for Supervisor {
-    type CallMsg = SupervisorCall;
-    type CastMsg = SupervisorCast;
-    type OutMsg = SupervisorResponse;
+impl Actor for Supervisor {
+    type Request = SupervisorCall;
+    type Message = SupervisorCast;
+    type Reply = SupervisorResponse;
     type Error = SupervisorError;
 
     async fn init(
         mut self,
-        handle: &GenServerHandle<Self>,
+        handle: &ActorRef<Self>,
     ) -> Result<InitResult<Self>, Self::Error> {
         // Enable trap_exit so we receive EXIT messages from linked children
         handle.trap_exit(true);
@@ -881,11 +881,11 @@ impl GenServer for Supervisor {
         Ok(InitResult::Success(self))
     }
 
-    async fn handle_call(
+    async fn handle_request(
         &mut self,
-        message: Self::CallMsg,
-        handle: &GenServerHandle<Self>,
-    ) -> CallResponse<Self> {
+        message: Self::Request,
+        handle: &ActorRef<Self>,
+    ) -> RequestResult<Self> {
         let response = match message {
             SupervisorCall::StartChild(spec) => {
                 match self.state.start_child(spec, handle) {
@@ -918,22 +918,22 @@ impl GenServer for Supervisor {
                 SupervisorResponse::Counts(self.state.count_children())
             }
         };
-        CallResponse::Reply(response)
+        RequestResult::Reply(response)
     }
 
-    async fn handle_cast(
+    async fn handle_message(
         &mut self,
-        _message: Self::CastMsg,
-        _handle: &GenServerHandle<Self>,
-    ) -> CastResponse {
-        CastResponse::NoReply
+        _message: Self::Message,
+        _handle: &ActorRef<Self>,
+    ) -> MessageResult {
+        MessageResult::NoReply
     }
 
     async fn handle_info(
         &mut self,
         message: SystemMessage,
-        handle: &GenServerHandle<Self>,
-    ) -> InfoResponse {
+        handle: &ActorRef<Self>,
+    ) -> InfoResult {
         match message {
             SystemMessage::Down { pid, reason, .. } => {
                 // A monitored child has exited
@@ -947,18 +947,18 @@ impl GenServer for Supervisor {
                                 }
                                 Err(SupervisorError::MaxRestartsExceeded) => {
                                     tracing::error!("Max restart intensity exceeded, supervisor stopping");
-                                    return InfoResponse::Stop;
+                                    return InfoResult::Stop;
                                 }
                                 Err(e) => {
                                     tracing::error!(child = %id, error = ?e, "Failed to restart child");
                                 }
                             }
                         }
-                        InfoResponse::NoReply
+                        InfoResult::NoReply
                     }
                     Err(e) => {
                         tracing::error!(error = ?e, "Error handling child exit");
-                        InfoResponse::NoReply
+                        InfoResult::NoReply
                     }
                 }
             }
@@ -972,21 +972,21 @@ impl GenServer for Supervisor {
                             match self.state.restart_child(&id, handle) {
                                 Ok(_) => {}
                                 Err(SupervisorError::MaxRestartsExceeded) => {
-                                    return InfoResponse::Stop;
+                                    return InfoResult::Stop;
                                 }
                                 Err(_) => {}
                             }
                         }
-                        InfoResponse::NoReply
+                        InfoResult::NoReply
                     }
-                    Err(_) => InfoResponse::NoReply,
+                    Err(_) => InfoResult::NoReply,
                 }
             }
-            SystemMessage::Timeout { .. } => InfoResponse::NoReply,
+            SystemMessage::Timeout { .. } => InfoResult::NoReply,
         }
     }
 
-    async fn teardown(mut self, _handle: &GenServerHandle<Self>) -> Result<(), Self::Error> {
+    async fn teardown(mut self, _handle: &ActorRef<Self>) -> Result<(), Self::Error> {
         // Shut down all children in reverse order
         self.state.shutdown();
         Ok(())
@@ -1176,7 +1176,7 @@ impl DynamicSupervisorState {
     fn start_child(
         &mut self,
         spec: ChildSpec,
-        supervisor_handle: &GenServerHandle<DynamicSupervisor>,
+        supervisor_handle: &ActorRef<DynamicSupervisor>,
     ) -> Result<Pid, DynamicSupervisorError> {
         if self.shutting_down {
             return Err(DynamicSupervisorError::ShuttingDown);
@@ -1220,7 +1220,7 @@ impl DynamicSupervisorState {
         &mut self,
         pid: Pid,
         reason: &ExitReason,
-        supervisor_handle: &GenServerHandle<DynamicSupervisor>,
+        supervisor_handle: &ActorRef<DynamicSupervisor>,
     ) -> Result<(), DynamicSupervisorError> {
         if self.shutting_down {
             self.children.remove(&pid);
@@ -1317,24 +1317,24 @@ impl DynamicSupervisor {
     }
 
     /// Start the DynamicSupervisor and return a handle.
-    pub fn start(spec: DynamicSupervisorSpec) -> GenServerHandle<DynamicSupervisor> {
+    pub fn start(spec: DynamicSupervisorSpec) -> ActorRef<DynamicSupervisor> {
         DynamicSupervisor::new(spec).start_server()
     }
 
-    fn start_server(self) -> GenServerHandle<DynamicSupervisor> {
-        GenServer::start(self, Backend::Async)
+    fn start_server(self) -> ActorRef<DynamicSupervisor> {
+        Actor::start(self, Backend::Async)
     }
 }
 
-impl GenServer for DynamicSupervisor {
-    type CallMsg = DynamicSupervisorCall;
-    type CastMsg = DynamicSupervisorCast;
-    type OutMsg = DynamicSupervisorResponse;
+impl Actor for DynamicSupervisor {
+    type Request = DynamicSupervisorCall;
+    type Message = DynamicSupervisorCast;
+    type Reply = DynamicSupervisorResponse;
     type Error = DynamicSupervisorError;
 
     async fn init(
         self,
-        handle: &GenServerHandle<Self>,
+        handle: &ActorRef<Self>,
     ) -> Result<InitResult<Self>, Self::Error> {
         handle.trap_exit(true);
 
@@ -1345,11 +1345,11 @@ impl GenServer for DynamicSupervisor {
         Ok(InitResult::Success(self))
     }
 
-    async fn handle_call(
+    async fn handle_request(
         &mut self,
-        message: Self::CallMsg,
-        handle: &GenServerHandle<Self>,
-    ) -> CallResponse<Self> {
+        message: Self::Request,
+        handle: &ActorRef<Self>,
+    ) -> RequestResult<Self> {
         let response = match message {
             DynamicSupervisorCall::StartChild(spec) => {
                 match self.state.start_child(spec, handle) {
@@ -1370,48 +1370,48 @@ impl GenServer for DynamicSupervisor {
                 DynamicSupervisorResponse::Count(self.state.count_children())
             }
         };
-        CallResponse::Reply(response)
+        RequestResult::Reply(response)
     }
 
-    async fn handle_cast(
+    async fn handle_message(
         &mut self,
-        _message: Self::CastMsg,
-        _handle: &GenServerHandle<Self>,
-    ) -> CastResponse {
-        CastResponse::NoReply
+        _message: Self::Message,
+        _handle: &ActorRef<Self>,
+    ) -> MessageResult {
+        MessageResult::NoReply
     }
 
     async fn handle_info(
         &mut self,
         message: SystemMessage,
-        handle: &GenServerHandle<Self>,
-    ) -> InfoResponse {
+        handle: &ActorRef<Self>,
+    ) -> InfoResult {
         match message {
             SystemMessage::Down { pid, reason, .. } => {
                 match self.state.handle_child_exit(pid, &reason, handle) {
-                    Ok(()) => InfoResponse::NoReply,
+                    Ok(()) => InfoResult::NoReply,
                     Err(DynamicSupervisorError::MaxRestartsExceeded) => {
                         tracing::error!("DynamicSupervisor: max restart intensity exceeded");
-                        InfoResponse::Stop
+                        InfoResult::Stop
                     }
                     Err(e) => {
                         tracing::error!("DynamicSupervisor error: {:?}", e);
-                        InfoResponse::NoReply
+                        InfoResult::NoReply
                     }
                 }
             }
             SystemMessage::Exit { pid, reason } => {
                 match self.state.handle_child_exit(pid, &reason, handle) {
-                    Ok(()) => InfoResponse::NoReply,
-                    Err(DynamicSupervisorError::MaxRestartsExceeded) => InfoResponse::Stop,
-                    Err(_) => InfoResponse::NoReply,
+                    Ok(()) => InfoResult::NoReply,
+                    Err(DynamicSupervisorError::MaxRestartsExceeded) => InfoResult::Stop,
+                    Err(_) => InfoResult::NoReply,
                 }
             }
-            SystemMessage::Timeout { .. } => InfoResponse::NoReply,
+            SystemMessage::Timeout { .. } => InfoResult::NoReply,
         }
     }
 
-    async fn teardown(mut self, _handle: &GenServerHandle<Self>) -> Result<(), Self::Error> {
+    async fn teardown(mut self, _handle: &ActorRef<Self>) -> Result<(), Self::Error> {
         self.state.shutdown();
         Ok(())
     }

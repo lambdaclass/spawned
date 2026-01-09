@@ -60,7 +60,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "812e12b5285cc515a9c72a5c1d3b6d46a19dac5acfef5265968c166106e31dd3"
 
 [[package]]
-name = "blocking_genserver"
+name = "blocking_actor"
 version = "0.1.0"
 dependencies = [
  "spawned-concurrency",
@@ -75,7 +75,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "46c5e41b57b8bba42a04676d81cb89e9ee8e859a1a66f80a5a72e1cb76b34d43"
 
 [[package]]
-name = "busy_genserver_warning"
+name = "busy_actor_warning"
 version = "0.1.0"
 dependencies = [
  "spawned-concurrency",

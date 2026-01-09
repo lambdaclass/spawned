@@ -1,4 +1,4 @@
-use spawned_concurrency::{self as concurrency, Process, ProcessInfo};
+use spawned_concurrency::{self as concurrency, Process, ActorInfo};
 use spawned_rt::tasks::mpsc::Sender;
 
 use crate::messages::Message;
@@ -6,7 +6,7 @@ use crate::messages::Message;
 pub struct Consumer {}
 
 impl Consumer {
-    pub async fn spawn_new() -> ProcessInfo<Message> {
+    pub async fn spawn_new() -> ActorInfo<Message> {
         Self {}.spawn().await
     }
 }
