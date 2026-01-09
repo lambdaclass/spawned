@@ -23,8 +23,9 @@ mod timer_tests;
 
 pub use error::{Error, GenServerError};
 pub use gen_server::{
-    send_message_on, Backend, CallResponse, CastResponse, GenServer, GenServerHandle,
-    GenServerInMsg, InitResult, InitResult::NoSuccess, InitResult::Success,
+    get_default_backend, send_message_on, set_default_backend, Backend, CallResponse, CastResponse,
+    GenServer, GenServerHandle, GenServerInMsg, InitResult, InitResult::NoSuccess,
+    InitResult::Success,
 };
 pub use link::{MonitorRef, SystemMessage};
 pub use pg::PgError;

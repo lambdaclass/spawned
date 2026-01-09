@@ -19,6 +19,33 @@ use std::{fmt::Debug, future::Future, panic::AssertUnwindSafe, sync::Arc, time::
 
 const DEFAULT_CALL_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Global default backend configuration.
+static DEFAULT_BACKEND: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+/// Set the global default backend for GenServers.
+///
+/// This affects all GenServers started with `start_default()` or `Backend::default()`.
+///
+/// # Example
+///
+/// ```ignore
+/// use spawned_concurrency::{set_default_backend, Backend};
+///
+/// // Configure all new GenServers to use blocking backend by default
+/// set_default_backend(Backend::Blocking);
+///
+/// // Now start_default() uses Blocking
+/// let handle = MyServer::new().start_default();
+/// ```
+pub fn set_default_backend(backend: Backend) {
+    DEFAULT_BACKEND.store(backend.to_u8(), std::sync::atomic::Ordering::SeqCst);
+}
+
+/// Get the current global default backend.
+pub fn get_default_backend() -> Backend {
+    Backend::from_u8(DEFAULT_BACKEND.load(std::sync::atomic::Ordering::SeqCst))
+}
+
 /// Execution backend for GenServer.
 ///
 /// Determines how the GenServer's async loop is executed. Choose based on
@@ -97,6 +124,26 @@ pub enum Backend {
     /// Each GenServer gets its own thread, providing complete isolation from
     /// the async runtime. Higher memory overhead (~2MB stack per thread).
     Thread,
+}
+
+impl Backend {
+    /// Convert backend to u8 for atomic storage.
+    fn to_u8(self) -> u8 {
+        match self {
+            Backend::Async => 0,
+            Backend::Blocking => 1,
+            Backend::Thread => 2,
+        }
+    }
+
+    /// Convert u8 back to Backend.
+    fn from_u8(value: u8) -> Self {
+        match value {
+            1 => Backend::Blocking,
+            2 => Backend::Thread,
+            _ => Backend::Async,
+        }
+    }
 }
 
 /// Handle to a running GenServer.
@@ -502,6 +549,21 @@ pub trait GenServer: Send + Sized {
             Backend::Blocking => GenServerHandle::new_blocking(self),
             Backend::Thread => GenServerHandle::new_on_thread(self),
         }
+    }
+
+    /// Start the GenServer with the global default backend.
+    ///
+    /// Uses the backend configured via `set_default_backend()`, or `Backend::Async`
+    /// if no default has been set.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Start with the global default backend
+    /// let handle = MyServer::new().start_default();
+    /// ```
+    fn start_default(self) -> GenServerHandle<Self> {
+        self.start(get_default_backend())
     }
 
     /// Start the GenServer and create a bidirectional link with another process.
