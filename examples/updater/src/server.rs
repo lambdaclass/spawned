@@ -3,7 +3,7 @@ use std::time::Duration;
 use spawned_concurrency::{
     messages::Unused,
     tasks::{
-        send_interval, CastResponse, GenServer, GenServerHandle,
+        send_interval, MessageResult, Actor, ActorRef,
         InitResult::{self, Success},
     },
 };
@@ -11,7 +11,7 @@ use spawned_rt::tasks::CancellationToken;
 
 use crate::messages::{UpdaterInMessage as InMessage, UpdaterOutMessage as OutMessage};
 
-type UpdateServerHandle = GenServerHandle<UpdaterServer>;
+type UpdateServerHandle = ActorRef<UpdaterServer>;
 
 pub struct UpdaterServer {
     pub url: String,
@@ -29,34 +29,34 @@ impl UpdaterServer {
     }
 }
 
-impl GenServer for UpdaterServer {
-    type CallMsg = Unused;
-    type CastMsg = InMessage;
-    type OutMsg = OutMessage;
+impl Actor for UpdaterServer {
+    type Request = Unused;
+    type Message = InMessage;
+    type Reply = OutMessage;
     type Error = std::fmt::Error;
 
-    // Initializing GenServer to start periodic checks.
+    // Initializing Actor to start periodic checks.
     async fn init(
         mut self,
-        handle: &GenServerHandle<Self>,
+        handle: &ActorRef<Self>,
     ) -> Result<InitResult<Self>, Self::Error> {
         let timer = send_interval(self.periodicity, handle.clone(), InMessage::Check);
         self.timer_token = Some(timer.cancellation_token);
         Ok(Success(self))
     }
 
-    async fn handle_cast(
+    async fn handle_message(
         &mut self,
-        message: Self::CastMsg,
+        message: Self::Message,
         _handle: &UpdateServerHandle,
-    ) -> CastResponse {
+    ) -> MessageResult {
         match message {
-            Self::CastMsg::Check => {
+            Self::Message::Check => {
                 let url = self.url.clone();
                 tracing::info!("Fetching: {url}");
                 let resp = req(url).await;
                 tracing::info!("Response: {resp:?}");
-                CastResponse::NoReply
+                MessageResult::NoReply
             }
         }
     }

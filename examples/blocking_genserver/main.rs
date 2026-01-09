@@ -3,7 +3,7 @@ use std::time::Duration;
 use std::{process::exit, thread};
 
 use spawned_concurrency::tasks::{
-    CallResponse, CastResponse, GenServer, GenServerHandle, send_after,
+    RequestResult, MessageResult, Actor, ActorRef, send_after,
 };
 
 // We test a scenario with a badly behaved task
@@ -22,25 +22,25 @@ pub enum InMessage {
 }
 
 #[derive(Clone)]
-pub enum OutMsg {
+pub enum Reply {
     Count(u64),
 }
 
-impl GenServer for BadlyBehavedTask {
-    type CallMsg = InMessage;
-    type CastMsg = ();
-    type OutMsg = ();
+impl Actor for BadlyBehavedTask {
+    type Request = InMessage;
+    type Message = ();
+    type Reply = ();
     type Error = ();
 
-    async fn handle_call(
+    async fn handle_request(
         &mut self,
-        _: Self::CallMsg,
-        _: &GenServerHandle<Self>,
-    ) -> CallResponse<Self> {
-        CallResponse::Stop(())
+        _: Self::Request,
+        _: &ActorRef<Self>,
+    ) -> RequestResult<Self> {
+        RequestResult::Stop(())
     }
 
-    async fn handle_cast(&mut self, _: Self::CastMsg, _: &GenServerHandle<Self>) -> CastResponse {
+    async fn handle_message(&mut self, _: Self::Message, _: &ActorRef<Self>) -> MessageResult {
         rt::sleep(Duration::from_millis(20)).await;
         loop {
             println!("{:?}: bad still alive", thread::current().id());
@@ -61,35 +61,35 @@ impl WellBehavedTask {
     }
 }
 
-impl GenServer for WellBehavedTask {
-    type CallMsg = InMessage;
-    type CastMsg = ();
-    type OutMsg = OutMsg;
+impl Actor for WellBehavedTask {
+    type Request = InMessage;
+    type Message = ();
+    type Reply = Reply;
     type Error = ();
 
-    async fn handle_call(
+    async fn handle_request(
         &mut self,
-        message: Self::CallMsg,
-        _: &GenServerHandle<Self>,
-    ) -> CallResponse<Self> {
+        message: Self::Request,
+        _: &ActorRef<Self>,
+    ) -> RequestResult<Self> {
         match message {
             InMessage::GetCount => {
                 let count = self.count;
-                CallResponse::Reply(OutMsg::Count(count))
+                RequestResult::Reply(Reply::Count(count))
             }
-            InMessage::Stop => CallResponse::Stop(OutMsg::Count(self.count)),
+            InMessage::Stop => RequestResult::Stop(Reply::Count(self.count)),
         }
     }
 
-    async fn handle_cast(
+    async fn handle_message(
         &mut self,
-        _: Self::CastMsg,
-        handle: &GenServerHandle<Self>,
-    ) -> CastResponse {
+        _: Self::Message,
+        handle: &ActorRef<Self>,
+    ) -> MessageResult {
         self.count += 1;
         println!("{:?}: good still alive", thread::current().id());
         send_after(Duration::from_millis(100), handle.to_owned(), ());
-        CastResponse::NoReply
+        MessageResult::NoReply
     }
 }
 
@@ -107,7 +107,7 @@ pub fn main() {
         let count = goodboy.call(InMessage::GetCount).await.unwrap();
 
         match count {
-            OutMsg::Count(num) => {
+            Reply::Count(num) => {
                 assert!(num == 10);
             }
         }

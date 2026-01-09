@@ -1,17 +1,17 @@
-use crate::tasks::{GenServer, GenServerHandle};
+use crate::tasks::{Actor, ActorRef};
 use futures::{future::select, Stream, StreamExt};
 use spawned_rt::tasks::JoinHandle;
 
-/// Spawns a listener that listens to a stream and sends messages to a GenServer.
+/// Spawns a listener that listens to a stream and sends messages to an Actor.
 ///
 /// Items sent through the stream are required to be wrapped in a Result type.
 ///
 /// This function returns a handle to the spawned task and a cancellation token
 /// to stop it.
-pub fn spawn_listener<T, S>(mut handle: GenServerHandle<T>, stream: S) -> JoinHandle<()>
+pub fn spawn_listener<T, S>(mut handle: ActorRef<T>, stream: S) -> JoinHandle<()>
 where
-    T: GenServer,
-    S: Send + Stream<Item = T::CastMsg> + 'static,
+    T: Actor,
+    S: Send + Stream<Item = T::Message> + 'static,
 {
     let cancelation_token = handle.cancellation_token();
     let join_handle = spawned_rt::tasks::spawn(async move {
@@ -35,7 +35,7 @@ where
             }
         });
         match select(is_cancelled, listener_loop).await {
-            futures::future::Either::Left(_) => tracing::trace!("GenServer stopped"),
+            futures::future::Either::Left(_) => tracing::trace!("Actor stopped"),
             futures::future::Either::Right(_) => (), // Stream finished or errored out
         }
     });

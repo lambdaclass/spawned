@@ -1,7 +1,7 @@
-//! GenServer trait and structs to create an abstraction similar to Erlang gen_server.
+//! Actor trait and structs to create an abstraction similar to Erlang gen_server.
 //! See examples/name_server for a usage example.
 use crate::{
-    error::GenServerError,
+    error::ActorError,
     link::{MonitorRef, SystemMessage},
     pid::{ExitReason, HasPid, Pid},
     process_table::{self, LinkError, SystemMessageSender},
@@ -18,25 +18,25 @@ use std::{fmt::Debug, future::Future, panic::AssertUnwindSafe, sync::Arc, time::
 
 const DEFAULT_CALL_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Handle to a running GenServer.
+/// Handle to a running Actor.
 ///
-/// This handle can be used to send messages to the GenServer and to
+/// This handle can be used to send messages to the Actor and to
 /// obtain its unique process identifier (`Pid`).
 ///
 /// Handles are cheap to clone and can be shared across tasks.
 #[derive(Debug)]
-pub struct GenServerHandle<G: GenServer + 'static> {
-    /// Unique process identifier for this GenServer.
+pub struct ActorRef<G: Actor + 'static> {
+    /// Unique process identifier for this Actor.
     pid: Pid,
-    /// Channel sender for messages to the GenServer.
-    pub tx: mpsc::Sender<GenServerInMsg<G>>,
-    /// Cancellation token to stop the GenServer.
+    /// Channel sender for messages to the Actor.
+    pub tx: mpsc::Sender<ActorInMsg<G>>,
+    /// Cancellation token to stop the Actor.
     cancellation_token: CancellationToken,
     /// Channel for system messages (internal use).
     system_tx: mpsc::Sender<SystemMessage>,
 }
 
-impl<G: GenServer> Clone for GenServerHandle<G> {
+impl<G: Actor> Clone for ActorRef<G> {
     fn clone(&self) -> Self {
         Self {
             pid: self.pid,
@@ -47,19 +47,19 @@ impl<G: GenServer> Clone for GenServerHandle<G> {
     }
 }
 
-impl<G: GenServer> HasPid for GenServerHandle<G> {
+impl<G: Actor> HasPid for ActorRef<G> {
     fn pid(&self) -> Pid {
         self.pid
     }
 }
 
 /// Internal sender for system messages, implementing SystemMessageSender trait.
-struct GenServerSystemSender {
+struct ActorSystemSender {
     system_tx: mpsc::Sender<SystemMessage>,
     cancellation_token: CancellationToken,
 }
 
-impl SystemMessageSender for GenServerSystemSender {
+impl SystemMessageSender for ActorSystemSender {
     fn send_down(&self, pid: Pid, monitor_ref: MonitorRef, reason: ExitReason) {
         let _ = self.system_tx.send(SystemMessage::Down {
             pid,
@@ -82,21 +82,21 @@ impl SystemMessageSender for GenServerSystemSender {
     }
 }
 
-impl<G: GenServer> GenServerHandle<G> {
+impl<G: Actor> ActorRef<G> {
     fn new(gen_server: G) -> Self {
         let pid = Pid::new();
-        let (tx, mut rx) = mpsc::channel::<GenServerInMsg<G>>();
+        let (tx, mut rx) = mpsc::channel::<ActorInMsg<G>>();
         let (system_tx, mut system_rx) = mpsc::channel::<SystemMessage>();
         let cancellation_token = CancellationToken::new();
 
         // Create the system message sender and register with process table
-        let system_sender = Arc::new(GenServerSystemSender {
+        let system_sender = Arc::new(ActorSystemSender {
             system_tx: system_tx.clone(),
             cancellation_token: cancellation_token.clone(),
         });
         process_table::register(pid, system_sender);
 
-        let handle = GenServerHandle {
+        let handle = ActorRef {
             pid,
             tx,
             cancellation_token,
@@ -108,16 +108,16 @@ impl<G: GenServer> GenServerHandle<G> {
             // Unregister from process table on exit
             let exit_reason = match &result {
                 Ok(_) => ExitReason::Normal,
-                Err(_) => ExitReason::Error("GenServer crashed".to_string()),
+                Err(_) => ExitReason::Error("Actor crashed".to_string()),
             };
             process_table::unregister(pid, exit_reason);
             if let Err(error) = result {
-                tracing::trace!(%error, "GenServer crashed")
+                tracing::trace!(%error, "Actor crashed")
             }
         };
 
         #[cfg(debug_assertions)]
-        // Optionally warn if the GenServer future blocks for too much time
+        // Optionally warn if the Actor future blocks for too much time
         let inner_future = warn_on_block::WarnOnBlocking::new(inner_future);
 
         // Ignore the JoinHandle for now. Maybe we'll use it in the future
@@ -128,18 +128,18 @@ impl<G: GenServer> GenServerHandle<G> {
 
     fn new_blocking(gen_server: G) -> Self {
         let pid = Pid::new();
-        let (tx, mut rx) = mpsc::channel::<GenServerInMsg<G>>();
+        let (tx, mut rx) = mpsc::channel::<ActorInMsg<G>>();
         let (system_tx, mut system_rx) = mpsc::channel::<SystemMessage>();
         let cancellation_token = CancellationToken::new();
 
         // Create the system message sender and register with process table
-        let system_sender = Arc::new(GenServerSystemSender {
+        let system_sender = Arc::new(ActorSystemSender {
             system_tx: system_tx.clone(),
             cancellation_token: cancellation_token.clone(),
         });
         process_table::register(pid, system_sender);
 
-        let handle = GenServerHandle {
+        let handle = ActorRef {
             pid,
             tx,
             cancellation_token,
@@ -152,11 +152,11 @@ impl<G: GenServer> GenServerHandle<G> {
                 let result = gen_server.run(&handle, &mut rx, &mut system_rx).await;
                 let exit_reason = match &result {
                     Ok(_) => ExitReason::Normal,
-                    Err(_) => ExitReason::Error("GenServer crashed".to_string()),
+                    Err(_) => ExitReason::Error("Actor crashed".to_string()),
                 };
                 process_table::unregister(pid, exit_reason);
                 if let Err(error) = result {
-                    tracing::trace!(%error, "GenServer crashed")
+                    tracing::trace!(%error, "Actor crashed")
                 };
             })
         });
@@ -165,18 +165,18 @@ impl<G: GenServer> GenServerHandle<G> {
 
     fn new_on_thread(gen_server: G) -> Self {
         let pid = Pid::new();
-        let (tx, mut rx) = mpsc::channel::<GenServerInMsg<G>>();
+        let (tx, mut rx) = mpsc::channel::<ActorInMsg<G>>();
         let (system_tx, mut system_rx) = mpsc::channel::<SystemMessage>();
         let cancellation_token = CancellationToken::new();
 
         // Create the system message sender and register with process table
-        let system_sender = Arc::new(GenServerSystemSender {
+        let system_sender = Arc::new(ActorSystemSender {
             system_tx: system_tx.clone(),
             cancellation_token: cancellation_token.clone(),
         });
         process_table::register(pid, system_sender);
 
-        let handle = GenServerHandle {
+        let handle = ActorRef {
             pid,
             tx,
             cancellation_token,
@@ -189,57 +189,57 @@ impl<G: GenServer> GenServerHandle<G> {
                 let result = gen_server.run(&handle, &mut rx, &mut system_rx).await;
                 let exit_reason = match &result {
                     Ok(_) => ExitReason::Normal,
-                    Err(_) => ExitReason::Error("GenServer crashed".to_string()),
+                    Err(_) => ExitReason::Error("Actor crashed".to_string()),
                 };
                 process_table::unregister(pid, exit_reason);
                 if let Err(error) = result {
-                    tracing::trace!(%error, "GenServer crashed")
+                    tracing::trace!(%error, "Actor crashed")
                 };
             })
         });
         handle_clone
     }
 
-    pub fn sender(&self) -> mpsc::Sender<GenServerInMsg<G>> {
+    pub fn sender(&self) -> mpsc::Sender<ActorInMsg<G>> {
         self.tx.clone()
     }
 
-    pub async fn call(&mut self, message: G::CallMsg) -> Result<G::OutMsg, GenServerError> {
+    pub async fn call(&mut self, message: G::Request) -> Result<G::Reply, ActorError> {
         self.call_with_timeout(message, DEFAULT_CALL_TIMEOUT).await
     }
 
     pub async fn call_with_timeout(
         &mut self,
-        message: G::CallMsg,
+        message: G::Request,
         duration: Duration,
-    ) -> Result<G::OutMsg, GenServerError> {
-        let (oneshot_tx, oneshot_rx) = oneshot::channel::<Result<G::OutMsg, GenServerError>>();
-        self.tx.send(GenServerInMsg::Call {
+    ) -> Result<G::Reply, ActorError> {
+        let (oneshot_tx, oneshot_rx) = oneshot::channel::<Result<G::Reply, ActorError>>();
+        self.tx.send(ActorInMsg::Call {
             sender: oneshot_tx,
             message,
         })?;
 
         match timeout(duration, oneshot_rx).await {
             Ok(Ok(result)) => result,
-            Ok(Err(_)) => Err(GenServerError::Server),
-            Err(_) => Err(GenServerError::CallTimeout),
+            Ok(Err(_)) => Err(ActorError::Server),
+            Err(_) => Err(ActorError::RequestTimeout),
         }
     }
 
-    pub async fn cast(&mut self, message: G::CastMsg) -> Result<(), GenServerError> {
+    pub async fn cast(&mut self, message: G::Message) -> Result<(), ActorError> {
         self.tx
-            .send(GenServerInMsg::Cast { message })
-            .map_err(|_error| GenServerError::Server)
+            .send(ActorInMsg::Cast { message })
+            .map_err(|_error| ActorError::Server)
     }
 
     pub fn cancellation_token(&self) -> CancellationToken {
         self.cancellation_token.clone()
     }
 
-    /// Stop the GenServer by cancelling its token.
+    /// Stop the Actor by cancelling its token.
     ///
     /// This is a convenience method equivalent to `cancellation_token().cancel()`.
-    /// The GenServer will exit and call its `teardown` method.
+    /// The Actor will exit and call its `teardown` method.
     pub fn stop(&self) {
         self.cancellation_token.cancel();
     }
@@ -367,49 +367,49 @@ impl<G: GenServer> GenServerHandle<G> {
     }
 }
 
-pub enum GenServerInMsg<G: GenServer> {
+pub enum ActorInMsg<G: Actor> {
     Call {
-        sender: oneshot::Sender<Result<G::OutMsg, GenServerError>>,
-        message: G::CallMsg,
+        sender: oneshot::Sender<Result<G::Reply, ActorError>>,
+        message: G::Request,
     },
     Cast {
-        message: G::CastMsg,
+        message: G::Message,
     },
 }
 
-pub enum CallResponse<G: GenServer> {
-    Reply(G::OutMsg),
+pub enum RequestResult<G: Actor> {
+    Reply(G::Reply),
     Unused,
-    Stop(G::OutMsg),
+    Stop(G::Reply),
 }
 
-pub enum CastResponse {
+pub enum MessageResult {
     NoReply,
     Unused,
     Stop,
 }
 
 /// Response from handle_info callback.
-pub enum InfoResponse {
+pub enum InfoResult {
     /// Continue running, message was handled.
     NoReply,
-    /// Stop the GenServer.
+    /// Stop the Actor.
     Stop,
 }
 
-pub enum InitResult<G: GenServer> {
+pub enum InitResult<G: Actor> {
     Success(G),
     NoSuccess(G),
 }
 
-pub trait GenServer: Send + Sized {
-    type CallMsg: Clone + Send + Sized + Sync;
-    type CastMsg: Clone + Send + Sized + Sync;
-    type OutMsg: Send + Sized;
+pub trait Actor: Send + Sized {
+    type Request: Clone + Send + Sized + Sync;
+    type Message: Clone + Send + Sized + Sync;
+    type Reply: Send + Sized;
     type Error: Debug + Send;
 
-    fn start(self) -> GenServerHandle<Self> {
-        GenServerHandle::new(self)
+    fn start(self) -> ActorRef<Self> {
+        ActorRef::new(self)
     }
 
     /// Tokio tasks depend on a collaborative multitasking model. "Work stealing" can't
@@ -417,23 +417,23 @@ pub trait GenServer: Send + Sized {
     /// or other blocking tasks need to be in their own separate thread, and the OS
     /// will manage them through hardware interrupts.
     /// `start_blocking` provides such a thread.
-    fn start_blocking(self) -> GenServerHandle<Self> {
-        GenServerHandle::new_blocking(self)
+    fn start_blocking(self) -> ActorRef<Self> {
+        ActorRef::new_blocking(self)
     }
 
-    /// For some "singleton" GenServers that run throughout the whole execution of the
+    /// For some "singleton" Actors that run throughout the whole execution of the
     /// program, it makes sense to run in their own dedicated thread to avoid interference
     /// with the rest of the tasks' runtime.
     /// The use of `tokio::task::spawn_blocking` is not recommended for these scenarios
     /// as it is a limited thread pool better suited for blocking IO tasks that eventually end.
-    fn start_on_thread(self) -> GenServerHandle<Self> {
-        GenServerHandle::new_on_thread(self)
+    fn start_on_thread(self) -> ActorRef<Self> {
+        ActorRef::new_on_thread(self)
     }
 
-    /// Start the GenServer and create a bidirectional link with another process.
+    /// Start the Actor and create a bidirectional link with another process.
     ///
     /// This is equivalent to calling `start()` followed by `link()`, but as an
-    /// atomic operation. If the link fails, the GenServer is stopped.
+    /// atomic operation. If the link fails, the Actor is stopped.
     ///
     /// # Example
     ///
@@ -442,17 +442,17 @@ pub trait GenServer: Send + Sized {
     /// let child = ChildServer::new().start_linked(&parent)?;
     /// // Now if either crashes, the other will be notified
     /// ```
-    fn start_linked(self, other: &impl HasPid) -> Result<GenServerHandle<Self>, LinkError> {
+    fn start_linked(self, other: &impl HasPid) -> Result<ActorRef<Self>, LinkError> {
         let handle = self.start();
         handle.link(other)?;
         Ok(handle)
     }
 
-    /// Start the GenServer and set up monitoring from another process.
+    /// Start the Actor and set up monitoring from another process.
     ///
     /// This is equivalent to calling `start()` followed by `monitor()`, but as an
     /// atomic operation. The monitoring process will receive a DOWN message when
-    /// this GenServer exits.
+    /// this Actor exits.
     ///
     /// # Example
     ///
@@ -464,7 +464,7 @@ pub trait GenServer: Send + Sized {
     fn start_monitored(
         self,
         monitor_from: &impl HasPid,
-    ) -> Result<(GenServerHandle<Self>, MonitorRef), LinkError> {
+    ) -> Result<(ActorRef<Self>, MonitorRef), LinkError> {
         let handle = self.start();
         let monitor_ref = monitor_from.pid();
         let actual_ref = process_table::monitor(monitor_ref, handle.pid())?;
@@ -473,22 +473,22 @@ pub trait GenServer: Send + Sized {
 
     fn run(
         self,
-        handle: &GenServerHandle<Self>,
-        rx: &mut mpsc::Receiver<GenServerInMsg<Self>>,
+        handle: &ActorRef<Self>,
+        rx: &mut mpsc::Receiver<ActorInMsg<Self>>,
         system_rx: &mut mpsc::Receiver<SystemMessage>,
-    ) -> impl Future<Output = Result<(), GenServerError>> + Send {
+    ) -> impl Future<Output = Result<(), ActorError>> + Send {
         async {
             let res = match self.init(handle).await {
                 Ok(Success(new_state)) => Ok(new_state.main_loop(handle, rx, system_rx).await),
                 Ok(NoSuccess(intermediate_state)) => {
                     // new_state is NoSuccess, this means the initialization failed, but the error was handled
                     // in callback. No need to report the error.
-                    // Just skip main_loop and return the state to teardown the GenServer
+                    // Just skip main_loop and return the state to teardown the Actor
                     Ok(intermediate_state)
                 }
                 Err(err) => {
                     tracing::error!("Initialization failed with unhandled error: {err:?}");
-                    Err(GenServerError::Initialization)
+                    Err(ActorError::Initialization)
                 }
             };
 
@@ -507,15 +507,15 @@ pub trait GenServer: Send + Sized {
     /// required.
     fn init(
         self,
-        _handle: &GenServerHandle<Self>,
+        _handle: &ActorRef<Self>,
     ) -> impl Future<Output = Result<InitResult<Self>, Self::Error>> + Send {
         async { Ok(Success(self)) }
     }
 
     fn main_loop(
         mut self,
-        handle: &GenServerHandle<Self>,
-        rx: &mut mpsc::Receiver<GenServerInMsg<Self>>,
+        handle: &ActorRef<Self>,
+        rx: &mut mpsc::Receiver<ActorInMsg<Self>>,
         system_rx: &mut mpsc::Receiver<SystemMessage>,
     ) -> impl Future<Output = Self> + Send {
         async {
@@ -524,15 +524,15 @@ pub trait GenServer: Send + Sized {
                     break;
                 }
             }
-            tracing::trace!("Stopping GenServer");
+            tracing::trace!("Stopping Actor");
             self
         }
     }
 
     fn receive(
         &mut self,
-        handle: &GenServerHandle<Self>,
-        rx: &mut mpsc::Receiver<GenServerInMsg<Self>>,
+        handle: &ActorRef<Self>,
+        rx: &mut mpsc::Receiver<ActorInMsg<Self>>,
         system_rx: &mut mpsc::Receiver<SystemMessage>,
     ) -> impl Future<Output = bool> + Send {
         async move {
@@ -551,8 +551,8 @@ pub trait GenServer: Send + Sized {
                                 .await
                             {
                                 Ok(response) => match response {
-                                    InfoResponse::NoReply => true,
-                                    InfoResponse::Stop => false,
+                                    InfoResult::NoReply => true,
+                                    InfoResult::Stop => false,
                                 },
                                 Err(error) => {
                                     tracing::error!("Error in handle_info: '{error:?}'");
@@ -569,43 +569,43 @@ pub trait GenServer: Send + Sized {
 
                 message = message_fut.fuse() => {
                     match message {
-                        Some(GenServerInMsg::Call { sender, message }) => {
+                        Some(ActorInMsg::Call { sender, message }) => {
                             let (keep_running, response) =
-                                match AssertUnwindSafe(self.handle_call(message, handle))
+                                match AssertUnwindSafe(self.handle_request(message, handle))
                                     .catch_unwind()
                                     .await
                                 {
                                     Ok(response) => match response {
-                                        CallResponse::Reply(response) => (true, Ok(response)),
-                                        CallResponse::Stop(response) => (false, Ok(response)),
-                                        CallResponse::Unused => {
-                                            tracing::error!("GenServer received unexpected CallMessage");
-                                            (false, Err(GenServerError::CallMsgUnused))
+                                        RequestResult::Reply(response) => (true, Ok(response)),
+                                        RequestResult::Stop(response) => (false, Ok(response)),
+                                        RequestResult::Unused => {
+                                            tracing::error!("Actor received unexpected CallMessage");
+                                            (false, Err(ActorError::RequestUnused))
                                         }
                                     },
                                     Err(error) => {
                                         tracing::error!("Error in callback: '{error:?}'");
-                                        (false, Err(GenServerError::Callback))
+                                        (false, Err(ActorError::Callback))
                                     }
                                 };
                             // Send response back
                             if sender.send(response).is_err() {
                                 tracing::error!(
-                                    "GenServer failed to send response back, client must have died"
+                                    "Actor failed to send response back, client must have died"
                                 )
                             };
                             keep_running
                         }
-                        Some(GenServerInMsg::Cast { message }) => {
-                            match AssertUnwindSafe(self.handle_cast(message, handle))
+                        Some(ActorInMsg::Cast { message }) => {
+                            match AssertUnwindSafe(self.handle_message(message, handle))
                                 .catch_unwind()
                                 .await
                             {
                                 Ok(response) => match response {
-                                    CastResponse::NoReply => true,
-                                    CastResponse::Stop => false,
-                                    CastResponse::Unused => {
-                                        tracing::error!("GenServer received unexpected CastMessage");
+                                    MessageResult::NoReply => true,
+                                    MessageResult::Stop => false,
+                                    MessageResult::Unused => {
+                                        tracing::error!("Actor received unexpected CastMessage");
                                         false
                                     }
                                 },
@@ -625,20 +625,20 @@ pub trait GenServer: Send + Sized {
         }
     }
 
-    fn handle_call(
+    fn handle_request(
         &mut self,
-        _message: Self::CallMsg,
-        _handle: &GenServerHandle<Self>,
-    ) -> impl Future<Output = CallResponse<Self>> + Send {
-        async { CallResponse::Unused }
+        _message: Self::Request,
+        _handle: &ActorRef<Self>,
+    ) -> impl Future<Output = RequestResult<Self>> + Send {
+        async { RequestResult::Unused }
     }
 
-    fn handle_cast(
+    fn handle_message(
         &mut self,
-        _message: Self::CastMsg,
-        _handle: &GenServerHandle<Self>,
-    ) -> impl Future<Output = CastResponse> + Send {
-        async { CastResponse::Unused }
+        _message: Self::Message,
+        _handle: &ActorRef<Self>,
+    ) -> impl Future<Output = MessageResult> + Send {
+        async { MessageResult::Unused }
     }
 
     /// Handle system messages (DOWN, EXIT, Timeout).
@@ -652,9 +652,9 @@ pub trait GenServer: Send + Sized {
     fn handle_info(
         &mut self,
         _message: SystemMessage,
-        _handle: &GenServerHandle<Self>,
-    ) -> impl Future<Output = InfoResponse> + Send {
-        async { InfoResponse::NoReply }
+        _handle: &ActorRef<Self>,
+    ) -> impl Future<Output = InfoResult> + Send {
+        async { InfoResult::NoReply }
     }
 
     /// Teardown function. It's called after the stop message is received.
@@ -662,22 +662,22 @@ pub trait GenServer: Send + Sized {
     /// like closing streams, stopping timers, etc.
     fn teardown(
         self,
-        _handle: &GenServerHandle<Self>,
+        _handle: &ActorRef<Self>,
     ) -> impl Future<Output = Result<(), Self::Error>> + Send {
         async { Ok(()) }
     }
 }
 
-/// Spawns a task that awaits on a future and sends a message to a GenServer
+/// Spawns a task that awaits on a future and sends a message to a Actor
 /// on completion.
 /// This function returns a handle to the spawned task.
 pub fn send_message_on<T, U>(
-    handle: GenServerHandle<T>,
+    handle: ActorRef<T>,
     future: U,
-    message: T::CastMsg,
+    message: T::Message,
 ) -> JoinHandle<()>
 where
-    T: GenServer,
+    T: Actor,
     U: Future + Send + 'static,
     <U as Future>::Output: Send,
 {
@@ -687,7 +687,7 @@ where
         let is_cancelled = pin!(cancelation_token.cancelled());
         let signal = pin!(future);
         match future::select(is_cancelled, signal).await {
-            future::Either::Left(_) => tracing::debug!("GenServer stopped"),
+            future::Either::Left(_) => tracing::debug!("Actor stopped"),
             future::Either::Right(_) => {
                 if let Err(e) = handle_clone.cast(message).await {
                     tracing::error!("Failed to send message: {e:?}")
@@ -758,32 +758,32 @@ mod tests {
         Stop,
     }
     #[derive(Clone)]
-    pub enum OutMsg {
+    pub enum Reply {
         Count(u64),
     }
 
-    impl GenServer for BadlyBehavedTask {
-        type CallMsg = InMessage;
-        type CastMsg = Unused;
-        type OutMsg = Unused;
+    impl Actor for BadlyBehavedTask {
+        type Request = InMessage;
+        type Message = Unused;
+        type Reply = Unused;
         type Error = Unused;
 
-        async fn handle_call(
+        async fn handle_request(
             &mut self,
-            _: Self::CallMsg,
-            _: &GenServerHandle<Self>,
-        ) -> CallResponse<Self> {
-            CallResponse::Stop(Unused)
+            _: Self::Request,
+            _: &ActorRef<Self>,
+        ) -> RequestResult<Self> {
+            RequestResult::Stop(Unused)
         }
 
-        async fn handle_cast(
+        async fn handle_message(
             &mut self,
-            _: Self::CastMsg,
-            _: &GenServerHandle<Self>,
-        ) -> CastResponse {
+            _: Self::Message,
+            _: &ActorRef<Self>,
+        ) -> MessageResult {
             rt::sleep(Duration::from_millis(20)).await;
             thread::sleep(Duration::from_secs(2));
-            CastResponse::Stop
+            MessageResult::Stop
         }
     }
 
@@ -791,32 +791,32 @@ mod tests {
         pub count: u64,
     }
 
-    impl GenServer for WellBehavedTask {
-        type CallMsg = InMessage;
-        type CastMsg = Unused;
-        type OutMsg = OutMsg;
+    impl Actor for WellBehavedTask {
+        type Request = InMessage;
+        type Message = Unused;
+        type Reply = Reply;
         type Error = Unused;
 
-        async fn handle_call(
+        async fn handle_request(
             &mut self,
-            message: Self::CallMsg,
-            _: &GenServerHandle<Self>,
-        ) -> CallResponse<Self> {
+            message: Self::Request,
+            _: &ActorRef<Self>,
+        ) -> RequestResult<Self> {
             match message {
-                InMessage::GetCount => CallResponse::Reply(OutMsg::Count(self.count)),
-                InMessage::Stop => CallResponse::Stop(OutMsg::Count(self.count)),
+                InMessage::GetCount => RequestResult::Reply(Reply::Count(self.count)),
+                InMessage::Stop => RequestResult::Stop(Reply::Count(self.count)),
             }
         }
 
-        async fn handle_cast(
+        async fn handle_message(
             &mut self,
-            _: Self::CastMsg,
-            handle: &GenServerHandle<Self>,
-        ) -> CastResponse {
+            _: Self::Message,
+            handle: &ActorRef<Self>,
+        ) -> MessageResult {
             self.count += 1;
             println!("{:?}: good still alive", thread::current().id());
             send_after(Duration::from_millis(100), handle.to_owned(), Unused);
-            CastResponse::NoReply
+            MessageResult::NoReply
         }
     }
 
@@ -832,7 +832,7 @@ mod tests {
             let count = goodboy.call(InMessage::GetCount).await.unwrap();
 
             match count {
-                OutMsg::Count(num) => {
+                Reply::Count(num) => {
                     assert_ne!(num, 10);
                 }
             }
@@ -852,7 +852,7 @@ mod tests {
             let count = goodboy.call(InMessage::GetCount).await.unwrap();
 
             match count {
-                OutMsg::Count(num) => {
+                Reply::Count(num) => {
                     assert_eq!(num, 10);
                 }
             }
@@ -866,32 +866,32 @@ mod tests {
     struct SomeTask;
 
     #[derive(Clone)]
-    enum SomeTaskCallMsg {
+    enum SomeTaskRequest {
         SlowOperation,
         FastOperation,
     }
 
-    impl GenServer for SomeTask {
-        type CallMsg = SomeTaskCallMsg;
-        type CastMsg = Unused;
-        type OutMsg = Unused;
+    impl Actor for SomeTask {
+        type Request = SomeTaskRequest;
+        type Message = Unused;
+        type Reply = Unused;
         type Error = Unused;
 
-        async fn handle_call(
+        async fn handle_request(
             &mut self,
-            message: Self::CallMsg,
-            _handle: &GenServerHandle<Self>,
-        ) -> CallResponse<Self> {
+            message: Self::Request,
+            _handle: &ActorRef<Self>,
+        ) -> RequestResult<Self> {
             match message {
-                SomeTaskCallMsg::SlowOperation => {
+                SomeTaskRequest::SlowOperation => {
                     // Simulate a slow operation that will not resolve in time
                     rt::sleep(TIMEOUT_DURATION * 2).await;
-                    CallResponse::Reply(Unused)
+                    RequestResult::Reply(Unused)
                 }
-                SomeTaskCallMsg::FastOperation => {
+                SomeTaskRequest::FastOperation => {
                     // Simulate a fast operation that resolves in time
                     rt::sleep(TIMEOUT_DURATION / 2).await;
-                    CallResponse::Reply(Unused)
+                    RequestResult::Reply(Unused)
                 }
             }
         }
@@ -904,14 +904,14 @@ mod tests {
             let mut unresolving_task = SomeTask.start();
 
             let result = unresolving_task
-                .call_with_timeout(SomeTaskCallMsg::FastOperation, TIMEOUT_DURATION)
+                .call_with_timeout(SomeTaskRequest::FastOperation, TIMEOUT_DURATION)
                 .await;
             assert!(matches!(result, Ok(Unused)));
 
             let result = unresolving_task
-                .call_with_timeout(SomeTaskCallMsg::SlowOperation, TIMEOUT_DURATION)
+                .call_with_timeout(SomeTaskRequest::SlowOperation, TIMEOUT_DURATION)
                 .await;
-            assert!(matches!(result, Err(GenServerError::CallTimeout)));
+            assert!(matches!(result, Err(ActorError::RequestTimeout)));
         });
     }
 
@@ -925,21 +925,21 @@ mod tests {
         }
     }
 
-    impl GenServer for SomeTaskThatFailsOnInit {
-        type CallMsg = Unused;
-        type CastMsg = Unused;
-        type OutMsg = Unused;
+    impl Actor for SomeTaskThatFailsOnInit {
+        type Request = Unused;
+        type Message = Unused;
+        type Reply = Unused;
         type Error = Unused;
 
         async fn init(
             self,
-            _handle: &GenServerHandle<Self>,
+            _handle: &ActorRef<Self>,
         ) -> Result<InitResult<Self>, Self::Error> {
             // Simulate an initialization failure by returning NoSuccess
             Ok(NoSuccess(self))
         }
 
-        async fn teardown(self, _handle: &GenServerHandle<Self>) -> Result<(), Self::Error> {
+        async fn teardown(self, _handle: &ActorRef<Self>) -> Result<(), Self::Error> {
             self.sender_channel.lock().unwrap().close();
             Ok(())
         }
@@ -971,7 +971,7 @@ mod tests {
             let handle2 = WellBehavedTask { count: 0 }.start();
             let handle3 = WellBehavedTask { count: 0 }.start();
 
-            // Each GenServer should have a unique Pid
+            // Each Actor should have a unique Pid
             assert_ne!(handle1.pid(), handle2.pid());
             assert_ne!(handle2.pid(), handle3.pid());
             assert_ne!(handle1.pid(), handle3.pid());

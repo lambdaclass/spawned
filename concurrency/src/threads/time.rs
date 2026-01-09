@@ -2,22 +2,22 @@ use std::time::Duration;
 
 use spawned_rt::threads::{self as rt, CancellationToken, JoinHandle};
 
-use super::{GenServer, GenServerHandle};
+use super::{Actor, ActorRef};
 
 pub struct TimerHandle {
     pub join_handle: JoinHandle<()>,
     pub cancellation_token: CancellationToken,
 }
 
-// Sends a message after a given period to the specified GenServer. The task terminates
+// Sends a message after a given period to the specified Actor. The task terminates
 // once the send has completed
 pub fn send_after<T>(
     period: Duration,
-    mut handle: GenServerHandle<T>,
-    message: T::CastMsg,
+    mut handle: ActorRef<T>,
+    message: T::Message,
 ) -> TimerHandle
 where
-    T: GenServer + 'static,
+    T: Actor + 'static,
 {
     let cancellation_token = CancellationToken::new();
     let mut cloned_token = cancellation_token.clone();
@@ -33,14 +33,14 @@ where
     }
 }
 
-// Sends a message to the specified GenServe repeatedly after `Time` milliseconds.
+// Sends a message to the specified Actor repeatedly after `Time` milliseconds.
 pub fn send_interval<T>(
     period: Duration,
-    mut handle: GenServerHandle<T>,
-    message: T::CastMsg,
+    mut handle: ActorRef<T>,
+    message: T::Message,
 ) -> TimerHandle
 where
-    T: GenServer + 'static,
+    T: Actor + 'static,
 {
     let cancellation_token = CancellationToken::new();
     let mut cloned_token = cancellation_token.clone();

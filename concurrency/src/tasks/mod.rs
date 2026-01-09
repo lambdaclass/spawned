@@ -1,7 +1,7 @@
 //! spawned concurrency
 //! Runtime tasks-based traits and structs to implement concurrent code à-la-Erlang.
 
-mod gen_server;
+mod actor;
 mod process;
 mod stream;
 mod time;
@@ -11,9 +11,9 @@ mod stream_tests;
 #[cfg(test)]
 mod timer_tests;
 
-pub use gen_server::{
-    send_message_on, CallResponse, CastResponse, GenServer, GenServerHandle, GenServerInMsg,
-    InfoResponse, InitResult, InitResult::NoSuccess, InitResult::Success,
+pub use actor::{
+    send_message_on, RequestResult, MessageResult, Actor, ActorRef, ActorInMsg,
+    InfoResult, InitResult, InitResult::NoSuccess, InitResult::Success,
 };
 pub use process::{send, Process, ProcessInfo};
 pub use stream::spawn_listener;

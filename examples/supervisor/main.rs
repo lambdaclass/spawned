@@ -7,12 +7,12 @@
 //! process restart and fault tolerance.
 //!
 //! Note: This example focuses on the supervisor state management API.
-//! In a full implementation, the Supervisor would be a GenServer itself
+//! In a full implementation, the Supervisor would be a Actor itself
 //! that monitors its children and restarts them automatically.
 
 use spawned_concurrency::messages::Unused;
 use spawned_concurrency::tasks::{
-    CallResponse, GenServer, GenServerHandle, HasPid, InitResult,
+    RequestResult, Actor, ActorRef, HasPid, InitResult,
 };
 use spawned_rt::tasks as rt;
 
@@ -20,7 +20,7 @@ fn main() {
     rt::run(async {
         println!("=== Supervisor Example ===\n");
 
-        // Example 1: Using supervisor with actual GenServer
+        // Example 1: Using supervisor with actual Actor
         example_genserver_supervisor().await;
 
         // Example 2: Supervisor concepts explanation
@@ -30,7 +30,7 @@ fn main() {
     });
 }
 
-// A simple counter GenServer for demonstration
+// A simple counter Actor for demonstration
 struct Counter {
     name: String,
     count: u64,
@@ -52,44 +52,44 @@ impl Counter {
     }
 }
 
-impl GenServer for Counter {
-    type CallMsg = CounterMsg;
-    type CastMsg = Unused;
-    type OutMsg = u64;
+impl Actor for Counter {
+    type Request = CounterMsg;
+    type Message = Unused;
+    type Reply = u64;
     type Error = String;
 
     async fn init(
         self,
-        _handle: &GenServerHandle<Self>,
+        _handle: &ActorRef<Self>,
     ) -> Result<InitResult<Self>, Self::Error> {
         println!("  Counter '{}' initialized", self.name);
         Ok(InitResult::Success(self))
     }
 
-    async fn handle_call(
+    async fn handle_request(
         &mut self,
-        message: Self::CallMsg,
-        _handle: &GenServerHandle<Self>,
-    ) -> CallResponse<Self> {
+        message: Self::Request,
+        _handle: &ActorRef<Self>,
+    ) -> RequestResult<Self> {
         match message {
-            CounterMsg::Get => CallResponse::Reply(self.count),
+            CounterMsg::Get => RequestResult::Reply(self.count),
             CounterMsg::Increment => {
                 self.count += 1;
-                CallResponse::Reply(self.count)
+                RequestResult::Reply(self.count)
             }
             CounterMsg::IncrementBy(n) => {
                 self.count += n;
-                CallResponse::Reply(self.count)
+                RequestResult::Reply(self.count)
             }
         }
     }
 }
 
-/// Demonstrates using actual GenServers that could be supervised
+/// Demonstrates using actual Actors that could be supervised
 async fn example_genserver_supervisor() {
-    println!("--- Example 1: GenServers that could be supervised ---\n");
+    println!("--- Example 1: Actors that could be supervised ---\n");
 
-    // Start workers using GenServer
+    // Start workers using Actor
     let mut worker1 = Counter::named("worker1").start();
     let mut worker2 = Counter::named("worker2").start();
 
@@ -166,7 +166,7 @@ fn example_supervisor_concepts() {
 
     println!("Prevents rapid restart loops:");
     println!("  .max_restarts(5, Duration::from_secs(60))");
-    println!("");
+    println!();
     println!("If more than 5 restarts occur within 60 seconds,");
     println!("the supervisor shuts down to prevent cascading failures.");
 }

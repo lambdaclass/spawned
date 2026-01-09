@@ -2,12 +2,12 @@ use std::collections::HashMap;
 
 use spawned_concurrency::{
     messages::Unused,
-    tasks::{CallResponse, GenServer, GenServerHandle},
+    tasks::{RequestResult, Actor, ActorRef},
 };
 
 use crate::messages::{NameServerInMessage as InMessage, NameServerOutMessage as OutMessage};
 
-type NameServerHandle = GenServerHandle<NameServer>;
+type NameServerHandle = ActorRef<NameServer>;
 
 pub struct NameServer {
     inner: HashMap<String, String>,
@@ -37,28 +37,28 @@ impl NameServer {
     }
 }
 
-impl GenServer for NameServer {
-    type CallMsg = InMessage;
-    type CastMsg = Unused;
-    type OutMsg = OutMessage;
+impl Actor for NameServer {
+    type Request = InMessage;
+    type Message = Unused;
+    type Reply = OutMessage;
     type Error = std::fmt::Error;
 
-    async fn handle_call(
+    async fn handle_request(
         &mut self,
-        message: Self::CallMsg,
+        message: Self::Request,
         _handle: &NameServerHandle,
-    ) -> CallResponse<Self> {
+    ) -> RequestResult<Self> {
         match message.clone() {
-            Self::CallMsg::Add { key, value } => {
+            Self::Request::Add { key, value } => {
                 self.inner.insert(key, value);
-                CallResponse::Reply(Self::OutMsg::Ok)
+                RequestResult::Reply(Self::Reply::Ok)
             }
-            Self::CallMsg::Find { key } => match self.inner.get(&key) {
+            Self::Request::Find { key } => match self.inner.get(&key) {
                 Some(result) => {
                     let value = result.to_string();
-                    CallResponse::Reply(Self::OutMsg::Found { value })
+                    RequestResult::Reply(Self::Reply::Found { value })
                 }
-                None => CallResponse::Reply(Self::OutMsg::NotFound),
+                None => RequestResult::Reply(Self::Reply::NotFound),
             },
         }
     }

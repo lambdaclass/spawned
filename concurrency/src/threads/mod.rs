@@ -1,7 +1,7 @@
 //! spawned concurrency
 //! IO threads-based traits and structs to implement concurrent code à-la-Erlang.
 
-mod gen_server;
+mod actor;
 mod process;
 mod stream;
 mod time;
@@ -9,8 +9,8 @@ mod time;
 #[cfg(test)]
 mod timer_tests;
 
-pub use gen_server::{
-    CallResponse, CastResponse, GenServer, GenServerHandle, GenServerInMsg, InfoResponse,
+pub use actor::{
+    RequestResult, MessageResult, Actor, ActorRef, ActorInMsg, InfoResult,
     InitResult,
 };
 pub use process::{send, Process, ProcessInfo};
