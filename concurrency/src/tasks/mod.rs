@@ -2,6 +2,7 @@
 //! Runtime tasks-based traits and structs to implement concurrent code à-la-Erlang.
 
 mod gen_server;
+mod gen_statem;
 mod process;
 mod stream;
 mod time;
@@ -14,6 +15,10 @@ mod timer_tests;
 pub use gen_server::{
     send_message_on, CallResponse, CastResponse, GenServer, GenServerHandle, GenServerInMsg,
     InfoResponse, InitResult, InitResult::NoSuccess, InitResult::Success,
+};
+pub use gen_statem::{
+    Backend as StatemBackend, GenStatem, GenStatemHandle, GetStateEvent, StateResult, StatemError,
+    StatemMsg,
 };
 pub use process::{send, Process, ProcessInfo};
 pub use stream::spawn_listener;

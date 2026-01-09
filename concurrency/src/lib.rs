@@ -21,3 +21,6 @@ pub use supervisor::{
     DynamicSupervisorSpec, RestartStrategy, RestartType, Shutdown, Supervisor, SupervisorCall,
     SupervisorCast, SupervisorCounts, SupervisorError, SupervisorResponse, SupervisorSpec,
 };
+pub use tasks::{
+    GenStatem, GenStatemHandle, GetStateEvent, StateResult, StatemBackend, StatemError, StatemMsg,
+};
