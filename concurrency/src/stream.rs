@@ -1,4 +1,4 @@
-use crate::tasks::{GenServer, GenServerHandle};
+use crate::{GenServer, GenServerHandle};
 use futures::{future::select, Stream, StreamExt};
 use spawned_rt::tasks::JoinHandle;
 

@@ -1,8 +1,7 @@
 use std::collections::HashMap;
 
 use spawned_concurrency::{
-    messages::Unused,
-    tasks::{CallResponse, GenServer, GenServerHandle},
+    messages::Unused, CallResponse, GenServer, GenServerHandle,
 };
 
 use crate::messages::{NameServerInMessage as InMessage, NameServerOutMessage as OutMessage};

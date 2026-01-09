@@ -1,11 +1,7 @@
 use std::time::Duration;
 
 use spawned_concurrency::{
-    messages::Unused,
-    tasks::{
-        send_interval, CastResponse, GenServer, GenServerHandle,
-        InitResult::{self, Success},
-    },
+    messages::Unused, send_interval, CastResponse, GenServer, GenServerHandle, InitResult, Success,
 };
 use spawned_rt::tasks::CancellationToken;
 

@@ -1,6 +1,5 @@
-use crate::tasks::{
-    send_after, stream::spawn_listener, Backend, CallResponse, CastResponse, GenServer,
-    GenServerHandle,
+use crate::{
+    send_after, spawn_listener, Backend, CallResponse, CastResponse, GenServer, GenServerHandle,
 };
 use futures::{stream, StreamExt};
 use spawned_rt::tasks::{self as rt, BroadcastStream, ReceiverStream};

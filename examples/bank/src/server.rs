@@ -1,11 +1,7 @@
 use std::collections::HashMap;
 
 use spawned_concurrency::{
-    messages::Unused,
-    tasks::{
-        CallResponse, GenServer, GenServerHandle,
-        InitResult::{self, Success},
-    },
+    messages::Unused, CallResponse, GenServer, GenServerHandle, InitResult, Success,
 };
 
 use crate::messages::{BankError, BankInMessage as InMessage, BankOutMessage as OutMessage};

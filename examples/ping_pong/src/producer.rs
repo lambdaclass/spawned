@@ -1,4 +1,4 @@
-use spawned_concurrency::tasks::{self as concurrency, Process, ProcessInfo};
+use spawned_concurrency::{self as concurrency, Process, ProcessInfo};
 use spawned_rt::tasks::mpsc::Sender;
 
 use crate::messages::Message;
