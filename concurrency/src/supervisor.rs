@@ -55,6 +55,17 @@ pub enum RestartType {
     Temporary,
 }
 
+impl RestartType {
+    /// Determine if a child should be restarted based on exit reason.
+    pub fn should_restart(self, reason: &ExitReason) -> bool {
+        match self {
+            RestartType::Permanent => true,
+            RestartType::Transient => !reason.is_normal(),
+            RestartType::Temporary => false,
+        }
+    }
+}
+
 /// Child shutdown behavior.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Shutdown {
@@ -140,6 +151,21 @@ pub struct ChildSpec {
 }
 
 impl ChildSpec {
+    /// Create a new child specification with the given type.
+    fn new_with_type<F, H>(id: impl Into<String>, start: F, child_type: ChildType) -> Self
+    where
+        F: Fn() -> H + Send + Sync + 'static,
+        H: ChildHandle + 'static,
+    {
+        Self {
+            id: id.into(),
+            start: Arc::new(move || Box::new(start()) as BoxedChildHandle),
+            restart: RestartType::default(),
+            shutdown: Shutdown::default(),
+            child_type,
+        }
+    }
+
     /// Create a new child specification for a worker.
     ///
     /// # Arguments
@@ -157,13 +183,7 @@ impl ChildSpec {
         F: Fn() -> H + Send + Sync + 'static,
         H: ChildHandle + 'static,
     {
-        Self {
-            id: id.into(),
-            start: Arc::new(move || Box::new(start()) as BoxedChildHandle),
-            restart: RestartType::default(),
-            shutdown: Shutdown::default(),
-            child_type: ChildType::Worker,
-        }
+        Self::new_with_type(id, start, ChildType::Worker)
     }
 
     /// Create a new child specification for a supervisor (nested supervision).
@@ -177,13 +197,7 @@ impl ChildSpec {
         F: Fn() -> H + Send + Sync + 'static,
         H: ChildHandle + 'static,
     {
-        Self {
-            id: id.into(),
-            start: Arc::new(move || Box::new(start()) as BoxedChildHandle),
-            restart: RestartType::default(),
-            shutdown: Shutdown::default(),
-            child_type: ChildType::Supervisor,
-        }
+        Self::new_with_type(id, start, ChildType::Supervisor)
     }
 
     /// Get the ID of this child spec.
@@ -656,14 +670,11 @@ impl SupervisorState {
         }
 
         // Determine if we should restart based on restart type
-        let should_restart = match self.children.get(&child_id) {
-            Some(info) => match info.spec.restart {
-                RestartType::Permanent => true,
-                RestartType::Transient => !reason.is_normal(),
-                RestartType::Temporary => false,
-            },
-            None => false,
-        };
+        let should_restart = self
+            .children
+            .get(&child_id)
+            .map(|info| info.spec.restart.should_restart(reason))
+            .unwrap_or(false);
 
         if !should_restart {
             return Ok(Vec::new());
@@ -1199,11 +1210,7 @@ impl DynamicSupervisorState {
         };
 
         // Determine if we should restart based on restart type
-        let should_restart = match info.spec.restart {
-            RestartType::Permanent => true,
-            RestartType::Transient => !reason.is_normal(),
-            RestartType::Temporary => false,
-        };
+        let should_restart = info.spec.restart.should_restart(reason);
 
         if !should_restart {
             return Ok(());
