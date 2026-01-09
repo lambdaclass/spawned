@@ -76,6 +76,45 @@ impl Default for Shutdown {
     }
 }
 
+/// Tracks restart intensity to prevent restart storms.
+///
+/// Records restart timestamps and checks if more restarts are allowed
+/// within the configured time window.
+#[derive(Debug, Clone)]
+pub struct RestartIntensityTracker {
+    /// Maximum restarts allowed within the time window.
+    max_restarts: u32,
+    /// Time window for counting restarts.
+    max_seconds: Duration,
+    /// Timestamps of recent restarts.
+    restart_times: Vec<Instant>,
+}
+
+impl RestartIntensityTracker {
+    /// Create a new tracker with the given limits.
+    pub fn new(max_restarts: u32, max_seconds: Duration) -> Self {
+        Self {
+            max_restarts,
+            max_seconds,
+            restart_times: Vec::new(),
+        }
+    }
+
+    /// Record that a restart occurred.
+    pub fn record_restart(&mut self) {
+        self.restart_times.push(Instant::now());
+    }
+
+    /// Check if another restart is allowed within intensity limits.
+    ///
+    /// Prunes old restart times and returns true if under the limit.
+    pub fn can_restart(&mut self) -> bool {
+        let cutoff = Instant::now() - self.max_seconds;
+        self.restart_times.retain(|t| *t > cutoff);
+        (self.restart_times.len() as u32) < self.max_restarts
+    }
+}
+
 /// Type of child process.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ChildType {
@@ -449,8 +488,8 @@ struct SupervisorState {
     /// Pid to child ID mapping.
     pid_to_child: HashMap<Pid, String>,
 
-    /// Restart timestamps for rate limiting.
-    restart_times: Vec<Instant>,
+    /// Restart intensity tracker.
+    restart_tracker: RestartIntensityTracker,
 
     /// Whether we're in the process of shutting down.
     shutting_down: bool,
@@ -459,12 +498,13 @@ struct SupervisorState {
 impl SupervisorState {
     /// Create a new supervisor state from a specification.
     fn new(spec: SupervisorSpec) -> Self {
+        let restart_tracker = RestartIntensityTracker::new(spec.max_restarts, spec.max_seconds);
         Self {
             spec,
             children: HashMap::new(),
             child_order: Vec::new(),
             pid_to_child: HashMap::new(),
-            restart_times: Vec::new(),
+            restart_tracker,
             shutting_down: false,
         }
     }
@@ -576,7 +616,7 @@ impl SupervisorState {
         }
 
         // Check restart intensity
-        if !self.check_restart_intensity() {
+        if !self.restart_tracker.can_restart() {
             return Err(SupervisorError::MaxRestartsExceeded);
         }
 
@@ -610,7 +650,7 @@ impl SupervisorState {
         info.restart_count += 1;
 
         self.pid_to_child.insert(pid, id.to_string());
-        self.restart_times.push(Instant::now());
+        self.restart_tracker.record_restart();
 
         Ok(pid)
     }
@@ -700,18 +740,6 @@ impl SupervisorState {
         };
 
         Ok(to_restart)
-    }
-
-    /// Check if we're within restart intensity limits.
-    fn check_restart_intensity(&mut self) -> bool {
-        let now = Instant::now();
-        let cutoff = now - self.spec.max_seconds;
-
-        // Remove old restart times
-        self.restart_times.retain(|t| *t > cutoff);
-
-        // Check if we've exceeded the limit
-        (self.restart_times.len() as u32) < self.spec.max_restarts
     }
 
     /// Get the list of child IDs in start order.
@@ -1104,8 +1132,8 @@ struct DynamicSupervisorState {
     /// Running children indexed by Pid.
     children: HashMap<Pid, DynamicChildInfo>,
 
-    /// Restart timestamps for rate limiting.
-    restart_times: Vec<Instant>,
+    /// Restart intensity tracker.
+    restart_tracker: RestartIntensityTracker,
 
     /// Whether we're shutting down.
     shutting_down: bool,
@@ -1125,10 +1153,11 @@ struct DynamicChildInfo {
 
 impl DynamicSupervisorState {
     fn new(spec: DynamicSupervisorSpec) -> Self {
+        let restart_tracker = RestartIntensityTracker::new(spec.max_restarts, spec.max_seconds);
         Self {
             spec,
             children: HashMap::new(),
-            restart_times: Vec::new(),
+            restart_tracker,
             shutting_down: false,
         }
     }
@@ -1204,7 +1233,7 @@ impl DynamicSupervisorState {
         }
 
         // Check restart intensity
-        if !self.check_restart_intensity() {
+        if !self.restart_tracker.can_restart() {
             return Err(DynamicSupervisorError::MaxRestartsExceeded);
         }
 
@@ -1220,16 +1249,9 @@ impl DynamicSupervisorState {
         };
 
         self.children.insert(new_pid, new_info);
-        self.restart_times.push(Instant::now());
+        self.restart_tracker.record_restart();
 
         Ok(())
-    }
-
-    fn check_restart_intensity(&mut self) -> bool {
-        let now = Instant::now();
-        let cutoff = now - self.spec.max_seconds;
-        self.restart_times.retain(|t| *t > cutoff);
-        (self.restart_times.len() as u32) < self.spec.max_restarts
     }
 
     fn which_children(&self) -> Vec<Pid> {
