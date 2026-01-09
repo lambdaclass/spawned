@@ -162,11 +162,21 @@ impl SystemMessageSender for GenServerSystemSender {
     }
 }
 
+/// Internal struct holding the initialized components for a GenServer.
+struct GenServerInit<G: GenServer + 'static> {
+    pid: Pid,
+    handle: GenServerHandle<G>,
+    rx: mpsc::Receiver<GenServerInMsg<G>>,
+    system_rx: mpsc::Receiver<SystemMessage>,
+}
+
 impl<G: GenServer> GenServerHandle<G> {
-    fn new(gen_server: G) -> Self {
+    /// Common initialization for all backends.
+    /// Returns the handle and channels needed to run the GenServer.
+    fn init(gen_server: G) -> (GenServerInit<G>, G) {
         let pid = Pid::new();
-        let (tx, mut rx) = mpsc::channel::<GenServerInMsg<G>>();
-        let (system_tx, mut system_rx) = mpsc::channel::<SystemMessage>();
+        let (tx, rx) = mpsc::channel::<GenServerInMsg<G>>();
+        let (system_tx, system_rx) = mpsc::channel::<SystemMessage>();
         let cancellation_token = CancellationToken::new();
 
         // Create the system message sender and register with process table
@@ -182,99 +192,89 @@ impl<G: GenServer> GenServerHandle<G> {
             cancellation_token,
             system_tx,
         };
+
+        (
+            GenServerInit {
+                pid,
+                handle,
+                rx,
+                system_rx,
+            },
+            gen_server,
+        )
+    }
+
+    /// Run the GenServer and handle cleanup on exit.
+    async fn run_and_cleanup(
+        gen_server: G,
+        handle: &GenServerHandle<G>,
+        rx: &mut mpsc::Receiver<GenServerInMsg<G>>,
+        system_rx: &mut mpsc::Receiver<SystemMessage>,
+        pid: Pid,
+    ) {
+        let result = gen_server.run(handle, rx, system_rx).await;
+        let exit_reason = match &result {
+            Ok(_) => ExitReason::Normal,
+            Err(_) => ExitReason::Error("GenServer crashed".to_string()),
+        };
+        process_table::unregister(pid, exit_reason);
+        if let Err(error) = result {
+            tracing::trace!(%error, "GenServer crashed")
+        }
+    }
+
+    fn new(gen_server: G) -> Self {
+        let (init, gen_server) = Self::init(gen_server);
+        let GenServerInit {
+            pid,
+            handle,
+            mut rx,
+            mut system_rx,
+        } = init;
         let handle_clone = handle.clone();
+
         let inner_future = async move {
-            let result = gen_server.run(&handle, &mut rx, &mut system_rx).await;
-            // Unregister from process table on exit
-            let exit_reason = match &result {
-                Ok(_) => ExitReason::Normal,
-                Err(_) => ExitReason::Error("GenServer crashed".to_string()),
-            };
-            process_table::unregister(pid, exit_reason);
-            if let Err(error) = result {
-                tracing::trace!(%error, "GenServer crashed")
-            }
+            Self::run_and_cleanup(gen_server, &handle, &mut rx, &mut system_rx, pid).await;
         };
 
         #[cfg(debug_assertions)]
-        // Optionally warn if the GenServer future blocks for too much time
         let inner_future = warn_on_block::WarnOnBlocking::new(inner_future);
 
-        // Ignore the JoinHandle for now. Maybe we'll use it in the future
         let _join_handle = rt::spawn(inner_future);
-
         handle_clone
     }
 
     fn new_blocking(gen_server: G) -> Self {
-        let pid = Pid::new();
-        let (tx, mut rx) = mpsc::channel::<GenServerInMsg<G>>();
-        let (system_tx, mut system_rx) = mpsc::channel::<SystemMessage>();
-        let cancellation_token = CancellationToken::new();
-
-        // Create the system message sender and register with process table
-        let system_sender = Arc::new(GenServerSystemSender {
-            system_tx: system_tx.clone(),
-            cancellation_token: cancellation_token.clone(),
-        });
-        process_table::register(pid, system_sender);
-
-        let handle = GenServerHandle {
+        let (init, gen_server) = Self::init(gen_server);
+        let GenServerInit {
             pid,
-            tx,
-            cancellation_token,
-            system_tx,
-        };
+            handle,
+            mut rx,
+            mut system_rx,
+        } = init;
         let handle_clone = handle.clone();
-        // Ignore the JoinHandle for now. Maybe we'll use it in the future
+
         let _join_handle = rt::spawn_blocking(move || {
             rt::block_on(async move {
-                let result = gen_server.run(&handle, &mut rx, &mut system_rx).await;
-                let exit_reason = match &result {
-                    Ok(_) => ExitReason::Normal,
-                    Err(_) => ExitReason::Error("GenServer crashed".to_string()),
-                };
-                process_table::unregister(pid, exit_reason);
-                if let Err(error) = result {
-                    tracing::trace!(%error, "GenServer crashed")
-                };
+                Self::run_and_cleanup(gen_server, &handle, &mut rx, &mut system_rx, pid).await;
             })
         });
         handle_clone
     }
 
     fn new_on_thread(gen_server: G) -> Self {
-        let pid = Pid::new();
-        let (tx, mut rx) = mpsc::channel::<GenServerInMsg<G>>();
-        let (system_tx, mut system_rx) = mpsc::channel::<SystemMessage>();
-        let cancellation_token = CancellationToken::new();
-
-        // Create the system message sender and register with process table
-        let system_sender = Arc::new(GenServerSystemSender {
-            system_tx: system_tx.clone(),
-            cancellation_token: cancellation_token.clone(),
-        });
-        process_table::register(pid, system_sender);
-
-        let handle = GenServerHandle {
+        let (init, gen_server) = Self::init(gen_server);
+        let GenServerInit {
             pid,
-            tx,
-            cancellation_token,
-            system_tx,
-        };
+            handle,
+            mut rx,
+            mut system_rx,
+        } = init;
         let handle_clone = handle.clone();
-        // Ignore the JoinHandle for now. Maybe we'll use it in the future
+
         let _join_handle = threads::spawn(move || {
             threads::block_on(async move {
-                let result = gen_server.run(&handle, &mut rx, &mut system_rx).await;
-                let exit_reason = match &result {
-                    Ok(_) => ExitReason::Normal,
-                    Err(_) => ExitReason::Error("GenServer crashed".to_string()),
-                };
-                process_table::unregister(pid, exit_reason);
-                if let Err(error) = result {
-                    tracing::trace!(%error, "GenServer crashed")
-                };
+                Self::run_and_cleanup(gen_server, &handle, &mut rx, &mut system_rx, pid).await;
             })
         });
         handle_clone
@@ -2168,92 +2168,78 @@ mod tests {
 
     #[test]
     pub fn genserver_can_register() {
-        // Clean registry before test
-        crate::registry::clear();
-
         let runtime = rt::Runtime::new().unwrap();
         runtime.block_on(async move {
             let handle = WellBehavedTask { count: 0 }.start(ASYNC);
+            // Use unique name based on PID to avoid conflicts with parallel tests
+            let name = format!("test_genserver_{}", handle.pid().id());
 
             // Register should succeed
-            assert!(handle.register("test_genserver").is_ok());
+            assert!(handle.register(&name).is_ok());
 
             // Should be findable via registry
-            assert_eq!(
-                crate::registry::whereis("test_genserver"),
-                Some(handle.pid())
-            );
+            assert_eq!(crate::registry::whereis(&name), Some(handle.pid()));
 
             // registered_name should return the name
-            assert_eq!(
-                handle.registered_name(),
-                Some("test_genserver".to_string())
-            );
+            assert_eq!(handle.registered_name(), Some(name.clone()));
 
             // Clean up
             handle.unregister();
-            assert!(crate::registry::whereis("test_genserver").is_none());
+            assert!(crate::registry::whereis(&name).is_none());
         });
-
-        // Clean registry after test
-        crate::registry::clear();
     }
 
     #[test]
     pub fn genserver_duplicate_register_fails() {
-        // Clean registry before test
-        crate::registry::clear();
-
         let runtime = rt::Runtime::new().unwrap();
         runtime.block_on(async move {
             let handle1 = WellBehavedTask { count: 0 }.start(ASYNC);
             let handle2 = WellBehavedTask { count: 0 }.start(ASYNC);
+            // Use unique name based on PID to avoid conflicts with parallel tests
+            let name = format!("unique_name_{}", handle1.pid().id());
+            let another_name = format!("another_name_{}", handle1.pid().id());
 
             // First registration should succeed
-            assert!(handle1.register("unique_name").is_ok());
+            assert!(handle1.register(&name).is_ok());
 
             // Second registration with same name should fail
             assert_eq!(
-                handle2.register("unique_name"),
+                handle2.register(&name),
                 Err(RegistryError::AlreadyRegistered)
             );
 
             // Same process can't register twice
             assert_eq!(
-                handle1.register("another_name"),
+                handle1.register(&another_name),
                 Err(RegistryError::ProcessAlreadyNamed)
             );
-        });
 
-        // Clean registry after test
-        crate::registry::clear();
+            // Clean up
+            handle1.unregister();
+        });
     }
 
     #[test]
     pub fn genserver_unregister_allows_reregister() {
-        // Clean registry before test
-        crate::registry::clear();
-
         let runtime = rt::Runtime::new().unwrap();
         runtime.block_on(async move {
             let handle1 = WellBehavedTask { count: 0 }.start(ASYNC);
             let handle2 = WellBehavedTask { count: 0 }.start(ASYNC);
+            // Use unique name based on PID to avoid conflicts with parallel tests
+            let name = format!("shared_name_{}", handle1.pid().id());
 
             // Register first process
-            assert!(handle1.register("shared_name").is_ok());
+            assert!(handle1.register(&name).is_ok());
 
             // Unregister
             handle1.unregister();
 
             // Now second process can use the name
-            assert!(handle2.register("shared_name").is_ok());
-            assert_eq!(
-                crate::registry::whereis("shared_name"),
-                Some(handle2.pid())
-            );
-        });
+            assert!(handle2.register(&name).is_ok());
+            assert_eq!(crate::registry::whereis(&name), Some(handle2.pid()));
 
-        // Clean registry after test
-        crate::registry::clear();
+            // Clean up
+            handle2.unregister();
+        });
     }
 }
