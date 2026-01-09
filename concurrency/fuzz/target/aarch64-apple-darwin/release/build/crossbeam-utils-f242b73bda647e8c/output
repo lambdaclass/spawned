@@ -1,0 +1,10 @@
+cargo:rustc-cfg=has_min_const_fn
+cargo:rustc-check-cfg=cfg(has_atomic_u8)
+cargo:rustc-cfg=has_atomic_u8
+cargo:rustc-check-cfg=cfg(has_atomic_u16)
+cargo:rustc-cfg=has_atomic_u16
+cargo:rustc-check-cfg=cfg(has_atomic_u32)
+cargo:rustc-cfg=has_atomic_u32
+cargo:rustc-check-cfg=cfg(has_atomic_u64)
+cargo:rustc-cfg=has_atomic_u64
+cargo:rustc-check-cfg=cfg(has_atomic_u128)

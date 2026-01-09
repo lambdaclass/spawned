@@ -13,7 +13,7 @@ pub mod threads;
 // Re-export commonly used types at the crate root
 pub use link::{MonitorRef, SystemMessage};
 pub use pid::{ExitReason, HasPid, Pid};
-pub use process_table::LinkError;
+pub use process_table::{LinkError, ProcessInfo};
 pub use registry::RegistryError;
 pub use supervisor::{
     BoxedChildHandle, ChildHandle, ChildInfo, ChildSpec, ChildType, DynamicSupervisor,
