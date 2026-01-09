@@ -1,11 +1,11 @@
 use crate::{
-    send_after, spawn_listener, Backend, CallResponse, CastResponse, GenServer, GenServerHandle,
+    send_after, spawn_listener, Backend, RequestResult, MessageResult, Actor, ActorRef,
 };
 use futures::{stream, StreamExt};
 use spawned_rt::tasks::{self as rt, BroadcastStream, ReceiverStream};
 use std::time::Duration;
 
-type SummatoryHandle = GenServerHandle<Summatory>;
+type SummatoryHandle = ActorRef<Summatory>;
 
 struct Summatory {
     count: u16,
@@ -32,34 +32,34 @@ impl Summatory {
     }
 }
 
-impl GenServer for Summatory {
-    type CallMsg = (); // We only handle one type of call, so there is no need for a specific message type.
-    type CastMsg = SummatoryCastMessage;
-    type OutMsg = SummatoryOutMessage;
+impl Actor for Summatory {
+    type Request = (); // We only handle one type of call, so there is no need for a specific message type.
+    type Message = SummatoryCastMessage;
+    type Reply = SummatoryOutMessage;
     type Error = ();
 
-    async fn handle_cast(
+    async fn handle_message(
         &mut self,
-        message: Self::CastMsg,
-        _handle: &GenServerHandle<Self>,
-    ) -> CastResponse {
+        message: Self::Message,
+        _handle: &ActorRef<Self>,
+    ) -> MessageResult {
         match message {
             SummatoryCastMessage::Add(val) => {
                 self.count += val;
-                CastResponse::NoReply
+                MessageResult::NoReply
             }
-            SummatoryCastMessage::StreamError => CastResponse::Stop,
-            SummatoryCastMessage::Stop => CastResponse::Stop,
+            SummatoryCastMessage::StreamError => MessageResult::Stop,
+            SummatoryCastMessage::Stop => MessageResult::Stop,
         }
     }
 
-    async fn handle_call(
+    async fn handle_request(
         &mut self,
-        _message: Self::CallMsg,
+        _message: Self::Request,
         _handle: &SummatoryHandle,
-    ) -> CallResponse<Self> {
+    ) -> RequestResult<Self> {
         let current_value = self.count;
-        CallResponse::Reply(current_value)
+        RequestResult::Reply(current_value)
     }
 }
 
@@ -207,7 +207,7 @@ pub fn test_halting_on_stream_error() {
         rt::sleep(Duration::from_secs(1)).await;
 
         let result = Summatory::get_value(&mut summatory_handle).await;
-        // GenServer should have been terminated, hence the result should be an error
+        // Actor should have been terminated, hence the result should be an error
         assert!(result.is_err());
     })
 }

@@ -14,7 +14,7 @@
 //! # Example
 //!
 //! ```ignore
-//! use spawned_concurrency::{Process, ProcessInfo, send};
+//! use spawned_concurrency::{Process, ActorInfo, send};
 //!
 //! struct Echo {
 //!     stopped: bool,
@@ -42,18 +42,18 @@
 //! info.handle.await.unwrap();
 //! ```
 //!
-//! For more complex use cases with request-reply patterns, see [`GenServer`](crate::GenServer).
+//! For more complex use cases with request-reply patterns, see [`Actor`](crate::Actor).
 
 use spawned_rt::tasks::{self as rt, mpsc, JoinHandle};
 use std::future::Future;
 
 #[derive(Debug)]
-pub struct ProcessInfo<T> {
+pub struct ActorInfo<T> {
     pub tx: mpsc::Sender<T>,
     pub handle: JoinHandle<()>,
 }
 
-impl<T> ProcessInfo<T> {
+impl<T> ActorInfo<T> {
     pub fn sender(&self) -> mpsc::Sender<T> {
         self.tx.clone()
     }
@@ -67,14 +67,14 @@ pub trait Process<T: Send + 'static>
 where
     Self: Send + Sync + Sized + 'static,
 {
-    fn spawn(mut self) -> impl Future<Output = ProcessInfo<T>> + Send {
+    fn spawn(mut self) -> impl Future<Output = ActorInfo<T>> + Send {
         async {
             let (tx, mut rx) = mpsc::channel::<T>();
             let tx_clone = tx.clone();
             let handle = rt::spawn(async move {
                 self.run(&tx_clone, &mut rx).await;
             });
-            ProcessInfo { tx, handle }
+            ActorInfo { tx, handle }
         }
     }
 

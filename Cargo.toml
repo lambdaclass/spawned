@@ -8,8 +8,8 @@ members = [
     "examples/name_server",
     "examples/ping_pong",
     "examples/updater",
-    "examples/blocking_genserver",
-    "examples/busy_genserver_warning",
+    "examples/blocking_actor",
+    "examples/busy_actor_warning",
 ]
 
 [workspace.dependencies]

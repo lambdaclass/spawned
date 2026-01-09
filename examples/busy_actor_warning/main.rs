@@ -3,7 +3,7 @@ use std::time::Duration;
 use std::{process::exit, thread};
 use tracing::info;
 
-use spawned_concurrency::{Backend, CallResponse, CastResponse, GenServer, GenServerHandle};
+use spawned_concurrency::{Backend, RequestResult, MessageResult, Actor, ActorRef};
 
 // We test a scenario with a badly behaved task
 struct BusyWorker;
@@ -21,40 +21,40 @@ pub enum InMessage {
 }
 
 #[derive(Clone)]
-pub enum OutMsg {
+pub enum Reply {
     Count(u64),
 }
 
-impl GenServer for BusyWorker {
-    type CallMsg = InMessage;
-    type CastMsg = ();
-    type OutMsg = ();
+impl Actor for BusyWorker {
+    type Request = InMessage;
+    type Message = ();
+    type Reply = ();
     type Error = ();
 
-    async fn handle_call(
+    async fn handle_request(
         &mut self,
-        _: Self::CallMsg,
-        _: &GenServerHandle<Self>,
-    ) -> CallResponse<Self> {
-        CallResponse::Stop(())
+        _: Self::Request,
+        _: &ActorRef<Self>,
+    ) -> RequestResult<Self> {
+        RequestResult::Stop(())
     }
 
-    async fn handle_cast(
+    async fn handle_message(
         &mut self,
-        _: Self::CastMsg,
-        handle: &GenServerHandle<Self>,
-    ) -> CastResponse {
+        _: Self::Message,
+        handle: &ActorRef<Self>,
+    ) -> MessageResult {
         info!(taskid = ?rt::task_id(), "sleeping");
         thread::sleep(Duration::from_millis(542));
         handle.clone().cast(()).await.unwrap();
         // This sleep is needed to yield control to the runtime.
         // If not, the future never returns and the warning isn't emitted.
         rt::sleep(Duration::from_millis(0)).await;
-        CastResponse::NoReply
+        MessageResult::NoReply
     }
 }
 
-/// Example of a program with a semi-blocking [`GenServer`].
+/// Example of a program with a semi-blocking [`Actor`].
 /// As mentioned in the `blocking_genserver` example, tasks that block can block
 /// the entire runtime in cooperative multitasking models. This is easy to find
 /// in practice, since it appears as if the whole world stopped. However, most

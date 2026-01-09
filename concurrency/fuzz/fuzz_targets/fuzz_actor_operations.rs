@@ -3,12 +3,12 @@
 use arbitrary::Arbitrary;
 use libfuzzer_sys::fuzz_target;
 use spawned_concurrency::{
-    Backend, CallResponse, CastResponse, GenServer, GenServerHandle,
+    Backend, RequestResult, MessageResult, Actor, ActorRef,
 };
 use spawned_rt::tasks as rt;
 use std::time::Duration;
 
-/// A simple counter GenServer for fuzzing
+/// A simple counter Actor for fuzzing
 struct FuzzCounter {
     count: i64,
 }
@@ -29,40 +29,40 @@ enum CounterCast {
     Add(i64),
 }
 
-impl GenServer for FuzzCounter {
-    type CallMsg = CounterCall;
-    type CastMsg = CounterCast;
-    type OutMsg = i64;
+impl Actor for FuzzCounter {
+    type Request = CounterCall;
+    type Message = CounterCast;
+    type Reply = i64;
     type Error = ();
 
-    async fn handle_call(
+    async fn handle_request(
         &mut self,
-        message: Self::CallMsg,
-        _: &GenServerHandle<Self>,
-    ) -> CallResponse<Self> {
+        message: Self::Request,
+        _: &ActorRef<Self>,
+    ) -> RequestResult<Self> {
         match message {
-            CounterCall::Get => CallResponse::Reply(self.count),
+            CounterCall::Get => RequestResult::Reply(self.count),
             CounterCall::Increment => {
                 self.count = self.count.saturating_add(1);
-                CallResponse::Reply(self.count)
+                RequestResult::Reply(self.count)
             }
             CounterCall::Decrement => {
                 self.count = self.count.saturating_sub(1);
-                CallResponse::Reply(self.count)
+                RequestResult::Reply(self.count)
             }
             CounterCall::Add(n) => {
                 self.count = self.count.saturating_add(n);
-                CallResponse::Reply(self.count)
+                RequestResult::Reply(self.count)
             }
-            CounterCall::Stop => CallResponse::Stop(self.count),
+            CounterCall::Stop => RequestResult::Stop(self.count),
         }
     }
 
-    async fn handle_cast(
+    async fn handle_message(
         &mut self,
-        message: Self::CastMsg,
-        _: &GenServerHandle<Self>,
-    ) -> CastResponse {
+        message: Self::Message,
+        _: &ActorRef<Self>,
+    ) -> MessageResult {
         match message {
             CounterCast::Increment => {
                 self.count = self.count.saturating_add(1);
@@ -74,11 +74,11 @@ impl GenServer for FuzzCounter {
                 self.count = self.count.saturating_add(n);
             }
         }
-        CastResponse::NoReply
+        MessageResult::NoReply
     }
 }
 
-/// Operations that can be performed on a GenServer
+/// Operations that can be performed on a Actor
 #[derive(Arbitrary, Debug, Clone)]
 enum Operation {
     CallGet,

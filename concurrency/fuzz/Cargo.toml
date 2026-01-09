@@ -22,8 +22,8 @@ path = ".."
 path = "../../rt"
 
 [[bin]]
-name = "fuzz_genserver_operations"
-path = "fuzz_targets/fuzz_genserver_operations.rs"
+name = "fuzz_actor_operations"
+path = "fuzz_targets/fuzz_actor_operations.rs"
 test = false
 doc = false
 bench = false

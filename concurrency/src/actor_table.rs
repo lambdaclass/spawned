@@ -16,7 +16,7 @@ use std::sync::{Arc, RwLock};
 /// Trait for sending system messages to a process.
 ///
 /// This is implemented by the internal message sender that can deliver
-/// SystemMessage to a GenServer's mailbox.
+/// SystemMessage to a Actor's mailbox.
 pub trait SystemMessageSender: Send + Sync {
     /// Send a DOWN message (from a monitored process).
     fn send_down(&self, pid: Pid, monitor_ref: MonitorRef, reason: ExitReason);
@@ -32,7 +32,7 @@ pub trait SystemMessageSender: Send + Sync {
 }
 
 /// Entry for a registered process in the table.
-struct ProcessEntry {
+struct ActorEntry {
     /// Sender for system messages.
     sender: Arc<dyn SystemMessageSender>,
     /// Whether this process traps exits.
@@ -42,9 +42,9 @@ struct ProcessEntry {
 /// Global process table.
 ///
 /// This is a singleton that tracks all active processes, their links, and monitors.
-struct ProcessTableInner {
+struct ActorTableInner {
     /// All registered processes.
-    processes: HashMap<Pid, ProcessEntry>,
+    processes: HashMap<Pid, ActorEntry>,
 
     /// Bidirectional links: pid -> set of linked pids.
     links: HashMap<Pid, HashSet<Pid>>,
@@ -56,7 +56,7 @@ struct ProcessTableInner {
     monitored_by: HashMap<Pid, HashSet<MonitorRef>>,
 }
 
-impl ProcessTableInner {
+impl ActorTableInner {
     fn new() -> Self {
         Self {
             processes: HashMap::new(),
@@ -68,17 +68,17 @@ impl ProcessTableInner {
 }
 
 /// Global process table instance.
-static PROCESS_TABLE: std::sync::LazyLock<RwLock<ProcessTableInner>> =
-    std::sync::LazyLock::new(|| RwLock::new(ProcessTableInner::new()));
+static ACTOR_TABLE: std::sync::LazyLock<RwLock<ActorTableInner>> =
+    std::sync::LazyLock::new(|| RwLock::new(ActorTableInner::new()));
 
 /// Register a process with the table.
 ///
-/// Called when a GenServer starts.
+/// Called when a Actor starts.
 pub fn register(pid: Pid, sender: Arc<dyn SystemMessageSender>) {
-    let mut table = PROCESS_TABLE.write().unwrap();
+    let mut table = ACTOR_TABLE.write().unwrap();
     table.processes.insert(
         pid,
-        ProcessEntry {
+        ActorEntry {
             sender,
             trap_exit: false,
         },
@@ -87,7 +87,7 @@ pub fn register(pid: Pid, sender: Arc<dyn SystemMessageSender>) {
 
 /// Unregister a process from the table.
 ///
-/// Called when a GenServer terminates. Also cleans up links, monitors, and registry.
+/// Called when a Actor terminates. Also cleans up links, monitors, and registry.
 pub fn unregister(pid: Pid, reason: ExitReason) {
     // First, notify linked and monitoring processes
     notify_exit(pid, reason);
@@ -96,7 +96,7 @@ pub fn unregister(pid: Pid, reason: ExitReason) {
     registry::unregister_pid(pid);
 
     // Then clean up the table
-    let mut table = PROCESS_TABLE.write().unwrap();
+    let mut table = ACTOR_TABLE.write().unwrap();
 
     // Remove from processes
     table.processes.remove(&pid);
@@ -136,7 +136,7 @@ pub fn unregister(pid: Pid, reason: ExitReason) {
 
 /// Notify linked and monitoring processes of an exit.
 fn notify_exit(pid: Pid, reason: ExitReason) {
-    let table = PROCESS_TABLE.read().unwrap();
+    let table = ACTOR_TABLE.read().unwrap();
 
     // Notify linked processes
     if let Some(linked_pids) = table.links.get(&pid) {
@@ -176,7 +176,7 @@ pub fn link(pid_a: Pid, pid_b: Pid) -> Result<(), LinkError> {
         return Err(LinkError::SelfLink);
     }
 
-    let mut table = PROCESS_TABLE.write().unwrap();
+    let mut table = ACTOR_TABLE.write().unwrap();
 
     // Verify both processes exist
     if !table.processes.contains_key(&pid_a) {
@@ -195,7 +195,7 @@ pub fn link(pid_a: Pid, pid_b: Pid) -> Result<(), LinkError> {
 
 /// Remove a bidirectional link between two processes.
 pub fn unlink(pid_a: Pid, pid_b: Pid) {
-    let mut table = PROCESS_TABLE.write().unwrap();
+    let mut table = ACTOR_TABLE.write().unwrap();
 
     if let Some(links) = table.links.get_mut(&pid_a) {
         links.remove(&pid_b);
@@ -210,7 +210,7 @@ pub fn unlink(pid_a: Pid, pid_b: Pid) {
 /// Returns a MonitorRef that can be used to cancel the monitor.
 /// When the monitored process exits, the monitoring process receives a DOWN message.
 pub fn monitor(monitoring_pid: Pid, monitored_pid: Pid) -> Result<MonitorRef, LinkError> {
-    let mut table = PROCESS_TABLE.write().unwrap();
+    let mut table = ACTOR_TABLE.write().unwrap();
 
     // Verify monitoring process exists
     if !table.processes.contains_key(&monitoring_pid) {
@@ -244,7 +244,7 @@ pub fn monitor(monitoring_pid: Pid, monitored_pid: Pid) -> Result<MonitorRef, Li
 
 /// Stop monitoring a process.
 pub fn demonitor(monitor_ref: MonitorRef) {
-    let mut table = PROCESS_TABLE.write().unwrap();
+    let mut table = ACTOR_TABLE.write().unwrap();
 
     if let Some((_, monitored_pid)) = table.monitors.remove(&monitor_ref) {
         if let Some(refs) = table.monitored_by.get_mut(&monitored_pid) {
@@ -258,7 +258,7 @@ pub fn demonitor(monitor_ref: MonitorRef) {
 /// When trap_exit is true, EXIT messages from linked processes are delivered
 /// via handle_info instead of causing the process to crash.
 pub fn set_trap_exit(pid: Pid, trap: bool) {
-    let mut table = PROCESS_TABLE.write().unwrap();
+    let mut table = ACTOR_TABLE.write().unwrap();
     if let Some(entry) = table.processes.get_mut(&pid) {
         entry.trap_exit = trap;
     }
@@ -266,7 +266,7 @@ pub fn set_trap_exit(pid: Pid, trap: bool) {
 
 /// Check if a process is trapping exits.
 pub fn is_trapping_exit(pid: Pid) -> bool {
-    let table = PROCESS_TABLE.read().unwrap();
+    let table = ACTOR_TABLE.read().unwrap();
     table
         .processes
         .get(&pid)
@@ -276,7 +276,7 @@ pub fn is_trapping_exit(pid: Pid) -> bool {
 
 /// Check if a process is alive (registered in the table).
 pub fn is_alive(pid: Pid) -> bool {
-    let table = PROCESS_TABLE.read().unwrap();
+    let table = ACTOR_TABLE.read().unwrap();
     table
         .processes
         .get(&pid)
@@ -286,7 +286,7 @@ pub fn is_alive(pid: Pid) -> bool {
 
 /// Get all processes linked to a given process.
 pub fn get_links(pid: Pid) -> Vec<Pid> {
-    let table = PROCESS_TABLE.read().unwrap();
+    let table = ACTOR_TABLE.read().unwrap();
     table
         .links
         .get(&pid)
@@ -296,7 +296,7 @@ pub fn get_links(pid: Pid) -> Vec<Pid> {
 
 /// Get all monitor refs for monitors where pid is being monitored.
 pub fn get_monitors(pid: Pid) -> Vec<MonitorRef> {
-    let table = PROCESS_TABLE.read().unwrap();
+    let table = ACTOR_TABLE.read().unwrap();
     table
         .monitored_by
         .get(&pid)

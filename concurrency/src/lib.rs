@@ -5,7 +5,7 @@
 //! This crate provides building blocks for implementing concurrent, fault-tolerant
 //! systems using patterns inspired by Erlang/OTP:
 //!
-//! - **[`GenServer`]** - A generic server abstraction for request-reply patterns
+//! - **[`Actor`]** - A generic server abstraction for request-reply patterns
 //! - **[`Supervisor`]** - Manages child processes with automatic restart
 //! - **[`DynamicSupervisor`]** - Runtime-configurable supervisor for dynamic children
 //! - **[`Process`]** - Simple process abstraction for message passing
@@ -25,7 +25,7 @@
 //! - **Links** are bidirectional - if one process dies abnormally, linked processes die too
 //! - **Monitors** are unidirectional - the monitoring process receives a [`SystemMessage::Down`]
 //!
-//! Use [`process_table::link`] and [`process_table::monitor`] for these operations.
+//! Use [`actor_table::link`] and [`actor_table::monitor`] for these operations.
 //!
 //! ### Name Registration
 //!
@@ -43,19 +43,19 @@
 //! }
 //! ```
 //!
-//! ## Quick Start: GenServer
+//! ## Quick Start: Actor
 //!
-//! The [`GenServer`] trait is the primary abstraction for building concurrent servers:
+//! The [`Actor`] trait is the primary abstraction for building concurrent servers:
 //!
 //! ```ignore
-//! use spawned_concurrency::{GenServer, GenServerHandle, Backend};
+//! use spawned_concurrency::{Actor, ActorRef, Backend};
 //!
 //! struct Counter { count: u32 }
 //!
-//! impl GenServer for Counter {
-//!     type CallMsg = ();
-//!     type CastMsg = ();
-//!     type OutMsg = u32;
+//! impl Actor for Counter {
+//!     type Request = ();
+//!     type Message = ();
+//!     type Reply = u32;
 //!     type State = Self;
 //!     type Error = ();
 //!
@@ -63,7 +63,7 @@
 //! }
 //!
 //! // Start the server
-//! let handle = Counter { count: 0 }.start(Backend::Async);
+//! let actor_ref = Counter { count: 0 }.start(Backend::Async);
 //! ```
 //!
 //! ## Supervision Trees
@@ -81,24 +81,24 @@
 //!
 //! ## Backends
 //!
-//! GenServers can run on different backends via [`Backend`]:
+//! Actors can run on different backends via [`Backend`]:
 //! - `Backend::Async` - Tokio async tasks (default)
 //! - `Backend::Blocking` - Tokio blocking thread pool
 //! - `Backend::Thread` - Dedicated OS thread
 
 pub mod error;
-mod gen_server;
+mod actor;
 pub mod link;
 pub mod pid;
 mod process;
-pub mod process_table;
+pub mod actor_table;
 pub mod registry;
 mod stream;
 pub mod supervisor;
 mod time;
 
 #[cfg(test)]
-mod gen_server_tests;
+mod actor_tests;
 #[cfg(test)]
 mod stream_tests;
 #[cfg(test)]
@@ -106,15 +106,15 @@ mod supervisor_tests;
 #[cfg(test)]
 mod timer_tests;
 
-pub use error::GenServerError;
-pub use gen_server::{
-    send_message_on, Backend, CallResponse, CastResponse, GenServer, GenServerHandle,
-    GenServerInMsg, InitResult, InitResult::NoSuccess, InitResult::Success,
+pub use error::ActorError;
+pub use actor::{
+    send_message_on, Backend, RequestResult, MessageResult, Actor, ActorRef,
+    ActorInMsg, InitResult, InitResult::NoSuccess, InitResult::Success, InfoResult,
 };
 pub use link::{MonitorRef, SystemMessage};
 pub use pid::{ExitReason, HasPid, Pid};
-pub use process::{send, Process, ProcessInfo};
-pub use process_table::LinkError;
+pub use process::{send, Process, ActorInfo};
+pub use actor_table::LinkError;
 pub use registry::RegistryError;
 pub use stream::spawn_listener;
 pub use supervisor::{
