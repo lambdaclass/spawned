@@ -1,8 +1,6 @@
 use std::collections::HashMap;
 
-use spawned_concurrency::{
-    messages::Unused, CallResponse, GenServer, GenServerHandle,
-};
+use spawned_concurrency::{CallResponse, GenServer, GenServerHandle};
 
 use crate::messages::{NameServerInMessage as InMessage, NameServerOutMessage as OutMessage};
 
@@ -38,7 +36,7 @@ impl NameServer {
 
 impl GenServer for NameServer {
     type CallMsg = InMessage;
-    type CastMsg = Unused;
+    type CastMsg = ();
     type OutMsg = OutMessage;
     type Error = std::fmt::Error;
 

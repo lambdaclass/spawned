@@ -143,6 +143,12 @@ pub trait HasPid {
     fn pid(&self) -> Pid;
 }
 
+impl HasPid for Pid {
+    fn pid(&self) -> Pid {
+        *self
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use spawned_concurrency::{
-    messages::Unused, CallResponse, GenServer, GenServerHandle,
+    CallResponse, GenServer, GenServerHandle,
     InitResult::{self, Success},
 };
 
@@ -54,7 +54,7 @@ impl Bank {
 
 impl GenServer for Bank {
     type CallMsg = InMessage;
-    type CastMsg = Unused;
+    type CastMsg = ();
     type OutMsg = MsgResult;
     type Error = BankError;
 
