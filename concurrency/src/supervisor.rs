@@ -323,6 +323,11 @@ impl SupervisorSpec {
         self.name = Some(name.into());
         self
     }
+
+    /// Get the restart strategy.
+    pub fn strategy(&self) -> RestartStrategy {
+        self.strategy
+    }
 }
 
 impl std::fmt::Debug for SupervisorSpec {
@@ -1030,6 +1035,11 @@ impl DynamicSupervisorSpec {
     pub fn name(mut self, name: impl Into<String>) -> Self {
         self.name = Some(name.into());
         self
+    }
+
+    /// Get the maximum number of children.
+    pub fn get_max_children(&self) -> Option<usize> {
+        self.max_children
     }
 }
 

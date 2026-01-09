@@ -1,5 +1,9 @@
 //! spawned concurrency
 //! Some basic traits and structs to implement concurrent code à-la-Erlang.
+
+#[macro_use]
+mod macros;
+
 pub mod error;
 pub mod link;
 pub mod messages;
