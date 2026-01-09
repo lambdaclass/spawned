@@ -302,15 +302,15 @@ impl<G: GenServer> GenServerHandle<G> {
 
         match timeout(duration, oneshot_rx).await {
             Ok(Ok(result)) => result,
-            Ok(Err(_)) => Err(GenServerError::Server),
-            Err(_) => Err(GenServerError::CallTimeout),
+            Ok(Err(_)) => Err(GenServerError::server("response channel closed")),
+            Err(_) => Err(GenServerError::call_timeout(duration.as_millis() as u64)),
         }
     }
 
     pub async fn cast(&mut self, message: G::CastMsg) -> Result<(), GenServerError> {
         self.tx
             .send(GenServerInMsg::Cast { message })
-            .map_err(|_error| GenServerError::Server)
+            .map_err(|_error| GenServerError::channel_closed("cast channel closed"))
     }
 
     pub fn cancellation_token(&self) -> CancellationToken {
@@ -567,7 +567,7 @@ pub trait GenServer: Send + Sized {
                 }
                 Err(err) => {
                     tracing::error!("Initialization failed with unhandled error: {err:?}");
-                    Err(GenServerError::Initialization)
+                    Err(GenServerError::initialization(format!("{:?}", err)))
                 }
             };
 
@@ -690,7 +690,7 @@ pub trait GenServer: Send + Sized {
                                     Err(error) => {
                                         tracing::error!("Error in callback: '{error:?}'");
                                         sys::record_error(pid);
-                                        (false, Err(GenServerError::Callback))
+                                        (false, Err(GenServerError::callback(format!("{:?}", error))))
                                     }
                                 };
 
@@ -1038,7 +1038,7 @@ mod tests {
             let result = unresolving_task
                 .call_with_timeout(SomeTaskCallMsg::SlowOperation, TIMEOUT_DURATION)
                 .await;
-            assert!(matches!(result, Err(GenServerError::CallTimeout)));
+            assert!(matches!(result, Err(GenServerError::CallTimeout { .. })));
         });
     }
 

@@ -21,7 +21,7 @@ mod stream_tests;
 #[cfg(test)]
 mod timer_tests;
 
-pub use error::GenServerError;
+pub use error::{Error, GenServerError};
 pub use gen_server::{
     send_message_on, Backend, CallResponse, CastResponse, GenServer, GenServerHandle,
     GenServerInMsg, InitResult, InitResult::NoSuccess, InitResult::Success,
