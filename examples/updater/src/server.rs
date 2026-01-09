@@ -1,7 +1,8 @@
 use std::time::Duration;
 
 use spawned_concurrency::{
-    messages::Unused, send_interval, CastResponse, GenServer, GenServerHandle, InitResult, Success,
+    send_interval, CastResponse, GenServer, GenServerHandle,
+    InitResult::{self, Success},
 };
 use spawned_rt::tasks::CancellationToken;
 
@@ -26,7 +27,7 @@ impl UpdaterServer {
 }
 
 impl GenServer for UpdaterServer {
-    type CallMsg = Unused;
+    type CallMsg = ();
     type CastMsg = InMessage;
     type OutMsg = OutMessage;
     type Error = std::fmt::Error;

@@ -3,7 +3,6 @@
 pub mod error;
 mod gen_server;
 pub mod link;
-pub mod messages;
 pub mod pid;
 mod process;
 pub mod process_table;
@@ -13,7 +12,11 @@ pub mod supervisor;
 mod time;
 
 #[cfg(test)]
+mod gen_server_tests;
+#[cfg(test)]
 mod stream_tests;
+#[cfg(test)]
+mod supervisor_tests;
 #[cfg(test)]
 mod timer_tests;
 
@@ -29,9 +32,8 @@ pub use process_table::LinkError;
 pub use registry::RegistryError;
 pub use stream::spawn_listener;
 pub use supervisor::{
-    BoxedChildHandle, ChildHandle, ChildInfo, ChildSpec, ChildType, DynamicSupervisor,
-    DynamicSupervisorCall, DynamicSupervisorCast, DynamicSupervisorError, DynamicSupervisorResponse,
-    DynamicSupervisorSpec, RestartStrategy, RestartType, Shutdown, Supervisor, SupervisorCall,
-    SupervisorCast, SupervisorCounts, SupervisorError, SupervisorResponse, SupervisorSpec,
+    BoxedChildHandle, ChildHandle, ChildSpec, ChildType, DynamicSupervisor,
+    DynamicSupervisorError, DynamicSupervisorSpec, RestartStrategy, RestartType, Shutdown,
+    Supervisor, SupervisorError, SupervisorSpec,
 };
 pub use time::{send_after, send_interval};

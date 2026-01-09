@@ -6,10 +6,6 @@ pub enum GenServerError {
     Initialization,
     #[error("Server error")]
     Server,
-    #[error("Unsupported Call Messages on this GenServer")]
-    CallMsgUnused,
-    #[error("Unsupported Cast Messages on this GenServer")]
-    CastMsgUnused,
     #[error("Call to GenServer timed out")]
     CallTimeout,
 }

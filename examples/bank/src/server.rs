@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 
 use spawned_concurrency::{
-    messages::Unused, CallResponse, GenServer, GenServerHandle, InitResult, Success,
+    CallResponse, GenServer, GenServerHandle,
+    InitResult::{self, Success},
 };
 
 use crate::messages::{BankError, BankInMessage as InMessage, BankOutMessage as OutMessage};
@@ -53,7 +54,7 @@ impl Bank {
 
 impl GenServer for Bank {
     type CallMsg = InMessage;
-    type CastMsg = Unused;
+    type CastMsg = ();
     type OutMsg = MsgResult;
     type Error = BankError;
 
