@@ -3,7 +3,7 @@ use std::time::Duration;
 use std::{process::exit, thread};
 
 use spawned_concurrency::tasks::{
-    RequestResult, MessageResult, Actor, ActorRef, send_after,
+    RequestResult, MessageResult, Actor, ActorRef, send_after, Backend,
 };
 
 // We test a scenario with a badly behaved task
@@ -93,16 +93,30 @@ impl Actor for WellBehavedTask {
     }
 }
 
-/// Example of start_blocking to fix issues #8 https://github.com/lambdaclass/spawned/issues/8
-/// Tasks that block can block the entire tokio runtime (and other cooperative multitasking models)
-/// To fix this we implement start_blocking, which under the hood launches a new thread to deal with the issue
+/// Example demonstrating Backend selection for Actor execution.
+///
+/// This example shows how to use `start_with_backend()` to choose the right
+/// execution context for different types of actors:
+///
+/// - `Backend::Thread`: For blocking actors that would freeze the async runtime
+/// - `Backend::Async`: For well-behaved async actors (the default)
+///
+/// The problem: Tasks that block can freeze the entire tokio runtime.
+/// The solution: Use `start_with_backend(Backend::Thread)` for blocking actors.
+///
+/// See also: https://github.com/lambdaclass/spawned/issues/8
 pub fn main() {
     rt::run(async move {
-        // If we change BadlyBehavedTask to start instead, it can stop the entire program
-        let mut badboy = BadlyBehavedTask::new().start_on_thread();
+        // A blocking actor that would freeze the runtime if started with Backend::Async
+        // Using Backend::Thread gives it a dedicated OS thread where blocking is safe
+        let mut badboy = BadlyBehavedTask::new().start_with_backend(Backend::Thread);
         let _ = badboy.cast(()).await;
-        let mut goodboy = WellBehavedTask::new(0).start();
+
+        // A well-behaved async actor can use the default Backend::Async
+        // This is equivalent to calling .start()
+        let mut goodboy = WellBehavedTask::new(0).start_with_backend(Backend::Async);
         let _ = goodboy.cast(()).await;
+
         rt::sleep(Duration::from_secs(1)).await;
         let count = goodboy.call(InMessage::GetCount).await.unwrap();
 
