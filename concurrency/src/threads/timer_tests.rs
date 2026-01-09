@@ -1,4 +1,4 @@
-use crate::threads::{send_interval, CallResponse, CastResponse, GenServer, GenServerHandle};
+use crate::threads::{send_interval, CallResponse, CastResponse, GenServer, GenServerHandle, InitResult};
 use spawned_rt::threads::{self as rt, CancellationToken};
 use std::time::Duration;
 
@@ -53,14 +53,14 @@ impl GenServer for Repeater {
     type OutMsg = RepeaterOutMessage;
     type Error = ();
 
-    fn init(mut self, handle: &RepeaterHandle) -> Result<Self, Self::Error> {
+    fn init(mut self, handle: &RepeaterHandle) -> Result<InitResult<Self>, Self::Error> {
         let timer = send_interval(
             Duration::from_millis(100),
             handle.clone(),
             RepeaterCastMessage::Inc,
         );
         self.cancellation_token = Some(timer.cancellation_token);
-        Ok(self)
+        Ok(InitResult::Success(self))
     }
 
     fn handle_call(

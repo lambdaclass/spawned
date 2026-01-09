@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use spawned_concurrency::{
     messages::Unused,
-    threads::{send_after, CastResponse, GenServer, GenServerHandle},
+    threads::{send_after, CastResponse, GenServer, GenServerHandle, InitResult},
 };
 use spawned_rt::threads::block_on;
 
@@ -23,9 +23,9 @@ impl GenServer for UpdaterServer {
     type Error = std::fmt::Error;
 
     // Initializing GenServer to start periodic checks.
-    fn init(self, handle: &GenServerHandle<Self>) -> Result<Self, Self::Error> {
+    fn init(self, handle: &GenServerHandle<Self>) -> Result<InitResult<Self>, Self::Error> {
         send_after(self.periodicity, handle.clone(), InMessage::Check);
-        Ok(self)
+        Ok(InitResult::Success(self))
     }
 
     fn handle_cast(&mut self, message: Self::CastMsg, handle: &UpdateServerHandle) -> CastResponse {

@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use spawned_concurrency::{
     messages::Unused,
-    threads::{CallResponse, GenServer, GenServerHandle},
+    threads::{CallResponse, GenServer, GenServerHandle, InitResult},
 };
 
 use crate::messages::{BankError, BankInMessage as InMessage, BankOutMessage as OutMessage};
@@ -56,9 +56,9 @@ impl GenServer for Bank {
     type Error = BankError;
 
     // Initializing "main" account with 1000 in balance to test init() callback.
-    fn init(mut self, _handle: &GenServerHandle<Self>) -> Result<Self, Self::Error> {
+    fn init(mut self, _handle: &GenServerHandle<Self>) -> Result<InitResult<Self>, Self::Error> {
         self.accounts.insert("main".to_string(), 1000);
-        Ok(self)
+        Ok(InitResult::Success(self))
     }
 
     fn handle_call(&mut self, message: Self::CallMsg, _handle: &BankHandle) -> CallResponse<Self> {
