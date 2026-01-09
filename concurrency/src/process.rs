@@ -1,5 +1,48 @@
-//! Process trait and struct to create a process abstraction similar to Erlang processes.
-//! See examples/ping_pong for a usage example.
+//! Simple process abstraction for message passing.
+//!
+//! This module provides a lightweight [`Process`] trait for creating concurrent
+//! message-handling processes, similar to Erlang processes.
+//!
+//! # Overview
+//!
+//! The [`Process`] trait provides:
+//! - Automatic message loop
+//! - Initialization callback
+//! - Message handling callback
+//! - Graceful shutdown via `should_stop()`
+//!
+//! # Example
+//!
+//! ```ignore
+//! use spawned_concurrency::{Process, ProcessInfo, send};
+//!
+//! struct Echo {
+//!     stopped: bool,
+//! }
+//!
+//! impl Process<String> for Echo {
+//!     fn should_stop(&self) -> bool {
+//!         self.stopped
+//!     }
+//!
+//!     async fn handle(&mut self, message: String, tx: &Sender<String>) -> String {
+//!         if message == "STOP" {
+//!             self.stopped = true;
+//!         } else {
+//!             let _ = tx.send(message.clone());
+//!         }
+//!         message
+//!     }
+//! }
+//!
+//! // Spawn and send messages
+//! let info = Echo { stopped: false }.spawn().await;
+//! send(&info.tx, "hello".to_string());
+//! send(&info.tx, "STOP".to_string());
+//! info.handle.await.unwrap();
+//! ```
+//!
+//! For more complex use cases with request-reply patterns, see [`GenServer`](crate::GenServer).
 
 use spawned_rt::tasks::{self as rt, mpsc, JoinHandle};
 use std::future::Future;
