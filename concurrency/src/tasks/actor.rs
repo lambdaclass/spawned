@@ -7,6 +7,7 @@ use crate::{
     process_table::{self, LinkError, SystemMessageSender},
     registry::{self, RegistryError},
     tasks::InitResult::{NoSuccess, Success},
+    Backend,
 };
 use core::pin::pin;
 use futures::future::{self, FutureExt};
@@ -428,6 +429,33 @@ pub trait Actor: Send + Sized {
     /// as it is a limited thread pool better suited for blocking IO tasks that eventually end.
     fn start_on_thread(self) -> ActorRef<Self> {
         ActorRef::new_on_thread(self)
+    }
+
+    /// Start the Actor with the specified backend.
+    ///
+    /// This is the unified API for starting an Actor with explicit backend selection.
+    /// See [`Backend`] for details on each option.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use spawned_concurrency::Backend;
+    ///
+    /// // Start on async runtime (default)
+    /// let handle = MyActor::new().start_with_backend(Backend::Async);
+    ///
+    /// // Start on blocking thread pool
+    /// let handle = MyActor::new().start_with_backend(Backend::Blocking);
+    ///
+    /// // Start on dedicated thread
+    /// let handle = MyActor::new().start_with_backend(Backend::Thread);
+    /// ```
+    fn start_with_backend(self, backend: Backend) -> ActorRef<Self> {
+        match backend {
+            Backend::Async => ActorRef::new(self),
+            Backend::Blocking => ActorRef::new_blocking(self),
+            Backend::Thread => ActorRef::new_on_thread(self),
+        }
     }
 
     /// Start the Actor and create a bidirectional link with another process.

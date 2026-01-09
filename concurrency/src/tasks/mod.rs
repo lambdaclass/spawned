@@ -15,6 +15,7 @@ pub use actor::{
     send_message_on, RequestResult, MessageResult, Actor, ActorRef, ActorInMsg,
     InfoResult, InitResult, InitResult::NoSuccess, InitResult::Success,
 };
+pub use crate::Backend;
 pub use process::{send, Process, ProcessInfo};
 pub use stream::spawn_listener;
 pub use time::{send_after, send_interval};
