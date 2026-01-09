@@ -1555,6 +1555,63 @@ mod tests {
     }
 
     #[test]
+    fn test_restart_type_should_restart_permanent() {
+        // Permanent: always restart, regardless of exit reason
+        assert!(RestartType::Permanent.should_restart(&ExitReason::Normal));
+        assert!(RestartType::Permanent.should_restart(&ExitReason::Shutdown));
+        assert!(RestartType::Permanent.should_restart(&ExitReason::Error("crash".to_string())));
+        assert!(RestartType::Permanent.should_restart(&ExitReason::Kill));
+    }
+
+    #[test]
+    fn test_restart_type_should_restart_transient() {
+        // Transient: restart only on abnormal exit
+        assert!(!RestartType::Transient.should_restart(&ExitReason::Normal));
+        assert!(!RestartType::Transient.should_restart(&ExitReason::Shutdown));
+        assert!(RestartType::Transient.should_restart(&ExitReason::Error("crash".to_string())));
+        assert!(RestartType::Transient.should_restart(&ExitReason::Kill));
+    }
+
+    #[test]
+    fn test_restart_type_should_restart_temporary() {
+        // Temporary: never restart
+        assert!(!RestartType::Temporary.should_restart(&ExitReason::Normal));
+        assert!(!RestartType::Temporary.should_restart(&ExitReason::Shutdown));
+        assert!(!RestartType::Temporary.should_restart(&ExitReason::Error("crash".to_string())));
+        assert!(!RestartType::Temporary.should_restart(&ExitReason::Kill));
+    }
+
+    #[test]
+    fn test_restart_intensity_tracker_basic() {
+        let mut tracker = RestartIntensityTracker::new(3, Duration::from_secs(60));
+
+        // Initially can restart
+        assert!(tracker.can_restart());
+
+        // After 2 restarts, still can restart
+        tracker.record_restart();
+        tracker.record_restart();
+        assert!(tracker.can_restart());
+
+        // After 3rd restart, cannot restart
+        tracker.record_restart();
+        assert!(!tracker.can_restart());
+    }
+
+    #[test]
+    fn test_restart_intensity_tracker_reset() {
+        let mut tracker = RestartIntensityTracker::new(2, Duration::from_secs(60));
+
+        tracker.record_restart();
+        tracker.record_restart();
+        assert!(!tracker.can_restart());
+
+        // Reset clears all recorded restarts
+        tracker.reset();
+        assert!(tracker.can_restart());
+    }
+
+    #[test]
     fn test_shutdown_default() {
         assert_eq!(Shutdown::default(), Shutdown::Timeout(Duration::from_secs(5)));
     }
