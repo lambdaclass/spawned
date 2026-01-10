@@ -474,6 +474,7 @@ pub enum InfoResponse {
     /// Continue running, message was handled.
     NoReply,
     /// Stop the GenServer.
+    #[allow(dead_code)] // Part of public API, used by implementors
     Stop,
 }
 
@@ -1050,10 +1051,11 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::clone_on_copy)]
     pub fn backend_enum_is_copy_and_clone() {
         let backend = Backend::Async;
         let copied = backend; // Copy
-        let cloned = backend.clone(); // Clone
+        let cloned = backend.clone(); // Clone - intentionally testing Clone trait
         assert_eq!(backend, copied);
         assert_eq!(backend, cloned);
     }
