@@ -486,4 +486,100 @@ mod tests {
 
         unregister(pid1, ExitReason::Normal);
     }
+
+    #[test]
+    fn test_linked_process_killed_on_abnormal_exit() {
+        let pid1 = Pid::new();
+        let pid2 = Pid::new();
+        let sender1 = MockSender::new();
+        let sender2 = MockSender::new();
+        let sender2_clone = sender2.clone();
+
+        register(pid1, sender1);
+        register(pid2, sender2);
+
+        // Link the two processes
+        assert!(link(pid1, pid2).is_ok());
+
+        // pid1 exits abnormally - pid2 should be killed
+        unregister(pid1, ExitReason::Error("crashed".to_string()));
+
+        // Verify pid2 received a kill signal
+        let kills = sender2_clone.kill_received.read().unwrap();
+        assert_eq!(kills.len(), 1, "Linked process should be killed on abnormal exit");
+        match &kills[0] {
+            ExitReason::Linked { pid, .. } => assert_eq!(*pid, pid1),
+            other => panic!("Expected Linked exit reason, got {:?}", other),
+        }
+
+        // Clean up
+        unregister(pid2, ExitReason::Normal);
+    }
+
+    #[test]
+    fn test_linked_process_survives_normal_exit() {
+        let pid1 = Pid::new();
+        let pid2 = Pid::new();
+        let sender1 = MockSender::new();
+        let sender2 = MockSender::new();
+        let sender2_clone = sender2.clone();
+
+        register(pid1, sender1);
+        register(pid2, sender2);
+
+        // Link the two processes
+        assert!(link(pid1, pid2).is_ok());
+
+        // pid1 exits normally - pid2 should NOT be killed
+        unregister(pid1, ExitReason::Normal);
+
+        // Verify pid2 did NOT receive a kill signal
+        let kills = sender2_clone.kill_received.read().unwrap();
+        assert_eq!(kills.len(), 0, "Linked process should NOT be killed on normal exit");
+
+        // pid2 should still be alive
+        assert!(is_alive(pid2));
+
+        // Clean up
+        unregister(pid2, ExitReason::Normal);
+    }
+
+    #[test]
+    fn test_trap_exit_receives_message_instead_of_kill() {
+        let pid1 = Pid::new();
+        let pid2 = Pid::new();
+        let sender1 = MockSender::new();
+        let sender2 = MockSender::new();
+        let sender2_clone = sender2.clone();
+
+        register(pid1, sender1);
+        register(pid2, sender2);
+
+        // Link the two processes
+        assert!(link(pid1, pid2).is_ok());
+
+        // pid2 traps exits
+        set_trap_exit(pid2, true);
+
+        // pid1 exits abnormally - pid2 should receive EXIT message, not be killed
+        unregister(pid1, ExitReason::Error("crashed".to_string()));
+
+        // Verify pid2 received an EXIT message (not killed)
+        let kills = sender2_clone.kill_received.read().unwrap();
+        assert_eq!(kills.len(), 0, "Process trapping exits should NOT be killed");
+
+        let exits = sender2_clone.exit_received.read().unwrap();
+        assert_eq!(exits.len(), 1, "Process trapping exits should receive EXIT message");
+        assert_eq!(exits[0].0, pid1, "EXIT message should be from the crashed process");
+        match &exits[0].1 {
+            ExitReason::Error(msg) => assert_eq!(msg, "crashed"),
+            other => panic!("Expected Error exit reason, got {:?}", other),
+        }
+
+        // pid2 should still be alive
+        assert!(is_alive(pid2));
+
+        // Clean up
+        unregister(pid2, ExitReason::Normal);
+    }
 }
