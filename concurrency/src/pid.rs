@@ -14,6 +14,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Global counter for generating unique Pids.
 /// Each call to Pid::new() returns a unique, never-reused ID.
+#[allow(dead_code)] // Used in subsequent PR
 static NEXT_PID_ID: AtomicU64 = AtomicU64::new(1);
 
 /// A unique process identifier.
@@ -40,6 +41,7 @@ impl Pid {
     ///
     /// This is called internally when starting a new GenServer.
     /// Each call returns a Pid with a unique id.
+    #[allow(dead_code)] // Used in subsequent PR
     pub(crate) fn new() -> Self {
         Self {
             // SeqCst ensures cross-thread visibility and ordering
