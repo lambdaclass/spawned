@@ -1,0 +1,29 @@
+[package]
+name = "spawned-concurrency-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+# Prevent this package from being included in the parent workspace
+[workspace]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+arbitrary = { version = "1", features = ["derive"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "time", "sync"] }
+
+[dependencies.spawned-concurrency]
+path = ".."
+
+[dependencies.spawned-rt]
+path = "../../rt"
+
+[[bin]]
+name = "fuzz_actor_operations"
+path = "fuzz_targets/fuzz_actor_operations.rs"
+test = false
+doc = false
+bench = false
