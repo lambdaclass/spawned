@@ -25,19 +25,22 @@ const DEFAULT_CALL_TIMEOUT: Duration = Duration::from_secs(5);
 /// |---------|-----------------|----------|-------------|
 /// | `Async` | Tokio task | Non-blocking I/O, async operations | Blocks runtime if sync code runs too long |
 /// | `Blocking` | Tokio blocking pool | Short blocking operations (file I/O, DNS) | Shared pool with limited threads |
-/// | `Thread` | Dedicated OS thread | Long-running blocking work, CPU-heavy tasks | Higher memory overhead per GenServer |
+/// | `Thread` | Dedicated OS thread with own runtime | Long-running services, isolation from main runtime | Higher memory overhead per GenServer |
+///
+/// **Note**: All backends use async internally. For fully synchronous code without any async
+/// runtime, use [`threads::GenServer`](crate::threads::GenServer) instead.
 ///
 /// # Examples
 ///
 /// ```ignore
 /// // For typical async workloads (HTTP handlers, database queries)
-/// let handle = MyServer::new().start(Backend::Async);
+/// let handle = MyServer::new().start();
 ///
 /// // For occasional blocking operations (file reads, external commands)
-/// let handle = MyServer::new().start(Backend::Blocking);
+/// let handle = MyServer::new().start_with_backend(Backend::Blocking);
 ///
 /// // For CPU-intensive or permanently blocking services
-/// let handle = MyServer::new().start(Backend::Thread);
+/// let handle = MyServer::new().start_with_backend(Backend::Thread);
 /// ```
 ///
 /// # When to Use Each Backend
@@ -53,9 +56,10 @@ const DEFAULT_CALL_TIMEOUT: Duration = Duration::from_secs(5);
 /// - **Avoid when**: You need guaranteed thread availability or long-running blocks
 ///
 /// ## `Backend::Thread`
-/// - **Advantages**: Complete isolation, no interference with async runtime
-/// - **Use when**: Long-running blocking work, singleton services, CPU-bound tasks
-/// - **Avoid when**: You need many GenServers (each gets its own OS thread)
+/// - **Advantages**: Isolated from main runtime, dedicated thread won't affect other tasks
+/// - **Use when**: Long-running singleton services that shouldn't share the main runtime
+/// - **Avoid when**: You need many GenServers (each gets its own OS thread + runtime)
+/// - **Note**: Still uses async internally (own runtime). For sync code, use `threads::GenServer`
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Backend {
     /// Run on tokio async runtime (default).
@@ -81,16 +85,19 @@ pub enum Backend {
     /// limit of 512 threads. If the pool is exhausted, new blocking tasks wait.
     Blocking,
 
-    /// Run on a dedicated OS thread.
+    /// Run on a dedicated OS thread with its own async runtime.
     ///
     /// Use for GenServers that:
-    /// - Block indefinitely or for long periods
-    /// - Need guaranteed thread availability
-    /// - Should not compete with other blocking tasks
-    /// - Run CPU-intensive workloads
+    /// - Need isolation from the main tokio runtime
+    /// - Are long-running singleton services
+    /// - Should not compete with other tasks for runtime resources
     ///
-    /// Each GenServer gets its own thread, providing complete isolation from
-    /// the async runtime. Higher memory overhead (~2MB stack per thread).
+    /// Each GenServer gets its own thread with a separate tokio runtime,
+    /// providing isolation from other async tasks. Higher memory overhead
+    /// (~2MB stack per thread plus runtime overhead).
+    ///
+    /// **Note**: This still uses async internally. For fully synchronous code
+    /// without any async runtime, use [`threads::GenServer`](crate::threads::GenServer).
     Thread,
 }
 
@@ -797,7 +804,7 @@ mod tests {
     pub fn backend_async_handles_call_and_cast() {
         let runtime = rt::Runtime::new().unwrap();
         runtime.block_on(async move {
-            let mut counter = Counter { count: 0 }.start(Backend::Async);
+            let mut counter = Counter { count: 0 }.start();
 
             // Test call
             let result = counter.call(CounterCall::Get).await.unwrap();
@@ -823,7 +830,7 @@ mod tests {
     pub fn backend_blocking_handles_call_and_cast() {
         let runtime = rt::Runtime::new().unwrap();
         runtime.block_on(async move {
-            let mut counter = Counter { count: 0 }.start(Backend::Blocking);
+            let mut counter = Counter { count: 0 }.start_with_backend(Backend::Blocking);
 
             // Test call
             let result = counter.call(CounterCall::Get).await.unwrap();
@@ -849,7 +856,7 @@ mod tests {
     pub fn backend_thread_handles_call_and_cast() {
         let runtime = rt::Runtime::new().unwrap();
         runtime.block_on(async move {
-            let mut counter = Counter { count: 0 }.start(Backend::Thread);
+            let mut counter = Counter { count: 0 }.start_with_backend(Backend::Thread);
 
             // Test call
             let result = counter.call(CounterCall::Get).await.unwrap();
@@ -876,9 +883,9 @@ mod tests {
         // Similar to badly_behaved_thread but using Backend::Thread
         let runtime = rt::Runtime::new().unwrap();
         runtime.block_on(async move {
-            let mut badboy = BadlyBehavedTask.start(Backend::Thread);
+            let mut badboy = BadlyBehavedTask.start_with_backend(Backend::Thread);
             let _ = badboy.cast(Unused).await;
-            let mut goodboy = WellBehavedTask { count: 0 }.start(ASYNC);
+            let mut goodboy = WellBehavedTask { count: 0 }.start();
             let _ = goodboy.cast(Unused).await;
             rt::sleep(Duration::from_secs(1)).await;
             let count = goodboy.call(InMessage::GetCount).await.unwrap();
@@ -898,9 +905,9 @@ mod tests {
         let runtime = rt::Runtime::new().unwrap();
         runtime.block_on(async move {
             // Start counters on all three backends
-            let mut async_counter = Counter { count: 0 }.start(Backend::Async);
-            let mut blocking_counter = Counter { count: 100 }.start(Backend::Blocking);
-            let mut thread_counter = Counter { count: 200 }.start(Backend::Thread);
+            let mut async_counter = Counter { count: 0 }.start();
+            let mut blocking_counter = Counter { count: 100 }.start_with_backend(Backend::Blocking);
+            let mut thread_counter = Counter { count: 200 }.start_with_backend(Backend::Thread);
 
             // Increment each
             async_counter.call(CounterCall::Increment).await.unwrap();
@@ -928,7 +935,7 @@ mod tests {
         let runtime = rt::Runtime::new().unwrap();
         runtime.block_on(async move {
             // Using Backend::default() should work the same as Backend::Async
-            let mut counter = Counter { count: 42 }.start(Backend::default());
+            let mut counter = Counter { count: 42 }.start();
 
             let result = counter.call(CounterCall::Get).await.unwrap();
             assert_eq!(result, 42);
