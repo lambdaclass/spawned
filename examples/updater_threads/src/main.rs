@@ -1,4 +1,4 @@
-//! Example to test a recurrent gen_server.
+//! Example to test a recurrent Actor.
 //!
 //! Just activates periodically and performs an http request
 //!
@@ -9,7 +9,7 @@ mod server;
 use std::{thread, time::Duration};
 
 use server::UpdaterServer;
-use spawned_concurrency::threads::GenServer as _;
+use spawned_concurrency::threads::Actor as _;
 use spawned_rt::threads as rt;
 
 fn main() {

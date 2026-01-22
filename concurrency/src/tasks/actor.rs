@@ -1,7 +1,7 @@
-//! GenServer trait and structs to create an abstraction similar to Erlang gen_server.
+//! Actor trait and structs to create an abstraction similar to Erlang gen_server.
 //! See examples/name_server for a usage example.
 use crate::{
-    error::GenServerError,
+    error::ActorError,
     tasks::InitResult::{NoSuccess, Success},
 };
 use core::pin::pin;
@@ -12,11 +12,11 @@ use spawned_rt::{
 };
 use std::{fmt::Debug, future::Future, panic::AssertUnwindSafe, time::Duration};
 
-const DEFAULT_CALL_TIMEOUT: Duration = Duration::from_secs(5);
+const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Execution backend for GenServer.
+/// Execution backend for Actor.
 ///
-/// Determines how the GenServer's async loop is executed. Choose based on
+/// Determines how the Actor's async loop is executed. Choose based on
 /// the nature of your workload:
 ///
 /// # Backend Comparison
@@ -25,10 +25,10 @@ const DEFAULT_CALL_TIMEOUT: Duration = Duration::from_secs(5);
 /// |---------|-----------------|----------|-------------|
 /// | `Async` | Tokio task | Non-blocking I/O, async operations | Blocks runtime if sync code runs too long |
 /// | `Blocking` | Tokio blocking pool | Short blocking operations (file I/O, DNS) | Shared pool with limited threads |
-/// | `Thread` | Dedicated OS thread with own runtime | Long-running services, isolation from main runtime | Higher memory overhead per GenServer |
+/// | `Thread` | Dedicated OS thread with own runtime | Long-running services, isolation from main runtime | Higher memory overhead per Actor |
 ///
 /// **Note**: All backends use async internally. For fully synchronous code without any async
-/// runtime, use [`threads::GenServer`](crate::threads::GenServer) instead.
+/// runtime, use [`threads::Actor`](crate::threads::Actor) instead.
 ///
 /// # Examples
 ///
@@ -47,7 +47,7 @@ const DEFAULT_CALL_TIMEOUT: Duration = Duration::from_secs(5);
 ///
 /// ## `Backend::Async` (Default)
 /// - **Advantages**: Lightweight, efficient, good for high concurrency
-/// - **Use when**: Your GenServer does mostly async I/O (network, database)
+/// - **Use when**: Your Actor does mostly async I/O (network, database)
 /// - **Avoid when**: Your code blocks (e.g., `std::thread::sleep`, heavy computation)
 ///
 /// ## `Backend::Blocking`
@@ -58,16 +58,16 @@ const DEFAULT_CALL_TIMEOUT: Duration = Duration::from_secs(5);
 /// ## `Backend::Thread`
 /// - **Advantages**: Isolated from main runtime, dedicated thread won't affect other tasks
 /// - **Use when**: Long-running singleton services that shouldn't share the main runtime
-/// - **Avoid when**: You need many GenServers (each gets its own OS thread + runtime)
-/// - **Note**: Still uses async internally (own runtime). For sync code, use `threads::GenServer`
+/// - **Avoid when**: You need many Actors (each gets its own OS thread + runtime)
+/// - **Note**: Still uses async internally (own runtime). For sync code, use `threads::Actor`
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Backend {
     /// Run on tokio async runtime (default).
     ///
-    /// Best for non-blocking, async workloads. The GenServer runs as a
+    /// Best for non-blocking, async workloads. The Actor runs as a
     /// lightweight tokio task, enabling high concurrency with minimal overhead.
     ///
-    /// **Warning**: If your `handle_call` or `handle_cast` blocks synchronously
+    /// **Warning**: If your `handle_request` or `handle_message` blocks synchronously
     /// (e.g., `std::thread::sleep`, CPU-heavy loops), it will block the entire
     /// tokio runtime thread, affecting other tasks.
     #[default]
@@ -75,7 +75,7 @@ pub enum Backend {
 
     /// Run on tokio's blocking thread pool.
     ///
-    /// Use for GenServers that perform blocking operations like:
+    /// Use for Actors that perform blocking operations like:
     /// - Synchronous file I/O
     /// - DNS lookups
     /// - External process calls
@@ -87,28 +87,28 @@ pub enum Backend {
 
     /// Run on a dedicated OS thread with its own async runtime.
     ///
-    /// Use for GenServers that:
+    /// Use for Actors that:
     /// - Need isolation from the main tokio runtime
     /// - Are long-running singleton services
     /// - Should not compete with other tasks for runtime resources
     ///
-    /// Each GenServer gets its own thread with a separate tokio runtime,
+    /// Each Actor gets its own thread with a separate tokio runtime,
     /// providing isolation from other async tasks. Higher memory overhead
     /// (~2MB stack per thread plus runtime overhead).
     ///
     /// **Note**: This still uses async internally. For fully synchronous code
-    /// without any async runtime, use [`threads::GenServer`](crate::threads::GenServer).
+    /// without any async runtime, use [`threads::Actor`](crate::threads::Actor).
     Thread,
 }
 
 #[derive(Debug)]
-pub struct GenServerHandle<G: GenServer + 'static> {
-    pub tx: mpsc::Sender<GenServerInMsg<G>>,
-    /// Cancellation token to stop the GenServer
+pub struct ActorRef<A: Actor + 'static> {
+    pub tx: mpsc::Sender<ActorInMsg<A>>,
+    /// Cancellation token to stop the Actor
     cancellation_token: CancellationToken,
 }
 
-impl<G: GenServer> Clone for GenServerHandle<G> {
+impl<A: Actor> Clone for ActorRef<A> {
     fn clone(&self) -> Self {
         Self {
             tx: self.tx.clone(),
@@ -117,23 +117,23 @@ impl<G: GenServer> Clone for GenServerHandle<G> {
     }
 }
 
-impl<G: GenServer> GenServerHandle<G> {
-    fn new(gen_server: G) -> Self {
-        let (tx, mut rx) = mpsc::channel::<GenServerInMsg<G>>();
+impl<A: Actor> ActorRef<A> {
+    fn new(actor: A) -> Self {
+        let (tx, mut rx) = mpsc::channel::<ActorInMsg<A>>();
         let cancellation_token = CancellationToken::new();
-        let handle = GenServerHandle {
+        let handle = ActorRef {
             tx,
             cancellation_token,
         };
         let handle_clone = handle.clone();
         let inner_future = async move {
-            if let Err(error) = gen_server.run(&handle, &mut rx).await {
-                tracing::trace!(%error, "GenServer crashed")
+            if let Err(error) = actor.run(&handle, &mut rx).await {
+                tracing::trace!(%error, "Actor crashed")
             }
         };
 
         #[cfg(debug_assertions)]
-        // Optionally warn if the GenServer future blocks for too much time
+        // Optionally warn if the Actor future blocks for too much time
         let inner_future = warn_on_block::WarnOnBlocking::new(inner_future);
 
         // Ignore the JoinHandle for now. Maybe we'll use it in the future
@@ -142,10 +142,10 @@ impl<G: GenServer> GenServerHandle<G> {
         handle_clone
     }
 
-    fn new_blocking(gen_server: G) -> Self {
-        let (tx, mut rx) = mpsc::channel::<GenServerInMsg<G>>();
+    fn new_blocking(actor: A) -> Self {
+        let (tx, mut rx) = mpsc::channel::<ActorInMsg<A>>();
         let cancellation_token = CancellationToken::new();
-        let handle = GenServerHandle {
+        let handle = ActorRef {
             tx,
             cancellation_token,
         };
@@ -153,18 +153,18 @@ impl<G: GenServer> GenServerHandle<G> {
         // Ignore the JoinHandle for now. Maybe we'll use it in the future
         let _join_handle = rt::spawn_blocking(|| {
             rt::block_on(async move {
-                if let Err(error) = gen_server.run(&handle, &mut rx).await {
-                    tracing::trace!(%error, "GenServer crashed")
+                if let Err(error) = actor.run(&handle, &mut rx).await {
+                    tracing::trace!(%error, "Actor crashed")
                 };
             })
         });
         handle_clone
     }
 
-    fn new_on_thread(gen_server: G) -> Self {
-        let (tx, mut rx) = mpsc::channel::<GenServerInMsg<G>>();
+    fn new_on_thread(actor: A) -> Self {
+        let (tx, mut rx) = mpsc::channel::<ActorInMsg<A>>();
         let cancellation_token = CancellationToken::new();
-        let handle = GenServerHandle {
+        let handle = ActorRef {
             tx,
             cancellation_token,
         };
@@ -172,44 +172,45 @@ impl<G: GenServer> GenServerHandle<G> {
         // Ignore the JoinHandle for now. Maybe we'll use it in the future
         let _join_handle = threads::spawn(|| {
             threads::block_on(async move {
-                if let Err(error) = gen_server.run(&handle, &mut rx).await {
-                    tracing::trace!(%error, "GenServer crashed")
+                if let Err(error) = actor.run(&handle, &mut rx).await {
+                    tracing::trace!(%error, "Actor crashed")
                 };
             })
         });
         handle_clone
     }
 
-    pub fn sender(&self) -> mpsc::Sender<GenServerInMsg<G>> {
+    pub fn sender(&self) -> mpsc::Sender<ActorInMsg<A>> {
         self.tx.clone()
     }
 
-    pub async fn call(&mut self, message: G::CallMsg) -> Result<G::OutMsg, GenServerError> {
-        self.call_with_timeout(message, DEFAULT_CALL_TIMEOUT).await
+    pub async fn request(&mut self, message: A::Request) -> Result<A::Reply, ActorError> {
+        self.request_with_timeout(message, DEFAULT_REQUEST_TIMEOUT)
+            .await
     }
 
-    pub async fn call_with_timeout(
+    pub async fn request_with_timeout(
         &mut self,
-        message: G::CallMsg,
+        message: A::Request,
         duration: Duration,
-    ) -> Result<G::OutMsg, GenServerError> {
-        let (oneshot_tx, oneshot_rx) = oneshot::channel::<Result<G::OutMsg, GenServerError>>();
-        self.tx.send(GenServerInMsg::Call {
+    ) -> Result<A::Reply, ActorError> {
+        let (oneshot_tx, oneshot_rx) = oneshot::channel::<Result<A::Reply, ActorError>>();
+        self.tx.send(ActorInMsg::Request {
             sender: oneshot_tx,
             message,
         })?;
 
         match timeout(duration, oneshot_rx).await {
             Ok(Ok(result)) => result,
-            Ok(Err(_)) => Err(GenServerError::Server),
-            Err(_) => Err(GenServerError::CallTimeout),
+            Ok(Err(_)) => Err(ActorError::Server),
+            Err(_) => Err(ActorError::RequestTimeout),
         }
     }
 
-    pub async fn cast(&mut self, message: G::CastMsg) -> Result<(), GenServerError> {
+    pub async fn send(&mut self, message: A::Message) -> Result<(), ActorError> {
         self.tx
-            .send(GenServerInMsg::Cast { message })
-            .map_err(|_error| GenServerError::Server)
+            .send(ActorInMsg::Message { message })
+            .map_err(|_error| ActorError::Server)
     }
 
     pub fn cancellation_token(&self) -> CancellationToken {
@@ -217,76 +218,76 @@ impl<G: GenServer> GenServerHandle<G> {
     }
 }
 
-pub enum GenServerInMsg<G: GenServer> {
-    Call {
-        sender: oneshot::Sender<Result<G::OutMsg, GenServerError>>,
-        message: G::CallMsg,
+pub enum ActorInMsg<A: Actor> {
+    Request {
+        sender: oneshot::Sender<Result<A::Reply, ActorError>>,
+        message: A::Request,
     },
-    Cast {
-        message: G::CastMsg,
+    Message {
+        message: A::Message,
     },
 }
 
-pub enum CallResponse<G: GenServer> {
-    Reply(G::OutMsg),
+pub enum RequestResponse<A: Actor> {
+    Reply(A::Reply),
     Unused,
-    Stop(G::OutMsg),
+    Stop(A::Reply),
 }
 
-pub enum CastResponse {
+pub enum MessageResponse {
     NoReply,
     Unused,
     Stop,
 }
 
-pub enum InitResult<G: GenServer> {
-    Success(G),
-    NoSuccess(G),
+pub enum InitResult<A: Actor> {
+    Success(A),
+    NoSuccess(A),
 }
 
-pub trait GenServer: Send + Sized {
-    type CallMsg: Clone + Send + Sized + Sync;
-    type CastMsg: Clone + Send + Sized + Sync;
-    type OutMsg: Send + Sized;
+pub trait Actor: Send + Sized {
+    type Request: Clone + Send + Sized + Sync;
+    type Message: Clone + Send + Sized + Sync;
+    type Reply: Send + Sized;
     type Error: Debug + Send;
 
-    /// Start the GenServer with the default backend (Async).
-    fn start(self) -> GenServerHandle<Self> {
+    /// Start the Actor with the default backend (Async).
+    fn start(self) -> ActorRef<Self> {
         self.start_with_backend(Backend::default())
     }
 
-    /// Start the GenServer with the specified backend.
+    /// Start the Actor with the specified backend.
     ///
     /// # Arguments
     /// * `backend` - The execution backend to use:
     ///   - `Backend::Async` - Run on tokio async runtime (default, best for non-blocking workloads)
     ///   - `Backend::Blocking` - Run on tokio's blocking thread pool (for blocking operations)
     ///   - `Backend::Thread` - Run on a dedicated OS thread (for long-running blocking services)
-    fn start_with_backend(self, backend: Backend) -> GenServerHandle<Self> {
+    fn start_with_backend(self, backend: Backend) -> ActorRef<Self> {
         match backend {
-            Backend::Async => GenServerHandle::new(self),
-            Backend::Blocking => GenServerHandle::new_blocking(self),
-            Backend::Thread => GenServerHandle::new_on_thread(self),
+            Backend::Async => ActorRef::new(self),
+            Backend::Blocking => ActorRef::new_blocking(self),
+            Backend::Thread => ActorRef::new_on_thread(self),
         }
     }
 
     fn run(
         self,
-        handle: &GenServerHandle<Self>,
-        rx: &mut mpsc::Receiver<GenServerInMsg<Self>>,
-    ) -> impl Future<Output = Result<(), GenServerError>> + Send {
+        handle: &ActorRef<Self>,
+        rx: &mut mpsc::Receiver<ActorInMsg<Self>>,
+    ) -> impl Future<Output = Result<(), ActorError>> + Send {
         async {
             let res = match self.init(handle).await {
                 Ok(Success(new_state)) => Ok(new_state.main_loop(handle, rx).await),
                 Ok(NoSuccess(intermediate_state)) => {
                     // new_state is NoSuccess, this means the initialization failed, but the error was handled
                     // in callback. No need to report the error.
-                    // Just skip main_loop and return the state to teardown the GenServer
+                    // Just skip main_loop and return the state to teardown the Actor
                     Ok(intermediate_state)
                 }
                 Err(err) => {
                     tracing::error!("Initialization failed with unhandled error: {err:?}");
-                    Err(GenServerError::Initialization)
+                    Err(ActorError::Initialization)
                 }
             };
 
@@ -305,15 +306,15 @@ pub trait GenServer: Send + Sized {
     /// required.
     fn init(
         self,
-        _handle: &GenServerHandle<Self>,
+        _handle: &ActorRef<Self>,
     ) -> impl Future<Output = Result<InitResult<Self>, Self::Error>> + Send {
         async { Ok(Success(self)) }
     }
 
     fn main_loop(
         mut self,
-        handle: &GenServerHandle<Self>,
-        rx: &mut mpsc::Receiver<GenServerInMsg<Self>>,
+        handle: &ActorRef<Self>,
+        rx: &mut mpsc::Receiver<ActorInMsg<Self>>,
     ) -> impl Future<Output = Self> + Send {
         async {
             loop {
@@ -321,57 +322,57 @@ pub trait GenServer: Send + Sized {
                     break;
                 }
             }
-            tracing::trace!("Stopping GenServer");
+            tracing::trace!("Stopping Actor");
             self
         }
     }
 
     fn receive(
         &mut self,
-        handle: &GenServerHandle<Self>,
-        rx: &mut mpsc::Receiver<GenServerInMsg<Self>>,
+        handle: &ActorRef<Self>,
+        rx: &mut mpsc::Receiver<ActorInMsg<Self>>,
     ) -> impl Future<Output = bool> + Send {
         async move {
             let message = rx.recv().await;
 
             let keep_running = match message {
-                Some(GenServerInMsg::Call { sender, message }) => {
+                Some(ActorInMsg::Request { sender, message }) => {
                     let (keep_running, response) =
-                        match AssertUnwindSafe(self.handle_call(message, handle))
+                        match AssertUnwindSafe(self.handle_request(message, handle))
                             .catch_unwind()
                             .await
                         {
                             Ok(response) => match response {
-                                CallResponse::Reply(response) => (true, Ok(response)),
-                                CallResponse::Stop(response) => (false, Ok(response)),
-                                CallResponse::Unused => {
-                                    tracing::error!("GenServer received unexpected CallMessage");
-                                    (false, Err(GenServerError::CallMsgUnused))
+                                RequestResponse::Reply(response) => (true, Ok(response)),
+                                RequestResponse::Stop(response) => (false, Ok(response)),
+                                RequestResponse::Unused => {
+                                    tracing::error!("Actor received unexpected Request");
+                                    (false, Err(ActorError::RequestUnused))
                                 }
                             },
                             Err(error) => {
                                 tracing::error!("Error in callback: '{error:?}'");
-                                (false, Err(GenServerError::Callback))
+                                (false, Err(ActorError::Callback))
                             }
                         };
                     // Send response back
                     if sender.send(response).is_err() {
                         tracing::error!(
-                            "GenServer failed to send response back, client must have died"
+                            "Actor failed to send response back, client must have died"
                         )
                     };
                     keep_running
                 }
-                Some(GenServerInMsg::Cast { message }) => {
-                    match AssertUnwindSafe(self.handle_cast(message, handle))
+                Some(ActorInMsg::Message { message }) => {
+                    match AssertUnwindSafe(self.handle_message(message, handle))
                         .catch_unwind()
                         .await
                     {
                         Ok(response) => match response {
-                            CastResponse::NoReply => true,
-                            CastResponse::Stop => false,
-                            CastResponse::Unused => {
-                                tracing::error!("GenServer received unexpected CastMessage");
+                            MessageResponse::NoReply => true,
+                            MessageResponse::Stop => false,
+                            MessageResponse::Unused => {
+                                tracing::error!("Actor received unexpected Message");
                                 false
                             }
                         },
@@ -390,20 +391,20 @@ pub trait GenServer: Send + Sized {
         }
     }
 
-    fn handle_call(
+    fn handle_request(
         &mut self,
-        _message: Self::CallMsg,
-        _handle: &GenServerHandle<Self>,
-    ) -> impl Future<Output = CallResponse<Self>> + Send {
-        async { CallResponse::Unused }
+        _message: Self::Request,
+        _handle: &ActorRef<Self>,
+    ) -> impl Future<Output = RequestResponse<Self>> + Send {
+        async { RequestResponse::Unused }
     }
 
-    fn handle_cast(
+    fn handle_message(
         &mut self,
-        _message: Self::CastMsg,
-        _handle: &GenServerHandle<Self>,
-    ) -> impl Future<Output = CastResponse> + Send {
-        async { CastResponse::Unused }
+        _message: Self::Message,
+        _handle: &ActorRef<Self>,
+    ) -> impl Future<Output = MessageResponse> + Send {
+        async { MessageResponse::Unused }
     }
 
     /// Teardown function. It's called after the stop message is received.
@@ -411,22 +412,18 @@ pub trait GenServer: Send + Sized {
     /// like closing streams, stopping timers, etc.
     fn teardown(
         self,
-        _handle: &GenServerHandle<Self>,
+        _handle: &ActorRef<Self>,
     ) -> impl Future<Output = Result<(), Self::Error>> + Send {
         async { Ok(()) }
     }
 }
 
-/// Spawns a task that awaits on a future and sends a message to a GenServer
+/// Spawns a task that awaits on a future and sends a message to an Actor
 /// on completion.
 /// This function returns a handle to the spawned task.
-pub fn send_message_on<T, U>(
-    handle: GenServerHandle<T>,
-    future: U,
-    message: T::CastMsg,
-) -> JoinHandle<()>
+pub fn send_message_on<T, U>(handle: ActorRef<T>, future: U, message: T::Message) -> JoinHandle<()>
 where
-    T: GenServer,
+    T: Actor,
     U: Future + Send + 'static,
     <U as Future>::Output: Send,
 {
@@ -436,9 +433,9 @@ where
         let is_cancelled = pin!(cancelation_token.cancelled());
         let signal = pin!(future);
         match future::select(is_cancelled, signal).await {
-            future::Either::Left(_) => tracing::debug!("GenServer stopped"),
+            future::Either::Left(_) => tracing::debug!("Actor stopped"),
             future::Either::Right(_) => {
-                if let Err(e) = handle_clone.cast(message).await {
+                if let Err(e) = handle_clone.send(message).await {
                     tracing::error!("Failed to send message: {e:?}")
                 }
             }
@@ -511,28 +508,28 @@ mod tests {
         Count(u64),
     }
 
-    impl GenServer for BadlyBehavedTask {
-        type CallMsg = InMessage;
-        type CastMsg = Unused;
-        type OutMsg = Unused;
+    impl Actor for BadlyBehavedTask {
+        type Request = InMessage;
+        type Message = Unused;
+        type Reply = Unused;
         type Error = Unused;
 
-        async fn handle_call(
+        async fn handle_request(
             &mut self,
-            _: Self::CallMsg,
-            _: &GenServerHandle<Self>,
-        ) -> CallResponse<Self> {
-            CallResponse::Stop(Unused)
+            _: Self::Request,
+            _: &ActorRef<Self>,
+        ) -> RequestResponse<Self> {
+            RequestResponse::Stop(Unused)
         }
 
-        async fn handle_cast(
+        async fn handle_message(
             &mut self,
-            _: Self::CastMsg,
-            _: &GenServerHandle<Self>,
-        ) -> CastResponse {
+            _: Self::Message,
+            _: &ActorRef<Self>,
+        ) -> MessageResponse {
             rt::sleep(Duration::from_millis(20)).await;
             thread::sleep(Duration::from_secs(2));
-            CastResponse::Stop
+            MessageResponse::Stop
         }
     }
 
@@ -540,32 +537,32 @@ mod tests {
         pub count: u64,
     }
 
-    impl GenServer for WellBehavedTask {
-        type CallMsg = InMessage;
-        type CastMsg = Unused;
-        type OutMsg = OutMsg;
+    impl Actor for WellBehavedTask {
+        type Request = InMessage;
+        type Message = Unused;
+        type Reply = OutMsg;
         type Error = Unused;
 
-        async fn handle_call(
+        async fn handle_request(
             &mut self,
-            message: Self::CallMsg,
-            _: &GenServerHandle<Self>,
-        ) -> CallResponse<Self> {
+            message: Self::Request,
+            _: &ActorRef<Self>,
+        ) -> RequestResponse<Self> {
             match message {
-                InMessage::GetCount => CallResponse::Reply(OutMsg::Count(self.count)),
-                InMessage::Stop => CallResponse::Stop(OutMsg::Count(self.count)),
+                InMessage::GetCount => RequestResponse::Reply(OutMsg::Count(self.count)),
+                InMessage::Stop => RequestResponse::Stop(OutMsg::Count(self.count)),
             }
         }
 
-        async fn handle_cast(
+        async fn handle_message(
             &mut self,
-            _: Self::CastMsg,
-            handle: &GenServerHandle<Self>,
-        ) -> CastResponse {
+            _: Self::Message,
+            handle: &ActorRef<Self>,
+        ) -> MessageResponse {
             self.count += 1;
             println!("{:?}: good still alive", thread::current().id());
             send_after(Duration::from_millis(100), handle.to_owned(), Unused);
-            CastResponse::NoReply
+            MessageResponse::NoReply
         }
     }
 
@@ -576,18 +573,18 @@ mod tests {
         let runtime = rt::Runtime::new().unwrap();
         runtime.block_on(async move {
             let mut badboy = BadlyBehavedTask.start();
-            let _ = badboy.cast(Unused).await;
+            let _ = badboy.send(Unused).await;
             let mut goodboy = WellBehavedTask { count: 0 }.start();
-            let _ = goodboy.cast(Unused).await;
+            let _ = goodboy.send(Unused).await;
             rt::sleep(Duration::from_secs(1)).await;
-            let count = goodboy.call(InMessage::GetCount).await.unwrap();
+            let count = goodboy.request(InMessage::GetCount).await.unwrap();
 
             match count {
                 OutMsg::Count(num) => {
                     assert_ne!(num, 10);
                 }
             }
-            goodboy.call(InMessage::Stop).await.unwrap();
+            goodboy.request(InMessage::Stop).await.unwrap();
         });
     }
 
@@ -596,18 +593,18 @@ mod tests {
         let runtime = rt::Runtime::new().unwrap();
         runtime.block_on(async move {
             let mut badboy = BadlyBehavedTask.start_with_backend(BLOCKING);
-            let _ = badboy.cast(Unused).await;
+            let _ = badboy.send(Unused).await;
             let mut goodboy = WellBehavedTask { count: 0 }.start();
-            let _ = goodboy.cast(Unused).await;
+            let _ = goodboy.send(Unused).await;
             rt::sleep(Duration::from_secs(1)).await;
-            let count = goodboy.call(InMessage::GetCount).await.unwrap();
+            let count = goodboy.request(InMessage::GetCount).await.unwrap();
 
             match count {
                 OutMsg::Count(num) => {
                     assert_eq!(num, 10);
                 }
             }
-            goodboy.call(InMessage::Stop).await.unwrap();
+            goodboy.request(InMessage::Stop).await.unwrap();
         });
     }
 
@@ -617,32 +614,32 @@ mod tests {
     struct SomeTask;
 
     #[derive(Clone)]
-    enum SomeTaskCallMsg {
+    enum SomeTaskRequest {
         SlowOperation,
         FastOperation,
     }
 
-    impl GenServer for SomeTask {
-        type CallMsg = SomeTaskCallMsg;
-        type CastMsg = Unused;
-        type OutMsg = Unused;
+    impl Actor for SomeTask {
+        type Request = SomeTaskRequest;
+        type Message = Unused;
+        type Reply = Unused;
         type Error = Unused;
 
-        async fn handle_call(
+        async fn handle_request(
             &mut self,
-            message: Self::CallMsg,
-            _handle: &GenServerHandle<Self>,
-        ) -> CallResponse<Self> {
+            message: Self::Request,
+            _handle: &ActorRef<Self>,
+        ) -> RequestResponse<Self> {
             match message {
-                SomeTaskCallMsg::SlowOperation => {
+                SomeTaskRequest::SlowOperation => {
                     // Simulate a slow operation that will not resolve in time
                     rt::sleep(TIMEOUT_DURATION * 2).await;
-                    CallResponse::Reply(Unused)
+                    RequestResponse::Reply(Unused)
                 }
-                SomeTaskCallMsg::FastOperation => {
+                SomeTaskRequest::FastOperation => {
                     // Simulate a fast operation that resolves in time
                     rt::sleep(TIMEOUT_DURATION / 2).await;
-                    CallResponse::Reply(Unused)
+                    RequestResponse::Reply(Unused)
                 }
             }
         }
@@ -655,14 +652,14 @@ mod tests {
             let mut unresolving_task = SomeTask.start();
 
             let result = unresolving_task
-                .call_with_timeout(SomeTaskCallMsg::FastOperation, TIMEOUT_DURATION)
+                .request_with_timeout(SomeTaskRequest::FastOperation, TIMEOUT_DURATION)
                 .await;
             assert!(matches!(result, Ok(Unused)));
 
             let result = unresolving_task
-                .call_with_timeout(SomeTaskCallMsg::SlowOperation, TIMEOUT_DURATION)
+                .request_with_timeout(SomeTaskRequest::SlowOperation, TIMEOUT_DURATION)
                 .await;
-            assert!(matches!(result, Err(GenServerError::CallTimeout)));
+            assert!(matches!(result, Err(ActorError::RequestTimeout)));
         });
     }
 
@@ -676,21 +673,18 @@ mod tests {
         }
     }
 
-    impl GenServer for SomeTaskThatFailsOnInit {
-        type CallMsg = Unused;
-        type CastMsg = Unused;
-        type OutMsg = Unused;
+    impl Actor for SomeTaskThatFailsOnInit {
+        type Request = Unused;
+        type Message = Unused;
+        type Reply = Unused;
         type Error = Unused;
 
-        async fn init(
-            self,
-            _handle: &GenServerHandle<Self>,
-        ) -> Result<InitResult<Self>, Self::Error> {
+        async fn init(self, _handle: &ActorRef<Self>) -> Result<InitResult<Self>, Self::Error> {
             // Simulate an initialization failure by returning NoSuccess
             Ok(NoSuccess(self))
         }
 
-        async fn teardown(self, _handle: &GenServerHandle<Self>) -> Result<(), Self::Error> {
+        async fn teardown(self, _handle: &ActorRef<Self>) -> Result<(), Self::Error> {
             self.sender_channel.lock().unwrap().close();
             Ok(())
         }
@@ -748,53 +742,53 @@ mod tests {
 
     // ==================== Backend functionality tests ====================
 
-    /// Simple counter GenServer for testing all backends
+    /// Simple counter Actor for testing all backends
     struct Counter {
         count: u64,
     }
 
     #[derive(Clone)]
-    enum CounterCall {
+    enum CounterRequest {
         Get,
         Increment,
         Stop,
     }
 
     #[derive(Clone)]
-    enum CounterCast {
+    enum CounterMessage {
         Increment,
     }
 
-    impl GenServer for Counter {
-        type CallMsg = CounterCall;
-        type CastMsg = CounterCast;
-        type OutMsg = u64;
+    impl Actor for Counter {
+        type Request = CounterRequest;
+        type Message = CounterMessage;
+        type Reply = u64;
         type Error = ();
 
-        async fn handle_call(
+        async fn handle_request(
             &mut self,
-            message: Self::CallMsg,
-            _: &GenServerHandle<Self>,
-        ) -> CallResponse<Self> {
+            message: Self::Request,
+            _: &ActorRef<Self>,
+        ) -> RequestResponse<Self> {
             match message {
-                CounterCall::Get => CallResponse::Reply(self.count),
-                CounterCall::Increment => {
+                CounterRequest::Get => RequestResponse::Reply(self.count),
+                CounterRequest::Increment => {
                     self.count += 1;
-                    CallResponse::Reply(self.count)
+                    RequestResponse::Reply(self.count)
                 }
-                CounterCall::Stop => CallResponse::Stop(self.count),
+                CounterRequest::Stop => RequestResponse::Stop(self.count),
             }
         }
 
-        async fn handle_cast(
+        async fn handle_message(
             &mut self,
-            message: Self::CastMsg,
-            _: &GenServerHandle<Self>,
-        ) -> CastResponse {
+            message: Self::Message,
+            _: &ActorRef<Self>,
+        ) -> MessageResponse {
             match message {
-                CounterCast::Increment => {
+                CounterMessage::Increment => {
                     self.count += 1;
-                    CastResponse::NoReply
+                    MessageResponse::NoReply
                 }
             }
         }
@@ -807,21 +801,21 @@ mod tests {
             let mut counter = Counter { count: 0 }.start();
 
             // Test call
-            let result = counter.call(CounterCall::Get).await.unwrap();
+            let result = counter.request(CounterRequest::Get).await.unwrap();
             assert_eq!(result, 0);
 
-            let result = counter.call(CounterCall::Increment).await.unwrap();
+            let result = counter.request(CounterRequest::Increment).await.unwrap();
             assert_eq!(result, 1);
 
             // Test cast
-            counter.cast(CounterCast::Increment).await.unwrap();
+            counter.send(CounterMessage::Increment).await.unwrap();
             rt::sleep(Duration::from_millis(10)).await; // Give time for cast to process
 
-            let result = counter.call(CounterCall::Get).await.unwrap();
+            let result = counter.request(CounterRequest::Get).await.unwrap();
             assert_eq!(result, 2);
 
             // Stop
-            let final_count = counter.call(CounterCall::Stop).await.unwrap();
+            let final_count = counter.request(CounterRequest::Stop).await.unwrap();
             assert_eq!(final_count, 2);
         });
     }
@@ -833,21 +827,21 @@ mod tests {
             let mut counter = Counter { count: 0 }.start_with_backend(Backend::Blocking);
 
             // Test call
-            let result = counter.call(CounterCall::Get).await.unwrap();
+            let result = counter.request(CounterRequest::Get).await.unwrap();
             assert_eq!(result, 0);
 
-            let result = counter.call(CounterCall::Increment).await.unwrap();
+            let result = counter.request(CounterRequest::Increment).await.unwrap();
             assert_eq!(result, 1);
 
             // Test cast
-            counter.cast(CounterCast::Increment).await.unwrap();
+            counter.send(CounterMessage::Increment).await.unwrap();
             rt::sleep(Duration::from_millis(50)).await; // Give time for cast to process
 
-            let result = counter.call(CounterCall::Get).await.unwrap();
+            let result = counter.request(CounterRequest::Get).await.unwrap();
             assert_eq!(result, 2);
 
             // Stop
-            let final_count = counter.call(CounterCall::Stop).await.unwrap();
+            let final_count = counter.request(CounterRequest::Stop).await.unwrap();
             assert_eq!(final_count, 2);
         });
     }
@@ -859,21 +853,21 @@ mod tests {
             let mut counter = Counter { count: 0 }.start_with_backend(Backend::Thread);
 
             // Test call
-            let result = counter.call(CounterCall::Get).await.unwrap();
+            let result = counter.request(CounterRequest::Get).await.unwrap();
             assert_eq!(result, 0);
 
-            let result = counter.call(CounterCall::Increment).await.unwrap();
+            let result = counter.request(CounterRequest::Increment).await.unwrap();
             assert_eq!(result, 1);
 
             // Test cast
-            counter.cast(CounterCast::Increment).await.unwrap();
+            counter.send(CounterMessage::Increment).await.unwrap();
             rt::sleep(Duration::from_millis(50)).await; // Give time for cast to process
 
-            let result = counter.call(CounterCall::Get).await.unwrap();
+            let result = counter.request(CounterRequest::Get).await.unwrap();
             assert_eq!(result, 2);
 
             // Stop
-            let final_count = counter.call(CounterCall::Stop).await.unwrap();
+            let final_count = counter.request(CounterRequest::Stop).await.unwrap();
             assert_eq!(final_count, 2);
         });
     }
@@ -884,11 +878,11 @@ mod tests {
         let runtime = rt::Runtime::new().unwrap();
         runtime.block_on(async move {
             let mut badboy = BadlyBehavedTask.start_with_backend(Backend::Thread);
-            let _ = badboy.cast(Unused).await;
+            let _ = badboy.send(Unused).await;
             let mut goodboy = WellBehavedTask { count: 0 }.start();
-            let _ = goodboy.cast(Unused).await;
+            let _ = goodboy.send(Unused).await;
             rt::sleep(Duration::from_secs(1)).await;
-            let count = goodboy.call(InMessage::GetCount).await.unwrap();
+            let count = goodboy.request(InMessage::GetCount).await.unwrap();
 
             // goodboy should have run normally because badboy is on a separate thread
             match count {
@@ -896,7 +890,7 @@ mod tests {
                     assert_eq!(num, 10);
                 }
             }
-            goodboy.call(InMessage::Stop).await.unwrap();
+            goodboy.request(InMessage::Stop).await.unwrap();
         });
     }
 
@@ -910,23 +904,29 @@ mod tests {
             let mut thread_counter = Counter { count: 200 }.start_with_backend(Backend::Thread);
 
             // Increment each
-            async_counter.call(CounterCall::Increment).await.unwrap();
-            blocking_counter.call(CounterCall::Increment).await.unwrap();
-            thread_counter.call(CounterCall::Increment).await.unwrap();
+            async_counter.request(CounterRequest::Increment).await.unwrap();
+            blocking_counter
+                .request(CounterRequest::Increment)
+                .await
+                .unwrap();
+            thread_counter
+                .request(CounterRequest::Increment)
+                .await
+                .unwrap();
 
             // Verify each has independent state
-            let async_val = async_counter.call(CounterCall::Get).await.unwrap();
-            let blocking_val = blocking_counter.call(CounterCall::Get).await.unwrap();
-            let thread_val = thread_counter.call(CounterCall::Get).await.unwrap();
+            let async_val = async_counter.request(CounterRequest::Get).await.unwrap();
+            let blocking_val = blocking_counter.request(CounterRequest::Get).await.unwrap();
+            let thread_val = thread_counter.request(CounterRequest::Get).await.unwrap();
 
             assert_eq!(async_val, 1);
             assert_eq!(blocking_val, 101);
             assert_eq!(thread_val, 201);
 
             // Clean up
-            async_counter.call(CounterCall::Stop).await.unwrap();
-            blocking_counter.call(CounterCall::Stop).await.unwrap();
-            thread_counter.call(CounterCall::Stop).await.unwrap();
+            async_counter.request(CounterRequest::Stop).await.unwrap();
+            blocking_counter.request(CounterRequest::Stop).await.unwrap();
+            thread_counter.request(CounterRequest::Stop).await.unwrap();
         });
     }
 
@@ -937,10 +937,10 @@ mod tests {
             // Using Backend::default() should work the same as Backend::Async
             let mut counter = Counter { count: 42 }.start_with_backend(Backend::Async);
 
-            let result = counter.call(CounterCall::Get).await.unwrap();
+            let result = counter.request(CounterRequest::Get).await.unwrap();
             assert_eq!(result, 42);
 
-            counter.call(CounterCall::Stop).await.unwrap();
+            counter.request(CounterRequest::Stop).await.unwrap();
         });
     }
 }
