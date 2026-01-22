@@ -935,7 +935,7 @@ mod tests {
         let runtime = rt::Runtime::new().unwrap();
         runtime.block_on(async move {
             // Using Backend::default() should work the same as Backend::Async
-            let mut counter = Counter { count: 42 }.start();
+            let mut counter = Counter { count: 42 }.start_with_backend(Backend::Async);
 
             let result = counter.call(CounterCall::Get).await.unwrap();
             assert_eq!(result, 42);
