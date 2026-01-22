@@ -14,6 +14,25 @@ use std::{fmt::Debug, future::Future, panic::AssertUnwindSafe, time::Duration};
 
 const DEFAULT_CALL_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Execution backend for GenServer.
+///
+/// Determines how the GenServer's async loop is executed.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Backend {
+    /// Run on tokio async runtime (default).
+    /// Best for non-blocking, async workloads.
+    #[default]
+    Async,
+    /// Run on tokio's blocking thread pool.
+    /// Use for blocking operations that eventually complete.
+    /// The pool is shared and limited in size.
+    Blocking,
+    /// Run on a dedicated OS thread.
+    /// Use for long-running blocking operations or singleton services
+    /// that should not interfere with the async runtime.
+    Thread,
+}
+
 #[derive(Debug)]
 pub struct GenServerHandle<G: GenServer + 'static> {
     pub tx: mpsc::Sender<GenServerInMsg<G>>,
@@ -163,26 +182,24 @@ pub trait GenServer: Send + Sized {
     type OutMsg: Send + Sized;
     type Error: Debug + Send;
 
+    /// Start the GenServer with the default backend (Async).
     fn start(self) -> GenServerHandle<Self> {
-        GenServerHandle::new(self)
+        self.start_with_backend(Backend::default())
     }
 
-    /// Tokio tasks depend on a coolaborative multitasking model. "work stealing" can't
-    /// happen if the task is blocking the thread. As such, for sync compute task
-    /// or other blocking tasks need to be in their own separate thread, and the OS
-    /// will manage them through hardware interrupts.
-    /// Start blocking provides such thread.
-    fn start_blocking(self) -> GenServerHandle<Self> {
-        GenServerHandle::new_blocking(self)
-    }
-
-    /// For some "singleton" GenServers that run througout the whole execution of the
-    /// program, it makes sense to run in their own dedicated thread to avoid interference
-    /// with the rest of the tasks' runtime.
-    /// The use of tokio::task::spawm_blocking is not recommended for these scenarios
-    /// as it is a limited thread pool better suited for blocking IO tasks that eventually end
-    fn start_on_thread(self) -> GenServerHandle<Self> {
-        GenServerHandle::new_on_thread(self)
+    /// Start the GenServer with the specified backend.
+    ///
+    /// # Arguments
+    /// * `backend` - The execution backend to use:
+    ///   - `Backend::Async` - Run on tokio async runtime (default, best for non-blocking workloads)
+    ///   - `Backend::Blocking` - Run on tokio's blocking thread pool (for blocking operations)
+    ///   - `Backend::Thread` - Run on a dedicated OS thread (for long-running blocking services)
+    fn start_with_backend(self, backend: Backend) -> GenServerHandle<Self> {
+        match backend {
+            Backend::Async => GenServerHandle::new(self),
+            Backend::Blocking => GenServerHandle::new_blocking(self),
+            Backend::Thread => GenServerHandle::new_on_thread(self),
+        }
     }
 
     fn run(
@@ -484,6 +501,8 @@ mod tests {
         }
     }
 
+    const BLOCKING: Backend = Backend::Blocking;
+
     #[test]
     pub fn badly_behaved_thread_non_blocking() {
         let runtime = rt::Runtime::new().unwrap();
@@ -508,7 +527,7 @@ mod tests {
     pub fn badly_behaved_thread() {
         let runtime = rt::Runtime::new().unwrap();
         runtime.block_on(async move {
-            let mut badboy = BadlyBehavedTask.start_blocking();
+            let mut badboy = BadlyBehavedTask.start_with_backend(BLOCKING);
             let _ = badboy.cast(Unused).await;
             let mut goodboy = WellBehavedTask { count: 0 }.start();
             let _ = goodboy.cast(Unused).await;

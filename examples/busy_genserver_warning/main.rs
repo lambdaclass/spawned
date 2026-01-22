@@ -63,7 +63,7 @@ impl GenServer for BusyWorker {
 /// whenever we detect tasks that take too long to run.
 pub fn main() {
     rt::run(async move {
-        // If we change BusyWorker to start_blocking instead, it won't print the warning
+        // If we change BusyWorker to Backend::Blocking instead, it won't print the warning
         let mut badboy = BusyWorker::new().start();
         let _ = badboy.cast(()).await;
 
