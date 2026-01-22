@@ -182,6 +182,11 @@ pub trait GenServer: Send + Sized {
     type OutMsg: Send + Sized;
     type Error: Debug + Send;
 
+    /// Start the GenServer with the default backend (Async).
+    fn start(self) -> GenServerHandle<Self> {
+        self.start_with_backend(Backend::default())
+    }
+
     /// Start the GenServer with the specified backend.
     ///
     /// # Arguments
@@ -189,7 +194,7 @@ pub trait GenServer: Send + Sized {
     ///   - `Backend::Async` - Run on tokio async runtime (default, best for non-blocking workloads)
     ///   - `Backend::Blocking` - Run on tokio's blocking thread pool (for blocking operations)
     ///   - `Backend::Thread` - Run on a dedicated OS thread (for long-running blocking services)
-    fn start(self, backend: Backend) -> GenServerHandle<Self> {
+    fn start_with_backend(self, backend: Backend) -> GenServerHandle<Self> {
         match backend {
             Backend::Async => GenServerHandle::new(self),
             Backend::Blocking => GenServerHandle::new_blocking(self),
@@ -496,16 +501,15 @@ mod tests {
         }
     }
 
-    const ASYNC: Backend = Backend::Async;
     const BLOCKING: Backend = Backend::Blocking;
 
     #[test]
     pub fn badly_behaved_thread_non_blocking() {
         let runtime = rt::Runtime::new().unwrap();
         runtime.block_on(async move {
-            let mut badboy = BadlyBehavedTask.start(ASYNC);
+            let mut badboy = BadlyBehavedTask.start();
             let _ = badboy.cast(Unused).await;
-            let mut goodboy = WellBehavedTask { count: 0 }.start(ASYNC);
+            let mut goodboy = WellBehavedTask { count: 0 }.start();
             let _ = goodboy.cast(Unused).await;
             rt::sleep(Duration::from_secs(1)).await;
             let count = goodboy.call(InMessage::GetCount).await.unwrap();
@@ -523,9 +527,9 @@ mod tests {
     pub fn badly_behaved_thread() {
         let runtime = rt::Runtime::new().unwrap();
         runtime.block_on(async move {
-            let mut badboy = BadlyBehavedTask.start(BLOCKING);
+            let mut badboy = BadlyBehavedTask.start_with_backend(BLOCKING);
             let _ = badboy.cast(Unused).await;
-            let mut goodboy = WellBehavedTask { count: 0 }.start(ASYNC);
+            let mut goodboy = WellBehavedTask { count: 0 }.start();
             let _ = goodboy.cast(Unused).await;
             rt::sleep(Duration::from_secs(1)).await;
             let count = goodboy.call(InMessage::GetCount).await.unwrap();
@@ -580,7 +584,7 @@ mod tests {
     pub fn unresolving_task_times_out() {
         let runtime = rt::Runtime::new().unwrap();
         runtime.block_on(async move {
-            let mut unresolving_task = SomeTask.start(ASYNC);
+            let mut unresolving_task = SomeTask.start();
 
             let result = unresolving_task
                 .call_with_timeout(SomeTaskCallMsg::FastOperation, TIMEOUT_DURATION)
@@ -630,7 +634,7 @@ mod tests {
         runtime.block_on(async move {
             let (rx, tx) = mpsc::channel::<u8>();
             let sender_channel = Arc::new(Mutex::new(tx));
-            let _task = SomeTaskThatFailsOnInit::new(sender_channel).start(ASYNC);
+            let _task = SomeTaskThatFailsOnInit::new(sender_channel).start();
 
             // Wait a while to ensure the task has time to run and fail
             rt::sleep(Duration::from_secs(1)).await;

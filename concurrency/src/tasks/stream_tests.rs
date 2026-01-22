@@ -1,6 +1,5 @@
 use crate::tasks::{
-    send_after, stream::spawn_listener, Backend, CallResponse, CastResponse, GenServer,
-    GenServerHandle,
+    send_after, stream::spawn_listener, CallResponse, CastResponse, GenServer, GenServerHandle,
 };
 use futures::{stream, StreamExt};
 use spawned_rt::tasks::{self as rt, BroadcastStream, ReceiverStream};
@@ -68,7 +67,7 @@ impl GenServer for Summatory {
 pub fn test_sum_numbers_from_stream() {
     let runtime = rt::Runtime::new().unwrap();
     runtime.block_on(async move {
-        let mut summatory_handle = Summatory::new(0).start(Backend::Async);
+        let mut summatory_handle = Summatory::new(0).start();
         let stream = stream::iter(vec![1u16, 2, 3, 4, 5].into_iter().map(Ok::<u16, ()>));
 
         spawn_listener(
@@ -88,7 +87,7 @@ pub fn test_sum_numbers_from_stream() {
 pub fn test_sum_numbers_from_channel() {
     let runtime = rt::Runtime::new().unwrap();
     runtime.block_on(async move {
-        let mut summatory_handle = Summatory::new(0).start(Backend::Async);
+        let mut summatory_handle = Summatory::new(0).start();
         let (tx, rx) = spawned_rt::tasks::mpsc::channel::<Result<u16, ()>>();
 
         // Spawn a task to send numbers to the channel
@@ -116,7 +115,7 @@ pub fn test_sum_numbers_from_channel() {
 pub fn test_sum_numbers_from_broadcast_channel() {
     let runtime = rt::Runtime::new().unwrap();
     runtime.block_on(async move {
-        let mut summatory_handle = Summatory::new(0).start(Backend::Async);
+        let mut summatory_handle = Summatory::new(0).start();
         let (tx, rx) = tokio::sync::broadcast::channel::<u16>(5);
 
         // Spawn a task to send numbers to the channel
@@ -146,7 +145,7 @@ pub fn test_stream_cancellation() {
 
     let runtime = rt::Runtime::new().unwrap();
     runtime.block_on(async move {
-        let mut summatory_handle = Summatory::new(0).start(Backend::Async);
+        let mut summatory_handle = Summatory::new(0).start();
         let (tx, rx) = spawned_rt::tasks::mpsc::channel::<Result<u16, ()>>();
 
         // Spawn a task to send numbers to the channel
@@ -193,7 +192,7 @@ pub fn test_stream_cancellation() {
 pub fn test_halting_on_stream_error() {
     let runtime = rt::Runtime::new().unwrap();
     runtime.block_on(async move {
-        let mut summatory_handle = Summatory::new(0).start(Backend::Async);
+        let mut summatory_handle = Summatory::new(0).start();
         let stream = tokio_stream::iter(vec![Ok(1u16), Ok(2), Ok(3), Err(()), Ok(4), Ok(5)]);
         let msg_stream = stream.filter_map(|value| async move {
             match value {
@@ -217,7 +216,7 @@ pub fn test_halting_on_stream_error() {
 pub fn test_skipping_on_stream_error() {
     let runtime = rt::Runtime::new().unwrap();
     runtime.block_on(async move {
-        let mut summatory_handle = Summatory::new(0).start(Backend::Async);
+        let mut summatory_handle = Summatory::new(0).start();
         let stream = tokio_stream::iter(vec![Ok(1u16), Ok(2), Ok(3), Err(()), Ok(4), Ok(5)]);
         let msg_stream = stream.filter_map(|value| async move {
             match value {
