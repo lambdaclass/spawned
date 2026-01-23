@@ -1,4 +1,6 @@
-use crate::threads::{send_interval, Actor, ActorRef, InitResult, MessageResponse, RequestResponse};
+use crate::threads::{
+    send_interval, Actor, ActorRef, InitResult, MessageResponse, RequestResponse,
+};
 use spawned_rt::threads::{self as rt, CancellationToken};
 use std::time::Duration;
 
@@ -43,7 +45,9 @@ impl Repeater {
     }
 
     pub fn get_count(server: &mut RepeaterHandle) -> Result<RepeaterOutMessage, ()> {
-        server.request(RepeaterCallMessage::GetCount).map_err(|_| ())
+        server
+            .request(RepeaterCallMessage::GetCount)
+            .map_err(|_| ())
     }
 }
 
@@ -169,7 +173,11 @@ impl Actor for Delayed {
         RequestResponse::Reply(DelayedOutMessage::Count(count))
     }
 
-    fn handle_message(&mut self, message: Self::Message, _handle: &DelayedHandle) -> MessageResponse {
+    fn handle_message(
+        &mut self,
+        message: Self::Message,
+        _handle: &DelayedHandle,
+    ) -> MessageResponse {
         match message {
             DelayedCastMessage::Inc => {
                 self.count += 1;

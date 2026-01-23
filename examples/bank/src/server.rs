@@ -3,7 +3,9 @@ use std::collections::HashMap;
 use spawned_concurrency::{
     messages::Unused,
     tasks::{
-        Actor, ActorRef, InitResult::{self, Success}, RequestResponse,
+        Actor, ActorRef,
+        InitResult::{self, Success},
+        RequestResponse,
     },
 };
 
@@ -61,10 +63,7 @@ impl Actor for Bank {
     type Error = BankError;
 
     // Initializing "main" account with 1000 in balance to test init() callback.
-    async fn init(
-        mut self,
-        _handle: &ActorRef<Self>,
-    ) -> Result<InitResult<Self>, Self::Error> {
+    async fn init(mut self, _handle: &ActorRef<Self>) -> Result<InitResult<Self>, Self::Error> {
         self.accounts.insert("main".to_string(), 1000);
         Ok(Success(self))
     }

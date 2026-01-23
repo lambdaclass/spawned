@@ -3,7 +3,9 @@ use std::time::Duration;
 use spawned_concurrency::{
     messages::Unused,
     tasks::{
-        send_interval, Actor, ActorRef, InitResult::{self, Success}, MessageResponse,
+        send_interval, Actor, ActorRef,
+        InitResult::{self, Success},
+        MessageResponse,
     },
 };
 use spawned_rt::tasks::CancellationToken;
@@ -35,10 +37,7 @@ impl Actor for UpdaterServer {
     type Error = std::fmt::Error;
 
     // Initializing Actor to start periodic checks.
-    async fn init(
-        mut self,
-        handle: &ActorRef<Self>,
-    ) -> Result<InitResult<Self>, Self::Error> {
+    async fn init(mut self, handle: &ActorRef<Self>) -> Result<InitResult<Self>, Self::Error> {
         let timer = send_interval(self.periodicity, handle.clone(), InMessage::Check);
         self.timer_token = Some(timer.cancellation_token);
         Ok(Success(self))

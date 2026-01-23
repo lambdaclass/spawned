@@ -1,6 +1,6 @@
 use super::{
-    send_after, send_interval, Actor, ActorRef, InitResult, MessageResponse, RequestResponse,
-    InitResult::Success,
+    send_after, send_interval, Actor, ActorRef, InitResult, InitResult::Success, MessageResponse,
+    RequestResponse,
 };
 use spawned_rt::tasks::{self as rt, CancellationToken};
 use std::time::Duration;
@@ -166,7 +166,10 @@ impl Delayed {
     }
 
     pub async fn stop(server: &mut DelayedHandle) -> Result<DelayedOutMessage, ()> {
-        server.request(DelayedCallMessage::Stop).await.map_err(|_| ())
+        server
+            .request(DelayedCallMessage::Stop)
+            .await
+            .map_err(|_| ())
     }
 }
 
