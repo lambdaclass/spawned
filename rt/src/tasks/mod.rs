@@ -32,3 +32,5 @@ pub fn run<F: Future>(future: F) -> F::Output {
 pub fn block_on<F: Future>(future: F) -> F::Output {
     Handle::current().block_on(future)
 }
+
+pub use crate::tasks::tokio::ctrl_c;

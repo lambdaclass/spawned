@@ -54,3 +54,26 @@ impl CancellationToken {
         self.is_cancelled.fetch_or(true, Ordering::SeqCst);
     }
 }
+
+/// Returns a closure that blocks until Ctrl+C is received.
+///
+/// The signal handler is registered immediately when this function is called,
+/// not when the returned closure is executed. This ensures no signals are missed
+/// due to race conditions if Ctrl+C is pressed before the closure runs.
+///
+/// # Example
+///
+/// ```ignore
+/// send_message_on(handle.clone(), rt::ctrl_c(), Msg::Shutdown);
+/// ```
+pub fn ctrl_c() -> impl FnOnce() + Send + 'static {
+    let (tx, rx) = std::sync::mpsc::channel();
+    ctrlc::set_handler(move || {
+        let _ = tx.send(());
+    })
+    .expect("Error setting Ctrl+C handler");
+
+    move || {
+        let _ = rx.recv();
+    }
+}

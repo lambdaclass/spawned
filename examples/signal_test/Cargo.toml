@@ -1,0 +1,10 @@
+[package]
+name = "signal_test"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+spawned-concurrency = { path = "../../concurrency" }
+spawned-rt = { path = "../../rt" }
+tracing = { workspace = true }
+tokio = { version = "1", features = ["signal"] }

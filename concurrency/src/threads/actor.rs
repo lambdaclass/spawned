@@ -1,6 +1,8 @@
 //! Actor trait and structs to create an abstraction similar to Erlang gen_server.
 //! See examples/name_server for a usage example.
-use spawned_rt::threads::{self as rt, mpsc, oneshot, oneshot::RecvTimeoutError, CancellationToken};
+use spawned_rt::threads::{
+    self as rt, mpsc, oneshot, oneshot::RecvTimeoutError, CancellationToken,
+};
 use std::{
     fmt::Debug,
     panic::{catch_unwind, AssertUnwindSafe},
@@ -75,8 +77,19 @@ impl<A: Actor> ActorRef<A> {
             .map_err(|_error| ActorError::Server)
     }
 
-    pub fn cancellation_token(&self) -> CancellationToken {
+    pub(crate) fn cancellation_token(&self) -> CancellationToken {
         self.cancellation_token.clone()
+    }
+
+    /// Blocks until the actor has stopped.
+    ///
+    /// This method blocks the current thread until the actor has finished
+    /// processing and exited its main loop.
+    pub fn join(&self) {
+        let mut token = self.cancellation_token.clone();
+        while !token.is_cancelled() {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
     }
 }
 
@@ -114,12 +127,6 @@ pub trait Actor: Send + Sized {
     type Error: Debug + Send;
 
     fn start(self) -> ActorRef<Self> {
-        ActorRef::new(self)
-    }
-
-    /// We copy the same interface as tasks, but all threads can work
-    /// while blocking by default
-    fn start_blocking(self) -> ActorRef<Self> {
         ActorRef::new(self)
     }
 

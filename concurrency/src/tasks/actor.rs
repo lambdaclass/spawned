@@ -213,8 +213,16 @@ impl<A: Actor> ActorRef<A> {
             .map_err(|_error| ActorError::Server)
     }
 
-    pub fn cancellation_token(&self) -> CancellationToken {
+    pub(crate) fn cancellation_token(&self) -> CancellationToken {
         self.cancellation_token.clone()
+    }
+
+    /// Waits for the actor to stop.
+    ///
+    /// This method returns a future that completes when the actor has finished
+    /// processing and exited its main loop.
+    pub async fn join(&self) {
+        self.cancellation_token.cancelled().await
     }
 }
 
@@ -357,9 +365,7 @@ pub trait Actor: Send + Sized {
                         };
                     // Send response back
                     if sender.send(response).is_err() {
-                        tracing::error!(
-                            "Actor failed to send response back, client must have died"
-                        )
+                        tracing::error!("Actor failed to send response back, client must have died")
                     };
                     keep_running
                 }
@@ -904,7 +910,10 @@ mod tests {
             let mut thread_counter = Counter { count: 200 }.start_with_backend(Backend::Thread);
 
             // Increment each
-            async_counter.request(CounterRequest::Increment).await.unwrap();
+            async_counter
+                .request(CounterRequest::Increment)
+                .await
+                .unwrap();
             blocking_counter
                 .request(CounterRequest::Increment)
                 .await
@@ -925,7 +934,10 @@ mod tests {
 
             // Clean up
             async_counter.request(CounterRequest::Stop).await.unwrap();
-            blocking_counter.request(CounterRequest::Stop).await.unwrap();
+            blocking_counter
+                .request(CounterRequest::Stop)
+                .await
+                .unwrap();
             thread_counter.request(CounterRequest::Stop).await.unwrap();
         });
     }
