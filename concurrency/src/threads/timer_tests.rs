@@ -86,7 +86,7 @@ impl Actor for Repeater {
                 self.count += 1;
             }
             RepeaterCastMessage::StopTimer => {
-                if let Some(mut ct) = self.cancellation_token.clone() {
+                if let Some(ct) = self.cancellation_token.clone() {
                     ct.cancel()
                 };
             }
@@ -132,6 +132,7 @@ enum DelayedCastMessage {
 #[derive(Clone)]
 enum DelayedCallMessage {
     GetCount,
+    Stop,
 }
 
 #[derive(PartialEq, Debug)]
@@ -156,6 +157,10 @@ impl Delayed {
     pub fn get_count(server: &mut DelayedHandle) -> Result<DelayedOutMessage, ()> {
         server.request(DelayedCallMessage::GetCount).map_err(|_| ())
     }
+
+    pub fn stop(server: &mut DelayedHandle) -> Result<DelayedOutMessage, ()> {
+        server.request(DelayedCallMessage::Stop).map_err(|_| ())
+    }
 }
 
 impl Actor for Delayed {
@@ -166,11 +171,17 @@ impl Actor for Delayed {
 
     fn handle_request(
         &mut self,
-        _message: Self::Request,
+        message: Self::Request,
         _handle: &DelayedHandle,
     ) -> RequestResponse<Self> {
-        let count = self.count;
-        RequestResponse::Reply(DelayedOutMessage::Count(count))
+        match message {
+            DelayedCallMessage::GetCount => {
+                RequestResponse::Reply(DelayedOutMessage::Count(self.count))
+            }
+            DelayedCallMessage::Stop => {
+                RequestResponse::Stop(DelayedOutMessage::Count(self.count))
+            }
+        }
     }
 
     fn handle_message(
@@ -209,7 +220,7 @@ pub fn test_send_after_and_cancellation() {
     assert_eq!(DelayedOutMessage::Count(1), count);
 
     // New timer
-    let mut timer = send_after(
+    let timer = send_after(
         Duration::from_millis(100),
         repeater.clone(),
         DelayedCastMessage::Inc,
@@ -225,5 +236,43 @@ pub fn test_send_after_and_cancellation() {
     let count2 = Delayed::get_count(&mut repeater).unwrap();
 
     // As timer was cancelled, count should remain at 1
+    assert_eq!(DelayedOutMessage::Count(1), count2);
+}
+
+#[test]
+pub fn test_send_after_actor_shutdown() {
+    // Start a Delayed
+    let mut actor = Delayed::new(0).start();
+
+    // Set a just once timed message
+    let _ = send_after(
+        Duration::from_millis(100),
+        actor.clone(),
+        DelayedCastMessage::Inc,
+    );
+
+    // Wait for 200 milliseconds
+    rt::sleep(Duration::from_millis(200));
+
+    // Check count
+    let count = Delayed::get_count(&mut actor).unwrap();
+
+    // Only one message (no repetition)
+    assert_eq!(DelayedOutMessage::Count(1), count);
+
+    // New timer with long delay
+    let _ = send_after(
+        Duration::from_millis(100),
+        actor.clone(),
+        DelayedCastMessage::Inc,
+    );
+
+    // Stop the Actor before timeout - this should wake up the timer immediately
+    let count2 = Delayed::stop(&mut actor).unwrap();
+
+    // Wait another 200 milliseconds
+    rt::sleep(Duration::from_millis(200));
+
+    // As actor was stopped, count should remain at 1 (timer didn't fire)
     assert_eq!(DelayedOutMessage::Count(1), count2);
 }

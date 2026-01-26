@@ -148,7 +148,7 @@ pub trait Actor: Send + Sized {
         handle: &ActorRef<Self>,
         rx: &mut mpsc::Receiver<ActorInMsg<Self>>,
     ) -> Result<(), ActorError> {
-        let mut cancellation_token = handle.cancellation_token.clone();
+        let cancellation_token = handle.cancellation_token.clone();
 
         let res = match self.init(handle) {
             Ok(InitResult::Success(new_state)) => {
@@ -285,7 +285,7 @@ where
     T: Actor,
     F: FnOnce() + Send + 'static,
 {
-    let mut cancellation_token = handle.cancellation_token();
+    let cancellation_token = handle.cancellation_token();
     let mut handle_clone = handle.clone();
     rt::spawn(move || {
         f();
