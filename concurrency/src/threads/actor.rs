@@ -219,7 +219,7 @@ pub trait Actor: Send + Sized {
                         }
                     },
                     Err(error) => {
-                        tracing::trace!("Error in callback, reverting state - Error: '{error:?}'");
+                        tracing::error!("Error in callback: '{error:?}'");
                         (true, Err(ActorError::Callback))
                     }
                 };
@@ -240,7 +240,7 @@ pub trait Actor: Send + Sized {
                         }
                     },
                     Err(error) => {
-                        tracing::trace!("Error in callback, reverting state - Error: '{error:?}'");
+                        tracing::error!("Error in callback: '{error:?}'");
                         true
                     }
                 }
