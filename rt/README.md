@@ -5,7 +5,7 @@ This crate is part of [spawned](https://github.com/lambdaclass/spawned). To unde
 
 ## Example: hit the ground running
 Let's take a look at one of the examples in the [examples folder](https://github.com/lambdaclass/spawned/tree/main/examples), the [name server](https://github.com/lambdaclass/spawned/tree/main/examples/name_server).
-The name server is a test of the `GenServer` abstraction using `tasks` implementation, and is based on Joe's Armstrong book: Programming Erlang, Second edition, Section 22.1 - The Road to the Generic Server.
+The name server is a test of the `Actor` abstraction using `tasks` implementation, and is based on Joe's Armstrong book: Programming Erlang, Second edition, Section 22.1 - The Road to the Generic Server.
 
 We would like to have a server that listens and responds to the following types of messages:
 
@@ -28,7 +28,7 @@ pub enum NameServerOutMessage {
 
 To write our server code, we first need to define the type for our name server's state, and it's handle:
 ```rust
-type NameServerHandle = GenServerHandle<NameServer>;
+type NameServerHandle = ActorRef<NameServer>;
 
 pub struct NameServer {
     inner: HashMap<String, String>,
@@ -48,7 +48,7 @@ Our name server's API has two async functions: `add`, and `find`, which correspo
 ```rust
 impl NameServer {
     pub async fn add(server: &mut NameServerHandle, key: String, value: String) -> OutMessage {
-        match server.call(InMessage::Add { key, value }).await {
+        match server.request(InMessage::Add { key, value }).await {
             Ok(_) => OutMessage::Ok,
             Err(_) => OutMessage::Error,
         }
@@ -56,37 +56,37 @@ impl NameServer {
 
     pub async fn find(server: &mut NameServerHandle, key: String) -> OutMessage {
         server
-            .call(InMessage::Find { key })
+            .request(InMessage::Find { key })
             .await
             .unwrap_or(OutMessage::Error)
     }
 }
 ```
 
-Now that our base state type is defined, we can implement the `GenServer` trait for our name server. Since the only thing we want to do differently than the defaults is how we handle `call` messages, we implement the async `handle_call` function and it's associated types:
+Now that our base state type is defined, we can implement the `Actor` trait for our name server. Since the only thing we want to do differently than the defaults is how we handle `request` messages, we implement the async `handle_request` function and it's associated types:
 ```rust
-impl GenServer for NameServer {
-    type CallMsg = InMessage;
-    type CastMsg = Unused;
-    type OutMsg = OutMessage;
+impl Actor for NameServer {
+    type Request = InMessage;
+    type Message = Unused;
+    type Reply = OutMessage;
     type Error = std::fmt::Error;
 
-    async fn handle_call(
+    async fn handle_request(
         &mut self,
-        message: Self::CallMsg,
+        message: Self::Request,
         _handle: &NameServerHandle,
-    ) -> CallResponse<Self> {
+    ) -> RequestResponse<Self> {
         match message.clone() {
-            Self::CallMsg::Add { key, value } => {
+            Self::Request::Add { key, value } => {
                 self.inner.insert(key, value);
-                CallResponse::Reply(Self::OutMsg::Ok)
+                RequestResponse::Reply(Self::Reply::Ok)
             }
-            Self::CallMsg::Find { key } => match self.inner.get(&key) {
+            Self::Request::Find { key } => match self.inner.get(&key) {
                 Some(result) => {
                     let value = result.to_string();
-                    CallResponse::Reply(Self::OutMsg::Found { value })
+                    RequestResponse::Reply(Self::Reply::Found { value })
                 }
-                None => CallResponse::Reply(Self::OutMsg::NotFound),
+                None => RequestResponse::Reply(Self::Reply::NotFound),
             },
         }
     }

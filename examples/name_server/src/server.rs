@@ -2,12 +2,12 @@ use std::collections::HashMap;
 
 use spawned_concurrency::{
     messages::Unused,
-    tasks::{CallResponse, GenServer, GenServerHandle},
+    tasks::{Actor, ActorRef, RequestResponse},
 };
 
 use crate::messages::{NameServerInMessage as InMessage, NameServerOutMessage as OutMessage};
 
-type NameServerHandle = GenServerHandle<NameServer>;
+type NameServerHandle = ActorRef<NameServer>;
 
 pub struct NameServer {
     inner: HashMap<String, String>,
@@ -23,7 +23,7 @@ impl NameServer {
 
 impl NameServer {
     pub async fn add(server: &mut NameServerHandle, key: String, value: String) -> OutMessage {
-        match server.call(InMessage::Add { key, value }).await {
+        match server.request(InMessage::Add { key, value }).await {
             Ok(_) => OutMessage::Ok,
             Err(_) => OutMessage::Error,
         }
@@ -31,34 +31,34 @@ impl NameServer {
 
     pub async fn find(server: &mut NameServerHandle, key: String) -> OutMessage {
         server
-            .call(InMessage::Find { key })
+            .request(InMessage::Find { key })
             .await
             .unwrap_or(OutMessage::Error)
     }
 }
 
-impl GenServer for NameServer {
-    type CallMsg = InMessage;
-    type CastMsg = Unused;
-    type OutMsg = OutMessage;
+impl Actor for NameServer {
+    type Request = InMessage;
+    type Message = Unused;
+    type Reply = OutMessage;
     type Error = std::fmt::Error;
 
-    async fn handle_call(
+    async fn handle_request(
         &mut self,
-        message: Self::CallMsg,
+        message: Self::Request,
         _handle: &NameServerHandle,
-    ) -> CallResponse<Self> {
+    ) -> RequestResponse<Self> {
         match message.clone() {
-            Self::CallMsg::Add { key, value } => {
+            Self::Request::Add { key, value } => {
                 self.inner.insert(key, value);
-                CallResponse::Reply(Self::OutMsg::Ok)
+                RequestResponse::Reply(Self::Reply::Ok)
             }
-            Self::CallMsg::Find { key } => match self.inner.get(&key) {
+            Self::Request::Find { key } => match self.inner.get(&key) {
                 Some(result) => {
                     let value = result.to_string();
-                    CallResponse::Reply(Self::OutMsg::Found { value })
+                    RequestResponse::Reply(Self::Reply::Found { value })
                 }
-                None => CallResponse::Reply(Self::OutMsg::NotFound),
+                None => RequestResponse::Reply(Self::Reply::NotFound),
             },
         }
     }

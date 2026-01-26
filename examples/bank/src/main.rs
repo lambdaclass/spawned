@@ -24,7 +24,7 @@ mod server;
 
 use messages::{BankError, BankOutMessage};
 use server::Bank;
-use spawned_concurrency::tasks::GenServer as _;
+use spawned_concurrency::tasks::Actor as _;
 use spawned_rt::tasks as rt;
 
 fn main() {

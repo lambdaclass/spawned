@@ -1,11 +1,11 @@
 use super::{
-    send_after, send_interval, CallResponse, CastResponse, GenServer, GenServerHandle, InitResult,
+    send_after, send_interval, Actor, ActorRef, InitResult, MessageResponse, RequestResponse,
     InitResult::Success,
 };
 use spawned_rt::tasks::{self as rt, CancellationToken};
 use std::time::Duration;
 
-type RepeaterHandle = GenServerHandle<Repeater>;
+type RepeaterHandle = ActorRef<Repeater>;
 
 #[derive(Clone)]
 enum RepeaterCastMessage {
@@ -40,23 +40,23 @@ impl Repeater {
 impl Repeater {
     pub async fn stop_timer(server: &mut RepeaterHandle) -> Result<(), ()> {
         server
-            .cast(RepeaterCastMessage::StopTimer)
+            .send(RepeaterCastMessage::StopTimer)
             .await
             .map_err(|_| ())
     }
 
     pub async fn get_count(server: &mut RepeaterHandle) -> Result<RepeaterOutMessage, ()> {
         server
-            .call(RepeaterCallMessage::GetCount)
+            .request(RepeaterCallMessage::GetCount)
             .await
             .map_err(|_| ())
     }
 }
 
-impl GenServer for Repeater {
-    type CallMsg = RepeaterCallMessage;
-    type CastMsg = RepeaterCastMessage;
-    type OutMsg = RepeaterOutMessage;
+impl Actor for Repeater {
+    type Request = RepeaterCallMessage;
+    type Message = RepeaterCastMessage;
+    type Reply = RepeaterOutMessage;
     type Error = ();
 
     async fn init(mut self, handle: &RepeaterHandle) -> Result<InitResult<Self>, Self::Error> {
@@ -69,20 +69,20 @@ impl GenServer for Repeater {
         Ok(Success(self))
     }
 
-    async fn handle_call(
+    async fn handle_request(
         &mut self,
-        _message: Self::CallMsg,
+        _message: Self::Request,
         _handle: &RepeaterHandle,
-    ) -> CallResponse<Self> {
+    ) -> RequestResponse<Self> {
         let count = self.count;
-        CallResponse::Reply(RepeaterOutMessage::Count(count))
+        RequestResponse::Reply(RepeaterOutMessage::Count(count))
     }
 
-    async fn handle_cast(
+    async fn handle_message(
         &mut self,
-        message: Self::CastMsg,
-        _handle: &GenServerHandle<Self>,
-    ) -> CastResponse {
+        message: Self::Message,
+        _handle: &ActorRef<Self>,
+    ) -> MessageResponse {
         match message {
             RepeaterCastMessage::Inc => {
                 self.count += 1;
@@ -93,7 +93,7 @@ impl GenServer for Repeater {
                 };
             }
         };
-        CastResponse::NoReply
+        MessageResponse::NoReply
     }
 }
 
@@ -127,7 +127,7 @@ pub fn test_send_interval_and_cancellation() {
     });
 }
 
-type DelayedHandle = GenServerHandle<Delayed>;
+type DelayedHandle = ActorRef<Delayed>;
 
 #[derive(Clone)]
 enum DelayedCastMessage {
@@ -160,47 +160,47 @@ impl Delayed {
 impl Delayed {
     pub async fn get_count(server: &mut DelayedHandle) -> Result<DelayedOutMessage, ()> {
         server
-            .call(DelayedCallMessage::GetCount)
+            .request(DelayedCallMessage::GetCount)
             .await
             .map_err(|_| ())
     }
 
     pub async fn stop(server: &mut DelayedHandle) -> Result<DelayedOutMessage, ()> {
-        server.call(DelayedCallMessage::Stop).await.map_err(|_| ())
+        server.request(DelayedCallMessage::Stop).await.map_err(|_| ())
     }
 }
 
-impl GenServer for Delayed {
-    type CallMsg = DelayedCallMessage;
-    type CastMsg = DelayedCastMessage;
-    type OutMsg = DelayedOutMessage;
+impl Actor for Delayed {
+    type Request = DelayedCallMessage;
+    type Message = DelayedCastMessage;
+    type Reply = DelayedOutMessage;
     type Error = ();
 
-    async fn handle_call(
+    async fn handle_request(
         &mut self,
-        message: Self::CallMsg,
+        message: Self::Request,
         _handle: &DelayedHandle,
-    ) -> CallResponse<Self> {
+    ) -> RequestResponse<Self> {
         match message {
             DelayedCallMessage::GetCount => {
                 let count = self.count;
-                CallResponse::Reply(DelayedOutMessage::Count(count))
+                RequestResponse::Reply(DelayedOutMessage::Count(count))
             }
-            DelayedCallMessage::Stop => CallResponse::Stop(DelayedOutMessage::Count(self.count)),
+            DelayedCallMessage::Stop => RequestResponse::Stop(DelayedOutMessage::Count(self.count)),
         }
     }
 
-    async fn handle_cast(
+    async fn handle_message(
         &mut self,
-        message: Self::CastMsg,
+        message: Self::Message,
         _handle: &DelayedHandle,
-    ) -> CastResponse {
+    ) -> MessageResponse {
         match message {
             DelayedCastMessage::Inc => {
                 self.count += 1;
             }
         };
-        CastResponse::NoReply
+        MessageResponse::NoReply
     }
 }
 
@@ -278,7 +278,7 @@ pub fn test_send_after_gen_server_teardown() {
             DelayedCastMessage::Inc,
         );
 
-        // Stop the GenServer before timeout
+        // Stop the Actor before timeout
         let count2 = Delayed::stop(&mut repeater).await.unwrap();
 
         // Wait another 200 milliseconds
