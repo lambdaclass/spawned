@@ -1,11 +1,12 @@
 //! Actor trait and structs to create an abstraction similar to Erlang gen_server.
 //! See examples/name_server for a usage example.
 use spawned_rt::threads::{
-    self as rt, mpsc, oneshot, oneshot::RecvTimeoutError, CancellationToken,
+    self as rt, mpsc, oneshot, oneshot::RecvTimeoutError, CancellationToken, JoinHandle,
 };
 use std::{
     fmt::Debug,
     panic::{catch_unwind, AssertUnwindSafe},
+    sync::{Arc, Mutex},
     time::Duration,
 };
 
@@ -17,6 +18,7 @@ const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 pub struct ActorRef<A: Actor + 'static> {
     pub tx: mpsc::Sender<ActorInMsg<A>>,
     cancellation_token: CancellationToken,
+    join_handle: Arc<Mutex<Option<JoinHandle<()>>>>,
 }
 
 impl<A: Actor> Clone for ActorRef<A> {
@@ -24,6 +26,7 @@ impl<A: Actor> Clone for ActorRef<A> {
         Self {
             tx: self.tx.clone(),
             cancellation_token: self.cancellation_token.clone(),
+            join_handle: self.join_handle.clone(),
         }
     }
 }
@@ -32,17 +35,22 @@ impl<A: Actor> ActorRef<A> {
     pub(crate) fn new(actor: A) -> Self {
         let (tx, mut rx) = mpsc::channel::<ActorInMsg<A>>();
         let cancellation_token = CancellationToken::new();
+        let join_handle = Arc::new(Mutex::new(None));
         let handle = ActorRef {
             tx,
             cancellation_token,
+            join_handle: join_handle.clone(),
         };
         let handle_clone = handle.clone();
-        // Ignore the JoinHandle for now. Maybe we'll use it in the future
-        let _join_handle = rt::spawn(move || {
+        let thread_handle = rt::spawn(move || {
             if actor.run(&handle, &mut rx).is_err() {
                 tracing::trace!("Actor crashed")
             };
         });
+        let mut guard = join_handle
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *guard = Some(thread_handle);
         handle_clone
     }
 
@@ -84,11 +92,16 @@ impl<A: Actor> ActorRef<A> {
     /// Blocks until the actor has stopped.
     ///
     /// This method blocks the current thread until the actor has finished
-    /// processing and exited its main loop.
+    /// processing and exited its main loop. Can only be called once; subsequent
+    /// calls return immediately.
     pub fn join(&self) {
-        let mut token = self.cancellation_token.clone();
-        while !token.is_cancelled() {
-            std::thread::sleep(std::time::Duration::from_millis(10));
+        // Recover from poisoned lock if another thread panicked while holding it
+        let mut guard = self
+            .join_handle
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(h) = guard.take() {
+            let _ = h.join();
         }
     }
 }

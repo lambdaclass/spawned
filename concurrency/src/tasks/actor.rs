@@ -10,9 +10,38 @@ use spawned_rt::{
     tasks::{self as rt, mpsc, oneshot, timeout, CancellationToken, JoinHandle},
     threads,
 };
-use std::{fmt::Debug, future::Future, panic::AssertUnwindSafe, time::Duration};
+use std::{
+    fmt::Debug,
+    future::Future,
+    panic::AssertUnwindSafe,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Wrapper for different JoinHandle types based on backend.
+#[derive(Debug)]
+enum ActorJoinHandle {
+    /// Tokio task JoinHandle (for Async and Blocking backends)
+    Task(JoinHandle<()>),
+    /// OS thread JoinHandle (for Thread backend)
+    Thread(threads::JoinHandle<()>),
+}
+
+impl ActorJoinHandle {
+    /// Waits for the actor to finish.
+    async fn join(self) {
+        match self {
+            ActorJoinHandle::Task(h) => {
+                let _ = h.await;
+            }
+            ActorJoinHandle::Thread(h) => {
+                let _ = h.join();
+            }
+        }
+    }
+}
 
 /// Execution backend for Actor.
 ///
@@ -106,6 +135,8 @@ pub struct ActorRef<A: Actor + 'static> {
     pub tx: mpsc::Sender<ActorInMsg<A>>,
     /// Cancellation token to stop the Actor
     cancellation_token: CancellationToken,
+    /// JoinHandle for waiting on actor completion
+    join_handle: Arc<Mutex<Option<ActorJoinHandle>>>,
 }
 
 impl<A: Actor> Clone for ActorRef<A> {
@@ -113,6 +144,7 @@ impl<A: Actor> Clone for ActorRef<A> {
         Self {
             tx: self.tx.clone(),
             cancellation_token: self.cancellation_token.clone(),
+            join_handle: self.join_handle.clone(),
         }
     }
 }
@@ -121,9 +153,11 @@ impl<A: Actor> ActorRef<A> {
     fn new(actor: A) -> Self {
         let (tx, mut rx) = mpsc::channel::<ActorInMsg<A>>();
         let cancellation_token = CancellationToken::new();
+        let join_handle = Arc::new(Mutex::new(None));
         let handle = ActorRef {
             tx,
             cancellation_token,
+            join_handle: join_handle.clone(),
         };
         let handle_clone = handle.clone();
         let inner_future = async move {
@@ -136,8 +170,11 @@ impl<A: Actor> ActorRef<A> {
         // Optionally warn if the Actor future blocks for too much time
         let inner_future = warn_on_block::WarnOnBlocking::new(inner_future);
 
-        // Ignore the JoinHandle for now. Maybe we'll use it in the future
-        let _join_handle = rt::spawn(inner_future);
+        let task_handle = rt::spawn(inner_future);
+        let mut guard = join_handle
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *guard = Some(ActorJoinHandle::Task(task_handle));
 
         handle_clone
     }
@@ -145,38 +182,50 @@ impl<A: Actor> ActorRef<A> {
     fn new_blocking(actor: A) -> Self {
         let (tx, mut rx) = mpsc::channel::<ActorInMsg<A>>();
         let cancellation_token = CancellationToken::new();
+        let join_handle = Arc::new(Mutex::new(None));
         let handle = ActorRef {
             tx,
             cancellation_token,
+            join_handle: join_handle.clone(),
         };
         let handle_clone = handle.clone();
-        // Ignore the JoinHandle for now. Maybe we'll use it in the future
-        let _join_handle = rt::spawn_blocking(|| {
+        let task_handle = rt::spawn_blocking(|| {
             rt::block_on(async move {
                 if let Err(error) = actor.run(&handle, &mut rx).await {
                     tracing::trace!(%error, "Actor crashed")
                 };
             })
         });
+        let mut guard = join_handle
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *guard = Some(ActorJoinHandle::Task(task_handle));
+
         handle_clone
     }
 
     fn new_on_thread(actor: A) -> Self {
         let (tx, mut rx) = mpsc::channel::<ActorInMsg<A>>();
         let cancellation_token = CancellationToken::new();
+        let join_handle = Arc::new(Mutex::new(None));
         let handle = ActorRef {
             tx,
             cancellation_token,
+            join_handle: join_handle.clone(),
         };
         let handle_clone = handle.clone();
-        // Ignore the JoinHandle for now. Maybe we'll use it in the future
-        let _join_handle = threads::spawn(|| {
+        let thread_handle = threads::spawn(|| {
             threads::block_on(async move {
                 if let Err(error) = actor.run(&handle, &mut rx).await {
                     tracing::trace!(%error, "Actor crashed")
                 };
             })
         });
+        let mut guard = join_handle
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *guard = Some(ActorJoinHandle::Thread(thread_handle));
+
         handle_clone
     }
 
@@ -220,9 +269,19 @@ impl<A: Actor> ActorRef<A> {
     /// Waits for the actor to stop.
     ///
     /// This method returns a future that completes when the actor has finished
-    /// processing and exited its main loop.
+    /// processing and exited its main loop. Can only be called once; subsequent
+    /// calls return immediately.
     pub async fn join(&self) {
-        self.cancellation_token.cancelled().await
+        let handle = {
+            let mut guard = self
+                .join_handle
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            guard.take()
+        };
+        if let Some(h) = handle {
+            h.join().await;
+        }
     }
 }
 
