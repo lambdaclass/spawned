@@ -37,7 +37,8 @@ impl ActorJoinHandle {
                 let _ = h.await;
             }
             ActorJoinHandle::Thread(h) => {
-                let _ = h.join();
+                // Use spawn_blocking to avoid blocking the tokio runtime
+                let _ = rt::spawn_blocking(move || h.join()).await;
             }
         }
     }
@@ -1012,6 +1013,83 @@ mod tests {
             assert_eq!(result, 42);
 
             counter.request(CounterRequest::Stop).await.unwrap();
+        });
+    }
+
+    /// Actor that sleeps during teardown to simulate slow shutdown
+    struct SlowShutdownActor;
+
+    impl Actor for SlowShutdownActor {
+        type Request = Unused;
+        type Message = Unused;
+        type Reply = Unused;
+        type Error = Unused;
+
+        async fn handle_message(
+            &mut self,
+            _message: Self::Message,
+            _handle: &ActorRef<Self>,
+        ) -> MessageResponse {
+            MessageResponse::Stop
+        }
+
+        async fn teardown(self, _handle: &ActorRef<Self>) -> Result<(), Self::Error> {
+            // Simulate slow shutdown - this runs on the thread
+            std::thread::sleep(Duration::from_millis(500));
+            Ok(())
+        }
+    }
+
+    /// Test that join() on a Backend::Thread actor doesn't block other async tasks.
+    ///
+    /// This test verifies that when we call join().await on an actor running on
+    /// Backend::Thread, it doesn't block the tokio runtime - other async tasks
+    /// should continue to make progress.
+    ///
+    /// Uses a single-threaded runtime to ensure we detect blocking behavior.
+    #[test]
+    pub fn thread_backend_join_does_not_block_runtime() {
+        // Use current_thread runtime to ensure blocking would be detected
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        runtime.block_on(async move {
+            // Start a thread-backend actor that takes 500ms to teardown
+            let mut slow_actor = SlowShutdownActor.start_with_backend(Backend::Thread);
+
+            // Spawn an async task that increments a counter every 50ms
+            let tick_count = Arc::new(std::sync::atomic::AtomicU64::new(0));
+            let tick_count_clone = tick_count.clone();
+            let _ticker = rt::spawn(async move {
+                for _ in 0..20 {
+                    rt::sleep(Duration::from_millis(50)).await;
+                    tick_count_clone.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                }
+            });
+
+            // Tell the actor to stop - it will start its slow teardown
+            slow_actor.send(Unused).await.unwrap();
+
+            // Small delay to ensure the actor received the message
+            rt::sleep(Duration::from_millis(10)).await;
+
+            // Now join the actor - this waits for the 500ms teardown
+            // If implemented correctly, the ticker should continue running DURING the join
+            slow_actor.join().await;
+
+            // Check tick count IMMEDIATELY after join returns, before awaiting ticker.
+            // The actor teardown takes 500ms. In that time, the ticker should have
+            // completed about 10 ticks (500ms / 50ms = 10).
+            // If join() blocked the runtime, the ticker would have 0-1 ticks.
+            let count_after_join = tick_count.load(std::sync::atomic::Ordering::SeqCst);
+            assert!(
+                count_after_join >= 8,
+                "Ticker should have completed ~10 ticks during the 500ms join(), but only got {}. \
+                 This suggests join() blocked the runtime.",
+                count_after_join
+            );
         });
     }
 }
