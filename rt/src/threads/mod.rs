@@ -79,10 +79,11 @@ pub fn ctrl_c() -> impl FnOnce() + Send + 'static {
     let subscribers = CTRL_C_SUBSCRIBERS.get_or_init(|| {
         ctrlc::set_handler(|| {
             if let Some(subs) = CTRL_C_SUBSCRIBERS.get() {
-                if let Ok(guard) = subs.lock() {
-                    for tx in guard.iter() {
-                        let _ = tx.send(());
-                    }
+                let guard = subs
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                for tx in guard.iter() {
+                    let _ = tx.send(());
                 }
             }
         })
@@ -92,9 +93,10 @@ pub fn ctrl_c() -> impl FnOnce() + Send + 'static {
 
     // Create a new subscriber channel
     let (tx, rx) = std_mpsc::channel();
-    if let Ok(mut guard) = subscribers.lock() {
-        guard.push(tx);
-    }
+    subscribers
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .push(tx);
 
     move || {
         let _ = rx.recv();
