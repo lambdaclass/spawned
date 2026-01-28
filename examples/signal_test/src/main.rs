@@ -95,18 +95,28 @@ fn main() {
         tracing::info!("Starting signal test with backend: {}", backend);
         tracing::info!("Press Ctrl+C to test signal handling...");
 
-        let actor = match backend {
+        // Start two actors - both should react to Ctrl+C
+        let (actor1, actor2) = match backend {
             "async" => {
                 tracing::info!("Using Backend::Async");
-                TickingActor::new("async").start_with_backend(Backend::Async)
+                (
+                    TickingActor::new("async-1").start_with_backend(Backend::Async),
+                    TickingActor::new("async-2").start_with_backend(Backend::Async),
+                )
             }
             "blocking" => {
                 tracing::info!("Using Backend::Blocking");
-                TickingActor::new("blocking").start_with_backend(Backend::Blocking)
+                (
+                    TickingActor::new("blocking-1").start_with_backend(Backend::Blocking),
+                    TickingActor::new("blocking-2").start_with_backend(Backend::Blocking),
+                )
             }
             "thread" => {
                 tracing::info!("Using Backend::Thread");
-                TickingActor::new("thread").start_with_backend(Backend::Thread)
+                (
+                    TickingActor::new("thread-1").start_with_backend(Backend::Thread),
+                    TickingActor::new("thread-2").start_with_backend(Backend::Thread),
+                )
             }
             _ => {
                 tracing::error!(
@@ -117,8 +127,9 @@ fn main() {
             }
         };
 
-        // Wait for the actor to stop
-        actor.join().await;
+        // Wait for both actors to stop
+        actor1.join().await;
+        actor2.join().await;
 
         tracing::info!("Main task exiting");
     });

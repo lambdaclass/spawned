@@ -5,7 +5,7 @@ pub mod oneshot;
 
 use std::sync::{
     atomic::{AtomicBool, Ordering},
-    Arc, Mutex,
+    mpsc as std_mpsc, Arc, Mutex, OnceLock,
 };
 pub use std::{
     future::Future,
@@ -13,6 +13,9 @@ pub use std::{
 };
 
 use crate::{tasks::Runtime, tracing::init_tracing};
+
+/// Global list of Ctrl+C subscribers
+static CTRL_C_SUBSCRIBERS: OnceLock<Mutex<Vec<std_mpsc::Sender<()>>>> = OnceLock::new();
 
 pub fn run(f: fn()) {
     init_tracing();
@@ -96,21 +99,43 @@ impl CancellationToken {
 
 /// Returns a closure that blocks until Ctrl+C is received.
 ///
-/// The signal handler is registered immediately when this function is called,
-/// not when the returned closure is executed. This ensures no signals are missed
-/// due to race conditions if Ctrl+C is pressed before the closure runs.
+/// Multiple calls to this function are supported - each returns a closure that
+/// will be notified when Ctrl+C is pressed. This allows multiple actors to
+/// react to the same signal.
+///
+/// The signal handler is registered on the first call. Subsequent calls simply
+/// add new subscribers to the broadcast list.
 ///
 /// # Example
 ///
 /// ```ignore
-/// send_message_on(handle.clone(), rt::ctrl_c(), Msg::Shutdown);
+/// // Both actors will be notified on Ctrl+C
+/// send_message_on(actor1.clone(), rt::ctrl_c(), Msg::Shutdown);
+/// send_message_on(actor2.clone(), rt::ctrl_c(), Msg::Shutdown);
 /// ```
 pub fn ctrl_c() -> impl FnOnce() + Send + 'static {
-    let (tx, rx) = std::sync::mpsc::channel();
-    ctrlc::set_handler(move || {
-        let _ = tx.send(());
-    })
-    .expect("Error setting Ctrl+C handler");
+    // Initialize subscribers list and register handler on first call
+    let subscribers = CTRL_C_SUBSCRIBERS.get_or_init(|| {
+        ctrlc::set_handler(|| {
+            if let Some(subs) = CTRL_C_SUBSCRIBERS.get() {
+                let guard = subs
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                for tx in guard.iter() {
+                    let _ = tx.send(());
+                }
+            }
+        })
+        .expect("Error setting Ctrl+C handler");
+        Mutex::new(Vec::new())
+    });
+
+    // Create a new subscriber channel
+    let (tx, rx) = std_mpsc::channel();
+    subscribers
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .push(tx);
 
     move || {
         let _ = rx.recv();

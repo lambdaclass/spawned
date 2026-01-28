@@ -90,10 +90,14 @@ fn main() {
         tracing::info!("Starting signal test for threads Actor");
         tracing::info!("Press Ctrl+C to test signal handling...");
 
-        let actor = TickingActor::new("threads").start();
+        // Start two actors - both want to react to Ctrl+C
+        // This currently panics because ctrl_c() can only be called once!
+        let actor1 = TickingActor::new("actor-1").start();
+        let actor2 = TickingActor::new("actor-2").start();
 
-        // Wait for the actor to stop
-        actor.join();
+        // Wait for both actors to stop
+        actor1.join();
+        actor2.join();
 
         tracing::info!("Main thread exiting");
     });
