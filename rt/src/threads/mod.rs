@@ -85,14 +85,20 @@ impl CancellationToken {
 
     /// Register a callback to be invoked when this token is cancelled.
     /// If already cancelled, the callback fires immediately.
+    ///
+    /// This method is thread-safe: the callback is guaranteed to fire exactly
+    /// once, either immediately (if already cancelled) or when `cancel()` is called.
     pub fn on_cancel(&self, callback: CancelCallback) {
+        // Hold the lock while checking is_cancelled to avoid a race with cancel().
+        // cancel() sets the flag BEFORE acquiring the lock, so if we see
+        // is_cancelled=false while holding the lock, cancel() hasn't drained
+        // callbacks yet and will drain ours after we release the lock.
+        let mut callbacks = self.callbacks.lock().unwrap_or_else(|e| e.into_inner());
         if self.is_cancelled() {
+            drop(callbacks);
             callback();
         } else {
-            self.callbacks
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .push(callback);
+            callbacks.push(callback);
         }
     }
 }
