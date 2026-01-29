@@ -3,6 +3,10 @@ name: PR Review - Kimi
 on:
   pull_request:
     types: [opened, synchronize, reopened]
+  pull_request_review_comment:
+    types: [created]
+  issue_comment:
+    types: [created]
 
 permissions:
   contents: read
@@ -15,6 +19,10 @@ concurrency:
 jobs:
   kimi-review:
     name: Kimi Code Review
+    if: |
+      github.event_name == 'pull_request' ||
+      (github.event_name == 'issue_comment' && github.event.issue.pull_request && contains(github.event.comment.body, '@kimi')) ||
+      (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@kimi'))
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -34,16 +42,26 @@ jobs:
         id: diff
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
         run: |
-          gh pr diff ${{ github.event.pull_request.number }} > pr_diff.txt
+          gh pr diff $PR_NUMBER > pr_diff.txt
           # Truncate if too large (Kimi has context limits)
           head -c 100000 pr_diff.txt > pr_diff_truncated.txt
+
+      - name: Get PR title
+        id: pr_info
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
+        run: |
+          TITLE=$(gh pr view $PR_NUMBER --json title -q '.title')
+          echo "title=$TITLE" >> $GITHUB_OUTPUT
 
       - name: Kimi Code Review
         id: kimi_review
         env:
           KIMI_API_KEY: ${{ secrets.KIMI_API_KEY }}
-          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_TITLE: ${{ steps.pr_info.outputs.title }}
           REVIEW_PROMPT: ${{ steps.prompt.outputs.content }}
         run: |
           if [ -z "$KIMI_API_KEY" ]; then
@@ -99,15 +117,11 @@ jobs:
       - name: Post review comment
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
         run: |
-          gh pr comment ${{ github.event.pull_request.number }} --body-file kimi_review.txt --body-prefix "## Kimi AI Code Review
+          gh pr comment $PR_NUMBER --body-file kimi_review.txt --body-prefix "## Kimi AI Code Review
 
 " --body-suffix "
 
 ---
 *Automated review by Kimi (Moonshot AI)*"
-
-          $REVIEW_CONTENT
-
-          ---
-          *Automated review by Kimi (Moonshot AI)*"
