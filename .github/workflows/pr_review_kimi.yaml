@@ -22,6 +22,14 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Read review prompt
+        id: prompt
+        run: |
+          PROMPT=$(cat .github/prompts/pr_review.md)
+          echo "content<<EOF" >> $GITHUB_OUTPUT
+          echo "$PROMPT" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
       - name: Get PR diff
         id: diff
         env:
@@ -36,6 +44,7 @@ jobs:
         env:
           KIMI_API_KEY: ${{ secrets.KIMI_API_KEY }}
           PR_TITLE: ${{ github.event.pull_request.title }}
+          REVIEW_PROMPT: ${{ steps.prompt.outputs.content }}
         run: |
           if [ -z "$KIMI_API_KEY" ]; then
             echo "Error: KIMI_API_KEY secret is not set" > kimi_review.txt
@@ -48,16 +57,17 @@ jobs:
           REQUEST_BODY=$(jq -n \
             --arg diff "$DIFF_CONTENT" \
             --arg title "$PR_TITLE" \
+            --arg prompt "$REVIEW_PROMPT" \
             '{
               "model": "moonshot-v1-128k",
               "messages": [
                 {
                   "role": "system",
-                  "content": "You are a senior code reviewer for spawned, a Rust actor framework with support for both async (tokio) and thread-based backends."
+                  "content": $prompt
                 },
                 {
                   "role": "user",
-                  "content": ("PR Title: " + $title + "\n\nReview this PR focusing on:\n- Code correctness and potential bugs\n- Concurrency issues (race conditions, deadlocks, data races)\n- Performance implications\n- Rust best practices and idiomatic patterns\n- Memory safety and proper error handling\n- Code readability and maintainability\n\nActor framework-specific considerations:\n- Actor lifecycle management (init, shutdown, cancellation)\n- Message passing correctness and ordering\n- Proper use of CancellationToken and graceful shutdown\n- Thread safety and synchronization primitives\n- Timer and interval handling\n\nBe concise and specific. Provide line references when suggesting changes.\nIf the code looks good, acknowledge it briefly.\n\nDiff:\n" + $diff)
+                  "content": ("PR Title: " + $title + "\n\nDiff:\n" + $diff)
                 }
               ],
               "temperature": 0.3,
