@@ -120,9 +120,9 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
         run: |
-          gh pr comment $PR_NUMBER --body-file kimi_review.txt --body-prefix "## Kimi AI Code Review
+          echo "<details><summary><h2>Kimi AI Code Review</h2></summary>" > body.md
+          cat kimi_review.txt >> body.md
+          echo -e "\n---\n*Automated review by Kimi (Moonshot AI)*\n</details>" >> body.md
 
-" --body-suffix "
+          gh pr comment ${{ github.event.pull_request.number }} --body-file body.md
 
----
-*Automated review by Kimi (Moonshot AI)*"
