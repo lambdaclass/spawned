@@ -44,5 +44,5 @@ jobs:
           MODEL: gpt-4o
           LANGUAGE: English
           MAX_PATCH_LENGTH: 100000
-          max_tokens: 4096
+          MAX_TOKENS: 4096
           PROMPT: ${{ steps.prompt.outputs.content }}
