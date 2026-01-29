@@ -100,9 +100,12 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          REVIEW_CONTENT=$(cat kimi_review.txt)
+          gh pr comment ${{ github.event.pull_request.number }} --body-file kimi_review.txt --body-prefix "## Kimi AI Code Review
 
-          gh pr comment ${{ github.event.pull_request.number }} --body "## Kimi AI Code Review
+" --body-suffix "
+
+---
+*Automated review by Kimi (Moonshot AI)*"
 
           $REVIEW_CONTENT
 
