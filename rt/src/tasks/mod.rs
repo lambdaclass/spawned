@@ -17,6 +17,7 @@ pub use crate::tasks::tokio::mpsc;
 pub use crate::tasks::tokio::oneshot;
 pub use crate::tasks::tokio::sleep;
 pub use crate::tasks::tokio::timeout;
+pub use crate::tasks::tokio::watch;
 pub use crate::tasks::tokio::CancellationToken;
 pub use crate::tasks::tokio::{spawn, spawn_blocking, task_id, JoinHandle, Runtime};
 pub use crate::tasks::tokio::{BroadcastStream, ReceiverStream};

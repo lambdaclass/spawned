@@ -1,12 +1,10 @@
 //! Actor trait and structs to create an abstraction similar to Erlang gen_server.
 //! See examples/name_server for a usage example.
-use spawned_rt::threads::{
-    self as rt, mpsc, oneshot, oneshot::RecvTimeoutError, CancellationToken, JoinHandle,
-};
+use spawned_rt::threads::{self as rt, mpsc, oneshot, oneshot::RecvTimeoutError, CancellationToken};
 use std::{
     fmt::Debug,
     panic::{catch_unwind, AssertUnwindSafe},
-    sync::{Arc, Mutex},
+    sync::{Arc, Condvar, Mutex},
     time::Duration,
 };
 
@@ -14,11 +12,11 @@ use crate::error::ActorError;
 
 const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
-#[derive(Debug)]
 pub struct ActorRef<A: Actor + 'static> {
     pub tx: mpsc::Sender<ActorInMsg<A>>,
     cancellation_token: CancellationToken,
-    join_handle: Arc<Mutex<Option<JoinHandle<()>>>>,
+    /// Completion signal: (is_completed, condvar for waiters)
+    completion: Arc<(Mutex<bool>, Condvar)>,
 }
 
 impl<A: Actor> Clone for ActorRef<A> {
@@ -26,8 +24,17 @@ impl<A: Actor> Clone for ActorRef<A> {
         Self {
             tx: self.tx.clone(),
             cancellation_token: self.cancellation_token.clone(),
-            join_handle: self.join_handle.clone(),
+            completion: self.completion.clone(),
         }
+    }
+}
+
+impl<A: Actor> std::fmt::Debug for ActorRef<A> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ActorRef")
+            .field("tx", &self.tx)
+            .field("cancellation_token", &self.cancellation_token)
+            .finish_non_exhaustive()
     }
 }
 
@@ -35,22 +42,23 @@ impl<A: Actor> ActorRef<A> {
     pub(crate) fn new(actor: A) -> Self {
         let (tx, mut rx) = mpsc::channel::<ActorInMsg<A>>();
         let cancellation_token = CancellationToken::new();
-        let join_handle = Arc::new(Mutex::new(None));
+        let completion = Arc::new((Mutex::new(false), Condvar::new()));
         let handle = ActorRef {
             tx,
             cancellation_token,
-            join_handle: join_handle.clone(),
+            completion: completion.clone(),
         };
         let handle_clone = handle.clone();
-        let thread_handle = rt::spawn(move || {
+        let _thread_handle = rt::spawn(move || {
             if actor.run(&handle, &mut rx).is_err() {
                 tracing::trace!("Actor crashed")
             };
+            // Signal completion to all waiters
+            let (lock, cvar) = &*completion;
+            let mut completed = lock.lock().unwrap_or_else(|p| p.into_inner());
+            *completed = true;
+            cvar.notify_all();
         });
-        let mut guard = join_handle
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        *guard = Some(thread_handle);
         handle_clone
     }
 
@@ -92,16 +100,14 @@ impl<A: Actor> ActorRef<A> {
     /// Blocks until the actor has stopped.
     ///
     /// This method blocks the current thread until the actor has finished
-    /// processing and exited its main loop. Can only be called once; subsequent
-    /// calls return immediately.
+    /// processing and exited its main loop. Can be called multiple times from
+    /// different clones of the ActorRef - all callers will be notified when
+    /// the actor stops.
     pub fn join(&self) {
-        // Recover from poisoned lock if another thread panicked while holding it
-        let mut guard = self
-            .join_handle
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if let Some(h) = guard.take() {
-            let _ = h.join();
+        let (lock, cvar) = &*self.completion;
+        let mut completed = lock.lock().unwrap_or_else(|p| p.into_inner());
+        while !*completed {
+            completed = cvar.wait(completed).unwrap_or_else(|p| p.into_inner());
         }
     }
 }
