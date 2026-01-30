@@ -79,12 +79,11 @@ pub fn ctrl_c() -> impl FnOnce() + Send + 'static {
     let subscribers = CTRL_C_SUBSCRIBERS.get_or_init(|| {
         ctrlc::set_handler(|| {
             if let Some(subs) = CTRL_C_SUBSCRIBERS.get() {
-                let guard = subs
+                let mut guard = subs
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner());
-                for tx in guard.iter() {
-                    let _ = tx.send(());
-                }
+                // Notify all subscribers and remove dead ones (where receiver was dropped)
+                guard.retain(|tx| tx.send(()).is_ok());
             }
         })
         .expect("Error setting Ctrl+C handler");
