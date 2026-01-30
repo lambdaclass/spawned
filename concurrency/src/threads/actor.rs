@@ -12,6 +12,19 @@ use crate::error::ActorError;
 
 const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Guard that signals completion when dropped.
+/// Ensures waiters are notified even if the actor thread panics.
+struct CompletionGuard(Arc<(Mutex<bool>, Condvar)>);
+
+impl Drop for CompletionGuard {
+    fn drop(&mut self) {
+        let (lock, cvar) = &*self.0;
+        let mut completed = lock.lock().unwrap_or_else(|p| p.into_inner());
+        *completed = true;
+        cvar.notify_all();
+    }
+}
+
 pub struct ActorRef<A: Actor + 'static> {
     pub tx: mpsc::Sender<ActorInMsg<A>>,
     cancellation_token: CancellationToken,
@@ -50,14 +63,11 @@ impl<A: Actor> ActorRef<A> {
         };
         let handle_clone = handle.clone();
         let _thread_handle = rt::spawn(move || {
+            // Guard ensures completion is signaled even if actor panics
+            let _guard = CompletionGuard(completion);
             if actor.run(&handle, &mut rx).is_err() {
                 tracing::trace!("Actor crashed")
             };
-            // Signal completion to all waiters
-            let (lock, cvar) = &*completion;
-            let mut completed = lock.lock().unwrap_or_else(|p| p.into_inner());
-            *completed = true;
-            cvar.notify_all();
         });
         handle_clone
     }
