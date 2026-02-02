@@ -12,7 +12,7 @@ where
     <I as IntoIterator>::IntoIter: std::marker::Send + 'static,
 {
     let mut iter = stream.into_iter();
-    let cancelation_token = handle.cancellation_token();
+    let cancellation_token = handle.cancellation_token();
     let join_handle = spawned_rt::threads::spawn(move || loop {
         match iter.next() {
             Some(msg) => match handle.send(msg) {
@@ -27,7 +27,7 @@ where
                 break;
             }
         }
-        if cancelation_token.is_cancelled() {
+        if cancellation_token.is_cancelled() {
             tracing::trace!("Actor stopped");
             break;
         }

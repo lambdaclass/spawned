@@ -13,10 +13,10 @@ where
     T: Actor,
     S: Send + Stream<Item = T::Message> + 'static,
 {
-    let cancelation_token = handle.cancellation_token();
+    let cancellation_token = handle.cancellation_token();
     let join_handle = spawned_rt::tasks::spawn(async move {
         let mut pinned_stream = core::pin::pin!(stream);
-        let is_cancelled = core::pin::pin!(cancelation_token.cancelled());
+        let is_cancelled = core::pin::pin!(cancellation_token.cancelled());
         let listener_loop = core::pin::pin!(async {
             loop {
                 match pinned_stream.next().await {
