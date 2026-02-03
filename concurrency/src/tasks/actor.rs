@@ -456,10 +456,10 @@ where
     U: Future + Send + 'static,
     <U as Future>::Output: Send,
 {
-    let cancelation_token = handle.cancellation_token();
+    let cancellation_token = handle.cancellation_token();
     let mut handle_clone = handle.clone();
     let join_handle = rt::spawn(async move {
-        let is_cancelled = pin!(cancelation_token.cancelled());
+        let is_cancelled = pin!(cancellation_token.cancelled());
         let signal = pin!(future);
         match future::select(is_cancelled, signal).await {
             future::Either::Left(_) => tracing::debug!("Actor stopped"),

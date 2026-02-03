@@ -1,6 +1,8 @@
 //! Actor trait and structs to create an abstraction similar to Erlang gen_server.
 //! See examples/name_server for a usage example.
-use spawned_rt::threads::{self as rt, mpsc, oneshot, oneshot::RecvTimeoutError, CancellationToken};
+use spawned_rt::threads::{
+    self as rt, mpsc, oneshot, oneshot::RecvTimeoutError, CancellationToken,
+};
 use std::{
     fmt::Debug,
     panic::{catch_unwind, AssertUnwindSafe},
@@ -164,7 +166,7 @@ pub trait Actor: Send + Sized {
         handle: &ActorRef<Self>,
         rx: &mut mpsc::Receiver<ActorInMsg<Self>>,
     ) -> Result<(), ActorError> {
-        let mut cancellation_token = handle.cancellation_token.clone();
+        let cancellation_token = handle.cancellation_token.clone();
 
         let res = match self.init(handle) {
             Ok(InitResult::Success(new_state)) => {
@@ -235,7 +237,7 @@ pub trait Actor: Send + Sized {
                         }
                     },
                     Err(error) => {
-                        tracing::trace!("Error in callback, reverting state - Error: '{error:?}'");
+                        tracing::error!("Error in callback: '{error:?}'");
                         (true, Err(ActorError::Callback))
                     }
                 };
@@ -256,7 +258,7 @@ pub trait Actor: Send + Sized {
                         }
                     },
                     Err(error) => {
-                        tracing::trace!("Error in callback, reverting state - Error: '{error:?}'");
+                        tracing::error!("Error in callback: '{error:?}'");
                         true
                     }
                 }
@@ -301,7 +303,7 @@ where
     T: Actor,
     F: FnOnce() + Send + 'static,
 {
-    let mut cancellation_token = handle.cancellation_token();
+    let cancellation_token = handle.cancellation_token();
     let mut handle_clone = handle.clone();
     rt::spawn(move || {
         f();

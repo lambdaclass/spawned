@@ -37,24 +37,69 @@ where
     spawn(f)
 }
 
-#[derive(Clone, Debug, Default)]
+type CancelCallback = Box<dyn FnOnce() + Send>;
+
+/// A token that can be used to signal cancellation.
+///
+/// Supports registering callbacks via `on_cancel()` that fire when
+/// the token is cancelled, enabling efficient waiting patterns.
+#[derive(Clone, Default)]
 pub struct CancellationToken {
     is_cancelled: Arc<AtomicBool>,
+    callbacks: Arc<Mutex<Vec<CancelCallback>>>,
+}
+
+impl std::fmt::Debug for CancellationToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CancellationToken")
+            .field("is_cancelled", &self.is_cancelled())
+            .finish()
+    }
 }
 
 impl CancellationToken {
     pub fn new() -> Self {
         CancellationToken {
             is_cancelled: Arc::new(false.into()),
+            callbacks: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
-    pub fn is_cancelled(&mut self) -> bool {
-        self.is_cancelled.fetch_and(false, Ordering::SeqCst)
+    pub fn is_cancelled(&self) -> bool {
+        self.is_cancelled.load(Ordering::SeqCst)
     }
 
-    pub fn cancel(&mut self) {
-        self.is_cancelled.fetch_or(true, Ordering::SeqCst);
+    pub fn cancel(&self) {
+        self.is_cancelled.store(true, Ordering::SeqCst);
+        // Fire all registered callbacks
+        let callbacks: Vec<_> = self
+            .callbacks
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .drain(..)
+            .collect();
+        for cb in callbacks {
+            cb();
+        }
+    }
+
+    /// Register a callback to be invoked when this token is cancelled.
+    /// If already cancelled, the callback fires immediately.
+    ///
+    /// This method is thread-safe: the callback is guaranteed to fire exactly
+    /// once, either immediately (if already cancelled) or when `cancel()` is called.
+    pub fn on_cancel(&self, callback: CancelCallback) {
+        // Hold the lock while checking is_cancelled to avoid a race with cancel().
+        // cancel() sets the flag BEFORE acquiring the lock, so if we see
+        // is_cancelled=false while holding the lock, cancel() hasn't drained
+        // callbacks yet and will drain ours after we release the lock.
+        let mut callbacks = self.callbacks.lock().unwrap_or_else(|e| e.into_inner());
+        if self.is_cancelled() {
+            drop(callbacks);
+            callback();
+        } else {
+            callbacks.push(callback);
+        }
     }
 }
 
