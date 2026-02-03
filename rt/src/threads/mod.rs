@@ -86,7 +86,7 @@ pub fn ctrl_c() -> impl FnOnce() + Send + 'static {
                 guard.retain(|tx| tx.send(()).is_ok());
             }
         })
-        .expect("Error setting Ctrl+C handler");
+        .expect("Ctrl+C handler already set. Use ctrl_c() instead of ctrlc::set_handler()");
         Mutex::new(Vec::new())
     });
 
