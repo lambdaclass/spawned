@@ -90,8 +90,7 @@ fn main() {
         tracing::info!("Starting signal test for threads Actor");
         tracing::info!("Press Ctrl+C to test signal handling...");
 
-        // Start two actors - both want to react to Ctrl+C
-        // This currently panics because ctrl_c() can only be called once!
+        // Start two actors - both will react to Ctrl+C
         let actor1 = TickingActor::new("actor-1").start();
         let actor2 = TickingActor::new("actor-2").start();
 
