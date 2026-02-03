@@ -7,7 +7,7 @@ use crate::{
 use core::pin::pin;
 use futures::future::{self, FutureExt as _};
 use spawned_rt::{
-    tasks::{self as rt, mpsc, oneshot, timeout, CancellationToken, JoinHandle},
+    tasks::{self as rt, mpsc, oneshot, timeout, watch, CancellationToken, JoinHandle},
     threads,
 };
 use std::{fmt::Debug, future::Future, panic::AssertUnwindSafe, time::Duration};
@@ -106,6 +106,8 @@ pub struct ActorRef<A: Actor + 'static> {
     pub tx: mpsc::Sender<ActorInMsg<A>>,
     /// Cancellation token to stop the Actor
     cancellation_token: CancellationToken,
+    /// Completion signal for waiting on actor stop (true = stopped)
+    completion_rx: watch::Receiver<bool>,
 }
 
 impl<A: Actor> Clone for ActorRef<A> {
@@ -113,6 +115,7 @@ impl<A: Actor> Clone for ActorRef<A> {
         Self {
             tx: self.tx.clone(),
             cancellation_token: self.cancellation_token.clone(),
+            completion_rx: self.completion_rx.clone(),
         }
     }
 }
@@ -121,23 +124,26 @@ impl<A: Actor> ActorRef<A> {
     fn new(actor: A) -> Self {
         let (tx, mut rx) = mpsc::channel::<ActorInMsg<A>>();
         let cancellation_token = CancellationToken::new();
+        let (completion_tx, completion_rx) = watch::channel(false);
         let handle = ActorRef {
             tx,
             cancellation_token,
+            completion_rx,
         };
         let handle_clone = handle.clone();
         let inner_future = async move {
             if let Err(error) = actor.run(&handle, &mut rx).await {
                 tracing::trace!(%error, "Actor crashed")
             }
+            // Signal completion to all waiters
+            let _ = completion_tx.send(true);
         };
 
         #[cfg(debug_assertions)]
         // Optionally warn if the Actor future blocks for too much time
         let inner_future = warn_on_block::WarnOnBlocking::new(inner_future);
 
-        // Ignore the JoinHandle for now. Maybe we'll use it in the future
-        let _join_handle = rt::spawn(inner_future);
+        let _task_handle = rt::spawn(inner_future);
 
         handle_clone
     }
@@ -145,38 +151,46 @@ impl<A: Actor> ActorRef<A> {
     fn new_blocking(actor: A) -> Self {
         let (tx, mut rx) = mpsc::channel::<ActorInMsg<A>>();
         let cancellation_token = CancellationToken::new();
+        let (completion_tx, completion_rx) = watch::channel(false);
         let handle = ActorRef {
             tx,
             cancellation_token,
+            completion_rx,
         };
         let handle_clone = handle.clone();
-        // Ignore the JoinHandle for now. Maybe we'll use it in the future
-        let _join_handle = rt::spawn_blocking(|| {
+        let _task_handle = rt::spawn_blocking(move || {
             rt::block_on(async move {
                 if let Err(error) = actor.run(&handle, &mut rx).await {
                     tracing::trace!(%error, "Actor crashed")
                 };
+                // Signal completion to all waiters
+                let _ = completion_tx.send(true);
             })
         });
+
         handle_clone
     }
 
     fn new_on_thread(actor: A) -> Self {
         let (tx, mut rx) = mpsc::channel::<ActorInMsg<A>>();
         let cancellation_token = CancellationToken::new();
+        let (completion_tx, completion_rx) = watch::channel(false);
         let handle = ActorRef {
             tx,
             cancellation_token,
+            completion_rx,
         };
         let handle_clone = handle.clone();
-        // Ignore the JoinHandle for now. Maybe we'll use it in the future
-        let _join_handle = threads::spawn(|| {
+        let _thread_handle = threads::spawn(move || {
             threads::block_on(async move {
                 if let Err(error) = actor.run(&handle, &mut rx).await {
                     tracing::trace!(%error, "Actor crashed")
                 };
+                // Signal completion to all waiters
+                let _ = completion_tx.send(true);
             })
         });
+
         handle_clone
     }
 
@@ -213,8 +227,25 @@ impl<A: Actor> ActorRef<A> {
             .map_err(|_error| ActorError::Server)
     }
 
-    pub fn cancellation_token(&self) -> CancellationToken {
+    pub(crate) fn cancellation_token(&self) -> CancellationToken {
         self.cancellation_token.clone()
+    }
+
+    /// Waits for the actor to stop.
+    ///
+    /// This method returns a future that completes when the actor has finished
+    /// processing and exited its main loop. Can be called multiple times from
+    /// different clones of the ActorRef - all callers will be notified when
+    /// the actor stops.
+    pub async fn join(&self) {
+        let mut rx = self.completion_rx.clone();
+        // Wait until completion signal is true
+        while !*rx.borrow_and_update() {
+            if rx.changed().await.is_err() {
+                // Sender dropped, actor must have completed
+                break;
+            }
+        }
     }
 }
 
@@ -357,9 +388,7 @@ pub trait Actor: Send + Sized {
                         };
                     // Send response back
                     if sender.send(response).is_err() {
-                        tracing::error!(
-                            "Actor failed to send response back, client must have died"
-                        )
+                        tracing::error!("Actor failed to send response back, client must have died")
                     };
                     keep_running
                 }
@@ -904,7 +933,10 @@ mod tests {
             let mut thread_counter = Counter { count: 200 }.start_with_backend(Backend::Thread);
 
             // Increment each
-            async_counter.request(CounterRequest::Increment).await.unwrap();
+            async_counter
+                .request(CounterRequest::Increment)
+                .await
+                .unwrap();
             blocking_counter
                 .request(CounterRequest::Increment)
                 .await
@@ -925,7 +957,10 @@ mod tests {
 
             // Clean up
             async_counter.request(CounterRequest::Stop).await.unwrap();
-            blocking_counter.request(CounterRequest::Stop).await.unwrap();
+            blocking_counter
+                .request(CounterRequest::Stop)
+                .await
+                .unwrap();
             thread_counter.request(CounterRequest::Stop).await.unwrap();
         });
     }
@@ -941,6 +976,121 @@ mod tests {
             assert_eq!(result, 42);
 
             counter.request(CounterRequest::Stop).await.unwrap();
+        });
+    }
+
+    /// Actor that sleeps during teardown to simulate slow shutdown
+    struct SlowShutdownActor;
+
+    impl Actor for SlowShutdownActor {
+        type Request = Unused;
+        type Message = Unused;
+        type Reply = Unused;
+        type Error = Unused;
+
+        async fn handle_message(
+            &mut self,
+            _message: Self::Message,
+            _handle: &ActorRef<Self>,
+        ) -> MessageResponse {
+            MessageResponse::Stop
+        }
+
+        async fn teardown(self, _handle: &ActorRef<Self>) -> Result<(), Self::Error> {
+            // Simulate slow shutdown - this runs on the thread
+            std::thread::sleep(Duration::from_millis(500));
+            Ok(())
+        }
+    }
+
+    /// Test that join() on a Backend::Thread actor doesn't block other async tasks.
+    ///
+    /// This test verifies that when we call join().await on an actor running on
+    /// Backend::Thread, it doesn't block the tokio runtime - other async tasks
+    /// should continue to make progress.
+    ///
+    /// Uses a single-threaded runtime to ensure we detect blocking behavior.
+    #[test]
+    pub fn thread_backend_join_does_not_block_runtime() {
+        // Use current_thread runtime to ensure blocking would be detected
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        runtime.block_on(async move {
+            // Start a thread-backend actor that takes 500ms to teardown
+            let mut slow_actor = SlowShutdownActor.start_with_backend(Backend::Thread);
+
+            // Spawn an async task that increments a counter every 50ms
+            let tick_count = Arc::new(std::sync::atomic::AtomicU64::new(0));
+            let tick_count_clone = tick_count.clone();
+            let _ticker = rt::spawn(async move {
+                for _ in 0..20 {
+                    rt::sleep(Duration::from_millis(50)).await;
+                    tick_count_clone.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                }
+            });
+
+            // Tell the actor to stop - it will start its slow teardown
+            slow_actor.send(Unused).await.unwrap();
+
+            // Small delay to ensure the actor received the message
+            rt::sleep(Duration::from_millis(10)).await;
+
+            // Now join the actor - this waits for the 500ms teardown
+            // If implemented correctly, the ticker should continue running DURING the join
+            slow_actor.join().await;
+
+            // Check tick count IMMEDIATELY after join returns, before awaiting ticker.
+            // The actor teardown takes 500ms. In that time, the ticker should have
+            // completed about 10 ticks (500ms / 50ms = 10).
+            // If join() blocked the runtime, the ticker would have 0-1 ticks.
+            let count_after_join = tick_count.load(std::sync::atomic::Ordering::SeqCst);
+            assert!(
+                count_after_join >= 8,
+                "Ticker should have completed ~10 ticks during the 500ms join(), but only got {}. \
+                 This suggests join() blocked the runtime.",
+                count_after_join
+            );
+        });
+    }
+
+    /// Test that multiple callers can wait on join() simultaneously.
+    ///
+    /// This verifies that the completion signal approach works correctly
+    /// when multiple tasks want to wait for the same actor to stop.
+    #[test]
+    pub fn multiple_join_callers_all_notified() {
+        let runtime = rt::Runtime::new().unwrap();
+        runtime.block_on(async move {
+            let mut actor = SlowShutdownActor.start();
+            let actor_clone1 = actor.clone();
+            let actor_clone2 = actor.clone();
+
+            // Spawn multiple tasks that will all call join()
+            let join1 = rt::spawn(async move {
+                actor_clone1.join().await;
+                1u32
+            });
+            let join2 = rt::spawn(async move {
+                actor_clone2.join().await;
+                2u32
+            });
+
+            // Give the join tasks time to start waiting
+            rt::sleep(Duration::from_millis(10)).await;
+
+            // Tell the actor to stop
+            actor.send(Unused).await.unwrap();
+
+            // All join tasks should complete after the actor stops
+            let (r1, r2) = tokio::join!(join1, join2);
+            assert_eq!(r1.unwrap(), 1);
+            assert_eq!(r2.unwrap(), 2);
+
+            // Calling join again should return immediately (actor already stopped)
+            actor.join().await;
         });
     }
 }

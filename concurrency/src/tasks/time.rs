@@ -13,11 +13,7 @@ pub struct TimerHandle {
 
 // Sends a message after a given period to the specified Actor. The task terminates
 // once the send has completed
-pub fn send_after<T>(
-    period: Duration,
-    mut handle: ActorRef<T>,
-    message: T::Message,
-) -> TimerHandle
+pub fn send_after<T>(period: Duration, mut handle: ActorRef<T>, message: T::Message) -> TimerHandle
 where
     T: Actor + 'static,
 {

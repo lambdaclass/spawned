@@ -17,6 +17,7 @@ pub use crate::tasks::tokio::mpsc;
 pub use crate::tasks::tokio::oneshot;
 pub use crate::tasks::tokio::sleep;
 pub use crate::tasks::tokio::timeout;
+pub use crate::tasks::tokio::watch;
 pub use crate::tasks::tokio::CancellationToken;
 pub use crate::tasks::tokio::{spawn, spawn_blocking, task_id, JoinHandle, Runtime};
 pub use crate::tasks::tokio::{BroadcastStream, ReceiverStream};
@@ -32,3 +33,5 @@ pub fn run<F: Future>(future: F) -> F::Output {
 pub fn block_on<F: Future>(future: F) -> F::Output {
     Handle::current().block_on(future)
 }
+
+pub use crate::tasks::tokio::ctrl_c;

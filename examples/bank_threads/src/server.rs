@@ -61,7 +61,11 @@ impl Actor for Bank {
         Ok(InitResult::Success(self))
     }
 
-    fn handle_request(&mut self, message: Self::Request, _handle: &BankHandle) -> RequestResponse<Self> {
+    fn handle_request(
+        &mut self,
+        message: Self::Request,
+        _handle: &BankHandle,
+    ) -> RequestResponse<Self> {
         match message.clone() {
             Self::Request::New { who } => match self.accounts.get(&who) {
                 Some(_amount) => RequestResponse::Reply(Err(BankError::AlreadyACustomer { who })),

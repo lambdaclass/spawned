@@ -4,6 +4,7 @@ use spawned_rt::threads::{self as rt, mpsc, oneshot, oneshot::RecvTimeoutError, 
 use std::{
     fmt::Debug,
     panic::{catch_unwind, AssertUnwindSafe},
+    sync::{Arc, Condvar, Mutex},
     time::Duration,
 };
 
@@ -11,10 +12,24 @@ use crate::error::ActorError;
 
 const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
-#[derive(Debug)]
+/// Guard that signals completion when dropped.
+/// Ensures waiters are notified even if the actor thread panics.
+struct CompletionGuard(Arc<(Mutex<bool>, Condvar)>);
+
+impl Drop for CompletionGuard {
+    fn drop(&mut self) {
+        let (lock, cvar) = &*self.0;
+        let mut completed = lock.lock().unwrap_or_else(|p| p.into_inner());
+        *completed = true;
+        cvar.notify_all();
+    }
+}
+
 pub struct ActorRef<A: Actor + 'static> {
     pub tx: mpsc::Sender<ActorInMsg<A>>,
     cancellation_token: CancellationToken,
+    /// Completion signal: (is_completed, condvar for waiters)
+    completion: Arc<(Mutex<bool>, Condvar)>,
 }
 
 impl<A: Actor> Clone for ActorRef<A> {
@@ -22,7 +37,17 @@ impl<A: Actor> Clone for ActorRef<A> {
         Self {
             tx: self.tx.clone(),
             cancellation_token: self.cancellation_token.clone(),
+            completion: self.completion.clone(),
         }
+    }
+}
+
+impl<A: Actor> std::fmt::Debug for ActorRef<A> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ActorRef")
+            .field("tx", &self.tx)
+            .field("cancellation_token", &self.cancellation_token)
+            .finish_non_exhaustive()
     }
 }
 
@@ -30,13 +55,16 @@ impl<A: Actor> ActorRef<A> {
     pub(crate) fn new(actor: A) -> Self {
         let (tx, mut rx) = mpsc::channel::<ActorInMsg<A>>();
         let cancellation_token = CancellationToken::new();
+        let completion = Arc::new((Mutex::new(false), Condvar::new()));
         let handle = ActorRef {
             tx,
             cancellation_token,
+            completion: completion.clone(),
         };
         let handle_clone = handle.clone();
-        // Ignore the JoinHandle for now. Maybe we'll use it in the future
-        let _join_handle = rt::spawn(move || {
+        let _thread_handle = rt::spawn(move || {
+            // Guard ensures completion is signaled even if actor panics
+            let _guard = CompletionGuard(completion);
             if actor.run(&handle, &mut rx).is_err() {
                 tracing::trace!("Actor crashed")
             };
@@ -75,8 +103,22 @@ impl<A: Actor> ActorRef<A> {
             .map_err(|_error| ActorError::Server)
     }
 
-    pub fn cancellation_token(&self) -> CancellationToken {
+    pub(crate) fn cancellation_token(&self) -> CancellationToken {
         self.cancellation_token.clone()
+    }
+
+    /// Blocks until the actor has stopped.
+    ///
+    /// This method blocks the current thread until the actor has finished
+    /// processing and exited its main loop. Can be called multiple times from
+    /// different clones of the ActorRef - all callers will be notified when
+    /// the actor stops.
+    pub fn join(&self) {
+        let (lock, cvar) = &*self.completion;
+        let mut completed = lock.lock().unwrap_or_else(|p| p.into_inner());
+        while !*completed {
+            completed = cvar.wait(completed).unwrap_or_else(|p| p.into_inner());
+        }
     }
 }
 
@@ -114,12 +156,6 @@ pub trait Actor: Send + Sized {
     type Error: Debug + Send;
 
     fn start(self) -> ActorRef<Self> {
-        ActorRef::new(self)
-    }
-
-    /// We copy the same interface as tasks, but all threads can work
-    /// while blocking by default
-    fn start_blocking(self) -> ActorRef<Self> {
         ActorRef::new(self)
     }
 

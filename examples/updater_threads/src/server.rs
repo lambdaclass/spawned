@@ -28,7 +28,11 @@ impl Actor for UpdaterServer {
         Ok(InitResult::Success(self))
     }
 
-    fn handle_message(&mut self, message: Self::Message, handle: &UpdateServerHandle) -> MessageResponse {
+    fn handle_message(
+        &mut self,
+        message: Self::Message,
+        handle: &UpdateServerHandle,
+    ) -> MessageResponse {
         match message {
             Self::Message::Check => {
                 send_after(self.periodicity, handle.clone(), InMessage::Check);
