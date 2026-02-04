@@ -16,31 +16,78 @@ The foundation is in place:
 
 ## Framework Comparison
 
-Analysis of how spawned compares to established actor frameworks:
+### Feature Matrix: Spawned vs Actix vs Ractor
 
-| Framework | Language | Key Features | Spawned Comparison |
-|-----------|----------|--------------|-------------------|
-| **Erlang/OTP** | Erlang | gen_server, supervisors, hot reload, distributed | Spawned's Actor ≈ gen_server; missing supervision, distribution |
-| **Akka** | Scala/Java | Typed actors, clustering, sharding, persistence | More mature; spawned lacks persistence/clustering |
-| **Orleans** | C#/.NET | Virtual actors, auto-activation, always-exists | Different model; spawned uses explicit lifecycle |
-| **Actix** | Rust | Tokio-based, Arbiter, `Recipient<M>` type erasure | Most similar; Actix more mature, spawned has dual modes |
-| **Ractor** | Rust | Erlang-style supervision, distributed actors | Similar goals; Ractor has supervision already |
+| Feature | Spawned | Actix | Ractor |
+|---------|---------|-------|--------|
+| **Handler\<M\> pattern** | Planned (v0.5) | ✅ Yes | ✅ Yes (enum-based) |
+| **Recipient/Type erasure** | Planned (v0.5) | ✅ Yes | ❌ Single msg type per actor |
+| **Supervision** | Planned (v0.5) | ✅ Yes | ✅ **Best** (Erlang-style) |
+| **Distributed actors** | Future (v0.6+) | ❌ No | ✅ `ractor_cluster` |
+| **Dual execution modes** | ✅ **Unique** | ❌ No | ❌ No |
+| **Native OS threads** | ✅ **Unique** | ❌ No | ❌ No |
+| **No runtime required** | ✅ (threads mode) | ❌ Actix runtime | ❌ Tokio required |
+| **Signal handling** | ✅ `send_message_on()` | ❌ Manual | ✅ Signal priority channel |
+| **Timers** | ✅ Built-in | ✅ Yes | ✅ `time` module |
+| **Named registry** | Planned (v0.5) | ✅ Yes | ✅ Erlang-style |
+| **Process groups (pg)** | ❌ Not yet | ❌ No | ✅ Erlang-style |
+| **Links/Monitors** | Planned (v0.5) | ❌ No | ✅ Yes |
+| **RPC** | ❌ Not yet | ❌ No | ✅ Built-in |
+| **Async-first** | ✅ Yes | ⚠️ Afterthought | ✅ Yes |
+| **Multiple runtimes** | ✅ Tokio + none | ❌ Actix only | ✅ Tokio + async-std |
+| **Pure Rust (no unsafe)** | ✅ Yes | ⚠️ Some unsafe | ✅ Yes |
 
-### What Spawned Has
+### Supervision Comparison
 
-- Clean `request()`/`send()` separation (like Erlang call/cast)
-- Type-safe message passing
-- Unique dual async/sync execution modes
-- Lightweight, focused API
+| Aspect | Spawned (Planned) | Actix | Ractor |
+|--------|-------------------|-------|--------|
+| **OneForOne** | Planned | ✅ Yes | ✅ Yes |
+| **OneForAll** | Planned | ✅ Yes | ✅ Yes |
+| **RestForOne** | Planned | ❌ No | ✅ Yes |
+| **Meltdown protection** | Not planned | ❌ No | ✅ Yes |
+| **Supervision trees** | Planned | ⚠️ Limited | ✅ **Full Erlang-style** |
+| **Dynamic supervisors** | Planned | ❌ No | ✅ Yes |
 
-### What's Missing
+### Erlang Alignment
 
-- Supervision trees
-- Process registry/naming
-- Pid/actor identity
-- Link/monitor primitives
-- Persistence/event sourcing
-- Clustering/distribution
+| Concept | Spawned | Actix | Ractor |
+|---------|---------|-------|--------|
+| **gen_server model** | ✅ Strong | ⚠️ Diverged | ✅ **Strongest** |
+| **call/cast naming** | `request`/`send` | `send`/`do_send` | `call`/`cast` |
+| **Supervision trees** | Planned | Limited | ✅ Full OTP-style |
+| **Process registry** | Planned | Yes | ✅ Erlang-style |
+| **Process groups (pg)** | ❌ No | ❌ No | ✅ Yes |
+| **EPMD-style clustering** | Future | ❌ No | ✅ `ractor_cluster` |
+
+### Spawned's Unique Value Propositions
+
+1. **Dual execution modes** - No other framework offers async AND blocking with same API
+2. **No runtime lock-in** - threads mode needs zero async runtime
+3. **Backend flexibility** - Async, Blocking pool, or dedicated Thread per actor
+4. **Simpler mental model** - Less concepts to learn than Actix or Ractor
+
+### What's Missing (vs Ractor)
+
+| Feature | Priority | Rationale |
+|---------|----------|-----------|
+| **RestForOne strategy** | High | Complete supervision |
+| **Meltdown protection** | High | Production safety |
+| **Process groups (pg)** | Medium | Erlang compatibility |
+| **Priority message channels** | Medium | Better control flow |
+| **Distributed actors** | Low | `ractor_cluster` equivalent |
+
+### When to Use Each Framework
+
+| Use Case | Best Choice | Why |
+|----------|-------------|-----|
+| **Erlang/OTP migration** | **Ractor** | Closest to OTP semantics |
+| **Embedded/no-runtime** | **Spawned** | Only one with native OS thread support |
+| **Mixed async/sync** | **Spawned** | Dual execution modes |
+| **Web applications** | **Actix** | actix-web ecosystem |
+| **Distributed systems** | **Ractor** | `ractor_cluster` ready |
+| **Raw performance** | **Actix** | Fastest in benchmarks |
+| **Simple learning** | **Spawned** | Cleanest API |
+| **Production fault-tolerance** | **Ractor** | Most complete supervision |
 
 ## Critical API Issues (Pre-Phase 2)
 
@@ -58,9 +105,75 @@ Before building more features, these API design issues should be addressed:
 
 **Problem:** Callers must match the full `Reply` enum even when only a subset of variants are possible for a given request.
 
+```rust
+// Current problem: GetBalance can only return Balance or NotFound,
+// but caller must handle ALL Reply variants
+match bank.request(Request::GetBalance { account }).await? {
+    Reply::Balance(b) => Ok(b),
+    Reply::AccountNotFound => Err(BankError::NotFound),
+    Reply::AccountCreated => unreachable!(),  // Annoying!
+    Reply::Deposited { .. } => unreachable!(), // Annoying!
+}
+```
+
 **Impact:** Verbose, error-prone code.
 
-**Solution direction:** Per-message response types or derive macro.
+#### How Ractor Solves This: `RpcReplyPort<T>`
+
+Ractor embeds a typed reply channel in each message variant:
+
+```rust
+// Ractor approach: Each call variant has its OWN reply type
+enum BankMessage {
+    // Fire-and-forget (cast) - no reply
+    PrintStatement,
+
+    // RPC calls - each specifies its reply type via RpcReplyPort<T>
+    CreateAccount(String, RpcReplyPort<Result<(), BankError>>),
+    Deposit(String, u64, RpcReplyPort<Result<u64, BankError>>),
+    GetBalance(String, RpcReplyPort<Result<u64, BankError>>),
+}
+
+// Caller gets exact type - no unreachable!()
+let balance: Result<u64, BankError> = call_t!(
+    bank_actor,
+    BankMessage::GetBalance,
+    100,  // timeout ms
+    "alice".to_string()
+).expect("RPC failed");
+```
+
+#### Comparison of Solutions
+
+| Approach | Reply Type | Message Definition | Multiple Handlers |
+|----------|------------|-------------------|-------------------|
+| **Spawned current** | Single enum | Clean | N/A |
+| **Ractor** | Per-variant via `RpcReplyPort<T>` | Port embedded in message | ❌ Single enum |
+| **Actix** | Per-message via `Message::Result` | Separate structs | ✅ Multiple `Handler<M>` |
+| **Spawned planned** | Per-message via `Message::Result` | Separate structs | ✅ Multiple `Handler<M>` |
+
+#### Our Planned Solution: Handler\<M\> Pattern
+
+We chose the Actix-style `Handler<M>` pattern over Ractor's `RpcReplyPort<T>` because:
+
+1. **Cleaner messages** - No infrastructure (reply port) in message definition
+2. **Multiple message types** - Actor can implement `Handler<M>` for multiple `M`
+3. **Proven pattern** - Actix has validated this approach at scale
+
+```rust
+// Spawned planned approach
+struct GetBalance { account: String }
+impl Message for GetBalance { type Result = Result<u64, BankError>; }
+
+impl Handler<GetBalance> for Bank {
+    async fn handle(&mut self, msg: GetBalance, ctx: &Context<Self>) -> Result<u64, BankError> {
+        self.accounts.get(&msg.account).copied().ok_or(BankError::NotFound)
+    }
+}
+
+// Caller gets exact type
+let balance: Result<u64, BankError> = bank.request(GetBalance { account: "alice".into() }).await?;
+```
 
 ## Phase Priorities
 
@@ -103,11 +216,31 @@ Features to consider for future versions:
 - **Explicit actor lifecycle** - Better for Rust's ownership model than Orleans's implicit activation
 - **Type-safe messages** - More safety than Erlang's untyped approach
 - **Dual execution modes** - Unique value proposition among Rust frameworks
+- **`request()`/`send()` naming** - Clearer than Actix's `send`/`do_send`, familiar to Erlang users
 
-### Consider Adopting
+### Adopt from Actix
 
-- **Akka's backoff supervision** - Add `SupervisorStrategy::RestartWithBackoff` in Phase 4
-- **Actix's `Recipient<M>`** - Type-erased message recipients for #145
+- **`Handler<M>` pattern** - Per-message type safety (#144)
+- **`Recipient<M>`** - Type-erased message recipients (#145)
+- **`Message::Result`** - Associated type for reply instead of separate enum
+
+### Adopt from Ractor
+
+- **RestForOne supervision strategy** - Complete supervision options
+- **Meltdown protection** - Prevent restart loops in production
+- **Supervision trees** - Full hierarchical fault tolerance
+
+### Consider for Future (from Ractor)
+
+- **Process groups (pg)** - Erlang-style actor grouping
+- **Priority message channels** - Signal > Stop > Supervision > Message
+- **Distributed actors** - `ractor_cluster` equivalent
+
+### Not Adopting
+
+- **Ractor's `RpcReplyPort<T>` in messages** - Clutters message definition; Handler<M> is cleaner
+- **Ractor's single message type per actor** - Less flexible than multiple Handler<M> impls
+- **Actix runtime requirement** - Keep our no-runtime threads mode
 
 ## References
 
