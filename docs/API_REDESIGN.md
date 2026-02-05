@@ -38,14 +38,25 @@ struct ActorB { peer: ActorRef<ActorA> }  // CIRCULAR!
 ### Solution: Recipient\<M\>
 
 ```rust
-/// Trait for anything that can receive messages of type M
+/// Trait for anything that can receive messages of type M.
+/// Object-safe: all methods return concrete types (no async/impl Future).
+/// Async waiting happens outside the trait via oneshot channels (Actix pattern).
 trait Receiver<M: Send>: Send + Sync {
     fn send(&self, msg: M) -> Result<(), ActorError>;
+    fn request(&self, msg: M) -> Result<oneshot::Receiver<M::Result>, ActorError>;
 }
 
 // ActorRef<A> implements Receiver<M> for all M where A: Handler<M>
 // Type-erased handle (ergonomic alias)
 type Recipient<M> = Arc<dyn Receiver<M>>;
+
+// Ergonomic async wrapper on the concrete Recipient type (not on the trait)
+impl<M: Message> Recipient<M> {
+    pub async fn send_request(&self, msg: M) -> Result<M::Result, ActorError> {
+        let rx = self.request(msg)?;
+        rx.await.map_err(|_| ActorError::ActorStopped)
+    }
+}
 
 // Usage - no circular dependency!
 struct ActorA { peer: Recipient<SharedMessage> }
@@ -94,20 +105,34 @@ let name: Option<String> = actor.request(GetName("joe")).await?;
 **New file:** `concurrency/src/recipient.rs`
 
 ```rust
-/// Trait for anything that can receive messages of type M
+/// Trait for anything that can receive messages of type M.
+///
+/// Object-safe by design: all methods return concrete types, no async/impl Future.
+/// This follows the Actix pattern where async waiting happens outside the trait
+/// boundary via oneshot channels, keeping the trait compatible with `dyn`.
 ///
 /// This is implemented by ActorRef<A> for all message types the actor handles.
 /// Use `Recipient<M>` for type-erased storage.
 pub trait Receiver<M: Message>: Send + Sync {
-    /// Fire-and-forget send
+    /// Fire-and-forget send (enqueue message, don't wait for reply)
     fn send(&self, msg: M) -> Result<(), ActorError>;
 
-    /// Send and wait for reply
-    fn request(&self, msg: M) -> impl Future<Output = Result<M::Result, ActorError>> + Send;
+    /// Enqueue message and return a oneshot channel to await the reply.
+    /// This is synchronous — it only does channel plumbing.
+    /// The async waiting happens on the returned receiver.
+    fn request(&self, msg: M) -> Result<oneshot::Receiver<M::Result>, ActorError>;
 }
 
-/// Type-erased handle (ergonomic alias)
+/// Type-erased handle (ergonomic alias). Object-safe because Receiver is.
 pub type Recipient<M> = Arc<dyn Receiver<M>>;
+
+/// Ergonomic async wrapper — lives on the concrete type, not the trait.
+impl<M: Message> Recipient<M> {
+    pub async fn send_request(&self, msg: M) -> Result<M::Result, ActorError> {
+        let rx = Receiver::request(&**self, msg)?;
+        rx.await.map_err(|_| ActorError::ActorStopped)
+    }
+}
 
 // ActorRef<A> implements Receiver<M> for all M where A: Handler<M>
 impl<A, M> Receiver<M> for ActorRef<A>
@@ -115,8 +140,16 @@ where
     A: Actor + Handler<M>,
     M: Message,
 {
-    fn send(&self, msg: M) -> Result<(), ActorError> { ... }
-    fn request(&self, msg: M) -> impl Future<Output = Result<M::Result, ActorError>> + Send { ... }
+    fn send(&self, msg: M) -> Result<(), ActorError> {
+        // Pack message into envelope, push to actor's mailbox channel
+        ...
+    }
+
+    fn request(&self, msg: M) -> Result<oneshot::Receiver<M::Result>, ActorError> {
+        // Create oneshot channel, pack (msg, tx) into envelope,
+        // push to actor's mailbox, return rx
+        ...
+    }
 }
 
 // Convert ActorRef to Recipient
@@ -232,11 +265,21 @@ pub trait Actor: Send + Sized + 'static {
 **ActorRef changes:**
 
 ```rust
-/// Typed handle to an actor
+/// Typed handle to an actor.
+///
+/// Internally uses an envelope pattern (like Actix) for the mailbox:
+/// messages of different types are packed into `Box<dyn Envelope<A>>` so
+/// the actor's single mpsc channel can carry any message type the actor handles.
 pub struct ActorRef<A: Actor> {
     id: ActorId,  // Internal identity (not public)
-    sender: mpsc::Sender<Box<dyn Any + Send>>,
+    sender: mpsc::Sender<Box<dyn Envelope<A> + Send>>,
     _marker: PhantomData<A>,
+}
+
+/// Type-erased envelope that the actor loop can dispatch.
+/// Each concrete envelope captures the message and an optional oneshot sender.
+trait Envelope<A: Actor>: Send {
+    fn handle(self: Box<Self>, actor: &mut A, ctx: &Context<A>);
 }
 
 impl<A, M> ActorRef<A>
@@ -247,8 +290,15 @@ where
     /// Fire-and-forget send (returns error if actor dead)
     pub fn send(&self, msg: M) -> Result<(), ActorError>;
 
-    /// Send and wait for typed response
-    pub async fn request(&self, msg: M) -> Result<M::Result, ActorError>;
+    /// Enqueue message and return a oneshot receiver for the reply.
+    /// Synchronous — only does channel plumbing (Actix pattern).
+    pub fn request(&self, msg: M) -> Result<oneshot::Receiver<M::Result>, ActorError>;
+
+    /// Ergonomic async request: enqueue + await reply.
+    pub async fn send_request(&self, msg: M) -> Result<M::Result, ActorError> {
+        let rx = self.request(msg)?;
+        rx.await.map_err(|_| ActorError::ActorStopped)
+    }
 
     /// Get type-erased Recipient for this message type
     pub fn recipient(&self) -> Recipient<M>;
@@ -309,11 +359,15 @@ impl Handler<GetBalance> for Bank {
 // main.rs
 let bank: ActorRef<Bank> = Bank::new().start();
 
-// Type-safe request (wait for reply)
-let balance: Result<u64, BankError> = bank.request(GetBalance { account: "alice".into() }).await?;
+// Type-safe request (async convenience wrapper: enqueue + await oneshot)
+let balance: Result<u64, BankError> = bank.send_request(GetBalance { account: "alice".into() }).await?;
 
 // Fire-and-forget send
 bank.send(Deposit { account: "alice".into(), amount: 50 })?;
+
+// Low-level: get oneshot receiver directly (useful for select!, timeouts, etc.)
+let rx = bank.request(GetBalance { account: "alice".into() })?;
+let balance = tokio::time::timeout(Duration::from_secs(5), rx).await??;
 
 // Get type-erased Recipient for storage/passing to other actors
 let recipient: Recipient<GetBalance> = bank.recipient();
@@ -347,7 +401,7 @@ pub struct OrderService {
 impl Handler<PlaceOrder> for OrderService {
     async fn handle(&mut self, msg: PlaceOrder, ctx: &Context<Self>) -> Result<(), OrderError> {
         let reply_to: Recipient<OrderUpdate> = ctx.recipient();
-        self.inventory.request(InventoryReserve {
+        self.inventory.send_request(InventoryReserve {
             item: msg.item,
             quantity: msg.quantity,
             reply_to,
