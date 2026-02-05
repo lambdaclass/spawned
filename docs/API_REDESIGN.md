@@ -38,13 +38,14 @@ struct ActorB { peer: ActorRef<ActorA> }  // CIRCULAR!
 ### Solution: Recipient\<M\>
 
 ```rust
-trait MessageSender<M: Send>: Send + Sync {
+/// Trait for anything that can receive messages of type M
+trait Receiver<M: Send>: Send + Sync {
     fn send(&self, msg: M) -> Result<(), ActorError>;
 }
 
-// ActorRef<A> implements MessageSender<A::Message>
-// Type-erased handle for specific message type
-type Recipient<M> = Arc<dyn MessageSender<M>>;
+// ActorRef<A> implements Receiver<M> for all M where A: Handler<M>
+// Type-erased handle (ergonomic alias)
+type Recipient<M> = Arc<dyn Receiver<M>>;
 
 // Usage - no circular dependency!
 struct ActorA { peer: Recipient<SharedMessage> }
@@ -88,22 +89,28 @@ let name: Option<String> = actor.request(GetName("joe")).await?;
 
 # Implementation Plan
 
-## Phase 3.1: Recipient<M> (Type-Erased Sender)
+## Phase 3.1: Receiver\<M\> Trait and Recipient\<M\> Alias
 
 **New file:** `concurrency/src/recipient.rs`
 
 ```rust
-/// Trait for sending a specific message type
-pub trait MessageSender<M: Message>: Send + Sync {
+/// Trait for anything that can receive messages of type M
+///
+/// This is implemented by ActorRef<A> for all message types the actor handles.
+/// Use `Recipient<M>` for type-erased storage.
+pub trait Receiver<M: Message>: Send + Sync {
+    /// Fire-and-forget send
     fn send(&self, msg: M) -> Result<(), ActorError>;
+
+    /// Send and wait for reply
     fn request(&self, msg: M) -> impl Future<Output = Result<M::Result, ActorError>> + Send;
 }
 
-/// Type-erased handle that can send messages of type M
-pub type Recipient<M> = Arc<dyn MessageSender<M>>;
+/// Type-erased handle (ergonomic alias)
+pub type Recipient<M> = Arc<dyn Receiver<M>>;
 
-// ActorRef<A> implements MessageSender<M> for all M where A: Handler<M>
-impl<A, M> MessageSender<M> for ActorRef<A>
+// ActorRef<A> implements Receiver<M> for all M where A: Handler<M>
+impl<A, M> Receiver<M> for ActorRef<A>
 where
     A: Actor + Handler<M>,
     M: Message,
@@ -375,7 +382,7 @@ let order_service = OrderService::new(inventory_recipient).start();
 
 | File | Action | Description |
 |------|--------|-------------|
-| `concurrency/src/recipient.rs` | Create | Recipient<M> and MessageSender trait |
+| `concurrency/src/recipient.rs` | Create | Receiver<M> trait and Recipient<M> alias |
 | `concurrency/src/identity.rs` | Create | Internal ActorId (not public) |
 | `concurrency/src/traits.rs` | Create | Supervisable, Linkable, Monitorable |
 | `concurrency/src/registry.rs` | Create | Named actor registry |
