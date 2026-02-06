@@ -187,14 +187,17 @@ pub enum ExitReason {
 **New file:** `concurrency/src/traits.rs`
 
 ```rust
-/// Trait for actors that can be supervised
+/// Trait for actors that can be supervised.
+/// Provides actor_id() for identity comparison with trait objects.
 pub trait Supervisable: Send + Sync {
+    fn actor_id(&self) -> ActorId;
     fn stop(&self);
     fn is_alive(&self) -> bool;
     fn on_exit(&self, callback: Box<dyn FnOnce(ExitReason) + Send>);
 }
 
-/// Trait for actors that can be linked
+/// Trait for actors that can be linked.
+/// Uses actor_id() (from Supervisable) to track links internally.
 pub trait Linkable: Supervisable {
     fn link(&self, other: &dyn Linkable);
     fn unlink(&self, other: &dyn Linkable);
@@ -240,7 +243,10 @@ pub trait Message: Send + 'static {
     type Result: Send;
 }
 
-/// Handler for a specific message type
+/// Handler for a specific message type.
+/// Uses RPITIT (Rust 1.75+) — this is fine since Handler is never used as dyn.
+/// &mut self is safe: actors process messages sequentially (one at a time),
+/// so there is no concurrent access to self.
 pub trait Handler<M: Message>: Actor {
     fn handle(&mut self, msg: M, ctx: &Context<Self>) -> impl Future<Output = M::Result> + Send;
 }
