@@ -9,7 +9,7 @@ mod server;
 use std::{thread, time::Duration};
 
 use server::UpdaterServer;
-use spawned_concurrency::tasks::Actor as _;
+use spawned_concurrency::tasks::ActorStart as _;
 use spawned_rt::tasks as rt;
 
 fn main() {

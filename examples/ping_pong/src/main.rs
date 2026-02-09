@@ -1,55 +1,39 @@
-//! Simple example to test concurrency/Process abstraction
+//! Ping-pong example demonstrating bidirectional communication
+//! between actors using Recipient<M> for type-erased messaging.
 //!
-//! Based on an Erlang example:
-//! -module(ping).
-//!
-//! -export([ping/1, pong/0, spawn_consumer/0, spawn_producer/1, start/0]).
-//!
-//! ping(Pid) ->
-//!     Pid ! {ping, self()},
-//!     receive
-//!         pong ->
-//!             io:format("Received pong!!!~n"),
-//!             ping(Pid)
-//!     end.
-//!
-//! pong() ->
-//!     receive
-//!         {ping, Pid} ->
-//!             io:format("Received ping!!~n"),
-//!             Pid ! pong,
-//!             pong();
-//!         die ->
-//!             ok
-//!         end.
-//!
-//! spawn_consumer() ->
-//!     spawn(ping, pong, []).
-//!
-//! spawn_producer(Pid) ->
-//!     spawn(ping, ping, [Pid]).
-//!
-//! start() ->
-//!     Pid = spawn_consumer(),
-//!     spawn_producer(Pid).
+//! This solves the circular dependency problem: Consumer and Producer
+//! don't need to know each other's concrete types — they only know
+//! about the message types they exchange (Ping and Pong).
 
 mod consumer;
 mod messages;
 mod producer;
 
-use std::{thread, time::Duration};
-
 use consumer::Consumer;
+use messages::Ping;
 use producer::Producer;
+use spawned_concurrency::tasks::ActorStart as _;
 use spawned_rt::tasks as rt;
+use std::time::Duration;
 
 fn main() {
     rt::run(async {
-        let consumer = Consumer::spawn_new().await;
+        // Start the producer first
+        let producer = Producer { consumer: None }.start();
 
-        Producer::spawn_new(consumer.sender()).await;
+        // Start the consumer with a Recipient<Pong> pointing to the producer
+        let consumer = Consumer {
+            producer: producer.recipient(),
+        }
+        .start();
 
-        // giving it some time before ending
-        thread::sleep(Duration::from_millis(1));
+        // Wire up the producer with the consumer's Recipient<Ping>
+        producer.send(messages::SetConsumer(consumer.recipient())).unwrap();
+
+        // Kick off the ping-pong loop
+        consumer.send(Ping).unwrap();
+
+        // Let them ping-pong for a bit
+        rt::sleep(Duration::from_millis(1)).await;
     })
 }
