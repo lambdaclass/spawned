@@ -1,7 +1,13 @@
-use spawned_rt::tasks::mpsc::Sender;
+use spawned_concurrency::message::Message;
 
-#[derive(Debug, Clone)]
-pub enum Message {
-    Ping { from: Sender<Message> },
-    Pong,
+#[derive(Debug)]
+pub struct Ping;
+impl Message for Ping {
+    type Result = ();
+}
+
+#[derive(Debug)]
+pub struct Pong;
+impl Message for Pong {
+    type Result = ();
 }

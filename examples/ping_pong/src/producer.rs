@@ -1,32 +1,36 @@
-use spawned_concurrency::tasks::{self as concurrency, Process, ProcessInfo};
-use spawned_rt::tasks::mpsc::Sender;
+use spawned_concurrency::message::Message;
+use spawned_concurrency::tasks::{Actor, Context, Handler};
 
-use crate::messages::Message;
+use crate::messages::Pong;
+use crate::protocols::PingInbox;
+
+pub struct SetConsumer(pub PingInbox);
+impl Message for SetConsumer {
+    type Result = ();
+}
+impl std::fmt::Debug for SetConsumer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("SetConsumer").finish()
+    }
+}
 
 pub struct Producer {
-    consumer: Sender<Message>,
+    pub consumer: Option<PingInbox>,
 }
 
-impl Producer {
-    pub async fn spawn_new(consumer: Sender<Message>) -> ProcessInfo<Message> {
-        Self { consumer }.spawn().await
-    }
+impl Actor for Producer {}
 
-    fn send_ping(&self, tx: &Sender<Message>, consumer: &Sender<Message>) {
-        let message = Message::Ping { from: tx.clone() };
-        tracing::info!("Producer sent Ping");
-        concurrency::send(consumer, message);
+impl Handler<SetConsumer> for Producer {
+    async fn handle(&mut self, msg: SetConsumer, _ctx: &Context<Self>) {
+        self.consumer = Some(msg.0);
     }
 }
 
-impl Process<Message> for Producer {
-    async fn init(&mut self, tx: &Sender<Message>) {
-        self.send_ping(tx, &self.consumer);
-    }
-
-    async fn handle(&mut self, message: Message, tx: &Sender<Message>) -> Message {
-        tracing::info!("Producer received {message:?}");
-        self.send_ping(tx, &self.consumer);
-        message
+impl Handler<Pong> for Producer {
+    async fn handle(&mut self, _msg: Pong, _ctx: &Context<Self>) {
+        tracing::info!("Producer received Pong, sending Ping");
+        if let Some(consumer) = &self.consumer {
+            let _ = consumer.ping();
+        }
     }
 }

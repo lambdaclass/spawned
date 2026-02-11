@@ -15,6 +15,7 @@ members = [
     "examples/busy_genserver_warning",
     "examples/signal_test",
     "examples/signal_test_threads",
+    "examples/chat_room",
 ]
 
 [workspace.dependencies]

@@ -1,50 +1,28 @@
 use std::time::Duration;
 
-use spawned_concurrency::{
-    messages::Unused,
-    threads::{send_after, Actor, ActorRef, InitResult, MessageResponse},
-};
+use spawned_concurrency::threads::{send_after, Actor, Context, Handler};
 use spawned_rt::threads::block_on;
 
-use crate::messages::{UpdaterInMessage as InMessage, UpdaterOutMessage as OutMessage};
+use crate::messages::Check;
 
-type UpdateServerHandle = ActorRef<UpdaterServer>;
-
-#[derive(Clone)]
 pub struct UpdaterServer {
     pub url: String,
     pub periodicity: Duration,
 }
 
 impl Actor for UpdaterServer {
-    type Request = Unused;
-    type Message = InMessage;
-    type Reply = OutMessage;
-    type Error = std::fmt::Error;
-
-    // Initializing Actor to start periodic checks.
-    fn init(self, handle: &ActorRef<Self>) -> Result<InitResult<Self>, Self::Error> {
-        send_after(self.periodicity, handle.clone(), InMessage::Check);
-        Ok(InitResult::Success(self))
+    fn started(&mut self, ctx: &Context<Self>) {
+        send_after(self.periodicity, ctx.clone(), Check);
     }
+}
 
-    fn handle_message(
-        &mut self,
-        message: Self::Message,
-        handle: &UpdateServerHandle,
-    ) -> MessageResponse {
-        match message {
-            Self::Message::Check => {
-                send_after(self.periodicity, handle.clone(), InMessage::Check);
-                let url = self.url.clone();
-                tracing::info!("Fetching: {url}");
-                let resp = block_on(req(url));
-
-                tracing::info!("Response: {resp:?}");
-
-                MessageResponse::NoReply
-            }
-        }
+impl Handler<Check> for UpdaterServer {
+    fn handle(&mut self, _msg: Check, ctx: &Context<Self>) {
+        send_after(self.periodicity, ctx.clone(), Check);
+        let url = self.url.clone();
+        tracing::info!("Fetching: {url}");
+        let resp = block_on(req(url));
+        tracing::info!("Response: {resp:?}");
     }
 }
 

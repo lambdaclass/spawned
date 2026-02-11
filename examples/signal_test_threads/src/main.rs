@@ -1,7 +1,7 @@
 //! Test to verify signal handling for threads Actor.
 //!
 //! This example demonstrates using `send_message_on` to handle Ctrl+C signals.
-//! The signal handler is set up in the Actor's `init()` function.
+//! The signal handler is set up after starting the actors.
 //!
 //! Run with: cargo run --bin signal_test_threads
 //!
@@ -9,9 +9,9 @@
 //! - Does the actor stop gracefully?
 //! - Does teardown run?
 
-use spawned_concurrency::{
-    messages::Unused,
-    threads::{send_interval, send_message_on, Actor, ActorRef, InitResult, MessageResponse},
+use spawned_concurrency::message::Message;
+use spawned_concurrency::threads::{
+    send_interval, send_message_on, Actor, ActorStart as _, Context, Handler,
 };
 use spawned_rt::threads::{self as rt, CancellationToken};
 use std::time::Duration;
@@ -32,56 +32,47 @@ impl TickingActor {
     }
 }
 
-#[derive(Clone)]
-enum Msg {
-    Tick,
-    Shutdown,
+#[derive(Debug, Clone)]
+struct Tick;
+impl Message for Tick {
+    type Result = ();
+}
+
+#[derive(Debug)]
+struct Shutdown;
+impl Message for Shutdown {
+    type Result = ();
 }
 
 impl Actor for TickingActor {
-    type Request = Unused;
-    type Message = Msg;
-    type Reply = Unused;
-    type Error = ();
-
-    fn init(mut self, handle: &ActorRef<Self>) -> Result<InitResult<Self>, Self::Error> {
+    fn started(&mut self, ctx: &Context<Self>) {
         tracing::info!("[{}] Actor initialized", self.name);
 
         // Set up periodic ticking
-        let timer = send_interval(Duration::from_secs(1), handle.clone(), Msg::Tick);
+        let timer = send_interval(Duration::from_secs(1), ctx.clone(), Tick);
         self.timer_token = Some(timer.cancellation_token);
-
-        // Set up Ctrl+C handler using send_message_on
-        send_message_on(handle.clone(), rt::ctrl_c(), Msg::Shutdown);
-
-        Ok(InitResult::Success(self))
     }
 
-    fn handle_message(
-        &mut self,
-        message: Self::Message,
-        _handle: &ActorRef<Self>,
-    ) -> MessageResponse {
-        match message {
-            Msg::Tick => {
-                self.count += 1;
-                tracing::info!("[{}] Tick #{}", self.name, self.count);
-                MessageResponse::NoReply
-            }
-            Msg::Shutdown => {
-                tracing::info!("[{}] Received shutdown signal", self.name);
-                MessageResponse::Stop
-            }
-        }
-    }
-
-    fn teardown(self, _handle: &ActorRef<Self>) -> Result<(), Self::Error> {
+    fn stopped(&mut self, _ctx: &Context<Self>) {
         tracing::info!(
             "[{}] Teardown called! Final count: {}",
             self.name,
             self.count
         );
-        Ok(())
+    }
+}
+
+impl Handler<Tick> for TickingActor {
+    fn handle(&mut self, _msg: Tick, _ctx: &Context<Self>) {
+        self.count += 1;
+        tracing::info!("[{}] Tick #{}", self.name, self.count);
+    }
+}
+
+impl Handler<Shutdown> for TickingActor {
+    fn handle(&mut self, _msg: Shutdown, ctx: &Context<Self>) {
+        tracing::info!("[{}] Received shutdown signal", self.name);
+        ctx.stop();
     }
 }
 
@@ -93,6 +84,10 @@ fn main() {
         // Start two actors - both will react to Ctrl+C
         let actor1 = TickingActor::new("actor-1").start();
         let actor2 = TickingActor::new("actor-2").start();
+
+        // Set up Ctrl+C handler using send_message_on
+        send_message_on(actor1.context(), rt::ctrl_c(), Shutdown);
+        send_message_on(actor2.context(), rt::ctrl_c(), Shutdown);
 
         // Wait for both actors to stop
         actor1.join();

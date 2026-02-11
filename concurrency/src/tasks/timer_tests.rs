@@ -1,31 +1,27 @@
 use super::{
-    send_after, send_interval, Actor, ActorRef, InitResult, InitResult::Success, MessageResponse,
-    RequestResponse,
+    send_after, send_interval, Actor, ActorStart, Context, Handler,
 };
+use crate::message::Message;
 use spawned_rt::tasks::{self as rt, CancellationToken};
 use std::time::Duration;
 
-type RepeaterHandle = ActorRef<Repeater>;
+// --- Repeater (interval timer test) ---
 
-#[derive(Clone)]
-enum RepeaterCastMessage {
-    Inc,
-    StopTimer,
-}
+#[derive(Clone, Debug)]
+struct Inc;
+impl Message for Inc { type Result = (); }
 
-#[derive(Clone)]
-enum RepeaterCallMessage {
-    GetCount,
-}
+#[derive(Clone, Debug)]
+struct StopTimer;
+impl Message for StopTimer { type Result = (); }
 
-#[derive(PartialEq, Debug)]
-enum RepeaterOutMessage {
-    Count(i32),
-}
+#[derive(Debug)]
+struct GetRepCount;
+impl Message for GetRepCount { type Result = i32; }
 
 struct Repeater {
-    pub(crate) count: i32,
-    pub(crate) cancellation_token: Option<CancellationToken>,
+    count: i32,
+    cancellation_token: Option<CancellationToken>,
 }
 
 impl Repeater {
@@ -37,63 +33,34 @@ impl Repeater {
     }
 }
 
-impl Repeater {
-    pub async fn stop_timer(server: &mut RepeaterHandle) -> Result<(), ()> {
-        server
-            .send(RepeaterCastMessage::StopTimer)
-            .await
-            .map_err(|_| ())
-    }
-
-    pub async fn get_count(server: &mut RepeaterHandle) -> Result<RepeaterOutMessage, ()> {
-        server
-            .request(RepeaterCallMessage::GetCount)
-            .await
-            .map_err(|_| ())
+impl Actor for Repeater {
+    async fn started(&mut self, ctx: &Context<Self>) {
+        let timer = send_interval(
+            Duration::from_millis(100),
+            ctx.clone(),
+            Inc,
+        );
+        self.cancellation_token = Some(timer.cancellation_token);
     }
 }
 
-impl Actor for Repeater {
-    type Request = RepeaterCallMessage;
-    type Message = RepeaterCastMessage;
-    type Reply = RepeaterOutMessage;
-    type Error = ();
-
-    async fn init(mut self, handle: &RepeaterHandle) -> Result<InitResult<Self>, Self::Error> {
-        let timer = send_interval(
-            Duration::from_millis(100),
-            handle.clone(),
-            RepeaterCastMessage::Inc,
-        );
-        self.cancellation_token = Some(timer.cancellation_token);
-        Ok(Success(self))
+impl Handler<Inc> for Repeater {
+    async fn handle(&mut self, _msg: Inc, _ctx: &Context<Self>) {
+        self.count += 1;
     }
+}
 
-    async fn handle_request(
-        &mut self,
-        _message: Self::Request,
-        _handle: &RepeaterHandle,
-    ) -> RequestResponse<Self> {
-        let count = self.count;
-        RequestResponse::Reply(RepeaterOutMessage::Count(count))
+impl Handler<StopTimer> for Repeater {
+    async fn handle(&mut self, _msg: StopTimer, _ctx: &Context<Self>) {
+        if let Some(ct) = self.cancellation_token.clone() {
+            ct.cancel();
+        }
     }
+}
 
-    async fn handle_message(
-        &mut self,
-        message: Self::Message,
-        _handle: &ActorRef<Self>,
-    ) -> MessageResponse {
-        match message {
-            RepeaterCastMessage::Inc => {
-                self.count += 1;
-            }
-            RepeaterCastMessage::StopTimer => {
-                if let Some(ct) = self.cancellation_token.clone() {
-                    ct.cancel()
-                };
-            }
-        };
-        MessageResponse::NoReply
+impl Handler<GetRepCount> for Repeater {
+    async fn handle(&mut self, _msg: GetRepCount, _ctx: &Context<Self>) -> i32 {
+        self.count
     }
 }
 
@@ -101,109 +68,60 @@ impl Actor for Repeater {
 pub fn test_send_interval_and_cancellation() {
     let runtime = rt::Runtime::new().unwrap();
     runtime.block_on(async move {
-        // Start a Repeater
-        let mut repeater = Repeater::new(0).start();
+        let repeater = Repeater::new(0).start();
 
-        // Wait for 1 second
         rt::sleep(Duration::from_secs(1)).await;
 
-        // Check count
-        let count = Repeater::get_count(&mut repeater).await.unwrap();
+        let count = repeater.send_request(GetRepCount).await.unwrap();
+        assert_eq!(9, count);
 
-        // 9 messages in 1 second (after first 100 milliseconds sleep)
-        assert_eq!(RepeaterOutMessage::Count(9), count);
+        repeater.send(StopTimer).unwrap();
 
-        // Pause timer
-        Repeater::stop_timer(&mut repeater).await.unwrap();
-
-        // Wait another second
         rt::sleep(Duration::from_secs(1)).await;
 
-        // Check count again
-        let count2 = Repeater::get_count(&mut repeater).await.unwrap();
-
-        // As timer was paused, count should remain at 9
-        assert_eq!(RepeaterOutMessage::Count(9), count2);
+        let count2 = repeater.send_request(GetRepCount).await.unwrap();
+        assert_eq!(9, count2);
     });
 }
 
-type DelayedHandle = ActorRef<Delayed>;
+// --- Delayed (send_after test) ---
 
-#[derive(Clone)]
-enum DelayedCastMessage {
-    Inc,
-}
+#[derive(Debug)]
+struct GetDelCount;
+impl Message for GetDelCount { type Result = i32; }
 
-#[derive(Clone)]
-enum DelayedCallMessage {
-    GetCount,
-    Stop,
-}
-
-#[derive(PartialEq, Debug)]
-enum DelayedOutMessage {
-    Count(i32),
-}
+#[derive(Debug)]
+struct StopDelayed;
+impl Message for StopDelayed { type Result = i32; }
 
 struct Delayed {
-    pub(crate) count: i32,
+    count: i32,
 }
 
 impl Delayed {
     pub fn new(initial_count: i32) -> Self {
-        Delayed {
-            count: initial_count,
-        }
+        Delayed { count: initial_count }
     }
 }
 
-impl Delayed {
-    pub async fn get_count(server: &mut DelayedHandle) -> Result<DelayedOutMessage, ()> {
-        server
-            .request(DelayedCallMessage::GetCount)
-            .await
-            .map_err(|_| ())
-    }
+impl Actor for Delayed {}
 
-    pub async fn stop(server: &mut DelayedHandle) -> Result<DelayedOutMessage, ()> {
-        server
-            .request(DelayedCallMessage::Stop)
-            .await
-            .map_err(|_| ())
+impl Handler<Inc> for Delayed {
+    async fn handle(&mut self, _msg: Inc, _ctx: &Context<Self>) {
+        self.count += 1;
     }
 }
 
-impl Actor for Delayed {
-    type Request = DelayedCallMessage;
-    type Message = DelayedCastMessage;
-    type Reply = DelayedOutMessage;
-    type Error = ();
-
-    async fn handle_request(
-        &mut self,
-        message: Self::Request,
-        _handle: &DelayedHandle,
-    ) -> RequestResponse<Self> {
-        match message {
-            DelayedCallMessage::GetCount => {
-                let count = self.count;
-                RequestResponse::Reply(DelayedOutMessage::Count(count))
-            }
-            DelayedCallMessage::Stop => RequestResponse::Stop(DelayedOutMessage::Count(self.count)),
-        }
+impl Handler<GetDelCount> for Delayed {
+    async fn handle(&mut self, _msg: GetDelCount, _ctx: &Context<Self>) -> i32 {
+        self.count
     }
+}
 
-    async fn handle_message(
-        &mut self,
-        message: Self::Message,
-        _handle: &DelayedHandle,
-    ) -> MessageResponse {
-        match message {
-            DelayedCastMessage::Inc => {
-                self.count += 1;
-            }
-        };
-        MessageResponse::NoReply
+impl Handler<StopDelayed> for Delayed {
+    async fn handle(&mut self, _msg: StopDelayed, ctx: &Context<Self>) -> i32 {
+        ctx.stop();
+        self.count
     }
 }
 
@@ -211,43 +129,33 @@ impl Actor for Delayed {
 pub fn test_send_after_and_cancellation() {
     let runtime = rt::Runtime::new().unwrap();
     runtime.block_on(async move {
-        // Start a Delayed
-        let mut repeater = Delayed::new(0).start();
+        let repeater = Delayed::new(0).start();
 
-        // Set a just once timed message
+        let ctx = Context::from_ref(&repeater);
         let _ = send_after(
             Duration::from_millis(100),
-            repeater.clone(),
-            DelayedCastMessage::Inc,
+            ctx,
+            Inc,
         );
 
-        // Wait for 200 milliseconds
         rt::sleep(Duration::from_millis(200)).await;
 
-        // Check count
-        let count = Delayed::get_count(&mut repeater).await.unwrap();
+        let count = repeater.send_request(GetDelCount).await.unwrap();
+        assert_eq!(1, count);
 
-        // Only one message (no repetition)
-        assert_eq!(DelayedOutMessage::Count(1), count);
-
-        // New timer
+        let ctx = Context::from_ref(&repeater);
         let timer = send_after(
             Duration::from_millis(100),
-            repeater.clone(),
-            DelayedCastMessage::Inc,
+            ctx,
+            Inc,
         );
 
-        // Cancel the new timer before timeout
         timer.cancellation_token.cancel();
 
-        // Wait another 200 milliseconds
         rt::sleep(Duration::from_millis(200)).await;
 
-        // Check count again
-        let count2 = Delayed::get_count(&mut repeater).await.unwrap();
-
-        // As timer was cancelled, count should remain at 1
-        assert_eq!(DelayedOutMessage::Count(1), count2);
+        let count2 = repeater.send_request(GetDelCount).await.unwrap();
+        assert_eq!(1, count2);
     });
 }
 
@@ -255,39 +163,31 @@ pub fn test_send_after_and_cancellation() {
 pub fn test_send_after_gen_server_teardown() {
     let runtime = rt::Runtime::new().unwrap();
     runtime.block_on(async move {
-        // Start a Delayed
-        let mut repeater = Delayed::new(0).start();
+        let repeater = Delayed::new(0).start();
 
-        // Set a just once timed message
+        let ctx = Context::from_ref(&repeater);
         let _ = send_after(
             Duration::from_millis(100),
-            repeater.clone(),
-            DelayedCastMessage::Inc,
+            ctx,
+            Inc,
         );
 
-        // Wait for 200 milliseconds
         rt::sleep(Duration::from_millis(200)).await;
 
-        // Check count
-        let count = Delayed::get_count(&mut repeater).await.unwrap();
+        let count = repeater.send_request(GetDelCount).await.unwrap();
+        assert_eq!(1, count);
 
-        // Only one message (no repetition)
-        assert_eq!(DelayedOutMessage::Count(1), count);
-
-        // New timer
+        let ctx = Context::from_ref(&repeater);
         let _ = send_after(
             Duration::from_millis(100),
-            repeater.clone(),
-            DelayedCastMessage::Inc,
+            ctx,
+            Inc,
         );
 
-        // Stop the Actor before timeout
-        let count2 = Delayed::stop(&mut repeater).await.unwrap();
+        let count2 = repeater.send_request(StopDelayed).await.unwrap();
 
-        // Wait another 200 milliseconds
         rt::sleep(Duration::from_millis(200)).await;
 
-        // As timer was cancelled, count should remain at 1
-        assert_eq!(DelayedOutMessage::Count(1), count2);
+        assert_eq!(1, count2);
     });
 }
