@@ -1,18 +1,10 @@
 use std::collections::HashMap;
 
-use spawned_concurrency::{
-    messages::Unused,
-    tasks::{
-        Actor, ActorRef,
-        InitResult::{self, Success},
-        RequestResponse,
-    },
-};
+use spawned_concurrency::tasks::{Actor, ActorRef, Context, Handler};
 
-use crate::messages::{BankError, BankInMessage as InMessage, BankOutMessage as OutMessage};
+use crate::messages::{BankError, BankOutMessage as OutMessage, Deposit, NewAccount, Stop, Withdraw};
 
 type MsgResult = Result<OutMessage, BankError>;
-type BankHandle = ActorRef<Bank>;
 
 pub struct Bank {
     accounts: HashMap<String, i32>,
@@ -27,89 +19,95 @@ impl Bank {
 }
 
 impl Bank {
-    pub async fn stop(server: &mut BankHandle) -> MsgResult {
+    pub async fn stop(server: &ActorRef<Bank>) -> MsgResult {
         server
-            .request(InMessage::Stop)
+            .send_request(Stop)
             .await
             .unwrap_or(Err(BankError::ServerError))
     }
 
-    pub async fn new_account(server: &mut BankHandle, who: String) -> MsgResult {
+    pub async fn new_account(server: &ActorRef<Bank>, who: String) -> MsgResult {
         server
-            .request(InMessage::New { who })
+            .send_request(NewAccount { who })
             .await
             .unwrap_or(Err(BankError::ServerError))
     }
 
-    pub async fn deposit(server: &mut BankHandle, who: String, amount: i32) -> MsgResult {
+    pub async fn deposit(server: &ActorRef<Bank>, who: String, amount: i32) -> MsgResult {
         server
-            .request(InMessage::Add { who, amount })
+            .send_request(Deposit { who, amount })
             .await
             .unwrap_or(Err(BankError::ServerError))
     }
 
-    pub async fn withdraw(server: &mut BankHandle, who: String, amount: i32) -> MsgResult {
+    pub async fn withdraw(server: &ActorRef<Bank>, who: String, amount: i32) -> MsgResult {
         server
-            .request(InMessage::Remove { who, amount })
+            .send_request(Withdraw { who, amount })
             .await
             .unwrap_or(Err(BankError::ServerError))
     }
 }
 
 impl Actor for Bank {
-    type Request = InMessage;
-    type Message = Unused;
-    type Reply = MsgResult;
-    type Error = BankError;
-
-    // Initializing "main" account with 1000 in balance to test init() callback.
-    async fn init(mut self, _handle: &ActorRef<Self>) -> Result<InitResult<Self>, Self::Error> {
+    async fn started(&mut self, _ctx: &Context<Self>) {
         self.accounts.insert("main".to_string(), 1000);
-        Ok(Success(self))
     }
+}
 
-    async fn handle_request(
-        &mut self,
-        message: Self::Request,
-        _handle: &BankHandle,
-    ) -> RequestResponse<Self> {
-        match message.clone() {
-            Self::Request::New { who } => match self.accounts.get(&who) {
-                Some(_amount) => RequestResponse::Reply(Err(BankError::AlreadyACustomer { who })),
-                None => {
-                    self.accounts.insert(who.clone(), 0);
-                    RequestResponse::Reply(Ok(OutMessage::Welcome { who }))
-                }
-            },
-            Self::Request::Add { who, amount } => match self.accounts.get(&who) {
-                Some(current) => {
-                    let new_amount = current + amount;
-                    self.accounts.insert(who.clone(), new_amount);
-                    RequestResponse::Reply(Ok(OutMessage::Balance {
-                        who,
-                        amount: new_amount,
-                    }))
-                }
-                None => RequestResponse::Reply(Err(BankError::NotACustomer { who })),
-            },
-            Self::Request::Remove { who, amount } => match self.accounts.get(&who) {
-                Some(&current) => match current < amount {
-                    true => RequestResponse::Reply(Err(BankError::InsufficientBalance {
-                        who,
-                        amount: current,
-                    })),
-                    false => {
-                        let new_amount = current - amount;
-                        self.accounts.insert(who.clone(), new_amount);
-                        RequestResponse::Reply(Ok(OutMessage::WidrawOk {
-                            who,
-                            amount: new_amount,
-                        }))
-                    }
-                },
-                None => RequestResponse::Reply(Err(BankError::NotACustomer { who })),
-            },
-            Self::Request::Stop => RequestResponse::Stop(Ok(OutMessage::Stopped)),
+impl Handler<NewAccount> for Bank {
+    async fn handle(&mut self, msg: NewAccount, _ctx: &Context<Self>) -> MsgResult {
+        match self.accounts.get(&msg.who) {
+            Some(_) => Err(BankError::AlreadyACustomer { who: msg.who }),
+            None => {
+                self.accounts.insert(msg.who.clone(), 0);
+                Ok(OutMessage::Welcome { who: msg.who })
+            }
         }
+    }
+}
+
+impl Handler<Deposit> for Bank {
+    async fn handle(&mut self, msg: Deposit, _ctx: &Context<Self>) -> MsgResult {
+        match self.accounts.get(&msg.who) {
+            Some(current) => {
+                let new_amount = current + msg.amount;
+                self.accounts.insert(msg.who.clone(), new_amount);
+                Ok(OutMessage::Balance {
+                    who: msg.who,
+                    amount: new_amount,
+                })
+            }
+            None => Err(BankError::NotACustomer { who: msg.who }),
+        }
+    }
+}
+
+impl Handler<Withdraw> for Bank {
+    async fn handle(&mut self, msg: Withdraw, _ctx: &Context<Self>) -> MsgResult {
+        match self.accounts.get(&msg.who) {
+            Some(&current) => {
+                if current < msg.amount {
+                    Err(BankError::InsufficientBalance {
+                        who: msg.who,
+                        amount: current,
+                    })
+                } else {
+                    let new_amount = current - msg.amount;
+                    self.accounts.insert(msg.who.clone(), new_amount);
+                    Ok(OutMessage::WidrawOk {
+                        who: msg.who,
+                        amount: new_amount,
+                    })
+                }
+            }
+            None => Err(BankError::NotACustomer { who: msg.who }),
+        }
+    }
+}
+
+impl Handler<Stop> for Bank {
+    async fn handle(&mut self, _msg: Stop, ctx: &Context<Self>) -> MsgResult {
+        ctx.stop();
+        Ok(OutMessage::Stopped)
     }
 }

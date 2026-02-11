@@ -16,19 +16,19 @@ mod server;
 
 use messages::NameServerOutMessage;
 use server::NameServer;
-use spawned_concurrency::tasks::Actor as _;
+use spawned_concurrency::tasks::ActorStart;
 use spawned_rt::tasks as rt;
 
 fn main() {
     rt::run(async {
-        let mut name_server = NameServer::new().start();
+        let name_server = NameServer::new().start();
 
         let result =
-            NameServer::add(&mut name_server, "Joe".to_string(), "At Home".to_string()).await;
+            NameServer::add(&name_server, "Joe".to_string(), "At Home".to_string()).await;
         tracing::info!("Storing value result: {result:?}");
         assert_eq!(result, NameServerOutMessage::Ok);
 
-        let result = NameServer::find(&mut name_server, "Joe".to_string()).await;
+        let result = NameServer::find(&name_server, "Joe".to_string()).await;
         tracing::info!("Retrieving value result: {result:?}");
         assert_eq!(
             result,
@@ -37,7 +37,7 @@ fn main() {
             }
         );
 
-        let result = NameServer::find(&mut name_server, "Bob".to_string()).await;
+        let result = NameServer::find(&name_server, "Bob".to_string()).await;
         tracing::info!("Retrieving value result: {result:?}");
         assert_eq!(result, NameServerOutMessage::NotFound);
     })

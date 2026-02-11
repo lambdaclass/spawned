@@ -1,5 +1,3 @@
-//! Actor trait and structs to create an abstraction similar to Erlang gen_server.
-//! See examples/name_server for a usage example.
 use spawned_rt::threads::{
     self as rt, mpsc, oneshot, oneshot::RecvTimeoutError, CancellationToken,
 };
@@ -11,11 +9,174 @@ use std::{
 };
 
 use crate::error::ActorError;
+use crate::message::Message;
 
 const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Guard that signals completion when dropped.
-/// Ensures waiters are notified even if the actor thread panics.
+// ---------------------------------------------------------------------------
+// Actor trait
+// ---------------------------------------------------------------------------
+
+pub trait Actor: Send + Sized + 'static {
+    fn started(&mut self, _ctx: &Context<Self>) {}
+    fn stopped(&mut self, _ctx: &Context<Self>) {}
+}
+
+// ---------------------------------------------------------------------------
+// Handler trait (per-message, sync version)
+// ---------------------------------------------------------------------------
+
+pub trait Handler<M: Message>: Actor {
+    fn handle(&mut self, msg: M, ctx: &Context<Self>) -> M::Result;
+}
+
+// ---------------------------------------------------------------------------
+// Envelope (type-erasure)
+// ---------------------------------------------------------------------------
+
+trait Envelope<A: Actor>: Send {
+    fn handle(self: Box<Self>, actor: &mut A, ctx: &Context<A>);
+}
+
+struct MessageEnvelope<M: Message> {
+    msg: M,
+    tx: Option<oneshot::Sender<M::Result>>,
+}
+
+impl<A, M> Envelope<A> for MessageEnvelope<M>
+where
+    A: Actor + Handler<M>,
+    M: Message,
+{
+    fn handle(self: Box<Self>, actor: &mut A, ctx: &Context<A>) {
+        let result = actor.handle(self.msg, ctx);
+        if let Some(tx) = self.tx {
+            let _ = tx.send(result);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Context
+// ---------------------------------------------------------------------------
+
+pub struct Context<A: Actor> {
+    sender: mpsc::Sender<Box<dyn Envelope<A> + Send>>,
+    cancellation_token: CancellationToken,
+}
+
+impl<A: Actor> Clone for Context<A> {
+    fn clone(&self) -> Self {
+        Self {
+            sender: self.sender.clone(),
+            cancellation_token: self.cancellation_token.clone(),
+        }
+    }
+}
+
+impl<A: Actor> Debug for Context<A> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Context").finish_non_exhaustive()
+    }
+}
+
+impl<A: Actor> Context<A> {
+    pub fn from_ref(actor_ref: &ActorRef<A>) -> Self {
+        Self {
+            sender: actor_ref.sender.clone(),
+            cancellation_token: actor_ref.cancellation_token.clone(),
+        }
+    }
+
+    pub fn stop(&self) {
+        self.cancellation_token.cancel();
+    }
+
+    pub fn send<M>(&self, msg: M) -> Result<(), ActorError>
+    where
+        A: Handler<M>,
+        M: Message,
+    {
+        let envelope = MessageEnvelope { msg, tx: None };
+        self.sender
+            .send(Box::new(envelope))
+            .map_err(|_| ActorError::ActorStopped)
+    }
+
+    pub fn request<M>(&self, msg: M) -> Result<oneshot::Receiver<M::Result>, ActorError>
+    where
+        A: Handler<M>,
+        M: Message,
+    {
+        let (tx, rx) = oneshot::channel();
+        let envelope = MessageEnvelope {
+            msg,
+            tx: Some(tx),
+        };
+        self.sender
+            .send(Box::new(envelope))
+            .map_err(|_| ActorError::ActorStopped)?;
+        Ok(rx)
+    }
+
+    pub fn send_request<M>(&self, msg: M) -> Result<M::Result, ActorError>
+    where
+        A: Handler<M>,
+        M: Message,
+    {
+        self.send_request_with_timeout(msg, DEFAULT_REQUEST_TIMEOUT)
+    }
+
+    pub fn send_request_with_timeout<M>(
+        &self,
+        msg: M,
+        duration: Duration,
+    ) -> Result<M::Result, ActorError>
+    where
+        A: Handler<M>,
+        M: Message,
+    {
+        let rx = self.request(msg)?;
+        match rx.recv_timeout(duration) {
+            Ok(result) => Ok(result),
+            Err(RecvTimeoutError::Timeout) => Err(ActorError::RequestTimeout),
+            Err(RecvTimeoutError::Disconnected) => Err(ActorError::ActorStopped),
+        }
+    }
+
+    pub(crate) fn cancellation_token(&self) -> CancellationToken {
+        self.cancellation_token.clone()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Receiver trait (object-safe) + Recipient alias
+// ---------------------------------------------------------------------------
+
+pub trait Receiver<M: Message>: Send + Sync {
+    fn send(&self, msg: M) -> Result<(), ActorError>;
+    fn request(&self, msg: M) -> Result<oneshot::Receiver<M::Result>, ActorError>;
+}
+
+pub type Recipient<M> = Arc<dyn Receiver<M>>;
+
+pub fn send_request<M: Message>(
+    recipient: &dyn Receiver<M>,
+    msg: M,
+    timeout: Duration,
+) -> Result<M::Result, ActorError> {
+    let rx = recipient.request(msg)?;
+    match rx.recv_timeout(timeout) {
+        Ok(result) => Ok(result),
+        Err(RecvTimeoutError::Timeout) => Err(ActorError::RequestTimeout),
+        Err(RecvTimeoutError::Disconnected) => Err(ActorError::ActorStopped),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ActorRef
+// ---------------------------------------------------------------------------
+
 struct CompletionGuard(Arc<(Mutex<bool>, Condvar)>);
 
 impl Drop for CompletionGuard {
@@ -27,94 +188,93 @@ impl Drop for CompletionGuard {
     }
 }
 
-pub struct ActorRef<A: Actor + 'static> {
-    pub tx: mpsc::Sender<ActorInMsg<A>>,
+pub struct ActorRef<A: Actor> {
+    sender: mpsc::Sender<Box<dyn Envelope<A> + Send>>,
     cancellation_token: CancellationToken,
-    /// Completion signal: (is_completed, condvar for waiters)
     completion: Arc<(Mutex<bool>, Condvar)>,
+}
+
+impl<A: Actor> Debug for ActorRef<A> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ActorRef").finish_non_exhaustive()
+    }
 }
 
 impl<A: Actor> Clone for ActorRef<A> {
     fn clone(&self) -> Self {
         Self {
-            tx: self.tx.clone(),
+            sender: self.sender.clone(),
             cancellation_token: self.cancellation_token.clone(),
             completion: self.completion.clone(),
         }
     }
 }
 
-impl<A: Actor> std::fmt::Debug for ActorRef<A> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ActorRef")
-            .field("tx", &self.tx)
-            .field("cancellation_token", &self.cancellation_token)
-            .finish_non_exhaustive()
-    }
-}
-
 impl<A: Actor> ActorRef<A> {
-    pub(crate) fn new(actor: A) -> Self {
-        let (tx, mut rx) = mpsc::channel::<ActorInMsg<A>>();
-        let cancellation_token = CancellationToken::new();
-        let completion = Arc::new((Mutex::new(false), Condvar::new()));
-        let handle = ActorRef {
-            tx,
-            cancellation_token,
-            completion: completion.clone(),
+    pub fn send<M>(&self, msg: M) -> Result<(), ActorError>
+    where
+        A: Handler<M>,
+        M: Message,
+    {
+        let envelope = MessageEnvelope { msg, tx: None };
+        self.sender
+            .send(Box::new(envelope))
+            .map_err(|_| ActorError::ActorStopped)
+    }
+
+    pub fn request<M>(&self, msg: M) -> Result<oneshot::Receiver<M::Result>, ActorError>
+    where
+        A: Handler<M>,
+        M: Message,
+    {
+        let (tx, rx) = oneshot::channel();
+        let envelope = MessageEnvelope {
+            msg,
+            tx: Some(tx),
         };
-        let handle_clone = handle.clone();
-        let _thread_handle = rt::spawn(move || {
-            // Guard ensures completion is signaled even if actor panics
-            let _guard = CompletionGuard(completion);
-            if actor.run(&handle, &mut rx).is_err() {
-                tracing::trace!("Actor crashed")
-            };
-        });
-        handle_clone
+        self.sender
+            .send(Box::new(envelope))
+            .map_err(|_| ActorError::ActorStopped)?;
+        Ok(rx)
     }
 
-    pub fn sender(&self) -> mpsc::Sender<ActorInMsg<A>> {
-        self.tx.clone()
+    pub fn send_request<M>(&self, msg: M) -> Result<M::Result, ActorError>
+    where
+        A: Handler<M>,
+        M: Message,
+    {
+        self.send_request_with_timeout(msg, DEFAULT_REQUEST_TIMEOUT)
     }
 
-    pub fn request(&mut self, message: A::Request) -> Result<A::Reply, ActorError> {
-        self.request_with_timeout(message, DEFAULT_REQUEST_TIMEOUT)
-    }
-
-    pub fn request_with_timeout(
-        &mut self,
-        message: A::Request,
+    pub fn send_request_with_timeout<M>(
+        &self,
+        msg: M,
         duration: Duration,
-    ) -> Result<A::Reply, ActorError> {
-        let (oneshot_tx, oneshot_rx) = oneshot::channel::<Result<A::Reply, ActorError>>();
-        self.tx.send(ActorInMsg::Request {
-            sender: oneshot_tx,
-            message,
-        })?;
-        match oneshot_rx.recv_timeout(duration) {
-            Ok(result) => result,
+    ) -> Result<M::Result, ActorError>
+    where
+        A: Handler<M>,
+        M: Message,
+    {
+        let rx = self.request(msg)?;
+        match rx.recv_timeout(duration) {
+            Ok(result) => Ok(result),
             Err(RecvTimeoutError::Timeout) => Err(ActorError::RequestTimeout),
-            Err(RecvTimeoutError::Disconnected) => Err(ActorError::Server),
+            Err(RecvTimeoutError::Disconnected) => Err(ActorError::ActorStopped),
         }
     }
 
-    pub fn send(&mut self, message: A::Message) -> Result<(), ActorError> {
-        self.tx
-            .send(ActorInMsg::Message { message })
-            .map_err(|_error| ActorError::Server)
+    pub fn recipient<M>(&self) -> Recipient<M>
+    where
+        A: Handler<M>,
+        M: Message,
+    {
+        Arc::new(self.clone())
     }
 
-    pub(crate) fn cancellation_token(&self) -> CancellationToken {
-        self.cancellation_token.clone()
+    pub fn context(&self) -> Context<A> {
+        Context::from_ref(self)
     }
 
-    /// Blocks until the actor has stopped.
-    ///
-    /// This method blocks the current thread until the actor has finished
-    /// processing and exited its main loop. Can be called multiple times from
-    /// different clones of the ActorRef - all callers will be notified when
-    /// the actor stops.
     pub fn join(&self) {
         let (lock, cvar) = &*self.completion;
         let mut completed = lock.lock().unwrap_or_else(|p| p.into_inner());
@@ -124,191 +284,114 @@ impl<A: Actor> ActorRef<A> {
     }
 }
 
-pub enum ActorInMsg<A: Actor> {
-    Request {
-        sender: oneshot::Sender<Result<A::Reply, ActorError>>,
-        message: A::Request,
-    },
-    Message {
-        message: A::Message,
-    },
-}
-
-pub enum RequestResponse<A: Actor> {
-    Reply(A::Reply),
-    Unused,
-    Stop(A::Reply),
-}
-
-pub enum MessageResponse {
-    NoReply,
-    Unused,
-    Stop,
-}
-
-pub enum InitResult<A: Actor> {
-    Success(A),
-    NoSuccess(A),
-}
-
-pub trait Actor: Send + Sized {
-    type Request: Clone + Send + Sized + Sync;
-    type Message: Clone + Send + Sized + Sync;
-    type Reply: Send + Sized;
-    type Error: Debug + Send;
-
-    fn start(self) -> ActorRef<Self> {
-        ActorRef::new(self)
+// Bridge: ActorRef<A> implements Receiver<M> for any M that A handles
+impl<A, M> Receiver<M> for ActorRef<A>
+where
+    A: Actor + Handler<M>,
+    M: Message,
+{
+    fn send(&self, msg: M) -> Result<(), ActorError> {
+        ActorRef::send(self, msg)
     }
 
-    fn run(
-        self,
-        handle: &ActorRef<Self>,
-        rx: &mut mpsc::Receiver<ActorInMsg<Self>>,
-    ) -> Result<(), ActorError> {
-        let cancellation_token = handle.cancellation_token.clone();
+    fn request(&self, msg: M) -> Result<oneshot::Receiver<M::Result>, ActorError> {
+        ActorRef::request(self, msg)
+    }
+}
 
-        let res = match self.init(handle) {
-            Ok(InitResult::Success(new_state)) => {
-                let final_state = new_state.main_loop(handle, rx)?;
-                Ok(final_state)
-            }
-            Ok(InitResult::NoSuccess(intermediate_state)) => {
-                // Initialization failed but error was handled in callback.
-                // Skip main_loop and return state for teardown.
-                Ok(intermediate_state)
-            }
-            Err(err) => {
-                tracing::error!("Initialization failed with unhandled error: {err:?}");
-                Err(ActorError::Initialization)
-            }
+// ---------------------------------------------------------------------------
+// Actor startup + main loop
+// ---------------------------------------------------------------------------
+
+impl<A: Actor> ActorRef<A> {
+    fn spawn(actor: A) -> Self {
+        let (tx, rx) = mpsc::channel::<Box<dyn Envelope<A> + Send>>();
+        let cancellation_token = CancellationToken::new();
+        let completion = Arc::new((Mutex::new(false), Condvar::new()));
+
+        let actor_ref = ActorRef {
+            sender: tx.clone(),
+            cancellation_token: cancellation_token.clone(),
+            completion: completion.clone(),
         };
 
-        cancellation_token.cancel();
+        let ctx = Context {
+            sender: tx,
+            cancellation_token: cancellation_token.clone(),
+        };
 
-        if let Ok(final_state) = res {
-            if let Err(err) = final_state.teardown(handle) {
-                tracing::error!("Error during teardown: {err:?}");
-            }
-        }
+        let _thread_handle = rt::spawn(move || {
+            let _guard = CompletionGuard(completion);
+            run_actor(actor, ctx, rx, cancellation_token);
+        });
 
-        Ok(())
+        actor_ref
+    }
+}
+
+fn run_actor<A: Actor>(
+    mut actor: A,
+    ctx: Context<A>,
+    rx: mpsc::Receiver<Box<dyn Envelope<A> + Send>>,
+    cancellation_token: CancellationToken,
+) {
+    actor.started(&ctx);
+
+    if cancellation_token.is_cancelled() {
+        actor.stopped(&ctx);
+        return;
     }
 
-    /// Initialization function. It's called before main loop. It
-    /// can be overrided on implementations in case initial steps are
-    /// required.
-    fn init(self, _handle: &ActorRef<Self>) -> Result<InitResult<Self>, Self::Error> {
-        Ok(InitResult::Success(self))
-    }
-
-    fn main_loop(
-        mut self,
-        handle: &ActorRef<Self>,
-        rx: &mut mpsc::Receiver<ActorInMsg<Self>>,
-    ) -> Result<Self, ActorError> {
-        loop {
-            if !self.receive(handle, rx)? {
-                break;
-            }
-        }
-        tracing::trace!("Stopping Actor");
-        Ok(self)
-    }
-
-    fn receive(
-        &mut self,
-        handle: &ActorRef<Self>,
-        rx: &mut mpsc::Receiver<ActorInMsg<Self>>,
-    ) -> Result<bool, ActorError> {
-        let message = rx.recv().ok();
-
-        let keep_running = match message {
-            Some(ActorInMsg::Request { sender, message }) => {
-                let (keep_running, response) = match catch_unwind(AssertUnwindSafe(|| {
-                    self.handle_request(message, handle)
-                })) {
-                    Ok(response) => match response {
-                        RequestResponse::Reply(response) => (true, Ok(response)),
-                        RequestResponse::Stop(response) => (false, Ok(response)),
-                        RequestResponse::Unused => {
-                            tracing::error!("Actor received unexpected Request");
-                            (false, Err(ActorError::RequestUnused))
-                        }
-                    },
-                    Err(error) => {
-                        tracing::error!("Error in callback: '{error:?}'");
-                        (true, Err(ActorError::Callback))
-                    }
-                };
-                // Send response back
-                if sender.send(response).is_err() {
-                    tracing::trace!("Actor failed to send response back, client must have died")
-                };
-                keep_running
-            }
-            Some(ActorInMsg::Message { message }) => {
-                match catch_unwind(AssertUnwindSafe(|| self.handle_message(message, handle))) {
-                    Ok(response) => match response {
-                        MessageResponse::NoReply => true,
-                        MessageResponse::Stop => false,
-                        MessageResponse::Unused => {
-                            tracing::error!("Actor received unexpected Message");
-                            false
-                        }
-                    },
-                    Err(error) => {
-                        tracing::error!("Error in callback: '{error:?}'");
-                        true
-                    }
+    loop {
+        let msg = rx.recv().ok();
+        match msg {
+            Some(envelope) => {
+                let result = catch_unwind(AssertUnwindSafe(|| {
+                    envelope.handle(&mut actor, &ctx);
+                }));
+                if let Err(panic) = result {
+                    tracing::error!("Panic in message handler: {panic:?}");
+                    break;
+                }
+                if cancellation_token.is_cancelled() {
+                    break;
                 }
             }
-            None => {
-                // Channel has been closed; won't receive further messages. Stop the server.
-                false
-            }
-        };
-        Ok(keep_running)
+            None => break,
+        }
     }
 
-    fn handle_request(
-        &mut self,
-        _message: Self::Request,
-        _handle: &ActorRef<Self>,
-    ) -> RequestResponse<Self> {
-        RequestResponse::Unused
-    }
+    cancellation_token.cancel();
+    actor.stopped(&ctx);
+}
 
-    fn handle_message(
-        &mut self,
-        _message: Self::Message,
-        _handle: &ActorRef<Self>,
-    ) -> MessageResponse {
-        MessageResponse::Unused
-    }
+// ---------------------------------------------------------------------------
+// Actor::start
+// ---------------------------------------------------------------------------
 
-    /// Teardown function. It's called after the stop message is received.
-    /// It can be overrided on implementations in case final steps are required,
-    /// like closing streams, stopping timers, etc.
-    fn teardown(self, _handle: &ActorRef<Self>) -> Result<(), Self::Error> {
-        Ok(())
+pub trait ActorStart: Actor {
+    fn start(self) -> ActorRef<Self> {
+        ActorRef::spawn(self)
     }
 }
 
-/// Spawns a thread that runs a blocking operation and sends a message to an Actor
-/// on completion. This is the sync equivalent of tasks::send_message_on.
-/// This function returns a handle to the spawned thread.
-pub fn send_message_on<T, F>(handle: ActorRef<T>, f: F, message: T::Message) -> rt::JoinHandle<()>
+impl<A: Actor> ActorStart for A {}
+
+// ---------------------------------------------------------------------------
+// send_message_on (utility)
+// ---------------------------------------------------------------------------
+
+pub fn send_message_on<A, M, F>(ctx: Context<A>, f: F, msg: M) -> rt::JoinHandle<()>
 where
-    T: Actor,
+    A: Actor + Handler<M>,
+    M: Message,
     F: FnOnce() + Send + 'static,
 {
-    let cancellation_token = handle.cancellation_token();
-    let mut handle_clone = handle.clone();
+    let cancellation_token = ctx.cancellation_token();
     rt::spawn(move || {
         f();
         if !cancellation_token.is_cancelled() {
-            if let Err(e) = handle_clone.send(message) {
+            if let Err(e) = ctx.send(msg) {
                 tracing::error!("Failed to send message: {e:?}")
             }
         }

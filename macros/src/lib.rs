@@ -1,0 +1,106 @@
+use proc_macro::TokenStream;
+use quote::quote;
+use syn::{parse_macro_input, FnArg, ImplItem, ItemImpl, Pat, ReturnType, Type};
+
+/// Attribute macro for actor impl blocks.
+///
+/// Place `#[actor]` on an `impl MyActor` block containing methods annotated
+/// with `#[handler]`. For each `#[handler]` method, the macro generates a
+/// corresponding `impl Handler<M> for MyActor` block.
+///
+/// # Handler method signature
+///
+/// ```ignore
+/// #[handler]
+/// async fn on_deposit(&mut self, msg: Deposit, ctx: &Context<Self>) { ... }
+/// // or with explicit return:
+/// #[handler]
+/// async fn on_withdraw(&mut self, msg: Withdraw, ctx: &Context<Self>) -> Result<u64, String> { ... }
+/// ```
+///
+/// Sync handlers (for the `threads` module) omit `async`:
+///
+/// ```ignore
+/// #[handler]
+/// fn on_deposit(&mut self, msg: Deposit, ctx: &Context<Self>) { ... }
+/// ```
+///
+/// The generated `Handler<M>` impl delegates to the original method.
+#[proc_macro_attribute]
+pub fn actor(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    let mut impl_block = parse_macro_input!(item as ItemImpl);
+
+    let self_ty = &impl_block.self_ty;
+    let (impl_generics, _, where_clause) = impl_block.generics.split_for_impl();
+
+    let mut handler_impls = Vec::new();
+
+    for item in &mut impl_block.items {
+        if let ImplItem::Fn(method) = item {
+            // Check for #[handler] attribute
+            let handler_idx = method.attrs.iter().position(|attr| {
+                attr.path().is_ident("handler")
+            });
+
+            if let Some(idx) = handler_idx {
+                method.attrs.remove(idx);
+
+                let method_name = &method.sig.ident;
+                let is_async = method.sig.asyncness.is_some();
+
+                // Extract message type from 2nd parameter (index 1, after &mut self)
+                let msg_ty = match method.sig.inputs.iter().nth(1) {
+                    Some(FnArg::Typed(pat_type)) => {
+                        if let Pat::Ident(pat_ident) = &*pat_type.pat {
+                            if pat_ident.ident == "_" || pat_ident.ident.to_string().starts_with('_') {
+                                // Still use the type
+                            }
+                        }
+                        &*pat_type.ty
+                    }
+                    _ => {
+                        return syn::Error::new_spanned(
+                            &method.sig,
+                            "#[handler] method must have signature: fn(&mut self, msg: M, ctx: &Context<Self>) -> R",
+                        )
+                        .to_compile_error()
+                        .into();
+                    }
+                };
+
+                // Extract return type (default to () if omitted)
+                let ret_ty: Box<Type> = match &method.sig.output {
+                    ReturnType::Default => syn::parse_quote! { () },
+                    ReturnType::Type(_, ty) => ty.clone(),
+                };
+
+                let handler_impl = if is_async {
+                    quote! {
+                        impl #impl_generics Handler<#msg_ty> for #self_ty #where_clause {
+                            async fn handle(&mut self, msg: #msg_ty, ctx: &Context<Self>) -> #ret_ty {
+                                self.#method_name(msg, ctx).await
+                            }
+                        }
+                    }
+                } else {
+                    quote! {
+                        impl #impl_generics Handler<#msg_ty> for #self_ty #where_clause {
+                            fn handle(&mut self, msg: #msg_ty, ctx: &Context<Self>) -> #ret_ty {
+                                self.#method_name(msg, ctx)
+                            }
+                        }
+                    }
+                };
+
+                handler_impls.push(handler_impl);
+            }
+        }
+    }
+
+    let output = quote! {
+        #impl_block
+        #(#handler_impls)*
+    };
+
+    output.into()
+}

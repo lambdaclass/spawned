@@ -1,0 +1,12 @@
+[package]
+name = "service_discovery"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+spawned-concurrency = { workspace = true }
+spawned-macros = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tokio = { version = "1", features = ["full"] }
