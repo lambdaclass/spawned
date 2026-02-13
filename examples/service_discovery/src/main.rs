@@ -1,12 +1,15 @@
-use spawned_concurrency::registry;
-use spawned_concurrency::tasks::{Actor, ActorStart, Context, Handler, Recipient, request};
-use spawned_macros::actor;
 use std::collections::HashMap;
 use std::time::Duration;
 
+use spawned_concurrency::messages;
+use spawned_concurrency::registry;
+use spawned_concurrency::tasks::{Actor, ActorStart, Context, Handler, Recipient, request};
+use spawned_macros::actor;
+use spawned_rt::tasks as rt;
+
 // --- Messages ---
 
-spawned_concurrency::messages! {
+messages! {
     Register { name: String, address: String } -> ();
     Lookup { name: String } -> Option<String>;
     ListAll -> Vec<(String, String)>
@@ -47,59 +50,53 @@ impl ServiceRegistry {
     }
 }
 
-#[tokio::main]
-async fn main() {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .init();
+fn main() {
+    rt::run(async {
+        // Start the service registry actor
+        let svc = ServiceRegistry::new().start();
 
-    // Start the service registry actor
-    let svc = ServiceRegistry::new().start();
+        // Register it by name — other actors can discover it
+        registry::register("service_registry", svc.recipient::<Lookup>()).unwrap();
 
-    // Register it by name — other actors can discover it
-    registry::register("service_registry", svc.recipient::<Lookup>()).unwrap();
-
-    // Register some services
-    svc.send(Register {
-        name: "web".into(),
-        address: "http://localhost:8080".into(),
-    })
-    .unwrap();
-
-    svc.send(Register {
-        name: "db".into(),
-        address: "postgres://localhost:5432".into(),
-    })
-    .unwrap();
-
-    // A consumer discovers the registry by name (doesn't need to know ServiceRegistry type)
-    let lookup_recipient: Recipient<Lookup> = registry::whereis("service_registry").unwrap();
-
-    // Look up a service
-    let addr = request(
-        &*lookup_recipient,
-        Lookup {
+        // Register some services
+        svc.send(Register {
             name: "web".into(),
-        },
-        Duration::from_secs(5),
-    )
-    .await
-    .unwrap();
-    tracing::info!("Looked up 'web': {:?}", addr);
+            address: "http://localhost:8080".into(),
+        })
+        .unwrap();
 
-    // List all registered names in the registry
-    let names = registry::registered();
-    tracing::info!("Registry contains: {:?}", names);
+        svc.send(Register {
+            name: "db".into(),
+            address: "postgres://localhost:5432".into(),
+        })
+        .unwrap();
 
-    // Direct request for all services
-    let all = svc.request(ListAll).await.unwrap();
-    tracing::info!("All services: {:?}", all);
+        // A consumer discovers the registry by name (doesn't need to know ServiceRegistry type)
+        let lookup_recipient: Recipient<Lookup> = registry::whereis("service_registry").unwrap();
 
-    // Clean up
-    registry::unregister("service_registry");
+        // Look up a service
+        let addr = request(
+            &*lookup_recipient,
+            Lookup {
+                name: "web".into(),
+            },
+            Duration::from_secs(5),
+        )
+        .await
+        .unwrap();
+        tracing::info!("Looked up 'web': {:?}", addr);
 
-    tracing::info!("Service discovery demo complete");
+        // List all registered names in the registry
+        let names = registry::registered();
+        tracing::info!("Registry contains: {:?}", names);
+
+        // Direct request for all services
+        let all = svc.request(ListAll).await.unwrap();
+        tracing::info!("All services: {:?}", all);
+
+        // Clean up
+        registry::unregister("service_registry");
+
+        tracing::info!("Service discovery demo complete");
+    });
 }

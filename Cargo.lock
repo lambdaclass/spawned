@@ -126,9 +126,18 @@ version = "0.4.5"
 dependencies = [
  "spawned-concurrency",
  "spawned-macros",
- "tokio",
+ "spawned-rt",
  "tracing",
- "tracing-subscriber",
+]
+
+[[package]]
+name = "chat_room_threads"
+version = "0.4.5"
+dependencies = [
+ "spawned-concurrency",
+ "spawned-macros",
+ "spawned-rt",
+ "tracing",
 ]
 
 [[package]]
@@ -1146,9 +1155,8 @@ version = "0.4.5"
 dependencies = [
  "spawned-concurrency",
  "spawned-macros",
- "tokio",
+ "spawned-rt",
  "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]

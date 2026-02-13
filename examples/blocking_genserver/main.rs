@@ -2,9 +2,10 @@ use spawned_rt::tasks as rt;
 use std::time::Duration;
 use std::{process::exit, thread};
 
+use spawned_concurrency::messages;
 use spawned_concurrency::tasks::{Actor, ActorStart, Backend, Context, Handler, send_after};
 
-spawned_concurrency::messages! {
+messages! {
     GetCount -> u64;
     StopActor -> u64;
     BadWork -> ();

@@ -3,9 +3,10 @@ use std::time::Duration;
 use std::{process::exit, thread};
 use tracing::info;
 
+use spawned_concurrency::messages;
 use spawned_concurrency::tasks::{Actor, ActorStart, Context, Handler};
 
-spawned_concurrency::messages! {
+messages! {
     StopBusy -> ();
     BusyWork -> ()
 }
