@@ -5,27 +5,32 @@ use syn::{parse_macro_input, FnArg, ImplItem, ItemImpl, Pat, ReturnType, Type};
 /// Attribute macro for actor impl blocks.
 ///
 /// Place `#[actor]` on an `impl MyActor` block containing methods annotated
-/// with `#[handler]`. For each `#[handler]` method, the macro generates a
-/// corresponding `impl Handler<M> for MyActor` block.
+/// with `#[send_handler]` or `#[request_handler]`. For each annotated method,
+/// the macro generates a corresponding `impl Handler<M> for MyActor` block.
 ///
-/// # Handler method signature
+/// Use `#[send_handler]` for fire-and-forget messages (no return value):
 ///
 /// ```ignore
-/// #[handler]
+/// #[send_handler]
 /// async fn on_deposit(&mut self, msg: Deposit, ctx: &Context<Self>) { ... }
-/// // or with explicit return:
-/// #[handler]
-/// async fn on_withdraw(&mut self, msg: Withdraw, ctx: &Context<Self>) -> Result<u64, String> { ... }
+/// ```
+///
+/// Use `#[request_handler]` for request-response messages (returns a value):
+///
+/// ```ignore
+/// #[request_handler]
+/// async fn on_balance(&mut self, msg: GetBalance, ctx: &Context<Self>) -> u64 { ... }
 /// ```
 ///
 /// Sync handlers (for the `threads` module) omit `async`:
 ///
 /// ```ignore
-/// #[handler]
+/// #[send_handler]
 /// fn on_deposit(&mut self, msg: Deposit, ctx: &Context<Self>) { ... }
 /// ```
 ///
-/// The generated `Handler<M>` impl delegates to the original method.
+/// The generic `#[handler]` attribute is also supported for backwards
+/// compatibility and works for both send and request handlers.
 #[proc_macro_attribute]
 pub fn actor(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let mut impl_block = parse_macro_input!(item as ItemImpl);
@@ -37,9 +42,10 @@ pub fn actor(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
     for item in &mut impl_block.items {
         if let ImplItem::Fn(method) = item {
-            // Check for #[handler] attribute
             let handler_idx = method.attrs.iter().position(|attr| {
                 attr.path().is_ident("handler")
+                    || attr.path().is_ident("send_handler")
+                    || attr.path().is_ident("request_handler")
             });
 
             if let Some(idx) = handler_idx {
@@ -61,7 +67,7 @@ pub fn actor(_attr: TokenStream, item: TokenStream) -> TokenStream {
                     _ => {
                         return syn::Error::new_spanned(
                             &method.sig,
-                            "#[handler] method must have signature: fn(&mut self, msg: M, ctx: &Context<Self>) -> R",
+                            "handler method must have signature: fn(&mut self, msg: M, ctx: &Context<Self>) -> R",
                         )
                         .to_compile_error()
                         .into();

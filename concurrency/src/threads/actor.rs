@@ -103,7 +103,7 @@ impl<A: Actor> Context<A> {
             .map_err(|_| ActorError::ActorStopped)
     }
 
-    pub fn request<M>(&self, msg: M) -> Result<oneshot::Receiver<M::Result>, ActorError>
+    pub fn request_raw<M>(&self, msg: M) -> Result<oneshot::Receiver<M::Result>, ActorError>
     where
         A: Handler<M>,
         M: Message,
@@ -119,15 +119,15 @@ impl<A: Actor> Context<A> {
         Ok(rx)
     }
 
-    pub fn send_request<M>(&self, msg: M) -> Result<M::Result, ActorError>
+    pub fn request<M>(&self, msg: M) -> Result<M::Result, ActorError>
     where
         A: Handler<M>,
         M: Message,
     {
-        self.send_request_with_timeout(msg, DEFAULT_REQUEST_TIMEOUT)
+        self.request_with_timeout(msg, DEFAULT_REQUEST_TIMEOUT)
     }
 
-    pub fn send_request_with_timeout<M>(
+    pub fn request_with_timeout<M>(
         &self,
         msg: M,
         duration: Duration,
@@ -136,7 +136,7 @@ impl<A: Actor> Context<A> {
         A: Handler<M>,
         M: Message,
     {
-        let rx = self.request(msg)?;
+        let rx = self.request_raw(msg)?;
         match rx.recv_timeout(duration) {
             Ok(result) => Ok(result),
             Err(RecvTimeoutError::Timeout) => Err(ActorError::RequestTimeout),
@@ -144,8 +144,31 @@ impl<A: Actor> Context<A> {
         }
     }
 
+    pub fn recipient<M>(&self) -> Recipient<M>
+    where
+        A: Handler<M>,
+        M: Message,
+    {
+        Arc::new(self.clone())
+    }
+
     pub(crate) fn cancellation_token(&self) -> CancellationToken {
         self.cancellation_token.clone()
+    }
+}
+
+// Bridge: Context<A> implements Receiver<M> for any M that A handles
+impl<A, M> Receiver<M> for Context<A>
+where
+    A: Actor + Handler<M>,
+    M: Message,
+{
+    fn send(&self, msg: M) -> Result<(), ActorError> {
+        Context::send(self, msg)
+    }
+
+    fn request_raw(&self, msg: M) -> Result<oneshot::Receiver<M::Result>, ActorError> {
+        Context::request_raw(self, msg)
     }
 }
 
@@ -155,17 +178,17 @@ impl<A: Actor> Context<A> {
 
 pub trait Receiver<M: Message>: Send + Sync {
     fn send(&self, msg: M) -> Result<(), ActorError>;
-    fn request(&self, msg: M) -> Result<oneshot::Receiver<M::Result>, ActorError>;
+    fn request_raw(&self, msg: M) -> Result<oneshot::Receiver<M::Result>, ActorError>;
 }
 
 pub type Recipient<M> = Arc<dyn Receiver<M>>;
 
-pub fn send_request<M: Message>(
+pub fn request<M: Message>(
     recipient: &dyn Receiver<M>,
     msg: M,
     timeout: Duration,
 ) -> Result<M::Result, ActorError> {
-    let rx = recipient.request(msg)?;
+    let rx = recipient.request_raw(msg)?;
     match rx.recv_timeout(timeout) {
         Ok(result) => Ok(result),
         Err(RecvTimeoutError::Timeout) => Err(ActorError::RequestTimeout),
@@ -222,7 +245,7 @@ impl<A: Actor> ActorRef<A> {
             .map_err(|_| ActorError::ActorStopped)
     }
 
-    pub fn request<M>(&self, msg: M) -> Result<oneshot::Receiver<M::Result>, ActorError>
+    pub fn request_raw<M>(&self, msg: M) -> Result<oneshot::Receiver<M::Result>, ActorError>
     where
         A: Handler<M>,
         M: Message,
@@ -238,15 +261,15 @@ impl<A: Actor> ActorRef<A> {
         Ok(rx)
     }
 
-    pub fn send_request<M>(&self, msg: M) -> Result<M::Result, ActorError>
+    pub fn request<M>(&self, msg: M) -> Result<M::Result, ActorError>
     where
         A: Handler<M>,
         M: Message,
     {
-        self.send_request_with_timeout(msg, DEFAULT_REQUEST_TIMEOUT)
+        self.request_with_timeout(msg, DEFAULT_REQUEST_TIMEOUT)
     }
 
-    pub fn send_request_with_timeout<M>(
+    pub fn request_with_timeout<M>(
         &self,
         msg: M,
         duration: Duration,
@@ -255,7 +278,7 @@ impl<A: Actor> ActorRef<A> {
         A: Handler<M>,
         M: Message,
     {
-        let rx = self.request(msg)?;
+        let rx = self.request_raw(msg)?;
         match rx.recv_timeout(duration) {
             Ok(result) => Ok(result),
             Err(RecvTimeoutError::Timeout) => Err(ActorError::RequestTimeout),
@@ -294,8 +317,8 @@ where
         ActorRef::send(self, msg)
     }
 
-    fn request(&self, msg: M) -> Result<oneshot::Receiver<M::Result>, ActorError> {
-        ActorRef::request(self, msg)
+    fn request_raw(&self, msg: M) -> Result<oneshot::Receiver<M::Result>, ActorError> {
+        ActorRef::request_raw(self, msg)
     }
 }
 

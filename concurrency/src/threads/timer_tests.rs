@@ -70,14 +70,14 @@ pub fn test_send_interval_and_cancellation() {
 
     rt::sleep(Duration::from_secs(1));
 
-    let count = repeater.send_request(GetRepCount).unwrap();
+    let count = repeater.request(GetRepCount).unwrap();
     assert_eq!(9, count);
 
     repeater.send(StopTimer).unwrap();
 
     rt::sleep(Duration::from_secs(1));
 
-    let count2 = repeater.send_request(GetRepCount).unwrap();
+    let count2 = repeater.request(GetRepCount).unwrap();
     assert_eq!(9, count2);
 }
 
@@ -131,7 +131,7 @@ pub fn test_send_after_and_cancellation() {
 
     rt::sleep(Duration::from_millis(200));
 
-    let count = actor.send_request(GetDelCount).unwrap();
+    let count = actor.request(GetDelCount).unwrap();
     assert_eq!(1, count);
 
     let ctx = Context::from_ref(&actor);
@@ -141,7 +141,7 @@ pub fn test_send_after_and_cancellation() {
 
     rt::sleep(Duration::from_millis(200));
 
-    let count2 = actor.send_request(GetDelCount).unwrap();
+    let count2 = actor.request(GetDelCount).unwrap();
     assert_eq!(1, count2);
 }
 
@@ -154,13 +154,13 @@ pub fn test_send_after_actor_shutdown() {
 
     rt::sleep(Duration::from_millis(200));
 
-    let count = actor.send_request(GetDelCount).unwrap();
+    let count = actor.request(GetDelCount).unwrap();
     assert_eq!(1, count);
 
     let ctx = Context::from_ref(&actor);
     let _ = send_after(Duration::from_millis(100), ctx, Inc);
 
-    let count2 = actor.send_request(StopDelayed).unwrap();
+    let count2 = actor.request(StopDelayed).unwrap();
 
     rt::sleep(Duration::from_millis(200));
 

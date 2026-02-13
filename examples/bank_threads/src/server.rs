@@ -21,25 +21,25 @@ impl Bank {
 impl Bank {
     pub fn stop(server: &ActorRef<Bank>) -> MsgResult {
         server
-            .send_request(Stop)
+            .request(Stop)
             .unwrap_or(Err(BankError::ServerError))
     }
 
     pub fn new_account(server: &ActorRef<Bank>, who: String) -> MsgResult {
         server
-            .send_request(NewAccount { who })
+            .request(NewAccount { who })
             .unwrap_or(Err(BankError::ServerError))
     }
 
     pub fn deposit(server: &ActorRef<Bank>, who: String, amount: i32) -> MsgResult {
         server
-            .send_request(Deposit { who, amount })
+            .request(Deposit { who, amount })
             .unwrap_or(Err(BankError::ServerError))
     }
 
     pub fn withdraw(server: &ActorRef<Bank>, who: String, amount: i32) -> MsgResult {
         server
-            .send_request(Withdraw { who, amount })
+            .request(Withdraw { who, amount })
             .unwrap_or(Err(BankError::ServerError))
     }
 }

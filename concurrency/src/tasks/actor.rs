@@ -131,7 +131,7 @@ impl<A: Actor> Context<A> {
             .map_err(|_| ActorError::ActorStopped)
     }
 
-    pub fn request<M>(&self, msg: M) -> Result<oneshot::Receiver<M::Result>, ActorError>
+    pub fn request_raw<M>(&self, msg: M) -> Result<oneshot::Receiver<M::Result>, ActorError>
     where
         A: Handler<M>,
         M: Message,
@@ -147,12 +147,12 @@ impl<A: Actor> Context<A> {
         Ok(rx)
     }
 
-    pub async fn send_request<M>(&self, msg: M) -> Result<M::Result, ActorError>
+    pub async fn request<M>(&self, msg: M) -> Result<M::Result, ActorError>
     where
         A: Handler<M>,
         M: Message,
     {
-        let rx = self.request(msg)?;
+        let rx = self.request_raw(msg)?;
         match timeout(DEFAULT_REQUEST_TIMEOUT, rx).await {
             Ok(Ok(result)) => Ok(result),
             Ok(Err(_)) => Err(ActorError::ActorStopped),
@@ -160,8 +160,31 @@ impl<A: Actor> Context<A> {
         }
     }
 
+    pub fn recipient<M>(&self) -> Recipient<M>
+    where
+        A: Handler<M>,
+        M: Message,
+    {
+        Arc::new(self.clone())
+    }
+
     pub(crate) fn cancellation_token(&self) -> CancellationToken {
         self.cancellation_token.clone()
+    }
+}
+
+// Bridge: Context<A> implements Receiver<M> for any M that A handles
+impl<A, M> Receiver<M> for Context<A>
+where
+    A: Actor + Handler<M>,
+    M: Message,
+{
+    fn send(&self, msg: M) -> Result<(), ActorError> {
+        Context::send(self, msg)
+    }
+
+    fn request_raw(&self, msg: M) -> Result<oneshot::Receiver<M::Result>, ActorError> {
+        Context::request_raw(self, msg)
     }
 }
 
@@ -171,17 +194,17 @@ impl<A: Actor> Context<A> {
 
 pub trait Receiver<M: Message>: Send + Sync {
     fn send(&self, msg: M) -> Result<(), ActorError>;
-    fn request(&self, msg: M) -> Result<oneshot::Receiver<M::Result>, ActorError>;
+    fn request_raw(&self, msg: M) -> Result<oneshot::Receiver<M::Result>, ActorError>;
 }
 
 pub type Recipient<M> = Arc<dyn Receiver<M>>;
 
-pub async fn send_request<M: Message>(
+pub async fn request<M: Message>(
     recipient: &dyn Receiver<M>,
     msg: M,
     timeout_duration: Duration,
 ) -> Result<M::Result, ActorError> {
-    let rx = recipient.request(msg)?;
+    let rx = recipient.request_raw(msg)?;
     match timeout(timeout_duration, rx).await {
         Ok(Ok(result)) => Ok(result),
         Ok(Err(_)) => Err(ActorError::ActorStopped),
@@ -227,7 +250,7 @@ impl<A: Actor> ActorRef<A> {
             .map_err(|_| ActorError::ActorStopped)
     }
 
-    pub fn request<M>(&self, msg: M) -> Result<oneshot::Receiver<M::Result>, ActorError>
+    pub fn request_raw<M>(&self, msg: M) -> Result<oneshot::Receiver<M::Result>, ActorError>
     where
         A: Handler<M>,
         M: Message,
@@ -243,15 +266,15 @@ impl<A: Actor> ActorRef<A> {
         Ok(rx)
     }
 
-    pub async fn send_request<M>(&self, msg: M) -> Result<M::Result, ActorError>
+    pub async fn request<M>(&self, msg: M) -> Result<M::Result, ActorError>
     where
         A: Handler<M>,
         M: Message,
     {
-        self.send_request_with_timeout(msg, DEFAULT_REQUEST_TIMEOUT).await
+        self.request_with_timeout(msg, DEFAULT_REQUEST_TIMEOUT).await
     }
 
-    pub async fn send_request_with_timeout<M>(
+    pub async fn request_with_timeout<M>(
         &self,
         msg: M,
         duration: Duration,
@@ -260,7 +283,7 @@ impl<A: Actor> ActorRef<A> {
         A: Handler<M>,
         M: Message,
     {
-        let rx = self.request(msg)?;
+        let rx = self.request_raw(msg)?;
         match timeout(duration, rx).await {
             Ok(Ok(result)) => Ok(result),
             Ok(Err(_)) => Err(ActorError::ActorStopped),
@@ -300,8 +323,8 @@ where
         ActorRef::send(self, msg)
     }
 
-    fn request(&self, msg: M) -> Result<oneshot::Receiver<M::Result>, ActorError> {
-        ActorRef::request(self, msg)
+    fn request_raw(&self, msg: M) -> Result<oneshot::Receiver<M::Result>, ActorError> {
+        ActorRef::request_raw(self, msg)
     }
 }
 
@@ -562,20 +585,20 @@ mod tests {
         runtime.block_on(async move {
             let counter = Counter { count: 0 }.start();
 
-            let result = counter.send_request(GetCount).await.unwrap();
+            let result = counter.request(GetCount).await.unwrap();
             assert_eq!(result, 0);
 
-            let result = counter.send_request(Increment).await.unwrap();
+            let result = counter.request(Increment).await.unwrap();
             assert_eq!(result, 1);
 
             // fire-and-forget send
             counter.send(Increment).unwrap();
             rt::sleep(Duration::from_millis(10)).await;
 
-            let result = counter.send_request(GetCount).await.unwrap();
+            let result = counter.request(GetCount).await.unwrap();
             assert_eq!(result, 2);
 
-            let final_count = counter.send_request(StopCounter).await.unwrap();
+            let final_count = counter.request(StopCounter).await.unwrap();
             assert_eq!(final_count, 2);
         });
     }
@@ -586,19 +609,19 @@ mod tests {
         runtime.block_on(async move {
             let counter = Counter { count: 0 }.start_with_backend(Backend::Blocking);
 
-            let result = counter.send_request(GetCount).await.unwrap();
+            let result = counter.request(GetCount).await.unwrap();
             assert_eq!(result, 0);
 
-            let result = counter.send_request(Increment).await.unwrap();
+            let result = counter.request(Increment).await.unwrap();
             assert_eq!(result, 1);
 
             counter.send(Increment).unwrap();
             rt::sleep(Duration::from_millis(50)).await;
 
-            let result = counter.send_request(GetCount).await.unwrap();
+            let result = counter.request(GetCount).await.unwrap();
             assert_eq!(result, 2);
 
-            let final_count = counter.send_request(StopCounter).await.unwrap();
+            let final_count = counter.request(StopCounter).await.unwrap();
             assert_eq!(final_count, 2);
         });
     }
@@ -609,19 +632,19 @@ mod tests {
         runtime.block_on(async move {
             let counter = Counter { count: 0 }.start_with_backend(Backend::Thread);
 
-            let result = counter.send_request(GetCount).await.unwrap();
+            let result = counter.request(GetCount).await.unwrap();
             assert_eq!(result, 0);
 
-            let result = counter.send_request(Increment).await.unwrap();
+            let result = counter.request(Increment).await.unwrap();
             assert_eq!(result, 1);
 
             counter.send(Increment).unwrap();
             rt::sleep(Duration::from_millis(50)).await;
 
-            let result = counter.send_request(GetCount).await.unwrap();
+            let result = counter.request(GetCount).await.unwrap();
             assert_eq!(result, 2);
 
-            let final_count = counter.send_request(StopCounter).await.unwrap();
+            let final_count = counter.request(StopCounter).await.unwrap();
             assert_eq!(final_count, 2);
         });
     }
@@ -634,21 +657,21 @@ mod tests {
             let blocking_counter = Counter { count: 100 }.start_with_backend(Backend::Blocking);
             let thread_counter = Counter { count: 200 }.start_with_backend(Backend::Thread);
 
-            async_counter.send_request(Increment).await.unwrap();
-            blocking_counter.send_request(Increment).await.unwrap();
-            thread_counter.send_request(Increment).await.unwrap();
+            async_counter.request(Increment).await.unwrap();
+            blocking_counter.request(Increment).await.unwrap();
+            thread_counter.request(Increment).await.unwrap();
 
-            let async_val = async_counter.send_request(GetCount).await.unwrap();
-            let blocking_val = blocking_counter.send_request(GetCount).await.unwrap();
-            let thread_val = thread_counter.send_request(GetCount).await.unwrap();
+            let async_val = async_counter.request(GetCount).await.unwrap();
+            let blocking_val = blocking_counter.request(GetCount).await.unwrap();
+            let thread_val = thread_counter.request(GetCount).await.unwrap();
 
             assert_eq!(async_val, 1);
             assert_eq!(blocking_val, 101);
             assert_eq!(thread_val, 201);
 
-            async_counter.send_request(StopCounter).await.unwrap();
-            blocking_counter.send_request(StopCounter).await.unwrap();
-            thread_counter.send_request(StopCounter).await.unwrap();
+            async_counter.request(StopCounter).await.unwrap();
+            blocking_counter.request(StopCounter).await.unwrap();
+            thread_counter.request(StopCounter).await.unwrap();
         });
     }
 
@@ -667,7 +690,7 @@ mod tests {
 
             let actor = SlowActor.start();
             let result = actor
-                .send_request_with_timeout(SlowOp, Duration::from_millis(50))
+                .request_with_timeout(SlowOp, Duration::from_millis(50))
                 .await;
             assert!(matches!(result, Err(ActorError::RequestTimeout)));
         });
@@ -680,12 +703,12 @@ mod tests {
             let counter = Counter { count: 42 }.start();
             let recipient: Recipient<GetCount> = counter.recipient();
 
-            let rx = recipient.request(GetCount).unwrap();
+            let rx = recipient.request_raw(GetCount).unwrap();
             let result = rx.await.unwrap();
             assert_eq!(result, 42);
 
-            // Also test send_request helper
-            let result = send_request(&*recipient, GetCount, Duration::from_secs(5)).await.unwrap();
+            // Also test request helper
+            let result = request(&*recipient, GetCount, Duration::from_secs(5)).await.unwrap();
             assert_eq!(result, 42);
         });
     }
@@ -825,9 +848,9 @@ mod tests {
             let goodboy = WellBehavedTask { count: 0 }.start();
             goodboy.send(IncrementWell).unwrap();
             rt::sleep(Duration::from_secs(1)).await;
-            let count = goodboy.send_request(GetCount).await.unwrap();
+            let count = goodboy.request(GetCount).await.unwrap();
             assert_ne!(count, 10);
-            goodboy.send_request(StopCounter).await.unwrap();
+            goodboy.request(StopCounter).await.unwrap();
         });
     }
 
@@ -840,9 +863,9 @@ mod tests {
             let goodboy = WellBehavedTask { count: 0 }.start();
             goodboy.send(IncrementWell).unwrap();
             rt::sleep(Duration::from_secs(1)).await;
-            let count = goodboy.send_request(GetCount).await.unwrap();
+            let count = goodboy.request(GetCount).await.unwrap();
             assert_eq!(count, 10);
-            goodboy.send_request(StopCounter).await.unwrap();
+            goodboy.request(StopCounter).await.unwrap();
         });
     }
 
@@ -855,9 +878,9 @@ mod tests {
             let goodboy = WellBehavedTask { count: 0 }.start();
             goodboy.send(IncrementWell).unwrap();
             rt::sleep(Duration::from_secs(1)).await;
-            let count = goodboy.send_request(GetCount).await.unwrap();
+            let count = goodboy.request(GetCount).await.unwrap();
             assert_eq!(count, 10);
-            goodboy.send_request(StopCounter).await.unwrap();
+            goodboy.request(StopCounter).await.unwrap();
         });
     }
 }

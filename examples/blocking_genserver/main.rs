@@ -84,11 +84,11 @@ pub fn main() {
         let goodboy = WellBehavedTask::new(0).start();
         let _ = goodboy.send(GoodWork);
         rt::sleep(Duration::from_secs(1)).await;
-        let count = goodboy.send_request(GetCount).await.unwrap();
+        let count = goodboy.request(GetCount).await.unwrap();
 
         assert!(count == 10);
 
-        goodboy.send_request(StopActor).await.unwrap();
+        goodboy.request(StopActor).await.unwrap();
         exit(0);
     })
 }

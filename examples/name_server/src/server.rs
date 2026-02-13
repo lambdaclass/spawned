@@ -18,7 +18,7 @@ impl NameServer {
 
 impl NameServer {
     pub async fn add(server: &ActorRef<NameServer>, key: String, value: String) -> OutMessage {
-        match server.send_request(Add { key, value }).await {
+        match server.request(Add { key, value }).await {
             Ok(_) => OutMessage::Ok,
             Err(_) => OutMessage::Error,
         }
@@ -26,7 +26,7 @@ impl NameServer {
 
     pub async fn find(server: &ActorRef<NameServer>, key: String) -> OutMessage {
         server
-            .send_request(Find { key })
+            .request(Find { key })
             .await
             .unwrap_or(OutMessage::Error)
     }
