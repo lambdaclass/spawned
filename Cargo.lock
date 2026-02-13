@@ -121,6 +121,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "613afe47fcd5fac7ccf1db93babcb082c5994d996f20b8b159f2ad1658eb5724"
 
 [[package]]
+name = "chat_room"
+version = "0.4.5"
+dependencies = [
+ "spawned-concurrency",
+ "spawned-macros",
+ "spawned-rt",
+ "tracing",
+]
+
+[[package]]
+name = "chat_room_threads"
+version = "0.4.5"
+dependencies = [
+ "spawned-concurrency",
+ "spawned-macros",
+ "spawned-rt",
+ "tracing",
+]
+
+[[package]]
 name = "core-foundation"
 version = "0.9.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1130,6 +1150,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "service_discovery"
+version = "0.4.5"
+dependencies = [
+ "spawned-concurrency",
+ "spawned-macros",
+ "spawned-rt",
+ "tracing",
+]
+
+[[package]]
 name = "sharded-slab"
 version = "0.1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1210,11 +1240,21 @@ version = "0.4.5"
 dependencies = [
  "futures",
  "pin-project-lite",
+ "spawned-macros",
  "spawned-rt",
  "thiserror",
  "tokio",
  "tokio-stream",
  "tracing",
+]
+
+[[package]]
+name = "spawned-macros"
+version = "0.4.5"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]

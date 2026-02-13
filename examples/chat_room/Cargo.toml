@@ -1,0 +1,11 @@
+[package]
+name = "chat_room"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+spawned-rt = { workspace = true }
+spawned-concurrency = { workspace = true }
+spawned-macros = { workspace = true }
+tracing = { workspace = true }

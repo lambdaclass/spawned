@@ -1,11 +1,6 @@
-#[derive(Debug, Clone)]
-pub enum UpdaterInMessage {
-    Check,
-}
+use spawned_concurrency::messages;
 
-#[allow(dead_code)]
-#[derive(Debug, Clone, PartialEq)]
-pub enum UpdaterOutMessage {
-    Ok,
-    Error,
+messages! {
+    #[derive(Clone)]
+    Check -> ()
 }

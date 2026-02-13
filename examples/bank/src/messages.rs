@@ -1,12 +1,5 @@
-#[derive(Debug, Clone)]
-pub enum BankInMessage {
-    New { who: String },
-    Add { who: String, amount: i32 },
-    Remove { who: String, amount: i32 },
-    Stop,
-}
+use spawned_concurrency::message::Message;
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum BankOutMessage {
     Welcome { who: String },
@@ -15,11 +8,44 @@ pub enum BankOutMessage {
     Stopped,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum BankError {
     AlreadyACustomer { who: String },
     NotACustomer { who: String },
     InsufficientBalance { who: String, amount: i32 },
     ServerError,
+}
+
+type MsgResult = Result<BankOutMessage, BankError>;
+
+#[derive(Debug)]
+pub struct NewAccount {
+    pub who: String,
+}
+impl Message for NewAccount {
+    type Result = MsgResult;
+}
+
+#[derive(Debug)]
+pub struct Deposit {
+    pub who: String,
+    pub amount: i32,
+}
+impl Message for Deposit {
+    type Result = MsgResult;
+}
+
+#[derive(Debug)]
+pub struct Withdraw {
+    pub who: String,
+    pub amount: i32,
+}
+impl Message for Withdraw {
+    type Result = MsgResult;
+}
+
+#[derive(Debug)]
+pub struct Stop;
+impl Message for Stop {
+    type Result = MsgResult;
 }
