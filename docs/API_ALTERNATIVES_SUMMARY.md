@@ -13,6 +13,8 @@ This document summarizes the different approaches explored for solving two criti
 - [Approach D: Derive Macro](#approach-d-derive-macro)
 - [Approach E: AnyActorRef](#approach-e-anyactorref-fully-type-erased)
 - [Approach F: PID Addressing](#approach-f-pid-addressing-erlang-style)
+- [Registry & Service Discovery](#registry--service-discovery)
+- [Macro Improvement Potential](#macro-improvement-potential)
 - [Comparison Matrix](#comparison-matrix)
 - [Recommendation](#recommendation)
 - [Branch Reference](#branch-reference)
@@ -219,17 +221,19 @@ alice.send_request(SayToRoom { text: "Hello everyone!".into() }).await?;
 ```
 </details>
 
-### With `#[actor]` macro + extension traits
+### With `#[actor]` macro + `actor_api!`
 
 <details>
-<summary><b>room.rs</b> — macro eliminates Handler boilerplate</summary>
+<summary><b>room.rs</b> — macros eliminate both Handler and extension trait boilerplate</summary>
 
 ```rust
-use spawned_concurrency::error::ActorError;
+use spawned_concurrency::actor_api;
 use spawned_concurrency::send_messages;
 use spawned_concurrency::request_messages;
 use spawned_concurrency::tasks::{Actor, ActorRef, Context, Handler, Recipient};
 use spawned_macros::actor;
+
+// -- Messages --
 
 send_messages! {
     Say { from: String, text: String };
@@ -241,26 +245,30 @@ request_messages! {
     Members -> Vec<String>
 }
 
+// -- API --
+
+actor_api! {
+    pub ChatRoomApi for ActorRef<ChatRoom> {
+        send fn say(from: String, text: String) => Say;
+        send fn add_member(name: String, inbox: Recipient<Deliver>) => Join;
+        request async fn members() -> Vec<String> => Members;
+    }
+}
+
+// -- Actor --
+
 pub struct ChatRoom {
     members: Vec<(String, Recipient<Deliver>)>,
-}
-
-pub trait ChatRoomApi {
-    fn say(&self, from: String, text: String) -> Result<(), ActorError>;
-    fn add_member(&self, name: String, inbox: Recipient<Deliver>) -> Result<(), ActorError>;
-    async fn members(&self) -> Result<Vec<String>, ActorError>;
-}
-
-impl ChatRoomApi for ActorRef<ChatRoom> {
-    fn say(&self, from: String, text: String) -> Result<(), ActorError> { self.send(Say { from, text }) }
-    fn add_member(&self, name: String, inbox: Recipient<Deliver>) -> Result<(), ActorError> { self.send(Join { name, inbox }) }
-    async fn members(&self) -> Result<Vec<String>, ActorError> { self.request(Members).await }
 }
 
 impl Actor for ChatRoom {}
 
 #[actor]
 impl ChatRoom {
+    pub fn new() -> Self {
+        Self { members: Vec::new() }
+    }
+
     #[send_handler]
     async fn handle_say(&mut self, msg: Say, _ctx: &Context<Self>) {
         for (name, inbox) in &self.members {
@@ -287,36 +295,43 @@ impl ChatRoom {
 <summary><b>user.rs</b> — macro version</summary>
 
 ```rust
-use spawned_concurrency::error::ActorError;
+use spawned_concurrency::actor_api;
 use spawned_concurrency::send_messages;
 use spawned_concurrency::tasks::{Actor, ActorRef, Context, Handler};
 use spawned_macros::actor;
 use crate::room::{ChatRoom, ChatRoomApi, Deliver};
+
+// -- Messages --
 
 send_messages! {
     SayToRoom { text: String };
     JoinRoom { room: ActorRef<ChatRoom> }
 }
 
+// -- API --
+
+actor_api! {
+    pub UserApi for ActorRef<User> {
+        send fn say(text: String) => SayToRoom;
+        send fn join_room(room: ActorRef<ChatRoom>) => JoinRoom;
+    }
+}
+
+// -- Actor --
+
 pub struct User {
     pub name: String,
     room: Option<ActorRef<ChatRoom>>,
-}
-
-pub trait UserApi {
-    fn say(&self, text: String) -> Result<(), ActorError>;
-    fn join_room(&self, room: &ActorRef<ChatRoom>) -> Result<(), ActorError>;
-}
-
-impl UserApi for ActorRef<User> {
-    fn say(&self, text: String) -> Result<(), ActorError> { self.send(SayToRoom { text }) }
-    fn join_room(&self, room: &ActorRef<ChatRoom>) -> Result<(), ActorError> { self.send(JoinRoom { room: room.clone() }) }
 }
 
 impl Actor for User {}
 
 #[actor]
 impl User {
+    pub fn new(name: String) -> Self {
+        Self { name, room: None }
+    }
+
     #[send_handler]
     async fn handle_say_to_room(&mut self, msg: SayToRoom, _ctx: &Context<Self>) {
         if let Some(ref room) = self.room {
@@ -346,8 +361,8 @@ let room = ChatRoom::new().start();
 let alice = User::new("Alice".into()).start();
 let bob = User::new("Bob".into()).start();
 
-alice.join_room(&room).unwrap();
-bob.join_room(&room).unwrap();
+alice.join_room(room.clone()).unwrap();
+bob.join_room(room.clone()).unwrap();
 
 let members = room.members().await.unwrap();
 
@@ -358,16 +373,16 @@ bob.say("Hi Alice!".into()).unwrap();
 
 ### Analysis
 
-| Dimension | Non-macro | With `#[actor]` macro |
-|-----------|-----------|----------------------|
-| **Readability** | Each `impl Handler<M>` block is self-contained. You see the message type and return type in the trait bound. But many small impl blocks can feel scattered. | `#[send_handler]`/`#[request_handler]` attributes inside a single `#[actor] impl` block group all handlers together. Reads top-to-bottom like a class. |
-| **API at a glance** | Must scan all `impl Handler<M>` blocks to know what messages an actor handles. | Same — the `#[actor]` block groups them, but the extension trait (`ChatRoomApi`) is the real "at-a-glance" API surface. |
-| **Boilerplate** | One `impl Handler<M>` block per message × per actor. Message structs need manual `impl Message`. | `send_messages!`/`request_messages!` macros eliminate `Message` impls. `#[actor]` eliminates `Handler` impls. Extension traits add some code but improve caller ergonomics. |
-| **main.rs expressivity** | Raw message structs: `room.send_request(Join { ... })` — explicit but verbose. | Extension traits: `alice.join_room(&room)` — reads like natural API calls. |
-| **Circular dep solution** | `Recipient<M>` — room stores `Recipient<Deliver>`, user stores `Recipient<Say>`. Neither knows the other's concrete type. | Same mechanism. The macro doesn't change how type erasure works. |
-| **Discoverability** | Standard Rust patterns. Any Rust developer can read `impl Handler<M>`. | `#[actor]` is custom — new developers need to learn what the attribute does, but the pattern is common (Actix uses the same). |
+| Dimension | Non-macro | With `#[actor]` macro + `actor_api!` |
+|-----------|-----------|--------------------------------------|
+| **Readability** | Each `impl Handler<M>` block is self-contained. You see the message type and return type in the trait bound. But many small impl blocks can feel scattered. | `#[send_handler]`/`#[request_handler]` attributes inside a single `#[actor] impl` block group all handlers together. `actor_api!` declares the caller-facing API in a compact block. Files read top-to-bottom: Messages → API → Actor. |
+| **API at a glance** | Must scan all `impl Handler<M>` blocks to know what messages an actor handles. | The `actor_api!` block is the "at-a-glance" API surface — each line declares a method, its params, and the underlying message. |
+| **Boilerplate** | One `impl Handler<M>` block per message × per actor. Message structs need manual `impl Message`. | `send_messages!`/`request_messages!` macros eliminate `Message` impls. `#[actor]` eliminates `Handler` impls. `actor_api!` reduces the extension trait + impl (~15 lines) to ~5 lines. |
+| **main.rs expressivity** | Raw message structs: `room.send_request(Join { ... })` — explicit but verbose. | Extension traits: `alice.join_room(room.clone())` — reads like natural API calls. |
+| **Circular dep solution** | `Recipient<M>` — room stores `Recipient<Deliver>`, user stores `Recipient<Say>`. Neither knows the other's concrete type. | Same mechanism. The macros don't change how type erasure works. |
+| **Discoverability** | Standard Rust patterns. Any Rust developer can read `impl Handler<M>`. | `#[actor]` and `actor_api!` are custom — new developers need to learn what they do, but the patterns are common (Actix uses the same approach). |
 
-**Key insight:** The non-macro version is already concise for handler code. The macro's main value is eliminating the `impl Handler<M> for X { fn handle(...) { self.method_name(msg, ctx) } }` delegation wrapper — a small but real reduction per handler. The extension traits (optional, orthogonal to the macro) are what transform `main.rs` from "send raw structs" to "call named methods."
+**Key insight:** The non-macro version is already concise for handler code. The `#[actor]` macro eliminates the `impl Handler<M>` delegation wrapper per handler. The `actor_api!` macro eliminates the extension trait boilerplate (trait definition + impl block) that provides ergonomic method-call syntax on `ActorRef`. Together, they reduce an actor definition to three declarative blocks: messages, API, and handlers.
 
 ---
 
@@ -886,6 +901,126 @@ let members: Vec<String> = spawned::request(room.pid(), Members).await?;
 
 ---
 
+## Registry & Service Discovery
+
+The current registry is a global `Any`-based name store (Approach A):
+
+```rust
+// Register: store a Recipient<M> by name
+registry::register("service_registry", svc.recipient::<Lookup>()).unwrap();
+
+// Discover: retrieve without knowing the concrete actor type
+let recipient: Recipient<Lookup> = registry::whereis("service_registry").unwrap();
+
+// Use: typed request through the recipient
+let addr = request(&*recipient, Lookup { name: "web".into() }, timeout).await?;
+```
+
+The registry API (`register`, `whereis`, `unregister`, `registered`) stays the same across approaches — it's just `HashMap<String, Box<dyn Any>>` with `RwLock`. What changes is **what you store and what you get back**.
+
+### How it differs per approach
+
+| Approach | Stored value | Retrieved as | Type safety | Discovery granularity |
+|----------|-------------|-------------|-------------|----------------------|
+| **Baseline** | `ActorRef<A>` | `ActorRef<A>` | Compile-time, but requires knowing actor type | Per actor — defeats the point of discovery |
+| **A: Recipient** | `Recipient<M>` | `Recipient<M>` | Compile-time per message type | Per message type — fine-grained |
+| **B: Protocol Traits** | `Arc<dyn Protocol>` | `Arc<dyn Protocol>` | Compile-time per protocol | Per protocol — coarser-grained |
+| **C: Typed Wrappers** | `ActorRef<A>` or `Recipient<M>` | Mixed | Depends on channel | Unclear — dual-channel split |
+| **D: Derive Macro** | `Recipient<M>` | `Recipient<M>` | Same as A | Same as A |
+| **E: AnyActorRef** | `AnyActorRef` | `AnyActorRef` | None — runtime only | Per actor, but no type info |
+| **F: PID** | `Pid` | `Pid` | None — runtime only | Per actor (Erlang-style `whereis`) |
+
+**Key differences:**
+
+- **A and D** register per message type: `registry::register("room_lookup", room.recipient::<Lookup>())`. A consumer discovers a `Recipient<Lookup>` — it can only send `Lookup` messages, nothing else. If the room handles 5 message types, you can register it under 5 names (or one name per message type you want to expose). This is the most granular.
+
+- **B** registers per protocol: `registry::register("room", Arc::new(room.clone()) as Arc<dyn ChatBroadcaster>)`. A consumer discovers an `Arc<dyn ChatBroadcaster>` — it can call any method on the protocol (`say`, `add_member`). This is coarser but more natural: one registration covers all the methods in the protocol.
+
+- **E** is trivially simple but useless: `registry::register("room", room.any_ref())`. You get back an `AnyActorRef` that accepts `Box<dyn Any>`. No compile-time knowledge of what messages the actor handles.
+
+- **F** is the most natural fit for a registry. The registry maps `name → Pid`, and PID-based dispatch handles the rest. This mirrors Erlang exactly: `register(room, Pid)`, `whereis(room) → Pid`. The registry is simple; the complexity moves to the PID dispatch table. But the same runtime safety concern applies — sending to a Pid that doesn't handle the message type fails at runtime.
+
+---
+
+## Macro Improvement Potential
+
+Approach A's `actor_api!` macro eliminates extension trait boilerplate by generating a trait + impl from a compact declaration. Could similar macros reduce boilerplate in the other approaches?
+
+### Approach B: Protocol Traits — YES, significant potential
+
+The bridge impls are structurally identical to what `actor_api!` already generates. Each bridge method just wraps `self.send(Msg { fields })`:
+
+```rust
+// Current bridge boilerplate (~10 lines per actor)
+impl ChatBroadcaster for ActorRef<ChatRoom> {
+    fn say(&self, from: String, text: String) -> Result<(), ActorError> {
+        self.send(Say { from, text })
+    }
+    fn add_member(&self, name: String, inbox: Arc<dyn ChatParticipant>) -> Result<(), ActorError> {
+        self.send(Join { name, inbox })
+    }
+}
+```
+
+A variant of `actor_api!` could generate bridge impls for an existing trait:
+
+```rust
+// Potential: impl-only mode for existing protocol traits
+actor_api! {
+    impl ChatBroadcaster for ActorRef<ChatRoom> {
+        send fn say(from: String, text: String) => Say;
+        send fn add_member(name: String, inbox: Arc<dyn ChatParticipant>) => Join;
+    }
+}
+```
+
+This would use the same syntax but `impl Trait for Type` (no `pub`, no new trait) signals that we're implementing an existing trait. The protocol trait itself remains user-defined — it IS the contract, so it should stay hand-written.
+
+**Impact:** Bridge boilerplate per actor drops from ~10 lines to ~4 lines. The protocol trait definition stays manual (by design). Combined with `#[actor]`, the total code for a protocol-based actor would be competitive with Approach A.
+
+### Approach C: Typed Wrappers — NO
+
+The fundamental problem is the dual-channel architecture, not boilerplate. The `Clone` bound incompatibility between enum messages and `Recipient<M>` creates a structural split that macros can't paper over. Typed wrappers still hide `unreachable!()` branches internally.
+
+### Approach D: Derive Macro — N/A
+
+This approach IS a macro. The `#[derive(ActorMessages)]` would generate message structs, `Message` impls, API wrappers, and `Handler<M>` delegation — subsuming what `actor_api!`, `send_messages!`, and `#[actor]` do separately. Adding `actor_api!` on top would be redundant.
+
+### Approach E: AnyActorRef — NO
+
+You could wrap `send_any(Box::new(...))` in typed helper methods, but this provides false safety — the runtime dispatch can still fail. The whole point of AnyActorRef is erasing types; adding typed wrappers on top contradicts that.
+
+### Approach F: PID — PARTIAL
+
+The registration boilerplate could be automated:
+
+```rust
+// Current: manual registration per message type
+room.register::<Say>();
+room.register::<Join>();
+room.register::<Members>();
+
+// Potential: derive-style auto-registration
+#[actor(register(Say, Join, Members))]
+impl ChatRoom { ... }
+```
+
+And `spawned::send(pid, Msg { ... })` could get ergonomic wrappers similar to `actor_api!`. But since `Pid` carries no type information, these wrappers can only provide ergonomics, not safety — a wrong Pid still causes a runtime error.
+
+### Summary
+
+| Approach | Macro potential | What it would eliminate | Worth implementing? |
+|----------|----------------|----------------------|---------------------|
+| **B: Protocol Traits** | High | Bridge impl boilerplate | Yes — `actor_api!` impl-only mode |
+| **C: Typed Wrappers** | None | N/A — structural problem | No |
+| **D: Derive Macro** | N/A | Already a macro | N/A |
+| **E: AnyActorRef** | None | Would add false safety | No |
+| **F: PID** | Low-Medium | Registration ceremony | Maybe — ergonomics only |
+
+**Takeaway:** Approach B is the only unimplemented approach that would meaningfully benefit from `actor_api!`-style macros. And the required change is small — adding an impl-only mode to the existing macro. This would make Approach B more competitive with Approach A on boilerplate, while retaining its testability advantage.
+
+---
+
 ## Comparison Matrix
 
 ### Functional Dimensions
@@ -896,17 +1031,19 @@ let members: Vec<String> = spawned::request(room.pid(), Members).await?;
 | **Breaking** | Yes | Yes | No | No | Yes | Yes |
 | **#144 type safety** | Full | Full | Hidden `unreachable!` | Hidden `unreachable!` | Full | Full |
 | **#145 type safety** | Compile-time | Compile-time | Compile-time | Compile-time | Runtime only | Runtime only |
-| **Macro support** | `#[actor]` + message macros | `#[actor]` (no bridge macro) | N/A (enum-based) | Derive macro | `#[actor]` | `#[actor]` |
+| **Macro support** | `#[actor]` + `actor_api!` + message macros | `#[actor]` (no bridge macro) | N/A (enum-based) | Derive macro | `#[actor]` | `#[actor]` |
 | **Dual-mode (async+threads)** | Works | Works | Complex (dual channel) | Complex | Works | Works |
+| **Registry stores** | `Recipient<M>` | `Arc<dyn Protocol>` | Mixed | `Recipient<M>` | `AnyActorRef` | `Pid` |
+| **Registry type safety** | Compile-time | Compile-time | Depends | Compile-time | Runtime | Runtime |
 
 ### Code Quality Dimensions
 
 | Dimension | A: Recipient | B: Protocol Traits | C: Typed Wrappers | D: Derive Macro | E: AnyActorRef | F: PID |
 |-----------|-------------|-------------------|-------------------|-----------------|---------------|--------|
 | **Handler readability** | Clear: one `impl Handler<M>` or `#[send_handler]` per message | Same as A + bridge impls | Noisy: enum `match` arms + wrapper fns | Opaque: generated from enum annotations | Same as A, but callers use `Box::new` | Same as A, but callers use global `send(pid, msg)` |
-| **API at a glance** | Extension traits or scan Handler impls | Protocol traits (best) | Typed wrapper functions | Annotated enum (good summary) | Nothing — `AnyActorRef` is opaque | Nothing — `Pid` is opaque |
-| **main.rs expressivity** | `alice.say("Hi")` with ext traits; `alice.send(SayToRoom{...})` without | `room.say("Alice", "Hi")` via protocol | `ChatRoom::say(&room, ...)` assoc fn | Generated methods: `room.say(...)` | `room.send_any(Box::new(...))` | `spawned::send(pid, ...)` + registration |
-| **Boilerplate per message** | Struct + optional macro | Struct + trait method + bridge impl | Enum variant + wrapper + match arm | Enum variant + annotation | Struct | Struct + registration |
+| **API at a glance** | `actor_api!` block or scan Handler impls | Protocol traits (best) | Typed wrapper functions | Annotated enum (good summary) | Nothing — `AnyActorRef` is opaque | Nothing — `Pid` is opaque |
+| **main.rs expressivity** | `alice.say("Hi")` with `actor_api!`; `alice.send(SayToRoom{...})` without | `room.say("Alice", "Hi")` via protocol | `ChatRoom::say(&room, ...)` assoc fn | Generated methods: `room.say(...)` | `room.send_any(Box::new(...))` | `spawned::send(pid, ...)` + registration |
+| **Boilerplate per message** | Struct + `actor_api!` line | Struct + trait method + bridge impl | Enum variant + wrapper + match arm | Enum variant + annotation | Struct | Struct + registration |
 | **Debugging** | Standard Rust — all code visible | Standard Rust — bridge impls visible | Standard Rust | Requires `cargo expand` | Runtime errors (downcast failures) | Runtime errors (unregistered types) |
 | **Testability** | Good (mock via Recipient) | Best (mock protocol trait) | Good | Good | Fair (Any-based) | Hard (global state) |
 
@@ -919,6 +1056,7 @@ let members: Vec<String> = spawned::request(room.pid(), Members).await?;
 | **Clustering readiness** | Needs `RemoteRecipient` | Needs remote bridge impls | Hard | Hard | Possible (serialize Any) | Excellent (Pid is location-transparent) |
 | **Learning curve** | Moderate (Handler<M> pattern) | Moderate + bridge pattern | Low (old API preserved) | Low (write enum, macro does rest) | Low concept, high debugging | Low concept, high registration overhead |
 | **Erlang alignment** | Actix-like | Least Erlang | Actix-like | Actix-like | Erlang-ish | Most Erlang |
+| **Macro improvement potential** | Already done (`actor_api!`) | High (bridge impls) | None (structural) | N/A (is a macro) | None (false safety) | Low (ergonomics only) |
 
 ---
 
@@ -927,9 +1065,10 @@ let members: Vec<String> = spawned::request(room.pid(), Members).await?;
 **Approach A (Handler\<M\> + Recipient\<M\>)** is the most mature and balanced option:
 - Fully implemented with 34 passing tests, multiple examples, proc macro, registry, and dual-mode support
 - Compile-time type safety for both #144 and #145
-- The `#[actor]` macro + extension traits provide good expressivity without hiding too much
+- The `#[actor]` macro + `actor_api!` macro provide good expressivity without hiding too much
+- `actor_api!` reduces extension trait boilerplate from ~15 lines to ~5 lines per actor
 - Proven pattern (Actix uses the same architecture)
-- Non-macro version is already clean — the macro is additive, not essential
+- Non-macro version is already clean — the macros are additive, not essential
 
 **Approach B (Protocol Traits)** is valuable as a **complementary** pattern:
 - Can coexist with Recipient\<M\> — use protocol traits where you want explicit contracts and testability, Recipient\<M\> where you want less boilerplate
