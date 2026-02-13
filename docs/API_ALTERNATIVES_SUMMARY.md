@@ -117,7 +117,7 @@ match room.request(RoomRequest::Members).await? {
 
 ## Approach A: Handler\<M\> + Recipient\<M\> (Actix-style)
 
-**Branches:** [`feat/handler-api-v0.5`](../../tree/34bf9a7) (implementation), [`feat/critical-api-issues`](../../tree/1ef33bf) (design doc), [`feat/actor-macro-registry`](../../tree/de651ad) (adds macro + registry)
+**Branches:** [`feat/handler-api-v0.5`](../../tree/34bf9a759cda72e5311efda8f1fc8a5ae515129a) (implementation), [`feat/critical-api-issues`](../../tree/1ef33bf0c463543dca379463c554ccc5914c86ff) (design doc), [`feat/actor-macro-registry`](../../tree/de651ad21e2dd39babf534cb74174ae0fe3b399c) (adds macro + registry)
 
 **Status:** Fully implemented and working. 34 tests passing. Multiple examples ported.
 
@@ -388,7 +388,7 @@ bob.say("Hi Alice!".into()).unwrap();
 
 ## Approach B: Protocol Traits (user-defined contracts)
 
-**Branch:** [`feat/145-protocol-trait`](../../tree/b0e5afb) (WIP, committed)
+**Branch:** [`feat/145-protocol-trait`](../../tree/b0e5afb2c69e1f5b6ab8ee82b59582348877c819) (WIP, committed)
 
 **Status:** WIP. Full implementation + migrated examples committed.
 
@@ -551,7 +551,7 @@ alice.send_request(SayToRoom { text: "Hello everyone!".into() }).await?;
 
 ## Approach C: Typed Wrappers (non-breaking)
 
-**Branch:** Not implemented. Documented in [`docs/ALTERNATIVE_APPROACHES.md`](../../blob/b0e5afb/docs/ALTERNATIVE_APPROACHES.md).
+**Branch:** Not implemented. Documented in [`docs/ALTERNATIVE_APPROACHES.md`](../../blob/b0e5afb2c69e1f5b6ab8ee82b59582348877c819/docs/ALTERNATIVE_APPROACHES.md).
 
 Keeps the old enum-based `Actor` trait unchanged. Adds typed convenience methods that hide the enum matching. For #145, adds a second envelope-based channel to `ActorRef` alongside the existing enum channel.
 
@@ -648,7 +648,7 @@ impl Handler<Deliver> for ChatRoom { /* ... */ }
 
 ## Approach D: Derive Macro
 
-**Branch:** Not implemented. Documented in [`docs/ALTERNATIVE_APPROACHES.md`](../../blob/b0e5afb/docs/ALTERNATIVE_APPROACHES.md).
+**Branch:** Not implemented. Documented in [`docs/ALTERNATIVE_APPROACHES.md`](../../blob/b0e5afb2c69e1f5b6ab8ee82b59582348877c819/docs/ALTERNATIVE_APPROACHES.md).
 
 A proc macro `#[derive(ActorMessages)]` auto-generates per-variant message structs, `Message` impls, typed wrappers, and `Handler<M>` delegation from an annotated enum.
 
@@ -720,7 +720,7 @@ let members = room.members().await.unwrap();
 
 ## Approach E: AnyActorRef (fully type-erased)
 
-**Branch:** Not implemented. Documented in [`docs/ALTERNATIVE_APPROACHES.md`](../../blob/b0e5afb/docs/ALTERNATIVE_APPROACHES.md).
+**Branch:** Not implemented. Documented in [`docs/ALTERNATIVE_APPROACHES.md`](../../blob/b0e5afb2c69e1f5b6ab8ee82b59582348877c819/docs/ALTERNATIVE_APPROACHES.md).
 
 Replaces `Recipient<M>` with a single fully type-erased handle `AnyActorRef = Arc<dyn AnyActor>` using `Box<dyn Any>`.
 
@@ -809,7 +809,7 @@ let members: Vec<String> = *reply.downcast::<Vec<String>>().expect("wrong reply 
 
 ## Approach F: PID Addressing (Erlang-style)
 
-**Branch:** Not implemented. Documented in [`docs/ALTERNATIVE_APPROACHES.md`](../../blob/b0e5afb/docs/ALTERNATIVE_APPROACHES.md).
+**Branch:** Not implemented. Documented in [`docs/ALTERNATIVE_APPROACHES.md`](../../blob/b0e5afb2c69e1f5b6ab8ee82b59582348877c819/docs/ALTERNATIVE_APPROACHES.md).
 
 Every actor gets a `Pid(u64)`. A global registry maps `(Pid, TypeId)` → message sender. Messages are sent by PID with explicit registration per message type.
 
@@ -1086,15 +1086,15 @@ And `spawned::send(pid, Msg { ... })` could get ergonomic wrappers similar to `a
 | Branch | Base | Description |
 |--------|------|-------------|
 | `main` | — | Old enum-based API (baseline) |
-| [`feat/critical-api-issues`](../../tree/1ef33bf) | main | Design doc for Handler\<M\> + Recipient\<M\> ([`docs/API_REDESIGN.md`](../../blob/1ef33bf/docs/API_REDESIGN.md)) |
-| [`feat/handler-api-v0.5`](../../tree/34bf9a7) | main | Handler\<M\> + Recipient\<M\> implementation |
-| [`feat/actor-macro-registry`](../../tree/de651ad) | main | Adds `#[actor]` macro + named registry on top of Handler\<M\> |
-| [`feat/145-protocol-trait`](../../tree/b0e5afb) | main | Protocol traits approach + [`docs/ALTERNATIVE_APPROACHES.md`](../../blob/b0e5afb/docs/ALTERNATIVE_APPROACHES.md) |
-| [`docs/add-project-roadmap`](../../tree/426c1a9) | main | Framework comparison with Actix and Ractor |
+| [`feat/critical-api-issues`](../../tree/1ef33bf0c463543dca379463c554ccc5914c86ff) | main | Design doc for Handler\<M\> + Recipient\<M\> ([`docs/API_REDESIGN.md`](../../blob/1ef33bf0c463543dca379463c554ccc5914c86ff/docs/API_REDESIGN.md)) |
+| [`feat/handler-api-v0.5`](../../tree/34bf9a759cda72e5311efda8f1fc8a5ae515129a) | main | Handler\<M\> + Recipient\<M\> implementation |
+| [`feat/actor-macro-registry`](../../tree/de651ad21e2dd39babf534cb74174ae0fe3b399c) | main | Adds `#[actor]` macro + named registry on top of Handler\<M\> |
+| [`feat/145-protocol-trait`](../../tree/b0e5afb2c69e1f5b6ab8ee82b59582348877c819) | main | Protocol traits approach + [`docs/ALTERNATIVE_APPROACHES.md`](../../blob/b0e5afb2c69e1f5b6ab8ee82b59582348877c819/docs/ALTERNATIVE_APPROACHES.md) |
+| [`docs/add-project-roadmap`](../../tree/426c1a9952b3ad440686c318882d570f2032666f) | main | Framework comparison with Actix and Ractor |
 
 ---
 
 ## Detailed Design Documents
 
-- **[`docs/API_REDESIGN.md`](../../blob/1ef33bf/docs/API_REDESIGN.md)** (on `feat/critical-api-issues`) — Full design rationale for Handler\<M\>, Receiver\<M\>, Envelope pattern, RPITIT decision, and planned supervision traits.
-- **[`docs/ALTERNATIVE_APPROACHES.md`](../../blob/b0e5afb/docs/ALTERNATIVE_APPROACHES.md)** (on `feat/145-protocol-trait`) — Original comparison of all 5 alternative branches with execution order plan.
+- **[`docs/API_REDESIGN.md`](../../blob/1ef33bf0c463543dca379463c554ccc5914c86ff/docs/API_REDESIGN.md)** (on `feat/critical-api-issues`) — Full design rationale for Handler\<M\>, Receiver\<M\>, Envelope pattern, RPITIT decision, and planned supervision traits.
+- **[`docs/ALTERNATIVE_APPROACHES.md`](../../blob/b0e5afb2c69e1f5b6ab8ee82b59582348877c819/docs/ALTERNATIVE_APPROACHES.md)** (on `feat/145-protocol-trait`) — Original comparison of all 5 alternative branches with execution order plan.
