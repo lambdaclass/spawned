@@ -24,16 +24,16 @@ mod server;
 
 use messages::{BankError, BankOutMessage};
 use server::Bank;
-use spawned_concurrency::threads::Actor as _;
+use spawned_concurrency::threads::ActorStart;
 use spawned_rt::threads as rt;
 
 fn main() {
     rt::run(|| {
         // Starting the bank
-        let mut name_server = Bank::new().start();
+        let name_server = Bank::new().start();
 
         // Testing initial balance for "main" account
-        let result = Bank::withdraw(&mut name_server, "main".to_string(), 15);
+        let result = Bank::withdraw(&name_server, "main".to_string(), 15);
         tracing::info!("Withdraw result {result:?}");
         assert_eq!(
             result,
@@ -46,17 +46,17 @@ fn main() {
         let joe = "Joe".to_string();
 
         // Error on deposit for an unexistent account
-        let result = Bank::deposit(&mut name_server, joe.clone(), 10);
+        let result = Bank::deposit(&name_server, joe.clone(), 10);
         tracing::info!("Deposit result {result:?}");
         assert_eq!(result, Err(BankError::NotACustomer { who: joe.clone() }));
 
         // Account creation
-        let result = Bank::new_account(&mut name_server, "Joe".to_string());
+        let result = Bank::new_account(&name_server, "Joe".to_string());
         tracing::info!("New account result {result:?}");
         assert_eq!(result, Ok(BankOutMessage::Welcome { who: joe.clone() }));
 
         // Deposit
-        let result = Bank::deposit(&mut name_server, "Joe".to_string(), 10);
+        let result = Bank::deposit(&name_server, "Joe".to_string(), 10);
         tracing::info!("Deposit result {result:?}");
         assert_eq!(
             result,
@@ -67,7 +67,7 @@ fn main() {
         );
 
         // Deposit
-        let result = Bank::deposit(&mut name_server, "Joe".to_string(), 30);
+        let result = Bank::deposit(&name_server, "Joe".to_string(), 30);
         tracing::info!("Deposit result {result:?}");
         assert_eq!(
             result,
@@ -78,7 +78,7 @@ fn main() {
         );
 
         // Withdrawal
-        let result = Bank::withdraw(&mut name_server, "Joe".to_string(), 15);
+        let result = Bank::withdraw(&name_server, "Joe".to_string(), 15);
         tracing::info!("Withdraw result {result:?}");
         assert_eq!(
             result,
@@ -89,7 +89,7 @@ fn main() {
         );
 
         // Withdrawal with not enough balance
-        let result = Bank::withdraw(&mut name_server, "Joe".to_string(), 45);
+        let result = Bank::withdraw(&name_server, "Joe".to_string(), 45);
         tracing::info!("Withdraw result {result:?}");
         assert_eq!(
             result,
@@ -100,7 +100,7 @@ fn main() {
         );
 
         // Full withdrawal
-        let result = Bank::withdraw(&mut name_server, "Joe".to_string(), 25);
+        let result = Bank::withdraw(&name_server, "Joe".to_string(), 25);
         tracing::info!("Withdraw result {result:?}");
         assert_eq!(
             result,
@@ -111,7 +111,7 @@ fn main() {
         );
 
         // Stopping the bank
-        let result = Bank::stop(&mut name_server);
+        let result = Bank::stop(&name_server);
         tracing::info!("Stop result {result:?}");
         assert_eq!(result, Ok(BankOutMessage::Stopped));
     })

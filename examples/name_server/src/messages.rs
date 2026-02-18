@@ -1,14 +1,26 @@
-#[derive(Debug, Clone)]
-pub enum NameServerInMessage {
-    Add { key: String, value: String },
-    Find { key: String },
-}
+use spawned_concurrency::message::Message;
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum NameServerOutMessage {
     Ok,
     Found { value: String },
     NotFound,
     Error,
+}
+
+#[derive(Debug)]
+pub struct Add {
+    pub key: String,
+    pub value: String,
+}
+impl Message for Add {
+    type Result = NameServerOutMessage;
+}
+
+#[derive(Debug)]
+pub struct Find {
+    pub key: String,
+}
+impl Message for Find {
+    type Result = NameServerOutMessage;
 }

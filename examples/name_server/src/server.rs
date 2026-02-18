@@ -1,13 +1,8 @@
 use std::collections::HashMap;
 
-use spawned_concurrency::{
-    messages::Unused,
-    tasks::{Actor, ActorRef, RequestResponse},
-};
+use spawned_concurrency::tasks::{Actor, ActorRef, Context, Handler};
 
-use crate::messages::{NameServerInMessage as InMessage, NameServerOutMessage as OutMessage};
-
-type NameServerHandle = ActorRef<NameServer>;
+use crate::messages::{Add, Find, NameServerOutMessage as OutMessage};
 
 pub struct NameServer {
     inner: HashMap<String, String>,
@@ -22,44 +17,37 @@ impl NameServer {
 }
 
 impl NameServer {
-    pub async fn add(server: &mut NameServerHandle, key: String, value: String) -> OutMessage {
-        match server.request(InMessage::Add { key, value }).await {
+    pub async fn add(server: &ActorRef<NameServer>, key: String, value: String) -> OutMessage {
+        match server.request(Add { key, value }).await {
             Ok(_) => OutMessage::Ok,
             Err(_) => OutMessage::Error,
         }
     }
 
-    pub async fn find(server: &mut NameServerHandle, key: String) -> OutMessage {
+    pub async fn find(server: &ActorRef<NameServer>, key: String) -> OutMessage {
         server
-            .request(InMessage::Find { key })
+            .request(Find { key })
             .await
             .unwrap_or(OutMessage::Error)
     }
 }
 
-impl Actor for NameServer {
-    type Request = InMessage;
-    type Message = Unused;
-    type Reply = OutMessage;
-    type Error = std::fmt::Error;
+impl Actor for NameServer {}
 
-    async fn handle_request(
-        &mut self,
-        message: Self::Request,
-        _handle: &NameServerHandle,
-    ) -> RequestResponse<Self> {
-        match message.clone() {
-            Self::Request::Add { key, value } => {
-                self.inner.insert(key, value);
-                RequestResponse::Reply(Self::Reply::Ok)
-            }
-            Self::Request::Find { key } => match self.inner.get(&key) {
-                Some(result) => {
-                    let value = result.to_string();
-                    RequestResponse::Reply(Self::Reply::Found { value })
-                }
-                None => RequestResponse::Reply(Self::Reply::NotFound),
+impl Handler<Add> for NameServer {
+    async fn handle(&mut self, msg: Add, _ctx: &Context<Self>) -> OutMessage {
+        self.inner.insert(msg.key, msg.value);
+        OutMessage::Ok
+    }
+}
+
+impl Handler<Find> for NameServer {
+    async fn handle(&mut self, msg: Find, _ctx: &Context<Self>) -> OutMessage {
+        match self.inner.get(&msg.key) {
+            Some(result) => OutMessage::Found {
+                value: result.to_string(),
             },
+            None => OutMessage::NotFound,
         }
     }
 }

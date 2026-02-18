@@ -1,23 +1,13 @@
 use std::time::Duration;
 
-use spawned_concurrency::{
-    messages::Unused,
-    tasks::{
-        send_interval, Actor, ActorRef,
-        InitResult::{self, Success},
-        MessageResponse,
-    },
-};
-use spawned_rt::tasks::CancellationToken;
+use spawned_concurrency::tasks::{send_interval, Actor, Context, Handler, TimerHandle};
 
-use crate::messages::{UpdaterInMessage as InMessage, UpdaterOutMessage as OutMessage};
-
-type UpdateServerHandle = ActorRef<UpdaterServer>;
+use crate::messages::Check;
 
 pub struct UpdaterServer {
     pub url: String,
     pub periodicity: Duration,
-    pub timer_token: Option<CancellationToken>,
+    pub timer: Option<TimerHandle>,
 }
 
 impl UpdaterServer {
@@ -25,38 +15,24 @@ impl UpdaterServer {
         UpdaterServer {
             url,
             periodicity,
-            timer_token: None,
+            timer: None,
         }
     }
 }
 
 impl Actor for UpdaterServer {
-    type Request = Unused;
-    type Message = InMessage;
-    type Reply = OutMessage;
-    type Error = std::fmt::Error;
-
-    // Initializing Actor to start periodic checks.
-    async fn init(mut self, handle: &ActorRef<Self>) -> Result<InitResult<Self>, Self::Error> {
-        let timer = send_interval(self.periodicity, handle.clone(), InMessage::Check);
-        self.timer_token = Some(timer.cancellation_token);
-        Ok(Success(self))
+    async fn started(&mut self, ctx: &Context<Self>) {
+        let timer = send_interval(self.periodicity, ctx.clone(), Check);
+        self.timer = Some(timer);
     }
+}
 
-    async fn handle_message(
-        &mut self,
-        message: Self::Message,
-        _handle: &UpdateServerHandle,
-    ) -> MessageResponse {
-        match message {
-            Self::Message::Check => {
-                let url = self.url.clone();
-                tracing::info!("Fetching: {url}");
-                let resp = req(url).await;
-                tracing::info!("Response: {resp:?}");
-                MessageResponse::NoReply
-            }
-        }
+impl Handler<Check> for UpdaterServer {
+    async fn handle(&mut self, _msg: Check, _ctx: &Context<Self>) {
+        let url = self.url.clone();
+        tracing::info!("Fetching: {url}");
+        let resp = req(url).await;
+        tracing::info!("Response: {resp:?}");
     }
 }
 
