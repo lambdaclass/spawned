@@ -447,27 +447,21 @@ pub trait ChatBroadcaster: Send + Sync {
 <summary><b>room.rs</b> — Messages → Bridge → Conversion → Actor</summary>
 
 ```rust
-use spawned_concurrency::actor_api;
 use spawned_concurrency::messages;
 use spawned_concurrency::error::ActorError;
 use spawned_concurrency::tasks::{Actor, ActorRef, Context, Handler};
 use spawned_concurrency::Response;
 use spawned_macros::actor;
 use std::sync::Arc;
-use crate::protocols::{BroadcasterRef, ChatBroadcaster, ChatParticipant, ParticipantRef};
+use crate::protocols::{BroadcasterRef, ChatBroadcaster, ParticipantRef};
 
 // -- Messages --
 
 messages! {
     Say { from: String, text: String } -> ();
+    Join { name: String, inbox: ParticipantRef } -> ();
     Members -> Vec<String>;
 }
-
-pub struct Join {
-    pub name: String,
-    pub inbox: ParticipantRef,
-}
-impl Message for Join { type Result = (); }
 
 // -- Protocol bridge --
 
