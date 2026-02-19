@@ -52,14 +52,14 @@ fn main() {
 
         // Alice speaks: main -> alice (SayToRoom) -> room (Say) -> bob (Deliver)
         alice
-            .send_request(SayToRoom {
+            .request(SayToRoom {
                 text: "Hello everyone!".into(),
             })
             .await
             .unwrap();
 
         // Bob replies: main -> bob (SayToRoom) -> room (Say) -> alice (Deliver)
-        bob.send_request(SayToRoom {
+        bob.request(SayToRoom {
             text: "Hey Alice!".into(),
         })
         .await

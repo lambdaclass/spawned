@@ -16,7 +16,7 @@ fn main() {
         let bank = Bank::new().start();
 
         // Testing initial balance for "main" account
-        let result = bank.send_request(Withdraw { who: "main".into(), amount: 15 }).unwrap();
+        let result = bank.request(Withdraw { who: "main".into(), amount: 15 }).unwrap();
         tracing::info!("Withdraw result {result:?}");
         assert_eq!(
             result,
@@ -29,17 +29,17 @@ fn main() {
         let joe = "Joe".to_string();
 
         // Error on deposit for a non-existent account
-        let result = bank.send_request(Deposit { who: joe.clone(), amount: 10 }).unwrap();
+        let result = bank.request(Deposit { who: joe.clone(), amount: 10 }).unwrap();
         tracing::info!("Deposit result {result:?}");
         assert_eq!(result, Err(BankError::NotACustomer { who: joe.clone() }));
 
         // Account creation
-        let result = bank.send_request(NewAccount { who: joe.clone() }).unwrap();
+        let result = bank.request(NewAccount { who: joe.clone() }).unwrap();
         tracing::info!("New account result {result:?}");
         assert_eq!(result, Ok(BankOutMessage::Welcome { who: joe.clone() }));
 
         // Deposit
-        let result = bank.send_request(Deposit { who: joe.clone(), amount: 10 }).unwrap();
+        let result = bank.request(Deposit { who: joe.clone(), amount: 10 }).unwrap();
         tracing::info!("Deposit result {result:?}");
         assert_eq!(
             result,
@@ -47,7 +47,7 @@ fn main() {
         );
 
         // Deposit
-        let result = bank.send_request(Deposit { who: joe.clone(), amount: 30 }).unwrap();
+        let result = bank.request(Deposit { who: joe.clone(), amount: 30 }).unwrap();
         tracing::info!("Deposit result {result:?}");
         assert_eq!(
             result,
@@ -55,7 +55,7 @@ fn main() {
         );
 
         // Withdrawal
-        let result = bank.send_request(Withdraw { who: joe.clone(), amount: 15 }).unwrap();
+        let result = bank.request(Withdraw { who: joe.clone(), amount: 15 }).unwrap();
         tracing::info!("Withdraw result {result:?}");
         assert_eq!(
             result,
@@ -63,7 +63,7 @@ fn main() {
         );
 
         // Withdrawal with not enough balance
-        let result = bank.send_request(Withdraw { who: joe.clone(), amount: 45 }).unwrap();
+        let result = bank.request(Withdraw { who: joe.clone(), amount: 45 }).unwrap();
         tracing::info!("Withdraw result {result:?}");
         assert_eq!(
             result,
@@ -71,7 +71,7 @@ fn main() {
         );
 
         // Full withdrawal
-        let result = bank.send_request(Withdraw { who: joe.clone(), amount: 25 }).unwrap();
+        let result = bank.request(Withdraw { who: joe.clone(), amount: 25 }).unwrap();
         tracing::info!("Withdraw result {result:?}");
         assert_eq!(
             result,
@@ -79,7 +79,7 @@ fn main() {
         );
 
         // Stopping the bank
-        let result = bank.send_request(Stop).unwrap();
+        let result = bank.request(Stop).unwrap();
         tracing::info!("Stop result {result:?}");
         assert_eq!(result, Ok(BankOutMessage::Stopped));
     })

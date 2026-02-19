@@ -74,7 +74,7 @@ pub fn test_sum_numbers_from_stream() {
 
         rt::sleep(Duration::from_secs(1)).await;
 
-        let val = summatory.send_request(GetValue).await.unwrap();
+        let val = summatory.request(GetValue).await.unwrap();
         assert_eq!(val, 15);
     })
 }
@@ -101,7 +101,7 @@ pub fn test_sum_numbers_from_channel() {
 
         rt::sleep(Duration::from_secs(1)).await;
 
-        let val = summatory.send_request(GetValue).await.unwrap();
+        let val = summatory.request(GetValue).await.unwrap();
         assert_eq!(val, 15);
     })
 }
@@ -128,7 +128,7 @@ pub fn test_sum_numbers_from_broadcast_channel() {
 
         rt::sleep(Duration::from_secs(1)).await;
 
-        let val = summatory.send_request(GetValue).await.unwrap();
+        let val = summatory.request(GetValue).await.unwrap();
         assert_eq!(val, 15);
     })
 }
@@ -165,14 +165,14 @@ pub fn test_stream_cancellation() {
         );
 
         rt::sleep(Duration::from_millis(READ_TIME)).await;
-        let val = summatory.send_request(GetValue).await.unwrap();
+        let val = summatory.request(GetValue).await.unwrap();
 
         assert!((1..=15).contains(&val));
 
         assert!(listener_handle.await.is_ok());
 
         rt::sleep(Duration::from_millis(10)).await;
-        assert!(summatory.send_request(GetValue).await.is_err());
+        assert!(summatory.request(GetValue).await.is_err());
     })
 }
 
@@ -194,7 +194,7 @@ pub fn test_halting_on_stream_error() {
 
         rt::sleep(Duration::from_secs(1)).await;
 
-        let result = summatory.send_request(GetValue).await;
+        let result = summatory.request(GetValue).await;
         assert!(result.is_err());
     })
 }
@@ -217,7 +217,7 @@ pub fn test_skipping_on_stream_error() {
 
         rt::sleep(Duration::from_secs(1)).await;
 
-        let val = summatory.send_request(GetValue).await.unwrap();
+        let val = summatory.request(GetValue).await.unwrap();
         assert_eq!(val, 15);
     })
 }

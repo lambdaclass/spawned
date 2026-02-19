@@ -72,14 +72,14 @@ pub fn test_send_interval_and_cancellation() {
 
         rt::sleep(Duration::from_secs(1)).await;
 
-        let count = repeater.send_request(GetRepCount).await.unwrap();
+        let count = repeater.request(GetRepCount).await.unwrap();
         assert_eq!(9, count);
 
         repeater.send(StopTimer).unwrap();
 
         rt::sleep(Duration::from_secs(1)).await;
 
-        let count2 = repeater.send_request(GetRepCount).await.unwrap();
+        let count2 = repeater.request(GetRepCount).await.unwrap();
         assert_eq!(9, count2);
     });
 }
@@ -140,7 +140,7 @@ pub fn test_send_after_and_cancellation() {
 
         rt::sleep(Duration::from_millis(200)).await;
 
-        let count = repeater.send_request(GetDelCount).await.unwrap();
+        let count = repeater.request(GetDelCount).await.unwrap();
         assert_eq!(1, count);
 
         let ctx = Context::from_ref(&repeater);
@@ -154,7 +154,7 @@ pub fn test_send_after_and_cancellation() {
 
         rt::sleep(Duration::from_millis(200)).await;
 
-        let count2 = repeater.send_request(GetDelCount).await.unwrap();
+        let count2 = repeater.request(GetDelCount).await.unwrap();
         assert_eq!(1, count2);
     });
 }
@@ -174,7 +174,7 @@ pub fn test_send_after_gen_server_teardown() {
 
         rt::sleep(Duration::from_millis(200)).await;
 
-        let count = repeater.send_request(GetDelCount).await.unwrap();
+        let count = repeater.request(GetDelCount).await.unwrap();
         assert_eq!(1, count);
 
         let ctx = Context::from_ref(&repeater);
@@ -184,7 +184,7 @@ pub fn test_send_after_gen_server_teardown() {
             Inc,
         );
 
-        let count2 = repeater.send_request(StopDelayed).await.unwrap();
+        let count2 = repeater.request(StopDelayed).await.unwrap();
 
         rt::sleep(Duration::from_millis(200)).await;
 
