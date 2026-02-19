@@ -1,71 +1,70 @@
-//! ChatRoom actor — knows about `Say`, `Join`, and `ChatParticipant` trait.
-//! Does NOT know about the `User` type.
+//! ChatRoom actor — stores Recipient<Deliver> for type-erased member references.
 
-use spawned_concurrency::error::ActorError;
-use spawned_concurrency::message::Message;
-use spawned_concurrency::tasks::{Actor, ActorRef, Context, Handler};
-use std::sync::Arc;
+use spawned_concurrency::actor_api;
+use spawned_concurrency::request_messages;
+use spawned_concurrency::send_messages;
+use spawned_concurrency::tasks::{Actor, ActorRef, Context, Handler, Recipient};
+use spawned_macros::actor;
 
-use crate::messages::Say;
-use crate::protocols::{ChatBroadcaster, ChatParticipant};
+// -- Messages --
 
-// Join carries an Arc<dyn ChatParticipant>, so we define it here (not via macro)
-pub struct Join {
-    pub name: String,
-    pub inbox: Arc<dyn ChatParticipant>,
+send_messages! {
+    Say { from: String, text: String };
+    Deliver { from: String, text: String };
+    Join { name: String, inbox: Recipient<Deliver> }
 }
 
-impl Message for Join {
-    type Result = ();
+request_messages! {
+    Members -> Vec<String>
 }
 
-impl std::fmt::Debug for Join {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Join").field("name", &self.name).finish()
+// -- API --
+
+actor_api! {
+    pub ChatRoomApi for ActorRef<ChatRoom> {
+        send fn say(from: String, text: String) => Say;
+        send fn add_member(name: String, inbox: Recipient<Deliver>) => Join;
+        request async fn members() -> Vec<String> => Members;
     }
 }
 
+// -- Actor --
+
 pub struct ChatRoom {
-    members: Vec<(String, Arc<dyn ChatParticipant>)>,
+    members: Vec<(String, Recipient<Deliver>)>,
 }
 
+impl Actor for ChatRoom {}
+
+#[actor]
 impl ChatRoom {
     pub fn new() -> Self {
         Self {
             members: Vec::new(),
         }
     }
-}
 
-impl Actor for ChatRoom {}
-
-impl Handler<Join> for ChatRoom {
-    async fn handle(&mut self, msg: Join, _ctx: &Context<Self>) {
+    #[send_handler]
+    async fn handle_join(&mut self, msg: Join, _ctx: &Context<Self>) {
         tracing::info!("[room] {} joined", msg.name);
         self.members.push((msg.name, msg.inbox));
     }
-}
 
-impl Handler<Say> for ChatRoom {
-    async fn handle(&mut self, msg: Say, _ctx: &Context<Self>) {
+    #[send_handler]
+    async fn handle_say(&mut self, msg: Say, _ctx: &Context<Self>) {
         tracing::info!("[room] {} says: {}", msg.from, msg.text);
-
-        // Broadcast to all members except the sender
         for (name, inbox) in &self.members {
             if *name != msg.from {
-                let _ = inbox.deliver(msg.from.clone(), msg.text.clone());
+                let _ = inbox.send(Deliver {
+                    from: msg.from.clone(),
+                    text: msg.text.clone(),
+                });
             }
         }
     }
-}
 
-// Bridge: ActorRef<ChatRoom> implements ChatBroadcaster
-impl ChatBroadcaster for ActorRef<ChatRoom> {
-    fn say(&self, from: String, text: String) -> Result<(), ActorError> {
-        self.send(Say { from, text })
-    }
-
-    fn add_member(&self, name: String, inbox: Arc<dyn ChatParticipant>) -> Result<(), ActorError> {
-        self.send(Join { name, inbox })
+    #[request_handler]
+    async fn handle_members(&mut self, _msg: Members, _ctx: &Context<Self>) -> Vec<String> {
+        self.members.iter().map(|(name, _)| name.clone()).collect()
     }
 }

@@ -1,42 +1,33 @@
-//! Ping-pong example demonstrating bidirectional communication
-//! between actors using protocol traits for type-erased messaging.
+//! Ping-pong example — Approach A (Recipient<M> for type erasure).
 //!
-//! This solves the circular dependency problem: Consumer and Producer
-//! don't need to know each other's concrete types — they only know
-//! about the protocol traits they implement (PingReceiver and PongReceiver).
+//! Consumer holds Recipient<Pong>, Producer holds Recipient<Ping>.
+//! No protocol traits needed.
 
 mod consumer;
 mod messages;
 mod producer;
-mod protocols;
 
 use consumer::Consumer;
 use producer::{Producer, SetConsumer};
 use spawned_concurrency::tasks::ActorStart as _;
 use spawned_rt::tasks as rt;
-use std::sync::Arc;
 use std::time::Duration;
 
 fn main() {
     rt::run(async {
-        // Start the producer first
         let producer = Producer { consumer: None }.start();
 
-        // Start the consumer with an Arc<dyn PongReceiver> pointing to the producer
         let consumer = Consumer {
-            producer: Arc::new(producer.clone()),
+            producer: producer.recipient(),
         }
         .start();
 
-        // Wire up the producer with the consumer's Arc<dyn PingReceiver>
         producer
-            .send(SetConsumer(Arc::new(consumer.clone())))
+            .send(SetConsumer(consumer.recipient()))
             .unwrap();
 
-        // Kick off the ping-pong loop
         consumer.send(messages::Ping).unwrap();
 
-        // Let them ping-pong for a bit
         rt::sleep(Duration::from_millis(1)).await;
     })
 }

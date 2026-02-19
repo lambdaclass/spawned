@@ -1,36 +1,58 @@
-//! User actor — knows about `SayToRoom`, `Deliver`, and `ChatBroadcaster` trait.
-//! Does NOT know about the `ChatRoom` type.
+//! User actor — imports ChatRoom + ChatRoomApi + Deliver from room module.
 
-use spawned_concurrency::error::ActorError;
+use spawned_concurrency::actor_api;
+use spawned_concurrency::send_messages;
 use spawned_concurrency::tasks::{Actor, ActorRef, Context, Handler};
-use std::sync::Arc;
+use spawned_macros::actor;
 
-use crate::messages::{Deliver, SayToRoom};
-use crate::protocols::{ChatBroadcaster, ChatParticipant};
+use crate::room::{ChatRoom, ChatRoomApi, Deliver};
+
+// -- Messages --
+
+send_messages! {
+    SayToRoom { text: String };
+    JoinRoom { room: ActorRef<ChatRoom> }
+}
+
+// -- API --
+
+actor_api! {
+    pub UserApi for ActorRef<User> {
+        send fn say(text: String) => SayToRoom;
+        send fn join_room(room: ActorRef<ChatRoom>) => JoinRoom;
+    }
+}
+
+// -- Actor --
 
 pub struct User {
-    pub name: String,
-    pub room: Arc<dyn ChatBroadcaster>,
+    name: String,
+    room: Option<ActorRef<ChatRoom>>,
 }
 
 impl Actor for User {}
 
-impl Handler<SayToRoom> for User {
-    async fn handle(&mut self, msg: SayToRoom, _ctx: &Context<Self>) {
-        // Forward to the room via Arc<dyn ChatBroadcaster> — no ChatRoom type needed
-        let _ = self.room.say(self.name.clone(), msg.text);
+#[actor]
+impl User {
+    pub fn new(name: String) -> Self {
+        Self { name, room: None }
     }
-}
 
-impl Handler<Deliver> for User {
-    async fn handle(&mut self, msg: Deliver, _ctx: &Context<Self>) {
-        tracing::info!("[{}] got message from {}: {}", self.name, msg.from, msg.text);
+    #[send_handler]
+    async fn handle_join_room(&mut self, msg: JoinRoom, ctx: &Context<Self>) {
+        let _ = msg.room.add_member(self.name.clone(), ctx.recipient::<Deliver>());
+        self.room = Some(msg.room);
     }
-}
 
-// Bridge: ActorRef<User> implements ChatParticipant
-impl ChatParticipant for ActorRef<User> {
-    fn deliver(&self, from: String, text: String) -> Result<(), ActorError> {
-        self.send(Deliver { from, text })
+    #[send_handler]
+    async fn handle_say_to_room(&mut self, msg: SayToRoom, _ctx: &Context<Self>) {
+        if let Some(ref room) = self.room {
+            let _ = room.say(self.name.clone(), msg.text);
+        }
+    }
+
+    #[send_handler]
+    async fn handle_deliver(&mut self, msg: Deliver, _ctx: &Context<Self>) {
+        tracing::info!("[{}] got: {} says '{}'", self.name, msg.from, msg.text);
     }
 }
