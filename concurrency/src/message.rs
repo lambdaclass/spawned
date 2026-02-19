@@ -135,55 +135,45 @@ macro_rules! request_messages {
     };
 }
 
-/// Generates an extension trait + impl on `ActorRef<A>` for ergonomic method-call syntax.
+/// Implements an existing protocol trait on a concrete type by mapping methods to messages.
 ///
 /// ```ignore
-/// actor_api! {
-///     pub ChatRoomApi for ActorRef<ChatRoom> {
+/// protocol_impl! {
+///     ChatBroadcaster for ActorRef<ChatRoom> {
 ///         send fn say(from: String, text: String) => Say;
-///         send fn add_member(name: String, inbox: Recipient<Deliver>) => Join;
-///         request async fn members() -> Vec<String> => Members;
+///         send fn add_member(name: String, participant: ParticipantRef) => Join;
+///         request fn members() -> Vec<String> => Members;
 ///     }
 /// }
 /// ```
 ///
-/// For threads (sync), use `request fn` instead of `request async fn`.
+/// Method kinds:
+/// - `send fn` — fire-and-forget, returns `Result<(), ActorError>`
+/// - `request fn` — async request via `Response<T>` (for tasks)
+/// - `request sync fn` — blocking request, returns `Result<T, ActorError>` (for threads)
 #[macro_export]
-macro_rules! actor_api {
-    // Entry: pub trait
-    (pub $trait_name:ident for $actor_ref:ty { $($body:tt)* }) => {
-        $crate::actor_api!(@parse [pub] $trait_name $actor_ref [] [] $($body)*);
+macro_rules! protocol_impl {
+    // Entry
+    ($trait_name:ident for $target:ty { $($body:tt)* }) => {
+        $crate::protocol_impl!(@parse $trait_name $target [] $($body)*);
     };
 
-    // Entry: private trait
-    ($trait_name:ident for $actor_ref:ty { $($body:tt)* }) => {
-        $crate::actor_api!(@parse [] $trait_name $actor_ref [] [] $($body)*);
-    };
-
-    // Terminal: generate trait + impl
-    (@parse [$($vis:tt)*] $trait_name:ident $actor_ref:ty
-        [$($trait_items:tt)*]
+    // Terminal: emit impl block
+    (@parse $trait_name:ident $target:ty
         [$($impl_items:tt)*]
     ) => {
-        $($vis)* trait $trait_name {
-            $($trait_items)*
-        }
-        impl $trait_name for $actor_ref {
+        impl $trait_name for $target {
             $($impl_items)*
         }
     };
 
     // send fn with params
-    (@parse [$($vis:tt)*] $trait_name:ident $actor_ref:ty
-        [$($trait_items:tt)*]
+    (@parse $trait_name:ident $target:ty
         [$($impl_items:tt)*]
         send fn $method:ident($($param:ident : $ptype:ty),+ $(,)?) => $msg:ident;
         $($rest:tt)*
     ) => {
-        $crate::actor_api!(@parse [$($vis)*] $trait_name $actor_ref
-            [$($trait_items)*
-                fn $method(&self, $($param : $ptype),+) -> Result<(), $crate::error::ActorError>;
-            ]
+        $crate::protocol_impl!(@parse $trait_name $target
             [$($impl_items)*
                 fn $method(&self, $($param : $ptype),+) -> Result<(), $crate::error::ActorError> {
                     self.send($msg { $($param),+ })
@@ -193,17 +183,13 @@ macro_rules! actor_api {
         );
     };
 
-    // send fn without params (unit message)
-    (@parse [$($vis:tt)*] $trait_name:ident $actor_ref:ty
-        [$($trait_items:tt)*]
+    // send fn without params
+    (@parse $trait_name:ident $target:ty
         [$($impl_items:tt)*]
         send fn $method:ident() => $msg:ident;
         $($rest:tt)*
     ) => {
-        $crate::actor_api!(@parse [$($vis)*] $trait_name $actor_ref
-            [$($trait_items)*
-                fn $method(&self) -> Result<(), $crate::error::ActorError>;
-            ]
+        $crate::protocol_impl!(@parse $trait_name $target
             [$($impl_items)*
                 fn $method(&self) -> Result<(), $crate::error::ActorError> {
                     self.send($msg)
@@ -213,57 +199,45 @@ macro_rules! actor_api {
         );
     };
 
-    // request async fn with params
-    (@parse [$($vis:tt)*] $trait_name:ident $actor_ref:ty
-        [$($trait_items:tt)*]
-        [$($impl_items:tt)*]
-        request async fn $method:ident($($param:ident : $ptype:ty),+ $(,)?) -> $ret:ty => $msg:ident;
-        $($rest:tt)*
-    ) => {
-        $crate::actor_api!(@parse [$($vis)*] $trait_name $actor_ref
-            [$($trait_items)*
-                async fn $method(&self, $($param : $ptype),+) -> Result<$ret, $crate::error::ActorError>;
-            ]
-            [$($impl_items)*
-                async fn $method(&self, $($param : $ptype),+) -> Result<$ret, $crate::error::ActorError> {
-                    self.request($msg { $($param),+ }).await
-                }
-            ]
-            $($rest)*
-        );
-    };
-
-    // request async fn without params (unit message)
-    (@parse [$($vis:tt)*] $trait_name:ident $actor_ref:ty
-        [$($trait_items:tt)*]
-        [$($impl_items:tt)*]
-        request async fn $method:ident() -> $ret:ty => $msg:ident;
-        $($rest:tt)*
-    ) => {
-        $crate::actor_api!(@parse [$($vis)*] $trait_name $actor_ref
-            [$($trait_items)*
-                async fn $method(&self) -> Result<$ret, $crate::error::ActorError>;
-            ]
-            [$($impl_items)*
-                async fn $method(&self) -> Result<$ret, $crate::error::ActorError> {
-                    self.request($msg).await
-                }
-            ]
-            $($rest)*
-        );
-    };
-
-    // request fn with params (sync/threads)
-    (@parse [$($vis:tt)*] $trait_name:ident $actor_ref:ty
-        [$($trait_items:tt)*]
+    // request fn with params (async — returns Response<T>)
+    (@parse $trait_name:ident $target:ty
         [$($impl_items:tt)*]
         request fn $method:ident($($param:ident : $ptype:ty),+ $(,)?) -> $ret:ty => $msg:ident;
         $($rest:tt)*
     ) => {
-        $crate::actor_api!(@parse [$($vis)*] $trait_name $actor_ref
-            [$($trait_items)*
-                fn $method(&self, $($param : $ptype),+) -> Result<$ret, $crate::error::ActorError>;
+        $crate::protocol_impl!(@parse $trait_name $target
+            [$($impl_items)*
+                fn $method(&self, $($param : $ptype),+) -> $crate::tasks::Response<$ret> {
+                    $crate::tasks::Response::from(self.request_raw($msg { $($param),+ }))
+                }
             ]
+            $($rest)*
+        );
+    };
+
+    // request fn without params (async — returns Response<T>)
+    (@parse $trait_name:ident $target:ty
+        [$($impl_items:tt)*]
+        request fn $method:ident() -> $ret:ty => $msg:ident;
+        $($rest:tt)*
+    ) => {
+        $crate::protocol_impl!(@parse $trait_name $target
+            [$($impl_items)*
+                fn $method(&self) -> $crate::tasks::Response<$ret> {
+                    $crate::tasks::Response::from(self.request_raw($msg))
+                }
+            ]
+            $($rest)*
+        );
+    };
+
+    // request sync fn with params (threads — returns Result<T>)
+    (@parse $trait_name:ident $target:ty
+        [$($impl_items:tt)*]
+        request sync fn $method:ident($($param:ident : $ptype:ty),+ $(,)?) -> $ret:ty => $msg:ident;
+        $($rest:tt)*
+    ) => {
+        $crate::protocol_impl!(@parse $trait_name $target
             [$($impl_items)*
                 fn $method(&self, $($param : $ptype),+) -> Result<$ret, $crate::error::ActorError> {
                     self.request($msg { $($param),+ })
@@ -273,17 +247,13 @@ macro_rules! actor_api {
         );
     };
 
-    // request fn without params (sync/threads, unit message)
-    (@parse [$($vis:tt)*] $trait_name:ident $actor_ref:ty
-        [$($trait_items:tt)*]
+    // request sync fn without params (threads — returns Result<T>)
+    (@parse $trait_name:ident $target:ty
         [$($impl_items:tt)*]
-        request fn $method:ident() -> $ret:ty => $msg:ident;
+        request sync fn $method:ident() -> $ret:ty => $msg:ident;
         $($rest:tt)*
     ) => {
-        $crate::actor_api!(@parse [$($vis)*] $trait_name $actor_ref
-            [$($trait_items)*
-                fn $method(&self) -> Result<$ret, $crate::error::ActorError>;
-            ]
+        $crate::protocol_impl!(@parse $trait_name $target
             [$($impl_items)*
                 fn $method(&self) -> Result<$ret, $crate::error::ActorError> {
                     self.request($msg)

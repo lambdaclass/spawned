@@ -1,17 +1,13 @@
 use spawned_concurrency::message::Message;
-use spawned_concurrency::tasks::{Actor, Context, Handler};
+use spawned_concurrency::protocol_impl;
+use spawned_concurrency::tasks::{Actor, ActorRef, Context, Handler};
 
 use crate::messages::Pong;
-use crate::protocols::PingInbox;
+use crate::protocols::{PingInbox, PongReceiver};
 
 pub struct SetConsumer(pub PingInbox);
 impl Message for SetConsumer {
     type Result = ();
-}
-impl std::fmt::Debug for SetConsumer {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_tuple("SetConsumer").finish()
-    }
 }
 
 pub struct Producer {
@@ -32,5 +28,11 @@ impl Handler<Pong> for Producer {
         if let Some(consumer) = &self.consumer {
             let _ = consumer.ping();
         }
+    }
+}
+
+protocol_impl! {
+    PongReceiver for ActorRef<Producer> {
+        send fn pong() => Pong;
     }
 }

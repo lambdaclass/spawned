@@ -63,6 +63,7 @@ where
 pub struct Context<A: Actor> {
     sender: mpsc::Sender<Box<dyn Envelope<A> + Send>>,
     cancellation_token: CancellationToken,
+    completion: Arc<(Mutex<bool>, Condvar)>,
 }
 
 impl<A: Actor> Clone for Context<A> {
@@ -70,6 +71,7 @@ impl<A: Actor> Clone for Context<A> {
         Self {
             sender: self.sender.clone(),
             cancellation_token: self.cancellation_token.clone(),
+            completion: self.completion.clone(),
         }
     }
 }
@@ -85,6 +87,7 @@ impl<A: Actor> Context<A> {
         Self {
             sender: actor_ref.sender.clone(),
             cancellation_token: actor_ref.cancellation_token.clone(),
+            completion: actor_ref.completion.clone(),
         }
     }
 
@@ -150,6 +153,14 @@ impl<A: Actor> Context<A> {
         M: Message,
     {
         Arc::new(self.clone())
+    }
+
+    pub fn actor_ref(&self) -> ActorRef<A> {
+        ActorRef {
+            sender: self.sender.clone(),
+            cancellation_token: self.cancellation_token.clone(),
+            completion: self.completion.clone(),
+        }
     }
 
     pub(crate) fn cancellation_token(&self) -> CancellationToken {
@@ -341,6 +352,7 @@ impl<A: Actor> ActorRef<A> {
         let ctx = Context {
             sender: tx,
             cancellation_token: cancellation_token.clone(),
+            completion: actor_ref.completion.clone(),
         };
 
         let _thread_handle = rt::spawn(move || {

@@ -1,31 +1,55 @@
-use spawned_concurrency::actor_api;
+//! User actor — knows about protocol traits, not ChatRoom (sync/threads version).
+
+use spawned_concurrency::error::ActorError;
+use spawned_concurrency::protocol_impl;
 use spawned_concurrency::send_messages;
 use spawned_concurrency::threads::{Actor, ActorRef, Context, Handler};
 use spawned_macros::actor;
+use std::sync::Arc;
 
-use crate::room::{ChatRoom, ChatRoomApi, Deliver};
+use crate::protocols::{AsParticipant, BroadcasterRef, ChatParticipant, ParticipantRef};
 
-// -- Messages --
+// -- Internal messages --
 
 send_messages! {
+    Deliver { from: String, text: String };
     SayToRoom { text: String };
-    JoinRoom { room: ActorRef<ChatRoom> }
+    JoinRoom { room: BroadcasterRef }
 }
 
-// -- API --
+// -- Protocol bridge (ChatParticipant) --
 
-actor_api! {
-    pub UserApi for ActorRef<User> {
+protocol_impl! {
+    ChatParticipant for ActorRef<User> {
+        send fn deliver(from: String, text: String) => Deliver;
+    }
+}
+
+impl AsParticipant for ActorRef<User> {
+    fn as_participant(&self) -> ParticipantRef {
+        Arc::new(self.clone())
+    }
+}
+
+// -- Caller API --
+
+pub trait UserActions {
+    fn say(&self, text: String) -> Result<(), ActorError>;
+    fn join_room(&self, room: BroadcasterRef) -> Result<(), ActorError>;
+}
+
+protocol_impl! {
+    UserActions for ActorRef<User> {
         send fn say(text: String) => SayToRoom;
-        send fn join_room(room: ActorRef<ChatRoom>) => JoinRoom;
+        send fn join_room(room: BroadcasterRef) => JoinRoom;
     }
 }
 
 // -- Actor --
 
 pub struct User {
-    pub name: String,
-    room: Option<ActorRef<ChatRoom>>,
+    name: String,
+    room: Option<BroadcasterRef>,
 }
 
 impl Actor for User {}
@@ -37,16 +61,18 @@ impl User {
     }
 
     #[send_handler]
+    fn handle_join_room(&mut self, msg: JoinRoom, ctx: &Context<Self>) {
+        let _ = msg
+            .room
+            .add_member(self.name.clone(), ctx.actor_ref().as_participant());
+        self.room = Some(msg.room);
+    }
+
+    #[send_handler]
     fn handle_say_to_room(&mut self, msg: SayToRoom, _ctx: &Context<Self>) {
         if let Some(ref room) = self.room {
             let _ = room.say(self.name.clone(), msg.text);
         }
-    }
-
-    #[send_handler]
-    fn handle_join_room(&mut self, msg: JoinRoom, ctx: &Context<Self>) {
-        let _ = msg.room.add_member(self.name.clone(), ctx.recipient::<Deliver>());
-        self.room = Some(msg.room);
     }
 
     #[send_handler]

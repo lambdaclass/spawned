@@ -1,10 +1,6 @@
-//! Protocol traits — cross-actor contracts.
-//!
-//! Neither `ChatRoom` nor `User` appears here. Both actors depend only
-//! on these traits, breaking circular dependencies completely.
+//! Protocol traits — cross-actor contracts (sync/threads version).
 
 use spawned_concurrency::error::ActorError;
-use spawned_concurrency::tasks::Response;
 use std::sync::Arc;
 
 pub type BroadcasterRef = Arc<dyn ChatBroadcaster>;
@@ -13,7 +9,7 @@ pub type ParticipantRef = Arc<dyn ChatParticipant>;
 pub trait ChatBroadcaster: Send + Sync {
     fn say(&self, from: String, text: String) -> Result<(), ActorError>;
     fn add_member(&self, name: String, participant: ParticipantRef) -> Result<(), ActorError>;
-    fn members(&self) -> Response<Vec<String>>;
+    fn members(&self) -> Result<Vec<String>, ActorError>;
 }
 
 pub trait ChatParticipant: Send + Sync {

@@ -10,7 +10,7 @@ mod timer_tests;
 
 pub use actor::{
     request, send_message_on, Actor, ActorRef, ActorStart, Backend, Context, Handler, Receiver,
-    Recipient,
+    Recipient, Response,
 };
 pub use process::{send, Process, ProcessInfo};
 pub use stream::spawn_listener;

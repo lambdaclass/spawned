@@ -125,6 +125,7 @@ name = "chat_room"
 version = "0.1.0"
 dependencies = [
  "spawned-concurrency",
+ "spawned-macros",
  "spawned-rt",
  "tracing",
 ]
