@@ -1,43 +1,26 @@
-//! Simple example to test concurrency/Process abstraction.
+//! Bank example using threads Actor with the new Handler<M> API.
 //!
 //! Based on Joe's Armstrong book: Programming Erlang, Second edition
 //! Section 22.1 - The Road to the Generic Server
-//!
-//! Erlang usage example:
-//! 1> my_bank:start().
-//! {ok,<0.33.0>}
-//! 2> my_bank:deposit("joe", 10).
-//! not_a_customer
-//! 3> my_bank:new_account("joe").
-//! {welcome,"joe"}
-//! 4> my_bank:deposit("joe", 10).
-//! {thanks,"joe",your_balance_is,10}
-//! 5> my_bank:deposit("joe", 30).
-//! {thanks,"joe",your_balance_is,40}
-//! 6> my_bank:withdraw("joe", 15).
-//! {thanks,"joe",your_balance_is,25}
-//! 7> my_bank:withdraw("joe", 45).
-//! {sorry,"joe",you_only_have,25,in_the_bank
 
 mod messages;
 mod server;
 
-use messages::{BankError, BankOutMessage};
+use messages::*;
 use server::Bank;
-use spawned_concurrency::threads::Actor as _;
+use spawned_concurrency::threads::ActorStart as _;
 use spawned_rt::threads as rt;
 
 fn main() {
     rt::run(|| {
-        // Starting the bank
-        let mut name_server = Bank::new().start();
+        let bank = Bank::new().start();
 
         // Testing initial balance for "main" account
-        let result = Bank::withdraw(&mut name_server, "main".to_string(), 15);
+        let result = bank.request(Withdraw { who: "main".into(), amount: 15 }).unwrap();
         tracing::info!("Withdraw result {result:?}");
         assert_eq!(
             result,
-            Ok(BankOutMessage::WidrawOk {
+            Ok(BankOutMessage::WithdrawOk {
                 who: "main".to_string(),
                 amount: 985
             })
@@ -45,73 +28,58 @@ fn main() {
 
         let joe = "Joe".to_string();
 
-        // Error on deposit for an unexistent account
-        let result = Bank::deposit(&mut name_server, joe.clone(), 10);
+        // Error on deposit for a non-existent account
+        let result = bank.request(Deposit { who: joe.clone(), amount: 10 }).unwrap();
         tracing::info!("Deposit result {result:?}");
         assert_eq!(result, Err(BankError::NotACustomer { who: joe.clone() }));
 
         // Account creation
-        let result = Bank::new_account(&mut name_server, "Joe".to_string());
+        let result = bank.request(NewAccount { who: joe.clone() }).unwrap();
         tracing::info!("New account result {result:?}");
         assert_eq!(result, Ok(BankOutMessage::Welcome { who: joe.clone() }));
 
         // Deposit
-        let result = Bank::deposit(&mut name_server, "Joe".to_string(), 10);
+        let result = bank.request(Deposit { who: joe.clone(), amount: 10 }).unwrap();
         tracing::info!("Deposit result {result:?}");
         assert_eq!(
             result,
-            Ok(BankOutMessage::Balance {
-                who: joe.clone(),
-                amount: 10
-            })
+            Ok(BankOutMessage::Balance { who: joe.clone(), amount: 10 })
         );
 
         // Deposit
-        let result = Bank::deposit(&mut name_server, "Joe".to_string(), 30);
+        let result = bank.request(Deposit { who: joe.clone(), amount: 30 }).unwrap();
         tracing::info!("Deposit result {result:?}");
         assert_eq!(
             result,
-            Ok(BankOutMessage::Balance {
-                who: joe.clone(),
-                amount: 40
-            })
+            Ok(BankOutMessage::Balance { who: joe.clone(), amount: 40 })
         );
 
         // Withdrawal
-        let result = Bank::withdraw(&mut name_server, "Joe".to_string(), 15);
+        let result = bank.request(Withdraw { who: joe.clone(), amount: 15 }).unwrap();
         tracing::info!("Withdraw result {result:?}");
         assert_eq!(
             result,
-            Ok(BankOutMessage::WidrawOk {
-                who: joe.clone(),
-                amount: 25
-            })
+            Ok(BankOutMessage::WithdrawOk { who: joe.clone(), amount: 25 })
         );
 
         // Withdrawal with not enough balance
-        let result = Bank::withdraw(&mut name_server, "Joe".to_string(), 45);
+        let result = bank.request(Withdraw { who: joe.clone(), amount: 45 }).unwrap();
         tracing::info!("Withdraw result {result:?}");
         assert_eq!(
             result,
-            Err(BankError::InsufficientBalance {
-                who: joe.clone(),
-                amount: 25
-            })
+            Err(BankError::InsufficientBalance { who: joe.clone(), amount: 25 })
         );
 
         // Full withdrawal
-        let result = Bank::withdraw(&mut name_server, "Joe".to_string(), 25);
+        let result = bank.request(Withdraw { who: joe.clone(), amount: 25 }).unwrap();
         tracing::info!("Withdraw result {result:?}");
         assert_eq!(
             result,
-            Ok(BankOutMessage::WidrawOk {
-                who: joe,
-                amount: 0
-            })
+            Ok(BankOutMessage::WithdrawOk { who: joe, amount: 0 })
         );
 
         // Stopping the bank
-        let result = Bank::stop(&mut name_server);
+        let result = bank.request(Stop).unwrap();
         tracing::info!("Stop result {result:?}");
         assert_eq!(result, Ok(BankOutMessage::Stopped));
     })

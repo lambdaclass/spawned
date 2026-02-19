@@ -1,55 +1,36 @@
-//! Simple example to test concurrency/Process abstraction
-//!
-//! Based on an Erlang example:
-//! -module(ping).
-//!
-//! -export([ping/1, pong/0, spawn_consumer/0, spawn_producer/1, start/0]).
-//!
-//! ping(Pid) ->
-//!     Pid ! {ping, self()},
-//!     receive
-//!         pong ->
-//!             io:format("Received pong!!!~n"),
-//!             ping(Pid)
-//!     end.
-//!
-//! pong() ->
-//!     receive
-//!         {ping, Pid} ->
-//!             io:format("Received ping!!~n"),
-//!             Pid ! pong,
-//!             pong();
-//!         die ->
-//!             ok
-//!         end.
-//!
-//! spawn_consumer() ->
-//!     spawn(ping, pong, []).
-//!
-//! spawn_producer(Pid) ->
-//!     spawn(ping, ping, [Pid]).
-//!
-//! start() ->
-//!     Pid = spawn_consumer(),
-//!     spawn_producer(Pid).
-
 mod consumer;
 mod messages;
 mod producer;
+mod protocols;
 
 use std::{thread, time::Duration};
 
 use consumer::Consumer;
-use producer::Producer;
+use producer::{Producer, SetConsumer};
+use spawned_concurrency::threads::ActorStart as _;
 use spawned_rt::threads as rt;
+use std::sync::Arc;
 
 fn main() {
     rt::run(|| {
-        let consumer = Consumer::spawn_new();
+        // Start the producer first
+        let producer = Producer { consumer: None }.start();
 
-        Producer::spawn_new(consumer.sender());
+        // Start the consumer with an Arc<dyn PongReceiver> pointing to the producer
+        let consumer = Consumer {
+            producer: Arc::new(producer.clone()),
+        }
+        .start();
 
-        // giving it some time before ending
+        // Wire up the producer with the consumer's Arc<dyn PingReceiver>
+        producer
+            .send(SetConsumer(Arc::new(consumer.clone())))
+            .unwrap();
+
+        // Kick off the ping-pong loop
+        consumer.send(messages::Ping).unwrap();
+
+        // Let them ping-pong for a bit
         thread::sleep(Duration::from_millis(1));
     })
 }

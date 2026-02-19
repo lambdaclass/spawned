@@ -1,7 +1,4 @@
-//! spawned concurrency
-//! IO threads-based traits and structs to implement concurrent code à-la-Erlang.
-
-mod actor;
+pub(crate) mod actor;
 mod process;
 mod stream;
 mod time;
@@ -10,9 +7,8 @@ mod time;
 mod timer_tests;
 
 pub use actor::{
-    send_message_on, Actor, ActorInMsg, ActorRef, InitResult, InitResult::NoSuccess,
-    InitResult::Success, MessageResponse, RequestResponse,
+    request, send_message_on, Actor, ActorRef, ActorStart, Context, Handler, Receiver, Recipient,
 };
 pub use process::{send, Process, ProcessInfo};
 pub use stream::spawn_listener;
-pub use time::{send_after, send_interval};
+pub use time::{send_after, send_interval, TimerHandle};
