@@ -385,6 +385,8 @@ bob.say("Hi Alice!".into()).unwrap();
 
 **Key insight:** The non-macro version is already concise for handler code. The `#[actor]` macro eliminates the `impl Handler<M>` delegation wrapper per handler. The `actor_api!` macro eliminates the extension trait boilerplate (trait definition + impl block) that provides ergonomic method-call syntax on `ActorRef`. Together, they reduce an actor definition to three declarative blocks: messages, API, and handlers.
 
+**Cross-crate limitation:** In the macro version, `Deliver` lives in `user.rs` (the actor that handles it) and room imports it — creating a bidirectional module dependency. This works within a single crate (sibling modules can reference each other), but Rust forbids circular crate dependencies. If Room and User were in separate crates, you'd need to extract shared types (`Deliver`, `ChatRoomApi`) into a third crate — effectively recreating Approach B's `protocols.rs` pattern. This is the main motivation for Approach B: its `protocols.rs` structure maps directly to a separate crate with zero restructuring.
+
 ---
 
 ## Approach B: Protocol Traits (user-defined contracts)
