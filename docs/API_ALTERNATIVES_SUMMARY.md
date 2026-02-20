@@ -651,6 +651,8 @@ bob.say("Hey Alice!".into()).unwrap();
 
 **Scaling trade-off:** In a system with N actor types and M cross-boundary message types, Approach A needs M message structs. Approach B needs M message structs + P protocol traits + P bridge impls, where P grows with distinct actor-to-actor interaction patterns. The extra cost scales with *interaction patterns*, not messages — and each protocol trait is a natural documentation + testing boundary.
 
+**Cross-crate scaling:** In Approach A, the bidirectional module dependency (room imports `Deliver` from user, user imports `ChatRoomApi` from room) works because they're sibling modules in the same crate. If actors lived in separate crates, this would be a circular crate dependency — which Rust forbids. The fix is extracting shared types (`Deliver`, `ChatRoomApi`) into a third crate, at which point you've essentially reinvented `protocols.rs`. Approach B's structure maps directly to separate crates with zero restructuring: `protocols` becomes a shared crate, and each actor crate depends only on it, never on each other.
+
 ---
 
 ## Approach C: Typed Wrappers (non-breaking)
