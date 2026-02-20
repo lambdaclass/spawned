@@ -8,7 +8,7 @@ mod protocols;
 mod room;
 mod user;
 
-use protocols::{AsBroadcaster, ChatBroadcaster};
+use protocols::ChatBroadcaster;
 use room::ChatRoom;
 use spawned_concurrency::tasks::ActorStart as _;
 use spawned_rt::tasks as rt;
@@ -21,8 +21,8 @@ fn main() {
         let alice = User::new("Alice".into()).start();
         let bob = User::new("Bob".into()).start();
 
-        alice.join_room(room.as_broadcaster()).unwrap();
-        bob.join_room(room.as_broadcaster()).unwrap();
+        alice.join_room(room.clone()).unwrap();
+        bob.join_room(room.clone()).unwrap();
         rt::sleep(Duration::from_millis(10)).await;
 
         let members = room.members().await.unwrap();

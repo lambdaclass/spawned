@@ -7,21 +7,21 @@ use std::{thread, time::Duration};
 
 use consumer::Consumer;
 use producer::{Producer, SetConsumer};
+use protocols::{AsPingReceiver, AsPongReceiver};
 use spawned_concurrency::threads::ActorStart as _;
 use spawned_rt::threads as rt;
-use std::sync::Arc;
 
 fn main() {
     rt::run(|| {
         let producer = Producer { consumer: None }.start();
 
         let consumer = Consumer {
-            producer: Arc::new(producer.clone()),
+            producer: producer.as_pong_receiver(),
         }
         .start();
 
         producer
-            .send(SetConsumer(Arc::new(consumer.clone())))
+            .send(SetConsumer(consumer.as_ping_receiver()))
             .unwrap();
 
         consumer.send(messages::Ping).unwrap();

@@ -10,9 +10,9 @@ mod protocols;
 
 use consumer::Consumer;
 use producer::{Producer, SetConsumer};
+use protocols::{AsPingReceiver, AsPongReceiver};
 use spawned_concurrency::tasks::ActorStart as _;
 use spawned_rt::tasks as rt;
-use std::sync::Arc;
 use std::time::Duration;
 
 fn main() {
@@ -20,12 +20,12 @@ fn main() {
         let producer = Producer { consumer: None }.start();
 
         let consumer = Consumer {
-            producer: Arc::new(producer.clone()),
+            producer: producer.as_pong_receiver(),
         }
         .start();
 
         producer
-            .send(SetConsumer(Arc::new(consumer.clone())))
+            .send(SetConsumer(consumer.as_ping_receiver()))
             .unwrap();
 
         consumer.send(messages::Ping).unwrap();

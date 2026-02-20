@@ -1,8 +1,9 @@
 use spawned_concurrency::protocol_impl;
 use spawned_concurrency::threads::{Actor, ActorRef, Context, Handler};
+use std::sync::Arc;
 
 use crate::messages::Ping;
-use crate::protocols::{PingReceiver, PongInbox};
+use crate::protocols::{AsPingReceiver, PingInbox, PingReceiver, PongInbox};
 
 pub struct Consumer {
     pub producer: PongInbox,
@@ -20,5 +21,11 @@ impl Handler<Ping> for Consumer {
 protocol_impl! {
     PingReceiver for ActorRef<Consumer> {
         send fn ping() => Ping;
+    }
+}
+
+impl AsPingReceiver for ActorRef<Consumer> {
+    fn as_ping_receiver(&self) -> PingInbox {
+        Arc::new(self.clone())
     }
 }

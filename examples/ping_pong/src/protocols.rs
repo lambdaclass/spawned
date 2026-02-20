@@ -11,3 +11,11 @@ pub trait PongReceiver: Send + Sync {
 
 pub type PingInbox = Arc<dyn PingReceiver>;
 pub type PongInbox = Arc<dyn PongReceiver>;
+
+pub trait AsPingReceiver {
+    fn as_ping_receiver(&self) -> PingInbox;
+}
+
+pub trait AsPongReceiver {
+    fn as_pong_receiver(&self) -> PongInbox;
+}

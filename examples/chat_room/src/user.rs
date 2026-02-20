@@ -7,7 +7,7 @@ use spawned_concurrency::tasks::{Actor, ActorRef, Context, Handler};
 use spawned_macros::actor;
 use std::sync::Arc;
 
-use crate::protocols::{AsParticipant, BroadcasterRef, ChatParticipant, ParticipantRef};
+use crate::protocols::{AsBroadcaster, AsParticipant, BroadcasterRef, ChatParticipant, ParticipantRef};
 
 // -- Internal messages --
 
@@ -35,13 +35,16 @@ impl AsParticipant for ActorRef<User> {
 
 pub trait UserActions {
     fn say(&self, text: String) -> Result<(), ActorError>;
-    fn join_room(&self, room: BroadcasterRef) -> Result<(), ActorError>;
+    fn join_room(&self, room: impl AsBroadcaster) -> Result<(), ActorError>;
 }
 
-protocol_impl! {
-    UserActions for ActorRef<User> {
-        send fn say(text: String) => SayToRoom;
-        send fn join_room(room: BroadcasterRef) => JoinRoom;
+impl UserActions for ActorRef<User> {
+    fn say(&self, text: String) -> Result<(), ActorError> {
+        self.send(SayToRoom { text })
+    }
+
+    fn join_room(&self, room: impl AsBroadcaster) -> Result<(), ActorError> {
+        self.send(JoinRoom { room: room.as_broadcaster() })
     }
 }
 
