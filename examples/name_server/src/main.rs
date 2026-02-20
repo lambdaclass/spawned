@@ -1,44 +1,31 @@
-//! Simple example to test concurrency/Process abstraction.
+//! Name server example using the new Handler<M> API.
 //!
 //! Based on Joe's Armstrong book: Programming Erlang, Second edition
 //! Section 22.1 - The Road to the Generic Server
-//!
-//! Erlang usage example:
-//! 1> server1:start(name_server, name_server).
-//! true
-//! 2> name_server:add(joe, "at home").
-//! ok
-//! 3> name_server:find(joe).
-//! {ok,"at home"}
 
 mod messages;
 mod server;
 
-use messages::NameServerOutMessage;
+use messages::*;
 use server::NameServer;
-use spawned_concurrency::tasks::Actor as _;
+use spawned_concurrency::tasks::ActorStart as _;
 use spawned_rt::tasks as rt;
 
 fn main() {
     rt::run(async {
-        let mut name_server = NameServer::new().start();
+        let ns = NameServer::new().start();
 
-        let result =
-            NameServer::add(&mut name_server, "Joe".to_string(), "At Home".to_string()).await;
-        tracing::info!("Storing value result: {result:?}");
-        assert_eq!(result, NameServerOutMessage::Ok);
+        ns.request(Add { key: "Joe".into(), value: "At Home".into() }).await.unwrap();
 
-        let result = NameServer::find(&mut name_server, "Joe".to_string()).await;
+        let result = ns.request(Find { key: "Joe".into() }).await.unwrap();
         tracing::info!("Retrieving value result: {result:?}");
         assert_eq!(
             result,
-            NameServerOutMessage::Found {
-                value: "At Home".to_string()
-            }
+            FindResult::Found { value: "At Home".to_string() }
         );
 
-        let result = NameServer::find(&mut name_server, "Bob".to_string()).await;
+        let result = ns.request(Find { key: "Bob".into() }).await.unwrap();
         tracing::info!("Retrieving value result: {result:?}");
-        assert_eq!(result, NameServerOutMessage::NotFound);
+        assert_eq!(result, FindResult::NotFound);
     })
 }

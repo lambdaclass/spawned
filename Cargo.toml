@@ -4,6 +4,7 @@ resolver = "3"
 members = [
     "rt",
     "concurrency",
+    "macros",
     "examples/bank",
     "examples/bank_threads",
     "examples/name_server",
@@ -15,11 +16,15 @@ members = [
     "examples/busy_genserver_warning",
     "examples/signal_test",
     "examples/signal_test_threads",
+    "examples/chat_room",
+    "examples/chat_room_threads",
+    "examples/service_discovery",
 ]
 
 [workspace.dependencies]
 spawned-rt = { path = "rt", version = "0.4.5" }
 spawned-concurrency = { path = "concurrency", version = "0.4.5" }
+spawned-macros = { path = "macros", version = "0.4.5" }
 tracing = { version = "0.1.41", features = ["log"] }
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 

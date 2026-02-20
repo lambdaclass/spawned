@@ -1,21 +1,21 @@
 use std::thread::JoinHandle;
 
-use crate::threads::{Actor, ActorRef};
+use crate::message::Message;
 
-/// Spawns a listener that listens to a stream and sends messages to an Actor.
-///
-/// Items sent through the stream are required to be wrapped in a Result type.
-pub fn spawn_listener<T, I>(mut handle: ActorRef<T>, stream: I) -> JoinHandle<()>
+use super::actor::{Actor, Context, Handler};
+
+pub fn spawn_listener<A, M, I>(ctx: Context<A>, stream: I) -> JoinHandle<()>
 where
-    T: Actor,
-    I: IntoIterator<Item = T::Message>,
+    A: Actor + Handler<M>,
+    M: Message,
+    I: IntoIterator<Item = M>,
     <I as IntoIterator>::IntoIter: std::marker::Send + 'static,
 {
     let mut iter = stream.into_iter();
-    let cancellation_token = handle.cancellation_token();
+    let cancellation_token = ctx.cancellation_token();
     let join_handle = spawned_rt::threads::spawn(move || loop {
         match iter.next() {
-            Some(msg) => match handle.send(msg) {
+            Some(msg) => match ctx.send(msg) {
                 Ok(_) => tracing::trace!("Message sent successfully"),
                 Err(e) => {
                     tracing::error!("Failed to send message: {e:?}");

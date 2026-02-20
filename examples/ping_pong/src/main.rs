@@ -1,55 +1,35 @@
-//! Simple example to test concurrency/Process abstraction
+//! Ping-pong example — Approach B (protocol traits + protocol_impl!).
 //!
-//! Based on an Erlang example:
-//! -module(ping).
-//!
-//! -export([ping/1, pong/0, spawn_consumer/0, spawn_producer/1, start/0]).
-//!
-//! ping(Pid) ->
-//!     Pid ! {ping, self()},
-//!     receive
-//!         pong ->
-//!             io:format("Received pong!!!~n"),
-//!             ping(Pid)
-//!     end.
-//!
-//! pong() ->
-//!     receive
-//!         {ping, Pid} ->
-//!             io:format("Received ping!!~n"),
-//!             Pid ! pong,
-//!             pong();
-//!         die ->
-//!             ok
-//!         end.
-//!
-//! spawn_consumer() ->
-//!     spawn(ping, pong, []).
-//!
-//! spawn_producer(Pid) ->
-//!     spawn(ping, ping, [Pid]).
-//!
-//! start() ->
-//!     Pid = spawn_consumer(),
-//!     spawn_producer(Pid).
+//! Consumer and Producer don't know each other's concrete types.
+//! They only depend on the PingReceiver and PongReceiver protocol traits.
 
 mod consumer;
 mod messages;
 mod producer;
-
-use std::{thread, time::Duration};
+mod protocols;
 
 use consumer::Consumer;
-use producer::Producer;
+use producer::{Producer, SetConsumer};
+use protocols::{AsPingReceiver, AsPongReceiver};
+use spawned_concurrency::tasks::ActorStart as _;
 use spawned_rt::tasks as rt;
+use std::time::Duration;
 
 fn main() {
     rt::run(async {
-        let consumer = Consumer::spawn_new().await;
+        let producer = Producer { consumer: None }.start();
 
-        Producer::spawn_new(consumer.sender()).await;
+        let consumer = Consumer {
+            producer: producer.as_pong_receiver(),
+        }
+        .start();
 
-        // giving it some time before ending
-        thread::sleep(Duration::from_millis(1));
+        producer
+            .send(SetConsumer(consumer.as_ping_receiver()))
+            .unwrap();
+
+        consumer.send(messages::Ping).unwrap();
+
+        rt::sleep(Duration::from_millis(1)).await;
     })
 }

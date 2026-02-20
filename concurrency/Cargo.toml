@@ -7,6 +7,7 @@ license.workspace = true
 
 [dependencies]
 spawned-rt = { workspace = true }
+spawned-macros = { workspace = true }
 tracing = { workspace = true }
 futures = "0.3.1"
 thiserror = "2.0.12"

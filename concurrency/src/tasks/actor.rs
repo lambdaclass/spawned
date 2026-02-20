@@ -1,119 +1,301 @@
-//! Actor trait and structs to create an abstraction similar to Erlang gen_server.
-//! See examples/name_server for a usage example.
-use crate::{
-    error::ActorError,
-    tasks::InitResult::{NoSuccess, Success},
-};
+use crate::error::ActorError;
+use crate::message::Message;
 use core::pin::pin;
 use futures::future::{self, FutureExt as _};
 use spawned_rt::{
     tasks::{self as rt, mpsc, oneshot, timeout, watch, CancellationToken, JoinHandle},
     threads,
 };
-use std::{fmt::Debug, future::Future, panic::AssertUnwindSafe, time::Duration};
+use std::{fmt::Debug, future::Future, panic::AssertUnwindSafe, pin::Pin, sync::Arc, time::Duration};
 
 const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Execution backend for Actor.
-///
-/// Determines how the Actor's async loop is executed. Choose based on
-/// the nature of your workload:
-///
-/// # Backend Comparison
-///
-/// | Backend | Execution Model | Best For | Limitations |
-/// |---------|-----------------|----------|-------------|
-/// | `Async` | Tokio task | Non-blocking I/O, async operations | Blocks runtime if sync code runs too long |
-/// | `Blocking` | Tokio blocking pool | Short blocking operations (file I/O, DNS) | Shared pool with limited threads |
-/// | `Thread` | Dedicated OS thread with own runtime | Long-running services, isolation from main runtime | Higher memory overhead per Actor |
-///
-/// **Note**: All backends use async internally. For fully synchronous code without any async
-/// runtime, use [`threads::Actor`](crate::threads::Actor) instead.
-///
-/// # Examples
-///
-/// ```ignore
-/// // For typical async workloads (HTTP handlers, database queries)
-/// let handle = MyServer::new().start();
-///
-/// // For occasional blocking operations (file reads, external commands)
-/// let handle = MyServer::new().start_with_backend(Backend::Blocking);
-///
-/// // For CPU-intensive or permanently blocking services
-/// let handle = MyServer::new().start_with_backend(Backend::Thread);
-/// ```
-///
-/// # When to Use Each Backend
-///
-/// ## `Backend::Async` (Default)
-/// - **Advantages**: Lightweight, efficient, good for high concurrency
-/// - **Use when**: Your Actor does mostly async I/O (network, database)
-/// - **Avoid when**: Your code blocks (e.g., `std::thread::sleep`, heavy computation)
-///
-/// ## `Backend::Blocking`
-/// - **Advantages**: Prevents blocking the async runtime, uses tokio's managed pool
-/// - **Use when**: You have occasional blocking operations that complete quickly
-/// - **Avoid when**: You need guaranteed thread availability or long-running blocks
-///
-/// ## `Backend::Thread`
-/// - **Advantages**: Isolated from main runtime, dedicated thread won't affect other tasks
-/// - **Use when**: Long-running singleton services that shouldn't share the main runtime
-/// - **Avoid when**: You need many Actors (each gets its own OS thread + runtime)
-/// - **Note**: Still uses async internally (own runtime). For sync code, use `threads::Actor`
+// ---------------------------------------------------------------------------
+// Backend
+// ---------------------------------------------------------------------------
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Backend {
-    /// Run on tokio async runtime (default).
-    ///
-    /// Best for non-blocking, async workloads. The Actor runs as a
-    /// lightweight tokio task, enabling high concurrency with minimal overhead.
-    ///
-    /// **Warning**: If your `handle_request` or `handle_message` blocks synchronously
-    /// (e.g., `std::thread::sleep`, CPU-heavy loops), it will block the entire
-    /// tokio runtime thread, affecting other tasks.
     #[default]
     Async,
-
-    /// Run on tokio's blocking thread pool.
-    ///
-    /// Use for Actors that perform blocking operations like:
-    /// - Synchronous file I/O
-    /// - DNS lookups
-    /// - External process calls
-    /// - Short CPU-bound computations
-    ///
-    /// The pool is shared across all `spawn_blocking` calls and has a default
-    /// limit of 512 threads. If the pool is exhausted, new blocking tasks wait.
     Blocking,
-
-    /// Run on a dedicated OS thread with its own async runtime.
-    ///
-    /// Use for Actors that:
-    /// - Need isolation from the main tokio runtime
-    /// - Are long-running singleton services
-    /// - Should not compete with other tasks for runtime resources
-    ///
-    /// Each Actor gets its own thread with a separate tokio runtime,
-    /// providing isolation from other async tasks. Higher memory overhead
-    /// (~2MB stack per thread plus runtime overhead).
-    ///
-    /// **Note**: This still uses async internally. For fully synchronous code
-    /// without any async runtime, use [`threads::Actor`](crate::threads::Actor).
     Thread,
 }
 
-#[derive(Debug)]
-pub struct ActorRef<A: Actor + 'static> {
-    pub tx: mpsc::Sender<ActorInMsg<A>>,
-    /// Cancellation token to stop the Actor
+// ---------------------------------------------------------------------------
+// Actor trait
+// ---------------------------------------------------------------------------
+
+pub trait Actor: Send + Sized + 'static {
+    fn started(&mut self, _ctx: &Context<Self>) -> impl Future<Output = ()> + Send {
+        async {}
+    }
+
+    fn stopped(&mut self, _ctx: &Context<Self>) -> impl Future<Output = ()> + Send {
+        async {}
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Handler trait (per-message, uses RPITIT — NOT object-safe, that's fine)
+// ---------------------------------------------------------------------------
+
+pub trait Handler<M: Message>: Actor {
+    fn handle(
+        &mut self,
+        msg: M,
+        ctx: &Context<Self>,
+    ) -> impl Future<Output = M::Result> + Send;
+}
+
+// ---------------------------------------------------------------------------
+// Envelope (type-erasure on the actor side)
+// ---------------------------------------------------------------------------
+
+trait Envelope<A: Actor>: Send {
+    fn handle<'a>(
+        self: Box<Self>,
+        actor: &'a mut A,
+        ctx: &'a Context<A>,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
+}
+
+struct MessageEnvelope<M: Message> {
+    msg: M,
+    tx: Option<oneshot::Sender<M::Result>>,
+}
+
+impl<A, M> Envelope<A> for MessageEnvelope<M>
+where
+    A: Actor + Handler<M>,
+    M: Message,
+{
+    fn handle<'a>(
+        self: Box<Self>,
+        actor: &'a mut A,
+        ctx: &'a Context<A>,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+        Box::pin(async move {
+            let result = actor.handle(self.msg, ctx).await;
+            if let Some(tx) = self.tx {
+                let _ = tx.send(result);
+            }
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Context
+// ---------------------------------------------------------------------------
+
+pub struct Context<A: Actor> {
+    sender: mpsc::Sender<Box<dyn Envelope<A> + Send>>,
     cancellation_token: CancellationToken,
-    /// Completion signal for waiting on actor stop (true = stopped)
     completion_rx: watch::Receiver<bool>,
+}
+
+impl<A: Actor> Clone for Context<A> {
+    fn clone(&self) -> Self {
+        Self {
+            sender: self.sender.clone(),
+            cancellation_token: self.cancellation_token.clone(),
+            completion_rx: self.completion_rx.clone(),
+        }
+    }
+}
+
+impl<A: Actor> Debug for Context<A> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Context").finish_non_exhaustive()
+    }
+}
+
+impl<A: Actor> Context<A> {
+    pub fn from_ref(actor_ref: &ActorRef<A>) -> Self {
+        Self {
+            sender: actor_ref.sender.clone(),
+            cancellation_token: actor_ref.cancellation_token.clone(),
+            completion_rx: actor_ref.completion_rx.clone(),
+        }
+    }
+
+    pub fn stop(&self) {
+        self.cancellation_token.cancel();
+    }
+
+    pub fn send<M>(&self, msg: M) -> Result<(), ActorError>
+    where
+        A: Handler<M>,
+        M: Message,
+    {
+        let envelope = MessageEnvelope { msg, tx: None };
+        self.sender
+            .send(Box::new(envelope))
+            .map_err(|_| ActorError::ActorStopped)
+    }
+
+    pub fn request_raw<M>(&self, msg: M) -> Result<oneshot::Receiver<M::Result>, ActorError>
+    where
+        A: Handler<M>,
+        M: Message,
+    {
+        let (tx, rx) = oneshot::channel();
+        let envelope = MessageEnvelope {
+            msg,
+            tx: Some(tx),
+        };
+        self.sender
+            .send(Box::new(envelope))
+            .map_err(|_| ActorError::ActorStopped)?;
+        Ok(rx)
+    }
+
+    pub async fn request<M>(&self, msg: M) -> Result<M::Result, ActorError>
+    where
+        A: Handler<M>,
+        M: Message,
+    {
+        let rx = self.request_raw(msg)?;
+        match timeout(DEFAULT_REQUEST_TIMEOUT, rx).await {
+            Ok(Ok(result)) => Ok(result),
+            Ok(Err(_)) => Err(ActorError::ActorStopped),
+            Err(_) => Err(ActorError::RequestTimeout),
+        }
+    }
+
+    pub fn recipient<M>(&self) -> Recipient<M>
+    where
+        A: Handler<M>,
+        M: Message,
+    {
+        Arc::new(self.clone())
+    }
+
+    pub fn actor_ref(&self) -> ActorRef<A> {
+        ActorRef {
+            sender: self.sender.clone(),
+            cancellation_token: self.cancellation_token.clone(),
+            completion_rx: self.completion_rx.clone(),
+        }
+    }
+
+    pub(crate) fn cancellation_token(&self) -> CancellationToken {
+        self.cancellation_token.clone()
+    }
+}
+
+// Bridge: Context<A> implements Receiver<M> for any M that A handles
+impl<A, M> Receiver<M> for Context<A>
+where
+    A: Actor + Handler<M>,
+    M: Message,
+{
+    fn send(&self, msg: M) -> Result<(), ActorError> {
+        Context::send(self, msg)
+    }
+
+    fn request_raw(&self, msg: M) -> Result<oneshot::Receiver<M::Result>, ActorError> {
+        Context::request_raw(self, msg)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Receiver trait (object-safe) + Recipient alias
+// ---------------------------------------------------------------------------
+
+pub trait Receiver<M: Message>: Send + Sync {
+    fn send(&self, msg: M) -> Result<(), ActorError>;
+    fn request_raw(&self, msg: M) -> Result<oneshot::Receiver<M::Result>, ActorError>;
+}
+
+pub type Recipient<M> = Arc<dyn Receiver<M>>;
+
+pub async fn request<M: Message>(
+    recipient: &dyn Receiver<M>,
+    msg: M,
+    timeout_duration: Duration,
+) -> Result<M::Result, ActorError> {
+    let rx = recipient.request_raw(msg)?;
+    match timeout(timeout_duration, rx).await {
+        Ok(Ok(result)) => Ok(result),
+        Ok(Err(_)) => Err(ActorError::ActorStopped),
+        Err(_) => Err(ActorError::RequestTimeout),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Response<T> — awaitable wrapper for protocol trait request-response
+// ---------------------------------------------------------------------------
+
+enum ResponseState<T> {
+    Receiver(oneshot::Receiver<T>),
+    Error(ActorError),
+    Done,
+}
+
+/// Concrete `Future` that wraps a oneshot receiver. Keeps protocol traits object-safe:
+/// `fn members(&self) -> Response<Vec<String>>` returns a concrete type, not `impl Future`.
+pub struct Response<T>(ResponseState<T>);
+
+impl<T> Unpin for Response<T> {}
+
+impl<T> From<Result<oneshot::Receiver<T>, ActorError>> for Response<T> {
+    fn from(result: Result<oneshot::Receiver<T>, ActorError>) -> Self {
+        match result {
+            Ok(rx) => Self(ResponseState::Receiver(rx)),
+            Err(e) => Self(ResponseState::Error(e)),
+        }
+    }
+}
+
+impl<T: Send + 'static> Future for Response<T> {
+    type Output = Result<T, ActorError>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Self::Output> {
+        let this = self.get_mut();
+        match &mut this.0 {
+            ResponseState::Receiver(rx) => match Pin::new(rx).poll(cx) {
+                std::task::Poll::Ready(Ok(val)) => {
+                    this.0 = ResponseState::Done;
+                    std::task::Poll::Ready(Ok(val))
+                }
+                std::task::Poll::Ready(Err(_)) => {
+                    this.0 = ResponseState::Done;
+                    std::task::Poll::Ready(Err(ActorError::ActorStopped))
+                }
+                std::task::Poll::Pending => std::task::Poll::Pending,
+            },
+            ResponseState::Error(_) => {
+                match std::mem::replace(&mut this.0, ResponseState::Done) {
+                    ResponseState::Error(e) => std::task::Poll::Ready(Err(e)),
+                    _ => unreachable!(),
+                }
+            }
+            ResponseState::Done => panic!("Response polled after completion"),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ActorRef
+// ---------------------------------------------------------------------------
+
+pub struct ActorRef<A: Actor> {
+    sender: mpsc::Sender<Box<dyn Envelope<A> + Send>>,
+    cancellation_token: CancellationToken,
+    completion_rx: watch::Receiver<bool>,
+}
+
+impl<A: Actor> Debug for ActorRef<A> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ActorRef").finish_non_exhaustive()
+    }
 }
 
 impl<A: Actor> Clone for ActorRef<A> {
     fn clone(&self) -> Self {
         Self {
-            tx: self.tx.clone(),
+            sender: self.sender.clone(),
             cancellation_token: self.cancellation_token.clone(),
             completion_rx: self.completion_rx.clone(),
         }
@@ -121,350 +303,215 @@ impl<A: Actor> Clone for ActorRef<A> {
 }
 
 impl<A: Actor> ActorRef<A> {
-    fn new(actor: A) -> Self {
-        let (tx, mut rx) = mpsc::channel::<ActorInMsg<A>>();
-        let cancellation_token = CancellationToken::new();
-        let (completion_tx, completion_rx) = watch::channel(false);
-        let handle = ActorRef {
-            tx,
-            cancellation_token,
-            completion_rx,
+    pub fn send<M>(&self, msg: M) -> Result<(), ActorError>
+    where
+        A: Handler<M>,
+        M: Message,
+    {
+        let envelope = MessageEnvelope { msg, tx: None };
+        self.sender
+            .send(Box::new(envelope))
+            .map_err(|_| ActorError::ActorStopped)
+    }
+
+    pub fn request_raw<M>(&self, msg: M) -> Result<oneshot::Receiver<M::Result>, ActorError>
+    where
+        A: Handler<M>,
+        M: Message,
+    {
+        let (tx, rx) = oneshot::channel();
+        let envelope = MessageEnvelope {
+            msg,
+            tx: Some(tx),
         };
-        let handle_clone = handle.clone();
-        let inner_future = async move {
-            if let Err(error) = actor.run(&handle, &mut rx).await {
-                tracing::trace!(%error, "Actor crashed")
-            }
-            // Signal completion to all waiters
-            let _ = completion_tx.send(true);
-        };
-
-        #[cfg(debug_assertions)]
-        // Optionally warn if the Actor future blocks for too much time
-        let inner_future = warn_on_block::WarnOnBlocking::new(inner_future);
-
-        let _task_handle = rt::spawn(inner_future);
-
-        handle_clone
+        self.sender
+            .send(Box::new(envelope))
+            .map_err(|_| ActorError::ActorStopped)?;
+        Ok(rx)
     }
 
-    fn new_blocking(actor: A) -> Self {
-        let (tx, mut rx) = mpsc::channel::<ActorInMsg<A>>();
-        let cancellation_token = CancellationToken::new();
-        let (completion_tx, completion_rx) = watch::channel(false);
-        let handle = ActorRef {
-            tx,
-            cancellation_token,
-            completion_rx,
-        };
-        let handle_clone = handle.clone();
-        let _task_handle = rt::spawn_blocking(move || {
-            rt::block_on(async move {
-                if let Err(error) = actor.run(&handle, &mut rx).await {
-                    tracing::trace!(%error, "Actor crashed")
-                };
-                // Signal completion to all waiters
-                let _ = completion_tx.send(true);
-            })
-        });
-
-        handle_clone
+    pub async fn request<M>(&self, msg: M) -> Result<M::Result, ActorError>
+    where
+        A: Handler<M>,
+        M: Message,
+    {
+        self.request_with_timeout(msg, DEFAULT_REQUEST_TIMEOUT).await
     }
 
-    fn new_on_thread(actor: A) -> Self {
-        let (tx, mut rx) = mpsc::channel::<ActorInMsg<A>>();
-        let cancellation_token = CancellationToken::new();
-        let (completion_tx, completion_rx) = watch::channel(false);
-        let handle = ActorRef {
-            tx,
-            cancellation_token,
-            completion_rx,
-        };
-        let handle_clone = handle.clone();
-        let _thread_handle = threads::spawn(move || {
-            threads::block_on(async move {
-                if let Err(error) = actor.run(&handle, &mut rx).await {
-                    tracing::trace!(%error, "Actor crashed")
-                };
-                // Signal completion to all waiters
-                let _ = completion_tx.send(true);
-            })
-        });
-
-        handle_clone
-    }
-
-    pub fn sender(&self) -> mpsc::Sender<ActorInMsg<A>> {
-        self.tx.clone()
-    }
-
-    pub async fn request(&mut self, message: A::Request) -> Result<A::Reply, ActorError> {
-        self.request_with_timeout(message, DEFAULT_REQUEST_TIMEOUT)
-            .await
-    }
-
-    pub async fn request_with_timeout(
-        &mut self,
-        message: A::Request,
+    pub async fn request_with_timeout<M>(
+        &self,
+        msg: M,
         duration: Duration,
-    ) -> Result<A::Reply, ActorError> {
-        let (oneshot_tx, oneshot_rx) = oneshot::channel::<Result<A::Reply, ActorError>>();
-        self.tx.send(ActorInMsg::Request {
-            sender: oneshot_tx,
-            message,
-        })?;
-
-        match timeout(duration, oneshot_rx).await {
-            Ok(Ok(result)) => result,
-            Ok(Err(_)) => Err(ActorError::Server),
+    ) -> Result<M::Result, ActorError>
+    where
+        A: Handler<M>,
+        M: Message,
+    {
+        let rx = self.request_raw(msg)?;
+        match timeout(duration, rx).await {
+            Ok(Ok(result)) => Ok(result),
+            Ok(Err(_)) => Err(ActorError::ActorStopped),
             Err(_) => Err(ActorError::RequestTimeout),
         }
     }
 
-    pub async fn send(&mut self, message: A::Message) -> Result<(), ActorError> {
-        self.tx
-            .send(ActorInMsg::Message { message })
-            .map_err(|_error| ActorError::Server)
+    pub fn recipient<M>(&self) -> Recipient<M>
+    where
+        A: Handler<M>,
+        M: Message,
+    {
+        Arc::new(self.clone())
     }
 
-    pub(crate) fn cancellation_token(&self) -> CancellationToken {
-        self.cancellation_token.clone()
+    pub fn context(&self) -> Context<A> {
+        Context::from_ref(self)
     }
 
-    /// Waits for the actor to stop.
-    ///
-    /// This method returns a future that completes when the actor has finished
-    /// processing and exited its main loop. Can be called multiple times from
-    /// different clones of the ActorRef - all callers will be notified when
-    /// the actor stops.
     pub async fn join(&self) {
         let mut rx = self.completion_rx.clone();
-        // Wait until completion signal is true
         while !*rx.borrow_and_update() {
             if rx.changed().await.is_err() {
-                // Sender dropped, actor must have completed
                 break;
             }
         }
     }
 }
 
-pub enum ActorInMsg<A: Actor> {
-    Request {
-        sender: oneshot::Sender<Result<A::Reply, ActorError>>,
-        message: A::Request,
-    },
-    Message {
-        message: A::Message,
-    },
+// Bridge: ActorRef<A> implements Receiver<M> for any M that A handles
+impl<A, M> Receiver<M> for ActorRef<A>
+where
+    A: Actor + Handler<M>,
+    M: Message,
+{
+    fn send(&self, msg: M) -> Result<(), ActorError> {
+        ActorRef::send(self, msg)
+    }
+
+    fn request_raw(&self, msg: M) -> Result<oneshot::Receiver<M::Result>, ActorError> {
+        ActorRef::request_raw(self, msg)
+    }
 }
 
-pub enum RequestResponse<A: Actor> {
-    Reply(A::Reply),
-    Unused,
-    Stop(A::Reply),
+// ---------------------------------------------------------------------------
+// Actor startup + main loop
+// ---------------------------------------------------------------------------
+
+impl<A: Actor> ActorRef<A> {
+    fn spawn(actor: A, backend: Backend) -> Self {
+        let (tx, rx) = mpsc::channel::<Box<dyn Envelope<A> + Send>>();
+        let cancellation_token = CancellationToken::new();
+        let (completion_tx, completion_rx) = watch::channel(false);
+
+        let actor_ref = ActorRef {
+            sender: tx.clone(),
+            cancellation_token: cancellation_token.clone(),
+            completion_rx,
+        };
+
+        let ctx = Context {
+            sender: tx,
+            cancellation_token: cancellation_token.clone(),
+            completion_rx: actor_ref.completion_rx.clone(),
+        };
+
+        let inner_future = async move {
+            run_actor(actor, ctx, rx, cancellation_token).await;
+            let _ = completion_tx.send(true);
+        };
+
+        match backend {
+            Backend::Async => {
+                #[cfg(debug_assertions)]
+                let inner_future = warn_on_block::WarnOnBlocking::new(inner_future);
+                let _handle = rt::spawn(inner_future);
+            }
+            Backend::Blocking => {
+                let _handle = rt::spawn_blocking(move || {
+                    rt::block_on(inner_future)
+                });
+            }
+            Backend::Thread => {
+                let _handle = threads::spawn(move || {
+                    threads::block_on(inner_future)
+                });
+            }
+        }
+
+        actor_ref
+    }
 }
 
-pub enum MessageResponse {
-    NoReply,
-    Unused,
-    Stop,
+async fn run_actor<A: Actor>(
+    mut actor: A,
+    ctx: Context<A>,
+    mut rx: mpsc::Receiver<Box<dyn Envelope<A> + Send>>,
+    cancellation_token: CancellationToken,
+) {
+    actor.started(&ctx).await;
+
+    if cancellation_token.is_cancelled() {
+        actor.stopped(&ctx).await;
+        return;
+    }
+
+    loop {
+        let msg = rx.recv().await;
+        match msg {
+            Some(envelope) => {
+                let result = AssertUnwindSafe(envelope.handle(&mut actor, &ctx))
+                    .catch_unwind()
+                    .await;
+                if let Err(panic) = result {
+                    tracing::error!("Panic in message handler: {panic:?}");
+                    break;
+                }
+                if cancellation_token.is_cancelled() {
+                    break;
+                }
+            }
+            None => break,
+        }
+    }
+
+    cancellation_token.cancel();
+    actor.stopped(&ctx).await;
 }
 
-pub enum InitResult<A: Actor> {
-    Success(A),
-    NoSuccess(A),
-}
+// ---------------------------------------------------------------------------
+// Actor::start
+// ---------------------------------------------------------------------------
 
-pub trait Actor: Send + Sized {
-    type Request: Clone + Send + Sized + Sync;
-    type Message: Clone + Send + Sized + Sync;
-    type Reply: Send + Sized;
-    type Error: Debug + Send;
-
-    /// Start the Actor with the default backend (Async).
+pub trait ActorStart: Actor {
     fn start(self) -> ActorRef<Self> {
         self.start_with_backend(Backend::default())
     }
 
-    /// Start the Actor with the specified backend.
-    ///
-    /// # Arguments
-    /// * `backend` - The execution backend to use:
-    ///   - `Backend::Async` - Run on tokio async runtime (default, best for non-blocking workloads)
-    ///   - `Backend::Blocking` - Run on tokio's blocking thread pool (for blocking operations)
-    ///   - `Backend::Thread` - Run on a dedicated OS thread (for long-running blocking services)
     fn start_with_backend(self, backend: Backend) -> ActorRef<Self> {
-        match backend {
-            Backend::Async => ActorRef::new(self),
-            Backend::Blocking => ActorRef::new_blocking(self),
-            Backend::Thread => ActorRef::new_on_thread(self),
-        }
-    }
-
-    fn run(
-        self,
-        handle: &ActorRef<Self>,
-        rx: &mut mpsc::Receiver<ActorInMsg<Self>>,
-    ) -> impl Future<Output = Result<(), ActorError>> + Send {
-        async {
-            let res = match self.init(handle).await {
-                Ok(Success(new_state)) => Ok(new_state.main_loop(handle, rx).await),
-                Ok(NoSuccess(intermediate_state)) => {
-                    // new_state is NoSuccess, this means the initialization failed, but the error was handled
-                    // in callback. No need to report the error.
-                    // Just skip main_loop and return the state to teardown the Actor
-                    Ok(intermediate_state)
-                }
-                Err(err) => {
-                    tracing::error!("Initialization failed with unhandled error: {err:?}");
-                    Err(ActorError::Initialization)
-                }
-            };
-
-            handle.cancellation_token().cancel();
-            if let Ok(final_state) = res {
-                if let Err(err) = final_state.teardown(handle).await {
-                    tracing::error!("Error during teardown: {err:?}");
-                }
-            }
-            Ok(())
-        }
-    }
-
-    /// Initialization function. It's called before main loop. It
-    /// can be overrided on implementations in case initial steps are
-    /// required.
-    fn init(
-        self,
-        _handle: &ActorRef<Self>,
-    ) -> impl Future<Output = Result<InitResult<Self>, Self::Error>> + Send {
-        async { Ok(Success(self)) }
-    }
-
-    fn main_loop(
-        mut self,
-        handle: &ActorRef<Self>,
-        rx: &mut mpsc::Receiver<ActorInMsg<Self>>,
-    ) -> impl Future<Output = Self> + Send {
-        async {
-            loop {
-                if !self.receive(handle, rx).await {
-                    break;
-                }
-            }
-            tracing::trace!("Stopping Actor");
-            self
-        }
-    }
-
-    fn receive(
-        &mut self,
-        handle: &ActorRef<Self>,
-        rx: &mut mpsc::Receiver<ActorInMsg<Self>>,
-    ) -> impl Future<Output = bool> + Send {
-        async move {
-            let message = rx.recv().await;
-
-            let keep_running = match message {
-                Some(ActorInMsg::Request { sender, message }) => {
-                    let (keep_running, response) =
-                        match AssertUnwindSafe(self.handle_request(message, handle))
-                            .catch_unwind()
-                            .await
-                        {
-                            Ok(response) => match response {
-                                RequestResponse::Reply(response) => (true, Ok(response)),
-                                RequestResponse::Stop(response) => (false, Ok(response)),
-                                RequestResponse::Unused => {
-                                    tracing::error!("Actor received unexpected Request");
-                                    (false, Err(ActorError::RequestUnused))
-                                }
-                            },
-                            Err(error) => {
-                                tracing::error!("Error in callback: '{error:?}'");
-                                (false, Err(ActorError::Callback))
-                            }
-                        };
-                    // Send response back
-                    if sender.send(response).is_err() {
-                        tracing::error!("Actor failed to send response back, client must have died")
-                    };
-                    keep_running
-                }
-                Some(ActorInMsg::Message { message }) => {
-                    match AssertUnwindSafe(self.handle_message(message, handle))
-                        .catch_unwind()
-                        .await
-                    {
-                        Ok(response) => match response {
-                            MessageResponse::NoReply => true,
-                            MessageResponse::Stop => false,
-                            MessageResponse::Unused => {
-                                tracing::error!("Actor received unexpected Message");
-                                false
-                            }
-                        },
-                        Err(error) => {
-                            tracing::trace!("Error in callback: '{error:?}'");
-                            false
-                        }
-                    }
-                }
-                None => {
-                    // Channel has been closed; won't receive further messages. Stop the server.
-                    false
-                }
-            };
-            keep_running
-        }
-    }
-
-    fn handle_request(
-        &mut self,
-        _message: Self::Request,
-        _handle: &ActorRef<Self>,
-    ) -> impl Future<Output = RequestResponse<Self>> + Send {
-        async { RequestResponse::Unused }
-    }
-
-    fn handle_message(
-        &mut self,
-        _message: Self::Message,
-        _handle: &ActorRef<Self>,
-    ) -> impl Future<Output = MessageResponse> + Send {
-        async { MessageResponse::Unused }
-    }
-
-    /// Teardown function. It's called after the stop message is received.
-    /// It can be overrided on implementations in case final steps are required,
-    /// like closing streams, stopping timers, etc.
-    fn teardown(
-        self,
-        _handle: &ActorRef<Self>,
-    ) -> impl Future<Output = Result<(), Self::Error>> + Send {
-        async { Ok(()) }
+        ActorRef::spawn(self, backend)
     }
 }
 
-/// Spawns a task that awaits on a future and sends a message to an Actor
-/// on completion.
-/// This function returns a handle to the spawned task.
-pub fn send_message_on<T, U>(handle: ActorRef<T>, future: U, message: T::Message) -> JoinHandle<()>
+impl<A: Actor> ActorStart for A {}
+
+// ---------------------------------------------------------------------------
+// send_message_on (utility)
+// ---------------------------------------------------------------------------
+
+pub fn send_message_on<A, M, U>(ctx: Context<A>, future: U, msg: M) -> JoinHandle<()>
 where
-    T: Actor,
+    A: Actor + Handler<M>,
+    M: Message,
     U: Future + Send + 'static,
     <U as Future>::Output: Send,
 {
-    let cancellation_token = handle.cancellation_token();
-    let mut handle_clone = handle.clone();
+    let cancellation_token = ctx.cancellation_token();
     let join_handle = rt::spawn(async move {
         let is_cancelled = pin!(cancellation_token.cancelled());
         let signal = pin!(future);
         match future::select(is_cancelled, signal).await {
             future::Either::Left(_) => tracing::debug!("Actor stopped"),
             future::Either::Right(_) => {
-                if let Err(e) = handle_clone.send(message).await {
+                if let Err(e) = ctx.send(msg) {
                     tracing::error!("Failed to send message: {e:?}")
                 }
             }
@@ -473,10 +520,13 @@ where
     join_handle
 }
 
+// ---------------------------------------------------------------------------
+// WarnOnBlocking (debug only)
+// ---------------------------------------------------------------------------
+
 #[cfg(debug_assertions)]
 mod warn_on_block {
     use super::*;
-
     use std::time::Instant;
     use tracing::warn;
 
@@ -514,228 +564,53 @@ mod warn_on_block {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
 #[cfg(test)]
 mod tests {
-
     use super::*;
-    use crate::{messages::Unused, tasks::send_after};
+    use crate::messages;
     use std::{
-        sync::{Arc, Mutex},
+        sync::{atomic, Arc},
         thread,
         time::Duration,
     };
 
-    struct BadlyBehavedTask;
+    // --- Counter actor for basic tests ---
 
-    #[derive(Clone)]
-    pub enum InMessage {
-        GetCount,
-        Stop,
-    }
-    #[derive(Clone)]
-    pub enum OutMsg {
-        Count(u64),
+    struct Counter {
+        count: u64,
     }
 
-    impl Actor for BadlyBehavedTask {
-        type Request = InMessage;
-        type Message = Unused;
-        type Reply = Unused;
-        type Error = Unused;
+    messages! {
+        GetCount -> u64;
+        Increment -> u64;
+        StopCounter -> u64
+    }
 
-        async fn handle_request(
-            &mut self,
-            _: Self::Request,
-            _: &ActorRef<Self>,
-        ) -> RequestResponse<Self> {
-            RequestResponse::Stop(Unused)
-        }
+    impl Actor for Counter {}
 
-        async fn handle_message(
-            &mut self,
-            _: Self::Message,
-            _: &ActorRef<Self>,
-        ) -> MessageResponse {
-            rt::sleep(Duration::from_millis(20)).await;
-            thread::sleep(Duration::from_secs(2));
-            MessageResponse::Stop
+    impl Handler<GetCount> for Counter {
+        async fn handle(&mut self, _msg: GetCount, _ctx: &Context<Self>) -> u64 {
+            self.count
         }
     }
 
-    struct WellBehavedTask {
-        pub count: u64,
-    }
-
-    impl Actor for WellBehavedTask {
-        type Request = InMessage;
-        type Message = Unused;
-        type Reply = OutMsg;
-        type Error = Unused;
-
-        async fn handle_request(
-            &mut self,
-            message: Self::Request,
-            _: &ActorRef<Self>,
-        ) -> RequestResponse<Self> {
-            match message {
-                InMessage::GetCount => RequestResponse::Reply(OutMsg::Count(self.count)),
-                InMessage::Stop => RequestResponse::Stop(OutMsg::Count(self.count)),
-            }
-        }
-
-        async fn handle_message(
-            &mut self,
-            _: Self::Message,
-            handle: &ActorRef<Self>,
-        ) -> MessageResponse {
+    impl Handler<Increment> for Counter {
+        async fn handle(&mut self, _msg: Increment, _ctx: &Context<Self>) -> u64 {
             self.count += 1;
-            println!("{:?}: good still alive", thread::current().id());
-            send_after(Duration::from_millis(100), handle.to_owned(), Unused);
-            MessageResponse::NoReply
+            self.count
         }
     }
 
-    const BLOCKING: Backend = Backend::Blocking;
-
-    #[test]
-    pub fn badly_behaved_thread_non_blocking() {
-        let runtime = rt::Runtime::new().unwrap();
-        runtime.block_on(async move {
-            let mut badboy = BadlyBehavedTask.start();
-            let _ = badboy.send(Unused).await;
-            let mut goodboy = WellBehavedTask { count: 0 }.start();
-            let _ = goodboy.send(Unused).await;
-            rt::sleep(Duration::from_secs(1)).await;
-            let count = goodboy.request(InMessage::GetCount).await.unwrap();
-
-            match count {
-                OutMsg::Count(num) => {
-                    assert_ne!(num, 10);
-                }
-            }
-            goodboy.request(InMessage::Stop).await.unwrap();
-        });
-    }
-
-    #[test]
-    pub fn badly_behaved_thread() {
-        let runtime = rt::Runtime::new().unwrap();
-        runtime.block_on(async move {
-            let mut badboy = BadlyBehavedTask.start_with_backend(BLOCKING);
-            let _ = badboy.send(Unused).await;
-            let mut goodboy = WellBehavedTask { count: 0 }.start();
-            let _ = goodboy.send(Unused).await;
-            rt::sleep(Duration::from_secs(1)).await;
-            let count = goodboy.request(InMessage::GetCount).await.unwrap();
-
-            match count {
-                OutMsg::Count(num) => {
-                    assert_eq!(num, 10);
-                }
-            }
-            goodboy.request(InMessage::Stop).await.unwrap();
-        });
-    }
-
-    const TIMEOUT_DURATION: Duration = Duration::from_millis(100);
-
-    #[derive(Debug, Default)]
-    struct SomeTask;
-
-    #[derive(Clone)]
-    enum SomeTaskRequest {
-        SlowOperation,
-        FastOperation,
-    }
-
-    impl Actor for SomeTask {
-        type Request = SomeTaskRequest;
-        type Message = Unused;
-        type Reply = Unused;
-        type Error = Unused;
-
-        async fn handle_request(
-            &mut self,
-            message: Self::Request,
-            _handle: &ActorRef<Self>,
-        ) -> RequestResponse<Self> {
-            match message {
-                SomeTaskRequest::SlowOperation => {
-                    // Simulate a slow operation that will not resolve in time
-                    rt::sleep(TIMEOUT_DURATION * 2).await;
-                    RequestResponse::Reply(Unused)
-                }
-                SomeTaskRequest::FastOperation => {
-                    // Simulate a fast operation that resolves in time
-                    rt::sleep(TIMEOUT_DURATION / 2).await;
-                    RequestResponse::Reply(Unused)
-                }
-            }
+    impl Handler<StopCounter> for Counter {
+        async fn handle(&mut self, _msg: StopCounter, ctx: &Context<Self>) -> u64 {
+            ctx.stop();
+            self.count
         }
     }
-
-    #[test]
-    pub fn unresolving_task_times_out() {
-        let runtime = rt::Runtime::new().unwrap();
-        runtime.block_on(async move {
-            let mut unresolving_task = SomeTask.start();
-
-            let result = unresolving_task
-                .request_with_timeout(SomeTaskRequest::FastOperation, TIMEOUT_DURATION)
-                .await;
-            assert!(matches!(result, Ok(Unused)));
-
-            let result = unresolving_task
-                .request_with_timeout(SomeTaskRequest::SlowOperation, TIMEOUT_DURATION)
-                .await;
-            assert!(matches!(result, Err(ActorError::RequestTimeout)));
-        });
-    }
-
-    struct SomeTaskThatFailsOnInit {
-        sender_channel: Arc<Mutex<mpsc::Receiver<u8>>>,
-    }
-
-    impl SomeTaskThatFailsOnInit {
-        pub fn new(sender_channel: Arc<Mutex<mpsc::Receiver<u8>>>) -> Self {
-            Self { sender_channel }
-        }
-    }
-
-    impl Actor for SomeTaskThatFailsOnInit {
-        type Request = Unused;
-        type Message = Unused;
-        type Reply = Unused;
-        type Error = Unused;
-
-        async fn init(self, _handle: &ActorRef<Self>) -> Result<InitResult<Self>, Self::Error> {
-            // Simulate an initialization failure by returning NoSuccess
-            Ok(NoSuccess(self))
-        }
-
-        async fn teardown(self, _handle: &ActorRef<Self>) -> Result<(), Self::Error> {
-            self.sender_channel.lock().unwrap().close();
-            Ok(())
-        }
-    }
-
-    #[test]
-    pub fn task_fails_with_intermediate_state() {
-        let runtime = rt::Runtime::new().unwrap();
-        runtime.block_on(async move {
-            let (rx, tx) = mpsc::channel::<u8>();
-            let sender_channel = Arc::new(Mutex::new(tx));
-            let _task = SomeTaskThatFailsOnInit::new(sender_channel).start();
-
-            // Wait a while to ensure the task has time to run and fail
-            rt::sleep(Duration::from_secs(1)).await;
-
-            // We assure that the teardown function has ran by checking that the receiver channel is closed
-            assert!(rx.is_closed())
-        });
-    }
-
-    // ==================== Backend enum tests ====================
 
     #[test]
     pub fn backend_default_is_async() {
@@ -746,8 +621,8 @@ mod tests {
     #[allow(clippy::clone_on_copy)]
     pub fn backend_enum_is_copy_and_clone() {
         let backend = Backend::Async;
-        let copied = backend; // Copy
-        let cloned = backend.clone(); // Clone - intentionally testing Clone trait
+        let copied = backend;
+        let cloned = backend.clone();
         assert_eq!(backend, copied);
         assert_eq!(backend, cloned);
     }
@@ -769,157 +644,73 @@ mod tests {
         assert_ne!(Backend::Blocking, Backend::Thread);
     }
 
-    // ==================== Backend functionality tests ====================
-
-    /// Simple counter Actor for testing all backends
-    struct Counter {
-        count: u64,
-    }
-
-    #[derive(Clone)]
-    enum CounterRequest {
-        Get,
-        Increment,
-        Stop,
-    }
-
-    #[derive(Clone)]
-    enum CounterMessage {
-        Increment,
-    }
-
-    impl Actor for Counter {
-        type Request = CounterRequest;
-        type Message = CounterMessage;
-        type Reply = u64;
-        type Error = ();
-
-        async fn handle_request(
-            &mut self,
-            message: Self::Request,
-            _: &ActorRef<Self>,
-        ) -> RequestResponse<Self> {
-            match message {
-                CounterRequest::Get => RequestResponse::Reply(self.count),
-                CounterRequest::Increment => {
-                    self.count += 1;
-                    RequestResponse::Reply(self.count)
-                }
-                CounterRequest::Stop => RequestResponse::Stop(self.count),
-            }
-        }
-
-        async fn handle_message(
-            &mut self,
-            message: Self::Message,
-            _: &ActorRef<Self>,
-        ) -> MessageResponse {
-            match message {
-                CounterMessage::Increment => {
-                    self.count += 1;
-                    MessageResponse::NoReply
-                }
-            }
-        }
-    }
-
     #[test]
-    pub fn backend_async_handles_call_and_cast() {
+    pub fn backend_async_handles_send_and_request() {
         let runtime = rt::Runtime::new().unwrap();
         runtime.block_on(async move {
-            let mut counter = Counter { count: 0 }.start();
+            let counter = Counter { count: 0 }.start();
 
-            // Test call
-            let result = counter.request(CounterRequest::Get).await.unwrap();
+            let result = counter.request(GetCount).await.unwrap();
             assert_eq!(result, 0);
 
-            let result = counter.request(CounterRequest::Increment).await.unwrap();
+            let result = counter.request(Increment).await.unwrap();
             assert_eq!(result, 1);
 
-            // Test cast
-            counter.send(CounterMessage::Increment).await.unwrap();
-            rt::sleep(Duration::from_millis(10)).await; // Give time for cast to process
+            // fire-and-forget send
+            counter.send(Increment).unwrap();
+            rt::sleep(Duration::from_millis(10)).await;
 
-            let result = counter.request(CounterRequest::Get).await.unwrap();
+            let result = counter.request(GetCount).await.unwrap();
             assert_eq!(result, 2);
 
-            // Stop
-            let final_count = counter.request(CounterRequest::Stop).await.unwrap();
+            let final_count = counter.request(StopCounter).await.unwrap();
             assert_eq!(final_count, 2);
         });
     }
 
     #[test]
-    pub fn backend_blocking_handles_call_and_cast() {
+    pub fn backend_blocking_handles_send_and_request() {
         let runtime = rt::Runtime::new().unwrap();
         runtime.block_on(async move {
-            let mut counter = Counter { count: 0 }.start_with_backend(Backend::Blocking);
+            let counter = Counter { count: 0 }.start_with_backend(Backend::Blocking);
 
-            // Test call
-            let result = counter.request(CounterRequest::Get).await.unwrap();
+            let result = counter.request(GetCount).await.unwrap();
             assert_eq!(result, 0);
 
-            let result = counter.request(CounterRequest::Increment).await.unwrap();
+            let result = counter.request(Increment).await.unwrap();
             assert_eq!(result, 1);
 
-            // Test cast
-            counter.send(CounterMessage::Increment).await.unwrap();
-            rt::sleep(Duration::from_millis(50)).await; // Give time for cast to process
+            counter.send(Increment).unwrap();
+            rt::sleep(Duration::from_millis(50)).await;
 
-            let result = counter.request(CounterRequest::Get).await.unwrap();
+            let result = counter.request(GetCount).await.unwrap();
             assert_eq!(result, 2);
 
-            // Stop
-            let final_count = counter.request(CounterRequest::Stop).await.unwrap();
+            let final_count = counter.request(StopCounter).await.unwrap();
             assert_eq!(final_count, 2);
         });
     }
 
     #[test]
-    pub fn backend_thread_handles_call_and_cast() {
+    pub fn backend_thread_handles_send_and_request() {
         let runtime = rt::Runtime::new().unwrap();
         runtime.block_on(async move {
-            let mut counter = Counter { count: 0 }.start_with_backend(Backend::Thread);
+            let counter = Counter { count: 0 }.start_with_backend(Backend::Thread);
 
-            // Test call
-            let result = counter.request(CounterRequest::Get).await.unwrap();
+            let result = counter.request(GetCount).await.unwrap();
             assert_eq!(result, 0);
 
-            let result = counter.request(CounterRequest::Increment).await.unwrap();
+            let result = counter.request(Increment).await.unwrap();
             assert_eq!(result, 1);
 
-            // Test cast
-            counter.send(CounterMessage::Increment).await.unwrap();
-            rt::sleep(Duration::from_millis(50)).await; // Give time for cast to process
+            counter.send(Increment).unwrap();
+            rt::sleep(Duration::from_millis(50)).await;
 
-            let result = counter.request(CounterRequest::Get).await.unwrap();
+            let result = counter.request(GetCount).await.unwrap();
             assert_eq!(result, 2);
 
-            // Stop
-            let final_count = counter.request(CounterRequest::Stop).await.unwrap();
+            let final_count = counter.request(StopCounter).await.unwrap();
             assert_eq!(final_count, 2);
-        });
-    }
-
-    #[test]
-    pub fn backend_thread_isolates_blocking_work() {
-        // Similar to badly_behaved_thread but using Backend::Thread
-        let runtime = rt::Runtime::new().unwrap();
-        runtime.block_on(async move {
-            let mut badboy = BadlyBehavedTask.start_with_backend(Backend::Thread);
-            let _ = badboy.send(Unused).await;
-            let mut goodboy = WellBehavedTask { count: 0 }.start();
-            let _ = goodboy.send(Unused).await;
-            rt::sleep(Duration::from_secs(1)).await;
-            let count = goodboy.request(InMessage::GetCount).await.unwrap();
-
-            // goodboy should have run normally because badboy is on a separate thread
-            match count {
-                OutMsg::Count(num) => {
-                    assert_eq!(num, 10);
-                }
-            }
-            goodboy.request(InMessage::Stop).await.unwrap();
         });
     }
 
@@ -927,126 +718,109 @@ mod tests {
     pub fn multiple_backends_concurrent() {
         let runtime = rt::Runtime::new().unwrap();
         runtime.block_on(async move {
-            // Start counters on all three backends
-            let mut async_counter = Counter { count: 0 }.start();
-            let mut blocking_counter = Counter { count: 100 }.start_with_backend(Backend::Blocking);
-            let mut thread_counter = Counter { count: 200 }.start_with_backend(Backend::Thread);
+            let async_counter = Counter { count: 0 }.start();
+            let blocking_counter = Counter { count: 100 }.start_with_backend(Backend::Blocking);
+            let thread_counter = Counter { count: 200 }.start_with_backend(Backend::Thread);
 
-            // Increment each
-            async_counter
-                .request(CounterRequest::Increment)
-                .await
-                .unwrap();
-            blocking_counter
-                .request(CounterRequest::Increment)
-                .await
-                .unwrap();
-            thread_counter
-                .request(CounterRequest::Increment)
-                .await
-                .unwrap();
+            async_counter.request(Increment).await.unwrap();
+            blocking_counter.request(Increment).await.unwrap();
+            thread_counter.request(Increment).await.unwrap();
 
-            // Verify each has independent state
-            let async_val = async_counter.request(CounterRequest::Get).await.unwrap();
-            let blocking_val = blocking_counter.request(CounterRequest::Get).await.unwrap();
-            let thread_val = thread_counter.request(CounterRequest::Get).await.unwrap();
+            let async_val = async_counter.request(GetCount).await.unwrap();
+            let blocking_val = blocking_counter.request(GetCount).await.unwrap();
+            let thread_val = thread_counter.request(GetCount).await.unwrap();
 
             assert_eq!(async_val, 1);
             assert_eq!(blocking_val, 101);
             assert_eq!(thread_val, 201);
 
-            // Clean up
-            async_counter.request(CounterRequest::Stop).await.unwrap();
-            blocking_counter
-                .request(CounterRequest::Stop)
-                .await
-                .unwrap();
-            thread_counter.request(CounterRequest::Stop).await.unwrap();
+            async_counter.request(StopCounter).await.unwrap();
+            blocking_counter.request(StopCounter).await.unwrap();
+            thread_counter.request(StopCounter).await.unwrap();
         });
     }
 
     #[test]
-    pub fn backend_default_works_in_start() {
+    pub fn request_timeout() {
         let runtime = rt::Runtime::new().unwrap();
         runtime.block_on(async move {
-            // Using Backend::default() should work the same as Backend::Async
-            let mut counter = Counter { count: 42 }.start_with_backend(Backend::Async);
+            struct SlowActor;
+            messages! { SlowOp -> () }
+            impl Actor for SlowActor {}
+            impl Handler<SlowOp> for SlowActor {
+                async fn handle(&mut self, _msg: SlowOp, _ctx: &Context<Self>) {
+                    rt::sleep(Duration::from_millis(200)).await;
+                }
+            }
 
-            let result = counter.request(CounterRequest::Get).await.unwrap();
-            assert_eq!(result, 42);
-
-            counter.request(CounterRequest::Stop).await.unwrap();
+            let actor = SlowActor.start();
+            let result = actor
+                .request_with_timeout(SlowOp, Duration::from_millis(50))
+                .await;
+            assert!(matches!(result, Err(ActorError::RequestTimeout)));
         });
     }
 
-    /// Actor that sleeps during teardown to simulate slow shutdown
+    #[test]
+    pub fn recipient_type_erasure() {
+        let runtime = rt::Runtime::new().unwrap();
+        runtime.block_on(async move {
+            let counter = Counter { count: 42 }.start();
+            let recipient: Recipient<GetCount> = counter.recipient();
+
+            let rx = recipient.request_raw(GetCount).unwrap();
+            let result = rx.await.unwrap();
+            assert_eq!(result, 42);
+
+            // Also test request helper
+            let result = request(&*recipient, GetCount, Duration::from_secs(5)).await.unwrap();
+            assert_eq!(result, 42);
+        });
+    }
+
+    // --- SlowShutdownActor for join tests ---
+
     struct SlowShutdownActor;
 
+    messages! { StopSlow -> () }
+
     impl Actor for SlowShutdownActor {
-        type Request = Unused;
-        type Message = Unused;
-        type Reply = Unused;
-        type Error = Unused;
-
-        async fn handle_message(
-            &mut self,
-            _message: Self::Message,
-            _handle: &ActorRef<Self>,
-        ) -> MessageResponse {
-            MessageResponse::Stop
-        }
-
-        async fn teardown(self, _handle: &ActorRef<Self>) -> Result<(), Self::Error> {
-            // Simulate slow shutdown - this runs on the thread
-            std::thread::sleep(Duration::from_millis(500));
-            Ok(())
+        async fn stopped(&mut self, _ctx: &Context<Self>) {
+            thread::sleep(Duration::from_millis(500));
         }
     }
 
-    /// Test that join() on a Backend::Thread actor doesn't block other async tasks.
-    ///
-    /// This test verifies that when we call join().await on an actor running on
-    /// Backend::Thread, it doesn't block the tokio runtime - other async tasks
-    /// should continue to make progress.
-    ///
-    /// Uses a single-threaded runtime to ensure we detect blocking behavior.
+    impl Handler<StopSlow> for SlowShutdownActor {
+        async fn handle(&mut self, _msg: StopSlow, ctx: &Context<Self>) {
+            ctx.stop();
+        }
+    }
+
     #[test]
     pub fn thread_backend_join_does_not_block_runtime() {
-        // Use current_thread runtime to ensure blocking would be detected
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .unwrap();
 
         runtime.block_on(async move {
-            // Start a thread-backend actor that takes 500ms to teardown
-            let mut slow_actor = SlowShutdownActor.start_with_backend(Backend::Thread);
+            let slow_actor = SlowShutdownActor.start_with_backend(Backend::Thread);
 
-            // Spawn an async task that increments a counter every 50ms
-            let tick_count = Arc::new(std::sync::atomic::AtomicU64::new(0));
+            let tick_count = Arc::new(atomic::AtomicU64::new(0));
             let tick_count_clone = tick_count.clone();
             let _ticker = rt::spawn(async move {
                 for _ in 0..20 {
                     rt::sleep(Duration::from_millis(50)).await;
-                    tick_count_clone.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    tick_count_clone.fetch_add(1, atomic::Ordering::SeqCst);
                 }
             });
 
-            // Tell the actor to stop - it will start its slow teardown
-            slow_actor.send(Unused).await.unwrap();
-
-            // Small delay to ensure the actor received the message
+            slow_actor.send(StopSlow).unwrap();
             rt::sleep(Duration::from_millis(10)).await;
 
-            // Now join the actor - this waits for the 500ms teardown
-            // If implemented correctly, the ticker should continue running DURING the join
             slow_actor.join().await;
 
-            // Check tick count IMMEDIATELY after join returns, before awaiting ticker.
-            // The actor teardown takes 500ms. In that time, the ticker should have
-            // completed about 10 ticks (500ms / 50ms = 10).
-            // If join() blocked the runtime, the ticker would have 0-1 ticks.
-            let count_after_join = tick_count.load(std::sync::atomic::Ordering::SeqCst);
+            let count_after_join = tick_count.load(atomic::Ordering::SeqCst);
             assert!(
                 count_after_join >= 8,
                 "Ticker should have completed ~10 ticks during the 500ms join(), but only got {}. \
@@ -1056,19 +830,14 @@ mod tests {
         });
     }
 
-    /// Test that multiple callers can wait on join() simultaneously.
-    ///
-    /// This verifies that the completion signal approach works correctly
-    /// when multiple tasks want to wait for the same actor to stop.
     #[test]
     pub fn multiple_join_callers_all_notified() {
         let runtime = rt::Runtime::new().unwrap();
         runtime.block_on(async move {
-            let mut actor = SlowShutdownActor.start();
+            let actor = SlowShutdownActor.start();
             let actor_clone1 = actor.clone();
             let actor_clone2 = actor.clone();
 
-            // Spawn multiple tasks that will all call join()
             let join1 = rt::spawn(async move {
                 actor_clone1.join().await;
                 1u32
@@ -1078,19 +847,105 @@ mod tests {
                 2u32
             });
 
-            // Give the join tasks time to start waiting
             rt::sleep(Duration::from_millis(10)).await;
 
-            // Tell the actor to stop
-            actor.send(Unused).await.unwrap();
+            actor.send(StopSlow).unwrap();
 
-            // All join tasks should complete after the actor stops
             let (r1, r2) = tokio::join!(join1, join2);
             assert_eq!(r1.unwrap(), 1);
             assert_eq!(r2.unwrap(), 2);
 
-            // Calling join again should return immediately (actor already stopped)
             actor.join().await;
+        });
+    }
+
+    // --- Badly behaved actors for blocking tests ---
+
+    struct BadlyBehavedTask;
+
+    messages! { DoBlock -> () }
+
+    impl Actor for BadlyBehavedTask {}
+
+    impl Handler<DoBlock> for BadlyBehavedTask {
+        async fn handle(&mut self, _msg: DoBlock, ctx: &Context<Self>) {
+            rt::sleep(Duration::from_millis(20)).await;
+            thread::sleep(Duration::from_secs(2));
+            ctx.stop();
+        }
+    }
+
+    messages! { IncrementWell -> () }
+
+    struct WellBehavedTask {
+        pub count: u64,
+    }
+
+    impl Actor for WellBehavedTask {}
+
+    impl Handler<GetCount> for WellBehavedTask {
+        async fn handle(&mut self, _msg: GetCount, _ctx: &Context<Self>) -> u64 {
+            self.count
+        }
+    }
+
+    impl Handler<StopCounter> for WellBehavedTask {
+        async fn handle(&mut self, _msg: StopCounter, ctx: &Context<Self>) -> u64 {
+            ctx.stop();
+            self.count
+        }
+    }
+
+    impl Handler<IncrementWell> for WellBehavedTask {
+        async fn handle(&mut self, _msg: IncrementWell, ctx: &Context<Self>) {
+            self.count += 1;
+            use crate::tasks::send_after;
+            send_after(Duration::from_millis(100), ctx.clone(), IncrementWell);
+        }
+    }
+
+    #[test]
+    pub fn badly_behaved_thread_non_blocking() {
+        let runtime = rt::Runtime::new().unwrap();
+        runtime.block_on(async move {
+            let badboy = BadlyBehavedTask.start();
+            badboy.send(DoBlock).unwrap();
+            let goodboy = WellBehavedTask { count: 0 }.start();
+            goodboy.send(IncrementWell).unwrap();
+            rt::sleep(Duration::from_secs(1)).await;
+            let count = goodboy.request(GetCount).await.unwrap();
+            assert_ne!(count, 10);
+            goodboy.request(StopCounter).await.unwrap();
+        });
+    }
+
+    #[test]
+    pub fn badly_behaved_thread() {
+        let runtime = rt::Runtime::new().unwrap();
+        runtime.block_on(async move {
+            let badboy = BadlyBehavedTask.start_with_backend(Backend::Blocking);
+            badboy.send(DoBlock).unwrap();
+            let goodboy = WellBehavedTask { count: 0 }.start();
+            goodboy.send(IncrementWell).unwrap();
+            rt::sleep(Duration::from_secs(1)).await;
+            let count = goodboy.request(GetCount).await.unwrap();
+            assert_eq!(count, 10);
+            goodboy.request(StopCounter).await.unwrap();
+        });
+    }
+
+    #[test]
+    pub fn backend_thread_isolates_blocking_work() {
+        let runtime = rt::Runtime::new().unwrap();
+        runtime.block_on(async move {
+            let badboy = BadlyBehavedTask.start_with_backend(Backend::Thread);
+            badboy.send(DoBlock).unwrap();
+            let goodboy = WellBehavedTask { count: 0 }.start();
+            goodboy.send(IncrementWell).unwrap();
+            rt::sleep(Duration::from_secs(1)).await;
+            let count = goodboy.request(GetCount).await.unwrap();
+            assert_eq!(count, 10);
+            goodboy.request(StopCounter).await.unwrap();
         });
     }
 }
