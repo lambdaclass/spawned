@@ -1,10 +1,10 @@
 # API Redesign: Alternatives Summary
 
-This document summarizes the different approaches explored for solving two critical API issues in spawned's actor framework. Each approach is illustrated with the **same example** — a chat room with bidirectional communication — so the trade-offs in expressivity, readability, and ease of use can be compared directly.
+This document summarizes the different approaches explored for solving three critical API issues in spawned's actor framework. Each approach is illustrated with the **same example** — a chat room with bidirectional communication and runtime discovery — so the trade-offs in expressivity, readability, and ease of use can be compared directly.
 
 ## Table of Contents
 
-- [The Two Problems](#the-two-problems)
+- [The Three Problems](#the-three-problems)
 - [The Chat Room Example](#the-chat-room-example)
 - [Baseline: The Old API](#baseline-the-old-api-whats-on-main-today)
 - [Approach A: Handler\<M\> + Recipient\<M\>](#approach-a-handlerm--recipientm-actix-style)
@@ -21,7 +21,7 @@ This document summarizes the different approaches explored for solving two criti
 
 ---
 
-## The Two Problems
+## The Three Problems
 
 ### #144: No per-message type safety
 
@@ -48,6 +48,22 @@ struct ChatRoom { members: Vec<ActorRef<User>> }  // imports User
 struct User { room: ActorRef<ChatRoom> }           // imports ChatRoom → circular!
 ```
 
+### Service discovery: finding actors at runtime
+
+The examples above wire actors together in `main.rs`: `alice.join_room(room.clone())`. In real systems, actors discover each other at runtime — a new user joining doesn't have a direct reference to the room; it looks it up by name.
+
+The registry is a global name store (`HashMap<String, Box<dyn Any>>`) that maps names to values. But **what** you store determines what the discoverer gets back — and how much of the actor's API is available without knowing its concrete type:
+
+```rust
+// The question: what type does the discoverer get back?
+let room = registry::whereis::<???>("general").unwrap();
+
+// A: ActorRef<ChatRoom> — requires knowing the concrete actor type
+// B: BroadcasterRef (Arc<dyn ChatBroadcaster>) — requires only the protocol
+```
+
+This is where the #145 solutions diverge most clearly. Approach A's `Recipient<M>` erases at the message level, so discovery returns per-message handles. Approach B's protocol traits erase at the actor level, so discovery returns the full actor API behind a single trait object.
+
 ---
 
 ## The Chat Room Example
@@ -58,8 +74,9 @@ Every approach below implements the same scenario:
 - **User** actor receives messages and can speak to the room
 - The room sends `Deliver` to users; users send `Say` to the room → **bidirectional**
 - `Members` is a request-reply message that returns the current member list
+- The room registers itself by name; a late joiner discovers it via the **registry**
 
-This exercises both #144 (typed request-reply) and #145 (circular dependency breaking).
+This exercises all three problems: #144 (typed request-reply), #145 (circular dependency breaking), and service discovery (registry lookup without direct references).
 
 ---
 
@@ -366,6 +383,9 @@ let room = ChatRoom::new().start();
 let alice = User::new("Alice".into()).start();
 let bob = User::new("Bob".into()).start();
 
+// Register the room by name
+registry::register("general", room.clone()).unwrap();
+
 alice.join_room(room.clone()).unwrap();
 bob.join_room(room.clone()).unwrap();
 
@@ -373,6 +393,11 @@ let members = room.members().await.unwrap();
 
 alice.say("Hello everyone!".into()).unwrap();
 bob.say("Hi Alice!".into()).unwrap();
+
+// Late joiner discovers the room — must know the concrete type
+let charlie = User::new("Charlie".into()).start();
+let discovered: ActorRef<ChatRoom> = registry::whereis("general").unwrap();
+charlie.join_room(discovered).unwrap();
 ```
 </details>
 
@@ -385,6 +410,7 @@ bob.say("Hi Alice!".into()).unwrap();
 | **Boilerplate** | One `impl Handler<M>` block per message × per actor. Message structs need manual `impl Message`. | `send_messages!`/`request_messages!` macros eliminate `Message` impls. `#[actor]` eliminates `Handler` impls. `actor_api!` reduces the extension trait + impl (~15 lines) to ~5 lines. |
 | **main.rs expressivity** | Raw message structs: `room.send_request(Join { ... })` — explicit but verbose. | Extension traits: `alice.join_room(room.clone())` — reads like natural API calls. |
 | **Circular dep solution** | `Recipient<M>` — room stores `Recipient<Deliver>`, user stores `Recipient<Say>`. Bidirectional module imports (room imports `Deliver` from user, user imports `Say` from room) — works within a crate but not across crates. | Same mechanism. The macros don't change how type erasure works. |
+| **Registry** | Register individual `Recipient<M>` per message type. Fine-grained but requires multiple registrations for a multi-message actor. | Register `ActorRef<ChatRoom>` — gives full API via `ChatRoomApi`, but the discoverer must know the concrete actor type. |
 | **Discoverability** | Standard Rust patterns. Any Rust developer can read `impl Handler<M>`. | `#[actor]` and `actor_api!` are custom — new developers need to learn what they do, but the patterns are common (Actix uses the same approach). |
 
 **Key insight:** The non-macro version is already concise for handler code. The `#[actor]` macro eliminates the `impl Handler<M>` delegation wrapper per handler. The `actor_api!` macro eliminates the extension trait boilerplate (trait definition + impl block) that provides ergonomic method-call syntax on `ActorRef`. Together, they reduce an actor definition to three declarative blocks: messages, API, and handlers.
@@ -450,6 +476,15 @@ pub trait ChatParticipant: Send + Sync {
 
 pub trait AsBroadcaster {
     fn as_broadcaster(&self) -> BroadcasterRef;
+}
+
+// Identity conversion — enables registry discovery:
+// let room: BroadcasterRef = registry::whereis("general").unwrap();
+// charlie.join_room(room).unwrap();  // works because BroadcasterRef: AsBroadcaster
+impl AsBroadcaster for BroadcasterRef {
+    fn as_broadcaster(&self) -> BroadcasterRef {
+        Arc::clone(self)
+    }
 }
 
 pub trait AsParticipant {
@@ -623,12 +658,15 @@ impl User {
 </details>
 
 <details>
-<summary><b>main.rs</b> — identical body to Approach A</summary>
+<summary><b>main.rs</b> — identical body to Approach A, protocol-level discovery</summary>
 
 ```rust
 let room = ChatRoom::new().start();
 let alice = User::new("Alice".into()).start();
 let bob = User::new("Bob".into()).start();
+
+// Register the room's protocol — not the concrete type
+registry::register("general", room.as_broadcaster()).unwrap();
 
 alice.join_room(room.clone()).unwrap();
 bob.join_room(room.clone()).unwrap();
@@ -637,6 +675,11 @@ let members = room.members().await.unwrap();
 
 alice.say("Hello everyone!".into()).unwrap();
 bob.say("Hey Alice!".into()).unwrap();
+
+// Late joiner discovers the room — only needs the protocol, not the concrete type
+let charlie = User::new("Charlie".into()).start();
+let discovered: BroadcasterRef = registry::whereis("general").unwrap();
+charlie.join_room(discovered).unwrap();
 ```
 </details>
 
@@ -650,6 +693,7 @@ bob.say("Hey Alice!".into()).unwrap();
 | **main.rs expressivity** | Identical body to A: `alice.join_room(room.clone())`, `room.members().await.unwrap()`, `alice.say(...)`. `join_room` accepts `impl AsBroadcaster` so callers pass `ActorRef` directly. |
 | **Request-response** | `Response<T>` keeps protocol traits object-safe while supporting async request-response. Structural mirror of the Envelope pattern — no RPITIT, no `BoxFuture` boxing. |
 | **Circular dep solution** | Actors hold `BroadcasterRef` / `ParticipantRef` instead of `ActorRef<OtherActor>`. Each new cross-boundary message requires adding a method to the protocol trait + updating the `protocol_impl!` bridge. |
+| **Registry** | Register `BroadcasterRef` — one registration gives the discoverer the full protocol API (`say`, `add_member`, `members`). No concrete actor type needed. Identity `AsBroadcaster` impl on `BroadcasterRef` means discovered refs pass directly to `join_room`. |
 | **Macro compatibility** | `#[actor]` for Handler impls, `protocol_impl!` for bridge impls. Direct caller APIs use manual trait impls when generic params are needed (e.g., `join_room(impl AsBroadcaster)`). |
 | **Testability** | Best of all approaches — you can mock `ChatBroadcaster` or `ChatParticipant` directly in unit tests without running an actor system. |
 
@@ -1015,28 +1059,30 @@ let members: Vec<String> = spawned::request(room.pid(), Members).await?;
 
 ## Registry & Service Discovery
 
-The current registry is a global `Any`-based name store (Approach A):
+The registry is a global `Any`-based name store: `HashMap<String, Box<dyn Any>>` with `RwLock`. The API (`register`, `whereis`, `unregister`, `registered`) stays the same across approaches. What changes is **what you store and what you get back** — and this is where Approach A and B diverge most visibly.
+
+The chat room examples above demonstrate this. Both register the room as `"general"` and a late joiner (Charlie) discovers it:
 
 ```rust
-// Register: store a Recipient<M> by name
-registry::register("service_registry", svc.recipient::<Lookup>()).unwrap();
+// Approach A — stores and retrieves the concrete type
+registry::register("general", room.clone()).unwrap();                       // ActorRef<ChatRoom>
+let discovered: ActorRef<ChatRoom> = registry::whereis("general").unwrap(); // caller must know ChatRoom
 
-// Discover: retrieve without knowing the concrete actor type
-let recipient: Recipient<Lookup> = registry::whereis("service_registry").unwrap();
-
-// Use: typed request through the recipient
-let addr = request(&*recipient, Lookup { name: "web".into() }, timeout).await?;
+// Approach B — stores and retrieves the protocol
+registry::register("general", room.as_broadcaster()).unwrap();              // BroadcasterRef
+let discovered: BroadcasterRef = registry::whereis("general").unwrap();     // caller only needs the protocol
+charlie.join_room(discovered).unwrap();                                     // works via AsBroadcaster
 ```
 
-The registry API (`register`, `whereis`, `unregister`, `registered`) stays the same across approaches — it's just `HashMap<String, Box<dyn Any>>` with `RwLock`. What changes is **what you store and what you get back**.
+In A, the discoverer must import `ChatRoom` and `ChatRoomApi` to use the retrieved reference — it knows exactly which actor it's talking to. In B, the discoverer imports only `BroadcasterRef` from `protocols.rs` — it knows *what the actor can do* without knowing *what actor it is*. Any actor implementing `ChatBroadcaster` could be behind that reference.
 
 ### How it differs per approach
 
 | Approach | Stored value | Retrieved as | Type safety | Discovery granularity |
 |----------|-------------|-------------|-------------|----------------------|
 | **Baseline** | `ActorRef<A>` | `ActorRef<A>` | Compile-time, but requires knowing actor type | Per actor — defeats the point of discovery |
-| **A: Recipient** | `Recipient<M>` | `Recipient<M>` | Compile-time per message type | Per message type — fine-grained |
-| **B: Protocol Traits** | `Arc<dyn Protocol>` | `Arc<dyn Protocol>` | Compile-time per protocol | Per protocol — coarser-grained |
+| **A: Recipient** | `ActorRef<A>` or `Recipient<M>` | Same | Compile-time, but `ActorRef<A>` requires concrete type; `Recipient<M>` is per-message | Per actor (full API but coupled) or per message (decoupled but fragmented) |
+| **B: Protocol Traits** | `Arc<dyn Protocol>` | `Arc<dyn Protocol>` | Compile-time per protocol | Per protocol — one registration, full API, no concrete type |
 | **C: Typed Wrappers** | `ActorRef<A>` or `Recipient<M>` | Mixed | Depends on channel | Unclear — dual-channel split |
 | **D: Derive Macro** | `Recipient<M>` | `Recipient<M>` | Same as A | Same as A |
 | **E: AnyActorRef** | `AnyActorRef` | `AnyActorRef` | None — runtime only | Per actor, but no type info |
@@ -1044,9 +1090,9 @@ The registry API (`register`, `whereis`, `unregister`, `registered`) stays the s
 
 **Key differences:**
 
-- **A and D** register per message type: `registry::register("room_lookup", room.recipient::<Lookup>())`. A consumer discovers a `Recipient<Lookup>` — it can only send `Lookup` messages, nothing else. If the room handles 5 message types, you can register it under 5 names (or one name per message type you want to expose). This is the most granular.
+- **A** faces a trade-off: register `ActorRef<ChatRoom>` for the full API (via `ChatRoomApi` extension trait), but the discoverer must know the concrete type — or register individual `Recipient<M>` handles for type-erased per-message access, but then you need multiple registrations and the discoverer can only send one message type per handle. The chat room example uses `ActorRef<ChatRoom>` because `ChatRoomApi` provides the natural caller API.
 
-- **B** registers per protocol: `registry::register("room", room.as_broadcaster())`. A consumer discovers a `BroadcasterRef` (`Arc<dyn ChatBroadcaster>`) — it can call any method on the protocol (`say`, `add_member`, `members`). This is coarser but more natural: one registration covers all the methods in the protocol.
+- **B** registers per protocol: `registry::register("general", room.as_broadcaster())`. A consumer discovers a `BroadcasterRef` (`Arc<dyn ChatBroadcaster>`) — it can call any method on the protocol (`say`, `add_member`, `members`). One registration, full API, no concrete type needed. This maps directly to Erlang's `register/whereis` pattern but with compile-time safety.
 
 - **E** is trivially simple but useless: `registry::register("room", room.any_ref())`. You get back an `AnyActorRef` that accepts `Box<dyn Any>`. No compile-time knowledge of what messages the actor handles.
 
@@ -1134,8 +1180,9 @@ And `spawned::send(pid, Msg { ... })` could get ergonomic wrappers similar to `a
 | **#145 type safety** | Compile-time | Compile-time | Compile-time | Compile-time | Runtime only | Runtime only |
 | **Macro support** | `#[actor]` + `actor_api!` + message macros | `#[actor]` + `protocol_impl!` + message macros | N/A (enum-based) | Derive macro | `#[actor]` | `#[actor]` |
 | **Dual-mode (async+threads)** | Works | Works | Complex (dual channel) | Complex | Works | Works |
-| **Registry stores** | `Recipient<M>` | `BroadcasterRef` / `Arc<dyn Protocol>` | Mixed | `Recipient<M>` | `AnyActorRef` | `Pid` |
+| **Registry stores** | `ActorRef<A>` (full API, coupled) or `Recipient<M>` (per-message, decoupled) | `Arc<dyn Protocol>` (full API, decoupled) | Mixed | `Recipient<M>` | `AnyActorRef` | `Pid` |
 | **Registry type safety** | Compile-time | Compile-time | Depends | Compile-time | Runtime | Runtime |
+| **Registry discovery** | Discoverer must know concrete type or individual message types | Discoverer only needs the protocol trait | Depends | Same as A | No type info | No type info |
 
 ### Code Quality Dimensions
 
@@ -1170,6 +1217,7 @@ And `spawned::send(pid, Msg { ... })` could get ergonomic wrappers similar to `a
 - `actor_api!` reduces extension trait boilerplate from ~15 lines to ~5 lines per actor
 - Proven pattern (Actix uses the same architecture)
 - Non-macro version is already clean — the macros are additive, not essential
+- Registry trade-off: register `ActorRef<A>` for full API (discoverer must know concrete type) or register `Recipient<M>` per message (decoupled but fragmented)
 
 **Approach B (Protocol Traits)** is a strong alternative with identical caller ergonomics:
 - main.rs body is identical to A: `alice.join_room(room.clone())`, `room.members().await.unwrap()`, `alice.say(...)`
@@ -1180,6 +1228,7 @@ And `spawned::send(pid, Msg { ... })` could get ergonomic wrappers similar to `a
 - Best testability — protocol traits can be mocked directly without running an actor system
 - Zero cross-actor dependencies — both Room and User depend only on `protocols.rs`
 - Only requires `Response<T>` and `Context::actor_ref()` from the framework; protocol traits and bridge impls are purely user-space
+- Best registry story: one registration per protocol, full API, no concrete type needed — discoverer depends only on the protocol trait
 
 **Approaches C and D** try to preserve the old enum-based API but introduce significant complexity (dual-channel, or heavy code generation) to work around its limitations.
 
