@@ -126,12 +126,19 @@ Each message is its own struct with an associated `Result` type. Actors implemen
 ### Without macro (manual `impl Handler<M>`)
 
 <details>
-<summary><b>messages.rs</b> — shared types, no actor types mentioned</summary>
+<summary><b>room.rs</b> — defines Room's messages, imports Deliver from user</summary>
 
 ```rust
 use spawned_concurrency::message::Message;
 use spawned_concurrency::messages;
-use spawned_concurrency::tasks::Recipient;
+use spawned_concurrency::tasks::{Actor, Context, Handler, Recipient};
+use crate::user::Deliver;
+
+// -- Messages (Room handles these) --
+
+messages! {
+    Say { from: String, text: String } -> ();
+}
 
 pub struct Join {
     pub name: String,
@@ -139,20 +146,7 @@ pub struct Join {
 }
 impl Message for Join { type Result = (); }
 
-messages! {
-    Say { from: String, text: String } -> ();
-    SayToRoom { text: String } -> ();
-    Deliver { from: String, text: String } -> ();
-}
-```
-</details>
-
-<details>
-<summary><b>room.rs</b> — knows messages, not User</summary>
-
-```rust
-use spawned_concurrency::tasks::{Actor, Context, Handler, Recipient};
-use crate::messages::{Deliver, Join, Say};
+// -- Actor --
 
 pub struct ChatRoom {
     members: Vec<(String, Recipient<Deliver>)>,
@@ -179,11 +173,21 @@ impl Handler<Say> for ChatRoom {
 </details>
 
 <details>
-<summary><b>user.rs</b> — knows messages, not ChatRoom</summary>
+<summary><b>user.rs</b> — defines User's messages (including Deliver), imports Say from room</summary>
 
 ```rust
+use spawned_concurrency::messages;
 use spawned_concurrency::tasks::{Actor, Context, Handler, Recipient};
-use crate::messages::{Deliver, Say, SayToRoom};
+use crate::room::Say;
+
+// -- Messages (User handles these) --
+
+messages! {
+    Deliver { from: String, text: String } -> ();
+    SayToRoom { text: String } -> ();
+}
+
+// -- Actor --
 
 pub struct User {
     pub name: String,
