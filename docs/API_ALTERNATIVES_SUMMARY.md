@@ -232,12 +232,12 @@ use spawned_concurrency::send_messages;
 use spawned_concurrency::request_messages;
 use spawned_concurrency::tasks::{Actor, ActorRef, Context, Handler, Recipient};
 use spawned_macros::actor;
+use crate::user::Deliver;
 
 // -- Messages --
 
 send_messages! {
     Say { from: String, text: String };
-    Deliver { from: String, text: String };
     Join { name: String, inbox: Recipient<Deliver> }
 }
 
@@ -292,18 +292,19 @@ impl ChatRoom {
 </details>
 
 <details>
-<summary><b>user.rs</b> — macro version</summary>
+<summary><b>user.rs</b> — defines Deliver (User's inbox message) + macro version</summary>
 
 ```rust
 use spawned_concurrency::actor_api;
 use spawned_concurrency::send_messages;
 use spawned_concurrency::tasks::{Actor, ActorRef, Context, Handler};
 use spawned_macros::actor;
-use crate::room::{ChatRoom, ChatRoomApi, Deliver};
+use crate::room::{ChatRoom, ChatRoomApi};
 
 // -- Messages --
 
 send_messages! {
+    Deliver { from: String, text: String };
     SayToRoom { text: String };
     JoinRoom { room: ActorRef<ChatRoom> }
 }
