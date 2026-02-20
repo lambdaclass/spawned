@@ -1,15 +1,16 @@
-//! User actor — imports ChatRoom + ChatRoomApi + Deliver from room module.
+//! User actor — defines Deliver (User's inbox message) and imports ChatRoom API.
 
 use spawned_concurrency::actor_api;
 use spawned_concurrency::send_messages;
 use spawned_concurrency::tasks::{Actor, ActorRef, Context, Handler};
 use spawned_macros::actor;
 
-use crate::room::{ChatRoom, ChatRoomApi, Deliver};
+use crate::room::{ChatRoom, ChatRoomApi};
 
 // -- Messages --
 
 send_messages! {
+    Deliver { from: String, text: String };
     SayToRoom { text: String };
     JoinRoom { room: ActorRef<ChatRoom> }
 }

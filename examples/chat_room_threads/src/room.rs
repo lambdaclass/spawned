@@ -4,11 +4,12 @@ use spawned_concurrency::send_messages;
 use spawned_concurrency::threads::{Actor, ActorRef, Context, Handler, Recipient};
 use spawned_macros::actor;
 
+use crate::user::Deliver;
+
 // -- Messages --
 
 send_messages! {
     Say { from: String, text: String };
-    Deliver { from: String, text: String };
     Join { name: String, inbox: Recipient<Deliver> }
 }
 

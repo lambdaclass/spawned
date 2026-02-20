@@ -3,11 +3,12 @@ use spawned_concurrency::send_messages;
 use spawned_concurrency::threads::{Actor, ActorRef, Context, Handler};
 use spawned_macros::actor;
 
-use crate::room::{ChatRoom, ChatRoomApi, Deliver};
+use crate::room::{ChatRoom, ChatRoomApi};
 
 // -- Messages --
 
 send_messages! {
+    Deliver { from: String, text: String };
     SayToRoom { text: String };
     JoinRoom { room: ActorRef<ChatRoom> }
 }
