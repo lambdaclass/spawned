@@ -1136,7 +1136,7 @@ And `spawned::send(pid, Msg { ... })` could get ergonomic wrappers similar to `a
 | **E: AnyActorRef** | None | Would add false safety | No |
 | **F: PID** | Low-Medium | Registration ceremony | Maybe — ergonomics only |
 
-**Takeaway:** Approach B now uses `#[protocol]` and `#[bridge]` to eliminate all scaffolding, achieving competitive code volume with Approach A. With `Response<T>`, `#[protocol]`, `#[bridge]`, and `Context::actor_ref()`, main.rs bodies are identical between A and B — the approaches differ only in internal wiring and dependency structure.
+**Takeaway:** Approach B now uses `#[protocol]` and `#[bridge]` to eliminate all scaffolding, achieving competitive code volume with Approach A. With `Response<T>`, `#[protocol]`, `#[bridge]`, and `Context::actor_ref()`, main.rs bodies are similarly simple — the only visible difference is `room.as_broadcaster()` vs `room.clone()`, making B's protocol boundary explicit at the call site.
 
 ---
 
