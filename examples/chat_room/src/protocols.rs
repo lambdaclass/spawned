@@ -1,29 +1,21 @@
-//! Protocol traits — cross-actor contracts.
-//!
-//! Neither `ChatRoom` nor `User` appears here. Both actors depend only
-//! on these traits, breaking circular dependencies completely.
-
 use spawned_concurrency::error::ActorError;
 use spawned_concurrency::tasks::Response;
+use spawned_macros::protocol;
 use std::sync::Arc;
 
-pub type BroadcasterRef = Arc<dyn ChatBroadcaster>;
-pub type ParticipantRef = Arc<dyn ChatParticipant>;
+pub type RoomRef = Arc<dyn RoomProtocol>;
+pub type UserRef = Arc<dyn UserProtocol>;
 
-pub trait ChatBroadcaster: Send + Sync {
+#[protocol]
+pub trait RoomProtocol: Send + Sync {
     fn say(&self, from: String, text: String) -> Result<(), ActorError>;
-    fn add_member(&self, name: String, participant: ParticipantRef) -> Result<(), ActorError>;
+    fn add_member(&self, name: String, user: UserRef) -> Result<(), ActorError>;
     fn members(&self) -> Response<Vec<String>>;
 }
 
-pub trait ChatParticipant: Send + Sync {
+#[protocol]
+pub trait UserProtocol: Send + Sync {
     fn deliver(&self, from: String, text: String) -> Result<(), ActorError>;
-}
-
-pub trait AsBroadcaster {
-    fn as_broadcaster(&self) -> BroadcasterRef;
-}
-
-pub trait AsParticipant {
-    fn as_participant(&self) -> ParticipantRef;
+    fn speak(&self, text: String) -> Result<(), ActorError>;
+    fn join_room(&self, room: RoomRef) -> Result<(), ActorError>;
 }

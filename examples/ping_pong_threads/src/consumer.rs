@@ -1,31 +1,20 @@
-use spawned_concurrency::protocol_impl;
-use spawned_concurrency::threads::{Actor, ActorRef, Context, Handler};
-use std::sync::Arc;
+use spawned_concurrency::threads::{Actor, Context, Handler};
+use spawned_macros::actor;
 
-use crate::messages::Ping;
-use crate::protocols::{AsPingReceiver, PingInbox, PingReceiver, PongInbox};
+use crate::protocols::ping_receiver::Ping;
+use crate::protocols::PongReceiverRef;
 
 pub struct Consumer {
-    pub producer: PongInbox,
+    pub producer: PongReceiverRef,
 }
 
 impl Actor for Consumer {}
 
-impl Handler<Ping> for Consumer {
-    fn handle(&mut self, _msg: Ping, _ctx: &Context<Self>) {
+#[actor]
+impl Consumer {
+    #[send_handler]
+    fn handle_ping(&mut self, _msg: Ping, _ctx: &Context<Self>) {
         tracing::info!("Consumer received Ping, sending Pong");
         let _ = self.producer.pong();
-    }
-}
-
-protocol_impl! {
-    PingReceiver for ActorRef<Consumer> {
-        send fn ping() => Ping;
-    }
-}
-
-impl AsPingReceiver for ActorRef<Consumer> {
-    fn as_ping_receiver(&self) -> PingInbox {
-        Arc::new(self.clone())
     }
 }

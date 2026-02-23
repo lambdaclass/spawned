@@ -1,36 +1,351 @@
 use proc_macro::TokenStream;
-use quote::quote;
-use syn::{parse_macro_input, FnArg, ImplItem, ItemImpl, Pat, ReturnType, Type};
+use quote::{format_ident, quote};
+use syn::{
+    parse_macro_input, FnArg, GenericArgument, Ident, ImplItem, ItemImpl, ItemTrait, Pat,
+    PathArguments, ReturnType, TraitItem, Type, TypePath,
+};
+
+// --- Helpers for #[protocol] ---
+
+fn to_snake_case(s: &str) -> String {
+    let mut result = String::new();
+    for (i, ch) in s.chars().enumerate() {
+        if ch.is_uppercase() {
+            if i > 0 {
+                result.push('_');
+            }
+            result.push(ch.to_ascii_lowercase());
+        } else {
+            result.push(ch);
+        }
+    }
+    result
+}
+
+fn to_pascal_case(s: &str) -> String {
+    s.split('_')
+        .map(|part| {
+            let mut chars = part.chars();
+            match chars.next() {
+                None => String::new(),
+                Some(c) => c.to_uppercase().to_string() + chars.as_str(),
+            }
+        })
+        .collect()
+}
+
+fn strip_protocol_suffix(name: &str) -> String {
+    name.strip_suffix("Protocol").unwrap_or(name).to_string()
+}
+
+enum MethodKind {
+    Send,
+    AsyncRequest(Box<Type>),
+    SyncRequest(Box<Type>),
+}
+
+fn classify_return_type(ret: &ReturnType) -> MethodKind {
+    match ret {
+        ReturnType::Default => MethodKind::Send,
+        ReturnType::Type(_, ty) => {
+            if let Some(inner) = extract_response_inner(ty) {
+                return MethodKind::AsyncRequest(inner);
+            }
+            if let Some(inner) = extract_result_inner(ty) {
+                if is_unit_type(&inner) {
+                    return MethodKind::Send;
+                }
+                return MethodKind::SyncRequest(inner);
+            }
+            MethodKind::Send
+        }
+    }
+}
+
+fn extract_response_inner(ty: &Type) -> Option<Box<Type>> {
+    if let Type::Path(TypePath { path, .. }) = ty {
+        let seg = path.segments.last()?;
+        if seg.ident == "Response" {
+            if let PathArguments::AngleBracketed(args) = &seg.arguments {
+                if let Some(GenericArgument::Type(inner)) = args.args.first() {
+                    return Some(Box::new(inner.clone()));
+                }
+            }
+        }
+    }
+    None
+}
+
+fn extract_result_inner(ty: &Type) -> Option<Box<Type>> {
+    if let Type::Path(TypePath { path, .. }) = ty {
+        let seg = path.segments.last()?;
+        if seg.ident == "Result" {
+            if let PathArguments::AngleBracketed(args) = &seg.arguments {
+                if let Some(GenericArgument::Type(inner)) = args.args.first() {
+                    return Some(Box::new(inner.clone()));
+                }
+            }
+        }
+    }
+    None
+}
+
+fn is_unit_type(ty: &Type) -> bool {
+    if let Type::Tuple(tuple) = ty {
+        return tuple.elems.is_empty();
+    }
+    false
+}
+
+/// Generates a blanket `impl Protocol for ActorRef<A>` and `impl AsX for ActorRef<A>`
+/// for a given runtime path (tasks or threads).
+fn generate_blanket_impl(
+    trait_name: &Ident,
+    mod_name: &Ident,
+    ref_name: &Ident,
+    converter_trait: &Ident,
+    converter_method: &Ident,
+    methods: &[ProtocolMethodInfo],
+    runtime_path: &proc_macro2::TokenStream,
+) -> proc_macro2::TokenStream {
+    let handler_bounds: Vec<_> = methods
+        .iter()
+        .map(|m| {
+            let sn = &m.struct_name;
+            quote! { #runtime_path::Handler<#mod_name::#sn> }
+        })
+        .collect();
+
+    let method_impls: Vec<_> = methods
+        .iter()
+        .map(|m| {
+            let method_name = &m.method_name;
+            let field_names = &m.field_names;
+            let params: Vec<_> = m.params.iter().collect();
+            let ret_ty = &m.ret_type;
+
+            let struct_name = &m.struct_name;
+            let msg_construct = if field_names.is_empty() {
+                quote! { #mod_name::#struct_name }
+            } else {
+                quote! { #mod_name::#struct_name { #(#field_names),* } }
+            };
+
+            match &m.kind {
+                MethodKind::Send => {
+                    quote! {
+                        fn #method_name(&self, #(#params),*) #ret_ty {
+                            self.send(#msg_construct)
+                        }
+                    }
+                }
+                MethodKind::AsyncRequest(_) => {
+                    quote! {
+                        fn #method_name(&self, #(#params),*) #ret_ty {
+                            spawned_concurrency::tasks::Response::from(
+                                self.request_raw(#msg_construct),
+                            )
+                        }
+                    }
+                }
+                MethodKind::SyncRequest(_) => {
+                    quote! {
+                        fn #method_name(&self, #(#params),*) #ret_ty {
+                            self.request(#msg_construct)
+                        }
+                    }
+                }
+            }
+        })
+        .collect();
+
+    quote! {
+        impl<__A: #runtime_path::Actor #(+ #handler_bounds)*> #trait_name
+            for #runtime_path::ActorRef<__A>
+        {
+            #(#method_impls)*
+        }
+
+        impl<__A: #runtime_path::Actor #(+ #handler_bounds)*> #converter_trait
+            for #runtime_path::ActorRef<__A>
+        {
+            fn #converter_method(&self) -> #ref_name {
+                ::std::sync::Arc::new(self.clone())
+            }
+        }
+    }
+}
+
+struct ProtocolMethodInfo {
+    method_name: Ident,
+    struct_name: Ident,
+    field_names: Vec<Ident>,
+    field_types: Vec<Box<Type>>,
+    kind: MethodKind,
+    params: Vec<FnArg>,
+    ret_type: ReturnType,
+}
+
+#[proc_macro_attribute]
+pub fn protocol(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    let trait_def = parse_macro_input!(item as ItemTrait);
+    let trait_name = &trait_def.ident;
+    let trait_vis = &trait_def.vis;
+
+    let base_name = strip_protocol_suffix(&trait_name.to_string());
+    let mod_name = format_ident!("{}", to_snake_case(&trait_name.to_string()));
+    let ref_name = format_ident!("{}Ref", base_name);
+    let converter_trait = format_ident!("As{}", base_name);
+    let converter_method = format_ident!("as_{}", to_snake_case(&base_name));
+
+    let mut methods: Vec<ProtocolMethodInfo> = Vec::new();
+    let mut has_async_request = false;
+    let mut has_sync_request = false;
+
+    for item in &trait_def.items {
+        if let TraitItem::Fn(method) = item {
+            let method_name = method.sig.ident.clone();
+            let struct_name = format_ident!("{}", to_pascal_case(&method_name.to_string()));
+
+            let mut field_names: Vec<Ident> = Vec::new();
+            let mut field_types: Vec<Box<Type>> = Vec::new();
+            let mut params: Vec<FnArg> = Vec::new();
+
+            for arg in method.sig.inputs.iter().skip(1) {
+                if let FnArg::Typed(pat_type) = arg {
+                    if let Pat::Ident(pat_ident) = &*pat_type.pat {
+                        field_names.push(pat_ident.ident.clone());
+                        field_types.push(pat_type.ty.clone());
+                    }
+                }
+                params.push(arg.clone());
+            }
+
+            let kind = classify_return_type(&method.sig.output);
+            match &kind {
+                MethodKind::AsyncRequest(_) => has_async_request = true,
+                MethodKind::SyncRequest(_) => has_sync_request = true,
+                MethodKind::Send => {}
+            }
+
+            methods.push(ProtocolMethodInfo {
+                method_name,
+                struct_name,
+                field_names,
+                field_types,
+                kind,
+                params,
+                ret_type: method.sig.output.clone(),
+            });
+        }
+    }
+
+    // Generate message structs
+    let msg_structs: Vec<_> = methods
+        .iter()
+        .map(|m| {
+            let struct_name = &m.struct_name;
+            let field_names = &m.field_names;
+            let field_types = &m.field_types;
+            let msg_result_ty: Box<Type> = match &m.kind {
+                MethodKind::Send => syn::parse_quote! { () },
+                MethodKind::AsyncRequest(inner) | MethodKind::SyncRequest(inner) => inner.clone(),
+            };
+
+            if field_names.is_empty() {
+                quote! {
+                    pub struct #struct_name;
+                    impl Message for #struct_name {
+                        type Result = #msg_result_ty;
+                    }
+                }
+            } else {
+                quote! {
+                    pub struct #struct_name {
+                        #(pub #field_names: #field_types,)*
+                    }
+                    impl Message for #struct_name {
+                        type Result = #msg_result_ty;
+                    }
+                }
+            }
+        })
+        .collect();
+
+    // Generate blanket impls based on protocol mode
+    let blanket_impls = if has_async_request {
+        let tasks = quote! { spawned_concurrency::tasks };
+        generate_blanket_impl(
+            trait_name,
+            &mod_name,
+            &ref_name,
+            &converter_trait,
+            &converter_method,
+            &methods,
+            &tasks,
+        )
+    } else if has_sync_request {
+        let threads = quote! { spawned_concurrency::threads };
+        generate_blanket_impl(
+            trait_name,
+            &mod_name,
+            &ref_name,
+            &converter_trait,
+            &converter_method,
+            &methods,
+            &threads,
+        )
+    } else {
+        // Send-only: generate for both runtimes
+        let tasks = quote! { spawned_concurrency::tasks };
+        let threads = quote! { spawned_concurrency::threads };
+        let tasks_impl = generate_blanket_impl(
+            trait_name,
+            &mod_name,
+            &ref_name,
+            &converter_trait,
+            &converter_method,
+            &methods,
+            &tasks,
+        );
+        let threads_impl = generate_blanket_impl(
+            trait_name,
+            &mod_name,
+            &ref_name,
+            &converter_trait,
+            &converter_method,
+            &methods,
+            &threads,
+        );
+        quote! { #tasks_impl #threads_impl }
+    };
+
+    let output = quote! {
+        #trait_def
+
+        #trait_vis mod #mod_name {
+            use super::*;
+            use spawned_concurrency::message::Message;
+            #(#msg_structs)*
+        }
+
+        #trait_vis trait #converter_trait {
+            fn #converter_method(&self) -> #ref_name;
+        }
+
+        impl #converter_trait for #ref_name {
+            fn #converter_method(&self) -> #ref_name {
+                ::std::sync::Arc::clone(self)
+            }
+        }
+
+        #blanket_impls
+    };
+
+    output.into()
+}
 
 /// Attribute macro for actor impl blocks.
-///
-/// Place `#[actor]` on an `impl MyActor` block containing methods annotated
-/// with `#[send_handler]` or `#[request_handler]`. For each annotated method,
-/// the macro generates a corresponding `impl Handler<M> for MyActor` block.
-///
-/// Use `#[send_handler]` for fire-and-forget messages (no return value):
-///
-/// ```ignore
-/// #[send_handler]
-/// async fn on_deposit(&mut self, msg: Deposit, ctx: &Context<Self>) { ... }
-/// ```
-///
-/// Use `#[request_handler]` for request-response messages (returns a value):
-///
-/// ```ignore
-/// #[request_handler]
-/// async fn on_balance(&mut self, msg: GetBalance, ctx: &Context<Self>) -> u64 { ... }
-/// ```
-///
-/// Sync handlers (for the `threads` module) omit `async`:
-///
-/// ```ignore
-/// #[send_handler]
-/// fn on_deposit(&mut self, msg: Deposit, ctx: &Context<Self>) { ... }
-/// ```
-///
-/// The generic `#[handler]` attribute is also supported for backwards
-/// compatibility and works for both send and request handlers.
 #[proc_macro_attribute]
 pub fn actor(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let mut impl_block = parse_macro_input!(item as ItemImpl);
@@ -58,7 +373,9 @@ pub fn actor(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 let msg_ty = match method.sig.inputs.iter().nth(1) {
                     Some(FnArg::Typed(pat_type)) => {
                         if let Pat::Ident(pat_ident) = &*pat_type.pat {
-                            if pat_ident.ident == "_" || pat_ident.ident.to_string().starts_with('_') {
+                            if pat_ident.ident == "_"
+                                || pat_ident.ident.to_string().starts_with('_')
+                            {
                                 // Still use the type
                             }
                         }
