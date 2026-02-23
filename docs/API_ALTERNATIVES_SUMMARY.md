@@ -421,13 +421,13 @@ charlie.join_room(discovered).unwrap();
 
 ## Approach B: Protocol Traits (user-defined contracts)
 
-**Branch:** [`feat/approach-b`](https://github.com/lambdaclass/spawned/tree/feat/approach-b) (protocol_impl! macro + Context::actor_ref())
+**Branch:** [`feat/approach-b`](https://github.com/lambdaclass/spawned/tree/feat/approach-b) (`#[protocol]` + `#[bridge]` macros + Context::actor_ref())
 
-**Status:** Fully implemented on `feat/approach-b`. 34 tests passing. All examples rewritten to protocol traits with `protocol_impl!` macro.
+**Status:** Fully implemented on `feat/approach-b`. 34 tests passing. All examples rewritten to protocol traits with `#[protocol]` and `#[bridge]` macros.
 
 Uses the same `Handler<M>` and `#[actor]` macro as Approach A for #144. Solves #145 differently: instead of `Recipient<M>`, actors communicate across boundaries via explicit user-defined trait objects.
 
-**Key improvements over the initial WIP:** Type aliases (`BroadcasterRef`, `ParticipantRef`) replace raw `Arc<dyn Trait>`, conversion traits (`AsBroadcaster`, `AsParticipant`) replace `Arc::new(x.clone())`, `Response<T>` enables async request-response on protocol traits without breaking object safety, `protocol_impl!` generates bridge impls from a compact declaration, and `Context::actor_ref()` lets actors obtain their own `ActorRef` for self-registration.
+**Key improvements over the initial WIP:** `#[protocol]` attribute on trait definitions generates type aliases, conversion traits, and identity impls from a single annotation. `#[bridge]` attribute on `#[actor]` impls generates both the protocol bridge impl and the conversion trait impl — no separate macro needed. `Response<T>` enables async request-response on protocol traits without breaking object safety, and `Context::actor_ref()` lets actors obtain their own `ActorRef` for self-registration.
 
 ### Response\<T\>: Envelope's counterpart on the receive side
 
@@ -454,56 +454,41 @@ This keeps protocol traits **object-safe** — `fn members(&self) -> Response<Ve
 ### Full chat room code
 
 <details>
-<summary><b>protocols.rs</b> — shared contracts with type aliases, Response&lt;T&gt;, and conversion traits</summary>
+<summary><b>protocols.rs</b> — <code>#[protocol]</code> generates type alias + conversion trait + identity impl</summary>
 
 ```rust
 use spawned_concurrency::error::ActorError;
 use spawned_concurrency::tasks::Response;
-use std::sync::Arc;
+use spawned_macros::protocol;
 
-pub type BroadcasterRef = Arc<dyn ChatBroadcaster>;
-pub type ParticipantRef = Arc<dyn ChatParticipant>;
+// #[protocol] generates for each trait:
+//   pub type ParticipantRef = Arc<dyn ChatParticipant>;
+//   pub trait AsParticipant { fn as_participant(&self) -> ParticipantRef; }
+//   impl AsParticipant for ParticipantRef { ... }  (identity, enables registry discovery)
 
+#[protocol(ref = ParticipantRef, converter = AsParticipant)]
+pub trait ChatParticipant: Send + Sync {
+    fn deliver(&self, from: String, text: String) -> Result<(), ActorError>;
+}
+
+#[protocol(ref = BroadcasterRef, converter = AsBroadcaster)]
 pub trait ChatBroadcaster: Send + Sync {
     fn say(&self, from: String, text: String) -> Result<(), ActorError>;
     fn add_member(&self, name: String, participant: ParticipantRef) -> Result<(), ActorError>;
     fn members(&self) -> Response<Vec<String>>;
 }
-
-pub trait ChatParticipant: Send + Sync {
-    fn deliver(&self, from: String, text: String) -> Result<(), ActorError>;
-}
-
-pub trait AsBroadcaster {
-    fn as_broadcaster(&self) -> BroadcasterRef;
-}
-
-// Identity conversion — enables registry discovery:
-// let room: BroadcasterRef = registry::whereis("general").unwrap();
-// charlie.join_room(room).unwrap();  // works because BroadcasterRef: AsBroadcaster
-impl AsBroadcaster for BroadcasterRef {
-    fn as_broadcaster(&self) -> BroadcasterRef {
-        Arc::clone(self)
-    }
-}
-
-pub trait AsParticipant {
-    fn as_participant(&self) -> ParticipantRef;
-}
 ```
 </details>
 
 <details>
-<summary><b>room.rs</b> — Messages → protocol_impl! → Conversion → Actor</summary>
+<summary><b>room.rs</b> — Messages → Actor with <code>#[bridge]</code></summary>
 
 ```rust
-use spawned_concurrency::protocol_impl;
 use spawned_concurrency::request_messages;
 use spawned_concurrency::send_messages;
 use spawned_concurrency::tasks::{Actor, ActorRef, Context, Handler};
 use spawned_macros::actor;
-use std::sync::Arc;
-use crate::protocols::{AsBroadcaster, BroadcasterRef, ChatBroadcaster, ParticipantRef};
+use crate::protocols::{ChatBroadcaster, AsBroadcaster, BroadcasterRef, ParticipantRef};
 
 // -- Internal messages --
 
@@ -516,22 +501,6 @@ request_messages! {
     Members -> Vec<String>
 }
 
-// -- Protocol bridge --
-
-protocol_impl! {
-    ChatBroadcaster for ActorRef<ChatRoom> {
-        send fn say(from: String, text: String) => Say;
-        send fn add_member(name: String, participant: ParticipantRef) => Join;
-        request fn members() -> Vec<String> => Members;
-    }
-}
-
-impl AsBroadcaster for ActorRef<ChatRoom> {
-    fn as_broadcaster(&self) -> BroadcasterRef {
-        Arc::new(self.clone())
-    }
-}
-
 // -- Actor --
 
 pub struct ChatRoom {
@@ -540,7 +509,15 @@ pub struct ChatRoom {
 
 impl Actor for ChatRoom {}
 
+// #[bridge] generates:
+//   impl ChatBroadcaster for ActorRef<ChatRoom> { ... }  (protocol bridge)
+//   impl AsBroadcaster for ActorRef<ChatRoom> { ... }    (conversion trait)
 #[actor]
+#[bridge(ChatBroadcaster as AsBroadcaster -> BroadcasterRef {
+    send fn say(from: String, text: String) => Say;
+    send fn add_member(name: String, participant: ParticipantRef) => Join;
+    request fn members() -> Vec<String> => Members;
+})]
 impl ChatRoom {
     pub fn new() -> Self {
         Self { members: Vec::new() }
@@ -571,15 +548,13 @@ impl ChatRoom {
 </details>
 
 <details>
-<summary><b>user.rs</b> — protocol_impl! bridge + UserActions trait + actor</summary>
+<summary><b>user.rs</b> — <code>#[bridge]</code> for ChatParticipant + manual UserActions trait</summary>
 
 ```rust
 use spawned_concurrency::error::ActorError;
-use spawned_concurrency::protocol_impl;
 use spawned_concurrency::send_messages;
 use spawned_concurrency::tasks::{Actor, ActorRef, Context, Handler};
 use spawned_macros::actor;
-use std::sync::Arc;
 use crate::protocols::{AsBroadcaster, AsParticipant, BroadcasterRef, ChatParticipant, ParticipantRef};
 
 // -- Internal messages --
@@ -590,21 +565,7 @@ send_messages! {
     JoinRoom { room: BroadcasterRef }
 }
 
-// -- Protocol bridge (ChatParticipant) --
-
-protocol_impl! {
-    ChatParticipant for ActorRef<User> {
-        send fn deliver(from: String, text: String) => Deliver;
-    }
-}
-
-impl AsParticipant for ActorRef<User> {
-    fn as_participant(&self) -> ParticipantRef {
-        Arc::new(self.clone())
-    }
-}
-
-// -- Caller API --
+// -- Caller API (manual — join_room takes impl AsBroadcaster) --
 
 pub trait UserActions {
     fn say(&self, text: String) -> Result<(), ActorError>;
@@ -631,6 +592,9 @@ pub struct User {
 impl Actor for User {}
 
 #[actor]
+#[bridge(ChatParticipant as AsParticipant -> ParticipantRef {
+    send fn deliver(from: String, text: String) => Deliver;
+})]
 impl User {
     pub fn new(name: String) -> Self {
         Self { name, room: None }
@@ -689,15 +653,15 @@ charlie.join_room(discovered).unwrap();
 |-----------|-----------|
 | **Readability** | `protocols.rs` is an excellent summary of what crosses the actor boundary. Type aliases (`BroadcasterRef`, `ParticipantRef`) eliminate raw `Arc<dyn Trait>` noise. Files read top-to-bottom: Messages → Bridge → Conversion → Actor. |
 | **API at a glance** | Protocol traits serve as the natural API contract for cross-actor boundaries. Looking at `ChatBroadcaster` tells you exactly what a room can do, with named methods and signatures — the strongest "at-a-glance" surface of all approaches. `UserActions` trait provides the direct caller API. |
-| **Boilerplate** | Higher than Approach A per cross-actor boundary: protocol trait + `protocol_impl!` bridge + message structs + Handler impls. Mitigated by type aliases, conversion traits, and `protocol_impl!` macro. |
+| **Boilerplate** | Higher than Approach A per cross-actor boundary: protocol trait + bridge + message structs + Handler impls. Mitigated by `#[protocol]` (generates scaffolding) and `#[bridge]` (generates bridge + conversion from `#[actor]` impl). |
 | **main.rs expressivity** | Identical body to A: `alice.join_room(room.clone())`, `room.members().await.unwrap()`, `alice.say(...)`. `join_room` accepts `impl AsBroadcaster` so callers pass `ActorRef` directly. |
 | **Request-response** | `Response<T>` keeps protocol traits object-safe while supporting async request-response. Structural mirror of the Envelope pattern — no RPITIT, no `BoxFuture` boxing. |
-| **Circular dep solution** | Actors hold `BroadcasterRef` / `ParticipantRef` instead of `ActorRef<OtherActor>`. Each new cross-boundary message requires adding a method to the protocol trait + updating the `protocol_impl!` bridge. |
+| **Circular dep solution** | Actors hold `BroadcasterRef` / `ParticipantRef` instead of `ActorRef<OtherActor>`. Each new cross-boundary message requires adding a method to the protocol trait + updating the `#[bridge]` declaration. |
 | **Registry** | Register `BroadcasterRef` — one registration gives the discoverer the full protocol API (`say`, `add_member`, `members`). No concrete actor type needed. Identity `AsBroadcaster` impl on `BroadcasterRef` means discovered refs pass directly to `join_room`. |
-| **Macro compatibility** | `#[actor]` for Handler impls, `protocol_impl!` for bridge impls. Direct caller APIs use manual trait impls when generic params are needed (e.g., `join_room(impl AsBroadcaster)`). |
+| **Macro compatibility** | `#[actor]` + `#[bridge]` generates both Handler impls and protocol bridge impls in one block. Direct caller APIs use manual trait impls when generic params are needed (e.g., `join_room(impl AsBroadcaster)`). |
 | **Testability** | Best of all approaches — you can mock `ChatBroadcaster` or `ChatParticipant` directly in unit tests without running an actor system. |
 
-**Key insight:** Protocol traits define contracts at the actor level (like Erlang behaviours) rather than the message level (like Actix's `Recipient<M>`). The duplication cost (protocol method mirrors message struct) is real but buys three things: (1) testability via trait mocking, (2) a natural "API at a glance" surface, and (3) actor-level granularity for registry and discovery. With `Response<T>`, type aliases, conversion traits, and `protocol_impl!`, B's main.rs body is identical to A's.
+**Key insight:** Protocol traits define contracts at the actor level (like Erlang behaviours) rather than the message level (like Actix's `Recipient<M>`). The duplication cost (protocol method mirrors message struct) is real but buys three things: (1) testability via trait mocking, (2) a natural "API at a glance" surface, and (3) actor-level granularity for registry and discovery. With `#[protocol]`, `#[bridge]`, `Response<T>`, and `Context::actor_ref()`, B's main.rs body is identical to A's.
 
 **Scaling trade-off:** In a system with N actor types and M cross-boundary message types, Approach A needs M message structs. Approach B needs M message structs + P protocol traits + P bridge impls, where P grows with distinct actor-to-actor interaction patterns. The extra cost scales with *interaction patterns*, not messages — and each protocol trait is a natural documentation + testing boundary.
 
@@ -1104,26 +1068,40 @@ In A, the discoverer must import `ChatRoom` and `ChatRoomApi` to use the retriev
 
 Approach A's `actor_api!` macro eliminates extension trait boilerplate by generating a trait + impl from a compact declaration. Could similar macros reduce boilerplate in the other approaches?
 
-### Approach B: Protocol Traits — DONE (`protocol_impl!`)
+### Approach B: Protocol Traits — DONE (`#[protocol]` + `#[bridge]`)
 
-B now uses `protocol_impl!` to generate bridge impls from a compact declaration. What was ~12 lines of manual bridge boilerplate per actor is now ~5 lines:
+Two proc macro attributes eliminate all protocol scaffolding:
+
+**`#[protocol]`** on the trait definition generates the type alias, conversion trait, and identity impl:
 
 ```rust
-// protocol_impl! generates the full impl block
-protocol_impl! {
-    ChatBroadcaster for ActorRef<ChatRoom> {
-        send fn say(from: String, text: String) => Say;
-        send fn add_member(name: String, participant: ParticipantRef) => Join;
-        request fn members() -> Vec<String> => Members;
-    }
+#[protocol(ref = BroadcasterRef, converter = AsBroadcaster)]
+pub trait ChatBroadcaster: Send + Sync {
+    fn say(&self, from: String, text: String) -> Result<(), ActorError>;
+    fn add_member(&self, name: String, participant: ParticipantRef) -> Result<(), ActorError>;
+    fn members(&self) -> Response<Vec<String>>;
 }
+// Generates: type BroadcasterRef, trait AsBroadcaster, impl AsBroadcaster for BroadcasterRef
+```
+
+**`#[bridge]`** on the `#[actor]` impl generates both the protocol bridge and conversion trait impl:
+
+```rust
+#[actor]
+#[bridge(ChatBroadcaster as AsBroadcaster -> BroadcasterRef {
+    send fn say(from: String, text: String) => Say;
+    send fn add_member(name: String, participant: ParticipantRef) => Join;
+    request fn members() -> Vec<String> => Members;
+})]
+impl ChatRoom { ... }
+// Generates: impl ChatBroadcaster for ActorRef<ChatRoom>, impl AsBroadcaster for ActorRef<ChatRoom>
 ```
 
 Each `send fn` generates `fn method(&self, ...) -> Result<(), ActorError> { self.send(Msg { ... }) }`. Each `request fn` generates `fn method(&self, ...) -> Response<T> { Response::from(self.request_raw(Msg)) }`. The protocol trait itself remains user-defined — it IS the contract, so it should stay hand-written.
 
-Conversion traits (`AsBroadcaster`, `AsParticipant`) are still manual (~4 lines each) but are structurally trivial. For direct caller APIs where generic params are needed (e.g., `join_room(impl AsBroadcaster)`), manual trait impls are used instead of `protocol_impl!`.
+For direct caller APIs where generic params are needed (e.g., `join_room(impl AsBroadcaster)`), manual trait impls are used instead of `#[bridge]`.
 
-**Impact:** Combined with `#[actor]`, `protocol_impl!`, and conversion traits, Approach B's total code is competitive with Approach A while retaining its testability and Erlang-like actor-level granularity advantages.
+**Impact:** Combined with `#[actor]`, `#[protocol]`, and `#[bridge]`, Approach B's total code is competitive with Approach A while retaining its testability and Erlang-like actor-level granularity advantages. No separate `protocol_impl!` macro needed — everything lives in the `#[actor]` impl block.
 
 ### Approach C: Typed Wrappers — NO
 
@@ -1131,7 +1109,7 @@ The fundamental problem is the dual-channel architecture, not boilerplate. The `
 
 ### Approach D: Derive Macro — N/A
 
-This approach IS a macro. The `#[derive(ActorMessages)]` would generate message structs, `Message` impls, API wrappers, and `Handler<M>` delegation — subsuming what `actor_api!`/`protocol_impl!`, `send_messages!`, and `#[actor]` do separately.
+This approach IS a macro. The `#[derive(ActorMessages)]` would generate message structs, `Message` impls, API wrappers, and `Handler<M>` delegation — subsuming what `actor_api!`/`#[bridge]`, `send_messages!`, and `#[actor]` do separately.
 
 ### Approach E: AnyActorRef — NO
 
@@ -1158,13 +1136,13 @@ And `spawned::send(pid, Msg { ... })` could get ergonomic wrappers similar to `a
 
 | Approach | Macro potential | What it would eliminate | Worth implementing? |
 |----------|----------------|----------------------|---------------------|
-| **B: Protocol Traits** | High | Bridge impls + conversion traits | Done — `protocol_impl!` macro |
+| **B: Protocol Traits** | High | Bridge impls + conversion traits + scaffolding | Done — `#[protocol]` + `#[bridge]` |
 | **C: Typed Wrappers** | None | N/A — structural problem | No |
 | **D: Derive Macro** | N/A | Already a macro | N/A |
 | **E: AnyActorRef** | None | Would add false safety | No |
 | **F: PID** | Low-Medium | Registration ceremony | Maybe — ergonomics only |
 
-**Takeaway:** Approach B now uses `protocol_impl!` for bridge impls, achieving competitive code volume with Approach A. With `Response<T>`, type aliases, conversion traits, and `protocol_impl!`, main.rs bodies are identical between A and B — the approaches differ only in internal wiring and dependency structure.
+**Takeaway:** Approach B now uses `#[protocol]` and `#[bridge]` to eliminate all scaffolding, achieving competitive code volume with Approach A. With `Response<T>`, `#[protocol]`, `#[bridge]`, and `Context::actor_ref()`, main.rs bodies are identical between A and B — the approaches differ only in internal wiring and dependency structure.
 
 ---
 
@@ -1178,7 +1156,7 @@ And `spawned::send(pid, Msg { ... })` could get ergonomic wrappers similar to `a
 | **Breaking** | Yes | Yes | No | No | Yes | Yes |
 | **#144 type safety** | Full | Full | Hidden `unreachable!` | Hidden `unreachable!` | Full | Full |
 | **#145 type safety** | Compile-time | Compile-time | Compile-time | Compile-time | Runtime only | Runtime only |
-| **Macro support** | `#[actor]` + `actor_api!` + message macros | `#[actor]` + `protocol_impl!` + message macros | N/A (enum-based) | Derive macro | `#[actor]` | `#[actor]` |
+| **Macro support** | `#[actor]` + `actor_api!` + message macros | `#[actor]` + `#[bridge]` + `#[protocol]` + message macros | N/A (enum-based) | Derive macro | `#[actor]` | `#[actor]` |
 | **Dual-mode (async+threads)** | Works | Works | Complex (dual channel) | Complex | Works | Works |
 | **Registry stores** | `ActorRef<A>` (full API, coupled) or `Recipient<M>` (per-message, decoupled) | `Arc<dyn Protocol>` (full API, decoupled) | Mixed | `Recipient<M>` | `AnyActorRef` | `Pid` |
 | **Registry type safety** | Compile-time | Compile-time | Depends | Compile-time | Runtime | Runtime |
@@ -1191,7 +1169,7 @@ And `spawned::send(pid, Msg { ... })` could get ergonomic wrappers similar to `a
 | **Handler readability** | Clear: one `impl Handler<M>` or `#[send_handler]` per message | Same as A for handlers. Files read Messages → Bridge → Conversion → Actor. Type aliases reduce noise. | Noisy: enum `match` arms + wrapper fns | Opaque: generated from enum annotations | Same as A, but callers use `Box::new` | Same as A, but callers use global `send(pid, msg)` |
 | **API at a glance** | `actor_api!` block or scan Handler impls | Protocol traits (best) + `UserActions` trait for direct caller API | Typed wrapper functions | Annotated enum (good summary) | Nothing — `AnyActorRef` is opaque | Nothing — `Pid` is opaque |
 | **main.rs expressivity** | `alice.say("Hi")` with `actor_api!`; `alice.send(SayToRoom{...})` without | Identical body to A: `alice.join_room(room.clone())`, `room.members().await`, `alice.say(...)` | `ChatRoom::say(&room, ...)` assoc fn | Generated methods: `room.say(...)` | `room.send_any(Box::new(...))` | `spawned::send(pid, ...)` + registration |
-| **Boilerplate per message** | Struct + `actor_api!` line | Struct + protocol method + `protocol_impl!` line | Enum variant + wrapper + match arm | Enum variant + annotation | Struct | Struct + registration |
+| **Boilerplate per message** | Struct + `actor_api!` line | Struct + protocol method + `#[bridge]` line | Enum variant + wrapper + match arm | Enum variant + annotation | Struct | Struct + registration |
 | **Debugging** | Standard Rust — all code visible | Standard Rust — bridge impls visible | Standard Rust | Requires `cargo expand` | Runtime errors (downcast failures) | Runtime errors (unregistered types) |
 | **Testability** | Good (mock via Recipient) | Best (mock protocol trait) | Good | Good | Fair (Any-based) | Hard (global state) |
 
@@ -1204,7 +1182,7 @@ And `spawned::send(pid, Msg { ... })` could get ergonomic wrappers similar to `a
 | **Clustering readiness** | Needs `RemoteRecipient` | Needs remote bridge impls | Hard | Hard | Possible (serialize Any) | Excellent (Pid is location-transparent) |
 | **Learning curve** | Moderate (Handler<M> pattern) | Moderate + bridge pattern | Low (old API preserved) | Low (write enum, macro does rest) | Low concept, high debugging | Low concept, high registration overhead |
 | **Erlang alignment** | Actix-like | Actor-level granularity (Erlang behaviours) | Actix-like | Actix-like | Erlang-ish | Most Erlang |
-| **Macro improvement potential** | Already done (`actor_api!`) | Done (`protocol_impl!`) | None (structural) | N/A (is a macro) | None (false safety) | Low (ergonomics only) |
+| **Macro improvement potential** | Already done (`actor_api!`) | Done (`#[protocol]` + `#[bridge]`) | None (structural) | N/A (is a macro) | None (false safety) | Low (ergonomics only) |
 
 ---
 
@@ -1221,7 +1199,7 @@ And `spawned::send(pid, Msg { ... })` could get ergonomic wrappers similar to `a
 
 **Approach B (Protocol Traits)** is a strong alternative with identical caller ergonomics:
 - main.rs body is identical to A: `alice.join_room(room.clone())`, `room.members().await.unwrap()`, `alice.say(...)`
-- `protocol_impl!` macro generates bridge impls from compact declarations, competitive boilerplate with `actor_api!`
+- `#[bridge]` attribute on `#[actor]` generates protocol bridge + conversion from a compact declaration — no separate macro needed
 - `Response<T>` keeps protocol traits object-safe while supporting async request-response — structural mirror of the Envelope pattern (no RPITIT, no `BoxFuture`)
 - `Context::actor_ref()` lets actors self-register with protocol traits (e.g., `ctx.actor_ref().as_participant()`)
 - Protocol traits define contracts at the actor level (like Erlang behaviours), giving actor-level granularity for registry and discovery
@@ -1242,7 +1220,7 @@ And `spawned::send(pid, Msg { ... })` could get ergonomic wrappers similar to `a
 |--------|------|-------------|
 | `main` | — | Old enum-based API (baseline) |
 | [`feat/approach-a`](https://github.com/lambdaclass/spawned/tree/feat/approach-a) | main | **Approach A** — Pure Recipient\<M\> + actor_api! pattern (all examples rewritten) |
-| [`feat/approach-b`](https://github.com/lambdaclass/spawned/tree/feat/approach-b) | main | **Approach B** — Protocol traits + protocol_impl! macro + Context::actor_ref() (all examples rewritten) |
+| [`feat/approach-b`](https://github.com/lambdaclass/spawned/tree/feat/approach-b) | main | **Approach B** — Protocol traits + `#[protocol]`/`#[bridge]` macros + Context::actor_ref() (all examples rewritten) |
 | [`feat/actor-macro-registry`](https://github.com/lambdaclass/spawned/tree/de651ad21e2dd39babf534cb74174ae0fe3b399c) | main | Adds `#[actor]` macro + named registry on top of Handler\<M\> |
 | [`feat/145-protocol-trait`](https://github.com/lambdaclass/spawned/tree/b0e5afb2c69e1f5b6ab8ee82b59582348877c819) | main | Original protocol traits exploration + [`docs/ALTERNATIVE_APPROACHES.md`](https://github.com/lambdaclass/spawned/blob/b0e5afb2c69e1f5b6ab8ee82b59582348877c819/docs/ALTERNATIVE_APPROACHES.md) |
 | [`feat/critical-api-issues`](https://github.com/lambdaclass/spawned/tree/1ef33bf0c463543dca379463c554ccc5914c86ff) | main | Design doc for Handler\<M\> + Recipient\<M\> ([`docs/API_REDESIGN.md`](https://github.com/lambdaclass/spawned/blob/1ef33bf0c463543dca379463c554ccc5914c86ff/docs/API_REDESIGN.md)) |
