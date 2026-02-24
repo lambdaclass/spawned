@@ -428,13 +428,13 @@ charlie.join_room(discovered).unwrap();
 
 ## Approach B: Protocol Traits (one protocol per actor)
 
-**Branch:** [`feat/approach-b`](https://github.com/lambdaclass/spawned/tree/feat/approach-b) (`#[protocol]` + `#[bridge]` macros + Context::actor_ref())
+**Branch:** [`feat/approach-b`](https://github.com/lambdaclass/spawned/tree/feat/approach-b) (`#[protocol]` + `#[actor(protocol = X)]` macros + Context::actor_ref())
 
-**Status:** Fully implemented on `feat/approach-b`. 34 tests passing. All examples rewritten to protocol traits with `#[protocol]` and `#[bridge]` macros.
+**Status:** Fully implemented on `feat/approach-b`. 34 tests passing. All examples rewritten to protocol traits with `#[protocol]` and `#[actor(protocol = X)]` macros.
 
-Uses the same `Handler<M>` and `#[actor]` macro as Approach A for #144. Solves #145 with a different philosophy inspired by Erlang's gen_server: each actor defines a **protocol trait** that represents its complete public API — like an Erlang module's exported functions. Actors communicate through protocol refs (`Arc<dyn Protocol>`), never through concrete `ActorRef<OtherActor>` types. One protocol per actor, one bridge per actor.
+Uses the same `Handler<M>` and `#[actor]` macro as Approach A for #144. Solves #145 with a different philosophy inspired by Erlang's gen_server: each actor defines a **protocol trait** that represents its complete public API — like an Erlang module's exported functions. Actors communicate through protocol refs (`Arc<dyn Protocol>`), never through concrete `ActorRef<OtherActor>` types. One protocol per actor.
 
-**Key design:** `#[protocol]` on a trait definition generates everything — message structs from method signatures, type alias (`Arc<dyn Trait>`), conversion trait, and a bridge helper macro. `#[bridge(TraitName)]` on an `#[actor]` impl is a one-liner that connects the actor to its protocol. Names are derived by convention (`RoomProtocol` → `RoomRef`, `AsRoom`), so no explicit parameters are needed. `Response<T>` enables async request-response on protocol traits without breaking object safety, and `Context::actor_ref()` lets actors obtain their own `ActorRef` for self-registration.
+**Key design:** `#[protocol]` on a trait definition generates everything — message structs from method signatures, conversion trait, blanket `impl Protocol for ActorRef<A>`, and blanket `impl ToXRef for ActorRef<A>`. Names are derived by convention (`RoomProtocol` → `RoomRef`, `ToRoomRef`). `#[actor(protocol = X)]` auto-generates `impl Actor`, `Handler<M>` impls from annotated methods, and a compile-time assertion that `ActorRef<T>: Protocol`. `Response<T>` enables async request-response on protocol traits without breaking object safety, and `Context::actor_ref()` lets actors obtain their own `ActorRef` for self-registration.
 
 ### Response\<T\>: Envelope's counterpart on the receive side
 
@@ -460,15 +460,15 @@ This keeps protocol traits **object-safe** — `fn members(&self) -> Response<Ve
 
 ### Without macro (expanded reference)
 
-This section shows what `#[protocol]` and `#[bridge]` generate under the hood. The macro versions follow below.
+This section shows what `#[protocol]` and `#[actor(protocol = X)]` generate under the hood. The macro versions follow below.
 
 <details>
-<summary><b>protocols.rs</b> — traits + message structs + converter traits (all manual)</summary>
+<summary><b>protocols.rs</b> — traits + message structs + blanket impls (all manual)</summary>
 
 ```rust
 use spawned_concurrency::error::ActorError;
 use spawned_concurrency::message::Message;
-use spawned_concurrency::tasks::Response;
+use spawned_concurrency::tasks::{Actor, ActorRef, Handler, Response};
 use std::sync::Arc;
 
 // --- Type aliases (manually declared for cross-protocol references) ---
@@ -497,13 +497,37 @@ pub mod room_protocol {
     impl Message for Members { type Result = Vec<String>; }
 }
 
-pub trait AsRoom {
-    fn as_room(&self) -> RoomRef;
+pub trait ToRoomRef {
+    fn to_room_ref(&self) -> RoomRef;
 }
 
-impl AsRoom for RoomRef {
-    fn as_room(&self) -> RoomRef {
+impl ToRoomRef for RoomRef {
+    fn to_room_ref(&self) -> RoomRef {
         Arc::clone(self)
+    }
+}
+
+impl<A: Actor + Handler<room_protocol::Say> + Handler<room_protocol::AddMember> + Handler<room_protocol::Members>>
+    RoomProtocol for ActorRef<A>
+{
+    fn say(&self, from: String, text: String) -> Result<(), ActorError> {
+        self.send(room_protocol::Say { from, text })
+    }
+
+    fn add_member(&self, name: String, user: UserRef) -> Result<(), ActorError> {
+        self.send(room_protocol::AddMember { name, user })
+    }
+
+    fn members(&self) -> Response<Vec<String>> {
+        Response::from(self.request_raw(room_protocol::Members))
+    }
+}
+
+impl<A: Actor + Handler<room_protocol::Say> + Handler<room_protocol::AddMember> + Handler<room_protocol::Members>>
+    ToRoomRef for ActorRef<A>
+{
+    fn to_room_ref(&self) -> RoomRef {
+        Arc::new(self.clone())
     }
 }
 
@@ -511,7 +535,7 @@ impl AsRoom for RoomRef {
 
 pub trait UserProtocol: Send + Sync {
     fn deliver(&self, from: String, text: String) -> Result<(), ActorError>;
-    fn speak(&self, text: String) -> Result<(), ActorError>;
+    fn say(&self, text: String) -> Result<(), ActorError>;
     fn join_room(&self, room: RoomRef) -> Result<(), ActorError>;
 }
 
@@ -521,35 +545,57 @@ pub mod user_protocol {
     pub struct Deliver { pub from: String, pub text: String }
     impl Message for Deliver { type Result = (); }
 
-    pub struct Speak { pub text: String }
-    impl Message for Speak { type Result = (); }
+    pub struct Say { pub text: String }
+    impl Message for Say { type Result = (); }
 
     pub struct JoinRoom { pub room: RoomRef }
     impl Message for JoinRoom { type Result = (); }
 }
 
-pub trait AsUser {
-    fn as_user(&self) -> UserRef;
+pub trait ToUserRef {
+    fn to_user_ref(&self) -> UserRef;
 }
 
-impl AsUser for UserRef {
-    fn as_user(&self) -> UserRef {
+impl ToUserRef for UserRef {
+    fn to_user_ref(&self) -> UserRef {
         Arc::clone(self)
+    }
+}
+
+impl<A: Actor + Handler<user_protocol::Deliver> + Handler<user_protocol::Say> + Handler<user_protocol::JoinRoom>>
+    UserProtocol for ActorRef<A>
+{
+    fn deliver(&self, from: String, text: String) -> Result<(), ActorError> {
+        self.send(user_protocol::Deliver { from, text })
+    }
+
+    fn say(&self, text: String) -> Result<(), ActorError> {
+        self.send(user_protocol::Say { text })
+    }
+
+    fn join_room(&self, room: RoomRef) -> Result<(), ActorError> {
+        self.send(user_protocol::JoinRoom { room })
+    }
+}
+
+impl<A: Actor + Handler<user_protocol::Deliver> + Handler<user_protocol::Say> + Handler<user_protocol::JoinRoom>>
+    ToUserRef for ActorRef<A>
+{
+    fn to_user_ref(&self) -> UserRef {
+        Arc::new(self.clone())
     }
 }
 ```
 </details>
 
 <details>
-<summary><b>room.rs</b> — manual Actor + Handler impls + bridge impl</summary>
+<summary><b>room.rs</b> — manual Actor + Handler impls + protocol assertion</summary>
 
 ```rust
-use spawned_concurrency::error::ActorError;
-use spawned_concurrency::tasks::{Actor, ActorRef, Context, Handler, Response};
-use std::sync::Arc;
+use spawned_concurrency::tasks::{Actor, ActorRef, Context, Handler};
 
-use crate::protocols::{AsRoom, RoomProtocol, RoomRef, UserRef};
 use crate::protocols::room_protocol::{AddMember, Members, Say};
+use crate::protocols::{RoomProtocol, UserRef};
 
 pub struct ChatRoom {
     members: Vec<(String, UserRef)>,
@@ -562,8 +608,6 @@ impl ChatRoom {
 }
 
 impl Actor for ChatRoom {}
-
-// --- Handler impls (what #[actor] with #[send_handler]/#[request_handler] generates) ---
 
 impl Handler<Say> for ChatRoom {
     async fn handle(&mut self, msg: Say, _ctx: &Context<Self>) {
@@ -589,40 +633,22 @@ impl Handler<Members> for ChatRoom {
     }
 }
 
-// --- Bridge impl (what #[bridge(RoomProtocol)] generates) ---
-
-impl RoomProtocol for ActorRef<ChatRoom> {
-    fn say(&self, from: String, text: String) -> Result<(), ActorError> {
-        self.send(Say { from, text })
-    }
-
-    fn add_member(&self, name: String, user: UserRef) -> Result<(), ActorError> {
-        self.send(AddMember { name, user })
-    }
-
-    fn members(&self) -> Response<Vec<String>> {
-        Response::from(self.request_raw(Members))
-    }
-}
-
-impl AsRoom for ActorRef<ChatRoom> {
-    fn as_room(&self) -> RoomRef {
-        Arc::new(self.clone())
-    }
-}
+// Compile-time assertion: ActorRef<ChatRoom> must satisfy RoomProtocol
+const _: () = {
+    fn _assert<T: RoomProtocol>() {}
+    fn _check() { _assert::<ActorRef<ChatRoom>>(); }
+};
 ```
 </details>
 
 <details>
-<summary><b>user.rs</b> — same pattern, manual Handler + bridge impls</summary>
+<summary><b>user.rs</b> — same pattern, manual Actor + Handler impls</summary>
 
 ```rust
-use spawned_concurrency::error::ActorError;
 use spawned_concurrency::tasks::{Actor, ActorRef, Context, Handler};
-use std::sync::Arc;
 
-use crate::protocols::{AsUser, RoomRef, UserProtocol, UserRef};
-use crate::protocols::user_protocol::{Deliver, JoinRoom, Speak};
+use crate::protocols::user_protocol::{Deliver, JoinRoom, Say};
+use crate::protocols::{RoomRef, ToUserRef, UserProtocol};
 
 pub struct User {
     name: String,
@@ -637,50 +663,32 @@ impl User {
 
 impl Actor for User {}
 
-// --- Handler impls ---
-
-impl Handler<JoinRoom> for User {
-    async fn handle(&mut self, msg: JoinRoom, ctx: &Context<Self>) {
-        let _ = msg.room.add_member(self.name.clone(), ctx.actor_ref().as_user());
-        self.room = Some(msg.room);
-    }
-}
-
-impl Handler<Speak> for User {
-    async fn handle(&mut self, msg: Speak, _ctx: &Context<Self>) {
-        if let Some(ref room) = self.room {
-            let _ = room.say(self.name.clone(), msg.text);
-        }
-    }
-}
-
 impl Handler<Deliver> for User {
     async fn handle(&mut self, msg: Deliver, _ctx: &Context<Self>) {
         tracing::info!("[{}] got: {} says '{}'", self.name, msg.from, msg.text);
     }
 }
 
-// --- Bridge impl (what #[bridge(UserProtocol)] generates) ---
-
-impl UserProtocol for ActorRef<User> {
-    fn deliver(&self, from: String, text: String) -> Result<(), ActorError> {
-        self.send(Deliver { from, text })
-    }
-
-    fn speak(&self, text: String) -> Result<(), ActorError> {
-        self.send(Speak { text })
-    }
-
-    fn join_room(&self, room: RoomRef) -> Result<(), ActorError> {
-        self.send(JoinRoom { room })
+impl Handler<Say> for User {
+    async fn handle(&mut self, msg: Say, _ctx: &Context<Self>) {
+        if let Some(ref room) = self.room {
+            let _ = room.say(self.name.clone(), msg.text);
+        }
     }
 }
 
-impl AsUser for ActorRef<User> {
-    fn as_user(&self) -> UserRef {
-        Arc::new(self.clone())
+impl Handler<JoinRoom> for User {
+    async fn handle(&mut self, msg: JoinRoom, ctx: &Context<Self>) {
+        let _ = msg.room.add_member(self.name.clone(), ctx.actor_ref().to_user_ref());
+        self.room = Some(msg.room);
     }
 }
+
+// Compile-time assertion: ActorRef<User> must satisfy UserProtocol
+const _: () = {
+    fn _assert<T: UserProtocol>() {}
+    fn _check() { _assert::<ActorRef<User>>(); }
+};
 ```
 </details>
 
@@ -693,15 +701,15 @@ let alice = User::new("Alice".into()).start();
 let bob = User::new("Bob".into()).start();
 
 // Register the room's protocol — not the concrete type
-registry::register("general", room.as_room()).unwrap();
+registry::register("general", room.to_room_ref()).unwrap();
 
-alice.join_room(room.as_room()).unwrap();
-bob.join_room(room.as_room()).unwrap();
+alice.join_room(room.to_room_ref()).unwrap();
+bob.join_room(room.to_room_ref()).unwrap();
 
 let members = room.members().await.unwrap();
 
-alice.speak("Hello everyone!".into()).unwrap();
-bob.speak("Hey Alice!".into()).unwrap();
+alice.say("Hello everyone!".into()).unwrap();
+bob.say("Hey Alice!".into()).unwrap();
 
 // Late joiner discovers the room — only needs the protocol, not the concrete type
 let charlie = User::new("Charlie".into()).start();
@@ -709,10 +717,10 @@ let discovered: RoomRef = registry::whereis("general").unwrap();
 charlie.join_room(discovered).unwrap();
 ```
 
-Protocol methods (`say`, `speak`, `members`) are called directly on `ActorRef` via the bridge impls. The `.as_room()` conversion makes the protocol boundary explicit.
+Protocol methods (`say`, `join_room`, `members`) are called directly on `ActorRef` via blanket impls. The `.to_room_ref()` conversion makes the protocol boundary explicit.
 </details>
 
-### With `#[protocol]` + `#[bridge]` macros
+### With `#[protocol]` + `#[actor]` macros
 
 <details>
 <summary><b>protocols.rs</b> — one protocol per actor, <code>#[protocol]</code> generates everything</summary>
@@ -721,16 +729,18 @@ Protocol methods (`say`, `speak`, `members`) are called directly on `ActorRef` v
 use spawned_concurrency::error::ActorError;
 use spawned_concurrency::tasks::Response;
 use spawned_macros::protocol;
+use std::sync::Arc;
+
+// Manual type aliases for circular references between protocols
+pub type RoomRef = Arc<dyn RoomProtocol>;
+pub type UserRef = Arc<dyn UserProtocol>;
 
 // #[protocol] generates for each trait:
-//   Type alias:       pub type RoomRef = Arc<dyn RoomProtocol>;
-//   Conversion trait: pub trait AsRoom { fn as_room(&self) -> RoomRef; }
-//   Identity impl:    impl AsRoom for RoomRef { ... }
+//   Conversion trait: pub trait ToRoomRef { fn to_room_ref(&self) -> RoomRef; }
+//   Identity impl:    impl ToRoomRef for RoomRef { ... }
 //   Message structs:  room_protocol::{Say, AddMember, Members} with Message impls
-//   Bridge helper:    hidden macro for #[bridge] to use
-//
-// Names derived by convention: RoomProtocol → RoomRef, AsRoom
-// Override with: #[protocol(ref = MyRef, converter = ToMyRef)]
+//   Blanket impl:     impl<A: Actor + Handler<Say> + ...> RoomProtocol for ActorRef<A>
+//   Blanket impl:     impl<A: Actor + Handler<Say> + ...> ToRoomRef for ActorRef<A>
 
 #[protocol]
 pub trait RoomProtocol: Send + Sync {
@@ -742,29 +752,27 @@ pub trait RoomProtocol: Send + Sync {
 #[protocol]
 pub trait UserProtocol: Send + Sync {
     fn deliver(&self, from: String, text: String) -> Result<(), ActorError>;
-    fn speak(&self, text: String) -> Result<(), ActorError>;
+    fn say(&self, text: String) -> Result<(), ActorError>;
     fn join_room(&self, room: RoomRef) -> Result<(), ActorError>;
 }
 ```
 </details>
 
 <details>
-<summary><b>room.rs</b> — <code>#[bridge(RoomProtocol)]</code>, message structs from protocol</summary>
+<summary><b>room.rs</b> — <code>#[actor(protocol = RoomProtocol)]</code> generates Actor impl, Handler impls, and assertion</summary>
 
 ```rust
-use spawned_concurrency::tasks::{Actor, Context};
+use spawned_concurrency::tasks::{Actor, Context, Handler};
 use spawned_macros::actor;
+
+use crate::protocols::room_protocol::{AddMember, Members, Say};
 use crate::protocols::{RoomProtocol, UserRef};
-use crate::protocols::room_protocol::{Say, AddMember, Members};
 
 pub struct ChatRoom {
     members: Vec<(String, UserRef)>,
 }
 
-impl Actor for ChatRoom {}
-
-#[actor]
-#[bridge(RoomProtocol)]
+#[actor(protocol = RoomProtocol)]
 impl ChatRoom {
     pub fn new() -> Self {
         Self { members: Vec::new() }
@@ -795,44 +803,42 @@ impl ChatRoom {
 </details>
 
 <details>
-<summary><b>user.rs</b> — <code>#[bridge(UserProtocol)]</code>, symmetric with room.rs</summary>
+<summary><b>user.rs</b> — <code>#[actor(protocol = UserProtocol)]</code>, symmetric with room.rs</summary>
 
 ```rust
-use spawned_concurrency::tasks::{Actor, Context};
+use spawned_concurrency::tasks::{Actor, Context, Handler};
 use spawned_macros::actor;
-use crate::protocols::{UserProtocol, RoomRef};
-use crate::protocols::user_protocol::{Deliver, Speak, JoinRoom};
+
+use crate::protocols::user_protocol::{Deliver, JoinRoom, Say};
+use crate::protocols::{RoomRef, ToUserRef, UserProtocol};
 
 pub struct User {
     name: String,
     room: Option<RoomRef>,
 }
 
-impl Actor for User {}
-
-#[actor]
-#[bridge(UserProtocol)]
+#[actor(protocol = UserProtocol)]
 impl User {
     pub fn new(name: String) -> Self {
         Self { name, room: None }
     }
 
     #[send_handler]
-    async fn handle_join_room(&mut self, msg: JoinRoom, ctx: &Context<Self>) {
-        let _ = msg.room.add_member(self.name.clone(), ctx.actor_ref().as_user());
-        self.room = Some(msg.room);
+    async fn handle_deliver(&mut self, msg: Deliver, _ctx: &Context<Self>) {
+        tracing::info!("[{}] got: {} says '{}'", self.name, msg.from, msg.text);
     }
 
     #[send_handler]
-    async fn handle_speak(&mut self, msg: Speak, _ctx: &Context<Self>) {
+    async fn handle_say(&mut self, msg: Say, _ctx: &Context<Self>) {
         if let Some(ref room) = self.room {
             let _ = room.say(self.name.clone(), msg.text);
         }
     }
 
     #[send_handler]
-    async fn handle_deliver(&mut self, msg: Deliver, _ctx: &Context<Self>) {
-        tracing::info!("[{}] got: {} says '{}'", self.name, msg.from, msg.text);
+    async fn handle_join_room(&mut self, msg: JoinRoom, ctx: &Context<Self>) {
+        let _ = msg.room.add_member(self.name.clone(), ctx.actor_ref().to_user_ref());
+        self.room = Some(msg.room);
     }
 }
 ```
@@ -847,15 +853,15 @@ let alice = User::new("Alice".into()).start();
 let bob = User::new("Bob".into()).start();
 
 // Register the room's protocol — not the concrete type
-registry::register("general", room.as_room()).unwrap();
+registry::register("general", room.to_room_ref()).unwrap();
 
-alice.join_room(room.as_room()).unwrap();
-bob.join_room(room.as_room()).unwrap();
+alice.join_room(room.to_room_ref()).unwrap();
+bob.join_room(room.to_room_ref()).unwrap();
 
 let members = room.members().await.unwrap();
 
-alice.speak("Hello everyone!".into()).unwrap();
-bob.speak("Hey Alice!".into()).unwrap();
+alice.say("Hello everyone!".into()).unwrap();
+bob.say("Hey Alice!".into()).unwrap();
 
 // Late joiner discovers the room — only needs the protocol, not the concrete type
 let charlie = User::new("Charlie".into()).start();
@@ -866,21 +872,21 @@ charlie.join_room(discovered).unwrap();
 
 ### Analysis
 
-| Dimension | Without macro | With `#[protocol]` + `#[bridge]` macros |
+| Dimension | Without macro | With `#[protocol]` + `#[actor]` macros |
 |-----------|---------------|----------------------------------------|
-| **Readability** | `protocols.rs` is a complete API index, but message submodules, converter traits, and identity impls add visual noise. Actor files have separate blocks for handlers and bridge impls. | `protocols.rs` is just trait definitions — the clearest API surface of all approaches. Actor files are pure implementation: imports → struct → `#[bridge]` one-liner → handlers. |
-| **API at a glance** | Protocol traits define the API, but you must scroll past message submodules and converter traits to see the full picture. | Protocol traits ARE the API. `RoomProtocol` tells you exactly what a room can do. No separate `actor_api!` — the protocol is the single source of truth. |
-| **Boilerplate** | High. Per protocol: message structs + `impl Message` in a submodule, converter trait + identity impl. Per actor: `impl Actor`, one `impl Handler<M>` per message, full `impl Protocol for ActorRef<T>` bridge with one method per message, `impl AsX for ActorRef<T>`. | Minimal. Per protocol: one `#[protocol]` trait. Per actor: `#[bridge]` one-liner + handler methods. Message structs, converter traits, and bridge impls are all generated. |
-| **main.rs expressivity** | Identical — `alice.speak("Hello")`, `room.members().await`, `room.as_room()`. Bridge impls provide the same API surface. | Identical — same call syntax. The macros don't change how callers use the protocols. |
+| **Readability** | `protocols.rs` is a complete API index, but blanket impls, message submodules, and converter traits add visual noise. Actor files have one `impl Handler<M>` block per message — clear but verbose. | `protocols.rs` is just trait definitions — the clearest API surface of all approaches. Actor files contain only the struct + annotated handler methods. `#[actor(protocol = RoomProtocol)]` makes the contract relationship explicit. |
+| **API at a glance** | Protocol traits define the API, but you must scroll past message submodules, blanket impls, and converter traits to see the full picture. | Protocol traits ARE the API. `RoomProtocol` tells you exactly what a room can do. No separate `actor_api!` — the protocol is the single source of truth. |
+| **Boilerplate** | High. Per protocol: message structs + `impl Message` in a submodule, converter trait + identity impl, blanket `impl Protocol for ActorRef<A>` + `impl ToXRef for ActorRef<A>`. Per actor: `impl Actor`, one `impl Handler<M>` per message, compile-time assertion const. | Minimal. Per protocol: one `#[protocol]` trait. Per actor: one `#[actor(protocol = X)]` line + handler methods. Everything else (message structs, converters, blanket impls, Actor impl, Handler impls, assertion) is generated. |
+| **main.rs expressivity** | Identical — `alice.say("Hello")`, `room.members().await`, `room.to_room_ref()`. Blanket impls provide the same API surface. | Identical — same call syntax. The macros don't change how callers use the protocols. |
 | **Request-response** | `Response<T>` keeps protocol traits object-safe — no RPITIT, no `BoxFuture` boxing. | Same mechanism. The macros generate the same `Response::from(self.request_raw(...))` calls. |
 | **Circular dep solution** | Actors hold `RoomRef` / `UserRef` — protocol-level refs. No `ActorRef<OtherActor>`, no bidirectional module imports. Both depend only on `protocols.rs`. | Same mechanism. |
-| **Registry** | Register `RoomRef` — one registration, full API, no concrete type needed. Identity `AsRoom` impl on `RoomRef` means discovered refs work directly. | Same — registry behavior is identical. |
-| **Symmetry** | Room and User have identical structure, but each actor file has ~30 lines of bridge boilerplate. | Room and User have identical structure: protocol → `#[bridge]` one-liner → handlers. No asymmetry. |
+| **Registry** | Register `RoomRef` — one registration, full API, no concrete type needed. Identity `ToRoomRef` impl on `RoomRef` means discovered refs work directly. | Same — registry behavior is identical. |
+| **Symmetry** | Room and User have identical structure, but each actor file has verbose handler impls + assertion boilerplate. | Room and User have identical structure: `#[actor(protocol = X)]` + handlers. No asymmetry. |
 | **Testability** | Best of all approaches — mock `RoomProtocol` or `UserProtocol` directly in unit tests without running an actor system. | Same — protocol traits are the same, mocking works identically. |
 
-**Key insight:** The non-macro version reveals the full machinery: message submodules, converter traits, bridge impls on `ActorRef<T>`. It's entirely standard Rust — any developer can read and understand it without knowing the macros. The `#[protocol]` + `#[bridge]` macros eliminate all that scaffolding while preserving B's unique advantages: protocol-level contracts, best-in-class testability, and Erlang-like actor-level granularity. The protocol trait IS the API — no separate API layer needed.
+**Key insight:** The non-macro version reveals the full machinery: message submodules, blanket impls, converter traits, protocol assertions. It's entirely standard Rust — any developer can read and understand it without knowing the macros. The `#[protocol]` + `#[actor(protocol = X)]` macros eliminate all that scaffolding while preserving B's unique advantages: protocol-level contracts, best-in-class testability, and Erlang-like actor-level granularity. The protocol trait IS the API — no separate API layer needed.
 
-**Scaling:** Each new actor needs one protocol trait + one `#[bridge]` + handlers. Each new message is one method in the protocol + one handler. The cost is linear and symmetric — no distinction between "internal" and "cross-boundary" messages. Every message goes through the protocol.
+**Scaling:** Each new actor needs one protocol trait + one `#[actor(protocol = X)]` + handlers. Each new message is one method in the protocol + one handler. The cost is linear and symmetric — no distinction between "internal" and "cross-boundary" messages. Every message goes through the protocol.
 
 **Cross-crate scaling:** `protocols.rs` maps directly to a shared crate. Each actor crate depends only on the protocols crate, never on each other. No restructuring needed — the architecture is crate-ready from day one. In Approach A, the bidirectional module dependency (room imports `Deliver` from user, user imports `ChatRoomApi` from room) would become a circular crate dependency that Rust forbids.
 
@@ -1250,9 +1256,9 @@ registry::register("general", room.clone()).unwrap();                       // A
 let discovered: ActorRef<ChatRoom> = registry::whereis("general").unwrap(); // caller must know ChatRoom
 
 // Approach B — stores and retrieves the protocol
-registry::register("general", room.as_room()).unwrap();                     // RoomRef
+registry::register("general", room.to_room_ref()).unwrap();                     // RoomRef
 let discovered: RoomRef = registry::whereis("general").unwrap();            // caller only needs the protocol
-charlie.join_room(discovered).unwrap();                                     // works via AsRoom identity impl
+charlie.join_room(discovered).unwrap();                                     // works — RoomRef implements ToRoomRef (identity)
 ```
 
 In A, the discoverer must import `ChatRoom` and `ChatRoomApi` to use the retrieved reference — it knows exactly which actor it's talking to. In B, the discoverer imports only `RoomRef` from `protocols.rs` — it knows *what the actor can do* without knowing *what actor it is*. Any actor implementing `RoomProtocol` could be behind that reference.
@@ -1273,7 +1279,7 @@ In A, the discoverer must import `ChatRoom` and `ChatRoomApi` to use the retriev
 
 - **A** faces a trade-off: register `ActorRef<ChatRoom>` for the full API (via `ChatRoomApi` extension trait), but the discoverer must know the concrete type — or register individual `Recipient<M>` handles for type-erased per-message access, but then you need multiple registrations and the discoverer can only send one message type per handle. The chat room example uses `ActorRef<ChatRoom>` because `ChatRoomApi` provides the natural caller API.
 
-- **B** registers per protocol: `registry::register("general", room.as_room())`. A consumer discovers a `RoomRef` (`Arc<dyn RoomProtocol>`) — it can call any method on the protocol (`say`, `add_member`, `members`). One registration, full API, no concrete type needed. This maps directly to Erlang's `register/whereis` pattern but with compile-time safety.
+- **B** registers per protocol: `registry::register("general", room.to_room_ref())`. A consumer discovers a `RoomRef` (`Arc<dyn RoomProtocol>`) — it can call any method on the protocol (`say`, `add_member`, `members`). One registration, full API, no concrete type needed. This maps directly to Erlang's `register/whereis` pattern but with compile-time safety.
 
 - **E** is trivially simple but useless: `registry::register("room", room.any_ref())`. You get back an `AnyActorRef` that accepts `Box<dyn Any>`. No compile-time knowledge of what messages the actor handles.
 
@@ -1285,11 +1291,11 @@ In A, the discoverer must import `ChatRoom` and `ChatRoomApi` to use the retriev
 
 Approach A's `actor_api!` macro eliminates extension trait boilerplate by generating a trait + impl from a compact declaration. Could similar macros reduce boilerplate in the other approaches?
 
-### Approach B: Protocol Traits — DONE (`#[protocol]` + `#[bridge]`)
+### Approach B: Protocol Traits — DONE (`#[protocol]` + `#[actor(protocol = X)]`)
 
-Two proc macro attributes — `#[protocol]` and `#[bridge]` — eliminate all scaffolding. The protocol trait is the single source of truth:
+Two proc macro attributes — `#[protocol]` and `#[actor]` — eliminate all scaffolding. The protocol trait is the single source of truth:
 
-**`#[protocol]`** on the trait definition generates everything: type alias, conversion trait, identity impl, message structs, and a hidden bridge helper macro. Names are derived by convention (`RoomProtocol` → `RoomRef`, `AsRoom`):
+**`#[protocol]`** on the trait definition generates everything: conversion trait, identity impl, message structs, and blanket impls. Names are derived by convention (`RoomProtocol` → `RoomRef`, `ToRoomRef`):
 
 ```rust
 #[protocol]
@@ -1299,24 +1305,23 @@ pub trait RoomProtocol: Send + Sync {
     fn members(&self) -> Response<Vec<String>>;
 }
 // Generates:
-//   type RoomRef = Arc<dyn RoomProtocol>
-//   trait AsRoom, impl AsRoom for RoomRef (identity)
+//   trait ToRoomRef, impl ToRoomRef for RoomRef (identity)
 //   room_protocol::{Say, AddMember, Members} with Message impls
-//   hidden bridge helper macro
+//   blanket impl<A: Actor + Handler<...>> RoomProtocol for ActorRef<A>
+//   blanket impl<A: Actor + Handler<...>> ToRoomRef for ActorRef<A>
 ```
 
-**`#[bridge]`** on the `#[actor]` impl is a one-liner — no method listing, no params:
+**`#[actor(protocol = X)]`** generates `impl Actor`, `Handler<M>` impls from annotated methods, and a compile-time assertion:
 
 ```rust
-#[actor]
-#[bridge(RoomProtocol)]
+#[actor(protocol = RoomProtocol)]
 impl ChatRoom { ... }
-// Generates: impl RoomProtocol for ActorRef<ChatRoom>, impl AsRoom for ActorRef<ChatRoom>
+// Generates: impl Actor for ChatRoom {}, impl Handler<M> per handler, static assertion
 ```
 
-The bridge helper (generated by `#[protocol]`) encodes all method→struct mappings. Each send method generates `fn method(&self, ...) -> Result<(), ActorError> { self.send(Msg { ... }) }`. Each request method generates `fn method(&self, ...) -> Response<T> { Response::from(self.request_raw(Msg)) }`.
+Each send method in the blanket impl generates `fn method(&self, ...) -> Result<(), ActorError> { self.send(Msg { ... }) }`. Each request method generates `fn method(&self, ...) -> Response<T> { Response::from(self.request_raw(Msg)) }`.
 
-**Impact:** With the "one protocol per actor" model, every actor has the same structure: protocol trait → `#[bridge]` one-liner → handlers. No `send_messages!`/`request_messages!`, no separate caller API traits, no method duplication. The only macros needed: `#[protocol]` and `#[actor]` (with `#[bridge]`). B's boilerplate per message is now lower than A's (protocol method + handler vs struct + `actor_api!` line + handler).
+**Impact:** With the "one protocol per actor" model, every actor has the same structure: protocol trait → `#[actor(protocol = X)]` → handlers. No `send_messages!`/`request_messages!`, no separate caller API traits, no method duplication. The only macros needed: `#[protocol]` and `#[actor]`. B's boilerplate per message is now lower than A's (protocol method + handler vs struct + `actor_api!` line + handler).
 
 ### Approach C: Typed Wrappers — NO
 
@@ -1324,7 +1329,7 @@ The fundamental problem is the dual-channel architecture, not boilerplate. The `
 
 ### Approach D: Derive Macro — N/A
 
-This approach IS a macro. The `#[derive(ActorMessages)]` would generate message structs, `Message` impls, API wrappers, and `Handler<M>` delegation — subsuming what `actor_api!`/`#[bridge]`, `send_messages!`, and `#[actor]` do separately.
+This approach IS a macro. The `#[derive(ActorMessages)]` would generate message structs, `Message` impls, API wrappers, and `Handler<M>` delegation — subsuming what `actor_api!`, `send_messages!`, and `#[actor]` do separately.
 
 ### Approach E: AnyActorRef — NO
 
@@ -1351,13 +1356,13 @@ And `spawned::send(pid, Msg { ... })` could get ergonomic wrappers similar to `a
 
 | Approach | Macro potential | What it would eliminate | Worth implementing? |
 |----------|----------------|----------------------|---------------------|
-| **B: Protocol Traits** | High | Message structs + bridge impls + conversion traits + caller APIs | Done — `#[protocol]` + `#[bridge]` |
+| **B: Protocol Traits** | High | Message structs + blanket impls + conversion traits + caller APIs | Done — `#[protocol]` + `#[actor(protocol = X)]` |
 | **C: Typed Wrappers** | None | N/A — structural problem | No |
 | **D: Derive Macro** | N/A | Already a macro | N/A |
 | **E: AnyActorRef** | None | Would add false safety | No |
 | **F: PID** | Low-Medium | Registration ceremony | Maybe — ergonomics only |
 
-**Takeaway:** With the "one protocol per actor" model, `#[protocol]` becomes the single source of truth — generating message structs, type aliases, conversion traits, and bridge helpers from method signatures. `#[bridge]` is a one-liner. The protocol IS the actor's API, making separate `actor_api!` or `UserActions` traits unnecessary. B's total boilerplate is now lower than A's per message (protocol method + handler vs struct + macro line + handler), while providing better testability, crate-ready architecture, and Erlang-like actor-level granularity.
+**Takeaway:** With the "one protocol per actor" model, `#[protocol]` becomes the single source of truth — generating message structs, conversion traits, and blanket impls from method signatures. `#[actor(protocol = X)]` generates `impl Actor`, Handler impls, and a compile-time assertion. The protocol IS the actor's API, making separate `actor_api!` or `UserActions` traits unnecessary. B's total boilerplate is now lower than A's per message (protocol method + handler vs struct + macro line + handler), while providing better testability, crate-ready architecture, and Erlang-like actor-level granularity.
 
 ---
 
@@ -1371,7 +1376,7 @@ And `spawned::send(pid, Msg { ... })` could get ergonomic wrappers similar to `a
 | **Breaking** | Yes | Yes | No | No | Yes | Yes |
 | **#144 type safety** | Full | Full | Hidden `unreachable!` | Hidden `unreachable!` | Full | Full |
 | **#145 type safety** | Compile-time | Compile-time | Compile-time | Compile-time | Runtime only | Runtime only |
-| **Macro support** | `#[actor]` + `actor_api!` + message macros | `#[protocol]` + `#[actor]`/`#[bridge]` (no message macros needed) | N/A (enum-based) | Derive macro | `#[actor]` | `#[actor]` |
+| **Macro support** | `#[actor]` + `actor_api!` + message macros | `#[protocol]` + `#[actor(protocol = X)]` (no message macros needed) | N/A (enum-based) | Derive macro | `#[actor]` | `#[actor]` |
 | **Dual-mode (async+threads)** | Works | Works | Complex (dual channel) | Complex | Works | Works |
 | **Registry stores** | `ActorRef<A>` (full API, coupled) or `Recipient<M>` (per-message, decoupled) | `Arc<dyn Protocol>` (full API, decoupled) | Mixed | `Recipient<M>` | `AnyActorRef` | `Pid` |
 | **Registry type safety** | Compile-time | Compile-time | Depends | Compile-time | Runtime | Runtime |
@@ -1381,11 +1386,11 @@ And `spawned::send(pid, Msg { ... })` could get ergonomic wrappers similar to `a
 
 | Dimension | A: Recipient | B: Protocol Traits | C: Typed Wrappers | D: Derive Macro | E: AnyActorRef | F: PID |
 |-----------|-------------|-------------------|-------------------|-----------------|---------------|--------|
-| **Handler readability** | Clear: one `impl Handler<M>` or `#[send_handler]` per message | Same as A for handlers. Actor files are pure implementation — imports → struct → `#[bridge]` → handlers. | Noisy: enum `match` arms + wrapper fns | Opaque: generated from enum annotations | Same as A, but callers use `Box::new` | Same as A, but callers use global `send(pid, msg)` |
+| **Handler readability** | Clear: one `impl Handler<M>` or `#[send_handler]` per message | Same as A for handlers. Actor files are pure implementation — struct + `#[actor(protocol = X)]` + handlers. | Noisy: enum `match` arms + wrapper fns | Opaque: generated from enum annotations | Same as A, but callers use `Box::new` | Same as A, but callers use global `send(pid, msg)` |
 | **API at a glance** | `actor_api!` block or scan Handler impls | Protocol trait IS the API — `RoomProtocol` and `UserProtocol` are the complete, single source of truth | Typed wrapper functions | Annotated enum (good summary) | Nothing — `AnyActorRef` is opaque | Nothing — `Pid` is opaque |
-| **main.rs expressivity** | `alice.say("Hi")` with `actor_api!`; `alice.send(SayToRoom{...})` without | `alice.speak("Hi")`, `room.members().await`, `alice.join_room(room.as_room())` | `ChatRoom::say(&room, ...)` assoc fn | Generated methods: `room.say(...)` | `room.send_any(Box::new(...))` | `spawned::send(pid, ...)` + registration |
+| **main.rs expressivity** | `alice.say("Hi")` with `actor_api!`; `alice.send(SayToRoom{...})` without | `alice.say("Hi")`, `room.members().await`, `alice.join_room(room.to_room_ref())` | `ChatRoom::say(&room, ...)` assoc fn | Generated methods: `room.say(...)` | `room.send_any(Box::new(...))` | `spawned::send(pid, ...)` + registration |
 | **Boilerplate per message** | Struct + `actor_api!` line + handler | Protocol method + handler (structs generated by `#[protocol]`) | Enum variant + wrapper + match arm | Enum variant + annotation | Struct | Struct + registration |
-| **Debugging** | Standard Rust — all code visible | Standard Rust — bridge impls visible | Standard Rust | Requires `cargo expand` | Runtime errors (downcast failures) | Runtime errors (unregistered types) |
+| **Debugging** | Standard Rust — all code visible | Standard Rust — blanket impls via `cargo expand` if needed | Standard Rust | Requires `cargo expand` | Runtime errors (downcast failures) | Runtime errors (unregistered types) |
 | **Testability** | Good (mock via Recipient) | Best (mock protocol trait) | Good | Good | Fair (Any-based) | Hard (global state) |
 
 ### Strategic Dimensions
@@ -1395,9 +1400,9 @@ And `spawned::send(pid, Msg { ... })` could get ergonomic wrappers similar to `a
 | **Framework complexity** | Medium | Low (`#[protocol]` proc macro + `Response<T>`) | High (dual channel) | Very high (proc macro) | High (dispatch) | Medium (registry) |
 | **Maintenance burden** | Low — proven Actix pattern | Low — protocol traits are user-space, macros are thin | High — two dispatch systems | High — complex macro | Medium | Medium |
 | **Clustering readiness** | Needs `RemoteRecipient` | Needs remote bridge impls | Hard | Hard | Possible (serialize Any) | Excellent (Pid is location-transparent) |
-| **Learning curve** | Moderate (Handler<M> pattern) | Moderate + bridge pattern | Low (old API preserved) | Low (write enum, macro does rest) | Low concept, high debugging | Low concept, high registration overhead |
+| **Learning curve** | Moderate (Handler<M> pattern) | Low (`#[protocol]` + `#[actor]` — write traits, add annotations) | Low (old API preserved) | Low (write enum, macro does rest) | Low concept, high debugging | Low concept, high registration overhead |
 | **Erlang alignment** | Actix-like | Most Erlang — one protocol per actor = gen_server module exports | Actix-like | Actix-like | Erlang-ish | Erlang PIDs (no type safety) |
-| **Macro improvement potential** | Already done (`actor_api!`) | Done — `#[protocol]` generates everything, `#[bridge]` is one-liner | None (structural) | N/A (is a macro) | None (false safety) | Low (ergonomics only) |
+| **Macro improvement potential** | Already done (`actor_api!`) | Done — `#[protocol]` + `#[actor(protocol = X)]` generate everything | None (structural) | N/A (is a macro) | None (false safety) | Low (ergonomics only) |
 
 ---
 
@@ -1414,12 +1419,12 @@ And `spawned::send(pid, Msg { ... })` could get ergonomic wrappers similar to `a
 
 **Approach B (Protocol Traits)** is a strong alternative with the most Erlang-like architecture:
 - One protocol per actor — the protocol IS the actor's complete public API, like an Erlang gen_server's module exports
-- `#[protocol]` generates everything from the trait definition: message structs, type alias, conversion trait, bridge helper. `#[bridge(TraitName)]` is a one-liner
+- `#[protocol]` generates everything from the trait definition: message structs, conversion trait, blanket impls. `#[actor(protocol = X)]` generates `impl Actor`, Handler impls, and compile-time assertion
 - Lowest boilerplate per message: protocol method + handler (structs generated automatically)
-- No `send_messages!`/`request_messages!`, no `actor_api!`, no manual caller API traits — just `#[protocol]` and `#[bridge]`
-- Perfect symmetry — every actor has the same structure: protocol → bridge → handlers
+- No `send_messages!`/`request_messages!`, no `actor_api!`, no manual caller API traits — just `#[protocol]` and `#[actor]`
+- Perfect symmetry — every actor has the same structure: protocol → `#[actor(protocol = X)]` → handlers
 - `Response<T>` keeps protocol traits object-safe (structural mirror of the Envelope pattern)
-- `Context::actor_ref()` lets actors self-register (e.g., `ctx.actor_ref().as_user()`)
+- `Context::actor_ref()` lets actors convert themselves to protocol refs (e.g., `ctx.actor_ref().to_user_ref()`)
 - Best testability — mock `RoomProtocol` or `UserProtocol` directly without an actor system
 - Zero cross-actor dependencies — both Room and User depend only on `protocols.rs`
 - Best registry story: one registration per protocol, full API, no concrete type needed
@@ -1437,7 +1442,7 @@ And `spawned::send(pid, Msg { ... })` could get ergonomic wrappers similar to `a
 |--------|------|-------------|
 | `main` | — | Old enum-based API (baseline) |
 | [`feat/approach-a`](https://github.com/lambdaclass/spawned/tree/feat/approach-a) | main | **Approach A** — Pure Recipient\<M\> + actor_api! pattern (all examples rewritten) |
-| [`feat/approach-b`](https://github.com/lambdaclass/spawned/tree/feat/approach-b) | main | **Approach B** — Protocol traits + `#[protocol]`/`#[bridge]` macros + Context::actor_ref() (all examples rewritten) |
+| [`feat/approach-b`](https://github.com/lambdaclass/spawned/tree/feat/approach-b) | main | **Approach B** — Protocol traits + `#[protocol]`/`#[actor(protocol = X)]` macros + Context::actor_ref() (all examples rewritten) |
 | [`feat/actor-macro-registry`](https://github.com/lambdaclass/spawned/tree/de651ad21e2dd39babf534cb74174ae0fe3b399c) | main | Adds `#[actor]` macro + named registry on top of Handler\<M\> |
 | [`feat/145-protocol-trait`](https://github.com/lambdaclass/spawned/tree/b0e5afb2c69e1f5b6ab8ee82b59582348877c819) | main | Original protocol traits exploration + [`docs/ALTERNATIVE_APPROACHES.md`](https://github.com/lambdaclass/spawned/blob/b0e5afb2c69e1f5b6ab8ee82b59582348877c819/docs/ALTERNATIVE_APPROACHES.md) |
 | [`feat/critical-api-issues`](https://github.com/lambdaclass/spawned/tree/1ef33bf0c463543dca379463c554ccc5914c86ff) | main | Design doc for Handler\<M\> + Recipient\<M\> ([`docs/API_REDESIGN.md`](https://github.com/lambdaclass/spawned/blob/1ef33bf0c463543dca379463c554ccc5914c86ff/docs/API_REDESIGN.md)) |
