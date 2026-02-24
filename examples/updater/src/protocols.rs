@@ -5,7 +5,6 @@ use std::sync::Arc;
 pub type UpdaterRef = Arc<dyn UpdaterProtocol>;
 
 #[protocol]
-#[allow(dead_code)]
 pub trait UpdaterProtocol: Send + Sync {
-    fn check(&self) -> Result<(), ActorError>;
+    fn _check(&self) -> Result<(), ActorError>;
 }
