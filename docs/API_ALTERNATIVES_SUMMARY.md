@@ -130,20 +130,22 @@ Each message is its own struct with an associated `Result` type. Actors implemen
 
 ```rust
 use spawned_concurrency::message::Message;
-use spawned_concurrency::messages;
 use spawned_concurrency::tasks::Recipient;
 
-pub struct Join {
-    pub name: String,
-    pub inbox: Recipient<Deliver>,
-}
+pub struct Say { pub from: String, pub text: String }
+impl Message for Say { type Result = (); }
+
+pub struct SayToRoom { pub text: String }
+impl Message for SayToRoom { type Result = (); }
+
+pub struct Deliver { pub from: String, pub text: String }
+impl Message for Deliver { type Result = (); }
+
+pub struct Join { pub name: String, pub inbox: Recipient<Deliver> }
 impl Message for Join { type Result = (); }
 
-messages! {
-    Say { from: String, text: String } -> ();
-    SayToRoom { text: String } -> ();
-    Deliver { from: String, text: String } -> ();
-}
+pub struct Members;
+impl Message for Members { type Result = Vec<String>; }
 ```
 </details>
 
@@ -152,7 +154,7 @@ messages! {
 
 ```rust
 use spawned_concurrency::tasks::{Actor, Context, Handler, Recipient};
-use crate::messages::{Deliver, Join, Say};
+use crate::messages::{Deliver, Join, Members, Say};
 
 pub struct ChatRoom {
     members: Vec<(String, Recipient<Deliver>)>,
@@ -173,6 +175,12 @@ impl Handler<Say> for ChatRoom {
                 let _ = inbox.send(Deliver { from: msg.from.clone(), text: msg.text.clone() });
             }
         }
+    }
+}
+
+impl Handler<Members> for ChatRoom {
+    async fn handle(&mut self, _msg: Members, _ctx: &Context<Self>) -> Vec<String> {
+        self.members.iter().map(|(name, _)| name.clone()).collect()
     }
 }
 ```
@@ -216,6 +224,8 @@ let bob = User { name: "Bob".into(), room: room.recipient() }.start();
 
 room.send_request(Join { name: "Alice".into(), inbox: alice.recipient::<Deliver>() }).await?;
 room.send_request(Join { name: "Bob".into(), inbox: bob.recipient::<Deliver>() }).await?;
+
+let members: Vec<String> = room.send_request(Members).await?;
 
 alice.send_request(SayToRoom { text: "Hello everyone!".into() }).await?;
 ```
@@ -440,7 +450,261 @@ impl<T> Future for Response<T> {
 
 This keeps protocol traits **object-safe** — `fn members(&self) -> Response<Vec<String>>` returns a concrete type, not `impl Future` (which would require RPITIT and break `dyn Trait`). No `BoxFuture` boxing needed either.
 
-### Full chat room code
+### Without macro (expanded reference)
+
+This section shows what `#[protocol]` and `#[actor(protocol = X)]` generate under the hood. The macro versions follow below.
+
+<details>
+<summary><b>protocols.rs</b> — traits + message structs + blanket impls (all manual)</summary>
+
+```rust
+use spawned_concurrency::error::ActorError;
+use spawned_concurrency::message::Message;
+use spawned_concurrency::tasks::{ActorRef, Actor, Handler, Response};
+use std::sync::Arc;
+
+// --- Type aliases (same as macro version) ---
+
+pub type RoomRef = Arc<dyn RoomProtocol>;
+pub type UserRef = Arc<dyn UserProtocol>;
+
+// --- RoomProtocol ---
+
+pub trait RoomProtocol: Send + Sync {
+    fn say(&self, from: String, text: String) -> Result<(), ActorError>;
+    fn add_member(&self, name: String, user: UserRef) -> Result<(), ActorError>;
+    fn members(&self) -> Response<Vec<String>>;
+}
+
+pub mod room_protocol {
+    use super::*;
+
+    pub struct Say { pub from: String, pub text: String }
+    impl Message for Say { type Result = (); }
+
+    pub struct AddMember { pub name: String, pub user: UserRef }
+    impl Message for AddMember { type Result = (); }
+
+    pub struct Members;
+    impl Message for Members { type Result = Vec<String>; }
+}
+
+pub trait ToRoomRef {
+    fn to_room_ref(&self) -> RoomRef;
+}
+
+impl ToRoomRef for RoomRef {
+    fn to_room_ref(&self) -> RoomRef {
+        Arc::clone(self)
+    }
+}
+
+impl<A: Actor + Handler<room_protocol::Say> + Handler<room_protocol::AddMember> + Handler<room_protocol::Members>>
+    RoomProtocol for ActorRef<A>
+{
+    fn say(&self, from: String, text: String) -> Result<(), ActorError> {
+        self.send(room_protocol::Say { from, text })
+    }
+
+    fn add_member(&self, name: String, user: UserRef) -> Result<(), ActorError> {
+        self.send(room_protocol::AddMember { name, user })
+    }
+
+    fn members(&self) -> Response<Vec<String>> {
+        Response::from(self.request_raw(room_protocol::Members))
+    }
+}
+
+impl<A: Actor + Handler<room_protocol::Say> + Handler<room_protocol::AddMember> + Handler<room_protocol::Members>>
+    ToRoomRef for ActorRef<A>
+{
+    fn to_room_ref(&self) -> RoomRef {
+        Arc::new(self.clone())
+    }
+}
+
+// --- UserProtocol ---
+
+pub trait UserProtocol: Send + Sync {
+    fn deliver(&self, from: String, text: String) -> Result<(), ActorError>;
+    fn say(&self, text: String) -> Result<(), ActorError>;
+    fn join_room(&self, room: RoomRef) -> Result<(), ActorError>;
+}
+
+pub mod user_protocol {
+    use super::*;
+
+    pub struct Deliver { pub from: String, pub text: String }
+    impl Message for Deliver { type Result = (); }
+
+    pub struct Say { pub text: String }
+    impl Message for Say { type Result = (); }
+
+    pub struct JoinRoom { pub room: RoomRef }
+    impl Message for JoinRoom { type Result = (); }
+}
+
+pub trait ToUserRef {
+    fn to_user_ref(&self) -> UserRef;
+}
+
+impl ToUserRef for UserRef {
+    fn to_user_ref(&self) -> UserRef {
+        Arc::clone(self)
+    }
+}
+
+impl<A: Actor + Handler<user_protocol::Deliver> + Handler<user_protocol::Say> + Handler<user_protocol::JoinRoom>>
+    UserProtocol for ActorRef<A>
+{
+    fn deliver(&self, from: String, text: String) -> Result<(), ActorError> {
+        self.send(user_protocol::Deliver { from, text })
+    }
+
+    fn say(&self, text: String) -> Result<(), ActorError> {
+        self.send(user_protocol::Say { text })
+    }
+
+    fn join_room(&self, room: RoomRef) -> Result<(), ActorError> {
+        self.send(user_protocol::JoinRoom { room })
+    }
+}
+
+impl<A: Actor + Handler<user_protocol::Deliver> + Handler<user_protocol::Say> + Handler<user_protocol::JoinRoom>>
+    ToUserRef for ActorRef<A>
+{
+    fn to_user_ref(&self) -> UserRef {
+        Arc::new(self.clone())
+    }
+}
+```
+</details>
+
+<details>
+<summary><b>room.rs</b> — manual Actor + Handler impls + protocol assertion</summary>
+
+```rust
+use spawned_concurrency::tasks::{Actor, ActorRef, Context, Handler};
+
+use crate::protocols::room_protocol::{AddMember, Members, Say};
+use crate::protocols::{RoomProtocol, UserRef};
+
+pub struct ChatRoom {
+    members: Vec<(String, UserRef)>,
+}
+
+impl ChatRoom {
+    pub fn new() -> Self {
+        Self { members: Vec::new() }
+    }
+}
+
+impl Actor for ChatRoom {}
+
+impl Handler<Say> for ChatRoom {
+    async fn handle(&mut self, msg: Say, _ctx: &Context<Self>) {
+        tracing::info!("[room] {} says: {}", msg.from, msg.text);
+        for (name, user) in &self.members {
+            if *name != msg.from {
+                let _ = user.deliver(msg.from.clone(), msg.text.clone());
+            }
+        }
+    }
+}
+
+impl Handler<AddMember> for ChatRoom {
+    async fn handle(&mut self, msg: AddMember, _ctx: &Context<Self>) {
+        tracing::info!("[room] {} joined", msg.name);
+        self.members.push((msg.name, msg.user));
+    }
+}
+
+impl Handler<Members> for ChatRoom {
+    async fn handle(&mut self, _msg: Members, _ctx: &Context<Self>) -> Vec<String> {
+        self.members.iter().map(|(name, _)| name.clone()).collect()
+    }
+}
+
+// Compile-time assertion: ActorRef<ChatRoom> must satisfy RoomProtocol
+const _: () = {
+    fn _assert_bridge<T: RoomProtocol>() {}
+    fn _check() { _assert_bridge::<ActorRef<ChatRoom>>(); }
+};
+```
+</details>
+
+<details>
+<summary><b>user.rs</b> — same pattern, manual Actor + Handler impls</summary>
+
+```rust
+use spawned_concurrency::tasks::{Actor, ActorRef, Context, Handler};
+
+use crate::protocols::user_protocol::{Deliver, JoinRoom, Say};
+use crate::protocols::{RoomRef, ToUserRef, UserProtocol};
+
+pub struct User {
+    name: String,
+    room: Option<RoomRef>,
+}
+
+impl User {
+    pub fn new(name: String) -> Self {
+        Self { name, room: None }
+    }
+}
+
+impl Actor for User {}
+
+impl Handler<Deliver> for User {
+    async fn handle(&mut self, msg: Deliver, _ctx: &Context<Self>) {
+        tracing::info!("[{}] got: {} says '{}'", self.name, msg.from, msg.text);
+    }
+}
+
+impl Handler<Say> for User {
+    async fn handle(&mut self, msg: Say, _ctx: &Context<Self>) {
+        if let Some(ref room) = self.room {
+            let _ = room.say(self.name.clone(), msg.text);
+        }
+    }
+}
+
+impl Handler<JoinRoom> for User {
+    async fn handle(&mut self, msg: JoinRoom, ctx: &Context<Self>) {
+        let _ = msg.room.add_member(self.name.clone(), ctx.actor_ref().to_user_ref());
+        self.room = Some(msg.room);
+    }
+}
+
+// Compile-time assertion: ActorRef<User> must satisfy UserProtocol
+const _: () = {
+    fn _assert_bridge<T: UserProtocol>() {}
+    fn _check() { _assert_bridge::<ActorRef<User>>(); }
+};
+```
+</details>
+
+<details>
+<summary><b>main.rs</b> — identical to macro version (no macros used here)</summary>
+
+```rust
+let room = ChatRoom::new().start();
+let alice = User::new("Alice".into()).start();
+let bob = User::new("Bob".into()).start();
+
+alice.join_room(room.to_room_ref()).unwrap();
+bob.join_room(room.to_room_ref()).unwrap();
+
+let members = room.members().await.unwrap();
+
+alice.say("Hello everyone!".into()).unwrap();
+bob.say("Hey Alice!".into()).unwrap();
+```
+
+Protocol methods (`say`, `join_room`, `members`) are called directly on `ActorRef` thanks to the blanket impls. No extension traits, no `actor_api!`, no manual wrappers.
+</details>
+
+### With `#[protocol]` + `#[actor]` macros
 
 <details>
 <summary><b>protocols.rs</b> — shared contracts, just traits + type aliases</summary>
@@ -583,18 +847,18 @@ Protocol methods (`say`, `join_room`, `members`) are called directly on `ActorRe
 
 ### Analysis
 
-| Dimension | Assessment |
-|-----------|-----------|
-| **Readability** | `protocols.rs` is the single source of truth for cross-actor contracts. Actor files contain only the struct + handlers — no message definitions, no bridge code. `#[actor(protocol = RoomProtocol)]` makes the actor-to-protocol relationship explicit. |
-| **API at a glance** | Protocol traits are the "at-a-glance" API surface: `RoomProtocol` tells you exactly what a room can do, `UserProtocol` tells you what a user can do. The strongest summary of all approaches. |
-| **Boilerplate** | Minimal. Per actor: one `#[actor(protocol = X)]` line + handler methods. Per protocol: one `#[protocol]` trait. The `#[protocol]` macro generates message structs, converters, and blanket impls. No manual bridge code. |
-| **main.rs expressivity** | Protocol methods called directly on `ActorRef`: `room.members().await`, `alice.say("Hi")`, `room.to_room_ref()`. No wrappers needed. |
-| **Request-response** | `Response<T>` keeps protocol traits object-safe while supporting async request-response. Structural mirror of the Envelope pattern — no RPITIT, no `BoxFuture` boxing. |
-| **Circular dep solution** | Actors hold `RoomRef` / `UserRef` (`Arc<dyn Protocol>`) instead of `ActorRef<OtherActor>`. Protocol definitions live in a shared `protocols.rs` that neither actor module depends on cyclically. |
-| **Compile-time safety** | `#[actor(protocol = X)]` emits a static assertion. If `ChatRoom` is missing a handler for any `RoomProtocol` method, the build fails with a clear error pointing at the actor. |
-| **Testability** | Best of all approaches — you can mock `RoomProtocol` or `UserProtocol` directly in unit tests without running an actor system. |
+| Dimension | Without macro | With `#[protocol]` + `#[actor]` macros |
+|-----------|---------------|----------------------------------------|
+| **Readability** | `protocols.rs` is the single source of truth, but blanket impls and converter traits add visual noise. Actor files have one `impl Handler<M>` block per message — clear but verbose. | `protocols.rs` is just trait definitions — the clearest API surface of all approaches. Actor files contain only the struct + annotated handler methods. `#[actor(protocol = RoomProtocol)]` makes the contract relationship explicit. |
+| **API at a glance** | Protocol traits define the API surface, but you must scroll past message submodules, converter traits, and blanket impls to see the full picture. | Protocol traits ARE the API — `RoomProtocol` tells you exactly what a room can do, `UserProtocol` tells you what a user can do. The strongest summary of all approaches. |
+| **Boilerplate** | High. Per protocol: message structs + `impl Message` in a submodule, converter trait + identity impl, blanket `impl Protocol for ActorRef<A>` + `impl ToXRef for ActorRef<A>`. Per actor: `impl Actor`, one `impl Handler<M>` per message, compile-time assertion const. | Minimal. Per protocol: one `#[protocol]` trait. Per actor: one `#[actor(protocol = X)]` line + handler methods. Everything else (message structs, converters, blanket impls, Actor impl, Handler impls, assertion) is generated. |
+| **main.rs expressivity** | Identical — protocol methods called directly on `ActorRef`: `room.members().await`, `alice.say("Hi")`, `room.to_room_ref()`. | Identical — same API surface, same call syntax. The macros don't change how callers use the protocols. |
+| **Request-response** | `Response<T>` keeps protocol traits object-safe while supporting async request-response. Structural mirror of the Envelope pattern — no RPITIT, no `BoxFuture` boxing. | Same mechanism. The macros generate the same `Response::from(self.request_raw(...))` calls. |
+| **Circular dep solution** | Actors hold `RoomRef` / `UserRef` (`Arc<dyn Protocol>`) instead of `ActorRef<OtherActor>`. Protocol definitions live in a shared `protocols.rs` that neither actor module depends on cyclically. | Same mechanism. |
+| **Compile-time safety** | Manual `const _: () = { ... }` assertion blocks verify `ActorRef<T>: Protocol`. You can forget to write them. | `#[actor(protocol = X)]` emits the assertion automatically. If `ChatRoom` is missing a handler for any `RoomProtocol` method, the build fails with a clear error. |
+| **Testability** | Best of all approaches — you can mock `RoomProtocol` or `UserProtocol` directly in unit tests without running an actor system. | Same — protocol traits are the same, mocking works identically. |
 
-**Key insight:** The combination of `#[protocol]` + `#[actor(protocol = X)]` eliminates all the boilerplate that made the original Approach B more verbose than A (manual message structs, bridge impls, conversion helpers, `actor_api!`), while preserving B's unique advantages: protocol-level contracts, best-in-class testability, and actor-level registry granularity. The protocol trait IS the API — no separate API layer needed.
+**Key insight:** The non-macro version reveals the full machinery: message structs, blanket impls, converter traits, protocol assertions. It's entirely standard Rust — any developer can read and understand it without knowing the macros. The `#[protocol]` + `#[actor(protocol = X)]` macros eliminate all that boilerplate while preserving B's unique advantages: protocol-level contracts, best-in-class testability, and actor-level registry granularity. The protocol trait IS the API — no separate API layer needed.
 
 **Scaling trade-off:** In a system with N actor types and M cross-boundary message types, Approach A needs M message structs (manual or via `messages!`). Approach B needs P protocol traits (where P is the number of distinct actor interfaces). The message structs are auto-generated by `#[protocol]`, so the user only writes the trait methods. The cost scales with *actor interfaces*, not messages.
 
