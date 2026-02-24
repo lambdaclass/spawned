@@ -180,7 +180,7 @@ struct ProtocolMethodInfo {
     method_name: Ident,
     struct_name: Ident,
     field_names: Vec<Ident>,
-    field_types: Vec<Box<Type>>,
+    field_types: Vec<Type>,
     kind: MethodKind,
     params: Vec<FnArg>,
     ret_type: ReturnType,
@@ -208,14 +208,14 @@ pub fn protocol(_attr: TokenStream, item: TokenStream) -> TokenStream {
             let struct_name = format_ident!("{}", to_pascal_case(&method_name.to_string()));
 
             let mut field_names: Vec<Ident> = Vec::new();
-            let mut field_types: Vec<Box<Type>> = Vec::new();
+            let mut field_types: Vec<Type> = Vec::new();
             let mut params: Vec<FnArg> = Vec::new();
 
             for arg in method.sig.inputs.iter().skip(1) {
                 if let FnArg::Typed(pat_type) = arg {
                     if let Pat::Ident(pat_ident) = &*pat_type.pat {
                         field_names.push(pat_ident.ident.clone());
-                        field_types.push(pat_type.ty.clone());
+                        field_types.push((*pat_type.ty).clone());
                     }
                 }
                 params.push(arg.clone());
