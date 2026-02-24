@@ -22,6 +22,7 @@ name = "bank"
 version = "0.1.0"
 dependencies = [
  "spawned-concurrency",
+ "spawned-macros",
  "spawned-rt",
  "tracing",
 ]
@@ -31,6 +32,7 @@ name = "bank_threads"
 version = "0.1.0"
 dependencies = [
  "spawned-concurrency",
+ "spawned-macros",
  "spawned-rt",
  "tracing",
 ]
@@ -751,6 +753,7 @@ name = "name_server"
 version = "0.1.0"
 dependencies = [
  "spawned-concurrency",
+ "spawned-macros",
  "spawned-rt",
  "tracing",
 ]
@@ -1190,6 +1193,7 @@ name = "signal_test"
 version = "0.1.0"
 dependencies = [
  "spawned-concurrency",
+ "spawned-macros",
  "spawned-rt",
  "tokio",
  "tracing",
@@ -1200,6 +1204,7 @@ name = "signal_test_threads"
 version = "0.1.0"
 dependencies = [
  "spawned-concurrency",
+ "spawned-macros",
  "spawned-rt",
  "tracing",
 ]
@@ -1529,6 +1534,7 @@ dependencies = [
  "futures",
  "reqwest",
  "spawned-concurrency",
+ "spawned-macros",
  "spawned-rt",
  "tracing",
 ]
@@ -1540,6 +1546,7 @@ dependencies = [
  "futures",
  "reqwest",
  "spawned-concurrency",
+ "spawned-macros",
  "spawned-rt",
  "tracing",
 ]

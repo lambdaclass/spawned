@@ -823,9 +823,8 @@ mod tests {
             let count_after_join = tick_count.load(atomic::Ordering::SeqCst);
             assert!(
                 count_after_join >= 8,
-                "Ticker should have completed ~10 ticks during the 500ms join(), but only got {}. \
-                 This suggests join() blocked the runtime.",
-                count_after_join
+                "Ticker should have completed ~10 ticks during the 500ms join(), but only got {count_after_join}. \
+                 This suggests join() blocked the runtime."
             );
         });
     }

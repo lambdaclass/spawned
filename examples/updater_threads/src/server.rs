@@ -1,23 +1,26 @@
 use std::time::Duration;
 
 use spawned_concurrency::threads::{send_after, Actor, Context, Handler};
+use spawned_macros::actor;
 use spawned_rt::threads::block_on;
 
-use crate::messages::Check;
+use crate::protocols::updater_protocol::Check;
+use crate::protocols::UpdaterProtocol;
 
 pub struct UpdaterServer {
     pub url: String,
     pub periodicity: Duration,
 }
 
-impl Actor for UpdaterServer {
+#[actor(protocol = UpdaterProtocol)]
+impl UpdaterServer {
+    #[started]
     fn started(&mut self, ctx: &Context<Self>) {
         send_after(self.periodicity, ctx.clone(), Check);
     }
-}
 
-impl Handler<Check> for UpdaterServer {
-    fn handle(&mut self, _msg: Check, ctx: &Context<Self>) {
+    #[send_handler]
+    fn handle_check(&mut self, _msg: Check, ctx: &Context<Self>) {
         send_after(self.periodicity, ctx.clone(), Check);
         let url = self.url.clone();
         tracing::info!("Fetching: {url}");

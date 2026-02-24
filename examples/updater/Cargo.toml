@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 spawned-rt = { workspace = true }
 spawned-concurrency = { workspace = true }
+spawned-macros = { workspace = true }
 tracing = { workspace = true }
 reqwest = { version = "0.11", features = ["blocking"] }
 futures = "0.3.1"

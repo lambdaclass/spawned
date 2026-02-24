@@ -4,7 +4,8 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-spawned-concurrency = { path = "../../concurrency" }
-spawned-rt = { path = "../../rt" }
+spawned-concurrency = { workspace = true }
+spawned-macros = { workspace = true }
+spawned-rt = { workspace = true }
 tracing = { workspace = true }
 tokio = { version = "1", features = ["signal"] }

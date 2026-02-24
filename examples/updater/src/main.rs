@@ -3,7 +3,7 @@
 //! Just activates periodically and performs an http request
 //!
 
-mod messages;
+mod protocols;
 mod server;
 
 use std::{thread, time::Duration};

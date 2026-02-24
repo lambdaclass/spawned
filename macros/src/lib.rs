@@ -254,6 +254,7 @@ pub fn protocol(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
             if field_names.is_empty() {
                 quote! {
+                    #[derive(Clone)]
                     pub struct #struct_name;
                     impl Message for #struct_name {
                         type Result = #msg_result_ty;
@@ -261,6 +262,7 @@ pub fn protocol(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 }
             } else {
                 quote! {
+                    #[derive(Clone)]
                     pub struct #struct_name {
                         #(pub #field_names: #field_types,)*
                     }
