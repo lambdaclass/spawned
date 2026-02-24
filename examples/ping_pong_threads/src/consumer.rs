@@ -2,15 +2,13 @@ use spawned_concurrency::threads::{Actor, Context, Handler};
 use spawned_macros::actor;
 
 use crate::protocols::ping_receiver::Ping;
-use crate::protocols::PongReceiverRef;
+use crate::protocols::{PingReceiver, PongReceiverRef};
 
 pub struct Consumer {
     pub producer: PongReceiverRef,
 }
 
-impl Actor for Consumer {}
-
-#[actor]
+#[actor(protocol = PingReceiver)]
 impl Consumer {
     #[send_handler]
     fn handle_ping(&mut self, _msg: Ping, _ctx: &Context<Self>) {

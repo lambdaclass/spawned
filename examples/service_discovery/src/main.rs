@@ -29,8 +29,6 @@ impl ServiceRegistry {
     }
 }
 
-impl Actor for ServiceRegistry {}
-
 #[actor]
 impl ServiceRegistry {
     #[handler]

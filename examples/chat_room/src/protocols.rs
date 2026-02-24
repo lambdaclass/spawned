@@ -16,6 +16,6 @@ pub trait RoomProtocol: Send + Sync {
 #[protocol]
 pub trait UserProtocol: Send + Sync {
     fn deliver(&self, from: String, text: String) -> Result<(), ActorError>;
-    fn speak(&self, text: String) -> Result<(), ActorError>;
+    fn say(&self, text: String) -> Result<(), ActorError>;
     fn join_room(&self, room: RoomRef) -> Result<(), ActorError>;
 }

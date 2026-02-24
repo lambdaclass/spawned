@@ -1,8 +1,8 @@
 use proc_macro::TokenStream;
 use quote::{format_ident, quote};
 use syn::{
-    parse_macro_input, FnArg, GenericArgument, Ident, ImplItem, ItemImpl, ItemTrait, Pat,
-    PathArguments, ReturnType, TraitItem, Type, TypePath,
+    parse::Parse, parse_macro_input, FnArg, GenericArgument, Ident, ImplItem, ImplItemFn,
+    ItemImpl, ItemTrait, Pat, PathArguments, ReturnType, TraitItem, Type, TypePath,
 };
 
 // --- Helpers for #[protocol] ---
@@ -97,7 +97,7 @@ fn is_unit_type(ty: &Type) -> bool {
     false
 }
 
-/// Generates a blanket `impl Protocol for ActorRef<A>` and `impl AsX for ActorRef<A>`
+/// Generates a blanket `impl Protocol for ActorRef<A>` and `impl ToXRef for ActorRef<A>`
 /// for a given runtime path (tasks or threads).
 fn generate_blanket_impl(
     trait_name: &Ident,
@@ -195,8 +195,8 @@ pub fn protocol(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let base_name = strip_protocol_suffix(&trait_name.to_string());
     let mod_name = format_ident!("{}", to_snake_case(&trait_name.to_string()));
     let ref_name = format_ident!("{}Ref", base_name);
-    let converter_trait = format_ident!("As{}", base_name);
-    let converter_method = format_ident!("as_{}", to_snake_case(&base_name));
+    let converter_trait = format_ident!("To{}Ref", base_name);
+    let converter_method = format_ident!("to_{}_ref", to_snake_case(&base_name));
 
     let mut methods: Vec<ProtocolMethodInfo> = Vec::new();
     let mut has_async_request = false;
@@ -346,13 +346,99 @@ pub fn protocol(_attr: TokenStream, item: TokenStream) -> TokenStream {
 }
 
 /// Attribute macro for actor impl blocks.
+///
+/// Generates `impl Actor for T` automatically. Use `#[started]` and `#[stopped]`
+/// on methods to override lifecycle callbacks.
+///
+/// Use `protocol = TraitName` to assert the actor implements a protocol:
+/// ```ignore
+/// #[actor(protocol = RoomProtocol)]
+/// ```
+/// For multiple protocols use the list form:
+/// ```ignore
+/// #[actor(protocol(RoomProtocol, AnotherProtocol))]
+/// ```
 #[proc_macro_attribute]
-pub fn actor(_attr: TokenStream, item: TokenStream) -> TokenStream {
+pub fn actor(attr: TokenStream, item: TokenStream) -> TokenStream {
     let mut impl_block = parse_macro_input!(item as ItemImpl);
 
     let self_ty = &impl_block.self_ty;
     let (impl_generics, _, where_clause) = impl_block.generics.split_for_impl();
 
+    // --- Parse named parameters from #[actor(protocol = X)] or #[actor(protocol(X, Y))] ---
+    let bridge_traits: Vec<Ident> = if attr.is_empty() {
+        Vec::new()
+    } else {
+        let parser = |input: syn::parse::ParseStream| -> syn::Result<Vec<Ident>> {
+            let mut protocols = Vec::new();
+            while !input.is_empty() {
+                let key: Ident = input.parse()?;
+                if key != "protocol" {
+                    return Err(syn::Error::new(key.span(), "unknown parameter, expected `protocol`"));
+                }
+                if input.peek(syn::Token![=]) {
+                    // protocol = TraitName
+                    let _: syn::Token![=] = input.parse()?;
+                    protocols.push(input.parse()?);
+                } else {
+                    // protocol(Trait1, Trait2)
+                    let content;
+                    syn::parenthesized!(content in input);
+                    let punctuated = content.parse_terminated(Ident::parse, syn::Token![,])?;
+                    protocols.extend(punctuated);
+                }
+                if input.peek(syn::Token![,]) {
+                    let _: syn::Token![,] = input.parse()?;
+                }
+            }
+            Ok(protocols)
+        };
+        match syn::parse::Parser::parse(parser, attr) {
+            Ok(traits) => traits,
+            Err(e) => return e.to_compile_error().into(),
+        }
+    };
+
+    // --- Extract #[started] and #[stopped] lifecycle methods ---
+    let mut started_method: Option<ImplItemFn> = None;
+    let mut stopped_method: Option<ImplItemFn> = None;
+    let mut has_async = false;
+
+    let mut items_to_keep = Vec::new();
+    for item in impl_block.items.drain(..) {
+        if let ImplItem::Fn(ref method) = item {
+            let is_started = method.attrs.iter().any(|a| a.path().is_ident("started"));
+            let is_stopped = method.attrs.iter().any(|a| a.path().is_ident("stopped"));
+
+            if is_started {
+                let mut m = method.clone();
+                m.attrs.retain(|a| !a.path().is_ident("started"));
+                m.vis = syn::Visibility::Inherited;
+                m.sig.ident = format_ident!("started");
+                if m.sig.asyncness.is_some() {
+                    has_async = true;
+                }
+                started_method = Some(m);
+                continue;
+            }
+
+            if is_stopped {
+                let mut m = method.clone();
+                m.attrs.retain(|a| !a.path().is_ident("stopped"));
+                m.vis = syn::Visibility::Inherited;
+                m.sig.ident = format_ident!("stopped");
+                if m.sig.asyncness.is_some() {
+                    has_async = true;
+                }
+                stopped_method = Some(m);
+                continue;
+            }
+        }
+        items_to_keep.push(item);
+    }
+    impl_block.items = items_to_keep;
+
+    // --- Process handler methods ---
     let mut handler_impls = Vec::new();
 
     for item in &mut impl_block.items {
@@ -367,20 +453,13 @@ pub fn actor(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 method.attrs.remove(idx);
 
                 let method_name = &method.sig.ident;
-                let is_async = method.sig.asyncness.is_some();
+                if method.sig.asyncness.is_some() {
+                    has_async = true;
+                }
 
                 // Extract message type from 2nd parameter (index 1, after &mut self)
                 let msg_ty = match method.sig.inputs.iter().nth(1) {
-                    Some(FnArg::Typed(pat_type)) => {
-                        if let Pat::Ident(pat_ident) = &*pat_type.pat {
-                            if pat_ident.ident == "_"
-                                || pat_ident.ident.to_string().starts_with('_')
-                            {
-                                // Still use the type
-                            }
-                        }
-                        &*pat_type.ty
-                    }
+                    Some(FnArg::Typed(pat_type)) => &*pat_type.ty,
                     _ => {
                         return syn::Error::new_spanned(
                             &method.sig,
@@ -397,7 +476,7 @@ pub fn actor(_attr: TokenStream, item: TokenStream) -> TokenStream {
                     ReturnType::Type(_, ty) => ty.clone(),
                 };
 
-                let handler_impl = if is_async {
+                let handler_impl = if method.sig.asyncness.is_some() {
                     quote! {
                         impl #impl_generics Handler<#msg_ty> for #self_ty #where_clause {
                             async fn handle(&mut self, msg: #msg_ty, ctx: &Context<Self>) -> #ret_ty {
@@ -420,9 +499,44 @@ pub fn actor(_attr: TokenStream, item: TokenStream) -> TokenStream {
         }
     }
 
+    // --- Generate impl Actor ---
+    let lifecycle_methods: Vec<&ImplItemFn> = [started_method.as_ref(), stopped_method.as_ref()]
+        .into_iter()
+        .flatten()
+        .collect();
+
+    let actor_impl = quote! {
+        impl #impl_generics Actor for #self_ty #where_clause {
+            #(#lifecycle_methods)*
+        }
+    };
+
+    // --- Generate bridge assertions ---
+    let runtime_path = if has_async {
+        quote! { spawned_concurrency::tasks }
+    } else {
+        quote! { spawned_concurrency::threads }
+    };
+
+    let bridge_asserts: Vec<_> = bridge_traits
+        .iter()
+        .map(|trait_name| {
+            quote! {
+                const _: () = {
+                    fn _assert_bridge<__T: #trait_name>() {}
+                    fn _check() {
+                        _assert_bridge::<#runtime_path::ActorRef<#self_ty>>();
+                    }
+                };
+            }
+        })
+        .collect();
+
     let output = quote! {
+        #actor_impl
         #impl_block
         #(#handler_impls)*
+        #(#bridge_asserts)*
     };
 
     output.into()

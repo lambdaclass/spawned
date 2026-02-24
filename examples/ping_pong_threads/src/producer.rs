@@ -3,7 +3,7 @@ use spawned_concurrency::threads::{Actor, Context, Handler};
 use spawned_macros::actor;
 
 use crate::protocols::pong_receiver::Pong;
-use crate::protocols::PingReceiverRef;
+use crate::protocols::{PingReceiverRef, PongReceiver};
 
 pub struct SetConsumer(pub PingReceiverRef);
 impl Message for SetConsumer {
@@ -14,9 +14,7 @@ pub struct Producer {
     pub consumer: Option<PingReceiverRef>,
 }
 
-impl Actor for Producer {}
-
-#[actor]
+#[actor(protocol = PongReceiver)]
 impl Producer {
     #[send_handler]
     fn handle_set_consumer(&mut self, msg: SetConsumer, _ctx: &Context<Self>) {

@@ -2,7 +2,7 @@ mod protocols;
 mod room;
 mod user;
 
-use protocols::{AsRoom, RoomProtocol, UserProtocol};
+use protocols::{RoomProtocol, ToRoomRef, UserProtocol};
 use room::ChatRoom;
 use spawned_concurrency::tasks::ActorStart as _;
 use spawned_rt::tasks as rt;
@@ -15,15 +15,15 @@ fn main() {
         let alice = User::new("Alice".into()).start();
         let bob = User::new("Bob".into()).start();
 
-        alice.join_room(room.as_room()).unwrap();
-        bob.join_room(room.as_room()).unwrap();
+        alice.join_room(room.to_room_ref()).unwrap();
+        bob.join_room(room.to_room_ref()).unwrap();
         rt::sleep(Duration::from_millis(10)).await;
 
         let members = room.members().await.unwrap();
         tracing::info!("Members: {:?}", members);
 
-        alice.speak("Hello everyone!".into()).unwrap();
-        bob.speak("Hey Alice!".into()).unwrap();
+        alice.say("Hello everyone!".into()).unwrap();
+        bob.say("Hey Alice!".into()).unwrap();
 
         rt::sleep(Duration::from_millis(50)).await;
     })

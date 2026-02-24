@@ -2,15 +2,13 @@ use spawned_concurrency::tasks::{Actor, Context, Handler};
 use spawned_macros::actor;
 
 use crate::protocols::room_protocol::{AddMember, Members, Say};
-use crate::protocols::UserRef;
+use crate::protocols::{RoomProtocol, UserRef};
 
 pub struct ChatRoom {
     members: Vec<(String, UserRef)>,
 }
 
-impl Actor for ChatRoom {}
-
-#[actor]
+#[actor(protocol = RoomProtocol)]
 impl ChatRoom {
     pub fn new() -> Self {
         Self {

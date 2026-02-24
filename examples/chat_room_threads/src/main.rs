@@ -5,7 +5,7 @@ mod user;
 use std::thread;
 use std::time::Duration;
 
-use protocols::{AsRoom, RoomProtocol, UserProtocol};
+use protocols::{RoomProtocol, ToRoomRef, UserProtocol};
 use room::ChatRoom;
 use spawned_concurrency::threads::ActorStart;
 use spawned_rt::threads as rt;
@@ -17,8 +17,8 @@ fn main() {
         let alice = User::new("Alice".into()).start();
         let bob = User::new("Bob".into()).start();
 
-        alice.join_room(room.as_room()).unwrap();
-        bob.join_room(room.as_room()).unwrap();
+        alice.join_room(room.to_room_ref()).unwrap();
+        bob.join_room(room.to_room_ref()).unwrap();
         thread::sleep(Duration::from_millis(10));
 
         let members = room.members().unwrap();
