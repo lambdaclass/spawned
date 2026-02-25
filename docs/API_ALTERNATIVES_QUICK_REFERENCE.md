@@ -45,7 +45,49 @@ Every approach implements: **ChatRoom** ↔ **User** (bidirectional), `Members` 
 
 ## Baseline: The Old API
 
-Single-enum `Actor` trait with associated types for Request/Message/Reply. **Cannot build the chat room** as separate modules (no type-erasure → circular imports). Even in one file, callers must match impossible enum variants.
+Single-enum `Actor` trait with associated types for Request/Message/Reply:
+
+```rust
+trait Actor: Send + Sized + 'static {
+    type Request: Clone + Send;   // single enum for all call messages
+    type Message: Clone + Send;   // single enum for all cast messages
+    type Reply: Send;             // single enum for all responses
+    type Error: Debug + Send;
+
+    async fn handle_request(&mut self, msg: Self::Request, ...) -> RequestResponse<Self>;
+    async fn handle_message(&mut self, msg: Self::Message, ...) -> MessageResponse;
+}
+```
+
+**The chat room cannot be built** with the old API as separate modules. There's no type-erasure mechanism, so `ChatRoom` must store `ActorRef<User>` (imports User) while `User` must store `ActorRef<ChatRoom>` (imports ChatRoom) — circular. Even ignoring that, the #144 problem means this:
+
+```rust
+// room.rs — all messages in one enum, all replies in another
+#[derive(Clone)]
+enum RoomRequest { Say { from: String, text: String }, Members }
+
+#[derive(Clone)]
+enum RoomReply { Ack, MemberList(Vec<String>) }
+
+impl Actor for ChatRoom {
+    type Request = RoomRequest;
+    type Reply = RoomReply;
+    // ...
+
+    async fn handle_request(&mut self, msg: RoomRequest, handle: &ActorRef<Self>) -> RequestResponse<Self> {
+        match msg {
+            RoomRequest::Say { from, text } => { /* broadcast */ RequestResponse::Reply(RoomReply::Ack) }
+            RoomRequest::Members => RequestResponse::Reply(RoomReply::MemberList(self.member_names())),
+        }
+    }
+}
+
+// Caller — must match impossible variants
+match room.request(RoomRequest::Members).await? {
+    RoomReply::MemberList(names) => println!("{:?}", names),
+    RoomReply::Ack => unreachable!(), // ← impossible but required
+}
+```
 
 ---
 
