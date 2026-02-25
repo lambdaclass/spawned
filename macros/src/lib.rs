@@ -1,8 +1,8 @@
 use proc_macro::TokenStream;
 use quote::{format_ident, quote};
 use syn::{
-    parse::Parse, parse_macro_input, FnArg, GenericArgument, Ident, ImplItem, ImplItemFn,
-    ItemImpl, ItemTrait, Pat, PathArguments, ReturnType, TraitItem, Type, TypePath,
+    parse::Parse, parse_macro_input, Attribute, FnArg, GenericArgument, Ident, ImplItem,
+    ImplItemFn, ItemImpl, ItemTrait, Pat, PathArguments, ReturnType, TraitItem, Type, TypePath,
 };
 
 // --- Helpers for #[protocol] ---
@@ -123,6 +123,7 @@ fn generate_blanket_impl(
             let field_names = &m.field_names;
             let params: Vec<_> = m.params.iter().collect();
             let ret_ty = &m.ret_type;
+            let doc_attrs = &m.doc_attrs;
 
             let struct_name = &m.struct_name;
             let msg_construct = if field_names.is_empty() {
@@ -134,6 +135,7 @@ fn generate_blanket_impl(
             match &m.kind {
                 MethodKind::Send => {
                     quote! {
+                        #(#doc_attrs)*
                         fn #method_name(&self, #(#params),*) #ret_ty {
                             self.send(#msg_construct)
                         }
@@ -141,6 +143,7 @@ fn generate_blanket_impl(
                 }
                 MethodKind::AsyncRequest(_) => {
                     quote! {
+                        #(#doc_attrs)*
                         fn #method_name(&self, #(#params),*) #ret_ty {
                             spawned_concurrency::tasks::Response::from(
                                 self.request_raw(#msg_construct),
@@ -150,6 +153,7 @@ fn generate_blanket_impl(
                 }
                 MethodKind::SyncRequest(_) => {
                     quote! {
+                        #(#doc_attrs)*
                         fn #method_name(&self, #(#params),*) #ret_ty {
                             self.request(#msg_construct)
                         }
@@ -184,6 +188,7 @@ struct ProtocolMethodInfo {
     kind: MethodKind,
     params: Vec<FnArg>,
     ret_type: ReturnType,
+    doc_attrs: Vec<Attribute>,
 }
 
 #[proc_macro_attribute]
@@ -228,6 +233,13 @@ pub fn protocol(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 MethodKind::Send => {}
             }
 
+            let doc_attrs: Vec<Attribute> = method
+                .attrs
+                .iter()
+                .filter(|a| a.path().is_ident("doc"))
+                .cloned()
+                .collect();
+
             methods.push(ProtocolMethodInfo {
                 method_name,
                 struct_name,
@@ -236,6 +248,7 @@ pub fn protocol(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 kind,
                 params,
                 ret_type: method.sig.output.clone(),
+                doc_attrs,
             });
         }
     }
@@ -247,6 +260,7 @@ pub fn protocol(_attr: TokenStream, item: TokenStream) -> TokenStream {
             let struct_name = &m.struct_name;
             let field_names = &m.field_names;
             let field_types = &m.field_types;
+            let doc_attrs = &m.doc_attrs;
             let msg_result_ty: Box<Type> = match &m.kind {
                 MethodKind::Send => syn::parse_quote! { () },
                 MethodKind::AsyncRequest(inner) | MethodKind::SyncRequest(inner) => inner.clone(),
@@ -254,6 +268,7 @@ pub fn protocol(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
             if field_names.is_empty() {
                 quote! {
+                    #(#doc_attrs)*
                     #[derive(Clone)]
                     pub struct #struct_name;
                     impl Message for #struct_name {
@@ -262,6 +277,7 @@ pub fn protocol(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 }
             } else {
                 quote! {
+                    #(#doc_attrs)*
                     #[derive(Clone)]
                     pub struct #struct_name {
                         #(pub #field_names: #field_types,)*
