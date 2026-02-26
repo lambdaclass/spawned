@@ -523,7 +523,26 @@ pub fn actor(attr: TokenStream, item: TokenStream) -> TokenStream {
         .flatten()
         .collect();
 
+    let protocol_doc = if bridge_traits.is_empty() {
+        quote! {}
+    } else {
+        let lines: Vec<String> = bridge_traits
+            .iter()
+            .map(|t| format!("- [`{t}`]"))
+            .collect();
+        let doc_body = format!(
+            "# Protocol\n\n\
+             When started, `ActorRef<{ty}>` implements:\n\n\
+             {lines}\n\n\
+             See the protocol trait docs for the full API.",
+            ty = quote!(#self_ty),
+            lines = lines.join("\n"),
+        );
+        quote! { #[doc = #doc_body] }
+    };
+
     let actor_impl = quote! {
+        #protocol_doc
         impl #impl_generics Actor for #self_ty #where_clause {
             #(#lifecycle_methods)*
         }
