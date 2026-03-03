@@ -7,6 +7,7 @@ use spawned_rt::tasks::{self as rt, CancellationToken};
 use std::sync::Arc;
 use std::{env, time::Duration};
 
+#[allow(dead_code)]
 pub type TickingRef = Arc<dyn TickingProtocol>;
 
 #[protocol]
