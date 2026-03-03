@@ -97,6 +97,109 @@ fn is_unit_type(ty: &Type) -> bool {
     false
 }
 
+/// Returns true for types available without explicit import (prelude + primitives).
+/// These can't be accessed via `super::` so must be left unqualified.
+fn is_prelude_or_primitive(name: &str) -> bool {
+    matches!(
+        name,
+        // Primitives
+        "bool" | "char" | "str"
+            | "i8" | "i16" | "i32" | "i64" | "i128" | "isize"
+            | "u8" | "u16" | "u32" | "u64" | "u128" | "usize"
+            | "f32" | "f64"
+            // Prelude types (Rust 2021)
+            | "Box" | "String" | "Vec"
+            | "Option" | "Some" | "None"
+            | "Result" | "Ok" | "Err"
+            | "ToString" | "ToOwned"
+    )
+}
+
+/// Qualify a type with `super::` so it resolves to the parent module's scope.
+/// This prevents name collisions when a generated struct name shadows an imported type
+/// via `use super::*`.
+///
+/// Prelude/primitive types are left unqualified (they can't be accessed via `super::`).
+/// User-defined types get `super::` prepended: `Event` → `super::Event`.
+/// Generic args are recursively qualified: `Vec<Event>` → `Vec<super::Event>`.
+fn qualify_type_with_super(ty: &Type) -> Type {
+    match ty {
+        Type::Path(TypePath { qself, path }) => {
+            // Leave qualified paths as-is: <X as T>::Y, ::abs::path, crate::, super::, self::
+            if qself.is_some() || path.leading_colon.is_some() {
+                return ty.clone();
+            }
+            if let Some(first) = path.segments.first() {
+                let s = first.ident.to_string();
+                if s == "crate" || s == "super" || s == "self" {
+                    return ty.clone();
+                }
+            }
+
+            // Recursively qualify generic arguments in all segments
+            let qualified_segments: syn::punctuated::Punctuated<_, _> = path
+                .segments
+                .iter()
+                .map(|seg| {
+                    let mut new_seg = seg.clone();
+                    if let PathArguments::AngleBracketed(ref mut args) = new_seg.arguments {
+                        for arg in &mut args.args {
+                            if let GenericArgument::Type(ref mut inner) = arg {
+                                *inner = qualify_type_with_super(inner);
+                            }
+                        }
+                    }
+                    new_seg
+                })
+                .collect();
+
+            // Only prepend super:: for non-prelude types
+            if let Some(first) = path.segments.first() {
+                if is_prelude_or_primitive(&first.ident.to_string()) {
+                    return Type::Path(TypePath {
+                        qself: None,
+                        path: syn::Path {
+                            leading_colon: None,
+                            segments: qualified_segments,
+                        },
+                    });
+                }
+            }
+
+            // Prepend super:: for user-defined types
+            let mut segments = syn::punctuated::Punctuated::new();
+            segments.push(syn::PathSegment {
+                ident: format_ident!("super"),
+                arguments: PathArguments::None,
+            });
+            for seg in qualified_segments {
+                segments.push(seg);
+            }
+
+            Type::Path(TypePath {
+                qself: None,
+                path: syn::Path {
+                    leading_colon: None,
+                    segments,
+                },
+            })
+        }
+        Type::Reference(r) => {
+            let mut new = r.clone();
+            new.elem = Box::new(qualify_type_with_super(&r.elem));
+            Type::Reference(new)
+        }
+        Type::Tuple(t) => {
+            let mut new = t.clone();
+            for elem in &mut new.elems {
+                *elem = qualify_type_with_super(elem);
+            }
+            Type::Tuple(new)
+        }
+        _ => ty.clone(),
+    }
+}
+
 /// Generates a blanket `impl Protocol for ActorRef<A>` and `impl ToXRef for ActorRef<A>`
 /// for a given runtime path (tasks or threads).
 fn generate_blanket_impl(
@@ -254,16 +357,22 @@ pub fn protocol(_attr: TokenStream, item: TokenStream) -> TokenStream {
     }
 
     // Generate message structs
+    // Field types and result types are qualified with `super::` to prevent
+    // name collisions when a generated struct name shadows an imported type.
+    // e.g., `fn event(&self, event: Event)` generates `struct Event { pub event: super::Event }`
     let msg_structs: Vec<_> = methods
         .iter()
         .map(|m| {
             let struct_name = &m.struct_name;
             let field_names = &m.field_names;
-            let field_types = &m.field_types;
+            let qualified_field_types: Vec<Type> =
+                m.field_types.iter().map(qualify_type_with_super).collect();
             let doc_attrs = &m.doc_attrs;
-            let msg_result_ty: Box<Type> = match &m.kind {
+            let msg_result_ty: Type = match &m.kind {
                 MethodKind::Send => syn::parse_quote! { () },
-                MethodKind::AsyncRequest(inner) | MethodKind::SyncRequest(inner) => inner.clone(),
+                MethodKind::AsyncRequest(inner) | MethodKind::SyncRequest(inner) => {
+                    qualify_type_with_super(inner)
+                }
             };
 
             if field_names.is_empty() {
@@ -280,7 +389,7 @@ pub fn protocol(_attr: TokenStream, item: TokenStream) -> TokenStream {
                     #(#doc_attrs)*
                     #[derive(Clone)]
                     pub struct #struct_name {
-                        #(pub #field_names: #field_types,)*
+                        #(pub #field_names: #qualified_field_types,)*
                     }
                     impl Message for #struct_name {
                         type Result = #msg_result_ty;
