@@ -1,9 +1,5 @@
 use spawned_concurrency::tasks::Response;
 use spawned_macros::protocol;
-use std::sync::Arc;
-
-#[allow(dead_code)]
-pub type NameServerRef = Arc<dyn NameServerProtocol>;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum FindResult {

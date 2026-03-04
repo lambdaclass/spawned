@@ -1,9 +1,5 @@
 use spawned_concurrency::error::ActorError;
 use spawned_macros::protocol;
-use std::sync::Arc;
-
-pub type RoomRef = Arc<dyn RoomProtocol>;
-pub type UserRef = Arc<dyn UserProtocol>;
 
 #[protocol]
 pub trait RoomProtocol: Send + Sync {

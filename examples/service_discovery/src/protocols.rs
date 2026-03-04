@@ -1,8 +1,5 @@
 use spawned_concurrency::tasks::Response;
 use spawned_macros::protocol;
-use std::sync::Arc;
-
-pub type ServiceRegistryRef = Arc<dyn ServiceRegistryProtocol>;
 
 #[protocol]
 pub trait ServiceRegistryProtocol: Send + Sync {

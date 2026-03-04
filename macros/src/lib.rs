@@ -447,8 +447,16 @@ pub fn protocol(_attr: TokenStream, item: TokenStream) -> TokenStream {
         quote! { #tasks_impl #threads_impl }
     };
 
+    let ref_doc = format!(
+        "Type-erased reference to any actor implementing [`{trait_name}`].\n\n\
+         Use this type to store protocol references without depending on the concrete actor type."
+    );
+
     let output = quote! {
         #trait_def
+
+        #[doc = #ref_doc]
+        #trait_vis type #ref_name = ::std::sync::Arc<dyn #trait_name>;
 
         #trait_vis mod #mod_name {
             use super::*;

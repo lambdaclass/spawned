@@ -1,9 +1,6 @@
 use spawned_concurrency::error::ActorError;
 use spawned_macros::protocol;
-use std::sync::Arc;
 
-#[allow(dead_code)]
-pub type BankRef = Arc<dyn BankProtocol>;
 pub type MsgResult = Result<BankOutMessage, BankError>;
 
 #[derive(Debug, Clone, PartialEq)]

@@ -1,9 +1,5 @@
 use spawned_concurrency::error::ActorError;
 use spawned_macros::protocol;
-use std::sync::Arc;
-
-pub type PingReceiverRef = Arc<dyn PingReceiver>;
-pub type PongReceiverRef = Arc<dyn PongReceiver>;
 
 #[protocol]
 pub trait PingReceiver: Send + Sync {
