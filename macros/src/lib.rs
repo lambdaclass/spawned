@@ -579,6 +579,16 @@ pub fn actor(attr: TokenStream, item: TokenStream) -> TokenStream {
             if let Some(idx) = handler_idx {
                 method.attrs.remove(idx);
 
+                // Collect remaining attributes (e.g. #[cfg(...)]) to propagate
+                // to the generated Handler impl block.
+                let extra_attrs: Vec<_> = method.attrs.iter().filter(|a| {
+                    !a.path().is_ident("handler")
+                        && !a.path().is_ident("send_handler")
+                        && !a.path().is_ident("request_handler")
+                        && !a.path().is_ident("started")
+                        && !a.path().is_ident("stopped")
+                }).cloned().collect();
+
                 let method_name = &method.sig.ident;
                 if method.sig.asyncness.is_some() {
                     has_async = true;
@@ -605,6 +615,7 @@ pub fn actor(attr: TokenStream, item: TokenStream) -> TokenStream {
 
                 let handler_impl = if method.sig.asyncness.is_some() {
                     quote! {
+                        #(#extra_attrs)*
                         impl #impl_generics Handler<#msg_ty> for #self_ty #where_clause {
                             async fn handle(&mut self, msg: #msg_ty, ctx: &Context<Self>) -> #ret_ty {
                                 self.#method_name(msg, ctx).await
@@ -613,6 +624,7 @@ pub fn actor(attr: TokenStream, item: TokenStream) -> TokenStream {
                     }
                 } else {
                     quote! {
+                        #(#extra_attrs)*
                         impl #impl_generics Handler<#msg_ty> for #self_ty #where_clause {
                             fn handle(&mut self, msg: #msg_ty, ctx: &Context<Self>) -> #ret_ty {
                                 self.#method_name(msg, ctx)
