@@ -1,0 +1,7 @@
+# Design Documents
+
+Architectural decision records from the v0.5 API redesign. Approach B was chosen.
+
+- **[API_REDESIGN.md](API_REDESIGN.md)** — Initial plan: Handler<M>, Recipient<M>, object-safe Receiver pattern, supervision sketches.
+- **[API_ALTERNATIVES_SUMMARY.md](API_ALTERNATIVES_SUMMARY.md)** — Full comparison of 6 approaches (A-F) using the same chat room example. Includes analysis tables and comparison matrix.
+- **[API_ALTERNATIVES_QUICK_REFERENCE.md](API_ALTERNATIVES_QUICK_REFERENCE.md)** — Condensed version of the above with code-first examples.
