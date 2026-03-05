@@ -22,7 +22,6 @@ name = "bank"
 version = "0.1.0"
 dependencies = [
  "spawned-concurrency",
- "spawned-macros",
  "spawned-rt",
  "tracing",
 ]
@@ -32,7 +31,6 @@ name = "bank_threads"
 version = "0.1.0"
 dependencies = [
  "spawned-concurrency",
- "spawned-macros",
  "spawned-rt",
  "tracing",
 ]
@@ -127,7 +125,6 @@ name = "chat_room"
 version = "0.1.0"
 dependencies = [
  "spawned-concurrency",
- "spawned-macros",
  "spawned-rt",
  "tracing",
 ]
@@ -137,7 +134,6 @@ name = "chat_room_threads"
 version = "0.4.5"
 dependencies = [
  "spawned-concurrency",
- "spawned-macros",
  "spawned-rt",
  "tracing",
 ]
@@ -753,7 +749,6 @@ name = "name_server"
 version = "0.1.0"
 dependencies = [
  "spawned-concurrency",
- "spawned-macros",
  "spawned-rt",
  "tracing",
 ]
@@ -907,7 +902,6 @@ name = "ping_pong"
 version = "0.1.0"
 dependencies = [
  "spawned-concurrency",
- "spawned-macros",
  "spawned-rt",
  "tracing",
 ]
@@ -917,7 +911,6 @@ name = "ping_pong_threads"
 version = "0.1.0"
 dependencies = [
  "spawned-concurrency",
- "spawned-macros",
  "spawned-rt",
  "tracing",
 ]
@@ -1159,7 +1152,6 @@ name = "service_discovery"
 version = "0.4.5"
 dependencies = [
  "spawned-concurrency",
- "spawned-macros",
  "spawned-rt",
  "tracing",
 ]
@@ -1193,7 +1185,6 @@ name = "signal_test"
 version = "0.1.0"
 dependencies = [
  "spawned-concurrency",
- "spawned-macros",
  "spawned-rt",
  "tokio",
  "tracing",
@@ -1204,7 +1195,6 @@ name = "signal_test_threads"
 version = "0.1.0"
 dependencies = [
  "spawned-concurrency",
- "spawned-macros",
  "spawned-rt",
  "tracing",
 ]
@@ -1534,7 +1524,6 @@ dependencies = [
  "futures",
  "reqwest",
  "spawned-concurrency",
- "spawned-macros",
  "spawned-rt",
  "tracing",
 ]
@@ -1546,7 +1535,6 @@ dependencies = [
  "futures",
  "reqwest",
  "spawned-concurrency",
- "spawned-macros",
  "spawned-rt",
  "tracing",
 ]

@@ -1,5 +1,5 @@
 use spawned_concurrency::tasks::Response;
-use spawned_macros::protocol;
+use spawned_concurrency::protocol;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum FindResult {

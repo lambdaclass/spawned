@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use spawned_concurrency::threads::{send_after, Actor, Context, Handler};
-use spawned_macros::actor;
+use spawned_concurrency::actor;
 use spawned_rt::threads::block_on;
 
 use crate::protocols::updater_protocol::Check;

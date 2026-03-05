@@ -2,7 +2,7 @@ use spawned_concurrency::error::ActorError;
 use spawned_concurrency::tasks::{
     send_interval, send_message_on, Actor, ActorStart as _, Backend, Context, Handler,
 };
-use spawned_macros::{actor, protocol};
+use spawned_concurrency::{actor, protocol};
 use spawned_rt::tasks::{self as rt, CancellationToken};
 use std::{env, time::Duration};
 

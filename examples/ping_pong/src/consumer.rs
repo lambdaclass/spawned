@@ -1,5 +1,5 @@
 use spawned_concurrency::tasks::{Actor, Context, Handler};
-use spawned_macros::actor;
+use spawned_concurrency::actor;
 
 use crate::protocols::ping_receiver::Ping;
 use crate::protocols::{PingReceiver, PongReceiverRef};

@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use spawned_concurrency::tasks::{send_interval, Actor, Context, Handler};
-use spawned_macros::actor;
+use spawned_concurrency::actor;
 use spawned_rt::tasks::CancellationToken;
 
 use crate::protocols::updater_protocol::Check;

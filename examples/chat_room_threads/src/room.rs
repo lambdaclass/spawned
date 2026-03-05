@@ -1,5 +1,5 @@
 use spawned_concurrency::threads::{Actor, Context, Handler};
-use spawned_macros::actor;
+use spawned_concurrency::actor;
 
 use crate::protocols::room_protocol::{AddMember, Members, Say};
 use crate::protocols::{RoomProtocol, UserRef};

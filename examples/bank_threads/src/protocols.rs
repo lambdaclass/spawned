@@ -1,5 +1,5 @@
 use spawned_concurrency::error::ActorError;
-use spawned_macros::protocol;
+use spawned_concurrency::protocol;
 
 pub type MsgResult = Result<BankOutMessage, BankError>;
 

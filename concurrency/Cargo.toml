@@ -4,6 +4,7 @@ description = "Spawned Concurrency"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 
 [dependencies]
 spawned-rt = { workspace = true }

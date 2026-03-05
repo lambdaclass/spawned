@@ -5,7 +5,6 @@ edition = "2021"
 
 [dependencies]
 spawned-concurrency = { workspace = true }
-spawned-macros = { workspace = true }
 spawned-rt = { workspace = true }
 tracing = { workspace = true }
 tokio = { version = "1", features = ["signal"] }

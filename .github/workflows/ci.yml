@@ -37,3 +37,17 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Run Clippy
         run: cargo clippy --all-targets -- -D warnings
+
+  publish-dry-run:
+    runs-on: ubuntu-latest
+    needs: build
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - name: Verify spawned-macros
+        run: cargo publish --package spawned-macros --dry-run
+      - name: Verify spawned-rt
+        run: cargo publish --package spawned-rt --dry-run
+      - name: Verify spawned-concurrency
+        run: cargo publish --package spawned-concurrency --dry-run

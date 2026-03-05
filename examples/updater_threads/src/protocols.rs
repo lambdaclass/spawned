@@ -1,5 +1,5 @@
 use spawned_concurrency::error::ActorError;
-use spawned_macros::protocol;
+use spawned_concurrency::protocol;
 
 #[protocol]
 pub trait UpdaterProtocol: Send + Sync {
