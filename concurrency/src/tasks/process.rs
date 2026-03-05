@@ -57,7 +57,9 @@ where
                     break;
                 }
 
-                self.receive(tx, rx).await;
+                if self.receive(tx, rx).await.is_none() {
+                    break;
+                }
             }
         }
     }
@@ -74,11 +76,11 @@ where
         &mut self,
         tx: &mpsc::Sender<T>,
         rx: &mut mpsc::Receiver<T>,
-    ) -> impl std::future::Future<Output = T> + Send {
+    ) -> impl std::future::Future<Output = Option<T>> + Send {
         async {
             match rx.recv().await {
-                Some(message) => self.handle(message, tx).await,
-                None => todo!(),
+                Some(message) => Some(self.handle(message, tx).await),
+                None => None,
             }
         }
     }

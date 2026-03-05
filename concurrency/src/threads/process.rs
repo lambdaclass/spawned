@@ -41,7 +41,9 @@ where
                 break;
             }
 
-            self.receive(tx, rx);
+            if self.receive(tx, rx).is_none() {
+                break;
+            }
         }
     }
 
@@ -53,10 +55,10 @@ where
         {}
     }
 
-    fn receive(&mut self, tx: &mpsc::Sender<T>, rx: &mut mpsc::Receiver<T>) -> T {
+    fn receive(&mut self, tx: &mpsc::Sender<T>, rx: &mut mpsc::Receiver<T>) -> Option<T> {
         match rx.recv().ok() {
-            Some(message) => self.handle(message, tx),
-            None => todo!(),
+            Some(message) => Some(self.handle(message, tx)),
+            None => None,
         }
     }
 

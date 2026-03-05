@@ -8,7 +8,7 @@ Spawned 0.5 replaces the enum-based `Actor` trait with protocol macros. The new 
 |-----------|-----------|-------|
 | `type Request = MyEnum` | `#[protocol]` trait | Protocol trait methods become message structs |
 | `type Message = MyEnum` | `#[protocol]` trait (no return) | Send-only methods |
-| `type Reply = MyEnum` | Method return types | `Response<T>` or `Result<T, ActorError>` |
+| `type Reply = MyEnum` | Method return types | `Response<T>`, `Result<T, ActorError>`, or `Result<(), ActorError>` (send) |
 | `type Error = E` | *(removed)* | Errors returned per-handler, not per-actor |
 | `handle_request()` | `#[request_handler]` methods | One handler per message, no `match` |
 | `handle_message()` | `#[send_handler]` methods | One handler per message |

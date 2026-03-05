@@ -4,7 +4,7 @@ An actor framework for Rust, inspired by Erlang/OTP.
 
 [![Crates.io](https://img.shields.io/crates/v/spawned-concurrency.svg)](https://crates.io/crates/spawned-concurrency)
 [![docs.rs](https://img.shields.io/docsrs/spawned-concurrency)](https://docs.rs/spawned-concurrency)
-[![CI](https://github.com/lambdaclass/spawned/actions/workflows/ci.yaml/badge.svg)](https://github.com/lambdaclass/spawned/actions/workflows/ci.yaml)
+[![CI](https://github.com/lambdaclass/spawned/actions/workflows/ci.yml/badge.svg)](https://github.com/lambdaclass/spawned/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 ## Quick Example
@@ -32,6 +32,8 @@ pub trait NameServerProtocol: Send + Sync {
 use std::collections::HashMap;
 use spawned_concurrency::tasks::{Actor, Context, Handler};
 use spawned_concurrency::actor;
+use crate::protocols::name_server_protocol::{Add, Find};
+use crate::protocols::{FindResult, NameServerProtocol};
 
 pub struct NameServer {
     inner: HashMap<String, String>,
@@ -58,6 +60,10 @@ impl NameServer {
 }
 
 // main.rs — use it
+use protocols::{FindResult, NameServerProtocol};
+use spawned_concurrency::tasks::ActorStart as _;
+use spawned_rt::tasks as rt;
+
 fn main() {
     rt::run(async {
         let ns = NameServer::new().start();
@@ -90,6 +96,7 @@ No message enums, no manual dispatch — just define a trait, implement the hand
 The return type on each protocol method determines the message kind:
 - `Response<T>` — async request (tasks mode), caller awaits the reply
 - `Result<T, ActorError>` — sync request (threads mode), caller blocks for the reply
+- `Result<(), ActorError>` — fire-and-forget send (threads mode), special case: unit result means no reply expected
 - No return / `-> ()` — fire-and-forget send, works in both modes
 
 **Actors** implement message handlers with `#[actor]`. Each handler method is annotated with `#[request_handler]`, `#[send_handler]`, or `#[handler]` and receives a single message struct plus a `Context`. The macro generates the `Actor` trait impl and one `Handler<M>` impl per method.
@@ -112,6 +119,8 @@ The return type on each protocol method determines the message kind:
 | [`signal_test_threads`](examples/signal_test_threads) | threads | Timers — thread-based |
 | [`updater`](examples/updater) | tasks | Periodic HTTP — recurrent timer-driven requests |
 | [`updater_threads`](examples/updater_threads) | threads | Periodic HTTP — thread-based |
+| [`blocking_genserver`](examples/blocking_genserver) | tasks | Backend comparison — async vs blocking vs thread isolation |
+| [`busy_genserver_warning`](examples/busy_genserver_warning) | tasks | Blocking detection — runtime warning for slow handlers |
 
 ## Erlang to Spawned
 
@@ -170,7 +179,7 @@ spawned/
 │       └── threads/   # Sync implementation (OS threads)
 ├── macros/        # Proc macros (#[protocol], #[actor]) — re-exported by concurrency
 ├── rt/            # Runtime abstraction (wraps tokio, provides CancellationToken)
-└── examples/      # 12 usage examples
+└── examples/      # 14 usage examples
 ```
 
 Users depend only on `spawned-concurrency` (which re-exports the macros) and `spawned-rt`.

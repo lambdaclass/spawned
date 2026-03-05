@@ -447,15 +447,28 @@ async fn run_actor<A: Actor>(
     mut rx: mpsc::Receiver<Box<dyn Envelope<A> + Send>>,
     cancellation_token: CancellationToken,
 ) {
-    actor.started(&ctx).await;
+    let start_result = AssertUnwindSafe(actor.started(&ctx))
+        .catch_unwind()
+        .await;
+    if let Err(panic) = start_result {
+        tracing::error!("Panic in started() callback: {panic:?}");
+        return;
+    }
 
     if cancellation_token.is_cancelled() {
-        actor.stopped(&ctx).await;
+        let _ = AssertUnwindSafe(actor.stopped(&ctx)).catch_unwind().await;
         return;
     }
 
     loop {
-        let msg = rx.recv().await;
+        let msg = {
+            let recv = pin!(rx.recv());
+            let cancel = pin!(cancellation_token.cancelled());
+            match future::select(recv, cancel).await {
+                future::Either::Left((msg, _)) => msg,
+                future::Either::Right(_) => None,
+            }
+        };
         match msg {
             Some(envelope) => {
                 let result = AssertUnwindSafe(envelope.handle(&mut actor, &ctx))
@@ -474,7 +487,12 @@ async fn run_actor<A: Actor>(
     }
 
     cancellation_token.cancel();
-    actor.stopped(&ctx).await;
+    let stop_result = AssertUnwindSafe(actor.stopped(&ctx))
+        .catch_unwind()
+        .await;
+    if let Err(panic) = stop_result {
+        tracing::error!("Panic in stopped() callback: {panic:?}");
+    }
 }
 
 // ---------------------------------------------------------------------------
