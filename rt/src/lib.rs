@@ -1,11 +1,16 @@
-//! Runtime wrapper to remove dependencies from code. Using this library will
-//! allow to set a tokio runtime or any other runtime, once implemented just by
-//! changing the enabled feature.
-//! May implement the `deterministic` version based on comonware.xyz's runtime:
-//! https://github.com/commonwarexyz/monorepo/blob/main/runtime/src/deterministic.rs
+//! Runtime abstraction layer for `spawned`.
 //!
-//! Currently, only a very limited set of tokio functionality is reexported. We may want to
-//! extend this functionality as needed.
+//! This crate wraps tokio and standard library primitives behind a uniform
+//! interface. Users typically don't depend on `spawned-rt` types directly —
+//! the relevant re-exports (`run`, `CancellationToken`, etc.) are available
+//! through `spawned_concurrency::tasks` and `spawned_concurrency::threads`.
+//!
+//! # Modules
+//!
+//! - [`tasks`] — async runtime backed by tokio: `run()`, `CancellationToken`,
+//!   `send_after`, `send_interval`, `send_message_on`
+//! - [`threads`] — blocking runtime using OS threads: `CancellationToken`,
+//!   `send_after`, `send_interval`
 
 pub mod tasks;
 pub mod threads;

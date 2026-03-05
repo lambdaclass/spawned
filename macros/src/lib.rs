@@ -294,6 +294,59 @@ struct ProtocolMethodInfo {
     doc_attrs: Vec<Attribute>,
 }
 
+/// Generates message types and blanket implementations from a protocol trait.
+///
+/// `#[protocol]` transforms a trait definition into a full message-passing interface.
+/// Each trait method becomes a message struct, and any `ActorRef<A>` where `A` handles
+/// those messages automatically implements the trait — so you call methods directly on
+/// the actor reference.
+///
+/// # What It Generates
+///
+/// For a trait `FooProtocol`, the macro generates:
+///
+/// 1. **Message structs** in a `foo_protocol` submodule — one per method, with public
+///    fields matching the method parameters. Each implements `Message`.
+/// 2. **Type alias** `pub type FooRef = Arc<dyn FooProtocol>` — a type-erased reference.
+/// 3. **Converter trait** `ToFooRef` with a `to_foo_ref(&self) -> FooRef` method.
+/// 4. **Blanket impls** — `impl FooProtocol for ActorRef<A>` and `impl ToFooRef for ActorRef<A>`
+///    for any actor `A` that handles all the generated message types.
+///
+/// # Return Type Conventions
+///
+/// The return type on each method determines the message kind and runtime:
+///
+/// | Return type | Kind | Runtime | Caller behavior |
+/// |-------------|------|---------|-----------------|
+/// | `Response<T>` | Request | `tasks` (async) | `.await` returns `Result<T, ActorError>` |
+/// | `Result<T, ActorError>` | Request | `threads` (sync) | Blocks, returns `Result<T, ActorError>` |
+/// | *(none)* | Send | Both | Fire-and-forget |
+///
+/// # Naming
+///
+/// - **Module**: trait name → `snake_case` (e.g., `ChatRoomProtocol` → `chat_room_protocol`)
+/// - **Structs**: method name → `PascalCase` (e.g., `send_message` → `SendMessage`)
+/// - **XRef alias**: strips `Protocol` suffix → `{Base}Ref` (e.g., `ChatRoomProtocol` → `ChatRoomRef`)
+/// - **Converter**: `To{Base}Ref` with `to_{snake_base}_ref()` method
+///
+/// # Example
+///
+/// ```ignore
+/// use spawned_concurrency::tasks::Response;
+/// use spawned_concurrency::protocol;
+///
+/// #[protocol]
+/// pub trait CounterProtocol: Send + Sync {
+///     fn increment(&self, amount: u64);                     // send (fire-and-forget)
+///     fn get_count(&self) -> Response<u64>;                 // async request
+/// }
+///
+/// // Generated:
+/// // - pub mod counter_protocol { pub struct Increment { pub amount: u64 }, pub struct GetCount }
+/// // - pub type CounterRef = Arc<dyn CounterProtocol>;
+/// // - pub trait ToCounterRef { fn to_counter_ref(&self) -> CounterRef; }
+/// // - impl CounterProtocol for ActorRef<A> where A: Handler<Increment> + Handler<GetCount>
+/// ```
 #[proc_macro_attribute]
 pub fn protocol(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let trait_def = parse_macro_input!(item as ItemTrait);
@@ -480,18 +533,76 @@ pub fn protocol(_attr: TokenStream, item: TokenStream) -> TokenStream {
     output.into()
 }
 
-/// Attribute macro for actor impl blocks.
+/// Generates `impl Actor` and `Handler<M>` implementations from an annotated impl block.
 ///
-/// Generates `impl Actor for T` automatically. Use `#[started]` and `#[stopped]`
-/// on methods to override lifecycle callbacks.
+/// Place `#[actor]` on an `impl MyStruct` block. The macro extracts annotated methods
+/// and generates the boilerplate needed to run the struct as an actor.
 ///
-/// Use `protocol = TraitName` to assert the actor implements a protocol:
+/// # Protocol Assertion
+///
+/// Use `protocol = TraitName` to verify at compile time that the actor fully implements
+/// a protocol (i.e., that `ActorRef<Self>` implements the protocol trait):
+///
 /// ```ignore
-/// #[actor(protocol = RoomProtocol)]
+/// #[actor(protocol = NameServerProtocol)]
+/// impl NameServer { /* ... */ }
 /// ```
-/// For multiple protocols use the list form:
+///
+/// For multiple protocols:
 /// ```ignore
-/// #[actor(protocol(RoomProtocol, AnotherProtocol))]
+/// #[actor(protocol(RoomProtocol, UserProtocol))]
+/// impl ChatUser { /* ... */ }
+/// ```
+///
+/// # Handler Attributes
+///
+/// | Attribute | Use for |
+/// |-----------|---------|
+/// | `#[request_handler]` | Messages that expect a reply (`Response<T>` or `Result<T, ActorError>`) |
+/// | `#[send_handler]` | Fire-and-forget messages |
+/// | `#[handler]` | Generic handler (works for either kind) |
+///
+/// Handler signature: `fn name(&mut self, msg: MessageType, ctx: &Context<Self>) -> ReturnType`
+///
+/// The return type must match the message's `Message::Result`. For request handlers
+/// returning `()`, omit the return type.
+///
+/// # Lifecycle Hooks
+///
+/// | Attribute | Called |
+/// |-----------|--------|
+/// | `#[started]` | After the actor starts, before processing messages |
+/// | `#[stopped]` | After the actor stops processing messages |
+///
+/// Both receive `&mut self` and `&Context<Self>`. Use async or sync to match your runtime.
+///
+/// # Example
+///
+/// ```ignore
+/// use spawned_concurrency::tasks::{Actor, Context, Handler};
+/// use spawned_concurrency::actor;
+///
+/// pub struct MyActor { count: u64 }
+///
+/// #[actor(protocol = CounterProtocol)]
+/// impl MyActor {
+///     pub fn new() -> Self { MyActor { count: 0 } }
+///
+///     #[started]
+///     async fn on_start(&mut self, _ctx: &Context<Self>) {
+///         tracing::info!("Actor started");
+///     }
+///
+///     #[request_handler]
+///     async fn handle_increment(&mut self, msg: Increment, _ctx: &Context<Self>) {
+///         self.count += msg.amount;
+///     }
+///
+///     #[request_handler]
+///     async fn handle_get_count(&mut self, _msg: GetCount, _ctx: &Context<Self>) -> u64 {
+///         self.count
+///     }
+/// }
 /// ```
 #[proc_macro_attribute]
 pub fn actor(attr: TokenStream, item: TokenStream) -> TokenStream {
