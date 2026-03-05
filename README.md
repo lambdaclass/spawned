@@ -119,7 +119,8 @@ For developers familiar with Erlang/OTP:
 
 | Erlang/OTP | Spawned | Description |
 |------------|---------|-------------|
-| `-behaviour(gen_server)` | `#[protocol]` trait | Define the message interface |
+| Module exports (client API) | `#[protocol]` trait | Define the public message interface |
+| `-behaviour(gen_server)` | `#[actor]` | Declare a module as an actor implementation |
 | `handle_call/3` | `#[request_handler]` | Handler for sync requests |
 | `handle_cast/2` | `#[send_handler]` | Handler for fire-and-forget messages |
 | `init/1` | `#[started]` | Initialization callback |
@@ -184,13 +185,20 @@ Protocols make this separation explicit: the trait defines *what* an actor does,
 
 ## Roadmap
 
-- **Supervision trees** — monitor and restart actors on failure, Erlang-style
+- **Supervision trees** — monitor, restart, and manage actor lifecycles with Erlang-style supervision strategies
+- **Observability and tracing** — built-in instrumentation for actor mailboxes, message latency, and lifecycle events
+- **Custom runtime** — replace tokio with a purpose-built runtime tailored for actor workloads
+- **Preemptive scheduling** — explore preemptive actor scheduling to prevent starvation from long-running handlers
+- **Virtual actors** — evaluate location-transparent, auto-activated actors inspired by [Orleans](https://learn.microsoft.com/en-us/dotnet/orleans/)
 - **Deterministic runtime** — reproducible execution for testing, inspired by [commonware](https://commonware.xyz)
+- **Landing page** — project website with guides, API reference, and interactive examples
 
 ## Inspiration
 
 - [Erlang/OTP](https://www.erlang.org/)
 - [Commonware](https://commonware.xyz)
+- [Actix](https://actix.rs/)
+- [Orleans](https://learn.microsoft.com/en-us/dotnet/orleans/)
 - [Ractor](https://slawlor.github.io/ractor/)
 - [Tokio](https://tokio.rs/)
 - [Actors with Tokio](https://ryhl.io/blog/actors-with-tokio/)
