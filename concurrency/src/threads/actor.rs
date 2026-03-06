@@ -370,15 +370,30 @@ fn run_actor<A: Actor>(
     rx: mpsc::Receiver<Box<dyn Envelope<A> + Send>>,
     cancellation_token: CancellationToken,
 ) {
-    actor.started(&ctx);
+    let start_result = catch_unwind(AssertUnwindSafe(|| {
+        actor.started(&ctx);
+    }));
+    if let Err(panic) = start_result {
+        tracing::error!("Panic in started() callback: {panic:?}");
+        return;
+    }
 
     if cancellation_token.is_cancelled() {
-        actor.stopped(&ctx);
+        let _ = catch_unwind(AssertUnwindSafe(|| actor.stopped(&ctx)));
         return;
     }
 
     loop {
-        let msg = rx.recv().ok();
+        let msg = match rx.recv_timeout(Duration::from_millis(100)) {
+            Ok(msg) => Some(msg),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                if cancellation_token.is_cancelled() {
+                    break;
+                }
+                continue;
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => None,
+        };
         match msg {
             Some(envelope) => {
                 let result = catch_unwind(AssertUnwindSafe(|| {
@@ -397,7 +412,12 @@ fn run_actor<A: Actor>(
     }
 
     cancellation_token.cancel();
-    actor.stopped(&ctx);
+    let stop_result = catch_unwind(AssertUnwindSafe(|| {
+        actor.stopped(&ctx);
+    }));
+    if let Err(panic) = stop_result {
+        tracing::error!("Panic in stopped() callback: {panic:?}");
+    }
 }
 
 // ---------------------------------------------------------------------------

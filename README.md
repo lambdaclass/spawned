@@ -96,8 +96,8 @@ No message enums, no manual dispatch — just define a trait, implement the hand
 The return type on each protocol method determines the message kind:
 - `Response<T>` — async request (tasks mode), caller awaits the reply
 - `Result<T, ActorError>` — sync request (threads mode), caller blocks for the reply
-- `Result<(), ActorError>` — fire-and-forget send (threads mode), special case: unit result means no reply expected
-- No return / `-> ()` — fire-and-forget send, works in both modes
+- `Result<(), ActorError>` — fire-and-forget send (both modes), returns the send result
+- No return / `-> ()` — fire-and-forget send (both modes), discards the send result
 
 **Actors** implement message handlers with `#[actor]`. Each handler method is annotated with `#[request_handler]`, `#[send_handler]`, or `#[handler]` and receives a single message struct plus a `Context`. The macro generates the `Actor` trait impl and one `Handler<M>` impl per method.
 

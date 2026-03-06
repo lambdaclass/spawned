@@ -204,6 +204,21 @@ fn qualify_type_with_super(ty: &Type) -> Type {
             }
             Type::Tuple(new)
         }
+        Type::Array(a) => {
+            let mut new = a.clone();
+            *new.elem = qualify_type_with_super(&a.elem);
+            Type::Array(new)
+        }
+        Type::Slice(s) => {
+            let mut new = s.clone();
+            *new.elem = qualify_type_with_super(&s.elem);
+            Type::Slice(new)
+        }
+        Type::Paren(p) => {
+            let mut new = p.clone();
+            *new.elem = qualify_type_with_super(&p.elem);
+            Type::Paren(new)
+        }
         _ => ty.clone(),
     }
 }
@@ -245,10 +260,15 @@ fn generate_blanket_impl(
 
             match &m.kind {
                 MethodKind::Send => {
+                    let body = if matches!(ret_ty, ReturnType::Default) {
+                        quote! { let _ = self.send(#msg_construct); }
+                    } else {
+                        quote! { self.send(#msg_construct) }
+                    };
                     quote! {
                         #(#doc_attrs)*
                         fn #method_name(&self, #(#params),*) #ret_ty {
-                            self.send(#msg_construct)
+                            #body
                         }
                     }
                 }
@@ -328,7 +348,8 @@ struct ProtocolMethodInfo {
 /// |-------------|------|---------|-----------------|
 /// | `Response<T>` | Request | `tasks` (async) | `.await` returns `Result<T, ActorError>` |
 /// | `Result<T, ActorError>` | Request | `threads` (sync) | Blocks, returns `Result<T, ActorError>` |
-/// | *(none)* | Send | Both | Fire-and-forget |
+/// | `Result<(), ActorError>` | Send | Both | Returns send result |
+/// | *(none)* | Send | Both | Fire-and-forget (discards send result) |
 ///
 /// # Naming
 ///
@@ -404,6 +425,14 @@ pub fn protocol(_attr: TokenStream, item: TokenStream) -> TokenStream {
                     if let Pat::Ident(pat_ident) = &*pat_type.pat {
                         field_names.push(pat_ident.ident.clone());
                         field_types.push((*pat_type.ty).clone());
+                    } else {
+                        return syn::Error::new_spanned(
+                            &pat_type.pat,
+                            "protocol methods only support simple identifier patterns \
+                             (e.g., `name: Type`)",
+                        )
+                        .to_compile_error()
+                        .into();
                     }
                 }
                 params.push(arg.clone());
@@ -430,7 +459,11 @@ pub fn protocol(_attr: TokenStream, item: TokenStream) -> TokenStream {
             let doc_attrs: Vec<Attribute> = method
                 .attrs
                 .iter()
-                .filter(|a| a.path().is_ident("doc"))
+                .filter(|a| {
+                    a.path().is_ident("doc")
+                        || a.path().is_ident("cfg")
+                        || a.path().is_ident("cfg_attr")
+                })
                 .cloned()
                 .collect();
 
@@ -469,6 +502,10 @@ pub fn protocol(_attr: TokenStream, item: TokenStream) -> TokenStream {
             let qualified_field_types: Vec<Type> =
                 m.field_types.iter().map(qualify_type_with_super).collect();
             let doc_attrs = &m.doc_attrs;
+            let cfg_attrs: Vec<_> = doc_attrs
+                .iter()
+                .filter(|a| a.path().is_ident("cfg") || a.path().is_ident("cfg_attr"))
+                .collect();
             let msg_result_ty: Type = match &m.kind {
                 MethodKind::Send => syn::parse_quote! { () },
                 MethodKind::AsyncRequest(inner) | MethodKind::SyncRequest(inner) => {
@@ -481,6 +518,7 @@ pub fn protocol(_attr: TokenStream, item: TokenStream) -> TokenStream {
                     #(#doc_attrs)*
                     #[derive(Clone)]
                     pub struct #struct_name;
+                    #(#cfg_attrs)*
                     impl Message for #struct_name {
                         type Result = #msg_result_ty;
                     }
@@ -492,6 +530,7 @@ pub fn protocol(_attr: TokenStream, item: TokenStream) -> TokenStream {
                     pub struct #struct_name {
                         #(pub #field_names: #qualified_field_types,)*
                     }
+                    #(#cfg_attrs)*
                     impl Message for #struct_name {
                         type Result = #msg_result_ty;
                     }
@@ -705,6 +744,14 @@ pub fn actor(attr: TokenStream, item: TokenStream) -> TokenStream {
             let is_stopped = method.attrs.iter().any(|a| a.path().is_ident("stopped"));
 
             if is_started {
+                if started_method.is_some() {
+                    return syn::Error::new_spanned(
+                        &method.sig,
+                        "only one #[started] method is allowed per actor",
+                    )
+                    .to_compile_error()
+                    .into();
+                }
                 let mut m = method.clone();
                 m.attrs.retain(|a| !a.path().is_ident("started"));
                 m.vis = syn::Visibility::Inherited;
@@ -717,6 +764,14 @@ pub fn actor(attr: TokenStream, item: TokenStream) -> TokenStream {
             }
 
             if is_stopped {
+                if stopped_method.is_some() {
+                    return syn::Error::new_spanned(
+                        &method.sig,
+                        "only one #[stopped] method is allowed per actor",
+                    )
+                    .to_compile_error()
+                    .into();
+                }
                 let mut m = method.clone();
                 m.attrs.retain(|a| !a.path().is_ident("stopped"));
                 m.vis = syn::Visibility::Inherited;
