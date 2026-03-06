@@ -1,5 +1,3 @@
 //! non-async replacement for oneshot channels
 
-pub use crossbeam::{
-    crossbeam_channel::unbounded as channel, crossbeam_channel::RecvTimeoutError, Receiver, Sender,
-};
+pub use std::sync::mpsc::{channel, RecvTimeoutError, Receiver, Sender};
