@@ -19,7 +19,11 @@ Spawned 0.5 replaces the enum-based `Actor` trait with protocol macros. The new 
 | `MessageResponse::NoReply` | *(implicit)* | Send handlers don't reply |
 | `Actor::start()` | `ActorStart::start()` | Same call, different trait |
 | `actor_ref.request(enum)` | `actor_ref.method(args)` | Direct method call |
-| `actor_ref.send(enum)` | `actor_ref.method(args)` | Direct method call |
+| `actor_ref.send(enum)` | `actor_ref.method(args)` | Direct method call, sync for sends |
+| `handle.cast(msg).await` | `actor_ref.method(args)` | Send is now sync — no `.await` needed |
+| `send_after(dur, handle, msg)` | `send_after(dur, ctx, msg)` | Takes `Context<A>`, not `ActorRef<A>` |
+| `send_interval(dur, handle, msg)` | `send_interval(dur, ctx, msg)` | Takes `Context<A>`, not `ActorRef<A>` |
+| `GenServerHandle<A>` | `ActorRef<A>` | Renamed |
 | `Unused` | *(removed)* | No placeholder types needed |
 
 ## Before/After: Messages
@@ -60,6 +64,52 @@ pub trait NameServerProtocol: Send + Sync {
     fn find(&self, key: String) -> Response<FindResult>;
 }
 // Generates: name_server_protocol::Add, name_server_protocol::Find
+```
+
+### Generated module naming
+
+`#[protocol]` generates a submodule containing the message structs. The naming rules:
+
+- **Module name**: trait name converted to `snake_case` — e.g., `trait FooBarProtocol` → `mod foo_bar_protocol`
+- **Message structs**: method name converted to `PascalCase` — e.g., `fn do_thing(...)` → `DoThing`
+- **Type-erased ref**: `{TraitName}Ref` — e.g., `FooBarProtocolRef = Arc<dyn FooBarProtocol>`
+
+Import message structs from the generated module:
+
+```rust
+use crate::protocols::foo_bar_protocol::{DoThing, GetStatus};
+```
+
+### Mixed send + request protocols
+
+A single protocol can have both request (awaitable) and send (fire-and-forget) methods. The return type determines the kind:
+
+```rust
+#[protocol]
+pub trait WorkerProtocol: Send + Sync {
+    /// Request — caller awaits the reply
+    fn get_status(&self) -> Response<Status>;
+
+    /// Send — fire-and-forget, no reply
+    fn notify(&self, event: Event);
+}
+```
+
+On the actor side, annotate each handler to match:
+
+```rust
+#[actor(protocol = WorkerProtocol)]
+impl Worker {
+    #[request_handler]
+    async fn handle_get_status(&mut self, _msg: GetStatus, _ctx: &Context<Self>) -> Status {
+        self.status.clone()
+    }
+
+    #[send_handler]
+    async fn handle_notify(&mut self, msg: Notify, _ctx: &Context<Self>) {
+        tracing::info!("event: {:?}", msg.event);
+    }
+}
 ```
 
 ## Before/After: Actor Implementation
@@ -121,6 +171,20 @@ impl NameServer {
 }
 ```
 
+### Handler attributes
+
+The `#[actor]` macro supports three handler attributes:
+
+| Attribute | Use for |
+|-----------|---------|
+| `#[request_handler]` | Messages that expect a reply (`Response<T>` or `Result<T, ActorError>`) |
+| `#[send_handler]` | Fire-and-forget messages (no return or `-> ()`) |
+| `#[handler]` | Generic — works for either kind |
+
+All three generate the same `impl Handler<M>` code. The distinction is semantic: use `#[request_handler]` and `#[send_handler]` to document intent, or `#[handler]` when you don't want to commit to a specific kind.
+
+Handler signature: `fn name(&mut self, msg: MessageType, ctx: &Context<Self>) -> ReturnType`
+
 ## Before/After: Calling an Actor
 
 **0.4** — Static methods wrapping `actor_ref.request(enum)`:
@@ -148,6 +212,87 @@ let result = ns.find("Joe".into()).await.unwrap();
 assert_eq!(result, FindResult::Found { value: "At Home".into() });
 ```
 
+### Send methods are now synchronous
+
+In 0.4, `handle.cast(msg).await` was async. In 0.5, send-only protocol methods return `Result<(), ActorError>` synchronously — no `.await` needed:
+
+```rust
+// 0.4:
+handle.cast(CastMessage::Notify(data)).await;
+
+// 0.5:
+actor_ref.notify(data); // returns Result<(), ActorError>, no .await
+```
+
+This means callers that only send messages no longer need `&mut self` or `async`:
+
+```rust
+// 0.4:
+pub struct MyService { handle: GenServerHandle<MyServer> }
+impl MyService {
+    pub async fn do_thing(&mut self, data: String) {
+        let _ = self.handle.cast(MyMsg::DoThing(data)).await;
+    }
+}
+
+// 0.5:
+pub struct MyService { handle: ActorRef<MyServer> }
+impl MyService {
+    pub fn do_thing(&self, data: String) {
+        let _ = self.handle.do_thing(data);
+    }
+}
+```
+
+## Before/After: Timers
+
+Timer functions (`send_after`, `send_interval`) now take `Context<A>` instead of `ActorRef<A>`.
+
+**0.4:**
+```rust
+use spawned_concurrency::tasks::send_after;
+
+// Inside a handler — clone the handle
+send_after(duration, handle.clone(), CastMessage::Tick);
+```
+
+**0.5:**
+```rust
+use spawned_concurrency::tasks::send_after;
+
+// Inside a handler — ctx is available directly
+send_after(duration, ctx.clone(), Tick);
+
+// Outside a handler — convert ActorRef to Context
+send_after(duration, actor_ref.context(), Tick);
+```
+
+`ActorRef::context()` converts an `ActorRef<A>` to a `Context<A>`. Use it when scheduling timers from outside a handler (e.g., in a `spawn()` block or from `main()`).
+
+### Self-rescheduling tick pattern
+
+A common pattern is an actor that reschedules itself with variable delays:
+
+**0.4:**
+```rust
+CastMessage::Tick => {
+    self.do_work();
+    let next_delay = self.compute_delay();
+    send_after(next_delay, handle.clone(), CastMessage::Tick);
+    CastResponse::NoReply
+}
+```
+
+**0.5:**
+```rust
+#[send_handler]
+async fn handle_tick(&mut self, _msg: Tick, ctx: &Context<Self>) {
+    self.do_work();
+    let next_delay = self.compute_delay();
+    send_after(next_delay, ctx.clone(), Tick);
+}
+```
+
 ## Before/After: Lifecycle Hooks
 
 **0.4:**
@@ -170,6 +315,8 @@ impl MyActor {
     async fn on_stop(&mut self, _ctx: &Context<Self>) { /* cleanup */ }
 }
 ```
+
+**Panic behavior:** If `#[started]` panics (tasks mode), the panic is caught, logged via `tracing::error!`, and the actor exits immediately — subsequent sends will receive `ActorError::ActorStopped`. The `#[stopped]` hook is *not* called in this case. In threads mode, a panic in `started()` will crash the actor's thread.
 
 ## Before/After: Stopping an Actor
 
@@ -235,6 +382,10 @@ registry::unregister("main_server");
 | *(n/a)* | `spawned_concurrency::tasks::{Context, Handler, Response}` |
 | *(n/a)* | `spawned_concurrency::{actor, protocol}` |
 | *(n/a)* | `spawned_concurrency::registry` |
+
+## spawned-rt Changes
+
+`spawned-rt` has **no breaking API changes** in 0.5. Both `spawned_rt::tasks` and `spawned_rt::threads` retain the same public exports (`spawn`, `sleep`, `CancellationToken`, `mpsc`, `oneshot`, etc.). Update the version in your `Cargo.toml` but no code changes are needed for `spawned-rt` imports.
 
 ## Escape Hatches
 
