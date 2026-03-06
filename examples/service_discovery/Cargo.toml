@@ -1,10 +1,13 @@
 [package]
 name = "service_discovery"
-version.workspace = true
-edition.workspace = true
-license.workspace = true
+version = "0.1.0"
+edition = "2021"
 
 [dependencies]
 spawned-rt = { workspace = true }
 spawned-concurrency = { workspace = true }
 tracing = { workspace = true }
+
+[[bin]]
+name = "service_discovery"
+path = "src/main.rs"

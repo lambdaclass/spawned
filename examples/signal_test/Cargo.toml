@@ -7,4 +7,3 @@ edition = "2021"
 spawned-concurrency = { workspace = true }
 spawned-rt = { workspace = true }
 tracing = { workspace = true }
-tokio = { version = "1", features = ["signal"] }

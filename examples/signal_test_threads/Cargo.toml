@@ -7,3 +7,7 @@ edition = "2021"
 spawned-concurrency = { workspace = true }
 spawned-rt = { workspace = true }
 tracing = { workspace = true }
+
+[[bin]]
+name = "signal_test_threads"
+path = "src/main.rs"

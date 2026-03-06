@@ -24,8 +24,8 @@ fn main() {
         let members = room.members().unwrap();
         tracing::info!("Members in room: {:?}", members);
 
-        alice.speak("Hello everyone!".into()).unwrap();
-        bob.speak("Hi Alice!".into()).unwrap();
+        alice.say("Hello everyone!".into()).unwrap();
+        bob.say("Hi Alice!".into()).unwrap();
         thread::sleep(Duration::from_millis(100));
 
         tracing::info!("Chat room demo complete");

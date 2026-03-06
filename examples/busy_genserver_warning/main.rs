@@ -1,23 +1,25 @@
-use spawned_concurrency::message::Message;
+use spawned_concurrency::error::ActorError;
 use spawned_concurrency::tasks::{Actor, ActorStart as _, Context, Handler};
+use spawned_concurrency::{actor, protocol};
 use spawned_rt::tasks as rt;
 use std::time::Duration;
 use std::{process::exit, thread};
 use tracing::info;
 
+#[protocol]
+pub trait BusyWorkerProtocol: Send + Sync {
+    fn do_work(&self) -> Result<(), ActorError>;
+}
+
+use busy_worker_protocol::DoWork;
+
 // We test a scenario with a badly behaved task
 struct BusyWorker;
 
-#[derive(Debug)]
-pub struct DoWork;
-impl Message for DoWork {
-    type Result = ();
-}
-
-impl Actor for BusyWorker {}
-
-impl Handler<DoWork> for BusyWorker {
-    async fn handle(&mut self, _msg: DoWork, ctx: &Context<Self>) {
+#[actor(protocol = BusyWorkerProtocol)]
+impl BusyWorker {
+    #[send_handler]
+    async fn handle_do_work(&mut self, _msg: DoWork, ctx: &Context<Self>) {
         info!(taskid = ?rt::task_id(), "sleeping");
         thread::sleep(Duration::from_millis(542));
         let _ = ctx.send(DoWork);
@@ -38,7 +40,7 @@ pub fn main() {
     rt::run(async move {
         // If we change BusyWorker to Backend::Blocking instead, it won't print the warning
         let badboy = BusyWorker.start();
-        let _ = badboy.send(DoWork);
+        let _ = badboy.do_work();
 
         rt::sleep(Duration::from_secs(5)).await;
         exit(0);

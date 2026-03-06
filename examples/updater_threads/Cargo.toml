@@ -8,7 +8,6 @@ spawned-rt = { workspace = true }
 spawned-concurrency = { workspace = true }
 tracing = { workspace = true }
 reqwest = { version = "0.11", features = ["blocking"] }
-futures = "0.3.1"
 
 [[bin]]
 name = "updater_threads"

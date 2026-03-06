@@ -1,7 +1,7 @@
 use spawned_concurrency::threads::{Actor, Context, Handler};
 use spawned_concurrency::actor;
 
-use crate::protocols::user_protocol::{Deliver, JoinRoom, Speak};
+use crate::protocols::user_protocol::{Deliver, JoinRoom, Say};
 use crate::protocols::{RoomRef, ToUserRef, UserProtocol};
 
 pub struct User {
@@ -21,7 +21,7 @@ impl User {
     }
 
     #[send_handler]
-    fn handle_speak(&mut self, msg: Speak, _ctx: &Context<Self>) {
+    fn handle_say(&mut self, msg: Say, _ctx: &Context<Self>) {
         if let Some(ref room) = self.room {
             let _ = room.say(self.name.clone(), msg.text);
         }

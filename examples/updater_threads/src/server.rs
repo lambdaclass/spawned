@@ -1,8 +1,8 @@
 use std::time::Duration;
 
-use spawned_concurrency::threads::{send_after, Actor, Context, Handler};
+use spawned_concurrency::threads::{send_interval, Actor, Context, Handler};
 use spawned_concurrency::actor;
-use spawned_rt::threads::block_on;
+use spawned_rt::threads::{block_on, CancellationToken};
 
 use crate::protocols::updater_protocol::Check;
 use crate::protocols::UpdaterProtocol;
@@ -10,18 +10,29 @@ use crate::protocols::UpdaterProtocol;
 pub struct UpdaterServer {
     pub url: String,
     pub periodicity: Duration,
+    pub timer_token: Option<CancellationToken>,
+}
+
+impl UpdaterServer {
+    pub fn new(url: String, periodicity: Duration) -> Self {
+        UpdaterServer {
+            url,
+            periodicity,
+            timer_token: None,
+        }
+    }
 }
 
 #[actor(protocol = UpdaterProtocol)]
 impl UpdaterServer {
     #[started]
     fn started(&mut self, ctx: &Context<Self>) {
-        send_after(self.periodicity, ctx.clone(), Check);
+        let timer = send_interval(self.periodicity, ctx.clone(), Check);
+        self.timer_token = Some(timer.cancellation_token);
     }
 
     #[send_handler]
-    fn handle_check(&mut self, _msg: Check, ctx: &Context<Self>) {
-        send_after(self.periodicity, ctx.clone(), Check);
+    fn handle_check(&mut self, _msg: Check, _ctx: &Context<Self>) {
         let url = self.url.clone();
         tracing::info!("Fetching: {url}");
         let resp = block_on(req(url));
