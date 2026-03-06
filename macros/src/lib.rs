@@ -9,10 +9,18 @@ use syn::{
 
 fn to_snake_case(s: &str) -> String {
     let mut result = String::new();
-    for (i, ch) in s.chars().enumerate() {
+    let chars: Vec<char> = s.chars().collect();
+    for (i, &ch) in chars.iter().enumerate() {
         if ch.is_uppercase() {
+            // Insert underscore before uppercase if:
+            // - not at start, AND
+            // - previous char is lowercase, OR next char is lowercase (handles acronyms)
             if i > 0 {
-                result.push('_');
+                let prev_lower = chars[i - 1].is_lowercase();
+                let next_lower = chars.get(i + 1).map_or(false, |c| c.is_lowercase());
+                if prev_lower || next_lower {
+                    result.push('_');
+                }
             }
             result.push(ch.to_ascii_lowercase());
         } else {
@@ -44,20 +52,20 @@ enum MethodKind {
     SyncRequest(Box<Type>),
 }
 
-fn classify_return_type(ret: &ReturnType) -> MethodKind {
+fn classify_return_type(ret: &ReturnType) -> Result<MethodKind, &Type> {
     match ret {
-        ReturnType::Default => MethodKind::Send,
+        ReturnType::Default => Ok(MethodKind::Send),
         ReturnType::Type(_, ty) => {
             if let Some(inner) = extract_response_inner(ty) {
-                return MethodKind::AsyncRequest(inner);
+                return Ok(MethodKind::AsyncRequest(inner));
             }
             if let Some(inner) = extract_result_inner(ty) {
                 if is_unit_type(&inner) {
-                    return MethodKind::Send;
+                    return Ok(MethodKind::Send);
                 }
-                return MethodKind::SyncRequest(inner);
+                return Ok(MethodKind::SyncRequest(inner));
             }
-            MethodKind::Send
+            Err(ty)
         }
     }
 }
@@ -131,7 +139,7 @@ fn qualify_type_with_super(ty: &Type) -> Type {
             }
             if let Some(first) = path.segments.first() {
                 let s = first.ident.to_string();
-                if s == "crate" || s == "super" || s == "self" {
+                if matches!(s.as_str(), "crate" | "super" | "self" | "std" | "core" | "alloc") {
                     return ty.clone();
                 }
             }
@@ -353,6 +361,15 @@ pub fn protocol(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let trait_name = &trait_def.ident;
     let trait_vis = &trait_def.vis;
 
+    if !trait_def.generics.params.is_empty() {
+        return syn::Error::new_spanned(
+            &trait_def.generics,
+            "generic type parameters on protocol traits are not supported",
+        )
+        .to_compile_error()
+        .into();
+    }
+
     let base_name = strip_protocol_suffix(&trait_name.to_string());
     let mod_name = format_ident!("{}", to_snake_case(&trait_name.to_string()));
     let ref_name = format_ident!("{}Ref", base_name);
@@ -365,6 +382,16 @@ pub fn protocol(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
     for item in &trait_def.items {
         if let TraitItem::Fn(method) = item {
+            if method.sig.asyncness.is_some() {
+                return syn::Error::new_spanned(
+                    &method.sig,
+                    "protocol methods must not be async; \
+                     use Response<T> as the return type for async requests",
+                )
+                .to_compile_error()
+                .into();
+            }
+
             let method_name = method.sig.ident.clone();
             let struct_name = format_ident!("{}", to_pascal_case(&method_name.to_string()));
 
@@ -382,7 +409,18 @@ pub fn protocol(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 params.push(arg.clone());
             }
 
-            let kind = classify_return_type(&method.sig.output);
+            let kind = match classify_return_type(&method.sig.output) {
+                Ok(kind) => kind,
+                Err(ty) => {
+                    return syn::Error::new_spanned(
+                        ty,
+                        "unsupported return type in protocol method; \
+                         use Response<T> (async), Result<T, ActorError> (sync), or no return type (send)",
+                    )
+                    .to_compile_error()
+                    .into();
+                }
+            };
             match &kind {
                 MethodKind::AsyncRequest(_) => has_async_request = true,
                 MethodKind::SyncRequest(_) => has_sync_request = true,
@@ -407,6 +445,16 @@ pub fn protocol(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 doc_attrs,
             });
         }
+    }
+
+    if has_async_request && has_sync_request {
+        return syn::Error::new_spanned(
+            trait_name,
+            "protocol cannot mix Response<T> (async) and Result<T, ActorError> (sync) request methods; \
+             use one convention per protocol trait",
+        )
+        .to_compile_error()
+        .into();
     }
 
     // Generate message structs
