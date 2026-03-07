@@ -7,8 +7,8 @@
 //! # Quick Start
 //!
 //! ```ignore
-//! use spawned_concurrency::tasks::{Actor, ActorStart, Context, Handler, Response};
-//! use spawned_concurrency::{actor, protocol};
+//! use spawned_concurrency::tasks::{Actor, ActorStart, Context, Handler};
+//! use spawned_concurrency::{actor, protocol, Response};
 //!
 //! #[protocol]
 //! pub trait GreeterProtocol: Send + Sync {
@@ -36,8 +36,8 @@
 //! - Blanket `impl Protocol for ActorRef<A>` so you can call methods directly
 //!
 //! Return types determine message kind:
-//! - [`tasks::Response<T>`] — async request, caller awaits the reply
-//! - `Result<T, ActorError>` — sync request (threads mode)
+//! - [`Response<T>`] — request, works in both async and sync modes
+//! - `Result<(), ActorError>` — fire-and-forget send, returns send result
 //! - No return type — fire-and-forget send
 //!
 //! **Actors** — `#[actor]` on an impl block generates `impl Actor` and `Handler<M>`
@@ -73,7 +73,9 @@
 pub mod error;
 pub mod message;
 pub mod registry;
+pub mod response;
 pub mod tasks;
 pub mod threads;
 
+pub use response::Response;
 pub use spawned_macros::{actor, protocol};

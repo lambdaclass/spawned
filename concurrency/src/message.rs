@@ -150,7 +150,7 @@ macro_rules! request_messages {
 /// Method kinds:
 /// - `send fn` — fire-and-forget, returns `Result<(), ActorError>`
 /// - `request fn` — async request via `Response<T>` (for tasks)
-/// - `request sync fn` — blocking request, returns `Result<T, ActorError>` (for threads)
+/// - `request sync fn` — blocking request via `Response<T>` (for threads)
 #[macro_export]
 macro_rules! protocol_impl {
     // Entry
@@ -207,8 +207,8 @@ macro_rules! protocol_impl {
     ) => {
         $crate::protocol_impl!(@parse $trait_name $target
             [$($impl_items)*
-                fn $method(&self, $($param : $ptype),+) -> $crate::tasks::Response<$ret> {
-                    $crate::tasks::Response::from(self.request_raw($msg { $($param),+ }))
+                fn $method(&self, $($param : $ptype),+) -> $crate::Response<$ret> {
+                    $crate::Response::from(self.request_raw($msg { $($param),+ }))
                 }
             ]
             $($rest)*
@@ -223,15 +223,15 @@ macro_rules! protocol_impl {
     ) => {
         $crate::protocol_impl!(@parse $trait_name $target
             [$($impl_items)*
-                fn $method(&self) -> $crate::tasks::Response<$ret> {
-                    $crate::tasks::Response::from(self.request_raw($msg))
+                fn $method(&self) -> $crate::Response<$ret> {
+                    $crate::Response::from(self.request_raw($msg))
                 }
             ]
             $($rest)*
         );
     };
 
-    // request sync fn with params (threads — returns Result<T>)
+    // request sync fn with params (threads — returns Response<T>)
     (@parse $trait_name:ident $target:ty
         [$($impl_items:tt)*]
         request sync fn $method:ident($($param:ident : $ptype:ty),+ $(,)?) -> $ret:ty => $msg:ident;
@@ -239,15 +239,15 @@ macro_rules! protocol_impl {
     ) => {
         $crate::protocol_impl!(@parse $trait_name $target
             [$($impl_items)*
-                fn $method(&self, $($param : $ptype),+) -> Result<$ret, $crate::error::ActorError> {
-                    self.request($msg { $($param),+ })
+                fn $method(&self, $($param : $ptype),+) -> $crate::Response<$ret> {
+                    $crate::Response::ready(self.request($msg { $($param),+ }))
                 }
             ]
             $($rest)*
         );
     };
 
-    // request sync fn without params (threads — returns Result<T>)
+    // request sync fn without params (threads — returns Response<T>)
     (@parse $trait_name:ident $target:ty
         [$($impl_items:tt)*]
         request sync fn $method:ident() -> $ret:ty => $msg:ident;
@@ -255,8 +255,8 @@ macro_rules! protocol_impl {
     ) => {
         $crate::protocol_impl!(@parse $trait_name $target
             [$($impl_items)*
-                fn $method(&self) -> Result<$ret, $crate::error::ActorError> {
-                    self.request($msg)
+                fn $method(&self) -> $crate::Response<$ret> {
+                    $crate::Response::ready(self.request($msg))
                 }
             ]
             $($rest)*

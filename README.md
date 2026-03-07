@@ -13,7 +13,7 @@ Define a protocol, implement it on an actor, and call it:
 
 ```rust
 // protocols.rs — define the message interface
-use spawned_concurrency::tasks::Response;
+use spawned_concurrency::Response;
 use spawned_concurrency::protocol;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -94,8 +94,7 @@ No message enums, no manual dispatch — just define a trait, implement the hand
 **Protocols** define the message interface for an actor. `#[protocol]` on a trait generates one message struct per method, a type-erased reference type (`XRef`), and blanket implementations that let any `ActorRef<A>` call the protocol methods directly — as long as `A` implements the right handlers.
 
 The return type on each protocol method determines the message kind:
-- `Response<T>` — async request (tasks mode), caller awaits the reply
-- `Result<T, ActorError>` — sync request (threads mode), caller blocks for the reply
+- `Response<T>` — request (both modes), caller uses `.await.unwrap()` (tasks) or `.unwrap()` (threads)
 - `Result<(), ActorError>` — fire-and-forget send (both modes), returns the send result
 - No return / `-> ()` — fire-and-forget send (both modes), discards the send result
 

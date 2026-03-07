@@ -1,4 +1,4 @@
-use spawned_concurrency::tasks::Response;
+use spawned_concurrency::Response;
 use spawned_concurrency::protocol;
 
 pub type MsgResult = Result<BankOutMessage, BankError>;

@@ -1,5 +1,5 @@
-use spawned_concurrency::error::ActorError;
 use spawned_concurrency::protocol;
+use spawned_concurrency::Response;
 
 pub type MsgResult = Result<BankOutMessage, BankError>;
 
@@ -20,8 +20,8 @@ pub enum BankError {
 
 #[protocol]
 pub trait BankProtocol: Send + Sync {
-    fn new_account(&self, who: String) -> Result<MsgResult, ActorError>;
-    fn deposit(&self, who: String, amount: i32) -> Result<MsgResult, ActorError>;
-    fn withdraw(&self, who: String, amount: i32) -> Result<MsgResult, ActorError>;
-    fn stop(&self) -> Result<MsgResult, ActorError>;
+    fn new_account(&self, who: String) -> Response<MsgResult>;
+    fn deposit(&self, who: String, amount: i32) -> Response<MsgResult>;
+    fn withdraw(&self, who: String, amount: i32) -> Response<MsgResult>;
+    fn stop(&self) -> Response<MsgResult>;
 }

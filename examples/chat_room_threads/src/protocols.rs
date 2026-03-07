@@ -1,11 +1,12 @@
 use spawned_concurrency::error::ActorError;
 use spawned_concurrency::protocol;
+use spawned_concurrency::Response;
 
 #[protocol]
 pub trait RoomProtocol: Send + Sync {
     fn say(&self, from: String, text: String) -> Result<(), ActorError>;
     fn add_member(&self, name: String, user: UserRef) -> Result<(), ActorError>;
-    fn members(&self) -> Result<Vec<String>, ActorError>;
+    fn members(&self) -> Response<Vec<String>>;
 }
 
 #[protocol]

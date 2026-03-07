@@ -8,7 +8,7 @@ Spawned 0.5 replaces the enum-based `Actor` trait with protocol macros. The new 
 |-----------|-----------|-------|
 | `type Request = MyEnum` | `#[protocol]` trait | Protocol trait methods become message structs |
 | `type Message = MyEnum` | `#[protocol]` trait (no return) | Send-only methods |
-| `type Reply = MyEnum` | Method return types | `Response<T>`, `Result<T, ActorError>`, or `Result<(), ActorError>` (send) |
+| `type Reply = MyEnum` | Method return types | `Response<T>` (request) or `Result<(), ActorError>` (send) |
 | `type Error = E` | *(removed)* | Errors returned per-handler, not per-actor |
 | `handle_request()` | `#[request_handler]` methods | One handler per message, no `match` |
 | `handle_message()` | `#[send_handler]` methods | One handler per message |
@@ -49,7 +49,7 @@ pub enum NameServerOutMessage {
 **0.5** — A protocol trait; message structs are generated:
 
 ```rust
-use spawned_concurrency::tasks::Response;
+use spawned_concurrency::Response;
 use spawned_concurrency::protocol;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -66,13 +66,15 @@ pub trait NameServerProtocol: Send + Sync {
 // Generates: name_server_protocol::Add, name_server_protocol::Find
 ```
 
+`Response<T>` works in both execution modes — use `.await.unwrap()` in tasks mode or `.unwrap()` directly in threads mode. A single protocol definition works for both runtimes.
+
 ### Generated module naming
 
 `#[protocol]` generates a submodule containing the message structs. The naming rules:
 
 - **Module name**: trait name converted to `snake_case` — e.g., `trait FooBarProtocol` → `mod foo_bar_protocol`
 - **Message structs**: method name converted to `PascalCase` — e.g., `fn do_thing(...)` → `DoThing`
-- **Type-erased ref**: `{TraitName}Ref` — e.g., `FooBarProtocolRef = Arc<dyn FooBarProtocol>`
+- **Type-erased ref**: strips `Protocol` suffix → `{Base}Ref` — e.g., `FooBarProtocol` → `FooBarRef = Arc<dyn FooBarProtocol>`
 
 Import message structs from the generated module:
 
@@ -316,7 +318,7 @@ impl MyActor {
 }
 ```
 
-**Panic behavior:** If `#[started]` panics (tasks mode), the panic is caught, logged via `tracing::error!`, and the actor exits immediately — subsequent sends will receive `ActorError::ActorStopped`. The `#[stopped]` hook is *not* called in this case. In threads mode, a panic in `started()` will crash the actor's thread.
+**Panic behavior:** If `#[started]` panics, the panic is caught, logged via `tracing::error!`, and the actor exits immediately — subsequent sends will receive `ActorError::ActorStopped`. The `#[stopped]` hook is *not* called in this case. This applies to both tasks and threads modes.
 
 ## Before/After: Stopping an Actor
 
@@ -379,7 +381,8 @@ registry::unregister("main_server");
 | `spawned_concurrency::messages::Unused` | *(removed)* |
 | `spawned_concurrency::tasks::RequestResponse` | *(removed — return values directly)* |
 | `spawned_concurrency::tasks::MessageResponse` | *(removed)* |
-| *(n/a)* | `spawned_concurrency::tasks::{Context, Handler, Response}` |
+| *(n/a)* | `spawned_concurrency::tasks::{Context, Handler}` |
+| *(n/a)* | `spawned_concurrency::Response` |
 | *(n/a)* | `spawned_concurrency::{actor, protocol}` |
 | *(n/a)* | `spawned_concurrency::registry` |
 

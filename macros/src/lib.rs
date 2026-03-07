@@ -48,22 +48,32 @@ fn strip_protocol_suffix(name: &str) -> String {
 
 enum MethodKind {
     Send,
-    AsyncRequest(Box<Type>),
-    SyncRequest(Box<Type>),
+    Request(Box<Type>),
+}
+
+#[derive(Clone, Copy)]
+enum RuntimeMode {
+    Tasks,
+    Threads,
 }
 
 fn classify_return_type(ret: &ReturnType) -> Result<MethodKind, &Type> {
     match ret {
         ReturnType::Default => Ok(MethodKind::Send),
         ReturnType::Type(_, ty) => {
+            if is_unit_type(ty) {
+                return Ok(MethodKind::Send);
+            }
             if let Some(inner) = extract_response_inner(ty) {
-                return Ok(MethodKind::AsyncRequest(inner));
+                return Ok(MethodKind::Request(inner));
             }
             if let Some(inner) = extract_result_inner(ty) {
                 if is_unit_type(&inner) {
                     return Ok(MethodKind::Send);
                 }
-                return Ok(MethodKind::SyncRequest(inner));
+                // Result<T, ActorError> where T ≠ () is no longer supported;
+                // use Response<T> which works in both modes.
+                return Err(ty);
             }
             Err(ty)
         }
@@ -233,6 +243,7 @@ fn generate_blanket_impl(
     converter_method: &Ident,
     methods: &[ProtocolMethodInfo],
     runtime_path: &proc_macro2::TokenStream,
+    mode: RuntimeMode,
 ) -> proc_macro2::TokenStream {
     let handler_bounds: Vec<_> = methods
         .iter()
@@ -260,7 +271,11 @@ fn generate_blanket_impl(
 
             match &m.kind {
                 MethodKind::Send => {
-                    let body = if matches!(ret_ty, ReturnType::Default) {
+                    let is_unit_return = match ret_ty {
+                        ReturnType::Default => true,
+                        ReturnType::Type(_, ty) => is_unit_type(ty),
+                    };
+                    let body = if is_unit_return {
                         quote! { let _ = self.send(#msg_construct); }
                     } else {
                         quote! { self.send(#msg_construct) }
@@ -272,21 +287,23 @@ fn generate_blanket_impl(
                         }
                     }
                 }
-                MethodKind::AsyncRequest(_) => {
-                    quote! {
-                        #(#doc_attrs)*
-                        fn #method_name(&self, #(#params),*) #ret_ty {
-                            spawned_concurrency::tasks::Response::from(
+                MethodKind::Request(_) => {
+                    let body = match mode {
+                        RuntimeMode::Tasks => quote! {
+                            spawned_concurrency::Response::from(
                                 self.request_raw(#msg_construct),
                             )
-                        }
-                    }
-                }
-                MethodKind::SyncRequest(_) => {
+                        },
+                        RuntimeMode::Threads => quote! {
+                            spawned_concurrency::Response::ready(
+                                self.request(#msg_construct),
+                            )
+                        },
+                    };
                     quote! {
                         #(#doc_attrs)*
                         fn #method_name(&self, #(#params),*) #ret_ty {
-                            self.request(#msg_construct)
+                            #body
                         }
                     }
                 }
@@ -342,14 +359,13 @@ struct ProtocolMethodInfo {
 ///
 /// # Return Type Conventions
 ///
-/// The return type on each method determines the message kind and runtime:
+/// The return type on each method determines the message kind:
 ///
 /// | Return type | Kind | Runtime | Caller behavior |
 /// |-------------|------|---------|-----------------|
-/// | `Response<T>` | Request | `tasks` (async) | `.await` returns `Result<T, ActorError>` |
-/// | `Result<T, ActorError>` | Request | `threads` (sync) | Blocks, returns `Result<T, ActorError>` |
+/// | `Response<T>` | Request | Both | `.await.unwrap()` (tasks) / `.unwrap()` (threads) |
 /// | `Result<(), ActorError>` | Send | Both | Returns send result |
-/// | *(none)* | Send | Both | Fire-and-forget (discards send result) |
+/// | *(none)* / `-> ()` | Send | Both | Fire-and-forget (discards send result) |
 ///
 /// # Naming
 ///
@@ -361,13 +377,13 @@ struct ProtocolMethodInfo {
 /// # Example
 ///
 /// ```ignore
-/// use spawned_concurrency::tasks::Response;
+/// use spawned_concurrency::Response;
 /// use spawned_concurrency::protocol;
 ///
 /// #[protocol]
 /// pub trait CounterProtocol: Send + Sync {
 ///     fn increment(&self, amount: u64);                     // send (fire-and-forget)
-///     fn get_count(&self) -> Response<u64>;                 // async request
+///     fn get_count(&self) -> Response<u64>;                 // request (both modes)
 /// }
 ///
 /// // Generated:
@@ -398,8 +414,6 @@ pub fn protocol(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let converter_method = format_ident!("to_{}_ref", to_snake_case(&base_name));
 
     let mut methods: Vec<ProtocolMethodInfo> = Vec::new();
-    let mut has_async_request = false;
-    let mut has_sync_request = false;
 
     for item in &trait_def.items {
         if let TraitItem::Fn(method) = item {
@@ -407,7 +421,7 @@ pub fn protocol(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 return syn::Error::new_spanned(
                     &method.sig,
                     "protocol methods must not be async; \
-                     use Response<T> as the return type for async requests",
+                     use Response<T> as the return type for requests",
                 )
                 .to_compile_error()
                 .into();
@@ -444,17 +458,13 @@ pub fn protocol(_attr: TokenStream, item: TokenStream) -> TokenStream {
                     return syn::Error::new_spanned(
                         ty,
                         "unsupported return type in protocol method; \
-                         use Response<T> (async), Result<T, ActorError> (sync), or no return type (send)",
+                         use Response<T> for requests (works in both async and sync modes), \
+                         Result<(), ActorError> for sends, or no return type for fire-and-forget",
                     )
                     .to_compile_error()
                     .into();
                 }
             };
-            match &kind {
-                MethodKind::AsyncRequest(_) => has_async_request = true,
-                MethodKind::SyncRequest(_) => has_sync_request = true,
-                MethodKind::Send => {}
-            }
 
             let doc_attrs: Vec<Attribute> = method
                 .attrs
@@ -480,16 +490,6 @@ pub fn protocol(_attr: TokenStream, item: TokenStream) -> TokenStream {
         }
     }
 
-    if has_async_request && has_sync_request {
-        return syn::Error::new_spanned(
-            trait_name,
-            "protocol cannot mix Response<T> (async) and Result<T, ActorError> (sync) request methods; \
-             use one convention per protocol trait",
-        )
-        .to_compile_error()
-        .into();
-    }
-
     // Generate message structs
     // Field types and result types are qualified with `super::` to prevent
     // name collisions when a generated struct name shadows an imported type.
@@ -508,9 +508,7 @@ pub fn protocol(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 .collect();
             let msg_result_ty: Type = match &m.kind {
                 MethodKind::Send => syn::parse_quote! { () },
-                MethodKind::AsyncRequest(inner) | MethodKind::SyncRequest(inner) => {
-                    qualify_type_with_super(inner)
-                }
+                MethodKind::Request(inner) => qualify_type_with_super(inner),
             };
 
             if field_names.is_empty() {
@@ -539,53 +537,30 @@ pub fn protocol(_attr: TokenStream, item: TokenStream) -> TokenStream {
         })
         .collect();
 
-    // Generate blanket impls based on protocol mode
-    let blanket_impls = if has_async_request {
-        let tasks = quote! { spawned_concurrency::tasks };
-        generate_blanket_impl(
-            trait_name,
-            &mod_name,
-            &ref_name,
-            &converter_trait,
-            &converter_method,
-            &methods,
-            &tasks,
-        )
-    } else if has_sync_request {
-        let threads = quote! { spawned_concurrency::threads };
-        generate_blanket_impl(
-            trait_name,
-            &mod_name,
-            &ref_name,
-            &converter_trait,
-            &converter_method,
-            &methods,
-            &threads,
-        )
-    } else {
-        // Send-only: generate for both runtimes
-        let tasks = quote! { spawned_concurrency::tasks };
-        let threads = quote! { spawned_concurrency::threads };
-        let tasks_impl = generate_blanket_impl(
-            trait_name,
-            &mod_name,
-            &ref_name,
-            &converter_trait,
-            &converter_method,
-            &methods,
-            &tasks,
-        );
-        let threads_impl = generate_blanket_impl(
-            trait_name,
-            &mod_name,
-            &ref_name,
-            &converter_trait,
-            &converter_method,
-            &methods,
-            &threads,
-        );
-        quote! { #tasks_impl #threads_impl }
-    };
+    // Always generate blanket impls for both runtimes
+    let tasks = quote! { spawned_concurrency::tasks };
+    let threads = quote! { spawned_concurrency::threads };
+    let tasks_impl = generate_blanket_impl(
+        trait_name,
+        &mod_name,
+        &ref_name,
+        &converter_trait,
+        &converter_method,
+        &methods,
+        &tasks,
+        RuntimeMode::Tasks,
+    );
+    let threads_impl = generate_blanket_impl(
+        trait_name,
+        &mod_name,
+        &ref_name,
+        &converter_trait,
+        &converter_method,
+        &methods,
+        &threads,
+        RuntimeMode::Threads,
+    );
+    let blanket_impls = quote! { #tasks_impl #threads_impl };
 
     let ref_doc = format!(
         "Type-erased reference to any actor implementing [`{trait_name}`].\n\n\

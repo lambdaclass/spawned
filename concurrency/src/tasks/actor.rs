@@ -224,59 +224,6 @@ pub async fn request<M: Message>(
 }
 
 // ---------------------------------------------------------------------------
-// Response<T> — awaitable wrapper for protocol trait request-response
-// ---------------------------------------------------------------------------
-
-enum ResponseState<T> {
-    Receiver(oneshot::Receiver<T>),
-    Error(ActorError),
-    Done,
-}
-
-/// Concrete `Future` that wraps a oneshot receiver. Keeps protocol traits object-safe:
-/// `fn members(&self) -> Response<Vec<String>>` returns a concrete type, not `impl Future`.
-pub struct Response<T>(ResponseState<T>);
-
-impl<T> Unpin for Response<T> {}
-
-impl<T> From<Result<oneshot::Receiver<T>, ActorError>> for Response<T> {
-    fn from(result: Result<oneshot::Receiver<T>, ActorError>) -> Self {
-        match result {
-            Ok(rx) => Self(ResponseState::Receiver(rx)),
-            Err(e) => Self(ResponseState::Error(e)),
-        }
-    }
-}
-
-impl<T: Send + 'static> Future for Response<T> {
-    type Output = Result<T, ActorError>;
-
-    fn poll(self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Self::Output> {
-        let this = self.get_mut();
-        match &mut this.0 {
-            ResponseState::Receiver(rx) => match Pin::new(rx).poll(cx) {
-                std::task::Poll::Ready(Ok(val)) => {
-                    this.0 = ResponseState::Done;
-                    std::task::Poll::Ready(Ok(val))
-                }
-                std::task::Poll::Ready(Err(_)) => {
-                    this.0 = ResponseState::Done;
-                    std::task::Poll::Ready(Err(ActorError::ActorStopped))
-                }
-                std::task::Poll::Pending => std::task::Poll::Pending,
-            },
-            ResponseState::Error(_) => {
-                match std::mem::replace(&mut this.0, ResponseState::Done) {
-                    ResponseState::Error(e) => std::task::Poll::Ready(Err(e)),
-                    _ => unreachable!(),
-                }
-            }
-            ResponseState::Done => panic!("Response polled after completion"),
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
 // ActorRef
 // ---------------------------------------------------------------------------
 
