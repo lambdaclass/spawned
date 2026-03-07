@@ -128,3 +128,59 @@ impl<T: Send + 'static> Future for Response<T> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use spawned_rt::tasks::oneshot;
+
+    #[test]
+    fn ready_ok_unwrap() {
+        let r: Response<i32> = Response::ready(Ok(42));
+        assert_eq!(r.unwrap(), 42);
+    }
+
+    #[test]
+    fn ready_err_is_err() {
+        let r: Response<i32> = Response::ready(Err(ActorError::ActorStopped));
+        assert!(r.is_err());
+    }
+
+    #[test]
+    #[should_panic(expected = "ActorStopped")]
+    fn ready_err_unwrap_panics() {
+        let r: Response<i32> = Response::ready(Err(ActorError::ActorStopped));
+        r.unwrap();
+    }
+
+    #[test]
+    fn future_resolves_from_receiver() {
+        let rt = spawned_rt::tasks::Runtime::new().unwrap();
+        rt.block_on(async {
+            let (tx, rx) = oneshot::channel::<i32>();
+            let resp: Response<i32> = Response::from(Ok(rx));
+            tx.send(99).unwrap();
+            let val = resp.await.unwrap();
+            assert_eq!(val, 99);
+        });
+    }
+
+    #[test]
+    fn future_err_on_dropped_sender() {
+        let rt = spawned_rt::tasks::Runtime::new().unwrap();
+        rt.block_on(async {
+            let (tx, rx) = oneshot::channel::<i32>();
+            let resp: Response<i32> = Response::from(Ok(rx));
+            drop(tx);
+            let result = resp.await;
+            assert!(matches!(result, Err(ActorError::ActorStopped)));
+        });
+    }
+
+    #[test]
+    fn map_transforms_value() {
+        let r: Response<i32> = Response::ready(Ok(2));
+        let mapped = r.map(|x| x * 3);
+        assert_eq!(mapped.unwrap(), 6);
+    }
+}

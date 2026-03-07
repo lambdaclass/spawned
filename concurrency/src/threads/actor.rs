@@ -452,3 +452,188 @@ where
         }
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::messages;
+    use std::thread;
+
+    struct Counter {
+        count: u64,
+    }
+
+    messages! {
+        GetCount -> u64;
+        Increment -> u64;
+        StopCounter -> u64
+    }
+
+    impl Actor for Counter {}
+
+    impl Handler<GetCount> for Counter {
+        fn handle(&mut self, _msg: GetCount, _ctx: &Context<Self>) -> u64 {
+            self.count
+        }
+    }
+
+    impl Handler<Increment> for Counter {
+        fn handle(&mut self, _msg: Increment, _ctx: &Context<Self>) -> u64 {
+            self.count += 1;
+            self.count
+        }
+    }
+
+    impl Handler<StopCounter> for Counter {
+        fn handle(&mut self, _msg: StopCounter, ctx: &Context<Self>) -> u64 {
+            ctx.stop();
+            self.count
+        }
+    }
+
+    #[test]
+    fn basic_send_and_request() {
+        let actor = Counter { count: 0 }.start();
+        assert_eq!(actor.request(GetCount).unwrap(), 0);
+        assert_eq!(actor.request(Increment).unwrap(), 1);
+        actor.send(Increment).unwrap();
+        rt::sleep(Duration::from_millis(50));
+        assert_eq!(actor.request(GetCount).unwrap(), 2);
+        actor.request(StopCounter).unwrap();
+    }
+
+    #[test]
+    fn join_waits_for_completion() {
+        struct SlowStop;
+        messages! { StopSlow -> () }
+        impl Actor for SlowStop {
+            fn stopped(&mut self, _ctx: &Context<Self>) {
+                rt::sleep(Duration::from_millis(300));
+            }
+        }
+        impl Handler<StopSlow> for SlowStop {
+            fn handle(&mut self, _msg: StopSlow, ctx: &Context<Self>) {
+                ctx.stop();
+            }
+        }
+
+        let actor = SlowStop.start();
+        actor.send(StopSlow).unwrap();
+        actor.join();
+        // If join() returned, stopped() has completed
+    }
+
+    #[test]
+    fn join_multiple_callers() {
+        struct SlowStop2;
+        messages! { StopSlow2 -> () }
+        impl Actor for SlowStop2 {
+            fn stopped(&mut self, _ctx: &Context<Self>) {
+                rt::sleep(Duration::from_millis(200));
+            }
+        }
+        impl Handler<StopSlow2> for SlowStop2 {
+            fn handle(&mut self, _msg: StopSlow2, ctx: &Context<Self>) {
+                ctx.stop();
+            }
+        }
+
+        let actor = SlowStop2.start();
+        let a1 = actor.clone();
+        let a2 = actor.clone();
+        let t1 = thread::spawn(move || {
+            a1.join();
+            1u32
+        });
+        let t2 = thread::spawn(move || {
+            a2.join();
+            2u32
+        });
+        actor.send(StopSlow2).unwrap();
+        assert_eq!(t1.join().unwrap(), 1);
+        assert_eq!(t2.join().unwrap(), 2);
+    }
+
+    #[test]
+    fn panic_in_started_stops_actor() {
+        struct PanicOnStart;
+        messages! { PingThread -> () }
+        impl Actor for PanicOnStart {
+            fn started(&mut self, _ctx: &Context<Self>) {
+                panic!("boom in started");
+            }
+        }
+        impl Handler<PingThread> for PanicOnStart {
+            fn handle(&mut self, _msg: PingThread, _ctx: &Context<Self>) {}
+        }
+
+        let actor = PanicOnStart.start();
+        rt::sleep(Duration::from_millis(50));
+        let result = actor.send(PingThread);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn panic_in_handler_stops_actor() {
+        struct PanicOnMsg;
+        messages! {
+            ExplodeThread -> ();
+            CheckThread -> u32
+        }
+        impl Actor for PanicOnMsg {}
+        impl Handler<ExplodeThread> for PanicOnMsg {
+            fn handle(&mut self, _msg: ExplodeThread, _ctx: &Context<Self>) {
+                panic!("boom in handler");
+            }
+        }
+        impl Handler<CheckThread> for PanicOnMsg {
+            fn handle(&mut self, _msg: CheckThread, _ctx: &Context<Self>) -> u32 {
+                42
+            }
+        }
+
+        let actor = PanicOnMsg.start();
+        actor.send(ExplodeThread).unwrap();
+        rt::sleep(Duration::from_millis(200));
+        let result = actor.request(CheckThread);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn panic_in_stopped_still_completes() {
+        struct PanicOnStop;
+        messages! { StopMeThread -> () }
+        impl Actor for PanicOnStop {
+            fn stopped(&mut self, _ctx: &Context<Self>) {
+                panic!("boom in stopped");
+            }
+        }
+        impl Handler<StopMeThread> for PanicOnStop {
+            fn handle(&mut self, _msg: StopMeThread, ctx: &Context<Self>) {
+                ctx.stop();
+            }
+        }
+
+        let actor = PanicOnStop.start();
+        actor.send(StopMeThread).unwrap();
+        actor.join();
+    }
+
+    #[test]
+    fn recipient_type_erasure() {
+        let actor = Counter { count: 42 }.start();
+        let recipient: Recipient<GetCount> = actor.recipient();
+        let result = request(&*recipient, GetCount, Duration::from_secs(5)).unwrap();
+        assert_eq!(result, 42);
+    }
+
+    #[test]
+    fn send_message_on_delivers() {
+        let actor = Counter { count: 0 }.start();
+        let ctx = actor.context();
+        send_message_on(ctx, || rt::sleep(Duration::from_millis(10)), Increment);
+        rt::sleep(Duration::from_millis(200));
+        let count = actor.request(GetCount).unwrap();
+        assert_eq!(count, 1);
+    }
+}

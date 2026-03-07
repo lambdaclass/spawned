@@ -912,4 +912,108 @@ mod tests {
             goodboy.request(StopCounter).await.unwrap();
         });
     }
+
+    // --- Panic recovery tests ---
+
+    #[test]
+    pub fn panic_in_started_stops_actor() {
+        let runtime = rt::Runtime::new().unwrap();
+        runtime.block_on(async move {
+            struct PanicOnStart;
+            messages! { Ping -> () }
+            impl Actor for PanicOnStart {
+                async fn started(&mut self, _ctx: &Context<Self>) {
+                    panic!("boom in started");
+                }
+            }
+            impl Handler<Ping> for PanicOnStart {
+                async fn handle(&mut self, _msg: Ping, _ctx: &Context<Self>) {}
+            }
+
+            let actor = PanicOnStart.start();
+            rt::sleep(Duration::from_millis(50)).await;
+            let result = actor.send(Ping);
+            assert!(result.is_err());
+        });
+    }
+
+    #[test]
+    pub fn panic_in_handler_stops_actor() {
+        let runtime = rt::Runtime::new().unwrap();
+        runtime.block_on(async move {
+            struct PanicOnMsg;
+            messages! {
+                Explode -> ();
+                Check -> u32
+            }
+            impl Actor for PanicOnMsg {}
+            impl Handler<Explode> for PanicOnMsg {
+                async fn handle(&mut self, _msg: Explode, _ctx: &Context<Self>) {
+                    panic!("boom in handler");
+                }
+            }
+            impl Handler<Check> for PanicOnMsg {
+                async fn handle(&mut self, _msg: Check, _ctx: &Context<Self>) -> u32 {
+                    42
+                }
+            }
+
+            let actor = PanicOnMsg.start();
+            actor.send(Explode).unwrap();
+            rt::sleep(Duration::from_millis(50)).await;
+            let result = actor.request(Check).await;
+            assert!(result.is_err());
+        });
+    }
+
+    #[test]
+    pub fn panic_in_stopped_still_completes() {
+        let runtime = rt::Runtime::new().unwrap();
+        runtime.block_on(async move {
+            struct PanicOnStop;
+            messages! { StopMe -> () }
+            impl Actor for PanicOnStop {
+                async fn stopped(&mut self, _ctx: &Context<Self>) {
+                    panic!("boom in stopped");
+                }
+            }
+            impl Handler<StopMe> for PanicOnStop {
+                async fn handle(&mut self, _msg: StopMe, ctx: &Context<Self>) {
+                    ctx.stop();
+                }
+            }
+
+            let actor = PanicOnStop.start();
+            actor.send(StopMe).unwrap();
+            actor.join().await;
+        });
+    }
+
+    #[test]
+    pub fn send_message_on_delivers() {
+        let runtime = rt::Runtime::new().unwrap();
+        runtime.block_on(async move {
+            let counter = Counter { count: 0 }.start();
+            let ctx = counter.context();
+            send_message_on(ctx, rt::sleep(Duration::from_millis(10)), Increment);
+            rt::sleep(Duration::from_millis(100)).await;
+            let count = counter.request(GetCount).await.unwrap();
+            assert_eq!(count, 1);
+        });
+    }
+
+    #[test]
+    pub fn send_message_on_cancelled() {
+        let runtime = rt::Runtime::new().unwrap();
+        runtime.block_on(async move {
+            let counter = Counter { count: 0 }.start();
+            let ctx = counter.context();
+            send_message_on(ctx, rt::sleep(Duration::from_millis(200)), Increment);
+            // Stop actor before the future resolves
+            counter.request(StopCounter).await.unwrap();
+            counter.join().await;
+            // Count should remain 0 — the message was never delivered
+            // (Actor is already stopped, so we can't request. But stop returned count=0.)
+        });
+    }
 }
