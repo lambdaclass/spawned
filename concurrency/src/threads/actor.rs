@@ -456,18 +456,21 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::messages;
+    use crate::message::Message;
     use std::thread;
 
     struct Counter {
         count: u64,
     }
 
-    messages! {
-        GetCount -> u64;
-        Increment -> u64;
-        StopCounter -> u64
-    }
+    struct GetCount;
+    impl Message for GetCount { type Result = u64; }
+
+    struct Increment;
+    impl Message for Increment { type Result = u64; }
+
+    struct StopCounter;
+    impl Message for StopCounter { type Result = u64; }
 
     impl Actor for Counter {}
 
@@ -505,7 +508,8 @@ mod tests {
     #[test]
     fn join_waits_for_completion() {
         struct SlowStop;
-        messages! { StopSlow -> () }
+        struct StopSlow;
+        impl Message for StopSlow { type Result = (); }
         impl Actor for SlowStop {
             fn stopped(&mut self, _ctx: &Context<Self>) {
                 rt::sleep(Duration::from_millis(300));
@@ -526,7 +530,8 @@ mod tests {
     #[test]
     fn join_multiple_callers() {
         struct SlowStop2;
-        messages! { StopSlow2 -> () }
+        struct StopSlow2;
+        impl Message for StopSlow2 { type Result = (); }
         impl Actor for SlowStop2 {
             fn stopped(&mut self, _ctx: &Context<Self>) {
                 rt::sleep(Duration::from_millis(200));
@@ -557,7 +562,8 @@ mod tests {
     #[test]
     fn panic_in_started_stops_actor() {
         struct PanicOnStart;
-        messages! { PingThread -> () }
+        struct PingThread;
+        impl Message for PingThread { type Result = (); }
         impl Actor for PanicOnStart {
             fn started(&mut self, _ctx: &Context<Self>) {
                 panic!("boom in started");
@@ -576,10 +582,10 @@ mod tests {
     #[test]
     fn panic_in_handler_stops_actor() {
         struct PanicOnMsg;
-        messages! {
-            ExplodeThread -> ();
-            CheckThread -> u32
-        }
+        struct ExplodeThread;
+        impl Message for ExplodeThread { type Result = (); }
+        struct CheckThread;
+        impl Message for CheckThread { type Result = u32; }
         impl Actor for PanicOnMsg {}
         impl Handler<ExplodeThread> for PanicOnMsg {
             fn handle(&mut self, _msg: ExplodeThread, _ctx: &Context<Self>) {
@@ -602,7 +608,8 @@ mod tests {
     #[test]
     fn panic_in_stopped_still_completes() {
         struct PanicOnStop;
-        messages! { StopMeThread -> () }
+        struct StopMeThread;
+        impl Message for StopMeThread { type Result = (); }
         impl Actor for PanicOnStop {
             fn stopped(&mut self, _ctx: &Context<Self>) {
                 panic!("boom in stopped");

@@ -394,6 +394,6 @@ registry::unregister("main_server");
 
 If the macros don't fit your use case:
 
-- **`messages!` / `request_messages!` / `send_messages!`** — Declarative macros for defining `Message` structs manually, without `#[protocol]`.
+- **Manual `Message` impls** — Define message structs and implement `Message` by hand instead of using `#[protocol]`.
 - **Manual `Handler<M>` impls** — Skip `#[actor]` and implement `Handler<M>` for each message type by hand.
 - **`Recipient<M>`** (`Arc<dyn Receiver<M>>`) — Type-erased reference for a single message type, available via `ctx.recipient::<M>()`.

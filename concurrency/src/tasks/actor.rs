@@ -536,7 +536,7 @@ mod warn_on_block {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::messages;
+    use crate::message::Message;
     use std::{
         sync::{atomic, Arc},
         thread,
@@ -549,11 +549,14 @@ mod tests {
         count: u64,
     }
 
-    messages! {
-        GetCount -> u64;
-        Increment -> u64;
-        StopCounter -> u64
-    }
+    struct GetCount;
+    impl Message for GetCount { type Result = u64; }
+
+    struct Increment;
+    impl Message for Increment { type Result = u64; }
+
+    struct StopCounter;
+    impl Message for StopCounter { type Result = u64; }
 
     impl Actor for Counter {}
 
@@ -710,7 +713,8 @@ mod tests {
         let runtime = rt::Runtime::new().unwrap();
         runtime.block_on(async move {
             struct SlowActor;
-            messages! { SlowOp -> () }
+            struct SlowOp;
+            impl Message for SlowOp { type Result = (); }
             impl Actor for SlowActor {}
             impl Handler<SlowOp> for SlowActor {
                 async fn handle(&mut self, _msg: SlowOp, _ctx: &Context<Self>) {
@@ -747,7 +751,8 @@ mod tests {
 
     struct SlowShutdownActor;
 
-    messages! { StopSlow -> () }
+    struct StopSlow;
+    impl Message for StopSlow { type Result = (); }
 
     impl Actor for SlowShutdownActor {
         async fn stopped(&mut self, _ctx: &Context<Self>) {
@@ -827,7 +832,8 @@ mod tests {
 
     struct BadlyBehavedTask;
 
-    messages! { DoBlock -> () }
+    struct DoBlock;
+    impl Message for DoBlock { type Result = (); }
 
     impl Actor for BadlyBehavedTask {}
 
@@ -839,7 +845,8 @@ mod tests {
         }
     }
 
-    messages! { IncrementWell -> () }
+    struct IncrementWell;
+    impl Message for IncrementWell { type Result = (); }
 
     struct WellBehavedTask {
         pub count: u64,
@@ -920,7 +927,8 @@ mod tests {
         let runtime = rt::Runtime::new().unwrap();
         runtime.block_on(async move {
             struct PanicOnStart;
-            messages! { Ping -> () }
+            struct Ping;
+            impl Message for Ping { type Result = (); }
             impl Actor for PanicOnStart {
                 async fn started(&mut self, _ctx: &Context<Self>) {
                     panic!("boom in started");
@@ -942,10 +950,10 @@ mod tests {
         let runtime = rt::Runtime::new().unwrap();
         runtime.block_on(async move {
             struct PanicOnMsg;
-            messages! {
-                Explode -> ();
-                Check -> u32
-            }
+            struct Explode;
+            impl Message for Explode { type Result = (); }
+            struct Check;
+            impl Message for Check { type Result = u32; }
             impl Actor for PanicOnMsg {}
             impl Handler<Explode> for PanicOnMsg {
                 async fn handle(&mut self, _msg: Explode, _ctx: &Context<Self>) {
@@ -971,7 +979,8 @@ mod tests {
         let runtime = rt::Runtime::new().unwrap();
         runtime.block_on(async move {
             struct PanicOnStop;
-            messages! { StopMe -> () }
+            struct StopMe;
+            impl Message for StopMe { type Result = (); }
             impl Actor for PanicOnStop {
                 async fn stopped(&mut self, _ctx: &Context<Self>) {
                     panic!("boom in stopped");

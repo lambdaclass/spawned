@@ -1,4 +1,4 @@
-use crate::messages;
+use crate::message::Message;
 use crate::threads::{
     spawn_listener, Actor, ActorStart, Context, Handler,
 };
@@ -14,10 +14,11 @@ struct Collector {
     done: Arc<AtomicU64>,
 }
 
-messages! {
-    Push { value: i32 } -> ();
-    GetItems -> Vec<i32>
-}
+struct Push { value: i32 }
+impl Message for Push { type Result = (); }
+
+struct GetItems;
+impl Message for GetItems { type Result = Vec<i32>; }
 
 impl Actor for Collector {}
 

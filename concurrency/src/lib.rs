@@ -55,7 +55,7 @@
 //! - [`threads`] — blocking actor runtime (native OS threads)
 //! - [`registry`] — global name-based actor registry
 //! - [`error`] — `ActorError` type
-//! - [`message`] — `Message` trait and declarative macros (`messages!`, `send_messages!`, `request_messages!`)
+//! - [`message`] — `Message` trait for defining message types
 //!
 //! # Choosing `tasks` vs `threads`
 //!
@@ -66,7 +66,7 @@
 //!
 //! # Advanced
 //!
-//! - [`message::Message`] trait and `messages!` macro for manual message definitions
+//! - [`message::Message`] trait for manual message definitions without `#[protocol]`
 //! - `Recipient<M>` (`Arc<dyn Receiver<M>>`) for type-erased per-message references
 //! - [`tasks::Backend`] enum for choosing async runtime, blocking pool, or OS thread
 
