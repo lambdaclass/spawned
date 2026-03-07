@@ -2,7 +2,7 @@ use crate::messages;
 use crate::threads::{
     spawn_listener, Actor, ActorStart, Context, Handler,
 };
-use spawned_rt::threads::{self as rt, CancellationToken};
+use spawned_rt::threads::{self as rt};
 use std::sync::{
     atomic::{AtomicU64, Ordering},
     Arc,
@@ -72,8 +72,6 @@ fn listener_stops_on_cancellation() {
     .start();
 
     let ctx = Context::from_ref(&actor);
-    let ct = CancellationToken::new();
-    let ct_clone = ct.clone();
 
     // An iterator that blocks between items, giving us time to cancel
     let iter = (1..=100).map(move |i| {
@@ -85,9 +83,8 @@ fn listener_stops_on_cancellation() {
 
     let _handle = spawn_listener(ctx, iter);
 
-    // Let a few items through then cancel
+    // Let a few items through then stop the actor
     rt::sleep(Duration::from_millis(200));
-    ct_clone.cancel();
     actor.context().stop();
     actor.join();
 

@@ -1010,10 +1010,9 @@ mod tests {
             let ctx = counter.context();
             send_message_on(ctx, rt::sleep(Duration::from_millis(200)), Increment);
             // Stop actor before the future resolves
-            counter.request(StopCounter).await.unwrap();
+            let final_count = counter.request(StopCounter).await.unwrap();
+            assert_eq!(final_count, 0, "message should not have been delivered");
             counter.join().await;
-            // Count should remain 0 — the message was never delivered
-            // (Actor is already stopped, so we can't request. But stop returned count=0.)
         });
     }
 }
