@@ -32,6 +32,7 @@ fn to_snake_case(s: &str) -> String {
 
 fn to_pascal_case(s: &str) -> String {
     s.split('_')
+        .filter(|part| !part.is_empty())
         .map(|part| {
             let mut chars = part.chars();
             match chars.next() {
@@ -377,6 +378,17 @@ struct ProtocolMethodInfo {
 /// 4. **Blanket impls** — `impl FooProtocol for ActorRef<A>` and `impl ToFooRef for ActorRef<A>`
 ///    for any actor `A` that handles all the generated message types.
 ///
+/// # Type Resolution in Generated Structs
+///
+/// The generated message module uses `use super::*` to access types from the
+/// parent scope. Types used in method parameters are qualified with `super::`
+/// in the generated structs — this means any type you reference in a protocol
+/// method signature must be in scope where the `#[protocol]` trait is defined.
+///
+/// Prelude types (`String`, `Vec`, `Option`, `Result`, `Box`, `bool`, `u32`, etc.)
+/// and fully qualified paths (`std::`, `core::`, `alloc::`) are used as-is without
+/// `super::` prefixing.
+///
 /// # Return Type Conventions
 ///
 /// The return type on each method determines the message kind:
@@ -436,6 +448,15 @@ pub fn protocol(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let mut methods: Vec<ProtocolMethodInfo> = Vec::new();
 
     for item in &trait_def.items {
+        if !matches!(item, TraitItem::Fn(_)) {
+            return syn::Error::new_spanned(
+                item,
+                "protocol traits may only contain methods; \
+                 associated types, constants, and other items are not supported",
+            )
+            .to_compile_error()
+            .into();
+        }
         if let TraitItem::Fn(method) = item {
             if method.sig.asyncness.is_some() {
                 return syn::Error::new_spanned(
@@ -740,6 +761,15 @@ pub fn actor(attr: TokenStream, item: TokenStream) -> TokenStream {
                     .to_compile_error()
                     .into();
                 }
+                // Expect: fn started(&mut self, ctx: &Context<Self>)
+                if method.sig.inputs.len() != 2 {
+                    return syn::Error::new_spanned(
+                        &method.sig,
+                        "#[started] method must take exactly (&mut self, &Context<Self>)",
+                    )
+                    .to_compile_error()
+                    .into();
+                }
                 let mut m = method.clone();
                 m.attrs.retain(|a| !a.path().is_ident("started"));
                 m.vis = syn::Visibility::Inherited;
@@ -756,6 +786,15 @@ pub fn actor(attr: TokenStream, item: TokenStream) -> TokenStream {
                     return syn::Error::new_spanned(
                         &method.sig,
                         "only one #[stopped] method is allowed per actor",
+                    )
+                    .to_compile_error()
+                    .into();
+                }
+                // Expect: fn stopped(&mut self, ctx: &Context<Self>)
+                if method.sig.inputs.len() != 2 {
+                    return syn::Error::new_spanned(
+                        &method.sig,
+                        "#[stopped] method must take exactly (&mut self, &Context<Self>)",
                     )
                     .to_compile_error()
                     .into();
