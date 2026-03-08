@@ -4,6 +4,9 @@ use spawned_rt::tasks::JoinHandle;
 
 use super::actor::{Actor, Context, Handler};
 
+/// Forward items from an async stream to an actor as messages.
+///
+/// Stops when the stream is exhausted, the actor stops, or sending fails.
 pub fn spawn_listener<A, M, S>(ctx: Context<A>, stream: S) -> JoinHandle<()>
 where
     A: Actor + Handler<M>,

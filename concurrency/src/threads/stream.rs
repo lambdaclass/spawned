@@ -4,6 +4,9 @@ use crate::message::Message;
 
 use super::actor::{Actor, Context, Handler};
 
+/// Forward items from an iterator to an actor as messages.
+///
+/// Stops when the iterator is exhausted, the actor stops, or sending fails.
 pub fn spawn_listener<A, M, I>(ctx: Context<A>, stream: I) -> JoinHandle<()>
 where
     A: Actor + Handler<M>,

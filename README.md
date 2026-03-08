@@ -78,6 +78,8 @@ fn main() {
 
 No message enums, no manual dispatch — just define a trait, implement the handlers, and call methods directly on the actor reference.
 
+For a complete API reference covering all features (timers, type erasure, registry, backend selection, and more), see the **[API Guide](docs/API-GUIDE.md)**.
+
 ## Features
 
 - **Protocol macros** — `#[protocol]` generates message types, blanket impls, and type-erased refs from a trait definition

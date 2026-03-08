@@ -7,11 +7,16 @@ use super::actor::{Actor, Context, Handler};
 use crate::message::Message;
 use core::pin::pin;
 
+/// Handle returned by [`send_after`] and [`send_interval`].
+///
+/// Cancel the timer by calling `timer.cancellation_token.cancel()`.
+/// Timers are also automatically cancelled when the actor stops.
 pub struct TimerHandle {
     pub join_handle: JoinHandle<()>,
     pub cancellation_token: CancellationToken,
 }
 
+/// Send a single message to an actor after a delay.
 pub fn send_after<A, M>(period: Duration, ctx: Context<A>, msg: M) -> TimerHandle
 where
     A: Actor + Handler<M>,
@@ -37,6 +42,8 @@ where
     }
 }
 
+/// Send a message to an actor repeatedly at a fixed interval.
+/// The message type must implement `Clone`.
 pub fn send_interval<A, M>(period: Duration, ctx: Context<A>, msg: M) -> TimerHandle
 where
     A: Actor + Handler<M>,

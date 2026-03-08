@@ -9,12 +9,18 @@ fn global_store() -> &'static Store {
     STORE.get_or_init(|| RwLock::new(HashMap::new()))
 }
 
+/// Errors that can occur when registering a value in the registry.
 #[derive(Debug, thiserror::Error)]
 pub enum RegistryError {
+    /// A value with this name is already registered.
     #[error("name '{0}' is already registered")]
     AlreadyRegistered(String),
 }
 
+/// Register a value by name in the global registry.
+///
+/// Returns `Err(AlreadyRegistered)` if the name is already taken.
+/// Use [`unregister`] first if you need to replace an existing entry.
 pub fn register<T: Send + Sync + 'static>(name: &str, value: T) -> Result<(), RegistryError> {
     let mut store = global_store().write().unwrap_or_else(|p| p.into_inner());
     if store.contains_key(name) {
@@ -24,16 +30,20 @@ pub fn register<T: Send + Sync + 'static>(name: &str, value: T) -> Result<(), Re
     Ok(())
 }
 
+/// Look up a value by name. Returns `None` if not found or if the stored
+/// type doesn't match `T`.
 pub fn whereis<T: Clone + Send + Sync + 'static>(name: &str) -> Option<T> {
     let store = global_store().read().unwrap_or_else(|p| p.into_inner());
     store.get(name)?.downcast_ref::<T>().cloned()
 }
 
+/// Remove a registration by name. No-op if the name is not registered.
 pub fn unregister(name: &str) {
     let mut store = global_store().write().unwrap_or_else(|p| p.into_inner());
     store.remove(name);
 }
 
+/// List all registered names.
 pub fn registered() -> Vec<String> {
     let store = global_store().read().unwrap_or_else(|p| p.into_inner());
     store.keys().cloned().collect()

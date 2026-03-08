@@ -14,6 +14,11 @@ const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 // Backend
 // ---------------------------------------------------------------------------
 
+/// Runtime backend for the actor's message loop (tasks mode only).
+///
+/// - `Async` — runs on the tokio async runtime (default, lowest overhead)
+/// - `Blocking` — runs on tokio's blocking thread pool (for blocking I/O)
+/// - `Thread` — runs on a dedicated OS thread (for CPU-bound work or isolation)
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Backend {
     #[default]
@@ -111,6 +116,8 @@ impl<A: Actor> Debug for Context<A> {
 }
 
 impl<A: Actor> Context<A> {
+    /// Create a `Context` from an `ActorRef`. Useful for setting up timers
+    /// or stream listeners from outside the actor.
     pub fn from_ref(actor_ref: &ActorRef<A>) -> Self {
         Self {
             sender: actor_ref.sender.clone(),
@@ -119,10 +126,13 @@ impl<A: Actor> Context<A> {
         }
     }
 
+    /// Signal the actor to stop. The current handler will finish, then
+    /// `stopped()` is called and the actor exits.
     pub fn stop(&self) {
         self.cancellation_token.cancel();
     }
 
+    /// Send a fire-and-forget message to this actor.
     pub fn send<M>(&self, msg: M) -> Result<(), ActorError>
     where
         A: Handler<M>,
@@ -134,6 +144,7 @@ impl<A: Actor> Context<A> {
             .map_err(|_| ActorError::ActorStopped)
     }
 
+    /// Send a request and get a raw oneshot receiver for the reply.
     pub fn request_raw<M>(&self, msg: M) -> Result<oneshot::Receiver<M::Result>, ActorError>
     where
         A: Handler<M>,
@@ -150,6 +161,7 @@ impl<A: Actor> Context<A> {
         Ok(rx)
     }
 
+    /// Send a request and wait for the reply (default 5s timeout).
     pub async fn request<M>(&self, msg: M) -> Result<M::Result, ActorError>
     where
         A: Handler<M>,
@@ -163,6 +175,8 @@ impl<A: Actor> Context<A> {
         }
     }
 
+    /// Get a type-erased `Recipient<M>` for sending a single message type
+    /// to this actor.
     pub fn recipient<M>(&self) -> Recipient<M>
     where
         A: Handler<M>,
@@ -171,6 +185,7 @@ impl<A: Actor> Context<A> {
         Arc::new(self.clone())
     }
 
+    /// Get an `ActorRef<A>` from this context.
     pub fn actor_ref(&self) -> ActorRef<A> {
         ActorRef {
             sender: self.sender.clone(),
@@ -203,13 +218,21 @@ where
 // Receiver trait (object-safe) + Recipient alias
 // ---------------------------------------------------------------------------
 
+/// Object-safe trait for sending a single message type to an actor.
+///
+/// Implemented automatically by `ActorRef<A>` and `Context<A>` for any
+/// message type that `A` handles.
 pub trait Receiver<M: Message>: Send + Sync {
     fn send(&self, msg: M) -> Result<(), ActorError>;
     fn request_raw(&self, msg: M) -> Result<oneshot::Receiver<M::Result>, ActorError>;
 }
 
+/// Type-erased reference for sending a single message type.
+///
+/// Obtained via `actor_ref.recipient::<M>()` or `ctx.recipient::<M>()`.
 pub type Recipient<M> = Arc<dyn Receiver<M>>;
 
+/// Send a request through a type-erased `Receiver` with a custom timeout.
 pub async fn request<M: Message>(
     recipient: &dyn Receiver<M>,
     msg: M,
@@ -250,6 +273,7 @@ impl<A: Actor> Clone for ActorRef<A> {
 }
 
 impl<A: Actor> ActorRef<A> {
+    /// Send a fire-and-forget message to the actor.
     pub fn send<M>(&self, msg: M) -> Result<(), ActorError>
     where
         A: Handler<M>,
@@ -261,6 +285,7 @@ impl<A: Actor> ActorRef<A> {
             .map_err(|_| ActorError::ActorStopped)
     }
 
+    /// Send a request and get a raw oneshot receiver for the reply.
     pub fn request_raw<M>(&self, msg: M) -> Result<oneshot::Receiver<M::Result>, ActorError>
     where
         A: Handler<M>,
@@ -277,6 +302,7 @@ impl<A: Actor> ActorRef<A> {
         Ok(rx)
     }
 
+    /// Send a request and wait for the reply (default 5s timeout).
     pub async fn request<M>(&self, msg: M) -> Result<M::Result, ActorError>
     where
         A: Handler<M>,
@@ -285,6 +311,7 @@ impl<A: Actor> ActorRef<A> {
         self.request_with_timeout(msg, DEFAULT_REQUEST_TIMEOUT).await
     }
 
+    /// Send a request and wait for the reply with a custom timeout.
     pub async fn request_with_timeout<M>(
         &self,
         msg: M,
@@ -302,6 +329,7 @@ impl<A: Actor> ActorRef<A> {
         }
     }
 
+    /// Get a type-erased `Recipient<M>` for this actor.
     pub fn recipient<M>(&self) -> Recipient<M>
     where
         A: Handler<M>,
@@ -310,10 +338,12 @@ impl<A: Actor> ActorRef<A> {
         Arc::new(self.clone())
     }
 
+    /// Get a `Context<A>` from this ref, for timer setup or stream listeners.
     pub fn context(&self) -> Context<A> {
         Context::from_ref(self)
     }
 
+    /// Wait until the actor has fully stopped (including `stopped()` callback).
     pub async fn join(&self) {
         let mut rx = self.completion_rx.clone();
         while !*rx.borrow_and_update() {
@@ -462,6 +492,10 @@ impl<A: Actor> ActorStart for A {}
 // send_message_on (utility)
 // ---------------------------------------------------------------------------
 
+/// Send a message to an actor when a future completes.
+///
+/// Spawns a task that races the future against the actor's cancellation token.
+/// If the actor stops before the future completes, the message is not sent.
 pub fn send_message_on<A, M, U>(ctx: Context<A>, future: U, msg: M) -> JoinHandle<()>
 where
     A: Actor + Handler<M>,

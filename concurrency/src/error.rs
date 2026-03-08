@@ -1,7 +1,15 @@
+/// Errors that can occur when communicating with an actor.
 #[derive(Debug, thiserror::Error)]
 pub enum ActorError {
+    /// The actor has stopped or its mailbox channel is closed.
+    ///
+    /// Returned by `send()` and `request()` when the actor is no longer running.
     #[error("Actor stopped")]
     ActorStopped,
+    /// A request exceeded the timeout duration (default: 5 seconds).
+    ///
+    /// Returned by `request()` and `request_with_timeout()` when the actor
+    /// does not reply in time.
     #[error("Request to Actor timed out")]
     RequestTimeout,
 }

@@ -45,9 +45,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2
-      - name: Verify spawned-macros
-        run: cargo publish --package spawned-macros --dry-run
-      - name: Verify spawned-rt
-        run: cargo publish --package spawned-rt --dry-run
-      - name: Verify spawned-concurrency
-        run: cargo publish --package spawned-concurrency --dry-run
+      - name: Verify crate packaging
+        run: |
+          # --no-verify skips the build step (which tries to fetch deps from crates.io).
+          # spawned-concurrency is skipped entirely because it depends on spawned-macros
+          # which isn't on crates.io yet — cargo can't even package it.
+          # TODO: after first publish, switch all three to: cargo publish --dry-run
+          cargo package --package spawned-macros --no-verify
+          cargo package --package spawned-rt --no-verify

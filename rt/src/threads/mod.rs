@@ -17,12 +17,14 @@ use crate::{tasks::Runtime, tracing::init_tracing};
 /// Global list of Ctrl+C subscribers
 static CTRL_C_SUBSCRIBERS: OnceLock<Mutex<Vec<std_mpsc::Sender<()>>>> = OnceLock::new();
 
+/// Initialize tracing and run the given function.
 pub fn run(f: fn()) {
     init_tracing();
 
     f()
 }
 
+/// Create a temporary tokio runtime and block on the given future.
 pub fn block_on<F: Future>(future: F) -> F::Output {
     let rt = Runtime::new().unwrap();
     rt.block_on(future)

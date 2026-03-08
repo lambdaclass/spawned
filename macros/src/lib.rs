@@ -17,7 +17,7 @@ fn to_snake_case(s: &str) -> String {
             // - previous char is lowercase, OR next char is lowercase (handles acronyms)
             if i > 0 {
                 let prev_lower = chars[i - 1].is_lowercase();
-                let next_lower = chars.get(i + 1).map_or(false, |c| c.is_lowercase());
+                let next_lower = chars.get(i + 1).is_some_and(|c| c.is_lowercase());
                 if prev_lower || next_lower {
                     result.push('_');
                 }
@@ -233,18 +233,23 @@ fn qualify_type_with_super(ty: &Type) -> Type {
     }
 }
 
+struct ProtocolInfo<'a> {
+    trait_name: &'a Ident,
+    mod_name: &'a Ident,
+    ref_name: &'a Ident,
+    converter_trait: &'a Ident,
+    converter_method: &'a Ident,
+}
+
 /// Generates a blanket `impl Protocol for ActorRef<A>` and `impl ToXRef for ActorRef<A>`
 /// for a given runtime path (tasks or threads).
 fn generate_blanket_impl(
-    trait_name: &Ident,
-    mod_name: &Ident,
-    ref_name: &Ident,
-    converter_trait: &Ident,
-    converter_method: &Ident,
+    info: &ProtocolInfo,
     methods: &[ProtocolMethodInfo],
     runtime_path: &proc_macro2::TokenStream,
     mode: RuntimeMode,
 ) -> proc_macro2::TokenStream {
+    let ProtocolInfo { trait_name, mod_name, ref_name, converter_trait, converter_method } = info;
     let handler_bounds: Vec<_> = methods
         .iter()
         .map(|m| {
@@ -540,26 +545,15 @@ pub fn protocol(_attr: TokenStream, item: TokenStream) -> TokenStream {
     // Always generate blanket impls for both runtimes
     let tasks = quote! { spawned_concurrency::tasks };
     let threads = quote! { spawned_concurrency::threads };
-    let tasks_impl = generate_blanket_impl(
+    let proto_info = ProtocolInfo {
         trait_name,
-        &mod_name,
-        &ref_name,
-        &converter_trait,
-        &converter_method,
-        &methods,
-        &tasks,
-        RuntimeMode::Tasks,
-    );
-    let threads_impl = generate_blanket_impl(
-        trait_name,
-        &mod_name,
-        &ref_name,
-        &converter_trait,
-        &converter_method,
-        &methods,
-        &threads,
-        RuntimeMode::Threads,
-    );
+        mod_name: &mod_name,
+        ref_name: &ref_name,
+        converter_trait: &converter_trait,
+        converter_method: &converter_method,
+    };
+    let tasks_impl = generate_blanket_impl(&proto_info, &methods, &tasks, RuntimeMode::Tasks);
+    let threads_impl = generate_blanket_impl(&proto_info, &methods, &threads, RuntimeMode::Threads);
     let blanket_impls = quote! { #tasks_impl #threads_impl };
 
     let ref_doc = format!(
