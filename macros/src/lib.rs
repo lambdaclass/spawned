@@ -580,6 +580,7 @@ pub fn protocol(_attr: TokenStream, item: TokenStream) -> TokenStream {
     );
 
     let output = quote! {
+        #[allow(dead_code)]
         #trait_def
 
         #[doc = #ref_doc]
