@@ -167,8 +167,21 @@ impl<A: Actor> Context<A> {
         A: Handler<M>,
         M: Message,
     {
+        self.request_with_timeout(msg, DEFAULT_REQUEST_TIMEOUT).await
+    }
+
+    /// Send a request and wait for the reply with a custom timeout.
+    pub async fn request_with_timeout<M>(
+        &self,
+        msg: M,
+        duration: Duration,
+    ) -> Result<M::Result, ActorError>
+    where
+        A: Handler<M>,
+        M: Message,
+    {
         let rx = self.request_raw(msg)?;
-        match timeout(DEFAULT_REQUEST_TIMEOUT, rx).await {
+        match timeout(duration, rx).await {
             Ok(Ok(result)) => Ok(result),
             Ok(Err(_)) => Err(ActorError::ActorStopped),
             Err(_) => Err(ActorError::RequestTimeout),

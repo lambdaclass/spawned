@@ -54,7 +54,11 @@ where
 }
 
 /// Send a message to an actor repeatedly at a fixed interval.
-/// The message type must implement `Clone`.
+///
+/// The message type must implement `Clone` since a copy is sent on each tick.
+/// For `#[protocol]`-generated messages, unit structs (no fields) derive `Clone`
+/// automatically. For structs with fields, add `#[derive(Clone)]` before
+/// `#[protocol]` on the trait, or implement `Clone` manually on the message.
 pub fn send_interval<A, M>(period: Duration, ctx: Context<A>, msg: M) -> TimerHandle
 where
     A: Actor + Handler<M>,

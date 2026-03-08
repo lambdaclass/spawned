@@ -250,8 +250,13 @@ fn generate_blanket_impl(
     mode: RuntimeMode,
 ) -> proc_macro2::TokenStream {
     let ProtocolInfo { trait_name, mod_name, ref_name, converter_trait, converter_method } = info;
+    // Split methods into unconditional and cfg-gated groups.
+    // Unconditional methods have their Handler bounds on the impl block.
+    // Cfg-gated methods have their Handler bounds on the method itself,
+    // since #[cfg] on individual trait bounds isn't valid Rust.
     let handler_bounds: Vec<_> = methods
         .iter()
+        .filter(|m| m.cfg_attrs.is_empty())
         .map(|m| {
             let sn = &m.struct_name;
             quote! { #runtime_path::Handler<#mod_name::#sn> }
@@ -266,12 +271,21 @@ fn generate_blanket_impl(
             let params: Vec<_> = m.params.iter().collect();
             let ret_ty = &m.ret_type;
             let doc_attrs = &m.doc_attrs;
+            let has_cfg = !m.cfg_attrs.is_empty();
 
             let struct_name = &m.struct_name;
             let msg_construct = if field_names.is_empty() {
                 quote! { #mod_name::#struct_name }
             } else {
                 quote! { #mod_name::#struct_name { #(#field_names),* } }
+            };
+
+            // For cfg-gated methods, add the Handler bound as a where clause
+            let where_clause = if has_cfg {
+                let sn = &m.struct_name;
+                quote! { where __A: #runtime_path::Handler<#mod_name::#sn> }
+            } else {
+                quote! {}
             };
 
             match &m.kind {
@@ -287,7 +301,7 @@ fn generate_blanket_impl(
                     };
                     quote! {
                         #(#doc_attrs)*
-                        fn #method_name(&self, #(#params),*) #ret_ty {
+                        fn #method_name(&self, #(#params),*) #ret_ty #where_clause {
                             #body
                         }
                     }
@@ -307,7 +321,7 @@ fn generate_blanket_impl(
                     };
                     quote! {
                         #(#doc_attrs)*
-                        fn #method_name(&self, #(#params),*) #ret_ty {
+                        fn #method_name(&self, #(#params),*) #ret_ty #where_clause {
                             #body
                         }
                     }
@@ -342,6 +356,7 @@ struct ProtocolMethodInfo {
     params: Vec<FnArg>,
     ret_type: ReturnType,
     doc_attrs: Vec<Attribute>,
+    cfg_attrs: Vec<Attribute>,
 }
 
 /// Generates message types and blanket implementations from a protocol trait.
@@ -481,6 +496,12 @@ pub fn protocol(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 })
                 .cloned()
                 .collect();
+            let cfg_attrs: Vec<Attribute> = method
+                .attrs
+                .iter()
+                .filter(|a| a.path().is_ident("cfg") || a.path().is_ident("cfg_attr"))
+                .cloned()
+                .collect();
 
             methods.push(ProtocolMethodInfo {
                 method_name,
@@ -491,6 +512,7 @@ pub fn protocol(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 params,
                 ret_type: method.sig.output.clone(),
                 doc_attrs,
+                cfg_attrs,
             });
         }
     }
@@ -507,10 +529,7 @@ pub fn protocol(_attr: TokenStream, item: TokenStream) -> TokenStream {
             let qualified_field_types: Vec<Type> =
                 m.field_types.iter().map(qualify_type_with_super).collect();
             let doc_attrs = &m.doc_attrs;
-            let cfg_attrs: Vec<_> = doc_attrs
-                .iter()
-                .filter(|a| a.path().is_ident("cfg") || a.path().is_ident("cfg_attr"))
-                .collect();
+            let cfg_attrs = &m.cfg_attrs;
             let msg_result_ty: Type = match &m.kind {
                 MethodKind::Send => syn::parse_quote! { () },
                 MethodKind::Request(inner) => qualify_type_with_super(inner),
