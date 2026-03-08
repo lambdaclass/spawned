@@ -529,7 +529,6 @@ pub fn protocol(_attr: TokenStream, item: TokenStream) -> TokenStream {
             } else {
                 quote! {
                     #(#doc_attrs)*
-                    #[derive(Clone)]
                     pub struct #struct_name {
                         #(pub #field_names: #qualified_field_types,)*
                     }

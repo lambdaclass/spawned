@@ -31,6 +31,9 @@ enum ResponseState<T> {
 /// ```
 pub struct Response<T>(ResponseState<T>);
 
+// Safety: tokio::sync::oneshot::Receiver<T> implements Unpin, so pinning
+// Response<T> is safe. This is required for the Future::poll implementation
+// which uses self.get_mut().
 impl<T> Unpin for Response<T> {}
 
 impl<T> Response<T> {

@@ -9,6 +9,7 @@ mod timer_tests;
 #[cfg(test)]
 mod stream_tests;
 
+pub use crate::response::Response;
 pub use actor::{
     request, send_message_on, Actor, ActorRef, ActorStart, Context, Handler, Receiver, Recipient,
 };
