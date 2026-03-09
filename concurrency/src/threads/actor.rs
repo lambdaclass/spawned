@@ -17,6 +17,12 @@ const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 // Actor trait
 // ---------------------------------------------------------------------------
 
+/// Trait for defining an actor's lifecycle hooks.
+///
+/// Implement this trait (typically via `#[actor]`) to define `started()` and
+/// `stopped()` callbacks. Message handling is defined separately via [`Handler<M>`].
+///
+/// Actors must be `Send + Sized + 'static` so they can be moved to a spawned thread.
 pub trait Actor: Send + Sized + 'static {
     fn started(&mut self, _ctx: &Context<Self>) {}
     fn stopped(&mut self, _ctx: &Context<Self>) {}
@@ -26,6 +32,9 @@ pub trait Actor: Send + Sized + 'static {
 // Handler trait (per-message, sync version)
 // ---------------------------------------------------------------------------
 
+/// Per-message handler trait. Implement once for each message type the actor handles.
+///
+/// Unlike the `tasks` version, handlers are synchronous — no `async`/`.await`.
 pub trait Handler<M: Message>: Actor {
     fn handle(&mut self, msg: M, ctx: &Context<Self>) -> M::Result;
 }
@@ -60,6 +69,10 @@ where
 // Context
 // ---------------------------------------------------------------------------
 
+/// Handle passed to every handler and lifecycle hook, providing access to the
+/// actor's mailbox and lifecycle controls.
+///
+/// Clone is cheap — it clones the inner channel sender and cancellation token.
 pub struct Context<A: Actor> {
     sender: mpsc::Sender<Box<dyn Envelope<A> + Send>>,
     cancellation_token: CancellationToken,
@@ -236,6 +249,10 @@ impl Drop for CompletionGuard {
     }
 }
 
+/// External handle to a running actor. Cloneable, `Send + Sync`.
+///
+/// Use this to send messages, make requests, or wait for the actor to stop.
+/// When all clones are dropped, the actor's mailbox closes and it stops.
 pub struct ActorRef<A: Actor> {
     sender: mpsc::Sender<Box<dyn Envelope<A> + Send>>,
     cancellation_token: CancellationToken,
@@ -446,7 +463,9 @@ fn run_actor<A: Actor>(
 // Actor::start
 // ---------------------------------------------------------------------------
 
+/// Extension trait for starting an actor. Automatically implemented for all [`Actor`] types.
 pub trait ActorStart: Actor {
+    /// Start the actor on a dedicated OS thread.
     fn start(self) -> ActorRef<Self> {
         ActorRef::spawn(self)
     }

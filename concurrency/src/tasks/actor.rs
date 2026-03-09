@@ -31,6 +31,12 @@ pub enum Backend {
 // Actor trait
 // ---------------------------------------------------------------------------
 
+/// Trait for defining an actor's lifecycle hooks.
+///
+/// Implement this trait (typically via `#[actor]`) to define `started()` and
+/// `stopped()` callbacks. Message handling is defined separately via [`Handler<M>`].
+///
+/// Actors must be `Send + Sized + 'static` so they can be moved to a spawned task.
 pub trait Actor: Send + Sized + 'static {
     fn started(&mut self, _ctx: &Context<Self>) -> impl Future<Output = ()> + Send {
         async {}
@@ -45,6 +51,10 @@ pub trait Actor: Send + Sized + 'static {
 // Handler trait (per-message, uses RPITIT — NOT object-safe, that's fine)
 // ---------------------------------------------------------------------------
 
+/// Per-message handler trait. Implement once for each message type the actor handles.
+///
+/// Uses RPITIT (return-position `impl Trait` in traits), which means this trait
+/// is **not** object-safe. For type-erased references, use [`Receiver<M>`] / [`Recipient<M>`].
 pub trait Handler<M: Message>: Actor {
     fn handle(
         &mut self,
@@ -93,6 +103,10 @@ where
 // Context
 // ---------------------------------------------------------------------------
 
+/// Handle passed to every handler and lifecycle hook, providing access to the
+/// actor's mailbox and lifecycle controls.
+///
+/// Clone is cheap — it clones the inner channel sender and cancellation token.
 pub struct Context<A: Actor> {
     sender: mpsc::Sender<Box<dyn Envelope<A> + Send>>,
     cancellation_token: CancellationToken,
@@ -263,6 +277,10 @@ pub async fn request<M: Message>(
 // ActorRef
 // ---------------------------------------------------------------------------
 
+/// External handle to a running actor. Cloneable, `Send + Sync`.
+///
+/// Use this to send messages, make requests, or wait for the actor to stop.
+/// When all clones are dropped, the actor's mailbox closes and it stops.
 pub struct ActorRef<A: Actor> {
     sender: mpsc::Sender<Box<dyn Envelope<A> + Send>>,
     cancellation_token: CancellationToken,
@@ -490,11 +508,14 @@ async fn run_actor<A: Actor>(
 // Actor::start
 // ---------------------------------------------------------------------------
 
+/// Extension trait for starting an actor. Automatically implemented for all [`Actor`] types.
 pub trait ActorStart: Actor {
+    /// Start the actor with the default backend ([`Backend::Async`]).
     fn start(self) -> ActorRef<Self> {
         self.start_with_backend(Backend::default())
     }
 
+    /// Start the actor with a specific [`Backend`].
     fn start_with_backend(self, backend: Backend) -> ActorRef<Self> {
         ActorRef::spawn(self, backend)
     }
