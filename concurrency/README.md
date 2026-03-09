@@ -12,7 +12,7 @@ use spawned_concurrency::tasks::{Actor, ActorStart as _, Context, Handler};
 use spawned_rt::tasks as rt;
 
 #[protocol]
-pub trait Counter: Send + Sync {
+pub trait CounterProtocol: Send + Sync {
     fn increment(&self);
     fn get(&self) -> Response<u64>;
 }
@@ -22,12 +22,13 @@ pub struct MyCounter { count: u64 }
 impl Actor for MyCounter {}
 
 impl Handler<counter_protocol::Increment> for MyCounter {
-    async fn handle(&mut self, _msg: counter_protocol::Increment, _ctx: &Context<Self>) {}
+    async fn handle(&mut self, _msg: counter_protocol::Increment, _ctx: &Context<Self>) {
+        self.count += 1;
+    }
 }
 
 impl Handler<counter_protocol::Get> for MyCounter {
     async fn handle(&mut self, _msg: counter_protocol::Get, _ctx: &Context<Self>) -> u64 {
-        self.count += 1;
         self.count
     }
 }

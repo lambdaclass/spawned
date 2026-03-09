@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use protocols::{RoomProtocol, ToRoomRef, UserProtocol};
 use room::ChatRoom;
-use spawned_concurrency::threads::ActorStart;
+use spawned_concurrency::threads::ActorStart as _;
 use spawned_rt::threads as rt;
 use user::User;
 

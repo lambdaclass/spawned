@@ -442,6 +442,7 @@ async fn run_actor<A: Actor>(
         .await;
     if let Err(panic) = start_result {
         tracing::error!("Panic in started() callback: {panic:?}");
+        cancellation_token.cancel();
         return;
     }
 

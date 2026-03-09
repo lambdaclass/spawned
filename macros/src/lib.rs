@@ -230,7 +230,49 @@ fn qualify_type_with_super(ty: &Type) -> Type {
             *new.elem = qualify_type_with_super(&p.elem);
             Type::Paren(new)
         }
+        Type::TraitObject(t) => {
+            let mut new = t.clone();
+            for bound in &mut new.bounds {
+                if let syn::TypeParamBound::Trait(tb) = bound {
+                    qualify_path_with_super(&mut tb.path);
+                }
+            }
+            Type::TraitObject(new)
+        }
+        Type::ImplTrait(t) => {
+            let mut new = t.clone();
+            for bound in &mut new.bounds {
+                if let syn::TypeParamBound::Trait(tb) = bound {
+                    qualify_path_with_super(&mut tb.path);
+                }
+            }
+            Type::ImplTrait(new)
+        }
+        Type::BareFn(f) => {
+            let mut new = f.clone();
+            for arg in &mut new.inputs {
+                arg.ty = qualify_type_with_super(&arg.ty);
+            }
+            if let ReturnType::Type(_, ref mut ty) = new.output {
+                *ty = Box::new(qualify_type_with_super(ty));
+            }
+            Type::BareFn(new)
+        }
         _ => ty.clone(),
+    }
+}
+
+/// Qualify a path's generic arguments with `super::`, used for trait bounds
+/// in `dyn Trait` and `impl Trait` types.
+fn qualify_path_with_super(path: &mut syn::Path) {
+    for seg in &mut path.segments {
+        if let PathArguments::AngleBracketed(ref mut args) = seg.arguments {
+            for arg in &mut args.args {
+                if let GenericArgument::Type(ref mut inner) = arg {
+                    *inner = qualify_type_with_super(inner);
+                }
+            }
+        }
     }
 }
 
@@ -244,6 +286,10 @@ struct ProtocolInfo<'a> {
 
 /// Generates a blanket `impl Protocol for ActorRef<A>` and `impl ToXRef for ActorRef<A>`
 /// for a given runtime path (tasks or threads).
+///
+/// For cfg-gated methods, we generate marker traits that conditionally require
+/// the Handler bounds. This avoids putting extra where-clause bounds on individual
+/// methods (which Rust rejects as "impl has stricter requirements than trait").
 fn generate_blanket_impl(
     info: &ProtocolInfo,
     methods: &[ProtocolMethodInfo],
@@ -251,10 +297,8 @@ fn generate_blanket_impl(
     mode: RuntimeMode,
 ) -> proc_macro2::TokenStream {
     let ProtocolInfo { trait_name, mod_name, ref_name, converter_trait, converter_method } = info;
-    // Split methods into unconditional and cfg-gated groups.
-    // Unconditional methods have their Handler bounds on the impl block.
-    // Cfg-gated methods have their Handler bounds on the method itself,
-    // since #[cfg] on individual trait bounds isn't valid Rust.
+
+    // Unconditional methods: Handler bounds go directly on the impl block.
     let handler_bounds: Vec<_> = methods
         .iter()
         .filter(|m| m.cfg_attrs.is_empty())
@@ -264,6 +308,79 @@ fn generate_blanket_impl(
         })
         .collect();
 
+    // Group cfg-gated methods by their cfg predicate.
+    // Each unique group gets a marker trait that conditionally requires the Handler bounds.
+    let mut cfg_groups: Vec<(String, Vec<&ProtocolMethodInfo>)> = Vec::new();
+    for m in methods.iter().filter(|m| !m.cfg_attrs.is_empty()) {
+        let key: String = m
+            .cfg_attrs
+            .iter()
+            .map(|a| quote!(#a).to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        if let Some(group) = cfg_groups.iter_mut().find(|(k, _)| k == &key) {
+            group.1.push(m);
+        } else {
+            cfg_groups.push((key, vec![m]));
+        }
+    }
+
+    let mode_suffix = match mode {
+        RuntimeMode::Tasks => format_ident!("Tasks"),
+        RuntimeMode::Threads => format_ident!("Threads"),
+    };
+
+    let mut marker_trait_defs = Vec::new();
+    let mut marker_trait_bounds = Vec::new();
+
+    for (i, (_key, group_methods)) in cfg_groups.iter().enumerate() {
+        let marker_name = format_ident!("__{}Cfg{}{}", trait_name, i, mode_suffix);
+        let cfg_attrs = &group_methods[0].cfg_attrs;
+        let group_handler_bounds: Vec<_> = group_methods
+            .iter()
+            .map(|m| {
+                let sn = &m.struct_name;
+                quote! { #runtime_path::Handler<#mod_name::#sn> }
+            })
+            .collect();
+
+        // Combine cfg predicates and negate for the fallback impl.
+        // #[cfg(A)] #[cfg(B)] -> active: all(A, B), inactive: not(all(A, B))
+        let cfg_predicates: Vec<proc_macro2::TokenStream> = cfg_attrs
+            .iter()
+            .filter(|a| a.path().is_ident("cfg"))
+            .filter_map(|a| a.parse_args::<proc_macro2::TokenStream>().ok())
+            .collect();
+
+        let (positive_cfg, negated_cfg) = if cfg_predicates.len() == 1 {
+            let pred = &cfg_predicates[0];
+            (quote! { #[cfg(#pred)] }, quote! { #[cfg(not(#pred))] })
+        } else {
+            (
+                quote! { #[cfg(all(#(#cfg_predicates),*))] },
+                quote! { #[cfg(not(all(#(#cfg_predicates),*)))] },
+            )
+        };
+
+        marker_trait_defs.push(quote! {
+            #positive_cfg
+            #[doc(hidden)]
+            trait #marker_name: #(#group_handler_bounds)+* {}
+            #positive_cfg
+            impl<__T: #(#group_handler_bounds)+*> #marker_name for __T {}
+
+            #negated_cfg
+            #[doc(hidden)]
+            trait #marker_name {}
+            #negated_cfg
+            impl<__T> #marker_name for __T {}
+        });
+
+        marker_trait_bounds.push(quote! { + #marker_name });
+    }
+
+    // Generate method implementations (no where clauses needed — bounds come from
+    // marker traits or the impl block).
     let method_impls: Vec<_> = methods
         .iter()
         .map(|m| {
@@ -271,22 +388,13 @@ fn generate_blanket_impl(
             let field_names = &m.field_names;
             let params: Vec<_> = m.params.iter().collect();
             let ret_ty = &m.ret_type;
-            let doc_attrs = &m.doc_attrs;
-            let has_cfg = !m.cfg_attrs.is_empty();
+            let method_attrs = &m.method_attrs;
 
             let struct_name = &m.struct_name;
             let msg_construct = if field_names.is_empty() {
                 quote! { #mod_name::#struct_name }
             } else {
                 quote! { #mod_name::#struct_name { #(#field_names),* } }
-            };
-
-            // For cfg-gated methods, add the Handler bound as a where clause
-            let where_clause = if has_cfg {
-                let sn = &m.struct_name;
-                quote! { where __A: #runtime_path::Handler<#mod_name::#sn> }
-            } else {
-                quote! {}
             };
 
             match &m.kind {
@@ -301,8 +409,8 @@ fn generate_blanket_impl(
                         quote! { self.send(#msg_construct) }
                     };
                     quote! {
-                        #(#doc_attrs)*
-                        fn #method_name(&self, #(#params),*) #ret_ty #where_clause {
+                        #(#method_attrs)*
+                        fn #method_name(&self, #(#params),*) #ret_ty {
                             #body
                         }
                     }
@@ -321,8 +429,8 @@ fn generate_blanket_impl(
                         },
                     };
                     quote! {
-                        #(#doc_attrs)*
-                        fn #method_name(&self, #(#params),*) #ret_ty #where_clause {
+                        #(#method_attrs)*
+                        fn #method_name(&self, #(#params),*) #ret_ty {
                             #body
                         }
                     }
@@ -332,13 +440,15 @@ fn generate_blanket_impl(
         .collect();
 
     quote! {
-        impl<__A: #runtime_path::Actor #(+ #handler_bounds)*> #trait_name
+        #(#marker_trait_defs)*
+
+        impl<__A: #runtime_path::Actor #(+ #handler_bounds)* #(#marker_trait_bounds)*> #trait_name
             for #runtime_path::ActorRef<__A>
         {
             #(#method_impls)*
         }
 
-        impl<__A: #runtime_path::Actor #(+ #handler_bounds)*> #converter_trait
+        impl<__A: #runtime_path::Actor #(+ #handler_bounds)* #(#marker_trait_bounds)*> #converter_trait
             for #runtime_path::ActorRef<__A>
         {
             fn #converter_method(&self) -> #ref_name {
@@ -356,7 +466,8 @@ struct ProtocolMethodInfo {
     kind: MethodKind,
     params: Vec<FnArg>,
     ret_type: ReturnType,
-    doc_attrs: Vec<Attribute>,
+    /// Doc + cfg attributes to propagate to blanket impl methods.
+    method_attrs: Vec<Attribute>,
     cfg_attrs: Vec<Attribute>,
 }
 
@@ -468,6 +579,19 @@ pub fn protocol(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 .into();
             }
 
+            // Verify first param is &self
+            match method.sig.inputs.first() {
+                Some(FnArg::Receiver(r)) if r.reference.is_some() && r.mutability.is_none() => {}
+                _ => {
+                    return syn::Error::new_spanned(
+                        &method.sig,
+                        "protocol methods must take `&self` as the first parameter",
+                    )
+                    .to_compile_error()
+                    .into();
+                }
+            }
+
             let method_name = method.sig.ident.clone();
             let struct_name = format_ident!("{}", to_pascal_case(&method_name.to_string()));
 
@@ -507,7 +631,7 @@ pub fn protocol(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 }
             };
 
-            let doc_attrs: Vec<Attribute> = method
+            let method_attrs: Vec<Attribute> = method
                 .attrs
                 .iter()
                 .filter(|a| {
@@ -532,7 +656,7 @@ pub fn protocol(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 kind,
                 params,
                 ret_type: method.sig.output.clone(),
-                doc_attrs,
+                method_attrs,
                 cfg_attrs,
             });
         }
@@ -549,7 +673,7 @@ pub fn protocol(_attr: TokenStream, item: TokenStream) -> TokenStream {
             let field_names = &m.field_names;
             let qualified_field_types: Vec<Type> =
                 m.field_types.iter().map(qualify_type_with_super).collect();
-            let doc_attrs = &m.doc_attrs;
+            let method_attrs = &m.method_attrs;
             let cfg_attrs = &m.cfg_attrs;
             let msg_result_ty: Type = match &m.kind {
                 MethodKind::Send => syn::parse_quote! { () },
@@ -558,7 +682,7 @@ pub fn protocol(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
             if field_names.is_empty() {
                 quote! {
-                    #(#doc_attrs)*
+                    #(#method_attrs)*
                     #[derive(Clone)]
                     pub struct #struct_name;
                     #(#cfg_attrs)*
@@ -568,7 +692,7 @@ pub fn protocol(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 }
             } else {
                 quote! {
-                    #(#doc_attrs)*
+                    #(#method_attrs)*
                     pub struct #struct_name {
                         #(pub #field_names: #qualified_field_types,)*
                     }
@@ -689,7 +813,7 @@ pub fn protocol(_attr: TokenStream, item: TokenStream) -> TokenStream {
 ///         tracing::info!("Actor started");
 ///     }
 ///
-///     #[request_handler]
+///     #[send_handler]
 ///     async fn handle_increment(&mut self, msg: Increment, _ctx: &Context<Self>) {
 ///         self.count += msg.amount;
 ///     }
@@ -761,11 +885,31 @@ pub fn actor(attr: TokenStream, item: TokenStream) -> TokenStream {
                     .to_compile_error()
                     .into();
                 }
+                if method.attrs.iter().any(|a| {
+                    a.path().is_ident("handler")
+                        || a.path().is_ident("send_handler")
+                        || a.path().is_ident("request_handler")
+                }) {
+                    return syn::Error::new_spanned(
+                        &method.sig,
+                        "#[started] cannot be combined with handler attributes",
+                    )
+                    .to_compile_error()
+                    .into();
+                }
                 // Expect: fn started(&mut self, ctx: &Context<Self>)
                 if method.sig.inputs.len() != 2 {
                     return syn::Error::new_spanned(
                         &method.sig,
                         "#[started] method must take exactly (&mut self, &Context<Self>)",
+                    )
+                    .to_compile_error()
+                    .into();
+                }
+                if !matches!(method.sig.inputs.first(), Some(FnArg::Receiver(r)) if r.mutability.is_some()) {
+                    return syn::Error::new_spanned(
+                        &method.sig,
+                        "#[started] method's first parameter must be `&mut self`",
                     )
                     .to_compile_error()
                     .into();
@@ -790,11 +934,31 @@ pub fn actor(attr: TokenStream, item: TokenStream) -> TokenStream {
                     .to_compile_error()
                     .into();
                 }
+                if method.attrs.iter().any(|a| {
+                    a.path().is_ident("handler")
+                        || a.path().is_ident("send_handler")
+                        || a.path().is_ident("request_handler")
+                }) {
+                    return syn::Error::new_spanned(
+                        &method.sig,
+                        "#[stopped] cannot be combined with handler attributes",
+                    )
+                    .to_compile_error()
+                    .into();
+                }
                 // Expect: fn stopped(&mut self, ctx: &Context<Self>)
                 if method.sig.inputs.len() != 2 {
                     return syn::Error::new_spanned(
                         &method.sig,
                         "#[stopped] method must take exactly (&mut self, &Context<Self>)",
+                    )
+                    .to_compile_error()
+                    .into();
+                }
+                if !matches!(method.sig.inputs.first(), Some(FnArg::Receiver(r)) if r.mutability.is_some()) {
+                    return syn::Error::new_spanned(
+                        &method.sig,
+                        "#[stopped] method's first parameter must be `&mut self`",
                     )
                     .to_compile_error()
                     .into();

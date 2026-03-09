@@ -41,7 +41,7 @@ Both provide identical Actor API. The `tasks` module has `Backend` enum: `Async`
 
 1. `started(&mut self, ctx: &Context<Self>)` - Setup before message loop
 2. `Handler<M>::handle(&mut self, msg: M, ctx: &Context<Self>)` - Process messages
-3. `stopped(&mut self)` - Cleanup after stop
+3. `stopped(&mut self, ctx: &Context<Self>)` - Cleanup after stop
 
 ## Common Patterns
 

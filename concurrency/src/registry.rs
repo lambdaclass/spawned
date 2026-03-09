@@ -21,7 +21,7 @@ pub enum RegistryError {
 ///
 /// Returns `Err(AlreadyRegistered)` if the name is already taken.
 /// Use [`unregister`] first if you need to replace an existing entry.
-pub fn register<T: Send + Sync + 'static>(name: &str, value: T) -> Result<(), RegistryError> {
+pub fn register<T: Clone + Send + Sync + 'static>(name: &str, value: T) -> Result<(), RegistryError> {
     let mut store = global_store().write().unwrap_or_else(|p| p.into_inner());
     if store.contains_key(name) {
         return Err(RegistryError::AlreadyRegistered(name.to_string()));

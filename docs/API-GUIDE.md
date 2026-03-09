@@ -76,6 +76,7 @@ From outside, drop all `ActorRef` clones — when the last sender is dropped, th
 | `ctx.stop()` | Signal the actor to stop after the current handler finishes |
 | `ctx.send(msg)` | Send a fire-and-forget message to this actor (self-send) |
 | `ctx.request(msg)` | Send a request and wait for the reply (tasks: async, threads: blocking) |
+| `ctx.request_with_timeout(msg, duration)` | Send a request with a custom timeout |
 | `ctx.request_raw(msg)` | Send a request and get a raw oneshot receiver |
 | `ctx.recipient::<M>()` | Get a type-erased `Recipient<M>` for this actor |
 | `ctx.actor_ref()` | Get an `ActorRef<A>` from the context |

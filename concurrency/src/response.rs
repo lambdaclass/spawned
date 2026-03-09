@@ -70,12 +70,14 @@ impl<T> Response<T> {
 
     /// Returns `true` if the response contains `Ok`.
     /// Only meaningful for ready responses (threads mode).
+    /// Returns `false` for pending (`Receiver`) or consumed (`Done`) states.
     pub fn is_ok(&self) -> bool {
         matches!(&self.0, ResponseState::Ready(Ok(_)))
     }
 
     /// Returns `true` if the response contains `Err`.
     /// Only meaningful for ready responses (threads mode).
+    /// Returns `false` for pending (`Receiver`) or consumed (`Done`) states.
     pub fn is_err(&self) -> bool {
         matches!(&self.0, ResponseState::Ready(Err(_)))
     }
