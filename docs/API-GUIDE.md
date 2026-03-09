@@ -15,7 +15,6 @@ Complete reference for the spawned actor framework. For a quick introduction, se
 - [Registry](#registry)
 - [Response\<T\>](#responset)
 - [Message Trait](#message-trait)
-- [Process Trait](#process-trait)
 - [Error Handling](#error-handling)
 - [spawned-rt](#spawned-rt)
 
@@ -380,36 +379,6 @@ impl Message for GetCount {
     type Result = u64;
 }
 ```
-
----
-
-## Process Trait
-
-A lightweight abstraction for message-processing loops, simpler than actors. Used for producer/consumer patterns where you don't need the full actor lifecycle.
-
-```rust
-use spawned_concurrency::tasks::{Process, ProcessInfo};
-```
-
-Implement the `handle` method to process messages:
-
-```rust
-impl Process<MyMessage> for MyProcessor {
-    async fn handle(&mut self, msg: MyMessage, tx: &mpsc::Sender<MyMessage>) -> MyMessage {
-        // Process and optionally send new messages via tx
-        msg
-    }
-}
-```
-
-Start with `.spawn()`:
-
-```rust
-let info: ProcessInfo<MyMessage> = MyProcessor.spawn().await;
-info.sender().send(MyMessage::Ping).await.unwrap();
-```
-
-See the [`ping_pong`](../examples/ping_pong) example for a complete usage.
 
 ---
 

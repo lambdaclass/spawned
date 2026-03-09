@@ -1,7 +1,7 @@
 # Spawned examples
 Some examples to test runtime and concurrency:
 
-- ping_pong: Simple example to test Process abstraction using `tasks` implementation.
+- ping_pong: Simple example to test Actor abstraction using `tasks` implementation.
 - ping_pong_threads: ping_pong example on `threads` implementation.
 - name_server: Simple example to test Actor abstraction using `tasks` implementation.
 - bank: A bit more complex example for Actor using `tasks` implementation.
