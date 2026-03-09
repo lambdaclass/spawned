@@ -254,7 +254,7 @@ fn qualify_type_with_super(ty: &Type) -> Type {
                 arg.ty = qualify_type_with_super(&arg.ty);
             }
             if let ReturnType::Type(_, ref mut ty) = new.output {
-                *ty = Box::new(qualify_type_with_super(ty));
+                **ty = qualify_type_with_super(ty);
             }
             Type::BareFn(new)
         }
