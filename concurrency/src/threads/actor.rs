@@ -252,7 +252,7 @@ impl Drop for CompletionGuard {
 /// External handle to a running actor. Cloneable, `Send + Sync`.
 ///
 /// Use this to send messages, make requests, or wait for the actor to stop.
-/// Call [`ActorRef::stop`] or [`Context::stop`] to signal the actor to shut down.
+/// Call [`Context::stop`] to signal the actor to shut down.
 pub struct ActorRef<A: Actor> {
     sender: mpsc::Sender<Box<dyn Envelope<A> + Send>>,
     cancellation_token: CancellationToken,

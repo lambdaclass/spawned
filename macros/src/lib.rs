@@ -484,6 +484,7 @@ struct ProtocolMethodInfo {
 ///
 /// 1. **Message structs** in a `foo_protocol` submodule — one per method, with public
 ///    fields matching the method parameters. Each implements `Message`.
+///    Unit structs (methods with no parameters beyond `&self`) automatically derive `Clone`.
 /// 2. **Type alias** `pub type FooRef = Arc<dyn FooProtocol>` — a type-erased reference.
 /// 3. **Converter trait** `ToFooRef` with a `to_foo_ref(&self) -> FooRef` method.
 /// 4. **Blanket impls** — `impl FooProtocol for ActorRef<A>` and `impl ToFooRef for ActorRef<A>`
