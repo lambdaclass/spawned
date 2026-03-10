@@ -54,6 +54,7 @@
 //! - [`tasks`] — async actor runtime (requires tokio)
 //! - [`threads`] — blocking actor runtime (native OS threads)
 //! - [`registry`] — global name-based actor registry
+//! - [`response`] — `Response<T>` unified wrapper for request-response
 //! - [`error`] — `ActorError` type
 //! - [`message`] — `Message` trait for defining message types
 //!
