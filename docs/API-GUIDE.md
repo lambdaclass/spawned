@@ -63,7 +63,7 @@ In all cases, `join()` will eventually return and subsequent `send()`/`request()
 
 Call `ctx.stop()` from inside a handler or lifecycle hook. This cancels the actor's internal token, causing the message loop to exit after the current handler finishes.
 
-From outside, drop all `ActorRef` clones — when the last sender is dropped, the mailbox closes and the actor stops.
+From outside, there is no direct stop method on `ActorRef`. Design your protocol with an explicit shutdown message, or use `ctx.stop()` from within the actor.
 
 ---
 
