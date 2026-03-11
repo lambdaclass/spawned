@@ -266,12 +266,23 @@ fn qualify_type_with_super(ty: &Type) -> Type {
 /// in `dyn Trait` and `impl Trait` types.
 fn qualify_path_with_super(path: &mut syn::Path) {
     for seg in &mut path.segments {
-        if let PathArguments::AngleBracketed(ref mut args) = seg.arguments {
-            for arg in &mut args.args {
-                if let GenericArgument::Type(ref mut inner) = arg {
-                    *inner = qualify_type_with_super(inner);
+        match &mut seg.arguments {
+            PathArguments::AngleBracketed(ref mut args) => {
+                for arg in &mut args.args {
+                    if let GenericArgument::Type(ref mut inner) = arg {
+                        *inner = qualify_type_with_super(inner);
+                    }
                 }
             }
+            PathArguments::Parenthesized(ref mut args) => {
+                for input in &mut args.inputs {
+                    *input = qualify_type_with_super(input);
+                }
+                if let syn::ReturnType::Type(_, ref mut ty) = args.output {
+                    **ty = qualify_type_with_super(ty);
+                }
+            }
+            PathArguments::None => {}
         }
     }
 }
@@ -507,7 +518,7 @@ struct ProtocolMethodInfo {
 ///
 /// | Return type | Kind | Runtime | Caller behavior |
 /// |-------------|------|---------|-----------------|
-/// | `Response<T>` | Request | Both | `.await.unwrap()` (tasks) / `.unwrap()` (threads) |
+/// | `Response<T>` | Request | Both | `.await.unwrap()` (tasks, no timeout) / `.unwrap()` (threads, 5s timeout) |
 /// | `Result<(), ActorError>` | Send | Both | Returns send result |
 /// | *(none)* / `-> ()` | Send | Both | Fire-and-forget (discards send result) |
 ///
@@ -1006,6 +1017,19 @@ pub fn actor(attr: TokenStream, item: TokenStream) -> TokenStream {
                 let method_name = &method.sig.ident;
                 if method.sig.asyncness.is_some() {
                     has_async = true;
+                }
+
+                // Validate handler has exactly 3 parameters: &mut self, msg, ctx
+                let param_count = method.sig.inputs.len();
+                if param_count != 3 {
+                    return syn::Error::new_spanned(
+                        &method.sig,
+                        format!(
+                            "handler method must have 3 parameters (&mut self, msg: M, ctx: &Context<Self>), found {param_count}"
+                        ),
+                    )
+                    .to_compile_error()
+                    .into();
                 }
 
                 // Extract message type from 2nd parameter (index 1, after &mut self)

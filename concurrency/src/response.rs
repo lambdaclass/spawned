@@ -47,8 +47,8 @@ impl<T> Response<T> {
 
     /// Extract the value, panicking on error.
     ///
-    /// For threads mode where the result is already available.
-    /// In tasks mode, use `.await.unwrap()` instead.
+    /// For ready (pre-computed) responses. Panics on pending responses —
+    /// use `.await.unwrap()` in async contexts instead.
     pub fn unwrap(self) -> T {
         match self.0 {
             ResponseState::Ready(result) => result.unwrap(),
@@ -63,26 +63,30 @@ impl<T> Response<T> {
     pub fn expect(self, msg: &str) -> T {
         match self.0 {
             ResponseState::Ready(result) => result.expect(msg),
-            ResponseState::Receiver(_) => panic!("{msg}"),
-            ResponseState::Done => panic!("{msg}"),
+            ResponseState::Receiver(_) => {
+                panic!("{msg}: called expect() on a pending Response; use .await in async contexts")
+            }
+            ResponseState::Done => panic!("{msg}: Response already consumed"),
         }
     }
 
     /// Returns `true` if the response contains `Ok`.
-    /// Only meaningful for ready responses (threads mode).
+    /// Only meaningful for ready responses.
     /// Returns `false` for pending (`Receiver`) or consumed (`Done`) states.
     pub fn is_ok(&self) -> bool {
         matches!(&self.0, ResponseState::Ready(Ok(_)))
     }
 
     /// Returns `true` if the response contains `Err`.
-    /// Only meaningful for ready responses (threads mode).
+    /// Only meaningful for ready responses.
     /// Returns `false` for pending (`Receiver`) or consumed (`Done`) states.
     pub fn is_err(&self) -> bool {
         matches!(&self.0, ResponseState::Ready(Err(_)))
     }
 
     /// Maps the inner value if the response is ready and `Ok`.
+    ///
+    /// Panics on pending or consumed responses.
     pub fn map<U, F: FnOnce(T) -> U>(self, f: F) -> Response<U> {
         match self.0 {
             ResponseState::Ready(result) => Response(ResponseState::Ready(result.map(f))),

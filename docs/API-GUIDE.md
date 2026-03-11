@@ -291,7 +291,7 @@ Note: For most cases, protocol-generated `XRef` types (e.g., `NameServerRef = Ar
 
 ## Registry
 
-Global name-based registry for discovering actors at runtime. Stores any `Send + Sync + 'static` value.
+Global name-based registry for discovering actors at runtime. Stores any `Clone + Send + Sync + 'static` value.
 
 ```rust
 use spawned_concurrency::registry;

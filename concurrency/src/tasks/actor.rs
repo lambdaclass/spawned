@@ -280,7 +280,8 @@ pub async fn request<M: Message>(
 /// External handle to a running actor. Cloneable, `Send + Sync`.
 ///
 /// Use this to send messages, make requests, or wait for the actor to stop.
-/// Call [`Context::stop`] to signal the actor to shut down.
+/// To stop the actor, send an explicit shutdown message through your protocol,
+/// or call [`Context::stop`] from within a handler.
 pub struct ActorRef<A: Actor> {
     sender: mpsc::Sender<Box<dyn Envelope<A> + Send>>,
     cancellation_token: CancellationToken,

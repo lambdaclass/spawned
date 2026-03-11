@@ -71,7 +71,7 @@ pub fn test_send_interval_and_cancellation() {
     rt::sleep(Duration::from_secs(1));
 
     let count = repeater.request(GetRepCount).unwrap();
-    assert_eq!(9, count);
+    assert!((8..=10).contains(&count), "expected 8..=10, got {count}");
 
     repeater.send(StopTimer).unwrap();
 

@@ -22,12 +22,15 @@ pub enum RegistryError {
 /// Returns `Err(AlreadyRegistered)` if the name is already taken.
 /// Use [`unregister`] first if you need to replace an existing entry.
 pub fn register<T: Clone + Send + Sync + 'static>(name: &str, value: T) -> Result<(), RegistryError> {
+    use std::collections::hash_map::Entry;
     let mut store = global_store().write().unwrap_or_else(|p| p.into_inner());
-    if store.contains_key(name) {
-        return Err(RegistryError::AlreadyRegistered(name.to_string()));
+    match store.entry(name.to_string()) {
+        Entry::Occupied(e) => Err(RegistryError::AlreadyRegistered(e.key().clone())),
+        Entry::Vacant(e) => {
+            e.insert(Box::new(value));
+            Ok(())
+        }
     }
-    store.insert(name.to_string(), Box::new(value));
-    Ok(())
 }
 
 /// Look up a value by name. Returns `None` if not found or if the stored

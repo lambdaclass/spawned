@@ -212,6 +212,9 @@ where
 // ---------------------------------------------------------------------------
 
 /// Object-safe trait for sending a single message type to an actor.
+///
+/// Implemented automatically by `ActorRef<A>` and `Context<A>` for any
+/// message type that `A` handles.
 pub trait Receiver<M: Message>: Send + Sync {
     fn send(&self, msg: M) -> Result<(), ActorError>;
     fn request_raw(&self, msg: M) -> Result<oneshot::Receiver<M::Result>, ActorError>;
@@ -252,7 +255,8 @@ impl Drop for CompletionGuard {
 /// External handle to a running actor. Cloneable, `Send + Sync`.
 ///
 /// Use this to send messages, make requests, or wait for the actor to stop.
-/// Call [`Context::stop`] to signal the actor to shut down.
+/// To stop the actor, send an explicit shutdown message through your protocol,
+/// or call [`Context::stop`] from within a handler.
 pub struct ActorRef<A: Actor> {
     sender: mpsc::Sender<Box<dyn Envelope<A> + Send>>,
     cancellation_token: CancellationToken,

@@ -7,10 +7,10 @@
 //!
 //! # Modules
 //!
-//! - [`tasks`] — async runtime backed by tokio: `run()`, `CancellationToken`,
-//!   `send_after`, `send_interval`, `send_message_on`
+//! - [`tasks`] — async runtime backed by tokio: `run()`, `spawn()`, `CancellationToken`,
+//!   `mpsc`, `oneshot`, `watch`, `timeout`, `sleep`
 //! - [`threads`] — blocking runtime using OS threads: `CancellationToken`,
-//!   `send_after`, `send_interval`
+//!   `mpsc`, `oneshot`, `sleep`
 
 pub mod tasks;
 pub mod threads;
