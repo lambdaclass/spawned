@@ -12,6 +12,7 @@ use core::pin::pin;
 /// Cancel the timer by calling `timer.cancellation_token.cancel()`.
 /// Timers are also automatically cancelled when the actor stops.
 pub struct TimerHandle {
+    #[allow(dead_code)]
     join_handle: JoinHandle<()>,
     pub cancellation_token: CancellationToken,
 }
