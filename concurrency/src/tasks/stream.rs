@@ -21,7 +21,7 @@ where
             loop {
                 match pinned_stream.next().await {
                     Some(msg) => match ctx.send(msg) {
-                        Ok(_) => tracing::trace!("Message sent successfully"),
+                        Ok(_) => {}
                         Err(e) => {
                             tracing::error!("Failed to send message: {e:?}");
                             break;

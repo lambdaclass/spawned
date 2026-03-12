@@ -19,7 +19,7 @@ where
     let join_handle = spawned_rt::threads::spawn(move || loop {
         match iter.next() {
             Some(msg) => match ctx.send(msg) {
-                Ok(_) => tracing::trace!("Message sent successfully"),
+                Ok(_) => {}
                 Err(e) => {
                     tracing::error!("Failed to send message: {e:?}");
                     break;

@@ -2,13 +2,19 @@ use crate::error::ActorError;
 use spawned_rt::tasks::oneshot;
 use std::future::Future;
 use std::pin::Pin;
+use std::time::Duration;
 
 // ---------------------------------------------------------------------------
 // Response<T> — unified wrapper for protocol request-response (tasks + threads)
+//
+// Note: this type uses spawned_rt::tasks::oneshot internally, so it transitively
+// depends on tokio even when only the threads runtime is used. Threads mode
+// only constructs the Ready variant, so the tokio types are never instantiated.
 // ---------------------------------------------------------------------------
 
 enum ResponseState<T> {
     Receiver(oneshot::Receiver<T>),
+    TimedReceiver(Pin<Box<dyn Future<Output = Result<T, ActorError>> + Send>>),
     Ready(Result<T, ActorError>),
     Done,
 }
@@ -52,7 +58,7 @@ impl<T> Response<T> {
     pub fn unwrap(self) -> T {
         match self.0 {
             ResponseState::Ready(result) => result.unwrap(),
-            ResponseState::Receiver(_) => {
+            ResponseState::Receiver(_) | ResponseState::TimedReceiver(_) => {
                 panic!("called unwrap() on a pending Response; use .await in async contexts")
             }
             ResponseState::Done => panic!("Response already consumed"),
@@ -63,7 +69,7 @@ impl<T> Response<T> {
     pub fn expect(self, msg: &str) -> T {
         match self.0 {
             ResponseState::Ready(result) => result.expect(msg),
-            ResponseState::Receiver(_) => {
+            ResponseState::Receiver(_) | ResponseState::TimedReceiver(_) => {
                 panic!("{msg}: called expect() on a pending Response; use .await in async contexts")
             }
             ResponseState::Done => panic!("{msg}: Response already consumed"),
@@ -90,10 +96,35 @@ impl<T> Response<T> {
     pub fn map<U, F: FnOnce(T) -> U>(self, f: F) -> Response<U> {
         match self.0 {
             ResponseState::Ready(result) => Response(ResponseState::Ready(result.map(f))),
-            ResponseState::Receiver(_) => {
+            ResponseState::Receiver(_) | ResponseState::TimedReceiver(_) => {
                 panic!("called map() on a pending Response; use .await in async contexts")
             }
             ResponseState::Done => panic!("Response already consumed"),
+        }
+    }
+}
+
+impl<T: Send + 'static> Response<T> {
+    /// Create a `Response` from a oneshot receiver with a timeout.
+    ///
+    /// Used by tasks-mode protocol blanket impls. Returns
+    /// `Err(ActorError::RequestTimeout)` if the timeout expires.
+    pub fn from_with_timeout(
+        result: Result<oneshot::Receiver<T>, ActorError>,
+        duration: Duration,
+    ) -> Self {
+        match result {
+            Ok(rx) => {
+                let fut = Box::pin(async move {
+                    match spawned_rt::tasks::timeout(duration, rx).await {
+                        Ok(Ok(val)) => Ok(val),
+                        Ok(Err(_)) => Err(ActorError::ActorStopped),
+                        Err(_) => Err(ActorError::RequestTimeout),
+                    }
+                });
+                Self(ResponseState::TimedReceiver(fut))
+            }
+            Err(e) => Self(ResponseState::Ready(Err(e))),
         }
     }
 }
@@ -124,6 +155,13 @@ impl<T: Send + 'static> Future for Response<T> {
                 std::task::Poll::Ready(Err(_)) => {
                     this.0 = ResponseState::Done;
                     std::task::Poll::Ready(Err(ActorError::ActorStopped))
+                }
+                std::task::Poll::Pending => std::task::Poll::Pending,
+            },
+            ResponseState::TimedReceiver(fut) => match fut.as_mut().poll(cx) {
+                std::task::Poll::Ready(result) => {
+                    this.0 = ResponseState::Done;
+                    std::task::Poll::Ready(result)
                 }
                 std::task::Poll::Pending => std::task::Poll::Pending,
             },
@@ -191,5 +229,27 @@ mod tests {
         let r: Response<i32> = Response::ready(Ok(2));
         let mapped = r.map(|x| x * 3);
         assert_eq!(mapped.unwrap(), 6);
+    }
+
+    #[test]
+    fn timed_receiver_resolves() {
+        let rt = spawned_rt::tasks::Runtime::new().unwrap();
+        rt.block_on(async {
+            let (tx, rx) = oneshot::channel::<i32>();
+            let resp = Response::from_with_timeout(Ok(rx), Duration::from_secs(5));
+            tx.send(42).unwrap();
+            assert_eq!(resp.await.unwrap(), 42);
+        });
+    }
+
+    #[test]
+    fn timed_receiver_times_out() {
+        let rt = spawned_rt::tasks::Runtime::new().unwrap();
+        rt.block_on(async {
+            let (_tx, rx) = oneshot::channel::<i32>();
+            let resp = Response::from_with_timeout(Ok(rx), Duration::from_millis(50));
+            let result = resp.await;
+            assert!(matches!(result, Err(ActorError::RequestTimeout)));
+        });
     }
 }

@@ -179,7 +179,7 @@ The `#[actor]` macro supports three handler attributes:
 
 | Attribute | Use for |
 |-----------|---------|
-| `#[request_handler]` | Messages that expect a reply (`Response<T>` or `Result<T, ActorError>`) |
+| `#[request_handler]` | Messages that expect a reply (`Response<T>`) |
 | `#[send_handler]` | Fire-and-forget messages (no return or `-> ()`) |
 | `#[handler]` | Generic — works for either kind |
 

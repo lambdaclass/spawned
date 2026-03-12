@@ -8,7 +8,7 @@ use spawned_rt::{
 };
 use std::{fmt::Debug, future::Future, panic::AssertUnwindSafe, pin::Pin, sync::Arc, time::Duration};
 
-const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+pub const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
 // ---------------------------------------------------------------------------
 // Backend

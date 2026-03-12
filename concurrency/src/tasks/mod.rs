@@ -10,7 +10,7 @@ mod timer_tests;
 pub use crate::response::Response;
 pub use actor::{
     request, send_message_on, Actor, ActorRef, ActorStart, Backend, Context, Handler, Receiver,
-    Recipient,
+    Recipient, DEFAULT_REQUEST_TIMEOUT,
 };
 pub use stream::spawn_listener;
 pub use time::{send_after, send_interval, TimerHandle};

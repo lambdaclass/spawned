@@ -429,8 +429,9 @@ fn generate_blanket_impl(
                 MethodKind::Request(_) => {
                     let body = match mode {
                         RuntimeMode::Tasks => quote! {
-                            spawned_concurrency::Response::from(
+                            spawned_concurrency::Response::from_with_timeout(
                                 self.request_raw(#msg_construct),
+                                spawned_concurrency::tasks::DEFAULT_REQUEST_TIMEOUT,
                             )
                         },
                         RuntimeMode::Threads => quote! {
@@ -518,7 +519,7 @@ struct ProtocolMethodInfo {
 ///
 /// | Return type | Kind | Runtime | Caller behavior |
 /// |-------------|------|---------|-----------------|
-/// | `Response<T>` | Request | Both | `.await.unwrap()` (tasks, no timeout) / `.unwrap()` (threads, 5s timeout) |
+/// | `Response<T>` | Request | Both | `.await.unwrap()` (tasks) / `.unwrap()` (threads) — 5s default timeout |
 /// | `Result<(), ActorError>` | Send | Both | Returns send result |
 /// | *(none)* / `-> ()` | Send | Both | Fire-and-forget (discards send result) |
 ///
@@ -736,6 +737,8 @@ pub fn protocol(_attr: TokenStream, item: TokenStream) -> TokenStream {
          Use this type to store protocol references without depending on the concrete actor type."
     );
 
+    // Protocol traits are consumed via blanket impls and dyn references,
+    // so rustc may report methods as unused during development.
     let output = quote! {
         #[allow(dead_code)]
         #trait_def
@@ -780,6 +783,10 @@ pub fn protocol(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// impl NameServer { /* ... */ }
 /// ```
 ///
+/// The runtime (tasks vs threads) is inferred from whether any handler in the block
+/// is `async fn`. If all handlers are defined outside the `#[actor]` block, put at
+/// least one handler inside so the macro can detect the correct runtime.
+///
 /// For multiple protocols:
 /// ```ignore
 /// #[actor(protocol(RoomProtocol, UserProtocol))]
@@ -790,7 +797,7 @@ pub fn protocol(_attr: TokenStream, item: TokenStream) -> TokenStream {
 ///
 /// | Attribute | Use for |
 /// |-----------|---------|
-/// | `#[request_handler]` | Messages that expect a reply (`Response<T>` or `Result<T, ActorError>`) |
+/// | `#[request_handler]` | Messages that expect a reply (`Response<T>`) |
 /// | `#[send_handler]` | Fire-and-forget messages |
 /// | `#[handler]` | Generic handler (works for either kind) |
 ///
