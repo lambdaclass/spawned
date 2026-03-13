@@ -11,7 +11,7 @@ use std::{
 use crate::error::ActorError;
 use crate::message::Message;
 
-const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+pub use crate::response::DEFAULT_REQUEST_TIMEOUT;
 
 // ---------------------------------------------------------------------------
 // Actor trait

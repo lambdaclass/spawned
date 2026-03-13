@@ -4,6 +4,8 @@ use std::future::Future;
 use std::pin::Pin;
 use std::time::Duration;
 
+pub const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+
 // ---------------------------------------------------------------------------
 // Response<T> — unified wrapper for protocol request-response (tasks + threads)
 //
