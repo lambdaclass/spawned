@@ -31,6 +31,6 @@ jobs:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
 
   claude-review:
-    uses: lambdaclass/actions/.github/workflows/ai-review-claude.yml@v1
+    uses: lambdaclass/actions/.github/workflows/ai-review-claude.yml@fix/claude-prompt-missing-newline
     secrets:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
