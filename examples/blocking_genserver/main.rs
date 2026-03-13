@@ -1,49 +1,38 @@
+use spawned_concurrency::error::ActorError;
+use spawned_concurrency::tasks::{
+    send_after, Actor, ActorStart as _, Backend, Context, Handler,
+};
+use spawned_concurrency::Response;
+use spawned_concurrency::{actor, protocol};
 use spawned_rt::tasks as rt;
 use std::time::Duration;
 use std::{process::exit, thread};
 
-use spawned_concurrency::tasks::{
-    Actor, ActorRef, Backend, MessageResponse, RequestResponse, send_after,
-};
+#[protocol]
+pub trait BadlyBehavedProtocol: Send + Sync {
+    fn do_block(&self) -> Result<(), ActorError>;
+}
+
+#[protocol]
+pub trait WellBehavedProtocol: Send + Sync {
+    fn get_count(&self) -> Response<u64>;
+    fn stop_actor(&self) -> Response<u64>;
+    fn tick(&self) -> Result<(), ActorError>;
+}
+
+use badly_behaved_protocol::DoBlock;
+use well_behaved_protocol::{GetCount, StopActor, Tick};
 
 // We test a scenario with a badly behaved task
 struct BadlyBehavedTask;
 
+#[actor(protocol = BadlyBehavedProtocol)]
 impl BadlyBehavedTask {
-    pub fn new() -> Self {
-        BadlyBehavedTask
-    }
-}
-
-#[derive(Clone)]
-pub enum InMessage {
-    GetCount,
-    Stop,
-}
-
-#[derive(Clone)]
-pub enum OutMsg {
-    Count(u64),
-}
-
-impl Actor for BadlyBehavedTask {
-    type Request = InMessage;
-    type Message = ();
-    type Reply = ();
-    type Error = ();
-
-    async fn handle_request(
-        &mut self,
-        _: Self::Request,
-        _: &ActorRef<Self>,
-    ) -> RequestResponse<Self> {
-        RequestResponse::Stop(())
-    }
-
-    async fn handle_message(&mut self, _: Self::Message, _: &ActorRef<Self>) -> MessageResponse {
+    #[send_handler]
+    async fn handle_do_block(&mut self, _msg: DoBlock, _ctx: &Context<Self>) {
         rt::sleep(Duration::from_millis(20)).await;
         loop {
-            println!("{:?}: bad still alive", thread::current().id());
+            tracing::info!("{:?}: bad still alive", thread::current().id());
             thread::sleep(Duration::from_millis(50));
         }
     }
@@ -53,43 +42,24 @@ struct WellBehavedTask {
     count: u64,
 }
 
+#[actor(protocol = WellBehavedProtocol)]
 impl WellBehavedTask {
-    pub fn new(initial_count: u64) -> Self {
-        WellBehavedTask {
-            count: initial_count,
-        }
-    }
-}
-
-impl Actor for WellBehavedTask {
-    type Request = InMessage;
-    type Message = ();
-    type Reply = OutMsg;
-    type Error = ();
-
-    async fn handle_request(
-        &mut self,
-        message: Self::Request,
-        _: &ActorRef<Self>,
-    ) -> RequestResponse<Self> {
-        match message {
-            InMessage::GetCount => {
-                let count = self.count;
-                RequestResponse::Reply(OutMsg::Count(count))
-            }
-            InMessage::Stop => RequestResponse::Stop(OutMsg::Count(self.count)),
-        }
+    #[request_handler]
+    async fn handle_get_count(&mut self, _msg: GetCount, _ctx: &Context<Self>) -> u64 {
+        self.count
     }
 
-    async fn handle_message(
-        &mut self,
-        _: Self::Message,
-        handle: &ActorRef<Self>,
-    ) -> MessageResponse {
+    #[request_handler]
+    async fn handle_stop_actor(&mut self, _msg: StopActor, ctx: &Context<Self>) -> u64 {
+        ctx.stop();
+        self.count
+    }
+
+    #[send_handler]
+    async fn handle_tick(&mut self, _msg: Tick, ctx: &Context<Self>) {
         self.count += 1;
-        println!("{:?}: good still alive", thread::current().id());
-        send_after(Duration::from_millis(100), handle.to_owned(), ());
-        MessageResponse::NoReply
+        tracing::info!("{:?}: good still alive", thread::current().id());
+        send_after(Duration::from_millis(100), ctx.clone(), Tick);
     }
 }
 
@@ -99,20 +69,16 @@ impl Actor for WellBehavedTask {
 pub fn main() {
     rt::run(async move {
         // If we change BadlyBehavedTask to Backend::Async instead, it can stop the entire program
-        let mut badboy = BadlyBehavedTask::new().start_with_backend(Backend::Thread);
-        let _ = badboy.send(()).await;
-        let mut goodboy = WellBehavedTask::new(0).start();
-        let _ = goodboy.send(()).await;
+        let badboy = BadlyBehavedTask.start_with_backend(Backend::Thread);
+        let _ = badboy.do_block();
+        let goodboy = WellBehavedTask { count: 0 }.start();
+        let _ = goodboy.tick();
         rt::sleep(Duration::from_secs(1)).await;
-        let count = goodboy.request(InMessage::GetCount).await.unwrap();
+        let count = goodboy.get_count().await.unwrap();
 
-        match count {
-            OutMsg::Count(num) => {
-                assert!(num == 10);
-            }
-        }
+        assert!(count == 10);
 
-        goodboy.request(InMessage::Stop).await.unwrap();
+        goodboy.stop_actor().await.unwrap();
         exit(0);
     })
 }

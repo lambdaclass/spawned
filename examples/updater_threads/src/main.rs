@@ -3,21 +3,21 @@
 //! Just activates periodically and performs an http request
 //!
 
-mod messages;
+mod protocols;
 mod server;
 
 use std::{thread, time::Duration};
 
 use server::UpdaterServer;
-use spawned_concurrency::threads::Actor as _;
+use spawned_concurrency::threads::ActorStart as _;
 use spawned_rt::threads as rt;
 
 fn main() {
     rt::run(|| {
-        UpdaterServer {
-            url: "https://httpbin.org/ip".to_string(),
-            periodicity: Duration::from_millis(1000),
-        }
+        UpdaterServer::new(
+            "https://httpbin.org/ip".to_string(),
+            Duration::from_millis(1000),
+        )
         .start();
 
         // giving it some time before ending

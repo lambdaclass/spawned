@@ -1,5 +1,6 @@
 on:
-  workflow_dispatch:
+  release:
+    types: [published]
 
 jobs:
   crates-publish:
@@ -15,5 +16,17 @@ jobs:
           toolchain: stable
           override: true
 
-      - name: Publish Crate
+      - name: Publish spawned-macros
+        run: cargo publish --package spawned-macros --token ${{ secrets.CRATES_IO_TOKEN }}
+
+      - name: Wait for crates.io indexing
+        run: sleep 30
+
+      - name: Publish spawned-rt
+        run: cargo publish --package spawned-rt --token ${{ secrets.CRATES_IO_TOKEN }}
+
+      - name: Wait for crates.io indexing
+        run: sleep 30
+
+      - name: Publish spawned-concurrency
         run: cargo publish --package spawned-concurrency --token ${{ secrets.CRATES_IO_TOKEN }}

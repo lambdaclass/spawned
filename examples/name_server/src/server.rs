@@ -1,65 +1,33 @@
 use std::collections::HashMap;
 
-use spawned_concurrency::{
-    messages::Unused,
-    tasks::{Actor, ActorRef, RequestResponse},
-};
+use spawned_concurrency::tasks::{Actor, Context, Handler};
+use spawned_concurrency::actor;
 
-use crate::messages::{NameServerInMessage as InMessage, NameServerOutMessage as OutMessage};
-
-type NameServerHandle = ActorRef<NameServer>;
+use crate::protocols::name_server_protocol::{Add, Find};
+use crate::protocols::{FindResult, NameServerProtocol};
 
 pub struct NameServer {
     inner: HashMap<String, String>,
 }
 
+#[actor(protocol = NameServerProtocol)]
 impl NameServer {
     pub fn new() -> Self {
         NameServer {
             inner: HashMap::new(),
         }
     }
-}
 
-impl NameServer {
-    pub async fn add(server: &mut NameServerHandle, key: String, value: String) -> OutMessage {
-        match server.request(InMessage::Add { key, value }).await {
-            Ok(_) => OutMessage::Ok,
-            Err(_) => OutMessage::Error,
-        }
+    #[request_handler]
+    async fn handle_add(&mut self, msg: Add, _ctx: &Context<Self>) {
+        self.inner.insert(msg.key, msg.value);
     }
 
-    pub async fn find(server: &mut NameServerHandle, key: String) -> OutMessage {
-        server
-            .request(InMessage::Find { key })
-            .await
-            .unwrap_or(OutMessage::Error)
-    }
-}
-
-impl Actor for NameServer {
-    type Request = InMessage;
-    type Message = Unused;
-    type Reply = OutMessage;
-    type Error = std::fmt::Error;
-
-    async fn handle_request(
-        &mut self,
-        message: Self::Request,
-        _handle: &NameServerHandle,
-    ) -> RequestResponse<Self> {
-        match message.clone() {
-            Self::Request::Add { key, value } => {
-                self.inner.insert(key, value);
-                RequestResponse::Reply(Self::Reply::Ok)
-            }
-            Self::Request::Find { key } => match self.inner.get(&key) {
-                Some(result) => {
-                    let value = result.to_string();
-                    RequestResponse::Reply(Self::Reply::Found { value })
-                }
-                None => RequestResponse::Reply(Self::Reply::NotFound),
-            },
+    #[request_handler]
+    async fn handle_find(&mut self, msg: Find, _ctx: &Context<Self>) -> FindResult {
+        match self.inner.get(&msg.key) {
+            Some(value) => FindResult::Found { value: value.clone() },
+            None => FindResult::NotFound,
         }
     }
 }

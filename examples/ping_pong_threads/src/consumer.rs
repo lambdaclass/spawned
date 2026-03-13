@@ -1,26 +1,18 @@
-use spawned_concurrency::threads::{self as concurrency, Process, ProcessInfo};
-use spawned_rt::threads::mpsc::Sender;
+use spawned_concurrency::threads::{Actor, Context, Handler};
+use spawned_concurrency::actor;
 
-use crate::messages::Message;
+use crate::protocols::ping_receiver::Ping;
+use crate::protocols::{PingReceiver, PongReceiverRef};
 
-pub struct Consumer {}
-
-impl Consumer {
-    pub fn spawn_new() -> ProcessInfo<Message> {
-        Self {}.spawn()
-    }
+pub struct Consumer {
+    pub producer: PongReceiverRef,
 }
 
-impl Process<Message> for Consumer {
-    fn handle(&mut self, message: Message, _tx: &Sender<Message>) -> Message {
-        tracing::info!("Consumer received {message:?}");
-        match message.clone() {
-            Message::Ping { from } => {
-                tracing::info!("Consumer sent Pong");
-                concurrency::send(&from, Message::Pong);
-            }
-            Message::Pong => (),
-        };
-        message
+#[actor(protocol = PingReceiver)]
+impl Consumer {
+    #[send_handler]
+    fn handle_ping(&mut self, _msg: Ping, _ctx: &Context<Self>) {
+        tracing::info!("Consumer received Ping, sending Pong");
+        let _ = self.producer.pong();
     }
 }

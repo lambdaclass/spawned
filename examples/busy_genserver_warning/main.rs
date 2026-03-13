@@ -1,56 +1,31 @@
+use spawned_concurrency::error::ActorError;
+use spawned_concurrency::tasks::{Actor, ActorStart as _, Context, Handler};
+use spawned_concurrency::{actor, protocol};
 use spawned_rt::tasks as rt;
 use std::time::Duration;
 use std::{process::exit, thread};
 use tracing::info;
 
-use spawned_concurrency::tasks::{Actor, ActorRef, MessageResponse, RequestResponse};
+#[protocol]
+pub trait BusyWorkerProtocol: Send + Sync {
+    fn do_work(&self) -> Result<(), ActorError>;
+}
+
+use busy_worker_protocol::DoWork;
 
 // We test a scenario with a badly behaved task
 struct BusyWorker;
 
+#[actor(protocol = BusyWorkerProtocol)]
 impl BusyWorker {
-    pub fn new() -> Self {
-        BusyWorker
-    }
-}
-
-#[derive(Clone)]
-pub enum InMessage {
-    GetCount,
-    Stop,
-}
-
-#[derive(Clone)]
-pub enum OutMsg {
-    Count(u64),
-}
-
-impl Actor for BusyWorker {
-    type Request = InMessage;
-    type Message = ();
-    type Reply = ();
-    type Error = ();
-
-    async fn handle_request(
-        &mut self,
-        _: Self::Request,
-        _: &ActorRef<Self>,
-    ) -> RequestResponse<Self> {
-        RequestResponse::Stop(())
-    }
-
-    async fn handle_message(
-        &mut self,
-        _: Self::Message,
-        handle: &ActorRef<Self>,
-    ) -> MessageResponse {
+    #[send_handler]
+    async fn handle_do_work(&mut self, _msg: DoWork, ctx: &Context<Self>) {
         info!(taskid = ?rt::task_id(), "sleeping");
         thread::sleep(Duration::from_millis(542));
-        handle.clone().send(()).await.unwrap();
+        let _ = ctx.send(DoWork);
         // This sleep is needed to yield control to the runtime.
         // If not, the future never returns and the warning isn't emitted.
         rt::sleep(Duration::from_millis(0)).await;
-        MessageResponse::NoReply
     }
 }
 
@@ -64,8 +39,8 @@ impl Actor for BusyWorker {
 pub fn main() {
     rt::run(async move {
         // If we change BusyWorker to Backend::Blocking instead, it won't print the warning
-        let mut badboy = BusyWorker::new().start();
-        let _ = badboy.send(()).await;
+        let badboy = BusyWorker.start();
+        let _ = badboy.do_work();
 
         rt::sleep(Duration::from_secs(5)).await;
         exit(0);

@@ -1,224 +1,216 @@
 # Spawned
-Library for concurrent Rust.
 
-# Goals:
-- Provide a framework to build robust, scalable and efficient applications in concurrent Rust.
-- Set coding guidelines to apply along LambdaClass repositories and codebase.
-- Starting point to ideate what we may expect for Concrete runtime implementation.
+An actor framework for Rust, inspired by Erlang/OTP.
 
-# Example: hit the ground running
-Let's take a look at one of the examples in the [examples folder](https://github.com/lambdaclass/spawned/tree/main/examples), the [name server](https://github.com/lambdaclass/spawned/tree/main/examples/name_server).
-The name server is a test of the `Actor` abstraction using `tasks` implementation, and is based on Joe's Armstrong book: Programming Erlang, Second edition, Section 22.1 - The Road to the Generic Server.
+[![Crates.io](https://img.shields.io/crates/v/spawned-concurrency.svg)](https://crates.io/crates/spawned-concurrency)
+[![docs.rs](https://img.shields.io/docsrs/spawned-concurrency)](https://docs.rs/spawned-concurrency)
+[![CI](https://github.com/lambdaclass/spawned/actions/workflows/ci.yml/badge.svg)](https://github.com/lambdaclass/spawned/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-We would like to have a server that listens and responds to the following types of messages:
+## Quick Example
+
+Define a protocol, implement it on an actor, and call it:
 
 ```rust
-#[derive(Debug, Clone)]
-pub enum NameServerInMessage {
-    Add { key: String, value: String },
-    Find { key: String },
-}
+// protocols.rs — define the message interface
+use spawned_concurrency::Response;
+use spawned_concurrency::protocol;
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
-pub enum NameServerOutMessage {
-    Ok,
+pub enum FindResult {
     Found { value: String },
     NotFound,
-    Error,
 }
-```
 
-To write our server code, we first need to define the type for our name server's state, and it's handle:
-```rust
-type NameServerHandle = ActorRef<NameServer>;
+#[protocol]
+pub trait NameServerProtocol: Send + Sync {
+    fn add(&self, key: String, value: String) -> Response<()>;
+    fn find(&self, key: String) -> Response<FindResult>;
+}
+
+// server.rs — implement the actor
+use std::collections::HashMap;
+use spawned_concurrency::tasks::{Actor, Context, Handler};
+use spawned_concurrency::actor;
+use crate::protocols::name_server_protocol::{Add, Find};
+use crate::protocols::{FindResult, NameServerProtocol};
 
 pub struct NameServer {
     inner: HashMap<String, String>,
 }
 
+#[actor(protocol = NameServerProtocol)]
 impl NameServer {
     pub fn new() -> Self {
-        NameServer {
-            inner: HashMap::new(),
+        NameServer { inner: HashMap::new() }
+    }
+
+    #[request_handler]
+    async fn handle_add(&mut self, msg: Add, _ctx: &Context<Self>) {
+        self.inner.insert(msg.key, msg.value);
+    }
+
+    #[request_handler]
+    async fn handle_find(&mut self, msg: Find, _ctx: &Context<Self>) -> FindResult {
+        match self.inner.get(&msg.key) {
+            Some(value) => FindResult::Found { value: value.clone() },
+            None => FindResult::NotFound,
         }
     }
 }
-```
 
-Our name server's API has two async functions: `add`, and `find`, which correspond to the `NameServerInMessage` variants. Note that these map to the return messages' type:
+// main.rs — use it
+use protocols::{FindResult, NameServerProtocol};
+use spawned_concurrency::tasks::ActorStart as _;
+use spawned_rt::tasks as rt;
 
-```rust
-impl NameServer {
-    pub async fn add(server: &mut NameServerHandle, key: String, value: String) -> OutMessage {
-        match server.request(InMessage::Add { key, value }).await {
-            Ok(_) => OutMessage::Ok,
-            Err(_) => OutMessage::Error,
-        }
-    }
-
-    pub async fn find(server: &mut NameServerHandle, key: String) -> OutMessage {
-        server
-            .request(InMessage::Find { key })
-            .await
-            .unwrap_or(OutMessage::Error)
-    }
-}
-```
-
-Now that our base state type is defined, we can implement the `Actor` trait for our name server. Since the only thing we want to do differently than the defaults is how we handle `request` messages, we implement the async `handle_request` function and it's associated types:
-```rust
-impl Actor for NameServer {
-    type Request = InMessage;
-    type Message = Unused;
-    type Reply = OutMessage;
-    type Error = std::fmt::Error;
-
-    async fn handle_request(
-        &mut self,
-        message: Self::Request,
-        _handle: &NameServerHandle,
-    ) -> RequestResponse<Self> {
-        match message.clone() {
-            Self::Request::Add { key, value } => {
-                self.inner.insert(key, value);
-                RequestResponse::Reply(Self::Reply::Ok)
-            }
-            Self::Request::Find { key } => match self.inner.get(&key) {
-                Some(result) => {
-                    let value = result.to_string();
-                    RequestResponse::Reply(Self::Reply::Found { value })
-                }
-                None => RequestResponse::Reply(Self::Reply::NotFound),
-            },
-        }
-    }
-}
-```
-
-Finally, we can write our `main` function:
-
-```rust
 fn main() {
     rt::run(async {
-        let mut name_server = NameServer::new().start();
+        let ns = NameServer::new().start();
 
-        let result =
-            NameServer::add(&mut name_server, "Joe".to_string(), "At Home".to_string()).await;
-        tracing::info!("Storing value result: {result:?}");
-        assert_eq!(result, NameServerOutMessage::Ok);
+        ns.add("Joe".into(), "At Home".into()).await.unwrap();
 
-        let result = NameServer::find(&mut name_server, "Joe".to_string()).await;
-        tracing::info!("Retrieving value result: {result:?}");
-        assert_eq!(
-            result,
-            NameServerOutMessage::Found {
-                value: "At Home".to_string()
-            }
-        );
-
-        let result = NameServer::find(&mut name_server, "Bob".to_string()).await;
-        tracing::info!("Retrieving value result: {result:?}");
-        assert_eq!(result, NameServerOutMessage::NotFound);
+        let result = ns.find("Joe".into()).await.unwrap();
+        assert_eq!(result, FindResult::Found { value: "At Home".to_string() });
     })
 }
 ```
 
-If you run `cargo run --bin name_server` this should produce:
-```
-2025-10-17T22:33:41.004784Z  INFO name_server: Storing value result: Ok
-2025-10-17T22:33:41.004902Z  INFO name_server: Retrieving value result: Found { value: "At Home" }
-2025-10-17T22:33:41.004940Z  INFO name_server: Retrieving value result: NotFound
-```
+No message enums, no manual dispatch — just define a trait, implement the handlers, and call methods directly on the actor reference.
 
-There are many more highlighting other features.
+For a complete API reference covering all features (timers, type erasure, registry, backend selection, and more), see the **[API Guide](docs/API-GUIDE.md)**.
 
-# Rationale
+## Features
 
-Inspired by Erlang OTP, the main goal for `spawned` is to keep concurrency logic separated from business logic. It provides an actor-model abstraction called `Actor` (inspired by Erlang's GenServer). The `Actor` trait handles the concurrency logic, while providing callback functions to implement the business logic.
+- **Protocol macros** — `#[protocol]` generates message types, blanket impls, and type-erased refs from a trait definition
+- **Actor macros** — `#[actor]` generates `impl Actor` and `Handler<M>` impls from annotated methods
+- **Dual execution modes** — async/tokio (`tasks`) or blocking OS threads (`threads`) with the same API
+- **Type-erased protocol refs** — `XRef` types let actors communicate through protocol interfaces without knowing concrete types
+- **Actor registry** — global name-based registry for discovering actors at runtime
+- **Timers** — `send_after` and `send_interval` for delayed and periodic messages
+- **Signal handling** — `send_message_on` to deliver messages on cancellation token signals
+- **Backend selection** — async runtime, blocking thread pool, or dedicated OS thread (tasks mode)
 
-As stated in  Joe Armstrong's book Programming Erlang:
-> The callback had no code for concurrency, no spawn, no send, no receive, and no register. It is pure sequential code—nothing else. *This means we can write client-server models without understanding anything about the underlying concurrency models.*
+## How It Works
 
-This is the most important idea behind `spawned`. You can check [bank](https://github.com/lambdaclass/spawned/tree/main/examples/bank) example that mimics the same example from chapter 22 section 1 of Armstrong's book.
+**Protocols** define the message interface for an actor. `#[protocol]` on a trait generates one message struct per method, a type-erased reference type (`XRef`), and blanket implementations that let any `ActorRef<A>` call the protocol methods directly — as long as `A` implements the right handlers.
 
-The bottom line is that any project using `spawned` should be simpler and easier to read and maintain, than when not using it. If that's not the case, we are doing it wrong.
+The return type on each protocol method determines the message kind:
+- `Response<T>` — request (both modes), caller uses `.await.unwrap()` (tasks) or `.unwrap()` (threads)
+- `Result<(), ActorError>` — fire-and-forget send (both modes), returns the send result
+- No return / `-> ()` — fire-and-forget send (both modes), discards the send result
 
-# Erlang to Spawned Terminology
+**Actors** implement message handlers with `#[actor]`. Each handler method is annotated with `#[request_handler]`, `#[send_handler]`, or `#[handler]` and receives a single message struct plus a `Context`. The macro generates the `Actor` trait impl and one `Handler<M>` impl per method.
 
-For developers familiar with Erlang/OTP, here's how common concepts map to `spawned`:
+**Using an actor** is just calling trait methods on its `ActorRef`. Because `#[protocol]` generates `impl NameServerProtocol for ActorRef<NameServer>`, you write `ns.add(...)` and `ns.find(...)` — the macro handles message construction and mailbox dispatch behind the scenes.
+
+## Examples
+
+| Example | Mode | Description |
+|---------|------|-------------|
+| [`name_server`](examples/name_server) | tasks | Key-value store — the classic Erlang name server |
+| [`bank`](examples/bank) | tasks | Bank account — deposit, withdraw, balance with error handling |
+| [`bank_threads`](examples/bank_threads) | threads | Bank account — same API, thread-based |
+| [`chat_room`](examples/chat_room) | tasks | Multi-actor chat — rooms and users via type-erased protocol refs |
+| [`chat_room_threads`](examples/chat_room_threads) | threads | Multi-actor chat — thread-based |
+| [`ping_pong`](examples/ping_pong) | tasks | Producer/consumer — bidirectional messaging between actors |
+| [`ping_pong_threads`](examples/ping_pong_threads) | threads | Producer/consumer — thread-based |
+| [`service_discovery`](examples/service_discovery) | tasks | Registry — register and discover actors by name |
+| [`signal_test`](examples/signal_test) | tasks | Timers — `send_interval` and `send_message_on` for cancellation |
+| [`signal_test_threads`](examples/signal_test_threads) | threads | Timers — thread-based |
+| [`updater`](examples/updater) | tasks | Periodic HTTP — recurrent timer-driven requests |
+| [`updater_threads`](examples/updater_threads) | threads | Periodic HTTP — thread-based |
+| [`blocking_genserver`](examples/blocking_genserver) | tasks | Backend comparison — async vs blocking vs thread isolation |
+| [`busy_genserver_warning`](examples/busy_genserver_warning) | tasks | Blocking detection — runtime warning for slow handlers |
+
+## Erlang to Spawned
+
+For developers familiar with Erlang/OTP:
 
 | Erlang/OTP | Spawned | Description |
 |------------|---------|-------------|
-| `gen_server` | `Actor` | The main abstraction for a stateful process that handles messages |
-| `gen_server` (module) | `ActorRef<T>` | A handle to communicate with a running actor |
-| `call/2,3` | `actor_ref.request(msg)` | Synchronous request that waits for a reply |
-| `cast/2` | `actor_ref.send(msg)` | Asynchronous message (fire-and-forget) |
-| `handle_call/3` | `handle_request()` | Callback for synchronous requests |
-| `handle_cast/2` | `handle_message()` | Callback for asynchronous messages |
-| `init/1` | `init()` | Initialization callback before the actor starts processing |
-| `terminate/2` | `teardown()` | Cleanup callback when the actor stops |
-| Request message | `type Request` | Associated type for call/request messages |
-| Cast message | `type Message` | Associated type for cast/fire-and-forget messages |
-| Reply | `type Reply` | Associated type for responses to calls |
-| `{reply, Reply, State}` | `RequestResponse::Reply(value)` | Response that sends a reply and continues |
-| `{noreply, State}` | `MessageResponse::NoReply` | Response that continues without reply |
-| `{stop, Reason, Reply, State}` | `RequestResponse::Stop(value)` | Response that sends reply and stops actor |
-| `start_link/0,1` | `actor.start()` | Start the actor |
-| `Pid` | `ActorRef<T>` | Reference to communicate with a process/actor |
-
-Example comparison:
+| Module exports (client API) | `#[protocol]` trait | Define the public message interface |
+| `-behaviour(gen_server)` | `#[actor]` | Declare a module as an actor implementation |
+| `handle_call/3` | `#[request_handler]` | Handler for sync requests |
+| `handle_cast/2` | `#[send_handler]` | Handler for fire-and-forget messages |
+| `init/1` | `#[started]` | Initialization callback |
+| `terminate/2` | `#[stopped]` | Cleanup callback |
+| `gen_server:call/2` | `ns.find(...)` | Direct method call on ActorRef |
+| `gen_server:cast/2` | `ns.notify(...)` | Direct method call (send variant) |
+| `Pid` | `ActorRef<T>` | Handle to a running actor |
+| `start_link/0` | `actor.start()` | Start the actor |
+| `register/2` | `registry::register(name, ref)` | Register an actor by name |
+| `whereis/1` | `registry::whereis(name)` | Look up an actor by name |
 
 **Erlang:**
 ```erlang
--module(my_server).
+-module(name_server).
 -behaviour(gen_server).
 
-handle_call({add, Key, Value}, _From, State) ->
-    NewState = maps:put(Key, Value, State),
-    {reply, ok, NewState}.
+handle_call({find, Key}, _From, State) ->
+    Reply = maps:get(Key, State, not_found),
+    {reply, Reply, State}.
 ```
 
 **Spawned:**
 ```rust
-impl Actor for MyServer {
-    type Request = MyRequest;
-    type Reply = MyReply;
-    // ...
-
-    async fn handle_request(&mut self, msg: Self::Request, _handle: &ActorRef<Self>) -> RequestResponse<Self> {
-        match msg {
-            MyRequest::Add { key, value } => {
-                self.data.insert(key, value);
-                RequestResponse::Reply(MyReply::Ok)
-            }
-        }
+#[request_handler]
+async fn handle_find(&mut self, msg: Find, _ctx: &Context<Self>) -> FindResult {
+    match self.inner.get(&msg.key) {
+        Some(value) => FindResult::Found { value: value.clone() },
+        None => FindResult::NotFound,
     }
 }
 ```
 
-# Roadmap
+## Two Execution Modes
 
-While current version is mostly a PoC, we have ambitious goals:
-- Implement an `Actor` registry. This will allow naming and accessing `Actor`s created somewhere else in the code, where the access to the handle is not easily available.
-- Implement monitors and supervision trees. A way to manage a tree of actors and provide rules to stop, restart or propagate terminations when an `Actor` fails.
-- Implement our own runtime. Currently we are reexporting tokio structs and traits. We would like to implement our own runtime, probably reusing the bits and parts that we find useful from tokio or other runtimes, as well as implementing our own improvements.
-- Implement a deterministic runtime. We think that comonware.xyz's implementation of a deterministic runtime is a great idea, and we plan to do the same or use it in `spawned`.
+- **`tasks`** — async/await on a tokio runtime. Use `spawned_concurrency::tasks` and `spawned_rt::tasks`. Supports `Backend::Async`, `Backend::Blocking`, and `Backend::Thread`.
+- **`threads`** — blocking, no async runtime needed. Use `spawned_concurrency::threads` and `spawned_rt::threads`. Each actor runs on a native OS thread.
 
-# Versions
+Both provide the same `Actor`, `Handler<M>`, `ActorRef<A>`, and `Context<A>` types. Switching between them requires changing imports and adding/removing `async`/`.await`.
 
-Two execution versions exist in their own submodules:
-- **tasks**: Requires an async runtime (currently Tokio). Use `spawned_rt::tasks` module.
-- **threads**: No async/await. Uses native OS threads via `spawned_rt::threads` module.
+## Project Structure
 
-Both modules provide the same Actor API. Switching between them requires only changing imports and removing `async`/`.await` syntax. The `tasks` module additionally provides a `Backend` enum to control execution (async runtime, blocking thread pool, or dedicated OS thread).
+```
+spawned/
+├── concurrency/   # Main library: Actor, Handler, protocols, registry
+│   └── src/
+│       ├── tasks/     # Async implementation (tokio)
+│       └── threads/   # Sync implementation (OS threads)
+├── macros/        # Proc macros (#[protocol], #[actor]) — re-exported by concurrency
+├── rt/            # Runtime abstraction (wraps tokio, provides CancellationToken)
+└── examples/      # 14 usage examples
+```
 
-# Inspiration:
+Users depend only on `spawned-concurrency` (which re-exports the macros) and `spawned-rt`.
 
-- [Erlang](https://www.erlang.org/)
-- [Commonware.xyz](https://commonware.xyz)
+## Rationale
+
+Inspired by Erlang/OTP, the goal of `spawned` is to keep concurrency logic separated from business logic. As Joe Armstrong wrote in *Programming Erlang*:
+
+> The callback had no code for concurrency, no spawn, no send, no receive, and no register. It is pure sequential code—nothing else. *This means we can write client-server models without understanding anything about the underlying concurrency models.*
+
+Protocols make this separation explicit: the trait defines *what* an actor does, the `#[actor]` impl defines *how*, and the framework handles message routing, mailboxes, and lifecycle. Your business logic is plain Rust methods — no channels, no `match` on enums, no concurrency primitives.
+
+## Roadmap
+
+- **Supervision trees** — monitor, restart, and manage actor lifecycles with Erlang-style supervision strategies
+- **Observability and tracing** — built-in instrumentation for actor mailboxes, message latency, and lifecycle events
+- **Custom runtime** — replace tokio with a purpose-built runtime tailored for actor workloads
+- **Preemptive scheduling** — explore preemptive actor scheduling to prevent starvation from long-running handlers
+- **Virtual actors** — evaluate location-transparent, auto-activated actors inspired by [Orleans](https://learn.microsoft.com/en-us/dotnet/orleans/)
+- **Deterministic runtime** — reproducible execution for testing, inspired by [commonware](https://commonware.xyz)
+- **Landing page** — project website with guides, API reference, and interactive examples
+
+## Inspiration
+
+- [Erlang/OTP](https://www.erlang.org/)
+- [Commonware](https://commonware.xyz)
+- [Actix](https://actix.rs/)
+- [Orleans](https://learn.microsoft.com/en-us/dotnet/orleans/)
 - [Ractor](https://slawlor.github.io/ractor/)
 - [Tokio](https://tokio.rs/)
 - [Actors with Tokio](https://ryhl.io/blog/actors-with-tokio/)
-- [Vale.dev](https://vale.dev/)
+- [Vale](https://vale.dev/)
 - [Gleam](https://gleam.run/)

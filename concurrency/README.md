@@ -1,134 +1,51 @@
 # Spawned concurrency
-Some traits and structs to implement à-la-Erlang concurrent code.
 
-This crate is part of [spawned](https://github.com/lambdaclass/spawned). To understand usage, we encourage you to read the [workspace README.md](https://github.com/lambdaclass/spawned/blob/main/README.md) but we reproduce a motivating example here.
+Actor framework for Rust, inspired by Erlang/OTP. Define protocols as traits, implement handlers on actors, and call methods directly on actor references.
 
-## Example: hit the ground running
-Let's take a look at one of the examples in the [examples folder](https://github.com/lambdaclass/spawned/tree/main/examples), the [name server](https://github.com/lambdaclass/spawned/tree/main/examples/name_server).
-The name server is a test of the `Actor` abstraction using `tasks` implementation, and is based on Joe's Armstrong book: Programming Erlang, Second edition, Section 22.1 - The Road to the Generic Server.
+This crate is part of [spawned](https://github.com/lambdaclass/spawned). See the [workspace README](https://github.com/lambdaclass/spawned/blob/main/README.md) for a full overview and the [API Guide](https://github.com/lambdaclass/spawned/blob/main/docs/API-GUIDE.md) for detailed documentation.
 
-We would like to have a server that listens and responds to the following types of messages:
+## Quick Example
 
 ```rust
-#[derive(Debug, Clone)]
-pub enum NameServerInMessage {
-    Add { key: String, value: String },
-    Find { key: String },
+use spawned_concurrency::{protocol, Response};
+use spawned_concurrency::tasks::{Actor, ActorStart as _, Context, Handler};
+use spawned_rt::tasks as rt;
+
+#[protocol]
+pub trait CounterProtocol: Send + Sync {
+    fn increment(&self);
+    fn get(&self) -> Response<u64>;
 }
 
-#[allow(dead_code)]
-#[derive(Debug, Clone, PartialEq)]
-pub enum NameServerOutMessage {
-    Ok,
-    Found { value: String },
-    NotFound,
-    Error,
-}
-```
+pub struct MyCounter { count: u64 }
 
-To write our server code, we first need to define the type for our name server's state, and it's handle:
-```rust
-type NameServerHandle = ActorRef<NameServer>;
+impl Actor for MyCounter {}
 
-pub struct NameServer {
-    inner: HashMap<String, String>,
-}
-
-impl NameServer {
-    pub fn new() -> Self {
-        NameServer {
-            inner: HashMap::new(),
-        }
+impl Handler<counter_protocol::Increment> for MyCounter {
+    async fn handle(&mut self, _msg: counter_protocol::Increment, _ctx: &Context<Self>) {
+        self.count += 1;
     }
 }
-```
 
-Our name server's API has two async functions: `add`, and `find`, which correspond to the `NameServerInMessage` variants. Note that these map to the return messages' type:
-
-```rust
-impl NameServer {
-    pub async fn add(server: &mut NameServerHandle, key: String, value: String) -> OutMessage {
-        match server.request(InMessage::Add { key, value }).await {
-            Ok(_) => OutMessage::Ok,
-            Err(_) => OutMessage::Error,
-        }
-    }
-
-    pub async fn find(server: &mut NameServerHandle, key: String) -> OutMessage {
-        server
-            .request(InMessage::Find { key })
-            .await
-            .unwrap_or(OutMessage::Error)
+impl Handler<counter_protocol::Get> for MyCounter {
+    async fn handle(&mut self, _msg: counter_protocol::Get, _ctx: &Context<Self>) -> u64 {
+        self.count
     }
 }
-```
 
-Now that our base state type is defined, we can implement the `Actor` trait for our name server. Since the only thing we want to do differently than the defaults is how we handle `request` messages, we implement the async `handle_request` function and it's associated types:
-```rust
-impl Actor for NameServer {
-    type Request = InMessage;
-    type Message = Unused;
-    type Reply = OutMessage;
-    type Error = std::fmt::Error;
-
-    async fn handle_request(
-        &mut self,
-        message: Self::Request,
-        _handle: &NameServerHandle,
-    ) -> RequestResponse<Self> {
-        match message.clone() {
-            Self::Request::Add { key, value } => {
-                self.inner.insert(key, value);
-                RequestResponse::Reply(Self::Reply::Ok)
-            }
-            Self::Request::Find { key } => match self.inner.get(&key) {
-                Some(result) => {
-                    let value = result.to_string();
-                    RequestResponse::Reply(Self::Reply::Found { value })
-                }
-                None => RequestResponse::Reply(Self::Reply::NotFound),
-            },
-        }
-    }
-}
-```
-
-Finally, we can write our `main` function:
-
-```rust
 fn main() {
     rt::run(async {
-        let mut name_server = NameServer::new().start();
-
-        let result =
-            NameServer::add(&mut name_server, "Joe".to_string(), "At Home".to_string()).await;
-        tracing::info!("Storing value result: {result:?}");
-        assert_eq!(result, NameServerOutMessage::Ok);
-
-        let result = NameServer::find(&mut name_server, "Joe".to_string()).await;
-        tracing::info!("Retrieving value result: {result:?}");
-        assert_eq!(
-            result,
-            NameServerOutMessage::Found {
-                value: "At Home".to_string()
-            }
-        );
-
-        let result = NameServer::find(&mut name_server, "Bob".to_string()).await;
-        tracing::info!("Retrieving value result: {result:?}");
-        assert_eq!(result, NameServerOutMessage::NotFound);
+        let counter = MyCounter { count: 0 }.start();
+        counter.increment();
+        let value = counter.get().await.unwrap();
+        assert_eq!(value, 1);
     })
 }
 ```
 
-If you run `cargo run --bin name_server` this should produce:
-```
-2025-10-17T22:33:41.004784Z  INFO name_server: Storing value result: Ok
-2025-10-17T22:33:41.004902Z  INFO name_server: Retrieving value result: Found { value: "At Home" }
-2025-10-17T22:33:41.004940Z  INFO name_server: Retrieving value result: NotFound
-```
+## Two Execution Modes
 
-## Notes
-There are currently two implementations:
-- threads: no use of async/await. Just IO threads code
-- tasks: a runtime is required to run async/await code. It uses `spawned_rt::tasks` module that abstracts the runtime.
+- **tasks**: async/await with tokio. Use `spawned_concurrency::tasks`.
+- **threads**: blocking, no async runtime. Use `spawned_concurrency::threads`.
+
+Both provide the same `Actor`, `Handler<M>`, `ActorRef<A>`, and `Context<A>` types.

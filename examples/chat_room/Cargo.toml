@@ -1,0 +1,13 @@
+[package]
+name = "chat_room"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+spawned-rt = { workspace = true }
+spawned-concurrency = { workspace = true }
+tracing = { workspace = true }
+
+[[bin]]
+name = "chat_room"
+path = "src/main.rs"

@@ -1,8 +1,4 @@
-//! spawned concurrency
-//! Runtime tasks-based traits and structs to implement concurrent code à-la-Erlang.
-
-mod actor;
-mod process;
+pub(crate) mod actor;
 mod stream;
 mod time;
 
@@ -11,10 +7,10 @@ mod stream_tests;
 #[cfg(test)]
 mod timer_tests;
 
+pub use crate::response::Response;
 pub use actor::{
-    send_message_on, Actor, ActorInMsg, ActorRef, Backend, InitResult, InitResult::NoSuccess,
-    InitResult::Success, MessageResponse, RequestResponse,
+    request, send_message_on, Actor, ActorRef, ActorStart, Backend, Context, Handler, Receiver,
+    Recipient, DEFAULT_REQUEST_TIMEOUT,
 };
-pub use process::{send, Process, ProcessInfo};
 pub use stream::spawn_listener;
-pub use time::{send_after, send_interval};
+pub use time::{send_after, send_interval, TimerHandle};

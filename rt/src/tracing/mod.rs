@@ -15,5 +15,5 @@ pub(crate) fn init_tracing() {
                 .from_env_lossy(),
         )
         .finish();
-    tracing::subscriber::set_global_default(subscriber).unwrap();
+    let _ = tracing::subscriber::set_global_default(subscriber);
 }

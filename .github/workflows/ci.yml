@@ -37,3 +37,19 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Run Clippy
         run: cargo clippy --all-targets -- -D warnings
+
+  publish-dry-run:
+    runs-on: ubuntu-latest
+    needs: build
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - name: Verify crate packaging
+        run: |
+          # --no-verify skips the build step (which tries to fetch deps from crates.io).
+          # spawned-concurrency is skipped entirely because it depends on spawned-macros
+          # which isn't on crates.io yet — cargo can't even package it.
+          # TODO: after first publish, switch all three to: cargo publish --dry-run
+          cargo package --package spawned-macros --no-verify
+          cargo package --package spawned-rt --no-verify

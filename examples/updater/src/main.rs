@@ -3,13 +3,13 @@
 //! Just activates periodically and performs an http request
 //!
 
-mod messages;
+mod protocols;
 mod server;
 
-use std::{thread, time::Duration};
+use std::time::Duration;
 
 use server::UpdaterServer;
-use spawned_concurrency::tasks::Actor as _;
+use spawned_concurrency::tasks::ActorStart as _;
 use spawned_rt::tasks as rt;
 
 fn main() {
@@ -22,7 +22,7 @@ fn main() {
         .start();
 
         // giving it some time before ending
-        thread::sleep(Duration::from_secs(10));
+        rt::sleep(Duration::from_secs(10)).await;
         tracing::info!("Updater stopped");
     })
 }

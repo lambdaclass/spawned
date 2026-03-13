@@ -1,32 +1,31 @@
-use spawned_concurrency::tasks::{self as concurrency, Process, ProcessInfo};
-use spawned_rt::tasks::mpsc::Sender;
+use spawned_concurrency::message::Message;
+use spawned_concurrency::tasks::{Actor, Context, Handler};
+use spawned_concurrency::actor;
 
-use crate::messages::Message;
+use crate::protocols::pong_receiver::Pong;
+use crate::protocols::{PingReceiverRef, PongReceiver};
+
+pub struct SetConsumer(pub PingReceiverRef);
+impl Message for SetConsumer {
+    type Result = ();
+}
 
 pub struct Producer {
-    consumer: Sender<Message>,
+    pub consumer: Option<PingReceiverRef>,
 }
 
+#[actor(protocol = PongReceiver)]
 impl Producer {
-    pub async fn spawn_new(consumer: Sender<Message>) -> ProcessInfo<Message> {
-        Self { consumer }.spawn().await
+    #[send_handler]
+    async fn handle_set_consumer(&mut self, msg: SetConsumer, _ctx: &Context<Self>) {
+        self.consumer = Some(msg.0);
     }
 
-    fn send_ping(&self, tx: &Sender<Message>, consumer: &Sender<Message>) {
-        let message = Message::Ping { from: tx.clone() };
-        tracing::info!("Producer sent Ping");
-        concurrency::send(consumer, message);
-    }
-}
-
-impl Process<Message> for Producer {
-    async fn init(&mut self, tx: &Sender<Message>) {
-        self.send_ping(tx, &self.consumer);
-    }
-
-    async fn handle(&mut self, message: Message, tx: &Sender<Message>) -> Message {
-        tracing::info!("Producer received {message:?}");
-        self.send_ping(tx, &self.consumer);
-        message
+    #[send_handler]
+    async fn handle_pong(&mut self, _msg: Pong, _ctx: &Context<Self>) {
+        tracing::info!("Producer received Pong, sending Ping");
+        if let Some(consumer) = &self.consumer {
+            let _ = consumer.ping();
+        }
     }
 }

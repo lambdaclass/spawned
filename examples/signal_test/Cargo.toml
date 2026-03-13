@@ -3,8 +3,11 @@ name = "signal_test"
 version = "0.1.0"
 edition = "2021"
 
+[[bin]]
+name = "signal_test"
+path = "src/main.rs"
+
 [dependencies]
-spawned-concurrency = { path = "../../concurrency" }
-spawned-rt = { path = "../../rt" }
+spawned-concurrency = { workspace = true }
+spawned-rt = { workspace = true }
 tracing = { workspace = true }
-tokio = { version = "1", features = ["signal"] }

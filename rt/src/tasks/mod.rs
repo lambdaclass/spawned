@@ -23,6 +23,7 @@ pub use crate::tasks::tokio::{spawn, spawn_blocking, task_id, JoinHandle, Runtim
 pub use crate::tasks::tokio::{BroadcastStream, ReceiverStream};
 use std::future::Future;
 
+/// Create a tokio runtime, initialize tracing, and block on the given future.
 pub fn run<F: Future>(future: F) -> F::Output {
     init_tracing();
 
@@ -30,6 +31,7 @@ pub fn run<F: Future>(future: F) -> F::Output {
     rt.block_on(future)
 }
 
+/// Block on a future using the current tokio runtime handle.
 pub fn block_on<F: Future>(future: F) -> F::Output {
     Handle::current().block_on(future)
 }

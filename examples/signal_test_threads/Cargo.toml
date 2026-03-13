@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-spawned-concurrency = { path = "../../concurrency" }
-spawned-rt = { path = "../../rt" }
+spawned-concurrency = { workspace = true }
+spawned-rt = { workspace = true }
 tracing = { workspace = true }
+
+[[bin]]
+name = "signal_test_threads"
+path = "src/main.rs"

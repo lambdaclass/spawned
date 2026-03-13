@@ -1,50 +1,42 @@
 use std::time::Duration;
 
-use spawned_concurrency::{
-    messages::Unused,
-    threads::{send_after, Actor, ActorRef, InitResult, MessageResponse},
-};
-use spawned_rt::threads::block_on;
+use spawned_concurrency::threads::{send_interval, Actor, Context, Handler};
+use spawned_concurrency::actor;
+use spawned_rt::threads::{block_on, CancellationToken};
 
-use crate::messages::{UpdaterInMessage as InMessage, UpdaterOutMessage as OutMessage};
+use crate::protocols::updater_protocol::Check;
+use crate::protocols::UpdaterProtocol;
 
-type UpdateServerHandle = ActorRef<UpdaterServer>;
-
-#[derive(Clone)]
 pub struct UpdaterServer {
     pub url: String,
     pub periodicity: Duration,
+    pub timer_token: Option<CancellationToken>,
 }
 
-impl Actor for UpdaterServer {
-    type Request = Unused;
-    type Message = InMessage;
-    type Reply = OutMessage;
-    type Error = std::fmt::Error;
+impl UpdaterServer {
+    pub fn new(url: String, periodicity: Duration) -> Self {
+        UpdaterServer {
+            url,
+            periodicity,
+            timer_token: None,
+        }
+    }
+}
 
-    // Initializing Actor to start periodic checks.
-    fn init(self, handle: &ActorRef<Self>) -> Result<InitResult<Self>, Self::Error> {
-        send_after(self.periodicity, handle.clone(), InMessage::Check);
-        Ok(InitResult::Success(self))
+#[actor(protocol = UpdaterProtocol)]
+impl UpdaterServer {
+    #[started]
+    fn started(&mut self, ctx: &Context<Self>) {
+        let timer = send_interval(self.periodicity, ctx.clone(), Check);
+        self.timer_token = Some(timer.cancellation_token);
     }
 
-    fn handle_message(
-        &mut self,
-        message: Self::Message,
-        handle: &UpdateServerHandle,
-    ) -> MessageResponse {
-        match message {
-            Self::Message::Check => {
-                send_after(self.periodicity, handle.clone(), InMessage::Check);
-                let url = self.url.clone();
-                tracing::info!("Fetching: {url}");
-                let resp = block_on(req(url));
-
-                tracing::info!("Response: {resp:?}");
-
-                MessageResponse::NoReply
-            }
-        }
+    #[send_handler]
+    fn handle_check(&mut self, _msg: Check, _ctx: &Context<Self>) {
+        let url = self.url.clone();
+        tracing::info!("Fetching: {url}");
+        let resp = block_on(req(url));
+        tracing::info!("Response: {resp:?}");
     }
 }
 
