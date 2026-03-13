@@ -1,6 +1,6 @@
+use spawned_concurrency::actor;
 use spawned_concurrency::message::Message;
 use spawned_concurrency::threads::{Actor, Context, Handler};
-use spawned_concurrency::actor;
 
 use crate::protocols::pong_receiver::Pong;
 use crate::protocols::{PingReceiverRef, PongReceiver};

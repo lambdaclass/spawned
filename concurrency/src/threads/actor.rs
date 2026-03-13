@@ -131,10 +131,7 @@ impl<A: Actor> Context<A> {
         M: Message,
     {
         let (tx, rx) = oneshot::channel();
-        let envelope = MessageEnvelope {
-            msg,
-            tx: Some(tx),
-        };
+        let envelope = MessageEnvelope { msg, tx: Some(tx) };
         self.sender
             .send(Box::new(envelope))
             .map_err(|_| ActorError::ActorStopped)?;
@@ -299,10 +296,7 @@ impl<A: Actor> ActorRef<A> {
         M: Message,
     {
         let (tx, rx) = oneshot::channel();
-        let envelope = MessageEnvelope {
-            msg,
-            tx: Some(tx),
-        };
+        let envelope = MessageEnvelope { msg, tx: Some(tx) };
         self.sender
             .send(Box::new(envelope))
             .map_err(|_| ActorError::ActorStopped)?;
@@ -513,13 +507,19 @@ mod tests {
     }
 
     struct GetCount;
-    impl Message for GetCount { type Result = u64; }
+    impl Message for GetCount {
+        type Result = u64;
+    }
 
     struct Increment;
-    impl Message for Increment { type Result = u64; }
+    impl Message for Increment {
+        type Result = u64;
+    }
 
     struct StopCounter;
-    impl Message for StopCounter { type Result = u64; }
+    impl Message for StopCounter {
+        type Result = u64;
+    }
 
     impl Actor for Counter {}
 
@@ -558,7 +558,9 @@ mod tests {
     fn join_waits_for_completion() {
         struct SlowStop;
         struct StopSlow;
-        impl Message for StopSlow { type Result = (); }
+        impl Message for StopSlow {
+            type Result = ();
+        }
         impl Actor for SlowStop {
             fn stopped(&mut self, _ctx: &Context<Self>) {
                 rt::sleep(Duration::from_millis(300));
@@ -580,7 +582,9 @@ mod tests {
     fn join_multiple_callers() {
         struct SlowStop2;
         struct StopSlow2;
-        impl Message for StopSlow2 { type Result = (); }
+        impl Message for StopSlow2 {
+            type Result = ();
+        }
         impl Actor for SlowStop2 {
             fn stopped(&mut self, _ctx: &Context<Self>) {
                 rt::sleep(Duration::from_millis(200));
@@ -612,7 +616,9 @@ mod tests {
     fn panic_in_started_stops_actor() {
         struct PanicOnStart;
         struct PingThread;
-        impl Message for PingThread { type Result = (); }
+        impl Message for PingThread {
+            type Result = ();
+        }
         impl Actor for PanicOnStart {
             fn started(&mut self, _ctx: &Context<Self>) {
                 panic!("boom in started");
@@ -632,9 +638,13 @@ mod tests {
     fn panic_in_handler_stops_actor() {
         struct PanicOnMsg;
         struct ExplodeThread;
-        impl Message for ExplodeThread { type Result = (); }
+        impl Message for ExplodeThread {
+            type Result = ();
+        }
         struct CheckThread;
-        impl Message for CheckThread { type Result = u32; }
+        impl Message for CheckThread {
+            type Result = u32;
+        }
         impl Actor for PanicOnMsg {}
         impl Handler<ExplodeThread> for PanicOnMsg {
             fn handle(&mut self, _msg: ExplodeThread, _ctx: &Context<Self>) {
@@ -658,7 +668,9 @@ mod tests {
     fn panic_in_stopped_still_completes() {
         struct PanicOnStop;
         struct StopMeThread;
-        impl Message for StopMeThread { type Result = (); }
+        impl Message for StopMeThread {
+            type Result = ();
+        }
         impl Actor for PanicOnStop {
             fn stopped(&mut self, _ctx: &Context<Self>) {
                 panic!("boom in stopped");

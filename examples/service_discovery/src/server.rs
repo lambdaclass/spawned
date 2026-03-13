@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
-use spawned_concurrency::tasks::{Actor, Context, Handler};
 use spawned_concurrency::actor;
+use spawned_concurrency::tasks::{Actor, Context, Handler};
 
 use crate::protocols::service_registry_protocol::{ListAll, Lookup, RegisterService};
 use crate::protocols::ServiceRegistryProtocol;
@@ -32,7 +32,14 @@ impl ServiceRegistry {
     }
 
     #[request_handler]
-    async fn handle_list_all(&mut self, _msg: ListAll, _ctx: &Context<Self>) -> Vec<(String, String)> {
-        self.services.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+    async fn handle_list_all(
+        &mut self,
+        _msg: ListAll,
+        _ctx: &Context<Self>,
+    ) -> Vec<(String, String)> {
+        self.services
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect()
     }
 }

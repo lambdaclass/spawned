@@ -1,7 +1,5 @@
 use crate::message::Message;
-use crate::threads::{
-    spawn_listener, Actor, ActorStart, Context, Handler,
-};
+use crate::threads::{spawn_listener, Actor, ActorStart, Context, Handler};
 use spawned_rt::threads::{self as rt};
 use std::sync::{
     atomic::{AtomicU64, Ordering},
@@ -14,11 +12,17 @@ struct Collector {
     done: Arc<AtomicU64>,
 }
 
-struct Push { value: i32 }
-impl Message for Push { type Result = (); }
+struct Push {
+    value: i32,
+}
+impl Message for Push {
+    type Result = ();
+}
 
 struct GetItems;
-impl Message for GetItems { type Result = Vec<i32>; }
+impl Message for GetItems {
+    type Result = Vec<i32>;
+}
 
 impl Actor for Collector {}
 

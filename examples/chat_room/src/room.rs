@@ -1,5 +1,5 @@
-use spawned_concurrency::tasks::{Actor, Context, Handler};
 use spawned_concurrency::actor;
+use spawned_concurrency::tasks::{Actor, Context, Handler};
 
 use crate::protocols::room_protocol::{AddMember, Members, Say};
 use crate::protocols::{RoomProtocol, UserRef};

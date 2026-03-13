@@ -1,5 +1,5 @@
-use spawned_concurrency::Response;
 use spawned_concurrency::protocol;
+use spawned_concurrency::Response;
 
 pub type MsgResult = Result<BankOutMessage, BankError>;
 

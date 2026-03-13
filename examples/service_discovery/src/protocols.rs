@@ -1,5 +1,5 @@
-use spawned_concurrency::Response;
 use spawned_concurrency::protocol;
+use spawned_concurrency::Response;
 
 #[protocol]
 pub trait ServiceRegistryProtocol: Send + Sync {
