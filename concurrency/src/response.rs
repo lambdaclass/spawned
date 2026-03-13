@@ -167,12 +167,10 @@ impl<T: Send + 'static> Future for Response<T> {
                 }
                 std::task::Poll::Pending => std::task::Poll::Pending,
             },
-            ResponseState::Ready(_) => {
-                match std::mem::replace(&mut this.0, ResponseState::Done) {
-                    ResponseState::Ready(result) => std::task::Poll::Ready(result),
-                    _ => unreachable!(),
-                }
-            }
+            ResponseState::Ready(_) => match std::mem::replace(&mut this.0, ResponseState::Done) {
+                ResponseState::Ready(result) => std::task::Poll::Ready(result),
+                _ => unreachable!(),
+            },
             ResponseState::Done => panic!("Response polled after completion"),
         }
     }

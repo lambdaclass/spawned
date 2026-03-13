@@ -1,8 +1,5 @@
-use crate::tasks::{
-    send_after, Actor, ActorStart, Context, Handler,
-    stream::spawn_listener,
-};
 use crate::message::Message;
+use crate::tasks::{send_after, stream::spawn_listener, Actor, ActorStart, Context, Handler};
 use futures::{stream, StreamExt};
 use spawned_rt::tasks::{self as rt, BroadcastStream, ReceiverStream};
 use std::time::Duration;
@@ -14,15 +11,21 @@ enum StreamMsg {
     Add(u16),
     Error,
 }
-impl Message for StreamMsg { type Result = (); }
+impl Message for StreamMsg {
+    type Result = ();
+}
 
 #[derive(Debug)]
 struct StopSum;
-impl Message for StopSum { type Result = (); }
+impl Message for StopSum {
+    type Result = ();
+}
 
 #[derive(Debug)]
 struct GetValue;
-impl Message for GetValue { type Result = u16; }
+impl Message for GetValue {
+    type Result = u16;
+}
 
 // --- Summatory Actor ---
 
@@ -158,11 +161,7 @@ pub fn test_stream_cancellation() {
                 .filter_map(|result| async move { result.ok().map(StreamMsg::Add) }),
         );
 
-        let _ = send_after(
-            Duration::from_millis(STOP_TIME),
-            ctx,
-            StopSum,
-        );
+        let _ = send_after(Duration::from_millis(STOP_TIME), ctx, StopSum);
 
         rt::sleep(Duration::from_millis(READ_TIME)).await;
         let val = summatory.request(GetValue).await.unwrap();

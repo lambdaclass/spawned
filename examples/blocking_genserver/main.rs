@@ -1,7 +1,5 @@
 use spawned_concurrency::error::ActorError;
-use spawned_concurrency::tasks::{
-    send_after, Actor, ActorStart as _, Backend, Context, Handler,
-};
+use spawned_concurrency::tasks::{send_after, Actor, ActorStart as _, Backend, Context, Handler};
 use spawned_concurrency::Response;
 use spawned_concurrency::{actor, protocol};
 use spawned_rt::tasks as rt;

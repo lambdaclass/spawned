@@ -38,7 +38,10 @@ fn main() {
         tracing::info!("Deposit result {result:?}");
         assert_eq!(
             result,
-            Ok(BankOutMessage::Balance { who: joe.clone(), amount: 10 })
+            Ok(BankOutMessage::Balance {
+                who: joe.clone(),
+                amount: 10
+            })
         );
 
         // Deposit
@@ -46,7 +49,10 @@ fn main() {
         tracing::info!("Deposit result {result:?}");
         assert_eq!(
             result,
-            Ok(BankOutMessage::Balance { who: joe.clone(), amount: 40 })
+            Ok(BankOutMessage::Balance {
+                who: joe.clone(),
+                amount: 40
+            })
         );
 
         // Withdrawal
@@ -54,7 +60,10 @@ fn main() {
         tracing::info!("Withdraw result {result:?}");
         assert_eq!(
             result,
-            Ok(BankOutMessage::WithdrawOk { who: joe.clone(), amount: 25 })
+            Ok(BankOutMessage::WithdrawOk {
+                who: joe.clone(),
+                amount: 25
+            })
         );
 
         // Withdrawal with not enough balance
@@ -62,7 +71,10 @@ fn main() {
         tracing::info!("Withdraw result {result:?}");
         assert_eq!(
             result,
-            Err(BankError::InsufficientBalance { who: joe.clone(), amount: 25 })
+            Err(BankError::InsufficientBalance {
+                who: joe.clone(),
+                amount: 25
+            })
         );
 
         // Full withdrawal
@@ -70,7 +82,10 @@ fn main() {
         tracing::info!("Withdraw result {result:?}");
         assert_eq!(
             result,
-            Ok(BankOutMessage::WithdrawOk { who: joe, amount: 0 })
+            Ok(BankOutMessage::WithdrawOk {
+                who: joe,
+                amount: 0
+            })
         );
 
         // Stopping the bank

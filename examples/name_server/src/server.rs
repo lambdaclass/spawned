@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
-use spawned_concurrency::tasks::{Actor, Context, Handler};
 use spawned_concurrency::actor;
+use spawned_concurrency::tasks::{Actor, Context, Handler};
 
 use crate::protocols::name_server_protocol::{Add, Find};
 use crate::protocols::{FindResult, NameServerProtocol};
@@ -26,7 +26,9 @@ impl NameServer {
     #[request_handler]
     async fn handle_find(&mut self, msg: Find, _ctx: &Context<Self>) -> FindResult {
         match self.inner.get(&msg.key) {
-            Some(value) => FindResult::Found { value: value.clone() },
+            Some(value) => FindResult::Found {
+                value: value.clone(),
+            },
             None => FindResult::NotFound,
         }
     }

@@ -126,9 +126,7 @@ pub fn ctrl_c() -> impl FnOnce() + Send + 'static {
     let subscribers = CTRL_C_SUBSCRIBERS.get_or_init(|| {
         ctrlc::set_handler(|| {
             if let Some(subs) = CTRL_C_SUBSCRIBERS.get() {
-                let mut guard = subs
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                let mut guard = subs.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
                 // Notify all subscribers and remove dead ones (where receiver was dropped)
                 guard.retain(|tx| tx.send(()).is_ok());
             }

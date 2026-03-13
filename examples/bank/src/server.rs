@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
-use spawned_concurrency::tasks::{Actor, Context, Handler};
 use spawned_concurrency::actor;
+use spawned_concurrency::tasks::{Actor, Context, Handler};
 
 use crate::protocols::bank_protocol::{Deposit, NewAccount, Stop, Withdraw};
 use crate::protocols::{BankError, BankOutMessage, BankProtocol, MsgResult};
@@ -52,12 +52,10 @@ impl Bank {
     #[request_handler]
     async fn handle_withdraw(&mut self, msg: Withdraw, _ctx: &Context<Self>) -> MsgResult {
         match self.accounts.get(&msg.who) {
-            Some(&current) if current < msg.amount => {
-                Err(BankError::InsufficientBalance {
-                    who: msg.who,
-                    amount: current,
-                })
-            }
+            Some(&current) if current < msg.amount => Err(BankError::InsufficientBalance {
+                who: msg.who,
+                amount: current,
+            }),
             Some(&current) => {
                 let new_amount = current - msg.amount;
                 self.accounts.insert(msg.who.clone(), new_amount);

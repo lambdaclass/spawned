@@ -1,6 +1,6 @@
 use spawned_concurrency::error::ActorError;
-use spawned_concurrency::Response;
 use spawned_concurrency::protocol;
+use spawned_concurrency::Response;
 
 #[protocol]
 pub trait RoomProtocol: Send + Sync {

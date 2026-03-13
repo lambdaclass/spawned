@@ -1,7 +1,5 @@
-use crate::threads::{
-    send_after, send_interval, Actor, ActorStart, Context, Handler,
-};
 use crate::message::Message;
+use crate::threads::{send_after, send_interval, Actor, ActorStart, Context, Handler};
 use spawned_rt::threads::{self as rt, CancellationToken};
 use std::time::Duration;
 
@@ -9,15 +7,21 @@ use std::time::Duration;
 
 #[derive(Clone, Debug)]
 struct Inc;
-impl Message for Inc { type Result = (); }
+impl Message for Inc {
+    type Result = ();
+}
 
 #[derive(Clone, Debug)]
 struct StopTimer;
-impl Message for StopTimer { type Result = (); }
+impl Message for StopTimer {
+    type Result = ();
+}
 
 #[derive(Debug)]
 struct GetRepCount;
-impl Message for GetRepCount { type Result = i32; }
+impl Message for GetRepCount {
+    type Result = i32;
+}
 
 struct Repeater {
     count: i32,
@@ -35,11 +39,7 @@ impl Repeater {
 
 impl Actor for Repeater {
     fn started(&mut self, ctx: &Context<Self>) {
-        let timer = send_interval(
-            Duration::from_millis(100),
-            ctx.clone(),
-            Inc,
-        );
+        let timer = send_interval(Duration::from_millis(100), ctx.clone(), Inc);
         self.cancellation_token = Some(timer.cancellation_token);
     }
 }
@@ -85,11 +85,15 @@ pub fn test_send_interval_and_cancellation() {
 
 #[derive(Debug)]
 struct GetDelCount;
-impl Message for GetDelCount { type Result = i32; }
+impl Message for GetDelCount {
+    type Result = i32;
+}
 
 #[derive(Debug)]
 struct StopDelayed;
-impl Message for StopDelayed { type Result = i32; }
+impl Message for StopDelayed {
+    type Result = i32;
+}
 
 struct Delayed {
     count: i32,
@@ -97,7 +101,9 @@ struct Delayed {
 
 impl Delayed {
     pub fn new(initial_count: i32) -> Self {
-        Delayed { count: initial_count }
+        Delayed {
+            count: initial_count,
+        }
     }
 }
 

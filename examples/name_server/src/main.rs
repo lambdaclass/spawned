@@ -16,7 +16,9 @@ fn main() {
         tracing::info!("Retrieving value result: {result:?}");
         assert_eq!(
             result,
-            FindResult::Found { value: "At Home".to_string() }
+            FindResult::Found {
+                value: "At Home".to_string()
+            }
         );
 
         let result = ns.find("Bob".into()).await.unwrap();

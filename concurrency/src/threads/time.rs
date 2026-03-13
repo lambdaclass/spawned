@@ -37,15 +37,13 @@ where
         let _ = wake_tx.send(());
     }));
 
-    let join_handle = rt::spawn(move || {
-        match wake_rx.recv_timeout(period) {
-            Err(RecvTimeoutError::Timeout) => {
-                if !timer_token.is_cancelled() && !actor_token.is_cancelled() {
-                    let _ = ctx.send(msg);
-                }
+    let join_handle = rt::spawn(move || match wake_rx.recv_timeout(period) {
+        Err(RecvTimeoutError::Timeout) => {
+            if !timer_token.is_cancelled() && !actor_token.is_cancelled() {
+                let _ = ctx.send(msg);
             }
-            Ok(()) | Err(RecvTimeoutError::Disconnected) => {}
         }
+        Ok(()) | Err(RecvTimeoutError::Disconnected) => {}
     });
 
     TimerHandle {

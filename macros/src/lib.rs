@@ -150,7 +150,10 @@ fn qualify_type_with_super(ty: &Type) -> Type {
             }
             if let Some(first) = path.segments.first() {
                 let s = first.ident.to_string();
-                if matches!(s.as_str(), "crate" | "super" | "self" | "std" | "core" | "alloc") {
+                if matches!(
+                    s.as_str(),
+                    "crate" | "super" | "self" | "std" | "core" | "alloc"
+                ) {
                     return ty.clone();
                 }
             }
@@ -307,7 +310,13 @@ fn generate_blanket_impl(
     runtime_path: &proc_macro2::TokenStream,
     mode: RuntimeMode,
 ) -> proc_macro2::TokenStream {
-    let ProtocolInfo { trait_name, mod_name, ref_name, converter_trait, converter_method } = info;
+    let ProtocolInfo {
+        trait_name,
+        mod_name,
+        ref_name,
+        converter_trait,
+        converter_method,
+    } = info;
 
     // Unconditional methods: Handler bounds go directly on the impl block.
     let handler_bounds: Vec<_> = methods
@@ -859,7 +868,10 @@ pub fn actor(attr: TokenStream, item: TokenStream) -> TokenStream {
             while !input.is_empty() {
                 let key: Ident = input.parse()?;
                 if key != "protocol" {
-                    return Err(syn::Error::new(key.span(), "unknown parameter, expected `protocol`"));
+                    return Err(syn::Error::new(
+                        key.span(),
+                        "unknown parameter, expected `protocol`",
+                    ));
                 }
                 if input.peek(syn::Token![=]) {
                     // protocol = TraitName
@@ -925,7 +937,8 @@ pub fn actor(attr: TokenStream, item: TokenStream) -> TokenStream {
                     .to_compile_error()
                     .into();
                 }
-                if !matches!(method.sig.inputs.first(), Some(FnArg::Receiver(r)) if r.mutability.is_some()) {
+                if !matches!(method.sig.inputs.first(), Some(FnArg::Receiver(r)) if r.mutability.is_some())
+                {
                     return syn::Error::new_spanned(
                         &method.sig,
                         "#[started] method's first parameter must be `&mut self`",
@@ -974,7 +987,8 @@ pub fn actor(attr: TokenStream, item: TokenStream) -> TokenStream {
                     .to_compile_error()
                     .into();
                 }
-                if !matches!(method.sig.inputs.first(), Some(FnArg::Receiver(r)) if r.mutability.is_some()) {
+                if !matches!(method.sig.inputs.first(), Some(FnArg::Receiver(r)) if r.mutability.is_some())
+                {
                     return syn::Error::new_spanned(
                         &method.sig,
                         "#[stopped] method's first parameter must be `&mut self`",
@@ -1013,13 +1027,18 @@ pub fn actor(attr: TokenStream, item: TokenStream) -> TokenStream {
 
                 // Collect remaining attributes (e.g. #[cfg(...)]) to propagate
                 // to the generated Handler impl block.
-                let extra_attrs: Vec<_> = method.attrs.iter().filter(|a| {
-                    !a.path().is_ident("handler")
-                        && !a.path().is_ident("send_handler")
-                        && !a.path().is_ident("request_handler")
-                        && !a.path().is_ident("started")
-                        && !a.path().is_ident("stopped")
-                }).cloned().collect();
+                let extra_attrs: Vec<_> = method
+                    .attrs
+                    .iter()
+                    .filter(|a| {
+                        !a.path().is_ident("handler")
+                            && !a.path().is_ident("send_handler")
+                            && !a.path().is_ident("request_handler")
+                            && !a.path().is_ident("started")
+                            && !a.path().is_ident("stopped")
+                    })
+                    .cloned()
+                    .collect();
 
                 let method_name = &method.sig.ident;
                 if method.sig.asyncness.is_some() {
@@ -1092,10 +1111,7 @@ pub fn actor(attr: TokenStream, item: TokenStream) -> TokenStream {
     let protocol_doc = if bridge_traits.is_empty() {
         quote! {}
     } else {
-        let lines: Vec<String> = bridge_traits
-            .iter()
-            .map(|t| format!("- [`{t}`]"))
-            .collect();
+        let lines: Vec<String> = bridge_traits.iter().map(|t| format!("- [`{t}`]")).collect();
         let doc_body = format!(
             "# Protocol\n\n\
              When started, `ActorRef<{ty}>` implements:\n\n\

@@ -6,7 +6,9 @@ use spawned_rt::{
     tasks::{self as rt, mpsc, oneshot, timeout, watch, CancellationToken, JoinHandle},
     threads,
 };
-use std::{fmt::Debug, future::Future, panic::AssertUnwindSafe, pin::Pin, sync::Arc, time::Duration};
+use std::{
+    fmt::Debug, future::Future, panic::AssertUnwindSafe, pin::Pin, sync::Arc, time::Duration,
+};
 
 pub use crate::response::DEFAULT_REQUEST_TIMEOUT;
 
@@ -56,11 +58,7 @@ pub trait Actor: Send + Sized + 'static {
 /// Uses RPITIT (return-position `impl Trait` in traits), which means this trait
 /// is **not** object-safe. For type-erased references, use [`Receiver<M>`] / [`Recipient<M>`].
 pub trait Handler<M: Message>: Actor {
-    fn handle(
-        &mut self,
-        msg: M,
-        ctx: &Context<Self>,
-    ) -> impl Future<Output = M::Result> + Send;
+    fn handle(&mut self, msg: M, ctx: &Context<Self>) -> impl Future<Output = M::Result> + Send;
 }
 
 // ---------------------------------------------------------------------------
@@ -165,10 +163,7 @@ impl<A: Actor> Context<A> {
         M: Message,
     {
         let (tx, rx) = oneshot::channel();
-        let envelope = MessageEnvelope {
-            msg,
-            tx: Some(tx),
-        };
+        let envelope = MessageEnvelope { msg, tx: Some(tx) };
         self.sender
             .send(Box::new(envelope))
             .map_err(|_| ActorError::ActorStopped)?;
@@ -181,7 +176,8 @@ impl<A: Actor> Context<A> {
         A: Handler<M>,
         M: Message,
     {
-        self.request_with_timeout(msg, DEFAULT_REQUEST_TIMEOUT).await
+        self.request_with_timeout(msg, DEFAULT_REQUEST_TIMEOUT)
+            .await
     }
 
     /// Send a request and wait for the reply with a custom timeout.
@@ -324,10 +320,7 @@ impl<A: Actor> ActorRef<A> {
         M: Message,
     {
         let (tx, rx) = oneshot::channel();
-        let envelope = MessageEnvelope {
-            msg,
-            tx: Some(tx),
-        };
+        let envelope = MessageEnvelope { msg, tx: Some(tx) };
         self.sender
             .send(Box::new(envelope))
             .map_err(|_| ActorError::ActorStopped)?;
@@ -340,7 +333,8 @@ impl<A: Actor> ActorRef<A> {
         A: Handler<M>,
         M: Message,
     {
-        self.request_with_timeout(msg, DEFAULT_REQUEST_TIMEOUT).await
+        self.request_with_timeout(msg, DEFAULT_REQUEST_TIMEOUT)
+            .await
     }
 
     /// Send a request and wait for the reply with a custom timeout.
@@ -435,14 +429,10 @@ impl<A: Actor> ActorRef<A> {
                 let _handle = rt::spawn(inner_future);
             }
             Backend::Blocking => {
-                let _handle = rt::spawn_blocking(move || {
-                    rt::block_on(inner_future)
-                });
+                let _handle = rt::spawn_blocking(move || rt::block_on(inner_future));
             }
             Backend::Thread => {
-                let _handle = threads::spawn(move || {
-                    threads::block_on(inner_future)
-                });
+                let _handle = threads::spawn(move || threads::block_on(inner_future));
             }
         }
 
@@ -456,9 +446,7 @@ async fn run_actor<A: Actor>(
     mut rx: mpsc::Receiver<Box<dyn Envelope<A> + Send>>,
     cancellation_token: CancellationToken,
 ) {
-    let start_result = AssertUnwindSafe(actor.started(&ctx))
-        .catch_unwind()
-        .await;
+    let start_result = AssertUnwindSafe(actor.started(&ctx)).catch_unwind().await;
     if let Err(panic) = start_result {
         tracing::error!("Panic in started() callback: {panic:?}");
         cancellation_token.cancel();
@@ -497,9 +485,7 @@ async fn run_actor<A: Actor>(
     }
 
     cancellation_token.cancel();
-    let stop_result = AssertUnwindSafe(actor.stopped(&ctx))
-        .catch_unwind()
-        .await;
+    let stop_result = AssertUnwindSafe(actor.stopped(&ctx)).catch_unwind().await;
     if let Err(panic) = stop_result {
         tracing::error!("Panic in stopped() callback: {panic:?}");
     }
@@ -620,13 +606,19 @@ mod tests {
     }
 
     struct GetCount;
-    impl Message for GetCount { type Result = u64; }
+    impl Message for GetCount {
+        type Result = u64;
+    }
 
     struct Increment;
-    impl Message for Increment { type Result = u64; }
+    impl Message for Increment {
+        type Result = u64;
+    }
 
     struct StopCounter;
-    impl Message for StopCounter { type Result = u64; }
+    impl Message for StopCounter {
+        type Result = u64;
+    }
 
     impl Actor for Counter {}
 
@@ -784,7 +776,9 @@ mod tests {
         runtime.block_on(async move {
             struct SlowActor;
             struct SlowOp;
-            impl Message for SlowOp { type Result = (); }
+            impl Message for SlowOp {
+                type Result = ();
+            }
             impl Actor for SlowActor {}
             impl Handler<SlowOp> for SlowActor {
                 async fn handle(&mut self, _msg: SlowOp, _ctx: &Context<Self>) {
@@ -812,7 +806,9 @@ mod tests {
             assert_eq!(result, 42);
 
             // Also test request helper
-            let result = request(&*recipient, GetCount, Duration::from_secs(5)).await.unwrap();
+            let result = request(&*recipient, GetCount, Duration::from_secs(5))
+                .await
+                .unwrap();
             assert_eq!(result, 42);
         });
     }
@@ -822,7 +818,9 @@ mod tests {
     struct SlowShutdownActor;
 
     struct StopSlow;
-    impl Message for StopSlow { type Result = (); }
+    impl Message for StopSlow {
+        type Result = ();
+    }
 
     impl Actor for SlowShutdownActor {
         async fn stopped(&mut self, _ctx: &Context<Self>) {
@@ -903,7 +901,9 @@ mod tests {
     struct BadlyBehavedTask;
 
     struct DoBlock;
-    impl Message for DoBlock { type Result = (); }
+    impl Message for DoBlock {
+        type Result = ();
+    }
 
     impl Actor for BadlyBehavedTask {}
 
@@ -916,7 +916,9 @@ mod tests {
     }
 
     struct IncrementWell;
-    impl Message for IncrementWell { type Result = (); }
+    impl Message for IncrementWell {
+        type Result = ();
+    }
 
     struct WellBehavedTask {
         pub count: u64,
@@ -998,7 +1000,9 @@ mod tests {
         runtime.block_on(async move {
             struct PanicOnStart;
             struct Ping;
-            impl Message for Ping { type Result = (); }
+            impl Message for Ping {
+                type Result = ();
+            }
             impl Actor for PanicOnStart {
                 async fn started(&mut self, _ctx: &Context<Self>) {
                     panic!("boom in started");
@@ -1021,9 +1025,13 @@ mod tests {
         runtime.block_on(async move {
             struct PanicOnMsg;
             struct Explode;
-            impl Message for Explode { type Result = (); }
+            impl Message for Explode {
+                type Result = ();
+            }
             struct Check;
-            impl Message for Check { type Result = u32; }
+            impl Message for Check {
+                type Result = u32;
+            }
             impl Actor for PanicOnMsg {}
             impl Handler<Explode> for PanicOnMsg {
                 async fn handle(&mut self, _msg: Explode, _ctx: &Context<Self>) {
@@ -1050,7 +1058,9 @@ mod tests {
         runtime.block_on(async move {
             struct PanicOnStop;
             struct StopMe;
-            impl Message for StopMe { type Result = (); }
+            impl Message for StopMe {
+                type Result = ();
+            }
             impl Actor for PanicOnStop {
                 async fn stopped(&mut self, _ctx: &Context<Self>) {
                     panic!("boom in stopped");
