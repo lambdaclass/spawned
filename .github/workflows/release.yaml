@@ -17,8 +17,10 @@ jobs:
           override: true
 
       - name: Publish spawned-macros
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
         run: |
-          OUTPUT=$(cargo publish --package spawned-macros --token ${{ secrets.CRATES_IO_TOKEN }} 2>&1) || {
+          OUTPUT=$(cargo publish --package spawned-macros 2>&1) || {
             if echo "$OUTPUT" | grep -q "already exists"; then
               echo "spawned-macros already published, continuing"
             else
@@ -31,8 +33,10 @@ jobs:
         run: sleep 30
 
       - name: Publish spawned-rt
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
         run: |
-          OUTPUT=$(cargo publish --package spawned-rt --token ${{ secrets.CRATES_IO_TOKEN }} 2>&1) || {
+          OUTPUT=$(cargo publish --package spawned-rt 2>&1) || {
             if echo "$OUTPUT" | grep -q "already exists"; then
               echo "spawned-rt already published, continuing"
             else
@@ -45,8 +49,10 @@ jobs:
         run: sleep 30
 
       - name: Publish spawned-concurrency
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
         run: |
-          OUTPUT=$(cargo publish --package spawned-concurrency --token ${{ secrets.CRATES_IO_TOKEN }} 2>&1) || {
+          OUTPUT=$(cargo publish --package spawned-concurrency 2>&1) || {
             if echo "$OUTPUT" | grep -q "already exists"; then
               echo "spawned-concurrency already published, continuing"
             else
