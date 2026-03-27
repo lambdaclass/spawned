@@ -23,22 +23,22 @@ Solved the two critical API issues (#144, #145) that blocked real-world usage:
 
 The missing piece for production fault tolerance. Target: v1.0.0.
 
-- **Links and monitors** (#131) — bidirectional failure propagation and unidirectional observation
-- **Child specs** (#132) — factory pattern for configuring supervised children
-- **Supervisor actor** (#133) — manages child actor lifecycles with restart strategies
+- **Links and monitors** ([#131](https://github.com/lambdaclass/spawned/issues/131)) — bidirectional failure propagation and unidirectional observation
+- **Child specs** ([#132](https://github.com/lambdaclass/spawned/issues/132)) — factory pattern for configuring supervised children
+- **Supervisor actor** ([#133](https://github.com/lambdaclass/spawned/issues/133)) — manages child actor lifecycles with restart strategies
   - OneForOne — restart only the failed child
   - OneForAll — restart all children when one fails
   - RestForOne — restart the failed child and all children started after it
-- **Dynamic supervisor** (#134) — add/remove children at runtime
+- **Dynamic supervisor** ([#134](https://github.com/lambdaclass/spawned/issues/134)) — add/remove children at runtime
 - **Supervision trees** — nested supervisors forming a hierarchy
 - **Meltdown protection** — rate-limit restarts to prevent infinite restart loops
-- **Error handling** (#125) — proper error propagation for channel send operations
+- **Error handling** ([#125](https://github.com/lambdaclass/spawned/issues/125)) — proper error propagation for channel send operations
 
 ## Phase 4: Documentation & Polish — pre-v1.0.0 release
 
 - Comprehensive API docs
 - Supervision and protocol guides
-- Doc tests in crate READMEs (#137)
+- Doc tests in crate READMEs ([#137](https://github.com/lambdaclass/spawned/issues/137))
 - End-to-end examples (chat server, job queue, etc.)
 
 ## Future Considerations (post-v1.0)
