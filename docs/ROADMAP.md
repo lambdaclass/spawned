@@ -32,7 +32,7 @@ The missing piece for production fault tolerance. Target: v1.0.0.
 - **Supervision trees** — nested supervisors forming a hierarchy
 - **Meltdown protection** — rate-limit restarts to prevent infinite restart loops
 
-## Phase 4: Documentation & Polish — v1.0.0
+## Phase 4: Documentation & Polish — pre-v1.0.0 release
 
 - Comprehensive API docs
 - Supervision and protocol guides
