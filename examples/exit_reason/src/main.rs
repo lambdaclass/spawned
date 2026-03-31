@@ -1,6 +1,6 @@
+use spawned_concurrency::protocol;
 use spawned_concurrency::tasks::{Actor, ActorStart, Context, Handler};
 use spawned_concurrency::Response;
-use spawned_concurrency::protocol;
 use spawned_rt::tasks as rt;
 use std::time::Duration;
 
@@ -48,11 +48,7 @@ impl Worker {
     }
 
     #[request_handler]
-    async fn handle_ping(
-        &mut self,
-        _msg: worker_protocol::Ping,
-        _ctx: &Context<Self>,
-    ) -> String {
+    async fn handle_ping(&mut self, _msg: worker_protocol::Ping, _ctx: &Context<Self>) -> String {
         format!("pong from {}", self.name)
     }
 }

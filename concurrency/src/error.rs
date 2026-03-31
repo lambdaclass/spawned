@@ -105,9 +105,6 @@ mod tests {
     fn exit_reason_partial_eq() {
         assert_eq!(ExitReason::Normal, ExitReason::Normal);
         assert_ne!(ExitReason::Normal, ExitReason::Kill);
-        assert_eq!(
-            ExitReason::Panic("x".into()),
-            ExitReason::Panic("x".into())
-        );
+        assert_eq!(ExitReason::Panic("x".into()), ExitReason::Panic("x".into()));
     }
 }

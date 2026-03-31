@@ -1162,7 +1162,9 @@ mod tests {
         runtime.block_on(async move {
             let actor = PanicStart.start();
             let reason = actor.wait_exit().await;
-            assert!(matches!(reason, ExitReason::Panic(ref msg) if msg.contains("boom in started")));
+            assert!(
+                matches!(reason, ExitReason::Panic(ref msg) if msg.contains("boom in started"))
+            );
         });
     }
 
@@ -1185,7 +1187,9 @@ mod tests {
             let actor = PanicHandler.start();
             let _ = actor.send(Explode);
             let reason = actor.wait_exit().await;
-            assert!(matches!(reason, ExitReason::Panic(ref msg) if msg.contains("boom in handler")));
+            assert!(
+                matches!(reason, ExitReason::Panic(ref msg) if msg.contains("boom in handler"))
+            );
         });
     }
 
