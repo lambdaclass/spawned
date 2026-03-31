@@ -8,7 +8,7 @@ use std::{
     time::Duration,
 };
 
-use crate::error::{ActorError, ExitReason};
+use crate::error::{panic_message, ActorError, ExitReason};
 use crate::message::Message;
 
 pub use crate::response::DEFAULT_REQUEST_TIMEOUT;
@@ -240,14 +240,14 @@ pub fn request<M: Message>(
 
 struct CompletionGuard {
     completion: Arc<(Mutex<Option<ExitReason>>, Condvar)>,
-    reason: ExitReason,
+    reason: Option<ExitReason>,
 }
 
 impl Drop for CompletionGuard {
     fn drop(&mut self) {
         let (lock, cvar) = &*self.completion;
         let mut completed = lock.lock().unwrap_or_else(|p| p.into_inner());
-        *completed = Some(std::mem::replace(&mut self.reason, ExitReason::Normal));
+        *completed = self.reason.take().or(Some(ExitReason::Kill));
         cvar.notify_all();
     }
 }
@@ -410,12 +410,11 @@ impl<A: Actor> ActorRef<A> {
         };
 
         let _thread_handle = rt::spawn(move || {
-            let reason = run_actor(actor, ctx, rx, cancellation_token);
-            let guard = CompletionGuard {
+            let mut guard = CompletionGuard {
                 completion,
-                reason,
+                reason: None, // defaults to Kill if run_actor panics unexpectedly
             };
-            drop(guard);
+            guard.reason = Some(run_actor(actor, ctx, rx, cancellation_token));
         });
 
         actor_ref
@@ -432,7 +431,7 @@ fn run_actor<A: Actor>(
         actor.started(&ctx);
     }));
     if let Err(panic) = start_result {
-        let msg = panic_message(&panic);
+        let msg = panic_message(&*panic);
         tracing::error!("Panic in started() callback: {msg}");
         cancellation_token.cancel();
         return ExitReason::Panic(format!("panic in started(): {msg}"));
@@ -462,7 +461,7 @@ fn run_actor<A: Actor>(
                     envelope.handle(&mut actor, &ctx);
                 }));
                 if let Err(panic) = result {
-                    let msg = panic_message(&panic);
+                    let msg = panic_message(&*panic);
                     tracing::error!("Panic in message handler: {msg}");
                     exit_reason = ExitReason::Panic(format!("panic in handler: {msg}"));
                     break;
@@ -480,21 +479,14 @@ fn run_actor<A: Actor>(
         actor.stopped(&ctx);
     }));
     if let Err(panic) = stop_result {
-        let msg = panic_message(&panic);
+        let msg = panic_message(&*panic);
         tracing::error!("Panic in stopped() callback: {msg}");
+        if !exit_reason.is_abnormal() {
+            exit_reason = ExitReason::Panic(format!("panic in stopped(): {msg}"));
+        }
     }
 
     exit_reason
-}
-
-fn panic_message(panic: &Box<dyn std::any::Any + Send>) -> String {
-    if let Some(s) = panic.downcast_ref::<&str>() {
-        s.to_string()
-    } else if let Some(s) = panic.downcast_ref::<String>() {
-        s.clone()
-    } else {
-        format!("{panic:?}")
-    }
 }
 
 // ---------------------------------------------------------------------------

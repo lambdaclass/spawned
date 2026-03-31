@@ -1,19 +1,22 @@
 /// Reason an actor stopped. Used by supervision to decide whether to restart.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ExitReason {
     /// Clean stop via `ctx.stop()` or channel closure.
     Normal,
     /// Ordered shutdown from a supervisor or linked actor.
+    /// Not yet produced — reserved for supervision tree implementation.
     Shutdown,
     /// Actor panicked in `started()`, a handler, or `stopped()`.
     Panic(String),
     /// Untrappable kill signal.
+    /// Not yet produced — reserved for supervision tree implementation.
     Kill,
 }
 
 impl ExitReason {
     /// Returns `true` for exit reasons that should trigger a restart
     /// of `Transient` or `Permanent` children.
+    /// `Shutdown` is considered normal (no restart) matching Erlang semantics.
     pub fn is_abnormal(&self) -> bool {
         match self {
             ExitReason::Normal | ExitReason::Shutdown => false,
@@ -30,6 +33,17 @@ impl std::fmt::Display for ExitReason {
             ExitReason::Panic(msg) => write!(f, "panic: {msg}"),
             ExitReason::Kill => write!(f, "kill"),
         }
+    }
+}
+
+/// Extract a human-readable message from a panic payload.
+pub(crate) fn panic_message(panic: &(dyn std::any::Any + Send)) -> String {
+    if let Some(s) = panic.downcast_ref::<&str>() {
+        s.to_string()
+    } else if let Some(s) = panic.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        format!("{panic:?}")
     }
 }
 
@@ -69,5 +83,31 @@ mod tests {
     fn test_error_into_std_error() {
         let error: &dyn std::error::Error = &ActorError::ActorStopped;
         assert_eq!(error.to_string(), "Actor stopped");
+    }
+
+    #[test]
+    fn exit_reason_is_abnormal_classification() {
+        assert!(!ExitReason::Normal.is_abnormal());
+        assert!(!ExitReason::Shutdown.is_abnormal());
+        assert!(ExitReason::Panic("boom".into()).is_abnormal());
+        assert!(ExitReason::Kill.is_abnormal());
+    }
+
+    #[test]
+    fn exit_reason_display() {
+        assert_eq!(ExitReason::Normal.to_string(), "normal");
+        assert_eq!(ExitReason::Shutdown.to_string(), "shutdown");
+        assert_eq!(ExitReason::Panic("oops".into()).to_string(), "panic: oops");
+        assert_eq!(ExitReason::Kill.to_string(), "kill");
+    }
+
+    #[test]
+    fn exit_reason_partial_eq() {
+        assert_eq!(ExitReason::Normal, ExitReason::Normal);
+        assert_ne!(ExitReason::Normal, ExitReason::Kill);
+        assert_eq!(
+            ExitReason::Panic("x".into()),
+            ExitReason::Panic("x".into())
+        );
     }
 }

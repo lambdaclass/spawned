@@ -1,4 +1,4 @@
-use crate::error::{ActorError, ExitReason};
+use crate::error::{panic_message, ActorError, ExitReason};
 use crate::message::Message;
 use core::pin::pin;
 use futures::future::{self, FutureExt as _};
@@ -387,7 +387,7 @@ impl<A: Actor> ActorRef<A> {
                 return reason;
             }
             if rx.changed().await.is_err() {
-                return ExitReason::Normal;
+                return ExitReason::Kill;
             }
         }
     }
@@ -461,7 +461,7 @@ async fn run_actor<A: Actor>(
 ) -> ExitReason {
     let start_result = AssertUnwindSafe(actor.started(&ctx)).catch_unwind().await;
     if let Err(panic) = start_result {
-        let msg = panic_message(&panic);
+        let msg = panic_message(&*panic);
         tracing::error!("Panic in started() callback: {msg}");
         cancellation_token.cancel();
         return ExitReason::Panic(format!("panic in started(): {msg}"));
@@ -489,7 +489,7 @@ async fn run_actor<A: Actor>(
                     .catch_unwind()
                     .await;
                 if let Err(panic) = result {
-                    let msg = panic_message(&panic);
+                    let msg = panic_message(&*panic);
                     tracing::error!("Panic in message handler: {msg}");
                     exit_reason = ExitReason::Panic(format!("panic in handler: {msg}"));
                     break;
@@ -505,21 +505,14 @@ async fn run_actor<A: Actor>(
     cancellation_token.cancel();
     let stop_result = AssertUnwindSafe(actor.stopped(&ctx)).catch_unwind().await;
     if let Err(panic) = stop_result {
-        let msg = panic_message(&panic);
+        let msg = panic_message(&*panic);
         tracing::error!("Panic in stopped() callback: {msg}");
+        if !exit_reason.is_abnormal() {
+            exit_reason = ExitReason::Panic(format!("panic in stopped(): {msg}"));
+        }
     }
 
     exit_reason
-}
-
-fn panic_message(panic: &Box<dyn std::any::Any + Send>) -> String {
-    if let Some(s) = panic.downcast_ref::<&str>() {
-        s.to_string()
-    } else if let Some(s) = panic.downcast_ref::<String>() {
-        s.clone()
-    } else {
-        format!("{panic:?}")
-    }
 }
 
 // ---------------------------------------------------------------------------
