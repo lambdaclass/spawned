@@ -1,4 +1,4 @@
-use crate::error::ActorError;
+use crate::error::{ActorError, ExitReason};
 use crate::message::Message;
 use core::pin::pin;
 use futures::future::{self, FutureExt as _};
@@ -108,7 +108,7 @@ where
 pub struct Context<A: Actor> {
     sender: mpsc::Sender<Box<dyn Envelope<A> + Send>>,
     cancellation_token: CancellationToken,
-    completion_rx: watch::Receiver<bool>,
+    completion_rx: watch::Receiver<Option<ExitReason>>,
 }
 
 impl<A: Actor> Clone for Context<A> {
@@ -281,7 +281,7 @@ pub async fn request<M: Message>(
 pub struct ActorRef<A: Actor> {
     sender: mpsc::Sender<Box<dyn Envelope<A> + Send>>,
     cancellation_token: CancellationToken,
-    completion_rx: watch::Receiver<bool>,
+    completion_rx: watch::Receiver<Option<ExitReason>>,
 }
 
 impl<A: Actor> Debug for ActorRef<A> {
@@ -371,10 +371,23 @@ impl<A: Actor> ActorRef<A> {
 
     /// Wait until the actor has fully stopped (including `stopped()` callback).
     pub async fn join(&self) {
+        let _ = self.wait_exit().await;
+    }
+
+    /// Poll the exit reason. Returns `None` if the actor is still running.
+    pub fn exit_reason(&self) -> Option<ExitReason> {
+        self.completion_rx.borrow().clone()
+    }
+
+    /// Wait until the actor stops and return the exit reason.
+    pub async fn wait_exit(&self) -> ExitReason {
         let mut rx = self.completion_rx.clone();
-        while !*rx.borrow_and_update() {
+        loop {
+            if let Some(reason) = rx.borrow_and_update().clone() {
+                return reason;
+            }
             if rx.changed().await.is_err() {
-                break;
+                return ExitReason::Normal;
             }
         }
     }
@@ -403,7 +416,7 @@ impl<A: Actor> ActorRef<A> {
     fn spawn(actor: A, backend: Backend) -> Self {
         let (tx, rx) = mpsc::channel::<Box<dyn Envelope<A> + Send>>();
         let cancellation_token = CancellationToken::new();
-        let (completion_tx, completion_rx) = watch::channel(false);
+        let (completion_tx, completion_rx) = watch::channel(None);
 
         let actor_ref = ActorRef {
             sender: tx.clone(),
@@ -418,8 +431,8 @@ impl<A: Actor> ActorRef<A> {
         };
 
         let inner_future = async move {
-            run_actor(actor, ctx, rx, cancellation_token).await;
-            let _ = completion_tx.send(true);
+            let reason = run_actor(actor, ctx, rx, cancellation_token).await;
+            let _ = completion_tx.send(Some(reason));
         };
 
         match backend {
@@ -445,18 +458,21 @@ async fn run_actor<A: Actor>(
     ctx: Context<A>,
     mut rx: mpsc::Receiver<Box<dyn Envelope<A> + Send>>,
     cancellation_token: CancellationToken,
-) {
+) -> ExitReason {
     let start_result = AssertUnwindSafe(actor.started(&ctx)).catch_unwind().await;
     if let Err(panic) = start_result {
-        tracing::error!("Panic in started() callback: {panic:?}");
+        let msg = panic_message(&panic);
+        tracing::error!("Panic in started() callback: {msg}");
         cancellation_token.cancel();
-        return;
+        return ExitReason::Panic(format!("panic in started(): {msg}"));
     }
 
     if cancellation_token.is_cancelled() {
         let _ = AssertUnwindSafe(actor.stopped(&ctx)).catch_unwind().await;
-        return;
+        return ExitReason::Normal;
     }
+
+    let mut exit_reason = ExitReason::Normal;
 
     loop {
         let msg = {
@@ -473,7 +489,9 @@ async fn run_actor<A: Actor>(
                     .catch_unwind()
                     .await;
                 if let Err(panic) = result {
-                    tracing::error!("Panic in message handler: {panic:?}");
+                    let msg = panic_message(&panic);
+                    tracing::error!("Panic in message handler: {msg}");
+                    exit_reason = ExitReason::Panic(format!("panic in handler: {msg}"));
                     break;
                 }
                 if cancellation_token.is_cancelled() {
@@ -487,7 +505,20 @@ async fn run_actor<A: Actor>(
     cancellation_token.cancel();
     let stop_result = AssertUnwindSafe(actor.stopped(&ctx)).catch_unwind().await;
     if let Err(panic) = stop_result {
-        tracing::error!("Panic in stopped() callback: {panic:?}");
+        let msg = panic_message(&panic);
+        tracing::error!("Panic in stopped() callback: {msg}");
+    }
+
+    exit_reason
+}
+
+fn panic_message(panic: &Box<dyn std::any::Any + Send>) -> String {
+    if let Some(s) = panic.downcast_ref::<&str>() {
+        s.to_string()
+    } else if let Some(s) = panic.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        format!("{panic:?}")
     }
 }
 
@@ -1102,6 +1133,78 @@ mod tests {
             let final_count = counter.request(StopCounter).await.unwrap();
             assert_eq!(final_count, 0, "message should not have been delivered");
             counter.join().await;
+        });
+    }
+
+    // --- ExitReason tests ---
+
+    #[test]
+    pub fn exit_reason_normal_on_clean_stop() {
+        let runtime = rt::Runtime::new().unwrap();
+        runtime.block_on(async move {
+            let actor = Counter { count: 0 }.start();
+            actor.request(StopCounter).await.unwrap();
+            let reason = actor.wait_exit().await;
+            assert!(matches!(reason, ExitReason::Normal));
+        });
+    }
+
+    #[test]
+    pub fn exit_reason_panic_in_started() {
+        struct PanicStart;
+        struct Ping;
+        impl Message for Ping {
+            type Result = ();
+        }
+        impl Actor for PanicStart {
+            async fn started(&mut self, _ctx: &Context<Self>) {
+                panic!("boom in started");
+            }
+        }
+        impl Handler<Ping> for PanicStart {
+            async fn handle(&mut self, _msg: Ping, _ctx: &Context<Self>) {}
+        }
+
+        let runtime = rt::Runtime::new().unwrap();
+        runtime.block_on(async move {
+            let actor = PanicStart.start();
+            let reason = actor.wait_exit().await;
+            assert!(matches!(reason, ExitReason::Panic(ref msg) if msg.contains("boom in started")));
+        });
+    }
+
+    #[test]
+    pub fn exit_reason_panic_in_handler() {
+        struct PanicHandler;
+        struct Explode;
+        impl Message for Explode {
+            type Result = ();
+        }
+        impl Actor for PanicHandler {}
+        impl Handler<Explode> for PanicHandler {
+            async fn handle(&mut self, _msg: Explode, _ctx: &Context<Self>) {
+                panic!("boom in handler");
+            }
+        }
+
+        let runtime = rt::Runtime::new().unwrap();
+        runtime.block_on(async move {
+            let actor = PanicHandler.start();
+            let _ = actor.send(Explode);
+            let reason = actor.wait_exit().await;
+            assert!(matches!(reason, ExitReason::Panic(ref msg) if msg.contains("boom in handler")));
+        });
+    }
+
+    #[test]
+    pub fn exit_reason_poll_returns_none_while_running() {
+        let runtime = rt::Runtime::new().unwrap();
+        runtime.block_on(async move {
+            let actor = Counter { count: 0 }.start();
+            assert!(actor.exit_reason().is_none());
+            actor.request(StopCounter).await.unwrap();
+            actor.join().await;
+            assert!(actor.exit_reason().is_some());
         });
     }
 }

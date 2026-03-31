@@ -1,3 +1,38 @@
+/// Reason an actor stopped. Used by supervision to decide whether to restart.
+#[derive(Debug, Clone)]
+pub enum ExitReason {
+    /// Clean stop via `ctx.stop()` or channel closure.
+    Normal,
+    /// Ordered shutdown from a supervisor or linked actor.
+    Shutdown,
+    /// Actor panicked in `started()`, a handler, or `stopped()`.
+    Panic(String),
+    /// Untrappable kill signal.
+    Kill,
+}
+
+impl ExitReason {
+    /// Returns `true` for exit reasons that should trigger a restart
+    /// of `Transient` or `Permanent` children.
+    pub fn is_abnormal(&self) -> bool {
+        match self {
+            ExitReason::Normal | ExitReason::Shutdown => false,
+            ExitReason::Panic(_) | ExitReason::Kill => true,
+        }
+    }
+}
+
+impl std::fmt::Display for ExitReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ExitReason::Normal => write!(f, "normal"),
+            ExitReason::Shutdown => write!(f, "shutdown"),
+            ExitReason::Panic(msg) => write!(f, "panic: {msg}"),
+            ExitReason::Kill => write!(f, "kill"),
+        }
+    }
+}
+
 /// Errors that can occur when communicating with an actor.
 #[derive(Debug, thiserror::Error)]
 pub enum ActorError {

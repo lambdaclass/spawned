@@ -19,6 +19,7 @@ members = [
     "examples/chat_room",
     "examples/chat_room_threads",
     "examples/service_discovery",
+    "examples/exit_reason",
 ]
 
 [workspace.dependencies]

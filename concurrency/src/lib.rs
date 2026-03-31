@@ -78,6 +78,6 @@ pub mod response;
 pub mod tasks;
 pub mod threads;
 
-pub use error::ActorError;
+pub use error::{ActorError, ExitReason};
 pub use response::Response;
 pub use spawned_macros::{actor, protocol};
