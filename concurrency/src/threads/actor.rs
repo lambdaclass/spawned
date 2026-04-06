@@ -247,7 +247,10 @@ impl Drop for CompletionGuard {
     fn drop(&mut self) {
         let (lock, cvar) = &*self.completion;
         let mut completed = lock.lock().unwrap_or_else(|p| p.into_inner());
-        *completed = self.reason.take().or(Some(ExitReason::Kill));
+        *completed = self
+            .reason
+            .take()
+            .or(Some(ExitReason::Panic("unexpected framework panic".into())));
         cvar.notify_all();
     }
 }

@@ -8,8 +8,9 @@ pub enum ExitReason {
     Shutdown,
     /// Actor panicked in `started()`, a handler, or `stopped()`.
     Panic(String),
-    /// Untrappable kill signal.
-    /// Not yet produced — reserved for supervision tree implementation.
+    /// Untrappable kill signal. Bypasses `trap_exit` and skips `stopped()` cleanup.
+    /// Currently produced as a fallback when an async task is aborted externally.
+    /// Will also be used by supervision for `ShutdownType::BrutalKill`.
     Kill,
 }
 
