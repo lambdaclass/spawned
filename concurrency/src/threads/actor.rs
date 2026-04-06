@@ -8,7 +8,7 @@ use std::{
     time::Duration,
 };
 
-use crate::error::ActorError;
+use crate::error::{panic_message, ActorError, ExitReason};
 use crate::message::Message;
 
 pub use crate::response::DEFAULT_REQUEST_TIMEOUT;
@@ -76,7 +76,7 @@ where
 pub struct Context<A: Actor> {
     sender: mpsc::Sender<Box<dyn Envelope<A> + Send>>,
     cancellation_token: CancellationToken,
-    completion: Arc<(Mutex<bool>, Condvar)>,
+    completion: Arc<(Mutex<Option<ExitReason>>, Condvar)>,
 }
 
 impl<A: Actor> Clone for Context<A> {
@@ -238,13 +238,19 @@ pub fn request<M: Message>(
 // ActorRef
 // ---------------------------------------------------------------------------
 
-struct CompletionGuard(Arc<(Mutex<bool>, Condvar)>);
+struct CompletionGuard {
+    completion: Arc<(Mutex<Option<ExitReason>>, Condvar)>,
+    reason: Option<ExitReason>,
+}
 
 impl Drop for CompletionGuard {
     fn drop(&mut self) {
-        let (lock, cvar) = &*self.0;
+        let (lock, cvar) = &*self.completion;
         let mut completed = lock.lock().unwrap_or_else(|p| p.into_inner());
-        *completed = true;
+        *completed = self
+            .reason
+            .take()
+            .or(Some(ExitReason::Panic("unexpected framework panic".into())));
         cvar.notify_all();
     }
 }
@@ -257,7 +263,7 @@ impl Drop for CompletionGuard {
 pub struct ActorRef<A: Actor> {
     sender: mpsc::Sender<Box<dyn Envelope<A> + Send>>,
     cancellation_token: CancellationToken,
-    completion: Arc<(Mutex<bool>, Condvar)>,
+    completion: Arc<(Mutex<Option<ExitReason>>, Condvar)>,
 }
 
 impl<A: Actor> Debug for ActorRef<A> {
@@ -346,9 +352,24 @@ impl<A: Actor> ActorRef<A> {
 
     /// Block until the actor has fully stopped (including `stopped()` callback).
     pub fn join(&self) {
+        let _ = self.wait_exit();
+    }
+
+    /// Poll the exit reason. Returns `None` if the actor is still running.
+    pub fn exit_reason(&self) -> Option<ExitReason> {
+        let (lock, _cvar) = &*self.completion;
+        let completed = lock.lock().unwrap_or_else(|p| p.into_inner());
+        completed.clone()
+    }
+
+    /// Block until the actor stops and return the exit reason.
+    pub fn wait_exit(&self) -> ExitReason {
         let (lock, cvar) = &*self.completion;
         let mut completed = lock.lock().unwrap_or_else(|p| p.into_inner());
-        while !*completed {
+        loop {
+            if let Some(reason) = completed.clone() {
+                return reason;
+            }
             completed = cvar.wait(completed).unwrap_or_else(|p| p.into_inner());
         }
     }
@@ -377,7 +398,7 @@ impl<A: Actor> ActorRef<A> {
     fn spawn(actor: A) -> Self {
         let (tx, rx) = mpsc::channel::<Box<dyn Envelope<A> + Send>>();
         let cancellation_token = CancellationToken::new();
-        let completion = Arc::new((Mutex::new(false), Condvar::new()));
+        let completion = Arc::new((Mutex::new(None), Condvar::new()));
 
         let actor_ref = ActorRef {
             sender: tx.clone(),
@@ -392,8 +413,11 @@ impl<A: Actor> ActorRef<A> {
         };
 
         let _thread_handle = rt::spawn(move || {
-            let _guard = CompletionGuard(completion);
-            run_actor(actor, ctx, rx, cancellation_token);
+            let mut guard = CompletionGuard {
+                completion,
+                reason: None, // defaults to Kill if run_actor panics unexpectedly
+            };
+            guard.reason = Some(run_actor(actor, ctx, rx, cancellation_token));
         });
 
         actor_ref
@@ -405,20 +429,23 @@ fn run_actor<A: Actor>(
     ctx: Context<A>,
     rx: mpsc::Receiver<Box<dyn Envelope<A> + Send>>,
     cancellation_token: CancellationToken,
-) {
+) -> ExitReason {
     let start_result = catch_unwind(AssertUnwindSafe(|| {
         actor.started(&ctx);
     }));
     if let Err(panic) = start_result {
-        tracing::error!("Panic in started() callback: {panic:?}");
+        let msg = panic_message(&*panic);
+        tracing::error!("Panic in started() callback: {msg}");
         cancellation_token.cancel();
-        return;
+        return ExitReason::Panic(format!("panic in started(): {msg}"));
     }
 
     if cancellation_token.is_cancelled() {
         let _ = catch_unwind(AssertUnwindSafe(|| actor.stopped(&ctx)));
-        return;
+        return ExitReason::Normal;
     }
+
+    let mut exit_reason = ExitReason::Normal;
 
     loop {
         let msg = match rx.recv_timeout(Duration::from_millis(100)) {
@@ -437,7 +464,9 @@ fn run_actor<A: Actor>(
                     envelope.handle(&mut actor, &ctx);
                 }));
                 if let Err(panic) = result {
-                    tracing::error!("Panic in message handler: {panic:?}");
+                    let msg = panic_message(&*panic);
+                    tracing::error!("Panic in message handler: {msg}");
+                    exit_reason = ExitReason::Panic(format!("panic in handler: {msg}"));
                     break;
                 }
                 if cancellation_token.is_cancelled() {
@@ -453,8 +482,14 @@ fn run_actor<A: Actor>(
         actor.stopped(&ctx);
     }));
     if let Err(panic) = stop_result {
-        tracing::error!("Panic in stopped() callback: {panic:?}");
+        let msg = panic_message(&*panic);
+        tracing::error!("Panic in stopped() callback: {msg}");
+        if !exit_reason.is_abnormal() {
+            exit_reason = ExitReason::Panic(format!("panic in stopped(): {msg}"));
+        }
     }
+
+    exit_reason
 }
 
 // ---------------------------------------------------------------------------
@@ -703,5 +738,65 @@ mod tests {
         rt::sleep(Duration::from_millis(200));
         let count = actor.request(GetCount).unwrap();
         assert_eq!(count, 1);
+    }
+
+    // --- ExitReason tests ---
+
+    #[test]
+    fn exit_reason_normal_on_clean_stop() {
+        let actor = Counter { count: 0 }.start();
+        actor.request(StopCounter).unwrap();
+        let reason = actor.wait_exit();
+        assert!(matches!(reason, ExitReason::Normal));
+    }
+
+    #[test]
+    fn exit_reason_panic_in_started() {
+        struct PanicStartThread;
+        struct PingThread2;
+        impl Message for PingThread2 {
+            type Result = ();
+        }
+        impl Actor for PanicStartThread {
+            fn started(&mut self, _ctx: &Context<Self>) {
+                panic!("boom in started");
+            }
+        }
+        impl Handler<PingThread2> for PanicStartThread {
+            fn handle(&mut self, _msg: PingThread2, _ctx: &Context<Self>) {}
+        }
+
+        let actor = PanicStartThread.start();
+        let reason = actor.wait_exit();
+        assert!(matches!(reason, ExitReason::Panic(ref msg) if msg.contains("boom in started")));
+    }
+
+    #[test]
+    fn exit_reason_panic_in_handler() {
+        struct PanicHandlerThread;
+        struct ExplodeThread2;
+        impl Message for ExplodeThread2 {
+            type Result = ();
+        }
+        impl Actor for PanicHandlerThread {}
+        impl Handler<ExplodeThread2> for PanicHandlerThread {
+            fn handle(&mut self, _msg: ExplodeThread2, _ctx: &Context<Self>) {
+                panic!("boom in handler");
+            }
+        }
+
+        let actor = PanicHandlerThread.start();
+        let _ = actor.send(ExplodeThread2);
+        let reason = actor.wait_exit();
+        assert!(matches!(reason, ExitReason::Panic(ref msg) if msg.contains("boom in handler")));
+    }
+
+    #[test]
+    fn exit_reason_poll_returns_none_while_running() {
+        let actor = Counter { count: 0 }.start();
+        assert!(actor.exit_reason().is_none());
+        actor.request(StopCounter).unwrap();
+        actor.join();
+        assert!(actor.exit_reason().is_some());
     }
 }
