@@ -52,7 +52,7 @@ type CancelFn = Arc<dyn Fn() + Send + Sync>;
 /// Obtained via `ChildHandle::from(actor_ref)`.
 ///
 /// Unlike `ActorRef<A>`, a `ChildHandle` cannot send messages — it only
-/// provides supervision-related operations (stop, wait, monitor, link).
+/// provides supervision-related operations (stop, wait, check liveness).
 #[derive(Clone)]
 pub struct ChildHandle {
     id: ActorId,
@@ -153,6 +153,9 @@ impl ChildHandle {
     /// Works with both execution modes. For Watch (tasks-mode handles), awaits
     /// the watch channel directly. For Condvar (threads-mode handles), delegates
     /// to a blocking task via `spawn_blocking` to avoid blocking the async runtime.
+    ///
+    /// **Note:** When used with threads-mode handles, this consumes a thread from
+    /// tokio's blocking pool for the duration of the wait.
     pub async fn wait_exit_async(&self) -> ExitReason {
         match &self.completion {
             Completion::Watch(rx) => {
@@ -178,6 +181,10 @@ impl ChildHandle {
 
 /// Blocking wait on a watch channel. Uses `block_in_place` if inside a tokio
 /// runtime (safe from multi-threaded runtime), otherwise creates a temporary runtime.
+///
+/// Returns `ExitReason::Kill` if the watch sender is dropped without setting a
+/// reason — this means the actor task was aborted externally (e.g., runtime
+/// shutdown) without going through the normal exit path.
 fn wait_for_exit_watch_blocking(
     rx: &spawned_rt::tasks::watch::Receiver<Option<ExitReason>>,
 ) -> ExitReason {

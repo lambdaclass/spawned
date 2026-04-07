@@ -142,6 +142,11 @@ impl<A: Actor> Context<A> {
         }
     }
 
+    /// The actor's unique identity.
+    pub fn id(&self) -> ActorId {
+        self.id
+    }
+
     /// Signal the actor to stop. The current handler will finish, then
     /// `stopped()` is called and the actor exits.
     pub fn stop(&self) {
@@ -414,8 +419,8 @@ impl<A: Actor> From<ActorRef<A>> for ChildHandle {
     fn from(actor_ref: ActorRef<A>) -> Self {
         ChildHandle::from_tasks(
             actor_ref.id,
-            actor_ref.cancellation_token.clone(),
-            actor_ref.completion_rx.clone(),
+            actor_ref.cancellation_token,
+            actor_ref.completion_rx,
         )
     }
 }
