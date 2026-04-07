@@ -123,24 +123,17 @@ impl ChildHandle {
         }
     }
 
-    /// Block until the actor stops and return the exit reason.
+    /// Block the calling thread until the actor stops and return the exit reason.
     ///
-    /// **Warning:** In tasks mode, this blocks the calling thread (not async).
-    /// Use `wait_exit_async()` from async code instead.
+    /// Safe to call from any context (sync or async). For the Watch variant,
+    /// uses the watch channel's built-in blocking recv. For Condvar, blocks
+    /// on the condvar directly.
     pub fn wait_exit_blocking(&self) -> ExitReason {
         match &self.completion {
             Completion::Watch(rx) => {
-                let mut rx = rx.clone();
-                spawned_rt::threads::block_on(async move {
-                    loop {
-                        if let Some(reason) = rx.borrow_and_update().clone() {
-                            return reason;
-                        }
-                        if rx.changed().await.is_err() {
-                            return ExitReason::Kill;
-                        }
-                    }
-                })
+                // wait_for_exit_watch_blocking is extracted to avoid holding the
+                // borrow on self across the loop
+                wait_for_exit_watch_blocking(&rx.clone())
             }
             Completion::Condvar(completion) => {
                 let (lock, cvar) = &**completion;
@@ -156,7 +149,10 @@ impl ChildHandle {
     }
 
     /// Async wait until the actor stops and return the exit reason.
-    /// Only usable from async code (tasks mode).
+    ///
+    /// Works with both execution modes. For Watch (tasks-mode handles), awaits
+    /// the watch channel directly. For Condvar (threads-mode handles), delegates
+    /// to a blocking task via `spawn_blocking` to avoid blocking the async runtime.
     pub async fn wait_exit_async(&self) -> ExitReason {
         match &self.completion {
             Completion::Watch(rx) => {
@@ -171,13 +167,43 @@ impl ChildHandle {
                 }
             }
             Completion::Condvar(_) => {
-                // Fallback: spawn a blocking task to avoid blocking the async runtime
                 let handle = self.clone();
                 spawned_rt::tasks::spawn_blocking(move || handle.wait_exit_blocking())
                     .await
                     .unwrap_or(ExitReason::Kill)
             }
         }
+    }
+}
+
+/// Blocking wait on a watch channel. Uses `block_in_place` if inside a tokio
+/// runtime (safe from multi-threaded runtime), otherwise creates a temporary runtime.
+fn wait_for_exit_watch_blocking(
+    rx: &spawned_rt::tasks::watch::Receiver<Option<ExitReason>>,
+) -> ExitReason {
+    // Fast path: already done
+    if let Some(reason) = rx.borrow().clone() {
+        return reason;
+    }
+
+    let mut rx = rx.clone();
+    let wait = async move {
+        loop {
+            if let Some(reason) = rx.borrow_and_update().clone() {
+                return reason;
+            }
+            if rx.changed().await.is_err() {
+                return ExitReason::Kill;
+            }
+        }
+    };
+
+    // If inside a tokio runtime, use block_in_place + block_on to avoid
+    // "cannot start a runtime from within a runtime" panic.
+    if let Ok(handle) = spawned_rt::tasks::Handle::try_current() {
+        spawned_rt::tasks::block_in_place(|| handle.block_on(wait))
+    } else {
+        spawned_rt::threads::block_on(wait)
     }
 }
 
@@ -252,5 +278,109 @@ mod tests {
         let h1 = ChildHandle::from_threads(id, token.clone(), completion.clone());
         let h2 = ChildHandle::from_threads(id, token, completion);
         assert_eq!(h1, h2);
+    }
+
+    // --- Integration tests using real actors ---
+
+    #[test]
+    fn child_handle_from_threads_actor_ref() {
+        use crate::message::Message;
+        use crate::threads::actor::{Actor, ActorStart, Context, Handler};
+
+        struct Worker;
+        struct Stop;
+        impl Message for Stop {
+            type Result = ();
+        }
+        impl Actor for Worker {}
+        impl Handler<Stop> for Worker {
+            fn handle(&mut self, _msg: Stop, ctx: &Context<Self>) {
+                ctx.stop();
+            }
+        }
+
+        let actor = Worker.start();
+        let handle = actor.child_handle();
+
+        assert!(handle.is_alive());
+        assert!(handle.exit_reason().is_none());
+        assert_eq!(handle.id(), actor.id());
+
+        actor.send(Stop).unwrap();
+        let reason = handle.wait_exit_blocking();
+        assert_eq!(reason, ExitReason::Normal);
+        assert!(!handle.is_alive());
+    }
+
+    #[test]
+    fn child_handle_from_tasks_actor_ref() {
+        use crate::message::Message;
+        use crate::tasks::actor::{Actor, ActorStart, Context, Handler};
+
+        struct Worker;
+        struct Stop;
+        impl Message for Stop {
+            type Result = ();
+        }
+        impl Actor for Worker {}
+        impl Handler<Stop> for Worker {
+            async fn handle(&mut self, _msg: Stop, ctx: &Context<Self>) {
+                ctx.stop();
+            }
+        }
+
+        let runtime = spawned_rt::tasks::Runtime::new().unwrap();
+        runtime.block_on(async {
+            let actor = Worker.start();
+            let handle = actor.child_handle();
+
+            assert!(handle.is_alive());
+            assert!(handle.exit_reason().is_none());
+            assert_eq!(handle.id(), actor.id());
+
+            actor.send(Stop).unwrap();
+            let reason = handle.wait_exit_async().await;
+            assert_eq!(reason, ExitReason::Normal);
+            assert!(!handle.is_alive());
+        });
+    }
+
+    #[test]
+    fn child_handle_stop_from_tasks_actor() {
+        use crate::tasks::actor::{Actor, ActorStart};
+
+        struct Idler;
+        impl Actor for Idler {}
+
+        let runtime = spawned_rt::tasks::Runtime::new().unwrap();
+        runtime.block_on(async {
+            let actor = Idler.start();
+            let handle = actor.child_handle();
+
+            assert!(handle.is_alive());
+            handle.stop();
+            let reason = handle.wait_exit_async().await;
+            assert_eq!(reason, ExitReason::Normal);
+        });
+    }
+
+    #[test]
+    fn child_handle_wait_blocking_inside_runtime() {
+        use crate::tasks::actor::{Actor, ActorStart};
+
+        struct Idler;
+        impl Actor for Idler {}
+
+        let runtime = spawned_rt::tasks::Runtime::new().unwrap();
+        runtime.block_on(async {
+            let actor = Idler.start();
+            let handle = actor.child_handle();
+            handle.stop();
+
+            // This is the bug-fix test: wait_exit_blocking inside a tokio runtime
+            // should NOT panic (uses block_in_place internally)
+            let reason = spawned_rt::tasks::block_in_place(|| handle.wait_exit_blocking());
+            assert_eq!(reason, ExitReason::Normal);
+        });
     }
 }
