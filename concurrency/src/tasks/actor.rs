@@ -1,3 +1,4 @@
+use crate::child_handle::{ActorId, ChildHandle};
 use crate::error::{panic_message, ActorError, ExitReason};
 use crate::message::Message;
 use core::pin::pin;
@@ -106,6 +107,7 @@ where
 ///
 /// Clone is cheap — it clones the inner channel sender and cancellation token.
 pub struct Context<A: Actor> {
+    id: ActorId,
     sender: mpsc::Sender<Box<dyn Envelope<A> + Send>>,
     cancellation_token: CancellationToken,
     completion_rx: watch::Receiver<Option<ExitReason>>,
@@ -114,6 +116,7 @@ pub struct Context<A: Actor> {
 impl<A: Actor> Clone for Context<A> {
     fn clone(&self) -> Self {
         Self {
+            id: self.id,
             sender: self.sender.clone(),
             cancellation_token: self.cancellation_token.clone(),
             completion_rx: self.completion_rx.clone(),
@@ -132,6 +135,7 @@ impl<A: Actor> Context<A> {
     /// or stream listeners from outside the actor.
     pub fn from_ref(actor_ref: &ActorRef<A>) -> Self {
         Self {
+            id: actor_ref.id,
             sender: actor_ref.sender.clone(),
             cancellation_token: actor_ref.cancellation_token.clone(),
             completion_rx: actor_ref.completion_rx.clone(),
@@ -211,6 +215,7 @@ impl<A: Actor> Context<A> {
     /// Get an `ActorRef<A>` from this context.
     pub fn actor_ref(&self) -> ActorRef<A> {
         ActorRef {
+            id: self.id,
             sender: self.sender.clone(),
             cancellation_token: self.cancellation_token.clone(),
             completion_rx: self.completion_rx.clone(),
@@ -279,6 +284,7 @@ pub async fn request<M: Message>(
 /// To stop the actor, send an explicit shutdown message through your protocol,
 /// or call [`Context::stop`] from within a handler.
 pub struct ActorRef<A: Actor> {
+    id: ActorId,
     sender: mpsc::Sender<Box<dyn Envelope<A> + Send>>,
     cancellation_token: CancellationToken,
     completion_rx: watch::Receiver<Option<ExitReason>>,
@@ -293,6 +299,7 @@ impl<A: Actor> Debug for ActorRef<A> {
 impl<A: Actor> Clone for ActorRef<A> {
     fn clone(&self) -> Self {
         Self {
+            id: self.id,
             sender: self.sender.clone(),
             cancellation_token: self.cancellation_token.clone(),
             completion_rx: self.completion_rx.clone(),
@@ -391,6 +398,26 @@ impl<A: Actor> ActorRef<A> {
             }
         }
     }
+
+    /// The actor's unique identity.
+    pub fn id(&self) -> ActorId {
+        self.id
+    }
+
+    /// Get a type-erased `ChildHandle` for this actor.
+    pub fn child_handle(&self) -> ChildHandle {
+        ChildHandle::from(self.clone())
+    }
+}
+
+impl<A: Actor> From<ActorRef<A>> for ChildHandle {
+    fn from(actor_ref: ActorRef<A>) -> Self {
+        ChildHandle::from_tasks(
+            actor_ref.id,
+            actor_ref.cancellation_token.clone(),
+            actor_ref.completion_rx.clone(),
+        )
+    }
 }
 
 // Bridge: ActorRef<A> implements Receiver<M> for any M that A handles
@@ -419,12 +446,14 @@ impl<A: Actor> ActorRef<A> {
         let (completion_tx, completion_rx) = watch::channel(None);
 
         let actor_ref = ActorRef {
+            id: ActorId::next(),
             sender: tx.clone(),
             cancellation_token: cancellation_token.clone(),
             completion_rx,
         };
 
         let ctx = Context {
+            id: actor_ref.id,
             sender: tx,
             cancellation_token: cancellation_token.clone(),
             completion_rx: actor_ref.completion_rx.clone(),
