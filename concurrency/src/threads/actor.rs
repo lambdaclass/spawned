@@ -8,6 +8,7 @@ use std::{
     time::Duration,
 };
 
+use crate::child_handle::{ActorId, ChildHandle};
 use crate::error::{panic_message, ActorError, ExitReason};
 use crate::message::Message;
 
@@ -74,6 +75,7 @@ where
 ///
 /// Clone is cheap — it clones the inner channel sender and cancellation token.
 pub struct Context<A: Actor> {
+    id: ActorId,
     sender: mpsc::Sender<Box<dyn Envelope<A> + Send>>,
     cancellation_token: CancellationToken,
     completion: Arc<(Mutex<Option<ExitReason>>, Condvar)>,
@@ -82,6 +84,7 @@ pub struct Context<A: Actor> {
 impl<A: Actor> Clone for Context<A> {
     fn clone(&self) -> Self {
         Self {
+            id: self.id,
             sender: self.sender.clone(),
             cancellation_token: self.cancellation_token.clone(),
             completion: self.completion.clone(),
@@ -100,10 +103,16 @@ impl<A: Actor> Context<A> {
     /// or stream listeners from outside the actor.
     pub fn from_ref(actor_ref: &ActorRef<A>) -> Self {
         Self {
+            id: actor_ref.id,
             sender: actor_ref.sender.clone(),
             cancellation_token: actor_ref.cancellation_token.clone(),
             completion: actor_ref.completion.clone(),
         }
+    }
+
+    /// The actor's unique identity.
+    pub fn id(&self) -> ActorId {
+        self.id
     }
 
     /// Signal the actor to stop. The current handler will finish, then
@@ -178,6 +187,7 @@ impl<A: Actor> Context<A> {
     /// Get an `ActorRef<A>` from this context.
     pub fn actor_ref(&self) -> ActorRef<A> {
         ActorRef {
+            id: self.id,
             sender: self.sender.clone(),
             cancellation_token: self.cancellation_token.clone(),
             completion: self.completion.clone(),
@@ -261,6 +271,7 @@ impl Drop for CompletionGuard {
 /// To stop the actor, send an explicit shutdown message through your protocol,
 /// or call [`Context::stop`] from within a handler.
 pub struct ActorRef<A: Actor> {
+    id: ActorId,
     sender: mpsc::Sender<Box<dyn Envelope<A> + Send>>,
     cancellation_token: CancellationToken,
     completion: Arc<(Mutex<Option<ExitReason>>, Condvar)>,
@@ -275,6 +286,7 @@ impl<A: Actor> Debug for ActorRef<A> {
 impl<A: Actor> Clone for ActorRef<A> {
     fn clone(&self) -> Self {
         Self {
+            id: self.id,
             sender: self.sender.clone(),
             cancellation_token: self.cancellation_token.clone(),
             completion: self.completion.clone(),
@@ -373,6 +385,26 @@ impl<A: Actor> ActorRef<A> {
             completed = cvar.wait(completed).unwrap_or_else(|p| p.into_inner());
         }
     }
+
+    /// The actor's unique identity.
+    pub fn id(&self) -> ActorId {
+        self.id
+    }
+
+    /// Get a type-erased `ChildHandle` for this actor.
+    pub fn child_handle(&self) -> ChildHandle {
+        ChildHandle::from(self.clone())
+    }
+}
+
+impl<A: Actor> From<ActorRef<A>> for ChildHandle {
+    fn from(actor_ref: ActorRef<A>) -> Self {
+        ChildHandle::from_threads(
+            actor_ref.id,
+            actor_ref.cancellation_token,
+            actor_ref.completion,
+        )
+    }
 }
 
 // Bridge: ActorRef<A> implements Receiver<M> for any M that A handles
@@ -399,14 +431,17 @@ impl<A: Actor> ActorRef<A> {
         let (tx, rx) = mpsc::channel::<Box<dyn Envelope<A> + Send>>();
         let cancellation_token = CancellationToken::new();
         let completion = Arc::new((Mutex::new(None), Condvar::new()));
+        let id = ActorId::next();
 
         let actor_ref = ActorRef {
+            id,
             sender: tx.clone(),
             cancellation_token: cancellation_token.clone(),
             completion: completion.clone(),
         };
 
         let ctx = Context {
+            id,
             sender: tx,
             cancellation_token: cancellation_token.clone(),
             completion: actor_ref.completion.clone(),

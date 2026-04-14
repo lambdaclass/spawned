@@ -71,6 +71,7 @@
 //! - `Recipient<M>` (`Arc<dyn Receiver<M>>`) for type-erased per-message references
 //! - [`tasks::Backend`] enum for choosing async runtime, blocking pool, or OS thread
 
+pub mod child_handle;
 pub mod error;
 pub mod message;
 pub mod registry;
@@ -78,6 +79,7 @@ pub mod response;
 pub mod tasks;
 pub mod threads;
 
+pub use child_handle::{ActorId, ChildHandle};
 pub use error::{ActorError, ExitReason};
 pub use response::Response;
 pub use spawned_macros::{actor, protocol};
