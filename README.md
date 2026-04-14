@@ -195,13 +195,7 @@ Protocols make this separation explicit: the trait defines *what* an actor does,
 
 ## Roadmap
 
-- **Supervision trees** — monitor, restart, and manage actor lifecycles with Erlang-style supervision strategies
-- **Observability and tracing** — built-in instrumentation for actor mailboxes, message latency, and lifecycle events
-- **Custom runtime** — replace tokio with a purpose-built runtime tailored for actor workloads
-- **Preemptive scheduling** — explore preemptive actor scheduling to prevent starvation from long-running handlers
-- **Virtual actors** — evaluate location-transparent, auto-activated actors inspired by [Orleans](https://learn.microsoft.com/en-us/dotnet/orleans/)
-- **Deterministic runtime** — reproducible execution for testing, inspired by [commonware](https://commonware.xyz)
-- **Landing page** — project website with guides, API reference, and interactive examples
+See [docs/ROADMAP.md](docs/ROADMAP.md) for the full roadmap. Next milestone: **supervision trees** for v1.0.0.
 
 ## Inspiration
 
