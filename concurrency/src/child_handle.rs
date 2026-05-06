@@ -34,9 +34,9 @@ impl std::fmt::Display for ActorId {
 #[derive(Clone)]
 pub(crate) enum Completion {
     /// Tasks mode: watch channel carrying Option<ExitReason>.
-    Watch(spawned_rt::tasks::watch::Receiver<Option<ExitReason>>),
+    Tasks(spawned_rt::tasks::watch::Receiver<Option<ExitReason>>),
     /// Threads mode: Mutex + Condvar carrying Option<ExitReason>.
-    Condvar(Arc<(Mutex<Option<ExitReason>>, Condvar)>),
+    Threads(Arc<(Mutex<Option<ExitReason>>, Condvar)>),
 }
 
 // ---------------------------------------------------------------------------
@@ -78,7 +78,7 @@ impl ChildHandle {
         Self {
             id,
             cancel: Arc::new(move || cancellation_token.cancel()),
-            completion: Completion::Watch(completion_rx),
+            completion: Completion::Tasks(completion_rx),
         }
     }
 
@@ -91,7 +91,7 @@ impl ChildHandle {
         Self {
             id,
             cancel: Arc::new(move || cancellation_token.cancel()),
-            completion: Completion::Condvar(completion),
+            completion: Completion::Threads(completion),
         }
     }
 
@@ -114,8 +114,8 @@ impl ChildHandle {
     /// Poll the exit reason. Returns `None` if the actor is still running.
     pub fn exit_reason(&self) -> Option<ExitReason> {
         match &self.completion {
-            Completion::Watch(rx) => rx.borrow().clone(),
-            Completion::Condvar(completion) => {
+            Completion::Tasks(rx) => rx.borrow().clone(),
+            Completion::Threads(completion) => {
                 let (lock, _) = &**completion;
                 let guard = lock.lock().unwrap_or_else(|p| p.into_inner());
                 guard.clone()
@@ -138,12 +138,11 @@ impl ChildHandle {
     /// [`wait_exit_async`]: ChildHandle::wait_exit_async
     pub fn wait_exit_blocking(&self) -> ExitReason {
         match &self.completion {
-            Completion::Watch(rx) => {
-                // wait_for_exit_watch_blocking is extracted to avoid holding the
-                // borrow on self across the loop
-                wait_for_exit_watch_blocking(&rx.clone())
+            Completion::Tasks(rx) => {
+                // Extracted to avoid holding the borrow on self across the loop
+                wait_for_tasks_exit_blocking(&rx.clone())
             }
-            Completion::Condvar(completion) => {
+            Completion::Threads(completion) => {
                 let (lock, cvar) = &**completion;
                 let mut guard = lock.lock().unwrap_or_else(|p| p.into_inner());
                 loop {
@@ -158,15 +157,15 @@ impl ChildHandle {
 
     /// Async wait until the actor stops and return the exit reason.
     ///
-    /// Works with both execution modes. For Watch (tasks-mode handles), awaits
-    /// the watch channel directly. For Condvar (threads-mode handles), delegates
-    /// to a blocking task via `spawn_blocking` to avoid blocking the async runtime.
+    /// Works with both execution modes. For tasks-mode handles, awaits the
+    /// watch channel directly. For threads-mode handles, delegates to a
+    /// blocking task via `spawn_blocking` to avoid blocking the async runtime.
     ///
     /// **Note:** When used with threads-mode handles, this consumes a thread from
     /// tokio's blocking pool for the duration of the wait.
     pub async fn wait_exit_async(&self) -> ExitReason {
         match &self.completion {
-            Completion::Watch(rx) => {
+            Completion::Tasks(rx) => {
                 let mut rx = rx.clone();
                 loop {
                     if let Some(reason) = rx.borrow_and_update().clone() {
@@ -177,7 +176,7 @@ impl ChildHandle {
                     }
                 }
             }
-            Completion::Condvar(_) => {
+            Completion::Threads(_) => {
                 let handle = self.clone();
                 spawned_rt::tasks::spawn_blocking(move || handle.wait_exit_blocking())
                     .await
@@ -187,7 +186,7 @@ impl ChildHandle {
     }
 }
 
-/// Blocking wait on a watch channel.
+/// Blocking wait on a tasks-mode watch channel.
 ///
 /// - From a sync context (no tokio runtime): creates a temporary runtime.
 /// - From a multi-thread tokio runtime: uses `block_in_place` + `Handle::block_on`.
@@ -198,7 +197,7 @@ impl ChildHandle {
 /// Returns `ExitReason::Kill` if the watch sender is dropped without setting a
 /// reason — this means the actor task was aborted externally (e.g., runtime
 /// shutdown) without going through the normal exit path.
-fn wait_for_exit_watch_blocking(
+fn wait_for_tasks_exit_blocking(
     rx: &spawned_rt::tasks::watch::Receiver<Option<ExitReason>>,
 ) -> ExitReason {
     // Fast path: already done — works from any context, no runtime needed
@@ -460,6 +459,99 @@ mod tests {
             // Now wait_exit_blocking takes the fast path
             let reason = handle.wait_exit_blocking();
             assert_eq!(reason, ExitReason::Normal);
+        });
+    }
+
+    // --- Panic observation tests ---
+
+    #[test]
+    fn child_handle_observes_panic_in_threads_actor() {
+        use crate::message::Message;
+        use crate::threads::actor::{Actor, ActorStart, Context, Handler};
+
+        struct Boomer;
+        struct Boom;
+        impl Message for Boom {
+            type Result = ();
+        }
+        impl Actor for Boomer {}
+        impl Handler<Boom> for Boomer {
+            fn handle(&mut self, _msg: Boom, _ctx: &Context<Self>) {
+                panic!("intentional panic in handler");
+            }
+        }
+
+        let actor = Boomer.start();
+        let handle = actor.child_handle();
+        let _ = actor.send(Boom);
+
+        let reason = handle.wait_exit_blocking();
+        match reason {
+            ExitReason::Panic(msg) => {
+                assert!(msg.contains("intentional panic in handler"), "got: {msg}");
+            }
+            other => panic!("expected Panic, got {other:?}"),
+        }
+        assert!(!handle.is_alive());
+    }
+
+    #[test]
+    fn child_handle_observes_panic_in_tasks_actor() {
+        use crate::message::Message;
+        use crate::tasks::actor::{Actor, ActorStart, Context, Handler};
+
+        struct Boomer;
+        struct Boom;
+        impl Message for Boom {
+            type Result = ();
+        }
+        impl Actor for Boomer {}
+        impl Handler<Boom> for Boomer {
+            async fn handle(&mut self, _msg: Boom, _ctx: &Context<Self>) {
+                panic!("intentional panic in handler");
+            }
+        }
+
+        let runtime = spawned_rt::tasks::Runtime::new().unwrap();
+        runtime.block_on(async {
+            let actor = Boomer.start();
+            let handle = actor.child_handle();
+            let _ = actor.send(Boom);
+
+            let reason = handle.wait_exit_async().await;
+            match reason {
+                ExitReason::Panic(msg) => {
+                    assert!(msg.contains("intentional panic in handler"), "got: {msg}");
+                }
+                other => panic!("expected Panic, got {other:?}"),
+            }
+            assert!(!handle.is_alive());
+        });
+    }
+
+    #[test]
+    fn child_handle_observes_panic_in_started_callback() {
+        use crate::tasks::actor::{Actor, ActorStart, Context};
+
+        struct PanicStart;
+        impl Actor for PanicStart {
+            async fn started(&mut self, _ctx: &Context<Self>) {
+                panic!("intentional panic in started");
+            }
+        }
+
+        let runtime = spawned_rt::tasks::Runtime::new().unwrap();
+        runtime.block_on(async {
+            let actor = PanicStart.start();
+            let handle = actor.child_handle();
+
+            let reason = handle.wait_exit_async().await;
+            match reason {
+                ExitReason::Panic(msg) => {
+                    assert!(msg.contains("intentional panic in started"), "got: {msg}");
+                }
+                other => panic!("expected Panic, got {other:?}"),
+            }
         });
     }
 }
