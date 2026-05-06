@@ -125,9 +125,17 @@ impl ChildHandle {
 
     /// Block the calling thread until the actor stops and return the exit reason.
     ///
-    /// Safe to call from any context (sync or async). For the Watch variant,
-    /// uses the watch channel's built-in blocking recv. For Condvar, blocks
-    /// on the condvar directly.
+    /// Safe contexts:
+    /// - Sync code with no active tokio runtime
+    /// - Multi-thread tokio runtime (uses `block_in_place`)
+    /// - Threads-mode actors (uses Condvar directly)
+    ///
+    /// **Panics** if called from within a current-thread tokio runtime on a
+    /// tasks-mode handle: blocking the only runtime thread would prevent the
+    /// actor task from making progress (deadlock). Use [`wait_exit_async`] from
+    /// async context instead.
+    ///
+    /// [`wait_exit_async`]: ChildHandle::wait_exit_async
     pub fn wait_exit_blocking(&self) -> ExitReason {
         match &self.completion {
             Completion::Watch(rx) => {
@@ -179,8 +187,13 @@ impl ChildHandle {
     }
 }
 
-/// Blocking wait on a watch channel. Uses `block_in_place` if inside a tokio
-/// runtime (safe from multi-threaded runtime), otherwise creates a temporary runtime.
+/// Blocking wait on a watch channel.
+///
+/// - From a sync context (no tokio runtime): creates a temporary runtime.
+/// - From a multi-thread tokio runtime: uses `block_in_place` + `Handle::block_on`.
+/// - From a current-thread tokio runtime: **panics**, because blocking the only
+///   runtime thread prevents the actor task from making progress (deadlock).
+///   Use `wait_exit_async` from async context, or run on a multi-thread runtime.
 ///
 /// Returns `ExitReason::Kill` if the watch sender is dropped without setting a
 /// reason — this means the actor task was aborted externally (e.g., runtime
@@ -188,7 +201,7 @@ impl ChildHandle {
 fn wait_for_exit_watch_blocking(
     rx: &spawned_rt::tasks::watch::Receiver<Option<ExitReason>>,
 ) -> ExitReason {
-    // Fast path: already done
+    // Fast path: already done — works from any context, no runtime needed
     if let Some(reason) = rx.borrow().clone() {
         return reason;
     }
@@ -205,12 +218,24 @@ fn wait_for_exit_watch_blocking(
         }
     };
 
-    // If inside a tokio runtime, use block_in_place + block_on to avoid
-    // "cannot start a runtime from within a runtime" panic.
-    if let Ok(handle) = spawned_rt::tasks::Handle::try_current() {
-        spawned_rt::tasks::block_in_place(|| handle.block_on(wait))
-    } else {
-        spawned_rt::threads::block_on(wait)
+    match spawned_rt::tasks::Handle::try_current() {
+        // No active runtime — create a temporary one
+        Err(_) => spawned_rt::threads::block_on(wait),
+        // Inside a tokio runtime — check the flavor
+        Ok(handle) => match handle.runtime_flavor() {
+            spawned_rt::tasks::RuntimeFlavor::MultiThread => {
+                spawned_rt::tasks::block_in_place(|| handle.block_on(wait))
+            }
+            // CurrentThread runtime: blocking here would deadlock the actor task.
+            // Including future flavors (e.g., MultiThreadAlt) for safety — only
+            // MultiThread is known to be safe with block_in_place.
+            _ => panic!(
+                "ChildHandle::wait_exit_blocking() cannot be called from within a \
+                current_thread tokio runtime; doing so would deadlock the actor \
+                task that this call is waiting for. Use wait_exit_async() from \
+                async context instead, or run on a multi-thread runtime."
+            ),
+        },
     }
 }
 
@@ -372,21 +397,68 @@ mod tests {
     }
 
     #[test]
-    fn child_handle_wait_blocking_inside_runtime() {
+    fn child_handle_wait_blocking_inside_multithread_runtime() {
         use crate::tasks::actor::{Actor, ActorStart};
 
         struct Idler;
         impl Actor for Idler {}
 
+        // Multi-thread runtime — wait_exit_blocking should work via block_in_place
         let runtime = spawned_rt::tasks::Runtime::new().unwrap();
         runtime.block_on(async {
             let actor = Idler.start();
             let handle = actor.child_handle();
             handle.stop();
 
-            // This is the bug-fix test: wait_exit_blocking inside a tokio runtime
-            // should NOT panic (uses block_in_place internally)
-            let reason = spawned_rt::tasks::block_in_place(|| handle.wait_exit_blocking());
+            let reason = handle.wait_exit_blocking();
+            assert_eq!(reason, ExitReason::Normal);
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "current_thread tokio runtime")]
+    fn child_handle_wait_blocking_panics_on_current_thread_runtime() {
+        use crate::tasks::actor::{Actor, ActorStart};
+
+        struct Idler;
+        impl Actor for Idler {}
+
+        let runtime = ::tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        runtime.block_on(async {
+            let actor = Idler.start();
+            let handle = actor.child_handle();
+            // Calling wait_exit_blocking from within a current-thread runtime
+            // would deadlock the actor task — we panic with a clear message instead.
+            let _ = handle.wait_exit_blocking();
+        });
+    }
+
+    #[test]
+    fn child_handle_wait_blocking_fast_path_on_current_thread_runtime() {
+        use crate::tasks::actor::{Actor, ActorStart};
+
+        struct Idler;
+        impl Actor for Idler {}
+
+        let runtime = ::tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        // Fast path: if the actor has already exited, wait_exit_blocking is safe
+        // even on a current-thread runtime (no actual blocking happens).
+        runtime.block_on(async {
+            let actor = Idler.start();
+            let handle = actor.child_handle();
+            handle.stop();
+            // Wait async first so the actor actually exits
+            let _ = handle.wait_exit_async().await;
+            // Now wait_exit_blocking takes the fast path
+            let reason = handle.wait_exit_blocking();
             assert_eq!(reason, ExitReason::Normal);
         });
     }

@@ -4,7 +4,7 @@ pub mod oneshot;
 pub use tokio::sync::watch;
 
 pub use tokio::{
-    runtime::{Handle, Runtime},
+    runtime::{Handle, Runtime, RuntimeFlavor},
     task::{block_in_place, id as task_id, spawn, spawn_blocking, JoinHandle},
     time::{sleep, timeout},
 };
