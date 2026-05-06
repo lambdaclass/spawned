@@ -1,6 +1,6 @@
 use spawned_concurrency::protocol;
 use spawned_concurrency::tasks::{Actor, ActorStart, Context, Handler};
-use spawned_concurrency::Response;
+use spawned_concurrency::{ChildHandle, Response};
 use spawned_rt::tasks as rt;
 use std::time::Duration;
 
@@ -107,6 +107,50 @@ fn main() {
         worker4.stop().await.unwrap();
         worker4.join().await;
         println!("  After stop:   {:?}", worker4.exit_reason());
+
+        // 5. ChildHandle — type-erased supervision handle
+        println!("\n--- Scenario 5: ChildHandle ---");
+        let worker5 = Worker::new("worker-5").start();
+        let handle: ChildHandle = worker5.child_handle();
+        println!("  ActorId: {}", handle.id());
+        println!("  Same id as ActorRef: {}", handle.id() == worker5.id());
+        println!("  is_alive: {}", handle.is_alive());
+
+        // Stop via ChildHandle (type-erased, no message sending)
+        handle.stop();
+        let reason = handle.wait_exit_async().await;
+        println!("  Stopped via ChildHandle");
+        println!("  Exit reason: {reason}");
+        println!("  is_alive: {}", handle.is_alive());
+
+        // 6. ChildHandle from a panicking actor
+        println!("\n--- Scenario 6: ChildHandle observes panic ---");
+        let worker6 = Worker::new("worker-6").start();
+        let handle6 = worker6.child_handle();
+        let _ = worker6.panic_now().await;
+        let reason = handle6.wait_exit_async().await;
+        println!("  Exit reason: {reason}");
+        println!("  is_abnormal: {}", reason.is_abnormal());
+
+        // 7. Multiple ChildHandles from different actor types
+        println!("\n--- Scenario 7: Heterogeneous ChildHandle vec ---");
+        struct Idler;
+        impl Actor for Idler {}
+
+        let w = Worker::new("worker-7").start();
+        let i = Idler.start();
+        let handles: Vec<ChildHandle> = vec![w.child_handle(), i.child_handle()];
+        println!("  {} actors managed via Vec<ChildHandle>", handles.len());
+        for h in &handles {
+            println!("  {} — alive: {}", h.id(), h.is_alive());
+        }
+        for h in &handles {
+            h.stop();
+        }
+        for h in &handles {
+            let reason = h.wait_exit_async().await;
+            println!("  {} — exit: {reason}", h.id());
+        }
 
         // Give tracing a moment to flush
         rt::sleep(Duration::from_millis(50)).await;
