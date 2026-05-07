@@ -164,10 +164,19 @@ fn main() {
         impl spawned_concurrency::message::Message for StartMonitor {
             type Result = MonitorRef;
         }
+        struct StopMonitor(MonitorRef);
+        impl spawned_concurrency::message::Message for StopMonitor {
+            type Result = ();
+        }
         impl Actor for Observer {}
         impl Handler<StartMonitor> for Observer {
             async fn handle(&mut self, msg: StartMonitor, ctx: &Context<Self>) -> MonitorRef {
                 ctx.monitor(&msg.0)
+            }
+        }
+        impl Handler<StopMonitor> for Observer {
+            async fn handle(&mut self, msg: StopMonitor, ctx: &Context<Self>) {
+                ctx.demonitor(msg.0);
             }
         }
         impl Handler<Down> for Observer {
@@ -186,6 +195,7 @@ fn main() {
 
         let worker_a = Worker::new("worker-a").start();
         let worker_b = Worker::new("worker-b").start();
+        let worker_c = Worker::new("worker-c").start();
 
         let ref_a = observer
             .request(StartMonitor(worker_a.child_handle()))
@@ -195,11 +205,20 @@ fn main() {
             .request(StartMonitor(worker_b.child_handle()))
             .await
             .unwrap();
-        println!("  Observer monitoring {} and {}", ref_a, ref_b);
+        let ref_c = observer
+            .request(StartMonitor(worker_c.child_handle()))
+            .await
+            .unwrap();
+        println!("  Observer monitoring {}, {}, and {}", ref_a, ref_b, ref_c);
 
-        // Trigger one clean stop and one panic
+        // Demonitor worker_c BEFORE it dies — Observer won't be notified
+        observer.request(StopMonitor(ref_c)).await.unwrap();
+        println!("  Demonitored {} — its death won't be observed", ref_c);
+
+        // Trigger: clean stop, panic, and the demonitored one
         worker_a.stop().await.unwrap();
         let _ = worker_b.panic_now().await;
+        worker_c.stop().await.unwrap();
 
         // Give the watchers a moment to deliver Down messages
         rt::sleep(Duration::from_millis(100)).await;
