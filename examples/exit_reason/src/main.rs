@@ -1,7 +1,8 @@
 use spawned_concurrency::protocol;
 use spawned_concurrency::tasks::{Actor, ActorStart, Context, Handler};
-use spawned_concurrency::{ChildHandle, Response};
+use spawned_concurrency::{ChildHandle, Down, MonitorRef, Response};
 use spawned_rt::tasks as rt;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 // -- A simple worker that can be told to stop, panic, or just keep running --
@@ -151,6 +152,70 @@ fn main() {
             let reason = h.wait_exit_async().await;
             println!("  {} — exit: {reason}", h.id());
         }
+
+        // 8. Monitor — get notified when another actor dies
+        println!("\n--- Scenario 8: Monitor ---");
+
+        // Observer actor that records Down notifications
+        struct Observer {
+            log: Arc<Mutex<Vec<Down>>>,
+        }
+        struct StartMonitor(ChildHandle);
+        impl spawned_concurrency::message::Message for StartMonitor {
+            type Result = MonitorRef;
+        }
+        impl Actor for Observer {}
+        impl Handler<StartMonitor> for Observer {
+            async fn handle(&mut self, msg: StartMonitor, ctx: &Context<Self>) -> MonitorRef {
+                ctx.monitor(&msg.0)
+            }
+        }
+        impl Handler<Down> for Observer {
+            async fn handle(&mut self, msg: Down, _ctx: &Context<Self>) {
+                tracing::info!(
+                    "[observer] received Down for {} ({})",
+                    msg.monitor_ref,
+                    msg.reason
+                );
+                self.log.lock().unwrap().push(msg);
+            }
+        }
+
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let observer = Observer { log: log.clone() }.start();
+
+        let worker_a = Worker::new("worker-a").start();
+        let worker_b = Worker::new("worker-b").start();
+
+        let ref_a = observer
+            .request(StartMonitor(worker_a.child_handle()))
+            .await
+            .unwrap();
+        let ref_b = observer
+            .request(StartMonitor(worker_b.child_handle()))
+            .await
+            .unwrap();
+        println!("  Observer monitoring {} and {}", ref_a, ref_b);
+
+        // Trigger one clean stop and one panic
+        worker_a.stop().await.unwrap();
+        let _ = worker_b.panic_now().await;
+
+        // Give the watchers a moment to deliver Down messages
+        rt::sleep(Duration::from_millis(100)).await;
+
+        let snapshot = log.lock().unwrap().clone();
+        println!("  Observer received {} Down messages:", snapshot.len());
+        for down in &snapshot {
+            println!(
+                "    {} — {} (abnormal: {})",
+                down.monitor_ref,
+                down.reason,
+                down.reason.is_abnormal()
+            );
+        }
+        observer.child_handle().stop();
+        observer.join().await;
 
         // Give tracing a moment to flush
         rt::sleep(Duration::from_millis(50)).await;

@@ -2,15 +2,25 @@ use spawned_rt::threads::{
     self as rt, mpsc, oneshot, oneshot::RecvTimeoutError, CancellationToken,
 };
 use std::{
+    collections::HashMap,
     fmt::Debug,
     panic::{catch_unwind, AssertUnwindSafe},
-    sync::{Arc, Condvar, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Condvar, Mutex,
+    },
     time::Duration,
 };
 
 use crate::child_handle::{ActorId, ChildHandle};
 use crate::error::{panic_message, ActorError, ExitReason};
 use crate::message::Message;
+use crate::monitor::{Down, MonitorRef};
+
+/// Per-actor table of active monitors. Each entry maps a `MonitorRef` to a
+/// flag the watcher checks before delivering `Down`. Shared across `Context`
+/// clones via `Arc`.
+type MonitorTable = Arc<Mutex<HashMap<MonitorRef, Arc<AtomicBool>>>>;
 
 pub use crate::response::DEFAULT_REQUEST_TIMEOUT;
 
@@ -79,6 +89,7 @@ pub struct Context<A: Actor> {
     sender: mpsc::Sender<Box<dyn Envelope<A> + Send>>,
     cancellation_token: CancellationToken,
     completion: Arc<(Mutex<Option<ExitReason>>, Condvar)>,
+    monitors: MonitorTable,
 }
 
 impl<A: Actor> Clone for Context<A> {
@@ -88,6 +99,7 @@ impl<A: Actor> Clone for Context<A> {
             sender: self.sender.clone(),
             cancellation_token: self.cancellation_token.clone(),
             completion: self.completion.clone(),
+            monitors: self.monitors.clone(),
         }
     }
 }
@@ -107,6 +119,7 @@ impl<A: Actor> Context<A> {
             sender: actor_ref.sender.clone(),
             cancellation_token: actor_ref.cancellation_token.clone(),
             completion: actor_ref.completion.clone(),
+            monitors: actor_ref.monitors.clone(),
         }
     }
 
@@ -191,6 +204,64 @@ impl<A: Actor> Context<A> {
             sender: self.sender.clone(),
             cancellation_token: self.cancellation_token.clone(),
             completion: self.completion.clone(),
+            monitors: self.monitors.clone(),
+        }
+    }
+
+    /// Set up a unidirectional monitor on another actor.
+    ///
+    /// Returns a [`MonitorRef`] that can be used to cancel the monitor via
+    /// [`Context::demonitor`]. When the monitored actor stops, a [`Down`]
+    /// message is delivered to this actor's mailbox via `Handler<Down>`.
+    ///
+    /// If the target is already dead, a `Down` message is delivered immediately.
+    ///
+    /// Multiple independent monitors are allowed on the same target — each
+    /// call returns a distinct `MonitorRef`.
+    ///
+    /// Monitors are unidirectional: the monitored actor is unaware of the
+    /// monitor and unaffected by it.
+    pub fn monitor(&self, target: &ChildHandle) -> MonitorRef
+    where
+        A: Handler<Down>,
+    {
+        let monitor_ref = MonitorRef::next();
+        let active = Arc::new(AtomicBool::new(true));
+
+        self.monitors
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(monitor_ref, active.clone());
+
+        let target = target.clone();
+        let actor_ref = self.actor_ref();
+
+        rt::spawn(move || {
+            let reason = target.wait_exit_blocking();
+            if active.load(Ordering::Acquire) {
+                let _ = actor_ref.send(Down {
+                    monitor_ref,
+                    reason,
+                });
+            }
+        });
+
+        monitor_ref
+    }
+
+    /// Cancel a previously-set monitor.
+    ///
+    /// If the target hasn't yet died, no `Down` message will be delivered.
+    /// If a `Down` message has already been delivered (or queued), this is
+    /// a best-effort cancellation — the message may still arrive.
+    pub fn demonitor(&self, monitor_ref: MonitorRef) {
+        if let Some(active) = self
+            .monitors
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&monitor_ref)
+        {
+            active.store(false, Ordering::Release);
         }
     }
 
@@ -275,6 +346,7 @@ pub struct ActorRef<A: Actor> {
     sender: mpsc::Sender<Box<dyn Envelope<A> + Send>>,
     cancellation_token: CancellationToken,
     completion: Arc<(Mutex<Option<ExitReason>>, Condvar)>,
+    monitors: MonitorTable,
 }
 
 impl<A: Actor> Debug for ActorRef<A> {
@@ -290,6 +362,7 @@ impl<A: Actor> Clone for ActorRef<A> {
             sender: self.sender.clone(),
             cancellation_token: self.cancellation_token.clone(),
             completion: self.completion.clone(),
+            monitors: self.monitors.clone(),
         }
     }
 }
@@ -432,12 +505,14 @@ impl<A: Actor> ActorRef<A> {
         let cancellation_token = CancellationToken::new();
         let completion = Arc::new((Mutex::new(None), Condvar::new()));
         let id = ActorId::next();
+        let monitors: MonitorTable = Arc::new(Mutex::new(HashMap::new()));
 
         let actor_ref = ActorRef {
             id,
             sender: tx.clone(),
             cancellation_token: cancellation_token.clone(),
             completion: completion.clone(),
+            monitors: monitors.clone(),
         };
 
         let ctx = Context {
@@ -445,6 +520,7 @@ impl<A: Actor> ActorRef<A> {
             sender: tx,
             cancellation_token: cancellation_token.clone(),
             completion: actor_ref.completion.clone(),
+            monitors,
         };
 
         let _thread_handle = rt::spawn(move || {
@@ -833,5 +909,159 @@ mod tests {
         actor.request(StopCounter).unwrap();
         actor.join();
         assert!(actor.exit_reason().is_some());
+    }
+
+    // --- Monitor tests ---
+
+    struct GetDowns;
+    impl Message for GetDowns {
+        type Result = Vec<crate::monitor::Down>;
+    }
+
+    struct Watcher {
+        downs: Arc<Mutex<Vec<crate::monitor::Down>>>,
+    }
+
+    struct StartMonitor(crate::ChildHandle);
+    impl Message for StartMonitor {
+        type Result = crate::monitor::MonitorRef;
+    }
+    struct CallDemonitor(crate::monitor::MonitorRef);
+    impl Message for CallDemonitor {
+        type Result = ();
+    }
+
+    impl Actor for Watcher {}
+
+    impl Handler<StartMonitor> for Watcher {
+        fn handle(&mut self, msg: StartMonitor, ctx: &Context<Self>) -> crate::monitor::MonitorRef {
+            ctx.monitor(&msg.0)
+        }
+    }
+
+    impl Handler<CallDemonitor> for Watcher {
+        fn handle(&mut self, msg: CallDemonitor, ctx: &Context<Self>) {
+            ctx.demonitor(msg.0);
+        }
+    }
+
+    impl Handler<crate::monitor::Down> for Watcher {
+        fn handle(&mut self, msg: crate::monitor::Down, _ctx: &Context<Self>) {
+            self.downs.lock().unwrap().push(msg);
+        }
+    }
+
+    impl Handler<GetDowns> for Watcher {
+        fn handle(&mut self, _msg: GetDowns, _ctx: &Context<Self>) -> Vec<crate::monitor::Down> {
+            self.downs.lock().unwrap().clone()
+        }
+    }
+
+    fn make_watcher() -> ActorRef<Watcher> {
+        Watcher {
+            downs: Arc::new(Mutex::new(Vec::new())),
+        }
+        .start()
+    }
+
+    #[test]
+    fn monitor_running_actor_delivers_down_on_exit() {
+        let target = Counter { count: 0 }.start();
+        let target_handle = target.child_handle();
+        let watcher = make_watcher();
+
+        let monitor_ref = watcher.request(StartMonitor(target_handle)).unwrap();
+
+        target.request(StopCounter).unwrap();
+        target.join();
+        rt::sleep(Duration::from_millis(150));
+
+        let downs = watcher.request(GetDowns).unwrap();
+        assert_eq!(downs.len(), 1);
+        assert_eq!(downs[0].monitor_ref, monitor_ref);
+        assert!(matches!(downs[0].reason, ExitReason::Normal));
+    }
+
+    #[test]
+    fn monitor_already_dead_actor_delivers_down_immediately() {
+        let target = Counter { count: 0 }.start();
+        target.request(StopCounter).unwrap();
+        target.join();
+        let target_handle = target.child_handle();
+
+        let watcher = make_watcher();
+        let _ = watcher.request(StartMonitor(target_handle)).unwrap();
+        rt::sleep(Duration::from_millis(150));
+
+        let downs = watcher.request(GetDowns).unwrap();
+        assert_eq!(downs.len(), 1);
+    }
+
+    #[test]
+    fn demonitor_before_target_dies_suppresses_down() {
+        let target = Counter { count: 0 }.start();
+        let target_handle = target.child_handle();
+        let watcher = make_watcher();
+
+        let monitor_ref = watcher.request(StartMonitor(target_handle)).unwrap();
+        watcher.request(CallDemonitor(monitor_ref)).unwrap();
+
+        target.request(StopCounter).unwrap();
+        target.join();
+        rt::sleep(Duration::from_millis(150));
+
+        let downs = watcher.request(GetDowns).unwrap();
+        assert!(downs.is_empty());
+    }
+
+    #[test]
+    fn multiple_monitors_each_get_own_ref_and_down() {
+        let target = Counter { count: 0 }.start();
+        let target_handle = target.child_handle();
+        let watcher = make_watcher();
+
+        let r1 = watcher
+            .request(StartMonitor(target_handle.clone()))
+            .unwrap();
+        let r2 = watcher.request(StartMonitor(target_handle)).unwrap();
+        assert_ne!(r1, r2);
+
+        target.request(StopCounter).unwrap();
+        target.join();
+        rt::sleep(Duration::from_millis(150));
+
+        let downs = watcher.request(GetDowns).unwrap();
+        assert_eq!(downs.len(), 2);
+        let refs: Vec<_> = downs.iter().map(|d| d.monitor_ref).collect();
+        assert!(refs.contains(&r1));
+        assert!(refs.contains(&r2));
+    }
+
+    #[test]
+    fn monitor_observes_panic_reason() {
+        struct PanicMsg;
+        impl Message for PanicMsg {
+            type Result = ();
+        }
+        struct PanicMe;
+        impl Actor for PanicMe {}
+        impl Handler<PanicMsg> for PanicMe {
+            fn handle(&mut self, _msg: PanicMsg, _ctx: &Context<Self>) {
+                panic!("intentional panic");
+            }
+        }
+
+        let target = PanicMe.start();
+        let target_handle = target.child_handle();
+        let watcher = make_watcher();
+
+        let _ = watcher.request(StartMonitor(target_handle)).unwrap();
+        let _ = target.send(PanicMsg);
+
+        rt::sleep(Duration::from_millis(200));
+
+        let downs = watcher.request(GetDowns).unwrap();
+        assert_eq!(downs.len(), 1);
+        assert!(matches!(downs[0].reason, ExitReason::Panic(_)));
     }
 }
