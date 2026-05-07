@@ -39,7 +39,7 @@ impl std::fmt::Display for MonitorRef {
 ///
 /// To monitor another actor, call `ctx.monitor(&child_handle)` and implement
 /// `Handler<Down>` on the monitoring actor.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Down {
     /// The monitor that triggered this notification.
     pub monitor_ref: MonitorRef,

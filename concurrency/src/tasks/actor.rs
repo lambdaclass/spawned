@@ -273,9 +273,17 @@ impl<A: Actor> Context<A> {
 
         let target = target.clone();
         let actor_ref = self.actor_ref();
+        let monitors = self.monitors.clone();
 
         rt::spawn(async move {
             let reason = target.wait_exit_async().await;
+            // Remove the entry from the monitor table so it doesn't accumulate
+            // stale entries over the actor's lifetime. Done before delivery
+            // since `demonitor` is now a no-op for this monitor anyway.
+            monitors
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .remove(&monitor_ref);
             if active.load(Ordering::Acquire) {
                 let _ = actor_ref.send(Down {
                     monitor_ref,
@@ -1488,6 +1496,48 @@ mod tests {
             let refs: Vec<_> = downs.iter().map(|d| d.monitor_ref).collect();
             assert!(refs.contains(&r1));
             assert!(refs.contains(&r2));
+        });
+    }
+
+    #[test]
+    pub fn monitor_table_is_cleaned_up_after_target_dies() {
+        // Watcher should remove its entry from the monitor table after the
+        // target dies, so the table doesn't accumulate stale entries.
+        struct Inspect;
+        impl Message for Inspect {
+            type Result = usize;
+        }
+        impl Handler<Inspect> for Watcher {
+            async fn handle(&mut self, _msg: Inspect, ctx: &Context<Self>) -> usize {
+                ctx.monitors.lock().unwrap().len()
+            }
+        }
+
+        let runtime = rt::Runtime::new().unwrap();
+        runtime.block_on(async move {
+            let target = Counter { count: 0 }.start();
+            let watcher = Watcher {
+                downs: Arc::new(Mutex::new(Vec::new())),
+                last_ref: Arc::new(Mutex::new(None)),
+            }
+            .start();
+
+            let _ = watcher
+                .request(StartMonitor(target.child_handle()))
+                .await
+                .unwrap();
+            assert_eq!(watcher.request(Inspect).await.unwrap(), 1);
+
+            target.request(StopCounter).await.unwrap();
+            target.join().await;
+            // Give the watcher time to process and clean up
+            rt::sleep(Duration::from_millis(50)).await;
+
+            assert_eq!(
+                watcher.request(Inspect).await.unwrap(),
+                0,
+                "monitor table should be empty after target died"
+            );
         });
     }
 

@@ -235,9 +235,17 @@ impl<A: Actor> Context<A> {
 
         let target = target.clone();
         let actor_ref = self.actor_ref();
+        let monitors = self.monitors.clone();
 
         rt::spawn(move || {
             let reason = target.wait_exit_blocking();
+            // Remove the entry from the monitor table so it doesn't accumulate
+            // stale entries over the actor's lifetime. Done before delivery
+            // since `demonitor` is now a no-op for this monitor anyway.
+            monitors
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .remove(&monitor_ref);
             if active.load(Ordering::Acquire) {
                 let _ = actor_ref.send(Down {
                     monitor_ref,
