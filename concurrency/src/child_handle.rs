@@ -130,18 +130,15 @@ impl ChildHandle {
     /// - Multi-thread tokio runtime (uses `block_in_place`)
     /// - Threads-mode actors (uses Condvar directly)
     ///
-    /// **Panics** if called from within a current-thread tokio runtime on a
-    /// tasks-mode handle: blocking the only runtime thread would prevent the
-    /// actor task from making progress (deadlock). Use [`wait_exit_async`] from
-    /// async context instead.
+    /// **Panics** if called from within a non-multi-thread tokio runtime (e.g.,
+    /// current-thread) on a tasks-mode handle: blocking the only runtime thread
+    /// would prevent the actor task from making progress (deadlock). Use
+    /// [`wait_exit_async`] from async context instead.
     ///
     /// [`wait_exit_async`]: ChildHandle::wait_exit_async
     pub fn wait_exit_blocking(&self) -> ExitReason {
         match &self.completion {
-            Completion::Tasks(rx) => {
-                // Extracted to avoid holding the borrow on self across the loop
-                wait_for_tasks_exit_blocking(&rx.clone())
-            }
+            Completion::Tasks(rx) => wait_for_tasks_exit_blocking(rx.clone()),
             Completion::Threads(completion) => {
                 let (lock, cvar) = &**completion;
                 let mut guard = lock.lock().unwrap_or_else(|p| p.into_inner());
@@ -190,22 +187,22 @@ impl ChildHandle {
 ///
 /// - From a sync context (no tokio runtime): creates a temporary runtime.
 /// - From a multi-thread tokio runtime: uses `block_in_place` + `Handle::block_on`.
-/// - From a current-thread tokio runtime: **panics**, because blocking the only
-///   runtime thread prevents the actor task from making progress (deadlock).
-///   Use `wait_exit_async` from async context, or run on a multi-thread runtime.
+/// - From any other tokio runtime flavor (e.g., current-thread): **panics**,
+///   because blocking the only runtime thread prevents the actor task from
+///   making progress (deadlock). Use `wait_exit_async` from async context, or
+///   run on a multi-thread runtime.
 ///
 /// Returns `ExitReason::Kill` if the watch sender is dropped without setting a
 /// reason — this means the actor task was aborted externally (e.g., runtime
 /// shutdown) without going through the normal exit path.
 fn wait_for_tasks_exit_blocking(
-    rx: &spawned_rt::tasks::watch::Receiver<Option<ExitReason>>,
+    mut rx: spawned_rt::tasks::watch::Receiver<Option<ExitReason>>,
 ) -> ExitReason {
     // Fast path: already done — works from any context, no runtime needed
     if let Some(reason) = rx.borrow().clone() {
         return reason;
     }
 
-    let mut rx = rx.clone();
     let wait = async move {
         loop {
             if let Some(reason) = rx.borrow_and_update().clone() {
@@ -225,14 +222,15 @@ fn wait_for_tasks_exit_blocking(
             spawned_rt::tasks::RuntimeFlavor::MultiThread => {
                 spawned_rt::tasks::block_in_place(|| handle.block_on(wait))
             }
-            // CurrentThread runtime: blocking here would deadlock the actor task.
-            // Including future flavors (e.g., MultiThreadAlt) for safety — only
-            // MultiThread is known to be safe with block_in_place.
-            _ => panic!(
+            // Any other flavor (current-thread, MultiThreadAlt, future variants):
+            // blocking here would deadlock the actor task. RuntimeFlavor is
+            // #[non_exhaustive] so we conservatively reject anything other than
+            // the explicitly-tested MultiThread variant.
+            other => panic!(
                 "ChildHandle::wait_exit_blocking() cannot be called from within a \
-                current_thread tokio runtime; doing so would deadlock the actor \
-                task that this call is waiting for. Use wait_exit_async() from \
-                async context instead, or run on a multi-thread runtime."
+                non-multi-thread tokio runtime ({other:?}); doing so would deadlock \
+                the actor task that this call is waiting for. Use wait_exit_async() \
+                from async context instead, or run on a multi-thread runtime."
             ),
         },
     }
@@ -255,6 +253,14 @@ impl std::hash::Hash for ChildHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Shared tasks-mode fixture: an Idler actor that does nothing and never
+    // stops on its own. Used by multiple tests below.
+    mod tasks_fixtures {
+        use crate::tasks::actor::Actor;
+        pub struct Idler;
+        impl Actor for Idler {}
+    }
 
     #[test]
     fn actor_id_is_unique() {
@@ -378,10 +384,8 @@ mod tests {
 
     #[test]
     fn child_handle_stop_from_tasks_actor() {
-        use crate::tasks::actor::{Actor, ActorStart};
-
-        struct Idler;
-        impl Actor for Idler {}
+        use crate::tasks::actor::ActorStart;
+        use tasks_fixtures::Idler;
 
         let runtime = spawned_rt::tasks::Runtime::new().unwrap();
         runtime.block_on(async {
@@ -397,10 +401,8 @@ mod tests {
 
     #[test]
     fn child_handle_wait_blocking_inside_multithread_runtime() {
-        use crate::tasks::actor::{Actor, ActorStart};
-
-        struct Idler;
-        impl Actor for Idler {}
+        use crate::tasks::actor::ActorStart;
+        use tasks_fixtures::Idler;
 
         // Multi-thread runtime — wait_exit_blocking should work via block_in_place
         let runtime = spawned_rt::tasks::Runtime::new().unwrap();
@@ -415,12 +417,10 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "current_thread tokio runtime")]
+    #[should_panic(expected = "non-multi-thread tokio runtime")]
     fn child_handle_wait_blocking_panics_on_current_thread_runtime() {
-        use crate::tasks::actor::{Actor, ActorStart};
-
-        struct Idler;
-        impl Actor for Idler {}
+        use crate::tasks::actor::ActorStart;
+        use tasks_fixtures::Idler;
 
         let runtime = ::tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -438,10 +438,8 @@ mod tests {
 
     #[test]
     fn child_handle_wait_blocking_fast_path_on_current_thread_runtime() {
-        use crate::tasks::actor::{Actor, ActorStart};
-
-        struct Idler;
-        impl Actor for Idler {}
+        use crate::tasks::actor::ActorStart;
+        use tasks_fixtures::Idler;
 
         let runtime = ::tokio::runtime::Builder::new_current_thread()
             .enable_all()

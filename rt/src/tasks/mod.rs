@@ -37,10 +37,4 @@ pub fn block_on<F: Future>(future: F) -> F::Output {
     Handle::current().block_on(future)
 }
 
-/// Block on a future using the current tokio runtime handle.
-/// Returns `None` if no tokio runtime is active.
-pub fn try_block_on<F: Future>(future: F) -> Option<F::Output> {
-    Handle::try_current().ok().map(|h| h.block_on(future))
-}
-
 pub use crate::tasks::tokio::ctrl_c;
