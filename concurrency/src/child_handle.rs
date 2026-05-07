@@ -115,11 +115,11 @@ impl ChildHandle {
     pub fn exit_reason(&self) -> Option<ExitReason> {
         match &self.completion {
             Completion::Tasks(rx) => rx.borrow().clone(),
-            Completion::Threads(completion) => {
-                let (lock, _) = &**completion;
-                let guard = lock.lock().unwrap_or_else(|p| p.into_inner());
-                guard.clone()
-            }
+            Completion::Threads(completion) => completion
+                .0
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clone(),
         }
     }
 
@@ -139,16 +139,7 @@ impl ChildHandle {
     pub fn wait_exit_blocking(&self) -> ExitReason {
         match &self.completion {
             Completion::Tasks(rx) => wait_for_tasks_exit_blocking(rx.clone()),
-            Completion::Threads(completion) => {
-                let (lock, cvar) = &**completion;
-                let mut guard = lock.lock().unwrap_or_else(|p| p.into_inner());
-                loop {
-                    if let Some(reason) = guard.clone() {
-                        return reason;
-                    }
-                    guard = cvar.wait(guard).unwrap_or_else(|p| p.into_inner());
-                }
-            }
+            Completion::Threads(completion) => wait_for_threads_exit_blocking(completion),
         }
     }
 
@@ -162,17 +153,7 @@ impl ChildHandle {
     /// tokio's blocking pool for the duration of the wait.
     pub async fn wait_exit_async(&self) -> ExitReason {
         match &self.completion {
-            Completion::Tasks(rx) => {
-                let mut rx = rx.clone();
-                loop {
-                    if let Some(reason) = rx.borrow_and_update().clone() {
-                        return reason;
-                    }
-                    if rx.changed().await.is_err() {
-                        return ExitReason::Kill;
-                    }
-                }
-            }
+            Completion::Tasks(rx) => wait_loop(rx.clone()).await,
             Completion::Threads(_) => {
                 let handle = self.clone();
                 spawned_rt::tasks::spawn_blocking(move || handle.wait_exit_blocking())
@@ -180,6 +161,31 @@ impl ChildHandle {
                     .unwrap_or(ExitReason::Kill)
             }
         }
+    }
+}
+
+/// Async loop that polls a watch channel until it carries an exit reason.
+/// Returns `ExitReason::Kill` if the watch sender is dropped without a reason.
+async fn wait_loop(mut rx: spawned_rt::tasks::watch::Receiver<Option<ExitReason>>) -> ExitReason {
+    loop {
+        if let Some(reason) = rx.borrow_and_update().clone() {
+            return reason;
+        }
+        if rx.changed().await.is_err() {
+            return ExitReason::Kill;
+        }
+    }
+}
+
+/// Block the current thread on a Mutex+Condvar until it carries an exit reason.
+fn wait_for_threads_exit_blocking(completion: &(Mutex<Option<ExitReason>>, Condvar)) -> ExitReason {
+    let (lock, cvar) = completion;
+    let mut guard = lock.lock().unwrap_or_else(|p| p.into_inner());
+    loop {
+        if let Some(reason) = guard.clone() {
+            return reason;
+        }
+        guard = cvar.wait(guard).unwrap_or_else(|p| p.into_inner());
     }
 }
 
@@ -196,23 +202,14 @@ impl ChildHandle {
 /// reason — this means the actor task was aborted externally (e.g., runtime
 /// shutdown) without going through the normal exit path.
 fn wait_for_tasks_exit_blocking(
-    mut rx: spawned_rt::tasks::watch::Receiver<Option<ExitReason>>,
+    rx: spawned_rt::tasks::watch::Receiver<Option<ExitReason>>,
 ) -> ExitReason {
     // Fast path: already done — works from any context, no runtime needed
     if let Some(reason) = rx.borrow().clone() {
         return reason;
     }
 
-    let wait = async move {
-        loop {
-            if let Some(reason) = rx.borrow_and_update().clone() {
-                return reason;
-            }
-            if rx.changed().await.is_err() {
-                return ExitReason::Kill;
-            }
-        }
-    };
+    let wait = wait_loop(rx);
 
     match spawned_rt::tasks::Handle::try_current() {
         // No active runtime — create a temporary one
