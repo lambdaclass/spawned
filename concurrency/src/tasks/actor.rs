@@ -1339,7 +1339,6 @@ mod tests {
     /// drive it from outside. Records all received Down messages.
     struct Watcher {
         downs: Arc<Mutex<Vec<crate::monitor::Down>>>,
-        last_ref: Arc<Mutex<Option<crate::monitor::MonitorRef>>>,
     }
 
     struct StartMonitor(crate::ChildHandle);
@@ -1359,9 +1358,7 @@ mod tests {
             msg: StartMonitor,
             ctx: &Context<Self>,
         ) -> crate::monitor::MonitorRef {
-            let r = ctx.monitor(&msg.0);
-            *self.last_ref.lock().unwrap() = Some(r);
-            r
+            ctx.monitor(&msg.0)
         }
     }
 
@@ -1396,7 +1393,6 @@ mod tests {
 
             let watcher = Watcher {
                 downs: Arc::new(Mutex::new(Vec::new())),
-                last_ref: Arc::new(Mutex::new(None)),
             }
             .start();
 
@@ -1427,7 +1423,6 @@ mod tests {
 
             let watcher = Watcher {
                 downs: Arc::new(Mutex::new(Vec::new())),
-                last_ref: Arc::new(Mutex::new(None)),
             }
             .start();
 
@@ -1450,7 +1445,6 @@ mod tests {
 
             let watcher = Watcher {
                 downs: Arc::new(Mutex::new(Vec::new())),
-                last_ref: Arc::new(Mutex::new(None)),
             }
             .start();
 
@@ -1476,7 +1470,6 @@ mod tests {
 
             let watcher = Watcher {
                 downs: Arc::new(Mutex::new(Vec::new())),
-                last_ref: Arc::new(Mutex::new(None)),
             }
             .start();
 
@@ -1518,7 +1511,6 @@ mod tests {
             let target = Counter { count: 0 }.start();
             let watcher = Watcher {
                 downs: Arc::new(Mutex::new(Vec::new())),
-                last_ref: Arc::new(Mutex::new(None)),
             }
             .start();
 
@@ -1562,7 +1554,6 @@ mod tests {
 
             let watcher = Watcher {
                 downs: Arc::new(Mutex::new(Vec::new())),
-                last_ref: Arc::new(Mutex::new(None)),
             }
             .start();
 
@@ -1575,6 +1566,38 @@ mod tests {
             let downs = watcher.request(GetDowns).await.unwrap();
             assert_eq!(downs.len(), 1);
             assert!(matches!(downs[0].reason, ExitReason::Panic(_)));
+        });
+    }
+
+    #[test]
+    pub fn monitoring_actor_stops_before_target_does_not_panic() {
+        // Regression: if the monitoring actor stops while the target is still
+        // alive, the watcher must not crash when the target eventually dies.
+        // The watcher's send() will fail silently (mailbox closed), and the
+        // watcher exits cleanly.
+        let runtime = rt::Runtime::new().unwrap();
+        runtime.block_on(async move {
+            let target = Counter { count: 0 }.start();
+            let target_handle = target.child_handle();
+
+            let watcher = Watcher {
+                downs: Arc::new(Mutex::new(Vec::new())),
+            }
+            .start();
+
+            let _ = watcher.request(StartMonitor(target_handle)).await.unwrap();
+
+            // Stop the monitoring actor first
+            let watcher_handle = watcher.child_handle();
+            watcher_handle.stop();
+            watcher_handle.wait_exit_async().await;
+
+            // Now stop the target — the watcher should clean up without panicking
+            target.request(StopCounter).await.unwrap();
+            target.join().await;
+            // Give the orphaned watcher task time to attempt delivery
+            rt::sleep(Duration::from_millis(50)).await;
+            // If we got here without panicking, the test passes.
         });
     }
 }

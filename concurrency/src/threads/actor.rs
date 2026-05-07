@@ -221,6 +221,11 @@ impl<A: Actor> Context<A> {
     ///
     /// Monitors are unidirectional: the monitored actor is unaware of the
     /// monitor and unaffected by it.
+    ///
+    /// **Resource cost (threads mode):** each active monitor occupies one OS
+    /// thread for the duration of the target's lifetime, blocked on the
+    /// target's completion signal. For supervisors with many long-lived
+    /// children, consider using tasks mode instead.
     pub fn monitor(&self, target: &ChildHandle) -> MonitorRef
     where
         A: Handler<Down>,
