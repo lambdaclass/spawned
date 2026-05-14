@@ -1,4 +1,5 @@
 use crate::error::ExitReason;
+use crate::link::{LinkTable, LinkedExitReason, SendExitFn, TrapExitFlag};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 
@@ -44,20 +45,27 @@ pub(crate) enum Completion {
 // ---------------------------------------------------------------------------
 
 /// Type-erased cancel function. Wraps the mode-specific cancellation token.
-type CancelFn = Arc<dyn Fn() + Send + Sync>;
+pub(crate) type CancelFn = Arc<dyn Fn() + Send + Sync>;
 
 /// Type-erased handle to a running actor. Provides lifecycle operations
 /// (stop, liveness check, exit reason) without knowing the actor's concrete type.
 ///
 /// Obtained via `ChildHandle::from(actor_ref)`.
 ///
-/// Unlike `ActorRef<A>`, a `ChildHandle` cannot send messages — it only
-/// provides supervision-related operations (stop, wait, check liveness).
+/// Unlike `ActorRef<A>`, a `ChildHandle` cannot send messages directly — it
+/// only provides supervision-related operations (stop, wait, check liveness,
+/// link/monitor).
 #[derive(Clone)]
 pub struct ChildHandle {
     id: ActorId,
     cancel: CancelFn,
     completion: Completion,
+    // Link/trap_exit support — carried so `ctx.link()` can wire up signal
+    // propagation without knowing the underlying actor type.
+    trap_exit: TrapExitFlag,
+    links: LinkTable,
+    linked_reason: LinkedExitReason,
+    send_exit: SendExitFn,
 }
 
 impl std::fmt::Debug for ChildHandle {
@@ -70,29 +78,64 @@ impl std::fmt::Debug for ChildHandle {
 
 impl ChildHandle {
     /// Create a ChildHandle for tasks mode.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn from_tasks(
         id: ActorId,
         cancellation_token: spawned_rt::tasks::CancellationToken,
         completion_rx: spawned_rt::tasks::watch::Receiver<Option<ExitReason>>,
+        trap_exit: TrapExitFlag,
+        links: LinkTable,
+        linked_reason: LinkedExitReason,
+        send_exit: SendExitFn,
     ) -> Self {
         Self {
             id,
             cancel: Arc::new(move || cancellation_token.cancel()),
             completion: Completion::Tasks(completion_rx),
+            trap_exit,
+            links,
+            linked_reason,
+            send_exit,
         }
     }
 
     /// Create a ChildHandle for threads mode.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn from_threads(
         id: ActorId,
         cancellation_token: spawned_rt::threads::CancellationToken,
         completion: Arc<(Mutex<Option<ExitReason>>, Condvar)>,
+        trap_exit: TrapExitFlag,
+        links: LinkTable,
+        linked_reason: LinkedExitReason,
+        send_exit: SendExitFn,
     ) -> Self {
         Self {
             id,
             cancel: Arc::new(move || cancellation_token.cancel()),
             completion: Completion::Threads(completion),
+            trap_exit,
+            links,
+            linked_reason,
+            send_exit,
         }
+    }
+
+    /// Crate-internal accessors used by `ctx.link()` to wire up signal propagation.
+    pub(crate) fn trap_exit_flag(&self) -> &TrapExitFlag {
+        &self.trap_exit
+    }
+    pub(crate) fn links(&self) -> &LinkTable {
+        &self.links
+    }
+    pub(crate) fn linked_reason(&self) -> &LinkedExitReason {
+        &self.linked_reason
+    }
+    pub(crate) fn cancel_fn(&self) -> &CancelFn {
+        &self.cancel
+    }
+    pub(crate) fn send_exit_fn(&self) -> &SendExitFn {
+        &self.send_exit
     }
 
     /// The actor's unique identity.
@@ -250,6 +293,7 @@ impl std::hash::Hash for ChildHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::link::{new_link_table, new_linked_exit_reason, new_trap_exit_flag};
 
     // Shared tasks-mode fixture: an Idler actor that does nothing and never
     // stops on its own. Used by multiple tests below.
@@ -257,6 +301,24 @@ mod tests {
         use crate::tasks::actor::Actor;
         pub struct Idler;
         impl Actor for Idler {}
+    }
+
+    /// Build a threads-mode ChildHandle for unit tests that exercise only the
+    /// ChildHandle surface (no real actor).
+    fn test_handle(
+        token: spawned_rt::threads::CancellationToken,
+        completion: Arc<(Mutex<Option<ExitReason>>, Condvar)>,
+    ) -> ChildHandle {
+        let no_op_send_exit: SendExitFn = Arc::new(|_| Ok(()));
+        ChildHandle::from_threads(
+            ActorId::next(),
+            token,
+            completion,
+            new_trap_exit_flag(),
+            new_link_table(),
+            new_linked_exit_reason(),
+            no_op_send_exit,
+        )
     }
 
     #[test]
@@ -277,7 +339,7 @@ mod tests {
     fn child_handle_from_threads_basics() {
         let completion = Arc::new((Mutex::new(None), Condvar::new()));
         let token = spawned_rt::threads::CancellationToken::new();
-        let handle = ChildHandle::from_threads(ActorId::next(), token, completion.clone());
+        let handle = test_handle(token, completion.clone());
 
         assert!(handle.is_alive());
         assert!(handle.exit_reason().is_none());
@@ -299,7 +361,7 @@ mod tests {
         let completion = Arc::new((Mutex::new(None), Condvar::new()));
         let token = spawned_rt::threads::CancellationToken::new();
         assert!(!token.is_cancelled());
-        let handle = ChildHandle::from_threads(ActorId::next(), token.clone(), completion);
+        let handle = test_handle(token.clone(), completion);
         handle.stop();
         assert!(token.is_cancelled());
     }
@@ -309,8 +371,25 @@ mod tests {
         let completion = Arc::new((Mutex::new(None), Condvar::new()));
         let token = spawned_rt::threads::CancellationToken::new();
         let id = ActorId::next();
-        let h1 = ChildHandle::from_threads(id, token.clone(), completion.clone());
-        let h2 = ChildHandle::from_threads(id, token, completion);
+        let no_op_send_exit: SendExitFn = Arc::new(|_| Ok(()));
+        let h1 = ChildHandle::from_threads(
+            id,
+            token.clone(),
+            completion.clone(),
+            new_trap_exit_flag(),
+            new_link_table(),
+            new_linked_exit_reason(),
+            no_op_send_exit.clone(),
+        );
+        let h2 = ChildHandle::from_threads(
+            id,
+            token,
+            completion,
+            new_trap_exit_flag(),
+            new_link_table(),
+            new_linked_exit_reason(),
+            no_op_send_exit,
+        );
         assert_eq!(h1, h2);
     }
 
