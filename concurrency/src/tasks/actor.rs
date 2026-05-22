@@ -505,7 +505,7 @@ impl<A: Actor> From<ActorRef<A>> for ChildHandle {
     fn from(actor_ref: ActorRef<A>) -> Self {
         ChildHandle::from_tasks(
             actor_ref.id,
-            actor_ref.cancellation_token,
+            Arc::new(move || actor_ref.cancellation_token.cancel()),
             actor_ref.completion_rx,
         )
     }
