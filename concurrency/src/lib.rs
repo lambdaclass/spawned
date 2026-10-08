@@ -59,6 +59,7 @@
 //! - [`message`] — `Message` trait for defining message types
 //! - [`child_handle`] — `ChildHandle` and `ActorId` for type-erased actor management
 //! - [`monitor`] — `MonitorRef` and `Down` for unidirectional death observation
+//! - [`link`] — `Exit` and bidirectional links with `trap_exit` semantics
 //!
 //! # Choosing `tasks` vs `threads`
 //!
@@ -75,6 +76,7 @@
 
 pub mod child_handle;
 pub mod error;
+pub mod link;
 pub mod message;
 pub mod monitor;
 pub mod registry;
@@ -84,6 +86,7 @@ pub mod threads;
 
 pub use child_handle::{ActorId, ChildHandle};
 pub use error::{ActorError, ExitReason};
+pub use link::Exit;
 pub use monitor::{Down, MonitorRef};
 pub use response::Response;
 pub use spawned_macros::{actor, protocol};

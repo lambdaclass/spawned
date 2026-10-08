@@ -1,6 +1,6 @@
 use spawned_concurrency::protocol;
 use spawned_concurrency::tasks::{Actor, ActorStart, Context, Handler};
-use spawned_concurrency::{ChildHandle, Down, MonitorRef, Response};
+use spawned_concurrency::{ChildHandle, Down, Exit, MonitorRef, Response};
 use spawned_rt::tasks as rt;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -235,6 +235,70 @@ fn main() {
         }
         observer.child_handle().stop();
         observer.join().await;
+
+        // 9. Links and trap_exit
+        println!("\n--- Scenario 9: Link with trap_exit (Erlang-style supervision) ---");
+
+        struct Supervisor {
+            log: Arc<Mutex<Vec<Exit>>>,
+        }
+        struct LinkChild(ChildHandle);
+        impl spawned_concurrency::message::Message for LinkChild {
+            type Result = ();
+        }
+        impl Actor for Supervisor {
+            async fn started(&mut self, ctx: &Context<Self>) {
+                // Supervisors trap exits so they observe child deaths as messages
+                // instead of dying along with their children.
+                ctx.trap_exit(true);
+                tracing::info!("[supervisor] trap_exit enabled");
+            }
+            async fn exit_received(&mut self, exit: Exit, _ctx: &Context<Self>) {
+                tracing::info!("[supervisor] child {} died: {}", exit.from, exit.reason);
+                self.log.lock().unwrap().push(exit);
+            }
+        }
+        impl Handler<LinkChild> for Supervisor {
+            async fn handle(&mut self, msg: LinkChild, ctx: &Context<Self>) {
+                ctx.link(&msg.0);
+            }
+        }
+
+        let sup_log = Arc::new(Mutex::new(Vec::new()));
+        let supervisor = Supervisor {
+            log: sup_log.clone(),
+        }
+        .start();
+
+        let worker_x = Worker::new("worker-x").start();
+        let worker_y = Worker::new("worker-y").start();
+        supervisor
+            .request(LinkChild(worker_x.child_handle()))
+            .await
+            .unwrap();
+        supervisor
+            .request(LinkChild(worker_y.child_handle()))
+            .await
+            .unwrap();
+        println!("  Supervisor linked to worker-x and worker-y, trap_exit=true");
+
+        worker_x.stop().await.unwrap(); // normal exit — supervisor still notified (trap_exit=true)
+        let _ = worker_y.panic_now().await;
+        rt::sleep(Duration::from_millis(100)).await;
+
+        let snapshot = sup_log.lock().unwrap().clone();
+        println!("  Supervisor received {} Exit messages:", snapshot.len());
+        for e in &snapshot {
+            println!("    from {} — {}", e.from, e.reason);
+        }
+
+        // Supervisor is still alive thanks to trap_exit
+        println!(
+            "  Supervisor still running: {}",
+            supervisor.exit_reason().is_none()
+        );
+        supervisor.child_handle().stop();
+        supervisor.join().await;
 
         // Give tracing a moment to flush
         rt::sleep(Duration::from_millis(50)).await;
