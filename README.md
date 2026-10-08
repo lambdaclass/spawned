@@ -7,6 +7,12 @@ An actor framework for Rust, inspired by Erlang/OTP.
 [![CI](https://github.com/lambdaclass/spawned/actions/workflows/ci.yml/badge.svg)](https://github.com/lambdaclass/spawned/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
+## Project Status
+
+**Spawned is actively maintained and used in production.** It powers the concurrency layer of [ethrex](https://github.com/lambdaclass/ethrex) (Ethereum L1/L2 execution client) and [ethlambda](https://github.com/lambdaclass/ethlambda) (Lean Ethereum consensus client), both developed by [LambdaClass](https://github.com/lambdaclass).
+
+The core API is stable, so periods without commits are expected (they mean things are working, not that the project is abandoned). New features land as those projects need them (see the [Roadmap](#roadmap)). Bug reports, questions, and pull requests are welcome and get answered.
+
 ## Quick Example
 
 Define a protocol, implement it on an actor, and call it:
