@@ -72,12 +72,12 @@ impl ChildHandle {
     /// Create a ChildHandle for tasks mode.
     pub(crate) fn from_tasks(
         id: ActorId,
-        cancellation_token: spawned_rt::tasks::CancellationToken,
+        cancel: CancelFn,
         completion_rx: spawned_rt::tasks::watch::Receiver<Option<ExitReason>>,
     ) -> Self {
         Self {
             id,
-            cancel: Arc::new(move || cancellation_token.cancel()),
+            cancel,
             completion: Completion::Tasks(completion_rx),
         }
     }
@@ -85,12 +85,12 @@ impl ChildHandle {
     /// Create a ChildHandle for threads mode.
     pub(crate) fn from_threads(
         id: ActorId,
-        cancellation_token: spawned_rt::threads::CancellationToken,
+        cancel: CancelFn,
         completion: Arc<(Mutex<Option<ExitReason>>, Condvar)>,
     ) -> Self {
         Self {
             id,
-            cancel: Arc::new(move || cancellation_token.cancel()),
+            cancel,
             completion: Completion::Threads(completion),
         }
     }
@@ -277,7 +277,10 @@ mod tests {
     fn child_handle_from_threads_basics() {
         let completion = Arc::new((Mutex::new(None), Condvar::new()));
         let token = spawned_rt::threads::CancellationToken::new();
-        let handle = ChildHandle::from_threads(ActorId::next(), token, completion.clone());
+        let cancel = Arc::new(move || {
+            token.cancel();
+        });
+        let handle = ChildHandle::from_threads(ActorId::next(), cancel, completion.clone());
 
         assert!(handle.is_alive());
         assert!(handle.exit_reason().is_none());
@@ -298,8 +301,12 @@ mod tests {
     fn child_handle_stop() {
         let completion = Arc::new((Mutex::new(None), Condvar::new()));
         let token = spawned_rt::threads::CancellationToken::new();
+        let token_clone = token.clone();
+        let cancel = Arc::new(move || {
+            token_clone.cancel();
+        });
         assert!(!token.is_cancelled());
-        let handle = ChildHandle::from_threads(ActorId::next(), token.clone(), completion);
+        let handle = ChildHandle::from_threads(ActorId::next(), cancel, completion);
         handle.stop();
         assert!(token.is_cancelled());
     }
@@ -308,9 +315,13 @@ mod tests {
     fn child_handle_equality_by_id() {
         let completion = Arc::new((Mutex::new(None), Condvar::new()));
         let token = spawned_rt::threads::CancellationToken::new();
+        let token_clone = token.clone();
+        let cancel = Arc::new(move || {
+            token_clone.cancel();
+        });
         let id = ActorId::next();
-        let h1 = ChildHandle::from_threads(id, token.clone(), completion.clone());
-        let h2 = ChildHandle::from_threads(id, token, completion);
+        let h1 = ChildHandle::from_threads(id, cancel.clone(), completion.clone());
+        let h2 = ChildHandle::from_threads(id, cancel, completion);
         assert_eq!(h1, h2);
     }
 
