@@ -230,6 +230,12 @@ removing Tokio is not a committed direction.
 - [Vale](https://vale.dev/)
 - [Gleam](https://gleam.run/)
 
+## Performance
+
+See the [reproducible baseline harness](benchmarks/README.md) and
+[initial local analysis](benchmarks/REPORT-2026-11-05.md). These microbenchmarks
+measure existing backends and document limits; they are not client-level results.
+
 ## Testing
 
 Run `cargo test --workspace`. See the [actor scenario testing guide](docs/TESTING.md)

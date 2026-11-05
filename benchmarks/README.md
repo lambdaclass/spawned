@@ -1,5 +1,8 @@
 # Performance baseline
 
+The [initial local report](REPORT-2026-11-05.md) includes raw results and a
+follow-up on dedicated-runtime worker counts.
+
 Run from the repository root with the Rust version in `.tool-versions`:
 
 ```sh
