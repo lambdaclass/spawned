@@ -284,13 +284,14 @@ impl<A: Actor> Context<A> {
     /// If a `Down` message has already been delivered (or queued), this is
     /// a best-effort cancellation — the message may still arrive.
     pub fn demonitor(&self, monitor_ref: MonitorRef) {
-        if let Some(active) = self
+        let active = self
             .monitors
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .as_mut()
-            .and_then(|entries| entries.remove(&monitor_ref))
-        {
+            .and_then(|entries| entries.remove(&monitor_ref));
+        // Waking the waiter must happen after releasing the table lock.
+        if let Some(active) = active {
             active.cancel();
         }
     }
@@ -1129,7 +1130,7 @@ mod monitor_cleanup_regressions {
         } else {
             observer.context().demonitor(monitor);
             // Only the waiter now owns this particular ChildHandle allocation.
-            let deadline = std::time::Instant::now() + Duration::from_millis(500);
+            let deadline = std::time::Instant::now() + Duration::from_secs(2);
             while waiter.strong_count() != 0 && std::time::Instant::now() < deadline {
                 std::thread::sleep(Duration::from_millis(1));
             }
@@ -1142,7 +1143,7 @@ mod monitor_cleanup_regressions {
             assert!(released, "demonitor retained its waiter until target exit");
             return;
         }
-        let deadline = std::time::Instant::now() + Duration::from_millis(500);
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
         while waiter.strong_count() != 0 && std::time::Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(1));
         }

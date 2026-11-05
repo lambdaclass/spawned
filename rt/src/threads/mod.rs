@@ -3,6 +3,8 @@
 pub mod mpsc;
 pub mod oneshot;
 
+// This cfg is only for cancellation models: instrumented tokens must be
+// constructed inside loom::model, not in ordinary actor or signal tests.
 #[cfg(spawned_loom)]
 use loom::sync::{
     atomic::{AtomicBool, Ordering},
