@@ -201,13 +201,22 @@ Protocols make this separation explicit: the trait defines *what* an actor does,
 
 ## Roadmap
 
-- **Supervision trees** — monitor, restart, and manage actor lifecycles with Erlang-style supervision strategies
-- **Observability and tracing** — built-in instrumentation for actor mailboxes, message latency, and lifecycle events
-- **Custom runtime** — replace tokio with a purpose-built runtime tailored for actor workloads
-- **Preemptive scheduling** — explore preemptive actor scheduling to prevent starvation from long-running handlers
-- **Virtual actors** — evaluate location-transparent, auto-activated actors inspired by [Orleans](https://learn.microsoft.com/en-us/dotnet/orleans/)
-- **Deterministic runtime** — reproducible execution for testing, inspired by [commonware](https://commonware.xyz)
-- **Landing page** — project website with guides, API reference, and interactive examples
+Preserve typed protocols, dynamic actors, and both async and synchronous thread
+execution while improving production visibility and recovery.
+
+1. **Optional runtime metrics** — mailbox depth and age, queue wait, handler
+   duration, request outcomes, and lifecycle events without editing handlers.
+2. **Representative benchmarks** — measure latency, throughput, memory, and
+   instrumentation overhead; instrument one Ethrex or Ethlambda workload.
+3. **Evidence-driven improvements** — evaluate bounded mailboxes, batching,
+   allocation reduction, or optional core affinity when measurements justify them.
+4. **Supervision** — explicit restart policies, limits, backoff, and defined
+   behavior for state, references, and requests across actor failure.
+
+See the [detailed roadmap](docs/PLAN.md) for acceptance criteria and the
+[Silver/flux research](docs/research/silver-flux.md) for transferable ideas.
+A custom runtime, busy spinning, and shared-memory transport remain research;
+removing Tokio is not a committed direction.
 
 ## Inspiration
 
