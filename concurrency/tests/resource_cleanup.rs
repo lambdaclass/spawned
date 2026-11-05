@@ -125,3 +125,23 @@ fn cancelled_thread_exit_wait_does_not_occupy_blocking_pool() {
         "cancelled exit wait retained the sole blocking worker"
     );
 }
+
+#[test]
+fn thread_exit_waits_work_inside_futures_executor() {
+    for already_exited in [false, true] {
+        let actor = threads::ActorStart::start(Sink);
+        let child = actor.child_handle();
+        child.stop();
+        if already_exited {
+            actor.join();
+        }
+        futures::executor::block_on(async {
+            assert_eq!(
+                child.wait_exit_blocking(),
+                spawned_concurrency::ExitReason::Normal
+            );
+            assert_eq!(actor.wait_exit(), spawned_concurrency::ExitReason::Normal);
+            actor.join();
+        });
+    }
+}

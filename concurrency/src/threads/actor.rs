@@ -213,6 +213,8 @@ impl<A: Actor> Context<A> {
     ///
     /// Monitors are unidirectional: the monitored actor is unaware of the
     /// monitor and unaffected by it.
+    /// Registration after owner shutdown starts (including in `stopped()`)
+    /// returns an inert reference and creates no waiter or notification.
     ///
     /// **Resource cost (threads mode):** each active monitor occupies one OS
     /// thread until the target exits, the monitor is cancelled, or its owner
@@ -232,6 +234,9 @@ impl<A: Actor> Context<A> {
             if self.cancellation_token.is_cancelled() {
                 return monitor_ref;
             }
+            let Some(monitors) = monitors.as_mut() else {
+                return monitor_ref;
+            };
             monitors.insert(monitor_ref, active.clone());
         }
 
@@ -255,11 +260,13 @@ impl<A: Actor> Context<A> {
             // Remove the entry from the monitor table so it doesn't accumulate
             // stale entries over the actor's lifetime. Done before delivery
             // since `demonitor` is now a no-op for this monitor anyway.
-            monitors
+            let deliver = monitors
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
-                .remove(&monitor_ref);
-            if !active.is_cancelled() {
+                .as_mut()
+                .and_then(|entries| entries.remove(&monitor_ref))
+                .is_some();
+            if deliver {
                 let _ = actor_ref.send(Down {
                     monitor_ref,
                     reason,
@@ -281,7 +288,8 @@ impl<A: Actor> Context<A> {
             .monitors
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .remove(&monitor_ref)
+            .as_mut()
+            .and_then(|entries| entries.remove(&monitor_ref))
         {
             active.cancel();
         }
@@ -467,7 +475,7 @@ impl<A: Actor> ActorRef<A> {
 
     /// Block until the actor stops and return the exit reason.
     pub fn wait_exit(&self) -> ExitReason {
-        self.child_handle().wait_exit_blocking()
+        crate::child_handle::wait_for_thread_exit_blocking(self.completion.clone())
     }
 
     /// The actor's unique identity.
@@ -516,7 +524,7 @@ impl<A: Actor> ActorRef<A> {
         let cancellation_token = CancellationToken::new();
         let (completion_tx, completion) = spawned_rt::tasks::watch::channel(None);
         let id = ActorId::next();
-        let monitors: MonitorTable = Arc::new(Mutex::new(HashMap::new()));
+        let monitors: MonitorTable = Arc::new(Mutex::new(Some(HashMap::new())));
 
         let actor_ref = ActorRef {
             id,
@@ -1090,23 +1098,42 @@ mod monitor_cleanup_regressions {
     impl Handler<Down> for Idle {
         fn handle(&mut self, _: Down, _: &Context<Self>) {}
     }
+    #[test]
+    fn closed_monitor_table_rejects_late_registration() {
+        let observer = Idle.start();
+        let target = Idle.start();
+        // Model cleanup during an unexpected unwind before token cancellation.
+        drop(MonitorCleanup(observer.monitors.clone()));
+        let child = target.child_handle();
+        let waiter = child.lifetime_probe();
+        observer.context().monitor(&child);
+        drop(child);
+        assert_eq!(waiter.strong_count(), 0);
+        assert!(observer.monitors.lock().unwrap().is_none());
+        observer.child_handle().stop();
+        target.child_handle().stop();
+        observer.join();
+        target.join();
+    }
     fn check_cleanup(stop_owner: bool) {
         let target = Idle.start();
         let observer = Idle.start();
-        let table = Arc::downgrade(&observer.monitors);
-        let monitor = observer.context().monitor(&target.child_handle());
+        let child = target.child_handle();
+        let waiter = child.lifetime_probe();
+        let monitor = observer.context().monitor(&child);
+        drop(child);
         if stop_owner {
             observer.child_handle().stop();
             observer.join();
             drop(observer);
         } else {
             observer.context().demonitor(monitor);
-            // Owner, its Context, and the cleanup guard are legitimate table owners.
+            // Only the waiter now owns this particular ChildHandle allocation.
             let deadline = std::time::Instant::now() + Duration::from_millis(500);
-            while table.strong_count() > 3 && std::time::Instant::now() < deadline {
+            while waiter.strong_count() != 0 && std::time::Instant::now() < deadline {
                 std::thread::sleep(Duration::from_millis(1));
             }
-            let released = table.strong_count() <= 3;
+            let released = waiter.strong_count() == 0;
             observer.child_handle().stop();
             observer.join();
             drop(observer);
@@ -1116,10 +1143,10 @@ mod monitor_cleanup_regressions {
             return;
         }
         let deadline = std::time::Instant::now() + Duration::from_millis(500);
-        while table.strong_count() != 0 && std::time::Instant::now() < deadline {
+        while waiter.strong_count() != 0 && std::time::Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(1));
         }
-        let released = table.strong_count() == 0;
+        let released = waiter.strong_count() == 0;
         target.child_handle().stop();
         target.join();
         assert!(released, "stopped observer retained its monitor waiter");

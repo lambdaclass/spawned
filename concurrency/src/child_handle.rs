@@ -95,6 +95,11 @@ impl ChildHandle {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn lifetime_probe(&self) -> std::sync::Weak<dyn Fn() + Send + Sync> {
+        Arc::downgrade(&self.cancel)
+    }
+
     /// The actor's unique identity.
     pub fn id(&self) -> ActorId {
         self.id
@@ -135,7 +140,7 @@ impl ChildHandle {
     pub fn wait_exit_blocking(&self) -> ExitReason {
         match &self.completion {
             Completion::Tasks(rx) => wait_for_tasks_exit_blocking(rx.clone()),
-            Completion::Threads(rx) => futures::executor::block_on(wait_loop(rx.clone())),
+            Completion::Threads(rx) => wait_for_thread_exit_blocking(rx.clone()),
         }
     }
 
@@ -160,6 +165,33 @@ async fn wait_loop(mut rx: spawned_rt::tasks::watch::Receiver<Option<ExitReason>
         }
         if rx.changed().await.is_err() {
             return ExitReason::Kill;
+        }
+    }
+}
+
+/// Poll a watch subscription with a thread waker, without entering an executor.
+/// This preserves synchronous waits even inside an existing futures executor.
+pub(crate) fn wait_for_thread_exit_blocking(
+    rx: spawned_rt::tasks::watch::Receiver<Option<ExitReason>>,
+) -> ExitReason {
+    use std::future::Future;
+    use std::task::{Context, Poll, Wake, Waker};
+    struct ThreadWake(std::thread::Thread);
+    impl Wake for ThreadWake {
+        fn wake(self: Arc<Self>) {
+            self.0.unpark();
+        }
+        fn wake_by_ref(self: &Arc<Self>) {
+            self.0.unpark();
+        }
+    }
+    let waker = Waker::from(Arc::new(ThreadWake(std::thread::current())));
+    let mut cx = Context::from_waker(&waker);
+    let mut wait = std::pin::pin!(wait_loop(rx));
+    loop {
+        match wait.as_mut().poll(&mut cx) {
+            Poll::Ready(reason) => return reason,
+            Poll::Pending => std::thread::park(),
         }
     }
 }
@@ -250,7 +282,7 @@ mod tests {
 
     #[test]
     fn child_handle_from_threads_basics() {
-        let (_completion_tx, completion) = spawned_rt::tasks::watch::channel(None);
+        let (completion_tx, completion) = spawned_rt::tasks::watch::channel(None);
         let token = spawned_rt::threads::CancellationToken::new();
         let handle = ChildHandle::from_threads(ActorId::next(), token, completion.clone());
 
@@ -258,7 +290,7 @@ mod tests {
         assert!(handle.exit_reason().is_none());
 
         // Simulate actor completion
-        _completion_tx.send_replace(Some(ExitReason::Normal));
+        completion_tx.send_replace(Some(ExitReason::Normal));
 
         assert!(!handle.is_alive());
         assert_eq!(handle.exit_reason(), Some(ExitReason::Normal));
