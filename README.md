@@ -220,3 +220,8 @@ Protocols make this separation explicit: the trait defines *what* an actor does,
 - [Actors with Tokio](https://ryhl.io/blog/actors-with-tokio/)
 - [Vale](https://vale.dev/)
 - [Gleam](https://gleam.run/)
+
+## Testing
+
+Run `cargo test --workspace`. See the [actor scenario testing guide](docs/TESTING.md)
+for generated lifecycle races, failure replay, and longer test campaigns.

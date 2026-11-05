@@ -103,3 +103,22 @@ fn listener_stops_on_cancellation() {
         "Expected at least some items to be processed"
     );
 }
+
+#[test]
+fn stopped_actor_does_not_poll_iterator() {
+    let polls = Arc::new(AtomicU64::new(0));
+    let actor = Collector {
+        items: vec![],
+        done: Default::default(),
+    }
+    .start();
+    actor.child_handle().stop();
+    actor.join();
+    let count = polls.clone();
+    let iter = std::iter::from_fn(move || {
+        count.fetch_add(1, Ordering::SeqCst);
+        None::<Push>
+    });
+    spawn_listener(actor.context(), iter).join().unwrap();
+    assert_eq!(polls.load(Ordering::SeqCst), 0);
+}

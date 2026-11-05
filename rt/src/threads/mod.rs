@@ -3,10 +3,19 @@
 pub mod mpsc;
 pub mod oneshot;
 
+// This cfg is only for cancellation models: instrumented tokens must be
+// constructed inside loom::model, not in ordinary actor or signal tests.
+#[cfg(spawned_loom)]
+use loom::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, Mutex,
+};
+#[cfg(not(spawned_loom))]
 use std::sync::{
     atomic::{AtomicBool, Ordering},
-    mpsc as std_mpsc, Arc, Mutex, OnceLock,
+    Arc, Mutex,
 };
+use std::sync::{mpsc as std_mpsc, OnceLock};
 pub use std::{
     future::Future,
     thread::{sleep, spawn, JoinHandle},
@@ -45,7 +54,7 @@ type CancelCallback = Box<dyn FnOnce() + Send>;
 ///
 /// Supports registering callbacks via `on_cancel()` that fire when
 /// the token is cancelled, enabling efficient waiting patterns.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct CancellationToken {
     is_cancelled: Arc<AtomicBool>,
     callbacks: Arc<Mutex<Vec<CancelCallback>>>,
@@ -56,6 +65,12 @@ impl std::fmt::Debug for CancellationToken {
         f.debug_struct("CancellationToken")
             .field("is_cancelled", &self.is_cancelled())
             .finish()
+    }
+}
+
+impl Default for CancellationToken {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

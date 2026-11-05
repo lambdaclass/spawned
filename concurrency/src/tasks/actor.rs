@@ -1,7 +1,7 @@
 use crate::child_handle::{ActorId, ChildHandle};
 use crate::error::{panic_message, ActorError, ExitReason};
 use crate::message::Message;
-use crate::monitor::{Down, MonitorRef};
+use crate::monitor::{Down, MonitorCleanup, MonitorRef, MonitorTable};
 use core::pin::pin;
 use futures::future::{self, FutureExt as _};
 use spawned_rt::{
@@ -14,17 +14,9 @@ use std::{
     future::Future,
     panic::AssertUnwindSafe,
     pin::Pin,
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc, Mutex,
-    },
+    sync::{Arc, Mutex},
     time::Duration,
 };
-
-/// Per-actor table of active monitors. Each entry maps a `MonitorRef` to a
-/// flag the watcher checks before delivering `Down`. Shared across `Context`
-/// clones via `Arc`.
-type MonitorTable = Arc<Mutex<HashMap<MonitorRef, Arc<AtomicBool>>>>;
 
 pub use crate::response::DEFAULT_REQUEST_TIMEOUT;
 
@@ -259,32 +251,53 @@ impl<A: Actor> Context<A> {
     ///
     /// Monitors are unidirectional: the monitored actor is unaware of the
     /// monitor and unaffected by it.
+    /// Registration after owner shutdown starts (including in `stopped()`)
+    /// returns an inert reference and creates no waiter or notification.
     pub fn monitor(&self, target: &ChildHandle) -> MonitorRef
     where
         A: Handler<Down>,
     {
         let monitor_ref = MonitorRef::next();
-        let active = Arc::new(AtomicBool::new(true));
+        let active = spawned_rt::tasks::CancellationToken::new();
 
-        self.monitors
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .insert(monitor_ref, active.clone());
+        {
+            let mut monitors = self.monitors.lock().unwrap_or_else(|p| p.into_inner());
+            // The token check makes registration inert once shutdown starts.
+            // The closed table below serializes registration with exit cleanup,
+            // even on paths that unwind before cancelling the owner token.
+            if self.cancellation_token.is_cancelled() {
+                return monitor_ref;
+            }
+            let Some(monitors) = monitors.as_mut() else {
+                return monitor_ref;
+            };
+            monitors.insert(monitor_ref, active.clone());
+        }
 
         let target = target.clone();
         let actor_ref = self.actor_ref();
         let monitors = self.monitors.clone();
 
         rt::spawn(async move {
-            let reason = target.wait_exit_async().await;
+            let reason = match futures::future::select(
+                Box::pin(active.cancelled()),
+                Box::pin(target.wait_exit_async()),
+            )
+            .await
+            {
+                futures::future::Either::Left(_) => return,
+                futures::future::Either::Right((reason, _)) => reason,
+            };
             // Remove the entry from the monitor table so it doesn't accumulate
             // stale entries over the actor's lifetime. Done before delivery
             // since `demonitor` is now a no-op for this monitor anyway.
-            monitors
+            let deliver = monitors
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
-                .remove(&monitor_ref);
-            if active.load(Ordering::Acquire) {
+                .as_mut()
+                .and_then(|entries| entries.remove(&monitor_ref))
+                .is_some();
+            if deliver {
                 let _ = actor_ref.send(Down {
                     monitor_ref,
                     reason,
@@ -297,17 +310,20 @@ impl<A: Actor> Context<A> {
 
     /// Cancel a previously-set monitor.
     ///
+    /// The monitor waiter is released promptly.
     /// If the target hasn't yet died, no `Down` message will be delivered.
     /// If a `Down` message has already been delivered (or queued), this is
     /// a best-effort cancellation — the message may still arrive.
     pub fn demonitor(&self, monitor_ref: MonitorRef) {
-        if let Some(active) = self
+        let active = self
             .monitors
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .remove(&monitor_ref)
-        {
-            active.store(false, Ordering::Release);
+            .as_mut()
+            .and_then(|entries| entries.remove(&monitor_ref));
+        // Waking the waiter must happen after releasing the table lock.
+        if let Some(active) = active {
+            active.cancel();
         }
     }
 
@@ -535,7 +551,7 @@ impl<A: Actor> ActorRef<A> {
         let (tx, rx) = mpsc::channel::<Box<dyn Envelope<A> + Send>>();
         let cancellation_token = CancellationToken::new();
         let (completion_tx, completion_rx) = watch::channel(None);
-        let monitors: MonitorTable = Arc::new(Mutex::new(HashMap::new()));
+        let monitors: MonitorTable = Arc::new(Mutex::new(Some(HashMap::new())));
 
         let actor_ref = ActorRef {
             id: ActorId::next(),
@@ -582,6 +598,7 @@ async fn run_actor<A: Actor>(
     mut rx: mpsc::Receiver<Box<dyn Envelope<A> + Send>>,
     cancellation_token: CancellationToken,
 ) -> ExitReason {
+    let _monitor_cleanup = MonitorCleanup(ctx.monitors.clone());
     let start_result = AssertUnwindSafe(actor.started(&ctx)).catch_unwind().await;
     if let Err(panic) = start_result {
         let msg = panic_message(&*panic);
@@ -591,7 +608,11 @@ async fn run_actor<A: Actor>(
     }
 
     if cancellation_token.is_cancelled() {
-        let _ = AssertUnwindSafe(actor.stopped(&ctx)).catch_unwind().await;
+        if let Err(panic) = AssertUnwindSafe(actor.stopped(&ctx)).catch_unwind().await {
+            let msg = panic_message(&*panic);
+            tracing::error!("Panic in stopped() callback: {msg}");
+            return ExitReason::Panic(format!("panic in stopped(): {msg}"));
+        }
         return ExitReason::Normal;
     }
 
@@ -1502,7 +1523,11 @@ mod tests {
         }
         impl Handler<Inspect> for Watcher {
             async fn handle(&mut self, _msg: Inspect, ctx: &Context<Self>) -> usize {
-                ctx.monitors.lock().unwrap().len()
+                ctx.monitors
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .map_or(0, HashMap::len)
             }
         }
 
@@ -1599,5 +1624,103 @@ mod tests {
             rt::sleep(Duration::from_millis(50)).await;
             // If we got here without panicking, the test passes.
         });
+    }
+}
+
+#[cfg(test)]
+mod monitor_cleanup_regressions {
+    use super::*;
+    struct Idle;
+    impl Actor for Idle {}
+    impl Handler<Down> for Idle {
+        async fn handle(&mut self, _: Down, _: &Context<Self>) {}
+    }
+    #[test]
+    fn closed_monitor_table_rejects_late_registration() {
+        let rt = rt::Runtime::new().unwrap();
+        let _entered = rt.enter();
+        let observer = Idle.start();
+        let target = Idle.start();
+        // Model cleanup during an unexpected unwind before token cancellation.
+        drop(MonitorCleanup(observer.monitors.clone()));
+        let child = target.child_handle();
+        let waiter = child.lifetime_probe();
+        observer.context().monitor(&child);
+        drop(child);
+        assert_eq!(waiter.strong_count(), 0);
+        assert!(observer.monitors.lock().unwrap().is_none());
+        observer.child_handle().stop();
+        target.child_handle().stop();
+        rt.block_on(observer.join());
+        rt.block_on(target.join());
+    }
+    fn check_cleanup(stop_owner: bool) {
+        let rt = rt::Runtime::new().unwrap();
+        let _entered = rt.enter();
+        let target = Idle.start();
+        let observer = Idle.start();
+        let child = target.child_handle();
+        let waiter = child.lifetime_probe();
+        let monitor = observer.context().monitor(&child);
+        drop(child);
+        if stop_owner {
+            observer.child_handle().stop();
+            rt.block_on(observer.join());
+            drop(observer);
+        } else {
+            observer.context().demonitor(monitor);
+            // Only the waiter now owns this particular ChildHandle allocation.
+            let deadline = std::time::Instant::now() + Duration::from_secs(2);
+            while waiter.strong_count() != 0 && std::time::Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            let released = waiter.strong_count() == 0;
+            observer.child_handle().stop();
+            rt.block_on(observer.join());
+            drop(observer);
+            target.child_handle().stop();
+            rt.block_on(target.join());
+            assert!(released, "demonitor retained its waiter until target exit");
+            return;
+        }
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while waiter.strong_count() != 0 && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let released = waiter.strong_count() == 0;
+        target.child_handle().stop();
+        rt.block_on(target.join());
+        assert!(released, "stopped observer retained its monitor waiter");
+    }
+    #[test]
+    fn demonitor_releases_waiter() {
+        check_cleanup(false);
+    }
+    #[test]
+    fn stopped_observer_releases_waiter() {
+        check_cleanup(true);
+    }
+}
+
+#[cfg(test)]
+mod early_stop_regression {
+    use super::*;
+    struct EarlyStop;
+    impl Actor for EarlyStop {
+        async fn started(&mut self, ctx: &Context<Self>) {
+            ctx.stop();
+        }
+        async fn stopped(&mut self, _: &Context<Self>) {
+            panic!("cleanup failed");
+        }
+    }
+    #[test]
+    fn panic_during_early_stop_is_reported() {
+        let rt = rt::Runtime::new().unwrap();
+        let _enter = rt.enter();
+        let actor = EarlyStop.start();
+        assert!(
+            matches!(rt.block_on(actor.wait_exit()), ExitReason::Panic(message) if message.contains("cleanup failed"))
+        );
     }
 }
