@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import markdown
 SCALE=['active128_p32','active128_p128','active512_p128','active1024_p256']
-PREFERRED=['async','threads','plain-tokio','dedicated-current','dedicated-shared','dedicated-managed','sharded-16','ready-16','ready-adaptive','local-ready-16']
+PREFERRED=['async','threads','blocking','plain-tokio','dedicated-current','dedicated-shared','dedicated-managed','sharded-16','ready-16','ready-adaptive','local-ready-16']
 
 def aggregate(rows,metric):
     values=[float(r[metric]) for r in rows if r.get('status')=='ok' and r.get(metric) not in ['',None] ]
@@ -22,6 +22,8 @@ def main():
   if (folder/'raw.csv').exists():studies[folder.name]=list(csv.DictReader((folder/'raw.csv').open()))
  plt.rcParams.update({'font.family':'DejaVu Sans','font.size':10,'axes.spines.top':False,'axes.spines.right':False,'axes.grid':True,'grid.alpha':.2,'figure.dpi':140,'savefig.bbox':'tight'})
  doc=['# Spawned backend design study','', 'Measured runtime, transport, scheduler and I/O experiments. Read the methodology and compatibility limits before choosing a backend. Public actor/protocol APIs and production defaults are unchanged.','', '## How to read this report','', 'Each platform is analyzed separately. Linux is an OrbStack ARM64 VM/container, not bare metal. Lines and bars use medians; error bars show observed min/max across repeated processes, not confidence intervals. Failed starts and watchdogs are retained and excluded from performance medians. Prototype controls omit some actor lifecycle semantics, so raw speed alone is not a replacement criterion.','']
+ findings=Path(__file__).parent/'DESIGN-FINDINGS.md'
+ if findings.exists():doc += [findings.read_text(),'']
  figures=[]
  def save(fig,name,caption):
   png=out/'graphs'/f'{name}.png';fig.savefig(png);fig.savefig(out/'graphs'/f'{name}.svg');plt.close(fig)
@@ -82,16 +84,20 @@ def main():
      if c and h and c[0]>0:labels.append(v);cold.append(c[0]/1e6);busy.append(h[0]/1e6)
     fig,ax=plt.subplots(figsize=(11,5));x=np.arange(len(labels));ax.bar(x-.2,cold,.4,label='Cold actors');ax.bar(x+.2,busy,.4,label='Hot actor');ax.set_xticks(x,labels,rotation=30,ha='right');ax.set_yscale('log');ax.set_ylabel('Completion p99 (ms)');ax.set_title(f'{name}: hotspot fairness and placement');ax.legend();fig.tight_layout();save(fig,name+'-fairness','Static placement puts the hot actor on one shard; this tests imbalance as well as batch policy.')
   if ios:
-   variants=[v for v in ['std-io','tokio-io','monoio-legacy','monoio-uring','tokio-mux','monoio-legacy-mux','monoio-uring-mux'] if any(r['variant']==v for r in ios)]
+   variants=[v for v in ['std-io','tokio-io','monoio-legacy','monoio-uring','tokio-mux','monoio-legacy-mux','monoio-uring-mux','tokio-mux4','monoio-legacy-mux4','monoio-uring-mux4'] if any(r['variant']==v for r in ios)]
    series(ios,variants,['1','16','128'],'completed_per_s',1,'Completed echo exchanges / second',f'{name}: persistent TCP I/O throughput',name+'-io-throughput')
    series(ios,variants,['1','16','128'],'p99_ns',1e-3,'Echo p99 (µs)',f'{name}: persistent TCP I/O latency',name+'-io-latency',True)
   doc+=['### Median results','','| Variant | Case | Successful samples | Replies/s | p99 (ms) | Peak RSS (MB) |','|---|---|---:|---:|---:|---:|']
   keys=sorted({(r['variant'],r['case']) for r in rows})
   for v,c in keys:
    group=[r for r in rows if r['variant']==v and r['case']==c];rate=aggregate(group,'completed_per_s');lat=aggregate(group,'completion_p99_ns' if group[0]['group']=='messages' else 'p99_ns');rss=aggregate(group,'rss_bytes')
-   if rate:doc.append(f'| {v} | {c} | {sum(r["status"]=="ok" for r in group)} | {rate[0]:,.0f} | {lat[0]/1e6:.4f} | {rss[0]/1e6:.1f} |')
+   if rate:
+    rate_text=f'{rate[0]:,.0f}' if c!='idle4' else '— (idle probe)'
+    lat_text=f'{lat[0]/1e6:.4f}' if lat else '—'
+    rss_text=f'{rss[0]/1e6:.1f}' if rss else '—'
+    doc.append(f'| {v} | {c} | {sum(r["status"]=="ok" for r in group)} | {rate_text} | {lat_text} | {rss_text} |')
   doc+=['']
- doc+=['## Design interpretation','','A backend is eligible for incorporation only after both performance and compatibility evidence support it. Keep async Tokio as the general-purpose reference. Evaluate managed shared-runtime ownership and matched reply-channel improvements first. Treat native runnable queues as scheduler prototypes requiring full lifecycle integration. Per-core placement can help locality while worsening skewed-load tails. Spinning consumes CPU even without useful work. io_uring results are Linux VM evidence and cannot rank macOS kqueue against Linux kernels directly.','', '## All implementations and tests','','The following guide defines every backend/control and test, including semantic differences and future integration work.','']
+ doc+=['## Incorporation criteria','','A backend is eligible for incorporation only after both performance and compatibility evidence support it. Keep async Tokio as the general-purpose reference. Treat native runnable queues as scheduler prototypes requiring full lifecycle integration. Per-core placement can help locality while worsening skewed-load tails. Spinning consumes CPU even without useful work. The reply experiment is a transport control: the normal async path already uses Tokio oneshots. io_uring results are Linux VM evidence and cannot rank macOS kqueue against Linux kernels directly.','', '## All implementations and tests','','The following guide defines every backend/control and test, including semantic differences and future integration work.','']
  guide=(Path(__file__).parent/'EXPERIMENTS.md').read_text();doc.append(guide.replace('# Backend design experiments: team guide','### Study guide',1))
  report='\n'.join(doc);(out/'REPORT.md').write_text(report)
  body=markdown.markdown(report,extensions=['tables','fenced_code','toc'])

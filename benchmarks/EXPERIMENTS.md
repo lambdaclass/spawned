@@ -106,9 +106,10 @@ no new default should be chosen without wider client compatibility tests.
 `io_designs.rs` reuses persistent loopback TCP connections with TCP_NODELAY.
 Each connection sends and validates 64-byte request/reply frames. Cases use
 1, 16 and 128 connections, 1,000 measured exchanges per connection after warmup.
-A common native echo server uses one OS thread per connection. Client execution
-also uses one OS thread per connection, so this isolates an I/O-runtime control,
-not an optimized multiplexed server or a complete actor backend.
+A common native echo server uses one OS thread per connection. The per-connection controls also use one client OS thread per connection. The
+`*-mux` controls distribute all connections across one client reactor, and
+`*-mux4` across up to four reactors. The server remains identical across these
+cases. None is a complete actor backend.
 
 | I/O variant | Mechanism | What it tests |
 |---|---|---|
