@@ -1,6 +1,6 @@
 use crate::error::ExitReason;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::Arc;
 
 // ---------------------------------------------------------------------------
 // ActorId
@@ -35,8 +35,8 @@ impl std::fmt::Display for ActorId {
 pub(crate) enum Completion {
     /// Tasks mode: watch channel carrying Option<ExitReason>.
     Tasks(spawned_rt::tasks::watch::Receiver<Option<ExitReason>>),
-    /// Threads mode: Mutex + Condvar carrying Option<ExitReason>.
-    Threads(Arc<(Mutex<Option<ExitReason>>, Condvar)>),
+    /// Threads mode: watch channel, also waitable without an async runtime.
+    Threads(spawned_rt::tasks::watch::Receiver<Option<ExitReason>>),
 }
 
 // ---------------------------------------------------------------------------
@@ -86,7 +86,7 @@ impl ChildHandle {
     pub(crate) fn from_threads(
         id: ActorId,
         cancellation_token: spawned_rt::threads::CancellationToken,
-        completion: Arc<(Mutex<Option<ExitReason>>, Condvar)>,
+        completion: spawned_rt::tasks::watch::Receiver<Option<ExitReason>>,
     ) -> Self {
         Self {
             id,
@@ -115,11 +115,7 @@ impl ChildHandle {
     pub fn exit_reason(&self) -> Option<ExitReason> {
         match &self.completion {
             Completion::Tasks(rx) => rx.borrow().clone(),
-            Completion::Threads(completion) => completion
-                .0
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .clone(),
+            Completion::Threads(rx) => rx.borrow().clone(),
         }
     }
 
@@ -128,7 +124,7 @@ impl ChildHandle {
     /// Safe contexts:
     /// - Sync code with no active tokio runtime
     /// - Multi-thread tokio runtime (uses `block_in_place`)
-    /// - Threads-mode actors (uses Condvar directly)
+    /// - Threads-mode actors (waits without a Tokio runtime)
     ///
     /// **Panics** if called from within a non-multi-thread tokio runtime (e.g.,
     /// current-thread) on a tasks-mode handle: blocking the only runtime thread
@@ -139,27 +135,18 @@ impl ChildHandle {
     pub fn wait_exit_blocking(&self) -> ExitReason {
         match &self.completion {
             Completion::Tasks(rx) => wait_for_tasks_exit_blocking(rx.clone()),
-            Completion::Threads(completion) => wait_for_threads_exit_blocking(completion),
+            Completion::Threads(rx) => futures::executor::block_on(wait_loop(rx.clone())),
         }
     }
 
     /// Async wait until the actor stops and return the exit reason.
     ///
-    /// Works with both execution modes. For tasks-mode handles, awaits the
-    /// watch channel directly. For threads-mode handles, delegates to a
-    /// blocking task via `spawn_blocking` to avoid blocking the async runtime.
-    ///
-    /// **Note:** When used with threads-mode handles, this consumes a thread from
-    /// tokio's blocking pool for the duration of the wait.
+    /// Works with both execution modes without occupying a blocking worker.
+    /// Dropping this future releases its subscription immediately.
     pub async fn wait_exit_async(&self) -> ExitReason {
         match &self.completion {
             Completion::Tasks(rx) => wait_loop(rx.clone()).await,
-            Completion::Threads(_) => {
-                let handle = self.clone();
-                spawned_rt::tasks::spawn_blocking(move || handle.wait_exit_blocking())
-                    .await
-                    .unwrap_or(ExitReason::Kill)
-            }
+            Completion::Threads(rx) => wait_loop(rx.clone()).await,
         }
     }
 }
@@ -174,18 +161,6 @@ async fn wait_loop(mut rx: spawned_rt::tasks::watch::Receiver<Option<ExitReason>
         if rx.changed().await.is_err() {
             return ExitReason::Kill;
         }
-    }
-}
-
-/// Block the current thread on a Mutex+Condvar until it carries an exit reason.
-fn wait_for_threads_exit_blocking(completion: &(Mutex<Option<ExitReason>>, Condvar)) -> ExitReason {
-    let (lock, cvar) = completion;
-    let mut guard = lock.lock().unwrap_or_else(|p| p.into_inner());
-    loop {
-        if let Some(reason) = guard.clone() {
-            return reason;
-        }
-        guard = cvar.wait(guard).unwrap_or_else(|p| p.into_inner());
     }
 }
 
@@ -275,7 +250,7 @@ mod tests {
 
     #[test]
     fn child_handle_from_threads_basics() {
-        let completion = Arc::new((Mutex::new(None), Condvar::new()));
+        let (_completion_tx, completion) = spawned_rt::tasks::watch::channel(None);
         let token = spawned_rt::threads::CancellationToken::new();
         let handle = ChildHandle::from_threads(ActorId::next(), token, completion.clone());
 
@@ -283,12 +258,7 @@ mod tests {
         assert!(handle.exit_reason().is_none());
 
         // Simulate actor completion
-        {
-            let (lock, cvar) = &*completion;
-            let mut guard = lock.lock().unwrap();
-            *guard = Some(ExitReason::Normal);
-            cvar.notify_all();
-        }
+        _completion_tx.send_replace(Some(ExitReason::Normal));
 
         assert!(!handle.is_alive());
         assert_eq!(handle.exit_reason(), Some(ExitReason::Normal));
@@ -296,7 +266,7 @@ mod tests {
 
     #[test]
     fn child_handle_stop() {
-        let completion = Arc::new((Mutex::new(None), Condvar::new()));
+        let (_completion_tx, completion) = spawned_rt::tasks::watch::channel(None);
         let token = spawned_rt::threads::CancellationToken::new();
         assert!(!token.is_cancelled());
         let handle = ChildHandle::from_threads(ActorId::next(), token.clone(), completion);
@@ -306,7 +276,7 @@ mod tests {
 
     #[test]
     fn child_handle_equality_by_id() {
-        let completion = Arc::new((Mutex::new(None), Condvar::new()));
+        let (_completion_tx, completion) = spawned_rt::tasks::watch::channel(None);
         let token = spawned_rt::threads::CancellationToken::new();
         let id = ActorId::next();
         let h1 = ChildHandle::from_threads(id, token.clone(), completion.clone());

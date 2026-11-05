@@ -51,6 +51,21 @@ impl Message for Down {
     type Result = ();
 }
 
+/// Each monitor owns a cancellation token that wakes its waiter immediately.
+pub(crate) type MonitorTable = std::sync::Arc<
+    std::sync::Mutex<std::collections::HashMap<MonitorRef, spawned_rt::tasks::CancellationToken>>,
+>;
+
+/// Release outgoing monitors on every actor exit path, including unwinding.
+pub(crate) struct MonitorCleanup(pub MonitorTable);
+impl Drop for MonitorCleanup {
+    fn drop(&mut self) {
+        for (_, token) in self.0.lock().unwrap_or_else(|p| p.into_inner()).drain() {
+            token.cancel();
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -11,11 +11,13 @@ const LIMIT: Duration = Duration::from_secs(5);
 enum Command {
     Work(u64),
     Watch(ChildHandle),
+    Unwatch(MonitorRef),
     Boom,
 }
 #[derive(Debug, PartialEq)]
 enum Reply {
     Work(u64),
+    Unwatched,
     Watch(MonitorRef),
 }
 impl Message for Command {
@@ -43,6 +45,10 @@ mod tasks {
                     Reply::Work(id)
                 }
                 Command::Watch(target) => Reply::Watch(ctx.monitor(&target)),
+                Command::Unwatch(id) => {
+                    ctx.demonitor(id);
+                    Reply::Unwatched
+                }
                 Command::Boom => panic!("scenario injected panic"),
             }
         }
@@ -71,6 +77,10 @@ mod threads {
                     Reply::Work(id)
                 }
                 Command::Watch(target) => Reply::Watch(ctx.monitor(&target)),
+                Command::Unwatch(id) => {
+                    ctx.demonitor(id);
+                    Reply::Unwatched
+                }
                 Command::Boom => panic!("scenario injected panic"),
             }
         }
@@ -300,4 +310,169 @@ fn lifecycle_race_regression() {
     for backend in 0..4 {
         scenario(backend, 3, &[(0, 0), (1, 1), (2, 2), (0, 2)], &[0, 1, 2]);
     }
+}
+
+#[test]
+fn concurrent_producers_preserve_order_and_reply_identity() {
+    for backend in 0..4 {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        let _entered = rt.enter();
+        let (tx, _) = mpsc::channel();
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let actor = Handle::start(
+            Worker {
+                processed: log.clone(),
+                events: tx,
+            },
+            backend,
+        );
+        let _cleanup = Cleanup(vec![actor.child()]);
+        let gate = Arc::new(Barrier::new(4));
+        std::thread::scope(|scope| {
+            for producer in 0..4u64 {
+                let actor = actor.clone();
+                let gate = gate.clone();
+                let rt = &rt;
+                scope.spawn(move || {
+                    gate.wait();
+                    for seq in 0..64u64 {
+                        let id = producer * 1000 + seq;
+                        if seq % 3 == 0 {
+                            actor.send(Command::Work(id)).unwrap();
+                        } else {
+                            assert_eq!(
+                                actor.request(rt, Command::Work(id)).unwrap(),
+                                Reply::Work(id)
+                            );
+                        }
+                    }
+                    assert_eq!(
+                        actor
+                            .request(rt, Command::Work(producer * 1000 + 64))
+                            .unwrap(),
+                        Reply::Work(producer * 1000 + 64)
+                    );
+                });
+            }
+        });
+        let actual = log.lock().unwrap();
+        assert_eq!(actual.len(), 4 * 65);
+        for producer in 0..4u64 {
+            let observed: Vec<_> = actual
+                .iter()
+                .copied()
+                .filter(|id| id / 1000 == producer)
+                .collect();
+            assert_eq!(
+                observed,
+                (0..65).map(|seq| producer * 1000 + seq).collect::<Vec<_>>()
+            );
+        }
+        drop(actual);
+        actor.child().stop();
+        wait(&rt, &actor.child());
+    }
+}
+
+#[test]
+fn demonitor_before_exit_suppresses_notification_and_races_do_not_duplicate() {
+    for backend in 0..4 {
+        for race in [false, true] {
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .enable_all()
+                .build()
+                .unwrap();
+            let _entered = rt.enter();
+            let (tx, rx) = mpsc::channel();
+            let observer = Handle::start(
+                Worker {
+                    processed: Default::default(),
+                    events: tx.clone(),
+                },
+                backend,
+            );
+            let target = Handle::start(
+                Worker {
+                    processed: Default::default(),
+                    events: tx,
+                },
+                backend,
+            );
+            let _cleanup = Cleanup(vec![target.child(), observer.child()]);
+            let Reply::Watch(id) = observer
+                .request(&rt, Command::Watch(target.child()))
+                .unwrap()
+            else {
+                unreachable!()
+            };
+            let barrier = Arc::new(Barrier::new(2));
+            let gate = barrier.clone();
+            let child = target.child();
+            let stop = std::thread::spawn(move || {
+                gate.wait();
+                child.stop();
+            });
+            if race {
+                barrier.wait();
+            }
+            assert_eq!(
+                observer.request(&rt, Command::Unwatch(id)).unwrap(),
+                Reply::Unwatched
+            );
+            if !race {
+                barrier.wait();
+            }
+            stop.join().unwrap();
+            wait(&rt, &target.child());
+            // Best effort demonitor permits a notification already being delivered.
+            // Repetition checks this bounded observation window; it is not a proof
+            // that an arbitrarily delayed notification cannot arrive later.
+            let event = rx.recv_timeout(Duration::from_millis(20));
+            if race {
+                if let Ok(event) = event {
+                    assert_eq!(event.monitor_ref, id);
+                    assert_eq!(event.reason, ExitReason::Normal);
+                }
+            } else {
+                assert!(event.is_err(), "cancelled live monitor delivered Down");
+            }
+            observer.child().stop();
+            wait(&rt, &observer.child());
+            assert!(rx.try_recv().is_err(), "duplicate Down");
+        }
+    }
+}
+
+/// Explicit long-running campaign, separate from normal PR tests.
+#[test]
+#[ignore = "extended actor churn campaign"]
+fn sustained_actor_churn() {
+    spawned_rt::threads::run(|| {
+        let rounds: usize = std::env::var("SPAWNED_STRESS_ROUNDS")
+            .ok()
+            .map(|s| s.parse().expect("positive round count"))
+            .unwrap_or(100);
+        assert!(rounds > 0);
+        let operations: Vec<_> = (0..=255u8).map(|id| (id % 8, id % 3)).collect();
+        for backend in 0..4 {
+            let started = std::time::Instant::now();
+            for round in 0..rounds {
+                scenario(backend, 8, &operations, &[0, 1, 0, 1]);
+                if round % 10 == 0 {
+                    tracing::info!(backend, round, "actor churn progress");
+                }
+            }
+            tracing::info!(
+                backend,
+                rounds,
+                elapsed_ms = started.elapsed().as_millis(),
+                "actor churn complete"
+            );
+        }
+    });
 }

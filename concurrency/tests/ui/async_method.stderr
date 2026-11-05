@@ -1,0 +1,5 @@
+error: protocol methods must not be async; use Response<T> as the return type for requests
+ --> tests/ui/async_method.rs:5:5
+  |
+5 |     async fn read(&self);
+  |     ^^^^^^^^^^^^^^^^^^^^

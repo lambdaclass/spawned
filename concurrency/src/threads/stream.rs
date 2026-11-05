@@ -7,6 +7,8 @@ use super::actor::{Actor, Context, Handler};
 /// Forward items from an iterator to an actor as messages.
 ///
 /// Stops when the iterator is exhausted, the actor stops, or sending fails.
+/// Cancellation is checked before each `next()` call; an already-running
+/// blocking `next()` cannot be interrupted and must return cooperatively.
 pub fn spawn_listener<A, M, I>(ctx: Context<A>, stream: I) -> JoinHandle<()>
 where
     A: Actor + Handler<M>,
@@ -17,6 +19,9 @@ where
     let mut iter = stream.into_iter();
     let cancellation_token = ctx.cancellation_token();
     let join_handle = spawned_rt::threads::spawn(move || loop {
+        if cancellation_token.is_cancelled() {
+            break;
+        }
         match iter.next() {
             Some(msg) => match ctx.send(msg) {
                 Ok(_) => {}
