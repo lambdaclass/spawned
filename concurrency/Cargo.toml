@@ -7,6 +7,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+monoio = { version = "0.2.4", optional = true, default-features = false, features = ["legacy", "iouring"] }
 spawned-rt = { workspace = true }
 spawned-macros = { workspace = true }
 tracing = { workspace = true }
@@ -24,3 +25,18 @@ trybuild = "1"
 [[bench]]
 name = "baseline"
 harness = false
+
+[features]
+io-experiments = ["dep:monoio"]
+# Private benchmark prototypes; no stable runtime-selection API.
+backend-experiments = ["spawned-rt/backend-experiments"]
+
+[[bench]]
+name = "designs"
+harness = false
+required-features = ["backend-experiments"]
+
+[[bench]]
+name = "io_designs"
+harness = false
+required-features = ["io-experiments"]

@@ -35,6 +35,20 @@ pub fn run(f: fn()) {
 
 /// Create a temporary tokio runtime and block on the given future.
 pub fn block_on<F: Future>(future: F) -> F::Output {
+    #[cfg(feature = "backend-experiments")]
+    let rt = match std::env::var("SPAWNED_EXPERIMENT_RUNTIME").as_deref() {
+        Ok("current") => tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap(),
+        Ok("one-worker") => tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .unwrap(),
+        _ => Runtime::new().unwrap(),
+    };
+    #[cfg(not(feature = "backend-experiments"))]
     let rt = Runtime::new().unwrap();
     rt.block_on(future)
 }
