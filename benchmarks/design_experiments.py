@@ -4,6 +4,7 @@ import argparse,csv,hashlib,json,os,platform,random,re,subprocess,time,signal,re
 from pathlib import Path
 ROOT=Path(__file__).resolve().parents[1]
 V={
+ 'blocking':('blocking',{},{}),
  'async':('async',{},{}), 'threads':('threads',{},{}), 'plain-tokio':('tokio',{},{}),
  'dedicated-default':('dedicated',{},{}),
  'dedicated-one':('dedicated',{}, {'SPAWNED_EXPERIMENT_RUNTIME':'one-worker'}),
@@ -60,7 +61,7 @@ def run(args):
     if allowed(v,c):
      for r in range(args.repetitions):cells.append(('messages',v,c,r))
  if args.group in ['all','io']:
-  for v in ['std-io','tokio-io','monoio-legacy','tokio-mux','monoio-legacy-mux']+(['monoio-uring','monoio-uring-mux'] if platform.system()=='Linux' else []):
+  for v in ['std-io','tokio-io','monoio-legacy','tokio-mux','monoio-legacy-mux','tokio-mux4','monoio-legacy-mux4']+(['monoio-uring','monoio-uring-mux','monoio-uring-mux4'] if platform.system()=='Linux' else []):
    for n in ([1,16] if args.smoke else [1,16,128]):
     for r in range(args.repetitions):cells.append(('io',v,str(n),r))
  random.Random(args.seed).shuffle(cells)
@@ -76,14 +77,14 @@ def run(args):
    if args.smoke:config['messages']=max(config['actors']*2,2048);config['warmup']=min(128,config['actors'])
    if args.smoke and c=='idle4':config['messages']=1
    exe=binaries['designs']
-  else:config=dict(backend=v,connections=int(c),messages=16 if args.smoke else 1000);exe=binaries['io_designs']
+  else:config=dict(backend=v[:-1] if v.endswith('mux4') else v,connections=int(c),messages=16 if args.smoke else 1000,**{'io-workers':4 if v.endswith('mux4') else 1});exe=binaries['io_designs']
   invocation=[exe]+[f'--{k}={value}' for k,value in config.items()]
   prefix=['/usr/bin/time','-l' if platform.system()=='Darwin' else '-v']
   start=time.monotonic()
   status='ok';stdout='';stderr=''
   process=subprocess.Popen(prefix+invocation,cwd=ROOT,env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True,preexec_fn=(lambda: resource.setrlimit(resource.RLIMIT_NOFILE,(args.fd_limit,resource.getrlimit(resource.RLIMIT_NOFILE)[1]))) if args.fd_limit else None)
   try:
-   stdout,stderr=process.communicate(timeout=90)
+   stdout,stderr=process.communicate(timeout=args.timeout)
    if process.returncode:status=f'exit_{process.returncode}'
   except subprocess.TimeoutExpired:
    os.killpg(process.pid,signal.SIGKILL)
@@ -111,4 +112,4 @@ def run(args):
   print(f'{index+1}/{len(cells)} {group} {v} {c} {repeat}: {row["status"]}',flush=True)
  if any(r['status']!='ok' for r in rows):print('Some samples failed; raw.csv retains failures. Do not treat failures as throughput samples.',flush=True)
 if __name__=='__main__':
- p=argparse.ArgumentParser(description=__doc__);p.add_argument('--output',type=Path,required=True);p.add_argument('--repetitions',type=int,default=3);p.add_argument('--seed',type=int,default=178);p.add_argument('--workers',type=int,default=2);p.add_argument('--capacity',type=int,default=256);p.add_argument('--group',choices=['all','messages','io'],default='all');p.add_argument('--smoke',action='store_true');p.add_argument('--fd-limit',type=int,default=0);p.add_argument('--cases',nargs='+',choices=C,default=list(C));p.add_argument('--variants',nargs='+',choices=V,default=list(V));args=p.parse_args();assert args.repetitions>0;run(args)
+ p=argparse.ArgumentParser(description=__doc__);p.add_argument('--output',type=Path,required=True);p.add_argument('--repetitions',type=int,default=3);p.add_argument('--seed',type=int,default=178);p.add_argument('--workers',type=int,default=2);p.add_argument('--timeout',type=int,default=90);p.add_argument('--capacity',type=int,default=256);p.add_argument('--group',choices=['all','messages','io'],default='all');p.add_argument('--smoke',action='store_true');p.add_argument('--fd-limit',type=int,default=0);p.add_argument('--cases',nargs='+',choices=C,default=list(C));p.add_argument('--variants',nargs='+',choices=V,default=list(V));args=p.parse_args();assert args.repetitions>0;run(args)

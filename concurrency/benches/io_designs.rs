@@ -25,7 +25,12 @@ fn main() {
             .expect("io_uring preflight");
     }
     if backend.ends_with("-mux") {
-        io_mux::run(&backend, connections, messages);
+        io_mux::run(
+            &backend,
+            connections,
+            messages,
+            args("io-workers", "1").parse().unwrap(),
+        );
         return;
     }
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();

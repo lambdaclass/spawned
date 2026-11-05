@@ -11,6 +11,7 @@ variable. Native scheduler/transport and I/O controls exist only in bench code.
 
 | Variant | Execution resources | Purpose and limitations |
 |---|---|---|
+| blocking | Persistent actor loops occupy the caller Tokio blocking pool | Current `Backend::Blocking`; the finite pool can be exhausted by a large population of persistent actors. |
 | async | Actor futures on the driver's two-worker Tokio runtime | Current general-purpose baseline; full Spawned lifecycle and messages. |
 | threads | One native OS thread per synchronous actor | Current actor implementation; no executor needed by handlers; still uses some Tokio synchronization types. |
 | plain-tokio | One task per worker-loop instance on two runtime workers | Simpler channel/oneshot control; omits actor cancellation/unwind/type-erasure machinery. |
@@ -193,3 +194,10 @@ drive all connections on one client runtime/thread. The per-connection-runtime
 variants remain as resource controls. They use the same native echo server;
 server thread costs remain common confounders. Linux io_uring is explicitly
 selected and preflighted, with no silent fallback.
+
+Additional controls include the existing `Backend::Blocking` pool, and I/O
+multiplexing on four client reactors (`*-mux4`) as well as one (`*-mux`).
+Per-reactor connections are partitioned round-robin; both configurations use the
+same echo server. This separates reactor amortization from a one-client-core
+bottleneck. Blocking-pool exhaustion is captured by a shorter process watchdog
+in its separate capacity study, rather than fabricated as zero throughput.
