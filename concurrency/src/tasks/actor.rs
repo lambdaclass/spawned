@@ -262,8 +262,9 @@ impl<A: Actor> Context<A> {
 
         {
             let mut monitors = self.monitors.lock().unwrap_or_else(|p| p.into_inner());
-            // Serialize registration with exit cleanup. A stopped owner cannot
-            // create new waiters after its cleanup guard has drained the table.
+            // The token check makes registration inert once shutdown starts.
+            // The closed table below serializes registration with exit cleanup,
+            // even on paths that unwind before cancelling the owner token.
             if self.cancellation_token.is_cancelled() {
                 return monitor_ref;
             }

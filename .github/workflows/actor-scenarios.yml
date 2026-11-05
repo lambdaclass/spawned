@@ -16,6 +16,9 @@ jobs:
       PROPTEST_CASES: '1000'
     steps:
       - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.93.0
+        with:
+          components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --locked -p spawned-concurrency --test actor_scenarios
       - run: cargo test --locked -p spawned-concurrency --test actor_scenarios sustained_actor_churn -- --ignored
@@ -33,6 +36,9 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.93.0
+        with:
+          components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
         with:
           key: loom

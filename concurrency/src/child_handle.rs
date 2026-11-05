@@ -95,6 +95,7 @@ impl ChildHandle {
         }
     }
 
+    // Each child_handle() creates this allocation; its clones share it.
     #[cfg(test)]
     pub(crate) fn lifetime_probe(&self) -> std::sync::Weak<dyn Fn() + Send + Sync> {
         Arc::downgrade(&self.cancel)
