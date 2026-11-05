@@ -1,4 +1,6 @@
 //! I/O mechanism control: persistent TCP echo, not a full actor backend.
+#[path = "support/io_mux.rs"]
+mod io_mux;
 use std::{
     io::{Read, Write},
     net::{TcpListener, TcpStream},
@@ -21,6 +23,10 @@ fn main() {
         let _ = monoio::RuntimeBuilder::<monoio::IoUringDriver>::new()
             .build()
             .expect("io_uring preflight");
+    }
+    if backend.ends_with("-mux") {
+        io_mux::run(&backend, connections, messages);
+        return;
     }
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();

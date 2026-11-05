@@ -9,6 +9,7 @@ V={
  'dedicated-one':('dedicated',{}, {'SPAWNED_EXPERIMENT_RUNTIME':'one-worker'}),
  'dedicated-current':('dedicated',{}, {'SPAWNED_EXPERIMENT_RUNTIME':'current'}),
  'dedicated-shared':('dedicated',{}, {'SPAWNED_EXPERIMENT_RUNTIME':'shared'}),
+ 'dedicated-managed':('dedicated',{}, {'SPAWNED_EXPERIMENT_RUNTIME':'managed'}),
  'native-block':('native-block',{'reply':'bounded'},{}),
  'native-hybrid':('native-hybrid',{'reply':'bounded'},{}),
  'native-spin':('native-spin',{'reply':'bounded'},{}),
@@ -59,7 +60,7 @@ def run(args):
     if allowed(v,c):
      for r in range(args.repetitions):cells.append(('messages',v,c,r))
  if args.group in ['all','io']:
-  for v in ['std-io','tokio-io','monoio-legacy']+(['monoio-uring'] if platform.system()=='Linux' else []):
+  for v in ['std-io','tokio-io','monoio-legacy','tokio-mux','monoio-legacy-mux']+(['monoio-uring','monoio-uring-mux'] if platform.system()=='Linux' else []):
    for n in ([1,16] if args.smoke else [1,16,128]):
     for r in range(args.repetitions):cells.append(('io',v,str(n),r))
  random.Random(args.seed).shuffle(cells)
@@ -71,7 +72,7 @@ def run(args):
   env=os.environ.copy();env.pop('TOKIO_WORKER_THREADS',None);env.pop('SPAWNED_EXPERIMENT_RUNTIME',None)
   if group=='messages':
    backend,options,extra=V[v];env.update(extra)
-   config=dict(C[c],**options,backend=backend,workers=2,observer='direct')
+   config=dict(C[c],**options,backend=backend,workers=args.workers,capacity=args.capacity,observer='direct')
    if args.smoke:config['messages']=max(config['actors']*2,2048);config['warmup']=min(128,config['actors'])
    if args.smoke and c=='idle4':config['messages']=1
    exe=binaries['designs']
@@ -93,7 +94,7 @@ def run(args):
   row=dict(group=group,variant=v,case=c,repeat=repeat,status=status,process_wall_s=time.monotonic()-start,config_json=json.dumps(config,sort_keys=True))
   if status=='ok':
    parsed=list(csv.DictReader(stdout.splitlines()))
-   if len(parsed)!=1:row['status']='invalid_output'
+   if len(parsed)!=1 or None in parsed[0] or any(v is None for v in parsed[0].values()):row['status']='invalid_output'
    else:row.update(parsed[0])
   if platform.system()=='Darwin':
    rss=re.search(r'(\d+)\s+maximum resident set size',stderr);cpu=re.search(r'([\d.]+)\s+user\s+([\d.]+)\s+sys',stderr)
@@ -110,4 +111,4 @@ def run(args):
   print(f'{index+1}/{len(cells)} {group} {v} {c} {repeat}: {row["status"]}',flush=True)
  if any(r['status']!='ok' for r in rows):print('Some samples failed; raw.csv retains failures. Do not treat failures as throughput samples.',flush=True)
 if __name__=='__main__':
- p=argparse.ArgumentParser(description=__doc__);p.add_argument('--output',type=Path,required=True);p.add_argument('--repetitions',type=int,default=3);p.add_argument('--seed',type=int,default=178);p.add_argument('--group',choices=['all','messages','io'],default='all');p.add_argument('--smoke',action='store_true');p.add_argument('--fd-limit',type=int,default=0);p.add_argument('--cases',nargs='+',choices=C,default=list(C));p.add_argument('--variants',nargs='+',choices=V,default=list(V));args=p.parse_args();assert args.repetitions>0;run(args)
+ p=argparse.ArgumentParser(description=__doc__);p.add_argument('--output',type=Path,required=True);p.add_argument('--repetitions',type=int,default=3);p.add_argument('--seed',type=int,default=178);p.add_argument('--workers',type=int,default=2);p.add_argument('--capacity',type=int,default=256);p.add_argument('--group',choices=['all','messages','io'],default='all');p.add_argument('--smoke',action='store_true');p.add_argument('--fd-limit',type=int,default=0);p.add_argument('--cases',nargs='+',choices=C,default=list(C));p.add_argument('--variants',nargs='+',choices=V,default=list(V));args=p.parse_args();assert args.repetitions>0;run(args)

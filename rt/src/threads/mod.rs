@@ -36,6 +36,20 @@ pub fn run(f: fn()) {
 /// Create a temporary tokio runtime and block on the given future.
 pub fn block_on<F: Future>(future: F) -> F::Output {
     #[cfg(feature = "backend-experiments")]
+    if std::env::var("SPAWNED_EXPERIMENT_RUNTIME").as_deref() == Ok("managed") {
+        // Experiment-only bounded shared pool; process lifetime, no caller dependency.
+        static POOL: OnceLock<Runtime> = OnceLock::new();
+        return POOL
+            .get_or_init(|| {
+                tokio::runtime::Builder::new_multi_thread()
+                    .worker_threads(2)
+                    .enable_all()
+                    .build()
+                    .unwrap()
+            })
+            .block_on(future);
+    }
+    #[cfg(feature = "backend-experiments")]
     let rt = match std::env::var("SPAWNED_EXPERIMENT_RUNTIME").as_deref() {
         Ok("current") => tokio::runtime::Builder::new_current_thread()
             .enable_all()

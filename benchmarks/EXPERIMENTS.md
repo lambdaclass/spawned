@@ -17,13 +17,14 @@ variable. Native scheduler/transport and I/O controls exist only in bench code.
 | dedicated-default | One owner thread plus a default multi-worker Tokio runtime per actor | Current `Backend::Thread`. Resource-heavy at large actor counts. Restricted to small cases in this matrix. |
 | dedicated-one | One owner thread plus one runtime worker per actor | Reduces runtime worker count, but still has multiple threads per actor. |
 | dedicated-current | One owner thread with a current-thread Tokio runtime | Removes helper runtime workers. A blocking handler stalls nested helper tasks. Each actor still owns a reactor and descriptors. |
+| dedicated-managed | One owner thread per actor, with a process-owned two-worker shared runtime | Avoids per-actor reactors and caller-lifetime dependence; helper-resource isolation differs and the pool lives until process exit. |
 | dedicated-shared | One owner thread per actor, sharing the caller's two-worker Tokio runtime | Avoids per-actor reactors and allows helper progress elsewhere. Caller runtime must outlive actors. |
 | native-block | One native thread per prototype actor; bounded addressed mailbox; blocking receive | Tokio-free actor/reply data path when bounded replies and direct observation are selected. Does not implement all Spawned lifecycle features. |
 | native-hybrid | Native-block plus up to 256 empty polls before blocking | Measures the CPU/latency tradeoff of short spinning. It is a fixed policy, not auto-tuned. |
 | native-spin | Native-block with continuous empty polling | Latency-oriented control; consumes CPU while idle. Limited to four actors to avoid uncontrolled oversubscription. |
 | sharded-1 / sharded-16 | Two native workers; actor queues partitioned by actor ID; bounded batches of 1 / 16 | Round-robin scans include idle queues. Actor placement is static within each benchmark process. |
-| ready-1 / ready-16 | Two native workers share a runnable-actor queue; batches of 1 / 16 | Avoids scanning idle actors; shared ready-queue lock can contend. Per-actor scheduling flag prevents simultaneous execution. |
-| ready-adaptive | Shared runnable queue; backlog-based batch size 1–64, with a 50 µs turn budget | Experimental adaptive batching. The time budget is checked between handlers and cannot preempt a handler. |
+| ready-1 / ready-16 | Two native workers share a runnable-actor queue; batches of 1 / 16 | Avoids scanning idle actors; shared ready-queue lock can contend. A mutex-protected scheduling gate prevents simultaneous ownership and lost wakeups. |
+| ready-adaptive | Shared runnable queue; full/empty-turn-adaptive batch size 1–64, with a 50 µs turn budget | Experimental adaptive batching. The time budget is checked between handlers and cannot preempt a handler. |
 | local-ready-16 | One runnable queue per worker; fixed actor-to-worker placement; batch 16 | Combines active-only scheduling and per-shard placement. Can suffer load imbalance; no work stealing. |
 
 Native prototypes use ordinary owned Rust messages and bounded `std::sync::mpsc`
@@ -164,3 +165,31 @@ these prototype controls.
 - [Mio](https://github.com/tokio-rs/mio): OS readiness mechanisms underlying Tokio networking.
 - [Compio](https://github.com/compio-rs/compio): portable thread-per-core I/O candidate for later integration; researched, not measured in this campaign.
 - [Silver/flux research](../docs/research/silver-flux.md): transport and observability ideas, with explicit differences from actors.
+
+## Scheduler review correction
+
+The first exploratory runnable-queue prototype used separate atomics for a pending
+count and scheduling flag. Review identified a possible lost notification and
+spurious rescheduling while a sender had reserved but not published work. Those
+samples are invalid for selecting a design and are excluded from final graphs.
+
+The measured revision uses `support/ready_gate.rs`: a mutex serializes producer
+notification with the worker's lookahead-and-release decision. The worker retains
+one lookahead message rather than maintaining a speculative pending count.
+`ready_gate_loom.rs` models that same gate implementation under publication/finish
+interleavings. Adaptive batching grows after full turns and resets on empty turns;
+its clock reads are part of the measured policy cost, not free instrumentation.
+
+Bounded and unbounded burst tails are different admission experiments: blocking
+a producer delays creation of its next burst timestamp. Burst p99 is therefore
+not a matched offered-load comparison. Use the absolute-arrival paced cases and
+a separately pre-sized capacity control before attributing differences to queue
+implementation. Hotspot placement deliberately creates a hot shard; it measures
+load imbalance as well as batching. Worker counts and total process CPU budgets
+are distinct controls.
+
+Multiplexed I/O variants (`tokio-mux`, `monoio-legacy-mux`, `monoio-uring-mux`)
+drive all connections on one client runtime/thread. The per-connection-runtime
+variants remain as resource controls. They use the same native echo server;
+server thread costs remain common confounders. Linux io_uring is explicitly
+selected and preflighted, with no silent fallback.

@@ -7,7 +7,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-monoio = { version = "0.2.4", optional = true, default-features = false, features = ["legacy", "iouring"] }
+monoio = { version = "0.2.4", optional = true, default-features = false, features = ["legacy", "iouring", "sync"] }
 spawned-rt = { workspace = true }
 spawned-macros = { workspace = true }
 tracing = { workspace = true }
@@ -40,3 +40,9 @@ required-features = ["backend-experiments"]
 name = "io_designs"
 harness = false
 required-features = ["io-experiments"]
+
+[target.'cfg(spawned_scheduler_loom)'.dev-dependencies]
+loom = "0.7"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(spawned_scheduler_loom)'] }

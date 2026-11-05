@@ -1,10 +1,12 @@
 //! Experimental design driver; see benchmarks/EXPERIMENTS.md.
+#[path = "support/ready_gate.rs"]
+mod ready_gate;
 use spawned_concurrency::{message::Message, tasks, threads, ChildHandle};
 use std::{
     alloc::{GlobalAlloc, Layout, System},
     hint::black_box,
     sync::{
-        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc, Arc, Barrier,
     },
     time::{Duration, Instant},
@@ -164,26 +166,20 @@ fn external_reply(kind: &str) -> (ReplySender, Reply) {
         _ => panic!("unknown external reply"),
     }
 }
+#[derive(Clone)]
 struct ReadySignal {
     id: usize,
-    scheduled: Arc<AtomicBool>,
-    pending: Arc<AtomicUsize>,
+    gate: Arc<ready_gate::ReadyGate>,
     ready: mpsc::Sender<Option<usize>>,
 }
-impl Clone for ReadySignal {
-    fn clone(&self) -> Self {
-        Self {
-            id: self.id,
-            scheduled: self.scheduled.clone(),
-            pending: self.pending.clone(),
-            ready: self.ready.clone(),
-        }
-    }
+struct ReadyMailbox {
+    rx: mpsc::Receiver<Probe>,
+    buffered: Option<Probe>,
+    batch_hint: usize,
 }
 struct ReadyActor {
-    rx: std::sync::Mutex<mpsc::Receiver<Probe>>,
-    scheduled: Arc<AtomicBool>,
-    pending: Arc<AtomicUsize>,
+    mailbox: std::sync::Mutex<ReadyMailbox>,
+    gate: Arc<ready_gate::ReadyGate>,
 }
 #[derive(Clone)]
 struct NativeSender {
@@ -193,16 +189,13 @@ struct NativeSender {
 }
 impl NativeSender {
     fn send(&self, probe: Probe) {
-        if let Some(signal) = &self.ready {
-            signal.pending.fetch_add(1, Ordering::AcqRel);
-        }
         self.tx
             .send(probe)
             .unwrap_or_else(|_| panic!("native worker stopped"));
         if let Some(signal) = &self.ready {
-            if !signal.scheduled.swap(true, Ordering::AcqRel) {
-                signal.ready.send(Some(signal.id)).unwrap();
-            }
+            signal
+                .gate
+                .notify(|| signal.ready.send(Some(signal.id)).unwrap());
         }
         if let Some(wake) = &self.wake {
             let _ = wake.try_send(());
@@ -386,24 +379,26 @@ fn main() {
         let mut actors = Vec::new();
         for id in 0..config.actors {
             let (tx, rx) = mpsc::sync_channel(config.capacity);
-            let scheduled = Arc::new(AtomicBool::new(false));
-            let pending = Arc::new(AtomicUsize::new(0));
+            let gate = Arc::new(ready_gate::ReadyGate::new());
             actors.push(ReadyActor {
-                rx: std::sync::Mutex::new(rx),
-                scheduled: scheduled.clone(),
-                pending: pending.clone(),
+                mailbox: std::sync::Mutex::new(ReadyMailbox {
+                    rx,
+                    buffered: None,
+                    batch_hint: 1,
+                }),
+                gate: gate.clone(),
             });
             targets.push(Target::Native(NativeSender {
                 tx,
                 wake: None,
                 ready: Some(ReadySignal {
                     id,
-                    scheduled,
-                    pending,
+                    gate,
                     ready: ready_txs[id % groups].clone(),
                 }),
             }));
         }
+
         let actors = Arc::new(actors);
         for worker in 0..config.workers {
             let (actors, rx, tx, batch) = (
@@ -416,34 +411,43 @@ fn main() {
                 let id = { rx.lock().unwrap().recv().unwrap() };
                 let Some(id) = id else { break };
                 let actor = &actors[id];
-                {
-                    let rx = actor.rx.lock().unwrap();
-                    let budget = if batch == 0 {
-                        actor.pending.load(Ordering::Acquire).clamp(1, 64)
-                    } else {
-                        batch
-                    };
-                    let turn = (batch == 0).then(Instant::now);
-                    for _ in 0..budget {
-                        match rx.try_recv() {
-                            Ok(probe) => {
-                                actor.pending.fetch_sub(1, Ordering::AcqRel);
-                                probe.reply.send(process(probe.work));
-                                if turn
-                                    .is_some_and(|turn| turn.elapsed() >= Duration::from_micros(50))
-                                {
-                                    break;
-                                }
-                            }
-                            Err(_) => break,
-                        }
+                let mut mailbox = actor.mailbox.lock().unwrap();
+                let budget = if batch == 0 {
+                    mailbox.batch_hint
+                } else {
+                    batch
+                };
+                let turn = (batch == 0).then(Instant::now);
+                let mut processed = 0;
+                for _ in 0..budget {
+                    let probe = mailbox
+                        .buffered
+                        .take()
+                        .or_else(|| mailbox.rx.try_recv().ok());
+                    let Some(probe) = probe else { break };
+                    probe.reply.send(process(probe.work));
+                    processed += 1;
+                    if turn.is_some_and(|t| t.elapsed() >= Duration::from_micros(50)) {
+                        break;
                     }
                 }
-                actor.scheduled.store(false, Ordering::Release);
-                if actor.pending.load(Ordering::Acquire) > 0
-                    && !actor.scheduled.swap(true, Ordering::AcqRel)
-                {
-                    tx.send(Some(id)).unwrap();
+                actor.gate.finish(
+                    || {
+                        if mailbox.buffered.is_none() {
+                            mailbox.buffered = mailbox.rx.try_recv().ok();
+                        }
+                        mailbox.buffered.is_some()
+                    },
+                    || tx.send(Some(id)).unwrap(),
+                );
+                if batch == 0 {
+                    mailbox.batch_hint = if mailbox.buffered.is_some() && processed == budget {
+                        (budget * 2).min(64)
+                    } else if mailbox.buffered.is_none() {
+                        1
+                    } else {
+                        budget
+                    };
                 }
             }));
         }
