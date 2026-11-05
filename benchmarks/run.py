@@ -66,7 +66,7 @@ def main():
         repetitions=args.repetitions, cases={case: CASES[case] for case in args.cases},
         binary_sha256=hashlib.sha256(Path(binary).read_bytes()).hexdigest(),
         source_sha256=hashlib.sha256((ROOT / 'concurrency/benches/baseline.rs').read_bytes()).hexdigest(),
-        environment={key: os.environ.get(key) for key in ['RUSTFLAGS', 'RUSTC', 'CARGO_PROFILE_BENCH_OPT_LEVEL', 'CARGO_PROFILE_BENCH_LTO']},
+        environment={key: os.environ.get(key) for key in ['RUSTFLAGS', 'RUSTC', 'CARGO_PROFILE_BENCH_OPT_LEVEL', 'CARGO_PROFILE_BENCH_LTO', 'TOKIO_WORKER_THREADS']},
         schedule=schedule,
     )
     if platform.system() == 'Darwin':

@@ -18,8 +18,10 @@ as comparable throughput results. `--cases` and `--backends` select smaller runs
 
 Five implementations perform the same payload scan and optional CPU work:
 Spawned async, blocking-pool, dedicated-thread task actors, synchronous thread
-actors, and a plain Tokio unbounded mpsc + oneshot loop. Tokio runtime worker
-count is two throughout. Native actor and producer/collector thread counts vary;
+actors, and a plain Tokio unbounded mpsc + oneshot loop. The driver Tokio runtime has two workers. The current dedicated task backend
+creates a separate `Runtime::new()` per actor via `spawned_rt::threads::block_on`;
+its worker count follows Tokio defaults / `TOKIO_WORKER_THREADS`, independently
+of the driver setting. Native actor and producer/collector thread counts vary;
 this is not an equal-total-thread or pinned-core experiment. Scheduling, affinity,
 other machine load, frequency scaling, and OS power policy are uncontrolled.
 
@@ -59,7 +61,7 @@ under indefinite overload. The runner's process timeout bounds stalled samples.
 - `completed_per_s`: replies observed divided by measurement duration, including
   final producer joins. Paced runs therefore track offered load when unsaturated.
 - Process peak RSS and CPU come from `/usr/bin/time`; they include initialization,
-  warmup, the 100 ms start delay, teardown, sample buffers and collectors. They
+  warmup, the 100 ms start delay, teardown, percentile sorting, sample buffers and collectors. They
   are not isolated actor memory or steady-state CPU utilization measurements.
 - `allocations` and `allocated_bytes` count successful alloc/realloc/zeroed-alloc
   calls and requested bytes during the measurement window **only when enabled**.
