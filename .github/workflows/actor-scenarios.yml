@@ -1,0 +1,26 @@
+name: Extended actor scenarios
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 3 * * *'
+
+permissions:
+  contents: read
+
+jobs:
+  scenarios:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      PROPTEST_CASES: '1000'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --locked -p spawned-concurrency --test actor_scenarios
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: actor-scenario-regressions
+          path: concurrency/tests/*.proptest-regressions
+          if-no-files-found: ignore
