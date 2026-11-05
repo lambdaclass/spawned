@@ -1,250 +1,135 @@
-# Spawned Project Roadmap
+# Spawned roadmap
 
-This document outlines the strategic roadmap for spawned, informed by analysis of established actor frameworks.
+Updated 2026-11-05. This is a proposed implementation order, not a release-date
+commitment. Each milestone needs its own design, tests, and review.
 
-## Current Status
+## Principles to preserve
 
-**Phase 1: Core Actor Framework** ✅ Complete
+- Application handlers express application logic; the framework owns messaging,
+  dispatch, and lifecycle machinery.
+- Typed protocols and ordinary Rust message/result types remain the interface.
+- Dynamic actor creation, addressed delivery, and both async and synchronous
+  thread execution remain supported.
+- Overload, cancellation, shutdown, and restart policies must be explicit.
+  Enqueue success is not a guarantee of processing or durable delivery.
+- Instrumentation must not require changes to business handlers or alter their
+  ordering, reply, or failure semantics.
 
-The foundation is in place:
-- `Actor` trait with `init()`, `handle_request()`, `handle_message()`, `teardown()` lifecycle
-- `ActorRef<T>` for communication (`request()` and `send()`)
-- Dual execution modes (async tasks / sync threads)
-- Timers (`send_after`, `send_interval`)
-- Stream processing
-- Signal handling via `send_message_on()`
+## Foundation already available
 
-## Framework Comparison
+At [08a84f1](https://github.com/lambdaclass/spawned/commit/08a84f12bd03c5f307baa24dfc4ed88566e01576):
 
-### Feature Matrix: Spawned vs Actix vs Ractor
+- `Actor` lifecycle: `started()`, per-message `Handler<M>`, and `stopped()`.
+- Protocol macros, typed replies, type-erased protocol references and recipients.
+- Tokio tasks, blocking-pool and dedicated-thread task backends, plus synchronous
+  thread actors that do not need a running Tokio executor.
+- Registry, timers, stream/iterator listeners, exit reasons and monitors.
+- Generated lifecycle scenarios, cleanup regressions, concurrent producers,
+  macro compile tests, cancellation Loom models, and nightly churn tests.
 
-| Feature | Spawned | Actix | Ractor |
-|---------|---------|-------|--------|
-| **Handler\<M\> pattern** | Planned (v0.5) | ✅ Yes | ✅ Yes (enum-based) |
-| **Recipient/Type erasure** | Planned (v0.5) | ✅ Yes | ❌ Single msg type per actor |
-| **Supervision** | Planned (v0.5) | ✅ Yes | ✅ **Best** (Erlang-style) |
-| **Distributed actors** | Future (v0.6+) | ❌ No | ✅ `ractor_cluster` |
-| **Dual execution modes** | ✅ **Unique** | ❌ No | ❌ No |
-| **Native OS threads** | ✅ **Unique** | ❌ No | ❌ No |
-| **No runtime required** | ✅ (threads mode) | ❌ Actix runtime | ❌ Tokio required |
-| **Signal handling** | ✅ `send_message_on()` | ❌ Manual | ✅ Signal priority channel |
-| **Timers** | ✅ Built-in | ✅ Yes | ✅ `time` module |
-| **Named registry** | Planned (v0.5) | ✅ Yes | ✅ Erlang-style |
-| **Process groups (pg)** | ❌ Not yet | ❌ No | ✅ Erlang-style |
-| **Links/Monitors** | Planned (v0.5) | ❌ No | ✅ Yes |
-| **RPC** | ❌ Not yet | ❌ No | ✅ Built-in |
-| **Async-first** | ✅ Yes | ⚠️ Afterthought | ✅ Yes |
-| **Multiple runtimes** | ✅ Tokio + none | ❌ Actix only | ✅ Tokio + async-std |
-| **Pure Rust (no unsafe)** | ✅ Yes | ⚠️ Some unsafe | ✅ Yes |
+The thread mode still uses Tokio synchronization primitives through `spawned-rt`;
+not needing an executor is different from having no Tokio dependency. Full
+supervision, a new scheduler, and production metrics are not completed milestones.
 
-### Supervision Comparison
+## 1. Optional framework-level observability
 
-| Aspect | Spawned (Planned) | Actix | Ractor |
-|--------|-------------------|-------|--------|
-| **OneForOne** | Planned | ✅ Yes | ✅ Yes |
-| **OneForAll** | Planned | ✅ Yes | ✅ Yes |
-| **RestForOne** | Planned | ❌ No | ✅ Yes |
-| **Meltdown protection** | Not planned | ❌ No | ✅ Yes |
-| **Supervision trees** | Planned | ⚠️ Limited | ✅ **Full Erlang-style** |
-| **Dynamic supervisors** | Planned | ❌ No | ✅ Yes |
+Instrument the mailbox, dispatch, request, and lifecycle boundaries first.
+Start with an exporter-independent collection interface and one optional exporter;
+do not begin with a shared-memory protocol or a dashboard.
 
-### Erlang Alignment
+| Signal | Definition / question |
+|---|---|
+| Mailbox depth | Accepted messages waiting to begin handling; exclude the active handler. |
+| Oldest-message age | Time since the oldest still-queued message was enqueued; distinguish an exact measurement from an estimate. |
+| Queue wait | Enqueue to handler start; includes scheduling delay. |
+| Handler elapsed time | Handler start to completion, including awaited time; not equivalent to CPU time. |
+| Request latency and outcomes | Caller-observed completion, timeout, or actor-stop result. |
+| Actor exits and active monitors | Lifecycle outcomes and retained monitoring resources. |
 
-| Concept | Spawned | Actix | Ractor |
-|---------|---------|-------|--------|
-| **gen_server model** | ✅ Strong | ⚠️ Diverged | ✅ **Strongest** |
-| **call/cast naming** | `request`/`send` | `send`/`do_send` | `call`/`cast` |
-| **Supervision trees** | Planned | Limited | ✅ Full OTP-style |
-| **Process registry** | Planned | Yes | ✅ Erlang-style |
-| **Process groups (pg)** | ❌ No | ❌ No | ✅ Yes |
-| **EPMD-style clustering** | Future | ❌ No | ✅ `ractor_cluster` |
+Define behavior for cancelled callers, dropped queued messages, panic paths, and
+shutdown before choosing an implementation. Use monotonic time within a process;
+propagated ingress timestamps require an explicit origin/correlation mechanism.
+Do not claim end-to-end latency from enqueue timestamps alone.
 
-### Spawned's Unique Value Propositions
+**Acceptance:** no handler edits; an instrumentation-off path; bounded metric
+cardinality and exporter buffering; tests for accounting across failure paths;
+measured disabled/enabled/sampled overhead. Exporter slowness must not block actor
+handlers. Specify whether per-actor detail is opt-in to avoid unlimited labels.
 
-1. **Dual execution modes** - No other framework offers async AND blocking with same API
-2. **No runtime lock-in** - threads mode needs zero async runtime
-3. **Backend flexibility** - Async, Blocking pool, or dedicated Thread per actor
-4. **Simpler mental model** - Less concepts to learn than Actix or Ractor
+## 2. Representative benchmarks and one client workload
 
-### What's Missing (vs Ractor)
+Measure the existing implementation before selecting a new transport or runtime.
 
-| Feature | Priority | Rationale |
-|---------|----------|-----------|
-| **RestForOne strategy** | High | Complete supervision |
-| **Meltdown protection** | High | Production safety |
-| **Process groups (pg)** | Medium | Erlang compatibility |
-| **Priority message channels** | Medium | Better control flow |
-| **Distributed actors** | Low | `ractor_cluster` equivalent |
+- Many small actors, a few busy actors, and mixed I/O/CPU workloads.
+- Send-only traffic and typed requests; different message sizes and fan-out.
+- Bursts and sustained overload, not just steady-state ping-pong.
+- Compare all relevant existing backends with equal CPU budgets and a plain
+  Tokio baseline where the application semantics can be matched.
+- Record throughput, p50/p95/p99 request and queue latency, allocations, RSS,
+  CPU utilization, and instrumentation overhead. Include offered load and errors.
+- Pin revisions, compiler/build flags, hardware, core placement, load-generation
+  method, and warmup. Use an external arrival schedule for overload experiments
+  so a slow system does not hide its own tail latency by slowing the generator.
 
-### When to Use Each Framework
+**First deliverable:** one instrumented Ethrex or Ethlambda workload showing
+where messages wait, where processing time goes, and what happens under overload.
+Use a reproducible fixture or approved sanitized trace; no client integration or
+performance result is implied by this roadmap. Define a target improvement and
+acceptable regressions before implementing an optimization.
 
-| Use Case | Best Choice | Why |
-|----------|-------------|-----|
-| **Erlang/OTP migration** | **Ractor** | Closest to OTP semantics |
-| **Embedded/no-runtime** | **Spawned** | Only one with native OS thread support |
-| **Mixed async/sync** | **Spawned** | Dual execution modes |
-| **Web applications** | **Actix** | actix-web ecosystem |
-| **Distributed systems** | **Ractor** | `ractor_cluster` ready |
-| **Raw performance** | **Actix** | Fastest in benchmarks |
-| **Simple learning** | **Spawned** | Cleanest API |
-| **Production fault-tolerance** | **Ractor** | Most complete supervision |
+## 3. Choose improvements from the measurements
 
-## Critical API Issues (Pre-Phase 2)
+| Evidence | Candidate experiment | Required guardrail |
+|---|---|---|
+| Sustained queue growth | Bounded mailboxes and admission control | Explicit wait/reject behavior, shutdown wakeup, and cyclic-send deadlock tests; never silently overwrite requests. |
+| Dispatch/allocation dominates | Batching, allocation reduction, envelope reuse | Preserve message ownership, drop behavior, ordering, fairness, and panic cleanup. |
+| Scheduling/locality dominates | Optional affinity for dedicated actors | Same CPU budget, oversubscription tests, platform fallback, and power/idle-CPU measurements. |
+| Diagnostics dominate | Sampling or cheaper aggregate collection | Preserve interpretable measurements; quantify missing samples and export loss. |
 
-Before building more features, these API design issues should be addressed:
+These are alternatives to evaluate, not an instruction to implement all of them.
+Keep unbounded mailboxes available where applications deliberately choose them.
+A message-count bound alone does not bound payload memory or blocked senders.
 
-### Issue #145: Circular Dependency with Bidirectional Actors
+## 4. Supervision as the next major recovery capability
 
-**Problem:** Current `ActorRef<T>` creates module-level circular dependencies when actors need to communicate bidirectionally.
+Build on exit reasons and monitors while keeping recovery policy outside ordinary
+application handlers:
 
-**Impact:** Blocks real-world actor collaboration patterns.
+- Explicit restart policies, limits within a time window, backoff, and escalation.
+- Child construction/state recovery and ordered startup/shutdown.
+- Defined identity and reference behavior across actor instances.
+- Defined outcomes for queued messages and in-flight requests on failure.
+- Equivalent policy semantics across async and synchronous thread modes, with
+  honest limits on interrupting blocking Rust code.
 
-**Solution direction:** Type-erased handles (like Actix's `Recipient<M>`) or PID-based addressing.
+**Acceptance:** a written lifecycle contract, failure-injection scenarios,
+restart-storm tests, and examples that do not imply exactly-once effects or
+transparent state recovery. A client recovery need can justify advancing this
+milestone; optimization is not a prerequisite for supervision.
 
-### Issue #144: Type Safety for Request/Reply
+## Research, not committed replacements
 
-**Problem:** Callers must match the full `Reply` enum even when only a subset of variants are possible for a given request.
+The [Silver/flux research](research/silver-flux.md) evaluates timing propagation,
+external diagnostics, preallocated transport, affinity, and thread execution.
+It separates three possible future projects:
 
-```rust
-// Current problem: GetBalance can only return Balance or NotFound,
-// but caller must handle ALL Reply variants
-match bank.request(Request::GetBalance { account }).await? {
-    Reply::Balance(b) => Ok(b),
-    Reply::AccountNotFound => Err(BankError::NotFound),
-    Reply::AccountCreated => unreachable!(),  // Annoying!
-    Reply::Deposited { .. } => unreachable!(), // Annoying!
-}
-```
+1. Make thread-only builds independent of Tokio through feature/dependency
+   separation and runtime-neutral synchronization interfaces.
+2. Prototype a specialized low-latency thread backend with explicit CPU budgets
+   and waiting policies, while preserving the actor/protocol contract.
+3. Replace the async runtime only if measured requirements justify owning an
+   executor, I/O reactor, timers, wakeups, cancellation, and ecosystem adapters.
 
-**Impact:** Verbose, error-prone code.
+There is no current commitment to remove Tokio. Busy spinning, shared-memory
+messaging, Copy-only messages, and lossy overwrite queues are not new defaults.
+Preemptive scheduling, deterministic simulation/replay, virtual/distributed
+actors, and a project website remain separate research or product work.
 
-#### How Ractor Solves This: `RpcReplyPort<T>`
+Deterministic testing is distinct from replacing the production runtime:
+current generated seeds reproduce operations, not thread schedules. Continue
+improving [tests](TESTING.md) throughout every milestone.
 
-Ractor embeds a typed reply channel in each message variant:
+## Historical context
 
-```rust
-// Ractor approach: Each call variant has its OWN reply type
-enum BankMessage {
-    // Fire-and-forget (cast) - no reply
-    PrintStatement,
-
-    // RPC calls - each specifies its reply type via RpcReplyPort<T>
-    CreateAccount(String, RpcReplyPort<Result<(), BankError>>),
-    Deposit(String, u64, RpcReplyPort<Result<u64, BankError>>),
-    GetBalance(String, RpcReplyPort<Result<u64, BankError>>),
-}
-
-// Caller gets exact type - no unreachable!()
-let balance: Result<u64, BankError> = call_t!(
-    bank_actor,
-    BankMessage::GetBalance,
-    100,  // timeout ms
-    "alice".to_string()
-).expect("RPC failed");
-```
-
-#### Comparison of Solutions
-
-| Approach | Reply Type | Message Definition | Multiple Handlers |
-|----------|------------|-------------------|-------------------|
-| **Spawned current** | Single enum | Clean | N/A |
-| **Ractor** | Per-variant via `RpcReplyPort<T>` | Port embedded in message | ❌ Single enum |
-| **Actix** | Per-message via `Message::Result` | Separate structs | ✅ Multiple `Handler<M>` |
-| **Spawned planned** | Per-message via `Message::Result` | Separate structs | ✅ Multiple `Handler<M>` |
-
-#### Our Planned Solution: Handler\<M\> Pattern
-
-We chose the Actix-style `Handler<M>` pattern over Ractor's `RpcReplyPort<T>` because:
-
-1. **Cleaner messages** - No infrastructure (reply port) in message definition
-2. **Multiple message types** - Actor can implement `Handler<M>` for multiple `M`
-3. **Proven pattern** - Actix has validated this approach at scale
-
-```rust
-// Spawned planned approach
-struct GetBalance { account: String }
-impl Message for GetBalance { type Result = Result<u64, BankError>; }
-
-impl Handler<GetBalance> for Bank {
-    async fn handle(&mut self, msg: GetBalance, ctx: &Context<Self>) -> Result<u64, BankError> {
-        self.accounts.get(&msg.account).copied().ok_or(BankError::NotFound)
-    }
-}
-
-// Caller gets exact type
-let balance: Result<u64, BankError> = bank.request(GetBalance { account: "alice".into() }).await?;
-```
-
-## Phase Priorities
-
-| Priority | Phase | Description | Status |
-|----------|-------|-------------|--------|
-| **P0** | API Design | Issues #144, #145 | 🔴 Not started |
-| **P1** | Phase 2 | Error Handling | 🔴 Not started |
-| **P2** | Phase 3 | Process Primitives (Pid, Registry, Links) | 🔴 Not started |
-| **P3** | Phase 4 | Supervision Trees | 🔴 Not started |
-| **P4** | Phase 5 | Documentation & Examples | 🔴 Not started |
-
-### Rationale for Ordering
-
-1. **API Design first** - Issues #144 and #145 affect the core API. Fixing them later would be breaking changes. Better to address before building supervision on top.
-
-2. **Error Handling before Supervision** - Clean error propagation is foundational for supervision strategies.
-
-3. **Process Primitives before Supervision** - Pid, Registry, and Links/Monitors are the building blocks supervisors need.
-
-4. **Documentation last** - After API stabilizes to avoid rewriting docs.
-
-## v0.6+ Considerations
-
-Features to consider for future versions:
-
-| Feature | Priority | Notes |
-|---------|----------|-------|
-| State machines (`gen_statem`) | Medium | Useful for protocol implementations |
-| Backoff strategies | Medium | Akka has this built into supervision |
-| Persistence/event sourcing | Medium | Akka Persistence pattern |
-| Actor naming beyond Registry | Low | Like Erlang's `{global, Name}` |
-| Clustering/distribution | Low | Significant complexity |
-| Virtual actors (Orleans) | Low | Different paradigm |
-| Hot code reload | Low | Rust doesn't support well |
-
-## Design Decisions
-
-### Keep Current Approach
-
-- **Explicit actor lifecycle** - Better for Rust's ownership model than Orleans's implicit activation
-- **Type-safe messages** - More safety than Erlang's untyped approach
-- **Dual execution modes** - Unique value proposition among Rust frameworks
-- **`request()`/`send()` naming** - Clearer than Actix's `send`/`do_send`, familiar to Erlang users
-
-### Adopt from Actix
-
-- **`Handler<M>` pattern** - Per-message type safety (#144)
-- **`Recipient<M>`** - Type-erased message recipients (#145)
-- **`Message::Result`** - Associated type for reply instead of separate enum
-
-### Adopt from Ractor
-
-- **RestForOne supervision strategy** - Complete supervision options
-- **Meltdown protection** - Prevent restart loops in production
-- **Supervision trees** - Full hierarchical fault tolerance
-
-### Consider for Future (from Ractor)
-
-- **Process groups (pg)** - Erlang-style actor grouping
-- **Priority message channels** - Signal > Stop > Supervision > Message
-- **Distributed actors** - `ractor_cluster` equivalent
-
-### Not Adopting
-
-- **Ractor's `RpcReplyPort<T>` in messages** - Clutters message definition; Handler<M> is cleaner
-- **Ractor's single message type per actor** - Less flexible than multiple Handler<M> impls
-- **Actix runtime requirement** - Keep our no-runtime threads mode
-
-## References
-
-- Issue #124: Framework comparison request
-- Issue #138: v0.5 Roadmap
-- Issue #144: Type safety for request/reply
-- Issue #145: Circular dependency with bidirectional actors
+The [previous plan](design/roadmap-before-observability.md) is archived because it
+predates the current APIs and contains outdated status and competitor claims.
