@@ -69,6 +69,8 @@ under indefinite overload. The runner's process timeout bounds stalled samples.
 - `allocations` and `allocated_bytes` count successful alloc/realloc/zeroed-alloc
   calls and requested bytes during the measurement window **only when enabled**.
   They include driver work and are not live bytes or framework-only allocations.
+  Reallocation adds the full requested new size even in place; it does not count
+  only incremental growth or bytes moved.
   Zero in counting-off rows means unavailable. The allocator wrapper retains a
   flag check even when counting is off, so this is not a zero-instrumentation build.
 
