@@ -10,6 +10,7 @@ import platform
 import random
 import re
 import statistics
+import signal
 import subprocess
 import time
 
@@ -32,6 +33,27 @@ def command(*args):
     return subprocess.check_output(args, cwd=ROOT, text=True).strip()
 
 
+def run_sample(invocation, log_prefix, timeout=90):
+    """Keep diagnostics and reap the entire process group on timeout/interruption."""
+    process = subprocess.Popen(invocation, cwd=ROOT, text=True, stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE, start_new_session=True,
+                               env=dict(os.environ, LC_ALL='C'))
+    try:
+        stdout, stderr = process.communicate(timeout=timeout)
+    except BaseException:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        stdout, stderr = process.communicate()
+        Path(str(log_prefix) + '.stdout').write_text(stdout)
+        Path(str(log_prefix) + '.stderr').write_text(stderr)
+        raise
+    Path(str(log_prefix) + '.stdout').write_text(stdout)
+    Path(str(log_prefix) + '.stderr').write_text(stderr)
+    return subprocess.CompletedProcess(invocation, process.returncode, stdout, stderr)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', type=Path, required=True)
@@ -40,6 +62,8 @@ def main():
     parser.add_argument('--cases', nargs='+', choices=CASES, default=list(CASES))
     parser.add_argument('--backends', nargs='+', choices=BACKENDS, default=BACKENDS)
     args = parser.parse_args()
+    if not Path('/usr/bin/time').is_file():
+        parser.error('/usr/bin/time is required for process resource measurements')
     if args.repetitions < 1:
         parser.error('repetitions must be positive')
     output = args.output.resolve()
@@ -65,7 +89,7 @@ def main():
         cpu_count=os.cpu_count(), workers=2, affinity='uncontrolled', seed=args.seed,
         repetitions=args.repetitions, cases={case: CASES[case] for case in args.cases},
         binary_sha256=hashlib.sha256(Path(binary).read_bytes()).hexdigest(),
-        source_sha256=hashlib.sha256((ROOT / 'concurrency/benches/baseline.rs').read_bytes()).hexdigest(),
+        bench_source_sha256=hashlib.sha256((ROOT / 'concurrency/benches/baseline.rs').read_bytes()).hexdigest(),
         environment={key: os.environ.get(key) for key in ['RUSTFLAGS', 'RUSTC', 'CARGO_PROFILE_BENCH_OPT_LEVEL', 'CARGO_PROFILE_BENCH_LTO', 'TOKIO_WORKER_THREADS']},
         schedule=schedule,
     )
@@ -77,13 +101,11 @@ def main():
         options = dict(CASES[case], backend=backend, workers=2)
         invocation = [binary] + [f'--{key}={value}' for key, value in options.items()]
         prefix = ['/usr/bin/time', '-l'] if platform.system() == 'Darwin' else ['/usr/bin/time', '-v']
-        result = subprocess.run(prefix + invocation, cwd=ROOT, text=True, capture_output=True, timeout=90)
         stem = f'{index:03d}-{case}-{backend}-{repeat}'
-        (output / 'logs' / f'{stem}.stdout').write_text(result.stdout)
-        (output / 'logs' / f'{stem}.stderr').write_text(result.stderr)
+        result = run_sample(prefix + invocation, output / 'logs' / stem)
         result.check_returncode()
         parsed = list(csv.DictReader(result.stdout.splitlines()))
-        if len(parsed) != 1:
+        if len(parsed) != 1 or None in parsed[0] or any(v is None for v in parsed[0].values()):
             raise RuntimeError(f'unexpected output: {stem}')
         row = dict(case=case, repeat=repeat, **parsed[0])
         if platform.system() == 'Darwin':
@@ -97,9 +119,11 @@ def main():
             system = re.search(r'System time \(seconds\):\s*([\d.]+)', result.stderr)
             row['process_peak_rss_bytes'] = int(rss[1]) * 1024 if rss else ''
             row['process_cpu_s'] = float(user[1]) + float(system[1]) if user and system else ''
+        if row['process_peak_rss_bytes'] == '' or row['process_cpu_s'] == '':
+            raise RuntimeError(f'cannot parse time resource measurements: {stem}; see retained stderr')
         rows.append(row)
         with (output / 'raw.csv').open('w') as handle:
-            writer = csv.DictWriter(handle, fieldnames=list(row))
+            writer = csv.DictWriter(handle, fieldnames=list(row), lineterminator='\n')
             writer.writeheader()
             writer.writerows(rows)
         print(f'{index + 1}/{len(schedule)} {case} {backend} repeat={repeat}', flush=True)
@@ -110,14 +134,15 @@ def main():
             group = [row for row in rows if row['case'] == case and row['backend'] == backend]
             item = dict(case=case, backend=backend, samples=len(group))
             for metric in metrics:
-                values = [float(row[metric]) for row in group if row[metric] != '']
+                values = [float(row[metric]) for row in group if row[metric] != ''
+                          and (metric not in ['allocations', 'allocated_bytes'] or row['allocation_counting'] == 'true')]
                 if values:
                     item[metric + '_median'] = statistics.median(values)
                     item[metric + '_min'] = min(values)
                     item[metric + '_max'] = max(values)
             summary.append(item)
     with (output / 'summary.csv').open('w') as handle:
-        writer = csv.DictWriter(handle, fieldnames=list(summary[0]))
+        writer = csv.DictWriter(handle, fieldnames=list(dict.fromkeys(key for item in summary for key in item)), lineterminator='\n')
         writer.writeheader()
         writer.writerows(summary)
 

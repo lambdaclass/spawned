@@ -1,4 +1,6 @@
 //! Experimental design driver; see benchmarks/EXPERIMENTS.md.
+#[path = "support/args.rs"]
+mod cli;
 #[path = "support/ready_gate.rs"]
 mod ready_gate;
 use spawned_concurrency::{message::Message, tasks, threads, ChildHandle};
@@ -296,11 +298,42 @@ struct Config {
 impl Config {
     fn parse() -> Self {
         let args: Vec<_> = std::env::args().skip(1).collect();
+        cli::validate(
+            &args,
+            &[
+                "backend",
+                "scenario",
+                "actors",
+                "producers",
+                "messages",
+                "warmup",
+                "workers",
+                "payload",
+                "iterations",
+                "rate",
+                "timing",
+                "allocations",
+                "reply",
+                "observer",
+                "routing",
+                "capacity",
+                "batch",
+                "idle-ms",
+                "scheduler",
+            ],
+        );
         let arg = |key: &str, default: &str| {
             args.iter()
                 .find_map(|a| a.strip_prefix(&format!("--{key}=")).map(str::to_owned))
                 .unwrap_or_else(|| default.to_owned())
         };
+        let flag = |key: &str, default: &str| match arg(key, default).as_str() {
+            "on" | "true" => true,
+            "off" | "false" => false,
+            _ => panic!("{key} must be on/off or true/false"),
+        };
+        let observer = arg("observer", "timed");
+        assert!(["timed", "direct"].contains(&observer.as_str()));
         let config = Self {
             backend: arg("backend", "async"),
             scenario: arg("scenario", "rpc"),
@@ -312,10 +345,10 @@ impl Config {
             payload: arg("payload", "64").parse().unwrap(),
             iterations: arg("iterations", "0").parse().unwrap(),
             rate: arg("rate", "0").parse().unwrap(),
-            timing: arg("timing", "on") == "on",
-            allocations: arg("allocations", "off") == "on",
+            timing: flag("timing", "on"),
+            allocations: flag("allocations", "off"),
             reply: arg("reply", "framework"),
-            direct: arg("observer", "timed") == "direct",
+            direct: observer == "direct",
             routing: arg("routing", "producer"),
             capacity: arg("capacity", "256").parse().unwrap(),
             batch: arg("batch", "1").parse().unwrap(),
@@ -326,6 +359,21 @@ impl Config {
             config.actors > 0 && config.producers > 0 && config.messages > 0 && config.workers > 0
         );
         assert!(["rpc", "burst", "paced"].contains(&config.scenario.as_str()));
+        assert!([
+            "async",
+            "blocking",
+            "dedicated",
+            "threads",
+            "tokio",
+            "native-ready",
+            "native-sharded",
+            "native-block",
+            "native-hybrid",
+            "native-spin"
+        ]
+        .contains(&config.backend.as_str()));
+        assert!(["producer", "round-robin", "hotspot"].contains(&config.routing.as_str()));
+        assert!(["global", "local"].contains(&config.scheduler.as_str()));
         assert!(config.scenario != "paced" || config.rate > 0);
         assert!(
             config.messages <= 1_000_000,

@@ -118,3 +118,23 @@ python3 -m venv /tmp/spawned-plots
 See [validation evidence](VALIDATION-DESIGNS.md) and the
 [independent agy review and resolution](reviews/agy-design-2026-11-05.md).
 The design report is separate from the historical baseline above.
+
+## Runner robustness
+
+The process watchdog kills the complete benchmark process group on timeout or
+interruption and retains stdout/stderr before raising. Unknown, duplicate and
+valueless benchmark flags fail before actors are started; booleans accept
+`on`/`off` and `true`/`false`. The runner requires parseable system time resource
+measurements and uses locale C. New CSVs use LF, and allocation summary cells are
+blank when counting was disabled. Historical datasets are unchanged.
+
+Run `python3 -m unittest discover -s benchmarks -p test_runner.py` to exercise
+real descendant cleanup and diagnostic retention. Metadata records the actual
+compiler/Cargo versions; the historical native run used Rust 1.93 and Cargo 1.98
+from separate Nix packages. `bench_source_sha256` hashes the bench driver only;
+the clean Git revision and executable hash identify the full measured build.
+
+Review archives are retained as requested provenance, with explicit editorial
+limits. Suggested numeric adoption thresholds are reviewer proposals, not
+approved production criteria. Baseline observer asymmetry remains disclosed;
+the later matched design study adds a direct observer and full-actor controls.
