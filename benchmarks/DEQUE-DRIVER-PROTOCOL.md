@@ -8,11 +8,13 @@ safe APIs. There is no custom unsafe queue code or new public Backend variant.
 
 A Worker is owned by exactly one native worker thread in a TLS slot. Other
 threads retain only its Stealer. The worker is installed before startup succeeds
-and its guard removes TLS before dropping tickets. Queue borrows end before
+and its guard clears TLS before dropping the Worker handle. Shared Stealers can
+retain the buffer/tickets until the pool drops. Queue borrows end before
 polling jobs, so actor handlers/destructors can schedule more work. External
 wakes enter a global injection queue; internal continuations enter the current
-owner's queue. Root's periodic oldest turn also inspects injected arrivals and
-uses the owner's Stealer to inspect its oldest work. Idle workers batch-steal
+owner's queue. Periodic turns alternate injection-first and local-oldest-first priority, using
+the owner's Stealer to inspect oldest work. Owner pop is a progress fallback
+after bounded self-steal retries; this is not a hard fairness bound. Idle workers batch-steal
 from injection or peer queues. Four Retry attempts are bounded; a retry budget
 is not proof of emptiness, and the existing register/recheck/requested 1 ms fallback remains.
 
@@ -38,10 +40,22 @@ Research references:
 
 The queue is an executor ready queue, not a message mailbox. Actors still own
 ordinary unbounded Tokio mailboxes; this does not adopt Silver's lossy broadcast
-rings or Copy-only transport. Final measured source 329006e passed ten executor unit tests, selected Deque full
-actor tests, workspace all-feature tests, three release benchmark builds and
-all-target/all-feature Clippy on fede. Fresh smokes (112 four-core, 28 eight-core
-and two lifecycle cases), 560 graph processes and 16 independent profiles have
-completed. Larger-population, offered and five-minute lifecycle blocks remain
-separate evidence. The retained Rust/Cargo tree is identical to that gated source;
-prose and commit ancestry can differ. No production/default promotion follows.
+rings or Copy-only transport. Historical source329006e completed its initial gates, smokes,560 graphs and16
+profiles. Review then found local-bottom starvation under continuous injection
+plus hot local continuations. V5/V6/V7 Deque observations remain historical; their
+unstarted follow-ups were cancelled. Root/Runnable are unaffected by this defect.
+
+A strengthened deterministic regression fails with the starvation assertion on
+old95b4ca6 and passes on corrected e633e59. The first probe omitted hot local
+continuations and passed; it is retained as a test-design limitation. The fix
+alternates injection/local-oldest priority, adds owner-pop fallback, checks TLS
+worker identity and clarifies buffer lifetime. Reverse progress, cross-pool
+injection and four-slot peer-batch ticket conservation are also tested.
+
+Frozen e633e59 passed18 spawned-rt unit tests, selected four-worker Deque full
+actor suites at Z0W0/Z1W1 (the existing badly_behaved_thread_non_blocking exclusion),
+workspace all-feature tests, three release benchmark builds and all-target/
+all-feature Clippy on fede. Optional Z/W controls default to zero and remain
+research settings; generic inline futures are not retained. New same-source
+smokes/graph/scale/offered/resource blocks execute separately before interpreting
+performance. No production/default promotion or formal fairness proof follows.
