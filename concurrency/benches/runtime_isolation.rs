@@ -263,7 +263,7 @@ mod linux {
                 bg + (completed as u64) * if relay { 2 } else { 1 } + 200
             );
             for actor in &actors {
-                actor.stop();
+                actor.child_handle().stop();
             }
             for actor in &actors {
                 assert_eq!(
