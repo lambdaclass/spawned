@@ -8,7 +8,7 @@ import time
 from fede_research import Campaign, VARIANTS
 
 VARIANTS.update({'native-global':('native-global',16),'native-local':('native-local',16),
-                 'native-steal':('native-steal',16),'tokio-pool':('tokio-pool',0)})
+                 'native-steal':('native-steal',16),'native-root':('native-root',16),'tokio-pool':('tokio-pool',0)})
 
 def main():
     p=argparse.ArgumentParser(description=__doc__)
@@ -16,13 +16,13 @@ def main():
     p.add_argument('--stage',choices=['smoke','queues','callers','clock','profiles','offered'],required=True)
     p.add_argument('--stop-at',type=float,required=True)
     a=p.parse_args();a.actor_cpus='2,3,4,5';a.driver_cpus='6,7,14,15';a.collector_cpus='8,9,16,17'
-    a.workers=[3,4];a.variants=['async','tokio-16','sharded-16','tokio-pool','native-global','native-local','native-steal']
+    a.workers=[3,4];a.variants=['async','tokio-16','sharded-16','tokio-pool','native-global','native-local','native-steal','native-root']
     a.seed=188;a.duration=2.;a.timeout=120.;a.smoke=a.stage=='smoke'
     c=Campaign(a);assert not c.meta['dirty']
     c.meta['controller_sha256']=hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
     c.meta['purpose']='Separate independent experiment blocks. Queue comparison: fixed blocking caller/counter-on/slice50. Caller factorial: blocking256OSthreads vs4current-threadRTs/256logicalproducers and observationcounteron/off, common4actorCPU+4driverCPU. Clock comparison: async caller, counter on, slice0/25/50/200 with same turn16. Native3actor+R1 and native4actor+R1 compareTokio4actor; unequalactiveworkerthreads disclosed. No source mixing with prior07f.'
     jobs=[]
-    policies=a.variants if a.stage in ['smoke','queues','profiles','offered'] else ['async','tokio-16','sharded-16','native-steal']
+    policies=a.variants if a.stage in ['smoke','queues','profiles','offered'] else ['async','tokio-16','sharded-16','native-steal','native-root']
     for v in policies:
         for workers in ([3,4] if v.startswith('native') and a.stage in ['smoke','queues','profiles','offered'] else [4]):
             if a.stage=='offered':

@@ -108,8 +108,16 @@ impl Config {
         assert!(["graph", "closed", "offered"].contains(&c.mode.as_str()));
         assert!(["chain", "fanout"].contains(&c.topology.as_str()));
         assert!(["same", "cross", "spread", "concentrated"].contains(&c.layout.as_str()));
-        assert!((2..=16).contains(&c.workers) && c.actors <= 4096 && c.actors >= c.workers * 2);
-        assert!(c.actors.is_multiple_of(c.workers) && (1..=256).contains(&c.producers));
+        let max_actors = if c.mode == "graph" { 65_536 } else { 4096 };
+        let max_producers = if c.mode == "graph" && c.caller == "async" {
+            2048
+        } else {
+            256
+        };
+        assert!(
+            (2..=16).contains(&c.workers) && c.actors <= max_actors && c.actors >= c.workers * 2
+        );
+        assert!(c.actors.is_multiple_of(c.workers) && (1..=max_producers).contains(&c.producers));
         assert!((1..=4_194_304).contains(&c.messages) && c.burst > 0 && c.deadline_ms > 0);
         assert!(["blocking", "async"].contains(&c.caller.as_str()));
         assert!((1..=256).contains(&c.caller_threads));
@@ -531,10 +539,8 @@ fn main() {
     let c = Config::parse();
     let scheduler = std::env::var("SPAWNED_EXPERIMENT_SCHEDULER").unwrap_or_default();
     let sharded = scheduler == "sharded";
-    let dispatched = matches!(
-        scheduler.as_str(),
-        "native-global" | "native-local" | "native-steal" | "tokio-pool"
-    );
+    let dispatched =
+        spawned_rt::tasks::experimental::dispatcher::policy_for_scheduler(&scheduler).is_some();
     let mut builder = if sharded || dispatched {
         tokio::runtime::Builder::new_current_thread()
     } else {

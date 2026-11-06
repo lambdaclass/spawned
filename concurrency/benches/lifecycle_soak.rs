@@ -238,10 +238,8 @@ fn main() {
             && (1..=256).contains(&steps)
     );
     let scheduler = std::env::var("SPAWNED_EXPERIMENT_SCHEDULER").unwrap_or_default();
-    let owned = matches!(
-        scheduler.as_str(),
-        "sharded" | "native-global" | "native-local" | "native-steal" | "tokio-pool"
-    );
+    let owned = scheduler == "sharded"
+        || spawned_rt::tasks::experimental::dispatcher::policy_for_scheduler(&scheduler).is_some();
     let mut builder = if owned {
         tokio::runtime::Builder::new_current_thread()
     } else {

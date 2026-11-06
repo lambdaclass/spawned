@@ -30,10 +30,7 @@ impl Drop for DropPanic {
 #[test]
 fn drop_panic_isolated_and_terminal_shutdown_rejects_new_actors() {
     let scheduler = std::env::var("SPAWNED_EXPERIMENT_SCHEDULER").unwrap_or_default();
-    if !matches!(
-        scheduler.as_str(),
-        "native-global" | "native-local" | "native-steal" | "tokio-pool"
-    ) {
+    if spawned_rt::tasks::experimental::dispatcher::policy_for_scheduler(&scheduler).is_none() {
         return;
     }
     let runtime = tokio::runtime::Builder::new_current_thread()

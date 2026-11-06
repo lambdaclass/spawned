@@ -461,7 +461,12 @@ fn percentile(values: &mut [u64], fraction: usize) -> u64 {
 }
 fn main() {
     let config = Config::parse();
-    let mut builder = if config.backend == "sharded" {
+    let scheduler = std::env::var("SPAWNED_EXPERIMENT_SCHEDULER").unwrap_or_default();
+    let dispatched =
+        spawned_rt::tasks::experimental::dispatcher::policy_for_scheduler(&scheduler).is_some();
+    let mut builder = if dispatched {
+        tokio::runtime::Builder::new_current_thread()
+    } else if config.backend == "sharded" {
         assert_eq!(
             std::env::var("SPAWNED_EXPERIMENT_SCHEDULER").as_deref(),
             Ok("sharded")
