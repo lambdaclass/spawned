@@ -319,10 +319,12 @@ fn main() {
     drop(actors);
     assert_eq!(counts.started.load(Ordering::Relaxed), workers * groups);
     assert_eq!(counts.stopped.load(Ordering::Relaxed), workers * groups);
-    assert_eq!(counts.dropped.load(Ordering::Relaxed), workers * groups);
     if sharded {
         spawned_rt::tasks::experimental::shutdown_sharded().unwrap();
     }
+    // Joining runtime workers also joins actor task-frame destruction.
+    drop(actor_runtime);
+    assert_eq!(counts.dropped.load(Ordering::Relaxed), workers * groups);
     observed.sort_unstable();
     completed.sort_unstable();
     println!("messages,succeeded,timeouts,replies_per_s,observed_p99_ns,completion_p99_ns,idle_cpu_s,idle_wall_s,active_cpu_s,elapsed_s,started,stopped,dropped");
