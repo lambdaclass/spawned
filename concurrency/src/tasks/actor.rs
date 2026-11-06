@@ -754,15 +754,14 @@ async fn run_actor_lifecycle<A: Actor>(
 
     loop {
         let msg = {
-            let mut parked = false;
             let recv = pin!(future::poll_fn(|cx| {
-                // A receive that previously parked must observe a stop before
-                // consuming newly queued work when both futures become ready.
-                if parked && cancellation_token.is_cancelled() {
+                // Stop and closed-mailbox both take the normal lifecycle exit,
+                // just like the cancellation arm below. Check before consuming
+                // work, including when receive resumes from a pending poll.
+                if cancellation_token.is_cancelled() {
                     return std::task::Poll::Ready(None);
                 }
                 let result = rx.poll_recv(cx);
-                parked = result.is_pending();
                 #[cfg(feature = "backend-experiments")]
                 if let Some(turn) = &mut turn {
                     if result.is_pending() {
@@ -790,15 +789,14 @@ async fn run_actor_lifecycle<A: Actor>(
                     exit_reason = ExitReason::Panic(format!("panic in handler: {msg}"));
                     break;
                 }
-                if cancellation_token.is_cancelled() {
-                    break;
-                }
                 #[cfg(feature = "backend-experiments")]
                 if let Some(turn) = &mut turn {
-                    turn.after_message(rx.is_empty()).await;
+                    // Do not yield on the way out of an already-stopped
+                    // handler. After a yield, the receive guard checks again.
                     if cancellation_token.is_cancelled() {
                         break;
                     }
+                    turn.after_message(rx.is_empty()).await;
                 }
             }
             None => break,

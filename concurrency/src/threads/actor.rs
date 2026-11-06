@@ -614,8 +614,8 @@ fn run_actor_receiving<A: Actor>(
         };
         match msg {
             Some(envelope) => {
-                // A stop signaled while recv_timeout was waiting wins over
-                // later work. Keep the envelope until stopped()/monitor cleanup.
+                // A stop observed after receive wins over dispatch, whether
+                // the channel waited or was buffered. Defer the message drop.
                 if cancellation_token.is_cancelled() {
                     discarded = Some(envelope);
                     break;
@@ -649,6 +649,8 @@ fn run_actor_receiving<A: Actor>(
         }
     }
 
+    // Message destructors and reply cancellation may re-enter monitor state.
+    // Preserve stopped() -> monitor cleanup -> undelivered-message drop.
     drop(_monitor_cleanup);
     drop(discarded);
     exit_reason
