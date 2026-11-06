@@ -434,7 +434,10 @@ fn thread_stats() -> HashMap<String, ThreadStat> {
         let Ok(name) = fs::read_to_string(dir.join("comm")) else {
             continue;
         };
-        if !(name.starts_with("actor-worker") || name.starts_with("spawned-shard-")) {
+        if !(name.starts_with("actor-worker")
+            || name.starts_with("spawned-shard-")
+            || name.starts_with("actor-reactor"))
+        {
             continue;
         }
         let sched = fs::read_to_string(dir.join("schedstat")).unwrap();
@@ -502,8 +505,13 @@ fn main() {
         "this research driver uses Linux /proc and taskset"
     );
     let c = Config::parse();
-    let sharded = std::env::var("SPAWNED_EXPERIMENT_SCHEDULER").as_deref() == Ok("sharded");
-    let mut builder = if sharded {
+    let scheduler = std::env::var("SPAWNED_EXPERIMENT_SCHEDULER").unwrap_or_default();
+    let sharded = scheduler == "sharded";
+    let dispatched = matches!(
+        scheduler.as_str(),
+        "native-global" | "native-local" | "tokio-pool"
+    );
+    let mut builder = if sharded || dispatched {
         tokio::runtime::Builder::new_current_thread()
     } else {
         let mut b = tokio::runtime::Builder::new_multi_thread();
@@ -966,5 +974,8 @@ fn main() {
     drop(nodes);
     if sharded {
         spawned_rt::tasks::experimental::shutdown_sharded().unwrap();
+    }
+    if dispatched {
+        spawned_rt::tasks::experimental::dispatcher::shutdown().unwrap();
     }
 }
