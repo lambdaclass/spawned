@@ -1,0 +1,23 @@
+**APPROVE FOR TESTING**
+
+### Review Summary
+
+1. **Alternating Oldest Fairness (`ReadyDeque::take` / `Owner::injection_first`)**:
+   - Flipping per-worker `owner.injection_first: Cell<bool>` on each `oldest` turn cleanly breaks single-worker local-bottom starvation under sustained external arrivals.
+   - On the first periodic `oldest` turn (`injection_first == false`), `self.stealers[worker].steal()` runs before `self.injection.steal_batch_and_pop(queue)`, rescuing the oldest local item at the FIFO bottom before an injector batch can refill the LIFO top.
+   - On the next periodic `oldest` turn (`injection_first == true`), `self.injection.steal_batch_and_pop(queue)` runs first, preventing hot local continuations from starving external arrivals.
+
+2. **Contention Fallbacks & Liveness**:
+   - When `oldest` is true and bounded `attempt(...)` (4 tries) returns `None` due to `Steal::Empty` or `Steal::Retry`, execution falls through to `queue.pop()`, guaranteeing local owner progress without another CAS steal loop.
+   - When `oldest` is false, `queue.pop()` is tried first, followed by `self.injection.steal_batch_and_pop(queue)` and round-robin peer `steal_batch_and_pop(queue)` skipping `peer == worker`.
+   - Bounded `Steal::Retry` on external/peer steals remains paired with the outer driver's sleep registration/recheck and 1ms timer fallback.
+
+3. **TLS Borrowing, Cross-Pool Routing & `OwnerGuard` Lifetime**:
+   - `OWNER` borrows (`borrow()` / `borrow_mut()`) are strictly scoped and non-overlapping; `OwnerGuard::drop` takes the `Option<Owner>` out of the `RefCell` before dropping `Owner` / `Worker<Work>`.
+   - `install`, `enqueue`, and `take` validate `owner.worker == worker` and `owner.pool == pool`. Cross-pool `enqueue` (`owner.pool != pool`) cleanly declines the TLS fast path without consuming `ticket` and routes to the destination `self.injection`.
+   - `OwnerGuard` drop comments accurately document that crossbeam buffer/ticket reclamation depends on `Stealer`/pool lifetime.
+
+4. **Deterministic Regression & Conservation Tests**:
+   - `oldest_local_progress_under_sustained_injection` deterministically reproduces the old policy's starvation (where every `turn % 4 == 3` stole a fresh batch of `ticket(2)` from `injection` onto the LIFO top) and passes on the first `oldest` turn (`turn == 3`, `injection_first == false`) under the fix.
+   - `injected_work_progresses_with_hot_local_continuations` verifies reverse fairness on the second `oldest` turn (`turn == 7`, `injection_first == true`).
+   - `cross_pool_arrival_uses_destination_injector` and `four_worker_peer_batch_steal_conserves_tickets` verify cross-pool injector routing and 64-ticket conservation across peer batch steals.

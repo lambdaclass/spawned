@@ -1,3 +1,9 @@
+The completed [backend research study](../research/backend-experiments/2026-11-06-fede/README.md)
+contains 5,744 successful processes, 51 figures, the pinned pipeline comparison,
+source bundles and review evidence. See [backend usage](../docs/BACKENDS.md) for
+supported choices and experimental status. New graphs and analysis live in the
+research folder; benchmark programs and runners stay here.
+
 The [native Linux graph, overload and profiling report](reports/fede-research-2026-11-06/REPORT.md)
 adds 1,002 fresh processes, longer graph confirmations and 66 CPU profiles.
 [HTML with embedded charts](reports/fede-research-2026-11-06/REPORT.html),
@@ -23,6 +29,28 @@ The [self-contained HTML report](reports/designs-2026-11-05/REPORT.html) embeds 
 graphs for sharing. Start with the [findings](DESIGN-FINDINGS.md) and
 [implementation/test guide](EXPERIMENTS.md). [Raw samples and source metadata](results/designs-2026-11-05/manifest.json)
 retain the nine failed resource-limit samples alongside successful measurements.
+
+## Supported backends and research status
+
+The supported execution choices remain the existing Tokio async, blocking-pool
+and dedicated-thread task backends, plus synchronous thread actors. Tokio is the
+general-purpose default. Blocking/dedicated modes have distinct use cases and
+resource costs; a persistent actor population must fit the chosen execution
+resources.
+
+Private selectors behind backend-experiments are research interfaces. Shared
+runtime ownership, static shards and Root/Runnable/Deque candidates are retained
+for defined workload studies. Global/local/split-queue variants also serve as
+comparison controls. Their presence does not make them supported public backend
+choices or recommended defaults.
+
+Generic inline-future storage remains on its research branch and in the exact
+source bundle; current measurements do not justify its added complexity.
+Benchmark-only transports and io_uring/epoll/kqueue engine controls remain
+experiments too. Supported additions need a named use case, a repeatable measured
+benefit, acceptable latency/CPU/memory/fairness tradeoffs, lifecycle/I/O/failure
+coverage, and a maintainable documented interface. The supported set should stay
+small.
 
 ## Initial baseline
 
@@ -163,3 +191,9 @@ Review archives are retained as requested provenance, with explicit editorial
 limits. Suggested numeric adoption thresholds are reviewer proposals, not
 approved production criteria. Baseline observer asymmetry remains disclosed;
 the later matched design study adds a direct observer and full-actor controls.
+
+The [fixed-core pipeline study](../research/backend-experiments/2026-11-06-fede/PINNED-PROFILES.md) explains the private
+Silver-inspired pinned park/spin profiles and their1/2/4/8-core comparison.
+It retains Tokio and addressed messages; CPU affinity is not a supported public
+backend option. Results distinguish dynamic many-actor graphs from small fixed
+pipelines and include the idle CPU cost of spinning.

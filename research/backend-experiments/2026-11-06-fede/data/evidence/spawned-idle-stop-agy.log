@@ -1,0 +1,38 @@
+I will start by reading `/private/tmp/spawned-idle-stop-review.txt` to understand the context and requirements for the review.
+### Final Read-Only Review
+
+**Verdict:** **BLOCKING FINDING** (1 compile error in the new sync regression test; production runtime logic in both `tasks` and `threads` is sound).
+
+---
+
+### Blocking Finding
+
+1. **Tuple struct `Increment` instantiated as unit struct in threads regression test**
+   - **Location:** [`stop_while_receiving_does_not_dispatch_a_later_request`](file:///private/tmp/spawned-stop-race/concurrency/src/threads/actor.rs#L1230-L1294)
+   - **Issue:** [`Increment`](file:///private/tmp/spawned-stop-race/concurrency/src/threads/actor.rs#L1230) is defined as a two-field tuple struct `struct Increment(Arc<Mutex<Vec<&'static str>>>, MonitorTable);`, but the test constructs the [`MessageEnvelope`](file:///private/tmp/spawned-stop-race/concurrency/src/threads/actor.rs#L1289-L1292) with `msg: Increment` instead of `msg: Increment(events.clone(), monitors)` (or `monitors.clone()`). In Rust, bare `Increment` resolves to the tuple-struct constructor function item `fn(Arc<Mutex<Vec<&'static str>>>, MonitorTable) -> Increment`, which fails to compile (`E0308: mismatched types`).
+   - **Fix:** Pass the event log and monitor table into the constructor:
+     ```rust
+     tx.send(Box::new(MessageEnvelope {
+         msg: Increment(events.clone(), monitors),
+         tx: Some(reply),
+     }) as Box<dyn Envelope<Counter> + Send>)
+         .unwrap();
+     ```
+
+---
+
+### Verification of Production Changes & Invariants
+
+- **Async idle-stop fix & hot-path performance ([`run_actor_lifecycle`](file:///private/tmp/spawned-stop-race/concurrency/src/tasks/actor.rs#L755-L806)):**
+  - Tracking `parked = result.is_pending()` inside the `poll_fn` wrapper around `rx.poll_recv(cx)` and checking `if parked && cancellation_token.is_cancelled()` before consuming from `rx` on resume closes the race where an idle parked actor receives both a message admission and a cancellation before re-poll (`future::select(recv, cancel)` polls `recv` first).
+  - On the backlogged fast path (`parked == false`), `rx.poll_recv(cx)` runs immediately on the first poll and returns `Poll::Ready(Some(_))` without polling `cancel` or registering a cancellation waiter on every message; post-handler cancellation checks ([lines 793-801](file:///private/tmp/spawned-stop-race/concurrency/src/tasks/actor.rs#L793-L801)) continue to handle stops triggered during or between backlogged handlers.
+  - Returning `Poll::Ready(None)` leaves the unconsumed envelope in `rx`, so [`run_actor`](file:///private/tmp/spawned-stop-race/concurrency/src/tasks/actor.rs#L723-L725) drains and drops it after `stopped()` and [`MonitorCleanup`](file:///private/tmp/spawned-stop-race/concurrency/src/tasks/actor.rs#L735), preserving queued message drop ordering.
+  - [` idle_stop_regression::stop_while_idle_does_not_dispatch_a_queued_request_on_resume`](file:///private/tmp/spawned-stop-race/concurrency/src/tasks/actor.rs#L1976-L2015) deterministically parks `run_actor` via `futures::poll!`, admits a request, cancels the token before awaiting completion, and verifies zero handler executions and closed reply channel without timing sleeps.
+
+- **Sync receive-boundary fix, ownership, and drop ordering ([`run_actor`](file:///private/tmp/spawned-stop-race/concurrency/src/threads/actor.rs#L561-L573), [`run_actor_receiving`](file:///private/tmp/spawned-stop-race/concurrency/src/threads/actor.rs#L575-L655)):**
+  - Rechecking `cancellation_token.is_cancelled()` immediately after `receive()` returns `Ok(envelope)` ([lines 619-622](file:///private/tmp/spawned-stop-race/concurrency/src/threads/actor.rs#L619-L622)) prevents dispatching work when a stop arrived while blocked on `recv_timeout`.
+  - Holding the already-dequeued envelope in `discarded` and explicitly running `drop(_monitor_cleanup); drop(discarded);` after `actor.stopped(&ctx)` ([lines 640-654](file:///private/tmp/spawned-stop-race/concurrency/src/threads/actor.rs#L640-L654)) ensures the sequence `stopped()` $\to$ monitor table cleanup $\to$ discarded envelope/oneshot reply drop $\to$ remaining `receive`/`rx` and `actor` drop $\to$ [`CompletionGuard`](file:///private/tmp/spawned-stop-race/concurrency/src/threads/actor.rs#L354-L367) exit publication.
+  - Early-stop and `started()`/`stopped()` panic handling ([lines 583-600](file:///private/tmp/spawned-stop-race/concurrency/src/threads/actor.rs#L583-L600), [640-650](file:///private/tmp/spawned-stop-race/concurrency/src/threads/actor.rs#L640-L650)) remain unchanged.
+
+- **Public API & stop contract ([`ChildHandle::stop`](file:///private/tmp/spawned-stop-race/concurrency/src/child_handle.rs#L109-L113)):**
+  - All public traits, signatures (`Actor`, `Handler`, `Backend`, `ActorRef`, `Context`, `ChildHandle`), and in-flight handler semantics remain unchanged.

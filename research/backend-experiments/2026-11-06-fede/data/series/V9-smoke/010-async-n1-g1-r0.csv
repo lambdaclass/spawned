@@ -1,0 +1,2 @@
+actor,thread,allowed_cpus,handled_before
+0,pipeline-worker,"2",0

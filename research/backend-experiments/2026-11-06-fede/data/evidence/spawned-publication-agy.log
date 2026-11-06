@@ -1,0 +1,28 @@
+I will start by reading `/private/tmp/spawned-native-publication-review.txt` to understand the context and scope of the code/model review.
+I will now read `/private/tmp/spawned-fede-controls/rt/src/tasks/dispatch_gate.rs` and any related files in `rt/src/tasks/` to inspect the `notify` change and the `coalesced_wake_publishes_data_to_the_next_poll` model.
+Wait—look at line 58 of `dispatch_gate.rs`!
+```rust
+    pub(crate) fn pending(&self) -> bool {
+        let mut state = self.0.load(Ordering::Acquire);
+        loop {
+            assert!(state & RUNNING != 0);
+            let next = if state & NOTIFIED != 0 { QUEUED } else { IDLE };
+            match self
+                .0
+                .compare_exchange_weak(state, next, Ordering::AcqRel, Ordering::Acquire)
+            {
+                Ok(_) => return enqueue,
+                Err(actual) => state = actual,
+            }
+        }
+    }
+```
+HOLD ON! Look at line 58: `Ok(_) => return enqueue,`! `enqueue` is NOT DEFINED in `pending(&self)`!
+Let's check `rt/src/tasks/mod.rs` or other files in `rt/src/tasks/` to see how `dispatch_gate.rs` is used!
+Remember: "No edits, commands or tests." So do NOT run `run_command` or edit any workspace files! We can read files using `read_file` and write the plan artifact if appropriate (since `/plan` was invoked, or both write the review/plan artifact and respond). Let's read `rt/src/tasks/mod.rs` first using `read_file`.
+Let's also read `/private/tmp/spawned-fede-controls/rt/src/tasks/experimental.rs` and the tokio/async-task reference files mentioned in `/private/tmp/spawned-native-publication-review.txt`.
+Let's read `/private/tmp/spawned-fede-controls/rt/src/tasks/experimental/dispatcher.rs`!
+Let's also read the local cargo registry files mentioned in `/private/tmp/spawned-native-publication-review.txt` so our review is completely grounded in all references!
+1. `/Users/unbalancedparen/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.48.0/src/runtime/task/state.rs` lines 240-280
+2. `/Users/unbalancedparen/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/async-task-4.7.1/src/raw.rs` lines 240-280
+Let's call `read_file` on both.

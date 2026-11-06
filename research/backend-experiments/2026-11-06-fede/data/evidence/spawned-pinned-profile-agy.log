@@ -1,0 +1,19 @@
+**APPROVE FOR TESTING** (no blockers found; one minor lifecycle-ordering note below).
+
+### Review Summary
+
+1. **Hot-Loop Fairness & Spin/Park Progress (`rt/src/tasks/experimental.rs`)**
+   - **Spin mode (`SPAWNED_EXPERIMENT_IDLE_SPIN=1`)**: Each shard runs a single persistent `block_on` owner loop using `rx.try_recv()`. On `Empty`, it awaits `tokio::task::yield_now()`, keeping the current-thread driver active without blocking in `epoll_wait` while still polling spawned actor tasks, timers, and I/O every turn. Calling `yield_now().await` after `tokio::spawn(job)` also prevents an unbounded burst of incoming spawns from starving already-spawned actors on that shard.
+   - **Park mode (`0` / default)**: Uses `rx.recv().await` with no extra yield overhead; default Tokio and public `Actor`/`Handler`/`Backend` APIs are untouched.
+
+2. **Startup Handshake, Failure Cleanup & Shutdown (`rt/src/tasks/experimental.rs`)**
+   - **CPU Authority & Startup**: `pin_core` resolves `/proc/thread-self` and runs `taskset -pc <core> <tid>` inside each worker thread *before* constructing the current-thread runtime and signaling `ready.send(Ok(()))`. Non-Linux targets deterministically fail with `ErrorKind::Unsupported` when pinning is requested.
+   - **Partial-Init Safety**: Worker handles and sender channels are pushed prior to `initialized.recv()??`. If pinning or runtime creation fails on shard `k`, `Pool::drop` takes `senders` (disconnecting shards `0..k`) and joins all previously spawned worker threads without leaking threads or self-joining.
+   - **Shutdown & Leases**: `Pool::shutdown` rejects calls from shard threads (`worker_ids`), waits on `idle` `Condvar` until all `Lease`s drop (`state.active == 0` with a 5s deadline), drops `senders` outside the state lock, and joins all workers. `spawn_sharded` enforces single-configuration-per-process invariants (`count`, `affinity`, `spin`).
+
+3. **Benchmark Timing, Math, Counters & Scope (`concurrency/benches/pinned_pipeline.rs`)**
+   - **Placement & Audit**: Actors are started in `0..workers * groups` order (round-robin across shards) and wired into `groups` independent `workers`-stage pipelines. In `sharded` mode, `Audit` verifies both `spawned-shard-{i % workers}` and exact single-core `Cpus_allowed_list` (`core_ids[i % workers]`) before warmup.
+   - **Math & Constant Work**: `WORK = 800` is divided evenly across `workers` (`1, 2, 4, 8`), preserving identical 800-step LCG work per root message regardless of stage count. The affine composition `(a, b)` accurately checks `id.wrapping_mul(a).wrapping_add(b)` and `hops == workers` on every warmup and benchmark reply.
+   - **Timing & CPU Accounting**: Uses `ActorRef::send` per hop with a single end-to-end `oneshot` reply carrying completion `Instant`. `/proc/self/stat` parsing after `rsplit_once(')')` indexes `fields[11]` (`utime`, field 14) and `fields[12]` (`stime`, field 15), normalized by `getconf CLK_TCK`, for both the 1s idle window and the barrier-synchronized 256-producer active run on driver CPUs `10..13`.
+   - **Counters & Lifecycle**: Verifies total handled messages `(messages + groups) * workers`, stops all actors, awaits `ExitReason::Normal` with a 5s timeout, checks `started`/`stopped`/`dropped` counts, and calls `shutdown_sharded()`.
+   - **Non-blocking observation**: `counts.dropped` is asserted with `Ordering::Relaxed` immediately before `shutdown_sharded()`. If `wait_exit()` resolves as the actor task finishes `stopped()` just before the task frame drops `Stage` on a remote worker thread, moving `shutdown_sharded()` (or `drop(actor_runtime)`) above the `counts.dropped` assertion guarantees a happens-before edge on task frame deallocation, though in practice if `Stage` is dropped prior to signaling exit notification this will already pass.

@@ -1,6 +1,6 @@
 # Spawned roadmap
 
-Updated 2026-11-05. This is a proposed implementation order, not a release-date
+Updated 2026-11-06. This is a proposed implementation order, not a release-date
 commitment. Each milestone needs its own design, tests, and review.
 
 ## Principles to preserve
@@ -107,6 +107,19 @@ restart-storm tests, and examples that do not imply exactly-once effects or
 transparent state recovery. A client recovery need can justify advancing this
 milestone; optimization is not a prerequisite for supervision.
 
+## Backend graduation policy
+
+Keep the existing supported execution modes and Tokio default. Retain alternative
+queue/scheduler/runtime-ownership designs behind the private experiment feature
+until a defined application need justifies support. Archive designs whose benefit
+does not justify their complexity, with source/data available for reproduction.
+
+A proposed supported backend needs a named workload and target metric, repeated
+controlled measurements, an explicit budget for latency/CPU/memory/fairness
+tradeoffs, lifecycle/I/O/helper/failure coverage, and a reviewed maintenance/API
+contract. A win in one synthetic case is evidence to investigate. Promotion is a
+separate decision; adding more backend names is not a milestone.
+
 ## Research, not committed replacements
 
 The [Silver/flux research](research/silver-flux.md) evaluates timing propagation,
@@ -128,6 +141,28 @@ actors, and a project website remain separate research or product work.
 Deterministic testing is distinct from replacing the production runtime:
 current generated seeds reproduce operations, not thread schedules. Continue
 improving [tests](TESTING.md) throughout every milestone.
+
+## Backend research checkpoint
+
+The [overnight scheduler research](../research/backend-experiments/2026-11-06-fede/SCHEDULER-RESEARCH.md)
+keeps Tokio as the default and treats custom drivers as private experiments.
+Independent requests, actor-to-actor graphs, hot/cold load and lifecycle churn
+answer different questions; a fast result in one does not select a runtime for
+all applications. Larger actor populations need realistic traffic, not only
+more idle actors.
+
+Before promoting a backend, require lifecycle/helper/I/O parity, wake-publication
+models, progress tests with both outside arrivals and internal continuations,
+overload admission/deadline evidence and bounded resource runs. Benchmark success
+alone missed real prototype publication and fairness defects. Targeted regression
+work also produced the production idle-stop fix in
+[PR185](https://github.com/lambdaclass/spawned/pull/185).
+
+Use the research to choose one client workload and optional framework metrics
+before expanding the backend count. Task scheduling, runtime ownership and an
+io_uring/epoll/kqueue I/O engine remain separate design decisions. Preserve
+ordinary message ownership, unbounded-mailbox availability, addressed delivery,
+typed replies and cooperative handler behavior throughout.
 
 ## Historical context
 

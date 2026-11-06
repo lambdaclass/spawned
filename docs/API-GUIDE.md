@@ -126,6 +126,8 @@ let actor_ref = MyActor::new().start_with_backend(Backend::Thread);
 ## Backend Selection (tasks mode)
 
 The `Backend` enum controls where the actor's message loop runs. Only available in `tasks` mode.
+See [backend selection and usage](BACKENDS.md) for resource sizing, multiple
+runtimes, and the separate status of experimental pinned profiles.
 
 | Backend | When to use |
 |---------|-------------|

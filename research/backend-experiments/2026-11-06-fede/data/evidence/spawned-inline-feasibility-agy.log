@@ -1,0 +1,209 @@
+# Design Feasibility Review: Inline Generic `PanicSafeFuture<F>` via `pin_project_lite`
+
+> [!NOTE]
+> **Scope Notice**: This is a design feasibility review only. It makes no claim of an approved implementation, tested runtime behavior, or verified performance speedup.
+
+---
+
+## 1. Feasibility of `pin_project_lite` (v0.2.16) Without Custom `unsafe`
+
+Using `pin_project_lite::pin_project!` with `#[pin] future: Option<F>` and `PinnedDrop` is **feasible and sound** in 100% safe surface code (all `unsafe` is encapsulated inside the macro expansion of `pin_project_lite` and standard library `Pin::set`).
+
+### Why `Option<F>` + `Pin::set(None)` Works for `!Unpin` Futures
+1. **Structural Pinning of `Option<F>`**: `pin_project_lite` supports structural pinning on `Option<F>` via `project().future.as_pin_mut()`, which yields `Option<Pin<&mut F>>` without moving `F`.
+2. **In-Place Drop via `Pin::set`**: Calling `self.project().future.set(None)` invokes `Pin::<&mut Option<F>>::set`. Inside `core::pin::Pin::set`, the standard library overwrites the pinned `Option<F>` in place (`*self.get_unchecked_mut() = value`). Before writing `None`, Rust drops the existing `Some(F)` **in place** without moving `F` out of its pinned memory address, satisfying the `Pin` drop guarantee for `!Unpin` compiler-generated state machines.
+3. **`PinnedDrop` vs. `Drop`**: `pin_project_lite` prohibits implementing `core::ops::Drop` directly on a `#[pin_project]` type (to prevent accidental moves of pinned fields in `&mut self`), instead providing `#[pin_project(PinnedDrop)]` and the `#[pinned_drop] impl<F> PinnedDrop for ... { fn drop(self: Pin<&mut Self>) }` syntax.
+
+---
+
+## 2. Minimal Candidate Design
+
+```rust
+use core::future::Future;
+use core::pin::Pin;
+use core::task::{Context, Poll};
+use std::panic::{catch_unwind, AssertUnwindSafe};
+use pin_project_lite::pin_project;
+
+pin_project! {
+    #[project = InlinePanicSafeProj]
+    #[ - ] // note: standard pin_project! syntax below
+    #[project(!Unpin)]
+    struct InlinePanicSafeFuture<F> {
+        #[pin]
+        future: Option<F>,
+    }
+    impl<F> PinnedDrop for InlinePanicSafeFuture<F> {
+        fn drop(mut self: Pin<&mut Self>) {
+            self.dispose();
+        }
+    }
+}
+
+impl<F> InlinePanicSafeFuture<F> {
+    fn new(future: F) -> Self {
+        Self { future: Some(future) }
+    }
+
+    fn dispose(self: Pin<&mut Self>) {
+        let mut this = self.project();
+        if this.future.as_ref().is_some() {
+            if catch_unwind(AssertUnwindSafe(|| {
+                this.future.set(None);
+            }))
+            .is_err()
+            {
+                tracing::error!("Experimental runnable actor future destructor panicked");
+            }
+        }
+    }
+}
+
+impl<F: Future<Output = ()>> Future for InlinePanicSafeFuture<F> {
+    type Output = ();
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            self.as_mut()
+                .project()
+                .future
+                .as_pin_mut()
+                .expect("poll after completion")
+                .poll(cx)
+        }));
+        match result {
+            Ok(Poll::Pending) => Poll::Pending,
+            Ok(Poll::Ready(())) => {
+                // Eagerly dispose in-place after completion so captured resources
+                // (including Lease) drop inside catch_unwind before Poll::Ready returns.
+                self.dispose();
+                Poll::Ready(())
+            }
+            Err(_) => {
+                tracing::error!("Experimental runnable actor future panicked");
+                self.dispose();
+                Poll::Ready(())
+            }
+        }
+    }
+}
+```
+
+---
+
+## 3. Lifecycle & Drop-Panic Guarantees Verification
+
+### A. Drop-Panic Assignment Guarantee (No Double-Drop After `Pin::set(None)` Unwinds)
+What happens if `F::drop` panics during `this.future.set(None)` inside `catch_unwind`?
+- `Pin::set(&mut self, value: T)` compiles to a direct dereference assignment: `*self.pointer = None;` (where `self.pointer` is `&mut Option<F>`).
+- In Rust's MIR and codegen semantics (`DropAndReplace`), an assignment `*place = new_value` splits into two sequential operations:
+  1. **Drop existing value in place**: `core::ptr::drop_in_place(place)`.
+  2. **Write new value (`None`)**: `core::ptr::write(place, None)` — importantly, in Rust MIR, the write of `new_value` happens along **both** the normal return edge **and** the unwind cleanup edge of the drop glue (`DropAndReplace` unwind path writes the new operand before continuing unwinding so that `*place` remains a valid, initialized value when the stack frame or surrounding `catch_unwind` inspects it).
+- **Consequence**: Even if `F`'s destructor panics during `this.future.set(None)`, the discriminant of `this.future` is guaranteed to be set to `None` before `catch_unwind` catches the panic!
+- Therefore, when `InlinePanicSafeFuture<F>` itself is later dropped by `async_task` deallocating the task allocation, `PinnedDrop::drop` calls `dispose()`, sees `this.future.as_ref().is_none()`, and is a no-op. **No double-drop of `F` can occur.**
+
+### B. Post-`Poll::Ready` Cleanup
+- When `F::poll` returns `Ok(Poll::Ready(()))`, `F`'s state machine has reached its terminal state, Move-dropped any locals consumed before the final yield point, and still holds any outer wrapper fields (such as `_lease = lease` in the outer `async move` block, if not yet dropped at the end of the block, or state machine variant fields).
+- Calling `self.dispose()` immediately on `Ok(Poll::Ready(()))` sets `future` to `None` inside `catch_unwind`, ensuring any destructor work remaining on `F` is panic-guarded at completion time and that subsequent `PinnedDrop::drop` of `InlinePanicSafeFuture<F>` is a no-op.
+
+### C. Cancellation Before First Poll (or While `Pending`)
+- If `Runnable` is dropped without being run, or cancelled while suspended at an `.await` point, `async-task` drops the inline task future in place.
+- For a never-polled `async move { let _lease = lease; future.await; }`, `F` is in its `Unresumed` state holding `lease` and the inner `future`.
+- `PinnedDrop::drop` runs `self.dispose()`, which executes `this.future.set(None)` inside `catch_unwind`. Both `future` and `lease` are dropped in place, guarded against panics, without ever having been moved after allocation.
+
+### D. Ordinary Double-Panic Limitation
+- If `F::poll` panics, and **while unwinding from `F::poll`** a local variable inside `F`'s active stack frame panics in its `Drop` implementation *before* execution exits `F::poll`'s `catch_unwind` boundary, standard Rust unwinding rules apply: two simultaneous active panics on the same thread before reaching `catch_unwind` trigger `std::rt::begin_panic` / process abort (`core::panicking::panic_in_cleanup`).
+- However, if `F::poll` panics, unwinds cleanly to the `catch_unwind` in `InlinePanicSafeFuture::poll` (completing first unwind), and **then** `self.dispose()` (`this.future.set(None)`) panics while dropping the rest of `F`, those two panics are **sequential** (each caught by its own `catch_unwind`), so that sequence will **not** abort the process.
+
+---
+
+## 4. End-to-End Generic Plumbing & Paired `inline=0/1` Experiment
+
+### Generic Plumbing (`dispatcher::spawn` -> `Pool::spawn`)
+- Currently, `Pool::spawn(self: &Arc<Self>, future: impl Future<Output = ()> + Send + 'static)` already accepts a concrete generic `F`!
+- As long as the public/internal call chain (`dispatcher::spawn` -> `Pool::spawn`) passes `F: Future<Output = ()> + Send + 'static` generically (rather than boxing at the `Actor` / `Handler` boundary before calling `Pool::spawn`), `Pool::spawn` knows the exact concrete type of `future` and of the outer `async move { let _lease = lease; future.await; }` block.
+
+### Why Different Task Internal Types Still Return `Runnable<TaskMeta>` / `Task<(), TaskMeta>`
+- `async_task::Builder::metadata(meta).spawn(future_fn, schedule_fn)` is generic over `F` (the future), `S` (the schedule callback), and `M` (metadata = `TaskMeta`).
+- Inside `async-task`, the heap-allocated `RawTask<F, T, S, M>` is type-erased behind a raw pointer and a static vtable pointer inside `Header<M>`.
+- The returned handle types are `async_task::Runnable<TaskMeta>` and `async_task::Task<F::Output, TaskMeta>` (which is `Task<(), TaskMeta>`). Neither `Runnable<TaskMeta>` nor `Task<(), TaskMeta>` has `F` or `S` in its type signature!
+- Therefore, `Work::Runnable(Runnable<TaskMeta>)`, the backend root queue, worker deques, and `schedule_from_metadata` remain **100% identical and type-compatible** across both `PanicSafeFuture` (boxed) and `InlinePanicSafeFuture<F>` (inline).
+
+### Paired `inline` Flag (`0` vs `1`) in `Pool::spawn`
+```rust
+let builder = async_task::Builder::new().metadata(meta);
+let (runnable, task) = match (self.inline_future, self.zero_schedule) {
+    (false, true) => builder.spawn(
+        move |_| PanicSafeFuture(Some(Box::pin(future))),
+        schedule_from_metadata,
+    ),
+    (false, false) => builder.spawn(
+        move |_| PanicSafeFuture(Some(Box::pin(future))),
+        move |runnable| {
+            if let Some(pool) = weak.upgrade() {
+                pool.enqueue_work(Work::Runnable(runnable));
+            }
+        },
+    ),
+    (true, true) => builder.spawn(
+        move |_| InlinePanicSafeFuture::new(future),
+        schedule_from_metadata,
+    ),
+    (true, false) => builder.spawn(
+        move |_| InlinePanicSafeFuture::new(future),
+        move |runnable| {
+            if let Some(pool) = weak.upgrade() {
+                pool.enqueue_work(Work::Runnable(runnable));
+            }
+        },
+    ),
+};
+task.detach();
+runnable.schedule();
+```
+Both arms return the exact same `(Runnable<TaskMeta>, Task<(), TaskMeta>)` tuple, sharing the same compilation unit, queue, worker loop, and scheduling policy.
+
+---
+
+## 5. Required Pin-Address and Drop Verification Tests
+
+Before any implementation could be trusted, the following unit tests are required:
+
+1. **`!Unpin` Pin Address Stability Test**:
+   - Construct a custom `!Unpin` future (using `PhantomPinned`) that records `self as *const Self as usize` on first `poll` (returning `Poll::Pending`), on second `poll` (returning `Poll::Ready(())`), and inside `Drop::drop`.
+   - Assert that all three recorded addresses are **bit-for-bit identical**, proving `F` was never moved between polls or during `Pin::set(None)` disposal.
+2. **Post-`Poll::Ready` Immediate Disposal Test**:
+   - Use an `Arc<AtomicUsize>` drop counter inside `F`. Poll `InlinePanicSafeFuture<F>` once to `Poll::Ready(())` *without* dropping the outer `InlinePanicSafeFuture<F>` yet.
+   - Assert the drop counter is `1` immediately after `Poll::Ready(())` returns, and stays `1` (not `2`) when `InlinePanicSafeFuture<F>` is subsequently dropped.
+3. **Drop-Panic Recovery & No-Double-Drop Test**:
+   - Construct an `!Unpin` future whose `Drop` increments an `Arc<AtomicUsize>` counter and then calls `panic!("boom in drop")`.
+   - Test across three paths:
+     1. Normal completion (`Poll::Ready(())` triggers `dispose()`).
+     2. Poll panic (`F::poll` panics, then `dispose()` runs `F::drop` which also panics).
+     3. Pre-poll / mid-flight cancellation (`Runnable` dropped without completion).
+   - In all three cases, assert that the thread does not abort/unwind out of `poll` or `drop`, and that the drop counter equals **exactly `1`** after the task allocation is freed (confirming `Pin::set(None)` marked the `Option` as `None` even when `F::drop` panicked).
+4. **Cancellation Before First Poll Lease Release Test**:
+   - Spawn or construct `InlinePanicSafeFuture` wrapping the `lease` closure, drop the `Runnable` before polling, and verify `active.count` (or `Lease` drop counter) decrements properly.
+
+---
+
+## 6. Reasons This Might NOT Isolate Future Representation Alone
+
+Even with a paired `inline=0/1` flag on the same source and queue, comparing `PanicSafeFuture(Option<Pin<Box<dyn Future>>>)` against `InlinePanicSafeFuture<F>` changes a few coupled factors beyond raw pointer indirection:
+
+1. **Upstream Boxing in Actor / Handler / Message Dispatch**:
+   - If the caller of `Pool::spawn` (or `dispatcher::spawn`) passes a future that already awaits an internally boxed future (e.g., `Pin<Box<dyn Future>>` from an async trait method, dynamic handler table, or boxed actor turn loop), then `F` inside `Pool::spawn` is merely a thin outer wrapper (`async move { let _lease = lease; boxed_inner.await }`). In that case, `inline=1` only inlines the `_lease` wrapper while the real actor work remains heap-allocated and type-erased.
+2. **Allocation Size & Cache-Line Footprint of `RawTask`**:
+   - With `inline=0`, `RawTask` always has a fixed, tiny size (`Header + Option<Pin<Box<dyn Future>>>` = header + 16 bytes), while the `Future` state machine lives in a separate heap allocation.
+   - With `inline=1`, `RawTask<InlinePanicSafeFuture<F>, ...>` has a variable size proportional to `size_of::<F>()` and alignment `align_of::<F>()`. This changes allocator size classes and how `Header<TaskMeta>` shares cache lines with `F`'s state machine fields.
+3. **Order of Destruction Relative to `Lease`**:
+   - Notice in `Pool::spawn`:
+     ```rust
+     let future = async move {
+         let _lease = lease;
+         future.await;
+     };
+     ```
+     When `future.await` completes normally (`Ok(Poll::Ready(()))`), `_lease` is dropped *inside* the `async move` block **before** `InlinePanicSafeFuture::poll` receives `Poll::Ready(())`. That is identical between `inline=0` and `inline=1`. However, on panic or cancellation, `_lease` is dropped when the `async move` state machine is dropped during `dispose()`.
+4. **Codegen / Inlining Thresholds in `async_task::RawTask::run`**:
+   - `async_task` instantiates a monomorphic `RawTask::<InlinePanicSafeFuture<F>, (), S, TaskMeta>::run` function for each distinct `F`. While this eliminates the inner `dyn Future` vtable call (`RawTask::run` still uses one outer function-pointer call from `Header.vtable.run`), LLVM inlining decisions inside `RawTask::run` will now depend on the size and complexity of `F::poll`, whereas `inline=0` had a single small monomorphic `RawTask::<PanicSafeFuture, ...>::run` calling a dynamic vtable.

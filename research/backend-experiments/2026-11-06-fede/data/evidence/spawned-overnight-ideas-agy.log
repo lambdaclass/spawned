@@ -1,0 +1,169 @@
+I am reading [`rt/src/tasks/experimental.rs`](file:///private/tmp/spawned-fede-next/crates/rt/src/tasks/experimental.rs) and [`concurrency/src/tasks/actor.rs`](file:///private/tmp/spawned-fede-next/crates/concurrency/src/tasks/actor.rs) to inspect the current experimental backend implementations, actor dispatch loop, turn budgets, and placement/lifecycle mechanics.
+I will now read [`rt/src/tasks/tokio.rs`](file:///private/tmp/spawned-fede-next/rt/src/tasks/tokio.rs) and the top of [`concurrency/benches/workload_research.rs`](file:///private/tmp/spawned-fede-next/concurrency/benches/workload_research.rs) to understand the existing runtime primitives and benchmark harness structure.
+### Executive Summary & Context: Where Existing Tokio Already Steals vs. What Current Data Shows
+
+Before ranking new experiments, we must separate what multi-thread Tokio (`Runtime::new_multi_thread`) **already does** from what the current experimental modes in [`rt/src/tasks/experimental.rs`](file:///private/tmp/spawned-fede-next/rt/src/tasks/experimental.rs) and [`concurrency/src/tasks/actor.rs`](file:///private/tmp/spawned-fede-next/concurrency/src/tasks/actor.rs) test:
+
+1. **Where Existing Multi-Thread Tokio Already Does Work Stealing**:
+   - In the default path ([`ActorRef::spawn`](file:///private/tmp/spawned-fede-next/concurrency/src/tasks/actor.rs#L556-L645)), every `Backend::Async` actor is a single long-lived Tokio task executing [`run_actor`](file:///private/tmp/spawned-fede-next/concurrency/src/tasks/actor.rs#L702-L726) / [`run_actor_lifecycle`](file:///private/tmp/spawned-fede-next/concurrency/src/tasks/actor.rs#L728-L814).
+   - Multi-thread Tokio already maintains per-worker LIFO slots + 256-slot local run queues, cross-worker work-stealing, a global injection queue for external wakes, and a 128-poll cooperative budget per tick.
+   - **Consequence on 8-node graphs (`chain` & `fanout`)**: Even when actors are spawned in nominal `cross` order in [`layout()`](file:///private/tmp/spawned-fede-next/concurrency/benches/workload_research.rs#L249-L289), when parent [`Node::handle`](file:///private/tmp/spawned-fede-next/concurrency/benches/workload_research.rs#L211-L248) sends a `Route` request to a child, Tokio wakes the child task into the waking worker's LIFO slot / local queue (or steals it onto an idle worker). Thus Tokio dynamically co-locates active graph edges (~951k root/s `chain` across both nominal placements; ~952k `fanout` on short 5-rep runs, pending long confirmations).
+   - **Consequence under concentrated hot/cold overload**: When hot actors monopolize a worker, other Tokio workers steal cold actors off that worker's local queue, preventing permanent `shard0` head-of-line pinning.
+
+2. **Why Current Static `sharded` (`Pool`) Wins Independent RPC / `same` Graphs Today, and Loses on `cross` Graphs / `shard0` Overload**:
+   - [`Pool::spawn`](file:///private/tmp/spawned-fede-next/rt/src/tasks/experimental.rs#L91-L112) permanently pins each actor via blind global round-robin (`self.next.fetch_add(1)`) onto one of $N$ isolated `new_current_thread()` Tokio runtimes (`spawned-shard-{id}`).
+   - **Independent RPC & `same`-shard graphs**: Zero cross-worker steal scanning, zero task migration, and cache-hot per-shard reactors yield higher single-hop throughput (2.070M/s vs 1.777M/s on old frozen 9b) and parity on `same` fanout (~952k) / near-parity on `same` chain (~864k).
+   - **`cross`-shard graphs (~514k chain, ~630k fanout)**: Every parent $\to$ child hop in [`Node::handle`](file:///private/tmp/spawned-fede-next/concurrency/benches/workload_research.rs#L219-L233) crosses pinned `current_thread` runtimes, forcing cross-thread `mpsc`/`oneshot` wakeups (`eventfd`/`epoll` unparks and context switches) with no way to migrate or steal the child onto the parent's worker.
+   - **Concentrated overload**: Cold actors statically assigned to `shard0` cannot escape the hot worker, inflating `cold_shard0_observed_p99_ns`, `worst_cold_actor_observed_p99_ns`, and `cold_late_observed`.
+
+---
+
+### Ranked Recommendations for the 10-Hour Overnight Campaign
+
+| Priority | Direction | Engineering Risk | Diagnostic Value | Why This Rank |
+| :--- | :--- | :--- | :--- | :--- |
+| **1** | **(4) Actor-Locality / Child-Inherited Placement Policy** + **(5) Caller/Driver Controls & Counter-Instrumentation A/B** | Low (~80 LoC) | **Highest** | Directly tests whether parent-inherited shard placement eliminates the `cross`-graph penalty in real actor trees without losing `shard16` locality, while counter A/B isolates remote-wake vs poll costs. |
+| **2** | **(1) Bounded Message / Wall-Time Turns on Existing Tokio (`MessageTurn` refinement)** | Low (~50 LoC) | **High** | Existing Tokio already steals cold actors off hot workers. Refining [`MessageTurn`](file:///private/tmp/spawned-fede-next/concurrency/src/tasks/actor.rs#L650-L700) tests whether Tokio + tuned turn/time-slice bounding achieves the best overall Pareto frontier (high graph throughput + bounded tail latency under concentrated overload). |
+| **3** | **(2) Process-Owned Shared Multi-Thread Tokio Executor (`tokio-pool` control)** | Very Low (~35 LoC) | **High (Control)** | Essential scientific control: isolates **process-owned runtime lifetime / driver thread separation** from **sharded `current_thread` vs work-stealing `multi_thread`**. |
+| **4** | **(3) Custom Actor Future Work-Sharing/Stealing Dispatcher over Per-Worker `current_thread` Reactors** | High (~300+ LoC, subtle pitfalls) | **Medium-High (Diagnostic)** | Multi-thread Tokio *already* steals tasks across workers. A custom dispatcher is only informative if it tests **sticky home-shard locality with overflow stealing** (or hot/cold queue separation); a naive global queue will lose to Tokio's lock-free queues, and migrating futures across `current_thread` reactors has major I/O/timer/coop pitfalls (detailed below). |
+
+---
+
+### Detailed Analysis of Each Candidate & What Prototype Would Test
+
+#### 1. Priority 1: (4) Child-Inherited / Locality Placement + (5) Counter-Instrumentation A/B
+* **What it tests**: In real applications, multi-hop actor pipelines (`chain`, `fanout`, supervision subtrees) are spawned by a parent actor (inside `started()` or a `Handler::handle()` turn) or grouped by domain key—not pre-sorted to reverse-engineer round-robin indices as [`layout()`](file:///private/tmp/spawned-fede-next/concurrency/benches/workload_research.rs#L249-L289) does.
+* **Mechanism (Private feature + env only)**:
+  - Record a thread-local `CURRENT_SHARD: Cell<Option<usize>>` inside each `spawned-shard-{id}` worker thread in [`rt/src/tasks/experimental.rs`](file:///private/tmp/spawned-fede-next/rt/src/tasks/experimental.rs#L55-L77).
+  - Add `SPAWNED_EXPERIMENT_PLACEMENT=round-robin|parent-sticky|parent-fanout`:
+    - `round-robin` (default): existing `self.next.fetch_add(1)` behavior.
+    - `parent-sticky`: if `ActorRef::spawn` is called from inside a shard worker (`CURRENT_SHARD.get() == Some(w)`), place the child on shard `w`; if called from an external thread (e.g. main/producer), use round-robin (`self.next.fetch_add(1)`).
+  - **Counter-instrumentation A/B (`SPAWNED_EXPERIMENT_COUNTERS=0|1`)**:
+    - Per-worker cache-line-padded atomic counters in `experimental.rs` / `actor.rs`: `turns_polled`, `messages_handled`, `turn_yields_count`, `turn_yields_time_slice`, `local_shard_spawns`, `remote_shard_spawns`, exported alongside [`save_threads()`](file:///private/tmp/spawned-fede-next/concurrency/benches/workload_research.rs#L466-L491) (`/proc/self/task/<tid>/schedstat` `runtime_ns`, `runqueue_wait_ns`, `voluntary_switches`, `involuntary_switches`).
+    - Run quick A/B with counters enabled vs compiled-out/disabled to verify counter overhead is $<1\%$ before long soaks.
+  - **Caller/Driver Controls**:
+    - Keep overload evaluations anchored on class-split metrics already in [`workload_research.rs`](file:///private/tmp/spawned-fede-next/concurrency/benches/workload_research.rs#L757-L942): `cold_shard0_observed_p99_ns`, `cold_other_observed_p99_ns`, `worst_cold_actor_observed_p99_ns`, `cold_late_observed`, `cold_late_completed`, `cold_timeouts`, and time-series `hot_queued` vs `cold_queued` backlog in [`observe_series()`](file:///private/tmp/spawned-fede-next/concurrency/benches/workload_research.rs#L366-L420) (never global in-window completion rate, which is dominated by hot completions).
+
+#### 2. Priority 2: (1) Bounded Message / Wall-Time Turns on Existing Tokio (`MessageTurn` Refinement)
+* **What it tests**: Why did `tokio-batch` (`turns1/16/adaptive`) behave as it did vs normal Tokio and `sharded`? Look at [`MessageTurn`](file:///private/tmp/spawned-fede-next/concurrency/src/tasks/actor.rs#L650-L700):
+  1. In [`run_actor_lifecycle`](file:///private/tmp/spawned-fede-next/concurrency/src/tasks/actor.rs#L760-L770), every transition out of `Pending` calls `turn.resumed()` (`Instant::now()`), and every completed message with `!rx.is_empty()` in [`MessageTurn::after_message`](file:///private/tmp/spawned-fede-next/concurrency/src/tasks/actor.rs#L681-L699) calls `t.elapsed()` (`clock_gettime` / vDSO read) against a hardcoded `50µs` limit.
+  2. When `self.completed >= self.limit || elapsed >= 50µs`, it awaits `tokio::task::yield_now().await`, which forces the actor out of the worker's LIFO slot to the back of the local run queue (where other workers can steal either it or queued cold actors).
+  3. However, when `turn` is `None` (default Tokio), `run_actor_lifecycle` loops unboundedly until `rx.recv()` returns `Pending` or Tokio's internal 128-poll coop budget expires on `rx.recv()`.
+* **Prototype knobs (`backend-experiments` only)**:
+  - Add `SPAWNED_EXPERIMENT_SLICE_US` (default `50`, `0` = message-count limit only without `Instant::now()` calls; test `0`, `25`, `50`, `200`).
+  - Test `tokio-batch` with `SPAWNED_EXPERIMENT_BATCH=1|4|16|0(adaptive)` paired with `SPAWNED_EXPERIMENT_SLICE_US=0|50` under both offered-load concentrated overload and 8-node graphs.
+
+#### 3. Priority 3: (2) Process-Owned Shared Multi-Thread Tokio Executor (`tokio-pool`)
+* **What it tests**: Currently in [`workload_research.rs`](file:///private/tmp/spawned-fede-next/concurrency/benches/workload_research.rs#L505-L514):
+  - When `SPAWNED_EXPERIMENT_SCHEDULER=sharded`, `main()` creates a `new_current_thread()` runtime for setup/fence RPCs while actors run on `spawned-shard-{id}` threads in [`experimental::Pool`](file:///private/tmp/spawned-fede-next/rt/src/tasks/experimental.rs#L22-L90).
+  - When `sharded` is off, `main()` creates a `new_multi_thread()` runtime (`actor-worker`), enters it on the main thread, and runs `runtime.block_on(...)` on it for setup/fences.
+* **Prototype**:
+  - Add `SPAWNED_EXPERIMENT_SCHEDULER=tokio-pool` in [`experimental.rs`](file:///private/tmp/spawned-fede-next/rt/src/tasks/experimental.rs) and [`actor.rs`](file:///private/tmp/spawned-fede-next/concurrency/src/tasks/actor.rs#L581-L619):
+  - Uses the exact same process-owned `OnceLock` registry, `Lease` counting, `RuntimeLease` for `Backend::Blocking`, and `shutdown_sharded()` contract as `Pool`, except backed by a single `tokio::runtime::Builder::new_multi_thread().worker_threads(count).thread_name("spawned-shard-mt").enable_all().build()` instead of $N$ `new_current_thread()` runtimes.
+  - Gives an exact apples-to-apples comparison between $N$ `current_thread` shards and a process-owned $N$-worker `multi_thread` Tokio runtime with identical caller isolation and lifecycle management.
+
+---
+
+### Deep-Dive Assessment: (3) Custom Actor Future Dispatcher Over Per-Worker `current_thread` Reactors
+
+#### What It Would Actually Test (vs. Existing Tokio)
+Multi-thread Tokio *already* runs a work-stealing future dispatcher where each actor is a task. Replacing Tokio's task harness with a custom `Arc<Job>` dispatcher on top of per-worker `current_thread` Tokio reactors is **only** a meaningful test if it evaluates **hybrid locality + overflow work-sharing** (i.e. actors have a home shard queue for cache/graph locality, and other workers only steal when a shard's ready queue exceeds a threshold) or **actor-level scheduling priority**—not a pure global `Mutex<VecDeque<Arc<Job>>>`, which will simply add lock contention compared to Tokio's lock-free deques.
+
+#### Minimum Viable Safe Wake Protocol (`ArcWake`)
+If prototyped behind `SPAWNED_EXPERIMENT_SCHEDULER=custom-steal`, the minimum sound state machine for `Arc<Job>` is:
+
+```
+States (AtomicU8):
+  IDLE      = 0  // Not queued, not polling
+  QUEUED    = 1  // In a ready queue (at most one queue reference exists)
+  RUNNING   = 2  // Currently locked and being polled by exactly one worker
+  NOTIFIED  = 3  // Woken while RUNNING; worker must re-poll or re-enqueue after poll()
+  COMPLETED = 4  // Terminal (Ready(()) or panic); all future wakes are no-ops
+```
+
+1. **`ArcWake::wake_by_ref(job: &Arc<Job>)`**:
+   - CAS loop on `job.state`:
+     - `IDLE -> QUEUED` (`AcqRel`): Caller wins the single enqueue right. Pushes `Arc::clone(job)` to the target queue (local worker queue if woken from a dispatcher worker thread, or home shard / global injector if woken externally) and triggers the worker's `tokio::sync::Notify::notify_one()`.
+     - `RUNNING -> NOTIFIED` (`AcqRel`): Does **not** push to any queue. Signals the currently polling worker that a wake occurred mid-poll.
+     - `QUEUED | NOTIFIED | COMPLETED`: No-op (prevents duplicate queue entries and post-completion wakes).
+
+2. **Worker Poll Turn (`poll_job(job: Arc<Job>)`)**:
+   - Transition `QUEUED -> RUNNING` (`AcqRel`).
+   - Acquire `job.future` guard (`Mutex<Option<Pin<Box<dyn Future<Output = ()> + Send>>>>`) — **must** be acquired after `QUEUED -> RUNNING` and dropped **before** `RUNNING -> IDLE`.
+   - Poll `fut.as_mut().poll(&mut cx)` with `waker_ref(&job)` inside `catch_unwind`:
+     - **On `Ok(Poll::Ready(()))` or `Err(_panic)`**:
+       1. Take and drop the `Pin<Box<dyn Future>>` *while still inside the Tokio runtime context* (before releasing `Lease`).
+       2. Store `COMPLETED` (`Release`).
+       3. Drop the `Job`'s `Lease` (decrementing `state.active` and notifying `idle` condvar).
+     - **On `Ok(Poll::Pending)`**:
+       1. **Drop the `MutexGuard` holding the future first!** (If we transitioned `RUNNING -> IDLE` while still holding the `MutexGuard`, an immediate concurrent wake on another thread could transition `IDLE -> QUEUED`, get popped by another worker, and contend or fail on the `Mutex`.)
+       2. CAS `RUNNING -> IDLE` (`AcqRel`):
+          - If `Ok(RUNNING)`: job is safely parked.
+          - If `Err(NOTIFIED)`: a wake arrived while `poll()` was executing. Transition `NOTIFIED -> QUEUED` (`Release`), push `job` to the back of the local ready queue, and count 1 poll toward the worker's reactor-yield budget. (Do **not** blindly re-poll in an unbounded inner loop—see Pitfall #1 below!)
+
+#### Potential Showstoppers & Subtle Pitfalls
+
+1. **Showstopper #1: Tokio Cooperative Budget Live-Lock (`NOTIFIED` Spin)**:
+   - When the custom worker loop polls multiple `Arc<Job>` futures inside a single outer Tokio task, all those jobs share the outer task's thread-local Tokio coop budget (128 operations per outer poll).
+   - Once 128 channel operations (`rx.poll_recv`, `oneshot`, etc.) occur across actors in a turn, Tokio's `coop::poll_proceed` exhausts the budget: it calls `cx.waker().wake_by_ref()` (which sets our `Arc<Job>` from `RUNNING -> NOTIFIED`) and returns `Poll::Pending`!
+   - If the custom dispatcher immediately re-polls a `NOTIFIED` job in place without yielding the outer runner task back to the `current_thread` Tokio runtime, Tokio's coop budget is **still zero**, so `poll_recv` immediately wakes `cx.waker()` and returns `Pending` again—causing an infinite spin!
+   - **Mandatory fix**: On `NOTIFIED`, re-queue the `Job` and after a bounded number of job polls (e.g. `<= 32` polls or whenever a job returns `Pending` with `NOTIFIED` set), the outer runner task **must** `tokio::task::yield_now().await` so the `current_thread` Tokio runtime resets its per-tick coop budget and drives the I/O/timer reactor.
+
+2. **Showstopper #2: `rt::task_id()` Panic in Debug Builds (`WarnOnBlocking`)**:
+   - In [`concurrency/src/tasks/actor.rs`](file:///private/tmp/spawned-fede-next/concurrency/src/tasks/actor.rs#L607-L608) and [`WarnOnBlocking::poll`](file:///private/tmp/spawned-fede-next/concurrency/src/tasks/actor.rs#L897), debug builds call `rt::task_id()`, which calls `tokio::task::id()`.
+   - `tokio::task::id()` **panics** if called directly inside `runtime.block_on(async { ... })` because `block_on` is not a spawned Tokio task.
+   - **Mandatory fix**: Each worker's custom dispatch loop must execute inside `runtime.block_on(async { tokio::spawn(worker_loop()).await.unwrap() })` so `tokio::task::id()` is always valid. (Note that all actors polled on that worker will share the worker loop's `task::Id`.)
+
+3. **Showstopper #3: Cross-Reactor I/O & Timer Binding Under Work-Stealing**:
+   - Each `new_current_thread()` worker owns a separate `epoll` reactor and timer wheel.
+   - When an actor awaits `spawned_rt::tasks::sleep` or `timeout` (e.g. inside [`Context::request_with_timeout`](file:///private/tmp/spawned-fede-next/concurrency/src/tasks/actor.rs#L207-L221)) or a TCP stream while running on Worker A, that timer/socket is registered on Worker A's reactor.
+   - If Worker B steals the `Arc<Job>`, Worker A's reactor must still wake promptly to fire the timer, and any *new* timers created while polling on Worker B bind to Worker B's reactor. If Worker A is later blocked in a long CPU handler, timers registered on Worker A's reactor are delayed even if Worker B is idle.
+   - Furthermore, detached helpers spawned via [`rt::spawn`](file:///private/tmp/spawned-fede-next/rt/src/tasks/mod.rs#L25) (such as [`Context::monitor`](file:///private/tmp/spawned-fede-next/concurrency/src/tasks/actor.rs#L285) and [`send_message_on`](file:///private/tmp/spawned-fede-next/concurrency/src/tasks/actor.rs#L851)) attach to whichever worker's `current_thread` runtime is currently entered when `rt::spawn` is called, and remain pinned to that worker's reactor for their lifetime.
+
+4. **Showstopper #4: Shutdown & Helper Lifetime Invariants**:
+   - Just like [`Pool`](file:///private/tmp/spawned-fede-next/rt/src/tasks/experimental.rs#L52-L88), worker `current_thread` runtimes **must not** exit when active actor `Job` count hits zero, because detached helpers (`send_message_on`, user `rt::spawn` tasks, `Backend::Blocking` children holding `RuntimeLease`) may still be running or using a shard reactor.
+   - Workers must stay parked on `notify.notified().await` (driving their Tokio reactor for background `tokio::spawn` tasks) until explicit `shutdown_sharded()` waits for `state.active == 0` and closes the dispatcher.
+   - `shutdown_sharded()` must reject self-calls from any worker thread (`worker_ids.contains(&thread::current().id())`).
+
+5. **Showstopper #5: `block_in_place` Unsupported**:
+   - `tokio::task::block_in_place` panics on `RuntimeFlavor::CurrentThread`; any actor using `rt::block_in_place` must remain on multi-thread Tokio (or `Backend::Blocking` / `Backend::Thread`).
+
+---
+
+### Concrete 10-Hour Overnight Campaign & Validation Plan (`fede256`)
+
+All experiments remain strictly behind `--features backend-experiments` and `SPAWNED_EXPERIMENT_*` env vars, with zero changes to public `Actor`/`Handler`/`Backend` signatures or default Tokio behavior, and no host/sudo security changes.
+
+#### Phase 0: Wait for Running Long Graph Confirmations & Baseline Lock (~0.5h)
+- Let the currently running 8-node graph (`chain` / `fanout`, `same` / `cross`) long confirmation runs finish cleanly before starting new builds or benchmarks on `fede256` so CPU sets remain uncontested.
+
+#### Phase 1: Low-Risk High-Signal Prototypes (Directions 4, 5, 2, 1) (~2.5h)
+1. **Implement `tokio-pool` control (Direction 2)** in [`rt/src/tasks/experimental.rs`](file:///private/tmp/spawned-fede-next/rt/src/tasks/experimental.rs):
+   - `SPAWNED_EXPERIMENT_SCHEDULER=tokio-pool` using a process-owned `multi_thread` runtime with the same `Lease`/`shutdown_sharded()` lifecycle.
+2. **Implement Child-Inherited / Locality Placement (Direction 4)** in [`rt/src/tasks/experimental.rs`](file:///private/tmp/spawned-fede-next/rt/src/tasks/experimental.rs):
+   - Thread-local `CURRENT_SHARD` + `SPAWNED_EXPERIMENT_PLACEMENT=round-robin|parent-sticky`.
+   - Add a graph spawn mode or test in [`workload_research.rs`](file:///private/tmp/spawned-fede-next/concurrency/benches/workload_research.rs) where root actors spawn their own child subgraphs inside `started()` / `Wire` to test organic parent-child locality vs external spawning.
+3. **Refine `MessageTurn` Slice & Counter A/B (Directions 1 & 5)** in [`concurrency/src/tasks/actor.rs`](file:///private/tmp/spawned-fede-next/concurrency/src/tasks/actor.rs):
+   - Add `SPAWNED_EXPERIMENT_SLICE_US` (`0` = count-only, or wall-time microseconds) and optional per-worker turn/wake counters (`SPAWNED_EXPERIMENT_COUNTERS=0|1`).
+4. **Correctness Gate**:
+   - Run full existing unit/integration tests + lifecycle/shutdown/monitor/lease tests before any benchmark run.
+
+#### Phase 2: Matched Benchmark & Profile Matrix on Priority 1–3 (~3.5h)
+- **Protocol rules**:
+  - Keep separate CPU sets (`actors`, `--driver-cpus`, `--collector-cpus`).
+  - Run unprofiled timing repetitions separately from `pprof` 199Hz profile runs (**never pool profiled and unprofiled timings**).
+  - Collect `/proc/self/task` `schedstat` (`runtime_ns`, `runqueue_wait_ns`, `slices`) and context switches (`voluntary_switches`, `involuntary_switches`) via [`save_threads()`](file:///private/tmp/spawned-fede-next/concurrency/benches/workload_research.rs#L466-L491).
+- **Workloads**:
+  1. **8-node DAG (`chain` & `fanout`, `same` vs `cross` vs organic parent-spawned)**: Compare `tokio` (default), `tokio-pool`, `sharded` (`round-robin`), and `sharded` (`parent-sticky`).
+  2. **Offered-Load Overload (`spread` & `concentrated`)**: Compare `tokio`, `tokio-batch` (`BATCH=1,16,0` $\times$ `SLICE_US=0,50`), `tokio-pool`, and `sharded` on class-split metrics (`cold_shard0_observed_p99_ns`, `cold_other_observed_p99_ns`, `worst_cold_actor_observed_p99_ns`, `cold_late_observed`, `cold_late_completed`, `cold_timeouts`, and `hot_queued`/`cold_queued` series).
+
+#### Phase 3: Custom Dispatcher Prototype & Verification Gate (Direction 3) (~2.0h)
+- Only proceed to benchmarking `custom-steal` (local per-worker ready queues + `crossbeam_deque` stealers + `ArcWake` `IDLE/QUEUED/RUNNING/NOTIFIED/COMPLETED` state machine over `current_thread` reactors) **after** passing a mandatory verification suite:
+  1. **State-machine / Loom / stress tests**: Concurrent wake-during-poll (`RUNNING -> NOTIFIED`), wake-while-completing (`RUNNING -> COMPLETED`), duplicate wake suppression (`QUEUED`), and panic inside `started()` / `handle()` / `stopped()` releasing `Lease`.
+  2. **Real reactor + helper tests**:
+     - Actors using [`Context::request_with_timeout`](file:///private/tmp/spawned-fede-next/concurrency/src/tasks/actor.rs#L207-L221) (real Tokio timers), real loopback TCP/UDP sockets across stolen polls, [` send_message_on`](file:///private/tmp/spawned-fede-next/concurrency/src/tasks/actor.rs#L843-L864), and [`Context::monitor`](file:///private/tmp/spawned-fede-next/concurrency/src/tasks/actor.rs#L260-L313).
+     - Coop exhaustion test: 100 actors bouncing messages back-and-forth without timers to verify no `NOTIFIED` coop live-lock spin.
+     - Last-actor exit test: verify detached `rt::spawn` helpers keep running after the last actor stops until explicit `shutdown_sharded()`, and self-shutdown from a worker returns `Err` without deadlocking.
+
+#### Phase 4: Long Soak & Comparative Diagnostic Summary (~1.5h)
+- Run a multi-minute offered-load soak (`rate` near knee + concentrated hot bursts) on the top 2 policies from Phase 2 (plus `custom-steal` if it passes Phase 3), tracking RSS stability (`rss_bytes` in [`observe_series()`](file:///private/tmp/spawned-fede-next/concurrency/benches/workload_research.rs#L375)), `hot_queued` / `cold_queued` drain recovery after bursts, and `worst_cold_actor_observed_p99_ns`.

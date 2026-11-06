@@ -1,0 +1,11 @@
+**APPROVE FOR TESTING**
+
+### Review Summary
+- **`enqueue` mismatch fallback**: Checking `owner.pool != pool || owner.worker != worker` before `ticket.take()` cleanly routes stale or cross-worker `current` hints to `self.injection` without panicking in arbitrary `Waker` contexts or losing the `Work` item.
+- **`take` invariant assertions**: `expect("native deque owner not installed")` and the `pool`/`worker` `assert_eq!` checks accurately enforce the private root-worker installation invariant without affecting external waker paths.
+- **Borrow & Drop safety**: `OWNER` `RefCell` borrows are strictly scoped inside non-reentrant closures (`Cell<bool>` handles `injection_first` under shared borrow), and `OwnerGuard::drop` releases the `RefMut` borrow before dropping `Owner`.
+- **New tests**:
+  - `mismatched_worker_hint_uses_injection` directly verifies that a same-pool, wrong-worker hint (`Some(1)` on worker `0`) routes through `injection` with `external == true`.
+  - `concurrent_owner_and_three_thieves_conserve_tickets` properly synchronizes the owner and three thieves with `Barrier::new(4)` and verifies exact conservation of all `8192` IDs across local pops, self-steals, and peer batch-steals with a bounded timeout guard.
+
+No blockers or correctness issues found in the supplied `ready_deque.rs`.

@@ -1,0 +1,15 @@
+**APPROVE**
+
+No blockers found in the supplied code.
+
+### Verification Summary
+- **Async Loop (`run_actor` / `run_actor_lifecycle`)**:
+  - `cancellation_token.is_cancelled()` is checked unconditionally inside `poll_fn` prior to `rx.poll_recv(cx)`, guaranteeing that neither an already-stopped actor entering a new turn nor an idle actor waking from `Poll::Pending` with both a queued message and cancellation will dequeue or dispatch a message.
+  - Under default configuration (`turn` disabled), removing the post-handler `is_cancelled()` check avoids redundant polling on the fast path since the next loop iteration immediately checks `cancellation_token.is_cancelled()` before `rx.poll_recv(cx)`.
+  - Under `#[cfg(feature = "backend-experiments")]`, when `turn` is `Some`, `cancellation_token.is_cancelled()` is checked before `turn.after_message(...)`, avoiding an unnecessary yield on stop, and re-verified at the top of the next `poll_fn` if cancelled during the yield.
+  - In-flight handler futures remain non-preemptive, and post-lifecycle mailbox draining (`rx.close(); while rx.recv().await.is_some() {}`) and `MonitorCleanup` drop ordering are preserved.
+- **Sync Loop (`run_actor` / `run_actor_receiving`)**:
+  - Re-checks `cancellation_token.is_cancelled()` immediately after `receive()` returns `Ok(envelope)`.
+  - Stashes the undelivered `envelope` in `discarded` and explicitly drops `_monitor_cleanup` before `discarded` (which drops before `actor` and `rx` captured in `receive`), preserving the exact `stopped()` -> monitor cleanup -> undelivered-message drop -> actor/receiver drop -> completion publish ordering.
+- **Regression Tests**:
+  - Both async and sync tests deterministically exercise the actual framework actor loops (`run_actor` and `run_actor_receiving`) without sleep-based timing races, confirming zero handler executions, closed reply channels, and strict drop/lifecycle ordering.

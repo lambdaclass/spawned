@@ -8,7 +8,10 @@ private native-runnable, not removal of Tokio or a supported runtime replacement
 
 The ready queue owns a unique Runnable ticket. Its integrated state machine owns
 poll/wake exclusion, so this path does not need our custom Gate, Arc<Job> clone
-per poll, a separately allocated Waker, or the mutex protecting each future.
+per poll, or the mutex protecting each future. The custom path's conversion
+from an existing Arc to Waker is an inline handle conversion, not another heap
+allocation; its preceding Arc clone still changes the reference count.
+[Standard-library implementation](https://doc.rust-lang.org/src/alloc/task.rs.html).
 Metadata keeps a weak pool pointer and preferred-worker atomic. Before each run,
 worker TLS routes internal wakes locally; external wakes prefer the last worker.
 Runnable.run consumes the ticket; wake schedules a new ticket. Detach Task before
