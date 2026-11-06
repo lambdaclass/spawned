@@ -50,3 +50,17 @@ selection, source/flag/worker provenance, strict validity/full-drain behavior an
 bounded resource windows. It requires sequential execution after earlier campaigns,
 small smokes first, and honest partial-block handling at the deadline. None of
 these reviews independently reproduces raw results or certifies production safety.
+
+Final source2cec0a6 received focused Agy approvals for the queue correction,
+callback hint fallback/concurrent conservation tests, and non-Send owner guard.
+The reviews checked supplied code and did not execute tests. Actual final-source
+fede gates then passed20 RT unit tests, both selected four-worker Deque actor
+suites (joint Z/W0/1, inherited badly-behaved exclusion), workspace all-feature
+tests, three release benchmark builds and all-target/all-feature Clippy. PR187
+merged only after those gates and exact-head GitHub technical checks passed.
+
+The five-minute ten-case V3 resource rerun completed at nice10 with continuous
+pipe drainage. Raw expected assertions and terminal shutdown succeeded in every
+case; resource plots still describe sampled whole-process behavior, not a
+production leak/SLO guarantee. Final results interpretation receives its own
+bounded review after the remaining source-matched workload blocks finish.
