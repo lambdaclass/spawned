@@ -8,6 +8,12 @@ the ticket and does not access it afterward. Inner future boxing/panic boundarie
 and Actor/Handler/Backend signatures stay unchanged; the private selector defaults
 0 and is immutable after initialization.
 
-Inline Agy review and Linux gates are pending at this checkpoint. Record actual
-verdict/source/results before scoring; do not infer a speedup from fewer source
+Inline Agy review returned APPROVE FOR TESTING with no blockers. It checked
+function-item size, metadata access before ticket transfer, concurrent completion,
+weak-pool/lease ownership and unchanged panic/disposal boundaries. Linux gates
+remain pending at this checkpoint. Do not infer a speedup from fewer source
 operations or treat reference-count samples as causal CPU attribution.
+
+Raw review: /private/tmp/spawned-zero-schedule-agy.log. Agy referred to Pool::spawn_raw
+in its explanation; the supplied function is named Pool::spawn. Its review is
+source inspection, not a claim that tests or timing trials ran.
