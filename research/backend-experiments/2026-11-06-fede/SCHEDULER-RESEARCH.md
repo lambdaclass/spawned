@@ -33,7 +33,7 @@ without hardware evidence.
 
 ## Integrated task primitive
 
-async-task4.7.1 supplies a unique Runnable ticket, metadata and wake-state
+async-task 4.7.1 supplies a unique Runnable ticket, metadata and wake-state
 management. Running consumes a ticket; a wake arranges another scheduled ticket.
 This gives a way to test whether replacing our custom Gate/future mutex/Arc job
 reduces overhead while keeping the same queue/root/I/O design. It does not remove
@@ -47,7 +47,7 @@ abort. Our experiment uses a safe boxed-future wrapper with separate poll/drop
 unwind boundaries and a targeted regression before any timings. This retains
 an inner allocation, so the experiment must not claim one allocation for all
 actor state.
-[async-task raw task implementation, pinned v4.7.1](https://github.com/smol-rs/async-task/blob/v4.7.1/src/raw.rs).
+[async-task raw task implementation, pinned v 4.7.1](https://github.com/smol-rs/async-task/blob/v4.7.1/src/raw.rs).
 
 ## Follow-up decisions
 
@@ -110,7 +110,7 @@ the current full actor graph measurements.
 [owned-buffer reads](https://docs.rs/monoio/latest/monoio/io/trait.AsyncReadRent.html).
 
 The native root driver multiplexes actors over a fixed worker population:
-16,128 actors on eight actor workers is not16,128 OS threads. It still relies on
+16,128 actors on eight actor workers is not 16,128 OS threads. It still relies on
 Tokio for channels, I/O, timer fallback and root-driver cooperative machinery.
 Root/Runnable actor futures are not Tokio tasks; task identity and blocking
 compatibility limits must remain explicit. A runtime rewrite is justified only
@@ -150,7 +150,7 @@ questions deserve follow-up; it does not silently promote experimental selectors
 
 V9 adds explicit Linux affinity and parked/spinning owner loops to the existing
 private Tokio-shard backend, plus a streaming constant-compute pipeline fixture.
-It compares one versus16 actors/core across1/2/4/8 cores, retaining ordinary
+It compares one versus 16 actors/core across 1/2/4/8 cores, retaining ordinary
 messages and replies. This explores fixed deployment and idle CPU tradeoffs;
 it does not transplant Flux's ring or claim Silver performance. See
 [profile semantics and reproduction](PINNED-PROFILES.md).

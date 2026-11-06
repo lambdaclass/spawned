@@ -42,7 +42,7 @@ An illustrative four-core spinning case, after building the benchmark:
       --idle-ms=1000 --actor-cpus=2,3,4,5 --driver-cpus=10,11,12,13 \
       --audit=/tmp/pinned-pipeline-audit.csv
 
-Spin0 uses the same pinned profile with idle parking. The Tokio reference removes
+Spin 0 uses the same pinned profile with idle parking. The Tokio reference removes
 all experimental selectors and uses the same workers, arguments and outer mask;
 its workers share that mask without individual pinning. Build with
 cargo bench --locked -p spawned-concurrency --features backend-experiments
@@ -52,10 +52,10 @@ actual clean source, rather than relying on the filename.
 ## What is compared
 
 The matrix has three profiles × four stage/core counts (1,2,4,8) × two actor
-populations (one or 16 actors/core) × three fresh processes =72 full cases, plus
-24 separate smoke cases. Every root performs exactly800 LCG iterations, divided
+populations (one or 16 actors/core) × three fresh processes = 72 full cases, plus
+24 separate smoke cases. Every root performs exactly 800 LCG iterations, divided
 among N sequential stages, and returns one end-to-end reply. Each hop is an owned
-one-way actor message. Groups1 gives one N-stage pipeline; groups16 gives16 such
+one-way actor message. Groups1 gives one N-stage pipeline; groups16 gives 16 such
 pipelines. There are 256 logical producers on four fixed driver runtime threads,
 with one outstanding root per producer. All actor placements are audited before
 warmup; replies, computation, message handling and actor lifecycle are checked.
@@ -86,4 +86,4 @@ makes the benchmark actor mask self-contained and supplies a non-Linux stub.
 It passes its own full gates. Reported timings remain on a8471f7, whose controller
 already applied the same actor mask externally. No timings are attributed to the
 post-measurement source. The measured bundle retains a8471f7; the retained bundle
-also includes20260cd.
+also includes 20260cd.

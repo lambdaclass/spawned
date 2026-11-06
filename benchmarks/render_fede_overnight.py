@@ -267,6 +267,18 @@ def main():
                 and data_upper > upper + max(1, abs(upper)) * 1e-8
             ):
                 raise RuntimeError(f"{name}: y-axis clips plotted data")
+            x_upper = max(ax.get_xlim())
+            if (
+                np.isfinite(ax.dataLim.xmax)
+                and ax.dataLim.xmax > x_upper + max(1, abs(x_upper)) * 1e-8
+            ):
+                raise RuntimeError(f"{name}: x-axis clips plotted data")
+            x_upper = max(ax.get_xlim())
+            if (
+                np.isfinite(ax.dataLim.xmax)
+                and ax.dataLim.xmax > x_upper + max(1, abs(x_upper)) * 1e-8
+            ):
+                raise RuntimeError(f"{name}: x-axis clips plotted data")
         fig.tight_layout(
             rect=(
                 0,
@@ -367,7 +379,7 @@ def main():
         "| native-steal | Separate mutex/deque per worker, local LIFO and oldest stealing, park/unpark | Less queue contention; still custom job/refcount and per-poll bridge overhead |",
         "| native-root | Same split queues, direct job polls inside one root future per native worker; yield root after a configurable poll quantum (default 8) | Amortizes runtime entry; still depends on Tokio for root driving and shared I/O |",
         "",
-        "Native-runnable replaces the custom job Gate/future mutex with async-task4.7.1 Runnable tickets, retaining a boxed actor future and separate poll/disposal unwind boundaries. Native-deque adds Crossbeam0.8.8 owner deques, shared outside injection and batch stealing. The latter changes queue primitive and scheduling policy together, so improvements cannot isolate mutex cost. Both reuse the root driver/shared Tokio I/O; these are not Tokio-free runtimes.",
+        "Native-runnable replaces the custom job Gate/future mutex with async-task 4.7.1 Runnable tickets, retaining a boxed actor future and separate poll/disposal unwind boundaries. Native-deque adds Crossbeam 0.8.8 owner deques, shared outside injection and batch stealing. The latter changes queue primitive and scheduling policy together, so improvements cannot isolate mutex cost. Both reuse the root driver/shared Tokio I/O; these are not Tokio-free runtimes.",
         "",
         "Figure key: N = actor scheduler workers, R1 = one additional shared I/O worker (idle owner/helpers are additional threads), Q = job polls per outer-driver turn, Z = zero-sized metadata schedule callback, W = sleeping-peer precheck, I = generic inline future storage. One root reply covers eight handler invocations; roots/s is not send-only messages/s. For example, 16,128 actors share eight actor worker threads in the scale block; there is no OS thread per actor in these scheduler experiments.",
         "",
@@ -381,15 +393,15 @@ def main():
         "| V2 eefc302 | Publication corrected; split queues, caller/counter factorial; 728 processes | Review later found a possible Global idle-shutdown lost notify. Remaining stages cancelled after callers. Historical observations only. |",
         "| V3 097ae02 | Corrected shutdown predicate + serialized teardown; adds amortized root driver | Separate common-source controls and gates; not proof of a supported production executor. |",
         "",
-        "| V4 09dd194 | Root/Runnable/quanta on stop-corrected source | Offered/resource evidence separate; unstarted480-case scale sweep deferred for the fairness correction. |",
+        "| V4 09dd194 | Root/Runnable/quanta on stop-corrected source | Offered/resource evidence separate; unstarted 480-case scale sweep deferred for the fairness correction. |",
         "| V5 329006e | Crossbeam owner-deque transport/policy | Review found possible local-oldest starvation; unstarted follow-ups cancelled. |",
         "| V6 0f81b57 | Metadata callback and wake-precheck factorial | Deque retains V5 fairness limitation; Root/Runnable unaffected. |",
         "| V7 acd37a3 | Generic pinned inline/boxed future pairs | Deque retains fairness limitation; inline throughput did not justify complexity. |",
         "| V8 2cec0a6 | Alternating oldest/injection priority, safe hint fallback, concurrent conservation tests | Corrected frozen source; bounded tests remain different from formal/production guarantees. |",
-        "| V9 a8471f7 | Fixed-core parked/spinning Tokio shards and constant-compute streaming pipeline | One or16 actors/core, 1/2/4/8 cores; independent fixture and CPU cost, no Flux transport or support promotion. |",
+        "| V9 a8471f7 | Fixed-core parked/spinning Tokio shards and constant-compute streaming pipeline | One or 16 actors/core, 1/2/4/8 cores; independent fixture and CPU cost, no Flux transport or support promotion. |",
         "The publication fix requires a release RMW even when wake state remains QUEUED or RUNNING|NOTIFIED. Queue-count-only Loom tests missed this visibility defect. The Global shutdown fix changes its closed predicate under the same mutex as Condvar wait. Concurrent shutdown callers serialize teardown. Older timings are not pooled into V3 medians.",
         "",
-        "Later PR187 review found a Deque fairness defect: every periodic oldest turn prioritized injection, allowing sustained external arrivals plus hot local continuations to starve the local bottom. V5/V6/V7 Deque observations remain historical; Root/Runnable are unaffected. Unstarted V5 and V7 optimized follow-ups were cancelled before scoring. V8 (2cec0a6; initial corrected preflight e633e59) alternates local-oldest/injection priority, adds owner-pop fallback after bounded retries and validates TLS worker identity. The strengthened regression fails on old95b4ca6 and passes on the correction; a preliminary probe missing hot local continuations had passed and is retained as a test-design limitation. No formal hard-latency fairness guarantee follows.",
+        "Later PR 187 review found a Deque fairness defect: every periodic oldest turn prioritized injection, allowing sustained external arrivals plus hot local continuations to starve the local bottom. V5/V6/V7 Deque observations remain historical; Root/Runnable are unaffected. Unstarted V5 and V7 optimized follow-ups were cancelled before scoring. V8 (2cec0a6; initial corrected preflight e633e59) alternates local-oldest/injection priority, adds owner-pop fallback after bounded retries and validates TLS worker identity. The strengthened regression fails on old 95b4ca6 and passes on the correction; a preliminary probe missing hot local continuations had passed and is retained as a test-design limitation. No formal hard-latency fairness guarantee follows.",
         "",
         "V7 pairs boxed/dynamic actor future storage (I0) with a generic pinned inline future (I1) inside async-task. It uses safe pin projection and guarded in-place disposal, retaining ordinary message/envelope/reply allocations. The comparison changes layout/allocation and monomorphization together. A task allocation can retain inline storage while stale Wakers live; graph RSS is not an isolated actor-memory measurement. Public Actor/Handler/Backend signatures and Tokio default stay unchanged.",
         "",
@@ -397,13 +409,13 @@ def main():
         "",
         "V4 (09dd194) includes the production stop fix, shared selector correction and Runnable/quanta controls. V5 (329006e) adds owner deques/batch injection on another common source. Earlier V4 preflights were stopped before scoring: the scale harness initially rejected >256 producers, then inspection found missing owned-runtime/test selectors. Both were corrected, gated and smoked on a new source; old preflight outcomes are not resource-budget rankings.",
         "",
-        "A separate deterministic stop race was reproduced in both production actor modes and fixed in [PR185](https://github.com/lambdaclass/spawned/pull/185). V3 timings remain on their recorded pre-PR185 source; they are not claimed as measurements of current main.",
+        "A separate deterministic stop race was reproduced in both production actor modes and fixed in [PR 185](https://github.com/lambdaclass/spawned/pull/185). V3 timings remain on their recorded pre-PR 185 source; they are not claimed as measurements of current main.",
         "",
         "## Machine and measurement",
         "",
         "Native Linux fede256 (SSH alias fede), Ryzen 9 9950X3D, 16 physical / 32 logical CPUs, about 251 GiB RAM. Rust 1.93, nice 10. Actor threads inherit CPUs 2–5; producers 6,7,14,15; collectors 8,9,16,17. These are distinct physical cores without own SMT pairing. Workers in V1–V8 are not individually pinned; V9 explicitly pins each sharded worker before actor startup. All actor budgets, including five runtime workers, share the same four actor cores. Shared-host activity and frequency scaling remain uncontrolled.",
         "",
-        "Four-core blocks use the masks above. Eight-core scale blocks use actor CPUs2–9, producers10–13 and collectors14–17, with1,024 logical producers on four driver runtime threads; V4 also includes512 producers. Those16CPU IDs are distinct physical cores. The eight-core mask spans two L3 domains: CPUs2–7 share96MiB L3, CPUs8–9 share32MiB L3 withothercores. Four-core actors stay in the96MiB domain. This is not a homogeneous-core strong-scaling experiment, and no cache-event cause is inferred. The archived cpu-cache-topology.json records per-CPU domains/SMT siblings. Their two-million-root requests and actor populations remain separate from the four-core blocks. Native N7+R1 versus Tokio8 and N8+R1 versus Tokio9 expose corresponding worker controls on eight actor cores. Native N3+R1 versus Tokio N4 controls total runtime worker count; native N4+R1 versus Tokio N4 controls actor worker count, and versus Tokio N5 controls total runtime workers. The native idle owner thread and lazily created blocking helpers are additional and disclosed. Graphs use 1,920 actors, 256 logical producers, 1,048,576 roots and eight handlers/root with 100 synthetic CPU iterations/handler. Same/cross placement is enforced only for static shards; elsewhere it is a spawn-order control.",
+        "Four-core blocks use the masks above. Eight-core scale blocks use actor CPUs 2–9, producers 10–13 and collectors 14–17, with 1,024 logical producers on four driver runtime threads; V4 also includes 512 producers. Those 16 CPU IDs are distinct physical cores. The eight-core mask spans two L3 domains: CPUs 2–7 share 96 MiB L3, CPUs 8–9 share 32 MiB L3 withothercores. Four-core actors stay in the 96 MiB domain. This is not a homogeneous-core strong-scaling experiment, and no cache-event cause is inferred. The archived cpu-cache-topology.json records per-CPU domains/SMT siblings. Their two-million-root requests and actor populations remain separate from the four-core blocks. Native N7+R1 versus Tokio8 and N8+R1 versus Tokio9 expose corresponding worker controls on eight actor cores. Native N3+R1 versus Tokio N4 controls total runtime worker count; native N4+R1 versus Tokio N4 controls actor worker count, and versus Tokio N5 controls total runtime workers. The native idle owner thread and lazily created blocking helpers are additional and disclosed. Graphs use 1,920 actors, 256 logical producers, 1,048,576 roots and eight handlers/root with 100 synthetic CPU iterations/handler. Same/cross placement is enforced only for static shards; elsewhere it is a spawn-order control.",
         "",
         "Blocking callers use 256 native producer threads; async callers use four current-thread runtimes driving 256 logical producers. Both use the same four producer cores and one outstanding root per producer. Their total thread populations differ. Observation-counter off removes one shared atomic, not clocks, latency storage, allocation or all instrumentation.",
         "",
@@ -418,7 +430,8 @@ def main():
         doc.append(f"| {block} | `{info['revision'][:12]}` | {info['samples']} |")
     findings = a.findings
     if findings.exists():
-        doc[6:6] = ["", findings.read_text(), ""]
+        insertion = doc.index("## What each backend does")
+        doc[insertion:insertion] = ["", findings.read_text(), ""]
     doc.extend(["", "## Matched graph results", ""])
     graph_phases = [
         "native-graphs",
@@ -766,7 +779,7 @@ def main():
             [
                 "## Pinned pipeline: small fixed deployments",
                 "",
-                "V9 is a separate streaming fixture: N sequential actor stages on N actor cores, with either one pipeline (one actor/core) or16 pipelines (16 actors/core). Every root performs the same800-step LCG computation, divided across stages, and carries one end-to-end reply channel. Each stage forwards an ordinary owned message through an addressed boxed mailbox. There are256 logical producers on four fixed driver cores10–13. The three variants share this fixture and masks: Tokio N unpinned workers within CPUs2..N+1, or individually pinned current-thread Tokio shards, parked/spinning. Pinned worker assignment is audited before warmup. Spin keeps a yielding owner runnable; it retains Tokio scheduling and is not Flux broadcast/overwrite transport. The new fixture does not isolate affinity from batching/sharding/spin and is not pooled with earlier eight-hop recursive request/reply graphs. N=8 crosses asymmetric L3 domains; compute is fixed but inter-stage messages grow with N, so core scaling also changes communication. Three fresh processes/cell; whiskers are min/max, not confidence intervals. Whole-process CPU includes driver and runtime threads, not isolated actor CPU or electrical power. The idle interval is one second after warmup; process CPU tick resolution limits tiny parked values.",
+                "V9 is a separate streaming fixture: N sequential actor stages on N actor cores, with either one pipeline (one actor/core) or 16 pipelines (16 actors/core). Every root performs the same 800-step LCG computation, divided across stages, and carries one end-to-end reply channel. Each stage forwards an ordinary owned message through an addressed boxed mailbox. There are 256 logical producers on four fixed driver cores 10–13. The three variants share this fixture and masks: Tokio N unpinned workers within CPUs 2..N+1, or individually pinned current-thread Tokio shards, parked/spinning. Pinned worker assignment is audited before warmup. Spin keeps a yielding owner runnable; it retains Tokio scheduling and is not Flux broadcast/overwrite transport. The new fixture does not isolate affinity from batching/sharding/spin and is not pooled with earlier eight-hop recursive request/reply graphs. N=8 crosses asymmetric L3 domains; compute is fixed but inter-stage messages grow with N, so core scaling also changes communication. Three fresh processes/cell; whiskers are min/max, not confidence intervals. Whole-process CPU includes driver and runtime threads, not isolated actor CPU or electrical power. The idle interval is one second after warmup; process CPU tick resolution limits tiny parked values.",
                 "",
             ]
         )
@@ -839,7 +852,7 @@ def main():
         [
             "## Lifecycle and resources",
             "",
-            "Closed-loop lifecycle churn maintains 1,024 idle residents and creates/stops 128 actors per cycle, with 16 stateful requests per actor, helper/timer awaits, exact monitor IDs/reasons and periodic intentional handler panic. Completed V3/V4 resource configurations and the corrected-source V8 follow-up request 300-second windows, chosen before their resource outcomes; exact requested durations remain in metadata. Unstarted V5 windows were cancelled after review found a fairness defect. Histories are bounded per cycle; 1 Hz resource samples stream to disk. The final resource sample precedes terminal executor shutdown, so descriptor/thread counts include still-live runtime infrastructure. Successful process exit also requires the subsequent explicit shutdown; sampled counts do not show the post-shutdown baseline. Tracked worker starts/stops/drops must match, including the seed worker. The separate monitoring actor is stopped and awaited explicitly; it is not included in those worker counters. These runs assess finite lifecycle/resource behavior, not production leak freedom, open-loop fairness, SLOs or comparable throughput. The first V3 resource attempt is excluded: pausing its Python pipe reader blocked diagnostic output. Its process/thread evidence is archived as a harness error; all ten cases are rerun in soaks-3 at nice10 with the reader continuously active. An intermediate nested-nice19 launch was cancelled before a completed case; both attempts remain harness diagnostics.",
+            "Closed-loop lifecycle churn maintains 1,024 idle residents and creates/stops 128 actors per cycle, with 16 stateful requests per actor, helper/timer awaits, exact monitor IDs/reasons and periodic intentional handler panic. Completed V3/V4 resource configurations and the corrected-source V8 follow-up request 300-second windows, chosen before their resource outcomes; exact requested durations remain in metadata. Unstarted V5 windows were cancelled after review found a fairness defect. Histories are bounded per cycle; 1 Hz resource samples stream to disk. The final resource sample precedes terminal executor shutdown, so descriptor/thread counts include still-live runtime infrastructure. Successful process exit also requires the subsequent explicit shutdown; sampled counts do not show the post-shutdown baseline. Tracked worker starts/stops/drops must match, including the seed worker. The separate monitoring actor is stopped and awaited explicitly; it is not included in those worker counters. These runs assess finite lifecycle/resource behavior, not production leak freedom, open-loop fairness, SLOs or comparable throughput. The first V3 resource attempt is excluded: pausing its Python pipe reader blocked diagnostic output. Its process/thread evidence is archived as a harness error; all ten cases are rerun in soaks-3 at nice 10 with the reader continuously active. An intermediate nested-nice 19 launch was cancelled before a completed case; both attempts remain harness diagnostics.",
             "",
         ]
     )
@@ -996,7 +1009,7 @@ def main():
             f'src="graphs/{f.name}"',
             f'src="data:image/png;base64,{base64.b64encode(f.read_bytes()).decode()}"',
         )
-    style = "body{max-width:1500px;margin:36px auto;padding:0 24px;background:#fcfcfa;color:#203443;font:16px/1.6 system-ui}h1,h2{line-height:1.2}h2{margin-top:2.5em;border-bottom:2px solid #d4e0e8;padding-bottom:.4em}img{width:100%;height:auto}table{display:block;overflow:auto;border-collapse:collapse;font-size:12px}th,td{padding:7px;border-bottom:1px solid #d4e0e8}th{background:#e9f0f3}a{color:#176a86}pre{overflow:auto;background:#eef2f3;padding:12px}"
+    style = "body{max-width: 1500px;margin: 36px auto;padding: 0 24px;background:#fcfcfa;color:#203443;font: 16px/1.6 system-ui}h 1,h 2{line-height: 1.2}h 2{margin-top: 2.5em;border-bottom: 2px solid #d 4e0e8;padding-bottom:.4em}img{width: 100%;height:auto}table{display:block;overflow:auto;border-collapse:collapse;font-size: 12px}th,td{padding: 7px;border-bottom: 1px solid #d 4e0e8}th{background:#e 9f0f3}a{color:#176a86}pre{overflow:auto;background:#eef 2f3;padding: 12px}"
     (out / "REPORT.html").write_text(
         '<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Spawned overnight research</title><style>'
         + style

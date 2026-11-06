@@ -1,4 +1,3 @@
-# Generated data stays available as files; keep code-review diffs bounded.
-benchmarks/reports/** -diff linguist-generated=true
-benchmarks/results/** -diff linguist-generated=true
-benchmarks/validation/** -diff linguist-generated=true
+research/backend-experiments/**/data/** linguist-generated=true
+research/backend-experiments/**/results/** linguist-generated=true
+research/backend-experiments/**/report/** linguist-generated=true

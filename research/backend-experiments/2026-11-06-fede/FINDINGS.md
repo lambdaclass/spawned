@@ -15,9 +15,9 @@ timing repetitions. Exact source/flags/resource budgets stay separate.
 ### Corrected custom schedulers still trail Tokio in the large actor graph
 
 V8 source `2cec0a6` includes the deque fairness correction. The displayed chain/cross
-case uses 1,920 actors,256 logical producers on four caller runtimes,
+case uses 1,920 actors, 256 logical producers on four caller runtimes,
 1,048,576 roots, eight handlers/root and 100 synthetic iterations/handler, with
-five fresh processes/cell. All actor workers share CPUs2–5. Native policies add
+five fresh processes/cell. All actor workers share CPUs 2–5. Native policies add
 one I/O worker and an idle runtime owner; Tokio5 is an oversubscription control.
 
 | Policy | Median roots/s | Fresh-process min–max roots/s | Median observed p99 ms |
@@ -33,21 +33,21 @@ Joint callback/wake settings improve Deque's displayed median by 16.6% over its
 own baseline, while Tokio remains ahead. This is a combined settings comparison,
 not an isolated atomic/lock causal measurement or a significance claim.
 
-The separate eight-core block uses 16,128 actors,1,024 logical producers,
+The separate eight-core block uses 16,128 actors, 1,024 logical producers,
 2,097,152 roots and three repetitions. In the same graph case, Tokio8 reaches
-1,399,374 roots/s with 1.569ms observed p99; joint Deque8 reaches731,672/s with
-10.823ms, versus its baseline508,283/s and 14.908ms. Root and Runnable reach
-589,997/s and 640,152/s. CPUs2–9 span96MiB and 32MiB L3 domains; this is an expanded
+1,399,374 roots/s with 1.569 ms observed p99; joint Deque8 reaches 731,672/s with
+10.823 ms, versus its baseline 508,283/s and 14.908 ms. Root and Runnable reach
+589,997/s and 640,152/s. CPUs 2–9 span 96 MiB and 32 MiB L3 domains; this is an expanded
 workload/resource budget, not homogeneous-core strong scaling. All ranges and
 other graph cases remain in the appendices.
 
 ### Fixed-core streaming is a promising use case
 
 V9 source `a8471f7` is an independent fixture: N sequential actor stages on N actor
-cores, with either one or 16 pipelines. Every root does the same800 LCG iterations
+cores, with either one or 16 pipelines. Every root does the same 800 LCG iterations
 in total and carries one end-to-end reply. Unlike the earlier graph, hops forward
 one-way messages without awaiting an intermediate response. There are 256 logical
-producers on four fixed driver cores10–13,1,048,576 roots and three fresh processes
+producers on four fixed driver cores 10–13,1,048,576 roots and three fresh processes
 per cell. Sharded workers are individually pinned before actor startup; actual
 thread/CPU placement is audited. Tokio workers share the same actor CPU mask
 without individual pinning. Sharding, batching and placement differ together.
@@ -65,7 +65,7 @@ The eight-core cells show a repeatable advantage within this synthetic fixture:
 
 One to four cores give mixed results; the full matrix and CPU/root values are
 plotted below. For example, with one actor/core at four cores, Tokio's median is
-1,226,625/s, parked shards1,162,851/s and spinning shards1,211,613/s. There is no
+1,226,625/s, parked shards 1,162,851/s and spinning shards 1,211,613/s. There is no
 universal fixed-core win or evidence that the smallest actor population is best.
 
 Idle CPU is measured for one second after warmup. Zero values mean no measured
@@ -80,7 +80,7 @@ and replies; it does not implement Flux's broadcast/overwrite transport.
 ### Optimizations are workload-specific
 
 V6 source `0f81b57`'s Root wake-precheck comparison improved the displayed four-core
-chain/cross median from 517,754 to 596,682 roots/s; Tokio was943,042/s. This narrows a
+chain/cross median from 517,754 to 596,682 roots/s; Tokio was 943,042/s. This narrows a
 cost hypothesis without establishing the precheck as an improvement everywhere.
 V8 resource windows show why graph-only tuning is insufficient: joint Z1W1
 Runnable and Deque complete fewer churn cycles than their Z0W0 counterparts in
@@ -88,35 +88,35 @@ their single 300-second windows. Those are finite lifecycle/resource checks with
 one sample/configuration, not a repeatable throughput ranking.
 
 V7 source `acd37a3` compared generic inline future storage with boxed storage.
-Runnable's displayed four-core chain/cross rate changed622,911→629,457/s, and
-its eight-core rate689,489→679,968/s. These small differences do not justify the
+Runnable's displayed four-core chain/cross rate changed 622,911→629,457/s, and
+its eight-core rate 689,489→679,968/s. These small differences do not justify the
 pin/drop complexity on throughput evidence. Inline storage remains on a research
 branch and in a source bundle. Historical V5/V6/V7 Deque rows inherit the later
 found fairness defect and are observations, not evidence of readiness.
 
 V3 source `097ae02`'s clock study compares policies, not just clock cost. Its
-count-only Tokio16 chain/cross case reached944,187/s and 0.465ms p99; a50µs turn
-control reached863,051/s and 0.643ms. Yield counts were not recorded, so do not
+count-only Tokio16 chain/cross case reached 944,187/s and 0.465 ms p99; a 50 µs turn
+control reached 863,051/s and 0.643 ms. Yield counts were not recorded, so do not
 attribute this specifically to slice expiration. Neither preempts a handler.
 
 ### Overload and lifecycle limit the conclusions
 
 Fast cold replies can coexist with an ever-growing hot mailbox. V3's concentrated,
-steady500k/s sharded16 case had three valid schedules: median cold other-cohort
-observed p99 was0.011ms while median peak hot queue depth was410,074 and in-window
+steady 500k/s sharded 16 case had three valid schedules: median cold other-cohort
+observed p99 was 0.011 ms while median peak hot queue depth was 410,074 and in-window
 queue growth about 202k messages/s. It is a finite two-second injection followed
 by complete drain, not sustainable capacity.
 
-Strict admission validity passed316/432 V3 schedules,177/252 V4 schedules and
+Strict admission validity passed 316/432 V3 schedules, 177/252 V4 schedules and
 130/176 V8 schedules. The rest remain diagnostics; invalid or mixed-validity
 aggregates cannot support equivalent-offered-load rankings. Completion quantiles
 omit timed-out responses; observed misses, timeouts and admission lag remain
 visible alongside tails. Unbounded mailboxes still permit memory exhaustion.
 
-All17 completed five-minute resource configurations pass their tracked
+All 17 completed five-minute resource configurations pass their tracked
 starts/stops/drops, stateful requests and monitor assertions, followed by terminal
 shutdown. V8's five windows each completed between 6.09M and 12.49M tracked actor
-lifecycles. Their sampled RSS maxima were10.8–12.1MB. These whole-process samples
+lifecycles. Their sampled RSS maxima were 10.8–12.1 MB. These whole-process samples
 are neither isolated actor allocations nor proof of leak freedom. Last samples
 precede terminal runtime shutdown and include still-live infrastructure. Resource
 plots retain warmup; the invalid paused-reader and nested-nice attempts are
@@ -135,7 +135,7 @@ archived separately as harness errors.
 
 No API, owned-message, addressed delivery, cooperative lifecycle or request/reply
 philosophy change is required. Deterministic idle-stop regressions did produce a
-production fix in [PR185](https://github.com/lambdaclass/spawned/pull/185). Wake
+production fix in [PR 185](https://github.com/lambdaclass/spawned/pull/185). Wake
 publication, idle-shutdown and deque fairness defects were also found and fixed.
 Finite tests and reviews do not prove every possible schedule correct.
 

@@ -1,0 +1,335 @@
+{
+  "started_utc": "2026-11-06T14:26:56Z",
+  "revision": "a3cb5eb15d68f2e21a5d86eb19c84686e747547c",
+  "dirty": false,
+  "binary_sha256": "db4583ca9526a13295ea3cdba11a63d9ca4d16d69abb2dac2e59cacc98af8e2f",
+  "controller_sha256": "7b1a72f54d6d60d70100a14d50fb2c8a37b8f438d8082ffea02fe74e8c0a7d38",
+  "actor_cpus": "2,3,4,5",
+  "driver_cpus": "10,11,12,13",
+  "nice": 10,
+  "planned_samples": 32,
+  "schedule": [
+    {
+      "config": {
+        "layout": "split",
+        "path": "direct",
+        "load": "busy",
+        "seconds": 0.1
+      },
+      "repeat": 0,
+      "smoke": true
+    },
+    {
+      "config": {
+        "layout": "split",
+        "path": "direct",
+        "load": "idle",
+        "seconds": 0.1
+      },
+      "repeat": 0,
+      "smoke": true
+    },
+    {
+      "config": {
+        "layout": "shared",
+        "path": "relay",
+        "load": "busy",
+        "seconds": 0.1
+      },
+      "repeat": 0,
+      "smoke": true
+    },
+    {
+      "config": {
+        "layout": "shared",
+        "path": "direct",
+        "load": "idle",
+        "seconds": 0.1
+      },
+      "repeat": 0,
+      "smoke": true
+    },
+    {
+      "config": {
+        "layout": "shared",
+        "path": "relay",
+        "load": "idle",
+        "seconds": 0.1
+      },
+      "repeat": 0,
+      "smoke": true
+    },
+    {
+      "config": {
+        "layout": "split",
+        "path": "relay",
+        "load": "busy",
+        "seconds": 0.1
+      },
+      "repeat": 0,
+      "smoke": true
+    },
+    {
+      "config": {
+        "layout": "split",
+        "path": "relay",
+        "load": "idle",
+        "seconds": 0.1
+      },
+      "repeat": 0,
+      "smoke": true
+    },
+    {
+      "config": {
+        "layout": "shared",
+        "path": "direct",
+        "load": "busy",
+        "seconds": 0.1
+      },
+      "repeat": 0,
+      "smoke": true
+    },
+    {
+      "config": {
+        "layout": "split",
+        "path": "relay",
+        "load": "busy",
+        "seconds": 2
+      },
+      "repeat": 1,
+      "smoke": false
+    },
+    {
+      "config": {
+        "layout": "shared",
+        "path": "direct",
+        "load": "idle",
+        "seconds": 2
+      },
+      "repeat": 2,
+      "smoke": false
+    },
+    {
+      "config": {
+        "layout": "shared",
+        "path": "direct",
+        "load": "idle",
+        "seconds": 2
+      },
+      "repeat": 1,
+      "smoke": false
+    },
+    {
+      "config": {
+        "layout": "split",
+        "path": "direct",
+        "load": "idle",
+        "seconds": 2
+      },
+      "repeat": 2,
+      "smoke": false
+    },
+    {
+      "config": {
+        "layout": "split",
+        "path": "relay",
+        "load": "idle",
+        "seconds": 2
+      },
+      "repeat": 1,
+      "smoke": false
+    },
+    {
+      "config": {
+        "layout": "split",
+        "path": "direct",
+        "load": "busy",
+        "seconds": 2
+      },
+      "repeat": 0,
+      "smoke": false
+    },
+    {
+      "config": {
+        "layout": "split",
+        "path": "relay",
+        "load": "idle",
+        "seconds": 2
+      },
+      "repeat": 0,
+      "smoke": false
+    },
+    {
+      "config": {
+        "layout": "split",
+        "path": "relay",
+        "load": "busy",
+        "seconds": 2
+      },
+      "repeat": 0,
+      "smoke": false
+    },
+    {
+      "config": {
+        "layout": "shared",
+        "path": "relay",
+        "load": "busy",
+        "seconds": 2
+      },
+      "repeat": 2,
+      "smoke": false
+    },
+    {
+      "config": {
+        "layout": "split",
+        "path": "relay",
+        "load": "idle",
+        "seconds": 2
+      },
+      "repeat": 2,
+      "smoke": false
+    },
+    {
+      "config": {
+        "layout": "shared",
+        "path": "direct",
+        "load": "busy",
+        "seconds": 2
+      },
+      "repeat": 2,
+      "smoke": false
+    },
+    {
+      "config": {
+        "layout": "split",
+        "path": "direct",
+        "load": "idle",
+        "seconds": 2
+      },
+      "repeat": 1,
+      "smoke": false
+    },
+    {
+      "config": {
+        "layout": "shared",
+        "path": "direct",
+        "load": "busy",
+        "seconds": 2
+      },
+      "repeat": 0,
+      "smoke": false
+    },
+    {
+      "config": {
+        "layout": "split",
+        "path": "direct",
+        "load": "idle",
+        "seconds": 2
+      },
+      "repeat": 0,
+      "smoke": false
+    },
+    {
+      "config": {
+        "layout": "shared",
+        "path": "relay",
+        "load": "idle",
+        "seconds": 2
+      },
+      "repeat": 0,
+      "smoke": false
+    },
+    {
+      "config": {
+        "layout": "shared",
+        "path": "relay",
+        "load": "idle",
+        "seconds": 2
+      },
+      "repeat": 2,
+      "smoke": false
+    },
+    {
+      "config": {
+        "layout": "shared",
+        "path": "relay",
+        "load": "idle",
+        "seconds": 2
+      },
+      "repeat": 1,
+      "smoke": false
+    },
+    {
+      "config": {
+        "layout": "shared",
+        "path": "direct",
+        "load": "busy",
+        "seconds": 2
+      },
+      "repeat": 1,
+      "smoke": false
+    },
+    {
+      "config": {
+        "layout": "split",
+        "path": "direct",
+        "load": "busy",
+        "seconds": 2
+      },
+      "repeat": 2,
+      "smoke": false
+    },
+    {
+      "config": {
+        "layout": "shared",
+        "path": "relay",
+        "load": "busy",
+        "seconds": 2
+      },
+      "repeat": 0,
+      "smoke": false
+    },
+    {
+      "config": {
+        "layout": "shared",
+        "path": "relay",
+        "load": "busy",
+        "seconds": 2
+      },
+      "repeat": 1,
+      "smoke": false
+    },
+    {
+      "config": {
+        "layout": "shared",
+        "path": "direct",
+        "load": "idle",
+        "seconds": 2
+      },
+      "repeat": 0,
+      "smoke": false
+    },
+    {
+      "config": {
+        "layout": "split",
+        "path": "direct",
+        "load": "busy",
+        "seconds": 2
+      },
+      "repeat": 1,
+      "smoke": false
+    },
+    {
+      "config": {
+        "layout": "split",
+        "path": "relay",
+        "load": "busy",
+        "seconds": 2
+      },
+      "repeat": 2,
+      "smoke": false
+    }
+  ],
+  "purpose": "Two-runtime isolation, same4actorworkers/cores. Shared4 vs critical1/general3. Direct versus general-router -> isolated-critical -> router typed reply. Idle or16backgroundactors/128closedloopproducers/50000LCG. Critical800LCG/oneclosedloopproducer.2s active plus bounded drain,3freshprocesses per full cell;8 independent100ms smokes. Actual actor affinity/IDs/LCG/message counts/18lifecycles asserted. Different achieved traffic; not equivalent offered load or an open-loop SLO. ProcessCPU includes4driverworkers. Normal Tokio scheduling in both; no new backend/API.",
+  "finished_utc": "2026-11-06T14:27:45Z"
+}

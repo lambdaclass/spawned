@@ -19,7 +19,7 @@ five minutes each. These are separate evidence blocks, not one timing sample.
 |---|---|
 | [FINDINGS.md](FINDINGS.md) | Main results, source-specific tables, tradeoffs and use-case recommendations |
 | [report/](report/REPORT.md) | Full analysis, 51 PNG/SVG figures, summaries, resource tables and profile leaf counts |
-| [data/](data/metadata.json) | Original per-block CSV/metadata, combined raw rows, time series, profiles, diagnostics, source bundles and SHA256 manifest |
+| [data/](data/metadata.json) | Original per-block CSV/metadata, combined raw rows, time series, profiles, diagnostics, source bundles and SHA 256 manifest |
 | [PROTOCOL.md](PROTOCOL.md) | Plans, source boundaries, CPU masks, validity criteria, exclusions and limitations |
 | [CORRECTNESS.md](CORRECTNESS.md) | Discovered bugs, actual negative controls and reproduction commands |
 | [PINNED-PROFILES.md](PINNED-PROFILES.md) | Silver-inspired parked/spinning semantics and exact experimental usage |
@@ -45,6 +45,13 @@ The earlier design study retains io_uring/epoll/kqueue and native transport
 controls. Those are not equivalent to these full actor workloads. No matched
 benchmark against Silver was run; the pinned profile borrows fixed-core placement,
 not Flux's broadcast, Copy-only payload or overwrite semantics.
+
+The raw dataset is deliberately retained as requested, with a hash manifest and
+original diagnostics. Generated artifacts are marked in GitHub diffs. This is a
+bounded research snapshot, not application source or a supported feature set.
+Plot versions are pinned in [requirements-research.txt](../../../benchmarks/requirements-research.txt);
+the recorded analysis orchestration files are in [orchestration/](orchestration/).
+See the [transcript index](reviews/INDEX.md) for failed or incomplete review attempts.
 
 ## Rebuild the report
 

@@ -6,10 +6,10 @@ measurements remain available with their source boundaries.
 
 | Finding | Evidence | Correction and scope |
 |---|---|---|
-| Coalesced wake did not publish prior writes | A stronger Loom model fails on3478e5f; queue-count-only models had passed | An AcqRel RMW is required even when wake bits do not change. Only old IDLE schedules a new queue entry. Applies to the custom native Job gate, not the default actor scheduler. |
+| Coalesced wake did not publish prior writes | A stronger Loom model fails on `3478e5f`; queue-count-only models had passed | An AcqRel RMW is required even when wake bits do not change. Only old IDLE schedules a new queue entry. Applies to the custom native Job gate, not the default actor scheduler. |
 | Global queue idle shutdown could lose notification | Review identified closed-store/notify racing the wait transition; no failing pre-fix execution is claimed | Change closed under the same queue mutex used by Condvar wait, then notify. Serialize concurrent teardown; stress tests cover terminal joins. |
-| An idle stopped actor could dispatch newly received work | Deterministic async Pending/resume and synchronous receive-barrier tests fail before the fix and pass after | Check cooperative cancellation before each async receive poll and after synchronous receive; preserve cleanup ordering. Merged in[PR185](https://github.com/lambdaclass/spawned/pull/185). Current handlers still finish; cancellation is non-atomic with dispatch. |
-| Oldest local deque work could starve | Strengthened queue-policy regression fails on95b4ca6 with hot local continuations plus sustained outside injection; corrected e633e59 passes | Alternate oldest-local/injection priority; add owner-pop fallback after bounded self-steal Retry. Final2cec0a6 also makes callback hints fall back safely and adds concurrent conservation tests. No hard wall-time fairness guarantee follows. |
+| An idle stopped actor could dispatch newly received work | Deterministic async Pending/resume and synchronous receive-barrier tests fail before the fix and pass after | Check cooperative cancellation before each async receive poll and after synchronous receive; preserve cleanup ordering. Merged in [PR 185](https://github.com/lambdaclass/spawned/pull/185). Current handlers still finish; cancellation is non-atomic with dispatch. |
+| Oldest local deque work could starve | Strengthened queue-policy regression fails on `95b4ca6` with hot local continuations plus sustained outside injection; corrected e633e59 passes | Alternate oldest-local/injection priority; add owner-pop fallback after bounded self-steal Retry. Final `2cec0a6` also makes callback hints fall back safely and adds concurrent conservation tests. No hard wall-time fairness guarantee follows. |
 
 The dequeue regression uses unpolled marker tickets to isolate queue policy.
 Full actor, timer/TCP/helper, panic, stale-waker, cancellation and shutdown tests
@@ -21,11 +21,11 @@ particular schedules/state machines, not every possible complete runtime state.
 Source bundles in the final results archive retain commits that squash merges
 would otherwise make inconvenient to find. In a clone containing their listed
 base commits, run git bundle verify, then fetch the relevant bundle reference
-and create a detached worktree. Use the recorded Rust1.93 toolchain and feature
+and create a detached worktree. Use the recorded Rust 1.93 toolchain and feature
 settings; the commands below are examples inside those source worktrees.
 
 For publication, use the controls-checked bundle. The added stronger model at
-3478e5f fails; the corrected5c0eca3 reference passes the four Gate models:
+3478e5f fails; the corrected `5c0eca3` reference passes the four Gate models:
 
     RUSTFLAGS="--cfg spawned_loom" cargo test --locked -p spawned-rt \
       --features backend-experiments --lib dispatch_gate -- --test-threads=1
@@ -41,7 +41,7 @@ The synchronous before-fix revision already contains the async correction; do
 not claim both tests fail on every historical checkout.
 
 For deque fairness, the final fairness-source bundle includes the old-policy
-negative control95b4ca6 and the final corrected source. The preliminary4b56238
+negative control `95b4ca6` and the final corrected source. The preliminary `4b56238`
 probe omitted hot local continuations and passed; it is a test-design limitation,
 not evidence against the later reproduction.
 
@@ -55,12 +55,12 @@ archived. A review that could not execute tests is not represented as reproducti
 ## Harness and probe failures are separate
 
 The first V3 resource attempt was invalidated by our paused Python pipe reader:
-a worker blocked writing expected diagnostic output. A restart inherited nice19
+a worker blocked writing expected diagnostic output. A restart inherited nice 19
 from a nested priority adjustment and was cancelled before a case completed.
-Both remain diagnostic artifacts; the valid rerun is soaks-3 at nice10 with a
+Both remain diagnostic artifacts; the valid rerun is soaks-3 at nice 10 with a
 continuously running reader. Neither is a library resource failure.
 
-An early eight-core smoke rejected more than256 logical producers at a legacy
+An early eight-core smoke rejected more than 256 logical producers at a legacy
 cap before actor startup. A second preflight exposed missing owned-runtime/test
 selectors, creating idle caller workers and skipping two integration guards.
 Both were corrected and revalidated before any scored V4 run.

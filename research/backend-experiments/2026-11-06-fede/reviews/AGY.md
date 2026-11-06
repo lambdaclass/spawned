@@ -18,7 +18,7 @@ Editorial corrections to broad wording in that review:
   applies to those displayed configurations, not all graph shapes or workloads.
 - Captured inclusive unpark_peer stacks are a hypothesis signal, not CPU time or
   proof that a rotator RMW caused a measured fraction of overhead.
-- Comparing count-only with50µs turns changes clock checks and scheduling policy.
+- Comparing count-only with 50 µs turns changes clock checks and scheduling policy.
   Yield counts were not recorded, so its assertion about “frequent expiration”
   is unsupported. Do not attribute the result specifically to slice expiration.
 - Root/Task/Deque differ in task and queue policy; do not state that batching
@@ -51,15 +51,15 @@ bounded resource windows. It requires sequential execution after earlier campaig
 small smokes first, and honest partial-block handling at the deadline. None of
 these reviews independently reproduces raw results or certifies production safety.
 
-Final source2cec0a6 received focused Agy approvals for the queue correction,
+Final source `2cec0a6` received focused Agy approvals for the queue correction,
 callback hint fallback/concurrent conservation tests, and non-Send owner guard.
 The reviews checked supplied code and did not execute tests. Actual final-source
-fede gates then passed20 RT unit tests, both selected four-worker Deque actor
+fede gates then passed 20 RT unit tests, both selected four-worker Deque actor
 suites (joint Z/W0/1, inherited badly-behaved exclusion), workspace all-feature
-tests, three release benchmark builds and all-target/all-feature Clippy. PR187
+tests, three release benchmark builds and all-target/all-feature Clippy. PR 187
 merged only after those gates and exact-head GitHub technical checks passed.
 
-The five-minute ten-case V3 resource rerun completed at nice10 with continuous
+The five-minute ten-case V3 resource rerun completed at nice 10 with continuous
 pipe drainage. Raw expected assertions and terminal shutdown succeeded in every
 case; resource plots still describe sampled whole-process behavior, not a
 production leak/SLO guarantee. Final results interpretation receives its own
@@ -75,8 +75,8 @@ Tokio4. The report and raw metadata retain the correct worker count.
 
 V9's measured source a8471f7 passed 21 RT unit tests, selected pinned parked and
 spinning actor suites, workspace all-feature tests, release build and all-target/
-all-feature Clippy. Post-measurement20260cd independently passed the same gates
-and exact-head GitHub technical checks before PR188 merged. Agy approved the final
+all-feature Clippy. Post-measurement 20260cd independently passed the same gates
+and exact-head GitHub technical checks before PR 188 merged. Agy approved the final
 supplied code. It correctly identifies removal of repeated *optional* config
 parsing; the existing worker-count environment lookup remains. The review's
 statement that all dependency/helper caveats are in RT comments is broader than
@@ -84,8 +84,8 @@ the source: detailed limitations are recorded in the PR and profile guide.
 Blocking helpers can inherit a shard's single-core affinity and outlive shutdown.
 The intentional Linux taskset dependency remains explicit.
 
-The collector validated all45 planned blocks and5,744 successful process rows,
-with source/binary/controller metadata and required result conservation. All17
+The collector validated all 45 planned blocks and 5,744 successful process rows,
+with source/binary/controller metadata and required result conservation. All 17
 five-minute resource configurations completed. Renderer grouping preserves every
 workload/experiment setting except artifact paths; smokes, profiles and source
 versions remain separate. Visual QA caught a V9 axis bound set before later series,

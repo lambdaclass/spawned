@@ -191,6 +191,11 @@ the supported default. Actor APIs, ordinary messages and request/reply are uncha
 See [backend selection and usage](docs/BACKENDS.md), including actors communicating
 across runtimes, and the [backend research folder](research/backend-experiments/README.md)
 for graphs, analysis, raw results and reproduction instructions.
+The [shared-versus-split runtime study](research/backend-experiments/2026-11-06-runtime-isolation/README.md)
+measures communication across runtimes, latency isolation and background-throughput
+tradeoffs; the [client audit](research/backend-experiments/2026-11-06-runtime-isolation/CLIENT-WORKLOADS.md)
+explains where to investigate ethrex and ethlambda. Smaller-core pinned results
+are mixed, so the eight-core pipeline benefit is not a general backend ranking.
 
 ## Project Structure
 
@@ -242,6 +247,8 @@ removing Tokio is not a committed direction.
 - [Orleans](https://learn.microsoft.com/en-us/dotnet/orleans/)
 - [Ractor](https://slawlor.github.io/ractor/)
 - [Tokio](https://tokio.rs/)
+- [Silver](https://github.com/gattaca-com/silver) — fixed-core pipeline and latency-oriented design research
+- [Flux](https://github.com/gattaca-com/flux) — tile/spine architecture, placement and transport research
 - [Actors with Tokio](https://ryhl.io/blog/actors-with-tokio/)
 - [Vale](https://vale.dev/)
 - [Gleam](https://gleam.run/)

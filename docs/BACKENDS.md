@@ -83,3 +83,13 @@ new per-actor public API for mixing pinned and default policies. A supported
 mixed-runtime configuration needs explicit ownership/placement and application
 measurements before API design. Communication compatibility alone is not a
 reason to create more runtimes.
+
+
+The [shared-versus-split runtime benchmark](../research/backend-experiments/2026-11-06-runtime-isolation/README.md)
+now measures this boundary with equal total actor cores/workers, idle/busy
+background actors, and both direct and general-runtime-relayed requests. It
+shows a useful direct-path latency benefit with a background-throughput cost,
+while the relay can still be delayed on the general runtime. Read its closed-loop
+and short-run limitations before transferring the result to an application.
+The [client source audit](../research/backend-experiments/2026-11-06-runtime-isolation/CLIENT-WORKLOADS.md)
+identifies concrete ethrex/ethlambda paths and the measurements to try next.

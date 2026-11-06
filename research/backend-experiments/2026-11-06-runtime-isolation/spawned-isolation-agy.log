@@ -1,0 +1,35 @@
+### Verdict: **No Blockers**
+
+The benchmark is sound for the stated bounded closed-loop experiment (`shared` 4 workers vs `split` 1 critical / 3 general workers on cores `2-5`, 4 driver workers on cores `10-13`, `direct` vs `relay`, `idle` vs `busy` with 128 producers across 16 background actors).
+
+---
+
+### Validation Breakdown
+
+1. **Barrier & Deadline Synchronization**
+   - **Participant count matches:** `Barrier::new(producers + 2)` matches the `producers` background tasks (`128` when `busy`, `0` when `idle`), `1` critical task (`cjob`), and `1` coordinator task inside `driver.block_on(...)`.
+   - **Initialization ordering is race-free:** `finish.set(start + Duration::from_secs_f64(seconds))` is executed before the coordinator enters `driver.block_on` and reaches `barrier.wait().await`. No spawned task on `driver` can pass `barrier.wait().await` and dereference `finish.get().unwrap()` before `finish` is populated.
+   - **Closed-loop timing:** `start` is recorded immediately before releasing the barrier and `elapsed` is measured immediately after all tasks exit their closed loops (`join_all(jobs)` and `cjob.await`). Note that under `busy`, total `elapsed` includes the tail drain of the last in-flight `50_000`-iteration background requests (~a few milliseconds over 2s), which is properly reflected by using actual `elapsed` as the denominator for `critical_per_s` and `bg_per_s`.
+
+2. **Runtime Ownership & CPU Placement**
+   - **Actor runtimes (`2,3,4,5`):**
+     - `shared`: `general` has 4 workers pinned to `2,3,4,5`; `critical_rt` aliases `general`.
+     - `split`: `general` has 3 workers pinned to `3,4,5`; `isolated` has 1 worker pinned to `2`.
+   - **Runtime attachment:** `spawn()` enters the target runtime (`let _entered = rt.enter();`) before calling `.start()`, binding `critical` to `critical_rt` and `router` + 16 `backgrounds` to `general`.
+   - **In-band placement verification:** `Audit` reads `/proc/thread-self/status` (`Cpus_allowed_list`) from inside each actor's handler execution context and asserts `"2-5"` (when `shared`), `"2"` (for `critical` when `split`), and `"3-5"` (for `router` and `backgrounds` when `split`).
+   - **Driver isolation (`10,11,12,13`):** The main thread is re-pinned to `10,11,12,13` prior to spawning the 4-worker `driver` runtime (also pinned to `10,11,12,13`), keeping load generation and orchestration off the actor cores.
+
+3. **Warmup & Message Accounting**
+   - **Pre-flight warmup:** `Audit` does not increment `self.handled` (verified to be `0`). The 100 warmup `Work` requests go through `router -> critical`, incrementing `router.handled` by `100` and `critical.handled` by `100` (`200` total) prior to constructing `cjob`'s latency vector.
+   - **Post-run conservation check:**
+     $$\text{total handled} = \text{bg} + \text{completed} \times \begin{cases} 2 & \text{if relay} \\ 1 & \text{if direct} \end{cases} + 200$$
+     matches the exact sum across all 18 actors.
+
+4. **Actor & Runtime Lifecycle**
+   - All 18 actors (`1` critical, `1` router, `16` background) receive `.stop()` and confirm `ExitReason::Normal` within the 5s timeout via `wait_exit()`.
+   - All `ActorRef` handles (`endpoint`, `critical`, `router`, `backgrounds`, `actors`) and both actor runtimes (`isolated`, `general`) are explicitly dropped before asserting `started == 18`, `stopped == 18`, and `dropped == 18`.
+
+5. **Comparison Confounds & Minor Notes (Non-Blockers)**
+   - **Public scheduling guard:** Asserts no `SPAWNED_EXPERIMENT_*` or `TOKIO_WORKER_THREADS` environment overrides are present.
+   - **Work verification:** Both critical (`800` LCG steps) and background (`50_000` LCG steps) replies are algebraically verified via `check(...)` on every iteration, preventing dead-code elimination alongside `black_box`.
+   - **Process-wide `cpu_s`:** `ticks()` reads `/proc/self/stat` (`utime + stime` at indices 11 and 12 after `)`), which measures total process CPU time across both actor cores (`2-5`) and driver cores (`10-13`). This is consistent across cells for a fixed driver configuration, just worth keeping in mind if interpreting `cpu_s` as actor-only CPU time.

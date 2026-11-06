@@ -193,7 +193,7 @@ approved production criteria. Baseline observer asymmetry remains disclosed;
 the later matched design study adds a direct observer and full-actor controls.
 
 The [fixed-core pipeline study](../research/backend-experiments/2026-11-06-fede/PINNED-PROFILES.md) explains the private
-Silver-inspired pinned park/spin profiles and their1/2/4/8-core comparison.
+Silver-inspired pinned park/spin profiles and their 1/2/4/8-core comparison.
 It retains Tokio and addressed messages; CPU affinity is not a supported public
 backend option. Results distinguish dynamic many-actor graphs from small fixed
 pipelines and include the idle CPU cost of spinning.
