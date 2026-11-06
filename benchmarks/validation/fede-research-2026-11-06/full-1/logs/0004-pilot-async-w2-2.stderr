@@ -1,0 +1,23 @@
+	Command being timed: "/tmp/spawned-fede-research-25dGGmPA/target/release/deps/workload_research-c4d801b948f04376 --mode=offered --layout=spread --actors=128 --producers=4 --messages=1374466 --rate=687233 --iterations=100 --hot-iterations=5000 --workers=2 --driver-cpus=6,7,8,9 --series=/tmp/spawned-fede-research-25dGGmPA/full-1/series/0004-pilot-async-w2-2.csv --threads=/tmp/spawned-fede-research-25dGGmPA/full-1/threads/0004-pilot-async-w2-2.csv"
+	User time (seconds): 13.71
+	System time (seconds): 2.89
+	Percent of CPU this job got: 386%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 0:04.29
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 345344
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 0
+	Minor (reclaiming a frame) page faults: 111521
+	Voluntary context switches: 763330
+	Involuntary context switches: 291252
+	Swaps: 0
+	File system inputs: 0
+	File system outputs: 16
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0

@@ -1,0 +1,21 @@
+    Checking hyper-tls v0.5.0
+    Checking spawned-concurrency v0.5.0 (/tmp/spawned-fede-research-25dGGmPA/source/concurrency)
+    Checking spawned-macros v0.5.0 (/tmp/spawned-fede-research-25dGGmPA/source/macros)
+    Checking reqwest v0.11.27
+    Checking bank v0.1.0 (/tmp/spawned-fede-research-25dGGmPA/source/examples/bank)
+    Checking chat_room_threads v0.1.0 (/tmp/spawned-fede-research-25dGGmPA/source/examples/chat_room_threads)
+    Checking busy_genserver_warning v0.1.0 (/tmp/spawned-fede-research-25dGGmPA/source/examples/busy_genserver_warning)
+    Checking ping_pong v0.1.0 (/tmp/spawned-fede-research-25dGGmPA/source/examples/ping_pong)
+    Checking name_server v0.1.0 (/tmp/spawned-fede-research-25dGGmPA/source/examples/name_server)
+    Checking signal_test_threads v0.1.0 (/tmp/spawned-fede-research-25dGGmPA/source/examples/signal_test_threads)
+    Checking service_discovery v0.1.0 (/tmp/spawned-fede-research-25dGGmPA/source/examples/service_discovery)
+    Checking exit_reason v0.1.0 (/tmp/spawned-fede-research-25dGGmPA/source/examples/exit_reason)
+    Checking updater_threads v0.1.0 (/tmp/spawned-fede-research-25dGGmPA/source/examples/updater_threads)
+    Checking updater v0.1.0 (/tmp/spawned-fede-research-25dGGmPA/source/examples/updater)
+    Checking chat_room v0.1.0 (/tmp/spawned-fede-research-25dGGmPA/source/examples/chat_room)
+    Checking bank_threads v0.1.0 (/tmp/spawned-fede-research-25dGGmPA/source/examples/bank_threads)
+    Checking blocking_genserver v0.1.0 (/tmp/spawned-fede-research-25dGGmPA/source/examples/blocking_genserver)
+    Checking ping_pong_threads v0.1.0 (/tmp/spawned-fede-research-25dGGmPA/source/examples/ping_pong_threads)
+    Checking signal_test v0.1.0 (/tmp/spawned-fede-research-25dGGmPA/source/examples/signal_test)
+    Checking spawned-rt v0.5.0 (/tmp/spawned-fede-research-25dGGmPA/source/rt)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.09s

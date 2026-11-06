@@ -9,7 +9,10 @@ compiler/flags, CPU topology, load snapshot and exact randomized invocation orde
 
 Run everything on native Linux `fede-256gb`, an AMD Ryzen 9 9950X3D server. Actor
 workers inherit CPUs 2–5. `workload_research` explicitly moves its producer
-threads to CPUs 6–9, and reply collectors/samplers to CPUs 10–13. The runner
+threads to a separate four-core set, and reply collectors/samplers to another
+four-core set. Defaults are 6–9 and 10–13. The published campaign explicitly used
+producer CPUs **6,7,14,15** and collector/sampler CPUs **8,9,16,17**, after a
+quiet-core snapshot; metadata records these overrides. The runner
 verifies all three disjoint sets and
 physical core IDs, excluding SMT siblings. Two actor workers may migrate within
 the same four-core mask; four workers share that mask. Worker threads are not
@@ -114,7 +117,8 @@ SPAWNED_RESEARCH_BINARY=/path/to/workload_research \
 nice -n 10 taskset -c 2,3,4,5 python3 benchmarks/fede_research.py \
   --output /tmp/spawned-research-smoke --smoke
 nice -n 10 taskset -c 2,3,4,5 python3 benchmarks/fede_research.py \
-  --output /tmp/spawned-research-full
+  --output /tmp/spawned-research-full \
+  --driver-cpus 6,7,14,15 --collector-cpus 8,9,16,17
 ```
 
 Use the recorded Rust compiler and benchmark debug-info flags. Each output path
@@ -131,3 +135,29 @@ so the campaign halted before scoring policies. The corrected campaign gives
 collectors/samplers their own four physical cores (10–13), preserving four producer
 cores (6–9) and the actor mask (2–5). Retain the rejected pilot separately; do not
 relax schedule validity or present those samples as backend saturation evidence.
+
+## Longer confirmation and publication
+
+The main campaign completed 778 subprocesses. An unchanged-source confirmation
+added 140 graph processes (1,048,576 roots, four workers, five repetitions) and
+84 offered-load processes. They use exactly the same benchmark executable hashes;
+short and long graph cells are never pooled. The confirmation controller and its
+SHA-256 are retained. Its two supplemental absolute rates, 814,489 and 950,237/s,
+were selected from baseline pilot hot-backlog growth, without inspecting candidate
+outcomes. The global service reference includes easily completed cold work even
+when hot work accumulates; it is not sustainable mixed-workload capacity.
+
+Only 260 of the 504 offered-load processes passed the predefined producer schedule
+check. Retain all 504 and mark every aggregate containing an invalid repetition;
+those cells must not be ranked as equal offered traffic. Process success means
+correct outcomes and complete drain, not valid admission timing. A low cold tail
+alongside hot timeouts and growing hot queues does not establish whole-system
+fairness. Two-second caller deadlines are not an application latency SLO.
+
+`collect_fede_research.py` retains both original CSV/metadata pairs and creates a
+combined CSV with campaign/path prefixes; numeric fields are unchanged. It copies
+profiles, queue/RSS series, scheduler counters and compressed diagnostics, archives
+a Git source bundle, and hashes the artifacts. `render_fede_research.py` emits
+14 figures, per-cell summaries and a self-contained HTML report. Reproduce the
+measured source from its bundle before attempting the primary/confirmation runs;
+analysis files added after measurement do not change measured executable hashes.

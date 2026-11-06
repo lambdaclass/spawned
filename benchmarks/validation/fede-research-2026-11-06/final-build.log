@@ -1,0 +1,4 @@
+   Compiling spawned-concurrency v0.5.0 (/tmp/spawned-fede-research-25dGGmPA/source/concurrency)
+    Finished `bench` profile [optimized + debuginfo] target(s) in 2.50s
+  Executable benches/designs.rs (/tmp/spawned-fede-research-25dGGmPA/target/release/deps/designs-69b9d992dadd81ad)
+  Executable benches/workload_research.rs (/tmp/spawned-fede-research-25dGGmPA/target/release/deps/workload_research-c4d801b948f04376)
