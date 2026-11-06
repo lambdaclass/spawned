@@ -370,6 +370,9 @@ fn observe_series(
     writeln!(file,"elapsed_ms,submitted,started,completed,observed,queued,outstanding,hot_queued,cold_queued,rss_bytes").unwrap();
     wait_until(epoch);
     loop {
+        // Acquire completion before taking the final snapshot, so it includes
+        // every counter update that preceded the measured drain.
+        let finished = done.load(Ordering::Acquire);
         let mut sums = [0u64; 3];
         let mut hot_queued = 0;
         let mut cold_queued = 0;
@@ -404,7 +407,7 @@ fn observe_series(
             rss()
         )
         .unwrap();
-        if done.load(Ordering::Acquire) {
+        if finished {
             break;
         }
         std::thread::sleep(Duration::from_millis(100));
