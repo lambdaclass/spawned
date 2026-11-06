@@ -36,3 +36,9 @@ References:
 - [async-task pinned task allocation](https://github.com/smol-rs/async-task/blob/v4.7.1/src/raw.rs)
 
 Compilation, Linux tests and scores are pending at this checkpoint.
+
+Inline storage can keep the task allocation's full storage resident while stale
+Waker references remain, even after the future destructor runs. Boxed mode can
+release its separate future allocation earlier while retaining a smaller task
+header. This is a storage tradeoff, not an unconditional actor-RSS improvement;
+whole-process graph RSS is dominated by other driver/sample/queue allocations.
