@@ -96,3 +96,22 @@ locality, stealing, synchronization, allocations and reference counting. A custo
 scheduler must earn its extra correctness/maintenance obligations against those
 existing mechanisms. Our finite synthetic studies do not establish that removing
 Tokio is beneficial.
+
+## I/O engines remain a separate experiment
+
+Monoio documents a thread-per-core model and an owned-buffer I/O abstraction.
+Those are meaningful design choices, not an interchangeable actor run queue.
+A future io_uring/epoll/kqueue backend needs a written compatibility plan for
+timers, helpers, socket/buffer ownership, cancellation and user Tokio calls.
+Keeping Actor/Handler signatures is necessary but does not by itself preserve
+these runtime behaviors. Earlier engine-only experiments remain separate from
+the current full actor graph measurements.
+[Monoio model](https://docs.rs/monoio/latest/monoio/),
+[owned-buffer reads](https://docs.rs/monoio/latest/monoio/io/trait.AsyncReadRent.html).
+
+The native root driver multiplexes actors over a fixed worker population:
+16,128 actors on eight actor workers is not16,128 OS threads. It still relies on
+Tokio for channels, I/O, timer fallback and root-driver cooperative machinery.
+Root/Runnable actor futures are not Tokio tasks; task identity and blocking
+compatibility limits must remain explicit. A runtime rewrite is justified only
+by a representative application need and end-to-end evidence.
