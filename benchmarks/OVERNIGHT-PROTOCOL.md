@@ -202,3 +202,8 @@ non-Send marker: its destructor clears installing-thread TLS. That guard is
 constructed inside each owner thread. This is an internal type invariant, with
 no public actor API or runtime algorithm change. Exact final-source gate outputs
 must accompany results rather than borrowing the earlier e633 preflight checks.
+
+Lifecycle counters describe tracked Worker actors, including the seed worker.
+The monitoring actor is a separate instance with its own explicit stop/wait;
+it is not part of those worker counters. Requested resource windows include
+resident setup/warmup before churn, and retain that initial phase in the plots.
