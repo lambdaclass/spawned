@@ -120,8 +120,7 @@ impl ChildHandle {
     /// Poll the exit reason. Returns `None` if the actor is still running.
     pub fn exit_reason(&self) -> Option<ExitReason> {
         match &self.completion {
-            Completion::Tasks(rx) => rx.borrow().clone(),
-            Completion::Threads(rx) => rx.borrow().clone(),
+            Completion::Tasks(rx) | Completion::Threads(rx) => poll_exit_reason(rx),
         }
     }
 
@@ -155,6 +154,17 @@ impl ChildHandle {
             Completion::Threads(rx) => wait_loop(rx.clone()).await,
         }
     }
+}
+
+/// A closed completion sender without a published reason means abnormal termination.
+/// Check closure before borrowing: a final published reason wins over Kill.
+pub(crate) fn poll_exit_reason(
+    rx: &spawned_rt::tasks::watch::Receiver<Option<ExitReason>>,
+) -> Option<ExitReason> {
+    let closed = rx.has_changed().is_err();
+    rx.borrow()
+        .clone()
+        .or_else(|| closed.then_some(ExitReason::Kill))
 }
 
 /// Async loop that polls a watch channel until it carries an exit reason.
@@ -213,7 +223,7 @@ fn wait_for_tasks_exit_blocking(
     rx: spawned_rt::tasks::watch::Receiver<Option<ExitReason>>,
 ) -> ExitReason {
     // Fast path: already done — works from any context, no runtime needed
-    if let Some(reason) = rx.borrow().clone() {
+    if let Some(reason) = poll_exit_reason(&rx) {
         return reason;
     }
 
@@ -551,5 +561,50 @@ mod tests {
                 other => panic!("expected Panic, got {other:?}"),
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod closed_completion_tests {
+    use super::*;
+    #[test]
+    fn closed_without_reason_is_dead_and_all_waits_agree() {
+        for threads in [false, true] {
+            let (tx, rx) = spawned_rt::tasks::watch::channel(None);
+            let token = spawned_rt::tasks::CancellationToken::new();
+            let child = if threads {
+                ChildHandle::from_threads(ActorId::next(), token, rx)
+            } else {
+                ChildHandle::from_tasks(ActorId::next(), token, rx)
+            };
+            assert!(child.is_alive());
+            drop(tx);
+            assert_eq!(child.exit_reason(), Some(ExitReason::Kill));
+            assert!(!child.is_alive());
+            assert_eq!(
+                futures::executor::block_on(child.wait_exit_async()),
+                ExitReason::Kill
+            );
+            // Already-exited fast path must not enter another executor or reject
+            // a current-thread runtime merely because no exit value was published.
+            assert_eq!(
+                futures::executor::block_on(async { child.wait_exit_blocking() }),
+                ExitReason::Kill
+            );
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            rt.block_on(async {
+                assert_eq!(child.wait_exit_blocking(), ExitReason::Kill);
+            });
+        }
+    }
+    #[test]
+    fn closure_preserves_the_final_published_reason() {
+        let (tx, rx) = spawned_rt::tasks::watch::channel(None);
+        tx.send(Some(ExitReason::Normal)).unwrap();
+        drop(tx);
+        assert_eq!(poll_exit_reason(&rx), Some(ExitReason::Normal));
     }
 }
