@@ -175,6 +175,20 @@ fn descriptor_limit_child() {
                         .unwrap(),
                     spawned_concurrency::ExitReason::Kill
                 );
+                assert_eq!(
+                    actor.exit_reason(),
+                    Some(spawned_concurrency::ExitReason::Kill)
+                );
+                let child = actor.child_handle();
+                assert!(!child.is_alive());
+                assert_eq!(
+                    child.exit_reason(),
+                    Some(spawned_concurrency::ExitReason::Kill)
+                );
+                assert_eq!(
+                    child.wait_exit_blocking(),
+                    spawned_concurrency::ExitReason::Kill
+                );
             }
         }
         for actor in &cleanup.0 {

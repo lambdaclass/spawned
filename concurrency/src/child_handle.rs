@@ -571,11 +571,18 @@ mod closed_completion_tests {
     fn closed_without_reason_is_dead_and_all_waits_agree() {
         for threads in [false, true] {
             let (tx, rx) = spawned_rt::tasks::watch::channel(None);
-            let token = spawned_rt::tasks::CancellationToken::new();
             let child = if threads {
-                ChildHandle::from_threads(ActorId::next(), token, rx)
+                ChildHandle::from_threads(
+                    ActorId::next(),
+                    spawned_rt::threads::CancellationToken::new(),
+                    rx,
+                )
             } else {
-                ChildHandle::from_tasks(ActorId::next(), token, rx)
+                ChildHandle::from_tasks(
+                    ActorId::next(),
+                    spawned_rt::tasks::CancellationToken::new(),
+                    rx,
+                )
             };
             assert!(child.is_alive());
             drop(tx);
