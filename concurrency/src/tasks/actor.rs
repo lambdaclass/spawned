@@ -579,7 +579,10 @@ impl<A: Actor> ActorRef<A> {
         let scheduler = std::env::var("SPAWNED_EXPERIMENT_SCHEDULER").unwrap_or_default();
         #[cfg(feature = "backend-experiments")]
         let turn = (backend == Backend::Async
-            && matches!(scheduler.as_str(), "sharded" | "tokio-batch"))
+            && matches!(
+                scheduler.as_str(),
+                "sharded" | "tokio-batch" | "native-global" | "native-local"
+            ))
         .then(MessageTurn::from_env);
         #[cfg(feature = "backend-experiments")]
         let borrowed_runtime = if backend != Backend::Async {
@@ -587,9 +590,17 @@ impl<A: Actor> ActorRef<A> {
         } else {
             None
         };
+        #[cfg(feature = "backend-experiments")]
+        let borrowed_dispatcher = if backend != Backend::Async {
+            rt::experimental::dispatcher::lease_if_initialized()
+        } else {
+            None
+        };
         let inner_future = async move {
             #[cfg(feature = "backend-experiments")]
             let _borrowed_runtime = borrowed_runtime;
+            #[cfg(feature = "backend-experiments")]
+            let _borrowed_dispatcher = borrowed_dispatcher;
             let reason = run_actor(
                 actor,
                 ctx,
@@ -606,6 +617,24 @@ impl<A: Actor> ActorRef<A> {
             Backend::Async => {
                 #[cfg(debug_assertions)]
                 let inner_future = warn_on_block::WarnOnBlocking::new(inner_future);
+                #[cfg(feature = "backend-experiments")]
+                if matches!(
+                    scheduler.as_str(),
+                    "native-global" | "native-local" | "tokio-pool"
+                ) {
+                    use rt::experimental::dispatcher::{self, Policy};
+                    let policy = match scheduler.as_str() {
+                        "native-global" => Policy::Global,
+                        "native-local" => Policy::Local,
+                        _ => Policy::TokioPool,
+                    };
+                    if let Err(error) = dispatcher::spawn(policy, inner_future) {
+                        actor_ref.cancellation_token.cancel();
+                        drop(MonitorCleanup(actor_ref.monitors.clone()));
+                        tracing::error!("Experimental executor startup failed: {error}");
+                    }
+                    return actor_ref;
+                }
                 #[cfg(feature = "backend-experiments")]
                 if scheduler == "sharded" {
                     if let Err(error) = rt::experimental::spawn_sharded(inner_future) {
@@ -894,7 +923,10 @@ mod warn_on_block {
             cx: &mut std::task::Context<'_>,
         ) -> std::task::Poll<Self::Output> {
             let type_id = std::any::type_name::<F>();
+            #[cfg(not(feature = "backend-experiments"))]
             let task_id = rt::task_id();
+            #[cfg(feature = "backend-experiments")]
+            let task_id = rt::experimental::try_task_id();
             let this = self.project();
             let now = Instant::now();
             let res = this.inner.poll(cx);
