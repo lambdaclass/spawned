@@ -208,6 +208,8 @@ mod tests {
             for _ in 0..64 {
                 ready.enqueue(101, ticket(2), None);
             }
+            // Keep a hot local continuation above the old marker as well.
+            ready.enqueue(101, ticket(2), Some(0));
             let work = ready.take(101, 0, turn % 4 == 3, &mut victim).unwrap();
             if work.preferred() == 1 {
                 found = true;
