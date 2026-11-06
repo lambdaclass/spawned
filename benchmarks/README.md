@@ -5,7 +5,7 @@ Spawned lifecycle/messages across Tokio, batching and sharding: 1,575 successful
 processes and 129 million requests on macOS, a Linux VM and native Linux on fede,
 with twelve figures.
 [Self-contained HTML](reports/full-actors-2026-11-05/REPORT.html),
-[findings](FINDINGS-FULL-ACTORS.md), [research priorities](RESEARCH-NEXT.md),
+[side-by-side backend numbers and findings](FINDINGS-FULL-ACTORS.md), [research priorities](RESEARCH-NEXT.md),
 [validation](VALIDATION-FULL-ACTORS.md) and
 [independent agy reviews](reviews/agy-full-actors-2026-11-05.md) accompany it.
 

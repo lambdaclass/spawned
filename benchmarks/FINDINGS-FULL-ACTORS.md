@@ -4,7 +4,30 @@
 Linux workloads, with an explicit runtime owner and compatibility contract before
 considering a supported backend.** The new matched comparison changes the earlier
 native-loop story: gains depend strongly on environment, worker budget and traffic.
-Five short, unpinned repetitions are exploratory evidence, not production forecasts.
+Five short repetitions with uncontrolled host activity are exploratory evidence,
+not production forecasts.
+
+### All seven backends side by side, four actor workers
+
+The same 1,024-actor / 256-producer CPU case, median of five fresh processes.
+Cells show **thousand completed replies/s / completion p99 in milliseconds**.
+Completion ends at the handler; caller-observed latency is recorded separately.
+Compare policies within each environment, not machine or OS speeds.
+
+| Backend | Native macOS | Linux VM | Native Linux, fede |
+|---|---:|---:|---:|
+| Tokio default | 587 / 0.693 | 1,029 / 2.106 | 1,777 / 1.081 |
+| Tokio, turn size 1 | 599 / 0.672 | 1,035 / 2.239 | 1,750 / 1.188 |
+| Tokio, batches of 16 | 613 / 0.658 | 850 / 2.541 | 1,737 / 1.105 |
+| Tokio, adaptive batches | 614 / 0.658 | 852 / 2.476 | 1,745 / 1.235 |
+| Sharded, turn size 1 | 536 / 1.077 | 1,429 / 0.407 | 1,996 / 0.202 |
+| Sharded, batches of 16 | 510 / 1.111 | 1,179 / 0.542 | 2,070 / 0.159 |
+| Sharded, adaptive batches | 509 / 1.064 | 1,199 / 0.604 | 2,049 / 0.186 |
+
+Sharded means a fixed pool of four Tokio current-thread workers serving all
+actors. Turn size describes completed messages between explicit yields; it is
+independent of actor count or thread count. The original public APIs and default
+Tokio backend are unchanged.
 
 ### Full actor CPU scaling: 1,024 actors / 256 producers
 
@@ -17,8 +40,9 @@ Five short, unpinned repetitions are exploratory evidence, not production foreca
 | Native Linux, fede | 2 | 1,779,639 | 1,712,394 | 0.233 ms | 0.187 ms |
 | Native Linux, fede | 4 | 1,776,924 | 2,070,492 | 1.081 ms | 0.159 ms |
 
-These are comparisons within each row. macOS runs on the host; Linux runs in an
-OrbStack VM/container restricted to four virtual CPUs and 8 GiB. There is no
+These are comparisons within each row. macOS runs on the host; the Linux VM
+studies run in OrbStack restricted to four virtual CPUs and 8 GiB. Native Linux
+fede uses a separate shared x86-64 server, described below. There is no
 cross-OS kernel-speed claim. The previous native-loop advantage does not reproduce
 in the large macOS full-actor case, while Linux sharding remains promising here.
 These experiments do not isolate which envelope, allocation, wakeup, placement or
