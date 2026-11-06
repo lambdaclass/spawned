@@ -559,11 +559,26 @@ impl<A: Actor> ActorRef<A> {
 }
 
 fn run_actor<A: Actor>(
-    mut actor: A,
+    actor: A,
     ctx: Context<A>,
     rx: mpsc::Receiver<Box<dyn Envelope<A> + Send>>,
     cancellation_token: CancellationToken,
 ) -> ExitReason {
+    run_actor_receiving(
+        actor,
+        ctx,
+        move || rx.recv_timeout(Duration::from_millis(100)),
+        cancellation_token,
+    )
+}
+
+fn run_actor_receiving<A: Actor>(
+    mut actor: A,
+    ctx: Context<A>,
+    mut receive: impl FnMut() -> Result<Box<dyn Envelope<A> + Send>, std::sync::mpsc::RecvTimeoutError>,
+    cancellation_token: CancellationToken,
+) -> ExitReason {
+    let mut discarded = None;
     let _monitor_cleanup = MonitorCleanup(ctx.monitors.clone());
     let start_result = catch_unwind(AssertUnwindSafe(|| {
         actor.started(&ctx);
@@ -587,7 +602,7 @@ fn run_actor<A: Actor>(
     let mut exit_reason = ExitReason::Normal;
 
     loop {
-        let msg = match rx.recv_timeout(Duration::from_millis(100)) {
+        let msg = match receive() {
             Ok(msg) => Some(msg),
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                 if cancellation_token.is_cancelled() {
@@ -599,6 +614,12 @@ fn run_actor<A: Actor>(
         };
         match msg {
             Some(envelope) => {
+                // A stop observed after receive wins over dispatch, whether
+                // the channel waited or was buffered. Defer the message drop.
+                if cancellation_token.is_cancelled() {
+                    discarded = Some(envelope);
+                    break;
+                }
                 let result = catch_unwind(AssertUnwindSafe(|| {
                     envelope.handle(&mut actor, &ctx);
                 }));
@@ -628,6 +649,10 @@ fn run_actor<A: Actor>(
         }
     }
 
+    // Message destructors and reply cancellation may re-enter monitor state.
+    // Preserve stopped() -> monitor cleanup -> undelivered-message drop.
+    drop(_monitor_cleanup);
+    drop(discarded);
     exit_reason
 }
 
@@ -1182,6 +1207,104 @@ mod early_stop_regression {
         let actor = EarlyStop.start();
         assert!(
             matches!(actor.wait_exit(), ExitReason::Panic(message) if message.contains("cleanup failed"))
+        );
+    }
+}
+
+#[cfg(test)]
+mod idle_stop_regression {
+    use super::*;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Barrier,
+    };
+    struct Counter(Arc<AtomicUsize>, Arc<Mutex<Vec<&'static str>>>);
+    impl Actor for Counter {
+        fn stopped(&mut self, _: &Context<Self>) {
+            self.1.lock().unwrap().push("stopped");
+        }
+    }
+    impl Drop for Counter {
+        fn drop(&mut self) {
+            self.1.lock().unwrap().push("actor-dropped");
+        }
+    }
+    struct Increment(Arc<Mutex<Vec<&'static str>>>, MonitorTable);
+    impl Drop for Increment {
+        fn drop(&mut self) {
+            assert!(
+                self.1.lock().unwrap().is_none(),
+                "message dropped before monitor cleanup"
+            );
+            self.0.lock().unwrap().push("message-dropped");
+        }
+    }
+    impl Message for Increment {
+        type Result = ();
+    }
+    impl Handler<Increment> for Counter {
+        fn handle(&mut self, _: Increment, _: &Context<Self>) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+    #[test]
+    fn stop_while_receiving_does_not_dispatch_a_later_request() {
+        let (tx, rx) = mpsc::channel();
+        let token = CancellationToken::new();
+        let (_, completion_rx) = spawned_rt::tasks::watch::channel(None);
+        let monitors = Arc::new(Mutex::new(Some(HashMap::new())));
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let ctx = Context {
+            id: ActorId::next(),
+            sender: tx.clone(),
+            cancellation_token: token.clone(),
+            completion: completion_rx,
+            monitors: monitors.clone(),
+        };
+        let count = Arc::new(AtomicUsize::new(0));
+        let seen = count.clone();
+        let entered = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+        let (e, r) = (entered.clone(), release.clone());
+        let cancel = token.clone();
+        let trace = events.clone();
+        let actor = std::thread::spawn(move || {
+            let mut first = true;
+            run_actor_receiving(
+                Counter(seen, trace),
+                ctx,
+                move || {
+                    // Pause the real receive boundary after the started/cancel
+                    // checks; the standard channel still carries the envelope.
+                    if first {
+                        first = false;
+                        e.wait();
+                        r.wait();
+                    }
+                    rx.recv_timeout(Duration::from_secs(5))
+                },
+                cancel,
+            )
+        });
+        entered.wait();
+        let (reply, response) = oneshot::channel();
+        tx.send(Box::new(MessageEnvelope {
+            msg: Increment(events.clone(), monitors),
+            tx: Some(reply),
+        }) as Box<dyn Envelope<Counter> + Send>)
+            .unwrap();
+        token.cancel();
+        release.wait();
+        assert_eq!(actor.join().unwrap(), ExitReason::Normal);
+        assert_eq!(
+            count.load(Ordering::SeqCst),
+            0,
+            "thread actor dispatched work after idle stop"
+        );
+        assert!(response.recv().is_err());
+        assert_eq!(
+            *events.lock().unwrap(),
+            ["stopped", "message-dropped", "actor-dropped"]
         );
     }
 }
