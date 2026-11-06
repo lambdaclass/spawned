@@ -189,3 +189,10 @@ and two resource cases remain unchanged. Existing V7 eight-core evidence and
 V8's new source-matched72-case scale block remain separate. Cancellation/defer
 decisions and exact timestamps are archived; no V4 scale outcome selected this
 change.
+
+Resource sampling ends after actor cleanup and before explicit terminal runtime
+shutdown. Last descriptor/thread values therefore include intentionally live
+runtime infrastructure. A successful process also requires subsequent shutdown
+and joins; the 1Hz samples do not measure the post-shutdown baseline. RSS maxima
+are maxima of sampled whole-process RSS, not isolated actor allocations or a
+continuous high-water measurement.
