@@ -3,12 +3,12 @@
 import argparse,hashlib,random,time
 from pathlib import Path
 from fede_research import Campaign,VARIANTS
-VARIANTS.update({'native-steal':('native-steal',16),'native-root':('native-root',16),'tokio-pool':('tokio-pool',0)})
+VARIANTS.update({'native-steal':('native-steal',16),'native-root':('native-root',16),'native-global':('native-global',16),'native-local':('native-local',16),'tokio-pool':('tokio-pool',0)})
 def main():
  p=argparse.ArgumentParser(description=__doc__);p.add_argument('--output',type=Path,required=True);p.add_argument('--stage',choices=['smoke','graphs','profiles'],required=True);p.add_argument('--stop-at',type=float,required=True);a=p.parse_args()
- a.actor_cpus='2,3,4,5';a.driver_cpus='6,7,14,15';a.collector_cpus='8,9,16,17';a.workers=[3,4,5];a.variants=['async','tokio-16','tokio-pool','sharded-16','native-steal','native-root'];a.seed=191;a.duration=2.;a.timeout=120.;a.smoke=a.stage=='smoke'
+ a.actor_cpus='2,3,4,5';a.driver_cpus='6,7,14,15';a.collector_cpus='8,9,16,17';a.workers=[3,4,5];a.variants=['async','tokio-16','tokio-pool','sharded-16','native-global','native-local','native-steal','native-root'];a.seed=191;a.duration=2.;a.timeout=120.;a.smoke=a.stage=='smoke'
  c=Campaign(a);assert not c.meta['dirty'];c.meta['controller_sha256']=hashlib.sha256(Path(__file__).read_bytes()).hexdigest();c.meta['purpose']='Same source,1920actors,256logicalproducers,8handlers/root. Native N3+R1 vsTokio4 equalruntimeworker;nativeN4+R1vsTokio4 equalactorworker andTokio5 equalruntimeworker,allshare4physicalactorcores. RootdriverobjectsNaddnoOSthreads,noActorTokioTasks. Blocking256threads vs4RT/256logicalcallerfutures,fullcounter. Rootquantum8. Profiledrows excludedfromperformance.'
- specs=[('async',4),('async',5),('tokio-pool',4),('tokio-16',4),('sharded-16',4),('native-steal',3),('native-steal',4),('native-root',3),('native-root',4)]
+ specs=[('async',4),('async',5),('tokio-pool',4),('tokio-16',4),('sharded-16',4),('native-global',3),('native-global',4),('native-local',3),('native-local',4),('native-steal',3),('native-steal',4),('native-root',3),('native-root',4)]
  jobs=[]
  for v,w in specs:
   for topology in ['chain','fanout']:

@@ -38,7 +38,14 @@ other native variants was not independently verified and is not a general claim.
 five fresh repetitions. Resource controls include native N3+R1 versus Tokio4,
 native N4+R1 versus Tokio4 and Tokio5, all on four physical actor cores. Tokio5 is
 an oversubscription control, not five cores. Only static shards enforce same/cross
-placement. Thirty-six small smoke processes precede 360 long graph processes;
-16 profile cases are separate. Source, binaries, schedule, CPU masks and controller
+placement. Fifty-two small smoke processes precede 520 long graph processes;
+24 profile cases are separate. Source, binaries, schedule, CPU masks and controller
 hashes are recorded. Never pool these with the earlier source versions, and keep
 Tokio default regardless of a single attractive graph result.
+
+The common source also fixes the global FIFO idle-shutdown lost notification by
+changing the closed predicate under the queue mutex, and serializes concurrent
+teardown calls. A concurrent idle-shutdown stress regression covers all policies.
+Earlier EEF queue/caller/profile samples are frozen; remaining old stages were
+cancelled before running. Clock, offered and long-soak work resumes only on this
+corrected source, with new metadata and no cross-source pooling.
