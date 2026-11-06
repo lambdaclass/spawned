@@ -60,3 +60,8 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(spawned_scheduler_loom)'] 
 name = "lifecycle_soak"
 harness = false
 required-features = ["backend-experiments"]
+
+[[bench]]
+name = "pinned_pipeline"
+harness = false
+required-features = ["backend-experiments"]

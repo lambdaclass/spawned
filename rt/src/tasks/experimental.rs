@@ -33,6 +33,8 @@ struct Pool {
     worker_ids: Vec<thread::ThreadId>,
     count: usize,
     next: AtomicUsize,
+    affinity: Option<Vec<usize>>,
+    spin: bool,
 }
 struct Lease(Arc<Pool>);
 impl Drop for Lease {
@@ -43,8 +45,18 @@ impl Drop for Lease {
     }
 }
 impl Pool {
+    #[cfg(test)]
     fn new(count: usize) -> io::Result<Self> {
+        Self::configured(count, None, false)
+    }
+    fn configured(count: usize, affinity: Option<Vec<usize>>, spin: bool) -> io::Result<Self> {
         assert!(count > 0);
+        if affinity.as_ref().is_some_and(|cores| cores.len() != count) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "one CPU per shard required",
+            ));
+        }
         let mut pool = Self {
             state: Mutex::new(State {
                 senders: Some(Vec::new()),
@@ -55,13 +67,23 @@ impl Pool {
             worker_ids: Vec::new(),
             count,
             next: AtomicUsize::new(0),
+            affinity,
+            spin,
         };
         for id in 0..count {
             let (tx, mut rx) = mpsc::unbounded_channel::<Job>();
             let (ready, initialized) = std::sync::mpsc::sync_channel(1);
+            let core = pool.affinity.as_ref().map(|cores| cores[id]);
+            let spin = pool.spin;
             let worker = thread::Builder::new()
                 .name(format!("spawned-shard-{id}"))
                 .spawn(move || {
+                    if let Some(core) = core {
+                        if let Err(error) = pin_core(core) {
+                            let _ = ready.send(Err(error));
+                            return;
+                        }
+                    }
                     let runtime = match tokio::runtime::Builder::new_current_thread()
                         .enable_all()
                         .build()
@@ -74,8 +96,27 @@ impl Pool {
                     };
                     let _ = ready.send(Ok(()));
                     runtime.block_on(async {
-                        while let Some(job) = rx.recv().await {
+                        loop {
+                            let job = if spin {
+                                match rx.try_recv() {
+                                    Ok(job) => Some(job),
+                                    Err(mpsc::error::TryRecvError::Empty) => {
+                                        // Always-ready owner keeps the driver polling; yield
+                                        // also lets actor tasks, timers and I/O make progress.
+                                        tokio::task::yield_now().await;
+                                        continue;
+                                    }
+                                    Err(mpsc::error::TryRecvError::Disconnected) => None,
+                                }
+                            } else {
+                                rx.recv().await
+                            };
+                            let Some(job) = job else { break };
                             tokio::spawn(job);
+                            if spin {
+                                // Accepting a burst of jobs must still let actor tasks run.
+                                tokio::task::yield_now().await;
+                            }
                         }
                     });
                     // Explicit pool shutdown cancels detached async helpers. Already-running
@@ -157,6 +198,67 @@ impl Drop for Pool {
         }
     }
 }
+
+fn pin_core(core: usize) -> io::Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        let thread = std::fs::read_link("/proc/thread-self")?;
+        let tid = thread
+            .file_name()
+            .ok_or_else(|| io::Error::other("missing thread id"))?;
+        let result = std::process::Command::new("taskset")
+            .args(["-pc", &core.to_string()])
+            .arg(tid)
+            .output()?;
+        if !result.status.success() {
+            return Err(io::Error::other(
+                String::from_utf8_lossy(&result.stderr).into_owned(),
+            ));
+        }
+        Ok(())
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = core;
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "research pinning requires Linux taskset",
+        ))
+    }
+}
+fn shard_options() -> io::Result<(Option<Vec<usize>>, bool)> {
+    let affinity = std::env::var("SPAWNED_EXPERIMENT_PIN_CORES")
+        .ok()
+        .map(|value| {
+            value
+                .split(',')
+                .map(|cpu| {
+                    cpu.trim().parse::<usize>().map_err(|_| {
+                        io::Error::new(io::ErrorKind::InvalidInput, "invalid CPU list")
+                    })
+                })
+                .collect::<io::Result<Vec<_>>>()
+        })
+        .transpose()?;
+    if affinity
+        .as_ref()
+        .is_some_and(|v| v.iter().collect::<std::collections::HashSet<_>>().len() != v.len())
+    {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "duplicate CPU"));
+    }
+    let spin = match std::env::var("SPAWNED_EXPERIMENT_IDLE_SPIN").as_deref() {
+        Ok("1") => true,
+        Ok("0") | Err(_) => false,
+        _ => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "idle spin must be 0/1",
+            ))
+        }
+    };
+    Ok((affinity, spin))
+}
+
 fn registry() -> &'static Mutex<Option<Arc<Pool>>> {
     static REGISTRY: OnceLock<Mutex<Option<Arc<Pool>>>> = OnceLock::new();
     REGISTRY.get_or_init(|| Mutex::new(None))
@@ -178,7 +280,10 @@ pub fn spawn_sharded(future: impl Future<Output = ()> + Send + 'static) -> io::R
             assert_eq!(pool.count, count, "one configuration per process");
             pool.clone()
         } else {
-            let pool = Arc::new(Pool::new(count)?);
+            // Optional placement/waiting configuration is frozen at pool startup.
+            // Avoid re-parsing and allocating it on each actor spawn.
+            let (affinity, spin) = shard_options()?;
+            let pool = Arc::new(Pool::configured(count, affinity, spin)?);
             *registry = Some(pool.clone());
             pool
         }
@@ -215,6 +320,39 @@ pub fn shutdown_sharded() -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn pinned_wait_modes_progress_and_join() {
+        let status = std::fs::read_to_string("/proc/thread-self/status").unwrap();
+        let allowed = status
+            .lines()
+            .find_map(|s| s.strip_prefix("Cpus_allowed_list:"))
+            .unwrap()
+            .trim();
+        let core: usize = allowed.split([',', '-']).next().unwrap().parse().unwrap();
+        for spin in [false, true] {
+            let pool = Arc::new(Pool::configured(1, Some(vec![core]), spin).unwrap());
+            let (tx, rx) = std::sync::mpsc::channel();
+            pool.spawn(async move {
+                tokio::time::sleep(Duration::from_millis(2)).await;
+                let status = std::fs::read_to_string("/proc/thread-self/status").unwrap();
+                let actual = status
+                    .lines()
+                    .find_map(|s| s.strip_prefix("Cpus_allowed_list:"))
+                    .unwrap()
+                    .trim();
+                tx.send(actual.to_owned()).unwrap();
+            })
+            .unwrap();
+            assert_eq!(
+                rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+                core.to_string()
+            );
+            pool.shutdown().unwrap();
+            assert!(pool.workers.lock().unwrap().is_empty());
+        }
+        assert!(Pool::configured(2, Some(vec![core]), false).is_err());
+    }
     #[test]
     fn idle_pool_joins_all_workers() {
         let pool = Pool::new(2).unwrap();
