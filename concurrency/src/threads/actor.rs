@@ -1227,7 +1227,7 @@ mod idle_stop_regression {
             id: ActorId::next(),
             sender: tx.clone(),
             cancellation_token: token.clone(),
-            completion_rx,
+            completion: completion_rx,
             monitors: Arc::new(Mutex::new(Some(HashMap::new()))),
         };
         let count = Arc::new(AtomicUsize::new(0));
