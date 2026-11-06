@@ -186,7 +186,8 @@ class Campaign:
         return row
 
     def add_series(self, row):
-        series = list(csv.DictReader((self.out / 'series' / f'{row["stem"]}.csv').open()))
+        with (self.out / 'series' / f'{row["stem"]}.csv').open() as file:
+            series = list(csv.DictReader(file))
         assert series, 'missing queue/RSS samples'
         for field in ['queued', 'outstanding', 'hot_queued', 'cold_queued', 'rss_bytes']:
             row[f'peak_{field}'] = max(int(r[field]) for r in series)

@@ -27,7 +27,8 @@ class ResearchDriver(unittest.TestCase):
         self.assertEqual(status, 'ok', stderr)
         rows = list(csv.DictReader(stdout.splitlines()))
         self.assertEqual(len(rows), 1)
-        series = list(csv.DictReader((Path(root)/'series.csv').open()))
+        with (Path(root)/'series.csv').open() as file:
+            series = list(csv.DictReader(file))
         self.assertEqual(int(series[-1]['queued']), 0)
         self.assertEqual(int(series[-1]['outstanding']), 0)
         return rows[0], series

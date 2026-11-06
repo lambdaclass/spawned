@@ -490,7 +490,7 @@ fn percentile(mut values: Vec<u64>, p: usize) -> u64 {
 }
 fn main() {
     assert!(
-        cfg!(target_os = "linux"),
+        std::path::Path::new("/proc/self/task").is_dir(),
         "this research driver uses Linux /proc and taskset"
     );
     let c = Config::parse();
