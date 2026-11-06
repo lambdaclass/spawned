@@ -51,7 +51,7 @@ def main():
             with tarfile.open(a.output / ('diagnostics-' + name + '.tar.gz'), 'w:gz') as archive:
                 archive.add(root / 'logs', arcname='logs')
         binaries = meta.get('binaries', meta.get('binary_sha256'))
-        inputs[name] = dict(samples=len(original), revision=meta['revision'], started_utc=meta['started_utc'], finished_utc=meta['finished_utc'], actor_cpus=meta['actor_cpus'], driver_cpus=meta['driver_cpus'], metadata_sha256=sha(root/'metadata.json'), raw_sha256=sha(root/'raw.csv'), binaries=binaries)
+        inputs[name] = dict(original_directory=str(root.resolve()), samples=len(original), revision=meta['revision'], started_utc=meta['started_utc'], finished_utc=meta['finished_utc'], actor_cpus=meta['actor_cpus'], driver_cpus=meta['driver_cpus'], metadata_sha256=sha(root/'metadata.json'), raw_sha256=sha(root/'raw.csv'), binaries=binaries)
         # Exact source and binaries remain properties of each block; never infer cross-version identity.
         revisions.setdefault(meta['revision'], []).append(name)
     fields = list(dict.fromkeys(k for r in records for k in r))

@@ -115,7 +115,7 @@ def main():
         return save(fig,f'{block}-{phase}-{caller}-a{actors}-p{producers}-{metric}')
     doc=['# Spawned overnight backend experiments on fede256','',
          f"{len(raw):,} successful fresh processes archived in {len(meta['inputs'])} completed blocks. Original source revisions, binary hashes, exact schedules and inputs remain separate. **Tokio remains the default; these are private research backends.**",'',
-         '[Machine-readable summary](SUMMARY.csv) · [Raw inputs and hashes](../../results/fede-overnight-2026-11-06/metadata.json) · [Experiment protocol](../../OVERNIGHT-PROTOCOL.md)','',
+         '[Machine-readable summary](SUMMARY.csv) · [Raw inputs and hashes](../../results/fede-overnight-2026-11-06/metadata.json) · [Experiment protocol](../../OVERNIGHT-PROTOCOL.md) · [Correctness findings](../../CORRECTNESS-FEDE-OVERNIGHT.md)','',
          '## What each backend does','',
          '| Backend | Scheduling / execution | Main tradeoff |','|---|---|---|',
          '| async | Existing Tokio multi-thread runtime; ordinary actor task and mailbox | Mature scheduler and compatibility; reference |',
