@@ -66,6 +66,7 @@ struct Pool {
     local_budget: usize,
     root_quantum: usize,
     zero_schedule: bool,
+    wake_precheck: bool,
     active: Mutex<Active>,
     idle: Condvar,
     closed: AtomicBool,
@@ -263,6 +264,7 @@ impl Pool {
         local_budget: usize,
         root_quantum: usize,
         zero_schedule: bool,
+        wake_precheck: bool,
     ) -> io::Result<Arc<Self>> {
         let ids = Arc::new(Mutex::new(Vec::new()));
         let (stop, stopped) = oneshot::channel();
@@ -344,6 +346,7 @@ impl Pool {
             local_budget,
             root_quantum,
             zero_schedule,
+            wake_precheck,
             active: Mutex::new(Active {
                 count: 0,
                 closed: false,
@@ -492,6 +495,18 @@ impl Pool {
         }
     }
     fn unpark_peer(&self, owner: usize) {
+        // Avoid a shared rotating-target RMW when every peer appears busy.
+        // This is a wake hint, not proof of emptiness; workers still register,
+        // recheck and use the bounded-request timer fallback.
+        if self.wake_precheck
+            && !self
+                .sleepers
+                .iter()
+                .enumerate()
+                .any(|(peer, sleeping)| peer != owner && sleeping.load(Ordering::Acquire))
+        {
+            return;
+        }
         let first = self.wake_next.fetch_add(1, Ordering::Relaxed);
         for step in 0..self.count {
             let peer = first.wrapping_add(step) % self.count;
@@ -852,18 +867,28 @@ pub fn spawn(policy: Policy, future: impl Future<Output = ()> + Send + 'static) 
             let budget = number("SPAWNED_EXPERIMENT_LOCAL_BUDGET", "3")?;
             let quantum = number("SPAWNED_EXPERIMENT_ROOT_QUANTUM", "8")?;
             let zero_schedule = number("SPAWNED_EXPERIMENT_ZERO_SCHEDULE", "0")?;
+            let wake_precheck = number("SPAWNED_EXPERIMENT_WAKE_PRECHECK", "0")?;
             if !(1..=64).contains(&count)
                 || !(1..=8).contains(&reactors)
                 || !(1..=64).contains(&budget)
                 || !(1..=256).contains(&quantum)
                 || zero_schedule > 1
+                || wake_precheck > 1
             {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
                     "experimental executor setting outside supported range",
                 ));
             }
-            let pool = Pool::new(policy, count, reactors, budget, quantum, zero_schedule == 1)?;
+            let pool = Pool::new(
+                policy,
+                count,
+                reactors,
+                budget,
+                quantum,
+                zero_schedule == 1,
+                wake_precheck == 1,
+            )?;
             *slot = Some(pool.clone());
             pool
         }
@@ -922,7 +947,7 @@ mod tests {
             Policy::Deque,
             Policy::TokioPool,
         ] {
-            let pool = Pool::new(policy, 2, 1, 3, 8, false).unwrap();
+            let pool = Pool::new(policy, 2, 1, 3, 8, false, false).unwrap();
             let (tx, rx) = std_mpsc::channel();
             for _ in 0..32 {
                 pool.spawn(WakeLoop {
@@ -943,8 +968,8 @@ mod tests {
     fn zero_sized_schedule_handles_internal_and_external_wakes() {
         assert_eq!(std::mem::size_of_val(&schedule_from_metadata), 0);
         for policy in [Policy::Runnable, Policy::Deque] {
-            for zero in [false, true] {
-                let pool = Pool::new(policy, 2, 1, 3, 8, zero).unwrap();
+            for (zero, precheck) in [(false, false), (false, true), (true, false), (true, true)] {
+                let pool = Pool::new(policy, 2, 1, 3, 8, zero, precheck).unwrap();
                 let (done, rx) = std_mpsc::channel();
                 let mut producers = Vec::new();
                 for _ in 0..32 {
@@ -1000,7 +1025,7 @@ mod tests {
             Policy::Deque,
             Policy::TokioPool,
         ] {
-            let pool = Pool::new(policy, 2, 1, 3, 8, false).unwrap();
+            let pool = Pool::new(policy, 2, 1, 3, 8, false, false).unwrap();
             let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             let addr = listener.local_addr().unwrap();
             let server = thread::spawn(move || {
@@ -1046,7 +1071,7 @@ mod tests {
             Policy::Runnable,
             Policy::Deque,
         ] {
-            let pool = Pool::new(policy, 1, 1, 3, 8, false).unwrap();
+            let pool = Pool::new(policy, 1, 1, 3, 8, false, false).unwrap();
             let (tx, rx) = std_mpsc::channel();
             let (entered, enter_rx) = std_mpsc::channel();
             let (release, gate) = std_mpsc::channel();
@@ -1076,7 +1101,7 @@ mod tests {
             Policy::Deque,
             Policy::TokioPool,
         ] {
-            let pool = Pool::new(policy, 2, 1, 3, 8, false).unwrap();
+            let pool = Pool::new(policy, 2, 1, 3, 8, false, false).unwrap();
             let other = pool.clone();
             let (tx, rx) = std_mpsc::channel();
             pool.spawn(async move {
@@ -1117,7 +1142,7 @@ mod tests {
             }
         }
         for policy in [Policy::Root, Policy::Runnable, Policy::Deque] {
-            let pool = Pool::new(policy, 1, 1, 3, 8, false).unwrap();
+            let pool = Pool::new(policy, 1, 1, 3, 8, false, false).unwrap();
             let (dropped, rx) = std_mpsc::channel();
             pool.spawn(DropPanic {
                 polled: false,
@@ -1167,7 +1192,7 @@ mod tests {
             Policy::Deque,
             Policy::TokioPool,
         ] {
-            let pool = Pool::new(policy, 2, 1, 3, 8, false).unwrap();
+            let pool = Pool::new(policy, 2, 1, 3, 8, false, false).unwrap();
             let steady = if policy == Policy::TokioPool { 3 } else { 4 };
             let wait_for = |expected| {
                 let deadline = Instant::now() + LIMIT;
@@ -1212,7 +1237,7 @@ mod tests {
             Policy::TokioPool,
         ] {
             for _ in 0..16 {
-                let pool = Pool::new(policy, 2, 1, 3, 8, false).unwrap();
+                let pool = Pool::new(policy, 2, 1, 3, 8, false, false).unwrap();
                 let gate = Arc::new(std::sync::Barrier::new(5));
                 let (done, rx) = std_mpsc::channel();
                 let mut closers = Vec::new();
@@ -1247,7 +1272,7 @@ mod tests {
             Policy::Runnable,
             Policy::Deque,
         ] {
-            let pool = Pool::new(policy, 2, 1, 3, 8, false).unwrap();
+            let pool = Pool::new(policy, 2, 1, 3, 8, false, false).unwrap();
             let (tx, rx) = std_mpsc::channel();
             pool.spawn(std::future::poll_fn(move |cx| {
                 tx.send(cx.waker().clone()).unwrap();
@@ -1269,7 +1294,7 @@ mod tests {
             }
         }
         for (policy, quantum) in cases {
-            let pool = Pool::new(policy, 1, 1, 3, quantum, false).unwrap();
+            let pool = Pool::new(policy, 1, 1, 3, quantum, false, false).unwrap();
             let stop = Arc::new(AtomicBool::new(false));
             let stop_job = stop.clone();
             let (tx, mut rx) = mpsc::unbounded_channel();

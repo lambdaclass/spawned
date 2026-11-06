@@ -23,3 +23,16 @@ Tokio and custom Root are controls. No causal speedup is claimed before results.
 This small follow-up is subject to the overnight deadline and may remain partial.
 
 [async-task pinned implementation](https://github.com/smol-rs/async-task/blob/v4.7.1/src/raw.rs)
+
+A second paired control crosses WAKE_PRECHECK0/1: skip the shared rotating-target
+fetch_add when a read-only scan sees no sleeping peer. V3 profiles had unpark_peer
+in226/1523 captured Root worker stacks and313/2007 Steal stacks for chain-crossN4.
+Those are inclusive user-space samples, not causal CPU percentages. The precheck
+is a wake hint; register/recheck and requested1ms fallback remain. New sleepers
+can race the snapshot, so mixed-load wake tails still need follow-up. Both flags
+default0; no hard wake latency or preemption bound is introduced.
+
+The final graph matrix has240processes: Tokio4/5,Root withprecheck0/1, and
+Runnable/Deque withbothflagcombinations, four graphcases andfive repetitions.
+Sixteen profiles are separate. The new unit exercises bothflags inbothpolicies;
+selected Root/Runnable/Deque suites run withprecheck1 before scoring.
