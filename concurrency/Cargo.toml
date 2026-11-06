@@ -65,3 +65,8 @@ required-features = ["backend-experiments"]
 name = "pinned_pipeline"
 harness = false
 required-features = ["backend-experiments"]
+
+[[bench]]
+name = "runtime_isolation"
+harness = false
+required-features = ["backend-experiments"]
