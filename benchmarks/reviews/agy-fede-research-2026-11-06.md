@@ -1,0 +1,124 @@
+# Agy native Linux graph/overload/profile result review
+
+Verdict: **APPROVE** for publishing the research evidence. Read-only source/report/aggregate review; agy did not rerun benchmarks or independently recompute all raw values. Codex checked raw preservation, medians and input hashes separately. This approval does not promote any experimental backend.
+
+## Result review transcript
+
+I will read `/private/tmp/spawned-research-results-review.txt` to inspect the research results and review criteria.
+**Verdict: APPROVE**
+
+### Review Summary
+
+I reviewed [FINDINGS-FEDE-RESEARCH.md](file:///private/tmp/spawned-fede-next/benchmarks/FINDINGS-FEDE-RESEARCH.md), [VALIDATION-FEDE-RESEARCH.md](file:///private/tmp/spawned-fede-next/benchmarks/VALIDATION-FEDE-RESEARCH.md), [RESEARCH-FEDE-PROTOCOL.md](file:///private/tmp/spawned-fede-next/benchmarks/RESEARCH-FEDE-PROTOCOL.md), [render_fede_research.py](file:///private/tmp/spawned-fede-next/benchmarks/render_fede_research.py), [collect_fede_research.py](file:///private/tmp/spawned-fede-next/benchmarks/collect_fede_research.py), and [SUMMARY.csv](file:///private/tmp/spawned-fede-next/benchmarks/reports/fede-research-2026-11-06/SUMMARY.csv). The package is methodologically sound, conservative in its claims, and ready for publication.
+
+### Key Verification Points
+
+1. **Quantitative Accuracy & Group Separation**
+   - Every cell in the 4-worker `graph-long` table in [FINDINGS-FEDE-RESEARCH.md](file:///private/tmp/spawned-fede-next/benchmarks/FINDINGS-FEDE-RESEARCH.md#L7-L15) (`replies_per_s_median` in k replies/s and `observed_p99_ns_median` in ms) matches [SUMMARY.csv](file:///private/tmp/spawned-fede-next/benchmarks/reports/fede-research-2026-11-06/SUMMARY.csv#L60-L87), including the `sharded-16` chain drop from `857.9k` to `508.4k` (`40.7%`) and actor-worker CPU cost rise from `4,636` to `7,831` ns/root.
+   - In [render_fede_research.py](file:///private/tmp/spawned-fede-next/benchmarks/render_fede_research.py#L78-L83), aggregation keys explicitly separate `(phase, workers, variant, topology, layout, rate, burst, work, routing, actors, iterations, messages)`, ensuring `graph` (65,536 roots), `graph-long` (1,048,576 roots), `offered`, `pilot`, `calibration`, and `profile` runs are never pooled.
+   - Unit conversions (`1e-6` ns-to-ms for latency, admission lag, and `observer_lag_p99_ns_median`; `1e-3` for k replies/s) are consistent across charts and tables in [render_fede_research.py](file:///private/tmp/spawned-fede-next/benchmarks/render_fede_research.py#L107-L166).
+
+2. **Offered-Load Validity & Overload Caveats**
+   - The 244/504 invalid admission schedules (`>1%` requests admitted `>1 ms` late, leaving 260/504 valid) are retained in full, marked (`×` on charts and `valid/n` in tables via [`valid_driver_samples`](file:///private/tmp/spawned-fede-next/benchmarks/render_fede_research.py#L83)), and explicitly disqualified from matched-load rankings across all three documents.
+   - The cited 4-worker concentrated diagnostic at `950,237` requests/s for `sharded-16` in [FINDINGS-FEDE-RESEARCH.md](file:///private/tmp/spawned-fede-next/benchmarks/FINDINGS-FEDE-RESEARCH.md#L23) is backed by `3/3` valid schedules in [SUMMARY.csv](file:///private/tmp/spawned-fede-next/benchmarks/reports/fede-research-2026-11-06/SUMMARY.csv#L188) (`66.3%` hot timeouts, `0.014 ms` other-cohort cold observed p99, `0.216 ms` worst cold actor p99).
+   - Survivor-only completion quantiles, timeout-censored observation tails, two-second finite injection windows with full drain, and hot-vs-cold cohort caveats are clearly stated.
+
+3. **Provenance, Affinity & Profiling Boundaries**
+   - [collect_fede_research.py](file:///private/tmp/spawned-fede-next/benchmarks/collect_fede_research.py#L30-L66) enforces clean-tree status, identical `revision` (`454d25a8baed62ee0a7b005e919d3d9e32f86893`), identical `binaries`, and identical `actor_cpus` (`2-5`), `driver_cpus` (`6,7,14,15`), `collector_cpus` (`8,9,16,17`), and environment across primary (778) and confirmation (224) campaigns (1,002 total processes), plus `succeeded + timeouts == messages` and confirmation controller hash verification. (Original vs. combined CSV numeric equality and the 2,040 artifact SHA-256 entries were separately verified by Codex.)
+   - [FINDINGS-FEDE-RESEARCH.md](file:///private/tmp/spawned-fede-next/benchmarks/FINDINGS-FEDE-RESEARCH.md#L25), [VALIDATION-FEDE-RESEARCH.md](file:///private/tmp/spawned-fede-next/benchmarks/VALIDATION-FEDE-RESEARCH.md#L67-L69), and [render_fede_research.py](file:///private/tmp/spawned-fede-next/benchmarks/render_fede_research.py#L167-L174) properly frame `pprof-rs` SIGPROF stacks as inclusive user-space ancestry on actor threads rather than exclusive scheduler overhead or kernel/hardware-counter attribution.
+   - Default Tokio behavior and public APIs remain unchanged, and follow-up native executor work is appropriately scoped as separate opt-in research.
+
+
+## Earlier harness review transcript
+
+The harness review preceded collector CPU separation and timing/snapshot corrections, subsequently validated on the server. One reviewer phrase claiming migration measurement is incorrect: scheduler counters record CPU, queue wait and context switches, not migrations. Final protocol/report use the correct limitation.
+
+I will read `/private/tmp/spawned-research-upload/agy-harness-prompt.txt` to understand the requested final review.
+I have read the prompt in [`agy-harness-prompt.txt`](file:///private/tmp/spawned-research-upload/agy-harness-prompt.txt). I will now inspect [`workload_research.rs`](file:///private/tmp/spawned-fede-next/concurrency/benches/workload_research.rs), [`profiling.rs`](file:///private/tmp/spawned-fede-next/concurrency/benches/support/profiling.rs), [`fede_research.py`](file:///private/tmp/spawned-fede-next/benchmarks/fede_research.py), [`designs.rs`](file:///private/tmp/spawned-fede-next/concurrency/benches/support/designs.rs), and [`concurrency/Cargo.toml`](file:///private/tmp/spawned-fede-next/concurrency/Cargo.toml) to perform the requested read-only methodology and correctness review.
+I will now read the remaining lines of [`workload_research.rs`](file:///private/tmp/spawned-fede-next/concurrency/benches/workload_research.rs#L800-L918), along with [`designs.rs`](file:///private/tmp/spawned-fede-next/concurrency/benches/designs.rs) and the root [`Cargo.toml`](file:///private/tmp/spawned-fede-next/Cargo.toml).
+I will now read the end of [`designs.rs`](file:///private/tmp/spawned-fede-next/concurrency/benches/designs.rs#L800-L937).
+### Verdict: **APPROVE**
+
+This is a read-only methodology and correctness review of [`concurrency/benches/workload_research.rs`](file:///private/tmp/spawned-fede-next/concurrency/benches/workload_research.rs), [`concurrency/benches/support/profiling.rs`](file:///private/tmp/spawned-fede-next/concurrency/benches/support/profiling.rs), [`benchmarks/fede_research.py`](file:///private/tmp/spawned-fede-next/benchmarks/fede_research.py), [`concurrency/benches/designs.rs`](file:///private/tmp/spawned-fede-next/concurrency/benches/designs.rs), and [`concurrency/Cargo.toml`](file:///private/tmp/spawned-fede-next/concurrency/Cargo.toml). No files were modified and no commands were executed.
+
+---
+
+### 1. Verification Against Review Checklist
+
+1. **Scope & Public Library Isolation**
+   - [`concurrency/Cargo.toml`](file:///private/tmp/spawned-fede-next/concurrency/Cargo.toml#L29-L52) gates `pprof` (Linux-only, `0.15` with `flamegraph`) behind the optional `profiling-experiments` feature and keeps `workload_research` and `designs` gated on `backend-experiments`. Default features and public library/backend code are untouched.
+
+2. **Graph Topologies, Placement & Static Shard Verification**
+   - **Acyclic 8-node chain & 7-way fan-out**: In [`workload_research.rs`](file:///private/tmp/spawned-fede-next/concurrency/benches/workload_research.rs#L521-L531), for each group of `width = 8` actors (`j = id % width`), `chain` links `id -> id + 1` for `j + 1 < width` (8-node directed path), and `fanout` links root `j == 0` to `id + 1 .. id + width` (root plus 7 leaves, 8 nodes total). In [`Node::handle(Route)`](file:///private/tmp/spawned-fede-next/concurrency/benches/workload_research.rs#L216-L224), all child requests are issued via `request_raw` before `join_all(replies).await`, so fan-out children execute concurrently.
+   - **Identical logical wiring across `same` / `cross`**: Both `Config::target` ([`workload_research.rs`](file:///private/tmp/spawned-fede-next/concurrency/benches/workload_research.rs#L112-L115), targeting group roots `(id % (actors / width)) * width`) and child wiring ([`workload_research.rs`](file:///private/tmp/spawned-fede-next/concurrency/benches/workload_research.rs#L521-L531)) depend only on actor `id`, `width`, and `topology`, never on `layout`.
+   - **Placement maps & spawn order**: [`layout()`](file:///private/tmp/spawned-fede-next/concurrency/benches/workload_research.rs#L246-L286) assigns equal-sized buckets (`actors / workers`) so that in `same`, an entire group `g` lands on worker `g % workers`; in `cross` `chain`, hop `j` lands on `(g + j) % workers` (every hop crosses shards); in `cross` `fanout`, root `j == 0` lands on `g % workers` and leaves `j > 0` land on `(g + 1 + (j - 1) % (workers - 1)) % workers` (guaranteed distinct from the root's shard). Actors are spawned in round-robin bucket order (`w = n % workers`).
+   - **Enforced sharded placement vs. Tokio spawn-order control**: [`Handler<Wire> for Node`](file:///private/tmp/spawned-fede-next/concurrency/benches/workload_research.rs#L190-L199) asserts `std::thread::current().name().unwrap() == format!("spawned-shard-{}", msg.expected_shard)` whenever `SPAWNED_EXPERIMENT_SCHEDULER=sharded`. Under default Tokio (`async` / `tokio-*`), `order` controls only spawn order onto the work-stealing runtime, not enforced thread affinity.
+   - **Campaign dimensions**: [`fede_research.py`](file:///private/tmp/spawned-fede-next/benchmarks/fede_research.py#L251-L256) runs `actors=1024, width=8, producers=256, messages=65536, iterations=100` across `workers in [2, 4]`, 7 variants, 2 topologies, 2 layouts, and 5 randomized repeats.
+
+3. **End-to-End Reply & Identity Validation**
+   - Every child hop in [`Node::handle(Route)`](file:///private/tmp/spawned-fede-next/concurrency/benches/workload_research.rs#L221-L230) validates `assert_eq!(ack.id, msg.id)` and accumulates `nodes`, `tag` (sum of `id + 1`), and `checksum`.
+   - Every successful top-level reply in [`sample()`](file:///private/tmp/spawned-fede-next/concurrency/benches/workload_research.rs#L333-L348) validates:
+     - `ack.id == p.id as u64`
+     - `ack.nodes == (c.width in graph mode, 1 otherwise)`
+     - `ack.tag == ((2 * p.target + c.width + 1) * c.width / 2 in graph mode, p.target + 1 otherwise)`
+   - Post-run checks ([`workload_research.rs`](file:///private/tmp/spawned-fede-next/concurrency/benches/workload_research.rs#L727-L745)) verify `samples.len() == c.messages`, bijective coverage of `id in 0..c.messages`, `succeeded + timeouts == c.messages`, and (for non-graph modes) `sum(meters.completed) == c.messages`.
+
+4. **Offered-Load Skew, Placement Maps & Non-Skipping Schedules**
+   - **4 fixed hot actors & 80/20 split**: With default `hot_actors = 4` ([`workload_research.rs`](file:///private/tmp/spawned-fede-next/concurrency/benches/workload_research.rs#L85)) and `actors = 128` ([`fede_research.py`](file:///private/tmp/spawned-fede-next/benchmarks/fede_research.py#L264)), [`Config::target`](file:///private/tmp/spawned-fede-next/concurrency/benches/workload_research.rs#L116-L123) routes `id % 5 < 4` (80%) across hot actors `0..4` (`hot_iterations = 5000`) and `id % 5 == 4` (20%) across cold actors `4..128` (`iterations = 100`). The hot actor count (`4`) and routing logic are invariant across `workers = 2` and `workers = 4`.
+   - **Concentrated vs. spread**: [`layout()`](file:///private/tmp/spawned-fede-next/concurrency/benches/workload_research.rs#L263-L275) places all 4 hot actors on shard `0` in `concentrated` and distributes them via `id % c.workers` in `spread`, then balances cold actors across buckets to `actors / workers` per shard.
+   - **Absolute steady/burst schedule never skips late sends**: [`Config::intended`](file:///private/tmp/spawned-fede-next/concurrency/benches/workload_research.rs#L125-L128) computes `slot = (id / burst) * burst` relative to the shared `epoch`. In the producer loop ([`workload_research.rs`](file:///private/tmp/spawned-fede-next/concurrency/benches/workload_research.rs#L626-L662)), every `id` waits until `intended` (returning immediately if already behind schedule), records `enqueued = Instant::now()`, and unconditionally submits the request, capturing `lag = enqueued - intended`.
+   - **HOL-free collector**: Each producer pairs with a dedicated `load-collector` thread ([`workload_research.rs`](file:///private/tmp/spawned-fede-next/concurrency/benches/workload_research.rs#L582-L601)) that drains `Pending` items from an unbounded channel into a `FuturesUnordered` driven by `tokio::select!`. Cold replies complete as soon as their oneshot resolves, without FIFO head-of-line blocking behind slow hot replies.
+
+5. **Deadlines, Lifecycle Drain Fences & Time-Series / RSS Accounting**
+   - **Caller-only timeouts & full drain fence**: `tokio::time::timeout_at(deadline, p.reply)` ([`workload_research.rs`](file:///private/tmp/spawned-fede-next/concurrency/benches/workload_research.rs#L591-L595)) only drops the collector's oneshot receiver upon timeout (`Err(_) => None`), while panicking if an actor ever drops an admitted request (`Ok(Err(_))`). Before stopping actors or snapshotting `actor_after` thread stats, the main thread executes a synchronous `Wire` request on every actor ([`workload_research.rs`](file:///private/tmp/spawned-fede-next/concurrency/benches/workload_research.rs#L708-L718)), guaranteeing that all queued and timed-out `Route` handlers have finished and avoiding shutdown deadlocks or work truncation.
+   - **Time series & RSS**: [`observe_series`](file:///private/tmp/spawned-fede-next/concurrency/benches/workload_research.rs#L361-L412) samples `submitted`, `started`, `completed`, `observed`, `queued` (`submitted - started`), `outstanding` (`submitted - completed`), `hot_queued`, `cold_queued`, and `/proc/self/status` `VmRSS` every 100 ms. Sample vectors are preallocated (`Vec::with_capacity(c.messages.div_ceil(c.producers))`) with a hard cap of `4_194_304` messages (`4_000_000` in [`fede_research.py`](file:///private/tmp/spawned-fede-next/benchmarks/fede_research.py#L219)), while transient in-flight `Pending` items, `FuturesUnordered` tasks, and actor mailbox backlogs are included in `VmRSS` and `/usr/bin/time -v` max RSS.
+
+6. **CPU Affinity, Kernel Thread Accounting & Optional SIGPROF Profiling**
+   - **Disjoint physical cores**: [`fede_research.py`](file:///private/tmp/spawned-fede-next/benchmarks/fede_research.py#L91-L101) asserts that `actor_cpus` (`2,3,4,5`) and `driver_cpus` (`6,7,8,9`) are disjoint, that the campaign process starts pinned to `actor_cpus`, and that every CPU in `actor_cpus | driver_cpus` maps to a distinct `(physical_package_id, core_id)` pair (no SMT siblings). Each benchmark child runs under `taskset -c <actor_cpus>`, and in [`workload_research.rs`](file:///private/tmp/spawned-fede-next/concurrency/benches/workload_research.rs#L130-L141) every producer, collector, and sampler thread calls `pin_driver(&c.driver_cpus)` (`taskset -pc 6,7,8,9 <tid>`) before the start barrier.
+   - **Per-worker `/proc` stats**: [`thread_stats()`](file:///private/tmp/spawned-fede-next/concurrency/benches/workload_research.rs#L422-L483) snapshots `/proc/self/task/<tid>/{comm,schedstat,status}` for `actor-worker*` and `spawned-shard-*` threads around the timed window, saving exact deltas for `runtime_ns`, `runqueue_wait_ns`, `slices`, `voluntary_switches`, and `involuntary_switches` without inferring unavailable hardware counters.
+   - **SIGPROF separation**: [`profiling.rs`](file:///private/tmp/spawned-fede-next/concurrency/benches/support/profiling.rs#L8-L48) enables 199 Hz `pprof` sampling with blocklist `["libc", "libgcc", "pthread", "vdso"]` only when `SPAWNED_PROFILE_PREFIX` is set (`phase == 'profile'` in [`fede_research.py`](file:///private/tmp/spawned-fede-next/benchmarks/fede_research.py#L153-L154)), emitting per-thread folded `.stacks` and `.svg` flamegraphs in separate `profile` rows.
+
+---
+
+### 2. Methodological & Reporting Notes for Campaign Analysis (Non-Blockers)
+
+When analyzing the output of [`fede_research.py`](file:///private/tmp/spawned-fede-next/benchmarks/fede_research.py), ensure the report accounts for the following implementation details:
+
+1. **Right-Censoring of `observed_p99_ns` / `worst_cold_actor_observed_p99_ns` vs. Survivor-Only Completion Quantiles**:
+   - In [`workload_research.rs`](file:///private/tmp/spawned-fede-next/concurrency/benches/workload_research.rs#L783-L877), `completion_p50_ns`, `completion_p99_ns`, `queue_p99_ns`, `service_p99_ns`, `hot_p99_ns`, `cold_p99_ns`, `cold_shard0_p99_ns`, and `cold_other_p99_ns` filter on `s.success` (survivor bias if reported alone when `timeouts > 0`).
+   - Conversely, `observed_p99_ns` ([line 806](file:///private/tmp/spawned-fede-next/concurrency/benches/workload_research.rs#L806)) and `worst_cold_actor_observed_p99_ns` ([line 746-754](file:///private/tmp/spawned-fede-next/concurrency/benches/workload_research.rs#L746-L754)) include timed-out requests, where `observed` is recorded when `timeout_at(deadline, ...)` fires (`~deadline_ms = 2000 ms`), so those values are right-censored at `deadline_ms`. Always report `timeouts`, `hot_timeouts`, `cold_timeouts`, `cold_late_observed`, and `cold_late_completed` alongside latency quantiles.
+2. **Interpretation of `replies_per_s` vs. `window_service_per_s` under Overload**:
+   - In [`workload_research.rs`](file:///private/tmp/spawned-fede-next/concurrency/benches/workload_research.rs#L708-L719), `elapsed` includes the post-observation `Wire` drain fence for timed-out work still queued in actor mailboxes, while `replies_per_s = succeeded / elapsed` ([line 898](file:///private/tmp/spawned-fede-next/concurrency/benches/workload_research.rs#L898)) counts only non-timed-out replies in the numerator. For offered-load runs, pair `replies_per_s` with `submit_elapsed_s`, `observation_elapsed_s`, and `window_service_per_s` / `window_queue_growth_per_s` computed from `series/*.csv`.
+3. **2-Worker Budget on a 4-CPU Affinity Mask**:
+   - [`fede_research.py`](file:///private/tmp/spawned-fede-next/benchmarks/fede_research.py#L155) launches both `w2` and `w4` runs under `taskset -c 2,3,4,5`. For `w2`, all variants constrain concurrency to 2 worker threads (`worker_threads(2)` or `SPAWNED_EXPERIMENT_WORKERS=2`), which the kernel may schedule across the 4 cores in `actor_cpus`. This is symmetric across all 7 variants, and actual CPU time/migrations are captured in `threads/*.csv` (`runtime_ns`, `runqueue_wait_ns`, context switches).
+4. **Thread Filtering for `designs` Profile Runs**:
+   - Unlike `workload_research`, [`designs.rs`](file:///private/tmp/spawned-fede-next/concurrency/benches/designs.rs) does not call `pin_driver`, so during the `designs` profile runs ([`fede_research.py`](file:///private/tmp/spawned-fede-next/benchmarks/fede_research.py#L268-L275)), producer threads also run on `actor_cpus` and are included in the combined `.svg` flamegraph. Use the thread-prefixed `.stacks` files generated by [`profiling.rs`](file:///private/tmp/spawned-fede-next/concurrency/benches/support/profiling.rs#L33-L44) to separate actor worker stacks (`actor-worker` / `spawned-shard-*`) from producer stacks.
+
+
+## Plot-label follow-up review
+
+Final verdict APPROVE after adding schedule validity and admission lag to every fixed-repetition curve and fixing autoscaling after all curves. Agy reviewed source and SVG text; Codex visually checked the rendered plot. No benchmark values or aggregate CSV changed.
+
+**Verdict: APPROVE**
+
+### Focused Review Summary
+
+1. **Per-Curve Schedule Validity & Producer Admission Lag (`render_fede_research.py`):**
+   - In [`main`](file:///private/tmp/spawned-fede-next/benchmarks/render_fede_research.py#L149-L161), each fixed-repetition (`repeat == 1`, `burst == 1`, highest offered rate / 125% reference) time-series curve now explicitly formats its legend label with both schedule validity (`valid(row)`) and producer admission lag p99 converted from nanoseconds to milliseconds:
+     ```python
+     label=f"{variant}: {'valid' if valid(row) else 'INVALID schedule'}, lag p99 {number(row,'lag_p99_ns')/1e6:.3f} ms"
+     ```
+   - `axes[0].legend(fontsize=7)` displays these labels on the figure.
+
+2. **Diagnostic-Only Suptitle Qualification (`render_fede_research.py`):**
+   - The time-series figure suptitle explicitly states that invalid schedules are diagnostics rather than equivalent offered load:
+     ```python
+     fig.suptitle(f'{w} workers · {layout} · 125% reference, predetermined repetition 1; dotted injection end\nInvalid schedules are diagnostics, not equivalent offered traffic')
+     ```
+
+3. **Post-Curve Y-Axis Autoscaling (`render_fede_research.py`):**
+   - `for ax in axes: ax.set_ylim(bottom=0)` is placed at [line 159](file:///private/tmp/spawned-fede-next/benchmarks/render_fede_research.py#L159), *outside* and *after* the `for variant, color in ...` loop ([lines 150-158](file:///private/tmp/spawned-fede-next/benchmarks/render_fede_research.py#L150-L158)). This ensures matplotlib's upper Y-limit autoscaling remains active across all plotted policy curves and prevents clipping of larger peaks added by later policies (`sharded-1`, `sharded-16`).
+
+4. **Rendered Artifacts & Validation Documentation (`VALIDATION-FEDE-RESEARCH.md`):**
+   - Spot-checked the regenerated SVG outputs ([timeseries-w2-spread.svg](file:///private/tmp/spawned-fede-next/benchmarks/reports/fede-research-2026-11-06/graphs/timeseries-w2-spread.svg) and [timeseries-w4-spread.svg](file:///private/tmp/spawned-fede-next/benchmarks/reports/fede-research-2026-11-06/graphs/timeseries-w4-spread.svg)), confirming the new legend strings (e.g., `async: valid, lag p99 0.000 ms`, `sharded-1: INVALID schedule, lag p99 1.573 ms`) and two-line diagnostic suptitle are present in the rendered charts.
+   - [VALIDATION-FEDE-RESEARCH.md](file:///private/tmp/spawned-fede-next/benchmarks/VALIDATION-FEDE-RESEARCH.md#L74-L84) accurately documents the hosted review context, the legend and autoscaling fixes, and the bounded scope of the regeneration.

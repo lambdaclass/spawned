@@ -1,3 +1,10 @@
+The [native Linux graph, overload and profiling report](reports/fede-research-2026-11-06/REPORT.md)
+adds 1,002 fresh processes, longer graph confirmations and 66 CPU profiles.
+[HTML with embedded charts](reports/fede-research-2026-11-06/REPORT.html),
+[findings](FINDINGS-FEDE-RESEARCH.md) and [protocol](RESEARCH-FEDE-PROTOCOL.md).
+Only 260/504 offered-load schedules passed admission timing; affected aggregates
+are flagged and cannot support equal-load backend rankings. Tokio stays default.
+
 # Performance studies
 
 The [full-actor report](reports/full-actors-2026-11-05/REPORT.md) compares actual
@@ -5,7 +12,7 @@ Spawned lifecycle/messages across Tokio, batching and sharding: 1,575 successful
 processes and 129 million requests on macOS, a Linux VM and native Linux on fede,
 with twelve figures.
 [Self-contained HTML](reports/full-actors-2026-11-05/REPORT.html),
-[findings](FINDINGS-FULL-ACTORS.md), [research priorities](RESEARCH-NEXT.md),
+[side-by-side backend numbers and findings](FINDINGS-FULL-ACTORS.md), [research priorities](RESEARCH-NEXT.md),
 [validation](VALIDATION-FULL-ACTORS.md) and
 [independent agy reviews](reviews/agy-full-actors-2026-11-05.md) accompany it.
 

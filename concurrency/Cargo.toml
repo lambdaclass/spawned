@@ -30,6 +30,7 @@ harness = false
 io-experiments = ["dep:monoio"]
 # Private benchmark prototypes; no stable runtime-selection API.
 backend-experiments = ["spawned-rt/backend-experiments"]
+profiling-experiments = ["dep:pprof"]
 
 [[bench]]
 name = "designs"
@@ -40,6 +41,14 @@ required-features = ["backend-experiments"]
 name = "io_designs"
 harness = false
 required-features = ["io-experiments"]
+
+[[bench]]
+name = "workload_research"
+harness = false
+required-features = ["backend-experiments"]
+
+[target.'cfg(target_os = "linux")'.dependencies]
+pprof = { version = "0.15", optional = true, features = ["flamegraph"] }
 
 [target.'cfg(spawned_scheduler_loom)'.dev-dependencies]
 loom = "0.7"

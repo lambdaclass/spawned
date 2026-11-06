@@ -3,6 +3,8 @@
 mod actor_io;
 #[path = "support/args.rs"]
 mod cli;
+#[path = "support/profiling.rs"]
+mod profiling;
 #[path = "support/ready_gate.rs"]
 mod ready_gate;
 use spawned_concurrency::{message::Message, tasks, threads, ChildHandle};
@@ -720,6 +722,7 @@ fn main() {
     let epoch = Instant::now() + Duration::from_millis(config.idle_ms);
     let mut batches = Vec::new();
     let rt_handle = rt.handle().clone();
+    let profile = profiling::start();
     std::thread::scope(|scope| {
         let mut joins = Vec::new();
         for producer in 0..config.producers {
@@ -833,6 +836,7 @@ fn main() {
         }
     });
     let elapsed = epoch.elapsed();
+    profiling::finish(profile);
     COUNT.store(false, Ordering::Relaxed);
     let allocations = ALLOCS.load(Ordering::Relaxed);
     let bytes = BYTES.load(Ordering::Relaxed);
