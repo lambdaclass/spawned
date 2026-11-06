@@ -1,0 +1,67 @@
+### Review Summary
+
+**Verdict: No blockers found.** (This review reflects static analysis of the integration diff against baseline `2f066d19` at `/private/tmp/spawned-stop-integration` (`21446fd0`), not an absolute security guarantee or reproduced test execution.)
+
+---
+
+### Findings
+
+None (no high, medium, or low severity defects identified).
+
+---
+
+### Detailed Verification & Concrete Schedule Analysis
+
+#### 1. Security & Privilege / Envelope Isolation
+- **Private Wakeup Signal**: [`MailboxItem<A>`](../../../../concurrency/src/threads/actor.rs#L93-L96) is module-private (`enum MailboxItem<A: Actor> { Message(Box<dyn Envelope<A> + Send>), Shutdown }`). External callers interacting with [`Context::send`](../../../../concurrency/src/threads/actor.rs#L174-L183), [`Context::request_raw`](../../../../concurrency/src/threads/actor.rs#L186-L197), [`ActorRef::send`](../../../../concurrency/src/threads/actor.rs#L513-L522), [`ActorRef::request_raw`](../../../../concurrency/src/threads/actor.rs#L525-L536), or link exit signals ([`own_send_exit_fn`](../../../../concurrency/src/threads/actor.rs#L409-L418)) can only construct `MailboxItem::Message(...)`. User messages cannot forge `MailboxItem::Shutdown` or bypass cancellation semantics.
+- **No `unsafe`, Build, or Dependency Changes**: The integration touches only [concurrency/src/threads/actor.rs](../../../../concurrency/src/threads/actor.rs) and [concurrency/src/link_regression_tests.rs](../../../../concurrency/src/link_regression_tests.rs), preserving [concurrency/src/child_handle.rs](../../../../concurrency/src/child_handle.rs) and [concurrency/src/tasks/actor.rs](../../../../concurrency/src/tasks/actor.rs) untouched from baseline.
+
+#### 2. Denial of Service & Memory Retention (Queue Growth & Sender Lifetimes)
+- **Original PR vs. Integration**: The original PR sent `MailboxItem::Shutdown` directly inside `Context::stop()` and `ChildHandle`'s cancel closure, which allowed $N$ concurrent or repeated `.stop()` calls on an actor with a busy handler to enqueue $N$ unbounded `MailboxItem::Shutdown` items into `std::sync::mpsc::channel`.
+- **Single-Wakeup Guarantee**: [`register_stop_wakeup`](../../../../concurrency/src/threads/actor.rs#L98-L105) registers a single `FnOnce` callback on [`CancellationToken::on_cancel`](../../../../rt/src/threads/mod.rs#L136-L148). Because [`CancellationToken::cancel`](../../../../rt/src/threads/mod.rs#L119-L129) drains the `callbacks: Mutex<Vec<CancelCallback>>` under lock and invokes each `FnOnce` after releasing the lock:
+  1. At most **one** `MailboxItem::Shutdown` is ever sent to the mailbox, regardless of how many times `Context::stop()`, `ChildHandle::stop()`, link cancellation, or `ActorCleanup` invoke `cancel()`.
+  2. The `mpsc::Sender<MailboxItem<A>>` captured inside the `on_cancel` closure is dropped immediately once the `FnOnce` executes on cancellation.
+
+#### 3. Deadlocks & Lock-Order Invariants
+- **Lock Acquisition Graph**:
+  - [`Context::stop`](../../../../concurrency/src/threads/actor.rs#L170-L172) and [`ChildHandle::from_threads`](../../../../concurrency/src/child_handle.rs#L115-L122): [`link::normal_stop`](../../../../concurrency/src/link.rs#L228-L234) locks `linked_reason`, drops the guard, and then calls `cancellation_token.cancel()`.
+  - [`link::make_signal`](../../../../concurrency/src/link.rs#L94-L132): locks `peer_linked_reason`, drops the guard, and calls `peer_cancel()` (which runs `normal_stop` -> locks `peer_linked_reason`, drops guard, calls `token.cancel()`). Note that [`propagate_exit`](../../../../concurrency/src/link.rs#L194-L210) releases the `LinkTable` mutex *before* invoking `deliver(&entry.signal, ...)`.
+  - [`CancellationToken::cancel`](../../../../rt/src/threads/mod.rs#L119-L129): stores `is_cancelled = true` (`SeqCst`), locks `callbacks`, drains the vector, drops the lock guard, and runs the wakeup callback (`let _ = sender.send(MailboxItem::Shutdown)`), which is non-blocking on an unbounded `std::sync::mpsc::Sender`.
+- No lock is held across `callbacks` execution or channel send; no lock-order cycles are introduced.
+
+#### 4. Registration-vs-Cancel Races & All Cancellation Routes
+- **Pre-Link / Pre-Dispatch Registration Schedule**:
+  In [`ActorRef::spawn`](../../../../concurrency/src/threads/actor.rs#L649-L704):
+  1. Line 651: `let cancellation_token = CancellationToken::new();`
+  2. Line 652: `register_stop_wakeup(&cancellation_token, tx.clone());`
+  3. Line 681: `if let Some(parent) = parent { actor_ref.context().link(&parent); }`
+  4. Line 696: `rt::spawn(...)`
+  - **Schedule A (Parent already dead with abnormal reason during `start_linked`)**: Step 3 observes `b.exited` in [`register_link`](../../../../concurrency/src/link.rs#L162-L178) and immediately invokes `own_signal` -> `cancellation_token.cancel()`. Because Step 2 already registered the wakeup callback, `cancel()` drains it and enqueues `MailboxItem::Shutdown` (and sets `is_cancelled = true`, which `run_actor_receiving` also checks at line 743 right after `started()`).
+  - **Schedule B (`on_cancel` vs concurrent `cancel()`)**: In [`CancellationToken`](../../../../rt/src/threads/mod.rs#L119-L148):
+    - `cancel()` executes `is_cancelled.store(true, SeqCst)` *before* locking `self.callbacks`.
+    - `on_cancel()` locks `self.callbacks` *before* checking `self.is_cancelled()` (`SeqCst`).
+    - If `on_cancel()` wins the lock first, `is_cancelled` is either already `true` (fires immediately after dropping lock) or `false` (pushed to `callbacks`, guaranteed to be drained when `cancel()` acquires the lock). If `cancel()` wins the lock first, `is_cancelled` is already `true` when `on_cancel()` acquires the lock, so `on_cancel()` fires the callback immediately.
+  - **All Cancellation Routes Covered**:
+    1. `ctx.stop()` -> `normal_stop` -> `cancellation_token.cancel()`
+    2. `child_handle.stop()` -> `normal_stop` -> `cancellation_token.cancel()`
+    3. Linked peer abnormal exit / runtime abort (`Kill`) -> `make_signal` -> `peer_cancel()` -> `cancellation_token.cancel()`
+    4. Raw `cancellation_token.cancel()` (e.g. crate-internal callers)
+    5. `ActorCleanup::drop` -> `(self.cancel)()` -> `cancellation_token.cancel()`
+
+#### 5. Cooperative Cancellation & Ordering Contracts
+- **Blocking `recv()` & FIFO Wakeup Schedule**:
+  - **Schedule C (Actor idle in `rx.recv()`, stop arrives)**: `cancel()` sets `is_cancelled = true` and sends `MailboxItem::Shutdown`. `rx.recv()` wakes up and returns `Ok(MailboxItem::Shutdown)` -> `msg` is `None` -> loop breaks ([line 757](../../../../concurrency/src/threads/actor.rs#L757)).
+  - **Schedule D (Messages $M_1, M_2$ already queued in mailbox when stop arrives)**:
+    1. `cancel()` sets `is_cancelled = true` (`SeqCst`) and appends `MailboxItem::Shutdown` after $M_1, M_2$.
+    2. On the next receive turn, `rx.recv()` dequeues `Ok(MailboxItem::Message(M_1))`.
+    3. At [line 770](../../../../concurrency/src/threads/actor.rs#L770), the pre-dispatch check `if cancellation_token.is_cancelled()` observes `true`, assigns `discarded = Some(envelope)`, and breaks out of the loop **without** waiting to reach `MailboxItem::Shutdown` and **without** dispatching $M_1$ or $M_2$.
+- **Destructor & Cleanup Ordering (`stopped()` -> monitor cleanup -> queued message drop -> completion)**:
+  - Tracing [`ActorRef::spawn`](../../../../concurrency/src/threads/actor.rs#L696-L700) and [`run_actor_receiving`](../../../../concurrency/src/threads/actor.rs#L725-L808):
+    1. `actor.stopped(&ctx)` runs at [line 793](../../../../concurrency/src/threads/actor.rs#L793).
+    2. `drop(_monitor_cleanup)` runs at [line 805](../../../../concurrency/src/threads/actor.rs#L805), taking the `MonitorTable` (`Option<HashMap<...>>` becomes `None`) and cancelling all active monitor tokens.
+    3. `drop(discarded)` runs at [line 806](../../../../concurrency/src/threads/actor.rs#L806) (dropping any dequeued-but-undispatched envelope and its reply `oneshot::Sender`).
+    4. At the end of `run_actor_receiving` ([line 808](../../../../concurrency/src/threads/actor.rs#L808)) and `run_actor` ([line 723](../../../../concurrency/src/threads/actor.rs#L723)), `ctx`, `actor`, and `rx` (`mpsc::Receiver<MailboxItem<A>>`) are dropped in scope order. Dropping `rx` drops all remaining queued `MailboxItem::Message` envelopes (and their `oneshot::Sender`s, waking any blocked `request` callers with `ActorError::ActorStopped`) *after* `_monitor_cleanup` has already closed the monitor table.
+    5. Back in the thread closure ([line 699](../../../../concurrency/src/threads/actor.rs#L699)), `cleanup.complete(reason)` and `drop(cleanup)` ([`ActorCleanup::drop`](../../../../concurrency/src/actor_cleanup.rs#L53-L61)) propagate link exits and publish the final `ExitReason` to `completion` (`watch::Sender`).
+- **Contract Preservation**:
+  - `Context<A>` still holds `sender: mpsc::Sender<MailboxItem<A>>`, so dropping all external `ActorRef<A>` handles does not auto-stop the actor.
+  - `run_actor_receiving` retains the `Err(RecvTimeoutError::Timeout)` branch ([lines 758-763](../../../../concurrency/src/threads/actor.rs#L758-L763)) so existing unit tests that inject a custom timeout closure into `run_actor_receiving` continue to work unchanged.

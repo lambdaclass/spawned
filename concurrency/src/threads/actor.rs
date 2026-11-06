@@ -89,6 +89,21 @@ impl<A: Actor> Envelope<A> for ExitEnvelope {
     }
 }
 
+// A private wakeup is distinct from user envelopes and never invokes a handler.
+enum MailboxItem<A: Actor> {
+    Message(Box<dyn Envelope<A> + Send>),
+    Shutdown,
+}
+
+fn register_stop_wakeup<A: Actor>(token: &CancellationToken, sender: mpsc::Sender<MailboxItem<A>>) {
+    // One callback covers Context, ChildHandle, linked exits and framework cleanup.
+    // CancellationToken drains this FnOnce callback exactly once, including when
+    // multiple callers race to cancel. Repeated stop calls cannot grow the queue.
+    token.on_cancel(Box::new(move || {
+        let _ = sender.send(MailboxItem::Shutdown);
+    }));
+}
+
 // ---------------------------------------------------------------------------
 // Context
 // ---------------------------------------------------------------------------
@@ -99,7 +114,7 @@ impl<A: Actor> Envelope<A> for ExitEnvelope {
 /// Clone is cheap — it clones the inner channel sender and cancellation token.
 pub struct Context<A: Actor> {
     id: ActorId,
-    sender: mpsc::Sender<Box<dyn Envelope<A> + Send>>,
+    sender: mpsc::Sender<MailboxItem<A>>,
     cancellation_token: CancellationToken,
     completion: spawned_rt::tasks::watch::Receiver<Option<ExitReason>>,
     monitors: MonitorTable,
@@ -164,7 +179,7 @@ impl<A: Actor> Context<A> {
     {
         let envelope = MessageEnvelope { msg, tx: None };
         self.sender
-            .send(Box::new(envelope))
+            .send(MailboxItem::Message(Box::new(envelope)))
             .map_err(|_| ActorError::ActorStopped)
     }
 
@@ -177,7 +192,7 @@ impl<A: Actor> Context<A> {
         let (tx, rx) = oneshot::channel();
         let envelope = MessageEnvelope { msg, tx: Some(tx) };
         self.sender
-            .send(Box::new(envelope))
+            .send(MailboxItem::Message(Box::new(envelope)))
             .map_err(|_| ActorError::ActorStopped)?;
         Ok(rx)
     }
@@ -397,7 +412,9 @@ impl<A: Actor> Context<A> {
         let sender = self.sender.clone();
         Arc::new(move |exit: Exit| {
             let envelope: Box<dyn Envelope<A> + Send> = Box::new(ExitEnvelope { exit });
-            sender.send(envelope).map_err(|_| ActorError::ActorStopped)
+            sender
+                .send(MailboxItem::Message(envelope))
+                .map_err(|_| ActorError::ActorStopped)
         })
     }
 
@@ -462,7 +479,7 @@ pub fn request<M: Message>(
 /// or call [`Context::stop`] from within a handler.
 pub struct ActorRef<A: Actor> {
     id: ActorId,
-    sender: mpsc::Sender<Box<dyn Envelope<A> + Send>>,
+    sender: mpsc::Sender<MailboxItem<A>>,
     cancellation_token: CancellationToken,
     completion: spawned_rt::tasks::watch::Receiver<Option<ExitReason>>,
     monitors: MonitorTable,
@@ -501,7 +518,7 @@ impl<A: Actor> ActorRef<A> {
     {
         let envelope = MessageEnvelope { msg, tx: None };
         self.sender
-            .send(Box::new(envelope))
+            .send(MailboxItem::Message(Box::new(envelope)))
             .map_err(|_| ActorError::ActorStopped)
     }
 
@@ -514,7 +531,7 @@ impl<A: Actor> ActorRef<A> {
         let (tx, rx) = oneshot::channel();
         let envelope = MessageEnvelope { msg, tx: Some(tx) };
         self.sender
-            .send(Box::new(envelope))
+            .send(MailboxItem::Message(Box::new(envelope)))
             .map_err(|_| ActorError::ActorStopped)?;
         Ok(rx)
     }
@@ -593,7 +610,9 @@ impl<A: Actor> From<ActorRef<A>> for ChildHandle {
         let sender = actor_ref.sender.clone();
         let send_exit: SendExitFn = Arc::new(move |exit: Exit| {
             let envelope: Box<dyn Envelope<A> + Send> = Box::new(ExitEnvelope { exit });
-            sender.send(envelope).map_err(|_| ActorError::ActorStopped)
+            sender
+                .send(MailboxItem::Message(envelope))
+                .map_err(|_| ActorError::ActorStopped)
         });
         ChildHandle::from_threads(
             actor_ref.id,
@@ -628,8 +647,9 @@ where
 
 impl<A: Actor> ActorRef<A> {
     fn spawn(actor: A, parent: Option<ChildHandle>) -> Self {
-        let (tx, rx) = mpsc::channel::<Box<dyn Envelope<A> + Send>>();
+        let (tx, rx) = mpsc::channel::<MailboxItem<A>>();
         let cancellation_token = CancellationToken::new();
+        register_stop_wakeup(&cancellation_token, tx.clone());
         let (completion_tx, completion) = spawned_rt::tasks::watch::channel(None);
         let id = ActorId::next();
         let monitors: MonitorTable = Arc::new(Mutex::new(Some(HashMap::new())));
@@ -688,13 +708,16 @@ impl<A: Actor> ActorRef<A> {
 fn run_actor<A: Actor>(
     actor: A,
     ctx: Context<A>,
-    rx: mpsc::Receiver<Box<dyn Envelope<A> + Send>>,
+    rx: mpsc::Receiver<MailboxItem<A>>,
     cancellation_token: CancellationToken,
 ) -> ExitReason {
     run_actor_receiving(
         actor,
         ctx,
-        move || rx.recv_timeout(Duration::from_millis(100)),
+        move || {
+            rx.recv()
+                .map_err(|_| std::sync::mpsc::RecvTimeoutError::Disconnected)
+        },
         cancellation_token,
     )
 }
@@ -702,7 +725,7 @@ fn run_actor<A: Actor>(
 fn run_actor_receiving<A: Actor>(
     mut actor: A,
     ctx: Context<A>,
-    mut receive: impl FnMut() -> Result<Box<dyn Envelope<A> + Send>, std::sync::mpsc::RecvTimeoutError>,
+    mut receive: impl FnMut() -> Result<MailboxItem<A>, std::sync::mpsc::RecvTimeoutError>,
     cancellation_token: CancellationToken,
 ) -> ExitReason {
     let mut discarded = None;
@@ -730,7 +753,8 @@ fn run_actor_receiving<A: Actor>(
 
     loop {
         let msg = match receive() {
-            Ok(msg) => Some(msg),
+            Ok(MailboxItem::Message(msg)) => Some(msg),
+            Ok(MailboxItem::Shutdown) => None,
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                 if cancellation_token.is_cancelled() {
                     break;
@@ -1550,11 +1574,11 @@ mod idle_stop_regression {
         });
         entered.wait();
         let (reply, response) = oneshot::channel();
-        tx.send(Box::new(MessageEnvelope {
+        tx.send(MailboxItem::Message(Box::new(MessageEnvelope {
             msg: Increment(events.clone(), monitors),
             tx: Some(reply),
-        }) as Box<dyn Envelope<Counter> + Send>)
-            .unwrap();
+        })))
+        .unwrap();
         token.cancel();
         release.wait();
         assert_eq!(actor.join().unwrap(), ExitReason::Normal);
@@ -1568,5 +1592,198 @@ mod idle_stop_regression {
             *events.lock().unwrap(),
             ["stopped", "message-dropped", "actor-dropped"]
         );
+    }
+}
+
+#[cfg(test)]
+mod stop_wakeup_regression {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct Idle(mpsc::Sender<()>);
+    impl Actor for Idle {
+        fn stopped(&mut self, _: &Context<Self>) {
+            let _ = self.0.send(());
+        }
+    }
+    struct Noop;
+    impl Message for Noop {
+        type Result = ();
+    }
+    impl Handler<Noop> for Idle {
+        fn handle(&mut self, _: Noop, _: &Context<Self>) {}
+    }
+
+    #[test]
+    fn concurrent_cancellation_enqueues_exactly_one_shutdown() {
+        for already_cancelled in [false, true] {
+            let (tx, rx) = mpsc::channel::<MailboxItem<Idle>>();
+            let token = CancellationToken::new();
+            if already_cancelled {
+                token.cancel();
+            }
+            register_stop_wakeup(&token, tx.clone());
+            std::thread::scope(|scope| {
+                for _ in 0..16 {
+                    let token = &token;
+                    scope.spawn(move || {
+                        for _ in 0..256 {
+                            token.cancel();
+                        }
+                    });
+                }
+            });
+            assert!(matches!(rx.try_recv(), Ok(MailboxItem::Shutdown)));
+            // Keep tx alive: Empty proves no duplicate, rather than disconnection.
+            assert!(matches!(
+                rx.try_recv(),
+                Err(std::sync::mpsc::TryRecvError::Empty)
+            ));
+        }
+    }
+
+    #[test]
+    fn cancellation_wakes_the_real_blocking_receive_boundary() {
+        let (tx, rx) = mpsc::channel();
+        let token = CancellationToken::new();
+        register_stop_wakeup(&token, tx.clone());
+        let (_, completion) = spawned_rt::tasks::watch::channel(None);
+        let ctx = Context {
+            id: ActorId::next(),
+            sender: tx,
+            cancellation_token: token.clone(),
+            completion,
+            monitors: Arc::new(Mutex::new(Some(HashMap::new()))),
+            trap_exit: new_trap_exit_flag(),
+            links: new_link_table(),
+            linked_reason: new_linked_exit_reason(),
+        };
+        let (entered_tx, entered) = mpsc::channel();
+        let (stopped_tx, stopped) = mpsc::channel();
+        let cancel = token.clone();
+        let actor = std::thread::spawn(move || {
+            run_actor_receiving(
+                Idle(stopped_tx),
+                ctx,
+                move || {
+                    let _ = entered_tx.send(());
+                    rx.recv()
+                        .map_err(|_| std::sync::mpsc::RecvTimeoutError::Disconnected)
+                },
+                cancel,
+            )
+        });
+        entered.recv_timeout(Duration::from_secs(2)).unwrap();
+        token.cancel();
+        stopped
+            .recv_timeout(Duration::from_secs(2))
+            .expect("cancel did not wake recv");
+        assert_eq!(actor.join().unwrap(), ExitReason::Normal);
+    }
+
+    struct Crash;
+    impl Message for Crash {
+        type Result = ();
+    }
+    struct Failing;
+    impl Actor for Failing {}
+    impl Handler<Crash> for Failing {
+        fn handle(&mut self, _: Crash, _: &Context<Self>) {
+            panic!("linked wakeup regression");
+        }
+    }
+
+    #[test]
+    fn every_stop_route_wakes_an_idle_thread() {
+        for route in 0..4 {
+            let (stopped_tx, stopped) = mpsc::channel();
+            let actor = Idle(stopped_tx).start();
+            // A reply ensures startup is complete before the cancellation race.
+            actor.request(Noop).unwrap();
+            let failing = if route == 3 {
+                let peer = Failing.start();
+                actor.context().link(&peer.child_handle());
+                Some(peer)
+            } else {
+                None
+            };
+            match route {
+                0 => actor.context().stop(),
+                1 => actor.child_handle().stop(),
+                2 => actor.cancellation_token.cancel(),
+                _ => failing.as_ref().unwrap().send(Crash).unwrap(),
+            }
+            let result = stopped.recv_timeout(Duration::from_secs(2));
+            // A failed test must not hang cleanup on a broken wakeup callback.
+            if result.is_err() {
+                actor.child_handle().stop();
+                let _ = actor.send(Noop);
+            }
+            assert!(
+                result.is_ok(),
+                "stop route {route} failed to wake the mailbox"
+            );
+            let reason = actor.wait_exit();
+            if route == 3 {
+                assert!(matches!(reason, ExitReason::Panic(_)));
+                failing.unwrap().join();
+            } else {
+                assert_eq!(reason, ExitReason::Normal);
+            }
+        }
+    }
+
+    struct Busy {
+        entered: mpsc::Sender<()>,
+        release: mpsc::Receiver<()>,
+        handled: Arc<AtomicUsize>,
+    }
+    impl Actor for Busy {}
+    struct Work;
+    impl Message for Work {
+        type Result = ();
+    }
+    impl Handler<Work> for Busy {
+        fn handle(&mut self, _: Work, _: &Context<Self>) {
+            self.handled.fetch_add(1, Ordering::SeqCst);
+            let _ = self.entered.send(());
+            self.release.recv_timeout(Duration::from_secs(5)).unwrap();
+        }
+    }
+
+    #[test]
+    fn repeated_stop_during_a_handler_discards_queued_requests() {
+        let (entered_tx, entered) = mpsc::channel();
+        let (release, release_rx) = mpsc::channel();
+        let handled = Arc::new(AtomicUsize::new(0));
+        let actor = Busy {
+            entered: entered_tx,
+            release: release_rx,
+            handled: handled.clone(),
+        }
+        .start();
+        let first = actor.request_raw(Work).unwrap();
+        entered.recv_timeout(Duration::from_secs(2)).unwrap();
+        let replies: Vec<_> = (0..256).map(|_| actor.request_raw(Work).unwrap()).collect();
+        std::thread::scope(|scope| {
+            for _ in 0..16 {
+                let child = actor.child_handle();
+                scope.spawn(move || {
+                    for _ in 0..256 {
+                        child.stop();
+                    }
+                });
+            }
+        });
+        release.send(()).unwrap();
+        first.recv_timeout(Duration::from_secs(2)).unwrap();
+        for reply in replies {
+            assert!(matches!(
+                reply.recv_timeout(Duration::from_secs(2)),
+                Err(RecvTimeoutError::Disconnected)
+            ));
+        }
+        assert_eq!(actor.wait_exit(), ExitReason::Normal);
+        assert_eq!(handled.load(Ordering::SeqCst), 1);
     }
 }

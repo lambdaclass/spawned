@@ -491,6 +491,9 @@ fn linked_runtime_abort_cancels_an_idle_threads_actor() {
     use crate::threads::{Actor as ThreadActor, ActorStart as ThreadStart};
     struct ThreadPeer;
     impl ThreadActor for ThreadPeer {}
+    impl crate::threads::Handler<Ping> for ThreadPeer {
+        fn handle(&mut self, _: Ping, _: &crate::threads::Context<Self>) {}
+    }
     let owner = runtime();
     let waiter = runtime();
     let target = {
@@ -509,6 +512,9 @@ fn linked_runtime_abort_cancels_an_idle_threads_actor() {
         .await
     });
     peer.child_handle().stop();
+    if result.is_err() {
+        let _ = peer.send(Ping); // Wake cleanup even if the cancellation callback regresses.
+    }
     peer.child_handle().wait_exit_blocking();
     assert_eq!(result, Ok(ExitReason::Kill));
 }
