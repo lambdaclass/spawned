@@ -112,7 +112,8 @@ impl Config {
         assert!(c.actors.is_multiple_of(c.workers) && (1..=256).contains(&c.producers));
         assert!((1..=4_194_304).contains(&c.messages) && c.burst > 0 && c.deadline_ms > 0);
         assert!(["blocking", "async"].contains(&c.caller.as_str()));
-        assert!((1..=c.producers).contains(&c.caller_threads));
+        assert!((1..=256).contains(&c.caller_threads));
+        assert!(c.caller == "blocking" || c.caller_threads <= c.producers);
         assert!(
             c.caller == "blocking" || c.mode == "graph",
             "async caller control is graph-only"
