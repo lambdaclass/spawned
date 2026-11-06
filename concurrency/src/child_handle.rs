@@ -118,6 +118,8 @@ impl ChildHandle {
     }
 
     /// Poll the exit reason. Returns `None` if the actor is still running.
+    /// A completion channel closed without a reason reports [`ExitReason::Kill`],
+    /// matching the wait methods (for example, after runtime shutdown).
     pub fn exit_reason(&self) -> Option<ExitReason> {
         match &self.completion {
             Completion::Tasks(rx) | Completion::Threads(rx) => poll_exit_reason(rx),
@@ -131,7 +133,8 @@ impl ChildHandle {
     /// - Multi-thread tokio runtime (uses `block_in_place`)
     /// - Threads-mode actors (waits without a Tokio runtime)
     ///
-    /// **Panics** if called from within a non-multi-thread tokio runtime (e.g.,
+    /// An already-exited actor returns immediately from any context.
+    /// **Panics** for a still-running actor if called from within a non-multi-thread tokio runtime (e.g.,
     /// current-thread) on a tasks-mode handle: blocking the only runtime thread
     /// would prevent the actor task from making progress (deadlock). Use
     /// [`wait_exit_async`] from async context instead.
@@ -157,7 +160,9 @@ impl ChildHandle {
 }
 
 /// A closed completion sender without a published reason means abnormal termination.
-/// Check closure before borrowing: a final published reason wins over Kill.
+/// Check closure before borrowing: a sender could publish its final reason and
+/// close between an earlier None borrow and a later closure check. The final
+/// published reason must win over the synthetic Kill.
 pub(crate) fn poll_exit_reason(
     rx: &spawned_rt::tasks::watch::Receiver<Option<ExitReason>>,
 ) -> Option<ExitReason> {
