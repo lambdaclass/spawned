@@ -240,7 +240,12 @@ fn main() {
     let scheduler = std::env::var("SPAWNED_EXPERIMENT_SCHEDULER").unwrap_or_default();
     let owned = matches!(
         scheduler.as_str(),
-        "sharded" | "native-global" | "native-local" | "native-steal" | "tokio-pool"
+        "sharded"
+            | "native-global"
+            | "native-local"
+            | "native-steal"
+            | "native-root"
+            | "tokio-pool"
     );
     let mut builder = if owned {
         tokio::runtime::Builder::new_current_thread()

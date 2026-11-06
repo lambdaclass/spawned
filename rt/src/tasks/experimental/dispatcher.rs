@@ -31,6 +31,7 @@ pub enum Policy {
     Global,
     Local,
     Steal,
+    Root,
     TokioPool,
 }
 struct Active {
@@ -53,6 +54,7 @@ struct Pool {
     sleepers: Vec<AtomicBool>,
     wake_handles: Vec<OnceLock<thread::Thread>>,
     wake_next: AtomicUsize,
+    root_ready: Vec<tokio::sync::Notify>,
     ready: Condvar,
     next: AtomicUsize,
     workers: Mutex<Vec<JoinHandle<()>>>,
@@ -92,7 +94,7 @@ impl Job {
             }
         }
     }
-    fn poll(self: Arc<Self>, worker: usize, handle: &Handle) {
+    fn poll(self: Arc<Self>, worker: usize, handle: &Handle, bridge: bool) {
         if !self.gate.claim() {
             return;
         }
@@ -112,9 +114,15 @@ impl Job {
         // this native thread. The wrapper always returns Ready after one actor
         // poll, so it never parks waiting on the actor or uses its own waker.
         let outcome = catch_unwind(AssertUnwindSafe(|| {
-            handle.block_on(std::future::poll_fn(|_| {
-                Poll::Ready(future.as_mut().unwrap().as_mut().poll(&mut cx))
-            }))
+            if bridge {
+                handle.block_on(std::future::poll_fn(|_| {
+                    Poll::Ready(future.as_mut().unwrap().as_mut().poll(&mut cx))
+                }))
+            } else {
+                // The one-per-worker Tokio root driver already owns the
+                // cooperative budget and a persistent shared-I/O handle scope.
+                future.as_mut().unwrap().as_mut().poll(&mut cx)
+            }
         }));
         drop(reset);
         if matches!(outcome, Ok(Poll::Pending)) {
@@ -229,6 +237,7 @@ impl Pool {
             sleepers: (0..count).map(|_| AtomicBool::new(false)).collect(),
             wake_handles: (0..count).map(|_| OnceLock::new()).collect(),
             wake_next: AtomicUsize::new(0),
+            root_ready: (0..count).map(|_| tokio::sync::Notify::new()).collect(),
             ready: Condvar::new(),
             next: AtomicUsize::new(0),
             workers: Mutex::new(Vec::new()),
@@ -245,13 +254,40 @@ impl Pool {
         if policy != Policy::TokioPool {
             for worker in 0..count {
                 let cloned = pool.clone();
+                let (started, startup) = std::sync::mpsc::sync_channel::<io::Result<()>>(1);
                 match thread::Builder::new()
                     .name(format!("actor-worker-n{worker}"))
-                    .spawn(move || cloned.run(worker))
-                {
+                    .spawn(move || {
+                        if cloned.policy == Policy::Root {
+                            match tokio::runtime::Builder::new_current_thread().build() {
+                                Ok(runtime) => {
+                                    if started.send(Ok(())).is_ok() {
+                                        cloned.run_root(worker, runtime);
+                                    }
+                                }
+                                Err(error) => {
+                                    let _ = started.send(Err(error));
+                                }
+                            }
+                        } else {
+                            let _ = started.send(Ok(()));
+                            cloned.run(worker);
+                        }
+                    }) {
                     Ok(handle) => {
                         pool.ids.lock().unwrap().push(handle.thread().id());
                         pool.workers.lock().unwrap().push(handle);
+                        match startup.recv() {
+                            Ok(Ok(())) => {}
+                            failure => {
+                                let _ = pool.close_workers();
+                                return Err(match failure {
+                                    Ok(Err(error)) => error,
+                                    Err(error) => io::Error::other(error),
+                                    _ => unreachable!(),
+                                });
+                            }
+                        }
                     }
                     Err(error) => {
                         let _ = pool.close_workers();
@@ -269,7 +305,7 @@ impl Pool {
         self.enqueue_from(job, current);
     }
     fn enqueue_from(&self, job: Arc<Job>, current: Option<usize>) {
-        if self.policy == Policy::Steal {
+        if matches!(self.policy, Policy::Steal | Policy::Root) {
             let target =
                 current.unwrap_or_else(|| job.preferred.load(Ordering::Relaxed)) % self.count;
             let depth = {
@@ -301,6 +337,10 @@ impl Pool {
         }
     }
     fn unpark(&self, worker: usize) {
+        if self.policy == Policy::Root {
+            self.root_ready[worker].notify_one();
+            return;
+        }
         if let Some(handle) = self.wake_handles[worker].get() {
             handle.unpark();
         }
@@ -360,7 +400,7 @@ impl Pool {
                 if !self.split[worker].lock().unwrap().is_empty() {
                     self.unpark_peer(worker);
                 }
-                job.poll(worker, &self.handle);
+                job.poll(worker, &self.handle, true);
             } else {
                 if self.closed.load(Ordering::Acquire) {
                     return;
@@ -369,6 +409,56 @@ impl Pool {
                 self.sleepers[worker].store(false, Ordering::Release);
             }
         }
+    }
+    fn run_root(&self, worker: usize, runtime: tokio::runtime::Runtime) {
+        // This root future is driven only by block_on on this native thread.
+        // It never migrates and no tasks are spawned on the driver runtime.
+        runtime.block_on(async {
+            let _io_scope = self.handle.enter();
+            let mut local_run = 0;
+            let mut victim = worker + 1;
+            let mut polls = 0;
+            loop {
+                if self.closed.load(Ordering::Acquire) {
+                    return;
+                }
+                let oldest = local_run >= self.local_budget;
+                let job = if let Some(job) = self.take_split(worker, oldest, &mut victim) {
+                    job
+                } else {
+                    let notified = self.root_ready[worker].notified();
+                    tokio::pin!(notified);
+                    notified.as_mut().enable();
+                    self.sleepers[worker].store(true, Ordering::Release);
+                    if let Some(job) = self.take_split(worker, oldest, &mut victim) {
+                        self.sleepers[worker].store(false, Ordering::Release);
+                        job
+                    } else {
+                        if self.closed.load(Ordering::Acquire) {
+                            return;
+                        }
+                        // Constructed within the shared-I/O handle scope: that
+                        // reactor drives the fallback even if another worker blocks.
+                        let _ = tokio::time::timeout(Duration::from_millis(1), notified).await;
+                        self.sleepers[worker].store(false, Ordering::Release);
+                        polls = 0;
+                        continue;
+                    }
+                };
+                local_run = if oldest { 0 } else { local_run + 1 };
+                if !self.split[worker].lock().unwrap().is_empty() {
+                    self.unpark_peer(worker);
+                }
+                job.poll(worker, &self.handle, false);
+                polls += 1;
+                if polls == 8 {
+                    polls = 0;
+                    // Reset the outer cooperative budget and flush deferred
+                    // custom-job wakes, without creating one Tokio task per actor.
+                    tokio::task::yield_now().await;
+                }
+            }
+        });
     }
     fn run(self: Arc<Self>, worker: usize) {
         if self.policy == Policy::Steal {
@@ -430,7 +520,7 @@ impl Pool {
                     };
                 }
             };
-            job.poll(worker, &self.handle);
+            job.poll(worker, &self.handle, true);
         }
     }
     fn spawn(
@@ -632,6 +722,7 @@ mod tests {
             Policy::Global,
             Policy::Local,
             Policy::Steal,
+            Policy::Root,
             Policy::TokioPool,
         ] {
             let pool = Pool::new(policy, 2, 1, 3).unwrap();
@@ -658,6 +749,7 @@ mod tests {
             Policy::Global,
             Policy::Local,
             Policy::Steal,
+            Policy::Root,
             Policy::TokioPool,
         ] {
             let pool = Pool::new(policy, 2, 1, 3).unwrap();
@@ -698,7 +790,7 @@ mod tests {
     }
     #[test]
     fn reactor_helpers_progress_while_native_actor_workers_block() {
-        for policy in [Policy::Global, Policy::Local, Policy::Steal] {
+        for policy in [Policy::Global, Policy::Local, Policy::Steal, Policy::Root] {
             let pool = Pool::new(policy, 1, 1, 3).unwrap();
             let (tx, rx) = std_mpsc::channel();
             let (entered, enter_rx) = std_mpsc::channel();
@@ -724,6 +816,7 @@ mod tests {
             Policy::Global,
             Policy::Local,
             Policy::Steal,
+            Policy::Root,
             Policy::TokioPool,
         ] {
             let pool = Pool::new(policy, 2, 1, 3).unwrap();
@@ -752,6 +845,7 @@ mod tests {
             Policy::Global,
             Policy::Local,
             Policy::Steal,
+            Policy::Root,
             Policy::TokioPool,
         ] {
             let pool = Pool::new(policy, 2, 1, 3).unwrap();
@@ -789,7 +883,7 @@ mod tests {
     }
     #[test]
     fn completed_job_ignores_retained_waker() {
-        for policy in [Policy::Global, Policy::Local, Policy::Steal] {
+        for policy in [Policy::Global, Policy::Local, Policy::Steal, Policy::Root] {
             let pool = Pool::new(policy, 2, 1, 3).unwrap();
             let (tx, rx) = std_mpsc::channel();
             pool.spawn(std::future::poll_fn(move |cx| {
@@ -805,7 +899,7 @@ mod tests {
     }
     #[test]
     fn cooperative_receive_loop_yields_with_single_native_worker() {
-        for policy in [Policy::Global, Policy::Local, Policy::Steal] {
+        for policy in [Policy::Global, Policy::Local, Policy::Steal, Policy::Root] {
             let pool = Pool::new(policy, 1, 1, 3).unwrap();
             let stop = Arc::new(AtomicBool::new(false));
             let stop_job = stop.clone();

@@ -211,7 +211,12 @@ fn actors_outlive_their_caller_runtime() {
     let scheduler = std::env::var("SPAWNED_EXPERIMENT_SCHEDULER").unwrap_or_default();
     if !matches!(
         scheduler.as_str(),
-        "sharded" | "native-global" | "native-local" | "native-steal" | "tokio-pool"
+        "sharded"
+            | "native-global"
+            | "native-local"
+            | "native-steal"
+            | "native-root"
+            | "tokio-pool"
     ) {
         return;
     }
