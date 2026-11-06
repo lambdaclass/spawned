@@ -3,7 +3,7 @@
 use spawned_concurrency::{
     message::Message,
     tasks::{Actor, ActorStart, Context, Handler},
-    ActorError, ChildHandle, ExitReason,
+    ChildHandle, ExitReason,
 };
 use std::{
     alloc::{GlobalAlloc, Layout, System},
@@ -12,6 +12,8 @@ use std::{
     time::Duration,
 };
 thread_local! {static PRODUCER: Cell<bool> = const { Cell::new(false) };}
+
+// ARMED -> PAUSED -> RELEASE gates exactly one allocation on the producer.
 static ARMED: AtomicBool = AtomicBool::new(false);
 static PAUSED: AtomicBool = AtomicBool::new(false);
 static RELEASE: AtomicBool = AtomicBool::new(false);
@@ -20,6 +22,9 @@ struct GateAllocator;
 unsafe impl GlobalAlloc for GateAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         let ptr = unsafe { System.alloc(layout) };
+        // The envelope and reply state are smaller than 256 bytes; Tokio's later
+        // mpsc block allocation is larger. A changed allocation strategy must
+        // fail the admission assertion below instead of silently passing.
         if layout.size() > 256
             && PRODUCER.try_with(Cell::get).unwrap_or(false)
             && ARMED.swap(false, Ordering::SeqCst)
@@ -38,6 +43,7 @@ unsafe impl GlobalAlloc for GateAllocator {
 #[global_allocator]
 static ALLOCATOR: GateAllocator = GateAllocator;
 const LIMIT: Duration = Duration::from_secs(5);
+
 enum Command {
     Hold {
         entered: tokio::sync::oneshot::Sender<()>,
@@ -74,6 +80,7 @@ impl Drop for Cleanup {
         self.0.stop();
     }
 }
+
 #[test]
 fn admitted_request_racing_shutdown_drops_its_reply_before_join_completes() {
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -136,14 +143,11 @@ fn admitted_request_racing_shutdown_drops_its_reply_before_join_completes() {
                 .unwrap(),
             ExitReason::Normal
         );
-        match result {
-            Ok(reply) => assert!(tokio::time::timeout(Duration::from_millis(250), reply)
-                .await
-                .expect("reply sender retained after actor termination")
-                .is_err()),
-            Err(ActorError::ActorStopped) => {}
-            Err(other) => panic!("unexpected admission result: {other:?}"),
-        }
+        let reply = result.expect("gate fired before mailbox admission; allocation hook is stale");
+        assert!(tokio::time::timeout(Duration::from_millis(250), reply)
+            .await
+            .expect("reply sender retained after actor termination")
+            .is_err());
         drop(actor); // keep sender references alive through the assertion
     });
 }
