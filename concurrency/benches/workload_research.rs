@@ -37,6 +37,7 @@ struct Config {
     burst: usize,
     deadline_ms: u64,
     driver_cpus: String,
+    collector_cpus: String,
     series: String,
     threads: String,
 }
@@ -61,6 +62,7 @@ impl Config {
                 "burst",
                 "deadline-ms",
                 "driver-cpus",
+                "collector-cpus",
                 "series",
                 "threads",
             ],
@@ -86,6 +88,7 @@ impl Config {
             burst: arg("burst", "1").parse().unwrap(),
             deadline_ms: arg("deadline-ms", "2000").parse().unwrap(),
             driver_cpus: arg("driver-cpus", "6,7,8,9"),
+            collector_cpus: arg("collector-cpus", "10,11,12,13"),
             series: arg("series", "/tmp/spawned-research-series.csv"),
             threads: arg("threads", "/tmp/spawned-research-threads.csv"),
         };
@@ -299,6 +302,7 @@ struct Sample {
     lag: u64,
     queue: u64,
     service: u64,
+    observer_lag: u64,
 }
 struct Meta {
     id: usize,
@@ -331,6 +335,7 @@ fn sample(
         ..Default::default()
     };
     if let Some(ack) = ack {
+        s.observer_lag = observed.duration_since(ack.completed).as_nanos() as u64;
         assert_eq!(ack.id, p.id as u64);
         black_box(ack.checksum);
         let expected_nodes = if c.mode == "graph" { c.width } else { 1 };
@@ -365,7 +370,7 @@ fn observe_series(
     done: &AtomicBool,
     observed: &AtomicU64,
 ) {
-    pin_driver(&c.driver_cpus);
+    pin_driver(&c.collector_cpus);
     let mut file = File::create(&c.series).unwrap();
     writeln!(file,"elapsed_ms,submitted,started,completed,observed,queued,outstanding,hot_queued,cold_queued,rss_bytes").unwrap();
     wait_until(epoch);
@@ -583,7 +588,7 @@ fn main() {
                 let assignment = &assignment;
                 let c = &c;
                 collectors.push(std::thread::Builder::new().name("load-collector".into()).spawn_scoped(scope,move|| {
-                    pin_driver(&c.driver_cpus);
+                    pin_driver(&c.collector_cpus);
                     let rt=tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
                     let mut samples=Vec::with_capacity(c.messages.div_ceil(c.producers));collector_gate.wait();
                     rt.block_on(async {
@@ -759,6 +764,17 @@ fn main() {
         .max()
         .unwrap_or(0);
     let fields = [
+        (
+            "observer_lag_p99_ns",
+            percentile(
+                samples
+                    .iter()
+                    .filter(|s| s.success)
+                    .map(|s| s.observer_lag)
+                    .collect(),
+                99,
+            ),
+        ),
         (
             "cold_samples",
             samples.iter().filter(|s| !s.hot).count() as u64,

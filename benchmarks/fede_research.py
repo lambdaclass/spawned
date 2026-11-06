@@ -80,24 +80,26 @@ class Campaign:
             'cargo': capture('cargo', '--version'), 'cpu': capture('lscpu'),
             'memory': Path('/proc/meminfo').read_text(),
             'load_before': Path('/proc/loadavg').read_text().strip(),
-            'actor_cpus': args.actor_cpus, 'driver_cpus': args.driver_cpus,
-            'affinity': 'workload_research starts on actor CPUs and moves producer/collector/sampler threads to driver CPUs; legacy designs profiling keeps all threads on actor CPUs',
+            'actor_cpus': args.actor_cpus, 'driver_cpus': args.driver_cpus, 'collector_cpus': args.collector_cpus,
+            'affinity': 'workload_research: actor CPUs, separate producer CPUs, separate collector/sampler CPUs; legacy designs profiles keep all threads on actor CPUs',
             'nice': os.nice(0), 'perf_event_paranoid': Path('/proc/sys/kernel/perf_event_paranoid').read_text().strip(),
             'environment': {k: os.environ.get(k) for k in ['RUSTFLAGS', 'CARGO_PROFILE_BENCH_DEBUG', 'CARGO_BUILD_JOBS']},
             'arguments': {k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()},
             'topology': {}, 'schedule': self.schedule,
         }
         actor_set, driver_set = self.cpu_set(args.actor_cpus), self.cpu_set(args.driver_cpus)
-        assert not actor_set & driver_set, 'actor and driver CPU sets must be disjoint'
+        collector_set = self.cpu_set(args.collector_cpus)
+        assert not (actor_set & driver_set or actor_set & collector_set or driver_set & collector_set), 'actor, producer and collector CPU sets must be disjoint'
         assert os.sched_getaffinity(0) == actor_set, 'launch campaign under taskset on actor CPUs'
         cores = set()
-        for cpu in sorted(actor_set | driver_set):
+        for cpu in sorted(actor_set | driver_set | collector_set):
             root = Path(f'/sys/devices/system/cpu/cpu{cpu}/topology')
             core = (root / 'physical_package_id').read_text().strip(), (root / 'core_id').read_text().strip()
             assert core not in cores, 'do not use SMT siblings as separate research cores'
             cores.add(core)
             self.meta['topology'][cpu] = dict(package=core[0], core=core[1])
         subprocess.run(['taskset', '-c', args.driver_cpus, 'true'], check=True)
+        subprocess.run(['taskset', '-c', args.collector_cpus, 'true'], check=True)
         command = ['cargo', 'bench', '--locked', '-p', 'spawned-concurrency',
                    '--features', 'backend-experiments,profiling-experiments',
                    '--bench', 'workload_research', '--bench', 'designs',
@@ -144,6 +146,7 @@ class Campaign:
         config = dict(config, workers=workers)
         if bench == 'workload_research':
             config.update(**{'driver-cpus': self.args.driver_cpus,
+                             'collector-cpus': self.args.collector_cpus,
                              'series': str(self.out / 'series' / f'{stem}.csv'),
                              'threads': str(self.out / 'threads' / f'{stem}.csv')})
         else:
@@ -288,6 +291,7 @@ def main():
     parser.add_argument('--variants',choices=VARIANTS,nargs='+',default=list(VARIANTS))
     parser.add_argument('--actor-cpus',default='2,3,4,5')
     parser.add_argument('--driver-cpus',default='6,7,8,9')
+    parser.add_argument('--collector-cpus',default='10,11,12,13')
     parser.add_argument('--seed',type=int,default=181)
     parser.add_argument('--duration',type=float,default=2.0)
     parser.add_argument('--timeout',type=float,default=120)

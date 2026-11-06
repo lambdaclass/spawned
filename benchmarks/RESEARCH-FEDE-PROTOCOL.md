@@ -8,8 +8,9 @@ compiler/flags, CPU topology, load snapshot and exact randomized invocation orde
 ## Machine and CPU budget
 
 Run everything on native Linux `fede-256gb`, an AMD Ryzen 9 9950X3D server. Actor
-workers inherit CPUs 2–5. `workload_research` explicitly moves its producer,
-collector and sampler threads to CPUs 6–9. The runner verifies disjoint sets and
+workers inherit CPUs 2–5. `workload_research` explicitly moves its producer
+threads to CPUs 6–9, and reply collectors/samplers to CPUs 10–13. The runner
+verifies all three disjoint sets and
 physical core IDs, excluding SMT siblings. Two actor workers may migrate within
 the same four-core mask; four workers share that mask. Worker threads are not
 individually pinned. All variants use these same settings. Other users, frequency
@@ -59,7 +60,7 @@ Producers follow one absolute schedule and submit every ID even when late. Four
 native generator threads enqueue without waiting for replies. Separate collectors
 use `FuturesUnordered`, so one hot reply cannot impose FIFO observation delay on
 cold replies. Record intended-arrival-to-handler-completion, caller-observed
-latency, admission lag and deadline outcomes. Flag schedules with more than 1% of
+latency, admission lag, handler-completion-to-observation delay and deadline outcomes. Flag schedules with more than 1% of
 requests over 1 ms late; do not rank those rows as equivalent offered traffic.
 
 The two-second caller deadline drops only the reply receiver. The handler still
@@ -72,7 +73,8 @@ service and queue growth are separate metrics, not interchangeable capacity clai
 
 Sample queue depth, outstanding work, hot/cold backlog and process RSS every
 100 ms. Snapshots are approximate across independent monotonic atomic counters;
-short spikes can be missed. Sample vectors are preallocated and request counts
+short spikes can be missed. Queued counts start just before request_raw, including
+in-flight admission/transport as well as mailbox waiting. Sample vectors are preallocated and request counts
 bounded, but mailbox backlog, pending-reply queues and observer futures still
 consume memory and appear in RSS. Process peak CPU/RSS also includes startup,
 warmup, sorting and teardown. Per-worker `/proc` scheduler/context-switch deltas
@@ -120,3 +122,12 @@ must be new. Watchdogs kill the full child process group and retain diagnostics;
 failed samples halt the campaign and are never assigned throughput values. Review
 raw ranges, censored outcomes, generator lag and affinity before drawing conclusions.
 A longer soak with churn and queue/RSS tracking follows this initial characterization.
+
+## Generator calibration correction
+
+The initial calibration shared four producer cores with four reply collectors and
+the sampler. Its offered schedules failed the predefined 1 ms / 1% validity check,
+so the campaign halted before scoring policies. The corrected campaign gives
+collectors/samplers their own four physical cores (10–13), preserving four producer
+cores (6–9) and the actor mask (2–5). Retain the rejected pilot separately; do not
+relax schedule validity or present those samples as backend saturation evidence.
