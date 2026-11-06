@@ -110,6 +110,43 @@ mod loom_tests {
         });
     }
     #[test]
+    fn coalesced_wake_publishes_data_to_the_next_poll() {
+        for already_running in [false, true] {
+            loom::model(move || {
+                let gate = Arc::new(Gate::new());
+                let data = Arc::new(AtomicUsize::new(0));
+                assert!(gate.notify());
+                if already_running {
+                    assert!(gate.claim());
+                    assert!(!gate.notify());
+                }
+                let (g, d) = (gate.clone(), data.clone());
+                let wake = thread::spawn(move || {
+                    d.store(1, Ordering::Relaxed);
+                    g.notify();
+                });
+                let g = gate.clone();
+                let poll = thread::spawn(move || {
+                    if already_running {
+                        assert!(g.pending());
+                    }
+                    assert!(g.claim());
+                    let observed = data.load(Ordering::Relaxed);
+                    g.pending();
+                    observed
+                });
+                wake.join().unwrap();
+                let observed = poll.join().unwrap();
+                // Either this poll acquired the wake's publication, or a later
+                // wake must have scheduled another poll that can observe it.
+                assert!(
+                    observed == 1 || gate.claim(),
+                    "coalesced wake lost data publication"
+                );
+            });
+        }
+    }
+    #[test]
     fn wake_while_completing_never_resurrects_future() {
         loom::model(|| {
             let gate = Arc::new(Gate::new());
