@@ -94,7 +94,15 @@ def main():
     plt.rcParams.update({'font.size':9,'axes.spines.top':False,'axes.spines.right':False,'axes.grid':True,'grid.alpha':.2,'figure.dpi':135,'svg.hashsalt':'spawned-overnight'})
     figures=[];palette=plt.get_cmap('tab20')
     def save(fig,name):
-        fig.tight_layout(rect=(0,0,1,(.75 if len(fig.axes)==3 else .86) if fig.legends else .93));path=out/'graphs'/f'{name}.png'
+        fig.tight_layout(rect=(0,0,1,(.75 if len(fig.axes)==3 else .86) if fig.legends else .93))
+        fig.canvas.draw()
+        title=getattr(fig,'_suptitle',None)
+        if title is not None:
+            renderer=fig.canvas.get_renderer();title_box=title.get_window_extent(renderer)
+            for legend in fig.legends:
+                if title_box.overlaps(legend.get_window_extent(renderer)):
+                    raise RuntimeError(f'{name}: figure title and legend overlap')
+        path=out/'graphs'/f'{name}.png'
         fig.savefig(path,bbox_inches='tight');svg=path.with_suffix('.svg');fig.savefig(svg,bbox_inches='tight',metadata={'Date':None})
         svg.write_text('\n'.join(x.rstrip() for x in svg.read_text().splitlines())+'\n');plt.close(fig);figures.append(path)
         return f'![{name}](graphs/{name}.png)'
