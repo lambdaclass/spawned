@@ -67,13 +67,14 @@ impl Pool {
             worker_ids: Vec::new(),
             count,
             next: AtomicUsize::new(0),
-            affinity: affinity.clone(),
+            affinity,
             spin,
         };
         for id in 0..count {
             let (tx, mut rx) = mpsc::unbounded_channel::<Job>();
             let (ready, initialized) = std::sync::mpsc::sync_channel(1);
-            let core = affinity.as_ref().map(|cores| cores[id]);
+            let core = pool.affinity.as_ref().map(|cores| cores[id]);
+            let spin = pool.spin;
             let worker = thread::Builder::new()
                 .name(format!("spawned-shard-{id}"))
                 .spawn(move || {
@@ -113,6 +114,7 @@ impl Pool {
                             let Some(job) = job else { break };
                             tokio::spawn(job);
                             if spin {
+                                // Accepting a burst of jobs must still let actor tasks run.
                                 tokio::task::yield_now().await;
                             }
                         }
@@ -231,7 +233,7 @@ fn shard_options() -> io::Result<(Option<Vec<usize>>, bool)> {
             value
                 .split(',')
                 .map(|cpu| {
-                    cpu.parse::<usize>().map_err(|_| {
+                    cpu.trim().parse::<usize>().map_err(|_| {
                         io::Error::new(io::ErrorKind::InvalidInput, "invalid CPU list")
                     })
                 })
@@ -272,15 +274,15 @@ pub fn spawn_sharded(future: impl Future<Output = ()> + Send + 'static) -> io::R
         (1..=256).contains(&count),
         "experimental worker count: 1..=256"
     );
-    let (affinity, spin) = shard_options()?;
     let pool = {
         let mut registry = registry().lock().unwrap();
         if let Some(pool) = registry.as_ref() {
             assert_eq!(pool.count, count, "one configuration per process");
-            assert_eq!(pool.affinity, affinity, "one affinity per process");
-            assert_eq!(pool.spin, spin, "one waiting policy per process");
             pool.clone()
         } else {
+            // Optional placement/waiting configuration is frozen at pool startup.
+            // Avoid re-parsing and allocating it on each actor spawn.
+            let (affinity, spin) = shard_options()?;
             let pool = Arc::new(Pool::configured(count, affinity, spin)?);
             *registry = Some(pool.clone());
             pool
