@@ -17,7 +17,9 @@ def main():
     p.add_argument('--output',type=Path,required=True)
     p.add_argument('--seconds',type=int,default=600)
     p.add_argument('--smoke',action='store_true')
-    p.add_argument('--runnable-only',action='store_true')
+    group=p.add_mutually_exclusive_group()
+    group.add_argument('--runnable-only',action='store_true')
+    group.add_argument('--deque-only',action='store_true')
     p.add_argument('--stop-at',type=float,required=True)
     a=p.parse_args();assert 1<=a.seconds<=1800
     out=a.output.resolve();out.mkdir(parents=True,exist_ok=False)
@@ -33,6 +35,7 @@ def main():
     specs=[('async',4,'',0),('tokio-16',4,'tokio-batch',16),('tokio-pool',4,'tokio-pool',0),('sharded-16',4,'sharded',16),('native-global',3,'native-global',16),('native-local',3,'native-local',16),('native-steal',3,'native-steal',16),('native-steal',4,'native-steal',16),('native-root',3,'native-root',16),('native-root',4,'native-root',16)]
     specs=[(v,w,s,b,8) for v,w,s,b in specs]
     if a.runnable_only:specs=[('native-runnable',4,'native-runnable',16,q) for q in [8,32]]
+    if a.deque_only:specs=[('native-deque',4,'native-deque',16,q) for q in [8,32]]
     random.Random(189).shuffle(specs);rows=[]
     def save():
         (out/'metadata.json').write_text(json.dumps(meta,indent=2)+'\n')

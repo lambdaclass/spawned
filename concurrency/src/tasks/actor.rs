@@ -588,6 +588,7 @@ impl<A: Actor> ActorRef<A> {
                     | "native-steal"
                     | "native-root"
                     | "native-runnable"
+                    | "native-deque"
             ))
         .then(MessageTurn::from_env);
         #[cfg(feature = "backend-experiments")]
