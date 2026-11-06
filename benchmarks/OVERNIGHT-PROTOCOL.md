@@ -150,7 +150,7 @@ observations remain historical; this does not affect Root or Runnable. Unstarted
 V5 scale/offered/resource and V7 optimized follow-up blocks were cancelled before
 any case, with cancellation states archived.
 
-V8 (final source1dcfea1; initial corrected preflight e633e59) alternates oldest-local/injection priority, falls back to owner pop
+V8 (final source2cec0a6; initial corrected preflight e633e59) alternates oldest-local/injection priority, falls back to owner pop
 after bounded self-steal Retry, validates TLS worker identity and corrects shared
 buffer lifetime comments. A strengthened regression fails on old95b4ca6 with the
 starvation assertion and passes on V8. The preliminary probe omitted hot local
@@ -196,3 +196,9 @@ runtime infrastructure. A successful process also requires subsequent shutdown
 and joins; the 1Hz samples do not measure the post-shutdown baseline. RSS maxima
 are maxima of sampled whole-process RSS, not isolated actor allocations or a
 continuous high-water measurement.
+
+The final V8 revision2cec0a6 also encodes OwnerGuard thread affinity with a
+non-Send marker: its destructor clears installing-thread TLS. That guard is
+constructed inside each owner thread. This is an internal type invariant, with
+no public actor API or runtime algorithm change. Exact final-source gate outputs
+must accompany results rather than borrowing the earlier e633 preflight checks.
