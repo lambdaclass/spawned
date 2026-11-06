@@ -586,7 +586,23 @@ impl<A: Actor> ActorRef<A> {
                 let _handle = rt::spawn_blocking(move || rt::block_on(inner_future));
             }
             Backend::Thread => {
+                #[cfg(not(feature = "backend-experiments"))]
                 let _handle = threads::spawn(move || threads::block_on(inner_future));
+                #[cfg(feature = "backend-experiments")]
+                {
+                    // Experiment-only selection; the default path is unchanged.
+                    let mode = std::env::var("SPAWNED_EXPERIMENT_RUNTIME").unwrap_or_default();
+                    let shared = rt::Handle::try_current().ok();
+                    let _handle = threads::spawn(move || {
+                        if mode == "shared" {
+                            shared
+                                .expect("shared experiment needs a caller runtime")
+                                .block_on(inner_future)
+                        } else {
+                            threads::block_on(inner_future)
+                        }
+                    });
+                }
             }
         }
 

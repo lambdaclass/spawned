@@ -1,4 +1,13 @@
-# Performance baseline
+# Performance studies
+
+The [backend design report](reports/designs-2026-11-05/REPORT.md) includes
+macOS and Linux results, 27 charts, backend explanations and compatibility limits.
+The [self-contained HTML report](reports/designs-2026-11-05/REPORT.html) embeds its
+graphs for sharing. Start with the [findings](DESIGN-FINDINGS.md) and
+[implementation/test guide](EXPERIMENTS.md). [Raw samples and source metadata](results/designs-2026-11-05/manifest.json)
+retain the nine failed resource-limit samples alongside successful measurements.
+
+## Initial baseline
 
 The [initial local report](REPORT-2026-11-05.md) includes raw results and a
 follow-up on dedicated-runtime worker counts.
@@ -95,6 +104,20 @@ the bench code. The production library is unchanged by this benchmark.
 Use the baseline to select profiling targets. Client integration, send-only
 traffic, real I/O, equal CPU budgets, long RSS/queue-growth experiments, and
 framework-level observability remain follow-up work from `docs/PLAN.md`.
+
+## Rebuild the design report
+
+```sh
+python3 -m venv /tmp/spawned-plots
+/tmp/spawned-plots/bin/pip install -r benchmarks/requirements-plots.txt
+/tmp/spawned-plots/bin/python benchmarks/render_experiments.py \
+  --data benchmarks/results/designs-2026-11-05 \
+  --output benchmarks/reports/designs-2026-11-05
+```
+
+See [validation evidence](VALIDATION-DESIGNS.md) and the
+[independent agy review and resolution](reviews/agy-design-2026-11-05.md).
+The design report is separate from the historical baseline above.
 
 ## Runner robustness
 

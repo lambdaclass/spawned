@@ -1,0 +1,31 @@
+
+thread '<unnamed>' (409316239) panicked at /private/tmp/spawned-scenario-tests/rt/src/threads/mod.rs:57:14:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread '<unnamed>' (409316240) panicked at /private/tmp/spawned-scenario-tests/rt/src/threads/mod.rs:57:14:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread '<unnamed>' (409316241) panicked at /private/tmp/spawned-scenario-tests/rt/src/threads/mod.rs:57:14:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'main' (409315202) panicked at concurrency/benches/designs.rs:233:72:
+actor stopped: ActorStopped
+        0.04 real         0.03 user         0.07 sys
+            56557568  maximum resident set size
+                   0  average shared memory size
+                   0  average unshared data size
+                   0  average unshared stack size
+                4699  page reclaims
+                   2  page faults
+                   0  swaps
+                   0  block input operations
+                   0  block output operations
+                   0  messages sent
+                   0  messages received
+                   0  signals received
+                   0  voluntary context switches
+                4424  involuntary context switches
+           367825235  instructions retired
+           442367084  cycles elapsed
+            52480016  peak memory footprint

@@ -1,0 +1,352 @@
+{
+  "started_utc": "2026-11-05T20:42:24Z",
+  "revision": "53eb0d01c30ba98d05f3158df42d04114ede985b",
+  "dirty": false,
+  "platform": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
+  "architecture": "arm64",
+  "cpu_count": 18,
+  "rustc": "rustc 1.93.0 (254b59607 2026-01-19) (built from a source tarball)",
+  "repetitions": 3,
+  "seed": 178,
+  "smoke": false,
+  "observer": "direct (process watchdog)",
+  "nofile": [
+    4096,
+    9223372036854775807
+  ],
+  "requested_fd_limit": 0,
+  "cgroup": {},
+  "schedule": [
+    [
+      "messages",
+      "blocking",
+      "active128_p128",
+      1
+    ],
+    [
+      "messages",
+      "blocking",
+      "active512_p128",
+      0
+    ],
+    [
+      "messages",
+      "blocking",
+      "rpc1",
+      0
+    ],
+    [
+      "messages",
+      "blocking",
+      "active1024_p256",
+      2
+    ],
+    [
+      "messages",
+      "blocking",
+      "rpc1",
+      2
+    ],
+    [
+      "messages",
+      "blocking",
+      "active1024_p256",
+      1
+    ],
+    [
+      "messages",
+      "blocking",
+      "active1024_p256",
+      0
+    ],
+    [
+      "messages",
+      "blocking",
+      "active128_p128",
+      2
+    ],
+    [
+      "messages",
+      "blocking",
+      "active128_p128",
+      0
+    ],
+    [
+      "messages",
+      "blocking",
+      "active512_p128",
+      1
+    ],
+    [
+      "messages",
+      "blocking",
+      "active512_p128",
+      2
+    ],
+    [
+      "messages",
+      "blocking",
+      "rpc1",
+      1
+    ]
+  ],
+  "definitions": {
+    "variants": {
+      "blocking": [
+        "blocking",
+        {},
+        {}
+      ],
+      "async": [
+        "async",
+        {},
+        {}
+      ],
+      "threads": [
+        "threads",
+        {},
+        {}
+      ],
+      "plain-tokio": [
+        "tokio",
+        {},
+        {}
+      ],
+      "dedicated-default": [
+        "dedicated",
+        {},
+        {}
+      ],
+      "dedicated-one": [
+        "dedicated",
+        {},
+        {
+          "SPAWNED_EXPERIMENT_RUNTIME": "one-worker"
+        }
+      ],
+      "dedicated-current": [
+        "dedicated",
+        {},
+        {
+          "SPAWNED_EXPERIMENT_RUNTIME": "current"
+        }
+      ],
+      "dedicated-shared": [
+        "dedicated",
+        {},
+        {
+          "SPAWNED_EXPERIMENT_RUNTIME": "shared"
+        }
+      ],
+      "dedicated-managed": [
+        "dedicated",
+        {},
+        {
+          "SPAWNED_EXPERIMENT_RUNTIME": "managed"
+        }
+      ],
+      "native-block": [
+        "native-block",
+        {
+          "reply": "bounded"
+        },
+        {}
+      ],
+      "native-hybrid": [
+        "native-hybrid",
+        {
+          "reply": "bounded"
+        },
+        {}
+      ],
+      "native-spin": [
+        "native-spin",
+        {
+          "reply": "bounded"
+        },
+        {}
+      ],
+      "sharded-1": [
+        "native-sharded",
+        {
+          "reply": "bounded",
+          "batch": 1
+        },
+        {}
+      ],
+      "sharded-16": [
+        "native-sharded",
+        {
+          "reply": "bounded",
+          "batch": 16
+        },
+        {}
+      ],
+      "ready-1": [
+        "native-ready",
+        {
+          "reply": "bounded",
+          "batch": 1
+        },
+        {}
+      ],
+      "ready-16": [
+        "native-ready",
+        {
+          "reply": "bounded",
+          "batch": 16
+        },
+        {}
+      ],
+      "ready-adaptive": [
+        "native-ready",
+        {
+          "reply": "bounded",
+          "batch": 0
+        },
+        {}
+      ],
+      "local-ready-16": [
+        "native-ready",
+        {
+          "reply": "bounded",
+          "batch": 16,
+          "scheduler": "local"
+        },
+        {}
+      ],
+      "async-reply-std": [
+        "async",
+        {
+          "reply": "std"
+        },
+        {}
+      ],
+      "async-reply-bounded": [
+        "async",
+        {
+          "reply": "bounded"
+        },
+        {}
+      ],
+      "async-reply-tokio": [
+        "async",
+        {
+          "reply": "tokio"
+        },
+        {}
+      ],
+      "threads-reply-std": [
+        "threads",
+        {
+          "reply": "std"
+        },
+        {}
+      ],
+      "threads-reply-bounded": [
+        "threads",
+        {
+          "reply": "bounded"
+        },
+        {}
+      ],
+      "threads-reply-tokio": [
+        "threads",
+        {
+          "reply": "tokio"
+        },
+        {}
+      ]
+    },
+    "cases": {
+      "rpc1": {
+        "scenario": "rpc",
+        "actors": 1,
+        "producers": 1,
+        "messages": 32768
+      },
+      "burst32": {
+        "scenario": "burst",
+        "actors": 1,
+        "producers": 32,
+        "messages": 131072
+      },
+      "active128_p32": {
+        "scenario": "rpc",
+        "actors": 128,
+        "producers": 32,
+        "messages": 131072,
+        "routing": "round-robin"
+      },
+      "active128_p128": {
+        "scenario": "rpc",
+        "actors": 128,
+        "producers": 128,
+        "messages": 131072,
+        "routing": "round-robin"
+      },
+      "active512_p128": {
+        "scenario": "rpc",
+        "actors": 512,
+        "producers": 128,
+        "messages": 262144,
+        "routing": "round-robin"
+      },
+      "active1024_p256": {
+        "scenario": "rpc",
+        "actors": 1024,
+        "producers": 256,
+        "messages": 262144,
+        "routing": "round-robin"
+      },
+      "hotspot128": {
+        "scenario": "rpc",
+        "actors": 128,
+        "producers": 128,
+        "messages": 131072,
+        "routing": "hotspot",
+        "iterations": 1000
+      },
+      "lowload": {
+        "scenario": "paced",
+        "actors": 4,
+        "producers": 32,
+        "messages": 10000,
+        "rate": 5000,
+        "iterations": 5000
+      },
+      "overload": {
+        "scenario": "paced",
+        "actors": 4,
+        "producers": 32,
+        "messages": 32768,
+        "rate": 1000000,
+        "iterations": 5000
+      },
+      "idle4": {
+        "scenario": "rpc",
+        "actors": 4,
+        "producers": 1,
+        "messages": 1,
+        "warmup": 4,
+        "idle-ms": 1000
+      },
+      "alloc1": {
+        "scenario": "rpc",
+        "actors": 1,
+        "producers": 1,
+        "messages": 32768,
+        "allocations": "on"
+      }
+    }
+  },
+  "environment": {
+    "TOKIO_WORKER_THREADS": null,
+    "SPAWNED_EXPERIMENT_RUNTIME": null,
+    "RUSTFLAGS": null
+  },
+  "binaries": {
+    "designs": "98189eed95769114c3df7e255b230c830660637f615328b11919adc945f27a84",
+    "io_designs": "8a7cfff865852df88e62c6570283cc5d8647cacc57255f3e81024a739f70cb25"
+  }
+}
