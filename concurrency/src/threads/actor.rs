@@ -1287,7 +1287,7 @@ mod idle_stop_regression {
         entered.wait();
         let (reply, response) = oneshot::channel();
         tx.send(Box::new(MessageEnvelope {
-            msg: Increment,
+            msg: Increment(events.clone(), monitors),
             tx: Some(reply),
         }) as Box<dyn Envelope<Counter> + Send>)
             .unwrap();
