@@ -70,3 +70,15 @@ ancestry is not exclusive CPU attribution. No hardware/off-CPU/migration claims.
 No long-term stability claim follows from two-second injection or a ~one-second
 graph window. Default Tokio stays supported; custom executors are a later,
 separate opt-in research branch.
+
+## Hosted review follow-up
+
+PR #183's technical build, fmt, tests, Clippy and publish dry run passed. Hosted
+Claude/Kimi/Gemini/DeepSeek/Grok review requests failed their context limits;
+those failures are not approvals. The hosted Codex review was truncated and found
+one reporting issue: fixed-repetition queue/RSS plots needed each curve's schedule
+validity and admission lag in the legend. The renderer now displays both and
+labels invalid curves as diagnostic. Visual QA also corrected time-series autoscaling
+after all curves are added, so later policy peaks remain visible. Regenerated on fede between timing stages;
+no benchmark values or validity threshold changes. Focused agy review provides
+bounded source/report/aggregate coverage, not independent raw recomputation.

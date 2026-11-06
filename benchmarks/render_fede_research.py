@@ -153,10 +153,11 @@ def main():
                 row=max(choices,key=lambda r:int(r['config']['rate']))
                 series=read_csv(args.data/'series'/f'{row["stem"]}.csv');x=[number(r,'elapsed_ms')/1000 for r in series]
                 for ax,key,factor,title in zip(axes,['queued','cold_queued','rss_bytes'],[1,1,1e-6],['Mailbox queue','Cold mailbox queue','Process RSS (MB)']):
-                    ax.plot(x,[number(r,key)*factor for r in series],color=color,label=variant);ax.set_title(title);ax.set_xlabel('Seconds since intended start');ax.set_ylim(bottom=0)
+                    ax.plot(x,[number(r,key)*factor for r in series],color=color,label=f"{variant}: {'valid' if valid(row) else 'INVALID schedule'}, lag p99 {number(row,'lag_p99_ns')/1e6:.3f} ms");ax.set_title(title);ax.set_xlabel('Seconds since intended start')
                 end=int(row['config']['messages'])/int(row['config']['rate'])
                 for ax in axes:ax.axvline(end,color=color,alpha=.25,linestyle=':')
-            axes[0].legend(fontsize=8);fig.suptitle(f'{w} workers · {layout} · 125% reference, predetermined repetition 1; dotted injection end')
+            for ax in axes:ax.set_ylim(bottom=0)
+            axes[0].legend(fontsize=7);fig.suptitle(f'{w} workers · {layout} · 125% reference, predetermined repetition 1; dotted injection end\nInvalid schedules are diagnostics, not equivalent offered traffic')
             doc.extend([save(fig,f'timeseries-w{w}-{layout}'),''])
     doc.extend(['## Per-cell offered outcomes','','Survivor-only completion p99 is shown beside timeout counts. Caller-observed deadline misses also include late ready replies; an elapsed timeout does not cancel actor work. All admitted work drains before process exit. `valid/n` describes generator schedules, not successful replies.','',
         '| Workers | Layout | Burst | Policy | Rate/s | valid/n | Other-cohort cold observed p99 ms | Worst cold actor p99 ms | Cold deadline misses % | Hot timeouts % | Peak queued |',
