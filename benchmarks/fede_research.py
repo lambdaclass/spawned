@@ -23,7 +23,9 @@ VARIANTS = {
 }
 SELECTORS = ['SPAWNED_EXPERIMENT_SCHEDULER', 'SPAWNED_EXPERIMENT_WORKERS',
              'SPAWNED_EXPERIMENT_BATCH', 'SPAWNED_EXPERIMENT_RUNTIME',
-             'SPAWNED_PROFILE_PREFIX', 'TOKIO_WORKER_THREADS']
+             'SPAWNED_PROFILE_PREFIX', 'TOKIO_WORKER_THREADS',
+             'SPAWNED_EXPERIMENT_REACTORS', 'SPAWNED_EXPERIMENT_LOCAL_BUDGET',
+             'SPAWNED_EXPERIMENT_SLICE_US', 'SPAWNED_EXPERIMENT_PLACEMENT']
 
 
 def capture(*command):
@@ -132,7 +134,7 @@ class Campaign:
         if self.rows:
             write_rows(self.out / 'raw.csv', self.rows)
 
-    def sample(self, phase, variant, workers, config, repeat, bench='workload_research'):
+    def sample(self, phase, variant, workers, config, repeat, bench='workload_research', experiment=None):
         index = len(self.rows)
         stem = f'{index:04d}-{phase}-{variant}-w{workers}-{repeat}'
         env = dict(os.environ, LC_ALL='C')
@@ -143,6 +145,9 @@ class Campaign:
             env.update(SPAWNED_EXPERIMENT_SCHEDULER=scheduler,
                        SPAWNED_EXPERIMENT_WORKERS=str(workers),
                        SPAWNED_EXPERIMENT_BATCH=str(batch))
+        experiment = experiment or {}
+        assert set(experiment) <= set(SELECTORS) - {'SPAWNED_PROFILE_PREFIX', 'TOKIO_WORKER_THREADS'}
+        env.update({k: str(v) for k, v in experiment.items()})
         config = dict(config, workers=workers)
         if bench == 'workload_research':
             config.update(**{'driver-cpus': self.args.driver_cpus,
@@ -157,12 +162,13 @@ class Campaign:
         invocation = ['taskset', '-c', self.args.actor_cpus, '/usr/bin/time', '-v',
                       self.binaries[bench]] + [f'--{k}={v}' for k, v in config.items()]
         self.schedule.append(dict(phase=phase, variant=variant, workers=workers,
-                                  repeat=repeat, config=config))
+                                  repeat=repeat, config=config, experimental_environment=experiment))
         self.save()
         start = time.monotonic()
         status, stdout, stderr = process(invocation, env, self.out / 'logs' / stem, self.args.timeout)
         row = dict(index=index, phase=phase, variant=variant, workers=workers, repeat=repeat,
-                   status=status, wall_s=time.monotonic()-start, config_json=json.dumps(config, sort_keys=True), stem=stem)
+                   status=status, wall_s=time.monotonic()-start, config_json=json.dumps(config, sort_keys=True),
+                   experiment_json=json.dumps(experiment, sort_keys=True), stem=stem)
         if status == 'ok':
             parsed = list(csv.DictReader(stdout.splitlines()))
             if len(parsed) != 1 or None in parsed[0] or any(v is None for v in parsed[0].values()):
