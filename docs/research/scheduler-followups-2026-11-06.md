@@ -130,3 +130,18 @@ Prefer this type of narrow, falsifiable change and a client workload over more
 backend names. Optional counters should distinguish injection, local continuation,
 peer steal, no-progress poll and explicit yield without a single contended global
 measurement counter becoming the workload.
+
+## Retain, investigate and archive
+
+Keep current public execution modes supported and Tokio as the default. Treat
+process-owned Tokio runtimes, static shards and custom Root/Runnable/Deque
+schedulers as candidates with explicit use cases while their selectors remain
+private. Preserve Global/Local/Steal as research controls rather than exposing
+every queue policy as an application-facing choice.
+
+Leave generic inline futures in the research archive: their source and negative
+throughput evidence remain reproducible. I/O engines and benchmark-only native
+transports also remain experiments. Graduation requires a repeatable advantage
+in a named application workload, acceptable resource/fairness tradeoffs and a
+complete compatibility/maintenance contract. The final report recommends which
+questions deserve follow-up; it does not silently promote experimental selectors.

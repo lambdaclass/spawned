@@ -24,6 +24,28 @@ graphs for sharing. Start with the [findings](DESIGN-FINDINGS.md) and
 [implementation/test guide](EXPERIMENTS.md). [Raw samples and source metadata](results/designs-2026-11-05/manifest.json)
 retain the nine failed resource-limit samples alongside successful measurements.
 
+## Supported backends and research status
+
+The supported execution choices remain the existing Tokio async, blocking-pool
+and dedicated-thread task backends, plus synchronous thread actors. Tokio is the
+general-purpose default. Blocking/dedicated modes have distinct use cases and
+resource costs; a persistent actor population must fit the chosen execution
+resources.
+
+Private selectors behind backend-experiments are research interfaces. Shared
+runtime ownership, static shards and Root/Runnable/Deque candidates are retained
+for defined workload studies. Global/local/split-queue variants also serve as
+comparison controls. Their presence does not make them supported public backend
+choices or recommended defaults.
+
+Generic inline-future storage remains on its research branch and in the exact
+source bundle; current measurements do not justify its added complexity.
+Benchmark-only transports and io_uring/epoll/kqueue engine controls remain
+experiments too. Supported additions need a named use case, a repeatable measured
+benefit, acceptable latency/CPU/memory/fairness tradeoffs, lifecycle/I/O/failure
+coverage, and a maintainable documented interface. The supported set should stay
+small.
+
 ## Initial baseline
 
 The [initial local report](REPORT-2026-11-05.md) includes raw results and a

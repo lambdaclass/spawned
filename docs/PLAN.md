@@ -107,6 +107,19 @@ restart-storm tests, and examples that do not imply exactly-once effects or
 transparent state recovery. A client recovery need can justify advancing this
 milestone; optimization is not a prerequisite for supervision.
 
+## Backend graduation policy
+
+Keep the existing supported execution modes and Tokio default. Retain alternative
+queue/scheduler/runtime-ownership designs behind the private experiment feature
+until a defined application need justifies support. Archive designs whose benefit
+does not justify their complexity, with source/data available for reproduction.
+
+A proposed supported backend needs a named workload and target metric, repeated
+controlled measurements, an explicit budget for latency/CPU/memory/fairness
+tradeoffs, lifecycle/I/O/helper/failure coverage, and a reviewed maintenance/API
+contract. A win in one synthetic case is evidence to investigate. Promotion is a
+separate decision; adding more backend names is not a milestone.
+
 ## Research, not committed replacements
 
 The [Silver/flux research](research/silver-flux.md) evaluates timing propagation,
