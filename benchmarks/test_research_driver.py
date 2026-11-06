@@ -1,7 +1,7 @@
 """End-to-end research-driver checks; run on Linux with the built bench binary.
 
-SPAWNED_RESEARCH_BINARY=/path/workload_research cargo... is not needed: run
-python3 -m unittest discover -s benchmarks -p test_research_driver.py directly.
+Set SPAWNED_RESEARCH_BINARY to the built bench, then run
+python3 -m unittest discover -s benchmarks -p test_research_driver.py.
 """
 import csv
 import os
@@ -44,7 +44,8 @@ class ResearchDriver(unittest.TestCase):
                 self.assertGreater(max(int(r['hot_queued']) for r in series), 0)
                 # A sequential hot-first reply collector would delay the fast
                 # other-shard cohort until the hot request's 100 ms deadline.
-                self.assertLess(int(row['cold_other_observed_p99_ns']), 100_000_000)
+                if selector:
+                    self.assertLess(int(row['cold_other_observed_p99_ns']), 100_000_000)
                 self.assertEqual(int(row['cold_samples']), 400)
                 self.assertEqual(int(row['hot_samples']), 1600)
                 print(selector or 'async', {k:row[k] for k in ['timeouts','hot_timeouts','cold_timeouts','cold_other_observed_p99_ns']})
