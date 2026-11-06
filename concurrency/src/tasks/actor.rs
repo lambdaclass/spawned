@@ -1951,3 +1951,61 @@ mod turn_regressions {
         });
     }
 }
+
+#[cfg(test)]
+mod idle_stop_regression {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    struct Counter(Arc<AtomicUsize>);
+    impl Actor for Counter {}
+    struct Increment;
+    impl Message for Increment {
+        type Result = ();
+    }
+    impl Handler<Increment> for Counter {
+        async fn handle(&mut self, _: Increment, _: &Context<Self>) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+    #[test]
+    fn stop_while_idle_does_not_dispatch_a_queued_request_on_resume() {
+        rt::Runtime::new().unwrap().block_on(async {
+            let (tx, rx) = mpsc::channel();
+            let token = CancellationToken::new();
+            let (_, completion_rx) = watch::channel(None);
+            let ctx = Context {
+                id: ActorId::next(),
+                sender: tx.clone(),
+                cancellation_token: token.clone(),
+                completion_rx,
+                monitors: Arc::new(Mutex::new(Some(HashMap::new()))),
+            };
+            let count = Arc::new(AtomicUsize::new(0));
+            let mut actor = Box::pin(run_actor(
+                Counter(count.clone()),
+                ctx,
+                rx,
+                token.clone(),
+                #[cfg(feature = "backend-experiments")]
+                None,
+            ));
+            // Start and park the actual actor loop, without allowing another
+            // executor task to run it between admission and stop below.
+            assert!(futures::poll!(actor.as_mut()).is_pending());
+            let (reply, response) = oneshot::channel();
+            tx.send(Box::new(MessageEnvelope {
+                msg: Increment,
+                tx: Some(reply),
+            }) as Box<dyn Envelope<Counter> + Send>)
+                .unwrap();
+            token.cancel();
+            assert_eq!(actor.await, ExitReason::Normal);
+            assert_eq!(
+                count.load(Ordering::SeqCst),
+                0,
+                "idle actor dispatched queued work after stop"
+            );
+            assert!(response.await.is_err(), "queued request unexpectedly ran");
+        });
+    }
+}
