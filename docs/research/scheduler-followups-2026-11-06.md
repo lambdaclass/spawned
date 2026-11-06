@@ -115,3 +115,18 @@ Tokio for channels, I/O, timer fallback and root-driver cooperative machinery.
 Root/Runnable actor futures are not Tokio tasks; task identity and blocking
 compatibility limits must remain explicit. A runtime rewrite is justified only
 by a representative application need and end-to-end evidence.
+
+## A bounded next scheduler question
+
+Review suggested a sparse-work experiment: after some root polls, an empty
+ready-queue scan could yield the outer driver once before constructing its idle
+Notify/timer wait. This might flush deferred Tokio wakes sooner and avoid
+temporary timer registration. It is an unmeasured hypothesis, not another
+implemented backend or a correctness fix. Compare idle CPU, external wake tails,
+timer/helper/TCP progress and graph throughput on one common source; do not infer
+the benefit from stack presence or larger-quantum medians.
+
+Prefer this type of narrow, falsifiable change and a client workload over more
+backend names. Optional counters should distinguish injection, local continuation,
+peer steal, no-progress poll and explicit yield without a single contended global
+measurement counter becoming the workload.
