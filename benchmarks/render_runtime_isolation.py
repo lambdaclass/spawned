@@ -112,6 +112,10 @@ def main():
         fig.savefig(
             a.output / f"{path}.svg", bbox_inches="tight", metadata={"Date": None}
         )
+        svg = a.output / f"{path}.svg"
+        svg.write_text(
+            "\n".join(line.rstrip() for line in svg.read_text().splitlines()) + "\n"
+        )
         plt.close(fig)
     lines = [
         "# Shared versus split actor runtimes",
