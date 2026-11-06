@@ -24,7 +24,7 @@ def main():
     jobs=[]
     policies=a.variants if a.stage in ['smoke','queues','profiles','offered'] else ['async','tokio-16','sharded-16','native-steal']
     for v in policies:
-        for workers in ([3,4] if v.startswith('native') and a.stage in ['queues','profiles','offered'] else [4]):
+        for workers in ([3,4] if v.startswith('native') and a.stage in ['smoke','queues','profiles','offered'] else [4]):
             if a.stage=='offered':
                 for layout in ['spread','concentrated']:
                     for rate in [500_000,900_000,1_200_000]:
@@ -38,7 +38,7 @@ def main():
                     caller_cases=[('blocking','on')]
                     if a.stage=='callers':caller_cases=[(x,y) for x in ['blocking','async'] for y in ['on','off']]
                     if a.stage=='clock':caller_cases=[('async','on')]
-                    if a.smoke:caller_cases=[('blocking','on'),('async','on'),('async','off')]
+                    if a.smoke:caller_cases=[(x,y) for x in ['blocking','async'] for y in ['on','off']]
                     for caller,counter in caller_cases:
                         slices=[0,25,50,200] if a.stage=='clock' and v!='async' else [50]
                         for us in slices:
