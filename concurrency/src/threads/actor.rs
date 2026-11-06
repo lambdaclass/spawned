@@ -578,6 +578,7 @@ fn run_actor_receiving<A: Actor>(
     mut receive: impl FnMut() -> Result<Box<dyn Envelope<A> + Send>, std::sync::mpsc::RecvTimeoutError>,
     cancellation_token: CancellationToken,
 ) -> ExitReason {
+    let mut discarded = None;
     let _monitor_cleanup = MonitorCleanup(ctx.monitors.clone());
     let start_result = catch_unwind(AssertUnwindSafe(|| {
         actor.started(&ctx);
@@ -613,6 +614,12 @@ fn run_actor_receiving<A: Actor>(
         };
         match msg {
             Some(envelope) => {
+                // A stop signaled while recv_timeout was waiting wins over
+                // later work. Keep the envelope until stopped()/monitor cleanup.
+                if cancellation_token.is_cancelled() {
+                    discarded = Some(envelope);
+                    break;
+                }
                 let result = catch_unwind(AssertUnwindSafe(|| {
                     envelope.handle(&mut actor, &ctx);
                 }));
@@ -642,6 +649,8 @@ fn run_actor_receiving<A: Actor>(
         }
     }
 
+    drop(_monitor_cleanup);
+    drop(discarded);
     exit_reason
 }
 
@@ -1207,9 +1216,27 @@ mod idle_stop_regression {
         atomic::{AtomicUsize, Ordering},
         Barrier,
     };
-    struct Counter(Arc<AtomicUsize>);
-    impl Actor for Counter {}
-    struct Increment;
+    struct Counter(Arc<AtomicUsize>, Arc<Mutex<Vec<&'static str>>>);
+    impl Actor for Counter {
+        fn stopped(&mut self, _: &Context<Self>) {
+            self.1.lock().unwrap().push("stopped");
+        }
+    }
+    impl Drop for Counter {
+        fn drop(&mut self) {
+            self.1.lock().unwrap().push("actor-dropped");
+        }
+    }
+    struct Increment(Arc<Mutex<Vec<&'static str>>>, MonitorTable);
+    impl Drop for Increment {
+        fn drop(&mut self) {
+            assert!(
+                self.1.lock().unwrap().is_none(),
+                "message dropped before monitor cleanup"
+            );
+            self.0.lock().unwrap().push("message-dropped");
+        }
+    }
     impl Message for Increment {
         type Result = ();
     }
@@ -1223,12 +1250,14 @@ mod idle_stop_regression {
         let (tx, rx) = mpsc::channel();
         let token = CancellationToken::new();
         let (_, completion_rx) = spawned_rt::tasks::watch::channel(None);
+        let monitors = Arc::new(Mutex::new(Some(HashMap::new())));
+        let events = Arc::new(Mutex::new(Vec::new()));
         let ctx = Context {
             id: ActorId::next(),
             sender: tx.clone(),
             cancellation_token: token.clone(),
             completion: completion_rx,
-            monitors: Arc::new(Mutex::new(Some(HashMap::new()))),
+            monitors: monitors.clone(),
         };
         let count = Arc::new(AtomicUsize::new(0));
         let seen = count.clone();
@@ -1236,10 +1265,11 @@ mod idle_stop_regression {
         let release = Arc::new(Barrier::new(2));
         let (e, r) = (entered.clone(), release.clone());
         let cancel = token.clone();
+        let trace = events.clone();
         let actor = std::thread::spawn(move || {
             let mut first = true;
             run_actor_receiving(
-                Counter(seen),
+                Counter(seen, trace),
                 ctx,
                 move || {
                     // Pause the real receive boundary after the started/cancel
@@ -1270,5 +1300,9 @@ mod idle_stop_regression {
             "thread actor dispatched work after idle stop"
         );
         assert!(response.recv().is_err());
+        assert_eq!(
+            *events.lock().unwrap(),
+            ["stopped", "message-dropped", "actor-dropped"]
+        );
     }
 }
