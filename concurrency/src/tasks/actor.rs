@@ -611,9 +611,26 @@ impl<A: Actor> ActorRef<A> {
 }
 
 async fn run_actor<A: Actor>(
-    mut actor: A,
+    actor: A,
     ctx: Context<A>,
     mut rx: mpsc::Receiver<Box<dyn Envelope<A> + Send>>,
+    cancellation_token: CancellationToken,
+) -> ExitReason {
+    let reason = run_actor_lifecycle(actor, ctx, &mut rx, cancellation_token).await;
+    // A concurrent send may have reserved a channel slot without publishing its
+    // envelope yet. Dropping the receiver alone can leave that envelope (and its
+    // reply sender) retained until every ActorRef is dropped. Closing admission
+    // and receiving through EOF waits for those sends and discards queued work
+    // before actor completion is published. No queued handlers run here.
+    rx.close();
+    while rx.recv().await.is_some() {}
+    reason
+}
+
+async fn run_actor_lifecycle<A: Actor>(
+    mut actor: A,
+    ctx: Context<A>,
+    rx: &mut mpsc::Receiver<Box<dyn Envelope<A> + Send>>,
     cancellation_token: CancellationToken,
 ) -> ExitReason {
     let _monitor_cleanup = MonitorCleanup(ctx.monitors.clone());
