@@ -142,3 +142,41 @@ impl ReadyDeque {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::{Gate, Job};
+    use super::*;
+    use std::sync::{Arc, Mutex, Weak};
+
+    fn ticket(id: usize) -> Work {
+        Work::Custom(Arc::new(Job {
+            gate: Gate::new(),
+            future: Mutex::new(None),
+            pool: Weak::new(),
+            preferred: AtomicUsize::new(id),
+        }))
+    }
+
+    #[test]
+    fn oldest_local_progress_under_sustained_injection() {
+        let (ready, mut queues) = ReadyDeque::new(1);
+        let _owner = install(101, queues.pop().unwrap());
+        ready.enqueue(101, ticket(1), Some(0));
+        let mut victim = 0;
+        let mut found = false;
+        for turn in 0..64 {
+            // More outside work than each local turn can consume. This must
+            // not permanently hide the oldest already-runnable local ticket.
+            for _ in 0..64 {
+                ready.enqueue(101, ticket(2), None);
+            }
+            let work = ready.take(101, 0, turn % 4 == 3, &mut victim).unwrap();
+            if work.preferred() == 1 {
+                found = true;
+                break;
+            }
+        }
+        assert!(found, "old local ticket starved behind sustained injection");
+    }
+}
