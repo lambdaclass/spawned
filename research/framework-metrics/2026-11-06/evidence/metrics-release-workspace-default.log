@@ -1,0 +1,415 @@
+   Compiling spawned-rt v0.6.0 (/tmp/spawned-pr-security-review/integrated/rt)
+   Compiling spawned-concurrency v0.6.0 (/tmp/spawned-pr-security-review/integrated/concurrency)
+   Compiling exit_reason v0.1.0 (/tmp/spawned-pr-security-review/integrated/examples/exit_reason)
+   Compiling updater v0.1.0 (/tmp/spawned-pr-security-review/integrated/examples/updater)
+   Compiling ping_pong_threads v0.1.0 (/tmp/spawned-pr-security-review/integrated/examples/ping_pong_threads)
+   Compiling busy_genserver_warning v0.1.0 (/tmp/spawned-pr-security-review/integrated/examples/busy_genserver_warning)
+   Compiling chat_room v0.1.0 (/tmp/spawned-pr-security-review/integrated/examples/chat_room)
+   Compiling name_server v0.1.0 (/tmp/spawned-pr-security-review/integrated/examples/name_server)
+   Compiling bank v0.1.0 (/tmp/spawned-pr-security-review/integrated/examples/bank)
+   Compiling ping_pong v0.1.0 (/tmp/spawned-pr-security-review/integrated/examples/ping_pong)
+   Compiling blocking_genserver v0.1.0 (/tmp/spawned-pr-security-review/integrated/examples/blocking_genserver)
+   Compiling bank_threads v0.1.0 (/tmp/spawned-pr-security-review/integrated/examples/bank_threads)
+   Compiling updater_threads v0.1.0 (/tmp/spawned-pr-security-review/integrated/examples/updater_threads)
+   Compiling chat_room_threads v0.1.0 (/tmp/spawned-pr-security-review/integrated/examples/chat_room_threads)
+   Compiling signal_test v0.1.0 (/tmp/spawned-pr-security-review/integrated/examples/signal_test)
+   Compiling service_discovery v0.1.0 (/tmp/spawned-pr-security-review/integrated/examples/service_discovery)
+   Compiling signal_test_threads v0.1.0 (/tmp/spawned-pr-security-review/integrated/examples/signal_test_threads)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 11.89s
+     Running unittests src/main.rs (/tmp/spawned-fede-research-25dGGmPA/fairness-target/debug/deps/bank-343f2767550739b2)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/main.rs (/tmp/spawned-fede-research-25dGGmPA/fairness-target/debug/deps/bank_threads-35c6b4b7e3aeb6be)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests main.rs (/tmp/spawned-fede-research-25dGGmPA/fairness-target/debug/deps/blocking_genserver-c3a6b273682159b6)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests main.rs (/tmp/spawned-fede-research-25dGGmPA/fairness-target/debug/deps/busy_genserver_warning-5f4728013de886dc)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/main.rs (/tmp/spawned-fede-research-25dGGmPA/fairness-target/debug/deps/chat_room-103890120bb7d3d8)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/main.rs (/tmp/spawned-fede-research-25dGGmPA/fairness-target/debug/deps/chat_room_threads-a895e57ce61a836c)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/main.rs (/tmp/spawned-fede-research-25dGGmPA/fairness-target/debug/deps/exit_reason-5f2359a62dc83f1a)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/main.rs (/tmp/spawned-fede-research-25dGGmPA/fairness-target/debug/deps/name_server-9872f39de0d20fac)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/main.rs (/tmp/spawned-fede-research-25dGGmPA/fairness-target/debug/deps/ping_pong-173b0b57b4390b9d)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/main.rs (/tmp/spawned-fede-research-25dGGmPA/fairness-target/debug/deps/ping_pong_threads-d852b8ed8533656c)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/main.rs (/tmp/spawned-fede-research-25dGGmPA/fairness-target/debug/deps/service_discovery-8eea579a4466c84b)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/main.rs (/tmp/spawned-fede-research-25dGGmPA/fairness-target/debug/deps/signal_test-6042d9b0a4137fe4)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/main.rs (/tmp/spawned-fede-research-25dGGmPA/fairness-target/debug/deps/signal_test_threads-25764c7422b9fae3)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (/tmp/spawned-fede-research-25dGGmPA/fairness-target/debug/deps/spawned_concurrency-102d31cd363d0a51)
+
+running 145 tests
+test child_handle::tests::actor_id_is_unique ... ok
+test child_handle::tests::actor_id_display ... ok
+test child_handle::closed_completion_tests::closure_preserves_the_final_published_reason ... ok
+test child_handle::tests::child_handle_equality_by_id ... ok
+test child_handle::tests::child_handle_from_threads_basics ... ok
+test child_handle::closed_completion_tests::closed_without_reason_is_dead_and_all_waits_agree ... ok
+test child_handle::tests::child_handle_from_threads_actor_ref ... ok
+test child_handle::tests::child_handle_from_tasks_actor_ref ... ok
+test child_handle::tests::child_handle_observes_panic_in_tasks_actor ... ok
+test child_handle::tests::child_handle_observes_panic_in_threads_actor ... ok
+test child_handle::tests::child_handle_stop ... ok
+test child_handle::tests::child_handle_wait_blocking_fast_path_on_current_thread_runtime ... ok
+test child_handle::tests::child_handle_observes_panic_in_started_callback ... ok
+test child_handle::tests::child_handle_wait_blocking_inside_multithread_runtime ... ok
+test error::tests::exit_reason_is_abnormal_classification ... ok
+test error::tests::exit_reason_partial_eq ... ok
+test error::tests::test_error_into_std_error ... ok
+test error::tests::exit_reason_display ... ok
+test link::tests::closure_is_terminal_and_delivers_each_edge_once ... ok
+test child_handle::tests::child_handle_wait_blocking_panics_on_current_thread_runtime - should panic ... ok
+test child_handle::tests::child_handle_stop_from_tasks_actor ... ok
+test link::tests::exit_is_clone_and_eq ... ok
+test link::tests::concurrent_link_unlink_preserves_symmetry ... ok
+test link::tests::new_state_is_open_and_empty ... ok
+test link::tests::self_link_is_noop ... ok
+test link::tests::normal_stop_cause_is_not_replaced_by_late_failure ... ok
+test link::tests::trap_exit_defaults_false ... ok
+test link::tests::weak_edges_do_not_keep_link_tables_alive ... ok
+test link_regression_tests::late_link_failure_cannot_relabel_an_already_requested_normal_stop ... ok
+test link_regression_tests::linked_runtime_abort_is_untrappable ... ok
+test link_regression_tests::linked_runtime_abort_cancels_an_idle_threads_actor ... ok
+test link_regression_tests::linking_in_post_drain_pre_completion_window_delivers_exit ... ok
+test link_regression_tests::never_polled_actor_propagates_runtime_shutdown_to_peer ... ok
+test link_regression_tests::never_polled_actor_notifies_monitor_on_runtime_shutdown ... ok
+test link_regression_tests::never_polled_monitor_owner_releases_waiter_and_refuses_late_registration ... ok
+test link_regression_tests::never_polled_completion_waits_for_actor_payload_destruction ... ok
+test link_regression_tests::polled_actor_propagates_runtime_shutdown_to_peer ... ok
+test monitor::tests::monitor_ref_display ... ok
+test monitor::tests::monitor_ref_is_unique ... ok
+test registry::tests::duplicate_register_fails ... ok
+test link_regression_tests::start_linked_registers_before_threads_started ... ok
+test registry::tests::register_and_whereis ... ok
+test registry::tests::registered_lists_names ... ok
+test registry::tests::unregister_removes_entry ... ok
+test link_regression_tests::start_linked_registers_before_async_started ... ok
+test registry::tests::whereis_missing_returns_none ... ok
+test registry::tests::whereis_wrong_type_returns_none ... ok
+test response::tests::map_transforms_value ... ok
+test response::tests::ready_err_is_err ... ok
+test response::tests::ready_err_unwrap_panics - should panic ... ok
+test response::tests::ready_ok_unwrap ... ok
+test response::tests::timed_receiver_resolves ... ok
+test response::tests::future_err_on_dropped_sender ... ok
+test response::tests::future_resolves_from_receiver ... ok
+test tasks::actor::early_stop_regression::panic_during_early_stop_is_reported ... ok
+test tasks::actor::idle_stop_regression::stop_while_idle_does_not_dispatch_a_queued_request_on_resume ... ok
+test tasks::actor::monitor_cleanup_regressions::closed_monitor_table_rejects_late_registration ... ok
+test tasks::actor::monitor_cleanup_regressions::stopped_observer_releases_waiter ... ok
+test tasks::actor::monitor_cleanup_regressions::demonitor_releases_waiter ... ok
+test tasks::actor::tests::backend_async_handles_send_and_request ... ok
+test tasks::actor::tests::backend_default_is_async ... ok
+test tasks::actor::tests::backend_enum_debug_format ... ok
+test tasks::actor::tests::backend_enum_equality ... ok
+test tasks::actor::tests::backend_enum_is_copy_and_clone ... ok
+test link_regression_tests::dropping_runtime_with_large_polled_link_cycle_reclaims_every_actor ... ok
+test response::tests::timed_receiver_times_out ... ok
+test tasks::actor::tests::backend_blocking_handles_send_and_request ... ok
+test tasks::actor::tests::backend_thread_handles_send_and_request ... ok
+test tasks::actor::tests::chain_propagation_through_non_trapping_middle ... ok
+test tasks::actor::tests::demonitor_before_target_dies_suppresses_down ... ok
+test tasks::actor::tests::duplicate_link_is_idempotent ... ok
+test tasks::actor::tests::exit_reason_normal_on_clean_stop ... ok
+test tasks::actor::tests::exit_reason_panic_in_handler ... ok
+test tasks::actor::tests::exit_reason_panic_in_started ... ok
+test tasks::actor::tests::exit_reason_poll_returns_none_while_running ... ok
+test tasks::actor::tests::link_delivers_exit_to_trapping_peer ... ok
+test tasks::actor::tests::link_normal_exit_not_propagated_to_non_trapping_peer ... ok
+test tasks::actor::tests::link_propagates_panic_to_non_trapping_peer ... ok
+test tasks::actor::tests::link_to_already_dead_actor_delivers_signal ... ok
+test tasks::actor::tests::link_to_already_dead_delivers_exactly_once_to_trapping_peer ... ok
+test tasks::actor::tests::monitor_already_dead_actor_delivers_down_immediately ... ok
+test tasks::actor::tests::monitor_observes_panic_reason ... ok
+test tasks::actor::tests::monitor_running_actor_delivers_down_on_exit ... ok
+test tasks::actor::tests::monitor_table_is_cleaned_up_after_target_dies ... ok
+test tasks::actor::tests::monitoring_actor_stops_before_target_does_not_panic ... ok
+test tasks::actor::tests::multiple_backends_concurrent ... ok
+test tasks::actor::tests::backend_thread_isolates_blocking_work ... ok
+test tasks::actor::tests::multiple_monitors_each_get_own_ref_and_down ... ok
+test tasks::actor::tests::panic_in_handler_stops_actor ... ok
+test tasks::actor::tests::panic_in_started_stops_actor ... ok
+test tasks::actor::tests::panic_in_stopped_still_completes ... ok
+test tasks::actor::tests::recipient_type_erasure ... ok
+test tasks::actor::tests::request_timeout ... ok
+test tasks::actor::tests::send_message_on_cancelled ... ok
+test tasks::actor::tests::send_message_on_delivers ... ok
+test tasks::actor::tests::start_linked_links_atomically ... ok
+test tasks::actor::tests::multiple_join_callers_all_notified ... ok
+test tasks::actor::tests::unlink_prevents_signal_delivery ... ok
+test tasks::actor::tests::thread_backend_join_does_not_block_runtime ... ok
+test tasks::actor::tests::badly_behaved_thread ... ok
+test tasks::actor::tests::badly_behaved_thread_non_blocking ... ok
+test tasks::stream_tests::test_halting_on_stream_error ... ok
+test tasks::stream_tests::test_skipping_on_stream_error ... ok
+test tasks::stream_tests::test_sum_numbers_from_broadcast_channel ... ok
+test tasks::stream_tests::test_stream_cancellation ... ok
+test tasks::timer_tests::test_send_after_and_cancellation ... ok
+test tasks::stream_tests::test_sum_numbers_from_channel ... ok
+test threads::actor::early_stop_regression::panic_during_early_stop_is_reported ... ok
+test threads::actor::idle_stop_regression::stop_while_receiving_does_not_dispatch_a_later_request ... ok
+test threads::actor::monitor_cleanup_regressions::closed_monitor_table_rejects_late_registration ... ok
+test threads::actor::monitor_cleanup_regressions::demonitor_releases_waiter ... ok
+test threads::actor::monitor_cleanup_regressions::stopped_observer_releases_waiter ... ok
+test threads::actor::stop_wakeup_regression::cancellation_wakes_the_real_blocking_receive_boundary ... ok
+test threads::actor::stop_wakeup_regression::concurrent_cancellation_enqueues_exactly_one_shutdown ... ok
+test threads::actor::stop_wakeup_regression::every_stop_route_wakes_an_idle_thread ... ok
+test threads::actor::stop_wakeup_regression::repeated_stop_during_a_handler_discards_queued_requests ... ok
+test threads::actor::tests::basic_send_and_request ... ok
+test tasks::timer_tests::test_send_after_gen_server_teardown ... ok
+test threads::actor::tests::exit_reason_normal_on_clean_stop ... ok
+test threads::actor::tests::exit_reason_panic_in_handler ... ok
+test threads::actor::tests::exit_reason_panic_in_started ... ok
+test threads::actor::tests::exit_reason_poll_returns_none_while_running ... ok
+test threads::actor::tests::demonitor_before_target_dies_suppresses_down ... ok
+test threads::actor::tests::join_multiple_callers ... ok
+test tasks::stream_tests::test_sum_numbers_from_stream ... ok
+test threads::actor::tests::link_propagates_panic_to_non_trapping_peer_threads ... ok
+test threads::actor::tests::link_delivers_exit_to_trapping_peer_threads ... ok
+test threads::actor::tests::monitor_already_dead_actor_delivers_down_immediately ... ok
+test threads::actor::tests::join_waits_for_completion ... ok
+test threads::actor::tests::monitor_observes_panic_reason ... ok
+test threads::actor::tests::monitor_running_actor_delivers_down_on_exit ... ok
+test threads::actor::tests::multiple_monitors_each_get_own_ref_and_down ... ok
+test threads::actor::tests::panic_in_stopped_still_completes ... ok
+test threads::actor::tests::recipient_type_erasure ... ok
+test threads::actor::tests::panic_in_started_stops_actor ... ok
+test threads::actor::tests::start_linked_threads ... ok
+test threads::stream_tests::listener_consumes_iterator ... ok
+test threads::actor::tests::panic_in_handler_stops_actor ... ok
+test threads::stream_tests::stopped_actor_does_not_poll_iterator ... ok
+test threads::actor::tests::send_message_on_delivers ... ok
+test threads::stream_tests::listener_stops_on_cancellation ... ok
+test threads::timer_tests::test_send_after_actor_shutdown ... ok
+test threads::timer_tests::test_send_after_and_cancellation ... ok
+test tasks::timer_tests::test_send_interval_and_cancellation ... ok
+test threads::timer_tests::test_send_interval_and_cancellation ... ok
+
+test result: ok. 145 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.42s
+
+     Running tests/actor_scenarios.rs (/tmp/spawned-fede-research-25dGGmPA/fairness-target/debug/deps/actor_scenarios-e1a7aa84836688c0)
+
+running 5 tests
+test lifecycle_race_regression ... ok
+test sustained_actor_churn ... ignored, extended actor churn campaign
+test concurrent_producers_preserve_order_and_reply_identity ... ok
+test demonitor_before_exit_suppresses_notification_and_races_do_not_duplicate ... ok
+test generated_actor_scenarios ... ok
+
+test result: ok. 4 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.13s
+
+     Running tests/backend_experiments.rs (/tmp/spawned-fede-research-25dGGmPA/fairness-target/debug/deps/backend_experiments-dae925c1c3f9e15b)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/backend_resource_limits.rs (/tmp/spawned-fede-research-25dGGmPA/fairness-target/debug/deps/backend_resource_limits-f15d8cd13501dbcb)
+
+running 1 test
+test persistent_blocking_actors_queue_until_a_worker_is_released ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running tests/cfg_gated_protocol.rs (/tmp/spawned-fede-research-25dGGmPA/fairness-target/debug/deps/cfg_gated_protocol-914df6a43a4e8fce)
+
+running 2 tests
+test cfg_gated_method_works_via_protocol_ref ... ok
+test cfg_gated_method_works_via_blanket_impl ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/full_actor_shards.rs (/tmp/spawned-fede-research-25dGGmPA/fairness-target/debug/deps/full_actor_shards-2a65c04067f61e4b)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/linked_exit_macro.rs (/tmp/spawned-fede-research-25dGGmPA/fairness-target/debug/deps/linked_exit_macro-5a0c7fb183b11f15)
+
+running 2 tests
+test synchronous::macro_receives_linked_exit ... ok
+test asynchronous::macro_receives_linked_exit ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/metrics.rs (/tmp/spawned-fede-research-25dGGmPA/fairness-target/debug/deps/metrics-8bc4f8f855694fe2)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/metrics_counts_only.rs (/tmp/spawned-fede-research-25dGGmPA/fairness-target/debug/deps/metrics_counts_only-9f172731be454229)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/metrics_sampling.rs (/tmp/spawned-fede-research-25dGGmPA/fairness-target/debug/deps/metrics_sampling-9e3e6d721e19cf34)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/native_dispatcher.rs (/tmp/spawned-fede-research-25dGGmPA/fairness-target/debug/deps/native_dispatcher-4b51bf450750b482)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/protocol_compile.rs (/tmp/spawned-fede-research-25dGGmPA/fairness-target/debug/deps/protocol_compile-1475db0e48887118)
+
+running 1 test
+   Compiling spawned-rt v0.6.0 (/tmp/spawned-pr-security-review/integrated/rt)
+   Compiling spawned-concurrency v0.6.0 (/tmp/spawned-pr-security-review/integrated/concurrency)
+   Compiling spawned-concurrency-tests v0.0.0 (/tmp/spawned-fede-research-25dGGmPA/fairness-target/tests/trybuild/spawned-concurrency)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.81s
+
+
+test tests/ui-pass/protocol_actor.rs [should pass] ... ok
+test tests/ui/associated_type.rs [should fail to compile] ... ok
+test tests/ui/async_method.rs [should fail to compile] ... ok
+test tests/ui/missing_receiver.rs [should fail to compile] ... ok
+
+
+test protocol_diagnostics ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.90s
+
+     Running tests/ready_gate_loom.rs (/tmp/spawned-fede-research-25dGGmPA/fairness-target/debug/deps/ready_gate_loom-98630cc9c68b0d97)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/resource_cleanup.rs (/tmp/spawned-fede-research-25dGGmPA/fairness-target/debug/deps/resource_cleanup-a69e677dde700693)
+
+running 4 tests
+test thread_exit_waits_work_inside_futures_executor ... ok
+test pending_async_listener_is_dropped_on_actor_exit ... ok
+test timers_release_payloads_on_actor_exit ... ok
+test cancelled_thread_exit_wait_does_not_occupy_blocking_pool ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/shutdown_publication.rs (/tmp/spawned-fede-research-25dGGmPA/fairness-target/debug/deps/shutdown_publication-1223f9b176669743)
+
+running 1 test
+test admitted_request_racing_shutdown_drops_its_reply_before_join_completes ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+
+     Running unittests src/lib.rs (/tmp/spawned-fede-research-25dGGmPA/fairness-target/debug/deps/spawned_macros-3c47239726ca611f)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (/tmp/spawned-fede-research-25dGGmPA/fairness-target/debug/deps/spawned_rt-9f808a36b00fff7f)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/cancellation_loom.rs (/tmp/spawned-fede-research-25dGGmPA/fairness-target/debug/deps/cancellation_loom-727ff8177b1288fc)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/main.rs (/tmp/spawned-fede-research-25dGGmPA/fairness-target/debug/deps/updater-1442b3f4d8b3e38e)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/main.rs (/tmp/spawned-fede-research-25dGGmPA/fairness-target/debug/deps/updater_threads-0882689987c5b905)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests spawned_concurrency
+
+running 3 tests
+test concurrency/src/lib.rs - (line 9) ... ignored
+test concurrency/src/message.rs - message::Message (line 7) ... ignored
+test concurrency/src/response.rs - response::Response (line 31) ... ignored
+
+test result: ok. 0 passed; 0 failed; 3 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests spawned_macros
+
+running 4 tests
+test macros/src/lib.rs - actor (line 790) ... ignored
+test macros/src/lib.rs - actor (line 800) ... ignored
+test macros/src/lib.rs - actor (line 830) ... ignored
+test macros/src/lib.rs - protocol (line 544) ... ignored
+
+test result: ok. 0 passed; 0 failed; 4 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests spawned_rt
+
+running 2 tests
+test rt/src/tasks/tokio/mod.rs - tasks::tokio::ctrl_c (line 20) ... ignored
+test rt/src/threads/mod.rs - threads::ctrl_c (line 162) ... ignored
+
+test result: ok. 0 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.00s

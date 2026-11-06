@@ -18,7 +18,7 @@ commitment. Each milestone needs its own design, tests, and review.
 ## Foundation already available
 
 On main after [PR166](https://github.com/lambdaclass/spawned/pull/166) and
-[PR168](https://github.com/lambdaclass/spawned/pull/168) (not yet a new release):
+[PR168](https://github.com/lambdaclass/spawned/pull/168) (available in v0.6.0):
 
 - `Actor` lifecycle: `started()`, per-message `Handler<M>`, and `stopped()`.
 - Protocol macros, typed replies, type-erased protocol references and recipients.
@@ -37,6 +37,13 @@ not needing an executor is different from having no Tokio dependency. Full
 supervision, a new scheduler, and production metrics are not completed milestones.
 
 ## 1. Optional framework-level observability
+
+The initial `metrics` feature in v0.6.0 implements fixed aggregate counters,
+mailbox-depth access, sampled timing and pull-based Prometheus text output;
+see [the metrics guide](METRICS.md). Oldest-message age, active-monitor counts,
+causal context and additional exporters remain future work. An application
+benchmark must still establish useful labels, collection cost and sampling.
+
 
 Instrument the mailbox, dispatch, request, and lifecycle boundaries first.
 Start with an exporter-independent collection interface and one optional exporter;
@@ -175,7 +182,7 @@ Exit reasons ([PR163](https://github.com/lambdaclass/spawned/pull/163)), typed
 child handles/identities ([PR164](https://github.com/lambdaclass/spawned/pull/164)),
 monitors ([PR165](https://github.com/lambdaclass/spawned/pull/165)), and links
 ([PR166](https://github.com/lambdaclass/spawned/pull/166)) are implemented. See the
-[usage guide](API-GUIDE.md#links-and-trapped-exits-unreleased-main) and
+[usage guide](API-GUIDE.md#links-and-trapped-exits) and
 [lifecycle review](reviews/pr-166-links.md) for current behavior. Normal linked
 exits are ignored unless trapped; abnormal exits cancel non-trapping peers;
 `Kill` cannot be trapped but remains cooperative. The current exit-reason variants
@@ -192,3 +199,5 @@ having links. No release date or v1.0 commitment is made here.
 
 The [previous plan](design/roadmap-before-observability.md) is archived because it
 predates the current APIs and contains outdated status and competitor claims.
+
+Other contract-focused candidates are ranked in the [concurrency ideas research](research/concurrency-ideas.md).

@@ -27,6 +27,8 @@ name = "baseline"
 harness = false
 
 [features]
+# Fixed-cardinality counters and sampled timings; disabled by default.
+metrics = []
 io-experiments = ["dep:monoio"]
 # Private benchmark prototypes; no stable runtime-selection API.
 backend-experiments = ["spawned-rt/backend-experiments"]
@@ -70,3 +72,7 @@ required-features = ["backend-experiments"]
 name = "runtime_isolation"
 harness = false
 required-features = ["backend-experiments"]
+
+[[bench]]
+name = "metrics_overhead"
+harness = false

@@ -220,8 +220,8 @@ Inspired by Erlang/OTP, the goal of `spawned` is to keep concurrency logic separ
 
 Protocols make this separation explicit: the trait defines *what* an actor does, the `#[actor]` impl defines *how*, and the framework handles message routing, mailboxes, and lifecycle. Your business logic is plain Rust methods — no channels, no `match` on enums, no concurrency primitives.
 
-Links, trapped exits and atomic linked startup are available on unreleased main.
-See [link usage](docs/API-GUIDE.md#links-and-trapped-exits-unreleased-main) and the
+Links, trapped exits and atomic linked startup are available in v0.6.0.
+See [link usage](docs/API-GUIDE.md#links-and-trapped-exits) and the
 [review and hardening notes](docs/reviews/pr-166-links.md). Automatic supervision
 and restart policies remain roadmap work.
 
@@ -243,6 +243,14 @@ See the [detailed roadmap](docs/ROADMAP.md) for acceptance criteria and the
 [Silver/flux research](docs/research/silver-flux.md) for transferable ideas.
 A custom runtime, busy spinning, and shared-memory transport remain research;
 removing Tokio is not a committed direction.
+
+## Optional framework metrics
+
+Enable the `metrics` Cargo feature for mailbox depth, sampled queue/handler/request
+latency, request outcomes and actor lifecycle counters. Collection uses fixed
+aggregate series and adds no business-handler instrumentation. Metrics are
+compiled out by default. See the [metrics guide](docs/METRICS.md) for sampling,
+Prometheus text export, accounting boundaries and measured overhead.
 
 ## Inspiration
 

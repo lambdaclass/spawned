@@ -10,6 +10,7 @@ use spawned_rt::tasks::watch;
 /// Constructed before dispatch, so even a never-polled actor has cleanup.
 /// Completion owns its sender until links and outgoing monitors are closed.
 pub(crate) struct ActorCleanup<C: Fn()> {
+    metrics: crate::instrumentation::ActorObservation,
     links: LinkCleanup,
     cause: LinkedExitReason,
     monitors: Option<MonitorCleanup>,
@@ -29,6 +30,7 @@ impl<C: Fn()> ActorCleanup<C> {
         cancel: C,
     ) -> Self {
         Self {
+            metrics: crate::instrumentation::ActorObservation::new(),
             links: LinkCleanup::new(id, links),
             cause,
             monitors: Some(MonitorCleanup(monitors)),
@@ -57,6 +59,7 @@ impl<C: Fn()> Drop for ActorCleanup<C> {
         (self.cancel)();
         drop(self.monitors.take());
         self.links.complete(&reason);
+        self.metrics.finish(&reason);
         self.completion.send_replace(Some(reason));
     }
 }

@@ -1,3 +1,6 @@
 research/backend-experiments/**/data/** linguist-generated=true
 research/backend-experiments/**/results/** linguist-generated=true
 research/backend-experiments/**/report/** linguist-generated=true
+research/framework-metrics/**/data/** linguist-generated=true
+research/framework-metrics/**/evidence/*.log linguist-generated=true
+research/framework-metrics/**/data/*.csv whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol

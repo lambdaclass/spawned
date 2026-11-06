@@ -32,7 +32,9 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
       - name: Run Tests
-        run: cargo test --verbose
+        run: cargo test --locked --verbose
+      - name: Test optional framework metrics
+        run: cargo test --locked -p spawned-concurrency --features metrics
 
   fmt:
     runs-on: ubuntu-latest
@@ -56,7 +58,9 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
       - name: Run Clippy
-        run: cargo clippy --all-targets -- -D warnings
+        run: |
+          cargo clippy --locked --all-targets -- -D warnings
+          cargo clippy --locked --workspace --all-targets --features spawned-concurrency/metrics -- -D warnings
 
   publish-dry-run:
     runs-on: ubuntu-latest
@@ -70,9 +74,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Verify crate packaging
         run: |
-          # --no-verify skips the build step (which tries to fetch deps from crates.io).
-          # spawned-concurrency is skipped entirely because it depends on spawned-macros
-          # which isn't on crates.io yet — cargo can't even package it.
-          # TODO: after first publish, switch all three to: cargo publish --dry-run
+          # --no-verify packages leaf crates without fetching sibling versions.
+          # spawned-concurrency's new sibling versions are published in dependency
+          # order by release.yaml; its package is also validated before release.
           cargo package --package spawned-macros --no-verify
           cargo package --package spawned-rt --no-verify

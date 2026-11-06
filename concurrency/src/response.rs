@@ -37,7 +37,10 @@ enum ResponseState<T> {
 /// // Tasks: actor.query().await.unwrap()
 /// // Threads: actor.query().unwrap()
 /// ```
-pub struct Response<T>(ResponseState<T>);
+pub struct Response<T>(
+    ResponseState<T>,
+    #[cfg(feature = "metrics")] Option<crate::instrumentation::RequestObservation>,
+);
 
 // Safety: tokio::sync::oneshot::Receiver<T> implements Unpin, so pinning
 // Response<T> is safe. This is required for the Future::poll implementation
@@ -50,7 +53,11 @@ impl<T> Response<T> {
     /// Used by the threads runtime where the request blocks at call time
     /// and the result is immediately available.
     pub fn ready(result: Result<T, ActorError>) -> Self {
-        Self(ResponseState::Ready(result))
+        Self(
+            ResponseState::Ready(result),
+            #[cfg(feature = "metrics")]
+            None,
+        )
     }
 
     /// Extract the value, panicking on error.
@@ -97,7 +104,11 @@ impl<T> Response<T> {
     /// Panics on pending or consumed responses.
     pub fn map<U, F: FnOnce(T) -> U>(self, f: F) -> Response<U> {
         match self.0 {
-            ResponseState::Ready(result) => Response(ResponseState::Ready(result.map(f))),
+            ResponseState::Ready(result) => Response(
+                ResponseState::Ready(result.map(f)),
+                #[cfg(feature = "metrics")]
+                None,
+            ),
             ResponseState::Receiver(_) | ResponseState::TimedReceiver(_) => {
                 panic!("called map() on a pending Response; use .await in async contexts")
             }
@@ -115,6 +126,8 @@ impl<T: Send + 'static> Response<T> {
         result: Result<oneshot::Receiver<T>, ActorError>,
         duration: Duration,
     ) -> Self {
+        #[cfg(feature = "metrics")]
+        let observation = crate::instrumentation::RequestObservation::new();
         match result {
             Ok(rx) => {
                 let fut = Box::pin(async move {
@@ -124,18 +137,46 @@ impl<T: Send + 'static> Response<T> {
                         Err(_) => Err(ActorError::RequestTimeout),
                     }
                 });
-                Self(ResponseState::TimedReceiver(fut))
+                Self(
+                    ResponseState::TimedReceiver(fut),
+                    #[cfg(feature = "metrics")]
+                    Some(observation),
+                )
             }
-            Err(e) => Self(ResponseState::Ready(Err(e))),
+            Err(e) => {
+                let result = Err(e);
+                #[cfg(feature = "metrics")]
+                observation.finish(&result);
+                Self(
+                    ResponseState::Ready(result),
+                    #[cfg(feature = "metrics")]
+                    None,
+                )
+            }
         }
     }
 }
 
 impl<T> From<Result<oneshot::Receiver<T>, ActorError>> for Response<T> {
     fn from(result: Result<oneshot::Receiver<T>, ActorError>) -> Self {
+        #[cfg(feature = "metrics")]
+        let observation = crate::instrumentation::RequestObservation::new();
         match result {
-            Ok(rx) => Self(ResponseState::Receiver(rx)),
-            Err(e) => Self(ResponseState::Ready(Err(e))),
+            Ok(rx) => Self(
+                ResponseState::Receiver(rx),
+                #[cfg(feature = "metrics")]
+                Some(observation),
+            ),
+            Err(e) => {
+                let result = Err(e);
+                #[cfg(feature = "metrics")]
+                observation.finish(&result);
+                Self(
+                    ResponseState::Ready(result),
+                    #[cfg(feature = "metrics")]
+                    None,
+                )
+            }
         }
     }
 }
@@ -148,7 +189,7 @@ impl<T: Send + 'static> Future for Response<T> {
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Self::Output> {
         let this = self.get_mut();
-        match &mut this.0 {
+        let result = match &mut this.0 {
             ResponseState::Receiver(rx) => match Pin::new(rx).poll(cx) {
                 std::task::Poll::Ready(Ok(val)) => {
                     this.0 = ResponseState::Done;
@@ -172,7 +213,14 @@ impl<T: Send + 'static> Future for Response<T> {
                 _ => unreachable!(),
             },
             ResponseState::Done => panic!("Response polled after completion"),
+        };
+        #[cfg(feature = "metrics")]
+        if let std::task::Poll::Ready(ref outcome) = result {
+            if let Some(observation) = this.1.take() {
+                observation.finish(outcome);
+            }
         }
+        result
     }
 }
 

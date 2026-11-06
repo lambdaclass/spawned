@@ -1,0 +1,2 @@
+metrics,mode,actors,producers,work,sample_every,requests,seconds,requests_per_second,actor_ref_bytes
+false,threads,1,1,0,0,366325,2.000573884,183109.958,72

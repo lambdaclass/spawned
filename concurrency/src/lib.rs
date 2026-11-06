@@ -95,3 +95,7 @@ pub use spawned_macros::{actor, protocol};
 mod link_regression_tests;
 
 mod actor_cleanup;
+
+mod instrumentation;
+#[cfg(feature = "metrics")]
+pub mod metrics;

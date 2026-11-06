@@ -1,0 +1,12 @@
+{
+  "seed": 20261107,
+  "seconds": 3,
+  "replicates": 7,
+  "cpus": "2,3,4,5",
+  "profiles": [
+    "baseline",
+    "off"
+  ],
+  "purpose": "resolve variable feature-off measurements; frozen binaries from initial builds",
+  "load_after": " 16:56:38 up 4 days, 23:50,  8 users,  load average: 19.57, 17.03, 11.01\n"
+}

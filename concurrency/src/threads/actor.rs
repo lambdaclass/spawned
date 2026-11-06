@@ -56,12 +56,21 @@ pub trait Handler<M: Message>: Actor {
 // ---------------------------------------------------------------------------
 
 trait Envelope<A: Actor>: Send {
+    #[cfg(feature = "metrics")]
+    fn observation(&mut self) -> Option<crate::instrumentation::MessageObservation> {
+        None
+    }
+    #[cfg(feature = "metrics")]
+    fn reject(self: Box<Self>) {}
+
     fn handle(self: Box<Self>, actor: &mut A, ctx: &Context<A>);
 }
 
 struct MessageEnvelope<M: Message> {
     msg: M,
     tx: Option<oneshot::Sender<M::Result>>,
+    #[cfg(feature = "metrics")]
+    observation: Option<crate::instrumentation::MessageObservation>,
 }
 
 impl<A, M> Envelope<A> for MessageEnvelope<M>
@@ -69,10 +78,58 @@ where
     A: Actor + Handler<M>,
     M: Message,
 {
+    #[cfg(feature = "metrics")]
+    fn observation(&mut self) -> Option<crate::instrumentation::MessageObservation> {
+        self.observation.take()
+    }
+    #[cfg(feature = "metrics")]
+    fn reject(mut self: Box<Self>) {
+        if let Some(observation) = self.observation.take() {
+            observation.reject();
+        }
+    }
     fn handle(self: Box<Self>, actor: &mut A, ctx: &Context<A>) {
         let result = actor.handle(self.msg, ctx);
         if let Some(tx) = self.tx {
-            let _ = tx.send(result);
+            let delivered = tx.send(result).is_ok();
+            #[cfg(feature = "metrics")]
+            crate::instrumentation::reply(delivered);
+            #[cfg(not(feature = "metrics"))]
+            let _ = delivered;
+        }
+    }
+}
+
+fn enqueue<A, M>(
+    sender: &mpsc::Sender<MailboxItem<A>>,
+    _mailbox: &crate::instrumentation::Mailbox,
+    msg: M,
+    tx: Option<oneshot::Sender<M::Result>>,
+) -> Result<(), ActorError>
+where
+    A: Actor + Handler<M>,
+    M: Message,
+{
+    let envelope: Box<dyn Envelope<A> + Send> = Box::new(MessageEnvelope {
+        msg,
+        tx,
+        #[cfg(feature = "metrics")]
+        observation: Some(_mailbox.enqueued()),
+    });
+    match sender.send(MailboxItem::Message(envelope)) {
+        Ok(()) => {
+            #[cfg(feature = "metrics")]
+            crate::instrumentation::accepted();
+            Ok(())
+        }
+        Err(_error) => {
+            #[cfg(feature = "metrics")]
+            {
+                if let MailboxItem::Message(envelope) = _error.0 {
+                    envelope.reject();
+                }
+            }
+            Err(ActorError::ActorStopped)
         }
     }
 }
@@ -121,6 +178,7 @@ pub struct Context<A: Actor> {
     trap_exit: TrapExitFlag,
     links: LinkTable,
     linked_reason: LinkedExitReason,
+    mailbox: crate::instrumentation::Mailbox,
 }
 
 impl<A: Actor> Clone for Context<A> {
@@ -134,6 +192,7 @@ impl<A: Actor> Clone for Context<A> {
             trap_exit: self.trap_exit.clone(),
             links: self.links.clone(),
             linked_reason: self.linked_reason.clone(),
+            mailbox: self.mailbox.clone(),
         }
     }
 }
@@ -157,7 +216,16 @@ impl<A: Actor> Context<A> {
             trap_exit: actor_ref.trap_exit.clone(),
             links: actor_ref.links.clone(),
             linked_reason: actor_ref.linked_reason.clone(),
+            mailbox: actor_ref.mailbox.clone(),
         }
+    }
+
+    /// Waiting messages, including in-flight enqueue reservations, excluding
+    /// the active handler and internal exit/shutdown control envelopes.
+    /// Concurrent observations are approximate; no registry or actor labels.
+    #[cfg(feature = "metrics")]
+    pub fn mailbox_depth(&self) -> u64 {
+        self.mailbox.depth()
     }
 
     /// The actor's unique identity.
@@ -177,10 +245,7 @@ impl<A: Actor> Context<A> {
         A: Handler<M>,
         M: Message,
     {
-        let envelope = MessageEnvelope { msg, tx: None };
-        self.sender
-            .send(MailboxItem::Message(Box::new(envelope)))
-            .map_err(|_| ActorError::ActorStopped)
+        enqueue(&self.sender, &self.mailbox, msg, None)
     }
 
     /// Send a request and get a raw oneshot receiver for the reply.
@@ -190,10 +255,7 @@ impl<A: Actor> Context<A> {
         M: Message,
     {
         let (tx, rx) = oneshot::channel();
-        let envelope = MessageEnvelope { msg, tx: Some(tx) };
-        self.sender
-            .send(MailboxItem::Message(Box::new(envelope)))
-            .map_err(|_| ActorError::ActorStopped)?;
+        enqueue(&self.sender, &self.mailbox, msg, Some(tx))?;
         Ok(rx)
     }
 
@@ -216,12 +278,17 @@ impl<A: Actor> Context<A> {
         A: Handler<M>,
         M: Message,
     {
-        let rx = self.request_raw(msg)?;
-        match rx.recv_timeout(duration) {
-            Ok(result) => Ok(result),
-            Err(RecvTimeoutError::Timeout) => Err(ActorError::RequestTimeout),
-            Err(RecvTimeoutError::Disconnected) => Err(ActorError::ActorStopped),
-        }
+        let observation = crate::instrumentation::RequestObservation::new();
+        let result = match self.request_raw(msg) {
+            Err(error) => Err(error),
+            Ok(rx) => match rx.recv_timeout(duration) {
+                Ok(result) => Ok(result),
+                Err(RecvTimeoutError::Timeout) => Err(ActorError::RequestTimeout),
+                Err(RecvTimeoutError::Disconnected) => Err(ActorError::ActorStopped),
+            },
+        };
+        observation.finish(&result);
+        result
     }
 
     /// Get a type-erased `Recipient<M>` for sending a single message type
@@ -245,6 +312,7 @@ impl<A: Actor> Context<A> {
             trap_exit: self.trap_exit.clone(),
             links: self.links.clone(),
             linked_reason: self.linked_reason.clone(),
+            mailbox: self.mailbox.clone(),
         }
     }
 
@@ -460,12 +528,17 @@ pub fn request<M: Message>(
     msg: M,
     timeout: Duration,
 ) -> Result<M::Result, ActorError> {
-    let rx = recipient.request_raw(msg)?;
-    match rx.recv_timeout(timeout) {
-        Ok(result) => Ok(result),
-        Err(RecvTimeoutError::Timeout) => Err(ActorError::RequestTimeout),
-        Err(RecvTimeoutError::Disconnected) => Err(ActorError::ActorStopped),
-    }
+    let observation = crate::instrumentation::RequestObservation::new();
+    let result = match recipient.request_raw(msg) {
+        Err(error) => Err(error),
+        Ok(rx) => match rx.recv_timeout(timeout) {
+            Ok(result) => Ok(result),
+            Err(RecvTimeoutError::Timeout) => Err(ActorError::RequestTimeout),
+            Err(RecvTimeoutError::Disconnected) => Err(ActorError::ActorStopped),
+        },
+    };
+    observation.finish(&result);
+    result
 }
 
 // ---------------------------------------------------------------------------
@@ -486,6 +559,7 @@ pub struct ActorRef<A: Actor> {
     trap_exit: TrapExitFlag,
     links: LinkTable,
     linked_reason: LinkedExitReason,
+    mailbox: crate::instrumentation::Mailbox,
 }
 
 impl<A: Actor> Debug for ActorRef<A> {
@@ -505,6 +579,7 @@ impl<A: Actor> Clone for ActorRef<A> {
             trap_exit: self.trap_exit.clone(),
             links: self.links.clone(),
             linked_reason: self.linked_reason.clone(),
+            mailbox: self.mailbox.clone(),
         }
     }
 }
@@ -516,10 +591,7 @@ impl<A: Actor> ActorRef<A> {
         A: Handler<M>,
         M: Message,
     {
-        let envelope = MessageEnvelope { msg, tx: None };
-        self.sender
-            .send(MailboxItem::Message(Box::new(envelope)))
-            .map_err(|_| ActorError::ActorStopped)
+        enqueue(&self.sender, &self.mailbox, msg, None)
     }
 
     /// Send a request and get a raw oneshot receiver for the reply.
@@ -529,10 +601,7 @@ impl<A: Actor> ActorRef<A> {
         M: Message,
     {
         let (tx, rx) = oneshot::channel();
-        let envelope = MessageEnvelope { msg, tx: Some(tx) };
-        self.sender
-            .send(MailboxItem::Message(Box::new(envelope)))
-            .map_err(|_| ActorError::ActorStopped)?;
+        enqueue(&self.sender, &self.mailbox, msg, Some(tx))?;
         Ok(rx)
     }
 
@@ -555,12 +624,17 @@ impl<A: Actor> ActorRef<A> {
         A: Handler<M>,
         M: Message,
     {
-        let rx = self.request_raw(msg)?;
-        match rx.recv_timeout(duration) {
-            Ok(result) => Ok(result),
-            Err(RecvTimeoutError::Timeout) => Err(ActorError::RequestTimeout),
-            Err(RecvTimeoutError::Disconnected) => Err(ActorError::ActorStopped),
-        }
+        let observation = crate::instrumentation::RequestObservation::new();
+        let result = match self.request_raw(msg) {
+            Err(error) => Err(error),
+            Ok(rx) => match rx.recv_timeout(duration) {
+                Ok(result) => Ok(result),
+                Err(RecvTimeoutError::Timeout) => Err(ActorError::RequestTimeout),
+                Err(RecvTimeoutError::Disconnected) => Err(ActorError::ActorStopped),
+            },
+        };
+        observation.finish(&result);
+        result
     }
 
     /// Get a type-erased `Recipient<M>` for this actor.
@@ -592,6 +666,14 @@ impl<A: Actor> ActorRef<A> {
     /// Block until the actor stops and return the exit reason.
     pub fn wait_exit(&self) -> ExitReason {
         crate::child_handle::wait_for_thread_exit_blocking(self.completion.clone())
+    }
+
+    /// Waiting messages, including in-flight enqueue reservations, excluding
+    /// the active handler and internal exit/shutdown control envelopes.
+    /// Concurrent observations are approximate; no registry or actor labels.
+    #[cfg(feature = "metrics")]
+    pub fn mailbox_depth(&self) -> u64 {
+        self.mailbox.depth()
     }
 
     /// The actor's unique identity.
@@ -666,6 +748,7 @@ impl<A: Actor> ActorRef<A> {
             trap_exit: trap_exit.clone(),
             links: links.clone(),
             linked_reason: linked_reason.clone(),
+            mailbox: crate::instrumentation::Mailbox::default(),
         };
 
         let ctx = Context {
@@ -677,6 +760,7 @@ impl<A: Actor> ActorRef<A> {
             trap_exit,
             links: links.clone(),
             linked_reason: linked_reason.clone(),
+            mailbox: actor_ref.mailbox.clone(),
         };
 
         if let Some(parent) = parent {
@@ -765,15 +849,26 @@ fn run_actor_receiving<A: Actor>(
         };
         match msg {
             Some(envelope) => {
+                #[cfg(feature = "metrics")]
+                let mut envelope = envelope;
+
                 // A stop observed after receive wins over dispatch, whether
                 // the channel waited or was buffered. Defer the message drop.
                 if cancellation_token.is_cancelled() {
                     discarded = Some(envelope);
                     break;
                 }
+                #[cfg(feature = "metrics")]
+                let observation = envelope
+                    .observation()
+                    .map(|observation| observation.begin());
                 let result = catch_unwind(AssertUnwindSafe(|| {
                     envelope.handle(&mut actor, &ctx);
                 }));
+                #[cfg(feature = "metrics")]
+                if let Some(observation) = observation {
+                    observation.finish(result.is_err());
+                }
                 if let Err(panic) = result {
                     let msg = panic_message(&*panic);
                     tracing::error!("Panic in message handler: {msg}");
@@ -1546,6 +1641,7 @@ mod idle_stop_regression {
             trap_exit: new_trap_exit_flag(),
             links: new_link_table(),
             linked_reason: new_linked_exit_reason(),
+            mailbox: crate::instrumentation::Mailbox::default(),
         };
         let count = Arc::new(AtomicUsize::new(0));
         let seen = count.clone();
@@ -1577,6 +1673,8 @@ mod idle_stop_regression {
         tx.send(MailboxItem::Message(Box::new(MessageEnvelope {
             msg: Increment(events.clone(), monitors),
             tx: Some(reply),
+            #[cfg(feature = "metrics")]
+            observation: None,
         })))
         .unwrap();
         token.cancel();
@@ -1657,6 +1755,7 @@ mod stop_wakeup_regression {
             trap_exit: new_trap_exit_flag(),
             links: new_link_table(),
             linked_reason: new_linked_exit_reason(),
+            mailbox: crate::instrumentation::Mailbox::default(),
         };
         let (entered_tx, entered) = mpsc::channel();
         let (stopped_tx, stopped) = mpsc::channel();

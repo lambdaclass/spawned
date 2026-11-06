@@ -451,7 +451,11 @@ Use **`threads`** when you want simplicity, no async runtime, or CPU-bound actor
 Both modes provide the same `Actor`, `Handler<M>`, `ActorRef<A>`, and `Context<A>` types. Switching requires changing imports and adding/removing `async`/`.await` on handlers and lifecycle hooks.
 
 
-## Links and trapped exits (unreleased main)
+<a id="links-and-trapped-exits-unreleased-main"></a>
+
+## Links and trapped exits
+
+Available since v0.6.0.
 
 Links are bidirectional failure notifications. Use `ctx.link(&child_handle)` and
 `ctx.unlink(&child_handle)` for existing actors, or `child.start_linked(&parent_ctx)`
