@@ -703,18 +703,21 @@ fn main() {
             batches.push(collector.join().unwrap());
         }
         observation_elapsed = epoch.elapsed();
-        // Fences discard no work: all submitted handlers finish, even when a
-        // caller deadline expired. Stop happens only after this measured drain.
-        for (id, node) in nodes.iter().enumerate() {
-            runtime
-                .block_on(
-                    node.request_raw(Wire {
-                        children: Vec::new(),
-                        expected_shard: assignment[id],
-                    })
-                    .unwrap(),
-                )
-                .unwrap();
+        // Offered-load deadlines can leave work running. Fences wait for it
+        // without discarding messages. Closed-loop producers already awaited
+        // every reply, so do not charge graphs for extra per-node fence RPCs.
+        if c.mode == "offered" {
+            for (id, node) in nodes.iter().enumerate() {
+                runtime
+                    .block_on(
+                        node.request_raw(Wire {
+                            children: Vec::new(),
+                            expected_shard: assignment[id],
+                        })
+                        .unwrap(),
+                    )
+                    .unwrap();
+            }
         }
         elapsed = epoch.elapsed();
         actor_after = Some(thread_stats());
