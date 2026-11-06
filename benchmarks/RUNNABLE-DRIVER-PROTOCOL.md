@@ -2,7 +2,7 @@
 
 Profiles of split native queues still contain atomic/reference-count operations.
 Test a second implementation of the actor task primitive using optional
-async-task4.7.1, keeping the same per-worker mutex/deque queues, root driver,
+async-task 4.7.1, keeping the same per-worker mutex/deque queues, root driver,
 shared Tokio I/O runtime, cooperative message turn and public actor API. This is
 private native-runnable, not removal of Tokio or a supported runtime replacement.
 
@@ -37,9 +37,9 @@ including the existing custom jobs. This changes layout/code generation even for
 controls; comparisons must be within the new source, with source/binary hashes.
 A difference from V3 is not attributable solely to the Runnable primitive.
 
-The private ROOT_QUANTUM selector defaults to8 polls as in V3, validates1..256
+The private ROOT_QUANTUM selector defaults to 8 polls as in V3, validates 1..256
 at startup, and is immutable after first successful initialization. Root and
-Runnable compare1/8/32/128 polls before yielding the outer driver. This is a
+Runnable compare 1/8/32/128 polls before yielding the outer driver. This is a
 scheduling tradeoff, not a running-handler preemption bound. Single-worker hot
 MPSC progress is checked at all four values. Every timing records the selector
 in experiment_json, and unlike quantum values are never pooled.
@@ -52,9 +52,9 @@ Runnable regression. The final executor probe tests a single destructor panic;
 ordinary poll panic is covered separately, and the direct wrapper test checks
 its own two unwind boundaries. No backend promises recovery from a double panic.
 
-The first eight-core scale smoke was rejected by the benchmark's legacy256
-producer cap before actor startup (exit101). Extend only graph actor limits to
-65536 and async logical graph producers to2048; blocking/offered producer caps
+The first eight-core scale smoke was rejected by the benchmark's legacy 256
+producer cap before actor startup (exit 101). Extend only graph actor limits to
+65,536 and async logical graph producers to 2,048; blocking/offered producer caps
 and offered actor limits stay unchanged. Fresh same-source smokes must cover
 both eight-core populations before scoring; retain the rejected probe log.
 
@@ -65,3 +65,24 @@ coordinator before any scored process; historical smokes are not resource-budget
 measurements. Centralize the dispatcher policy selector and reuse it in actor
 dispatch, graph/soak/legacy harness ownership and the lifecycle integration tests.
 Repeat gates and smokes on the corrected new source before any V4 scores.
+
+## Review notes and timing boundaries
+
+The root driver shares Tokio's outer cooperative budget across its job polls.
+At larger quanta, that budget can be exhausted before the next explicit root
+yield; subsequent resource polls may make no progress until deferred wakes are
+flushed. Quantum changes therefore alter scheduling and budget interaction, not
+only loop overhead. No yield-count instrumentation isolates these effects.
+
+Both lifecycle integration targets are crate-level gated by backend-experiments;
+the research benches also require that feature. Default-feature GitHub build,
+test and Clippy checks pass. Terminal close calls policy-aware unpark for every
+worker, including Root/Runnable Notify wakeups. The Runnable bridge=false debug
+assert documents an internal invariant: only the root-driver path constructs
+and executes Runnable work. This experiment does not promise task-local identity
+or block_in_place compatibility.
+
+Owned-dispatcher legacy benchmark callers now use a current-thread runtime;
+this is a harness resource change for existing native/pool controls too. All
+comparisons remain within their recorded source. Final V4 measurements freeze
+09dd194; later prose changes do not alter Rust/Cargo source.

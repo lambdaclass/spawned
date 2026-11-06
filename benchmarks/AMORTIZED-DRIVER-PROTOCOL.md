@@ -54,6 +54,10 @@ The corrected-source continuation adds native-root to the count/time-slice,
 offered/burst, and bounded lifecycle soak controllers. Clock cases are kept
 separate from graph/caller cases; all slice/caller/resource settings remain in
 the grouping key. Twelve configurations share each offered rate/shape; ten
-ten-minute soaks include native-root N3+R1 and N4+R1. The former is an equal
+lifecycle resource configurations include native-root N3+R1 and N4+R1. The
+initial plan used ten-minute windows; before any long-soak outcomes, the full
+V3/V4/V5 matrix was allocated uniform five-minute windows within the overnight
+budget. Exact --seconds=300 arguments remain in metadata; the CLI default of 600 seconds
+was not changed. The former is an equal
 runtime-worker control against Tokio4; the latter is an equal actor-worker
 control with one extra shared I/O worker on the same four physical actor cores.
