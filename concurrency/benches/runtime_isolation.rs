@@ -274,7 +274,6 @@ mod linux {
                 );
             }
         });
-        drop(endpoint);
         drop(critical);
         drop(router);
         drop(backgrounds);
