@@ -35,6 +35,20 @@ pub enum Policy {
     Runnable,
     TokioPool,
 }
+/// Shared selector mapping for actor dispatch, harness runtime ownership and
+/// lifecycle tests. Keep all research-owned runtimes in one place.
+#[doc(hidden)]
+pub fn policy_for_scheduler(selector: &str) -> Option<Policy> {
+    match selector {
+        "native-global" => Some(Policy::Global),
+        "native-local" => Some(Policy::Local),
+        "native-steal" => Some(Policy::Steal),
+        "native-root" => Some(Policy::Root),
+        "native-runnable" => Some(Policy::Runnable),
+        "tokio-pool" => Some(Policy::TokioPool),
+        _ => None,
+    }
+}
 struct Active {
     count: usize,
     closed: bool,

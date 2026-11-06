@@ -539,10 +539,8 @@ fn main() {
     let c = Config::parse();
     let scheduler = std::env::var("SPAWNED_EXPERIMENT_SCHEDULER").unwrap_or_default();
     let sharded = scheduler == "sharded";
-    let dispatched = matches!(
-        scheduler.as_str(),
-        "native-global" | "native-local" | "native-steal" | "native-root" | "tokio-pool"
-    );
+    let dispatched =
+        spawned_rt::tasks::experimental::dispatcher::policy_for_scheduler(&scheduler).is_some();
     let mut builder = if sharded || dispatched {
         tokio::runtime::Builder::new_current_thread()
     } else {

@@ -209,15 +209,9 @@ fn suspended_actor_does_not_block_another_actor_on_its_shard() {
 #[test]
 fn actors_outlive_their_caller_runtime() {
     let scheduler = std::env::var("SPAWNED_EXPERIMENT_SCHEDULER").unwrap_or_default();
-    if !matches!(
-        scheduler.as_str(),
-        "sharded"
-            | "native-global"
-            | "native-local"
-            | "native-steal"
-            | "native-root"
-            | "tokio-pool"
-    ) {
+    if scheduler != "sharded"
+        && spawned_rt::tasks::experimental::dispatcher::policy_for_scheduler(&scheduler).is_none()
+    {
         return;
     }
     let rt = runtime();

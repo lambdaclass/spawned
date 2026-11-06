@@ -57,3 +57,11 @@ producer cap before actor startup (exit101). Extend only graph actor limits to
 65536 and async logical graph producers to2048; blocking/offered producer caps
 and offered actor limits stay unchanged. Fresh same-source smokes must cover
 both eight-core populations before scoring; retain the rejected probe log.
+
+Before V4 scoring, source inspection found native-runnable missing from duplicated
+owned-runtime/test selector lists. That created unnecessary idle caller-runtime
+workers in the harness and skipped two integration cases. Cancel the waiting V4
+coordinator before any scored process; historical smokes are not resource-budget
+measurements. Centralize the dispatcher policy selector and reuse it in actor
+dispatch, graph/soak/legacy harness ownership and the lifecycle integration tests.
+Repeat gates and smokes on the corrected new source before any V4 scores.
