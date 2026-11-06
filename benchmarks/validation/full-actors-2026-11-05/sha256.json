@@ -15,5 +15,16 @@
   "spawned-linux-full-meta.json": "fdd4681efb1f2374e9a1361199a49f632b2eb7d2a26159e75f8c9e1493a36b2e",
   "spawned-full-actors-mac-meta.json": "18ef69c72e901ea7dd5651569f68076a7dec06f43a4ab4e15909f61cb9d34291",
   "spawned-full-actor-release-clippy.log": "f82d0fca8ff42d429b1c9c24081deed1ba4ef4e2f9ec51bda04147476fa1bdf4",
-  "spawned-full-actor-release-default.log": "7cc6364bdd6ddaee2004aa7e9c20d89ce2251df0eca8d0fbc0dd2bc460918c17"
+  "spawned-full-actor-release-default.log": "7cc6364bdd6ddaee2004aa7e9c20d89ce2251df0eca8d0fbc0dd2bc460918c17",
+  "merged-clippy.log": "433166e929ec8462cb0da31474089ed65f7ee4b7c62ae52502b98d8bc7bf7098",
+  "fede-sharded-tests.log": "6bb3ca2463976133c8f8d0290d40eb724fd1cd69840fab25fd599f28ba459e45",
+  "fede-actor-scenarios-failure-seed.txt": "f7edbdf486f55ad3ee92b226283bce1616a8ecc9d7f6f3c65dff927ae476b228",
+  "fede-default-tests.log": "ab9fde72947b2ba209215acf9e61aa71fa6ba75191cf7d3894baf8911649e8b7",
+  "fede-run.sh": "c78b7209f48a8cc42f79567a3d6dee4b288538e12f9a2fe24c754132dea77f4e",
+  "merged-all-feature-tests.log": "fad60bdbf744b5226efb2a66093f7dceb1ae01ceabf7252679b558606132ae4b",
+  "shutdown-publication-after.log": "495a83ac9a2e10771c8ef5dca493613ed16e9a07ae6ce923e8e1e303362ba645",
+  "shutdown-publication-before.log": "0233dbc0bb9fb89e7c41b61574e6a6370b16661bf10cf51fe5498888f2103c08",
+  "fede-scenario-fixed-stress.log": "f66cb803e13508e2725660ab871e01197fb4db368a91c2d0faf835524cca5bae",
+  "fede-default-tests-attempt2-scenario.log": "0b0611126e28936ce03dd05bcb624eb93381cbbf8f3505402a3f08a09fd7bcfd",
+  "fede-review-input.txt": "13420ab051c14ad6a3528b089db9217f4724e44e589f212395df89d4b73e1627"
 }

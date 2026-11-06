@@ -1,8 +1,9 @@
 # Performance studies
 
 The [full-actor report](reports/full-actors-2026-11-05/REPORT.md) compares actual
-Spawned lifecycle/messages across Tokio, batching and sharding: 1,050 successful
-processes and 86 million requests on macOS/Linux, with eight figures.
+Spawned lifecycle/messages across Tokio, batching and sharding: 1,575 successful
+processes and 129 million requests on macOS, a Linux VM and native Linux on fede,
+with twelve figures.
 [Self-contained HTML](reports/full-actors-2026-11-05/REPORT.html),
 [findings](FINDINGS-FULL-ACTORS.md), [research priorities](RESEARCH-NEXT.md),
 [validation](VALIDATION-FULL-ACTORS.md) and

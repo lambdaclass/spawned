@@ -1,0 +1,210 @@
+{
+  "hostname": "fede-256gb",
+  "kernel": "Linux-6.8.0-147-generic-x86_64-with-glibc2.39",
+  "lscpu": "Architecture:                            x86_64\nCPU op-mode(s):                          32-bit, 64-bit\nAddress sizes:                           48 bits physical, 48 bits virtual\nByte Order:                              Little Endian\nCPU(s):                                  32\nOn-line CPU(s) list:                     0-31\nVendor ID:                               AuthenticAMD\nModel name:                              AMD Ryzen 9 9950X3D 16-Core Processor\nCPU family:                              26\nModel:                                   68\nThread(s) per core:                      2\nCore(s) per socket:                      16\nSocket(s):                               1\nStepping:                                0\nCPU(s) scaling MHz:                      51%\nCPU max MHz:                             5752.0000\nCPU min MHz:                             600.0000\nBogoMIPS:                                8583.31\nFlags:                                   fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 ht syscall nx mmxext fxsr_opt pdpe1gb rdtscp lm constant_tsc rep_good amd_lbr_v2 nopl nonstop_tsc cpuid extd_apicid aperfmperf rapl pni pclmulqdq monitor ssse3 fma cx16 sse4_1 sse4_2 movbe popcnt aes xsave avx f16c rdrand lahf_lm cmp_legacy svm extapic cr8_legacy abm sse4a misalignsse 3dnowprefetch osvw ibs skinit wdt tce topoext perfctr_core perfctr_nb bpext perfctr_llc mwaitx cpb cat_l3 cdp_l3 hw_pstate ssbd mba perfmon_v2 ibrs ibpb stibp ibrs_enhanced vmmcall fsgsbase tsc_adjust bmi1 avx2 smep bmi2 erms invpcid cqm rdt_a avx512f avx512dq rdseed adx smap avx512ifma clflushopt clwb avx512cd sha_ni avx512bw avx512vl xsaveopt xsavec xgetbv1 xsaves cqm_llc cqm_occup_llc cqm_mbm_total cqm_mbm_local user_shstk avx_vnni avx512_bf16 clzero irperf xsaveerptr rdpru wbnoinvd cppc amd_ibpb_ret arat npt lbrv svm_lock nrip_save tsc_scale vmcb_clean flushbyasid decodeassists pausefilter pfthreshold avic v_vmsave_vmload vgif x2avic v_spec_ctrl vnmi avx512vbmi umip pku ospke avx512_vbmi2 gfni vaes vpclmulqdq avx512_vnni avx512_bitalg avx512_vpopcntdq rdpid bus_lock_detect movdiri movdir64b overflow_recov succor smca fsrm avx512_vp2intersect flush_l1d srso_user_kernel_no\nVirtualization:                          AMD-V\nL1d cache:                               768 KiB (16 instances)\nL1i cache:                               512 KiB (16 instances)\nL2 cache:                                16 MiB (16 instances)\nL3 cache:                                128 MiB (2 instances)\nNUMA node(s):                            1\nNUMA node0 CPU(s):                       0-31\nVulnerability Gather data sampling:      Not affected\nVulnerability Indirect target selection: Not affected\nVulnerability Itlb multihit:             Not affected\nVulnerability L1tf:                      Not affected\nVulnerability Mds:                       Not affected\nVulnerability Meltdown:                  Not affected\nVulnerability Mmio stale data:           Not affected\nVulnerability Reg file data sampling:    Not affected\nVulnerability Retbleed:                  Not affected\nVulnerability Spec rstack overflow:      Not affected\nVulnerability Spec store bypass:         Mitigation; Speculative Store Bypass disabled via prctl\nVulnerability Spectre v1:                Mitigation; usercopy/swapgs barriers and __user pointer sanitization\nVulnerability Spectre v2:                Mitigation; Enhanced / Automatic IBRS; IBPB conditional; STIBP always-on; PBRSB-eIBRS Not affected; BHI Not affected\nVulnerability Srbds:                     Not affected\nVulnerability Tsa:                       Not affected\nVulnerability Tsx async abort:           Not affected\nVulnerability Vmscape:                   Not affected\n",
+  "allowed_cpus_before": [
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27,
+    28,
+    29,
+    30,
+    31
+  ],
+  "chosen_cpus": [
+    2,
+    3,
+    4,
+    5
+  ],
+  "same_l3_cache_id": "0",
+  "core_candidates": {
+    "0": [
+      [
+        0.0,
+        2,
+        [
+          2,
+          18
+        ]
+      ],
+      [
+        0.0,
+        3,
+        [
+          3,
+          19
+        ]
+      ],
+      [
+        0.0,
+        4,
+        [
+          4,
+          20
+        ]
+      ],
+      [
+        0.0,
+        5,
+        [
+          5,
+          21
+        ]
+      ],
+      [
+        0.00990099009900991,
+        6,
+        [
+          6,
+          22
+        ]
+      ],
+      [
+        0.0,
+        7,
+        [
+          7,
+          23
+        ]
+      ]
+    ],
+    "1": [
+      [
+        0.0,
+        8,
+        [
+          8,
+          24
+        ]
+      ],
+      [
+        0.02970297029702973,
+        25,
+        [
+          9,
+          25
+        ]
+      ],
+      [
+        0.0,
+        10,
+        [
+          10,
+          26
+        ]
+      ],
+      [
+        0.030303030303030276,
+        27,
+        [
+          11,
+          27
+        ]
+      ],
+      [
+        0.010000000000000009,
+        28,
+        [
+          12,
+          28
+        ]
+      ],
+      [
+        0.04040404040404044,
+        29,
+        [
+          13,
+          29
+        ]
+      ],
+      [
+        0.0,
+        14,
+        [
+          14,
+          30
+        ]
+      ],
+      [
+        0.0,
+        15,
+        [
+          15,
+          31
+        ]
+      ]
+    ]
+  },
+  "busy_fraction_1s": {
+    "0": 0.00990099009900991,
+    "1": 0.0,
+    "2": 0.0,
+    "3": 0.0,
+    "4": 0.0,
+    "5": 0.0,
+    "6": 0.0,
+    "7": 0.0,
+    "8": 0.0,
+    "9": 0.02970297029702973,
+    "10": 0.0,
+    "11": 0.030303030303030276,
+    "12": 0.010000000000000009,
+    "13": 0.04040404040404044,
+    "14": 0.0,
+    "15": 0.0,
+    "16": 0.0,
+    "17": 0.0,
+    "18": 0.0,
+    "19": 0.0,
+    "20": 0.0,
+    "21": 0.0,
+    "22": 0.00990099009900991,
+    "23": 0.0,
+    "24": 0.0,
+    "25": 0.0,
+    "26": 0.0,
+    "27": 0.0,
+    "28": 0.0,
+    "29": 0.040000000000000036,
+    "30": 0.0,
+    "31": 0.0
+  },
+  "load_average_before": [
+    2.375,
+    8.2880859375,
+    11.09912109375
+  ],
+  "rustc_path": "/nix/store/5gk010lr12bwp64cm9rj3pj21c0hviw8-rustc-1.93.0/bin/rustc",
+  "cargo": "cargo 1.98.0 (797e8a9bc 2026-08-05)",
+  "notes": "Shared server; four distinct physical cores within one L3 group selected from a one-second idle snapshot. Entire job taskset; no per-worker pinning. nice=10. Other users and dynamic frequency remain uncontrolled.",
+  "build_environment": {
+    "pkg_config": "/nix/store/j5fz28pic24azmxkv183hk6fchfs7ag8-pkg-config-0.29.2/bin/pkg-config",
+    "openssl_pkg_config_path": "/nix/store/1p14m1hrdkykyxs0l6wg7y29ahppcnsr-openssl-3.6.1-dev/lib/pkgconfig",
+    "openssl_lib": "/nix/store/p96a7p297gmia8zcy4i72qd45wzw8lh6-openssl-3.6.1/lib",
+    "initial_failure": "workspace build lacked pkg-config/OpenSSL dev discovery; reused cached Nix packages without installing globally"
+  }
+}

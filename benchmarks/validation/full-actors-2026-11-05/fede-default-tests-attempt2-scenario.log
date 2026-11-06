@@ -1,0 +1,505 @@
+   Compiling openssl-sys v0.9.111
+   Compiling tinystr v0.8.2
+   Compiling trybuild v1.0.122
+   Compiling writeable v0.6.2
+   Compiling litemap v0.8.1
+   Compiling potential_utf v0.1.4
+   Compiling zerotrie v0.2.3
+   Compiling icu_locale_core v2.1.1
+   Compiling icu_properties_data v2.1.2
+   Compiling icu_normalizer_data v2.1.1
+   Compiling icu_collections v2.1.1
+   Compiling foreign-types-shared v0.1.1
+   Compiling fnv v1.0.7
+   Compiling openssl v0.10.75
+   Compiling http v0.2.12
+   Compiling foreign-types v0.3.2
+   Compiling icu_provider v2.1.1
+   Compiling openssl-macros v0.1.1
+   Compiling hashbrown v0.17.1
+   Compiling equivalent v1.0.2
+   Compiling httparse v1.10.1
+   Compiling native-tls v0.2.14
+   Compiling indexmap v2.14.2
+   Compiling icu_properties v2.1.2
+   Compiling icu_normalizer v2.1.1
+   Compiling percent-encoding v2.3.2
+   Compiling openssl-probe v0.1.6
+   Compiling try-lock v0.2.5
+   Compiling want v0.3.1
+   Compiling form_urlencoded v1.2.2
+   Compiling idna_adapter v1.2.1
+   Compiling h2 v0.3.27
+   Compiling http-body v0.4.6
+   Compiling httpdate v1.0.3
+   Compiling utf8_iter v1.0.4
+   Compiling tower-service v0.3.3
+   Compiling idna v1.1.0
+   Compiling base64 v0.21.7
+   Compiling tokio-native-tls v0.3.1
+   Compiling url v2.5.7
+   Compiling rustls-pemfile v1.0.4
+   Compiling serde_urlencoded v0.7.1
+   Compiling encoding_rs v0.8.35
+   Compiling mime v0.3.17
+   Compiling ipnet v2.11.0
+   Compiling sync_wrapper v0.1.2
+   Compiling spawned-concurrency v0.5.0 (/tmp/spawned-fede-repro-50cQ1RW4/source/concurrency)
+   Compiling hyper v0.14.32
+   Compiling hyper-tls v0.5.0
+   Compiling reqwest v0.11.27
+   Compiling chat_room v0.1.0 (/tmp/spawned-fede-repro-50cQ1RW4/source/examples/chat_room)
+   Compiling chat_room_threads v0.1.0 (/tmp/spawned-fede-repro-50cQ1RW4/source/examples/chat_room_threads)
+   Compiling busy_genserver_warning v0.1.0 (/tmp/spawned-fede-repro-50cQ1RW4/source/examples/busy_genserver_warning)
+   Compiling name_server v0.1.0 (/tmp/spawned-fede-repro-50cQ1RW4/source/examples/name_server)
+   Compiling service_discovery v0.1.0 (/tmp/spawned-fede-repro-50cQ1RW4/source/examples/service_discovery)
+   Compiling signal_test_threads v0.1.0 (/tmp/spawned-fede-repro-50cQ1RW4/source/examples/signal_test_threads)
+   Compiling blocking_genserver v0.1.0 (/tmp/spawned-fede-repro-50cQ1RW4/source/examples/blocking_genserver)
+   Compiling bank v0.1.0 (/tmp/spawned-fede-repro-50cQ1RW4/source/examples/bank)
+   Compiling signal_test v0.1.0 (/tmp/spawned-fede-repro-50cQ1RW4/source/examples/signal_test)
+   Compiling ping_pong v0.1.0 (/tmp/spawned-fede-repro-50cQ1RW4/source/examples/ping_pong)
+   Compiling ping_pong_threads v0.1.0 (/tmp/spawned-fede-repro-50cQ1RW4/source/examples/ping_pong_threads)
+   Compiling exit_reason v0.1.0 (/tmp/spawned-fede-repro-50cQ1RW4/source/examples/exit_reason)
+   Compiling updater v0.1.0 (/tmp/spawned-fede-repro-50cQ1RW4/source/examples/updater)
+   Compiling updater_threads v0.1.0 (/tmp/spawned-fede-repro-50cQ1RW4/source/examples/updater_threads)
+   Compiling bank_threads v0.1.0 (/tmp/spawned-fede-repro-50cQ1RW4/source/examples/bank_threads)
+   Compiling spawned-rt v0.5.0 (/tmp/spawned-fede-repro-50cQ1RW4/source/rt)
+   Compiling spawned-macros v0.5.0 (/tmp/spawned-fede-repro-50cQ1RW4/source/macros)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 15.21s
+     Running unittests src/main.rs (/tmp/spawned-fede-repro-50cQ1RW4/target/debug/deps/bank-611ec571862eeaca)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/main.rs (/tmp/spawned-fede-repro-50cQ1RW4/target/debug/deps/bank_threads-c0ae5b6c0bfdbb57)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests main.rs (/tmp/spawned-fede-repro-50cQ1RW4/target/debug/deps/blocking_genserver-a597586f0d2b3b72)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests main.rs (/tmp/spawned-fede-repro-50cQ1RW4/target/debug/deps/busy_genserver_warning-6384e54aa9231c3d)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/main.rs (/tmp/spawned-fede-repro-50cQ1RW4/target/debug/deps/chat_room-4a2aeea4ef299b1b)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/main.rs (/tmp/spawned-fede-repro-50cQ1RW4/target/debug/deps/chat_room_threads-e668655ab0e6da2c)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/main.rs (/tmp/spawned-fede-repro-50cQ1RW4/target/debug/deps/exit_reason-bdd28da2bd0d3d1a)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/main.rs (/tmp/spawned-fede-repro-50cQ1RW4/target/debug/deps/name_server-52ff0e153ff27c0b)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/main.rs (/tmp/spawned-fede-repro-50cQ1RW4/target/debug/deps/ping_pong-cefa08d81c6ce7ba)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/main.rs (/tmp/spawned-fede-repro-50cQ1RW4/target/debug/deps/ping_pong_threads-81362a08c0c9ce8f)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/main.rs (/tmp/spawned-fede-repro-50cQ1RW4/target/debug/deps/service_discovery-e75174de2895fe43)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/main.rs (/tmp/spawned-fede-repro-50cQ1RW4/target/debug/deps/signal_test-5f59e3892b51b795)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/main.rs (/tmp/spawned-fede-repro-50cQ1RW4/target/debug/deps/signal_test_threads-4eced6a643688e02)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (/tmp/spawned-fede-repro-50cQ1RW4/target/debug/deps/spawned_concurrency-a765c4eae06bb785)
+
+running 109 tests
+test child_handle::tests::actor_id_is_unique ... ok
+test child_handle::tests::actor_id_display ... ok
+test child_handle::closed_completion_tests::closure_preserves_the_final_published_reason ... ok
+test child_handle::tests::child_handle_equality_by_id ... ok
+test child_handle::closed_completion_tests::closed_without_reason_is_dead_and_all_waits_agree ... ok
+test child_handle::tests::child_handle_from_threads_basics ... ok
+test child_handle::tests::child_handle_from_threads_actor_ref ... ok
+test child_handle::tests::child_handle_from_tasks_actor_ref ... ok
+test child_handle::tests::child_handle_stop ... ok
+test child_handle::tests::child_handle_observes_panic_in_threads_actor ... ok
+test child_handle::tests::child_handle_observes_panic_in_tasks_actor ... ok
+test child_handle::tests::child_handle_stop_from_tasks_actor ... ok
+test child_handle::tests::child_handle_wait_blocking_fast_path_on_current_thread_runtime ... ok
+test child_handle::tests::child_handle_observes_panic_in_started_callback ... ok
+test error::tests::exit_reason_display ... ok
+test error::tests::exit_reason_is_abnormal_classification ... ok
+test error::tests::test_error_into_std_error ... ok
+test error::tests::exit_reason_partial_eq ... ok
+test monitor::tests::monitor_ref_display ... ok
+test child_handle::tests::child_handle_wait_blocking_panics_on_current_thread_runtime - should panic ... ok
+test monitor::tests::monitor_ref_is_unique ... ok
+test registry::tests::duplicate_register_fails ... ok
+test registry::tests::register_and_whereis ... ok
+test registry::tests::registered_lists_names ... ok
+test registry::tests::unregister_removes_entry ... ok
+test registry::tests::whereis_missing_returns_none ... ok
+test child_handle::tests::child_handle_wait_blocking_inside_multithread_runtime ... ok
+test registry::tests::whereis_wrong_type_returns_none ... ok
+test response::tests::map_transforms_value ... ok
+test response::tests::ready_err_is_err ... ok
+test response::tests::ready_ok_unwrap ... ok
+test response::tests::ready_err_unwrap_panics - should panic ... ok
+test response::tests::future_resolves_from_receiver ... ok
+test response::tests::future_err_on_dropped_sender ... ok
+test response::tests::timed_receiver_resolves ... ok
+test tasks::actor::early_stop_regression::panic_during_early_stop_is_reported ... ok
+test tasks::actor::monitor_cleanup_regressions::closed_monitor_table_rejects_late_registration ... ok
+test tasks::actor::monitor_cleanup_regressions::demonitor_releases_waiter ... ok
+test tasks::actor::monitor_cleanup_regressions::stopped_observer_releases_waiter ... ok
+test tasks::actor::tests::backend_default_is_async ... ok
+test tasks::actor::tests::backend_enum_debug_format ... ok
+test tasks::actor::tests::backend_enum_equality ... ok
+test tasks::actor::tests::backend_enum_is_copy_and_clone ... ok
+test tasks::actor::tests::backend_async_handles_send_and_request ... ok
+test response::tests::timed_receiver_times_out ... ok
+test tasks::actor::tests::backend_blocking_handles_send_and_request ... ok
+test tasks::actor::tests::backend_thread_handles_send_and_request ... ok
+test tasks::actor::tests::demonitor_before_target_dies_suppresses_down ... ok
+test tasks::actor::tests::exit_reason_normal_on_clean_stop ... ok
+test tasks::actor::tests::exit_reason_panic_in_handler ... ok
+test tasks::actor::tests::exit_reason_panic_in_started ... ok
+test tasks::actor::tests::exit_reason_poll_returns_none_while_running ... ok
+test tasks::actor::tests::monitor_already_dead_actor_delivers_down_immediately ... ok
+test tasks::actor::tests::monitor_observes_panic_reason ... ok
+test tasks::actor::tests::monitor_running_actor_delivers_down_on_exit ... ok
+test tasks::actor::tests::monitor_table_is_cleaned_up_after_target_dies ... ok
+test tasks::actor::tests::monitoring_actor_stops_before_target_does_not_panic ... ok
+test tasks::actor::tests::multiple_backends_concurrent ... ok
+test tasks::actor::tests::multiple_join_callers_all_notified ... ok
+test tasks::actor::tests::multiple_monitors_each_get_own_ref_and_down ... ok
+test tasks::actor::tests::backend_thread_isolates_blocking_work ... ok
+test tasks::actor::tests::panic_in_handler_stops_actor ... ok
+test tasks::actor::tests::panic_in_stopped_still_completes ... ok
+test tasks::actor::tests::recipient_type_erasure ... ok
+test tasks::actor::tests::panic_in_started_stops_actor ... ok
+test tasks::actor::tests::send_message_on_cancelled ... ok
+test tasks::actor::tests::request_timeout ... ok
+test tasks::actor::tests::send_message_on_delivers ... ok
+test tasks::actor::turn_regressions::idle_time_is_excluded_and_an_empty_mailbox_needs_no_yield ... ok
+test tasks::actor::turn_regressions::stop_during_batch_yield_does_not_execute_the_next_queued_message ... ok
+test tasks::actor::tests::thread_backend_join_does_not_block_runtime ... ok
+test tasks::actor::tests::badly_behaved_thread ... ok
+test tasks::actor::tests::badly_behaved_thread_non_blocking ... ok
+test tasks::stream_tests::test_halting_on_stream_error ... ok
+test tasks::stream_tests::test_skipping_on_stream_error ... ok
+test tasks::stream_tests::test_sum_numbers_from_broadcast_channel ... ok
+test tasks::stream_tests::test_sum_numbers_from_channel ... ok
+test tasks::stream_tests::test_stream_cancellation ... ok
+test tasks::timer_tests::test_send_after_and_cancellation ... ok
+test threads::actor::early_stop_regression::panic_during_early_stop_is_reported ... ok
+test threads::actor::monitor_cleanup_regressions::closed_monitor_table_rejects_late_registration ... ok
+test tasks::timer_tests::test_send_after_gen_server_teardown ... ok
+test tasks::stream_tests::test_sum_numbers_from_stream ... ok
+test threads::actor::tests::basic_send_and_request ... ok
+test threads::actor::monitor_cleanup_regressions::demonitor_releases_waiter ... ok
+test threads::actor::tests::exit_reason_normal_on_clean_stop ... ok
+test threads::actor::tests::exit_reason_panic_in_handler ... ok
+test threads::actor::tests::exit_reason_panic_in_started ... ok
+test threads::actor::tests::exit_reason_poll_returns_none_while_running ... ok
+test threads::actor::monitor_cleanup_regressions::stopped_observer_releases_waiter ... ok
+test threads::actor::tests::demonitor_before_target_dies_suppresses_down ... ok
+test threads::actor::tests::join_multiple_callers ... ok
+test threads::actor::tests::monitor_already_dead_actor_delivers_down_immediately ... ok
+test threads::actor::tests::join_waits_for_completion ... ok
+test threads::actor::tests::monitor_observes_panic_reason ... ok
+test threads::actor::tests::monitor_running_actor_delivers_down_on_exit ... ok
+test threads::actor::tests::panic_in_started_stops_actor ... ok
+test threads::actor::tests::panic_in_stopped_still_completes ... ok
+test threads::actor::tests::recipient_type_erasure ... ok
+test threads::actor::tests::multiple_monitors_each_get_own_ref_and_down ... ok
+test threads::stream_tests::listener_consumes_iterator ... ok
+test threads::actor::tests::panic_in_handler_stops_actor ... ok
+test threads::stream_tests::stopped_actor_does_not_poll_iterator ... ok
+test threads::actor::tests::send_message_on_delivers ... ok
+test threads::stream_tests::listener_stops_on_cancellation ... ok
+test threads::timer_tests::test_send_after_actor_shutdown ... ok
+test threads::timer_tests::test_send_after_and_cancellation ... ok
+test tasks::timer_tests::test_send_interval_and_cancellation ... ok
+test threads::timer_tests::test_send_interval_and_cancellation ... ok
+
+test result: ok. 109 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.43s
+
+     Running tests/actor_scenarios.rs (/tmp/spawned-fede-repro-50cQ1RW4/target/debug/deps/actor_scenarios-66fa14b983a1af2e)
+
+running 5 tests
+test lifecycle_race_regression ... ok
+test sustained_actor_churn ... ignored, extended actor churn campaign
+test concurrent_producers_preserve_order_and_reply_identity ... ok
+test demonitor_before_exit_suppresses_notification_and_races_do_not_duplicate ... ok
+test generated_actor_scenarios ... FAILED
+
+failures:
+
+---- generated_actor_scenarios stdout ----
+
+thread 'tokio-runtime-worker' (570083) panicked at concurrency/tests/actor_scenarios.rs:52:34:
+scenario injected panic
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'tokio-runtime-worker' (570082) panicked at concurrency/tests/actor_scenarios.rs:52:34:
+scenario injected panic
+
+thread 'tokio-runtime-worker' (570083) panicked at concurrency/tests/actor_scenarios.rs:52:34:
+scenario injected panic
+
+thread 'tokio-runtime-worker' (570083) panicked at concurrency/tests/actor_scenarios.rs:52:34:
+scenario injected panic
+
+thread 'tokio-runtime-worker' (570124) panicked at concurrency/tests/actor_scenarios.rs:52:34:
+scenario injected panic
+
+thread 'tokio-runtime-worker' (570127) panicked at concurrency/tests/actor_scenarios.rs:52:34:
+scenario injected panic
+
+thread 'tokio-runtime-worker' (570119) panicked at concurrency/tests/actor_scenarios.rs:52:34:
+scenario injected panic
+
+thread 'tokio-runtime-worker' (570132) panicked at concurrency/tests/actor_scenarios.rs:52:34:
+scenario injected panic
+
+thread '<unnamed>' (570184) panicked at concurrency/tests/actor_scenarios.rs:52:34:
+scenario injected panic
+
+thread '<unnamed>' (570185) panicked at concurrency/tests/actor_scenarios.rs:52:34:
+scenario injected panic
+
+thread '<unnamed>' (570191) panicked at concurrency/tests/actor_scenarios.rs:52:34:
+scenario injected panic
+
+thread '<unnamed>' (570193) panicked at concurrency/tests/actor_scenarios.rs:52:34:
+scenario injected panic
+
+thread '<unnamed>' (570250) panicked at concurrency/tests/actor_scenarios.rs:84:34:
+scenario injected panic
+
+thread '<unnamed>' (570251) panicked at concurrency/tests/actor_scenarios.rs:84:34:
+scenario injected panic
+
+thread '<unnamed>' (570256) panicked at concurrency/tests/actor_scenarios.rs:84:34:
+scenario injected panic
+
+thread '<unnamed>' (570257) panicked at concurrency/tests/actor_scenarios.rs:84:34:
+scenario injected panic
+
+thread 'tokio-runtime-worker' (570410) panicked at concurrency/tests/actor_scenarios.rs:52:34:
+scenario injected panic
+
+thread 'tokio-runtime-worker' (570410) panicked at concurrency/tests/actor_scenarios.rs:52:34:
+scenario injected panic
+
+thread 'tokio-runtime-worker' (570417) panicked at concurrency/tests/actor_scenarios.rs:52:34:
+scenario injected panic
+
+thread 'tokio-runtime-worker' (570418) panicked at concurrency/tests/actor_scenarios.rs:52:34:
+scenario injected panic
+
+thread '<unnamed>' (570424) panicked at concurrency/tests/actor_scenarios.rs:52:34:
+scenario injected panic
+
+thread '<unnamed>' (570425) panicked at concurrency/tests/actor_scenarios.rs:52:34:
+scenario injected panic
+
+thread '<unnamed>' (570443) panicked at concurrency/tests/actor_scenarios.rs:84:34:
+scenario injected panic
+
+thread '<unnamed>' (570444) panicked at concurrency/tests/actor_scenarios.rs:84:34:
+scenario injected panic
+
+thread 'generated_actor_scenarios' (570076) panicked at concurrency/tests/actor_scenarios.rs:255:27:
+request failed to resolve during shutdown: RequestTimeout
+
+thread 'tokio-runtime-worker' (571029) panicked at concurrency/tests/actor_scenarios.rs:52:34:
+scenario injected panic
+
+thread 'tokio-runtime-worker' (571038) panicked at concurrency/tests/actor_scenarios.rs:52:34:
+scenario injected panic
+
+thread '<unnamed>' (571047) panicked at concurrency/tests/actor_scenarios.rs:52:34:
+scenario injected panic
+
+thread '<unnamed>' (571072) panicked at concurrency/tests/actor_scenarios.rs:84:34:
+scenario injected panic
+
+thread 'tokio-runtime-worker' (571079) panicked at concurrency/tests/actor_scenarios.rs:52:34:
+scenario injected panic
+
+thread 'tokio-runtime-worker' (571089) panicked at concurrency/tests/actor_scenarios.rs:52:34:
+scenario injected panic
+
+thread '<unnamed>' (571101) panicked at concurrency/tests/actor_scenarios.rs:52:34:
+scenario injected panic
+
+thread '<unnamed>' (571132) panicked at concurrency/tests/actor_scenarios.rs:84:34:
+scenario injected panic
+proptest: Saving this and future failures in /tmp/spawned-fede-repro-50cQ1RW4/source/concurrency/tests/actor_scenarios.proptest-regressions
+proptest: If this test was run on a CI system, you may wish to add the following line to your copy of the file. (You may need to create it.)
+cc b41c0252aa152cde6f886242fbaa05ccd3e8651f569d58776e0182003b63a7f9
+
+thread 'generated_actor_scenarios' (570076) panicked at concurrency/tests/actor_scenarios.rs:296:1:
+Test failed: request failed to resolve during shutdown: RequestTimeout.
+minimal failing input: count = 4, operations = [
+    (
+        34,
+        243,
+    ),
+    (
+        86,
+        172,
+    ),
+    (
+        214,
+        116,
+    ),
+    (
+        164,
+        173,
+    ),
+    (
+        211,
+        65,
+    ),
+    (
+        51,
+        203,
+    ),
+    (
+        251,
+        214,
+    ),
+    (
+        75,
+        223,
+    ),
+    (
+        187,
+        0,
+    ),
+    (
+        35,
+        243,
+    ),
+    (
+        91,
+        4,
+    ),
+    (
+        195,
+        182,
+    ),
+    (
+        170,
+        203,
+    ),
+    (
+        66,
+        216,
+    ),
+    (
+        49,
+        134,
+    ),
+    (
+        174,
+        166,
+    ),
+    (
+        233,
+        166,
+    ),
+    (
+        36,
+        189,
+    ),
+    (
+        244,
+        14,
+    ),
+    (
+        56,
+        55,
+    ),
+    (
+        102,
+        205,
+    ),
+    (
+        96,
+        70,
+    ),
+    (
+        0,
+        6,
+    ),
+    (
+        116,
+        213,
+    ),
+    (
+        248,
+        228,
+    ),
+    (
+        246,
+        55,
+    ),
+], endings = [
+    1,
+    0,
+    2,
+    1,
+    0,
+    0,
+    0,
+]
+	successes: 3
+	local rejects: 0
+	global rejects: 0
+
+
+
+failures:
+    generated_actor_scenarios
+
+test result: FAILED. 3 passed; 1 failed; 1 ignored; 0 measured; 0 filtered out; finished in 5.51s
+
+error: test failed, to rerun pass `-p spawned-concurrency --test actor_scenarios`

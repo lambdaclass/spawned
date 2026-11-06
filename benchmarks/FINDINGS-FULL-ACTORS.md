@@ -14,6 +14,8 @@ Five short, unpinned repetitions are exploratory evidence, not production foreca
 | Native macOS | 4 | 587,212 | 509,723 | 0.693 ms | 1.111 ms |
 | Linux VM | 2 | 826,880 | 999,398 | 0.918 ms | 0.503 ms |
 | Linux VM | 4 | 1,029,048 | 1,179,428 | 2.106 ms | 0.542 ms |
+| Native Linux, fede | 2 | 1,779,639 | 1,712,394 | 0.233 ms | 0.187 ms |
+| Native Linux, fede | 4 | 1,776,924 | 2,070,492 | 1.081 ms | 0.159 ms |
 
 These are comparisons within each row. macOS runs on the host; Linux runs in an
 OrbStack VM/container restricted to four virtual CPUs and 8 GiB. There is no
@@ -21,6 +23,35 @@ cross-OS kernel-speed claim. The previous native-loop advantage does not reprodu
 in the large macOS full-actor case, while Linux sharding remains promising here.
 These experiments do not isolate which envelope, allocation, wakeup, placement or
 reactor cost explains the difference; profiling is needed for causal attribution.
+
+### Native Linux reproduction on fede
+
+The November 6 reproduction adds 525 successful measured processes on an AMD
+Ryzen 9 9950X3D. It uses the same clean measured revision and seven variants, with
+five repetitions per cell. The complete job, including producers, observers and
+TCP server threads, shares CPUs 2–5 (four physical cores in one L3 group), at
+nice=10. Workers are not pinned individually and the host is shared. This is a
+separate environment from the ARM64 VM, not a controlled kernel or CPU comparison.
+
+At 1,024 actors, fixed-16 sharding is 16.5% faster with 85.3% lower completion p99
+at four workers. At two workers it is 3.8% slower with 19.8% lower p99. The larger
+VM throughput gain is therefore not a portable constant. Four workers also do not
+universally beat two within this four-core job budget; the producer/observer
+threads compete for those CPUs too, and profiling is needed to explain the tails.
+
+The other cells prevent a simple winner claim. At four workers and 128 actors,
+fixed-16 sharding has a 2.305M/s median versus Tokio's 1.878M/s, but p99 rises from
+0.156 to 0.555 ms; the throughput run ranges overlap. At two workers under skew,
+cold p99 improves (0.237 to 0.116 ms) while overall p99 worsens (0.482 to 0.893 ms)
+and throughput falls. Native Linux reproduces the scheduling tradeoffs, not a
+universal fairness win.
+
+For persistent TCP at four workers, medians are 588k/s and 0.821 ms for fixed-16
+sharding versus 513k/s and 2.548 ms for Tokio. At two workers throughput is similar
+and sharded p99 is worse (2.005 versus 1.339 ms). Timer throughput is close across
+the reference and fixed-16 paths, about 59–61k/s. Deliberately blocking handlers
+show similar throughput but lower sharded tails; they remain non-preemptible.
+The TCP server and producer setup remain common controls, not an optimized client.
 
 ### Throughput and overall p99 do not establish fairness
 
@@ -76,15 +107,18 @@ published final reason, treats closed-without-reason as `Kill`, and allows the
 already-exited blocking fast path to work without entering another runtime.
 Tests cover both tasks and thread completion modes and resource-exhaustion startup.
 
-The performance dataset is pinned to clean revision `9b22346`, before that getter-only
-status fix. All successful benchmark cells are of that source/binary; performance
+The performance dataset is pinned to clean revision `9b22346`, before both the getter-only status fix and the later shutdown-publication fix.
+The latter closes/drains/discards admitted requests before reporting ordinary actor
+completion; its deterministic regression fails on the historical source and passes
+with the fix. Fede functional checks use corrected source separately. All successful benchmark cells are of that source/binary; performance
 was not remeasured after the status-path fix. The later fix has separate validation.
 Do not describe these numbers as measurements of an unrecorded final-branch binary.
 
 ### What to do next
 
-1. Land the independently reviewable completion-status fix and document blocking
-   pool / dedicated-reactor capacity. Keep the runtime experiment opt-in.
+1. Keep the merged completion-status and shutdown-publication fixes covered by
+   regressions, document blocking-pool / dedicated-reactor capacity, and retain
+   the runtime experiment as opt-in research.
 2. Profile the representative macOS loss and Linux gain, then test actor-to-actor
    chains/fan-out with controlled same/cross-shard placement and skew. This decides
    whether locality or a specific wakeup cost justifies a new supported backend.
