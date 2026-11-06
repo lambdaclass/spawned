@@ -1,7 +1,7 @@
 # Research: Silver / flux and what Spawned can adopt
 
 Date: 2026-11-05. Status: source analysis and proposed experiments, not a benchmark
-report or a commitment to replace Spawned's runtime. See the [roadmap](../PLAN.md).
+report or a commitment to replace Spawned's runtime. See the [roadmap](../ROADMAP.md).
 
 ## Revisions and scope
 

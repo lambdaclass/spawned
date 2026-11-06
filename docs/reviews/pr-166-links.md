@@ -47,10 +47,11 @@ module without changing runtime behavior, then Clippy was rerun on final source.
 
 Independent supplied-code review approved the hardened primitive; final lifecycle
 publication changes also received a separate focused approval. Review is not execution
-reproduction or a proof of every schedule. Initial reviewer suggestions about
-automatic shutdown when all ActorRefs are dropped and nonexistent Shutdown/Aborted
-exit variants were rejected: current actors retain their context sender and use
-explicit cooperative stop; runtime abort is reported as Kill. No such philosophy
+reproduction or a proof of every schedule. Reviewer suggestions were checked against current source: actors retain their
+context sender and use explicit cooperative stop; runtime abort is reported as
+`Kill`. `Shutdown` already exists as a reserved exit-reason variant but is not
+produced by current actor stops; there is no `Aborted` variant. No exit-reason
+variant was added by this integration. No such philosophy
 or public delivery change was adopted. All ordinary typed messages and replies
 remain addressed and unbounded.
 

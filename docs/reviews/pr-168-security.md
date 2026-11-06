@@ -46,7 +46,9 @@ review and tests do not prove the absence of every possible defect or schedule.
 
 ## Validation
 
-Source `21446fd0` passed on fede:
+Source `21446fd0` passed on fede. Its runtime and tests are identical to the
+merged [main source `b4c3632f`](https://github.com/lambdaclass/spawned/commit/b4c3632f6bf8854d7ad5409c8fb96cb301187c2e);
+subsequent changes only add the review and logs:
 
 ```sh
 cargo test --locked -p spawned-concurrency --all-features --lib -- --test-threads=1

@@ -239,7 +239,7 @@ execution while improving production visibility and recovery.
 4. **Supervision** — explicit restart policies, limits, backoff, and defined
    behavior for state, references, and requests across actor failure.
 
-See the [detailed roadmap](docs/PLAN.md) for acceptance criteria and the
+See the [detailed roadmap](docs/ROADMAP.md) for acceptance criteria and the
 [Silver/flux research](docs/research/silver-flux.md) for transferable ideas.
 A custom runtime, busy spinning, and shared-memory transport remain research;
 removing Tokio is not a committed direction.

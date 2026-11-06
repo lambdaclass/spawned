@@ -1,4 +1,4 @@
-> Historical plan, superseded on 2026-11-05 by [the current roadmap](../PLAN.md).
+> Historical plan, superseded on 2026-11-05 by [the current roadmap](../ROADMAP.md).
 > API status, competitor comparisons, version targets, and priorities below are
 > preserved for context and must not be treated as current facts or commitments.
 
