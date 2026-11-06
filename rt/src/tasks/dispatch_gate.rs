@@ -55,7 +55,7 @@ impl Gate {
                 .0
                 .compare_exchange_weak(state, next, Ordering::AcqRel, Ordering::Acquire)
             {
-                Ok(_) => return enqueue,
+                Ok(_) => return next == QUEUED,
                 Err(actual) => state = actual,
             }
         }
