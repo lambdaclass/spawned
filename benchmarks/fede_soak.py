@@ -26,9 +26,10 @@ def main():
     assert not meta['dirty']
     result=subprocess.run(['cargo','bench','--locked','-p','spawned-concurrency','--features','backend-experiments,profiling-experiments','--bench','lifecycle_soak','--no-run','--message-format=json'],cwd=ROOT,capture_output=True,text=True)
     (out/'build.log').write_text(result.stderr);result.check_returncode()
-    executable=next(json.loads(line)['executable'] for line in result.stdout.splitlines() if json.loads(line).get('reason')=='compiler-artifact' and json.loads(line).get('executable'))
+    artifacts=[json.loads(line) for line in result.stdout.splitlines()]
+    executable=next(x['executable'] for x in artifacts if x.get('reason')=='compiler-artifact' and x['target']['name']=='lifecycle_soak' and 'bench' in x['target']['kind'] and x.get('executable'))
     meta['binary_sha256']=hashlib.sha256(Path(executable).read_bytes()).hexdigest()
-    specs=[('async',4,'',0),('tokio-16',4,'tokio-batch',16),('tokio-pool',4,'tokio-pool',0),('sharded-16',4,'sharded',16),('native-global',3,'native-global',16),('native-local',3,'native-local',16),('native-steal',3,'native-steal',16),('native-steal',4,'native-steal',16)]
+    specs=[('async',4,'',0),('tokio-16',4,'tokio-batch',16),('tokio-pool',4,'tokio-pool',0),('sharded-16',4,'sharded',16),('native-global',3,'native-global',16),('native-local',3,'native-local',16),('native-steal',3,'native-steal',16),('native-steal',4,'native-steal',16),('native-root',3,'native-root',16),('native-root',4,'native-root',16)]
     random.Random(189).shuffle(specs);rows=[]
     def save():
         (out/'metadata.json').write_text(json.dumps(meta,indent=2)+'\n')

@@ -49,3 +49,11 @@ teardown calls. A concurrent idle-shutdown stress regression covers all policies
 Earlier EEF queue/caller/profile samples are frozen; remaining old stages were
 cancelled before running. Clock, offered and long-soak work resumes only on this
 corrected source, with new metadata and no cross-source pooling.
+
+The corrected-source continuation adds native-root to the count/time-slice,
+offered/burst, and bounded lifecycle soak controllers. Clock cases are kept
+separate from graph/caller cases; all slice/caller/resource settings remain in
+the grouping key. Twelve configurations share each offered rate/shape; ten
+ten-minute soaks include native-root N3+R1 and N4+R1. The former is an equal
+runtime-worker control against Tokio4; the latter is an equal actor-worker
+control with one extra shared I/O worker on the same four physical actor cores.
