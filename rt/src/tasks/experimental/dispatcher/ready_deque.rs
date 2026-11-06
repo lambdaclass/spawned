@@ -78,13 +78,11 @@ impl ReadyDeque {
             OWNER.with(|slot| {
                 let owner = slot.borrow();
                 let owner = owner.as_ref()?;
-                if owner.pool != pool {
+                // A scheduling hint must not panic through an arbitrary
+                // Waker caller. Route mismatched owner/index hints externally.
+                if owner.pool != pool || owner.worker != worker {
                     return None;
                 }
-                assert_eq!(
-                    owner.worker, worker,
-                    "native deque worker identity mismatch"
-                );
                 owner.queue.push(ticket.take().unwrap());
                 Some((owner.worker, owner.queue.len() > 1))
             })
@@ -121,6 +119,9 @@ impl ReadyDeque {
     ) -> Option<Work> {
         OWNER.with(|slot| {
             let owner = slot.borrow();
+            // Private dequeue entry: run_root installs this exact pool/worker
+            // before startup succeeds. Unlike enqueue, this is never a Waker
+            // callback; a wrong owner is an internal scheduler invariant error.
             let owner = owner.as_ref().expect("native deque owner not installed");
             assert_eq!(owner.pool, pool);
             assert_eq!(
@@ -282,5 +283,68 @@ mod tests {
         }
         ids.sort_unstable();
         assert_eq!(ids, (0..64).collect::<Vec<_>>());
+    }
+    #[test]
+    fn mismatched_worker_hint_uses_injection() {
+        let (ready, mut queues) = ReadyDeque::new(2);
+        let _owner = install(106, 0, queues.remove(0));
+        let result = ready.enqueue(106, ticket(7), Some(1));
+        assert!(result.external);
+        assert_eq!(ready.injection.steal().success().unwrap().preferred(), 7);
+    }
+
+    #[test]
+    fn concurrent_owner_and_three_thieves_conserve_tickets() {
+        use std::sync::Barrier;
+        const TOTAL: usize = 8192;
+        let (ready, mut queues) = ReadyDeque::new(4);
+        let owner_queue = queues.remove(0);
+        let ready = Arc::new(ready);
+        let _owner = install(107, 0, owner_queue);
+        for id in 0..TOTAL {
+            ready.enqueue(107, ticket(id), Some(0));
+        }
+        let start = Arc::new(Barrier::new(4));
+        let consumed = Arc::new(AtomicUsize::new(0));
+        let mut thieves = Vec::new();
+        for (index, queue) in queues.into_iter().enumerate() {
+            let ready = ready.clone();
+            let start = start.clone();
+            let consumed = consumed.clone();
+            thieves.push(std::thread::spawn(move || {
+                let worker = index + 1;
+                let _owner = install(107, worker, queue);
+                start.wait();
+                collect_concurrently(&ready, worker, &consumed, TOTAL)
+            }));
+        }
+        start.wait();
+        let mut ids = collect_concurrently(&ready, 0, &consumed, TOTAL);
+        for thief in thieves {
+            ids.extend(thief.join().unwrap());
+        }
+        ids.sort_unstable();
+        assert_eq!(ids, (0..TOTAL).collect::<Vec<_>>());
+    }
+
+    fn collect_concurrently(
+        ready: &ReadyDeque,
+        worker: usize,
+        consumed: &AtomicUsize,
+        total: usize,
+    ) -> Vec<usize> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut ids = Vec::new();
+        let mut victim = worker + 1;
+        while consumed.load(Ordering::Relaxed) < total {
+            if let Some(work) = ready.take(107, worker, ids.len() % 4 == 3, &mut victim) {
+                ids.push(work.preferred());
+                consumed.fetch_add(1, Ordering::Relaxed);
+            } else {
+                assert!(std::time::Instant::now() < deadline, "lost ready ticket");
+                std::thread::yield_now();
+            }
+        }
+        ids
     }
 }

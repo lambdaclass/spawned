@@ -59,3 +59,17 @@ all-feature Clippy on fede. Optional Z/W controls default to zero and remain
 research settings; generic inline futures are not retained. New same-source
 smokes/graph/scale/offered/resource blocks execute separately before interpreting
 performance. No production/default promotion or formal fairness proof follows.
+
+External batch stealing fills a LIFO owner queue, so later owner pops can execute
+younger injected tickets first. Periodic oldest-local turns give older tickets a
+progress opportunity; per-actor mailbox ordering remains independent. Queue
+lengths and sleeper scans are approximate hints. Acquire/Release store-load
+ordering can miss a peer notification even without a newly sleeping peer; the
+registered queue recheck and requested timer fallback are required. No hard wake
+deadline or FIFO scheduling guarantee is claimed.
+
+Scheduling callbacks route mismatched owner/index hints through the destination
+injector, rather than panicking through Waker::wake. Private dequeue assertions
+document the root-driver installation invariant. A separate four-participant
+owner/thief stress test checks8192 ticket IDs concurrently; the earlier batch
+transfer test deliberately checks a deterministic transfer before owner draining.
