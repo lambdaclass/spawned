@@ -821,6 +821,7 @@ pub fn protocol(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// |-----------|--------|
 /// | `#[started]` | After the actor starts, before processing messages |
 /// | `#[stopped]` | After the actor stops processing messages |
+/// | `#[exit_received]` | A linked exit delivered while trapping exits |
 ///
 /// Both receive `&mut self` and `&Context<Self>`. Use async or sync to match your runtime.
 ///
@@ -899,6 +900,7 @@ pub fn actor(attr: TokenStream, item: TokenStream) -> TokenStream {
     // --- Extract #[started] and #[stopped] lifecycle methods ---
     let mut started_method: Option<ImplItemFn> = None;
     let mut stopped_method: Option<ImplItemFn> = None;
+    let mut exit_method: Option<ImplItemFn> = None;
     let mut has_async = false;
 
     let mut items_to_keep = Vec::new();
@@ -906,6 +908,50 @@ pub fn actor(attr: TokenStream, item: TokenStream) -> TokenStream {
         if let ImplItem::Fn(ref method) = item {
             let is_started = method.attrs.iter().any(|a| a.path().is_ident("started"));
             let is_stopped = method.attrs.iter().any(|a| a.path().is_ident("stopped"));
+
+            let is_exit = method
+                .attrs
+                .iter()
+                .any(|a| a.path().is_ident("exit_received"));
+            if is_exit {
+                if exit_method.is_some() {
+                    return syn::Error::new_spanned(
+                        &method.sig,
+                        "only one #[exit_received] method is allowed per actor",
+                    )
+                    .to_compile_error()
+                    .into();
+                }
+                if is_started
+                    || is_stopped
+                    || method.attrs.iter().any(|a| {
+                        a.path().is_ident("handler")
+                            || a.path().is_ident("send_handler")
+                            || a.path().is_ident("request_handler")
+                    })
+                {
+                    return syn::Error::new_spanned(&method.sig, "#[exit_received] cannot be combined with other lifecycle or handler attributes").to_compile_error().into();
+                }
+                if method.sig.inputs.len() != 3
+                    || !matches!(method.sig.inputs.first(), Some(FnArg::Receiver(r)) if r.reference.is_some() && r.mutability.is_some())
+                {
+                    return syn::Error::new_spanned(
+                        &method.sig,
+                        "#[exit_received] must take (&mut self, Exit, &Context<Self>)",
+                    )
+                    .to_compile_error()
+                    .into();
+                }
+                let mut m = method.clone();
+                m.attrs.retain(|a| !a.path().is_ident("exit_received"));
+                m.vis = syn::Visibility::Inherited;
+                m.sig.ident = format_ident!("exit_received");
+                if m.sig.asyncness.is_some() {
+                    has_async = true;
+                }
+                exit_method = Some(m);
+                continue;
+            }
 
             if is_started {
                 if started_method.is_some() {
@@ -1103,10 +1149,14 @@ pub fn actor(attr: TokenStream, item: TokenStream) -> TokenStream {
     }
 
     // --- Generate impl Actor ---
-    let lifecycle_methods: Vec<&ImplItemFn> = [started_method.as_ref(), stopped_method.as_ref()]
-        .into_iter()
-        .flatten()
-        .collect();
+    let lifecycle_methods: Vec<&ImplItemFn> = [
+        started_method.as_ref(),
+        stopped_method.as_ref(),
+        exit_method.as_ref(),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
 
     let protocol_doc = if bridge_traits.is_empty() {
         quote! {}

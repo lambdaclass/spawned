@@ -220,6 +220,11 @@ Inspired by Erlang/OTP, the goal of `spawned` is to keep concurrency logic separ
 
 Protocols make this separation explicit: the trait defines *what* an actor does, the `#[actor]` impl defines *how*, and the framework handles message routing, mailboxes, and lifecycle. Your business logic is plain Rust methods — no channels, no `match` on enums, no concurrency primitives.
 
+Links, trapped exits and atomic linked startup are available on unreleased main.
+See [link usage](docs/API-GUIDE.md#links-and-trapped-exits-unreleased-main) and the
+[review and hardening notes](docs/reviews/pr-166-links.md). Automatic supervision
+and restart policies remain roadmap work.
+
 ## Roadmap
 
 Preserve typed protocols, dynamic actors, and both async and synchronous thread

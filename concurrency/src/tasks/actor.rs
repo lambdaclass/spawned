@@ -1,5 +1,9 @@
 use crate::child_handle::{ActorId, ChildHandle};
 use crate::error::{panic_message, ActorError, ExitReason};
+use crate::link::{
+    self, new_link_table, new_linked_exit_reason, new_trap_exit_flag, Exit, LinkTable,
+    LinkedExitReason, SendExitFn, TrapExitFlag,
+};
 use crate::message::Message;
 use crate::monitor::{Down, MonitorCleanup, MonitorRef, MonitorTable};
 use core::pin::pin;
@@ -8,6 +12,7 @@ use spawned_rt::{
     tasks::{self as rt, mpsc, oneshot, timeout, watch, CancellationToken, JoinHandle},
     threads,
 };
+use std::sync::atomic::Ordering;
 use std::{
     collections::HashMap,
     fmt::Debug,
@@ -57,6 +62,16 @@ pub trait Actor: Send + Sized + 'static {
     }
 
     fn stopped(&mut self, _ctx: &Context<Self>) -> impl Future<Output = ()> + Send {
+        async {}
+    }
+
+    /// Called when a linked actor stops, if this actor has called
+    /// `ctx.trap_exit(true)`. Default impl ignores the signal.
+    fn exit_received(
+        &mut self,
+        _exit: Exit,
+        _ctx: &Context<Self>,
+    ) -> impl Future<Output = ()> + Send {
         async {}
     }
 }
@@ -109,6 +124,26 @@ where
     }
 }
 
+/// System envelope that dispatches an `Exit` notification to the actor's
+/// `exit_received` callback. Unlike `MessageEnvelope<M>`, this does not require
+/// `Handler<Exit>` on the actor — every actor can receive `Exit` via the
+/// trait's default-no-op `exit_received` callback.
+struct ExitEnvelope {
+    exit: Exit,
+}
+
+impl<A: Actor> Envelope<A> for ExitEnvelope {
+    fn handle<'a>(
+        self: Box<Self>,
+        actor: &'a mut A,
+        ctx: &'a Context<A>,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+        Box::pin(async move {
+            actor.exit_received(self.exit, ctx).await;
+        })
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Context
 // ---------------------------------------------------------------------------
@@ -123,6 +158,9 @@ pub struct Context<A: Actor> {
     cancellation_token: CancellationToken,
     completion_rx: watch::Receiver<Option<ExitReason>>,
     monitors: MonitorTable,
+    trap_exit: TrapExitFlag,
+    links: LinkTable,
+    linked_reason: LinkedExitReason,
 }
 
 impl<A: Actor> Clone for Context<A> {
@@ -133,6 +171,9 @@ impl<A: Actor> Clone for Context<A> {
             cancellation_token: self.cancellation_token.clone(),
             completion_rx: self.completion_rx.clone(),
             monitors: self.monitors.clone(),
+            trap_exit: self.trap_exit.clone(),
+            links: self.links.clone(),
+            linked_reason: self.linked_reason.clone(),
         }
     }
 }
@@ -153,6 +194,9 @@ impl<A: Actor> Context<A> {
             cancellation_token: actor_ref.cancellation_token.clone(),
             completion_rx: actor_ref.completion_rx.clone(),
             monitors: actor_ref.monitors.clone(),
+            trap_exit: actor_ref.trap_exit.clone(),
+            links: actor_ref.links.clone(),
+            linked_reason: actor_ref.linked_reason.clone(),
         }
     }
 
@@ -164,7 +208,7 @@ impl<A: Actor> Context<A> {
     /// Signal the actor to stop. The current handler will finish, then
     /// `stopped()` is called and the actor exits.
     pub fn stop(&self) {
-        self.cancellation_token.cancel();
+        link::normal_stop(&self.linked_reason, || self.cancellation_token.cancel());
     }
 
     /// Send a fire-and-forget message to this actor.
@@ -239,6 +283,9 @@ impl<A: Actor> Context<A> {
             cancellation_token: self.cancellation_token.clone(),
             completion_rx: self.completion_rx.clone(),
             monitors: self.monitors.clone(),
+            trap_exit: self.trap_exit.clone(),
+            links: self.links.clone(),
+            linked_reason: self.linked_reason.clone(),
         }
     }
 
@@ -331,6 +378,78 @@ impl<A: Actor> Context<A> {
         }
     }
 
+    /// Set up a bidirectional link with another actor.
+    ///
+    /// When either side dies abnormally, the other receives an exit signal.
+    /// By default the receiver is terminated by the signal. Call
+    /// [`trap_exit(true)`] to convert signals into `Exit` messages delivered
+    /// via [`Actor::exit_received`] instead.
+    ///
+    /// If the target is already dead with an abnormal reason, the exit
+    /// signal is delivered immediately without retaining a link. Repeating an
+    /// existing live link is a no-op; each attempt to link a closed peer reports
+    /// that peer's exit for the new attempt.
+    ///
+    /// [`trap_exit(true)`]: Self::trap_exit
+    /// [`Actor::exit_received`]: Actor::exit_received
+    pub fn link(&self, target: &ChildHandle) {
+        let own_signal = link::make_signal(
+            self.trap_exit.clone(),
+            self.own_cancel_fn(),
+            self.own_send_exit_fn(),
+            self.linked_reason.clone(),
+        );
+        let peer_signal = link::make_signal(
+            target.trap_exit_flag().clone(),
+            target.cancel_fn().clone(),
+            target.send_exit_fn().clone(),
+            target.linked_reason().clone(),
+        );
+        link::register_link(
+            self.id,
+            &self.links,
+            own_signal,
+            target.id(),
+            target.links(),
+            peer_signal,
+        );
+    }
+
+    /// Remove a previously-set bidirectional link.
+    pub fn unlink(&self, target: &ChildHandle) {
+        link::unregister_link(self.id, &self.links, target.id(), target.links());
+    }
+
+    /// Control how exit signals from linked actors are handled.
+    ///
+    /// - `false` (default): an abnormal exit signal from a linked actor cancels
+    ///   this actor (propagating the death).
+    /// - `true`: the signal is converted to an `Exit` message and delivered to
+    ///   [`Actor::exit_received`].
+    ///
+    /// `Kill` is untrappable — it cancels the actor regardless of this flag.
+    /// Cancellation remains cooperative: an in-flight handler is not preempted.
+    pub fn trap_exit(&self, enabled: bool) {
+        self.trap_exit.store(enabled, Ordering::Release);
+    }
+
+    /// Build a type-erased cancel closure for this actor.
+    fn own_cancel_fn(&self) -> Arc<dyn Fn() + Send + Sync> {
+        let token = self.cancellation_token.clone();
+        let reason = self.linked_reason.clone();
+        Arc::new(move || link::normal_stop(&reason, || token.cancel()))
+    }
+
+    /// Build a type-erased `SendExitFn` that enqueues an `ExitEnvelope`
+    /// onto this actor's mailbox.
+    fn own_send_exit_fn(&self) -> SendExitFn {
+        let sender = self.sender.clone();
+        Arc::new(move |exit: Exit| {
+            let envelope: Box<dyn Envelope<A> + Send> = Box::new(ExitEnvelope { exit });
+            sender.send(envelope).map_err(|_| ActorError::ActorStopped)
+        })
+    }
+
     pub(crate) fn cancellation_token(&self) -> CancellationToken {
         self.cancellation_token.clone()
     }
@@ -398,6 +517,9 @@ pub struct ActorRef<A: Actor> {
     cancellation_token: CancellationToken,
     completion_rx: watch::Receiver<Option<ExitReason>>,
     monitors: MonitorTable,
+    trap_exit: TrapExitFlag,
+    links: LinkTable,
+    linked_reason: LinkedExitReason,
 }
 
 impl<A: Actor> Debug for ActorRef<A> {
@@ -414,6 +536,9 @@ impl<A: Actor> Clone for ActorRef<A> {
             cancellation_token: self.cancellation_token.clone(),
             completion_rx: self.completion_rx.clone(),
             monitors: self.monitors.clone(),
+            trap_exit: self.trap_exit.clone(),
+            links: self.links.clone(),
+            linked_reason: self.linked_reason.clone(),
         }
     }
 }
@@ -525,10 +650,21 @@ impl<A: Actor> ActorRef<A> {
 
 impl<A: Actor> From<ActorRef<A>> for ChildHandle {
     fn from(actor_ref: ActorRef<A>) -> Self {
+        // Build a type-erased SendExitFn that enqueues an ExitEnvelope onto
+        // this actor's mailbox.
+        let sender = actor_ref.sender.clone();
+        let send_exit: SendExitFn = Arc::new(move |exit: Exit| {
+            let envelope: Box<dyn Envelope<A> + Send> = Box::new(ExitEnvelope { exit });
+            sender.send(envelope).map_err(|_| ActorError::ActorStopped)
+        });
         ChildHandle::from_tasks(
             actor_ref.id,
             actor_ref.cancellation_token,
             actor_ref.completion_rx,
+            actor_ref.trap_exit,
+            actor_ref.links,
+            actor_ref.linked_reason,
+            send_exit,
         )
     }
 }
@@ -553,11 +689,14 @@ where
 // ---------------------------------------------------------------------------
 
 impl<A: Actor> ActorRef<A> {
-    fn spawn(actor: A, backend: Backend) -> Self {
+    fn spawn(actor: A, backend: Backend, parent: Option<ChildHandle>) -> Self {
         let (tx, rx) = mpsc::channel::<Box<dyn Envelope<A> + Send>>();
         let cancellation_token = CancellationToken::new();
         let (completion_tx, completion_rx) = watch::channel(None);
         let monitors: MonitorTable = Arc::new(Mutex::new(Some(HashMap::new())));
+        let trap_exit = new_trap_exit_flag();
+        let links = new_link_table();
+        let linked_reason = new_linked_exit_reason();
 
         let actor_ref = ActorRef {
             id: ActorId::next(),
@@ -565,6 +704,9 @@ impl<A: Actor> ActorRef<A> {
             cancellation_token: cancellation_token.clone(),
             completion_rx,
             monitors: monitors.clone(),
+            trap_exit: trap_exit.clone(),
+            links: links.clone(),
+            linked_reason: linked_reason.clone(),
         };
 
         let ctx = Context {
@@ -573,7 +715,14 @@ impl<A: Actor> ActorRef<A> {
             cancellation_token: cancellation_token.clone(),
             completion_rx: actor_ref.completion_rx.clone(),
             monitors,
+            trap_exit,
+            links: links.clone(),
+            linked_reason: linked_reason.clone(),
         };
+
+        if let Some(parent) = parent {
+            actor_ref.context().link(&parent);
+        }
 
         #[cfg(feature = "backend-experiments")]
         let scheduler = std::env::var("SPAWNED_EXPERIMENT_SCHEDULER").unwrap_or_default();
@@ -603,7 +752,20 @@ impl<A: Actor> ActorRef<A> {
         } else {
             None
         };
+        let cleanup_token = cancellation_token.clone();
+        let cleanup = crate::actor_cleanup::ActorCleanup::new(
+            actor_ref.id,
+            links,
+            linked_reason,
+            actor_ref.monitors.clone(),
+            completion_tx,
+            ExitReason::Kill,
+            move || cleanup_token.cancel(),
+        );
+        let startup =
+            crate::actor_cleanup::ActorStartup::new((actor, ctx, rx, cancellation_token), cleanup);
         let inner_future = async move {
+            let ((actor, ctx, rx, cancellation_token), mut cleanup) = startup.into_parts();
             #[cfg(feature = "backend-experiments")]
             let _borrowed_runtime = borrowed_runtime;
             #[cfg(feature = "backend-experiments")]
@@ -617,7 +779,7 @@ impl<A: Actor> ActorRef<A> {
                 turn,
             )
             .await;
-            let _ = completion_tx.send(Some(reason));
+            cleanup.complete(reason);
         };
 
         match backend {
@@ -868,7 +1030,18 @@ pub trait ActorStart: Actor {
 
     /// Start the actor with a specific [`Backend`].
     fn start_with_backend(self, backend: Backend) -> ActorRef<Self> {
-        ActorRef::spawn(self, backend)
+        ActorRef::spawn(self, backend, None)
+    }
+
+    /// Register the bidirectional link before the child can run `started()`.
+    /// A closed parent is observed under its link-state mutex; an abnormal
+    /// parent exit cancels the child cooperatively before message dispatch.
+    fn start_linked<P: Actor>(self, parent_ctx: &Context<P>) -> ActorRef<Self> {
+        ActorRef::spawn(
+            self,
+            Backend::Async,
+            Some(parent_ctx.actor_ref().child_handle()),
+        )
     }
 }
 
@@ -1824,6 +1997,368 @@ mod tests {
             // If we got here without panicking, the test passes.
         });
     }
+
+    // --- Link tests ---
+
+    /// Trapping actor that records `Exit` notifications.
+    struct TrapActor {
+        exits: Arc<Mutex<Vec<Exit>>>,
+        trap: bool,
+    }
+
+    struct GetExits;
+    impl Message for GetExits {
+        type Result = Vec<Exit>;
+    }
+    struct LinkTo(crate::ChildHandle);
+    impl Message for LinkTo {
+        type Result = ();
+    }
+
+    impl Actor for TrapActor {
+        async fn started(&mut self, ctx: &Context<Self>) {
+            ctx.trap_exit(self.trap);
+        }
+        async fn exit_received(&mut self, exit: Exit, _ctx: &Context<Self>) {
+            self.exits.lock().unwrap().push(exit);
+        }
+    }
+
+    impl Handler<LinkTo> for TrapActor {
+        async fn handle(&mut self, msg: LinkTo, ctx: &Context<Self>) {
+            ctx.link(&msg.0);
+        }
+    }
+
+    impl Handler<GetExits> for TrapActor {
+        async fn handle(&mut self, _msg: GetExits, _ctx: &Context<Self>) -> Vec<Exit> {
+            self.exits.lock().unwrap().clone()
+        }
+    }
+
+    fn make_trapper(trap: bool) -> ActorRef<TrapActor> {
+        TrapActor {
+            exits: Arc::new(Mutex::new(Vec::new())),
+            trap,
+        }
+        .start()
+    }
+
+    #[test]
+    pub fn link_propagates_panic_to_non_trapping_peer() {
+        let runtime = rt::Runtime::new().unwrap();
+        runtime.block_on(async move {
+            // Two non-trapping actors. When A panics, B should be terminated.
+            let a = make_trapper(false);
+            let b = make_trapper(false);
+            a.request(LinkTo(b.child_handle())).await.unwrap();
+
+            // Make A panic by dropping its only ActorRef while it's mid-handler... easier:
+            // make A panic via a panic message
+            struct Boom;
+            impl Message for Boom {
+                type Result = ();
+            }
+            impl Handler<Boom> for TrapActor {
+                async fn handle(&mut self, _msg: Boom, _ctx: &Context<Self>) {
+                    panic!("boom");
+                }
+            }
+
+            let _ = a.send(Boom);
+            // Both should die
+            let reason_a = a.wait_exit().await;
+            let reason_b = b.wait_exit().await;
+            assert!(matches!(reason_a, ExitReason::Panic(_)));
+            // B should propagate A's reason (transitive propagation)
+            assert!(matches!(reason_b, ExitReason::Panic(_)));
+        });
+    }
+
+    #[test]
+    pub fn link_delivers_exit_to_trapping_peer() {
+        let runtime = rt::Runtime::new().unwrap();
+        runtime.block_on(async move {
+            let a = make_trapper(false);
+            let b = make_trapper(true); // B traps
+            b.request(LinkTo(a.child_handle())).await.unwrap();
+
+            struct Boom2;
+            impl Message for Boom2 {
+                type Result = ();
+            }
+            impl Handler<Boom2> for TrapActor {
+                async fn handle(&mut self, _msg: Boom2, _ctx: &Context<Self>) {
+                    panic!("boom2");
+                }
+            }
+
+            let _ = a.send(Boom2);
+            a.wait_exit().await;
+            // Give B time to process the Exit message
+            rt::sleep(Duration::from_millis(50)).await;
+
+            // B should still be alive and have received an Exit
+            assert!(b.exit_reason().is_none());
+            let exits = b.request(GetExits).await.unwrap();
+            assert_eq!(exits.len(), 1);
+            assert_eq!(exits[0].from, a.id());
+            assert!(matches!(exits[0].reason, ExitReason::Panic(_)));
+
+            // Clean up
+            let bh = b.child_handle();
+            bh.stop();
+            bh.wait_exit_async().await;
+        });
+    }
+
+    #[test]
+    pub fn link_normal_exit_not_propagated_to_non_trapping_peer() {
+        let runtime = rt::Runtime::new().unwrap();
+        runtime.block_on(async move {
+            let a = Counter { count: 0 }.start();
+            let b = make_trapper(false);
+            b.request(LinkTo(a.child_handle())).await.unwrap();
+
+            // A stops cleanly
+            a.request(StopCounter).await.unwrap();
+            a.join().await;
+            rt::sleep(Duration::from_millis(50)).await;
+
+            // B should still be alive
+            assert!(b.exit_reason().is_none());
+
+            let bh = b.child_handle();
+            bh.stop();
+            bh.wait_exit_async().await;
+        });
+    }
+
+    #[test]
+    pub fn link_to_already_dead_actor_delivers_signal() {
+        let runtime = rt::Runtime::new().unwrap();
+        runtime.block_on(async move {
+            // Start and panic a target
+            struct Boom3;
+            impl Message for Boom3 {
+                type Result = ();
+            }
+            impl Handler<Boom3> for TrapActor {
+                async fn handle(&mut self, _msg: Boom3, _ctx: &Context<Self>) {
+                    panic!("boom3");
+                }
+            }
+            let target = make_trapper(false);
+            let _ = target.send(Boom3);
+            target.wait_exit().await;
+
+            // Now link from a trapping observer — should receive Exit immediately
+            let observer = make_trapper(true);
+            observer
+                .request(LinkTo(target.child_handle()))
+                .await
+                .unwrap();
+
+            rt::sleep(Duration::from_millis(50)).await;
+            let exits = observer.request(GetExits).await.unwrap();
+            assert_eq!(exits.len(), 1);
+            assert!(matches!(exits[0].reason, ExitReason::Panic(_)));
+
+            let oh = observer.child_handle();
+            oh.stop();
+            oh.wait_exit_async().await;
+        });
+    }
+
+    #[test]
+    pub fn unlink_prevents_signal_delivery() {
+        let runtime = rt::Runtime::new().unwrap();
+        runtime.block_on(async move {
+            let a = Counter { count: 0 }.start();
+            let b = make_trapper(true);
+            b.request(LinkTo(a.child_handle())).await.unwrap();
+
+            // Now unlink
+            struct UnlinkFrom(crate::ChildHandle);
+            impl Message for UnlinkFrom {
+                type Result = ();
+            }
+            impl Handler<UnlinkFrom> for TrapActor {
+                async fn handle(&mut self, msg: UnlinkFrom, ctx: &Context<Self>) {
+                    ctx.unlink(&msg.0);
+                }
+            }
+            b.request(UnlinkFrom(a.child_handle())).await.unwrap();
+
+            // A panics
+            struct Boom4;
+            impl Message for Boom4 {
+                type Result = u64;
+            }
+            impl Handler<Boom4> for Counter {
+                async fn handle(&mut self, _msg: Boom4, _ctx: &Context<Self>) -> u64 {
+                    panic!("boom4");
+                }
+            }
+            // Counter's Boom4 returns u64; just use send with no expectation of reply
+            let _ = a.send(Boom4);
+            a.wait_exit().await;
+            rt::sleep(Duration::from_millis(50)).await;
+
+            // B should NOT have received an Exit
+            let exits = b.request(GetExits).await.unwrap();
+            assert!(exits.is_empty());
+
+            let bh = b.child_handle();
+            bh.stop();
+            bh.wait_exit_async().await;
+        });
+    }
+
+    #[test]
+    pub fn duplicate_link_is_idempotent() {
+        let runtime = rt::Runtime::new().unwrap();
+        runtime.block_on(async move {
+            let a = Counter { count: 0 }.start();
+            let b = make_trapper(true);
+            b.request(LinkTo(a.child_handle())).await.unwrap();
+            b.request(LinkTo(a.child_handle())).await.unwrap(); // duplicate
+
+            struct Boom5;
+            impl Message for Boom5 {
+                type Result = u64;
+            }
+            impl Handler<Boom5> for Counter {
+                async fn handle(&mut self, _msg: Boom5, _ctx: &Context<Self>) -> u64 {
+                    panic!("boom5");
+                }
+            }
+            let _ = a.send(Boom5);
+            a.wait_exit().await;
+            rt::sleep(Duration::from_millis(50)).await;
+
+            // Should receive only ONE Exit, not two
+            let exits = b.request(GetExits).await.unwrap();
+            assert_eq!(exits.len(), 1);
+
+            let bh = b.child_handle();
+            bh.stop();
+            bh.wait_exit_async().await;
+        });
+    }
+
+    #[test]
+    pub fn chain_propagation_through_non_trapping_middle() {
+        let runtime = rt::Runtime::new().unwrap();
+        runtime.block_on(async move {
+            // A linked to B linked to C. A panics → B dies (not trapping) →
+            // B's death propagates to C.
+            let a = make_trapper(false);
+            let b = make_trapper(false);
+            let c = make_trapper(true); // C traps
+
+            a.request(LinkTo(b.child_handle())).await.unwrap();
+            c.request(LinkTo(b.child_handle())).await.unwrap();
+
+            struct Boom6;
+            impl Message for Boom6 {
+                type Result = ();
+            }
+            impl Handler<Boom6> for TrapActor {
+                async fn handle(&mut self, _msg: Boom6, _ctx: &Context<Self>) {
+                    panic!("boom6");
+                }
+            }
+            let _ = a.send(Boom6);
+            a.wait_exit().await;
+            b.wait_exit().await;
+            rt::sleep(Duration::from_millis(100)).await;
+
+            // C should have received an Exit (B's death propagated)
+            let exits = c.request(GetExits).await.unwrap();
+            assert_eq!(exits.len(), 1, "expected C to receive Exit from B's death");
+
+            let ch = c.child_handle();
+            ch.stop();
+            ch.wait_exit_async().await;
+        });
+    }
+
+    #[test]
+    pub fn link_to_already_dead_delivers_exactly_once_to_trapping_peer() {
+        // Regression: previously, `ctx.link()` would deliver a duplicate Exit
+        // to trapping actors when the target died concurrently — once from
+        // propagate_exit (since register_link inserted self in target's table
+        // before target's drain ran) and once from the fallback exit_reason()
+        // check.
+        struct Boom7;
+        impl Message for Boom7 {
+            type Result = ();
+        }
+        impl Handler<Boom7> for TrapActor {
+            async fn handle(&mut self, _msg: Boom7, _ctx: &Context<Self>) {
+                panic!("boom7");
+            }
+        }
+
+        let runtime = rt::Runtime::new().unwrap();
+        runtime.block_on(async move {
+            let target = make_trapper(false);
+            // Kick off the panic
+            let _ = target.send(Boom7);
+            // Wait for target to fully die so exit_reason() is Some
+            target.wait_exit().await;
+
+            // Now link from a trapping observer — should receive Exit EXACTLY ONCE
+            let observer = make_trapper(true);
+            observer
+                .request(LinkTo(target.child_handle()))
+                .await
+                .unwrap();
+
+            rt::sleep(Duration::from_millis(100)).await;
+            let exits = observer.request(GetExits).await.unwrap();
+            assert_eq!(exits.len(), 1, "expected exactly one Exit, got {:?}", exits);
+
+            let oh = observer.child_handle();
+            oh.stop();
+            oh.wait_exit_async().await;
+        });
+    }
+
+    #[test]
+    pub fn start_linked_links_atomically() {
+        // Parent + child via start_linked. When parent stops via panic,
+        // child (not trapping) should die too.
+        struct Parent;
+        struct PanicParent;
+        impl Message for PanicParent {
+            type Result = ();
+        }
+        impl Actor for Parent {}
+        impl Handler<PanicParent> for Parent {
+            async fn handle(&mut self, _msg: PanicParent, _ctx: &Context<Self>) {
+                panic!("parent boom");
+            }
+        }
+
+        struct Child;
+        impl Actor for Child {}
+
+        let runtime = rt::Runtime::new().unwrap();
+        runtime.block_on(async move {
+            let parent = Parent.start();
+            let child = Child.start_linked(&parent.context());
+
+            // Parent panics — child should die too
+            let _ = parent.send(PanicParent);
+            parent.wait_exit().await;
+            // Child should also die (link propagation)
+            let reason = child.wait_exit().await;
+            // Reason should be the parent's panic
+            assert!(matches!(reason, ExitReason::Panic(_)));
+        });
+    }
 }
 
 #[cfg(test)]
@@ -1995,6 +2530,9 @@ mod turn_regressions {
                 cancellation_token: token.clone(),
                 completion_rx,
                 monitors: Arc::new(Mutex::new(Some(HashMap::new()))),
+                trap_exit: new_trap_exit_flag(),
+                links: new_link_table(),
+                linked_reason: new_linked_exit_reason(),
             };
             let count = Arc::new(AtomicUsize::new(0));
             for _ in 0..2 {
@@ -2052,6 +2590,9 @@ mod idle_stop_regression {
                 cancellation_token: token.clone(),
                 completion_rx,
                 monitors: Arc::new(Mutex::new(Some(HashMap::new()))),
+                trap_exit: new_trap_exit_flag(),
+                links: new_link_table(),
+                linked_reason: new_linked_exit_reason(),
             };
             let count = Arc::new(AtomicUsize::new(0));
             let mut actor = Box::pin(run_actor(

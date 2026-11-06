@@ -449,3 +449,47 @@ Use **`tasks`** when you need async I/O, high actor counts (thousands), or integ
 Use **`threads`** when you want simplicity, no async runtime, or CPU-bound actors that benefit from dedicated OS threads. Each actor gets its own thread, so this mode works best with a moderate number of actors.
 
 Both modes provide the same `Actor`, `Handler<M>`, `ActorRef<A>`, and `Context<A>` types. Switching requires changing imports and adding/removing `async`/`.await` on handlers and lifecycle hooks.
+
+
+## Links and trapped exits (unreleased main)
+
+Links are bidirectional failure notifications. Use `ctx.link(&child_handle)` and
+`ctx.unlink(&child_handle)` for existing actors, or `child.start_linked(&parent_ctx)`
+to perform registration before the child starts. Child handles allow links across
+execution modes. Normal peer exits are ignored by non-trapping actors; abnormal
+exits request cooperative cancellation and propagate their cause.
+
+Call `ctx.trap_exit(true)` to receive linked exits through `Actor::exit_received`
+instead. The actor macro supports this lifecycle hook:
+
+```rust
+use spawned_concurrency::{actor, Exit};
+use spawned_concurrency::tasks::{Actor, Context};
+
+struct Supervisor;
+
+#[actor]
+impl Supervisor {
+    #[started]
+    async fn setup(&mut self, ctx: &Context<Self>) {
+        ctx.trap_exit(true);
+    }
+
+    #[exit_received]
+    async fn child_exit(&mut self, exit: Exit, _ctx: &Context<Self>) {
+        tracing::warn!(actor = %exit.from, reason = ?exit.reason, "Linked actor exited");
+    }
+}
+```
+
+Use synchronous methods and the `threads` imports in synchronous mode. The hook
+is optional and defaults to doing nothing. Trapped exits use the ordinary actor
+mailbox; they do not interrupt a running handler. Kill bypasses trapping and
+requests cancellation, also cooperatively. A normal stop already committed is
+not relabelled by a later peer failure; callback failures are still reported.
+
+A link to a closed peer creates no retained relationship and applies that peer's
+exit-signal rules for the attempt. Repeated live links are no-ops. Unlink prevents
+future propagation through the relationship but does not retract an exit already
+in flight. Links are a supervision primitive; automatic restart/backoff and
+reference replacement are separate work. See the [review and regression evidence](reviews/pr-166-links.md).

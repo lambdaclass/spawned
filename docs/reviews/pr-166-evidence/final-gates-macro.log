@@ -1,0 +1,10 @@
+   Compiling spawned-concurrency v0.5.0 (/tmp/spawned-pr-security-review/integrated/concurrency)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.08s
+     Running tests/linked_exit_macro.rs (/tmp/spawned-fede-research-25dGGmPA/fairness-target/debug/deps/linked_exit_macro-c973bb77fcfad4f2)
+
+running 2 tests
+test synchronous::macro_receives_linked_exit ... ok
+test asynchronous::macro_receives_linked_exit ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
