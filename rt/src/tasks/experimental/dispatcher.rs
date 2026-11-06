@@ -897,6 +897,7 @@ mod tests {
             Policy::Global,
             Policy::Local,
             Policy::Steal,
+            Policy::Root,
             Policy::TokioPool,
         ] {
             for _ in 0..16 {
