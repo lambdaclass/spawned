@@ -1,0 +1,41 @@
+# Agy bounded lifecycle soak review
+
+Verdict APPROVE-for-testing before server compilation. Read-only code review, no performance or executed-test claim.
+
+I will read `/private/tmp/spawned-soak-review.txt` to understand the requested read-only review.
+I will now read [lifecycle_soak.rs](file:///private/tmp/spawned-fede-controls/concurrency/benches/lifecycle_soak.rs) to examine the harness implementation.
+I will read the actor and monitor implementation in `concurrency/src` and the scheduler shutdown implementation in `rt/src` to verify the API contracts, lifecycle ordering, and shutdown behavior.
+I will now read `concurrency/src/tasks/mod.rs` and `concurrency/src/monitor.rs` to check how actor lifecycle, exit reasons, and monitor notifications work.
+I will now read `concurrency/src/tasks/actor.rs` and `concurrency/benches/support/args.rs`.
+I will now read the remainder of `run_actor_lifecycle` in `concurrency/src/tasks/actor.rs` and the experimental scheduler code in `rt/src/tasks`.
+I will read `rt/src/tasks/experimental.rs` and `concurrency/Cargo.toml` to verify the experimental scheduler setup, `rt::spawn` routing, and benchmark configuration.
+I will now read `rt/src/tasks/experimental/dispatcher.rs` and `rt/src/tasks/tokio.rs` to verify how `tokio::spawn` and `rt::spawn` interact with the native executors and `SharedIo` reactor, as well as how `dispatcher::shutdown()` joins threads.
+I will read `concurrency/src/child_handle.rs` to verify `ChildHandle::stop` and `poll_exit_reason`.
+**Verdict: `APPROVE-for-testing`**
+
+### Read-Only Review Summary of [lifecycle_soak.rs](file:///private/tmp/spawned-fede-controls/concurrency/benches/lifecycle_soak.rs)
+
+1. **Lifecycle Counts & Formula Validation ([lines 368–389](file:///private/tmp/spawned-fede-controls/concurrency/benches/lifecycle_soak.rs#L368-L389))**
+   - **Actor population**: `1` unmonitored `seed` actor + `idle` (`1024` default) monitored `residents` + `cycles * churn` (`128` default per cycle) monitored churn actors.
+   - **Formulas**:
+     - `started == 1 + idle + cycles * churn`
+     - `requests == 1 + idle + cycles * churn * steps` (`1` request to `seed`, `1` to each resident, `steps = 16` sequential requests to each churn actor)
+     - `down == idle + cycles * churn` (`seed` is unmonitored; all `residents` and `churn` actors are monitored once)
+     - `started == stopped` and `started == dropped`
+   - **Happens-before & race freedom**: In [`run_actor_lifecycle`](file:///private/tmp/spawned-fede-controls/concurrency/src/tasks/actor.rs#L768-L854), `started()`, all message handlers, `stopped()` (which still runs after a caught handler panic at [lines 822–851](file:///private/tmp/spawned-fede-controls/concurrency/src/tasks/actor.rs#L822-L851)), and the drop of the `Worker` struct all complete before [`completion_tx.send(Some(reason))`](file:///private/tmp/spawned-fede-controls/concurrency/src/tasks/actor.rs#L613) unblocks `wait_exit()`. Thus, awaiting [`stop()`](file:///private/tmp/spawned-fede-controls/concurrency/benches/lifecycle_soak.rs#L148-L168) on `seed`, `actors`, `residents`, and `observer.wait_exit()` establishes a strict happens-before relationship before the final `Relaxed` counter loads at [lines 368–389](file:///private/tmp/spawned-fede-controls/concurrency/benches/lifecycle_soak.rs#L368-L389).
+
+2. **Monitor Tracking, Panic Injection & Bounded State ([lines 92–129](file:///private/tmp/spawned-fede-controls/concurrency/benches/lifecycle_soak.rs#L92-L129), [148–206](file:///private/tmp/spawned-fede-controls/concurrency/benches/lifecycle_soak.rs#L148-L206))**
+   - [`watched()`](file:///private/tmp/spawned-fede-controls/concurrency/benches/lifecycle_soak.rs#L169-L183) synchronously registers all monitors on `Watcher` via `request_with_timeout(Watch(...), LIMIT)` before any churn requests or `Crash` messages are sent.
+   - Every 16th cycle (`counts.cycles.load(Ordering::Relaxed).is_multiple_of(16)`), `actors[0]` is sent `Crash`, panics inside `Handler<Crash>`, and both `wait_exit()` in [`stop()`](file:///private/tmp/spawned-fede-controls/concurrency/benches/lifecycle_soak.rs#L158-L167) and [`Handler<Down>`](file:///private/tmp/spawned-fede-controls/concurrency/benches/lifecycle_soak.rs#L108-L119) assert `ExitReason::Panic(_)` for `actors[0]` and `ExitReason::Normal` for all other actors.
+   - `Watcher` inserts each `MonitorRef` into `pending` (asserting no duplicate `MonitorRef`) and removes it upon `Down` (`expect("duplicate/unknown monitor notification")`). Simultaneously, the internal monitor task in [`Context::monitor`](file:///private/tmp/spawned-fede-controls/concurrency/src/tasks/actor.rs#L298-L303) removes the entry from the actor's internal `MonitorTable` before delivering `Down`.
+   - [`notifications()`](file:///private/tmp/spawned-fede-controls/concurrency/benches/lifecycle_soak.rs#L184-L206) pairs `Ordering::Acquire` on `counts.down` with `Ordering::Release` in `Handler<Down>`, checks `observer.exit_reason().is_none()` (using the public [`ActorRef::exit_reason`](file:///private/tmp/spawned-fede-controls/concurrency/src/tasks/actor.rs#L498-L500) API), and verifies via `Remaining` that `pending.len()` equals `idle` after each churn cycle and `0` after `residents` stop.
+
+3. **Awaited Async Helpers & Timers ([lines 67–77](file:///private/tmp/spawned-fede-controls/concurrency/benches/lifecycle_soak.rs#L67-L77))**
+   - Both resident warm-up and churn steps (`expected == 0 && i % 16 == 0`) spawn a `tokio::spawn` helper with a `1ms` timer and `.await` its `JoinHandle` inside `Handler<Step>::handle` before returning. No detached helper tasks outlive the request turn.
+   - Under `native-global`, `native-local`, and `native-steal`, [`Job::poll`](file:///private/tmp/spawned-fede-controls/rt/src/tasks/experimental/dispatcher.rs#L114-L118) enters the shared reactor's `Handle::block_on`, so `tokio::spawn`, `tokio::time::sleep`, and `rt::spawn` monitor waiters execute on the shared reactor runtime (`actor-reactor`).
+
+4. **CPU Pinning Order, Bounded Sampling & Terminal Pool Shutdown ([lines 240–306](file:///private/tmp/spawned-fede-controls/concurrency/benches/lifecycle_soak.rs#L240-L306), [390–398](file:///private/tmp/spawned-fede-controls/concurrency/benches/lifecycle_soak.rs#L390-L398))**
+   - Argument validation and bounds (`seconds` in `1..=1800`, `workers` in `1..=16`, `idle` in `1..=4096`, `churn` in `1..=512`, `steps` in `1..=256`) run before runtime creation.
+   - `observer` and `seed` start and complete a request/stop cycle before `pin(&get("driver-cpus", ...))` is called at [line 269](file:///private/tmp/spawned-fede-controls/concurrency/benches/lifecycle_soak.rs#L269), ensuring all owned shard/native/reactor worker threads are spawned while inheriting the initial process CPU affinity (`2..5`), after which the caller thread pins its own TID to `driver-cpus` and the sampler thread pins its own TID to `sampler-cpus`.
+   - The sampler writes one CSV line per second directly to disk and flushes without retaining per-message or per-cycle vectors in memory.
+   - At exit ([lines 390–398](file:///private/tmp/spawned-fede-controls/concurrency/benches/lifecycle_soak.rs#L390-L398)), the sampler thread is joined, `shutdown_sharded()` or `dispatcher::shutdown()` waits for all active actor leases to release and joins all worker/reactor threads, and the driver Tokio runtime is dropped cleanly.

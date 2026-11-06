@@ -55,3 +55,8 @@ loom = "0.7"
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(spawned_scheduler_loom)'] }
+
+[[bench]]
+name = "lifecycle_soak"
+harness = false
+required-features = ["backend-experiments"]

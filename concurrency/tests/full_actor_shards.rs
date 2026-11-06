@@ -208,7 +208,11 @@ fn suspended_actor_does_not_block_another_actor_on_its_shard() {
 }
 #[test]
 fn actors_outlive_their_caller_runtime() {
-    if std::env::var("SPAWNED_EXPERIMENT_SCHEDULER").as_deref() != Ok("sharded") {
+    let scheduler = std::env::var("SPAWNED_EXPERIMENT_SCHEDULER").unwrap_or_default();
+    if !matches!(
+        scheduler.as_str(),
+        "sharded" | "native-global" | "native-local" | "native-steal" | "tokio-pool"
+    ) {
         return;
     }
     let rt = runtime();
@@ -220,11 +224,8 @@ fn actors_outlive_their_caller_runtime() {
     let _cleanup = Cleanup(vec![actor.child_handle()]);
     drop(rt);
     runtime().block_on(async {
-        assert!(actor
-            .request_with_timeout(Thread, LIMIT)
-            .await
-            .unwrap()
-            .starts_with("spawned-shard-"));
+        let name = actor.request_with_timeout(Thread, LIMIT).await.unwrap();
+        assert!(name.starts_with("spawned-shard-") || name.starts_with("actor-worker-"));
         actor.child_handle().stop();
         tokio::time::timeout(LIMIT, actor.join()).await.unwrap();
     });

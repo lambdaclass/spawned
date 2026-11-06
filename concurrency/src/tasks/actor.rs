@@ -579,7 +579,10 @@ impl<A: Actor> ActorRef<A> {
         let scheduler = std::env::var("SPAWNED_EXPERIMENT_SCHEDULER").unwrap_or_default();
         #[cfg(feature = "backend-experiments")]
         let turn = (backend == Backend::Async
-            && matches!(scheduler.as_str(), "sharded" | "tokio-batch"))
+            && matches!(
+                scheduler.as_str(),
+                "sharded" | "tokio-batch" | "native-global" | "native-local" | "native-steal"
+            ))
         .then(MessageTurn::from_env);
         #[cfg(feature = "backend-experiments")]
         let borrowed_runtime = if backend != Backend::Async {
@@ -587,9 +590,17 @@ impl<A: Actor> ActorRef<A> {
         } else {
             None
         };
+        #[cfg(feature = "backend-experiments")]
+        let borrowed_dispatcher = if backend != Backend::Async {
+            rt::experimental::dispatcher::lease_if_initialized()
+        } else {
+            None
+        };
         let inner_future = async move {
             #[cfg(feature = "backend-experiments")]
             let _borrowed_runtime = borrowed_runtime;
+            #[cfg(feature = "backend-experiments")]
+            let _borrowed_dispatcher = borrowed_dispatcher;
             let reason = run_actor(
                 actor,
                 ctx,
@@ -606,6 +617,25 @@ impl<A: Actor> ActorRef<A> {
             Backend::Async => {
                 #[cfg(debug_assertions)]
                 let inner_future = warn_on_block::WarnOnBlocking::new(inner_future);
+                #[cfg(feature = "backend-experiments")]
+                if matches!(
+                    scheduler.as_str(),
+                    "native-global" | "native-local" | "native-steal" | "tokio-pool"
+                ) {
+                    use rt::experimental::dispatcher::{self, Policy};
+                    let policy = match scheduler.as_str() {
+                        "native-global" => Policy::Global,
+                        "native-local" => Policy::Local,
+                        "native-steal" => Policy::Steal,
+                        _ => Policy::TokioPool,
+                    };
+                    if let Err(error) = dispatcher::spawn(policy, inner_future) {
+                        actor_ref.cancellation_token.cancel();
+                        drop(MonitorCleanup(actor_ref.monitors.clone()));
+                        tracing::error!("Experimental executor startup failed: {error}");
+                    }
+                    return actor_ref;
+                }
                 #[cfg(feature = "backend-experiments")]
                 if scheduler == "sharded" {
                     if let Err(error) = rt::experimental::spawn_sharded(inner_future) {
@@ -650,6 +680,7 @@ impl<A: Actor> ActorRef<A> {
 struct MessageTurn {
     limit: usize,
     adaptive: bool,
+    slice: Option<Duration>,
     completed: usize,
     began: Option<std::time::Instant>,
 }
@@ -661,7 +692,13 @@ impl MessageTurn {
             .parse()
             .expect("SPAWNED_EXPERIMENT_BATCH must be an integer");
         assert!(batch <= 64, "experimental batch: 0 (adaptive) or 1..=64");
+        let slice_us: u64 = std::env::var("SPAWNED_EXPERIMENT_SLICE_US")
+            .unwrap_or_else(|_| "50".into())
+            .parse()
+            .expect("experimental slice microseconds");
+        assert!(slice_us <= 1_000_000);
         Self {
+            slice: (slice_us != 0).then_some(Duration::from_micros(slice_us)),
             limit: batch.max(1),
             adaptive: batch == 0,
             completed: 0,
@@ -676,7 +713,9 @@ impl MessageTurn {
         self.began = None;
     }
     fn resumed(&mut self) {
-        self.began.get_or_insert_with(std::time::Instant::now);
+        if self.slice.is_some() {
+            self.began.get_or_insert_with(std::time::Instant::now);
+        }
     }
     async fn after_message(&mut self, empty: bool) {
         if empty {
@@ -687,14 +726,15 @@ impl MessageTurn {
         if self.completed >= self.limit
             || self
                 .began
-                .is_some_and(|t| t.elapsed() >= Duration::from_micros(50))
+                .zip(self.slice)
+                .is_some_and(|(t, slice)| t.elapsed() >= slice)
         {
             if self.adaptive {
                 self.limit = if empty { 1 } else { (self.limit * 2).min(64) };
             }
             self.completed = 0;
             rt::experimental::yield_now().await;
-            self.began = Some(std::time::Instant::now());
+            self.began = self.slice.map(|_| std::time::Instant::now());
         }
     }
 }
@@ -897,7 +937,10 @@ mod warn_on_block {
             cx: &mut std::task::Context<'_>,
         ) -> std::task::Poll<Self::Output> {
             let type_id = std::any::type_name::<F>();
+            #[cfg(not(feature = "backend-experiments"))]
             let task_id = rt::task_id();
+            #[cfg(feature = "backend-experiments")]
+            let task_id = rt::experimental::try_task_id();
             let this = self.project();
             let now = Instant::now();
             let res = this.inner.poll(cx);
@@ -1891,6 +1934,7 @@ mod turn_regressions {
         let mut turn = MessageTurn {
             limit: 16,
             adaptive: false,
+            slice: Some(Duration::from_micros(50)),
             completed: 0,
             began: Some(std::time::Instant::now()),
         };
@@ -1902,6 +1946,32 @@ mod turn_regressions {
         futures::executor::block_on(turn.after_message(true));
         assert!(turn.began.is_none());
         assert_eq!(turn.completed, 0);
+    }
+    #[test]
+    fn count_only_turn_never_starts_a_clock_and_yields_at_its_count() {
+        rt::Runtime::new().unwrap().block_on(async {
+            let mut turn = MessageTurn {
+                limit: 4,
+                adaptive: false,
+                slice: None,
+                completed: 0,
+                began: None,
+            };
+            turn.resumed();
+            for _ in 0..3 {
+                let mut message = Box::pin(turn.after_message(false));
+                assert!(futures::poll!(message.as_mut()).is_ready());
+            }
+            assert!(turn.began.is_none());
+            let mut fourth = Box::pin(turn.after_message(false));
+            assert!(futures::poll!(fourth.as_mut()).is_pending());
+            fourth.await;
+            assert_eq!(turn.completed, 0);
+            assert!(turn.began.is_none());
+            turn.parked();
+            turn.resumed();
+            assert!(turn.began.is_none());
+        });
     }
     #[test]
     fn stop_during_batch_yield_does_not_execute_the_next_queued_message() {
@@ -1936,6 +2006,7 @@ mod turn_regressions {
             let turn = MessageTurn {
                 limit: 1,
                 adaptive: false,
+                slice: Some(Duration::from_micros(50)),
                 completed: 0,
                 began: None,
             };

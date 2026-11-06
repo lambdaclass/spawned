@@ -10,6 +10,9 @@
 mod tokio;
 
 #[cfg(feature = "backend-experiments")]
+mod dispatch_gate;
+
+#[cfg(feature = "backend-experiments")]
 #[doc(hidden)]
 pub mod experimental;
 

@@ -1,6 +1,13 @@
 //! Feature-gated research hooks, not a stable runtime selection API.
 //! Process-owned current-thread Tokio shards. Actor count does not own runtime
 //! lifetime: detached helpers and blocking children may outlive their parent.
+#[doc(hidden)]
+pub mod dispatcher;
+
+#[doc(hidden)]
+pub fn try_task_id() -> Option<tokio::task::Id> {
+    tokio::task::try_id()
+}
 use std::{
     future::Future,
     io,

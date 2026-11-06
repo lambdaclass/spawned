@@ -26,6 +26,9 @@ struct Config {
     topology: String,
     layout: String,
     workers: usize,
+    caller: String,
+    caller_threads: usize,
+    observation_counter: bool,
     actors: usize,
     width: usize,
     producers: usize,
@@ -51,6 +54,9 @@ impl Config {
                 "topology",
                 "layout",
                 "workers",
+                "caller",
+                "caller-threads",
+                "observation-counter",
                 "actors",
                 "width",
                 "producers",
@@ -77,6 +83,13 @@ impl Config {
             topology: arg("topology", "chain"),
             layout: arg("layout", "same"),
             workers: arg("workers", "4").parse().unwrap(),
+            caller: arg("caller", "blocking"),
+            caller_threads: arg("caller-threads", "4").parse().unwrap(),
+            observation_counter: match arg("observation-counter", "on").as_str() {
+                "on" => true,
+                "off" => false,
+                _ => panic!("observation-counter is on/off"),
+            },
             actors: arg("actors", "1024").parse().unwrap(),
             width: arg("width", "8").parse().unwrap(),
             producers: arg("producers", "128").parse().unwrap(),
@@ -98,6 +111,17 @@ impl Config {
         assert!((2..=16).contains(&c.workers) && c.actors <= 4096 && c.actors >= c.workers * 2);
         assert!(c.actors.is_multiple_of(c.workers) && (1..=256).contains(&c.producers));
         assert!((1..=4_194_304).contains(&c.messages) && c.burst > 0 && c.deadline_ms > 0);
+        assert!(["blocking", "async"].contains(&c.caller.as_str()));
+        assert!((1..=256).contains(&c.caller_threads));
+        assert!(c.caller == "blocking" || c.caller_threads <= c.producers);
+        assert!(
+            c.caller == "blocking" || c.mode == "graph",
+            "async caller control is graph-only"
+        );
+        assert!(
+            c.observation_counter || c.mode == "graph",
+            "counter control is graph-only"
+        );
         if c.mode == "graph" {
             assert!((2..=16).contains(&c.width) && c.actors.is_multiple_of(c.width * c.workers));
             assert!(["same", "cross"].contains(&c.layout.as_str()));
@@ -434,7 +458,10 @@ fn thread_stats() -> HashMap<String, ThreadStat> {
         let Ok(name) = fs::read_to_string(dir.join("comm")) else {
             continue;
         };
-        if !(name.starts_with("actor-worker") || name.starts_with("spawned-shard-")) {
+        if !(name.starts_with("actor-worker")
+            || name.starts_with("spawned-shard-")
+            || name.starts_with("actor-reactor"))
+        {
             continue;
         }
         let sched = fs::read_to_string(dir.join("schedstat")).unwrap();
@@ -502,8 +529,13 @@ fn main() {
         "this research driver uses Linux /proc and taskset"
     );
     let c = Config::parse();
-    let sharded = std::env::var("SPAWNED_EXPERIMENT_SCHEDULER").as_deref() == Ok("sharded");
-    let mut builder = if sharded {
+    let scheduler = std::env::var("SPAWNED_EXPERIMENT_SCHEDULER").unwrap_or_default();
+    let sharded = scheduler == "sharded";
+    let dispatched = matches!(
+        scheduler.as_str(),
+        "native-global" | "native-local" | "native-steal" | "tokio-pool"
+    );
+    let mut builder = if sharded || dispatched {
         tokio::runtime::Builder::new_current_thread()
     } else {
         let mut b = tokio::runtime::Builder::new_multi_thread();
@@ -561,9 +593,11 @@ fn main() {
     }
     let done = Arc::new(AtomicBool::new(false));
     let observed = Arc::new(AtomicU64::new(0));
-    let gate = Arc::new(Barrier::new(
-        c.producers * if c.mode == "offered" { 2 } else { 1 } + 1,
-    ));
+    let gate = Arc::new(Barrier::new(if c.caller == "async" {
+        c.caller_threads + 1
+    } else {
+        c.producers * if c.mode == "offered" { 2 } else { 1 } + 1
+    }));
     let (epoch_tx, epoch_rx) = tokio::sync::watch::channel(None::<Instant>);
     let mut batches = Vec::new();
     let mut actor_before = None;
@@ -574,20 +608,87 @@ fn main() {
     std::thread::scope(|scope| {
         let mut producers = Vec::new();
         let mut collectors = Vec::new();
-        for producer in 0..c.producers {
-            let (tx, rx) = if c.mode == "offered" {
-                let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Pending>();
-                (Some(tx), Some(rx))
-            } else {
-                (None, None)
-            };
-            if let Some(mut rx) = rx {
-                let collector_gate = gate.clone();
-                let mut collector_epoch = epoch_rx.clone();
-                let observed = observed.clone();
-                let assignment = &assignment;
-                let c = &c;
-                collectors.push(std::thread::Builder::new().name("load-collector".into()).spawn_scoped(scope,move|| {
+        if c.caller == "async" {
+            for driver in 0..c.caller_threads {
+                let gate = gate.clone();
+                let mut epoch = epoch_rx.clone();
+                let (c, nodes, assignment, observed) = (&c, &nodes, &assignment, &observed);
+                producers.push(
+                    std::thread::Builder::new()
+                        .name("graph-driver".into())
+                        .spawn_scoped(scope, move || {
+                            pin_driver(&c.driver_cpus);
+                            let runtime = tokio::runtime::Builder::new_current_thread()
+                                .enable_all()
+                                .build()
+                                .unwrap();
+                            gate.wait();
+                            runtime.block_on(async {
+                                epoch.changed().await.unwrap();
+                                let start = epoch.borrow().unwrap();
+                                wait_until(start);
+                                let producers = (driver..c.producers)
+                                    .step_by(c.caller_threads)
+                                    .map(|producer| async move {
+                                        let mut samples =
+                                            Vec::with_capacity(c.messages.div_ceil(c.producers));
+                                        for id in (producer..c.messages).step_by(c.producers) {
+                                            let intended = Instant::now();
+                                            let enqueued = Instant::now();
+                                            let (target, hot) = c.target(id);
+                                            let reply = nodes[target]
+                                                .request_raw(Route {
+                                                    id: id as u64,
+                                                    enqueued,
+                                                    iterations: c.iterations,
+                                                    measured: false,
+                                                })
+                                                .unwrap();
+                                            let ack = reply.await.unwrap();
+                                            samples.push(sample(
+                                                Meta {
+                                                    id,
+                                                    target,
+                                                    hot,
+                                                    intended,
+                                                    enqueued,
+                                                },
+                                                Some(ack),
+                                                Instant::now(),
+                                                c,
+                                                assignment,
+                                            ));
+                                            if c.observation_counter {
+                                                observed.fetch_add(1, Ordering::Relaxed);
+                                            }
+                                        }
+                                        samples
+                                    });
+                                futures::future::join_all(producers)
+                                    .await
+                                    .into_iter()
+                                    .flatten()
+                                    .collect()
+                            })
+                        })
+                        .unwrap(),
+                );
+            }
+        } else {
+            for producer in 0..c.producers {
+                let (tx, rx) = if c.mode == "offered" {
+                    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Pending>();
+                    (Some(tx), Some(rx))
+                } else {
+                    (None, None)
+                };
+                if let Some(mut rx) = rx {
+                    let collector_gate = gate.clone();
+                    let mut collector_epoch = epoch_rx.clone();
+                    let observed = observed.clone();
+                    let assignment = &assignment;
+                    let c = &c;
+                    collectors.push(std::thread::Builder::new().name("load-collector".into()).spawn_scoped(scope,move|| {
                     pin_driver(&c.collector_cpus);
                     let rt=tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
                     let mut samples=Vec::with_capacity(c.messages.div_ceil(c.producers));collector_gate.wait();
@@ -607,82 +708,85 @@ fn main() {
                         }}
                     });samples
                 }).unwrap());
-            }
-            let producer_gate = gate.clone();
-            let mut producer_epoch = epoch_rx.clone();
-            let nodes = &nodes;
-            let meters = &meters;
-            let c = &c;
-            let assignment = &assignment;
-            let observed = observed.clone();
-            producers.push(
-                std::thread::Builder::new()
-                    .name("load-producer".into())
-                    .spawn_scoped(scope, move || {
-                        pin_driver(&c.driver_cpus);
-                        let mut samples = if c.mode == "offered" {
-                            Vec::new()
-                        } else {
-                            Vec::with_capacity(c.messages.div_ceil(c.producers))
-                        };
-                        producer_gate.wait();
-                        let epoch = futures::executor::block_on(async {
-                            producer_epoch.changed().await.unwrap();
-                            producer_epoch.borrow().unwrap()
-                        });
-                        wait_until(epoch);
-                        for id in (producer..c.messages).step_by(c.producers) {
-                            let intended = if c.mode == "offered" {
-                                c.intended(epoch, id)
+                }
+                let producer_gate = gate.clone();
+                let mut producer_epoch = epoch_rx.clone();
+                let nodes = &nodes;
+                let meters = &meters;
+                let c = &c;
+                let assignment = &assignment;
+                let observed = observed.clone();
+                producers.push(
+                    std::thread::Builder::new()
+                        .name("load-producer".into())
+                        .spawn_scoped(scope, move || {
+                            pin_driver(&c.driver_cpus);
+                            let mut samples = if c.mode == "offered" {
+                                Vec::new()
                             } else {
-                                Instant::now()
+                                Vec::with_capacity(c.messages.div_ceil(c.producers))
                             };
-                            if c.mode == "offered" {
-                                wait_until(intended);
-                            }
-                            let enqueued = Instant::now();
-                            let (target, hot) = c.target(id);
-                            let iterations = if c.mode == "graph" || !hot {
-                                c.iterations
-                            } else {
-                                c.hot_iterations
-                            };
-                            if c.mode != "graph" {
-                                meters[target].submitted.fetch_add(1, Ordering::Relaxed);
-                            }
-                            let reply = nodes[target]
-                                .request_raw(Route {
-                                    id: id as u64,
+                            producer_gate.wait();
+                            let epoch = futures::executor::block_on(async {
+                                producer_epoch.changed().await.unwrap();
+                                producer_epoch.borrow().unwrap()
+                            });
+                            wait_until(epoch);
+                            for id in (producer..c.messages).step_by(c.producers) {
+                                let intended = if c.mode == "offered" {
+                                    c.intended(epoch, id)
+                                } else {
+                                    Instant::now()
+                                };
+                                if c.mode == "offered" {
+                                    wait_until(intended);
+                                }
+                                let enqueued = Instant::now();
+                                let (target, hot) = c.target(id);
+                                let iterations = if c.mode == "graph" || !hot {
+                                    c.iterations
+                                } else {
+                                    c.hot_iterations
+                                };
+                                if c.mode != "graph" {
+                                    meters[target].submitted.fetch_add(1, Ordering::Relaxed);
+                                }
+                                let reply = nodes[target]
+                                    .request_raw(Route {
+                                        id: id as u64,
+                                        enqueued,
+                                        iterations,
+                                        measured: c.mode != "graph",
+                                    })
+                                    .unwrap();
+                                let meta = Meta {
+                                    id,
+                                    target,
+                                    hot,
+                                    intended,
                                     enqueued,
-                                    iterations,
-                                    measured: c.mode != "graph",
-                                })
-                                .unwrap();
-                            let meta = Meta {
-                                id,
-                                target,
-                                hot,
-                                intended,
-                                enqueued,
-                            };
-                            if let Some(tx) = &tx {
-                                tx.send(Pending { meta, reply }).unwrap();
-                            } else {
-                                let ack = futures::executor::block_on(reply).unwrap();
-                                samples.push(sample(
-                                    meta,
-                                    Some(ack),
-                                    Instant::now(),
-                                    c,
-                                    assignment,
-                                ));
-                                observed.fetch_add(1, Ordering::Relaxed);
+                                };
+                                if let Some(tx) = &tx {
+                                    tx.send(Pending { meta, reply }).unwrap();
+                                } else {
+                                    let ack = futures::executor::block_on(reply).unwrap();
+                                    samples.push(sample(
+                                        meta,
+                                        Some(ack),
+                                        Instant::now(),
+                                        c,
+                                        assignment,
+                                    ));
+                                    if c.observation_counter {
+                                        observed.fetch_add(1, Ordering::Relaxed);
+                                    }
+                                }
                             }
-                        }
-                        samples
-                    })
-                    .unwrap(),
-            );
+                            samples
+                        })
+                        .unwrap(),
+                );
+            }
         }
         gate.wait();
         actor_before = Some(thread_stats());
@@ -966,5 +1070,8 @@ fn main() {
     drop(nodes);
     if sharded {
         spawned_rt::tasks::experimental::shutdown_sharded().unwrap();
+    }
+    if dispatched {
+        spawned_rt::tasks::experimental::dispatcher::shutdown().unwrap();
     }
 }
