@@ -1,0 +1,9 @@
+   Compiling spawned-concurrency v0.5.0 (/private/tmp/spawned-scenario-tests/concurrency)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.80s
+     Running tests/shutdown_publication.rs (target/debug/deps/shutdown_publication-a5e4b8a5bab659d4)
+
+running 1 test
+test admitted_request_racing_shutdown_drops_its_reply_before_join_completes ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+

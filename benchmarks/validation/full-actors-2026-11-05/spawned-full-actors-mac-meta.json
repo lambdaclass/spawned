@@ -1,0 +1,24 @@
+{
+  "mac2": {
+    "revision": "9b223463599ffb18615e0fc7f538924bd3edd8e7",
+    "dirty": false,
+    "platform": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
+    "rustc": "rustc 1.93.0 (254b59607 2026-01-19) (built from a source tarball)",
+    "nofile": [
+      4096,
+      9223372036854775807
+    ],
+    "driver_policy": "sharded: current-thread observer + N actor workers; async: N actor workers on caller runtime"
+  },
+  "mac4": {
+    "revision": "9b223463599ffb18615e0fc7f538924bd3edd8e7",
+    "dirty": false,
+    "platform": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
+    "rustc": "rustc 1.93.0 (254b59607 2026-01-19) (built from a source tarball)",
+    "nofile": [
+      4096,
+      9223372036854775807
+    ],
+    "driver_policy": "sharded: current-thread observer + N actor workers; async: N actor workers on caller runtime"
+  }
+}

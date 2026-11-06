@@ -9,6 +9,10 @@
 
 mod tokio;
 
+#[cfg(feature = "backend-experiments")]
+#[doc(hidden)]
+pub mod experimental;
+
 use crate::tracing::init_tracing;
 
 pub use crate::tasks::tokio::mpsc;

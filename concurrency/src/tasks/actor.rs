@@ -27,8 +27,12 @@ pub use crate::response::DEFAULT_REQUEST_TIMEOUT;
 /// Runtime backend for the actor's message loop (tasks mode only).
 ///
 /// - `Async` — runs on the tokio async runtime (default, lowest overhead)
-/// - `Blocking` — runs on tokio's blocking thread pool (for blocking I/O)
-/// - `Thread` — runs on a dedicated OS thread (for CPU-bound work or isolation)
+/// - `Blocking` — runs on tokio's blocking thread pool (for blocking I/O).
+///   Each actor occupies a blocking worker until it stops. Actors beyond the
+///   available pool capacity remain queued, including their `started()` hook.
+/// - `Thread` — runs on a dedicated OS thread (for CPU-bound work or isolation).
+///   Each actor also creates an isolated Tokio runtime; account for helper threads
+///   and reactor descriptors when sizing large populations.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Backend {
     #[default]
@@ -571,8 +575,30 @@ impl<A: Actor> ActorRef<A> {
             monitors,
         };
 
+        #[cfg(feature = "backend-experiments")]
+        let scheduler = std::env::var("SPAWNED_EXPERIMENT_SCHEDULER").unwrap_or_default();
+        #[cfg(feature = "backend-experiments")]
+        let turn = (backend == Backend::Async
+            && matches!(scheduler.as_str(), "sharded" | "tokio-batch"))
+        .then(MessageTurn::from_env);
+        #[cfg(feature = "backend-experiments")]
+        let borrowed_runtime = if backend != Backend::Async {
+            rt::experimental::lease_if_initialized()
+        } else {
+            None
+        };
         let inner_future = async move {
-            let reason = run_actor(actor, ctx, rx, cancellation_token).await;
+            #[cfg(feature = "backend-experiments")]
+            let _borrowed_runtime = borrowed_runtime;
+            let reason = run_actor(
+                actor,
+                ctx,
+                rx,
+                cancellation_token,
+                #[cfg(feature = "backend-experiments")]
+                turn,
+            )
+            .await;
             let _ = completion_tx.send(Some(reason));
         };
 
@@ -580,6 +606,15 @@ impl<A: Actor> ActorRef<A> {
             Backend::Async => {
                 #[cfg(debug_assertions)]
                 let inner_future = warn_on_block::WarnOnBlocking::new(inner_future);
+                #[cfg(feature = "backend-experiments")]
+                if scheduler == "sharded" {
+                    if let Err(error) = rt::experimental::spawn_sharded(inner_future) {
+                        actor_ref.cancellation_token.cancel();
+                        drop(MonitorCleanup(actor_ref.monitors.clone()));
+                        tracing::error!("Experimental shard startup failed: {error}");
+                    }
+                    return actor_ref;
+                }
                 let _handle = rt::spawn(inner_future);
             }
             Backend::Blocking => {
@@ -610,13 +645,76 @@ impl<A: Actor> ActorRef<A> {
     }
 }
 
+// Batch only between completed handlers: never preempt or concurrently poll an actor.
+#[cfg(feature = "backend-experiments")]
+struct MessageTurn {
+    limit: usize,
+    adaptive: bool,
+    completed: usize,
+    began: Option<std::time::Instant>,
+}
+#[cfg(feature = "backend-experiments")]
+impl MessageTurn {
+    fn from_env() -> Self {
+        let batch: usize = std::env::var("SPAWNED_EXPERIMENT_BATCH")
+            .unwrap_or_else(|_| "16".into())
+            .parse()
+            .expect("SPAWNED_EXPERIMENT_BATCH must be an integer");
+        assert!(batch <= 64, "experimental batch: 0 (adaptive) or 1..=64");
+        Self {
+            limit: batch.max(1),
+            adaptive: batch == 0,
+            completed: 0,
+            began: None,
+        }
+    }
+    fn parked(&mut self) {
+        self.completed = 0;
+        if self.adaptive {
+            self.limit = 1;
+        }
+        self.began = None;
+    }
+    fn resumed(&mut self) {
+        self.began.get_or_insert_with(std::time::Instant::now);
+    }
+    async fn after_message(&mut self, empty: bool) {
+        if empty {
+            self.parked();
+            return;
+        }
+        self.completed += 1;
+        if self.completed >= self.limit
+            || self
+                .began
+                .is_some_and(|t| t.elapsed() >= Duration::from_micros(50))
+        {
+            if self.adaptive {
+                self.limit = if empty { 1 } else { (self.limit * 2).min(64) };
+            }
+            self.completed = 0;
+            rt::experimental::yield_now().await;
+            self.began = Some(std::time::Instant::now());
+        }
+    }
+}
+
 async fn run_actor<A: Actor>(
     actor: A,
     ctx: Context<A>,
     mut rx: mpsc::Receiver<Box<dyn Envelope<A> + Send>>,
     cancellation_token: CancellationToken,
+    #[cfg(feature = "backend-experiments")] turn: Option<MessageTurn>,
 ) -> ExitReason {
-    let reason = run_actor_lifecycle(actor, ctx, &mut rx, cancellation_token).await;
+    let reason = run_actor_lifecycle(
+        actor,
+        ctx,
+        &mut rx,
+        cancellation_token,
+        #[cfg(feature = "backend-experiments")]
+        turn,
+    )
+    .await;
     // A concurrent send may have reserved a channel slot without publishing its
     // envelope yet. Dropping the receiver alone can leave that envelope (and its
     // reply sender) retained until every ActorRef is dropped. Closing admission
@@ -632,6 +730,7 @@ async fn run_actor_lifecycle<A: Actor>(
     ctx: Context<A>,
     rx: &mut mpsc::Receiver<Box<dyn Envelope<A> + Send>>,
     cancellation_token: CancellationToken,
+    #[cfg(feature = "backend-experiments")] mut turn: Option<MessageTurn>,
 ) -> ExitReason {
     let _monitor_cleanup = MonitorCleanup(ctx.monitors.clone());
     let start_result = AssertUnwindSafe(actor.started(&ctx)).catch_unwind().await;
@@ -655,7 +754,20 @@ async fn run_actor_lifecycle<A: Actor>(
 
     loop {
         let msg = {
+            #[cfg(not(feature = "backend-experiments"))]
             let recv = pin!(rx.recv());
+            #[cfg(feature = "backend-experiments")]
+            let recv = pin!(future::poll_fn(|cx| {
+                let result = rx.poll_recv(cx);
+                if let Some(turn) = &mut turn {
+                    if result.is_pending() {
+                        turn.parked();
+                    } else if matches!(result, std::task::Poll::Ready(Some(_))) {
+                        turn.resumed();
+                    }
+                }
+                result
+            }));
             let cancel = pin!(cancellation_token.cancelled());
             match future::select(recv, cancel).await {
                 future::Either::Left((msg, _)) => msg,
@@ -675,6 +787,13 @@ async fn run_actor_lifecycle<A: Actor>(
                 }
                 if cancellation_token.is_cancelled() {
                     break;
+                }
+                #[cfg(feature = "backend-experiments")]
+                if let Some(turn) = &mut turn {
+                    turn.after_message(rx.is_empty()).await;
+                    if cancellation_token.is_cancelled() {
+                        break;
+                    }
                 }
             }
             None => break,
@@ -1757,5 +1876,78 @@ mod early_stop_regression {
         assert!(
             matches!(rt.block_on(actor.wait_exit()), ExitReason::Panic(message) if message.contains("cleanup failed"))
         );
+    }
+}
+
+#[cfg(all(test, feature = "backend-experiments"))]
+mod turn_regressions {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    #[test]
+    fn idle_time_is_excluded_and_an_empty_mailbox_needs_no_yield() {
+        let mut turn = MessageTurn {
+            limit: 16,
+            adaptive: false,
+            completed: 0,
+            began: Some(std::time::Instant::now()),
+        };
+        turn.parked();
+        assert!(turn.began.is_none());
+        let wake = std::time::Instant::now();
+        turn.resumed();
+        assert!(turn.began.unwrap() >= wake);
+        futures::executor::block_on(turn.after_message(true));
+        assert!(turn.began.is_none());
+        assert_eq!(turn.completed, 0);
+    }
+    #[test]
+    fn stop_during_batch_yield_does_not_execute_the_next_queued_message() {
+        struct Count(Arc<AtomicUsize>);
+        impl Actor for Count {}
+        struct Inc;
+        impl Message for Inc {
+            type Result = ();
+        }
+        impl Handler<Inc> for Count {
+            async fn handle(&mut self, _: Inc, _: &Context<Self>) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+        rt::Runtime::new().unwrap().block_on(async {
+            let (tx, rx) = mpsc::channel();
+            let token = CancellationToken::new();
+            let (_, completion_rx) = watch::channel(None);
+            let ctx = Context {
+                id: ActorId::next(),
+                sender: tx.clone(),
+                cancellation_token: token.clone(),
+                completion_rx,
+                monitors: Arc::new(Mutex::new(Some(HashMap::new()))),
+            };
+            let count = Arc::new(AtomicUsize::new(0));
+            for _ in 0..2 {
+                tx.send(Box::new(MessageEnvelope { msg: Inc, tx: None })
+                    as Box<dyn Envelope<Count> + Send>)
+                    .unwrap();
+            }
+            let turn = MessageTurn {
+                limit: 1,
+                adaptive: false,
+                completed: 0,
+                began: None,
+            };
+            let mut job = Box::pin(run_actor(
+                Count(count.clone()),
+                ctx,
+                rx,
+                token.clone(),
+                Some(turn),
+            ));
+            assert!(futures::poll!(job.as_mut()).is_pending());
+            assert_eq!(count.load(Ordering::SeqCst), 1);
+            token.cancel();
+            assert_eq!(job.await, ExitReason::Normal);
+            assert_eq!(count.load(Ordering::SeqCst), 1);
+        });
     }
 }

@@ -1,4 +1,6 @@
 //! Experimental design driver; see benchmarks/EXPERIMENTS.md.
+#[path = "support/actor_io.rs"]
+mod actor_io;
 #[path = "support/args.rs"]
 mod cli;
 #[path = "support/ready_gate.rs"]
@@ -73,6 +75,9 @@ fn process(work: Work) -> Ack {
     } else {
         work.enqueued
     };
+    process_at(work, start)
+}
+fn process_at(work: Work, start: Instant) -> Ack {
     let mut value = work.id;
     for byte in work.payload.iter() {
         value = value.wrapping_mul(31).wrapping_add(*byte as u64);
@@ -97,11 +102,53 @@ fn process(work: Work) -> Ack {
         checksum: value,
     }
 }
-struct Sink;
+struct Sink {
+    work: String,
+    wait: Duration,
+    address: Option<std::net::SocketAddr>,
+    socket: Option<tokio::net::TcpStream>,
+}
+impl Sink {
+    fn new(config: &Config, address: Option<std::net::SocketAddr>) -> Self {
+        Self {
+            work: config.work.clone(),
+            wait: Duration::from_micros(config.wait_us),
+            address,
+            socket: None,
+        }
+    }
+}
 impl tasks::Actor for Sink {}
 impl tasks::Handler<Work> for Sink {
     async fn handle(&mut self, work: Work, _: &tasks::Context<Self>) -> Ack {
-        process(work)
+        let start = if work.timing {
+            Instant::now()
+        } else {
+            work.enqueued
+        };
+        match self.work.as_str() {
+            "timer" => tokio::time::sleep(self.wait).await,
+            "blocking" => std::thread::sleep(self.wait),
+            "tcp" => {
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                if self.socket.is_none() {
+                    let socket = tokio::net::TcpStream::connect(self.address.unwrap())
+                        .await
+                        .unwrap();
+                    socket.set_nodelay(true).unwrap();
+                    self.socket = Some(socket);
+                }
+                let socket = self.socket.as_mut().unwrap();
+                let mut frame = [0u8; 64];
+                frame[..8].copy_from_slice(&work.id.to_le_bytes());
+                let expected = frame;
+                socket.write_all(&frame).await.unwrap();
+                socket.read_exact(&mut frame).await.unwrap();
+                assert_eq!(frame, expected);
+            }
+            _ => {}
+        }
+        process_at(work, start)
     }
 }
 impl threads::Actor for Sink {}
@@ -276,6 +323,8 @@ impl Drop for Shutdown {
 #[derive(Clone)]
 struct Config {
     backend: String,
+    work: String,
+    wait_us: u64,
     scenario: String,
     actors: usize,
     producers: usize,
@@ -302,6 +351,8 @@ impl Config {
             &args,
             &[
                 "backend",
+                "work",
+                "wait-us",
                 "scenario",
                 "actors",
                 "producers",
@@ -336,6 +387,8 @@ impl Config {
         assert!(["timed", "direct"].contains(&observer.as_str()));
         let config = Self {
             backend: arg("backend", "async"),
+            work: arg("work", "cpu"),
+            wait_us: arg("wait-us", "1000").parse().unwrap(),
             scenario: arg("scenario", "rpc"),
             actors: arg("actors", "1").parse().unwrap(),
             producers: arg("producers", "1").parse().unwrap(),
@@ -361,6 +414,7 @@ impl Config {
         assert!(["rpc", "burst", "paced"].contains(&config.scenario.as_str()));
         assert!([
             "async",
+            "sharded",
             "blocking",
             "dedicated",
             "threads",
@@ -381,7 +435,13 @@ impl Config {
         );
         assert!(config.actors <= 2048 && config.producers <= 256);
         assert!(["framework", "std", "bounded", "tokio"].contains(&config.reply.as_str()));
-        assert!(config.capacity > 0 && (config.batch > 0 || config.backend == "native-ready"));
+        assert!(config.capacity > 0);
+        assert!(["cpu", "timer", "blocking", "tcp"].contains(&config.work.as_str()));
+        assert!(config.work == "cpu" || ["async", "sharded"].contains(&config.backend.as_str()));
+        assert!(
+            config.batch > 0
+                || ["native-ready", "async", "sharded"].contains(&config.backend.as_str())
+        );
         config
     }
 }
@@ -399,11 +459,20 @@ fn percentile(values: &mut [u64], fraction: usize) -> u64 {
 }
 fn main() {
     let config = Config::parse();
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(config.workers)
-        .enable_all()
-        .build()
-        .unwrap();
+    let mut builder = if config.backend == "sharded" {
+        assert_eq!(
+            std::env::var("SPAWNED_EXPERIMENT_SCHEDULER").as_deref(),
+            Ok("sharded")
+        );
+        tokio::runtime::Builder::new_current_thread()
+    } else {
+        let mut builder = tokio::runtime::Builder::new_multi_thread();
+        builder.worker_threads(config.workers);
+        builder
+    };
+    let rt = builder.enable_all().build().unwrap();
+    let server = (config.work == "tcp").then(actor_io::EchoServer::new);
+    let address = server.as_ref().map(|s| s.addr);
     let _entered = rt.enter();
     let mut targets = Vec::new();
     let mut shutdown = Shutdown(Vec::new());
@@ -563,15 +632,18 @@ fn main() {
         config.actors
     } {
         let target = match config.backend.as_str() {
-            "async" | "blocking" | "dedicated" => {
+            "async" | "sharded" | "blocking" | "dedicated" => {
                 let backend = match config.backend.as_str() {
-                    "async" => tasks::Backend::Async,
+                    "async" | "sharded" => tasks::Backend::Async,
                     "blocking" => tasks::Backend::Blocking,
                     _ => tasks::Backend::Thread,
                 };
-                Target::Tasks(tasks::ActorStart::start_with_backend(Sink, backend))
+                Target::Tasks(tasks::ActorStart::start_with_backend(
+                    Sink::new(&config, address),
+                    backend,
+                ))
             }
-            "threads" => Target::Threads(threads::ActorStart::start(Sink)),
+            "threads" => Target::Threads(threads::ActorStart::start(Sink::new(&config, address))),
             "tokio" => {
                 let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<TokioMessage>();
                 tokio_joins.push(rt.spawn(async move {
@@ -854,5 +926,8 @@ fn main() {
     }
     for join in tokio_joins {
         rt.block_on(join).unwrap();
+    }
+    if config.backend == "sharded" {
+        spawned_rt::tasks::experimental::shutdown_sharded().unwrap();
     }
 }

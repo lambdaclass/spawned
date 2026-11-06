@@ -1,5 +1,15 @@
 # Performance studies
 
+The [full-actor report](reports/full-actors-2026-11-05/REPORT.md) compares actual
+Spawned lifecycle/messages across Tokio, batching and sharding: 1,575 successful
+processes and 129 million requests on macOS, a Linux VM and native Linux on fede,
+with twelve figures.
+[Self-contained HTML](reports/full-actors-2026-11-05/REPORT.html),
+[findings](FINDINGS-FULL-ACTORS.md), [research priorities](RESEARCH-NEXT.md),
+[validation](VALIDATION-FULL-ACTORS.md) and
+[independent agy reviews](reviews/agy-full-actors-2026-11-05.md) accompany it.
+
+
 The [backend design report](reports/designs-2026-11-05/REPORT.md) includes
 macOS and Linux results, 27 charts, backend explanations and compatibility limits.
 The [self-contained HTML report](reports/designs-2026-11-05/REPORT.html) embeds its
@@ -118,6 +128,14 @@ python3 -m venv /tmp/spawned-plots
 See [validation evidence](VALIDATION-DESIGNS.md) and the
 [independent agy review and resolution](reviews/agy-design-2026-11-05.md).
 The design report is separate from the historical baseline above.
+
+Rebuild the matched full-actor report with the same plotting environment:
+
+```sh
+/tmp/spawned-plots/bin/python benchmarks/render_full_actors.py \
+  --data benchmarks/results/full-actors-2026-11-05 \
+  --output benchmarks/reports/full-actors-2026-11-05
+```
 
 ## Runner robustness
 
