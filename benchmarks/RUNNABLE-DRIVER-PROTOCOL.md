@@ -51,3 +51,9 @@ double panic. Preserve that failed log as a test-design limitation, not a new
 Runnable regression. The final executor probe tests a single destructor panic;
 ordinary poll panic is covered separately, and the direct wrapper test checks
 its own two unwind boundaries. No backend promises recovery from a double panic.
+
+The first eight-core scale smoke was rejected by the benchmark's legacy256
+producer cap before actor startup (exit101). Extend only graph actor limits to
+65536 and async logical graph producers to2048; blocking/offered producer caps
+and offered actor limits stay unchanged. Fresh same-source smokes must cover
+both eight-core populations before scoring; retain the rejected probe log.
