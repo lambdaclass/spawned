@@ -38,7 +38,7 @@ other native variants was not independently verified and is not a general claim.
 five fresh repetitions. Resource controls include native N3+R1 versus Tokio4,
 native N4+R1 versus Tokio4 and Tokio5, all on four physical actor cores. Tokio5 is
 an oversubscription control, not five cores. Only static shards enforce same/cross
-placement. Thirty-two small smoke processes precede 320 long graph processes;
-14 profile cases are separate. Source, binaries, schedule, CPU masks and controller
+placement. Thirty-six small smoke processes precede 360 long graph processes;
+16 profile cases are separate. Source, binaries, schedule, CPU masks and controller
 hashes are recorded. Never pool these with the earlier source versions, and keep
 Tokio default regardless of a single attractive graph result.
