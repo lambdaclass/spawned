@@ -31,6 +31,8 @@ pub enum Policy {
     Global,
     Local,
     Steal,
+    Root,
+    Runnable,
     TokioPool,
 }
 struct Active {
@@ -38,22 +40,24 @@ struct Active {
     closed: bool,
 }
 struct Queues {
-    global: VecDeque<Arc<Job>>,
-    local: Vec<VecDeque<Arc<Job>>>,
+    global: VecDeque<Work>,
+    local: Vec<VecDeque<Work>>,
 }
 struct Pool {
     policy: Policy,
     count: usize,
     local_budget: usize,
+    root_quantum: usize,
     active: Mutex<Active>,
     idle: Condvar,
     closed: AtomicBool,
     teardown: Mutex<()>,
     queues: Mutex<Queues>,
-    split: Vec<Mutex<VecDeque<Arc<Job>>>>,
+    split: Vec<Mutex<VecDeque<Work>>>,
     sleepers: Vec<AtomicBool>,
     wake_handles: Vec<OnceLock<thread::Thread>>,
     wake_next: AtomicUsize,
+    root_ready: Vec<tokio::sync::Notify>,
     ready: Condvar,
     next: AtomicUsize,
     workers: Mutex<Vec<JoinHandle<()>>>,
@@ -69,6 +73,85 @@ impl Drop for Lease {
         let mut state = self.0.active.lock().unwrap();
         state.count -= 1;
         self.0.idle.notify_all();
+    }
+}
+// A Runnable owns its scheduling state and inline future allocation. The
+// scheduler queues that unique ticket rather than cloning Arc<Job> per poll.
+// async-task aborts if the stored future destructor unwinds. Keep user
+// future polling and disposal behind separate unwind boundaries, matching
+// Custom jobs. The inner future stays boxed; no per-poll future mutex remains.
+struct PanicSafeFuture(Option<FutureJob>);
+impl PanicSafeFuture {
+    fn dispose(&mut self) {
+        if catch_unwind(AssertUnwindSafe(|| drop(self.0.take()))).is_err() {
+            tracing::error!("Experimental runnable actor future destructor panicked");
+        }
+    }
+}
+impl Future for PanicSafeFuture {
+    type Output = ();
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            self.0
+                .as_mut()
+                .expect("poll after completion")
+                .as_mut()
+                .poll(cx)
+        }));
+        match result {
+            Ok(Poll::Pending) => Poll::Pending,
+            _ => {
+                if result.is_err() {
+                    tracing::error!("Experimental runnable actor future panicked");
+                }
+                self.dispose();
+                Poll::Ready(())
+            }
+        }
+    }
+}
+impl Drop for PanicSafeFuture {
+    fn drop(&mut self) {
+        self.dispose();
+    }
+}
+struct TaskMeta {
+    pool: Weak<Pool>,
+    preferred: AtomicUsize,
+}
+enum Work {
+    Custom(Arc<Job>),
+    Runnable(async_task::Runnable<TaskMeta>),
+}
+impl Work {
+    fn preferred(&self) -> usize {
+        match self {
+            Self::Custom(job) => job.preferred.load(Ordering::Relaxed),
+            Self::Runnable(job) => job.metadata().preferred.load(Ordering::Relaxed),
+        }
+    }
+    fn poll(self, worker: usize, handle: &Handle, bridge: bool) {
+        match self {
+            Self::Custom(job) => job.poll(worker, handle, bridge),
+            Self::Runnable(job) => {
+                job.metadata().preferred.store(worker, Ordering::Relaxed);
+                let pool = job.metadata().pool.as_ptr() as usize;
+                let old = POLLING.with(|p| p.replace(Some((pool, worker))));
+                struct Reset(Option<(usize, usize)>);
+                impl Drop for Reset {
+                    fn drop(&mut self) {
+                        POLLING.with(|p| p.set(self.0));
+                    }
+                }
+                let _reset = Reset(old);
+                // Only the amortized root driver runs this policy, with shared
+                // I/O context and cooperative budget already installed.
+                debug_assert!(!bridge);
+                if catch_unwind(AssertUnwindSafe(|| job.run())).is_err() {
+                    tracing::error!("Experimental runnable actor future panicked");
+                }
+            }
+        }
     }
 }
 struct Job {
@@ -93,7 +176,7 @@ impl Job {
             }
         }
     }
-    fn poll(self: Arc<Self>, worker: usize, handle: &Handle) {
+    fn poll(self: Arc<Self>, worker: usize, handle: &Handle, bridge: bool) {
         if !self.gate.claim() {
             return;
         }
@@ -113,16 +196,22 @@ impl Job {
         // this native thread. The wrapper always returns Ready after one actor
         // poll, so it never parks waiting on the actor or uses its own waker.
         let outcome = catch_unwind(AssertUnwindSafe(|| {
-            handle.block_on(std::future::poll_fn(|_| {
-                Poll::Ready(future.as_mut().unwrap().as_mut().poll(&mut cx))
-            }))
+            if bridge {
+                handle.block_on(std::future::poll_fn(|_| {
+                    Poll::Ready(future.as_mut().unwrap().as_mut().poll(&mut cx))
+                }))
+            } else {
+                // The one-per-worker Tokio root driver already owns the
+                // cooperative budget and a persistent shared-I/O handle scope.
+                future.as_mut().unwrap().as_mut().poll(&mut cx)
+            }
         }));
         drop(reset);
         if matches!(outcome, Ok(Poll::Pending)) {
             drop(future);
             if self.gate.pending() {
                 if let Some(pool) = self.pool.upgrade() {
-                    pool.enqueue_from(self.clone(), Some(worker));
+                    pool.enqueue_from(Work::Custom(self.clone()), Some(worker));
                 }
             }
         } else {
@@ -144,6 +233,7 @@ impl Pool {
         count: usize,
         reactors: usize,
         local_budget: usize,
+        root_quantum: usize,
     ) -> io::Result<Arc<Self>> {
         let ids = Arc::new(Mutex::new(Vec::new()));
         let (stop, stopped) = oneshot::channel();
@@ -216,6 +306,7 @@ impl Pool {
             policy,
             count,
             local_budget,
+            root_quantum,
             active: Mutex::new(Active {
                 count: 0,
                 closed: false,
@@ -231,6 +322,7 @@ impl Pool {
             sleepers: (0..count).map(|_| AtomicBool::new(false)).collect(),
             wake_handles: (0..count).map(|_| OnceLock::new()).collect(),
             wake_next: AtomicUsize::new(0),
+            root_ready: (0..count).map(|_| tokio::sync::Notify::new()).collect(),
             ready: Condvar::new(),
             next: AtomicUsize::new(0),
             workers: Mutex::new(Vec::new()),
@@ -247,13 +339,40 @@ impl Pool {
         if policy != Policy::TokioPool {
             for worker in 0..count {
                 let cloned = pool.clone();
+                let (started, startup) = std::sync::mpsc::sync_channel::<io::Result<()>>(1);
                 match thread::Builder::new()
                     .name(format!("actor-worker-n{worker}"))
-                    .spawn(move || cloned.run(worker))
-                {
+                    .spawn(move || {
+                        if matches!(cloned.policy, Policy::Root | Policy::Runnable) {
+                            match tokio::runtime::Builder::new_current_thread().build() {
+                                Ok(runtime) => {
+                                    if started.send(Ok(())).is_ok() {
+                                        cloned.run_root(worker, runtime);
+                                    }
+                                }
+                                Err(error) => {
+                                    let _ = started.send(Err(error));
+                                }
+                            }
+                        } else {
+                            let _ = started.send(Ok(()));
+                            cloned.run(worker);
+                        }
+                    }) {
                     Ok(handle) => {
                         pool.ids.lock().unwrap().push(handle.thread().id());
                         pool.workers.lock().unwrap().push(handle);
+                        match startup.recv() {
+                            Ok(Ok(())) => {}
+                            failure => {
+                                let _ = pool.close_workers();
+                                return Err(match failure {
+                                    Ok(Err(error)) => error,
+                                    Err(error) => io::Error::other(error),
+                                    _ => unreachable!(),
+                                });
+                            }
+                        }
                     }
                     Err(error) => {
                         let _ = pool.close_workers();
@@ -265,15 +384,17 @@ impl Pool {
         Ok(pool)
     }
     fn enqueue(&self, job: Arc<Job>) {
+        self.enqueue_work(Work::Custom(job));
+    }
+    fn enqueue_work(&self, job: Work) {
         let current = POLLING
             .with(Cell::get)
             .and_then(|(pool, worker)| (pool == self as *const Self as usize).then_some(worker));
         self.enqueue_from(job, current);
     }
-    fn enqueue_from(&self, job: Arc<Job>, current: Option<usize>) {
-        if self.policy == Policy::Steal {
-            let target =
-                current.unwrap_or_else(|| job.preferred.load(Ordering::Relaxed)) % self.count;
+    fn enqueue_from(&self, job: Work, current: Option<usize>) {
+        if matches!(self.policy, Policy::Steal | Policy::Root | Policy::Runnable) {
+            let target = current.unwrap_or_else(|| job.preferred()) % self.count;
             let depth = {
                 let mut queue = self.split[target].lock().unwrap();
                 queue.push_back(job);
@@ -289,8 +410,7 @@ impl Pool {
         }
         let mut queues = self.queues.lock().unwrap();
         if self.policy == Policy::Local {
-            let target =
-                current.unwrap_or_else(|| job.preferred.load(Ordering::Relaxed)) % self.count;
+            let target = current.unwrap_or_else(|| job.preferred()) % self.count;
             queues.local[target].push_back(job);
             // Keep a single cheap continuation local; a periodic steal check
             // also prevents a blocking owner from hiding that continuation.
@@ -303,6 +423,10 @@ impl Pool {
         }
     }
     fn unpark(&self, worker: usize) {
+        if matches!(self.policy, Policy::Root | Policy::Runnable) {
+            self.root_ready[worker].notify_one();
+            return;
+        }
         if let Some(handle) = self.wake_handles[worker].get() {
             handle.unpark();
         }
@@ -317,7 +441,7 @@ impl Pool {
             }
         }
     }
-    fn take_split(&self, worker: usize, oldest: bool, victim: &mut usize) -> Option<Arc<Job>> {
+    fn take_split(&self, worker: usize, oldest: bool, victim: &mut usize) -> Option<Work> {
         let own = {
             let mut queue = self.split[worker].lock().unwrap();
             if oldest {
@@ -362,7 +486,7 @@ impl Pool {
                 if !self.split[worker].lock().unwrap().is_empty() {
                     self.unpark_peer(worker);
                 }
-                job.poll(worker, &self.handle);
+                job.poll(worker, &self.handle, true);
             } else {
                 if self.closed.load(Ordering::Acquire) {
                     return;
@@ -371,6 +495,56 @@ impl Pool {
                 self.sleepers[worker].store(false, Ordering::Release);
             }
         }
+    }
+    fn run_root(&self, worker: usize, runtime: tokio::runtime::Runtime) {
+        // This root future is driven only by block_on on this native thread.
+        // It never migrates and no tasks are spawned on the driver runtime.
+        runtime.block_on(async {
+            let _io_scope = self.handle.enter();
+            let mut local_run = 0;
+            let mut victim = worker + 1;
+            let mut polls = 0;
+            loop {
+                if self.closed.load(Ordering::Acquire) {
+                    return;
+                }
+                let oldest = local_run >= self.local_budget;
+                let job = if let Some(job) = self.take_split(worker, oldest, &mut victim) {
+                    job
+                } else {
+                    let notified = self.root_ready[worker].notified();
+                    tokio::pin!(notified);
+                    notified.as_mut().enable();
+                    self.sleepers[worker].store(true, Ordering::Release);
+                    if let Some(job) = self.take_split(worker, oldest, &mut victim) {
+                        self.sleepers[worker].store(false, Ordering::Release);
+                        job
+                    } else {
+                        if self.closed.load(Ordering::Acquire) {
+                            return;
+                        }
+                        // Constructed within the shared-I/O handle scope: that
+                        // reactor drives the fallback even if another worker blocks.
+                        let _ = tokio::time::timeout(Duration::from_millis(1), notified).await;
+                        self.sleepers[worker].store(false, Ordering::Release);
+                        polls = 0;
+                        continue;
+                    }
+                };
+                local_run = if oldest { 0 } else { local_run + 1 };
+                if !self.split[worker].lock().unwrap().is_empty() {
+                    self.unpark_peer(worker);
+                }
+                job.poll(worker, &self.handle, false);
+                polls += 1;
+                if polls == self.root_quantum {
+                    polls = 0;
+                    // Reset the outer cooperative budget and flush deferred
+                    // custom-job wakes, without creating one Tokio task per actor.
+                    tokio::task::yield_now().await;
+                }
+            }
+        });
     }
     fn run(self: Arc<Self>, worker: usize) {
         if self.policy == Policy::Steal {
@@ -432,7 +606,7 @@ impl Pool {
                     };
                 }
             };
-            job.poll(worker, &self.handle);
+            job.poll(worker, &self.handle, true);
         }
     }
     fn spawn(
@@ -447,10 +621,10 @@ impl Pool {
             state.count += 1;
         }
         let lease = Lease(self.clone());
-        let future: FutureJob = Box::pin(async move {
+        let future = async move {
             let _lease = lease;
             future.await;
-        });
+        };
         if self.policy == Policy::TokioPool {
             let tx = self
                 .tokio_jobs
@@ -459,12 +633,31 @@ impl Pool {
                 .as_ref()
                 .cloned()
                 .ok_or_else(|| io::Error::other("Tokio pool closed"))?;
-            tx.send(future)
+            tx.send(Box::pin(future))
                 .map_err(|_| io::Error::other("Tokio pool terminated"))
+        } else if self.policy == Policy::Runnable {
+            let weak = Arc::downgrade(self);
+            let meta = TaskMeta {
+                pool: weak.clone(),
+                preferred: AtomicUsize::new(self.next.fetch_add(1, Ordering::Relaxed) % self.count),
+            };
+            let (runnable, task) = async_task::Builder::new().metadata(meta).spawn(
+                move |_| PanicSafeFuture(Some(Box::pin(future))),
+                move |runnable| {
+                    if let Some(pool) = weak.upgrade() {
+                        pool.enqueue_work(Work::Runnable(runnable));
+                    }
+                },
+            );
+            // Framework completion/reasons remain in the actor future. Dropping
+            // an async-task Task would cancel it, so explicitly detach it.
+            task.detach();
+            runnable.schedule();
+            Ok(())
         } else {
             let job = Arc::new(Job {
                 gate: Gate::new(),
-                future: Mutex::new(Some(future)),
+                future: Mutex::new(Some(Box::pin(future))),
                 pool: Arc::downgrade(self),
                 preferred: AtomicUsize::new(self.next.fetch_add(1, Ordering::Relaxed) % self.count),
             });
@@ -579,16 +772,18 @@ pub fn spawn(policy: Policy, future: impl Future<Output = ()> + Send + 'static) 
             let count = number("SPAWNED_EXPERIMENT_WORKERS", "2")?;
             let reactors = number("SPAWNED_EXPERIMENT_REACTORS", "1")?;
             let budget = number("SPAWNED_EXPERIMENT_LOCAL_BUDGET", "3")?;
+            let quantum = number("SPAWNED_EXPERIMENT_ROOT_QUANTUM", "8")?;
             if !(1..=64).contains(&count)
                 || !(1..=8).contains(&reactors)
                 || !(1..=64).contains(&budget)
+                || !(1..=256).contains(&quantum)
             {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
                     "experimental executor setting outside supported range",
                 ));
             }
-            let pool = Pool::new(policy, count, reactors, budget)?;
+            let pool = Pool::new(policy, count, reactors, budget, quantum)?;
             *slot = Some(pool.clone());
             pool
         }
@@ -642,9 +837,11 @@ mod tests {
             Policy::Global,
             Policy::Local,
             Policy::Steal,
+            Policy::Root,
+            Policy::Runnable,
             Policy::TokioPool,
         ] {
-            let pool = Pool::new(policy, 2, 1, 3).unwrap();
+            let pool = Pool::new(policy, 2, 1, 3, 8).unwrap();
             let (tx, rx) = std_mpsc::channel();
             for _ in 0..32 {
                 pool.spawn(WakeLoop {
@@ -668,9 +865,11 @@ mod tests {
             Policy::Global,
             Policy::Local,
             Policy::Steal,
+            Policy::Root,
+            Policy::Runnable,
             Policy::TokioPool,
         ] {
-            let pool = Pool::new(policy, 2, 1, 3).unwrap();
+            let pool = Pool::new(policy, 2, 1, 3, 8).unwrap();
             let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             let addr = listener.local_addr().unwrap();
             let server = thread::spawn(move || {
@@ -708,8 +907,14 @@ mod tests {
     }
     #[test]
     fn reactor_helpers_progress_while_native_actor_workers_block() {
-        for policy in [Policy::Global, Policy::Local, Policy::Steal] {
-            let pool = Pool::new(policy, 1, 1, 3).unwrap();
+        for policy in [
+            Policy::Global,
+            Policy::Local,
+            Policy::Steal,
+            Policy::Root,
+            Policy::Runnable,
+        ] {
+            let pool = Pool::new(policy, 1, 1, 3, 8).unwrap();
             let (tx, rx) = std_mpsc::channel();
             let (entered, enter_rx) = std_mpsc::channel();
             let (release, gate) = std_mpsc::channel();
@@ -734,9 +939,11 @@ mod tests {
             Policy::Global,
             Policy::Local,
             Policy::Steal,
+            Policy::Root,
+            Policy::Runnable,
             Policy::TokioPool,
         ] {
-            let pool = Pool::new(policy, 2, 1, 3).unwrap();
+            let pool = Pool::new(policy, 2, 1, 3, 8).unwrap();
             let other = pool.clone();
             let (tx, rx) = std_mpsc::channel();
             pool.spawn(async move {
@@ -757,14 +964,76 @@ mod tests {
         }
     }
     #[test]
+    fn native_jobs_survive_future_destructor_panics() {
+        struct DropPanic {
+            polled: bool,
+            dropped: std_mpsc::Sender<()>,
+        }
+        impl Future for DropPanic {
+            type Output = ();
+            fn poll(mut self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<()> {
+                assert!(!self.polled);
+                self.polled = true;
+                Poll::Ready(())
+            }
+        }
+        impl Drop for DropPanic {
+            fn drop(&mut self) {
+                self.dropped.send(()).unwrap();
+                panic!("injected future destructor panic");
+            }
+        }
+        for policy in [Policy::Root, Policy::Runnable] {
+            let pool = Pool::new(policy, 1, 1, 3, 8).unwrap();
+            let (dropped, rx) = std_mpsc::channel();
+            pool.spawn(DropPanic {
+                polled: false,
+                dropped,
+            })
+            .unwrap();
+            rx.recv_timeout(LIMIT).unwrap();
+            let (done, rx) = std_mpsc::channel();
+            pool.spawn(async move {
+                done.send(42).unwrap();
+            })
+            .unwrap();
+            assert_eq!(rx.recv_timeout(LIMIT).unwrap(), 42);
+            pool.shutdown().unwrap();
+        }
+    }
+    #[test]
+    fn runnable_wrapper_separates_poll_and_disposal_unwinds() {
+        struct Bomb(std_mpsc::Sender<()>);
+        impl Future for Bomb {
+            type Output = ();
+            fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<()> {
+                panic!("injected direct inner poll panic");
+            }
+        }
+        impl Drop for Bomb {
+            fn drop(&mut self) {
+                self.0.send(()).unwrap();
+                panic!("injected direct inner disposal panic");
+            }
+        }
+        let (done, rx) = std_mpsc::channel();
+        let mut guarded = Box::pin(PanicSafeFuture(Some(Box::pin(Bomb(done)))));
+        let mut cx = Context::from_waker(Waker::noop());
+        assert!(guarded.as_mut().poll(&mut cx).is_ready());
+        rx.recv_timeout(LIMIT).unwrap();
+        drop(guarded);
+    }
+    #[test]
     fn retired_blocking_helpers_do_not_accumulate_thread_ids() {
         for policy in [
             Policy::Global,
             Policy::Local,
             Policy::Steal,
+            Policy::Root,
+            Policy::Runnable,
             Policy::TokioPool,
         ] {
-            let pool = Pool::new(policy, 2, 1, 3).unwrap();
+            let pool = Pool::new(policy, 2, 1, 3, 8).unwrap();
             let steady = if policy == Policy::TokioPool { 3 } else { 4 };
             let wait_for = |expected| {
                 let deadline = Instant::now() + LIMIT;
@@ -803,10 +1072,12 @@ mod tests {
             Policy::Global,
             Policy::Local,
             Policy::Steal,
+            Policy::Root,
+            Policy::Runnable,
             Policy::TokioPool,
         ] {
             for _ in 0..16 {
-                let pool = Pool::new(policy, 2, 1, 3).unwrap();
+                let pool = Pool::new(policy, 2, 1, 3, 8).unwrap();
                 let gate = Arc::new(std::sync::Barrier::new(5));
                 let (done, rx) = std_mpsc::channel();
                 let mut closers = Vec::new();
@@ -833,8 +1104,14 @@ mod tests {
     }
     #[test]
     fn completed_job_ignores_retained_waker() {
-        for policy in [Policy::Global, Policy::Local, Policy::Steal] {
-            let pool = Pool::new(policy, 2, 1, 3).unwrap();
+        for policy in [
+            Policy::Global,
+            Policy::Local,
+            Policy::Steal,
+            Policy::Root,
+            Policy::Runnable,
+        ] {
+            let pool = Pool::new(policy, 2, 1, 3, 8).unwrap();
             let (tx, rx) = std_mpsc::channel();
             pool.spawn(std::future::poll_fn(move |cx| {
                 tx.send(cx.waker().clone()).unwrap();
@@ -849,8 +1126,14 @@ mod tests {
     }
     #[test]
     fn cooperative_receive_loop_yields_with_single_native_worker() {
-        for policy in [Policy::Global, Policy::Local, Policy::Steal] {
-            let pool = Pool::new(policy, 1, 1, 3).unwrap();
+        let mut cases = vec![(Policy::Global, 8), (Policy::Local, 8), (Policy::Steal, 8)];
+        for policy in [Policy::Root, Policy::Runnable] {
+            for quantum in [1, 8, 32, 128] {
+                cases.push((policy, quantum));
+            }
+        }
+        for (policy, quantum) in cases {
+            let pool = Pool::new(policy, 1, 1, 3, quantum).unwrap();
             let stop = Arc::new(AtomicBool::new(false));
             let stop_job = stop.clone();
             let (tx, mut rx) = mpsc::unbounded_channel();

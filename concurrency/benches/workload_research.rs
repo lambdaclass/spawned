@@ -533,7 +533,7 @@ fn main() {
     let sharded = scheduler == "sharded";
     let dispatched = matches!(
         scheduler.as_str(),
-        "native-global" | "native-local" | "native-steal" | "tokio-pool"
+        "native-global" | "native-local" | "native-steal" | "native-root" | "tokio-pool"
     );
     let mut builder = if sharded || dispatched {
         tokio::runtime::Builder::new_current_thread()

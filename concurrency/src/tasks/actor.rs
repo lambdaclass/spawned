@@ -581,7 +581,13 @@ impl<A: Actor> ActorRef<A> {
         let turn = (backend == Backend::Async
             && matches!(
                 scheduler.as_str(),
-                "sharded" | "tokio-batch" | "native-global" | "native-local" | "native-steal"
+                "sharded"
+                    | "tokio-batch"
+                    | "native-global"
+                    | "native-local"
+                    | "native-steal"
+                    | "native-root"
+                    | "native-runnable"
             ))
         .then(MessageTurn::from_env);
         #[cfg(feature = "backend-experiments")]
@@ -620,13 +626,20 @@ impl<A: Actor> ActorRef<A> {
                 #[cfg(feature = "backend-experiments")]
                 if matches!(
                     scheduler.as_str(),
-                    "native-global" | "native-local" | "native-steal" | "tokio-pool"
+                    "native-global"
+                        | "native-local"
+                        | "native-steal"
+                        | "native-root"
+                        | "native-runnable"
+                        | "tokio-pool"
                 ) {
                     use rt::experimental::dispatcher::{self, Policy};
                     let policy = match scheduler.as_str() {
                         "native-global" => Policy::Global,
                         "native-local" => Policy::Local,
                         "native-steal" => Policy::Steal,
+                        "native-root" => Policy::Root,
+                        "native-runnable" => Policy::Runnable,
                         _ => Policy::TokioPool,
                     };
                     if let Err(error) = dispatcher::spawn(policy, inner_future) {
