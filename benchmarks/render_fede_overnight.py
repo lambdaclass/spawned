@@ -572,7 +572,7 @@ def main():
         [
             "## Offered-load fairness",
             "",
-            "240 actors; four hot actors receive 80% of traffic, hot work 5,000 iterations and cold work 100. Spread/concentrated are hot actor ID layouts: static shards enforce worker placement, while pooled schedulers can move actors. Common absolute rates 500k, 900k and 1.2M requests/s; two-second injection windows; caller deadline two seconds; all admitted work drains. Steady and 1,000-request bursts remain separate. × means at least one repetition exceeded the unchanged validity threshold (>1% requests >1 ms late). Such points are diagnostics and cannot be ranked as equivalent offered traffic. Survivor completion p99 excludes timeouts; observed deadline miss fractions accompany censored observations.",
+            "240 actors; four hot actors receive 80% of traffic, hot work 5,000 iterations and cold work 100. Spread/concentrated are hot actor ID layouts: static shards enforce worker placement, while pooled schedulers can move actors. Common absolute rates 500k, 900k and 1.2M requests/s; two-second injection windows; caller deadline two seconds; all admitted work drains. Steady and 1,000-request bursts remain separate. × means at least one repetition exceeded the unchanged validity threshold (>1% requests >1 ms late). Faint crosses retain those diagnostic aggregates; lines/circles use fully valid groups and break at invalid groups. Invalid schedules cannot be ranked as equivalent offered traffic. Survivor completion p99 excludes timeouts; observed deadline miss fractions accompany censored observations.",
             "",
         ]
     )
@@ -630,7 +630,12 @@ def main():
                         )
                         ax.plot(
                             [s["rate"] / 1000 for s in g],
-                            [s[metric + "_median"] * scale for s in g],
+                            [
+                                s[metric + "_median"] * scale
+                                if s["valid_driver_samples"] == s["samples"]
+                                else np.nan
+                                for s in g
+                            ],
                             "o-",
                             label=l,
                             color=palette(i % 20),
@@ -643,7 +648,8 @@ def main():
                                     s[metric + "_median"] * scale,
                                     marker="x",
                                     s=55,
-                                    color="black",
+                                    color=palette(i % 20),
+                                    alpha=0.45,
                                     zorder=5,
                                 )
                     ax.set_title(title)
@@ -657,7 +663,7 @@ def main():
                     fontsize=7,
                 )
                 fig.suptitle(
-                    f"{block} · hot actors {layout} · burst {burst} · invalid schedule groups marked ×"
+                    f"{block} · hot actors {layout} · burst {burst} · faint × = invalid groups; lines use fully valid groups"
                 )
                 doc.extend(
                     [save(fig, f"{block}-{offered_phase}-{layout}-burst{burst}"), ""]
@@ -698,6 +704,8 @@ def main():
                         [num(t, "elapsed_ms") / 1000 for t in ts],
                         [num(t, key) * scale for t in ts],
                         color=palette(i % 20),
+                        linestyle="-" if valid(r) else "--",
+                        alpha=1 if valid(r) else 0.5,
                         label=f"{l}: {'valid' if valid(r) else 'INVALID'}, lag {num(r, 'lag_p99_ns') / 1e6:.3f} ms",
                     )
                     ax.set_title(title)
