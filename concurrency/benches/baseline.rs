@@ -225,7 +225,7 @@ impl Config {
             config.messages <= 1_000_000,
             "bounded campaign size required"
         );
-        assert!(config.actors <= 512 && config.producers <= 64);
+        assert!(config.actors <= 512 && config.producers <= 256);
         config
     }
 }

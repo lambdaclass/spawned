@@ -24,6 +24,7 @@ jobs:
   test:
     runs-on: ubuntu-latest
     needs: build
+    timeout-minutes: 20
 
     steps:
       - uses: actions/checkout@v4
@@ -33,6 +34,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Run Tests
         run: cargo test --locked --verbose
+      - name: Run capability examples
+        run: |
+          for example in runtime_isolation byte_budget_pipeline timeout_outcomes graceful_drain; do
+            timeout 60s cargo run --locked -p spawned-capability-examples --bin "$example"
+          done
+          timeout 60s cargo run --locked -p spawned-capability-examples --features metrics --bin framework_metrics
       - name: Test optional framework metrics
         run: cargo test --locked -p spawned-concurrency --features metrics
 

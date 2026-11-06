@@ -1,0 +1,16 @@
+[package]
+name = "spawned-capability-examples"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[features]
+metrics = ["spawned-concurrency/metrics"]
+
+[dependencies]
+spawned-concurrency = { workspace = true }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+
+[[bin]]
+name = "framework_metrics"
+required-features = ["metrics"]

@@ -1,5 +1,15 @@
 # Spawned examples
-Some examples to test runtime and concurrency:
+Start with the [capability guide](capabilities/README.md) for finite, asserted
+programs showing runtime isolation, byte-budgeted pipelines, timeout outcomes,
+shutdown draining and framework metrics. Each explains why it is useful and its
+limits. The [proposed example catalog](planned/README.md) maps every ranked
+roadmap idea to the scenario it should eventually demonstrate; proposed APIs are
+not available yet.
+
+Run an existing package with `cargo run --locked -p <package>` from the repository
+root. Some older examples below use external HTTP services or run until stopped.
+
+Basic runtime and concurrency examples:
 
 - ping_pong: Simple example to test Actor abstraction using `tasks` implementation.
 - ping_pong_threads: ping_pong example on `threads` implementation.
@@ -15,3 +25,5 @@ Some examples to test runtime and concurrency:
 - blocking_genserver: Example demonstrating Backend::Thread to handle blocking tasks.
 - busy_genserver_warning: Example showing warning detection for tasks that take too long.
 - service_discovery: Example demonstrating the named registry for service discovery.
+
+- exit_reason: Clean stop, panic, ChildHandle, monitors, links and trapped exits. This demonstrates lifecycle primitives, not automatic restart supervision.

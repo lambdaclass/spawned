@@ -1,0 +1,571 @@
+
+thread 'load-producer' (680447) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'load-producer' (680519) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-producer' (680425) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-collector' (680510) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-collector' (680309) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-producer' (680291) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-collector' (680313) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-collector' (680460) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-producer' (680380) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-producer' (680271) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-producer' (680509) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-producer' (680328) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-collector' (680426) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-producer' (680386) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-producer' (680404) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-collector' (680397) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-producer' (680394) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-producer' (680392) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-collector' (680401) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-collector' (680520) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-collector' (680290) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-producer' (680443) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-producer' (680527) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-collector' (680444) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-collector' (680218) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-collector' (680440) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-collector' (680518) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-collector' (680464) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-producer' (680324) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-collector' (680470) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-producer' (680304) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-collector' (680381) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-collector' (680454) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-producer' (680467) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-producer' (680487) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-collector' (680446) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-collector' (680357) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-producer' (680316) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-collector' (680355) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-producer' (680503) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-collector' (680448) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-producer' (680211) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-collector' (680274) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-collector' (680339) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-collector' (680516) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-collector' (680369) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-collector' (680305) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-producer' (680497) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-producer' (680398) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-collector' (680385) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-producer' (680342) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-collector' (680482) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-producer' (680322) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-collector' (680405) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-producer' (680374) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-collector' (680479) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-collector' (680383) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-collector' (680456) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-producer' (680453) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-producer' (680310) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-collector' (680414) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-collector' (680492) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-collector' (680466) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-producer' (680499) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-producer' (680362) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-producer' (680300) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-producer' (680472) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-producer' (680474) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-producer' (680515) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-producer' (680356) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-collector' (680553) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-producer' (680330) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-producer' (680554) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-collector' (680349) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-collector' (680365) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-producer' (680314) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-producer' (680340) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-collector' (680347) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-collector' (680303) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-producer' (680449) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-producer' (680419) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-producer' (680505) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-producer' (680459) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-collector' (680319) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-collector' (680473) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-collector' (680359) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-producer' (680495) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-producer' (680348) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-collector' (680379) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-producer' (680358) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-producer' (680346) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-collector' (680307) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-collector' (680395) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-collector' (680361) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-producer' (680491) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-producer' (680334) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-producer' (680402) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-collector' (680129) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-collector' (680333) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-collector' (680494) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-producer' (680413) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-collector' (680468) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-collector' (680311) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-collector' (680450) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-collector' (680331) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-producer' (680560) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-producer' (680469) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-collector' (680477) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-collector' (680389) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-producer' (680384) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-producer' (680360) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-collector' (680337) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-producer' (680451) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-collector' (680363) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-collector' (680341) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-producer' (680562) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-collector' (680458) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-collector' (680351) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-collector' (680345) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-producer' (680312) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-producer' (680352) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-producer' (680501) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-collector' (680353) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-producer' (680338) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-producer' (680336) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-producer' (680366) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-collector' (680371) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-producer' (680415) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-producer' (680483) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-producer' (680493) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-collector' (680325) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-collector' (680327) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-producer' (680326) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-collector' (680321) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-collector' (680335) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-producer' (680523) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-collector' (680490) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-collector' (680317) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-producer' (680441) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-collector' (680488) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-collector' (680500) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-collector' (680367) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-collector' (680323) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-producer' (680302) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-producer' (680332) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-producer' (680481) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-collector' (680412) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-collector' (680125) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-collector' (680502) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-producer' (680485) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-producer' (680267) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-collector' (680484) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-collector' (680475) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-producer' (680476) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-producer' (680478) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-collector' (680496) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-collector' (680166) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-producer' (680539) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-producer' (680318) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-collector' (680559) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-producer' (680209) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-collector' (680168) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-producer' (680489) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-collector' (680190) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-producer' (680308) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-producer' (680184) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-producer' (680147) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-collector' (680196) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-collector' (680164) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-producer' (680207) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-producer' (680201) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-collector' (680094) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-collector' (680422) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-producer' (680203) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-producer' (680178) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-producer' (680199) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-producer' (680180) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-collector' (680181) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-producer' (680421) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-collector' (680123) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-producer' (680558) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-producer' (680139) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-producer' (680423) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-producer' (680122) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-producer' (680120) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-producer' (680118) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-producer' (680093) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-collector' (680100) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-collector' (680092) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+
+thread 'load-producer' (680066) panicked at concurrency/benches/workload_research.rs:170:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }

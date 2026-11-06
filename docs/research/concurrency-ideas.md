@@ -102,3 +102,9 @@ invariant after explicit restart. Dedup must commit with the effect or use a
 receiver's idempotency contract. Arbitrary boxed Rust envelopes are not a durable
 format; replay must not repeat external I/O. Cost: low for a recipe, high for a
 library subsystem. Prioritize only after a client recovery need is identified.
+
+The [deeper Commonware review](commonware.md) adds policy-based overload,
+completion watermarks, explicit acknowledgement, lifecycle-bound work ownership,
+scoped metrics and a ranked set of library capabilities. It also records
+Seastar/CAF/cancellation-safety follow-ups. See [testing](../TESTING.md) for the
+implemented reliability work; research proposals are not implemented features.

@@ -112,8 +112,14 @@ The return type on each protocol method determines the message kind:
 
 ## Examples
 
+See the [examples guide](examples/README.md) for run commands, use cases and the
+[planned capability examples](examples/planned/README.md).
+
+
 | Example | Mode | Description |
 |---------|------|-------------|
+| [`capabilities`](examples/capabilities) | tasks | Runtime isolation, byte budgets, timeout outcomes, draining and optional metrics |
+| [`exit_reason`](examples/exit_reason) | tasks | Stop, panic, links, monitors and trapped exits |
 | [`name_server`](examples/name_server) | tasks | Key-value store — the classic Erlang name server |
 | [`bank`](examples/bank) | tasks | Bank account — deposit, withdraw, balance with error handling |
 | [`bank_threads`](examples/bank_threads) | threads | Bank account — same API, thread-based |
@@ -207,7 +213,7 @@ spawned/
 │       └── threads/   # Sync implementation (OS threads)
 ├── macros/        # Proc macros (#[protocol], #[actor]) — re-exported by concurrency
 ├── rt/            # Runtime abstraction (wraps tokio, provides CancellationToken)
-└── examples/      # 14 usage examples
+└── examples/      # Usage examples and capability guides
 ```
 
 Users depend only on `spawned-concurrency` (which re-exports the macros) and `spawned-rt`.

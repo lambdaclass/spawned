@@ -1,0 +1,8 @@
+
+running 2 tests
+test checker_rejects_wrong_replies_duplicate_dispatch_and_lost_acknowledged_effects ... ok
+checked 512 histories across four backends; input seed=20261106; OS schedules are not replayed
+test concurrent_histories_have_a_legal_sequential_explanation ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.47s
+

@@ -1,6 +1,56 @@
-# Actor scenario tests
+# Actor testing and reliability campaigns
 
 Run `cargo test -p spawned-concurrency --test actor_scenarios`.
+
+The [capability examples](../examples/capabilities/README.md) demonstrate useful
+application behavior separately from these test oracles. CI runs their finite
+programs and assertions; future APIs have an explicitly
+[proposed example catalog](../examples/planned/README.md).
+
+## Controlled failures, histories and simulations
+
+| Suite | Evidence provided | Limit |
+|---|---|---|
+| `failure_windows` | Nine deliberately reached lifecycle/request windows across async, blocking, dedicated-thread and synchronous-thread actors; optional `SPAWNED_FAILURE_REPORT` records coverage | A bounded demonitor observation is not exhaustive proof over schedules |
+| `request_histories` | Independent bounded search for a legal sequential history, with wrong-reply/duplicate/lost-effect negative controls | At most 16 operations and 100,000 search states; exhausted search is inconclusive and fails, not a pass |
+| `delivery_simulation` | Enumerate 125 states of a finite cooperative-stop model and replay 500 witnesses across four backends, plus seeded scripts and an audit digest | Controls handler-progress gates, not arbitrary OS/Tokio scheduling, network, clocks or all lifecycle signals |
+| `payload_stress` | Unique owned payloads from 128 concurrent producers; verify FIFO delivery or complete destruction on stop | Explicitly bounded payload volume; not a whole-process memory proof |
+| `process_failures` (Unix) | Abort or kill an owned subprocess after an actor effect; check process failure does not promise cleanup callbacks or rollback | Temporary marker is not a storage durability acknowledgement |
+| `benchmark_startup` | Startup rendezvous opens for all participants, aborts after setup failure and has a finite timeout | Tests the research driver, not production actor supervision |
+
+```sh
+cargo test --locked -p spawned-concurrency --test failure_windows --test request_histories --test delivery_simulation --test process_failures --test benchmark_startup
+SPAWNED_HISTORY_CASES=128 SPAWNED_HISTORY_SEED=20261106 cargo test --locked -p spawned-concurrency --test request_histories -- --nocapture
+SPAWNED_SIM_CASES=256 SPAWNED_SIM_SEED=20261106 cargo test --locked -p spawned-concurrency --test delivery_simulation -- --nocapture
+SPAWNED_STRESS_PRODUCERS=128 SPAWNED_STRESS_MESSAGES=256 SPAWNED_STRESS_PAYLOAD=1024 cargo test --locked -p spawned-concurrency --test payload_stress -- --ignored --nocapture
+```
+
+A timeout, dropped caller or closed reply after dispatch has an **unknown
+effect outcome**. The history oracle explores both effect/no-effect possibilities
+without pretending the caller timeout ended the operation. A proven enqueue
+rejection permits no effect. Normal successful replies require their matching
+effect; the checker never treats ambiguous operations as acknowledged success.
+No automatic retry or exactly-once guarantee is introduced.
+
+The Linux campaign driver runs isolated owned process groups with CPU affinity,
+nice level, wall-time, sampled RSS, thread and descriptor budgets. Builds have a
+separate memory allowance from stress executables. It kills only its own process
+group on failure and writes commands, source revision, environment and resource
+peaks. The default 768-thread ceiling accommodates 256 offered-load producers
+and their collectors; they still share the declared CPU mask. Shared-page RSS
+can be counted more than once and short peaks can escape sampling.
+
+```sh
+python3 benchmarks/run_reliability.py --source . --out /tmp/spawned-reliability --cpus 2,3,4,5 --phase all --seconds 30 --replicates 3
+```
+
+Use an available CPU set appropriate to the machine. The benchmark phase records
+closed-loop requests, actor-to-actor graphs, concentrated offered load and actor
+churn/idle soaks. Benchmarks describe their generator as well as actor work; high
+producer counts do not imply that many actor workers. See the
+[recorded campaign](../research/reliability/2026-11-06/README.md) for results,
+excluded preflights and reproducibility details. No throughput threshold is
+enforced in shared CI. Nightly CI retains failure coverage and stress logs.
 
 The suite generates 2–8 worker actors and an observer, with sequences of sends,
 requests, and dropped reply receivers. Every generated scenario runs on Tokio

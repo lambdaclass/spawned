@@ -1,0 +1,219 @@
+[
+  {
+    "label": "workspace-default",
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "--workspace"
+    ],
+    "env": {},
+    "returncode": 0,
+    "failure": null,
+    "elapsed_s": 9.96450961503433,
+    "rss_bytes": 1450999808,
+    "threads": 38,
+    "fds": 587,
+    "stdout": "001-workspace-default.stdout",
+    "stderr": "001-workspace-default.stderr"
+  },
+  {
+    "label": "clippy-default",
+    "command": [
+      "cargo",
+      "clippy",
+      "--locked",
+      "--workspace",
+      "--all-targets",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "env": {
+      "RUSTC": "/nix/store/xvp6nfxayb07si2jaggqwvx3iykw89g2-rustc-1.98.1/bin/rustc",
+      "RUSTDOC": "/nix/store/xvp6nfxayb07si2jaggqwvx3iykw89g2-rustc-1.98.1/bin/rustdoc"
+    },
+    "returncode": 0,
+    "failure": null,
+    "elapsed_s": 11.000733888009563,
+    "rss_bytes": 1291018240,
+    "threads": 33,
+    "fds": 219,
+    "stdout": "002-clippy-default.stdout",
+    "stderr": "002-clippy-default.stderr"
+  },
+  {
+    "label": "workspace-all",
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "--workspace",
+      "--all-features"
+    ],
+    "env": {},
+    "returncode": 0,
+    "failure": null,
+    "elapsed_s": 10.84360918198945,
+    "rss_bytes": 1580924928,
+    "threads": 58,
+    "fds": 597,
+    "stdout": "003-workspace-all.stdout",
+    "stderr": "003-workspace-all.stderr"
+  },
+  {
+    "label": "clippy-all",
+    "command": [
+      "cargo",
+      "clippy",
+      "--locked",
+      "--workspace",
+      "--all-targets",
+      "--all-features",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "env": {
+      "RUSTC": "/nix/store/xvp6nfxayb07si2jaggqwvx3iykw89g2-rustc-1.98.1/bin/rustc",
+      "RUSTDOC": "/nix/store/xvp6nfxayb07si2jaggqwvx3iykw89g2-rustc-1.98.1/bin/rustdoc"
+    },
+    "returncode": 0,
+    "failure": null,
+    "elapsed_s": 6.485546069976408,
+    "rss_bytes": 1350094848,
+    "threads": 30,
+    "fds": 129,
+    "stdout": "004-clippy-all.stdout",
+    "stderr": "004-clippy-all.stderr"
+  },
+  {
+    "label": "histories",
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "spawned-concurrency",
+      "--test",
+      "request_histories",
+      "--",
+      "--nocapture"
+    ],
+    "env": {
+      "SPAWNED_HISTORY_CASES": "128",
+      "SPAWNED_HISTORY_SEED": "20261106"
+    },
+    "returncode": 0,
+    "failure": null,
+    "elapsed_s": 0.5527243780088611,
+    "rss_bytes": 70205440,
+    "threads": 15,
+    "fds": 17,
+    "stdout": "005-histories.stdout",
+    "stderr": "005-histories.stderr"
+  },
+  {
+    "label": "simulations",
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "spawned-concurrency",
+      "--test",
+      "delivery_simulation",
+      "--",
+      "--nocapture"
+    ],
+    "env": {
+      "SPAWNED_SIM_CASES": "256",
+      "SPAWNED_SIM_SEED": "20261106"
+    },
+    "returncode": 0,
+    "failure": null,
+    "elapsed_s": 0.3028747510397807,
+    "rss_bytes": 71987200,
+    "threads": 41,
+    "fds": 41,
+    "stdout": "006-simulations.stdout",
+    "stderr": "006-simulations.stderr"
+  },
+  {
+    "label": "failure-windows",
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "spawned-concurrency",
+      "--test",
+      "failure_windows",
+      "--",
+      "--nocapture"
+    ],
+    "env": {
+      "SPAWNED_FAILURE_REPORT": "/tmp/spawned-pr-security-review/reliability-2026-11-06/failure-coverage.txt"
+    },
+    "returncode": 0,
+    "failure": null,
+    "elapsed_s": 0.19179885502671823,
+    "rss_bytes": 69861376,
+    "threads": 8,
+    "fds": 13,
+    "stdout": "007-failure-windows.stdout",
+    "stderr": "007-failure-windows.stderr"
+  },
+  {
+    "label": "payloads",
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "spawned-concurrency",
+      "--test",
+      "payload_stress",
+      "--",
+      "--ignored",
+      "--nocapture"
+    ],
+    "env": {
+      "SPAWNED_STRESS_PRODUCERS": "128",
+      "SPAWNED_STRESS_MESSAGES": "256",
+      "SPAWNED_STRESS_PAYLOAD": "1024"
+    },
+    "returncode": 0,
+    "failure": null,
+    "elapsed_s": 0.18528464098926634,
+    "rss_bytes": 139587584,
+    "threads": 32,
+    "fds": 13,
+    "stdout": "008-payloads.stdout",
+    "stderr": "008-payloads.stderr"
+  },
+  {
+    "label": "scenarios",
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "spawned-concurrency",
+      "--test",
+      "actor_scenarios"
+    ],
+    "env": {
+      "PROPTEST_CASES": "256",
+      "PROPTEST_RNG_SEED": "20261106"
+    },
+    "returncode": -9,
+    "failure": "RSS budget exceeded",
+    "elapsed_s": 0.9678066170308739,
+    "rss_bytes": 553103360,
+    "threads": 14,
+    "fds": 220,
+    "stdout": "009-scenarios.stdout",
+    "stderr": "009-scenarios.stderr"
+  }
+]

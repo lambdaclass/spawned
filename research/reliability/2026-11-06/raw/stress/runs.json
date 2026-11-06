@@ -1,0 +1,195 @@
+[
+  {
+    "label": "build-reliability-tests",
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "spawned-concurrency",
+      "--no-run",
+      "--message-format=json",
+      "--test",
+      "request_histories",
+      "--test",
+      "delivery_simulation",
+      "--test",
+      "failure_windows",
+      "--test",
+      "payload_stress",
+      "--test",
+      "actor_scenarios"
+    ],
+    "env": {},
+    "returncode": 0,
+    "failure": null,
+    "elapsed_s": 0.5822146750288084,
+    "rss_bytes": 475934720,
+    "threads": 11,
+    "fds": 220,
+    "stdout": "001-build-reliability-tests.stdout",
+    "stderr": "001-build-reliability-tests.stderr"
+  },
+  {
+    "label": "histories",
+    "command": [
+      "/tmp/spawned-fede-research-25dGGmPA/fairness-target/debug/deps/request_histories-b699f9094f5069a6",
+      "--nocapture"
+    ],
+    "env": {
+      "SPAWNED_HISTORY_CASES": "128",
+      "SPAWNED_HISTORY_SEED": "20261106"
+    },
+    "returncode": 0,
+    "failure": null,
+    "elapsed_s": 0.4860013430006802,
+    "rss_bytes": 6078464,
+    "threads": 11,
+    "fds": 13,
+    "stdout": "002-histories.stdout",
+    "stderr": "002-histories.stderr"
+  },
+  {
+    "label": "simulations",
+    "command": [
+      "/tmp/spawned-fede-research-25dGGmPA/fairness-target/debug/deps/delivery_simulation-e389e28d8f7e0744",
+      "--nocapture"
+    ],
+    "env": {
+      "SPAWNED_SIM_CASES": "256",
+      "SPAWNED_SIM_SEED": "20261106"
+    },
+    "returncode": 0,
+    "failure": null,
+    "elapsed_s": 0.24504318204708397,
+    "rss_bytes": 7733248,
+    "threads": 19,
+    "fds": 21,
+    "stdout": "003-simulations.stdout",
+    "stderr": "003-simulations.stderr"
+  },
+  {
+    "label": "failure-windows",
+    "command": [
+      "/tmp/spawned-fede-research-25dGGmPA/fairness-target/debug/deps/failure_windows-c352fc5757b810a6",
+      "--nocapture"
+    ],
+    "env": {
+      "SPAWNED_FAILURE_REPORT": "/tmp/spawned-pr-security-review/reliability-stress-final/failure-coverage.txt"
+    },
+    "returncode": 0,
+    "failure": null,
+    "elapsed_s": 0.12067013402702287,
+    "rss_bytes": 6615040,
+    "threads": 11,
+    "fds": 13,
+    "stdout": "004-failure-windows.stdout",
+    "stderr": "004-failure-windows.stderr"
+  },
+  {
+    "label": "payloads",
+    "command": [
+      "/tmp/spawned-fede-research-25dGGmPA/fairness-target/debug/deps/payload_stress-166db542798e2839",
+      "--ignored",
+      "--nocapture"
+    ],
+    "env": {
+      "SPAWNED_STRESS_PRODUCERS": "128",
+      "SPAWNED_STRESS_MESSAGES": "256",
+      "SPAWNED_STRESS_PAYLOAD": "1024"
+    },
+    "returncode": 0,
+    "failure": null,
+    "elapsed_s": 0.1282303130137734,
+    "rss_bytes": 71573504,
+    "threads": 10,
+    "fds": 13,
+    "stdout": "005-payloads.stdout",
+    "stderr": "005-payloads.stderr"
+  },
+  {
+    "label": "scenarios",
+    "command": [
+      "/tmp/spawned-fede-research-25dGGmPA/fairness-target/debug/deps/actor_scenarios-2d29263244f01f7b"
+    ],
+    "env": {
+      "PROPTEST_CASES": "256",
+      "PROPTEST_RNG_SEED": "20261106"
+    },
+    "returncode": 0,
+    "failure": null,
+    "elapsed_s": 0.6213089770171791,
+    "rss_bytes": 11698176,
+    "threads": 44,
+    "fds": 41,
+    "stdout": "006-scenarios.stdout",
+    "stderr": "006-scenarios.stderr"
+  },
+  {
+    "label": "churn",
+    "command": [
+      "/tmp/spawned-fede-research-25dGGmPA/fairness-target/debug/deps/actor_scenarios-2d29263244f01f7b",
+      "sustained_actor_churn",
+      "--ignored"
+    ],
+    "env": {
+      "SPAWNED_STRESS_ROUNDS": "100"
+    },
+    "returncode": 0,
+    "failure": null,
+    "elapsed_s": 0.509134144987911,
+    "rss_bytes": 10739712,
+    "threads": 49,
+    "fds": 45,
+    "stdout": "007-churn.stdout",
+    "stderr": "007-churn.stderr"
+  },
+  {
+    "label": "cancellation-model",
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "spawned-rt",
+      "--test",
+      "cancellation_loom"
+    ],
+    "env": {
+      "RUSTFLAGS": "--cfg spawned_loom"
+    },
+    "returncode": 0,
+    "failure": null,
+    "elapsed_s": 12.312674924032763,
+    "rss_bytes": 1227915264,
+    "threads": 32,
+    "fds": 208,
+    "stdout": "008-cancellation-model.stdout",
+    "stderr": "008-cancellation-model.stderr"
+  },
+  {
+    "label": "ready-model",
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "spawned-concurrency",
+      "--features",
+      "backend-experiments",
+      "--test",
+      "ready_gate_loom"
+    ],
+    "env": {
+      "RUSTFLAGS": "--cfg spawned_scheduler_loom"
+    },
+    "returncode": 0,
+    "failure": null,
+    "elapsed_s": 11.340001777978614,
+    "rss_bytes": 1376464896,
+    "threads": 32,
+    "fds": 212,
+    "stdout": "009-ready-model.stdout",
+    "stderr": "009-ready-model.stderr"
+  }
+]

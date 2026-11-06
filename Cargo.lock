@@ -1683,6 +1683,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "spawned-capability-examples"
+version = "0.1.0"
+dependencies = [
+ "spawned-concurrency",
+ "tokio",
+]
+
+[[package]]
 name = "spawned-concurrency"
 version = "0.6.0"
 dependencies = [

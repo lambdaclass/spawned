@@ -24,6 +24,31 @@ jobs:
       - run: cargo test --locked -p spawned-concurrency --test actor_scenarios sustained_actor_churn -- --ignored
         env:
           SPAWNED_STRESS_ROUNDS: '100'
+      - name: Controlled failures and independent histories
+        run: |
+          set -o pipefail
+          cargo test --locked -p spawned-concurrency --test failure_windows --test request_histories --test delivery_simulation --test process_failures -- --nocapture 2>&1 | tee reliability-tests.log
+        env:
+          SPAWNED_FAILURE_REPORT: failure-coverage.txt
+          SPAWNED_HISTORY_CASES: '128'
+          SPAWNED_SIM_CASES: '256'
+      - name: Bounded unique-payload pressure
+        run: |
+          set -o pipefail
+          cargo test --locked -p spawned-concurrency --test payload_stress -- --ignored --nocapture 2>&1 | tee payload-stress.log
+        env:
+          SPAWNED_STRESS_PRODUCERS: '128'
+          SPAWNED_STRESS_MESSAGES: '256'
+          SPAWNED_STRESS_PAYLOAD: '1024'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: actor-reliability-evidence
+          path: |
+            failure-coverage.txt
+            reliability-tests.log
+            payload-stress.log
+          if-no-files-found: ignore
       - uses: actions/upload-artifact@v4
         if: failure()
         with:

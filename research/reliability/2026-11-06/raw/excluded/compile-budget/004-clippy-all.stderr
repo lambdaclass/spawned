@@ -1,0 +1,94 @@
+    Checking stable_deref_trait v1.2.1
+    Checking bitflags v2.10.0
+   Compiling crossbeam-utils v0.8.21
+   Compiling getrandom v0.3.4
+   Compiling crossbeam-epoch v0.9.21
+   Compiling crossbeam-deque v0.8.8
+   Compiling version_check v0.9.5
+   Compiling zerocopy v0.8.63
+    Checking nix v0.30.1
+   Compiling ahash v0.8.12
+   Compiling rustix v1.1.2
+    Checking bitflags v1.3.2
+   Compiling cpp_demangle v0.4.5
+    Checking uuid v1.29.0
+    Checking ctrlc v3.5.1
+    Checking debugid v0.8.0
+   Compiling findshlibs v0.10.2
+   Compiling equator-macro v0.4.2
+    Checking memmap2 v0.9.12
+    Checking getrandom v0.2.17
+   Compiling symbolic-demangle v12.18.3
+    Checking arrayvec v0.7.8
+    Checking adler2 v2.0.1
+    Checking linux-raw-sys v0.11.0
+    Checking bytemuck v1.25.2
+    Checking async-task v4.7.1
+    Checking gimli v0.34.0
+    Checking rustc-demangle v0.1.28
+   Compiling io-uring v0.6.4
+    Checking equator v0.4.2
+    Checking rgb v0.8.53
+    Checking num-format v0.4.4
+    Checking miniz_oxide v0.9.1
+    Checking nanorand v0.7.0
+    Checking symbolic-common v12.18.3
+    Checking quick-xml v0.26.0
+    Checking object v0.40.0
+    Checking addr2line v0.27.1
+    Checking spin v0.9.9
+    Checking num_cpus v1.17.0
+    Checking is-terminal v0.4.17
+    Checking byteorder v1.5.0
+    Checking fastrand v2.3.0
+   Compiling pprof v0.15.0
+    Checking str_stack v0.1.1
+    Checking tempfile v3.23.0
+    Checking fxhash v0.2.1
+    Checking threadpool v1.8.1
+    Checking flume v0.11.1
+    Checking inferno v0.11.21
+    Checking aligned-vec v0.6.4
+    Checking spawned-rt v0.6.0 (/tmp/spawned-pr-security-review/integrated/rt)
+    Checking nix v0.26.4
+    Checking spin v0.10.1
+    Checking mio v0.8.11
+   Compiling auto-const-array v0.2.2
+    Checking proptest v1.12.0
+    Checking monoio v0.2.4
+    Checking yoke v0.8.1
+    Checking zerovec v0.11.5
+    Checking tinystr v0.8.2
+    Checking icu_locale_core v2.1.1
+    Checking zerotrie v0.2.3
+    Checking potential_utf v0.1.4
+    Checking icu_collections v2.1.1
+    Checking icu_provider v2.1.1
+    Checking openssl v0.10.75
+    Checking icu_normalizer v2.1.1
+    Checking icu_properties v2.1.2
+    Checking backtrace v0.3.77
+    Checking spawned-concurrency v0.6.0 (/tmp/spawned-pr-security-review/integrated/concurrency)
+    Checking idna_adapter v1.2.1
+    Checking idna v1.1.0
+    Checking url v2.5.7
+    Checking name_server v0.1.0 (/tmp/spawned-pr-security-review/integrated/examples/name_server)
+    Checking blocking_genserver v0.1.0 (/tmp/spawned-pr-security-review/integrated/examples/blocking_genserver)
+    Checking native-tls v0.2.14
+    Checking busy_genserver_warning v0.1.0 (/tmp/spawned-pr-security-review/integrated/examples/busy_genserver_warning)
+    Checking tokio-native-tls v0.3.1
+    Checking signal_test v0.1.0 (/tmp/spawned-pr-security-review/integrated/examples/signal_test)
+    Checking hyper-tls v0.5.0
+    Checking reqwest v0.11.27
+    Checking ping_pong_threads v0.1.0 (/tmp/spawned-pr-security-review/integrated/examples/ping_pong_threads)
+    Checking bank v0.1.0 (/tmp/spawned-pr-security-review/integrated/examples/bank)
+    Checking signal_test_threads v0.1.0 (/tmp/spawned-pr-security-review/integrated/examples/signal_test_threads)
+    Checking chat_room v0.1.0 (/tmp/spawned-pr-security-review/integrated/examples/chat_room)
+    Checking updater v0.1.0 (/tmp/spawned-pr-security-review/integrated/examples/updater)
+    Checking updater_threads v0.1.0 (/tmp/spawned-pr-security-review/integrated/examples/updater_threads)
+    Checking bank_threads v0.1.0 (/tmp/spawned-pr-security-review/integrated/examples/bank_threads)
+    Checking chat_room_threads v0.1.0 (/tmp/spawned-pr-security-review/integrated/examples/chat_room_threads)
+    Checking ping_pong v0.1.0 (/tmp/spawned-pr-security-review/integrated/examples/ping_pong)
+    Checking exit_reason v0.1.0 (/tmp/spawned-pr-security-review/integrated/examples/exit_reason)
+    Checking service_discovery v0.1.0 (/tmp/spawned-pr-security-review/integrated/examples/service_discovery)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 6.40s

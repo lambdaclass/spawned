@@ -1,0 +1,54 @@
+//! Existing behavior: a timed-out caller does not roll back an actor's effect.
+use spawned_concurrency::{
+    message::Message,
+    tasks::{Actor, ActorStart, Context, Handler},
+    ActorError, Response,
+};
+use std::time::Duration;
+use tokio::sync::oneshot;
+
+struct Counter(usize);
+impl Actor for Counter {}
+struct Apply {
+    entered: oneshot::Sender<()>,
+    release: oneshot::Receiver<()>,
+}
+impl Message for Apply {
+    type Result = ();
+}
+impl Handler<Apply> for Counter {
+    async fn handle(&mut self, msg: Apply, _: &Context<Self>) {
+        self.0 += 1; // Effect happens before the reply.
+        msg.entered.send(()).unwrap();
+        let _ = msg.release.await;
+    }
+}
+struct Read;
+impl Message for Read {
+    type Result = usize;
+}
+impl Handler<Read> for Counter {
+    async fn handle(&mut self, _: Read, _: &Context<Self>) -> usize {
+        self.0
+    }
+}
+
+#[tokio::main(flavor = "multi_thread", worker_threads = 2)]
+async fn main() {
+    let counter = Counter(0).start();
+    let (entered_tx, entered_rx) = oneshot::channel();
+    let (release_tx, release_rx) = oneshot::channel();
+    let reply = counter.request_raw(Apply {
+        entered: entered_tx,
+        release: release_rx,
+    });
+    entered_rx.await.unwrap();
+    // A gate keeps the reply pending; no race-dependent sleep is needed.
+    let result = Response::from_with_timeout(reply, Duration::ZERO).await;
+    assert!(matches!(result, Err(ActorError::RequestTimeout)));
+    release_tx.send(()).unwrap();
+    assert_eq!(counter.request(Read).await.unwrap(), 1);
+    println!("caller timed out, but the effect happened once; retry needs an application idempotency key");
+    counter.child_handle().stop();
+    counter.join().await;
+}

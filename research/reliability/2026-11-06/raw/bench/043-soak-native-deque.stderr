@@ -1,0 +1,712 @@
+
+thread 'actor-worker-n1' (889607) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'actor-worker-n1' (889607) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n0' (889606) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n1' (889607) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n0' (889606) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n1' (889607) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n0' (889606) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n2' (889608) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n0' (889606) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n1' (889607) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n3' (889609) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n1' (889607) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n2' (889608) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n2' (889608) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n2' (889608) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n2' (889608) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n0' (889606) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n1' (889607) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n2' (889608) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n2' (889608) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n0' (889606) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n0' (889606) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n2' (889608) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n0' (889606) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n2' (889608) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n1' (889607) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n1' (889607) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n1' (889607) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n3' (889609) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n1' (889607) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n0' (889606) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n0' (889606) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n3' (889609) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n1' (889607) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n2' (889608) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n3' (889609) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n0' (889606) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n3' (889609) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n2' (889608) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n0' (889606) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n1' (889607) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n3' (889609) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n2' (889608) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n1' (889607) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n1' (889607) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n2' (889608) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n2' (889608) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n0' (889606) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n3' (889609) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n2' (889608) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n2' (889608) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n1' (889607) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n1' (889607) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n3' (889609) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n2' (889608) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n1' (889607) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n1' (889607) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n1' (889607) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n2' (889608) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n1' (889607) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n3' (889609) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n1' (889607) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n0' (889606) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n3' (889609) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n2' (889608) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n2' (889608) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n2' (889608) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n3' (889609) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n0' (889606) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n1' (889607) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n0' (889606) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n1' (889607) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n1' (889607) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n1' (889607) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n3' (889609) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n1' (889607) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n1' (889607) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n3' (889609) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n0' (889606) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n3' (889609) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n2' (889608) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n0' (889606) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n1' (889607) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n3' (889609) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n3' (889609) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n3' (889609) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n3' (889609) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n3' (889609) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n1' (889607) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n2' (889608) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n1' (889607) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n1' (889607) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n1' (889607) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n2' (889608) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n2' (889608) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n3' (889609) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n0' (889606) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n2' (889608) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n3' (889609) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n1' (889607) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n0' (889606) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n0' (889606) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n1' (889607) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n2' (889608) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n1' (889607) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n0' (889606) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n2' (889608) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n0' (889606) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n0' (889606) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n0' (889606) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n2' (889608) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n1' (889607) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n0' (889606) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n2' (889608) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n1' (889607) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n3' (889609) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n1' (889607) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n0' (889606) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n1' (889607) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n0' (889606) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n3' (889609) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n0' (889606) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n2' (889608) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n3' (889609) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n3' (889609) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n3' (889609) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n3' (889609) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n3' (889609) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n1' (889607) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n2' (889608) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n0' (889606) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n0' (889606) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n1' (889607) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n3' (889609) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n3' (889609) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n0' (889606) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n1' (889607) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n1' (889607) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n0' (889606) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n3' (889609) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n0' (889606) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n2' (889608) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n0' (889606) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n1' (889607) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n3' (889609) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n0' (889606) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n3' (889609) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n2' (889608) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n2' (889608) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n2' (889608) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n2' (889608) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n2' (889608) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n3' (889609) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n3' (889609) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n3' (889609) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n0' (889606) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n1' (889607) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n3' (889609) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n0' (889606) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n1' (889607) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n1' (889607) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n0' (889606) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n3' (889609) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n3' (889609) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n1' (889607) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n0' (889606) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n2' (889608) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n2' (889608) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n3' (889609) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n1' (889607) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n3' (889609) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n0' (889606) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n2' (889608) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n1' (889607) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n3' (889609) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n3' (889609) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n0' (889606) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n3' (889609) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n0' (889606) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n1' (889607) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n3' (889609) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n1' (889607) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n0' (889606) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n3' (889609) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n3' (889609) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n0' (889606) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n1' (889607) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n0' (889606) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n1' (889607) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n1' (889607) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n0' (889606) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n2' (889608) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n2' (889608) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n3' (889609) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n1' (889607) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n2' (889608) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n3' (889609) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n0' (889606) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n3' (889609) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n0' (889606) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n1' (889607) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n2' (889608) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n2' (889608) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n1' (889607) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n1' (889607) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n1' (889607) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n2' (889608) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n1' (889607) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n0' (889606) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n1' (889607) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n0' (889606) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n3' (889609) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n2' (889608) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n2' (889608) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n3' (889609) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n3' (889609) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n0' (889606) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n1' (889607) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n1' (889607) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n2' (889608) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n3' (889609) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n3' (889609) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n0' (889606) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n1' (889607) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n3' (889609) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n3' (889609) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n1' (889607) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n1' (889607) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n0' (889606) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n1' (889607) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n1' (889607) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n3' (889609) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n1' (889607) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n3' (889609) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n2' (889608) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n3' (889609) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure
+
+thread 'actor-worker-n2' (889608) panicked at concurrency/benches/lifecycle_soak.rs:89:9:
+soak injected handler failure

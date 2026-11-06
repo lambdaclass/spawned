@@ -1,0 +1,3 @@
+# Preserve exact captured test output, including intentional blank final lines.
+**/*.stdout -whitespace
+**/*.stderr -whitespace

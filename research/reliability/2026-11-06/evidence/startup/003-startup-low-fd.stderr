@@ -1,0 +1,4 @@
+
+thread 'main' (895630) panicked at concurrency/benches/workload_research.rs:558:48:
+called `Result::unwrap()` on an `Err` value: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace

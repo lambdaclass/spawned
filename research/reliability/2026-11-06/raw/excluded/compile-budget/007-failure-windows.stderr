@@ -1,0 +1,51 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.03s
+     Running tests/failure_windows.rs (/tmp/spawned-fede-research-25dGGmPA/fairness-target/debug/deps/failure_windows-c352fc5757b810a6)
+
+thread 'tokio-runtime-worker' (587539) panicked at concurrency/tests/support/failure_actor.rs:175:17:
+controlled panic after effect
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'tokio-runtime-worker' (587538) panicked at concurrency/tests/support/failure_actor.rs:146:9:
+controlled cleanup panic
+
+thread 'tokio-runtime-worker' (587538) panicked at concurrency/tests/support/failure_actor.rs:161:31:
+controlled handler panic
+
+thread 'tokio-runtime-worker' (587538) panicked at concurrency/tests/support/failure_actor.rs:161:31:
+controlled handler panic
+
+thread 'tokio-runtime-worker' (587540) panicked at concurrency/tests/support/failure_actor.rs:175:17:
+controlled panic after effect
+
+thread 'tokio-runtime-worker' (587540) panicked at concurrency/tests/support/failure_actor.rs:146:9:
+controlled cleanup panic
+
+thread 'tokio-runtime-worker' (587541) panicked at concurrency/tests/support/failure_actor.rs:161:31:
+controlled handler panic
+
+thread 'tokio-runtime-worker' (587540) panicked at concurrency/tests/support/failure_actor.rs:161:31:
+controlled handler panic
+
+thread '<unnamed>' (587557) panicked at concurrency/tests/support/failure_actor.rs:175:17:
+controlled panic after effect
+
+thread '<unnamed>' (587562) panicked at concurrency/tests/support/failure_actor.rs:146:9:
+controlled cleanup panic
+
+thread '<unnamed>' (587568) panicked at concurrency/tests/support/failure_actor.rs:161:31:
+controlled handler panic
+
+thread '<unnamed>' (587578) panicked at concurrency/tests/support/failure_actor.rs:161:31:
+controlled handler panic
+
+thread '<unnamed>' (587610) panicked at concurrency/tests/support/failure_actor.rs:228:17:
+controlled panic after effect
+
+thread '<unnamed>' (587611) panicked at concurrency/tests/support/failure_actor.rs:199:9:
+controlled cleanup panic
+
+thread '<unnamed>' (587613) panicked at concurrency/tests/support/failure_actor.rs:214:31:
+controlled handler panic
+
+thread '<unnamed>' (587615) panicked at concurrency/tests/support/failure_actor.rs:214:31:
+controlled handler panic

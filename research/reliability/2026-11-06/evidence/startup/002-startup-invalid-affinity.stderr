@@ -1,0 +1,36 @@
+
+thread 'load-producer' (895614) panicked at concurrency/benches/workload_research.rs:178:5:
+thread affinity: taskset: failed to set pid 895614's affinity: Invalid argument
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'main' (895609) panicked at concurrency/benches/workload_research.rs:813:27:
+benchmark setup failed: "startup participant failed or timed out"
+
+thread 'load-producer' (895615) panicked at concurrency/benches/workload_research.rs:178:5:
+thread affinity: taskset: failed to set pid 895615's affinity: Invalid argument
+
+
+thread 'load-producer' (895617) panicked at concurrency/benches/workload_research.rs:178:5:
+thread affinity: taskset: failed to set pid 895617's affinity: Invalid argument
+
+
+thread 'load-producer' (895620) panicked at concurrency/benches/workload_research.rs:178:5:
+thread affinity: taskset: failed to set pid 895620's affinity: Invalid argument
+
+
+thread 'load-producer' (895619) panicked at concurrency/benches/workload_research.rs:178:5:
+thread affinity: taskset: failed to set pid 895619's affinity: Invalid argument
+
+
+thread 'load-producer' (895616) panicked at concurrency/benches/workload_research.rs:178:5:
+thread affinity: taskset: failed to set pid 895616's affinity: Invalid argument
+
+
+thread 'load-producer' (895621) panicked at concurrency/benches/workload_research.rs:178:5:
+thread affinity: taskset: failed to set pid 895621's affinity: Invalid argument
+
+
+thread 'load-producer' (895622) panicked at concurrency/benches/workload_research.rs:178:5:
+thread affinity: taskset: failed to set pid 895622's affinity: Invalid argument
+

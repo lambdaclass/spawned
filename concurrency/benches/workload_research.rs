@@ -3,11 +3,14 @@
 mod cli;
 #[path = "support/profiling.rs"]
 mod profiling;
+#[path = "support/start_gate.rs"]
+mod start_gate;
 use futures::{stream::FuturesUnordered, StreamExt};
 use spawned_concurrency::{
     message::Message,
     tasks::{Actor, ActorRef, ActorStart, Context, Handler},
 };
+use start_gate::StartGate;
 use std::{
     collections::HashMap,
     fs::{self, File},
@@ -15,7 +18,7 @@ use std::{
     io::Write,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
-        Arc, Barrier,
+        Arc, Mutex,
     },
     time::{Duration, Instant},
 };
@@ -163,6 +166,10 @@ impl Config {
     }
 }
 fn pin_driver(cpus: &str) {
+    // Hundreds of concurrent Command::output calls transiently exhaust pipe FDs.
+    // Startup is outside the measured epoch; serialize this setup operation.
+    static PIN_SETUP: Mutex<()> = Mutex::new(());
+    let _setup = PIN_SETUP.lock().unwrap_or_else(|p| p.into_inner());
     let tid = fs::read_link("/proc/thread-self").unwrap();
     let result = std::process::Command::new("taskset")
         .args(["-pc", cpus, tid.file_name().unwrap().to_str().unwrap()])
@@ -599,12 +606,11 @@ fn main() {
     }
     let done = Arc::new(AtomicBool::new(false));
     let observed = Arc::new(AtomicU64::new(0));
-    let gate = Arc::new(Barrier::new(if c.caller == "async" {
+    let gate = StartGate::new(if c.caller == "async" {
         c.caller_threads + 1
     } else {
         c.producers * if c.mode == "offered" { 2 } else { 1 } + 1
-    }));
-    let (epoch_tx, epoch_rx) = tokio::sync::watch::channel(None::<Instant>);
+    });
     let mut batches = Vec::new();
     let mut actor_before = None;
     let mut actor_after = None;
@@ -612,11 +618,21 @@ fn main() {
     let mut submit_elapsed = Duration::ZERO;
     let mut observation_elapsed = Duration::ZERO;
     std::thread::scope(|scope| {
+        // Drop the sender on setup panic before scoped-thread joining begins.
+        let (epoch_tx, epoch_rx) = tokio::sync::watch::channel(None::<Instant>);
+        let main_start = gate.participant();
+        struct FinishSampler<'a>(&'a AtomicBool);
+        impl Drop for FinishSampler<'_> {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::Release);
+            }
+        }
+        let _finish_sampler = FinishSampler(&done);
         let mut producers = Vec::new();
         let mut collectors = Vec::new();
         if c.caller == "async" {
             for driver in 0..c.caller_threads {
-                let gate = gate.clone();
+                let gate = gate.participant();
                 let mut epoch = epoch_rx.clone();
                 let (c, nodes, assignment, observed) = (&c, &nodes, &assignment, &observed);
                 producers.push(
@@ -625,10 +641,10 @@ fn main() {
                         .spawn_scoped(scope, move || {
                             pin_driver(&c.driver_cpus);
                             let runtime = tokio::runtime::Builder::new_current_thread()
-                                .enable_all()
+                                .enable_time()
                                 .build()
                                 .unwrap();
-                            gate.wait();
+                            gate.wait().expect("benchmark setup failed");
                             runtime.block_on(async {
                                 epoch.changed().await.unwrap();
                                 let start = epoch.borrow().unwrap();
@@ -689,15 +705,15 @@ fn main() {
                     (None, None)
                 };
                 if let Some(mut rx) = rx {
-                    let collector_gate = gate.clone();
+                    let collector_gate = gate.participant();
                     let mut collector_epoch = epoch_rx.clone();
                     let observed = observed.clone();
                     let assignment = &assignment;
                     let c = &c;
                     collectors.push(std::thread::Builder::new().name("load-collector".into()).spawn_scoped(scope,move|| {
                     pin_driver(&c.collector_cpus);
-                    let rt=tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
-                    let mut samples=Vec::with_capacity(c.messages.div_ceil(c.producers));collector_gate.wait();
+                    let rt=tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
+                    let mut samples=Vec::with_capacity(c.messages.div_ceil(c.producers));collector_gate.wait().expect("benchmark setup failed");
                     rt.block_on(async {
                         collector_epoch.changed().await.unwrap();
                         let mut futures=FuturesUnordered::new();let mut open=true;
@@ -715,7 +731,7 @@ fn main() {
                     });samples
                 }).unwrap());
                 }
-                let producer_gate = gate.clone();
+                let producer_gate = gate.participant();
                 let mut producer_epoch = epoch_rx.clone();
                 let nodes = &nodes;
                 let meters = &meters;
@@ -732,7 +748,7 @@ fn main() {
                             } else {
                                 Vec::with_capacity(c.messages.div_ceil(c.producers))
                             };
-                            producer_gate.wait();
+                            producer_gate.wait().expect("benchmark setup failed");
                             let epoch = futures::executor::block_on(async {
                                 producer_epoch.changed().await.unwrap();
                                 producer_epoch.borrow().unwrap()
@@ -794,7 +810,7 @@ fn main() {
                 );
             }
         }
-        gate.wait();
+        main_start.wait().expect("benchmark setup failed");
         actor_before = Some(thread_stats());
         let profile = profiling::start();
         let epoch = Instant::now() + Duration::from_millis(200);

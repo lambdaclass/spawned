@@ -1,0 +1,53 @@
+   Compiling spawned-concurrency v0.6.0 (/tmp/spawned-pr-security-review/integrated/concurrency)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.36s
+     Running unittests src/main.rs (/tmp/spawned-fede-research-25dGGmPA/fairness-target/debug/deps/bank-343f2767550739b2)
+     Running unittests src/main.rs (/tmp/spawned-fede-research-25dGGmPA/fairness-target/debug/deps/bank_threads-35c6b4b7e3aeb6be)
+     Running unittests main.rs (/tmp/spawned-fede-research-25dGGmPA/fairness-target/debug/deps/blocking_genserver-c3a6b273682159b6)
+     Running unittests main.rs (/tmp/spawned-fede-research-25dGGmPA/fairness-target/debug/deps/busy_genserver_warning-5f4728013de886dc)
+     Running unittests src/main.rs (/tmp/spawned-fede-research-25dGGmPA/fairness-target/debug/deps/chat_room-103890120bb7d3d8)
+     Running unittests src/main.rs (/tmp/spawned-fede-research-25dGGmPA/fairness-target/debug/deps/chat_room_threads-a895e57ce61a836c)
+     Running unittests src/main.rs (/tmp/spawned-fede-research-25dGGmPA/fairness-target/debug/deps/exit_reason-5f2359a62dc83f1a)
+     Running unittests src/main.rs (/tmp/spawned-fede-research-25dGGmPA/fairness-target/debug/deps/name_server-9872f39de0d20fac)
+     Running unittests src/main.rs (/tmp/spawned-fede-research-25dGGmPA/fairness-target/debug/deps/ping_pong-173b0b57b4390b9d)
+     Running unittests src/main.rs (/tmp/spawned-fede-research-25dGGmPA/fairness-target/debug/deps/ping_pong_threads-d852b8ed8533656c)
+     Running unittests src/main.rs (/tmp/spawned-fede-research-25dGGmPA/fairness-target/debug/deps/service_discovery-8eea579a4466c84b)
+     Running unittests src/main.rs (/tmp/spawned-fede-research-25dGGmPA/fairness-target/debug/deps/signal_test-6042d9b0a4137fe4)
+     Running unittests src/main.rs (/tmp/spawned-fede-research-25dGGmPA/fairness-target/debug/deps/signal_test_threads-25764c7422b9fae3)
+     Running unittests src/lib.rs (/tmp/spawned-fede-research-25dGGmPA/fairness-target/debug/deps/spawned_concurrency-102d31cd363d0a51)
+     Running tests/actor_scenarios.rs (/tmp/spawned-fede-research-25dGGmPA/fairness-target/debug/deps/actor_scenarios-e1a7aa84836688c0)
+     Running tests/backend_experiments.rs (/tmp/spawned-fede-research-25dGGmPA/fairness-target/debug/deps/backend_experiments-dae925c1c3f9e15b)
+     Running tests/backend_resource_limits.rs (/tmp/spawned-fede-research-25dGGmPA/fairness-target/debug/deps/backend_resource_limits-f15d8cd13501dbcb)
+     Running tests/cfg_gated_protocol.rs (/tmp/spawned-fede-research-25dGGmPA/fairness-target/debug/deps/cfg_gated_protocol-914df6a43a4e8fce)
+     Running tests/delivery_simulation.rs (/tmp/spawned-fede-research-25dGGmPA/fairness-target/debug/deps/delivery_simulation-a6c2a0374a59edc8)
+     Running tests/failure_windows.rs (/tmp/spawned-fede-research-25dGGmPA/fairness-target/debug/deps/failure_windows-25975fae76f9cbc9)
+     Running tests/full_actor_shards.rs (/tmp/spawned-fede-research-25dGGmPA/fairness-target/debug/deps/full_actor_shards-2a65c04067f61e4b)
+     Running tests/linked_exit_macro.rs (/tmp/spawned-fede-research-25dGGmPA/fairness-target/debug/deps/linked_exit_macro-5a0c7fb183b11f15)
+     Running tests/metrics.rs (/tmp/spawned-fede-research-25dGGmPA/fairness-target/debug/deps/metrics-8bc4f8f855694fe2)
+     Running tests/metrics_counts_only.rs (/tmp/spawned-fede-research-25dGGmPA/fairness-target/debug/deps/metrics_counts_only-9f172731be454229)
+     Running tests/metrics_sampling.rs (/tmp/spawned-fede-research-25dGGmPA/fairness-target/debug/deps/metrics_sampling-9e3e6d721e19cf34)
+     Running tests/native_dispatcher.rs (/tmp/spawned-fede-research-25dGGmPA/fairness-target/debug/deps/native_dispatcher-4b51bf450750b482)
+     Running tests/payload_stress.rs (/tmp/spawned-fede-research-25dGGmPA/fairness-target/debug/deps/payload_stress-b511a2edd57fbdc9)
+     Running tests/process_failures.rs (/tmp/spawned-fede-research-25dGGmPA/fairness-target/debug/deps/process_failures-d8da3715f2f94e1a)
+     Running tests/protocol_compile.rs (/tmp/spawned-fede-research-25dGGmPA/fairness-target/debug/deps/protocol_compile-1475db0e48887118)
+   Compiling spawned-concurrency-tests v0.0.0 (/tmp/spawned-fede-research-25dGGmPA/fairness-target/tests/trybuild/spawned-concurrency)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.16s
+
+
+test tests/ui-pass/protocol_actor.rs [should pass] ... ok
+test tests/ui/associated_type.rs [should fail to compile] ... ok
+test tests/ui/async_method.rs [should fail to compile] ... ok
+test tests/ui/missing_receiver.rs [should fail to compile] ... ok
+
+
+     Running tests/ready_gate_loom.rs (/tmp/spawned-fede-research-25dGGmPA/fairness-target/debug/deps/ready_gate_loom-98630cc9c68b0d97)
+     Running tests/request_histories.rs (/tmp/spawned-fede-research-25dGGmPA/fairness-target/debug/deps/request_histories-a3397f87987cbb64)
+     Running tests/resource_cleanup.rs (/tmp/spawned-fede-research-25dGGmPA/fairness-target/debug/deps/resource_cleanup-a69e677dde700693)
+     Running tests/shutdown_publication.rs (/tmp/spawned-fede-research-25dGGmPA/fairness-target/debug/deps/shutdown_publication-1223f9b176669743)
+     Running unittests src/lib.rs (/tmp/spawned-fede-research-25dGGmPA/fairness-target/debug/deps/spawned_macros-3c47239726ca611f)
+     Running unittests src/lib.rs (/tmp/spawned-fede-research-25dGGmPA/fairness-target/debug/deps/spawned_rt-9f808a36b00fff7f)
+     Running tests/cancellation_loom.rs (/tmp/spawned-fede-research-25dGGmPA/fairness-target/debug/deps/cancellation_loom-727ff8177b1288fc)
+     Running unittests src/main.rs (/tmp/spawned-fede-research-25dGGmPA/fairness-target/debug/deps/updater-1442b3f4d8b3e38e)
+     Running unittests src/main.rs (/tmp/spawned-fede-research-25dGGmPA/fairness-target/debug/deps/updater_threads-0882689987c5b905)
+   Doc-tests spawned_concurrency
+   Doc-tests spawned_macros
+   Doc-tests spawned_rt
