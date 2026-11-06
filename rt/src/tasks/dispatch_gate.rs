@@ -18,9 +18,13 @@ impl Gate {
     pub(crate) fn notify(&self) -> bool {
         let mut state = self.0.load(Ordering::Acquire);
         loop {
-            if state & (QUEUED | DONE) != 0 {
+            if state & DONE != 0 {
                 return false;
             }
+            let enqueue = state == IDLE;
+            // Even an already-queued/notified wake must publish the caller's
+            // writes to the next claim. Keep the same-value release RMW; an
+            // acquire-only early return would lose that synchronization.
             let next = if state & RUNNING != 0 {
                 state | NOTIFIED
             } else {
@@ -30,7 +34,7 @@ impl Gate {
                 .0
                 .compare_exchange_weak(state, next, Ordering::AcqRel, Ordering::Acquire)
             {
-                Ok(_) => return next == QUEUED,
+                Ok(_) => return enqueue,
                 Err(actual) => state = actual,
             }
         }
@@ -51,7 +55,7 @@ impl Gate {
                 .0
                 .compare_exchange_weak(state, next, Ordering::AcqRel, Ordering::Acquire)
             {
-                Ok(_) => return next == QUEUED,
+                Ok(_) => return enqueue,
                 Err(actual) => state = actual,
             }
         }
