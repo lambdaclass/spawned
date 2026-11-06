@@ -753,6 +753,36 @@ fn main() {
         .max()
         .unwrap_or(0);
     let fields = [
+        (
+            "cold_samples",
+            samples.iter().filter(|s| !s.hot).count() as u64,
+        ),
+        (
+            "hot_samples",
+            samples.iter().filter(|s| s.hot).count() as u64,
+        ),
+        (
+            "cold_other_observed_p99_ns",
+            percentile(
+                samples
+                    .iter()
+                    .filter(|s| !s.hot && !s.shard0)
+                    .map(|s| s.observed)
+                    .collect(),
+                99,
+            ),
+        ),
+        (
+            "cold_shard0_observed_p99_ns",
+            percentile(
+                samples
+                    .iter()
+                    .filter(|s| !s.hot && s.shard0)
+                    .map(|s| s.observed)
+                    .collect(),
+                99,
+            ),
+        ),
         ("worst_cold_actor_observed_p99_ns", worst_cold_actor_p99),
         (
             "cold_late_observed",

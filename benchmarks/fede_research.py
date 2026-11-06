@@ -4,7 +4,6 @@ import argparse
 import csv
 import hashlib
 import json
-import math
 import os
 from pathlib import Path
 import platform
@@ -82,7 +81,7 @@ class Campaign:
             'memory': Path('/proc/meminfo').read_text(),
             'load_before': Path('/proc/loadavg').read_text().strip(),
             'actor_cpus': args.actor_cpus, 'driver_cpus': args.driver_cpus,
-            'affinity': 'whole job starts on actor CPUs; producer/collector/sampler threads explicitly move to driver CPUs',
+            'affinity': 'workload_research starts on actor CPUs and moves producer/collector/sampler threads to driver CPUs; legacy designs profiling keeps all threads on actor CPUs',
             'nice': os.nice(0), 'perf_event_paranoid': Path('/proc/sys/kernel/perf_event_paranoid').read_text().strip(),
             'environment': {k: os.environ.get(k) for k in ['RUSTFLAGS', 'CARGO_PROFILE_BENCH_DEBUG', 'CARGO_BUILD_JOBS']},
             'arguments': {k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()},
@@ -225,7 +224,7 @@ class Campaign:
                      if r.get('driver_valid') and r.get('window_service_per_s')]
             if not valid:
                 raise RuntimeError('baseline pilot could not produce a valid offered-rate schedule')
-            capacity = statistics.median(sorted(valid)[-2:])
+            capacity = max(valid)
             estimates[workers] = capacity
             self.meta.setdefault('calibration', {})[workers] = dict(
                 closed_reference_per_s=reference, service_reference_per_s=capacity,
