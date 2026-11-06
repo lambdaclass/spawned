@@ -38,7 +38,10 @@ do; this experiment does not transparently relocate external tasks. Spawning a
 current-thread-incompatible operation such as Tokio `block_in_place` inside a
 shard is unsupported. Synchronous blocking stalls that entire shard, including
 its timers and sockets. No work stealing, CPU affinity or !Send handler support
-is added. Runtime configuration is fixed for the process; shutdown is terminal.
+is added. Runtime configuration is fixed for the process; shutdown is terminal after pool
+initialization. Calling the private shutdown hook before initialization is a no-op.
+Its registration count cannot discover every external helper, so callers must
+still follow the stop-all/await-important-helpers contract.
 
 ## Equal worker budgets and workload coverage
 

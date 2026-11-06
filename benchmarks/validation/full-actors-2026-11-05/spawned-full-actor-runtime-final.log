@@ -1,0 +1,16 @@
+   Compiling spawned-rt v0.5.0 (/private/tmp/spawned-scenario-tests/rt)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.50s
+     Running unittests src/lib.rs (target/debug/deps/spawned_rt-6b08879fed06b182)
+
+running 3 tests
+test tasks::experimental::tests::shutdown_from_a_shard_is_rejected_without_self_join ... ok
+test tasks::experimental::tests::idle_pool_joins_all_workers ... ok
+test tasks::experimental::tests::shutdown_waits_for_registered_jobs_and_is_terminal ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/cancellation_loom.rs (target/debug/deps/cancellation_loom-e112ec20acdce885)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s

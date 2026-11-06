@@ -1,3 +1,6 @@
 benchmarks/reports/designs-2026-11-05/** linguist-generated=true
 benchmarks/results/designs-2026-11-05/** linguist-generated=true
 benchmarks/validation/designs-2026-11-05/** linguist-generated=true
+benchmarks/reports/full-actors-2026-11-05/** linguist-generated=true
+benchmarks/results/full-actors-2026-11-05/** linguist-generated=true
+benchmarks/validation/full-actors-2026-11-05/** linguist-generated=true
