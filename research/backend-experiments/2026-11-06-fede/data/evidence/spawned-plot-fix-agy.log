@@ -1,0 +1,23 @@
+**Verdict: APPROVE**
+
+### Focused Review Summary
+
+1. **Per-Curve Schedule Validity & Producer Admission Lag (`render_fede_research.py`):**
+   - In [`main`](file:///private/tmp/spawned-fede-next/benchmarks/render_fede_research.py#L149-L161), each fixed-repetition (`repeat == 1`, `burst == 1`, highest offered rate / 125% reference) time-series curve now explicitly formats its legend label with both schedule validity (`valid(row)`) and producer admission lag p99 converted from nanoseconds to milliseconds:
+     ```python
+     label=f"{variant}: {'valid' if valid(row) else 'INVALID schedule'}, lag p99 {number(row,'lag_p99_ns')/1e6:.3f} ms"
+     ```
+   - `axes[0].legend(fontsize=7)` displays these labels on the figure.
+
+2. **Diagnostic-Only Suptitle Qualification (`render_fede_research.py`):**
+   - The time-series figure suptitle explicitly states that invalid schedules are diagnostics rather than equivalent offered load:
+     ```python
+     fig.suptitle(f'{w} workers · {layout} · 125% reference, predetermined repetition 1; dotted injection end\nInvalid schedules are diagnostics, not equivalent offered traffic')
+     ```
+
+3. **Post-Curve Y-Axis Autoscaling (`render_fede_research.py`):**
+   - `for ax in axes: ax.set_ylim(bottom=0)` is placed at [line 159](file:///private/tmp/spawned-fede-next/benchmarks/render_fede_research.py#L159), *outside* and *after* the `for variant, color in ...` loop ([lines 150-158](file:///private/tmp/spawned-fede-next/benchmarks/render_fede_research.py#L150-L158)). This ensures matplotlib's upper Y-limit autoscaling remains active across all plotted policy curves and prevents clipping of larger peaks added by later policies (`sharded-1`, `sharded-16`).
+
+4. **Rendered Artifacts & Validation Documentation (`VALIDATION-FEDE-RESEARCH.md`):**
+   - Spot-checked the regenerated SVG outputs ([timeseries-w2-spread.svg](file:///private/tmp/spawned-fede-next/benchmarks/reports/fede-research-2026-11-06/graphs/timeseries-w2-spread.svg) and [timeseries-w4-spread.svg](file:///private/tmp/spawned-fede-next/benchmarks/reports/fede-research-2026-11-06/graphs/timeseries-w4-spread.svg)), confirming the new legend strings (e.g., `async: valid, lag p99 0.000 ms`, `sharded-1: INVALID schedule, lag p99 1.573 ms`) and two-line diagnostic suptitle are present in the rendered charts.
+   - [VALIDATION-FEDE-RESEARCH.md](file:///private/tmp/spawned-fede-next/benchmarks/VALIDATION-FEDE-RESEARCH.md#L74-L84) accurately documents the hosted review context, the legend and autoscaling fixes, and the bounded scope of the regeneration.

@@ -1,0 +1,23 @@
+I will read `/private/tmp/spawned-research-results-review.txt` to inspect the research results and review criteria.
+**Verdict: APPROVE**
+
+### Review Summary
+
+I reviewed [FINDINGS-FEDE-RESEARCH.md](file:///private/tmp/spawned-fede-next/benchmarks/FINDINGS-FEDE-RESEARCH.md), [VALIDATION-FEDE-RESEARCH.md](file:///private/tmp/spawned-fede-next/benchmarks/VALIDATION-FEDE-RESEARCH.md), [RESEARCH-FEDE-PROTOCOL.md](file:///private/tmp/spawned-fede-next/benchmarks/RESEARCH-FEDE-PROTOCOL.md), [render_fede_research.py](file:///private/tmp/spawned-fede-next/benchmarks/render_fede_research.py), [collect_fede_research.py](file:///private/tmp/spawned-fede-next/benchmarks/collect_fede_research.py), and [SUMMARY.csv](file:///private/tmp/spawned-fede-next/benchmarks/reports/fede-research-2026-11-06/SUMMARY.csv). The package is methodologically sound, conservative in its claims, and ready for publication.
+
+### Key Verification Points
+
+1. **Quantitative Accuracy & Group Separation**
+   - Every cell in the 4-worker `graph-long` table in [FINDINGS-FEDE-RESEARCH.md](file:///private/tmp/spawned-fede-next/benchmarks/FINDINGS-FEDE-RESEARCH.md#L7-L15) (`replies_per_s_median` in k replies/s and `observed_p99_ns_median` in ms) matches [SUMMARY.csv](file:///private/tmp/spawned-fede-next/benchmarks/reports/fede-research-2026-11-06/SUMMARY.csv#L60-L87), including the `sharded-16` chain drop from `857.9k` to `508.4k` (`40.7%`) and actor-worker CPU cost rise from `4,636` to `7,831` ns/root.
+   - In [render_fede_research.py](file:///private/tmp/spawned-fede-next/benchmarks/render_fede_research.py#L78-L83), aggregation keys explicitly separate `(phase, workers, variant, topology, layout, rate, burst, work, routing, actors, iterations, messages)`, ensuring `graph` (65,536 roots), `graph-long` (1,048,576 roots), `offered`, `pilot`, `calibration`, and `profile` runs are never pooled.
+   - Unit conversions (`1e-6` ns-to-ms for latency, admission lag, and `observer_lag_p99_ns_median`; `1e-3` for k replies/s) are consistent across charts and tables in [render_fede_research.py](file:///private/tmp/spawned-fede-next/benchmarks/render_fede_research.py#L107-L166).
+
+2. **Offered-Load Validity & Overload Caveats**
+   - The 244/504 invalid admission schedules (`>1%` requests admitted `>1 ms` late, leaving 260/504 valid) are retained in full, marked (`×` on charts and `valid/n` in tables via [`valid_driver_samples`](file:///private/tmp/spawned-fede-next/benchmarks/render_fede_research.py#L83)), and explicitly disqualified from matched-load rankings across all three documents.
+   - The cited 4-worker concentrated diagnostic at `950,237` requests/s for `sharded-16` in [FINDINGS-FEDE-RESEARCH.md](file:///private/tmp/spawned-fede-next/benchmarks/FINDINGS-FEDE-RESEARCH.md#L23) is backed by `3/3` valid schedules in [SUMMARY.csv](file:///private/tmp/spawned-fede-next/benchmarks/reports/fede-research-2026-11-06/SUMMARY.csv#L188) (`66.3%` hot timeouts, `0.014 ms` other-cohort cold observed p99, `0.216 ms` worst cold actor p99).
+   - Survivor-only completion quantiles, timeout-censored observation tails, two-second finite injection windows with full drain, and hot-vs-cold cohort caveats are clearly stated.
+
+3. **Provenance, Affinity & Profiling Boundaries**
+   - [collect_fede_research.py](file:///private/tmp/spawned-fede-next/benchmarks/collect_fede_research.py#L30-L66) enforces clean-tree status, identical `revision` (`454d25a8baed62ee0a7b005e919d3d9e32f86893`), identical `binaries`, and identical `actor_cpus` (`2-5`), `driver_cpus` (`6,7,14,15`), `collector_cpus` (`8,9,16,17`), and environment across primary (778) and confirmation (224) campaigns (1,002 total processes), plus `succeeded + timeouts == messages` and confirmation controller hash verification. (Original vs. combined CSV numeric equality and the 2,040 artifact SHA-256 entries were separately verified by Codex.)
+   - [FINDINGS-FEDE-RESEARCH.md](file:///private/tmp/spawned-fede-next/benchmarks/FINDINGS-FEDE-RESEARCH.md#L25), [VALIDATION-FEDE-RESEARCH.md](file:///private/tmp/spawned-fede-next/benchmarks/VALIDATION-FEDE-RESEARCH.md#L67-L69), and [render_fede_research.py](file:///private/tmp/spawned-fede-next/benchmarks/render_fede_research.py#L167-L174) properly frame `pprof-rs` SIGPROF stacks as inclusive user-space ancestry on actor threads rather than exclusive scheduler overhead or kernel/hardware-counter attribution.
+   - Default Tokio behavior and public APIs remain unchanged, and follow-up native executor work is appropriately scoped as separate opt-in research.

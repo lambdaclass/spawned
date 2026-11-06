@@ -1,0 +1,49 @@
+### Final Supplied-Code Review (`20260cd` Post-Measurement Cleanup)
+
+**Verdict:** Approved — no blockers found across lifecycle, spin/progress, configuration, or benchmark fairness. All earlier observations are resolved within the documented private experimental scope.
+
+---
+
+### 1. Verification of Earlier Observations (`20260cd` Changes)
+
+1. **One-time shard option parsing on pool initialization (`RT`)**
+   - `shard_options()` (`SPAWNED_EXPERIMENT_PIN_CORES` and `SPAWNED_EXPERIMENT_IDLE_SPIN`) is now called exclusively inside the uninitialized branch of `spawn_sharded()` before constructing `Pool::configured(count, affinity, spin)`.
+   - Subsequent `spawn_sharded()` calls on an initialized pool only verify `assert_eq!(pool.count, count, "one configuration per process")` and clone the `Arc<Pool>`, eliminating per-spawn env lookups and `Vec`/`HashSet` allocations.
+
+2. **Self-contained CPU mask application before Tokio worker startup (`Bench`)**
+   - `linux::run()` calls `pin(&cores)` on the main thread before constructing `actor_runtime` or starting actors.
+   - In multi-thread baseline mode (`!sharded`), Tokio `pipeline-worker` threads inherit the `actor-cpus` affinity mask directly even if invoked without an outer `taskset` wrapper.
+   - After actor wiring, affinity auditing, and warm-up verification, the main thread moves itself to `driver-cpus` (`pin(&driver)`) and pins every `driver_runtime` worker via `.on_thread_start(move || pin(&driver_mask))`.
+
+3. **Linux-only benchmark gating (`Bench` & `RT`)**
+   - The benchmark implementation is cleanly isolated inside `#[cfg(target_os = "linux")] mod linux`, with a non-Linux `main()` stub that exits with an explanatory message rather than failing compilation or panicking on `/proc` / `taskset`.
+   - In `RT`, `pin_core` returns `io::ErrorKind::Unsupported` off-Linux, and `pinned_wait_modes_progress_and_join` is gated under `#[cfg(target_os = "linux")]`.
+
+4. **Documented experimental caveats (`RT`)**
+   - Module-level and inline comments explicitly state that the API is a feature-gated research hook, `taskset` is a deliberate Linux dependency for pinning, actor count does not own runtime lifetime, `shutdown_background()` cancels remaining detached async helpers on pool shutdown, and already-running blocking helpers may inherit single-core shard affinity and outlive shutdown.
+
+---
+
+### 2. Audit by Subsystem
+
+#### Lifecycle & Shutdown Safety
+- **Initialization & partial-failure cleanup:** `Pool::configured` synchronizes with each spawned worker via `sync_channel(1)` (`initialized.recv()`). If any worker fails `pin_core` or runtime creation, `Pool::drop` runs on the partially built `Pool`, takes `senders` (closing channels for previously started shards), and joins all already-spawned worker threads.
+- **Active lease accounting:** `Pool::spawn` and `lease_if_initialized` both verify `state.senders.is_some()` and increment `state.active` under the `state` mutex before constructing `Lease`. In `Pool::spawn`, sending occurs outside the mutex; if `tx.send` fails, the `Lease` drops immediately, decrementing `state.active` and notifying `idle`.
+- **Graceful & terminal shutdown:** `Pool::shutdown` rejects calls from shard threads (`self.worker_ids.contains(&thread::current().id())`) to prevent self-join deadlock, waits up to 5 seconds on `self.idle` for `state.active == 0`, drops `senders` outside the lock, and joins all worker threads. Shutdown is idempotent, and any subsequent `spawn` or `lease_if_initialized` cleanly observes `senders == None`.
+- **Bench teardown verification:** `linux::run()` stops all actors, awaits `ExitReason::Normal` with a 5s timeout, drops actor references, calls `shutdown_sharded().unwrap()` when `sharded`, drops `actor_runtime`, and asserts `started == stopped == dropped == workers * groups`.
+
+#### Spin & Progress Semantics
+- **Parked wait (`spin == false`):** `rx.recv().await` parks the root job loop when no new actor spawns arrive, leaving the current-thread Tokio runtime free to poll spawned actors, timers, and I/O drivers.
+- **Busy poll (`spin == true`):**
+  - On `TryRecvError::Empty`, `tokio::task::yield_now().await` keeps the `block_on` root future ready (preventing OS reactor sleep) while yielding execution back to the current-thread scheduler so actor tasks, timers, and I/O drivers make progress.
+  - After `tokio::spawn(job)`, `tokio::task::yield_now().await` prevents a burst of incoming actor spawns from starving already-spawned actors on that shard.
+  - On `TryRecvError::Disconnected` (when `senders` are dropped in `shutdown()`), the loop exits cleanly and reaches `runtime.shutdown_background()`.
+
+#### Configuration Validation
+- `SPAWNED_EXPERIMENT_WORKERS`: validated in `1..=256` and enforced constant per process.
+- `SPAWNED_EXPERIMENT_PIN_CORES`: validates integer CPU IDs, rejects duplicates via `HashSet`, and enforces `cores.len() == count` (`"one CPU per shard required"`).
+- `SPAWNED_EXPERIMENT_IDLE_SPIN`: strictly accepts `"1"`, `"0"`, or unset; rejects any other value with `ErrorKind::InvalidInput`.
+
+#### Fairness & Benchmark Integrity
+- **Equivalent workload:** Every message executes exactly `WORK = 800` LCG steps split evenly across `workers` stages (`WORK / workers` per stage), verified on every warm-up and benchmark message via closed-form affine parameters `(a, b)` and `hops == workers`, plus post-run `Audit` total message counts (`(messages + groups) * workers`).
+- **Round-robin shard placement & load generation:** Shards are assigned via `self.next.fetch_add(1, Ordering::Relaxed) % senders.len()`, matching the benchmark's `i % workers` pipeline stage layout audited via `/proc/thread-self/status`. All `producers` synchronize on `Barrier::new(producers + 1)` and distribute work across `roots[id % groups]`.

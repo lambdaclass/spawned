@@ -1,0 +1,153 @@
+I will read [/private/tmp/spawned-full-shard-review.txt](file:///private/tmp/spawned-full-shard-review.txt) to understand the requested read-only concurrency review.
+I will now read the five files specified in the review prompt to inspect the full-actor sharding experiment and its test suite.
+I will read the remaining lines of [actor.rs](file:///private/tmp/spawned-scenario-tests/concurrency/src/tasks/actor.rs) to complete the inspection of all five target files.
+I will read [tokio.rs](file:///private/tmp/spawned-scenario-tests/rt/src/tasks/tokio.rs) (referenced by `rt/src/tasks/mod.rs`) to verify the exact `rt::Runtime`, `rt::Handle`, and `rt::mpsc` definitions.
+I will read [mod.rs](file:///private/tmp/spawned-scenario-tests/rt/src/tasks/tokio/mod.rs) to check the re-exported Tokio primitives.
+I will read [mpsc.rs](file:///private/tmp/spawned-scenario-tests/rt/src/tasks/tokio/mpsc.rs) to inspect the mailbox channel implementation used by `run_actor` and `MessageTurn`.
+Here is the read-only concurrency review of the full-actor sharding experiment across [experimental.rs](file:///private/tmp/spawned-scenario-tests/rt/src/tasks/experimental.rs), [mod.rs](file:///private/tmp/spawned-scenario-tests/rt/src/tasks/mod.rs), [actor.rs](file:///private/tmp/spawned-scenario-tests/concurrency/src/tasks/actor.rs), [backend_resource_limits.rs](file:///private/tmp/spawned-scenario-tests/concurrency/tests/backend_resource_limits.rs), and [full_actor_shards.rs](file:///private/tmp/spawned-scenario-tests/concurrency/tests/full_actor_shards.rs).
+
+---
+
+## 1. Interface & Default Runtime Invariants
+
+- **Public API preserved:** [`Backend`](file:///private/tmp/spawned-scenario-tests/concurrency/src/tasks/actor.rs#L32-L38), [`Actor`](file:///private/tmp/spawned-scenario-tests/concurrency/src/tasks/actor.rs#L50-L58), [`Handler<M>`](file:///private/tmp/spawned-scenario-tests/concurrency/src/tasks/actor.rs#L68-L70), [`Context<A>`](file:///private/tmp/spawned-scenario-tests/concurrency/src/tasks/actor.rs#L116-L122), [`ActorRef<A>`](file:///private/tmp/spawned-scenario-tests/concurrency/src/tasks/actor.rs#L391-L397), and [`ActorStart`](file:///private/tmp/spawned-scenario-tests/concurrency/src/tasks/actor.rs#L761-L771) signatures are unchanged.
+- **Default runtime path:** Without `--features backend-experiments`, [`ActorRef::spawn`](file:///private/tmp/spawned-scenario-tests/concurrency/src/tasks/actor.rs#L550-L627) and [`run_actor`](file:///private/tmp/spawned-scenario-tests/concurrency/src/tasks/actor.rs#L673-L754) compile to the original behavior. With `backend-experiments` enabled and env vars unset, `Backend::Async` still dispatches via `rt::spawn(inner_future)` with `turn = None`, though [`ActorRef::spawn`](file:///private/tmp/spawned-scenario-tests/concurrency/src/tasks/actor.rs#L573) still queries `std::env::var("SPAWNED_EXPERIMENT_SCHEDULER")` on every spawn.
+
+---
+
+## 2. Actual Blockers & Correctness Bugs (with Concrete Interleavings)
+
+### Blocker 1: `MessageTurn` records `self.began` on park instead of wakeup, breaking batching after any idle $\ge 50\,\mu\text{s}$ and yielding on empty mailboxes
+In [`MessageTurn::parked`](file:///private/tmp/spawned-scenario-tests/concurrency/src/tasks/actor.rs#L653-L659) and [`run_actor`](file:///private/tmp/spawned-scenario-tests/concurrency/src/tasks/actor.rs#L705-L713):
+```rust
+let result = rx.poll_recv(cx);
+if result.is_pending() {
+    if let Some(turn) = &mut turn {
+        turn.parked(); // sets self.began = Instant::now() BEFORE sleeping
+    }
+}
+```
+When the actor later wakes up and `rx.poll_recv(cx)` returns `Poll::Ready(Some(msg))`, `self.began` is **not** reset.
+- **Concrete Interleaving:**
+  1. Actor $A$ (configured with fixed batch `SPAWNED_EXPERIMENT_BATCH=16`, `self.limit = 16`) has an empty mailbox at $t = 0$. `rx.poll_recv(cx)` returns `Poll::Pending`; `turn.parked()` sets `self.began = t_0` and `self.completed = 0`.
+  2. Actor $A$ remains idle for $100\,\mu\text{s}$. At $t = 100\,\mu\text{s}$, 16 messages arrive in `rx`.
+  3. Actor $A$ wakes, dequeues message #1 (`rx.poll_recv` returns `Ready`, so `parked()` does not run), and finishes `handle()` in $1\,\mu\text{s}$.
+  4. [`turn.after_message(rx.is_empty()).await`](file:///private/tmp/spawned-scenario-tests/concurrency/src/tasks/actor.rs#L660-L670) runs with `self.completed = 1`. Even though `1 < 16`, `self.began.elapsed()` is $101\,\mu\text{s} \ge 50\,\mu\text{s}$ because `self.began` measured the **idle sleep duration** rather than the active turn duration.
+  5. Actor $A$ immediately calls `yield_now().await` after just **1 message** instead of batching 16.
+  6. Furthermore, when `rx.is_empty()` is `true` (e.g., 1-message ping-pong spaced $>50\,\mu\text{s}$ apart, or adaptive mode where `limit == 1`), `after_message(true)` **still calls `yield_now().await`**, forcing a redundant scheduler round-trip before the loop can call `rx.poll_recv(cx)` to register the mailbox waker and park.
+
+---
+
+### Blocker 2: `stop()` cancellation is bypassed for a queued message when cancelled during `MessageTurn::after_message` yield
+In [`run_actor`](file:///private/tmp/spawned-scenario-tests/concurrency/src/tasks/actor.rs#L700-L741), the post-handler cancellation check ([line 731](file:///private/tmp/spawned-scenario-tests/concurrency/src/tasks/actor.rs#L731-L733)) runs **before** `turn.after_message(rx.is_empty()).await` ([line 736](file:///private/tmp/spawned-scenario-tests/concurrency/src/tasks/actor.rs#L735-L737)), and at the top of the next loop iteration `futures::future::select(recv, cancel)` ([line 715](file:///private/tmp/spawned-scenario-tests/concurrency/src/tasks/actor.rs#L715)) always polls `recv` **before** `cancel`.
+- **Concrete Interleaving:**
+  1. Actor $A$ on `spawned-shard-0` has $M_1, M_2$ queued in `rx`.
+  2. Actor $A$ completes $M_1$. At [line 731](file:///private/tmp/spawned-scenario-tests/concurrency/src/tasks/actor.rs#L731), `cancellation_token.is_cancelled()` is `false`.
+  3. At [line 736](file:///private/tmp/spawned-scenario-tests/concurrency/src/tasks/actor.rs#L736), `turn.after_message(false).await` calls `yield_now().await` and yields control of `spawned-shard-0`.
+  4. Before Actor $A$ is re-polled, another task on `spawned-shard-0` (or another thread) calls `actor_a.child_handle().stop()`, cancelling `cancellation_token`.
+  5. Actor $A$ resumes from `yield_now().await` and loops to [line 715](file:///private/tmp/spawned-scenario-tests/concurrency/src/tasks/actor.rs#L715): `future::select(recv, cancel).await`.
+  6. `future::select` polls its first argument (`recv`) first. Because $M_2$ is already in `rx`, `rx.poll_recv(cx)` returns `Poll::Ready(Some(M_2))` without polling `cancel`.
+  7. Actor $A$ executes $M_2$ after `stop()` was already issued, violating the contract tested by [`stop_finishes_in_flight_handler_and_rejects_queued_work`](file:///private/tmp/spawned-scenario-tests/concurrency/tests/full_actor_shards.rs#L123-L152).
+
+---
+
+### Blocker 3: Pool lease release races with `actor.join()`, worker teardown, and `REGISTRY` re-initialization
+In [`ActorRef::spawn`](file:///private/tmp/spawned-scenario-tests/concurrency/src/tasks/actor.rs#L578-L589) and [`Pool::spawn`](file:///private/tmp/spawned-scenario-tests/rt/src/tasks/experimental.rs#L65-L76):
+```rust
+// ActorRef::spawn
+let inner_future = async move {
+    let reason = run_actor(...).await;
+    let _ = completion_tx.send(Some(reason));
+};
+// Pool::spawn
+self.senders[shard].send(Box::pin(async move {
+    let _lease = lease;
+    future.await;
+}))
+```
+And in [`Pool::drop`](file:///private/tmp/spawned-scenario-tests/rt/src/tasks/experimental.rs#L78-L90):
+```rust
+impl Drop for Pool {
+    fn drop(&mut self) {
+        self.senders.clear();
+        let current = thread::current().id();
+        for worker in self.workers.drain(..) {
+            if worker.thread().id() != current {
+                let _ = worker.join();
+            }
+        }
+    }
+}
+```
+This creates two concrete races when the last sharded actor exits:
+
+1. **Interleaving A (`actor.join()` completes before `_lease` drops — config assertion panic or premature inspection):**
+   - Worker `spawned-shard-0` executes `completion_tx.send(Some(reason))` inside `inner_future` ([actor.rs:588](file:///private/tmp/spawned-scenario-tests/concurrency/src/tasks/actor.rs#L588)) **before** `inner_future` returns and drops `_lease` ([experimental.rs:72-74](file:///private/tmp/spawned-scenario-tests/rt/src/tasks/experimental.rs#L72-L74)).
+   - Observer thread $T_{\text{obs}}$ awaiting `actor.join()` wakes immediately on `completion_tx.send(...)` while `spawned-shard-0` is preempted before dropping `_lease`.
+   - $T_{\text{obs}}$ considers the actor system idle and starts a new test/benchmark phase with a different `SPAWNED_EXPERIMENT_WORKERS`. `registry.upgrade()` in [`spawn_sharded`](file:///private/tmp/spawned-scenario-tests/rt/src/tasks/experimental.rs#L108-L109) still succeeds on the old `Pool` and panics at `assert_eq!(pool.senders.len(), count, "use one config per process")`.
+
+2. **Interleaving B (`Weak::upgrade()` becomes `None` before `Pool::drop` runs, overlapping $2N$ shard runtimes and detaching the final worker):**
+   - In `Arc::drop`, the strong count is decremented to `0` *before* `Pool::drop` executes. The moment `spawned-shard-0` decrements the strong count of `_lease` to `0`, `REGISTRY`'s `Weak<Pool>::upgrade()` returns `None` (and [`suspended_job_owns_pool_until_it_finishes`](file:///private/tmp/spawned-scenario-tests/rt/src/tasks/experimental.rs#L139) exits its loop), even though:
+     1. `spawned-shard-0` has not yet cleared `self.senders` or joined `spawned-shard-1..N-1`; and
+     2. `spawned-shard-0` **skips `worker.join()` on itself** (`worker.thread().id() != current`), detaching its own `JoinHandle` while it is still inside `runtime.block_on(...)` and before `runtime.shutdown_background()` has run.
+   - If $T_{\text{obs}}$ calls `spawn_sharded` during this window, `registry.upgrade()` is `None`, so `Pool::new(count)` spawns $N$ new shard threads and Tokio reactors **concurrently with the $N$ old shard threads/reactors still shutting down** (temporarily consuming $2N$ reactor FD sets and threads).
+   - Also note: `spawned-shard-0` synchronously calls `worker.join()` on $N-1$ other OS threads *from inside an async task poll* on `spawned-shard-0`'s Tokio runtime.
+
+---
+
+### Blocker 4: Helper tasks (`tokio::spawn` / `rt::spawn`), `Context::monitor`, and `send_message_on` do not hold a `Pool` lease and bind to the wrong runtime when called externally
+[`Pool::spawn`](file:///private/tmp/spawned-scenario-tests/rt/src/tasks/experimental.rs#L68-L74) only attaches `_lease: Arc<Pool>` to the top-level actor future sent over `self.senders[shard]`.
+1. **In-handler helper tasks dropped on last-actor exit:**
+   - Inside a sharded actor handler, `tokio::spawn` / `rt::spawn` (including [`Context::monitor`](file:///private/tmp/spawned-scenario-tests/concurrency/src/tasks/actor.rs#L281) and [`send_message_on`](file:///private/tmp/spawned-scenario-tests/concurrency/src/tasks/actor.rs#L791)) spawns tasks directly onto that shard's `current_thread` runtime **without** cloning `_lease`.
+   - **Concrete Interleaving:** The last sharded actor spawns a helper task on `spawned-shard-0` (or a monitor task delivering `Down` to a `Backend::Thread` actor) and then stops. When the actor future finishes, `_lease` drops, `Pool::drop` clears `self.senders`, `rx.recv().await` on `spawned-shard-0` returns `None`, `runtime.block_on` exits immediately (because `block_on` only awaits the `rx.recv()` loop, not tasks spawned via `tokio::spawn`), and `runtime.shutdown_background()` aborts the in-flight helper task.
+2. **External `actor.context().monitor(...)` / `send_message_on(actor.context(), ...)` killed when caller runtime drops:**
+   - [`Context::from_ref`](file:///private/tmp/spawned-scenario-tests/concurrency/src/tasks/actor.rs#L143-L145) is explicitly documented for setting up timers or listeners from outside the actor via `actor_ref.context()`.
+   - **Concrete Interleaving:** Caller runtime `rt1` starts a sharded actor $A$, calls `send_message_on(A.context(), sleep(100ms), Msg)` or `A.context().monitor(&target)` (which calls [`rt::spawn`](file:///private/tmp/spawned-scenario-tests/concurrency/src/tasks/actor.rs#L281) on **`rt1`**, not on $A$'s shard), and then drops `rt1` as in [`actors_outlive_their_caller_runtime`](file:///private/tmp/spawned-scenario-tests/concurrency/tests/full_actor_shards.rs#L210-L231). Dropping `rt1` cancels the timer/monitor waiter task on `rt1` while leaving a stale `MonitorRef` entry in $A$'s `MonitorTable`; $A$ survives on its shard, but the timer or `Down` notification is silently lost. Calling `A.context().monitor(...)` or `send_message_on(...)` from a non-runtime OS thread panics outright inside `rt::spawn`.
+
+---
+
+### Blocker 5: Child `Backend::Blocking` (or `Backend::Thread` with `shared`) spawned from inside a sharded actor borrows the shard's `current_thread` runtime without a lease
+- **Concrete Interleaving:**
+  1. Sharded Actor $A$ on `spawned-shard-0` spawns a child actor $B$ with `Backend::Blocking` ([actor.rs:602-604](file:///private/tmp/spawned-scenario-tests/concurrency/src/tasks/actor.rs#L602-L604): `rt::spawn_blocking(move || rt::block_on(inner_future))`).
+  2. $B$ runs on `spawned-shard-0`'s blocking pool and calls `Handle::current().block_on(inner_future)` using `spawned-shard-0`'s `current_thread` runtime handle, relying on `spawned-shard-0` to drive its reactor/timers. $B$ holds no `Arc<Pool>` lease.
+  3. Actor $A$ stops and drops the last `Arc<Pool>` lease. `spawned-shard-0` exits `runtime.block_on` and calls `runtime.shutdown_background()`, shutting down the reactor and timer driver underneath the still-running `Backend::Blocking` actor $B$.
+
+---
+
+## 3. Evaluation of Resource Limit Tests ([backend_resource_limits.rs](file:///private/tmp/spawned-scenario-tests/concurrency/tests/backend_resource_limits.rs))
+
+The resource tests in [backend_resource_limits.rs](file:///private/tmp/spawned-scenario-tests/concurrency/tests/backend_resource_limits.rs) **do not accurately characterize the reported limits**:
+
+1. **`descriptor_limit_child` compares `sharded` (`Backend::Async`) against `Backend::Thread`, not against default `Backend::Async` ([lines 127-131](file:///private/tmp/spawned-scenario-tests/concurrency/tests/backend_resource_limits.rs#L127-L131)):**
+   - Default `Backend::Async` (standard `tokio::spawn`) also reuses its existing runtime reactor, allocates 0 file descriptors per additional actor, and would pass `count = 128` after `EMFILE` identically to `sharded`.
+   - In fact, `sharded` (`SPAWNED_EXPERIMENT_WORKERS=2`) consumes *more* baseline file descriptors than default `Backend::Async` because it initializes 2 extra `current_thread` Tokio runtimes (each with its own `kqueue`/`epoll` + waker FDs) in addition to the test's `current_thread` runtime.
+2. **Pre-warming `seed` before exhausting FDs hides `sharded`'s startup `EMFILE` panic ([lines 133-145](file:///private/tmp/spawned-scenario-tests/concurrency/tests/backend_resource_limits.rs#L133-L145)):**
+   - `seed` is started *before* the `/dev/null` loop drains all remaining file descriptors to `EMFILE` (`errno == 24`).
+   - If `spawn_sharded` is first called (or re-initialized after an idle drop) when FDs are exhausted, [`Pool::new(count).expect("initialize experimental actor shards")`](file:///private/tmp/spawned-scenario-tests/rt/src/tasks/experimental.rs#L112) **panics synchronously on the caller thread**, whereas `Backend::Thread` isolates the panic to the spawned thread and reports `ExitReason::Kill` via `wait_exit()`.
+   - Note that partial initialization inside [`Pool::new`](file:///private/tmp/spawned-scenario-tests/rt/src/tasks/experimental.rs#L31-L63) *does* clean up already-spawned shard threads $0..k-1$ via `Pool::drop` before `expect(...)` panics.
+3. **`SPAWNED_EXPERIMENT_RUNTIME=current` ([line 85](file:///private/tmp/spawned-scenario-tests/concurrency/tests/backend_resource_limits.rs#L85)) is a dead configuration value:**
+   - [`actor.rs:611-620`](file:///private/tmp/spawned-scenario-tests/concurrency/src/tasks/actor.rs#L611-L620) only checks `if mode == "shared"`; `"current"` simply falls into `else { threads::block_on(inner_future) }` (the unmodified `Backend::Thread` path). Meanwhile, the `mode == "shared"` branch is untested here.
+4. **Manual `/dev/null` exhaustion does not measure per-actor FD cost:**
+   - Draining FDs to 0 with `File::open("/dev/null")` guarantees any operation needing $\ge 1$ FD fails at `count = 1` (including any sharded actor that opens a socket or file), while pure in-memory channel messaging on pre-allocated runtimes succeeds for any `count`.
+5. **`persistent_blocking_actors_queue_until_a_worker_is_released` uses an immediate `try_recv()` ([lines 51-57](file:///private/tmp/spawned-scenario-tests/concurrency/tests/backend_resource_limits.rs#L51-L57)):**
+   - `started.try_recv()` immediately after `start_with_backend(Backend::Blocking)` returns `Err(TryRecvError::Empty)` simply due to OS/thread-pool scheduling latency even when workers are idle; it does not wait a short timeout to prove the 3rd actor is genuinely blocked on pool capacity (`max_blocking_threads(2)`).
+
+---
+
+## 4. Documented Tradeoffs, Deadlock Characteristics & Benchmark Caveats
+
+- **Self-join / cyclic request deadlocks (inherent to sequential actor model):**
+  - Calling `ctx.actor_ref().join().await` or `wait_exit().await` inside `started()`, `handle()`, or `stopped()` deadlocks indefinitely because [`completion_tx.send(Some(reason))`](file:///private/tmp/spawned-scenario-tests/concurrency/src/tasks/actor.rs#L588) only runs after `run_actor` returns.
+  - Self-requests (`ctx.request(...).await`) or cyclic requests ($A \leftrightarrow B$, whether on the same shard or across shards) deadlock until `DEFAULT_REQUEST_TIMEOUT` (5s).
+  - Non-cyclic requests between two actors on the *same* shard ($A \to B$) do not deadlock because `A`'s `request` yields `Poll::Pending` to the shard's `current_thread` executor, which then polls `B` (and the shard's `rx.recv()` ingress task).
+- **Sync blocking / `rt::block_on` on a shard worker:**
+  - Calling [`rt::block_on`](file:///private/tmp/spawned-scenario-tests/rt/src/tasks/mod.rs#L40-L42) (`Handle::current().block_on`) or `block_in_place` from inside a shard worker panics immediately because each shard uses a `current_thread` runtime.
+  - Any synchronous blocking inside a handler stalls every actor, timer, I/O resource, and the new-actor ingress loop (`rx.recv()`) on that shard.
+- **Static round-robin placement without work stealing ([`experimental.rs:66`](file:///private/tmp/spawned-scenario-tests/rt/src/tasks/experimental.rs#L66)):**
+  - Actors are permanently pinned via `next.fetch_add(1, Relaxed) % count`. Skewed actor lifetimes or skewed message rates across modulo classes can overload one shard while other shards sit idle.
+- **Per-spawn env-var and mutex overhead (benchmark note):**
+  - Every sharded `Actor::start()` calls `std::env::var` **three times** (`SPAWNED_EXPERIMENT_SCHEDULER`, `SPAWNED_EXPERIMENT_BATCH`, `SPAWNED_EXPERIMENT_WORKERS`) and locks the global `REGISTRY` `Mutex<Weak<Pool>>` ([`actor.rs:573-577`](file:///private/tmp/spawned-scenario-tests/concurrency/src/tasks/actor.rs#L573-L577), [`actor.rs:640`](file:///private/tmp/spawned-scenario-tests/concurrency/src/tasks/actor.rs#L640), [`experimental.rs:95-107`](file:///private/tmp/spawned-scenario-tests/rt/src/tasks/experimental.rs#L95-L107)). In spawn-heavy benchmarks (or handlers that spawn child actors like `Nested`), this adds non-trivial process-env lock and mutex contention that default `rt::spawn` does not pay.
+- **Test gating in [`full_actor_shards.rs`](file:///private/tmp/spawned-scenario-tests/concurrency/tests/full_actor_shards.rs#L155):**
+  - Unless `SPAWNED_EXPERIMENT_SCHEDULER=sharded` is set in the environment, two of the four tests in `full_actor_shards.rs` early-return as no-ops and the other two run against default Tokio.
+
+*(Because you invoked `/plan` alongside the read-only review instructions, please let me know if you would like an implementation plan artifact to address any of the blockers above, or if this read-only review completes your request.)*

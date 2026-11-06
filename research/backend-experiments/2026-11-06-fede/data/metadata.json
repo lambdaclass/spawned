@@ -1,0 +1,716 @@
+{
+  "inputs": {
+    "V1-smoke": {
+      "original_directory": "/tmp/spawned-fede-research-25dGGmPA/night/smoke-1",
+      "samples": 72,
+      "revision": "07f0e1120e144de4317aeb980b4b95cdbc42f877",
+      "started_utc": "2026-11-06T05:43:13Z",
+      "finished_utc": "2026-11-06T05:43:40Z",
+      "actor_cpus": "2,3,4,5",
+      "driver_cpus": "6,7,14,15",
+      "metadata_sha256": "3341c3dec5ee2ae715b3a7bc0b29f49748981117e2800901a4812c48466f45f3",
+      "raw_sha256": "208c2f7c60ce4aa6a4ebaea26e3b4d974bd305fd8424814c76f7d9cdbdeb1753",
+      "binaries": {
+        "designs": "a2a532cbcc759b1a62a87e921eb40f371fa86fb668e9b1b449dcc066ce34f754",
+        "workload_research": "10296b8d0f2169bffd74ee412debc69fd24a24e4decc00133a644ffc24cc2e4b"
+      }
+    },
+    "V1-graphs": {
+      "original_directory": "/tmp/spawned-fede-research-25dGGmPA/night/graphs-1",
+      "samples": 360,
+      "revision": "07f0e1120e144de4317aeb980b4b95cdbc42f877",
+      "started_utc": "2026-11-06T05:43:40Z",
+      "finished_utc": "2026-11-06T06:02:39Z",
+      "actor_cpus": "2,3,4,5",
+      "driver_cpus": "6,7,14,15",
+      "metadata_sha256": "866f3f656e888f57741bcfb657331f71fdf35d512be7a789afb68007149eb4f6",
+      "raw_sha256": "80a6e722ba7228256c6cae5f164ec80409b4c8a5b78fdca48a42f574fb5982a8",
+      "binaries": {
+        "workload_research": "10296b8d0f2169bffd74ee412debc69fd24a24e4decc00133a644ffc24cc2e4b",
+        "designs": "a2a532cbcc759b1a62a87e921eb40f371fa86fb668e9b1b449dcc066ce34f754"
+      }
+    },
+    "V2-smoke": {
+      "original_directory": "/tmp/spawned-fede-research-25dGGmPA/controls/smoke-1",
+      "samples": 160,
+      "revision": "eefc302aca9c2a1e6f259a3d6307e731ad2bd46f",
+      "started_utc": "2026-11-06T06:42:09Z",
+      "finished_utc": "2026-11-06T06:43:14Z",
+      "actor_cpus": "2,3,4,5",
+      "driver_cpus": "6,7,14,15",
+      "metadata_sha256": "df1df2929d639f6c2ea887417074f17ec152f0f1dadcfd69df26cf02128339a4",
+      "raw_sha256": "be0cb8b04410201a8f0b402795ccd3a61610f9130fa464f7c9e59cde755c5fd5",
+      "binaries": {
+        "designs": "9d168a4f4e0f636ba86bbfde47973bc34a0b28659f3d52a87b9577d29c0bb915",
+        "workload_research": "4bc8e983159e1dc51835ab7bf9907d74b4c1c3a6eefce2b840fdccd23923d600"
+      }
+    },
+    "V2-soak-smoke": {
+      "original_directory": "/tmp/spawned-fede-research-25dGGmPA/controls/soak-smoke-1",
+      "samples": 8,
+      "revision": "eefc302aca9c2a1e6f259a3d6307e731ad2bd46f",
+      "started_utc": "2026-11-06T06:43:14Z",
+      "finished_utc": "2026-11-06T06:43:44Z",
+      "actor_cpus": "2,3,4,5",
+      "driver_cpus": "6,7,14,15",
+      "metadata_sha256": "94bbf10466e406e2fda96f4f40fab0e4c8de48988c1721d107eda2b4d5c31779",
+      "raw_sha256": "cdcee169c6daae689e47ffc9a113b37b3b7ae98e8bae825cf912fcfa0d5b0268",
+      "binaries": "5db7a0a993d49b9a32813710974aec0145eef0924b680432a4d371c5f691d4f1"
+    },
+    "V2-profiles": {
+      "original_directory": "/tmp/spawned-fede-research-25dGGmPA/controls/profiles-1",
+      "samples": 40,
+      "revision": "eefc302aca9c2a1e6f259a3d6307e731ad2bd46f",
+      "started_utc": "2026-11-06T06:43:44Z",
+      "finished_utc": "2026-11-06T06:46:52Z",
+      "actor_cpus": "2,3,4,5",
+      "driver_cpus": "6,7,14,15",
+      "metadata_sha256": "a00d30cfa80d2a4fdec66c4f2f77aa3332b79ad278ad162e58dee7131e051a8a",
+      "raw_sha256": "e1ecf1684b403de0285499200fedb8109864f0e221cfc0f93a6aec3ca92cc4d6",
+      "binaries": {
+        "designs": "9d168a4f4e0f636ba86bbfde47973bc34a0b28659f3d52a87b9577d29c0bb915",
+        "workload_research": "4bc8e983159e1dc51835ab7bf9907d74b4c1c3a6eefce2b840fdccd23923d600"
+      }
+    },
+    "V2-queues": {
+      "original_directory": "/tmp/spawned-fede-research-25dGGmPA/controls/queues-1",
+      "samples": 200,
+      "revision": "eefc302aca9c2a1e6f259a3d6307e731ad2bd46f",
+      "started_utc": "2026-11-06T06:46:52Z",
+      "finished_utc": "2026-11-06T06:59:30Z",
+      "actor_cpus": "2,3,4,5",
+      "driver_cpus": "6,7,14,15",
+      "metadata_sha256": "37421434fe841f99e39c286222ed37419cdea18ee38e51ebc107f050c9177c91",
+      "raw_sha256": "6986d8e302e93bab37e4dc71e32737c25a940572ad515be684d0aa4c0b9c94cd",
+      "binaries": {
+        "designs": "9d168a4f4e0f636ba86bbfde47973bc34a0b28659f3d52a87b9577d29c0bb915",
+        "workload_research": "4bc8e983159e1dc51835ab7bf9907d74b4c1c3a6eefce2b840fdccd23923d600"
+      }
+    },
+    "V2-callers": {
+      "original_directory": "/tmp/spawned-fede-research-25dGGmPA/controls/callers-1",
+      "samples": 320,
+      "revision": "eefc302aca9c2a1e6f259a3d6307e731ad2bd46f",
+      "started_utc": "2026-11-06T06:59:30Z",
+      "finished_utc": "2026-11-06T07:10:30Z",
+      "actor_cpus": "2,3,4,5",
+      "driver_cpus": "6,7,14,15",
+      "metadata_sha256": "8766826897caaeaaef1be5bf6d5f4d2900b9c05a26abe7af381b2939a72ee279",
+      "raw_sha256": "6a11cd3ab8c07eefc4b34787235f470233f7886a256d85e9768866414cf14522",
+      "binaries": {
+        "workload_research": "4bc8e983159e1dc51835ab7bf9907d74b4c1c3a6eefce2b840fdccd23923d600",
+        "designs": "9d168a4f4e0f636ba86bbfde47973bc34a0b28659f3d52a87b9577d29c0bb915"
+      }
+    },
+    "V3-smoke": {
+      "original_directory": "/tmp/spawned-fede-research-25dGGmPA/amortized-v3/smoke-1",
+      "samples": 52,
+      "revision": "097ae02f6d05e383b303594bfe9fbfbfc9141666",
+      "started_utc": "2026-11-06T08:15:28Z",
+      "finished_utc": "2026-11-06T08:15:48Z",
+      "actor_cpus": "2,3,4,5",
+      "driver_cpus": "6,7,14,15",
+      "metadata_sha256": "3e1a9b3609ec7f6f05e6c894645e2fda100b7cd12d8b3ba479dedd6c21011ddf",
+      "raw_sha256": "d0004dac16fb24f499d40c5f9ff8b548a4656e4f5b32f2eb4693a9de0489e88d",
+      "binaries": {
+        "designs": "40b14ab1c18a1752bb20360bd062ff527b53f7ea1962cd65026bd6b1c3b4fd13",
+        "workload_research": "8a4018efc97cb9e84a25d0b07c9ab4b9bbd9a9b04f47fb921afb5de4e96d8d1e"
+      }
+    },
+    "V3-soak-smoke": {
+      "original_directory": "/tmp/spawned-fede-research-25dGGmPA/amortized-v3/soak-smoke-1",
+      "samples": 10,
+      "revision": "097ae02f6d05e383b303594bfe9fbfbfc9141666",
+      "started_utc": "2026-11-06T08:15:48Z",
+      "finished_utc": "2026-11-06T08:16:27Z",
+      "actor_cpus": "2,3,4,5",
+      "driver_cpus": "6,7,14,15",
+      "metadata_sha256": "1fc365369f9239768299e0dfc7d44cf0af7a0e1f04522063c1a300d65063a24d",
+      "raw_sha256": "1832fda2d3d8c1cea66b4aa5e802fe7c2ad9eb054f8465cdac93e99c833110dc",
+      "binaries": "bd3ae0e4bfae3690aa076a5f57b6beb95d37dccb94e68908c9ab5d37f9821f9e"
+    },
+    "V3-graphs": {
+      "original_directory": "/tmp/spawned-fede-research-25dGGmPA/amortized-v3/graphs-1",
+      "samples": 520,
+      "revision": "097ae02f6d05e383b303594bfe9fbfbfc9141666",
+      "started_utc": "2026-11-06T08:16:27Z",
+      "finished_utc": "2026-11-06T08:44:30Z",
+      "actor_cpus": "2,3,4,5",
+      "driver_cpus": "6,7,14,15",
+      "metadata_sha256": "0e8fa2e6b09b8ab2e91f574ddeb35aa15475fce7eb41874fb760322bafe5ab56",
+      "raw_sha256": "6679d5e378f6303fbf1f3fea10eb1dc42e846e5d71591fbbd3c2b269a6a99a8e",
+      "binaries": {
+        "designs": "40b14ab1c18a1752bb20360bd062ff527b53f7ea1962cd65026bd6b1c3b4fd13",
+        "workload_research": "8a4018efc97cb9e84a25d0b07c9ab4b9bbd9a9b04f47fb921afb5de4e96d8d1e"
+      }
+    },
+    "V3-profiles": {
+      "original_directory": "/tmp/spawned-fede-research-25dGGmPA/amortized-v3/profiles-1",
+      "samples": 24,
+      "revision": "097ae02f6d05e383b303594bfe9fbfbfc9141666",
+      "started_utc": "2026-11-06T09:05:23Z",
+      "finished_utc": "2026-11-06T09:06:53Z",
+      "actor_cpus": "2,3,4,5",
+      "driver_cpus": "6,7,14,15",
+      "metadata_sha256": "3e10ac0fa6906dca216bbc102188d6c482905da1051cacf261edf50ee01bb321",
+      "raw_sha256": "77ce5ed0086b479a16c9441c0bd547801f1edbe8173172c5193e325ab6296b5e",
+      "binaries": {
+        "designs": "40b14ab1c18a1752bb20360bd062ff527b53f7ea1962cd65026bd6b1c3b4fd13",
+        "workload_research": "8a4018efc97cb9e84a25d0b07c9ab4b9bbd9a9b04f47fb921afb5de4e96d8d1e"
+      }
+    },
+    "V3-clock": {
+      "original_directory": "/tmp/spawned-fede-research-25dGGmPA/amortized-v3/clock-1",
+      "samples": 340,
+      "revision": "097ae02f6d05e383b303594bfe9fbfbfc9141666",
+      "started_utc": "2026-11-06T09:06:53Z",
+      "finished_utc": "2026-11-06T09:19:57Z",
+      "actor_cpus": "2,3,4,5",
+      "driver_cpus": "6,7,14,15",
+      "metadata_sha256": "8f752b238d6cd4225839a18bbb5e5da76a0be958edaa448d7d67d7005e682af1",
+      "raw_sha256": "8e8424c60c13ddffb1dd0c4a6e0e94e8e1fbf288948c23844fdfbbb3f334de4b",
+      "binaries": {
+        "workload_research": "8a4018efc97cb9e84a25d0b07c9ab4b9bbd9a9b04f47fb921afb5de4e96d8d1e",
+        "designs": "40b14ab1c18a1752bb20360bd062ff527b53f7ea1962cd65026bd6b1c3b4fd13"
+      }
+    },
+    "V3-offered": {
+      "original_directory": "/tmp/spawned-fede-research-25dGGmPA/amortized-v3/offered-1",
+      "samples": 432,
+      "revision": "097ae02f6d05e383b303594bfe9fbfbfc9141666",
+      "started_utc": "2026-11-06T10:56:09Z",
+      "finished_utc": "2026-11-06T11:17:27Z",
+      "actor_cpus": "2,3,4,5",
+      "driver_cpus": "6,7,14,15",
+      "metadata_sha256": "36a857ed9067a9fe00187aeae901f4d16c4abf861b0a23f27c8224d7718a7365",
+      "raw_sha256": "f518b0a6d5e1228f6ea6818654cece0d8e8087765213d6013ea418d5668346e4",
+      "binaries": {
+        "workload_research": "8a4018efc97cb9e84a25d0b07c9ab4b9bbd9a9b04f47fb921afb5de4e96d8d1e",
+        "designs": "40b14ab1c18a1752bb20360bd062ff527b53f7ea1962cd65026bd6b1c3b4fd13"
+      }
+    },
+    "V3-soaks": {
+      "original_directory": "/tmp/spawned-fede-research-25dGGmPA/amortized-v3/soaks-3",
+      "samples": 10,
+      "revision": "097ae02f6d05e383b303594bfe9fbfbfc9141666",
+      "started_utc": "2026-11-06T11:39:57Z",
+      "finished_utc": "2026-11-06T12:29:58Z",
+      "actor_cpus": "2,3,4,5",
+      "driver_cpus": "6,7,14,15",
+      "metadata_sha256": "a95e0615943e5ba2094ab23f9b9b3c00802953e29f178d82e6d3a4e8631cb316",
+      "raw_sha256": "dc9ddb462a6dea18223a2b3eb6172ede77737e393d93e4ef8773eab69243683b",
+      "binaries": "bd3ae0e4bfae3690aa076a5f57b6beb95d37dccb94e68908c9ab5d37f9821f9e"
+    },
+    "V4-smoke": {
+      "original_directory": "/tmp/spawned-fede-research-25dGGmPA/runnable-v4/smoke-1",
+      "samples": 136,
+      "revision": "09dd194b832bc6136453f40a17e1a6f718a08a4f",
+      "started_utc": "2026-11-06T09:26:32Z",
+      "finished_utc": "2026-11-06T09:27:21Z",
+      "actor_cpus": "2,3,4,5",
+      "driver_cpus": "6,7,14,15",
+      "metadata_sha256": "b2cace1115dfd484a2a4da2af93288ca763eca7da9cd967d663fa6e58a2c2fdc",
+      "raw_sha256": "d9e604980a75bc6bbad48375ad2ab1e6da9366cf72f40a520395ba51c85e07ab",
+      "binaries": {
+        "workload_research": "8f97e9d335b6df5adbcedd2e10b29344958a25d79c4177c7bdeda5950cc2f7f8",
+        "designs": "3aa09f91511b238766a746c05e644b552d2404a1ae6a3a423e023c31a6fa656c"
+      }
+    },
+    "V4-scale-smoke": {
+      "original_directory": "/tmp/spawned-fede-research-25dGGmPA/runnable-v4/scale-smoke-1",
+      "samples": 96,
+      "revision": "09dd194b832bc6136453f40a17e1a6f718a08a4f",
+      "started_utc": "2026-11-06T09:27:21Z",
+      "finished_utc": "2026-11-06T09:28:04Z",
+      "actor_cpus": "2,3,4,5,6,7,8,9",
+      "driver_cpus": "10,11,12,13",
+      "metadata_sha256": "a3faaa2fa763961d1bd4925e2287823aa9a5ba6177dff732853d1b785eff123d",
+      "raw_sha256": "cf799532cc4e17d3ca5b1edf97a36ce1d284d24afe5b69cd66a9a9b38712d332",
+      "binaries": {
+        "workload_research": "8f97e9d335b6df5adbcedd2e10b29344958a25d79c4177c7bdeda5950cc2f7f8",
+        "designs": "3aa09f91511b238766a746c05e644b552d2404a1ae6a3a423e023c31a6fa656c"
+      }
+    },
+    "V4-soak-smoke": {
+      "original_directory": "/tmp/spawned-fede-research-25dGGmPA/runnable-v4/soak-smoke-1",
+      "samples": 2,
+      "revision": "09dd194b832bc6136453f40a17e1a6f718a08a4f",
+      "started_utc": "2026-11-06T09:28:04Z",
+      "finished_utc": "2026-11-06T09:28:12Z",
+      "actor_cpus": "2,3,4,5",
+      "driver_cpus": "6,7,14,15",
+      "metadata_sha256": "8bf75301811bc26c04f42fcf44e029f35961f9088890b765e264187eed3c2b21",
+      "raw_sha256": "b177268c9623f64fddcd2ddd786f8d9381164867f78f56a0d288edc02feff16f",
+      "binaries": "e98be22fa03ead2852f593eb5fd9d0aae2488d39b82655167b4c13583851d81b"
+    },
+    "V4-graphs": {
+      "original_directory": "/tmp/spawned-fede-research-25dGGmPA/runnable-v4/graphs-1",
+      "samples": 680,
+      "revision": "09dd194b832bc6136453f40a17e1a6f718a08a4f",
+      "started_utc": "2026-11-06T09:29:20Z",
+      "finished_utc": "2026-11-06T10:00:23Z",
+      "actor_cpus": "2,3,4,5",
+      "driver_cpus": "6,7,14,15",
+      "metadata_sha256": "d7c43a4b69758b6f9d8bf817fc1649c0b657583b901df548093274956a4f9abf",
+      "raw_sha256": "41a1dd2199b621f7d300c75e6d72b3a7db21cd177afd1b27b4cade822710624a",
+      "binaries": {
+        "workload_research": "8f97e9d335b6df5adbcedd2e10b29344958a25d79c4177c7bdeda5950cc2f7f8",
+        "designs": "3aa09f91511b238766a746c05e644b552d2404a1ae6a3a423e023c31a6fa656c"
+      }
+    },
+    "V4-profiles": {
+      "original_directory": "/tmp/spawned-fede-research-25dGGmPA/runnable-v4/profiles-1",
+      "samples": 20,
+      "revision": "09dd194b832bc6136453f40a17e1a6f718a08a4f",
+      "started_utc": "2026-11-06T10:04:12Z",
+      "finished_utc": "2026-11-06T10:05:07Z",
+      "actor_cpus": "2,3,4,5",
+      "driver_cpus": "6,7,14,15",
+      "metadata_sha256": "c757f00412941e36c13de0277549f9091610b35177df3410b138d251d2531660",
+      "raw_sha256": "75634019e9d697d302e3b73570967a2caa181cf10004fdb942e4bbba4fa0077f",
+      "binaries": {
+        "designs": "3aa09f91511b238766a746c05e644b552d2404a1ae6a3a423e023c31a6fa656c",
+        "workload_research": "8f97e9d335b6df5adbcedd2e10b29344958a25d79c4177c7bdeda5950cc2f7f8"
+      }
+    },
+    "V4-offered": {
+      "original_directory": "/tmp/spawned-fede-research-25dGGmPA/runnable-v4/offered-1",
+      "samples": 252,
+      "revision": "09dd194b832bc6136453f40a17e1a6f718a08a4f",
+      "started_utc": "2026-11-06T12:31:22Z",
+      "finished_utc": "2026-11-06T12:44:28Z",
+      "actor_cpus": "2,3,4,5",
+      "driver_cpus": "6,7,14,15",
+      "metadata_sha256": "7435cbd115ea6fbd7759b4bbdaa46e70e744177599fbbe6deb4e33d630662101",
+      "raw_sha256": "e3ea3cdab668d9cffe0c38db66f11b7c12b9c67a530e8277a98c34684f1ec69f",
+      "binaries": {
+        "designs": "3aa09f91511b238766a746c05e644b552d2404a1ae6a3a423e023c31a6fa656c",
+        "workload_research": "8f97e9d335b6df5adbcedd2e10b29344958a25d79c4177c7bdeda5950cc2f7f8"
+      }
+    },
+    "V4-soaks": {
+      "original_directory": "/tmp/spawned-fede-research-25dGGmPA/runnable-v4/soaks-1",
+      "samples": 2,
+      "revision": "09dd194b832bc6136453f40a17e1a6f718a08a4f",
+      "started_utc": "2026-11-06T12:44:28Z",
+      "finished_utc": "2026-11-06T12:54:28Z",
+      "actor_cpus": "2,3,4,5",
+      "driver_cpus": "6,7,14,15",
+      "metadata_sha256": "d0bb93140b788df1f654d04cbc391c1897a73cea636cc63d2d3b55d485804105",
+      "raw_sha256": "8c4d2f4c95c4a294938d236386e9f662bbc3f09c84e0d4f79d8eb42d1db13e27",
+      "binaries": "e98be22fa03ead2852f593eb5fd9d0aae2488d39b82655167b4c13583851d81b"
+    },
+    "V5-smoke": {
+      "original_directory": "/tmp/spawned-fede-research-25dGGmPA/deque-v5/smoke-1",
+      "samples": 112,
+      "revision": "329006e8c02e7c4b2711d035ac2f942454c2e723",
+      "started_utc": "2026-11-06T09:28:12Z",
+      "finished_utc": "2026-11-06T09:28:54Z",
+      "actor_cpus": "2,3,4,5",
+      "driver_cpus": "6,7,14,15",
+      "metadata_sha256": "b3e6ddb506b87413200c90c1e7d0afb72e8f320e91c6aca948b7322f05575fea",
+      "raw_sha256": "173ae017255eb2113511d280081fa96f7afc7d5ce306f70e0651e25bc4c87540",
+      "binaries": {
+        "designs": "03c9626698a6739ed614e81109ec6bd4b57fc67b525df7c35407c63d2d0ad069",
+        "workload_research": "3ba8a9d04a9ee6fd8470720630e516639938cef92abd3a36e609202b4021353a"
+      }
+    },
+    "V5-scale-smoke": {
+      "original_directory": "/tmp/spawned-fede-research-25dGGmPA/deque-v5/scale-smoke-1",
+      "samples": 28,
+      "revision": "329006e8c02e7c4b2711d035ac2f942454c2e723",
+      "started_utc": "2026-11-06T09:28:54Z",
+      "finished_utc": "2026-11-06T09:29:11Z",
+      "actor_cpus": "2,3,4,5,6,7,8,9",
+      "driver_cpus": "10,11,12,13",
+      "metadata_sha256": "6dadf33f2f6dc9e8e3dd31df52179fa8a15ba0f5a89ad77a7b30cf14fd1326b4",
+      "raw_sha256": "84a19a11ad1ee00212c3b15622eae04ac4a34a37525fa79957f471111ce8cdc7",
+      "binaries": {
+        "workload_research": "3ba8a9d04a9ee6fd8470720630e516639938cef92abd3a36e609202b4021353a",
+        "designs": "03c9626698a6739ed614e81109ec6bd4b57fc67b525df7c35407c63d2d0ad069"
+      }
+    },
+    "V5-soak-smoke": {
+      "original_directory": "/tmp/spawned-fede-research-25dGGmPA/deque-v5/soak-smoke-1",
+      "samples": 2,
+      "revision": "329006e8c02e7c4b2711d035ac2f942454c2e723",
+      "started_utc": "2026-11-06T09:29:12Z",
+      "finished_utc": "2026-11-06T09:29:20Z",
+      "actor_cpus": "2,3,4,5",
+      "driver_cpus": "6,7,14,15",
+      "metadata_sha256": "798c93b43a4c2372f5d391e6f3784bc0ffa8816cbb6ca9be3f49903b8859d8e5",
+      "raw_sha256": "0fd75cc360596867e7d70938be92b2d834689f82d76f7f3bc4b444eae6ab47bf",
+      "binaries": "5478c91ff55f6521bd84969277a33080ef7bc2a7012f4046cdca169b19a89cf3"
+    },
+    "V5-graphs": {
+      "original_directory": "/tmp/spawned-fede-research-25dGGmPA/deque-v5/graphs-1",
+      "samples": 560,
+      "revision": "329006e8c02e7c4b2711d035ac2f942454c2e723",
+      "started_utc": "2026-11-06T10:05:07Z",
+      "finished_utc": "2026-11-06T10:26:01Z",
+      "actor_cpus": "2,3,4,5",
+      "driver_cpus": "6,7,14,15",
+      "metadata_sha256": "f9ac3bb5b455d3d7bdb9ace00e2687bc68d8bf5320c0b405898031523854a878",
+      "raw_sha256": "32f1c3b6cd915dc4b215cf325f813bce1335d42b0c7a44b80f4557f7e50ef18a",
+      "binaries": {
+        "designs": "03c9626698a6739ed614e81109ec6bd4b57fc67b525df7c35407c63d2d0ad069",
+        "workload_research": "3ba8a9d04a9ee6fd8470720630e516639938cef92abd3a36e609202b4021353a"
+      }
+    },
+    "V5-profiles": {
+      "original_directory": "/tmp/spawned-fede-research-25dGGmPA/deque-v5/profiles-1",
+      "samples": 16,
+      "revision": "329006e8c02e7c4b2711d035ac2f942454c2e723",
+      "started_utc": "2026-11-06T10:26:01Z",
+      "finished_utc": "2026-11-06T10:26:40Z",
+      "actor_cpus": "2,3,4,5",
+      "driver_cpus": "6,7,14,15",
+      "metadata_sha256": "e070ad36851a6812aa59c07bd07a8fd1c0c7dabf0c89ba1caae1f5c4d9fefee0",
+      "raw_sha256": "79979a9ed17acc17295768465bcbed70394f1f6a677c9d75407a5cbf4904fd89",
+      "binaries": {
+        "workload_research": "3ba8a9d04a9ee6fd8470720630e516639938cef92abd3a36e609202b4021353a",
+        "designs": "03c9626698a6739ed614e81109ec6bd4b57fc67b525df7c35407c63d2d0ad069"
+      }
+    },
+    "V6-smoke": {
+      "original_directory": "/tmp/spawned-fede-research-25dGGmPA/callback-v6/smoke-1",
+      "samples": 48,
+      "revision": "0f81b5769e041c2dd03a63c5d3337636b8949239",
+      "started_utc": "2026-11-06T10:03:56Z",
+      "finished_utc": "2026-11-06T10:04:12Z",
+      "actor_cpus": "2,3,4,5",
+      "driver_cpus": "6,7,14,15",
+      "metadata_sha256": "bbb01f20a6ba1b4474bc29ee7c20d7ab1ad18092b03bf1af9cb115c11f75efae",
+      "raw_sha256": "125f3fa3b0a0fe74678fa2a2539ddd0a3e3b42e70575a8cbf681582f05bb19e0",
+      "binaries": {
+        "designs": "e7bac3dd5142126158f1e8f3f5e1b6e9c1e1cd618b4b0a17d7059abf996d28e8",
+        "workload_research": "38b914d3b2043853172404b91df9b3406c94fbdfde68f1239bdbc6e2d04f41b6"
+      }
+    },
+    "V6-graphs": {
+      "original_directory": "/tmp/spawned-fede-research-25dGGmPA/callback-v6/graphs-1",
+      "samples": 240,
+      "revision": "0f81b5769e041c2dd03a63c5d3337636b8949239",
+      "started_utc": "2026-11-06T10:26:40Z",
+      "finished_utc": "2026-11-06T10:34:57Z",
+      "actor_cpus": "2,3,4,5",
+      "driver_cpus": "6,7,14,15",
+      "metadata_sha256": "08457dea359760166f9904b9f7335bdb2b0b89ebf3f7aab72b737e80e3918dda",
+      "raw_sha256": "788075daa22b918b669f541faeda0fef55200b50226990624948039fc43f6106",
+      "binaries": {
+        "workload_research": "38b914d3b2043853172404b91df9b3406c94fbdfde68f1239bdbc6e2d04f41b6",
+        "designs": "e7bac3dd5142126158f1e8f3f5e1b6e9c1e1cd618b4b0a17d7059abf996d28e8"
+      }
+    },
+    "V6-profiles": {
+      "original_directory": "/tmp/spawned-fede-research-25dGGmPA/callback-v6/profiles-1",
+      "samples": 16,
+      "revision": "0f81b5769e041c2dd03a63c5d3337636b8949239",
+      "started_utc": "2026-11-06T10:34:57Z",
+      "finished_utc": "2026-11-06T10:35:35Z",
+      "actor_cpus": "2,3,4,5",
+      "driver_cpus": "6,7,14,15",
+      "metadata_sha256": "146167371a474529ef9c34ed42acc2d2f8857021ff40173aa35536d1d4e096e5",
+      "raw_sha256": "1531821b0dc098060fdd56c38fb1809242cf142e8e41527cda51bbc802adef77",
+      "binaries": {
+        "designs": "e7bac3dd5142126158f1e8f3f5e1b6e9c1e1cd618b4b0a17d7059abf996d28e8",
+        "workload_research": "38b914d3b2043853172404b91df9b3406c94fbdfde68f1239bdbc6e2d04f41b6"
+      }
+    },
+    "V7-smoke": {
+      "original_directory": "/tmp/spawned-fede-research-25dGGmPA/inline-v7/smoke-1",
+      "samples": 44,
+      "revision": "acd37a3b7cfc01bf8a0b656a30843c14db0859fd",
+      "started_utc": "2026-11-06T10:42:00Z",
+      "finished_utc": "2026-11-06T10:42:14Z",
+      "actor_cpus": "2,3,4,5",
+      "driver_cpus": "6,7,14,15",
+      "metadata_sha256": "d8b9cd59459e8ea69e97eac6ac9a778af9af1734280119f4bf606e0e410f94ec",
+      "raw_sha256": "dd82bc8d6627184d1e4f447c120bd72617182c743d006bd63657dea8262c27e0",
+      "binaries": {
+        "designs": "a9895edcf77149ac4eff5e5e003baeecb39ab5e0593058fdd2fb3ae5eec2bef5",
+        "workload_research": "25c9a139a638cf49c42982ba638f574e9d2dffe6b3a16db46d67de6b859ea03a"
+      }
+    },
+    "V7-graphs": {
+      "original_directory": "/tmp/spawned-fede-research-25dGGmPA/inline-v7/graphs-1",
+      "samples": 220,
+      "revision": "acd37a3b7cfc01bf8a0b656a30843c14db0859fd",
+      "started_utc": "2026-11-06T10:42:14Z",
+      "finished_utc": "2026-11-06T10:49:47Z",
+      "actor_cpus": "2,3,4,5",
+      "driver_cpus": "6,7,14,15",
+      "metadata_sha256": "1a00d9389d08cb4ecad1e06f8f43421690f47a892570be1a425796dfccd2cbdd",
+      "raw_sha256": "c7ff8ffa68bdc5c6b4e61b799163099e65b92f559ea3a9e84a8df6e5bc735ba0",
+      "binaries": {
+        "designs": "a9895edcf77149ac4eff5e5e003baeecb39ab5e0593058fdd2fb3ae5eec2bef5",
+        "workload_research": "25c9a139a638cf49c42982ba638f574e9d2dffe6b3a16db46d67de6b859ea03a"
+      }
+    },
+    "V7-profiles": {
+      "original_directory": "/tmp/spawned-fede-research-25dGGmPA/inline-v7/profiles-1",
+      "samples": 16,
+      "revision": "acd37a3b7cfc01bf8a0b656a30843c14db0859fd",
+      "started_utc": "2026-11-06T10:49:47Z",
+      "finished_utc": "2026-11-06T10:50:24Z",
+      "actor_cpus": "2,3,4,5",
+      "driver_cpus": "6,7,14,15",
+      "metadata_sha256": "c287a3a4bf855411ba2df92b038acfba7341cce2f1d4c09ec732808bd9d55c8e",
+      "raw_sha256": "4b6d825f2f83b983c2e55600822a5728692c0f72aa190b27e85632b4113cb7e9",
+      "binaries": {
+        "designs": "a9895edcf77149ac4eff5e5e003baeecb39ab5e0593058fdd2fb3ae5eec2bef5",
+        "workload_research": "25c9a139a638cf49c42982ba638f574e9d2dffe6b3a16db46d67de6b859ea03a"
+      }
+    },
+    "V7-scale-smoke": {
+      "original_directory": "/tmp/spawned-fede-research-25dGGmPA/inline-v7/scale-smoke-1",
+      "samples": 32,
+      "revision": "acd37a3b7cfc01bf8a0b656a30843c14db0859fd",
+      "started_utc": "2026-11-06T10:50:24Z",
+      "finished_utc": "2026-11-06T10:50:42Z",
+      "actor_cpus": "2,3,4,5,6,7,8,9",
+      "driver_cpus": "10,11,12,13",
+      "metadata_sha256": "9df5ce0ffc36b1eff31bb0c4ea8c24b4774184afeba7e09257adb104e7ab1b43",
+      "raw_sha256": "c2dd4be6014f42c2b981ec122d81d6de206d7164f99cbc1ab031890061197149",
+      "binaries": {
+        "workload_research": "25c9a139a638cf49c42982ba638f574e9d2dffe6b3a16db46d67de6b859ea03a",
+        "designs": "a9895edcf77149ac4eff5e5e003baeecb39ab5e0593058fdd2fb3ae5eec2bef5"
+      }
+    },
+    "V7-scale": {
+      "original_directory": "/tmp/spawned-fede-research-25dGGmPA/inline-v7/scale-scale-1",
+      "samples": 96,
+      "revision": "acd37a3b7cfc01bf8a0b656a30843c14db0859fd",
+      "started_utc": "2026-11-06T10:50:42Z",
+      "finished_utc": "2026-11-06T10:56:09Z",
+      "actor_cpus": "2,3,4,5,6,7,8,9",
+      "driver_cpus": "10,11,12,13",
+      "metadata_sha256": "e853a42a2372d18a6e4cffbe125242af5d4699464178a77d42a9d48cd651c8f5",
+      "raw_sha256": "9cdffa84b86caa6c75869e6d3225e594f3e6d37685a33dfacae5e74ef2d93c3f",
+      "binaries": {
+        "designs": "a9895edcf77149ac4eff5e5e003baeecb39ab5e0593058fdd2fb3ae5eec2bef5",
+        "workload_research": "25c9a139a638cf49c42982ba638f574e9d2dffe6b3a16db46d67de6b859ea03a"
+      }
+    },
+    "V8-graph-smoke": {
+      "original_directory": "/tmp/spawned-fede-research-25dGGmPA/fairness-v8/graph-smoke-1",
+      "samples": 24,
+      "revision": "2cec0a6335c1df0de27b4da52104558712bfdb66",
+      "started_utc": "2026-11-06T12:54:29Z",
+      "finished_utc": "2026-11-06T12:54:37Z",
+      "actor_cpus": "2,3,4,5",
+      "driver_cpus": "6,7,14,15",
+      "metadata_sha256": "7e0634126bc8055c901cbc9cdd26c912804fb6f87d9735669ab3c9edda03449e",
+      "raw_sha256": "ad0c643350ccba43a319050261a9d11b8533c3e0a62cde82348c7ec64fb3c62a",
+      "binaries": {
+        "workload_research": "0b03b3a9f41cf6bdcd05e2f72c089b4366a3ecd7150c4bf24a4645ae912e3728",
+        "designs": "ddd57c76d366068b44a2c82240e8b44251d3882ce2661c5440a5301fec7f0840"
+      }
+    },
+    "V8-scale-smoke": {
+      "original_directory": "/tmp/spawned-fede-research-25dGGmPA/fairness-v8/scale-smoke-1",
+      "samples": 24,
+      "revision": "2cec0a6335c1df0de27b4da52104558712bfdb66",
+      "started_utc": "2026-11-06T12:54:37Z",
+      "finished_utc": "2026-11-06T12:54:50Z",
+      "actor_cpus": "2,3,4,5,6,7,8,9",
+      "driver_cpus": "10,11,12,13",
+      "metadata_sha256": "1fa89dce893f235c96c9e5b9272e32dca0e0a5b734688ba9dfa8a2ca3883dc68",
+      "raw_sha256": "b354922542e3001942953567ed9887abf1a8127c852d7530334519d5b2dd2fe5",
+      "binaries": {
+        "workload_research": "0b03b3a9f41cf6bdcd05e2f72c089b4366a3ecd7150c4bf24a4645ae912e3728",
+        "designs": "ddd57c76d366068b44a2c82240e8b44251d3882ce2661c5440a5301fec7f0840"
+      }
+    },
+    "V8-smoke": {
+      "original_directory": "/tmp/spawned-fede-research-25dGGmPA/fairness-v8/smoke-1",
+      "samples": 44,
+      "revision": "2cec0a6335c1df0de27b4da52104558712bfdb66",
+      "started_utc": "2026-11-06T12:54:50Z",
+      "finished_utc": "2026-11-06T12:56:08Z",
+      "actor_cpus": "2,3,4,5",
+      "driver_cpus": "6,7,14,15",
+      "metadata_sha256": "f79f965afb3d035c824fb9e62456cfb341e526564207dadd56dca85c5275baf9",
+      "raw_sha256": "ed2a255d9c4b0adb3697734f5401ec31ed805ebe68c7208570ffa18bcada5737",
+      "binaries": {
+        "workload_research": "0b03b3a9f41cf6bdcd05e2f72c089b4366a3ecd7150c4bf24a4645ae912e3728",
+        "designs": "ddd57c76d366068b44a2c82240e8b44251d3882ce2661c5440a5301fec7f0840"
+      }
+    },
+    "V8-soak-smoke": {
+      "original_directory": "/tmp/spawned-fede-research-25dGGmPA/fairness-v8/soak-smoke-1",
+      "samples": 5,
+      "revision": "2cec0a6335c1df0de27b4da52104558712bfdb66",
+      "started_utc": "2026-11-06T12:56:08Z",
+      "finished_utc": "2026-11-06T12:56:23Z",
+      "actor_cpus": "2,3,4,5",
+      "driver_cpus": "6,7,14,15",
+      "metadata_sha256": "0e61da18048795c5985d18fb999bfc7b0a29778118f37b5403064b74225cc198",
+      "raw_sha256": "3cee14633585a99fe0e7ac597fffc92337a45990b5e077074af12c1f9020fa93",
+      "binaries": "17a731573820bdfe58c4486aca7d414207feecab78d65a4e4a9696256b1c1321"
+    },
+    "V8-graphs": {
+      "original_directory": "/tmp/spawned-fede-research-25dGGmPA/fairness-v8/graphs-1",
+      "samples": 120,
+      "revision": "2cec0a6335c1df0de27b4da52104558712bfdb66",
+      "started_utc": "2026-11-06T12:56:23Z",
+      "finished_utc": "2026-11-06T13:00:29Z",
+      "actor_cpus": "2,3,4,5",
+      "driver_cpus": "6,7,14,15",
+      "metadata_sha256": "e96feef56588aa873c9c3b4d5867b20c577bec94703a6878cf481d88fc01c181",
+      "raw_sha256": "6f854ab0fe640b583331b51bca757f4b63be38135ab731a479973eb8b0695389",
+      "binaries": {
+        "designs": "ddd57c76d366068b44a2c82240e8b44251d3882ce2661c5440a5301fec7f0840",
+        "workload_research": "0b03b3a9f41cf6bdcd05e2f72c089b4366a3ecd7150c4bf24a4645ae912e3728"
+      }
+    },
+    "V8-profiles": {
+      "original_directory": "/tmp/spawned-fede-research-25dGGmPA/fairness-v8/profiles-1",
+      "samples": 12,
+      "revision": "2cec0a6335c1df0de27b4da52104558712bfdb66",
+      "started_utc": "2026-11-06T13:00:29Z",
+      "finished_utc": "2026-11-06T13:00:57Z",
+      "actor_cpus": "2,3,4,5",
+      "driver_cpus": "6,7,14,15",
+      "metadata_sha256": "aa40f3da1d76fe4f64ec15b3aec5bf8dcad5effebd4a77969b5ee343f04ef43f",
+      "raw_sha256": "9e5a79c4e30a7de86115e546a5fcfb93e20968a87882469f7048f67a65ef458c",
+      "binaries": {
+        "designs": "ddd57c76d366068b44a2c82240e8b44251d3882ce2661c5440a5301fec7f0840",
+        "workload_research": "0b03b3a9f41cf6bdcd05e2f72c089b4366a3ecd7150c4bf24a4645ae912e3728"
+      }
+    },
+    "V8-scale": {
+      "original_directory": "/tmp/spawned-fede-research-25dGGmPA/fairness-v8/scale-1",
+      "samples": 72,
+      "revision": "2cec0a6335c1df0de27b4da52104558712bfdb66",
+      "started_utc": "2026-11-06T13:00:57Z",
+      "finished_utc": "2026-11-06T13:05:21Z",
+      "actor_cpus": "2,3,4,5,6,7,8,9",
+      "driver_cpus": "10,11,12,13",
+      "metadata_sha256": "0d717f45a493d119db8cde4b90d37b25171e7018f3ebe5be472528b5134bb60a",
+      "raw_sha256": "ace2e03bc9a4476002e062db483c5f771868f26d65cff9ba43e14e2d94798176",
+      "binaries": {
+        "workload_research": "0b03b3a9f41cf6bdcd05e2f72c089b4366a3ecd7150c4bf24a4645ae912e3728",
+        "designs": "ddd57c76d366068b44a2c82240e8b44251d3882ce2661c5440a5301fec7f0840"
+      }
+    },
+    "V8-offered": {
+      "original_directory": "/tmp/spawned-fede-research-25dGGmPA/fairness-v8/offered-1",
+      "samples": 176,
+      "revision": "2cec0a6335c1df0de27b4da52104558712bfdb66",
+      "started_utc": "2026-11-06T13:05:21Z",
+      "finished_utc": "2026-11-06T13:14:02Z",
+      "actor_cpus": "2,3,4,5",
+      "driver_cpus": "6,7,14,15",
+      "metadata_sha256": "776152d4d36267fec9ef60f45d6c5a4224fc1cfca3d2a29be82237e7bdb76034",
+      "raw_sha256": "7a5ed1069842d706e94eb3ef2502a995bcd6f55913eda865bb5ce2c1a0c0b72c",
+      "binaries": {
+        "designs": "ddd57c76d366068b44a2c82240e8b44251d3882ce2661c5440a5301fec7f0840",
+        "workload_research": "0b03b3a9f41cf6bdcd05e2f72c089b4366a3ecd7150c4bf24a4645ae912e3728"
+      }
+    },
+    "V8-soaks": {
+      "original_directory": "/tmp/spawned-fede-research-25dGGmPA/fairness-v8/soaks-1",
+      "samples": 5,
+      "revision": "2cec0a6335c1df0de27b4da52104558712bfdb66",
+      "started_utc": "2026-11-06T13:14:02Z",
+      "finished_utc": "2026-11-06T13:39:02Z",
+      "actor_cpus": "2,3,4,5",
+      "driver_cpus": "6,7,14,15",
+      "metadata_sha256": "feaa93449c7a00b9e5b1167dc8047551993832b4cce71a65900759950b2c3421",
+      "raw_sha256": "d7d68da25578fb5415bb40ad4298950a9e9cc752d402342111f7dfb5ef941359",
+      "binaries": "17a731573820bdfe58c4486aca7d414207feecab78d65a4e4a9696256b1c1321"
+    },
+    "V9-smoke": {
+      "original_directory": "/tmp/spawned-fede-research-25dGGmPA/pinned-v9/smoke-1",
+      "samples": 24,
+      "revision": "a8471f74b2b2d8c6550690d27679216a7341c774",
+      "started_utc": "2026-11-06T13:44:03Z",
+      "finished_utc": "2026-11-06T13:44:28Z",
+      "actor_cpus": "per-case first N CPUs from 2,3,4,5,6,7,8,9",
+      "driver_cpus": "10,11,12,13",
+      "metadata_sha256": "46bdee9ecd5239bfedcd413b28f3355ec340860b5d51ae38724003080063e402",
+      "raw_sha256": "f5bf8a9f862471ac1e3462593023e9d6d10d8ad297b3a2303bd46ba6132b7b38",
+      "binaries": "4b1d3eaf27a48c09bde71ee862d057f3e2ac11ab50d8146ad546dd607f3bb2fe"
+    },
+    "V9-pipeline": {
+      "original_directory": "/tmp/spawned-fede-research-25dGGmPA/pinned-v9/pipeline-1",
+      "samples": 72,
+      "revision": "a8471f74b2b2d8c6550690d27679216a7341c774",
+      "started_utc": "2026-11-06T13:44:28Z",
+      "finished_utc": "2026-11-06T13:46:59Z",
+      "actor_cpus": "per-case first N CPUs from 2,3,4,5,6,7,8,9",
+      "driver_cpus": "10,11,12,13",
+      "metadata_sha256": "075e837351e5931c5d2b4eee3032ec7e4595cb22d05c28658751e70d220195ca",
+      "raw_sha256": "d8baedc5a5d201e833bc8ed87b8f4989fb8be069052365fac898b83feda96e13",
+      "binaries": "4b1d3eaf27a48c09bde71ee862d057f3e2ac11ab50d8146ad546dd607f3bb2fe"
+    }
+  },
+  "revisions": {
+    "07f0e1120e144de4317aeb980b4b95cdbc42f877": [
+      "V1-smoke",
+      "V1-graphs"
+    ],
+    "eefc302aca9c2a1e6f259a3d6307e731ad2bd46f": [
+      "V2-smoke",
+      "V2-soak-smoke",
+      "V2-profiles",
+      "V2-queues",
+      "V2-callers"
+    ],
+    "097ae02f6d05e383b303594bfe9fbfbfc9141666": [
+      "V3-smoke",
+      "V3-soak-smoke",
+      "V3-graphs",
+      "V3-profiles",
+      "V3-clock",
+      "V3-offered",
+      "V3-soaks"
+    ],
+    "09dd194b832bc6136453f40a17e1a6f718a08a4f": [
+      "V4-smoke",
+      "V4-scale-smoke",
+      "V4-soak-smoke",
+      "V4-graphs",
+      "V4-profiles",
+      "V4-offered",
+      "V4-soaks"
+    ],
+    "329006e8c02e7c4b2711d035ac2f942454c2e723": [
+      "V5-smoke",
+      "V5-scale-smoke",
+      "V5-soak-smoke",
+      "V5-graphs",
+      "V5-profiles"
+    ],
+    "0f81b5769e041c2dd03a63c5d3337636b8949239": [
+      "V6-smoke",
+      "V6-graphs",
+      "V6-profiles"
+    ],
+    "acd37a3b7cfc01bf8a0b656a30843c14db0859fd": [
+      "V7-smoke",
+      "V7-graphs",
+      "V7-profiles",
+      "V7-scale-smoke",
+      "V7-scale"
+    ],
+    "2cec0a6335c1df0de27b4da52104558712bfdb66": [
+      "V8-graph-smoke",
+      "V8-scale-smoke",
+      "V8-smoke",
+      "V8-soak-smoke",
+      "V8-graphs",
+      "V8-profiles",
+      "V8-scale",
+      "V8-offered",
+      "V8-soaks"
+    ],
+    "a8471f74b2b2d8c6550690d27679216a7341c774": [
+      "V9-smoke",
+      "V9-pipeline"
+    ]
+  },
+  "samples": 5744,
+  "derivation": "Original CSVs/metadata retained in runs/. Derived rows add dataset, revision and original_stem, prefix stem with dataset; all original numeric and config/experiment fields are unchanged. Blocks and source revisions are never pooled."
+}

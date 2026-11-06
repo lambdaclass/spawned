@@ -1,0 +1,88 @@
+I will start by reading [spawned-full-shard-followup.txt](file:///private/tmp/spawned-full-shard-followup.txt) to understand the requirements for the read-only follow-up review.
+I will now read the prior review report and the target source, test, and documentation files in the workspace.
+I will now read the remainder of [actor.rs](file:///private/tmp/spawned-scenario-tests/concurrency/src/tasks/actor.rs) (lines 801–1925) to inspect `send_message_on` and the unit tests (including the manual-poll regression and idle turn clock tests).
+I will briefly read [monitor.rs](file:///private/tmp/spawned-scenario-tests/concurrency/src/monitor.rs) and [child_handle.rs](file:///private/tmp/spawned-scenario-tests/concurrency/src/child_handle.rs) to verify the `MonitorCleanup` and `ChildHandle` lifecycle contracts.
+Here is the read-only follow-up concurrency review of the updated full-actor sharding experiment across [experimental.rs](file:///private/tmp/spawned-scenario-tests/rt/src/tasks/experimental.rs), [mod.rs](file:///private/tmp/spawned-scenario-tests/rt/src/tasks/mod.rs), [threads/mod.rs](file:///private/tmp/spawned-scenario-tests/rt/src/threads/mod.rs), [actor.rs](file:///private/tmp/spawned-scenario-tests/concurrency/src/tasks/actor.rs), [backend_resource_limits.rs](file:///private/tmp/spawned-scenario-tests/concurrency/tests/backend_resource_limits.rs), [full_actor_shards.rs](file:///private/tmp/spawned-scenario-tests/concurrency/tests/full_actor_shards.rs), and [full-actor-shards.md](file:///private/tmp/spawned-scenario-tests/docs/research/full-actor-shards.md).
+
+---
+
+## 1. Resolution of Prior Review Findings
+
+1. **Idle turn clock & empty-mailbox yield (Resolved):**
+   - [`MessageTurn`](file:///private/tmp/spawned-scenario-tests/concurrency/src/tasks/actor.rs#L648-L698) now initializes `began: None`, clears `began = None` in [`parked()`](file:///private/tmp/spawned-scenario-tests/concurrency/src/tasks/actor.rs#L669-L675) when `rx.poll_recv(cx)` returns `Pending`, and starts the turn clock via [`resumed()`](file:///private/tmp/spawned-scenario-tests/concurrency/src/tasks/actor.rs#L676-L678) (`self.began.get_or_insert_with(Instant::now)`) only when `rx.poll_recv(cx)` returns `Poll::Ready(Some(_))` ([`actor.rs:732-742`](file:///private/tmp/spawned-scenario-tests/concurrency/src/tasks/actor.rs#L732-L742)).
+   - [`MessageTurn::after_message`](file:///private/tmp/spawned-scenario-tests/concurrency/src/tasks/actor.rs#L679-L697) immediately calls `self.parked()` and returns without calling `yield_now()` when `empty` (`rx.is_empty()`) is `true`. Covered by [`idle_time_is_excluded_and_an_empty_mailbox_needs_no_yield`](file:///private/tmp/spawned-scenario-tests/concurrency/src/tasks/actor.rs#L1859-L1874).
+
+2. **Cancellation during batch yield (Resolved):**
+   - [`run_actor`](file:///private/tmp/spawned-scenario-tests/concurrency/src/tasks/actor.rs#L760-L770) now rechecks `if cancellation_token.is_cancelled() { break; }` immediately after `turn.after_message(rx.is_empty()).await` before the next loop iteration can poll `rx.poll_recv(cx)`. Covered by the deterministic manual-poll regression test [`stop_during_batch_yield_does_not_execute_the_next_queued_message`](file:///private/tmp/spawned-scenario-tests/concurrency/src/tasks/actor.rs#L1876-L1924).
+
+3. **Process-owned shard pool, detached helpers, cross-backend monitors, and blocking children (Resolved):**
+   - [`registry()`](file:///private/tmp/spawned-scenario-tests/rt/src/tasks/experimental.rs#L153-L156) now holds `OnceLock<Mutex<Option<Arc<Pool>>>>` instead of `Weak<Pool>`, so the last sharded actor stopping no longer drops the pool or calls `runtime.shutdown_background()` underneath detached `tokio::spawn` helpers, monitor waiter tasks, or `Backend::Blocking` children.
+   - Non-`Async` backends (`Backend::Blocking` and `Backend::Thread`) acquire a conservative [`RuntimeLease`](file:///private/tmp/spawned-scenario-tests/rt/src/tasks/experimental.rs#L184-L197) via [`lease_if_initialized()`](file:///private/tmp/spawned-scenario-tests/rt/src/tasks/experimental.rs#L188-L197) in [`ActorRef::spawn`](file:///private/tmp/spawned-scenario-tests/concurrency/src/tasks/actor.rs#L583-L590) whenever the experimental pool exists.
+   - Covered by [`detached_helper_and_blocking_child_outlive_parent_stop`](file:///private/tmp/spawned-scenario-tests/concurrency/tests/full_actor_shards.rs#L349-L373) and [`monitor_helper_survives_the_last_sharded_actor_stopping`](file:///private/tmp/spawned-scenario-tests/concurrency/tests/full_actor_shards.rs#L403-L442).
+
+4. **Resource limit tests & `SPAWNED_EXPERIMENT_RUNTIME=current` (Resolved):**
+   - `SPAWNED_EXPERIMENT_RUNTIME=current` is implemented in [`threads::block_on`](file:///private/tmp/spawned-scenario-tests/rt/src/threads/mod.rs#L53-L57), giving `Backend::Thread` in `dedicated` mode the same `current_thread` Tokio runtime flavor as each shard worker.
+   - [`descriptor_limit_is_scoped_to_children`](file:///private/tmp/spawned-scenario-tests/concurrency/tests/backend_resource_limits.rs#L82-L124) and [`descriptor_limit_child`](file:///private/tmp/spawned-scenario-tests/concurrency/tests/backend_resource_limits.rs#L128-L201) now test `"async"` (default `Backend::Async` control), `"sharded"` (warmed shard reactor reuse), `"dedicated"` (`Backend::Thread` with `current` failing to allocate a new reactor under `EMFILE`), and `"sharded-cold"` (cold shard initialization failing cleanly under `EMFILE` without poisoning [`registry()`](file:///private/tmp/spawned-scenario-tests/rt/src/tasks/experimental.rs#L153-L156) and recovering once descriptors are released).
+   - [`persistent_blocking_actors_queue_until_a_worker_is_released`](file:///private/tmp/spawned-scenario-tests/concurrency/tests/backend_resource_limits.rs#L33-L78) deterministically awaits both initial `started()` hooks and verifies the 3rd actor remains unstarted across a 25ms timeout before releasing a worker.
+
+---
+
+## 2. Inspection of Shutdown, Registration & Lease Races
+
+- **`actor.join()` vs. `shutdown_sharded()` lease release race — Sound:**
+  - In [`ActorRef::spawn`](file:///private/tmp/spawned-scenario-tests/concurrency/src/tasks/actor.rs#L588-L601), `completion_tx.send(Some(reason))` fires just before `inner_future` returns and drops either [`Pool::spawn`](file:///private/tmp/spawned-scenario-tests/rt/src/tasks/experimental.rs#L105-L110)'s `_lease` (for sharded `Backend::Async`) or `_borrowed_runtime` (for `Backend::Blocking` / `Backend::Thread`).
+  - [`Pool::shutdown`](file:///private/tmp/spawned-scenario-tests/rt/src/tasks/experimental.rs#L120-L133) holds `self.state.lock()` and waits on `self.idle.wait_timeout(state, remaining)` while `state.active != 0` *before* calling `state.senders.take()`. Thus, an observer thread that calls `actor.join().await` and immediately invokes `shutdown_sharded()` will wait for the worker to finish polling the wrapper future and drop `Lease` before closing `senders` or shutting down the shard runtimes.
+- **`Pool::spawn` vs. `Pool::shutdown` registration serialization — Sound:**
+  - [`Pool::spawn`](file:///private/tmp/spawned-scenario-tests/rt/src/tasks/experimental.rs#L95-L104) checks `state.senders.as_ref()` and increments `state.active += 1` under the same `self.state` mutex acquisition.
+  - Consequently, `Pool::shutdown` cannot observe `state.active == 0` and take `state.senders` while a `Pool::spawn` call is in the window between releasing `self.state` ([line 104](file:///private/tmp/spawned-scenario-tests/rt/src/tasks/experimental.rs#L104)) and calling `tx.send(...)` ([line 107](file:///private/tmp/spawned-scenario-tests/rt/src/tasks/experimental.rs#L107)). If `tx.send(...)` ever failed, dropping the unsent closure drops `lease` outside the lock and decrements `state.active`.
+- **Self-join check vs. concurrent `shutdown()` — Sound:**
+  - `worker_ids: Vec<thread::ThreadId>` is populated during [`Pool::new`](file:///private/tmp/spawned-scenario-tests/rt/src/tasks/experimental.rs#L85) and is immutable afterward. [`Pool::shutdown`](file:///private/tmp/spawned-scenario-tests/rt/src/tasks/experimental.rs#L114-L118) checks `self.worker_ids.contains(&thread::current().id())` before locking `self.state` or `self.workers`, so a call from a shard worker is rejected immediately even if another thread is concurrently joining workers in `self.workers.lock()`.
+  - Two external threads calling `shutdown_sharded()` concurrently both synchronize on `self.workers.lock()` ([line 134](file:///private/tmp/spawned-scenario-tests/rt/src/tasks/experimental.rs#L134)), so the second caller does not return `Ok(())` until the first caller has finished joining all shard threads.
+- **Partial initialization failure in `Pool::new` — Sound:**
+  - If thread spawn or `Builder::new_current_thread().enable_all().build()` fails on shard $k > 0$, [`Pool::drop`](file:///private/tmp/spawned-scenario-tests/rt/src/tasks/experimental.rs#L142-L151) takes `senders` and joins shards $0..k-1$, leaving `*registry` as `None` so subsequent initialization can succeed.
+
+---
+
+## 3. Remaining Contract Violations vs. Disclosed Experimental Differences
+
+### Remaining Contract Violation: `exit_reason()`, `ChildHandle::is_alive()`, and `ChildHandle::wait_exit_blocking()` on spawn/startup failure
+
+When [`rt::experimental::spawn_sharded(inner_future)`](file:///private/tmp/spawned-scenario-tests/concurrency/src/tasks/actor.rs#L609-L614) returns `Err(error)` (either during cold initialization under FD exhaustion as in `sharded-cold`, or when `Actor::start()` is called after `shutdown_sharded()`), `inner_future` is dropped without ever running:
+```rust
+if let Err(error) = rt::experimental::spawn_sharded(inner_future) {
+    actor_ref.cancellation_token.cancel();
+    drop(MonitorCleanup(actor_ref.monitors.clone()));
+    tracing::error!("Experimental shard startup failed: {error}");
+}
+return actor_ref;
+```
+Because `inner_future` owned `completion_tx` (initialized via `watch::channel(None)` at [`actor.rs:557`](file:///private/tmp/spawned-scenario-tests/concurrency/src/tasks/actor.rs#L557)), dropping `inner_future` closes `completion_tx` while the stored value in `completion_rx` is still `None` (the same also happens for `Backend::Thread` when `threads::block_on` panics at `build().unwrap()` before polling `inner_future`, as in `dedicated` under `EMFILE`).
+
+While [`ActorRef::wait_exit`](file:///private/tmp/spawned-scenario-tests/concurrency/src/tasks/actor.rs#L501-L511) and [`ChildHandle::wait_exit_async`](file:///private/tmp/spawned-scenario-tests/concurrency/src/child_handle.rs#L162-L171) treat `rx.changed().await.is_err()` as `ExitReason::Kill`, the synchronous status and blocking-wait methods only inspect `rx.borrow().clone()`:
+- [`ActorRef::exit_reason`](file:///private/tmp/spawned-scenario-tests/concurrency/src/tasks/actor.rs#L496-L498) (`self.completion_rx.borrow().clone()`) returns `None` permanently—even **after** `actor.wait_exit().await` has returned `ExitReason::Kill`.
+- [`ChildHandle::exit_reason`](file:///private/tmp/spawned-scenario-tests/concurrency/src/child_handle.rs#L121-L126) returns `None` permanently, and [`ChildHandle::is_alive`](file:///private/tmp/spawned-scenario-tests/concurrency/src/child_handle.rs#L116-L118) (`self.exit_reason().is_none()`) returns **`true` permanently** for an actor that failed to start and has already terminated with `ExitReason::Kill`.
+- [`ChildHandle::wait_exit_blocking`](file:///private/tmp/spawned-scenario-tests/concurrency/src/child_handle.rs#L212-L242) checks `if let Some(reason) = rx.borrow().clone() { return reason; }` for its fast path ([line 215](file:///private/tmp/spawned-scenario-tests/concurrency/src/child_handle.rs#L215)). Because `rx.borrow()` remains `None`, the fast path is bypassed even after `wait_exit_async().await` has completed:
+  - Calling `handle.wait_exit_blocking()` on a `current_thread` runtime (after `handle.wait_exit_async().await` already returned `ExitReason::Kill`) **panics** at [`child_handle.rs:234`](file:///private/tmp/spawned-scenario-tests/concurrency/src/child_handle.rs#L234) instead of taking the already-exited fast path.
+  - Calling `handle.wait_exit_blocking()` from a non-runtime thread while FDs are still exhausted falls through to `spawned_rt::threads::block_on(wait)` ([`child_handle.rs:224`](file:///private/tmp/spawned-scenario-tests/concurrency/src/child_handle.rs#L224)), which attempts `Runtime::new().unwrap()` and **panics with `EMFILE`**.
+
+*(Note: Either sending `Some(ExitReason::Kill)` on `completion_tx` before dropping it on startup failure, or falling back to `rx.has_changed().is_err().then_some(ExitReason::Kill)` in `exit_reason()`, would make `exit_reason()`, `is_alive()`, and `wait_exit_blocking()`'s fast path consistent with `wait_exit()`.)*
+
+---
+
+### Minor Edge Cases in Private `shutdown_sharded()` Lifecycle
+
+These do not affect normal benchmark or test runs when following the documented shutdown sequence ("stop/join all actors, await important helpers, close registration and join workers"), but are worth noting for completeness:
+1. **`shutdown_sharded()` before first sharded spawn is a no-op rather than terminal:**
+   - [`shutdown_sharded()`](file:///private/tmp/spawned-scenario-tests/rt/src/tasks/experimental.rs#L201-L207) only calls `pool.shutdown()` if `registry()` is already `Some(pool)`. If called when `*registry` is still `None`, it returns `Ok(())` without preventing a later `spawn_sharded()` call from initializing the pool.
+2. **Pre-pool `Backend::Thread` actors using a shard monitor waiter:**
+   - [`lease_if_initialized()`](file:///private/tmp/spawned-scenario-tests/rt/src/tasks/experimental.rs#L188-L197) only tracks non-`Async` actors started *after* `Pool` is initialized. If a `Backend::Thread` actor is started *before* the first sharded actor (so `lease_if_initialized()` returned `None`), and a sharded actor later installs a monitor on its behalf (spawning the monitor waiter onto the shard runtime), `state.active` will return to `0` as soon as the sharded actor stops, even though the pre-pool `Backend::Thread` actor is still alive. Calling `shutdown_sharded()` without also stopping that `Backend::Thread` actor is already outside `shutdown_sharded()`'s documented contract ("stop/join all actors first").
+
+---
+
+### Properly Disclosed Experimental Differences (Non-Blockers)
+
+The following behaviors are accurately disclosed in [full-actor-shards.md](file:///private/tmp/spawned-scenario-tests/docs/research/full-actor-shards.md) and code comments, and are **not** blockers for the experiment:
+- **Process-owned pool & terminal private shutdown ([`full-actor-shards.md:24-32`](file:///private/tmp/spawned-scenario-tests/docs/research/full-actor-shards.md#L24-L32)):** Shard workers live for the process (or until explicit `shutdown_sharded()`), with one fixed configuration per process.
+- **External `actor_ref.context()` helpers attach to the caller's runtime ([`full-actor-shards.md:35-37`](file:///private/tmp/spawned-scenario-tests/docs/research/full-actor-shards.md#L35-L37)):** Calling `actor_ref.context().monitor(...)` or `send_message_on(actor_ref.context(), ...)` from outside the actor spawns onto `Handle::current()` at the call site rather than relocating to the actor's shard.
+- **No `block_in_place` / synchronous blocking stalls the shard ([`full-actor-shards.md:37-40`](file:///private/tmp/spawned-scenario-tests/docs/research/full-actor-shards.md#L37-L40)):** Each shard uses a `current_thread` runtime and static round-robin assignment without work stealing.
+- **Parallel vs. serial suite behavior ([`full-actor-shards.md:81-91`](file:///private/tmp/spawned-scenario-tests/docs/research/full-actor-shards.md#L81-L91)):** Shared 2-worker contention in the parallel unit suite and round-robin separation in `badly_behaved_thread_non_blocking` under serial execution are explicitly documented, with deterministic same-shard and cross-shard tests ([`blocking_handler_stalls_its_shard_while_another_shard_progresses`](file:///private/tmp/spawned-scenario-tests/concurrency/tests/full_actor_shards.rs#L247-L310)) added alongside the unchanged original test.

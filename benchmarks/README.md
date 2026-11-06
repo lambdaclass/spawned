@@ -1,3 +1,9 @@
+The completed [backend research study](../research/backend-experiments/2026-11-06-fede/README.md)
+contains 5,744 successful processes, 51 figures, the pinned pipeline comparison,
+source bundles and review evidence. See [backend usage](../docs/BACKENDS.md) for
+supported choices and experimental status. New graphs and analysis live in the
+research folder; benchmark programs and runners stay here.
+
 The [native Linux graph, overload and profiling report](reports/fede-research-2026-11-06/REPORT.md)
 adds 1,002 fresh processes, longer graph confirmations and 66 CPU profiles.
 [HTML with embedded charts](reports/fede-research-2026-11-06/REPORT.html),
@@ -185,3 +191,9 @@ Review archives are retained as requested provenance, with explicit editorial
 limits. Suggested numeric adoption thresholds are reviewer proposals, not
 approved production criteria. Baseline observer asymmetry remains disclosed;
 the later matched design study adds a direct observer and full-actor controls.
+
+The [fixed-core pipeline study](../research/backend-experiments/2026-11-06-fede/PINNED-PROFILES.md) explains the private
+Silver-inspired pinned park/spin profiles and their1/2/4/8-core comparison.
+It retains Tokio and addressed messages; CPU affinity is not a supported public
+backend option. Results distinguish dynamic many-actor graphs from small fixed
+pipelines and include the idle CPU cost of spinning.

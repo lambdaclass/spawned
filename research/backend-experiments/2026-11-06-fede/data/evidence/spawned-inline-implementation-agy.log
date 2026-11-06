@@ -1,0 +1,35 @@
+**APPROVE FOR TESTING**
+
+No blockers found. Compilation, unit/actor test gates, and benchmark stages remain unexecuted as stated.
+
+### 1. Pinning, Drop Guarantees, and Unwind Safety (`InlinePanicSafeFuture<F>`)
+- **Macro & Safe Projection**: `pin_project_lite::pin_project!` in [`dispatcher.rs`](file:///private/tmp/spawned-fede-inline/rt/src/tasks/experimental/dispatcher.rs) uses the documented `#[pin] future: Option<F>` projection and `impl<F> PinnedDrop for InlinePanicSafeFuture<F> { fn drop(this: Pin<&mut Self>) { this.dispose(); } }` syntax with no custom `unsafe`.
+- **Non-Moving `F` Across Poll and Disposal**:
+  - In `Pool::spawn`, `LeaseFuture<F>` is moved into `InlinePanicSafeFuture { future: Some(future) }` inside the `async_task::Builder::spawn` closure when constructing `async-task`'s `RawTask` allocation, before first poll and before type erasure into `Runnable<TaskMeta>`.
+  - `Future::poll` projects `self.as_mut().project().future.as_pin_mut()` without moving `F`.
+  - `dispose` calls `projected.future.set(None)`, which overwrites the `Option<F>` slot in place (`*ptr = None`), dropping `LeaseFuture<F>` in place without moving `F` and leaving `None` in the slot even if `F::drop` unwinds.
+- **Unwind Boundaries & Lease Ordering**:
+  - `poll` and `dispose` each wrap their body in a separate `catch_unwind(AssertUnwindSafe(...))`, so a panic in `F::poll` followed by a panic in `F::drop` during `self.dispose()` is caught across two distinct boundaries rather than triggering a double-panic abort (while an actual double panic inside a single unwind still aborts as normal in Rust).
+  - Inside `LeaseFuture<F>`, Rust drops fields in declaration order (`future: F` first, `_lease: TaskLease` second), ensuring `_lease` decrements `Pool::active` and notifies `Pool::idle` even when `F::drop` unwinds.
+
+### 2. Configuration & Public Surface
+- [`Cargo.toml`](file:///private/tmp/spawned-fede-inline/rt/Cargo.toml) gates `pin-project-lite = "=0.2.16"` under `backend-experiments`.
+- `DriverConfig` stays private to [`dispatcher.rs`](file:///private/tmp/spawned-fede-inline/rt/src/tasks/experimental/dispatcher.rs), with `Default` preserving `quantum: 8` and `false` for `zero_schedule`, `wake_precheck`, and `inline_future`. Public `Actor`, `Handler`, `Backend`, and `dispatcher::spawn` signatures are unchanged.
+- `SPAWNED_EXPERIMENT_INLINE_FUTURE` defaults to `"0"`, rejects values `> 1` with `io::ErrorKind::InvalidInput`, maps `1` to `DriverConfig::inline_future`, and is registered in `SELECTORS` in [`fede_research.py`](file:///private/tmp/spawned-fede-inline/benchmarks/fede_research.py).
+
+### 3. Test Coverage Verification
+- `inline_future_stays_pinned_and_drops_once`:
+  - Verifies `!Unpin` (`PhantomPinned`) address stability across repeated polls and inside `Drop::drop`.
+  - Verifies direct `InlinePanicSafeFuture` disposal both before first poll (`polled = false`) and upon `Poll::Ready(())` (`polled = true`) with `panic_on_drop: true`, checking `future.as_ref().project_ref().future.get_ref().is_none()` after `Ready` and confirming `drops == 1` after outer `drop(future)`.
+  - Verifies end-to-end `Pool::spawn` + `pool.shutdown()` across `[Policy::Runnable, Policy::Deque] × [false, true]` (32 `Probe` tasks per pool).
+- `direct_disposal_panic_after_poll_panic_stays_contained`:
+  - Covers both `PanicSafeFuture` (`inline = false`) and `InlinePanicSafeFuture` (`inline = true`) for sequential `poll` panic + `drop` panic (`Bomb`), verifying via `rx.try_recv().is_err()` that the inner destructor does not run a second time when `guarded` is dropped.
+
+### 4. Controller Plan & Sample Accounting
+- **Sample counts**:
+  - **Smoke**: 11 specs (`async` w=4/5, `native-root` w=4, and `native-runnable`/`native-deque` w=4 × `inline` $\in \{0,1\}$ × `(zero, precheck)` $\in \{(0,0), (1,1)\}$) × 2 topologies × 2 layouts × 1 repeat = **44 samples** (`messages = 4096`).
+  - **Graphs**: 11 specs × 2 topologies × 2 layouts × 5 repeats = **220 samples** (`messages = 1_048_576`).
+  - **Profiles**: 8 native-queue specs × 1 topology (`chain`) × 2 layouts × 1 repeat = **16 samples**.
+- **Scope & Interpretation**:
+  - Correctly attributes differences between `INLINE_FUTURE=0` and `INLINE_FUTURE=1` to the combined effect of removing the inner `Box<dyn Future>` allocation and enabling concrete monomorphization inside `async-task`'s `RawTask` (while ordinary message/envelope/reply allocations remain), and notes that `(Z0W0, Z1W1)` are joint scheduling points rather than an isolated `Z` vs `W` factorial.
+  - Gate measurement on full compilation, `dispatcher` unit tests (including the new pinning/drop-panic tests), and actor test suites under `SPAWNED_EXPERIMENT_INLINE_FUTURE=1`.

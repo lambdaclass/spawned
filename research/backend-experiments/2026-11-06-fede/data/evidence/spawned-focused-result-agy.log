@@ -1,0 +1,44 @@
+I will start by reading [/private/tmp/spawned-focused-result-review.txt](file:///private/tmp/spawned-focused-result-review.txt) to understand the requirements.
+### 1. Verdict on Interpretations & Overclaim Audit
+
+* **Keep multi-worker Tokio (`async`) as default — Supported, with caveats:**
+  Across general multi-actor workloads (`active1024_p256`, `active128_p128`, `hotspot128`), standard multi-worker Tokio (`async` and `actor-tokio-*`) matches or outperforms static sharding (`actor-sharded-*`) without requiring static placement or extra runtime threads. However, `actor-sharded-*` shows ~2× lower p99 latency in `blocking128` (`mac2`: 8.79–10.54 ms vs 18.97–19.31 ms; `mac4`: 4.45–4.54 ms vs 9.77–9.83 ms) and higher single-actor throughput in `mac2` `alloc1`/`rpc1` (though min/max ranges overlap heavily). Keeping Tokio as the default is justified for ergonomics and high-actor-count scaling, provided we do not overclaim universal dominance in blocking or single-actor micro-cases.
+* **Native-loop gains fail to reproduce for sharded full actors at 1024 actors — Strongly Supported:**
+  In `active1024_p256`, `actor-sharded-{1,16,adaptive}` clearly trail `async` and `actor-tokio-*` in both `mac2` and `mac4` with non-overlapping or near-non-overlapping ranges:
+  * `mac2`: sharded medians are **351.9k–373.9k** replies/s (p99 **1.43–1.56 ms**) vs `async` **489.0k** (p99 **0.78 ms**) and `actor-tokio-16` **493.8k** (p99 **0.79 ms**).
+  * `mac4`: sharded medians are **508.9k–536.2k** replies/s (p99 **1.06–1.11 ms**) vs `async` **587.2k** (p99 **0.69 ms**) and `actor-tokio-adaptive` **614.1k** (p99 **0.66 ms**).
+  Full-actor envelope, unbounded mailbox, reply channel, and cross-runtime wakeup costs erase any raw loop advantage under static placement at 1024 actors.
+* **Batching on normal Tokio (`actor-tokio-{16,adaptive}` vs `actor-tokio-1` / `async`) helps some cells but is not universal — Supported:**
+  * *Helps throughput:* `hotspot128` (`mac2`: `actor-tokio-16` **339.0k** vs `actor-tokio-1` **220.1k**; `mac4`: **379.2k** vs **217.7k**). However, compare against unyielded `async` (**347.9k** in `mac2`, **402.5k** in `mac4`): `actor-tokio-1` artificially degrades throughput by forcing a yield after every handler, and batching (`16`/`adaptive`) mostly recovers that self-inflicted yield penalty—while inflating `mac2` `hotspot128` p99 to **4.29 ms** (`actor-tokio-16`) vs **0.72 ms** (`actor-tokio-1`) and **2.51 ms** (`async`).
+  * *Helps or ties:* `mac2` `active1024_p256` (`actor-tokio-16` **493.8k** vs `actor-tokio-1` **409.5k**, but essentially tied with `async` **489.0k**).
+  * *Neutral or noisy:* `active128_p128` (`mac2` `actor-tokio-1` **482.2k** beats `actor-tokio-16` **446.8k**; `mac4` variants cluster around **584.6k–601.6k** with overlapping ranges), `async_wait128`, `blocking128`, and `tcp128`.
+* **TCP throughput is similar enough to require caution — Strongly Supported:**
+  In `tcp128`, all seven variants cluster within **149.3k–157.6k** replies/s on `mac2` and **142.9k–155.5k** on `mac4`, with wide overlapping min/max spans (e.g., `mac4` `actor-tokio-adaptive` min **119.7k** to max **160.6k**). Note also that `mac4` TCP throughput is slightly *lower* than `mac2` across all variants, pointing to kernel loopback/socket or unpinned producer/echo-server thread contention rather than actor scheduler limits.
+* **Challenging Overclaims:**
+  * *Process-global CPU & RSS confounds:* `cpu_s` and `rss_bytes` measure the whole process (including startup, multi-thread producers, the native TCP echo server, and the extra current-thread observer runtime in `sharded`). Small RSS differences (~100–200 KB in `idle4`/`blocking128`) or short-run `cpu_s` differences (`alloc1` 0.24–0.43s) cannot be attributed purely to actor runtime overhead.
+  * *`idle4` throughput is meaningless:* `idle4` measures a single request after a 1s sleep (`cpu_s` = 0.0); `completed_per_s` (**196–659**/s) is an artifact of dividing 1 request by timer/harness window jitter. Only `completion_p99_ns` (~18.4–23.6 µs across variants) is interpretable.
+  * *`blocking128` sleep duration & pool semantics:* Throughput is flat (~15.0k/s on `mac2`, ~29.7k/s on `mac4`) because it is timer-bound by sleep duration and concurrency, while the 2× p99 gap reflects how blocking work is scheduled/queued across N runtimes vs a shared pool.
+
+---
+
+### 2. Three Strongest Methodological Cautions
+
+1. **Closed-Loop Traffic Masks Queueing & Conflates Latency with Throughput:** Producers wait for replies before issuing new work. Under contention (`hotspot128`, `active1024_p256`), closed-loop backpressure caps mailbox depth and hides open-loop tail-latency blowups and producer lag.
+2. **Unpinned Multi-Component Contention on macOS ARM64:** With no core pinning (P/E core scheduling on Apple Silicon), producer threads, the native TCP echo server, N actor workers, and the `sharded` observer thread compete for cores within the same process, confounding scheduler comparisons (especially visible in `mac4` `tcp128` regression and wide `alloc1`/`rpc1` min/max spreads at $n=5$).
+3. **Whole-Process Short-Run Resource Accounting:** Short non-stationary runs ($n=5$, sub-second to a few seconds of CPU time) mix initialization, allocator warmup, and harness threads into `cpu_s` and peak `rss_bytes`.
+
+---
+
+### 3. Ranked Next Experiments & Decisions Informed
+
+1. **CPU & Wakeup Profiling (`active1024_p256` and `hotspot128`)**
+   * *Missing evidence:* Whether `actor-sharded-*` loses at 1024 actors due to cross-thread `kqueue`/unpark syscalls, observer hop overhead, or static load imbalance across the N single-threaded runtimes.
+   * *Decision informed:* Whether to abandon sharded current-thread runtimes altogether or fix a specific wakeup/observer bottleneck.
+2. **Actor-to-Actor Chain / Fanout Topology**
+   * *Missing evidence:* Current benchmarks only test external producer $\rightarrow$ actor $\rightarrow$ producer reply (`driver_policy` hops). They do not measure internal actor-to-actor messaging, where shard-local affinity could avoid cross-thread wakeups or work-stealing could win on dynamic fanout.
+   * *Decision informed:* Whether static sharding or locality hints have any architectural value for multi-hop actor pipelines.
+3. **Fixed-Rate Open-Loop Saturation & Producer-Lag Tests (paired with Per-Active-Handler Blocking-Worker Leasing)**
+   * *Missing evidence:* Open-loop latency-vs-offered-load curves under unbounded mailboxes, and whether leasing blocking workers per active handler eliminates Tokio's 2× `blocking128` p99 penalty without persistent blocking-thread pools.
+   * *Decision informed:* Default yield/batching policy under real queue pressure and the blocking-execution model for Spawned actors.
+
+*(Note: All conclusions above are strictly scoped to macOS (`mac2`/`mac4` in [spawned-full-actors-mac-summary.csv](file:///private/tmp/spawned-full-actors-mac-summary.csv) and [spawned-full-actors-mac-meta.json](file:///private/tmp/spawned-full-actors-mac-meta.json)); Linux results are still pending and no Linux claims are made.)*

@@ -176,6 +176,22 @@ async fn handle_find(&mut self, msg: Find, _ctx: &Context<Self>) -> FindResult {
 
 Both provide the same `Actor`, `Handler<M>`, `ActorRef<A>`, and `Context<A>` types. Switching between them requires changing imports and adding/removing `async`/`.await`.
 
+## Choosing a backend
+
+Use Tokio (`Backend::Async`) for general async applications and dynamic actor
+populations. Use `Backend::Blocking` for persistent blocking work, or
+`Backend::Thread` when an actor needs a dedicated thread. Each blocking actor
+occupies a worker until it stops; each dedicated actor has its own thread/runtime.
+
+The experimental pinned profiles target fixed streaming pipelines. Parked shards
+showed promising eight-core results; spinning can improve some tails but consumes
+the assigned cores while idle. These remain private experiments, and Tokio stays
+the supported default. Actor APIs, ordinary messages and request/reply are unchanged.
+
+See [backend selection and usage](docs/BACKENDS.md), including actors communicating
+across runtimes, and the [backend research folder](research/backend-experiments/README.md)
+for graphs, analysis, raw results and reproduction instructions.
+
 ## Project Structure
 
 ```
@@ -235,6 +251,8 @@ removing Tokio is not a committed direction.
 See the [reproducible baseline harness](benchmarks/README.md) and
 [initial local analysis](benchmarks/REPORT-2026-11-05.md). These microbenchmarks
 measure existing backends and document limits; they are not client-level results.
+The [backend research index](research/backend-experiments/README.md) brings together
+the studies, including the completed fede scheduler and pinned-pipeline analysis.
 
 ## Testing
 

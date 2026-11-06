@@ -1,0 +1,12 @@
+**APPROVE FOR TESTING**
+
+All three prior findings are resolved cleanly in [`benchmarks/collect_fede_overnight.py`](file:///private/tmp/spawned-fede-report/benchmarks/collect_fede_overnight.py) and [`benchmarks/render_fede_overnight.py`](file:///private/tmp/spawned-fede-report/benchmarks/render_fede_overnight.py):
+
+1. **Empty `phase` normalization**: `r['phase'] = r.get('phase') or 'soak'` runs during initial row normalization before `groups` and `summary` are built, so combined CSV rows with `""` when `soak` runs are merged with phased blocks no longer leak empty strings into grouping or filtering.
+2. **Numeric typing for `slice_us`, `rate`, `burst`, `actors`, `producers`**: All five fields are coerced via `int(...)` on load, ensuring numeric ordering (`key=lambda s: s['rate']`, `key=lambda s: s['slice_us']`, `max(..., key=lambda r: r['rate'])`) and exact integer equality (`s['burst'] == burst`).
+3. **Explicit phase/counter scoping and figure naming**:
+   - `bars()` filters by `dataset == block`, `phase == phase`, `caller == caller`, and `counter == 'on'`, asserts `len(g) <= 1` per cell, and includes `{phase}` in the output filename (`{block}-{phase}-{caller}-{metric}`).
+   - `control-callers`, `control-clock`, `control-offered` (both grid and time-series selection), `soak`, and `profile` sections each filter explicitly on both `dataset` and `phase`.
+4. **Methodology text alignment**: The report prose accurately states that bars/points show medians, matched graph bars include fresh-process min/max whiskers, and full min/max ranges for all cells are recorded in `SUMMARY.csv`.
+
+No remaining blockers identified.

@@ -1,0 +1,24 @@
+**Verdict: `APPROVE FOR TESTING`** (no blockers found; review-only, no tools run, no execution claims).
+
+---
+
+### 1. Compatibility of Skipping `wake_next.fetch_add` with Existing Wake Hint & Fallback
+- **No Memory-Ordering Regression:** In the baseline implementation, `self.wake_next.fetch_add(1, Ordering::Relaxed)` is a `Relaxed` RMW on an index counter that is disjoint from both work queues and `self.sleepers`. A `Relaxed` RMW on an unrelated atomic establishes no happens-before edge and provides no `SeqCst` total-order store-load barrier between work publication and sleeper observation.
+- **Equivalent Snapshot Semantics:** Under `wake_precheck == true`, scanning `self.sleepers` with `sleeping.load(Ordering::Acquire)` for `peer != owner` performs the exact same per-slot `Acquire` loads that the baseline loop performed immediately after `fetch_add`. When no peer is observed sleeping, returning early avoids cache-line invalidation / coherence traffic on `wake_next` under busy multi-worker loads without weakening any existing memory publication or wake synchronization invariant.
+
+### 2. Lost-Wake & Starvation Bounds Analysis
+- **Busy-Load Regime:** When all peers have `sleepers[peer] == false`, they are actively executing in their worker loops and will poll local/steal/global queues on subsequent iterations without requiring an OS unpark signal.
+- **Concurrent Sleep Transition (Snapshot Race):** Because `unpark_peer` is an advisory wake hint rather than a `SeqCst` Dekker handshake, a worker transitioning to sleep can race the `sleepers` snapshot under both `wake_precheck = 0` and `wake_precheck = 1`:
+  1. **Register-then-Recheck:** If the peer sets `sleepers[peer] = true` *after* the producer's precheck scan reads `false`, the peer's post-registration queue recheck observes any work published prior to registration and aborts the sleep.
+  2. **1ms Timer Fallback:** If store-load reordering between work publication and sleeper registration causes both the precheck scan and the peer's recheck to miss each other, the parked peer is still bounded by the existing `1ms` timed park fallback—preventing indefinite lost wakes or deadlock.
+- **Explicit Scope Limits:** As documented in `benchmarks/ZERO-SCHEDULE-PROTOCOL.md`, no hard wake-latency bound or hard wall-clock preemption guarantee is claimed, and mixed-load wake tail effects remain explicitly scoped as an empirical question.
+
+### 3. Configuration, Matrix, and Test Coverage Verification
+- **Startup Validation & Immutability:** `SPAWNED_EXPERIMENT_WAKE_PRECHECK` defaults to `"0"`, is range-checked (`wake_precheck > 1` returns `io::ErrorKind::InvalidInput`), and is stored as an immutable `bool` on `Pool`.
+- **Unit & Pre-Measurement Suite Coverage:**
+  - `zero_sized_schedule_handles_internal_and_external_wakes` crosses all four `(zero_schedule, wake_precheck)` combinations `[(false, false), (false, true), (true, false), (true, true)]` across both `Policy::Runnable` and `Policy::Deque` for internal and external wakes.
+  - Existing unit tests preserve baseline `(false, false)` coverage, and running selected `Root` / `Runnable` / `Deque` suites with `SPAWNED_EXPERIMENT_WAKE_PRECHECK=1` prior to measurement covers `Policy::Root` (which shares the identical `Pool::unpark_peer` implementation).
+- **Paired Campaign Matrix (`benchmarks/fede_zero_schedule.py`):**
+  - **12 Specs:** `async` N4/N5 (`2`) + `native-root` N4 with `precheck` $\in \{0,1\}$ (`2`) + `native-runnable`/`native-deque` N4 crossed over `zero` $\in \{0,1\} \times \text{precheck} \in \{0,1\}$ (`8`).
+  - **240 Graph Runs:** $12\text{ specs} \times 2\text{ topologies (chain, fanout)} \times 2\text{ layouts (same, cross)} \times 5\text{ repeats} = 240$ processes.
+  - **16 Separate Profile Runs:** Filtered to `native-runnable` and `native-deque` ($8\text{ specs}$) $\times 1\text{ topology (chain)} \times 2\text{ layouts (same, cross)} \times 1\text{ repeat} = 16$ profile runs.

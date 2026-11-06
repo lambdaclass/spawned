@@ -1,0 +1,20 @@
+### Code Review: `/private/tmp/spawned-completion-review.patch`
+
+**Verdict:** No remaining blockers or bugs found in the patch.
+
+#### Key Checks
+1. **Ordering & Race Safety (`poll_exit_reason`)**:
+   - Sampling `let closed = rx.has_changed().is_err();` **before** `rx.borrow()` prevents a TOCTOU race where a sender publishes `Some(Normal | Panic)` and drops between a `None` borrow and a subsequent closure check.
+   - If `has_changed().is_err()` observes closure, the sender drop has already occurred, establishing happens-before ordering so `rx.borrow()` is guaranteed to see any final `ExitReason` published prior to drop.
+   - If the sender drops after `has_changed()` returns `Ok(_)` without publishing a reason, `poll_exit_reason` returns `None` (linearizable immediately before the drop), and the next poll/wait observes closure.
+
+2. **Preserving Published `Normal` / `Panic`**:
+   - `rx.borrow().clone().or_else(|| closed.then_some(ExitReason::Kill))` always prioritizes a published `Some(reason)` over channel closure, falling back to `ExitReason::Kill` only when the value is `None` and the sender is closed.
+   - Directly covered by `closure_preserves_the_final_published_reason`.
+
+3. **Blocking Fast Path Without a Runtime / Inside Current-Thread Runtime**:
+   - Updating `wait_for_tasks_exit_blocking` to check `poll_exit_reason(&rx)` ensures an already-closed channel with `None` returns `ExitReason::Kill` immediately on the fast path without needing a runtime or panicking inside an active `current_thread` runtime.
+
+4. **API Consistency & Test Coverage**:
+   - `ChildHandle::exit_reason` (and transitive `is_alive`), `tasks::ActorRef::exit_reason`, and `threads::ActorRef::exit_reason` all share `poll_exit_reason`.
+   - `closed_without_reason_is_dead_and_all_waits_agree` exercises both `ChildHandle::from_tasks` and `ChildHandle::from_threads` across `is_alive`, `exit_reason`, `wait_exit_async`, and `wait_exit_blocking`.

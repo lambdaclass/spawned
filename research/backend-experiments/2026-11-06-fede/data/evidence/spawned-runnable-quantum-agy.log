@@ -1,0 +1,19 @@
+**APPROVE FOR TESTING**
+
+### Review Summary
+
+1. **Root Quantum Validation & Pool Immutability (`dispatcher.rs`)**
+   - `SPAWNED_EXPERIMENT_ROOT_QUANTUM` defaults to `"8"`, is parsed and validated within `1..=256` prior to `Pool::new`, and is stored on `Pool` as an immutable `root_quantum: usize` field.
+   - `Pool::run_root` yields the outer driver after `polls == self.root_quantum` job polls (`1`, `8`, `32`, `128`), resetting `polls = 0`.
+   - `cooperative_receive_loop_yields_with_single_native_worker` covers `(Policy::Root, q)` and `(Policy::Runnable, q)` across all four quanta (`1, 8, 32, 128`) on a single worker.
+
+2. **Common-Source `Work` Queue & `PanicSafeFuture` Boundary**
+   - All experimental ready queues (`Queues::global`, `Queues::local`, `Pool::split`) hold `Work`, keeping layout and dispatch code generation uniform across custom-job controls and `Policy::Runnable`.
+   - `PanicSafeFuture` isolates both `poll` and `Drop` disposal via `catch_unwind` around `self.0.take()`, preventing `async-task` from aborting when a stored future's destructor unwinds, while `native_jobs_survive_future_destructor_panics` verifies both normal-completion-then-drop-panic and poll-panic-then-drop-panic recovery followed by clean shutdown.
+
+3. **Controller Configuration, CPU Accounting & Metadata**
+   - **CPU & worker accounting:** `scale` / `scale-smoke` pin actors to 8 cores (`2..=9`), drivers to `10..=13`, and collectors to `14..=17` (all disjoint from 4-core `2..=5` / `6,7,14,15` / `8,9,16,17`). `actor_workers` and `total_runtime_workers = w + (1 if v.startswith('native') else 0)` explicitly record 8 vs 9 runtime threads sharing the 8 actor cores (plus the 1 shared-I/O reactor and idle owner extra).
+   - **Factorial counts & divisibility:**
+     - **4-core `graphs`:** 17 `(variant, workers, quantum)` specs × 1 population `(1920, 256)` × 2 topologies × 2 layouts × 2 callers × 5 repeats = **680 processes**.
+     - **8-core `scale`:** 12 specs × 2 populations `(4032, 512)` and `(16128, 1024)` (both divisible by width `8`, `16` shards, and `7, 8, 9` worker counts) × 2 topologies × 2 layouts × 1 caller (`async`) × 5 repeats = **480 processes** at `2,097,152` root messages.
+   - **Provenance:** `SPAWNED_EXPERIMENT_ROOT_QUANTUM` is recorded in `experiment_json` for every sample, `controller_sha256` and dirty-tree assertions are enforced before sampling, and pre-fix V3 results remain unpooled.

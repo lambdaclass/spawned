@@ -1,0 +1,19 @@
+I will start by reading `/private/tmp/spawned-fede-final-review.txt` to understand the requested review scope.
+I will now read `benchmarks/FINDINGS-FULL-ACTORS.md`, `VALIDATION-FULL-ACTORS.md`, and lines 700–850 of `concurrency/src/tasks/actor.rs` in `/private/tmp/spawned-scenario-tests`.
+I will read `benchmarks/VALIDATION-FULL-ACTORS.md`.
+**Verdict: APPROVE** (no blockers found)
+
+### Verification Summary
+
+1. **Report & Data Alignment ([FINDINGS-FULL-ACTORS.md](file:///private/tmp/spawned-scenario-tests/benchmarks/FINDINGS-FULL-ACTORS.md), [VALIDATION-FULL-ACTORS.md](file:///private/tmp/spawned-scenario-tests/benchmarks/VALIDATION-FULL-ACTORS.md))**
+   - **Medians & Ratios**: All reported `fede2` (315/315 rows) and `fede4` (210/210 rows) medians and derived percentages match the computed raw values:
+     - `active1024_p256`: `fede2` `1,779,639`/s (`0.233 ms` p99) vs `1,712,394`/s (`0.187 ms` p99, `-3.8%` rate / `-19.8%` p99); `fede4` `1,776,924`/s (`1.081 ms` p99) vs `2,070,492`/s (`0.159 ms` p99, `+16.5%` rate / `-85.3%` p99).
+     - `active128_p128` (`fede4`): `2.305M`/s (`0.555 ms` p99) sharded-16 vs `1.878M`/s (`0.156 ms` p99) `async`.
+     - `hotspot128` (`fede2`): cold p99 `0.237` $\to$ `0.116 ms`, overall p99 `0.482` $\to$ `0.893 ms`, throughput `1,042,457` $\to$ `973,112`/s.
+     - `tcp128`: `fede4` `588k`/s (`0.821 ms` p99) vs `513k`/s (`2.548 ms` p99); `fede2` `452k`/s (`2.005 ms` p99) vs `443k`/s (`1.339 ms` p99).
+     - `async_wait128` (`~59–61k`/s) and `blocking128` (matched throughput, lower sharded p99 tails) match the computed summary.
+   - **Methodology & Provenance**: Accurately documents 1,575/1,575 successful processes (129,024,105 requests, including 525/525 and 43,008,035 on `fede`), clean revision `9b22346` with identical binary hashes across worker budgets per platform, `fede` host constraints (shared Ryzen 9 9950X3D, whole-job `taskset` CPUs 2–5, `nice=10`, unpinned workers, 256 producers sharing the 4 cores), and explicit separation between `9b22346` performance measurements and `22d3ad4` / PR #182 functional validation without causal or universal production claims.
+
+2. **Actor Lifecycle Merge ([actor.rs](file:///private/tmp/spawned-scenario-tests/concurrency/src/tasks/actor.rs#L702-L814))**
+   - [`run_actor`](file:///private/tmp/spawned-scenario-tests/concurrency/src/tasks/actor.rs#L702-L726) has a single close/drain wrapper (`rx.close(); while rx.recv().await.is_some() {}`) that cleanly forwards `#[cfg(feature = "backend-experiments")] turn: Option<MessageTurn>` into the single [`run_actor_lifecycle`](file:///private/tmp/spawned-scenario-tests/concurrency/src/tasks/actor.rs#L728-L814) helper.
+   - Public traits/signatures ([`ActorStart`](file:///private/tmp/spawned-scenario-tests/concurrency/src/tasks/actor.rs#L821-L833)) and the default `Backend::Async` behavior remain unchanged.

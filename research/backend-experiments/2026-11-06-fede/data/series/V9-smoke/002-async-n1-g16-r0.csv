@@ -1,0 +1,17 @@
+actor,thread,allowed_cpus,handled_before
+0,pipeline-worker,"2",0
+1,pipeline-worker,"2",0
+2,pipeline-worker,"2",0
+3,pipeline-worker,"2",0
+4,pipeline-worker,"2",0
+5,pipeline-worker,"2",0
+6,pipeline-worker,"2",0
+7,pipeline-worker,"2",0
+8,pipeline-worker,"2",0
+9,pipeline-worker,"2",0
+10,pipeline-worker,"2",0
+11,pipeline-worker,"2",0
+12,pipeline-worker,"2",0
+13,pipeline-worker,"2",0
+14,pipeline-worker,"2",0
+15,pipeline-worker,"2",0

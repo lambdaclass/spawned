@@ -144,7 +144,7 @@ improving [tests](TESTING.md) throughout every milestone.
 
 ## Backend research checkpoint
 
-The [overnight scheduler research](research/scheduler-followups-2026-11-06.md)
+The [overnight scheduler research](../research/backend-experiments/2026-11-06-fede/SCHEDULER-RESEARCH.md)
 keeps Tokio as the default and treats custom drivers as private experiments.
 Independent requests, actor-to-actor graphs, hot/cold load and lifecycle churn
 answer different questions; a fast result in one does not select a runtime for

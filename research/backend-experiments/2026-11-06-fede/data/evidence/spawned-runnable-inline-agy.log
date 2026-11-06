@@ -1,0 +1,35 @@
+**APPROVE FOR TESTING**
+
+No concrete blockers found. The `Policy::Runnable` addition is well-isolated, preserves all existing policy semantics (`Global`, `Local`, `Steal`, `Root`, `TokioPool`), and integrates cleanly with the native-root queues, root driver, and shared I/O runtime.
+
+### Verification Summary by Focus Area
+
+1. **Feature Gating & Dependencies (`rt/Cargo.toml`, `actor.rs`)**
+   - `async-task = { version = "=4.7.1", optional = true }` is properly gated behind `backend-experiments = ["dep:async-task"]`.
+   - Public API and default behavior remain unchanged; `native-runnable` is wired alongside the other experimental policies for both `MessageTurn` and `dispatcher::spawn`.
+
+2. **Scheduling Publication & Unique Run Ownership**
+   - `async_task::Builder::new().metadata(meta).spawn(...)` produces a `(Runnable<TaskMeta>, Task<(), TaskMeta>)`.
+   - `Work::Runnable` holds the unique `Runnable<TaskMeta>` token directly in the queue (`VecDeque<Work>`), eliminating per-poll `Arc<Job>` cloning and mutex locking around the future.
+   - `async-task`'s internal state machine guarantees single-flight execution: `job.run()` consumes the `Runnable`, polls the future once, and only invokes the schedule callback with a fresh `Runnable` if woken (either during the poll after re-queued at `Pending`, or asynchronously afterward). Duplicate wakes coalesce inside `async-task`'s atomic state without double-enqueuing.
+
+3. **Metadata & Preferred Worker TLS (`POLLING`)**
+   - `TaskMeta` stores `pool: Weak<Pool>` and `preferred: AtomicUsize` (initialized round-robin via `self.next`).
+   - Before `job.run()`, `Work::poll` updates `preferred` to the executing `worker` and sets the `POLLING` thread-local to `Some((pool_ptr, worker))` with an RAII `Reset` guard.
+   - Because `job.metadata()` borrows from the `Runnable` *before* `job.run()` consumes `job`, there is no use-after-move.
+   - Self-wakes during `job.run()` invoke the schedule closure while `POLLING` is still installed, allowing `enqueue_work` to match `pool == self as *const Self as usize` and route the continuation directly to `Some(worker)` without a redundant `unpark(target)`.
+
+4. **Detach, Cancellation, Panic & Lease Teardown Ordering**
+   - `task.detach()` is called before `runnable.schedule()`, ensuring the `Task` handle is never dropped in a way that cancels the future.
+   - The spawned future moves `Lease(self.clone())` into the async block (`let _lease = lease; future.await;`).
+   - When the future completes (`Poll::Ready`) or unwinds during `job.run()`, `async-task` drops the future in-place inside `run()` (before `catch_unwind` returns, and before `Task` teardown completes). Dropping the future drops `_lease`, which decrements `active.count` and notifies `self.idle`.
+   - If the future panics during `poll` or during drop of its state, `catch_unwind(AssertUnwindSafe(|| job.run()))` catches the unwind, `_reset` restores `POLLING` TLS, and the error is logged without poisoning the worker thread or leaking the `Lease`.
+   - If the pool shuts down and drops queued `Work::Runnable` items (or if a retained `Waker` fires after `Weak<Pool>::upgrade()` returns `None`), dropping the `Runnable` cancels and drops the future, cleanly releasing the `Lease`. (And in normal `Pool::shutdown`, `active.count` reaches 0 before workers are closed.)
+
+5. **Tokio Cooperative Budget & Shared I/O Compatibility**
+   - `Policy::Runnable` spawns worker threads running `run_root` on a `new_current_thread()` Tokio driver runtime, holding `let _io_scope = self.handle.enter();` across awaits.
+   - Timer and I/O resources inside actor futures bind to the shared reactor (`self.handle`), while `tokio::task::yield_now().await` every 8 polls resets the outer cooperative budget and yields the root driver task so in-place cooperative wakes (`cx.waker().wake_by_ref()` from `tokio::sync` / `coop`) make forward progress on single-worker pools.
+
+6. **Existing Policies**
+   - `Work` enum dispatch preserves exact behavior for `Work::Custom(Arc<Job>)`.
+   - `Policy::Steal` and `Policy::Root` branching now includes `Policy::Runnable` only where appropriate (`run_root`, `enqueue_from`, `unpark`), leaving `Global`, `Local`, `Steal`, `Root`, and `TokioPool` semantics untouched.

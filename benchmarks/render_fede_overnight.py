@@ -90,6 +90,11 @@ METRICS = [
     "window_queue_growth_per_s",
     "cpu_s",
     "elapsed_s",
+    "idle_cpu_s",
+    "idle_wall_s",
+    "active_cpu_s",
+    "idle_cores",
+    "active_cpu_us_per_root",
     "wall_s",
     "timeouts",
     "hot_timeouts",
@@ -113,6 +118,12 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--data", type=Path, required=True)
     p.add_argument("--output", type=Path, required=True)
+    p.add_argument(
+        "--findings",
+        type=Path,
+        default=Path(__file__).resolve().parents[1]
+        / "research/backend-experiments/2026-11-06-fede/FINDINGS.md",
+    )
     a = p.parse_args()
     out = a.output
     out.mkdir(parents=True, exist_ok=True)
@@ -154,6 +165,12 @@ def main():
         ]:
             if num(r, denominator):
                 r[metric] = 100 * num(r, numerator) / num(r, denominator)
+        if num(r, "idle_wall_s"):
+            r["idle_cores"] = num(r, "idle_cpu_s") / num(r, "idle_wall_s")
+        if num(r, "messages") and r.get("active_cpu_s") not in [None, ""]:
+            r["active_cpu_us_per_root"] = (
+                1e6 * num(r, "active_cpu_s") / num(r, "messages")
+            )
         path = a.data / "threads" / f"{r['stem']}.csv"
         if path.exists() and num(r, "messages"):
             t = rows(path)
@@ -172,7 +189,7 @@ def main():
         config = {
             k: v
             for k, v in r["config"].items()
-            if k not in ["series", "threads", "profile", "stacks"]
+            if k not in ["series", "threads", "profile", "stacks", "audit"]
         }
         key = (
             r["dataset"],
@@ -241,6 +258,15 @@ def main():
     palette = plt.get_cmap("tab20")
 
     def save(fig, name):
+        # Axis bounds must include every series, including later errorbar ranges.
+        for ax in fig.axes:
+            upper = max(ax.get_ylim())
+            data_upper = ax.dataLim.ymax
+            if (
+                np.isfinite(data_upper)
+                and data_upper > upper + max(1, abs(upper)) * 1e-8
+            ):
+                raise RuntimeError(f"{name}: y-axis clips plotted data")
         fig.tight_layout(
             rect=(
                 0,
@@ -326,7 +352,7 @@ def main():
         "",
         f"{len(raw):,} successful fresh processes archived in {len(meta['inputs'])} completed blocks. Original source revisions, binary hashes, exact schedules and inputs remain separate. **Tokio remains the default; these are private research backends.**",
         "",
-        "[Machine-readable summary](SUMMARY.csv) · [Raw inputs and hashes](../../results/fede-overnight-2026-11-06/metadata.json) · [Experiment protocol](../../OVERNIGHT-PROTOCOL.md) · [Correctness findings](../../CORRECTNESS-FEDE-OVERNIGHT.md)",
+        "[Machine-readable summary](SUMMARY.csv) · [Raw inputs and hashes](../data/metadata.json) · [Experiment protocol](../PROTOCOL.md) · [Correctness findings](../CORRECTNESS.md)",
         "",
         "## What each backend does",
         "",
@@ -360,6 +386,7 @@ def main():
         "| V6 0f81b57 | Metadata callback and wake-precheck factorial | Deque retains V5 fairness limitation; Root/Runnable unaffected. |",
         "| V7 acd37a3 | Generic pinned inline/boxed future pairs | Deque retains fairness limitation; inline throughput did not justify complexity. |",
         "| V8 2cec0a6 | Alternating oldest/injection priority, safe hint fallback, concurrent conservation tests | Corrected frozen source; bounded tests remain different from formal/production guarantees. |",
+        "| V9 a8471f7 | Fixed-core parked/spinning Tokio shards and constant-compute streaming pipeline | One or16 actors/core, 1/2/4/8 cores; independent fixture and CPU cost, no Flux transport or support promotion. |",
         "The publication fix requires a release RMW even when wake state remains QUEUED or RUNNING|NOTIFIED. Queue-count-only Loom tests missed this visibility defect. The Global shutdown fix changes its closed predicate under the same mutex as Condvar wait. Concurrent shutdown callers serialize teardown. Older timings are not pooled into V3 medians.",
         "",
         "Later PR187 review found a Deque fairness defect: every periodic oldest turn prioritized injection, allowing sustained external arrivals plus hot local continuations to starve the local bottom. V5/V6/V7 Deque observations remain historical; Root/Runnable are unaffected. Unstarted V5 and V7 optimized follow-ups were cancelled before scoring. V8 (2cec0a6; initial corrected preflight e633e59) alternates local-oldest/injection priority, adds owner-pop fallback after bounded retries and validates TLS worker identity. The strengthened regression fails on old95b4ca6 and passes on the correction; a preliminary probe missing hot local continuations had passed and is retained as a test-design limitation. No formal hard-latency fairness guarantee follows.",
@@ -374,7 +401,7 @@ def main():
         "",
         "## Machine and measurement",
         "",
-        "Native Linux fede256 (SSH alias fede), Ryzen 9 9950X3D, 16 physical / 32 logical CPUs, about 251 GiB RAM. Rust 1.93, nice 10. Actor threads inherit CPUs 2–5; producers 6,7,14,15; collectors 8,9,16,17. These are distinct physical cores without own SMT pairing. Workers are not individually pinned. All actor budgets, including five runtime workers, share the same four actor cores. Shared-host activity and frequency scaling remain uncontrolled.",
+        "Native Linux fede256 (SSH alias fede), Ryzen 9 9950X3D, 16 physical / 32 logical CPUs, about 251 GiB RAM. Rust 1.93, nice 10. Actor threads inherit CPUs 2–5; producers 6,7,14,15; collectors 8,9,16,17. These are distinct physical cores without own SMT pairing. Workers in V1–V8 are not individually pinned; V9 explicitly pins each sharded worker before actor startup. All actor budgets, including five runtime workers, share the same four actor cores. Shared-host activity and frequency scaling remain uncontrolled.",
         "",
         "Four-core blocks use the masks above. Eight-core scale blocks use actor CPUs2–9, producers10–13 and collectors14–17, with1,024 logical producers on four driver runtime threads; V4 also includes512 producers. Those16CPU IDs are distinct physical cores. The eight-core mask spans two L3 domains: CPUs2–7 share96MiB L3, CPUs8–9 share32MiB L3 withothercores. Four-core actors stay in the96MiB domain. This is not a homogeneous-core strong-scaling experiment, and no cache-event cause is inferred. The archived cpu-cache-topology.json records per-CPU domains/SMT siblings. Their two-million-root requests and actor populations remain separate from the four-core blocks. Native N7+R1 versus Tokio8 and N8+R1 versus Tokio9 expose corresponding worker controls on eight actor cores. Native N3+R1 versus Tokio N4 controls total runtime worker count; native N4+R1 versus Tokio N4 controls actor worker count, and versus Tokio N5 controls total runtime workers. The native idle owner thread and lazily created blocking helpers are additional and disclosed. Graphs use 1,920 actors, 256 logical producers, 1,048,576 roots and eight handlers/root with 100 synthetic CPU iterations/handler. Same/cross placement is enforced only for static shards; elsewhere it is a spawn-order control.",
         "",
@@ -389,7 +416,7 @@ def main():
     ]
     for block, info in meta["inputs"].items():
         doc.append(f"| {block} | `{info['revision'][:12]}` | {info['samples']} |")
-    findings = Path(__file__).with_name("FINDINGS-FEDE-OVERNIGHT.md")
+    findings = a.findings
     if findings.exists():
         doc[6:6] = ["", findings.read_text(), ""]
     doc.extend(["", "## Matched graph results", ""])
@@ -733,6 +760,81 @@ def main():
                 "",
             ]
         )
+    pinned = [s for s in summary if s["phase"] == "pinned-pipeline"]
+    if pinned:
+        doc.extend(
+            [
+                "## Pinned pipeline: small fixed deployments",
+                "",
+                "V9 is a separate streaming fixture: N sequential actor stages on N actor cores, with either one pipeline (one actor/core) or16 pipelines (16 actors/core). Every root performs the same800-step LCG computation, divided across stages, and carries one end-to-end reply channel. Each stage forwards an ordinary owned message through an addressed boxed mailbox. There are256 logical producers on four fixed driver cores10–13. The three variants share this fixture and masks: Tokio N unpinned workers within CPUs2..N+1, or individually pinned current-thread Tokio shards, parked/spinning. Pinned worker assignment is audited before warmup. Spin keeps a yielding owner runnable; it retains Tokio scheduling and is not Flux broadcast/overwrite transport. The new fixture does not isolate affinity from batching/sharding/spin and is not pooled with earlier eight-hop recursive request/reply graphs. N=8 crosses asymmetric L3 domains; compute is fixed but inter-stage messages grow with N, so core scaling also changes communication. Three fresh processes/cell; whiskers are min/max, not confidence intervals. Whole-process CPU includes driver and runtime threads, not isolated actor CPU or electrical power. The idle interval is one second after warmup; process CPU tick resolution limits tiny parked values.",
+                "",
+            ]
+        )
+        for group_count in [1, 16]:
+            selected = [
+                s
+                for s in pinned
+                if json.loads(s["config_json"])["groups"] == group_count
+            ]
+            fig, axes = plt.subplots(2, 2, figsize=(16, 10))
+            metrics = [
+                ("replies_per_s", 1e-6, "Throughput, million roots/s"),
+                ("observed_p99_ns", 1e-6, "Observed end-to-end p99, ms"),
+                ("idle_cores", 1, "Idle process CPU, equivalent busy cores"),
+                ("active_cpu_us_per_root", 1, "Active process CPU, microseconds/root"),
+            ]
+            for i, variant in enumerate(["async", "pinned-park", "pinned-spin"]):
+                g = sorted(
+                    [s for s in selected if s["variant"] == variant],
+                    key=lambda s: int(s["workers"]),
+                )
+                assert len(g) == 4 and all(s["samples"] == 3 for s in g)
+                for ax, (metric, scale, title) in zip(axes.flat, metrics):
+                    mid = np.array([s[metric + "_median"] * scale for s in g])
+                    low = np.array([s[metric + "_min"] * scale for s in g])
+                    high = np.array([s[metric + "_max"] * scale for s in g])
+                    ax.errorbar(
+                        [int(s["workers"]) for s in g],
+                        mid,
+                        yerr=[mid - low, high - mid],
+                        label=variant,
+                        color=palette(i * 2),
+                        marker="o",
+                        capsize=4,
+                    )
+                    ax.set_title(title)
+                    ax.set_xlabel("Actor cores / stages per pipeline")
+                    ax.set_xticks([1, 2, 4, 8])
+            for ax in axes.flat:
+                ax.set_ylim(bottom=0)
+            fig.legend(
+                *axes[0, 0].get_legend_handles_labels(),
+                loc="upper center",
+                bbox_to_anchor=(0.5, 0.94),
+                ncol=3,
+            )
+            fig.suptitle(
+                f"V9: {group_count} actor(s) per core; constant 800 CPU iterations/root\n256 logical producers; four separate fixed driver cores; n=3 fresh processes"
+            )
+            doc.extend([save(fig, f"V9-pinned-groups{group_count}"), ""])
+        doc.extend(
+            [
+                "| Actors/core | Actor cores | Profile | Median roots/s | Observed p99 ms | Idle process busy-core equivalents | Active process CPU µs/root |",
+                "|---:|---:|---|---:|---:|---:|---:|",
+            ]
+        )
+        for s in sorted(
+            pinned,
+            key=lambda s: (
+                json.loads(s["config_json"])["groups"],
+                int(s["workers"]),
+                s["variant"],
+            ),
+        ):
+            doc.append(
+                f"| {json.loads(s['config_json'])['groups']} | {s['workers']} | {s['variant']} | {s['replies_per_s_median']:,.0f} | {s['observed_p99_ns_median'] / 1e6:.3f} | {s['idle_cores_median']:.2f} | {s['active_cpu_us_per_root_median']:.2f} |"
+            )
+        doc.append("")
     doc.extend(
         [
             "## Lifecycle and resources",
@@ -870,7 +972,7 @@ def main():
                     executor_samples=actor,
                 )
             )
-        link = f"../../results/fede-overnight-2026-11-06/profiles/{r['stem']}.svg"
+        link = f"../data/profiles/{r['stem']}.svg"
         doc.append(
             f"| {r['dataset']} / {label(r)} / {r['layout']} | {actor:,} | {other:,} | {contended:,} | [SVG]({link}) |"
         )
@@ -886,7 +988,7 @@ def main():
             "",
         ]
     )
-    report = "\n".join(doc) + "\n"
+    report = "\n".join(doc).rstrip() + "\n"
     (out / "REPORT.md").write_text(report)
     body = markdown.markdown(report, extensions=["tables", "fenced_code"])
     for f in figures:

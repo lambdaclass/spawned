@@ -1,0 +1,3 @@
+I will start by reading [/private/tmp/spawned-full-actors-mac-results-review.txt](file:///private/tmp/spawned-full-actors-mac-results-review.txt) to review the completed results and research priorities.
+I will now read the summary data, metadata, documentation, and benchmark implementation files listed in the review instructions.
+I will now read the rest of [designs.rs](file:///private/tmp/spawned-scenario-tests/concurrency/benches/designs.rs) and inspect the raw CSV files and actor task loop implementation.
