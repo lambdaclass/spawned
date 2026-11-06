@@ -48,6 +48,7 @@ struct Pool {
     active: Mutex<Active>,
     idle: Condvar,
     closed: AtomicBool,
+    teardown: Mutex<()>,
     queues: Mutex<Queues>,
     split: Vec<Mutex<VecDeque<Arc<Job>>>>,
     sleepers: Vec<AtomicBool>,
@@ -221,6 +222,7 @@ impl Pool {
             }),
             idle: Condvar::new(),
             closed: AtomicBool::new(false),
+            teardown: Mutex::new(()),
             queues: Mutex::new(Queues {
                 global: VecDeque::new(),
                 local: (0..count).map(|_| VecDeque::new()).collect(),
@@ -472,7 +474,12 @@ impl Pool {
     }
     fn close_workers(&self) -> io::Result<()> {
         let mut panicked = false;
-        self.closed.store(true, Ordering::Release);
+        // The condition-variable predicate must change under the same lock
+        // used by idle workers. Otherwise notify can precede their wait.
+        {
+            let _queues = self.queues.lock().unwrap();
+            self.closed.store(true, Ordering::Release);
+        }
         self.ready.notify_all();
         for worker in 0..self.count {
             self.unpark(worker);
@@ -503,6 +510,9 @@ impl Pool {
                 "shutdown must run outside executor threads",
             ));
         }
+        // Check self-join before this lock: a worker must never wait behind
+        // an external caller that is waiting for that worker's active lease.
+        let _teardown = self.teardown.lock().unwrap();
         let deadline = Instant::now() + SHUTDOWN_LIMIT;
         let mut state = self.active.lock().unwrap();
         while state.count != 0 {
@@ -785,6 +795,40 @@ mod tests {
             wait_for(steady);
             pool.shutdown().unwrap();
             assert!(pool.ids.lock().unwrap().is_empty());
+        }
+    }
+    #[test]
+    fn concurrent_shutdown_of_idle_workers_is_idempotent() {
+        for policy in [
+            Policy::Global,
+            Policy::Local,
+            Policy::Steal,
+            Policy::TokioPool,
+        ] {
+            for _ in 0..16 {
+                let pool = Pool::new(policy, 2, 1, 3).unwrap();
+                let gate = Arc::new(std::sync::Barrier::new(5));
+                let (done, rx) = std_mpsc::channel();
+                let mut closers = Vec::new();
+                pool.ready.notify_all();
+                for _ in 0..4 {
+                    let (p, g, d) = (pool.clone(), gate.clone(), done.clone());
+                    closers.push(thread::spawn(move || {
+                        g.wait();
+                        d.send(p.shutdown()).unwrap();
+                    }));
+                }
+                gate.wait();
+                for _ in 0..4 {
+                    rx.recv_timeout(LIMIT)
+                        .expect("idle shutdown stalled")
+                        .unwrap();
+                }
+                for closer in closers {
+                    closer.join().unwrap();
+                }
+                assert!(pool.ids.lock().unwrap().is_empty());
+            }
         }
     }
     #[test]

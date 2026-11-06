@@ -14,6 +14,9 @@ import statistics
 import subprocess
 import time
 
+if not __debug__:
+    raise RuntimeError('Research commands require Python without -O so integrity checks remain enabled')
+
 ROOT = Path(__file__).resolve().parents[1]
 VARIANTS = {
     'async': ('', 0), 'tokio-1': ('tokio-batch', 1),
