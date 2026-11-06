@@ -15,7 +15,10 @@ struct Owner {
 thread_local! {
     static OWNER: RefCell<Option<Owner>> = const {RefCell::new(None)};
 }
-pub(super) struct OwnerGuard;
+// Drop clears thread-local ownership; this guard cannot migrate to a helper.
+pub(super) struct OwnerGuard {
+    _not_send: std::marker::PhantomData<*const ()>,
+}
 impl Drop for OwnerGuard {
     fn drop(&mut self) {
         // Release TLS ownership before dropping the Worker handle. Its shared
@@ -34,7 +37,9 @@ pub(super) fn install(pool: usize, worker: usize, queue: Worker<Work>) -> OwnerG
             injection_first: Cell::new(false),
         });
     });
-    OwnerGuard
+    OwnerGuard {
+        _not_send: std::marker::PhantomData,
+    }
 }
 pub(super) struct ReadyDeque {
     injection: Injector<Work>,
