@@ -1956,7 +1956,8 @@ mod turn_regressions {
             };
             turn.resumed();
             for _ in 0..3 {
-                assert!(futures::poll!(turn.after_message(false)).is_ready());
+                let mut message = Box::pin(turn.after_message(false));
+                assert!(futures::poll!(message.as_mut()).is_ready());
             }
             assert!(turn.began.is_none());
             let mut fourth = Box::pin(turn.after_message(false));
