@@ -754,11 +754,16 @@ async fn run_actor_lifecycle<A: Actor>(
 
     loop {
         let msg = {
-            #[cfg(not(feature = "backend-experiments"))]
-            let recv = pin!(rx.recv());
-            #[cfg(feature = "backend-experiments")]
+            let mut parked = false;
             let recv = pin!(future::poll_fn(|cx| {
+                // A receive that previously parked must observe a stop before
+                // consuming newly queued work when both futures become ready.
+                if parked && cancellation_token.is_cancelled() {
+                    return std::task::Poll::Ready(None);
+                }
                 let result = rx.poll_recv(cx);
+                parked = result.is_pending();
+                #[cfg(feature = "backend-experiments")]
                 if let Some(turn) = &mut turn {
                     if result.is_pending() {
                         turn.parked();
