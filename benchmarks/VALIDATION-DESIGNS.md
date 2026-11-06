@@ -73,3 +73,7 @@ Before promoting any candidate, test full actor lifecycle, async suspension,
 panic cleanup, cancellation, monitors, dynamic actor registration, timer/I/O
 compatibility, skew, long-running saturation, and resource ceilings. No native
 prototype in this study meets all those requirements yet.
+
+## Merge validation, November 6
+
+Main completion/watchdog fixes were merged without changing measured historical datasets. Workspace all-feature tests and all-target/all-feature Clippy passed. The watchdog subprocess-descendant regression passed. Fresh optimized benches rejected unknown/duplicate flags, invalid booleans and observer/routing/backend values before starting workers; async, native-ready and Tokio TCP mux smoke cases passed. CLI validation now covers both experiment targets as well as baseline; zero I/O workers is rejected before any socket threads start. See the [focused agy merge review](reviews/agy-design-merge-2026-11-06.md).

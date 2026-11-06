@@ -32,7 +32,8 @@ fn main() {
     .contains(&backend.as_str()));
     let connections: usize = args("connections", "16").parse().unwrap();
     let messages: usize = args("messages", "2000").parse().unwrap();
-    assert!(connections > 0 && connections <= 256 && messages > 0);
+    let workers: usize = args("io-workers", "1").parse().unwrap();
+    assert!(connections > 0 && connections <= 256 && messages > 0 && workers > 0);
     #[cfg(target_os = "linux")]
     if backend == "monoio-uring" {
         // Fail before spawning barrier participants when the VM/seccomp denies io_uring.
@@ -41,12 +42,7 @@ fn main() {
             .expect("io_uring preflight");
     }
     if backend.ends_with("-mux") {
-        io_mux::run(
-            &backend,
-            connections,
-            messages,
-            args("io-workers", "1").parse().unwrap(),
-        );
+        io_mux::run(&backend, connections, messages, workers);
         return;
     }
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
