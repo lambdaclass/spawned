@@ -588,6 +588,7 @@ impl<A: Actor> ActorRef<A> {
                     | "native-steal"
                     | "native-root"
                     | "native-runnable"
+                    | "native-deque"
             ))
         .then(MessageTurn::from_env);
         #[cfg(feature = "backend-experiments")]
@@ -624,24 +625,9 @@ impl<A: Actor> ActorRef<A> {
                 #[cfg(debug_assertions)]
                 let inner_future = warn_on_block::WarnOnBlocking::new(inner_future);
                 #[cfg(feature = "backend-experiments")]
-                if matches!(
-                    scheduler.as_str(),
-                    "native-global"
-                        | "native-local"
-                        | "native-steal"
-                        | "native-root"
-                        | "native-runnable"
-                        | "tokio-pool"
-                ) {
-                    use rt::experimental::dispatcher::{self, Policy};
-                    let policy = match scheduler.as_str() {
-                        "native-global" => Policy::Global,
-                        "native-local" => Policy::Local,
-                        "native-steal" => Policy::Steal,
-                        "native-root" => Policy::Root,
-                        "native-runnable" => Policy::Runnable,
-                        _ => Policy::TokioPool,
-                    };
+                if let Some(policy) = rt::experimental::dispatcher::policy_for_scheduler(&scheduler)
+                {
+                    use rt::experimental::dispatcher;
                     if let Err(error) = dispatcher::spawn(policy, inner_future) {
                         actor_ref.cancellation_token.cancel();
                         drop(MonitorCleanup(actor_ref.monitors.clone()));

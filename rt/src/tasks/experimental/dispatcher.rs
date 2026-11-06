@@ -4,6 +4,7 @@
 //! A shared Tokio runtime supplies I/O, timers, helpers and a single-poll
 //! cooperative-budget bridge. Native actor task IDs are intentionally absent.
 use super::super::dispatch_gate::Gate;
+mod ready_deque;
 use std::{
     cell::Cell,
     collections::VecDeque,
@@ -33,7 +34,23 @@ pub enum Policy {
     Steal,
     Root,
     Runnable,
+    Deque,
     TokioPool,
+}
+/// Shared selector mapping for actor dispatch, harness runtime ownership and
+/// lifecycle tests. Keep all research-owned runtimes in one place.
+#[doc(hidden)]
+pub fn policy_for_scheduler(selector: &str) -> Option<Policy> {
+    match selector {
+        "native-global" => Some(Policy::Global),
+        "native-local" => Some(Policy::Local),
+        "native-steal" => Some(Policy::Steal),
+        "native-root" => Some(Policy::Root),
+        "native-runnable" => Some(Policy::Runnable),
+        "native-deque" => Some(Policy::Deque),
+        "tokio-pool" => Some(Policy::TokioPool),
+        _ => None,
+    }
 }
 struct Active {
     count: usize,
@@ -54,6 +71,7 @@ struct Pool {
     teardown: Mutex<()>,
     queues: Mutex<Queues>,
     split: Vec<Mutex<VecDeque<Work>>>,
+    deque: Option<ready_deque::ReadyDeque>,
     sleepers: Vec<AtomicBool>,
     wake_handles: Vec<OnceLock<thread::Thread>>,
     wake_next: AtomicUsize,
@@ -302,6 +320,13 @@ impl Pool {
                 return Err(io::Error::other(error));
             }
         };
+        let (deque, owned_deques) = if policy == Policy::Deque {
+            let (ready, queues) = ready_deque::ReadyDeque::new(count);
+            (Some(ready), queues)
+        } else {
+            (None, Vec::new())
+        };
+        let mut owned_deques = owned_deques.into_iter();
         let pool = Arc::new(Self {
             policy,
             count,
@@ -319,6 +344,7 @@ impl Pool {
                 local: (0..count).map(|_| VecDeque::new()).collect(),
             }),
             split: (0..count).map(|_| Mutex::new(VecDeque::new())).collect(),
+            deque,
             sleepers: (0..count).map(|_| AtomicBool::new(false)).collect(),
             wake_handles: (0..count).map(|_| OnceLock::new()).collect(),
             wake_next: AtomicUsize::new(0),
@@ -339,11 +365,18 @@ impl Pool {
         if policy != Policy::TokioPool {
             for worker in 0..count {
                 let cloned = pool.clone();
+                let deque = owned_deques.next();
                 let (started, startup) = std::sync::mpsc::sync_channel::<io::Result<()>>(1);
                 match thread::Builder::new()
                     .name(format!("actor-worker-n{worker}"))
                     .spawn(move || {
-                        if matches!(cloned.policy, Policy::Root | Policy::Runnable) {
+                        let _owner = deque.map(|queue| {
+                            ready_deque::install(Arc::as_ptr(&cloned) as usize, queue)
+                        });
+                        if matches!(
+                            cloned.policy,
+                            Policy::Root | Policy::Runnable | Policy::Deque
+                        ) {
                             match tokio::runtime::Builder::new_current_thread().build() {
                                 Ok(runtime) => {
                                     if started.send(Ok(())).is_ok() {
@@ -393,7 +426,22 @@ impl Pool {
         self.enqueue_from(job, current);
     }
     fn enqueue_from(&self, job: Work, current: Option<usize>) {
-        if matches!(self.policy, Policy::Steal | Policy::Root | Policy::Runnable) {
+        if let Some(deque) = &self.deque {
+            let queued = deque.enqueue(self as *const Self as usize, job, current);
+            if queued.external {
+                self.unpark(queued.owner);
+            }
+            if queued.share
+                || (queued.external && !self.sleepers[queued.owner].load(Ordering::Acquire))
+            {
+                self.unpark_peer(queued.owner);
+            }
+            return;
+        }
+        if matches!(
+            self.policy,
+            Policy::Steal | Policy::Root | Policy::Runnable | Policy::Deque
+        ) {
             let target = current.unwrap_or_else(|| job.preferred()) % self.count;
             let depth = {
                 let mut queue = self.split[target].lock().unwrap();
@@ -423,7 +471,7 @@ impl Pool {
         }
     }
     fn unpark(&self, worker: usize) {
-        if matches!(self.policy, Policy::Root | Policy::Runnable) {
+        if matches!(self.policy, Policy::Root | Policy::Runnable | Policy::Deque) {
             self.root_ready[worker].notify_one();
             return;
         }
@@ -441,7 +489,17 @@ impl Pool {
             }
         }
     }
+    fn more_ready(&self, worker: usize) -> bool {
+        if let Some(deque) = &self.deque {
+            deque.has_local(self as *const Self as usize)
+        } else {
+            !self.split[worker].lock().unwrap().is_empty()
+        }
+    }
     fn take_split(&self, worker: usize, oldest: bool, victim: &mut usize) -> Option<Work> {
+        if let Some(deque) = &self.deque {
+            return deque.take(self as *const Self as usize, worker, oldest, victim);
+        }
         let own = {
             let mut queue = self.split[worker].lock().unwrap();
             if oldest {
@@ -483,7 +541,7 @@ impl Pool {
             if let Some(job) = job {
                 self.sleepers[worker].store(false, Ordering::Release);
                 local_run = if oldest { 0 } else { local_run + 1 };
-                if !self.split[worker].lock().unwrap().is_empty() {
+                if self.more_ready(worker) {
                     self.unpark_peer(worker);
                 }
                 job.poll(worker, &self.handle, true);
@@ -532,7 +590,7 @@ impl Pool {
                     }
                 };
                 local_run = if oldest { 0 } else { local_run + 1 };
-                if !self.split[worker].lock().unwrap().is_empty() {
+                if self.more_ready(worker) {
                     self.unpark_peer(worker);
                 }
                 job.poll(worker, &self.handle, false);
@@ -635,7 +693,7 @@ impl Pool {
                 .ok_or_else(|| io::Error::other("Tokio pool closed"))?;
             tx.send(Box::pin(future))
                 .map_err(|_| io::Error::other("Tokio pool terminated"))
-        } else if self.policy == Policy::Runnable {
+        } else if matches!(self.policy, Policy::Runnable | Policy::Deque) {
             let weak = Arc::downgrade(self);
             let meta = TaskMeta {
                 pool: weak.clone(),
@@ -839,6 +897,7 @@ mod tests {
             Policy::Steal,
             Policy::Root,
             Policy::Runnable,
+            Policy::Deque,
             Policy::TokioPool,
         ] {
             let pool = Pool::new(policy, 2, 1, 3, 8).unwrap();
@@ -867,6 +926,7 @@ mod tests {
             Policy::Steal,
             Policy::Root,
             Policy::Runnable,
+            Policy::Deque,
             Policy::TokioPool,
         ] {
             let pool = Pool::new(policy, 2, 1, 3, 8).unwrap();
@@ -913,6 +973,7 @@ mod tests {
             Policy::Steal,
             Policy::Root,
             Policy::Runnable,
+            Policy::Deque,
         ] {
             let pool = Pool::new(policy, 1, 1, 3, 8).unwrap();
             let (tx, rx) = std_mpsc::channel();
@@ -941,6 +1002,7 @@ mod tests {
             Policy::Steal,
             Policy::Root,
             Policy::Runnable,
+            Policy::Deque,
             Policy::TokioPool,
         ] {
             let pool = Pool::new(policy, 2, 1, 3, 8).unwrap();
@@ -983,7 +1045,7 @@ mod tests {
                 panic!("injected future destructor panic");
             }
         }
-        for policy in [Policy::Root, Policy::Runnable] {
+        for policy in [Policy::Root, Policy::Runnable, Policy::Deque] {
             let pool = Pool::new(policy, 1, 1, 3, 8).unwrap();
             let (dropped, rx) = std_mpsc::channel();
             pool.spawn(DropPanic {
@@ -1031,6 +1093,7 @@ mod tests {
             Policy::Steal,
             Policy::Root,
             Policy::Runnable,
+            Policy::Deque,
             Policy::TokioPool,
         ] {
             let pool = Pool::new(policy, 2, 1, 3, 8).unwrap();
@@ -1074,6 +1137,7 @@ mod tests {
             Policy::Steal,
             Policy::Root,
             Policy::Runnable,
+            Policy::Deque,
             Policy::TokioPool,
         ] {
             for _ in 0..16 {
@@ -1110,6 +1174,7 @@ mod tests {
             Policy::Steal,
             Policy::Root,
             Policy::Runnable,
+            Policy::Deque,
         ] {
             let pool = Pool::new(policy, 2, 1, 3, 8).unwrap();
             let (tx, rx) = std_mpsc::channel();
@@ -1127,7 +1192,7 @@ mod tests {
     #[test]
     fn cooperative_receive_loop_yields_with_single_native_worker() {
         let mut cases = vec![(Policy::Global, 8), (Policy::Local, 8), (Policy::Steal, 8)];
-        for policy in [Policy::Root, Policy::Runnable] {
+        for policy in [Policy::Root, Policy::Runnable, Policy::Deque] {
             for quantum in [1, 8, 32, 128] {
                 cases.push((policy, quantum));
             }
