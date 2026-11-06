@@ -704,9 +704,17 @@ async fn run_actor<A: Actor>(
     ctx: Context<A>,
     mut rx: mpsc::Receiver<Box<dyn Envelope<A> + Send>>,
     cancellation_token: CancellationToken,
-    #[cfg(feature = "backend-experiments")] mut turn: Option<MessageTurn>,
+    #[cfg(feature = "backend-experiments")] turn: Option<MessageTurn>,
 ) -> ExitReason {
-    let reason = run_actor_lifecycle(actor, ctx, &mut rx, cancellation_token).await;
+    let reason = run_actor_lifecycle(
+        actor,
+        ctx,
+        &mut rx,
+        cancellation_token,
+        #[cfg(feature = "backend-experiments")]
+        turn,
+    )
+    .await;
     // A concurrent send may have reserved a channel slot without publishing its
     // envelope yet. Dropping the receiver alone can leave that envelope (and its
     // reply sender) retained until every ActorRef is dropped. Closing admission
@@ -722,6 +730,7 @@ async fn run_actor_lifecycle<A: Actor>(
     ctx: Context<A>,
     rx: &mut mpsc::Receiver<Box<dyn Envelope<A> + Send>>,
     cancellation_token: CancellationToken,
+    #[cfg(feature = "backend-experiments")] mut turn: Option<MessageTurn>,
 ) -> ExitReason {
     let _monitor_cleanup = MonitorCleanup(ctx.monitors.clone());
     let start_result = AssertUnwindSafe(actor.started(&ctx)).catch_unwind().await;
