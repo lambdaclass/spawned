@@ -72,3 +72,37 @@ SLO, production leak proof or throughput ranking.
 
 Agy approved the new queue/clock/caller paths and the soak for testing. That does
 not claim compilation, server tests, Loom or performance have already passed.
+
+## Publication and lifecycle corrections before measurement
+
+A fourth Loom model reproduced a real data-publication defect in the initial
+native Gate: an acquire-only early return for an already-queued wake did not
+publish writes to the next poll. Queue-count models alone missed it. Coalesced
+wakes now perform a same-value release RMW; only an old IDLE state schedules a
+new queue entry. Keep the RMW for already-NOTIFIED wakes as well. The initial
+007f source/432 successful benchmark processes are frozen as historical prototype
+evidence, and its remaining stages were cancelled before running. Benchmark
+outcome validation is not proof of arbitrary Future wake correctness.
+
+Thread-stop callbacks now remove retired Tokio/blocking-helper IDs; a unit test
+forces helper creation/retirement and checks the registry returns to steady size
+and zero after shutdown. Runtime teardown uses bounded graceful shutdown and
+reports remaining worker threads. Startup settings are read on first successful
+pool creation and remain immutable; malformed values/policy mismatches return
+errors. Global FIFO parks without an unnecessary periodic idle wake or local
+queue scan. Shared local remains the reference policy. These corrections and the
+new queue/control cases must be measured from a new common source.
+
+`--stage offered` uses 240 actors, four hot, common absolute rates 500k/900k/1.2M
+per second, both steady and 1,000-request bursts, three fresh repetitions, and
+unchanged deadline/drain/admission-validity checks. Burst and steady traffic are
+different workload shapes; never pool them or call bursts proof of steady-load
+fairness. A schedule that misses the 1%/1ms threshold remains invalid.
+
+`fede_soak.py` archives eight ten-minute processes with exact configuration,
+source/binary hashes, diagnostics and streamed series. Seven configurations have
+four total runtime workers; native-steal N4+R1 is the additional equal-actor-count
+control on the same four physical cores. Each process has a requested-duration
+plus 60s watchdog, and the controller leaves enough time before the overnight
+stop time to complete it. Smaller three-second/eight-configuration smokes precede
+long runs. No per-policy capacity or SLO ranking follows from these soaks.

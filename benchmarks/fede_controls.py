@@ -13,7 +13,7 @@ VARIANTS.update({'native-global':('native-global',16),'native-local':('native-lo
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--output',type=Path,required=True)
-    p.add_argument('--stage',choices=['smoke','queues','callers','clock','profiles'],required=True)
+    p.add_argument('--stage',choices=['smoke','queues','callers','clock','profiles','offered'],required=True)
     p.add_argument('--stop-at',type=float,required=True)
     a=p.parse_args();a.actor_cpus='2,3,4,5';a.driver_cpus='6,7,14,15';a.collector_cpus='8,9,16,17'
     a.workers=[3,4];a.variants=['async','tokio-16','sharded-16','tokio-pool','native-global','native-local','native-steal']
@@ -22,9 +22,17 @@ def main():
     c.meta['controller_sha256']=hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
     c.meta['purpose']='Separate independent experiment blocks. Queue comparison: fixed blocking caller/counter-on/slice50. Caller factorial: blocking256OSthreads vs4current-threadRTs/256logicalproducers and observationcounteron/off, common4actorCPU+4driverCPU. Clock comparison: async caller, counter on, slice0/25/50/200 with same turn16. Native3actor+R1 and native4actor+R1 compareTokio4actor; unequalactiveworkerthreads disclosed. No source mixing with prior07f.'
     jobs=[]
-    policies=a.variants if a.stage in ['smoke','queues','profiles'] else ['async','tokio-16','sharded-16','native-steal']
+    policies=a.variants if a.stage in ['smoke','queues','profiles','offered'] else ['async','tokio-16','sharded-16','native-steal']
     for v in policies:
-        for workers in ([3,4] if v.startswith('native') and a.stage in ['queues','profiles'] else [4]):
+        for workers in ([3,4] if v.startswith('native') and a.stage in ['queues','profiles','offered'] else [4]):
+            if a.stage=='offered':
+                for layout in ['spread','concentrated']:
+                    for rate in [500_000,900_000,1_200_000]:
+                        for burst in [1,1000]:
+                            for repeat in range(3):
+                                cfg=dict(mode='offered',layout=layout,actors=240,producers=4,messages=rate*2,rate=rate,burst=burst,iterations=100,**{'hot-iterations':5000})
+                                jobs.append((v,workers,cfg,repeat,dict(SPAWNED_EXPERIMENT_SLICE_US=50,SPAWNED_EXPERIMENT_REACTORS=1,SPAWNED_EXPERIMENT_LOCAL_BUDGET=3)))
+                continue
             for topology in ['chain','fanout']:
                 for layout in ['same','cross']:
                     caller_cases=[('blocking','on')]
