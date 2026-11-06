@@ -1718,6 +1718,7 @@ dependencies = [
  "crossbeam-deque",
  "ctrlc",
  "loom",
+ "pin-project-lite",
  "tokio",
  "tokio-stream",
  "tokio-util",

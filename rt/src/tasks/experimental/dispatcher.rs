@@ -52,6 +52,23 @@ pub fn policy_for_scheduler(selector: &str) -> Option<Policy> {
         _ => None,
     }
 }
+#[derive(Clone, Copy)]
+struct DriverConfig {
+    quantum: usize,
+    zero_schedule: bool,
+    wake_precheck: bool,
+    inline_future: bool,
+}
+impl Default for DriverConfig {
+    fn default() -> Self {
+        Self {
+            quantum: 8,
+            zero_schedule: false,
+            wake_precheck: false,
+            inline_future: false,
+        }
+    }
+}
 struct Active {
     count: usize,
     closed: bool,
@@ -67,6 +84,7 @@ struct Pool {
     root_quantum: usize,
     zero_schedule: bool,
     wake_precheck: bool,
+    inline_future: bool,
     active: Mutex<Active>,
     idle: Condvar,
     closed: AtomicBool,
@@ -133,6 +151,51 @@ impl Future for PanicSafeFuture {
 impl Drop for PanicSafeFuture {
     fn drop(&mut self) {
         self.dispose();
+    }
+}
+// Keep a concrete actor future in the task allocation. Projection preserves
+// !Unpin fields; set(None) drops in place, including on the unwind assignment
+// path, without moving the future or retaining a separate Box<dyn Future>.
+pin_project_lite::pin_project! {
+    struct InlinePanicSafeFuture<F> {
+        #[pin]
+        future: Option<F>,
+    }
+    impl<F> PinnedDrop for InlinePanicSafeFuture<F> {
+        fn drop(this: Pin<&mut Self>) {
+            this.dispose();
+        }
+    }
+}
+impl<F> InlinePanicSafeFuture<F> {
+    fn dispose(self: Pin<&mut Self>) {
+        let mut projected = self.project();
+        if catch_unwind(AssertUnwindSafe(|| projected.future.set(None))).is_err() {
+            tracing::error!("Experimental inline actor future destructor panicked");
+        }
+    }
+}
+impl<F: Future<Output = ()>> Future for InlinePanicSafeFuture<F> {
+    type Output = ();
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            self.as_mut()
+                .project()
+                .future
+                .as_pin_mut()
+                .expect("poll after completion")
+                .poll(cx)
+        }));
+        match result {
+            Ok(Poll::Pending) => Poll::Pending,
+            _ => {
+                if result.is_err() {
+                    tracing::error!("Experimental inline actor future panicked");
+                }
+                self.dispose();
+                Poll::Ready(())
+            }
+        }
     }
 }
 // Passing this function item keeps Schedule zero-sized. async-task can avoid
@@ -262,9 +325,7 @@ impl Pool {
         count: usize,
         reactors: usize,
         local_budget: usize,
-        root_quantum: usize,
-        zero_schedule: bool,
-        wake_precheck: bool,
+        driver: DriverConfig,
     ) -> io::Result<Arc<Self>> {
         let ids = Arc::new(Mutex::new(Vec::new()));
         let (stop, stopped) = oneshot::channel();
@@ -344,9 +405,10 @@ impl Pool {
             policy,
             count,
             local_budget,
-            root_quantum,
-            zero_schedule,
-            wake_precheck,
+            root_quantum: driver.quantum,
+            zero_schedule: driver.zero_schedule,
+            wake_precheck: driver.wake_precheck,
+            inline_future: driver.inline_future,
             active: Mutex::new(Active {
                 count: 0,
                 closed: false,
@@ -727,7 +789,27 @@ impl Pool {
                 preferred: AtomicUsize::new(self.next.fetch_add(1, Ordering::Relaxed) % self.count),
             };
             let builder = async_task::Builder::new().metadata(meta);
-            let (runnable, task) = if self.zero_schedule {
+            let (runnable, task) = if self.inline_future {
+                if self.zero_schedule {
+                    builder.spawn(
+                        move |_| InlinePanicSafeFuture {
+                            future: Some(future),
+                        },
+                        schedule_from_metadata,
+                    )
+                } else {
+                    builder.spawn(
+                        move |_| InlinePanicSafeFuture {
+                            future: Some(future),
+                        },
+                        move |runnable| {
+                            if let Some(pool) = weak.upgrade() {
+                                pool.enqueue_work(Work::Runnable(runnable));
+                            }
+                        },
+                    )
+                }
+            } else if self.zero_schedule {
                 builder.spawn(
                     move |_| PanicSafeFuture(Some(Box::pin(future))),
                     schedule_from_metadata,
@@ -868,12 +950,14 @@ pub fn spawn(policy: Policy, future: impl Future<Output = ()> + Send + 'static) 
             let quantum = number("SPAWNED_EXPERIMENT_ROOT_QUANTUM", "8")?;
             let zero_schedule = number("SPAWNED_EXPERIMENT_ZERO_SCHEDULE", "0")?;
             let wake_precheck = number("SPAWNED_EXPERIMENT_WAKE_PRECHECK", "0")?;
+            let inline_future = number("SPAWNED_EXPERIMENT_INLINE_FUTURE", "0")?;
             if !(1..=64).contains(&count)
                 || !(1..=8).contains(&reactors)
                 || !(1..=64).contains(&budget)
                 || !(1..=256).contains(&quantum)
                 || zero_schedule > 1
                 || wake_precheck > 1
+                || inline_future > 1
             {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
@@ -885,9 +969,12 @@ pub fn spawn(policy: Policy, future: impl Future<Output = ()> + Send + 'static) 
                 count,
                 reactors,
                 budget,
-                quantum,
-                zero_schedule == 1,
-                wake_precheck == 1,
+                DriverConfig {
+                    quantum,
+                    zero_schedule: zero_schedule == 1,
+                    wake_precheck: wake_precheck == 1,
+                    inline_future: inline_future == 1,
+                },
             )?;
             *slot = Some(pool.clone());
             pool
@@ -947,7 +1034,7 @@ mod tests {
             Policy::Deque,
             Policy::TokioPool,
         ] {
-            let pool = Pool::new(policy, 2, 1, 3, 8, false, false).unwrap();
+            let pool = Pool::new(policy, 2, 1, 3, DriverConfig::default()).unwrap();
             let (tx, rx) = std_mpsc::channel();
             for _ in 0..32 {
                 pool.spawn(WakeLoop {
@@ -969,7 +1056,18 @@ mod tests {
         assert_eq!(std::mem::size_of_val(&schedule_from_metadata), 0);
         for policy in [Policy::Runnable, Policy::Deque] {
             for (zero, precheck) in [(false, false), (false, true), (true, false), (true, true)] {
-                let pool = Pool::new(policy, 2, 1, 3, 8, zero, precheck).unwrap();
+                let pool = Pool::new(
+                    policy,
+                    2,
+                    1,
+                    3,
+                    DriverConfig {
+                        zero_schedule: zero,
+                        wake_precheck: precheck,
+                        ..DriverConfig::default()
+                    },
+                )
+                .unwrap();
                 let (done, rx) = std_mpsc::channel();
                 let mut producers = Vec::new();
                 for _ in 0..32 {
@@ -1014,6 +1112,119 @@ mod tests {
         }
     }
     #[test]
+    fn inline_future_stays_pinned_and_drops_once() {
+        use std::{cell::Cell, marker::PhantomPinned};
+        struct Probe {
+            address: Cell<usize>,
+            polls: Cell<usize>,
+            drops: Arc<AtomicUsize>,
+            finished: std_mpsc::Sender<()>,
+            panic_on_drop: bool,
+            _pin: PhantomPinned,
+        }
+        impl Future for Probe {
+            type Output = ();
+            fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+                let this = self.as_ref().get_ref();
+                let address = this as *const Self as usize;
+                if this.address.get() == 0 {
+                    this.address.set(address);
+                }
+                assert_eq!(this.address.get(), address, "pinned future moved");
+                let count = this.polls.get();
+                this.polls.set(count + 1);
+                if count < 3 {
+                    cx.waker().wake_by_ref();
+                    Poll::Pending
+                } else {
+                    Poll::Ready(())
+                }
+            }
+        }
+        impl Drop for Probe {
+            fn drop(&mut self) {
+                if self.address.get() != 0 {
+                    assert_eq!(
+                        self.address.get(),
+                        self as *const Self as usize,
+                        "future moved before drop"
+                    );
+                }
+                assert_eq!(
+                    self.drops.fetch_add(1, Ordering::SeqCst),
+                    0,
+                    "future dropped twice"
+                );
+                self.finished.send(()).unwrap();
+                assert!(
+                    !self.panic_on_drop,
+                    "injected inline future destructor panic"
+                );
+            }
+        }
+        // Direct wrapper: both disposal before first poll and completed disposal
+        // must guard Drop panics and leave Option::None after a panicking drop.
+        for polled in [false, true] {
+            let drops = Arc::new(AtomicUsize::new(0));
+            let (finished, rx) = std_mpsc::channel();
+            let mut future = Box::pin(InlinePanicSafeFuture {
+                future: Some(Probe {
+                    address: Cell::new(0),
+                    polls: Cell::new(0),
+                    drops: drops.clone(),
+                    finished,
+                    panic_on_drop: true,
+                    _pin: PhantomPinned,
+                }),
+            });
+            if polled {
+                let mut cx = Context::from_waker(Waker::noop());
+                while future.as_mut().poll(&mut cx).is_pending() {}
+                assert!(future.as_ref().project_ref().future.get_ref().is_none());
+            }
+            drop(future);
+            rx.recv_timeout(LIMIT).unwrap();
+            assert_eq!(drops.load(Ordering::SeqCst), 1);
+        }
+        // Real native queues/tickets must keep a !Unpin concrete future stable
+        // across repeated polls and release its lease for terminal shutdown.
+        for policy in [Policy::Runnable, Policy::Deque] {
+            for inline in [false, true] {
+                let pool = Pool::new(
+                    policy,
+                    2,
+                    1,
+                    3,
+                    DriverConfig {
+                        inline_future: inline,
+                        ..DriverConfig::default()
+                    },
+                )
+                .unwrap();
+                let (finished, rx) = std_mpsc::channel();
+                let mut counters = Vec::new();
+                for _ in 0..32 {
+                    let drops = Arc::new(AtomicUsize::new(0));
+                    counters.push(drops.clone());
+                    pool.spawn(Probe {
+                        address: Cell::new(0),
+                        polls: Cell::new(0),
+                        drops,
+                        finished: finished.clone(),
+                        panic_on_drop: false,
+                        _pin: PhantomPinned,
+                    })
+                    .unwrap();
+                }
+                for _ in 0..32 {
+                    rx.recv_timeout(LIMIT).unwrap();
+                }
+                pool.shutdown().unwrap();
+                assert!(counters.iter().all(|n| n.load(Ordering::SeqCst) == 1));
+            }
+        }
+    }
+    #[test]
     fn shared_reactor_timers_tcp_and_detached_helpers_survive_zero_actors() {
         use std::io::{Read, Write};
         for policy in [
@@ -1025,7 +1236,7 @@ mod tests {
             Policy::Deque,
             Policy::TokioPool,
         ] {
-            let pool = Pool::new(policy, 2, 1, 3, 8, false, false).unwrap();
+            let pool = Pool::new(policy, 2, 1, 3, DriverConfig::default()).unwrap();
             let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             let addr = listener.local_addr().unwrap();
             let server = thread::spawn(move || {
@@ -1071,7 +1282,7 @@ mod tests {
             Policy::Runnable,
             Policy::Deque,
         ] {
-            let pool = Pool::new(policy, 1, 1, 3, 8, false, false).unwrap();
+            let pool = Pool::new(policy, 1, 1, 3, DriverConfig::default()).unwrap();
             let (tx, rx) = std_mpsc::channel();
             let (entered, enter_rx) = std_mpsc::channel();
             let (release, gate) = std_mpsc::channel();
@@ -1101,7 +1312,7 @@ mod tests {
             Policy::Deque,
             Policy::TokioPool,
         ] {
-            let pool = Pool::new(policy, 2, 1, 3, 8, false, false).unwrap();
+            let pool = Pool::new(policy, 2, 1, 3, DriverConfig::default()).unwrap();
             let other = pool.clone();
             let (tx, rx) = std_mpsc::channel();
             pool.spawn(async move {
@@ -1142,7 +1353,7 @@ mod tests {
             }
         }
         for policy in [Policy::Root, Policy::Runnable, Policy::Deque] {
-            let pool = Pool::new(policy, 1, 1, 3, 8, false, false).unwrap();
+            let pool = Pool::new(policy, 1, 1, 3, DriverConfig::default()).unwrap();
             let (dropped, rx) = std_mpsc::channel();
             pool.spawn(DropPanic {
                 polled: false,
@@ -1174,12 +1385,21 @@ mod tests {
                 panic!("injected direct inner disposal panic");
             }
         }
-        let (done, rx) = std_mpsc::channel();
-        let mut guarded = Box::pin(PanicSafeFuture(Some(Box::pin(Bomb(done)))));
-        let mut cx = Context::from_waker(Waker::noop());
-        assert!(guarded.as_mut().poll(&mut cx).is_ready());
-        rx.recv_timeout(LIMIT).unwrap();
-        drop(guarded);
+        for inline in [false, true] {
+            let (done, rx) = std_mpsc::channel();
+            let mut guarded: FutureJob = if inline {
+                Box::pin(InlinePanicSafeFuture {
+                    future: Some(Bomb(done)),
+                })
+            } else {
+                Box::pin(PanicSafeFuture(Some(Box::pin(Bomb(done)))))
+            };
+            let mut cx = Context::from_waker(Waker::noop());
+            assert!(guarded.as_mut().poll(&mut cx).is_ready());
+            rx.recv_timeout(LIMIT).unwrap();
+            drop(guarded);
+            assert!(rx.try_recv().is_err(), "future destructor ran again");
+        }
     }
     #[test]
     fn retired_blocking_helpers_do_not_accumulate_thread_ids() {
@@ -1192,7 +1412,7 @@ mod tests {
             Policy::Deque,
             Policy::TokioPool,
         ] {
-            let pool = Pool::new(policy, 2, 1, 3, 8, false, false).unwrap();
+            let pool = Pool::new(policy, 2, 1, 3, DriverConfig::default()).unwrap();
             let steady = if policy == Policy::TokioPool { 3 } else { 4 };
             let wait_for = |expected| {
                 let deadline = Instant::now() + LIMIT;
@@ -1237,7 +1457,7 @@ mod tests {
             Policy::TokioPool,
         ] {
             for _ in 0..16 {
-                let pool = Pool::new(policy, 2, 1, 3, 8, false, false).unwrap();
+                let pool = Pool::new(policy, 2, 1, 3, DriverConfig::default()).unwrap();
                 let gate = Arc::new(std::sync::Barrier::new(5));
                 let (done, rx) = std_mpsc::channel();
                 let mut closers = Vec::new();
@@ -1272,7 +1492,7 @@ mod tests {
             Policy::Runnable,
             Policy::Deque,
         ] {
-            let pool = Pool::new(policy, 2, 1, 3, 8, false, false).unwrap();
+            let pool = Pool::new(policy, 2, 1, 3, DriverConfig::default()).unwrap();
             let (tx, rx) = std_mpsc::channel();
             pool.spawn(std::future::poll_fn(move |cx| {
                 tx.send(cx.waker().clone()).unwrap();
@@ -1294,7 +1514,17 @@ mod tests {
             }
         }
         for (policy, quantum) in cases {
-            let pool = Pool::new(policy, 1, 1, 3, quantum, false, false).unwrap();
+            let pool = Pool::new(
+                policy,
+                1,
+                1,
+                3,
+                DriverConfig {
+                    quantum,
+                    ..DriverConfig::default()
+                },
+            )
+            .unwrap();
             let stop = Arc::new(AtomicBool::new(false));
             let stop_job = stop.clone();
             let (tx, mut rx) = mpsc::unbounded_channel();

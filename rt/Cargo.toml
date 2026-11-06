@@ -14,6 +14,7 @@ ctrlc = "3.4"
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 
+pin-project-lite = { version = "=0.2.16", optional = true }
 crossbeam-deque = { version = "=0.8.8", optional = true }
 async-task = { version = "=4.7.1", optional = true }
 
@@ -27,4 +28,4 @@ loom = "0.7"
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(spawned_loom)'] }
 
 [features]
-backend-experiments = ["dep:async-task", "dep:crossbeam-deque"]
+backend-experiments = ["dep:async-task", "dep:crossbeam-deque", "dep:pin-project-lite"]
