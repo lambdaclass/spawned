@@ -23,6 +23,7 @@ use tokio::{
     runtime::Handle,
     sync::{mpsc, oneshot},
 };
+const SHUTDOWN_LIMIT: Duration = Duration::from_secs(5);
 type FutureJob = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
 thread_local! {static POLLING:Cell<Option<(usize,usize)>>=const {Cell::new(None)};}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -43,7 +44,6 @@ struct Queues {
 struct Pool {
     policy: Policy,
     count: usize,
-    reactors: usize,
     local_budget: usize,
     active: Mutex<Active>,
     idle: Condvar,
@@ -158,7 +158,9 @@ impl Pool {
             .name("actor-reactor-owner".into())
             .spawn(move || {
                 let ids_start = ids_clone.clone();
-                let runtime = tokio::runtime::Builder::new_multi_thread()
+                let ids_stop = ids_clone.clone();
+                let mut builder = tokio::runtime::Builder::new_multi_thread();
+                builder
                     .worker_threads(runtime_threads)
                     .thread_name(if policy == Policy::TokioPool {
                         "actor-worker-pool"
@@ -166,8 +168,16 @@ impl Pool {
                         "actor-reactor"
                     })
                     .on_thread_start(move || ids_start.lock().unwrap().push(thread::current().id()))
-                    .enable_all()
-                    .build();
+                    .on_thread_stop(move || {
+                        ids_stop
+                            .lock()
+                            .unwrap()
+                            .retain(|id| *id != thread::current().id())
+                    })
+                    .enable_all();
+                #[cfg(test)]
+                builder.thread_keep_alive(Duration::from_millis(10));
+                let runtime = builder.build();
                 let runtime = match runtime {
                     Ok(r) => r,
                     Err(error) => {
@@ -187,7 +197,7 @@ impl Pool {
                         let _ = stopped.await;
                     }
                 });
-                runtime.shutdown_background();
+                runtime.shutdown_timeout(SHUTDOWN_LIMIT);
             })?;
         ids.lock().unwrap().push(owner.thread().id());
         let handle = match initialized.recv() {
@@ -204,7 +214,6 @@ impl Pool {
         let pool = Arc::new(Self {
             policy,
             count,
-            reactors,
             local_budget,
             active: Mutex::new(Active {
                 count: 0,
@@ -245,7 +254,7 @@ impl Pool {
                         pool.workers.lock().unwrap().push(handle);
                     }
                     Err(error) => {
-                        pool.close_workers();
+                        let _ = pool.close_workers();
                         return Err(error);
                     }
                 }
@@ -376,12 +385,17 @@ impl Pool {
                         return;
                     }
                     let oldest = local_run >= self.local_budget;
-                    let own = if oldest {
+                    let own = if self.policy == Policy::Global {
+                        queues.global.pop_front()
+                    } else if oldest {
                         queues.local[worker].pop_front()
                     } else {
                         queues.local[worker].pop_back()
                     };
-                    let job = own.or_else(|| queues.global.pop_front()).or_else(|| {
+                    let job = own.or_else(|| {
+                        if self.policy == Policy::Global {
+                            return None;
+                        }
                         for _ in 0..self.count {
                             let other = victim % self.count;
                             victim += 1;
@@ -396,18 +410,24 @@ impl Pool {
                     });
                     if let Some(job) = job {
                         local_run = if oldest { 0 } else { local_run + 1 };
-                        if !queues.global.is_empty() || queues.local.iter().any(|q| !q.is_empty()) {
+                        if !queues.global.is_empty()
+                            || (self.policy == Policy::Local
+                                && queues.local.iter().any(|q| !q.is_empty()))
+                        {
                             self.ready.notify_one();
                         }
                         break job;
                     }
                     // Bounded idle steal interval: no spinning or stranded local
                     // work if its owner is inside a blocking handler.
-                    queues = self
-                        .ready
-                        .wait_timeout(queues, Duration::from_millis(1))
-                        .unwrap()
-                        .0;
+                    queues = if self.policy == Policy::Global {
+                        self.ready.wait(queues).unwrap()
+                    } else {
+                        self.ready
+                            .wait_timeout(queues, Duration::from_millis(1))
+                            .unwrap()
+                            .0
+                    };
                 }
             };
             job.poll(worker, &self.handle);
@@ -450,22 +470,32 @@ impl Pool {
             Ok(())
         }
     }
-    fn close_workers(&self) {
+    fn close_workers(&self) -> io::Result<()> {
+        let mut panicked = false;
         self.closed.store(true, Ordering::Release);
         self.ready.notify_all();
         for worker in 0..self.count {
             self.unpark(worker);
         }
         for worker in self.workers.lock().unwrap().drain(..) {
-            let _ = worker.join();
+            let id = worker.thread().id();
+            panicked |= worker.join().is_err();
+            self.ids.lock().unwrap().retain(|value| *value != id);
         }
         self.tokio_jobs.lock().unwrap().take();
         if let Some(stop) = self.reactor_stop.lock().unwrap().take() {
             let _ = stop.send(());
         }
         if let Some(owner) = self.owner.lock().unwrap().take() {
-            let _ = owner.join();
+            let id = owner.thread().id();
+            panicked |= owner.join().is_err();
+            self.ids.lock().unwrap().retain(|value| *value != id);
         }
+        let remaining = self.ids.lock().unwrap().len();
+        if panicked || remaining != 0 {
+            return Err(io::Error::other(format!("executor teardown: panicked={panicked}, remaining runtime threads={remaining}; blocking helpers must finish")));
+        }
+        Ok(())
     }
     fn shutdown(&self) -> io::Result<()> {
         if self.ids.lock().unwrap().contains(&thread::current().id()) {
@@ -473,18 +503,22 @@ impl Pool {
                 "shutdown must run outside executor threads",
             ));
         }
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + SHUTDOWN_LIMIT;
         let mut state = self.active.lock().unwrap();
         while state.count != 0 {
             let remaining = deadline
                 .checked_duration_since(Instant::now())
-                .ok_or_else(|| io::Error::other("stop/join actors before shutdown"))?;
+                .ok_or_else(|| {
+                    io::Error::other(format!(
+                        "stop/join actors before shutdown: {} active runtime leases",
+                        state.count
+                    ))
+                })?;
             state = self.idle.wait_timeout(state, remaining).unwrap().0;
         }
         state.closed = true;
         drop(state);
-        self.close_workers();
-        Ok(())
+        self.close_workers()
     }
 }
 fn registry() -> &'static Mutex<Option<Arc<Pool>>> {
@@ -509,26 +543,41 @@ pub fn lease_if_initialized() -> Option<RuntimeLease> {
     })
 }
 pub fn spawn(policy: Policy, future: impl Future<Output = ()> + Send + 'static) -> io::Result<()> {
-    let number = |key: &str, default: &str| {
-        std::env::var(key)
-            .unwrap_or_else(|_| default.into())
-            .parse::<usize>()
-            .expect("experimental executor integer")
-    };
-    let count = number("SPAWNED_EXPERIMENT_WORKERS", "2");
-    let reactors = number("SPAWNED_EXPERIMENT_REACTORS", "1");
-    let budget = number("SPAWNED_EXPERIMENT_LOCAL_BUDGET", "3");
-    assert!((1..=64).contains(&count) && (1..=8).contains(&reactors) && (1..=64).contains(&budget));
     let pool = {
         let mut slot = registry().lock().unwrap();
         if let Some(pool) = slot.as_ref() {
-            assert_eq!(
-                (pool.policy, pool.count, pool.reactors, pool.local_budget),
-                (policy, count, reactors, budget),
-                "one executor configuration per process"
-            );
+            if pool.policy != policy {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "one executor policy per process",
+                ));
+            }
             pool.clone()
         } else {
+            // Read immutable startup settings once, outside actor hot paths.
+            let number = |key: &str, default: &str| -> io::Result<usize> {
+                std::env::var(key)
+                    .unwrap_or_else(|_| default.into())
+                    .parse()
+                    .map_err(|_| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            format!("{key} must be an integer"),
+                        )
+                    })
+            };
+            let count = number("SPAWNED_EXPERIMENT_WORKERS", "2")?;
+            let reactors = number("SPAWNED_EXPERIMENT_REACTORS", "1")?;
+            let budget = number("SPAWNED_EXPERIMENT_LOCAL_BUDGET", "3")?;
+            if !(1..=64).contains(&count)
+                || !(1..=8).contains(&reactors)
+                || !(1..=64).contains(&budget)
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "experimental executor setting outside supported range",
+                ));
+            }
             let pool = Pool::new(policy, count, reactors, budget)?;
             *slot = Some(pool.clone());
             pool
@@ -695,6 +744,47 @@ mod tests {
             .unwrap();
             assert_eq!(rx.recv_timeout(LIMIT).unwrap(), 42);
             pool.shutdown().unwrap();
+        }
+    }
+    #[test]
+    fn retired_blocking_helpers_do_not_accumulate_thread_ids() {
+        for policy in [
+            Policy::Global,
+            Policy::Local,
+            Policy::Steal,
+            Policy::TokioPool,
+        ] {
+            let pool = Pool::new(policy, 2, 1, 3).unwrap();
+            let steady = if policy == Policy::TokioPool { 3 } else { 4 };
+            let wait_for = |expected| {
+                let deadline = Instant::now() + LIMIT;
+                while pool.ids.lock().unwrap().len() != expected {
+                    assert!(
+                        Instant::now() < deadline,
+                        "runtime thread IDs did not settle"
+                    );
+                    thread::sleep(Duration::from_millis(1));
+                }
+            };
+            wait_for(steady);
+            let gate = Arc::new(std::sync::Barrier::new(33));
+            let handles: Vec<_> = (0..32)
+                .map(|_| {
+                    let gate = gate.clone();
+                    pool.handle.spawn_blocking(move || {
+                        gate.wait();
+                    })
+                })
+                .collect();
+            gate.wait();
+            pool.handle.block_on(async {
+                for handle in handles {
+                    handle.await.unwrap();
+                }
+            });
+            wait_for(steady);
+            pool.shutdown().unwrap();
+            assert!(pool.ids.lock().unwrap().is_empty());
         }
     }
     #[test]
