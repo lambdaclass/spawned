@@ -314,6 +314,11 @@ The following behaviors are accurately disclosed in [full-actor-shards.md](https
 
 ## Completed Linux results and priorities review
 
+Agy's verdict: adequate as an exploratory engineering report with explicit caveats;
+do not promote sharding or yield policies to production defaults, and do not infer
+causal mechanisms without profiling. The review below assesses the complete
+525-run Linux dataset with five repetitions per cell.
+
 ## 1. Challenge of Proposed Conclusions
 
 1. **Keep Tokio default; preserve opt-in sharded research; no cross-OS rate comparisons (Supported with qualification):**

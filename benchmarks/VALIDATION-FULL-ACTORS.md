@@ -22,6 +22,11 @@ Measurements precede the later completion-getter fix. That fix affects status
 reporting after abnormal completion and has separate tests; no claim is made that
 the final branch was performance-measured after that fix.
 
+The inherited raw `capacity` field configures native prototype queues and has no
+effect on these unbounded full-actor mailboxes. Likewise, the baseline's generic
+`batch` field does not enable explicit turns; only the selected actor-tokio and
+actor-sharded policies do so.
+
 ## Tests and characterized differences
 
 - Workspace tests with no experimental selector pass, including all features.
