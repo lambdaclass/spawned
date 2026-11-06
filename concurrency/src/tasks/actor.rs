@@ -489,8 +489,10 @@ impl<A: Actor> ActorRef<A> {
     }
 
     /// Poll the exit reason. Returns `None` if the actor is still running.
+    /// A completion channel closed without a reason reports [`ExitReason::Kill`],
+    /// matching the wait methods (for example, after runtime shutdown).
     pub fn exit_reason(&self) -> Option<ExitReason> {
-        self.completion_rx.borrow().clone()
+        crate::child_handle::poll_exit_reason(&self.completion_rx)
     }
 
     /// Wait until the actor stops and return the exit reason.
