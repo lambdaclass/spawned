@@ -29,6 +29,7 @@ thread_local! {static POLLING:Cell<Option<(usize,usize)>>=const {Cell::new(None)
 pub enum Policy {
     Global,
     Local,
+    Steal,
     TokioPool,
 }
 struct Active {
@@ -48,6 +49,10 @@ struct Pool {
     idle: Condvar,
     closed: AtomicBool,
     queues: Mutex<Queues>,
+    split: Vec<Mutex<VecDeque<Arc<Job>>>>,
+    sleepers: Vec<AtomicBool>,
+    wake_handles: Vec<OnceLock<thread::Thread>>,
+    wake_next: AtomicUsize,
     ready: Condvar,
     next: AtomicUsize,
     workers: Mutex<Vec<JoinHandle<()>>>,
@@ -211,6 +216,10 @@ impl Pool {
                 global: VecDeque::new(),
                 local: (0..count).map(|_| VecDeque::new()).collect(),
             }),
+            split: (0..count).map(|_| Mutex::new(VecDeque::new())).collect(),
+            sleepers: (0..count).map(|_| AtomicBool::new(false)).collect(),
+            wake_handles: (0..count).map(|_| OnceLock::new()).collect(),
+            wake_next: AtomicUsize::new(0),
             ready: Condvar::new(),
             next: AtomicUsize::new(0),
             workers: Mutex::new(Vec::new()),
@@ -251,6 +260,22 @@ impl Pool {
         self.enqueue_from(job, current);
     }
     fn enqueue_from(&self, job: Arc<Job>, current: Option<usize>) {
+        if self.policy == Policy::Steal {
+            let target =
+                current.unwrap_or_else(|| job.preferred.load(Ordering::Relaxed)) % self.count;
+            let depth = {
+                let mut queue = self.split[target].lock().unwrap();
+                queue.push_back(job);
+                queue.len()
+            };
+            if current != Some(target) {
+                self.unpark(target);
+            }
+            if depth > 1 {
+                self.unpark_peer(target);
+            }
+            return;
+        }
         let mut queues = self.queues.lock().unwrap();
         if self.policy == Policy::Local {
             let target =
@@ -266,7 +291,81 @@ impl Pool {
             self.ready.notify_one();
         }
     }
+    fn unpark(&self, worker: usize) {
+        if let Some(handle) = self.wake_handles[worker].get() {
+            handle.unpark();
+        }
+    }
+    fn unpark_peer(&self, owner: usize) {
+        let first = self.wake_next.fetch_add(1, Ordering::Relaxed);
+        for step in 0..self.count {
+            let peer = first.wrapping_add(step) % self.count;
+            if peer != owner && self.sleepers[peer].load(Ordering::Acquire) {
+                self.unpark(peer);
+                break;
+            }
+        }
+    }
+    fn take_split(&self, worker: usize, oldest: bool, victim: &mut usize) -> Option<Arc<Job>> {
+        let own = {
+            let mut queue = self.split[worker].lock().unwrap();
+            if oldest {
+                queue.pop_front()
+            } else {
+                queue.pop_back()
+            }
+        };
+        own.or_else(|| {
+            for _ in 0..self.count {
+                let peer = *victim % self.count;
+                *victim = (*victim).wrapping_add(1);
+                if peer == worker {
+                    continue;
+                }
+                let job = self.split[peer].lock().unwrap().pop_front();
+                if job.is_some() {
+                    return job;
+                }
+            }
+            None
+        })
+    }
+    fn run_split(&self, worker: usize) {
+        let _ = self.wake_handles[worker].set(thread::current());
+        let mut local_run = 0;
+        let mut victim = worker + 1;
+        loop {
+            if self.closed.load(Ordering::Acquire) {
+                return;
+            }
+            let oldest = local_run >= self.local_budget;
+            let job = self.take_split(worker, oldest, &mut victim).or_else(|| {
+                // Register before the final search. An external unpark retains
+                // its token even if it races the transition into park_timeout.
+                self.sleepers[worker].store(true, Ordering::Release);
+                self.take_split(worker, oldest, &mut victim)
+            });
+            if let Some(job) = job {
+                self.sleepers[worker].store(false, Ordering::Release);
+                local_run = if oldest { 0 } else { local_run + 1 };
+                if !self.split[worker].lock().unwrap().is_empty() {
+                    self.unpark_peer(worker);
+                }
+                job.poll(worker, &self.handle);
+            } else {
+                if self.closed.load(Ordering::Acquire) {
+                    return;
+                }
+                thread::park_timeout(Duration::from_millis(1));
+                self.sleepers[worker].store(false, Ordering::Release);
+            }
+        }
+    }
     fn run(self: Arc<Self>, worker: usize) {
+        if self.policy == Policy::Steal {
+            self.run_split(worker);
+            return;
+        }
         let mut local_run = 0;
         let mut victim = worker + 1;
         loop {
@@ -354,6 +453,9 @@ impl Pool {
     fn close_workers(&self) {
         self.closed.store(true, Ordering::Release);
         self.ready.notify_all();
+        for worker in 0..self.count {
+            self.unpark(worker);
+        }
         for worker in self.workers.lock().unwrap().drain(..) {
             let _ = worker.join();
         }
@@ -477,7 +579,12 @@ mod tests {
     }
     #[test]
     fn duplicate_self_wakes_progress_without_concurrent_polls() {
-        for policy in [Policy::Global, Policy::Local, Policy::TokioPool] {
+        for policy in [
+            Policy::Global,
+            Policy::Local,
+            Policy::Steal,
+            Policy::TokioPool,
+        ] {
             let pool = Pool::new(policy, 2, 1, 3).unwrap();
             let (tx, rx) = std_mpsc::channel();
             for _ in 0..32 {
@@ -498,7 +605,12 @@ mod tests {
     #[test]
     fn shared_reactor_timers_tcp_and_detached_helpers_survive_zero_actors() {
         use std::io::{Read, Write};
-        for policy in [Policy::Global, Policy::Local, Policy::TokioPool] {
+        for policy in [
+            Policy::Global,
+            Policy::Local,
+            Policy::Steal,
+            Policy::TokioPool,
+        ] {
             let pool = Pool::new(policy, 2, 1, 3).unwrap();
             let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             let addr = listener.local_addr().unwrap();
@@ -537,7 +649,7 @@ mod tests {
     }
     #[test]
     fn reactor_helpers_progress_while_native_actor_workers_block() {
-        for policy in [Policy::Global, Policy::Local] {
+        for policy in [Policy::Global, Policy::Local, Policy::Steal] {
             let pool = Pool::new(policy, 1, 1, 3).unwrap();
             let (tx, rx) = std_mpsc::channel();
             let (entered, enter_rx) = std_mpsc::channel();
@@ -559,7 +671,12 @@ mod tests {
     }
     #[test]
     fn worker_self_shutdown_rejected_and_panic_does_not_kill_other_jobs() {
-        for policy in [Policy::Global, Policy::Local, Policy::TokioPool] {
+        for policy in [
+            Policy::Global,
+            Policy::Local,
+            Policy::Steal,
+            Policy::TokioPool,
+        ] {
             let pool = Pool::new(policy, 2, 1, 3).unwrap();
             let other = pool.clone();
             let (tx, rx) = std_mpsc::channel();
@@ -582,7 +699,7 @@ mod tests {
     }
     #[test]
     fn completed_job_ignores_retained_waker() {
-        for policy in [Policy::Global, Policy::Local] {
+        for policy in [Policy::Global, Policy::Local, Policy::Steal] {
             let pool = Pool::new(policy, 2, 1, 3).unwrap();
             let (tx, rx) = std_mpsc::channel();
             pool.spawn(std::future::poll_fn(move |cx| {
@@ -598,7 +715,7 @@ mod tests {
     }
     #[test]
     fn cooperative_receive_loop_yields_with_single_native_worker() {
-        for policy in [Policy::Global, Policy::Local] {
+        for policy in [Policy::Global, Policy::Local, Policy::Steal] {
             let pool = Pool::new(policy, 1, 1, 3).unwrap();
             let stop = Arc::new(AtomicBool::new(false));
             let stop_job = stop.clone();

@@ -31,7 +31,7 @@ fn drop_panic_isolated_and_terminal_shutdown_rejects_new_actors() {
     let scheduler = std::env::var("SPAWNED_EXPERIMENT_SCHEDULER").unwrap_or_default();
     if !matches!(
         scheduler.as_str(),
-        "native-global" | "native-local" | "tokio-pool"
+        "native-global" | "native-local" | "native-steal" | "tokio-pool"
     ) {
         return;
     }
