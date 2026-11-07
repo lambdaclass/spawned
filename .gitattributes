@@ -7,3 +7,6 @@ research/framework-metrics/**/data/*.csv whitespace=blank-at-eol,blank-at-eof,sp
 research/reliability/**/raw/** linguist-generated=true
 research/reliability/**/evidence/** linguist-generated=true
 research/reliability/**/figures/** linguist-generated=true
+research/client-observations/**/data/** linguist-generated=true
+research/client-observations/**/figures/** linguist-generated=true
+docs/reviews/dedicated-runtime-evidence/** linguist-generated=true

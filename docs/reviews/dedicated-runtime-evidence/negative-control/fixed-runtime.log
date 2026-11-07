@@ -1,0 +1,10 @@
+   Compiling spawned-rt v0.6.0 (/tmp/spawned-pr-security-review/integrated/rt)
+   Compiling spawned-concurrency v0.6.0 (/tmp/spawned-pr-security-review/integrated/concurrency)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.74s
+     Running tests/dedicated_runtime.rs (/tmp/spawned-fede-research-25dGGmPA/fairness-target/debug/deps/dedicated_runtime-24d80c38f424b814)
+
+running 1 test
+test thread_block_on_owns_one_worker_without_an_ambient_runtime ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+

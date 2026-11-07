@@ -1,0 +1,4 @@
+   Compiling spawned-rt v0.6.0 (/tmp/spawned-pr-security-review/integrated/rt)
+   Compiling spawned-concurrency v0.6.0 (/tmp/spawned-pr-security-review/integrated/concurrency)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.64s
+     Running tests/ready_gate_loom.rs (/tmp/spawned-fede-research-25dGGmPA/fairness-target/debug/deps/ready_gate_loom-e9638910d767625e)

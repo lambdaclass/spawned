@@ -1,0 +1,50 @@
+
+running 1 test
+[2m2026-11-07T02:04:23.096044Z[0m [32m INFO[0m [2mactor_scenarios[0m[2m:[0m actor churn progress [3mbackend[0m[2m=[0m0 [3mround[0m[2m=[0m0
+[2m2026-11-07T02:04:23.107125Z[0m [32m INFO[0m [2mactor_scenarios[0m[2m:[0m actor churn progress [3mbackend[0m[2m=[0m0 [3mround[0m[2m=[0m10
+[2m2026-11-07T02:04:23.117588Z[0m [32m INFO[0m [2mactor_scenarios[0m[2m:[0m actor churn progress [3mbackend[0m[2m=[0m0 [3mround[0m[2m=[0m20
+[2m2026-11-07T02:04:23.128122Z[0m [32m INFO[0m [2mactor_scenarios[0m[2m:[0m actor churn progress [3mbackend[0m[2m=[0m0 [3mround[0m[2m=[0m30
+[2m2026-11-07T02:04:23.138543Z[0m [32m INFO[0m [2mactor_scenarios[0m[2m:[0m actor churn progress [3mbackend[0m[2m=[0m0 [3mround[0m[2m=[0m40
+[2m2026-11-07T02:04:23.148992Z[0m [32m INFO[0m [2mactor_scenarios[0m[2m:[0m actor churn progress [3mbackend[0m[2m=[0m0 [3mround[0m[2m=[0m50
+[2m2026-11-07T02:04:23.159609Z[0m [32m INFO[0m [2mactor_scenarios[0m[2m:[0m actor churn progress [3mbackend[0m[2m=[0m0 [3mround[0m[2m=[0m60
+[2m2026-11-07T02:04:23.170386Z[0m [32m INFO[0m [2mactor_scenarios[0m[2m:[0m actor churn progress [3mbackend[0m[2m=[0m0 [3mround[0m[2m=[0m70
+[2m2026-11-07T02:04:23.180762Z[0m [32m INFO[0m [2mactor_scenarios[0m[2m:[0m actor churn progress [3mbackend[0m[2m=[0m0 [3mround[0m[2m=[0m80
+[2m2026-11-07T02:04:23.191259Z[0m [32m INFO[0m [2mactor_scenarios[0m[2m:[0m actor churn progress [3mbackend[0m[2m=[0m0 [3mround[0m[2m=[0m90
+[2m2026-11-07T02:04:23.200644Z[0m [32m INFO[0m [2mactor_scenarios[0m[2m:[0m actor churn complete [3mbackend[0m[2m=[0m0 [3mrounds[0m[2m=[0m100 [3melapsed_ms[0m[2m=[0m105
+[2m2026-11-07T02:04:23.201849Z[0m [32m INFO[0m [2mactor_scenarios[0m[2m:[0m actor churn progress [3mbackend[0m[2m=[0m1 [3mround[0m[2m=[0m0
+[2m2026-11-07T02:04:23.212881Z[0m [32m INFO[0m [2mactor_scenarios[0m[2m:[0m actor churn progress [3mbackend[0m[2m=[0m1 [3mround[0m[2m=[0m10
+[2m2026-11-07T02:04:23.229541Z[0m [32m INFO[0m [2mactor_scenarios[0m[2m:[0m actor churn progress [3mbackend[0m[2m=[0m1 [3mround[0m[2m=[0m20
+[2m2026-11-07T02:04:23.240553Z[0m [32m INFO[0m [2mactor_scenarios[0m[2m:[0m actor churn progress [3mbackend[0m[2m=[0m1 [3mround[0m[2m=[0m30
+[2m2026-11-07T02:04:23.251569Z[0m [32m INFO[0m [2mactor_scenarios[0m[2m:[0m actor churn progress [3mbackend[0m[2m=[0m1 [3mround[0m[2m=[0m40
+[2m2026-11-07T02:04:23.262506Z[0m [32m INFO[0m [2mactor_scenarios[0m[2m:[0m actor churn progress [3mbackend[0m[2m=[0m1 [3mround[0m[2m=[0m50
+[2m2026-11-07T02:04:23.273544Z[0m [32m INFO[0m [2mactor_scenarios[0m[2m:[0m actor churn progress [3mbackend[0m[2m=[0m1 [3mround[0m[2m=[0m60
+[2m2026-11-07T02:04:23.285435Z[0m [32m INFO[0m [2mactor_scenarios[0m[2m:[0m actor churn progress [3mbackend[0m[2m=[0m1 [3mround[0m[2m=[0m70
+[2m2026-11-07T02:04:23.297032Z[0m [32m INFO[0m [2mactor_scenarios[0m[2m:[0m actor churn progress [3mbackend[0m[2m=[0m1 [3mround[0m[2m=[0m80
+[2m2026-11-07T02:04:23.308039Z[0m [32m INFO[0m [2mactor_scenarios[0m[2m:[0m actor churn progress [3mbackend[0m[2m=[0m1 [3mround[0m[2m=[0m90
+[2m2026-11-07T02:04:23.317873Z[0m [32m INFO[0m [2mactor_scenarios[0m[2m:[0m actor churn complete [3mbackend[0m[2m=[0m1 [3mrounds[0m[2m=[0m100 [3melapsed_ms[0m[2m=[0m117
+[2m2026-11-07T02:04:23.319164Z[0m [32m INFO[0m [2mactor_scenarios[0m[2m:[0m actor churn progress [3mbackend[0m[2m=[0m2 [3mround[0m[2m=[0m0
+[2m2026-11-07T02:04:23.331928Z[0m [32m INFO[0m [2mactor_scenarios[0m[2m:[0m actor churn progress [3mbackend[0m[2m=[0m2 [3mround[0m[2m=[0m10
+[2m2026-11-07T02:04:23.345331Z[0m [32m INFO[0m [2mactor_scenarios[0m[2m:[0m actor churn progress [3mbackend[0m[2m=[0m2 [3mround[0m[2m=[0m20
+[2m2026-11-07T02:04:23.358842Z[0m [32m INFO[0m [2mactor_scenarios[0m[2m:[0m actor churn progress [3mbackend[0m[2m=[0m2 [3mround[0m[2m=[0m30
+[2m2026-11-07T02:04:23.371555Z[0m [32m INFO[0m [2mactor_scenarios[0m[2m:[0m actor churn progress [3mbackend[0m[2m=[0m2 [3mround[0m[2m=[0m40
+[2m2026-11-07T02:04:23.384058Z[0m [32m INFO[0m [2mactor_scenarios[0m[2m:[0m actor churn progress [3mbackend[0m[2m=[0m2 [3mround[0m[2m=[0m50
+[2m2026-11-07T02:04:23.396573Z[0m [32m INFO[0m [2mactor_scenarios[0m[2m:[0m actor churn progress [3mbackend[0m[2m=[0m2 [3mround[0m[2m=[0m60
+[2m2026-11-07T02:04:23.410364Z[0m [32m INFO[0m [2mactor_scenarios[0m[2m:[0m actor churn progress [3mbackend[0m[2m=[0m2 [3mround[0m[2m=[0m70
+[2m2026-11-07T02:04:23.423524Z[0m [32m INFO[0m [2mactor_scenarios[0m[2m:[0m actor churn progress [3mbackend[0m[2m=[0m2 [3mround[0m[2m=[0m80
+[2m2026-11-07T02:04:23.436147Z[0m [32m INFO[0m [2mactor_scenarios[0m[2m:[0m actor churn progress [3mbackend[0m[2m=[0m2 [3mround[0m[2m=[0m90
+[2m2026-11-07T02:04:23.448119Z[0m [32m INFO[0m [2mactor_scenarios[0m[2m:[0m actor churn complete [3mbackend[0m[2m=[0m2 [3mrounds[0m[2m=[0m100 [3melapsed_ms[0m[2m=[0m130
+[2m2026-11-07T02:04:23.449047Z[0m [32m INFO[0m [2mactor_scenarios[0m[2m:[0m actor churn progress [3mbackend[0m[2m=[0m3 [3mround[0m[2m=[0m0
+[2m2026-11-07T02:04:23.457433Z[0m [32m INFO[0m [2mactor_scenarios[0m[2m:[0m actor churn progress [3mbackend[0m[2m=[0m3 [3mround[0m[2m=[0m10
+[2m2026-11-07T02:04:23.466084Z[0m [32m INFO[0m [2mactor_scenarios[0m[2m:[0m actor churn progress [3mbackend[0m[2m=[0m3 [3mround[0m[2m=[0m20
+[2m2026-11-07T02:04:23.474933Z[0m [32m INFO[0m [2mactor_scenarios[0m[2m:[0m actor churn progress [3mbackend[0m[2m=[0m3 [3mround[0m[2m=[0m30
+[2m2026-11-07T02:04:23.483352Z[0m [32m INFO[0m [2mactor_scenarios[0m[2m:[0m actor churn progress [3mbackend[0m[2m=[0m3 [3mround[0m[2m=[0m40
+[2m2026-11-07T02:04:23.491719Z[0m [32m INFO[0m [2mactor_scenarios[0m[2m:[0m actor churn progress [3mbackend[0m[2m=[0m3 [3mround[0m[2m=[0m50
+[2m2026-11-07T02:04:23.500088Z[0m [32m INFO[0m [2mactor_scenarios[0m[2m:[0m actor churn progress [3mbackend[0m[2m=[0m3 [3mround[0m[2m=[0m60
+[2m2026-11-07T02:04:23.508494Z[0m [32m INFO[0m [2mactor_scenarios[0m[2m:[0m actor churn progress [3mbackend[0m[2m=[0m3 [3mround[0m[2m=[0m70
+[2m2026-11-07T02:04:23.517589Z[0m [32m INFO[0m [2mactor_scenarios[0m[2m:[0m actor churn progress [3mbackend[0m[2m=[0m3 [3mround[0m[2m=[0m80
+[2m2026-11-07T02:04:23.526001Z[0m [32m INFO[0m [2mactor_scenarios[0m[2m:[0m actor churn progress [3mbackend[0m[2m=[0m3 [3mround[0m[2m=[0m90
+[2m2026-11-07T02:04:23.533802Z[0m [32m INFO[0m [2mactor_scenarios[0m[2m:[0m actor churn complete [3mbackend[0m[2m=[0m3 [3mrounds[0m[2m=[0m100 [3melapsed_ms[0m[2m=[0m85
+test sustained_actor_churn ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.44s
+

@@ -1,0 +1,296 @@
+[
+  {
+    "label": "workspace-default",
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "--workspace"
+    ],
+    "env": {},
+    "returncode": 0,
+    "failure": null,
+    "elapsed_s": 15.293398842972238,
+    "rss_bytes": 1280118784,
+    "threads": 26,
+    "fds": 423,
+    "stdout": "001-workspace-default.stdout",
+    "stderr": "001-workspace-default.stderr",
+    "expected_error": null
+  },
+  {
+    "label": "clippy-default",
+    "command": [
+      "cargo",
+      "clippy",
+      "--locked",
+      "--workspace",
+      "--all-targets",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "env": {
+      "RUSTC": "/nix/store/xvp6nfxayb07si2jaggqwvx3iykw89g2-rustc-1.98.1/bin/rustc",
+      "RUSTDOC": "/nix/store/xvp6nfxayb07si2jaggqwvx3iykw89g2-rustc-1.98.1/bin/rustdoc"
+    },
+    "returncode": 0,
+    "failure": null,
+    "elapsed_s": 1.3493997089681216,
+    "rss_bytes": 537202688,
+    "threads": 12,
+    "fds": 34,
+    "stdout": "002-clippy-default.stdout",
+    "stderr": "002-clippy-default.stderr",
+    "expected_error": null
+  },
+  {
+    "label": "workspace-all",
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "--workspace",
+      "--all-features"
+    ],
+    "env": {},
+    "returncode": 0,
+    "failure": null,
+    "elapsed_s": 32.808080276008695,
+    "rss_bytes": 2017112064,
+    "threads": 76,
+    "fds": 425,
+    "stdout": "003-workspace-all.stdout",
+    "stderr": "003-workspace-all.stderr",
+    "expected_error": null
+  },
+  {
+    "label": "clippy-all",
+    "command": [
+      "cargo",
+      "clippy",
+      "--locked",
+      "--workspace",
+      "--all-targets",
+      "--all-features",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "env": {
+      "RUSTC": "/nix/store/xvp6nfxayb07si2jaggqwvx3iykw89g2-rustc-1.98.1/bin/rustc",
+      "RUSTDOC": "/nix/store/xvp6nfxayb07si2jaggqwvx3iykw89g2-rustc-1.98.1/bin/rustdoc"
+    },
+    "returncode": 0,
+    "failure": null,
+    "elapsed_s": 2.777075056976173,
+    "rss_bytes": 698531840,
+    "threads": 12,
+    "fds": 34,
+    "stdout": "004-clippy-all.stdout",
+    "stderr": "004-clippy-all.stderr",
+    "expected_error": null
+  },
+  {
+    "label": "build-reliability-tests",
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "spawned-concurrency",
+      "--no-run",
+      "--message-format=json",
+      "--test",
+      "request_histories",
+      "--test",
+      "delivery_simulation",
+      "--test",
+      "failure_windows",
+      "--test",
+      "payload_stress",
+      "--test",
+      "actor_scenarios"
+    ],
+    "env": {},
+    "returncode": 0,
+    "failure": null,
+    "elapsed_s": 3.357470517978072,
+    "rss_bytes": 889782272,
+    "threads": 19,
+    "fds": 424,
+    "stdout": "005-build-reliability-tests.stdout",
+    "stderr": "005-build-reliability-tests.stderr",
+    "expected_error": null
+  },
+  {
+    "label": "histories",
+    "command": [
+      "/tmp/spawned-fede-research-25dGGmPA/fairness-target/debug/deps/request_histories-b699f9094f5069a6",
+      "--nocapture"
+    ],
+    "env": {
+      "SPAWNED_HISTORY_CASES": "128",
+      "SPAWNED_HISTORY_SEED": "20261106"
+    },
+    "returncode": 0,
+    "failure": null,
+    "elapsed_s": 0.5001317870337516,
+    "rss_bytes": 5722112,
+    "threads": 7,
+    "fds": 13,
+    "stdout": "006-histories.stdout",
+    "stderr": "006-histories.stderr",
+    "expected_error": null
+  },
+  {
+    "label": "simulations",
+    "command": [
+      "/tmp/spawned-fede-research-25dGGmPA/fairness-target/debug/deps/delivery_simulation-e389e28d8f7e0744",
+      "--nocapture"
+    ],
+    "env": {
+      "SPAWNED_SIM_CASES": "256",
+      "SPAWNED_SIM_SEED": "20261106"
+    },
+    "returncode": 0,
+    "failure": null,
+    "elapsed_s": 0.18589426996186376,
+    "rss_bytes": 6868992,
+    "threads": 14,
+    "fds": 13,
+    "stdout": "007-simulations.stdout",
+    "stderr": "007-simulations.stderr",
+    "expected_error": null
+  },
+  {
+    "label": "failure-windows",
+    "command": [
+      "/tmp/spawned-fede-research-25dGGmPA/fairness-target/debug/deps/failure_windows-c352fc5757b810a6",
+      "--nocapture"
+    ],
+    "env": {
+      "SPAWNED_FAILURE_REPORT": "/tmp/spawned-pr-security-review/dedicated-runtime-final-checks/failure-coverage.txt"
+    },
+    "returncode": 0,
+    "failure": null,
+    "elapsed_s": 0.12353449902730063,
+    "rss_bytes": 6258688,
+    "threads": 7,
+    "fds": 9,
+    "stdout": "008-failure-windows.stdout",
+    "stderr": "008-failure-windows.stderr",
+    "expected_error": null
+  },
+  {
+    "label": "payloads",
+    "command": [
+      "/tmp/spawned-fede-research-25dGGmPA/fairness-target/debug/deps/payload_stress-166db542798e2839",
+      "--ignored",
+      "--nocapture"
+    ],
+    "env": {
+      "SPAWNED_STRESS_PRODUCERS": "128",
+      "SPAWNED_STRESS_MESSAGES": "256",
+      "SPAWNED_STRESS_PAYLOAD": "1024"
+    },
+    "returncode": 0,
+    "failure": null,
+    "elapsed_s": 0.13140329701127484,
+    "rss_bytes": 76115968,
+    "threads": 7,
+    "fds": 13,
+    "stdout": "009-payloads.stdout",
+    "stderr": "009-payloads.stderr",
+    "expected_error": null
+  },
+  {
+    "label": "scenarios",
+    "command": [
+      "/tmp/spawned-fede-research-25dGGmPA/fairness-target/debug/deps/actor_scenarios-2d29263244f01f7b"
+    ],
+    "env": {
+      "PROPTEST_CASES": "256",
+      "PROPTEST_RNG_SEED": "20261106"
+    },
+    "returncode": 0,
+    "failure": null,
+    "elapsed_s": 0.5140250499825925,
+    "rss_bytes": 9924608,
+    "threads": 27,
+    "fds": 53,
+    "stdout": "010-scenarios.stdout",
+    "stderr": "010-scenarios.stderr",
+    "expected_error": null
+  },
+  {
+    "label": "churn",
+    "command": [
+      "/tmp/spawned-fede-research-25dGGmPA/fairness-target/debug/deps/actor_scenarios-2d29263244f01f7b",
+      "sustained_actor_churn",
+      "--ignored"
+    ],
+    "env": {
+      "SPAWNED_STRESS_ROUNDS": "100"
+    },
+    "returncode": 0,
+    "failure": null,
+    "elapsed_s": 0.493134098011069,
+    "rss_bytes": 9326592,
+    "threads": 22,
+    "fds": 45,
+    "stdout": "011-churn.stdout",
+    "stderr": "011-churn.stderr",
+    "expected_error": null
+  },
+  {
+    "label": "cancellation-model",
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "spawned-rt",
+      "--test",
+      "cancellation_loom"
+    ],
+    "env": {
+      "RUSTFLAGS": "--cfg spawned_loom"
+    },
+    "returncode": 0,
+    "failure": null,
+    "elapsed_s": 6.662520741985645,
+    "rss_bytes": 428003328,
+    "threads": 11,
+    "fds": 208,
+    "stdout": "012-cancellation-model.stdout",
+    "stderr": "012-cancellation-model.stderr",
+    "expected_error": null
+  },
+  {
+    "label": "ready-model",
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "spawned-concurrency",
+      "--features",
+      "backend-experiments",
+      "--test",
+      "ready_gate_loom"
+    ],
+    "env": {
+      "RUSTFLAGS": "--cfg spawned_scheduler_loom"
+    },
+    "returncode": 0,
+    "failure": null,
+    "elapsed_s": 1.5770708020427264,
+    "rss_bytes": 350674944,
+    "threads": 11,
+    "fds": 196,
+    "stdout": "013-ready-model.stdout",
+    "stderr": "013-ready-model.stderr",
+    "expected_error": null
+  }
+]

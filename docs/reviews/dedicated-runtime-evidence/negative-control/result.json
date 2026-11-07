@@ -1,0 +1,30 @@
+{
+  "source": "9ed58d78d0ee6c0c4de135a4410c726f8e1f0bdf",
+  "negative_overlay": "rt/src/threads/mod.rs from8030665b",
+  "expected_old_workers": 4,
+  "expected_fixed_workers": 1,
+  "TOKIO_WORKER_THREADS": "4",
+  "old_failed_as_expected": true,
+  "fixed_passed": true,
+  "command": [
+    "taskset",
+    "-c",
+    "2,3,4,5",
+    "nice",
+    "-n",
+    "10",
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "spawned-concurrency",
+    "--test",
+    "dedicated_runtime",
+    "thread_block_on_owns_one_worker_without_an_ambient_runtime",
+    "--",
+    "--exact",
+    "--nocapture"
+  ],
+  "jobs": 2,
+  "timeout_s": 120
+}
