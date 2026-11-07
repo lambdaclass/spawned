@@ -10,7 +10,7 @@ specific isolation or blocking requirement, then measure the application.
 |---|---|---|
 | `tasks::Backend::Async` | Async I/O, many dynamic actors, general request/reply | Actors share Tokio workers; a running handler must cooperate |
 | `tasks::Backend::Blocking` | Persistent actors that perform blocking calls | Each actor occupies a Tokio blocking worker until it stops; excess actors queue, including startup |
-| `tasks::Backend::Thread` | Actors needing a dedicated execution thread | One OS thread and an isolated Tokio runtime per actor; account for helpers and descriptors |
+| `tasks::Backend::Thread` | Actors needing a dedicated execution thread | One dedicated root thread plus one isolated Tokio async worker per actor; blocking helpers can add threads |
 | `threads` module | Synchronous actor handlers | One native OS thread per actor; synchronous API |
 
 In tasks mode, existing actor/protocol definitions work with each supported
@@ -29,6 +29,21 @@ Stop and await actors when their work is finished. A dedicated thread does not
 make one long-running handler preemptible, and a persistent blocking actor does
 not release its worker between messages. Size persistent populations accordingly.
 The [API guide](API-GUIDE.md#backend-selection-tasks-mode) covers these APIs.
+
+`Backend::Thread` drives actor lifecycle hooks and handlers on its dedicated root
+thread. Its isolated multithread Tokio runtime has one async worker, explicitly
+configured independently of `TOKIO_WORKER_THREADS`. Spawned async helpers, timers
+and nested `Backend::Async` actors can progress on that worker while the root
+thread blocks; `block_in_place` remains supported. One blocked async worker can
+still stall other work assigned to it. Await blocking helpers instead of assuming
+that an isolated runtime provides unlimited parallel progress.
+
+Tokio can create additional threads for `spawn_blocking`, filesystem or DNS work,
+and each isolated runtime still consumes reactor descriptors. Stop and join
+nested actors explicitly before their owning runtime exits. Actor `join()` waits
+for actor completion, not detached helper completion or final runtime destruction;
+nonterminating blocking helpers can keep the native thread alive during teardown.
+`spawned_rt::threads::block_on` uses the same one-worker runtime configuration.
 
 ## Experimental fixed-core profiles
 

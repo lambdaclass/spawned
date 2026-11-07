@@ -187,7 +187,9 @@ Both provide the same `Actor`, `Handler<M>`, `ActorRef<A>`, and `Context<A>` typ
 Use Tokio (`Backend::Async`) for general async applications and dynamic actor
 populations. Use `Backend::Blocking` for persistent blocking work, or
 `Backend::Thread` when an actor needs a dedicated thread. Each blocking actor
-occupies a worker until it stops; each dedicated actor has its own thread/runtime.
+occupies a worker until it stops. Each dedicated async actor has its own root
+thread and an isolated runtime with one async helper worker; blocking helpers
+can create additional threads. See [backend resource sizing](docs/BACKENDS.md).
 
 The experimental pinned profiles target fixed streaming pipelines. Parked shards
 showed promising eight-core results; spinning can improve some tails but consumes

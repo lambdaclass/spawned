@@ -133,7 +133,7 @@ runtimes, and the separate status of experimental pinned profiles.
 |---------|-------------|
 | `Backend::Async` (default) | Standard async actors. Runs on the tokio runtime. Handlers must not block. |
 | `Backend::Blocking` | Actors that do blocking I/O (file system, synchronous HTTP). Runs on tokio's blocking thread pool. |
-| `Backend::Thread` | CPU-bound work or full isolation. Runs on a dedicated OS thread with its own tokio runtime. |
+| `Backend::Thread` | CPU-bound work or dedicated execution. One root OS thread plus an isolated Tokio runtime with one async helper worker; blocking helpers can add threads. |
 
 ```rust
 // Default — async on tokio

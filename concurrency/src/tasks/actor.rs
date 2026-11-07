@@ -36,8 +36,11 @@ pub use crate::response::DEFAULT_REQUEST_TIMEOUT;
 ///   Each actor occupies a blocking worker until it stops. Actors beyond the
 ///   available pool capacity remain queued, including their `started()` hook.
 /// - `Thread` — runs on a dedicated OS thread (for CPU-bound work or isolation).
-///   Each actor also creates an isolated Tokio runtime; account for helper threads
-///   and reactor descriptors when sizing large populations.
+///   Each actor has a dedicated root thread plus an isolated Tokio runtime with
+///   one async worker. Async helpers can progress while the root blocks, and
+///   `block_in_place` is supported. Blocking helpers may create further threads;
+///   account for those threads and reactor descriptors when sizing populations.
+///   Actor completion does not wait for detached helpers or runtime destruction.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Backend {
     #[default]

@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- Bound each dedicated async actor runtime to one async helper worker instead
+  of creating a machine-sized Tokio worker pool per actor. The actor remains
+  on its dedicated thread; blocking-helper progress, `block_in_place`, timers
+  and I/O remain supported. Blocking operations can still create extra threads.
+
+
 ## 0.6.0 — 2026-11-06
 
 ### Added
