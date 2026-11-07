@@ -36,7 +36,7 @@ jobs:
         run: cargo test --locked --verbose
       - name: Run capability examples
         run: |
-          for example in runtime_isolation byte_budget_pipeline timeout_outcomes graceful_drain; do
+          for example in dedicated_thread runtime_isolation byte_budget_pipeline timeout_outcomes graceful_drain; do
             timeout 60s cargo run --locked -p spawned-capability-examples --bin "$example"
           done
           timeout 60s cargo run --locked -p spawned-capability-examples --features metrics --bin framework_metrics
