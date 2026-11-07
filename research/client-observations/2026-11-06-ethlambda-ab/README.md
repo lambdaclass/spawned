@@ -104,6 +104,35 @@ with different retained data/history. These are observations, not proof of equal
 hardware, disk/cache conditions, EL configuration or host-wide CPU availability.
 Beacon process CPU excludes the execution client and other host processes.
 
+## Follow-up: separate answer arrival from actor application
+
+The per-block rows also permit `attestable - el_verdict`: equivalently
+`total_ms - before_ms - columns_wait_ms - el_ms`, since the SQL's execution-start
+anchor is `el_sent` on these 150 blocks. Mean answer-to-attestable was **3.53 ms**
+on eth4 and **5.30 ms** on eth5. The worst eth5 total-latency block applied its
+answer only **0.087 ms** after the request task recorded that answer; its large
+995.87 ms request interval therefore did not occur waiting in the actor's reply
+mailbox. That localizes the large outlier without identifying the cause of the
+request interval.
+
+The [request span begins before the helper task is spawned](https://github.com/lambdaclass/ethlambda/blob/5259dee25b81cc5275a4b0f441f24361d4f4b940/crates/blockchain/src/beacon_new_payload.rs#L369),
+and [the answer timestamp precedes the actor message](https://github.com/lambdaclass/ethlambda/blob/5259dee25b81cc5275a4b0f441f24361d4f4b940/crates/blockchain/src/beacon_new_payload.rs#L530).
+It includes task scheduling, request construction, network/server work and client
+wakeups. It is not a pure EL-server CPU measurement. The separate
+[`timed_new_payload` wrapper](https://github.com/lambdaclass/ethlambda/blob/5259dee25b81cc5275a4b0f441f24361d4f4b940/crates/blockchain/src/beacon_engine.rs#L238)
+starts inside that task, around awaiting the client call. Its trailing 30-minute
+sum/count gives approximately **62.25 vs 71.63 ms** (149.49 extrapolated events
+on each node), consistent with a gap inside the wrapped call. Those counter-based
+means are not the exact matched 150-block sample and cannot establish a precise
+helper-scheduling difference.
+
+Similarly, column wait ends when the actor observes that its required columns
+are present, not at an independently measured network receipt of the last byte.
+FCU timing surrounds the awaited request and verdict application. To distinguish
+network/server/disk delay from client scheduling, add or consult transport/server
+spans with correlated block/request IDs. No such EL-server evidence was obtained
+in this study, and no causal latency fix is claimed.
+
 ## What differs between builds
 
 [Compare `4117c5a` to `5259dee`](https://github.com/lambdaclass/ethlambda/compare/4117c5aef5ca3b916c3d871cea042805b57a4e88...5259dee25b81cc5275a4b0f441f24361d4f4b940):
