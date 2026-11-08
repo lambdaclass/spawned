@@ -1,0 +1,5 @@
+controls/builds/** linguist-generated=true
+controls/collector-validation/** linguist-generated=true
+controls/builds/**/*.log -whitespace
+controls/builds/**/*.stdout -whitespace
+controls/builds/**/*.stderr -whitespace

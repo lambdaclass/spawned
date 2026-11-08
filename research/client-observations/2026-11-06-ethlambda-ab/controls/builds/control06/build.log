@@ -1,0 +1,554 @@
+   Compiling proc-macro2 v1.0.106
+   Compiling unicode-ident v1.0.24
+   Compiling quote v1.0.45
+   Compiling libc v0.2.186
+   Compiling syn v2.0.117
+   Compiling cfg-if v1.0.4
+   Compiling serde_core v1.0.228
+   Compiling serde v1.0.228
+   Compiling serde_derive v1.0.228
+   Compiling shlex v1.3.0
+   Compiling jobserver v0.1.34
+   Compiling find-msvc-tools v0.1.9
+   Compiling cc v1.2.62
+   Compiling getrandom v0.2.17
+   Compiling version_check v0.9.5
+   Compiling zeroize_derive v1.4.3
+   Compiling memchr v2.8.0
+   Compiling zeroize v1.8.2
+   Compiling typenum v1.20.0
+   Compiling rand_core v0.6.4
+   Compiling smallvec v1.15.1
+   Compiling pin-project-lite v0.2.17
+   Compiling once_cell v1.21.4
+   Compiling subtle v2.6.1
+   Compiling generic-array v0.14.7
+   Compiling bytes v1.11.1
+   Compiling log v0.4.29
+   Compiling crypto-common v0.1.7
+   Compiling zerocopy v0.8.48
+   Compiling const-oid v0.9.6
+   Compiling thiserror v2.0.18
+   Compiling block-buffer v0.10.4
+   Compiling thiserror-impl v2.0.18
+   Compiling scopeguard v1.2.0
+   Compiling lock_api v0.4.14
+   Compiling digest v0.10.7
+   Compiling tracing-core v0.1.36
+   Compiling tracing-attributes v0.1.31
+   Compiling tracing v0.1.44
+   Compiling cpufeatures v0.2.17
+   Compiling synstructure v0.13.2
+   Compiling parking_lot_core v0.9.12
+   Compiling futures-core v0.3.32
+   Compiling zerofrom-derive v0.1.7
+   Compiling futures-sink v0.3.32
+   Compiling futures-io v0.3.32
+   Compiling slab v0.4.12
+   Compiling futures-channel v0.3.32
+   Compiling parking_lot v0.12.5
+   Compiling ppv-lite86 v0.2.21
+   Compiling itoa v1.0.18
+   Compiling yoke-derive v0.8.2
+   Compiling futures-macro v0.3.32
+   Compiling either v1.16.0
+   Compiling futures-task v0.3.32
+   Compiling futures-util v0.3.32
+   Compiling sha2-asm v0.6.4
+   Compiling displaydoc v0.2.5
+   Compiling sha2 v0.10.9
+   Compiling zerovec-derive v0.11.3
+   Compiling autocfg v1.5.0
+   Compiling getrandom v0.3.4
+   Compiling byteorder v1.5.0
+   Compiling rand_chacha v0.3.1
+   Compiling rand v0.8.6
+   Compiling crossbeam-utils v0.8.21
+   Compiling lazy_static v1.5.0
+   Compiling num-traits v0.2.19
+   Compiling errno v0.3.14
+   Compiling foldhash v0.2.0
+   Compiling stable_deref_trait v1.2.1
+   Compiling paste v1.0.15
+   Compiling signal-hook-registry v1.4.8
+   Compiling tokio-macros v2.7.0
+   Compiling mio v1.2.0
+   Compiling socket2 v0.6.3
+   Compiling tokio v1.52.3
+   Compiling semver v1.0.28
+   Compiling rustc_version v0.4.1
+   Compiling hmac v0.12.1
+   Compiling icu_properties_data v2.2.0
+   Compiling icu_normalizer_data v2.2.0
+   Compiling hex v0.4.3
+   Compiling zerofrom v0.1.8
+   Compiling der v0.7.10
+   Compiling static_assertions v1.1.0
+   Compiling yoke v0.8.2
+   Compiling num-integer v0.1.46
+   Compiling allocator-api2 v0.2.21
+   Compiling bitflags v2.11.1
+   Compiling spki v0.7.3
+   Compiling ff v0.13.1
+   Compiling base16ct v0.2.0
+   Compiling sec1 v0.7.3
+   Compiling group v0.13.0
+   Compiling pkcs8 v0.10.2
+   Compiling num-bigint v0.4.6
+   Compiling zerovec v0.11.6
+   Compiling signature v2.2.0
+   Compiling crypto-bigint v0.5.5
+   Compiling aho-corasick v1.1.4
+   Compiling regex-syntax v0.8.10
+   Compiling regex-automata v0.4.14
+   Compiling elliptic-curve v0.13.8
+   Compiling equivalent v1.0.2
+   Compiling rfc6979 v0.4.0
+   Compiling hashbrown v0.17.1
+   Compiling ecdsa v0.16.9
+   Compiling tinystr v0.8.3
+   Compiling litemap v0.8.2
+   Compiling writeable v0.6.3
+   Compiling icu_locale_core v2.2.0
+   Compiling potential_utf v0.1.5
+   Compiling zerotrie v0.2.4
+   Compiling futures-executor v0.3.32
+   Compiling crossbeam-epoch v0.9.21
+   Compiling percent-encoding v2.3.2
+   Compiling heck v0.5.0
+   Compiling utf8_iter v1.0.4
+   Compiling zmij v1.0.21
+   Compiling icu_collections v2.2.0
+   Compiling futures v0.3.32
+   Compiling icu_provider v2.2.0
+   Compiling k256 v0.13.4
+   Compiling matchers v0.2.0
+   Compiling sharded-slab v0.1.7
+   Compiling tracing-log v0.2.0
+   Compiling thread_local v1.1.9
+   Compiling nu-ansi-term v0.50.3
+   Compiling pkg-config v0.3.33
+   Compiling serde_json v1.0.149
+   Compiling tracing-subscriber v0.3.23
+   Compiling fnv v1.0.7
+   Compiling rustc-hash v2.1.2
+   Compiling cfg_aliases v0.2.1
+   Compiling crossbeam-deque v0.8.6
+   Compiling icu_normalizer v2.2.0
+   Compiling icu_properties v2.2.0
+   Compiling form_urlencoded v1.2.2
+   Compiling itertools v0.14.0
+   Compiling rayon-core v1.13.0
+   Compiling anyhow v1.0.102
+   Compiling idna_adapter v1.2.2
+   Compiling ryu v1.0.23
+   Compiling idna v1.1.0
+   Compiling hashbrown v0.16.1
+   Compiling ring v0.17.14
+   Compiling unicode-segmentation v1.13.2
+   Compiling rayon v1.12.0
+   Compiling url v2.5.8
+   Compiling blst v0.3.16
+   Compiling bytemuck v1.25.0
+   Compiling arrayvec v0.7.6
+   Compiling ahash v0.8.12
+   Compiling num_cpus v1.17.0
+   Compiling unicode-xid v0.2.6
+   Compiling threadpool v1.8.1
+   Compiling curve25519-dalek v4.1.3
+   Compiling asynchronous-codec v0.7.0
+   Compiling vcpkg v0.2.15
+   Compiling untrusted v0.9.0
+   Compiling thiserror v1.0.69
+   Compiling strsim v0.11.1
+   Compiling ident_case v1.0.1
+   Compiling unsigned-varint v0.8.0
+   Compiling rand_core v0.9.5
+   Compiling thiserror-impl v1.0.69
+   Compiling pin-project-internal v1.1.13
+   Compiling curve25519-dalek-derive v0.1.1
+   Compiling crunchy v0.2.4
+   Compiling foldhash v0.1.5
+   Compiling hashbrown v0.15.5
+   Compiling pin-project v1.1.13
+   Compiling rand_chacha v0.9.0
+   Compiling spin v0.9.8
+   Compiling rustls-pki-types v1.15.1
+   Compiling data-encoding v2.11.0
+   Compiling rustc-hex v2.1.0
+   Compiling rand_core v0.10.1
+   Compiling libm v0.2.16
+   Compiling ansi_term v0.12.1
+   Compiling tracing-forest v0.3.1
+   Compiling data-encoding-macro-internal v0.1.18
+   Compiling rand v0.9.4
+   Compiling ed25519 v2.2.3
+   Compiling hkdf v0.12.4
+   Compiling quick-protobuf v0.8.1
+   Compiling c-kzg v2.1.8
+   Compiling match-lookup v0.1.2
+   Compiling enum-ordinalize-derive v4.3.2
+   Compiling zk_alloc v0.1.0 (https://github.com/leanEthereum/leanVM.git?rev=48a904208d682848dac0e18ef8b01ebfc40df9ad#48a90420)
+   Compiling parallel v0.1.0 (https://github.com/leanEthereum/leanVM.git?rev=48a904208d682848dac0e18ef8b01ebfc40df9ad#48a90420)
+   Compiling glob v0.3.3
+   Compiling getrandom v0.4.2
+   Compiling const-str v0.4.3
+   Compiling clang-sys v1.8.1
+   Compiling base256emoji v1.0.2
+   Compiling primitives v0.1.0 (https://github.com/leanEthereum/leanVM.git?rev=48a904208d682848dac0e18ef8b01ebfc40df9ad#48a90420)
+   Compiling enum-ordinalize v4.3.2
+   Compiling ed25519-dalek v2.2.0
+   Compiling data-encoding-macro v0.1.20
+   Compiling rlp v0.6.1
+   Compiling multihash v0.19.5
+   Compiling indexmap v2.14.0
+   Compiling ark-std v0.5.0
+   Compiling crossbeam-channel v0.5.15
+   Compiling hybrid-array v0.4.12
+   Compiling ark-serialize-derive v0.5.0
+   Compiling asn1_der v0.7.7
+   Compiling tiny-keccak v2.0.2
+   Compiling crc32fast v1.5.0
+   Compiling prettyplease v0.2.37
+   Compiling base-x v0.2.11
+   Compiling rustls v0.23.46
+   Compiling bs58 v0.5.1
+   Compiling libp2p-identity v0.2.13
+   Compiling multibase v0.9.2
+   Compiling ark-serialize v0.5.0
+   Compiling impl-rlp v0.4.0
+   Compiling ark-ff-macros v0.5.0
+   Compiling educe v0.6.0
+   Compiling fixed-hash v0.8.0
+   Compiling rustls-webpki v0.103.15
+   Compiling safe_arch v0.7.4
+   Compiling libssz-merkle v0.3.0 (https://github.com/lambdaclass/libssz?rev=5cb14378ffdadcb51b387c003567e2630d0c7073#5cb14378)
+   Compiling itertools v0.13.0
+   Compiling impl-serde v0.5.0
+   Compiling ptr_meta_derive v0.3.1
+   Compiling ark-ff-asm v0.5.0
+   Compiling minimal-lexical v0.2.1
+   Compiling time-core v0.1.8
+   Compiling base64 v0.22.1
+   Compiling arrayref v0.3.9
+   Compiling utf8parse v0.2.2
+   Compiling malachite-nz v0.6.1
+   Compiling num-conv v0.2.2
+   Compiling web-time v1.1.0
+   Compiling nom v7.1.3
+   Compiling anstyle-parse v1.0.0
+   Compiling multiaddr v0.18.2
+   Compiling ark-ff v0.5.0
+   Compiling ptr_meta v0.3.1
+   Compiling wide v0.7.33
+   Compiling crypto-common v0.2.2
+   Compiling block-buffer v0.12.0
+   Compiling malachite-base v0.6.1
+   Compiling uint v0.10.0
+   Compiling multistream-select v0.14.0 (https://github.com/lambdaclass/rust-libp2p.git?rev=2f14d0ec9665a01cfb6a02326c90628c4bba521c#2f14d0ec)
+   Compiling rw-stream-sink v0.5.0 (https://github.com/lambdaclass/rust-libp2p.git?rev=2f14d0ec9665a01cfb6a02326c90628c4bba521c#2f14d0ec)
+   Compiling convert_case v0.10.0
+   Compiling lru v0.16.4
+   Compiling libloading v0.8.9
+   Compiling http v1.4.0
+   Compiling libssz v0.3.0 (https://github.com/lambdaclass/libssz?rev=5cb14378ffdadcb51b387c003567e2630d0c7073#5cb14378)
+   Compiling secp256k1-sys v0.10.1
+   Compiling futures-timer v3.0.4
+   Compiling anstyle-query v1.1.5
+   Compiling bindgen v0.72.1
+   Compiling rustix v0.38.44
+   Compiling is_terminal_polyfill v1.70.2
+   Compiling anstyle v1.0.14
+   Compiling colorchoice v1.0.5
+   Compiling anstream v1.0.0
+   Compiling http-body v1.0.1
+   Compiling libp2p-core v0.44.0 (https://github.com/lambdaclass/rust-libp2p.git?rev=2f14d0ec9665a01cfb6a02326c90628c4bba521c#2f14d0ec)
+   Compiling derive_more-impl v2.1.1
+   Compiling primitive-types v0.13.1
+   Compiling digest v0.11.3
+   Compiling ethbloom v0.14.1
+   Compiling ark-poly v0.5.0
+   Compiling rancor v0.1.1
+   Compiling regex v1.12.3
+   Compiling cexpr v0.6.0
+   Compiling fiat_shamir v0.1.0 (https://github.com/leanEthereum/leanVM.git?rev=48a904208d682848dac0e18ef8b01ebfc40df9ad#48a90420)
+   Compiling bytecheck_derive v0.8.2
+   Compiling keccak v0.2.0
+   Compiling socket2 v0.5.10
+   Compiling ipnet v2.12.0
+   Compiling procfs v0.17.0
+   Compiling ruint-macro v1.2.1
+   Compiling simdutf8 v0.1.5
+   Compiling protobuf v3.7.2
+   Compiling linux-raw-sys v0.4.15
+   Compiling clap_lex v1.1.0
+   Compiling clap_builder v4.6.0
+   Compiling bytecheck v0.8.2
+   Compiling ruint v1.20.1
+   Compiling sha3 v0.11.0
+   Compiling malachite-q v0.6.1
+   Compiling pcs v0.1.0 (https://github.com/leanEthereum/leanVM.git?rev=48a904208d682848dac0e18ef8b01ebfc40df9ad#48a90420)
+   Compiling ark-ec v0.5.0
+   Compiling ethereum-types v0.15.1
+   Compiling derive_more v2.1.1
+   Compiling libssz-types v0.3.0 (https://github.com/lambdaclass/libssz?rev=5cb14378ffdadcb51b387c003567e2630d0c7073#5cb14378)
+   Compiling protobuf-support v3.7.2
+   Compiling clap_derive v4.6.1
+   Compiling libssz-merkle v0.3.0
+   Compiling primeorder v0.13.6
+   Compiling procfs-core v0.17.0
+   Compiling const-hex v1.19.0
+   Compiling munge_macro v0.4.7
+   Compiling syn v3.0.4
+   Compiling prometheus v0.14.0
+   Compiling httparse v1.10.1
+   Compiling cpufeatures v0.3.0
+   Compiling tower-service v0.3.3
+   Compiling rustversion v1.0.22
+   Compiling chacha20 v0.10.0
+   Compiling rkyv_derive v0.8.18
+   Compiling munge v0.4.7
+   Compiling alloy-primitives v1.6.0
+   Compiling clap v4.6.1
+   Compiling p256 v0.13.2
+   Compiling ethlambda-ssz-tree v1.0.0 (/tmp/spawned-pr-security-review/ethlambda-spawned-control/crates/common/ssz-tree)
+   Compiling secp256k1 v0.30.0
+   Compiling ark-bn254 v0.5.0
+   Compiling malachite v0.6.1
+   Compiling rend v0.5.3
+   Compiling nix v0.31.3
+   Compiling crossbeam-queue v0.3.12
+   Compiling ripemd v0.1.3
+   Compiling libssz v0.3.0
+   Compiling libssz-derive v0.3.0 (https://github.com/lambdaclass/libssz?rev=5cb14378ffdadcb51b387c003567e2630d0c7073#5cb14378)
+   Compiling hex-literal v0.4.1
+   Compiling powerfmt v0.2.0
+   Compiling try-lock v0.2.5
+   Compiling want v0.3.1
+   Compiling deranged v0.5.8
+   Compiling ethrex-crypto v25.0.0 (https://github.com/lambdaclass/ethrex?tag=v25.0.0#f3b90bc6)
+   Compiling ethlambda-types v1.0.0 (/tmp/spawned-pr-security-review/ethlambda-spawned-control/crates/common/types)
+   Compiling crossbeam v0.8.4
+   Compiling rkyv v0.8.18
+   Compiling ethereum_serde_utils v0.8.0
+   Compiling rand v0.10.1
+   Compiling ethrex-rlp v25.0.0 (https://github.com/lambdaclass/ethrex?tag=v25.0.0#f3b90bc6)
+   Compiling flock v0.1.0 (https://github.com/leanEthereum/leanVM.git?rev=48a904208d682848dac0e18ef8b01ebfc40df9ad#48a90420)
+   Compiling time-macros v0.2.27
+   Compiling libz-sys v1.1.28
+   Compiling bzip2-sys v0.1.13+1.0.8
+   Compiling zstd-sys v2.1.2+zstd.1.5.7
+   Compiling tokio-util v0.7.18
+   Compiling sync_wrapper v1.0.2
+   Compiling lz4-sys v1.11.1+lz4-1.10.0
+   Compiling vsimd v0.8.0
+   Compiling atomic-waker v1.1.2
+   Compiling outref v0.5.2
+   Compiling httpdate v1.0.3
+   Compiling tower-layer v0.3.3
+   Compiling darling_core v0.20.11
+   Compiling hyper v1.9.0
+   Compiling hex-simd v0.8.0
+   Compiling time v0.3.47
+   Compiling lean_vm v0.1.0 (https://github.com/leanEthereum/leanVM.git?rev=48a904208d682848dac0e18ef8b01ebfc40df9ad#48a90420)
+   Compiling ethrex-trie v25.0.0 (https://github.com/lambdaclass/ethrex?tag=v25.0.0#f3b90bc6)
+   Compiling ethereum_ssz v0.10.4
+   Compiling libssz-types v0.3.0
+   Compiling heapless v0.7.17
+   Compiling libssz-derive v0.3.0
+   Compiling ethrex-common v25.0.0 (https://github.com/lambdaclass/ethrex?tag=v25.0.0#f3b90bc6)
+   Compiling ctrlc v3.5.2
+   Compiling xmss v0.1.0 (https://github.com/leanEthereum/leanVM.git?rev=48a904208d682848dac0e18ef8b01ebfc40df9ad#48a90420)
+   Compiling lean_compiler v0.1.0 (https://github.com/leanEthereum/leanVM.git?rev=48a904208d682848dac0e18ef8b01ebfc40df9ad#48a90420)
+   Compiling hyper-util v0.1.20
+   Compiling darling_macro v0.20.11
+   Compiling tower v0.5.3
+   Compiling tokio-stream v0.1.18
+   Compiling ethlambda-metrics v1.0.0 (/tmp/spawned-pr-security-review/ethlambda-spawned-control/crates/common/metrics)
+   Compiling librocksdb-sys v0.17.3+10.4.2
+   Compiling lean_da v0.1.0 (https://github.com/leanEthereum/leanVM.git?rev=48a904208d682848dac0e18ef8b01ebfc40df9ad#48a90420)
+   Compiling http-body-util v0.1.3
+   Compiling sphincs v0.1.0 (https://github.com/leanEthereum/leanVM.git?rev=48a904208d682848dac0e18ef8b01ebfc40df9ad#48a90420)
+   Compiling darling_core v0.23.0
+   Compiling hash32 v0.2.1
+   Compiling inout v0.1.4
+   Compiling bincode v1.3.3
+   Compiling rec_aggregation v0.1.0 (https://github.com/leanEthereum/leanVM.git?rev=48a904208d682848dac0e18ef8b01ebfc40df9ad#48a90420)
+   Compiling darling_macro v0.23.0
+   Compiling cipher v0.4.4
+   Compiling darling v0.20.11
+   Compiling xdelta3 v0.1.5 (https://github.com/sigp/xdelta3-rs?rev=fe3906605c87#fe390660)
+   Compiling rusticata-macros v4.1.0
+   Compiling tokio-rustls v0.26.4
+   Compiling webpki-roots v1.0.9
+   Compiling convert_case v0.6.0
+   Compiling hashlink v0.11.0
+   Compiling serde_urlencoded v0.7.1
+   Compiling nix v0.30.1
+   Compiling libp2p-swarm-derive v0.36.0 (https://github.com/lambdaclass/rust-libp2p.git?rev=2f14d0ec9665a01cfb6a02326c90628c4bba521c#2f14d0ec)
+   Compiling netlink-packet-core v0.8.1
+   Compiling asn1-rs-derive v0.6.0
+   Compiling cobs v0.3.0
+   Compiling asn1-rs-impl v0.2.0
+   Compiling tinyvec_macros v0.1.1
+   Compiling tinyvec v1.11.0
+   Compiling asn1-rs v0.7.2
+   Compiling postcard v1.1.3
+   Compiling libp2p-swarm v0.48.0 (https://github.com/lambdaclass/rust-libp2p.git?rev=2f14d0ec9665a01cfb6a02326c90628c4bba521c#2f14d0ec)
+   Compiling derive_more-impl v1.0.0
+   Compiling hyper-rustls v0.27.9
+   Compiling derive_builder_core v0.20.2
+   Compiling darling v0.23.0
+   Compiling leanvm v0.1.0 (https://github.com/leanEthereum/leanVM.git?rev=48a904208d682848dac0e18ef8b01ebfc40df9ad#48a90420)
+   Compiling tower-http v0.6.11
+   Compiling strum_macros v0.27.2
+   Compiling netlink-sys v0.8.8
+   Compiling adler2 v2.0.1
+   Compiling keccak v0.1.6
+   Compiling oid-registry v0.8.1
+   Compiling simd-adler32 v0.3.9
+   Compiling object v0.37.3
+   Compiling miniz_oxide v0.8.9
+   Compiling sha3 v0.10.9
+   Compiling netlink-proto v0.12.0
+   Compiling strum v0.27.2
+   Compiling reqwest v0.12.28
+   Compiling ethlambda-crypto v1.0.0 (/tmp/spawned-pr-security-review/ethlambda-spawned-control/crates/common/crypto)
+   Compiling serde_with_macros v3.22.0
+   Compiling derive_builder_macro v0.20.2
+   Compiling derive_more v1.0.0
+   Compiling netlink-packet-route v0.28.0
+   Compiling vergen-lib v9.1.0
+   Compiling quinn-udp v0.5.14
+   Compiling libgit2-sys v0.18.4+1.9.3
+   Compiling lambdaworks-math v0.13.0
+   Compiling concurrent-queue v2.5.0
+   Compiling env_filter v1.0.1
+   Compiling tikv-jemalloc-sys v0.6.1+5.3.0-1-ge13ca993e8ccb9ba9847cc330696e02839f328f7
+   Compiling nohash-hasher v0.2.0
+   Compiling hashbrown v0.14.5
+   Compiling parking v2.2.1
+   Compiling gimli v0.32.3
+   Compiling addr2line v0.25.1
+   Compiling ethrex-guest-program v25.0.0 (https://github.com/lambdaclass/ethrex?tag=v25.0.0#f3b90bc6)
+   Compiling event-listener v5.4.1
+   Compiling dashmap v6.2.1
+   Compiling env_logger v0.11.10
+   Compiling lambdaworks-crypto v0.13.0
+   Compiling prost-derive v0.14.3
+   Compiling rtnetlink v0.20.0
+   Compiling ethrex-levm v25.0.0 (https://github.com/lambdaclass/ethrex?tag=v25.0.0#f3b90bc6)
+   Compiling derive_builder v0.20.2
+   Compiling serde_with v3.22.0
+   Compiling der-parser v10.0.0
+   Compiling spawned-rt v0.6.0
+   Compiling yasna v0.5.2
+   Compiling vergen v9.1.0
+   Compiling pem v3.0.6
+   Compiling rand_pcg v0.10.2
+   Compiling num-format v0.4.4
+   Compiling rgb v0.8.53
+   Compiling quinn v0.11.9
+   Compiling num-rational v0.4.2
+   Compiling num-iter v0.1.45
+   Compiling snow v0.9.6
+   Compiling num-complex v0.4.6
+   Compiling universal-hash v0.5.1
+   Compiling quick-xml v0.41.0
+   Compiling spawned-macros v0.6.0
+   Compiling str_stack v0.1.1
+   Compiling opaque-debug v0.3.1
+   Compiling siphasher v1.0.3
+   Compiling rustc-demangle v0.1.27
+   Compiling rustix v1.1.4
+   Compiling lru-slab v0.1.2
+   Compiling dyn-clone v1.0.20
+   Compiling ethrex-vm v25.0.0 (https://github.com/lambdaclass/ethrex?tag=v25.0.0#f3b90bc6)
+   Compiling quinn-proto v0.11.19
+   Compiling backtrace v0.3.76
+   Compiling fastbloom v0.14.1
+   Compiling polyval v0.6.2
+   Compiling inferno v0.12.8
+   Compiling spawned-concurrency v0.6.0
+   Compiling num v0.4.3
+   Compiling rcgen v0.13.2
+   Compiling x509-parser v0.17.0
+   Compiling ethrex-l2-common v25.0.0 (https://github.com/lambdaclass/ethrex?tag=v25.0.0#f3b90bc6)
+   Compiling if-watch v3.2.2
+   Compiling prost v0.14.3
+   Compiling event-listener-strategy v0.5.4
+   Compiling flate2 v1.1.9
+   Compiling ctr v0.9.2
+   Compiling aes v0.8.4
+   Compiling vergen-git2 v9.1.0
+   Compiling futures-rustls v0.26.0
+   Compiling quick-protobuf-codec v0.4.0 (https://github.com/lambdaclass/rust-libp2p.git?rev=2f14d0ec9665a01cfb6a02326c90628c4bba521c#2f14d0ec)
+   Compiling futures-bounded v0.3.0
+   Compiling mime v0.3.17
+   Compiling snap v1.1.1
+   Compiling linux-raw-sys v0.12.1
+   Compiling num_threads v0.1.7
+   Compiling axum-core v0.5.6
+   Compiling libp2p-tls v0.7.0 (https://github.com/lambdaclass/rust-libp2p.git?rev=2f14d0ec9665a01cfb6a02326c90628c4bba521c#2f14d0ec)
+   Compiling pprof_util v0.8.2
+   Compiling async-channel v2.5.0
+   Compiling git2 v0.20.4
+   Compiling ethlambda-network-api v1.0.0 (/tmp/spawned-pr-security-review/ethlambda-spawned-control/crates/net/api)
+   Compiling ghash v0.5.1
+   Compiling ethrex-storage v25.0.0 (https://github.com/lambdaclass/ethrex?tag=v25.0.0#f3b90bc6)
+   Compiling yamux v0.13.10
+   Compiling yamux v0.12.1
+   Compiling ethlambda-telemetry v1.0.0 (/tmp/spawned-pr-security-review/ethlambda-spawned-control/crates/common/telemetry)
+   Compiling spawned-rt v0.5.0
+   Compiling ethrex-metrics v25.0.0 (https://github.com/lambdaclass/ethrex?tag=v25.0.0#f3b90bc6)
+   Compiling x25519-dalek v2.0.1
+   Compiling serde_path_to_error v0.1.20
+   Compiling aead v0.5.2
+   Compiling spawned-macros v0.5.0
+   Compiling matchit v0.8.4
+   Compiling fastrand v2.4.1
+   Compiling hex_fmt v0.3.0
+   Compiling libp2p-gossipsub v0.50.0 (https://github.com/lambdaclass/rust-libp2p.git?rev=2f14d0ec9665a01cfb6a02326c90628c4bba521c#2f14d0ec)
+   Compiling tempfile v3.27.0
+   Compiling axum v0.8.9
+   Compiling spawned-concurrency v0.5.0
+   Compiling aes-gcm v0.10.3
+   Compiling libp2p-noise v0.47.0 (https://github.com/lambdaclass/rust-libp2p.git?rev=2f14d0ec9665a01cfb6a02326c90628c4bba521c#2f14d0ec)
+   Compiling ethrex-blockchain v25.0.0 (https://github.com/lambdaclass/ethrex?tag=v25.0.0#f3b90bc6)
+   Compiling libp2p-yamux v0.48.0 (https://github.com/lambdaclass/rust-libp2p.git?rev=2f14d0ec9665a01cfb6a02326c90628c4bba521c#2f14d0ec)
+   Compiling libp2p-quic v0.14.0 (https://github.com/lambdaclass/rust-libp2p.git?rev=2f14d0ec9665a01cfb6a02326c90628c4bba521c#2f14d0ec)
+   Compiling mappings v0.7.2
+   Compiling libp2p-identify v0.48.0 (https://github.com/lambdaclass/rust-libp2p.git?rev=2f14d0ec9665a01cfb6a02326c90628c4bba521c#2f14d0ec)
+   Compiling libp2p-request-response v0.30.0 (https://github.com/lambdaclass/rust-libp2p.git?rev=2f14d0ec9665a01cfb6a02326c90628c4bba521c#2f14d0ec)
+   Compiling tikv-jemalloc-ctl v0.6.1
+   Compiling libp2p-tcp v0.45.0 (https://github.com/lambdaclass/rust-libp2p.git?rev=2f14d0ec9665a01cfb6a02326c90628c4bba521c#2f14d0ec)
+   Compiling ethlambda-engine v1.0.0 (/tmp/spawned-pr-security-review/ethlambda-spawned-control/crates/net/engine)
+   Compiling libp2p-connection-limits v0.7.0 (https://github.com/lambdaclass/rust-libp2p.git?rev=2f14d0ec9665a01cfb6a02326c90628c4bba521c#2f14d0ec)
+   Compiling libp2p-allow-block-list v0.7.0 (https://github.com/lambdaclass/rust-libp2p.git?rev=2f14d0ec9665a01cfb6a02326c90628c4bba521c#2f14d0ec)
+   Compiling salsa20 v0.10.2
+   Compiling ethlambda-fork-choice v1.0.0 (/tmp/spawned-pr-security-review/ethlambda-spawned-control/crates/blockchain/fork_choice)
+   Compiling pbkdf2 v0.12.2
+   Compiling concat-kdf v0.1.0
+   Compiling unsafe-libyaml v0.2.11
+   Compiling eyre v0.6.12
+   Compiling serde_yaml_ng v0.10.0
+   Compiling ethrex-p2p v25.0.0 (https://github.com/lambdaclass/ethrex?tag=v25.0.0#f3b90bc6)
+   Compiling scrypt v0.11.0
+   Compiling libp2p v0.57.0 (https://github.com/lambdaclass/rust-libp2p.git?rev=2f14d0ec9665a01cfb6a02326c90628c4bba521c#2f14d0ec)
+   Compiling jemalloc_pprof v0.8.2
+   Compiling ethlambda v1.0.0 (/tmp/spawned-pr-security-review/ethlambda-spawned-control/bin/ethlambda)
+   Compiling libp2p-mplex v0.44.0 (https://github.com/lambdaclass/rust-libp2p.git?rev=2f14d0ec9665a01cfb6a02326c90628c4bba521c#2f14d0ec)
+   Compiling unicode-normalization v0.1.25
+   Compiling uuid v1.23.1
+   Compiling async-trait v0.1.89
+   Compiling indenter v0.3.4
+   Compiling ethlambda-validator v1.0.0 (/tmp/spawned-pr-security-review/ethlambda-spawned-control/crates/validator)
+   Compiling tikv-jemallocator v0.6.1
+   Compiling rocksdb v0.24.0
+   Compiling ethlambda-storage v1.0.0 (/tmp/spawned-pr-security-review/ethlambda-spawned-control/crates/storage)
+   Compiling ethlambda-state-transition v1.0.0 (/tmp/spawned-pr-security-review/ethlambda-spawned-control/crates/blockchain/state_transition)
+   Compiling ethlambda-test-fixtures v1.0.0 (/tmp/spawned-pr-security-review/ethlambda-spawned-control/crates/common/test-fixtures)
+   Compiling ethlambda-blockchain v1.0.0 (/tmp/spawned-pr-security-review/ethlambda-spawned-control/crates/blockchain)
+   Compiling ethlambda-rpc v1.0.0 (/tmp/spawned-pr-security-review/ethlambda-spawned-control/crates/net/rpc)
+   Compiling ethlambda-p2p v1.0.0 (/tmp/spawned-pr-security-review/ethlambda-spawned-control/crates/net/p2p)
+    Finished `release` profile [optimized] target(s) in 10m 05s

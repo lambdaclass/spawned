@@ -1,0 +1,11 @@
+{
+  "returncode": 0,
+  "failure": null,
+  "elapsed_s": 184.7105853880057,
+  "sampled_peak_rss_bytes": 2908553216,
+  "sampled_peak_threads": 19,
+  "sampled_peak_fds": 30,
+  "binary_sha256": "7fae67349cb5df34d7645eaa0df4fd2cc6f9f1d1481e9b51ea3689ff69aff4ac",
+  "binary_bytes": 47595624,
+  "version": "ethlambda ethlambda/v1.0.0-diagnostic/spawned05-baseline-4117c5a/x86_64-unknown-linux-gnu/rustc-v1.97.1"
+}

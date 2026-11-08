@@ -1,0 +1,41 @@
+{
+  "control06": {
+    "artifact": "/tmp/spawned-pr-security-review/ethlambda-control-build/artifacts/ethlambda-control06",
+    "sha256": "b78e203ce3211f786779fefc5defa5dfac616ad03ca4d325d0ab0b1884a94670",
+    "bytes": 47631576,
+    "version": "ethlambda ethlambda/v1.0.0-diagnostic/spawned06-metrics-off-old-network-c585f3d/x86_64-unknown-linux-gnu/rustc-v1.97.1",
+    "source_commit": "c585f3d2b8e816e24e7029e418a484ee3396c30a",
+    "canonical_base": "a2d9661b99de58baaa43a2316a16546f1d43c159",
+    "cargo_lock_sha256": "9fd73e8fb81fb5f8f7c5d1679970567b7a08a890c0df44c1426a7f5c2516321f",
+    "release_profile": "repository release (fat LTO, one codegen unit)",
+    "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)\nbinary: rustc\ncommit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452\ncommit-date: 2026-07-14\nhost: x86_64-unknown-linux-gnu\nrelease: 1.97.1\nLLVM version: 22.1.6\n",
+    "host_cc": "cc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0",
+    "flags": "# leanVM proves over a binary field tower, whose multiplication is a carryless\n# multiply. Both entries below have to enable it, or the prover falls back to\n# scalar bit-twiddling: `+pclmulqdq` on x86, and on aarch64 the `aes` feature,\n# which is what LLVM gates PMULL behind.\n[target.x86_64-unknown-linux-gnu]\nrustflags = [\n    \"-Ctarget-cpu=x86-64-v3\",\n    \"-Ctarget-feature=+avx2,+sse2,+ssse3,+sse4.1,+sse4.2,+bmi1,+lzcnt,+pclmulqdq\",\n]\n\n[target.aarch64-unknown-linux-gnu]\nrustflags = [\n    # Baseline armv8.2 (the floor for Apple silicon and Neoverse N1/V1), plus the\n    # crypto extensions carrying PMULL and SHA-2.\n    \"-Ctarget-cpu=neoverse-n1\",\n    \"-Ctarget-feature=+aes,+sha2,+neon\",\n]\n\n# Supply-chain cooldown for dependency resolution (unstable min-publish-age,\n# tracking issue rust-lang/cargo#17009): crate versions published less than\n# 14 days ago are excluded when the resolver runs on a nightly cargo.\n# Stable cargo ignores these tables silently, so builds from the committed\n# Cargo.lock are unaffected; run `make update` to resolve under the policy.\n# When the feature stabilizes, drop the [unstable] table and the nightly\n# resolver pin in the Makefile: the policy then binds all resolution.\n[unstable]\nmin-publish-age = true\n\n[registry]\nglobal-min-publish-age = \"14 days\"\n",
+    "clean_environment_version_passed": true,
+    "beacon_help_passed": true,
+    "has_nix_runtime_dependency": false,
+    "compile_elapsed_s": 605.6379440309247,
+    "sampled_peak_rss_bytes": 2968879104
+  },
+  "baseline05": {
+    "artifact": "/tmp/spawned-pr-security-review/ethlambda-control-build/artifacts/ethlambda-baseline05",
+    "sha256": "7fae67349cb5df34d7645eaa0df4fd2cc6f9f1d1481e9b51ea3689ff69aff4ac",
+    "bytes": 47595624,
+    "version": "ethlambda ethlambda/v1.0.0-diagnostic/spawned05-baseline-4117c5a/x86_64-unknown-linux-gnu/rustc-v1.97.1",
+    "source_commit": "4117c5aef5ca3b916c3d871cea042805b57a4e88",
+    "canonical_base": "4117c5aef5ca3b916c3d871cea042805b57a4e88",
+    "cargo_lock_sha256": "d992254ee18b49e4714b08c07c4db9a2ccdc265f617ee21e3465150692509610",
+    "release_profile": "repository release (fat LTO, one codegen unit)",
+    "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)\nbinary: rustc\ncommit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452\ncommit-date: 2026-07-14\nhost: x86_64-unknown-linux-gnu\nrelease: 1.97.1\nLLVM version: 22.1.6\n",
+    "host_cc": "cc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0",
+    "flags": "# leanVM proves over a binary field tower, whose multiplication is a carryless\n# multiply. Both entries below have to enable it, or the prover falls back to\n# scalar bit-twiddling: `+pclmulqdq` on x86, and on aarch64 the `aes` feature,\n# which is what LLVM gates PMULL behind.\n[target.x86_64-unknown-linux-gnu]\nrustflags = [\n    \"-Ctarget-cpu=x86-64-v3\",\n    \"-Ctarget-feature=+avx2,+sse2,+ssse3,+sse4.1,+sse4.2,+bmi1,+lzcnt,+pclmulqdq\",\n]\n\n[target.aarch64-unknown-linux-gnu]\nrustflags = [\n    # Baseline armv8.2 (the floor for Apple silicon and Neoverse N1/V1), plus the\n    # crypto extensions carrying PMULL and SHA-2.\n    \"-Ctarget-cpu=neoverse-n1\",\n    \"-Ctarget-feature=+aes,+sha2,+neon\",\n]\n\n# Supply-chain cooldown for dependency resolution (unstable min-publish-age,\n# tracking issue rust-lang/cargo#17009): crate versions published less than\n# 14 days ago are excluded when the resolver runs on a nightly cargo.\n# Stable cargo ignores these tables silently, so builds from the committed\n# Cargo.lock are unaffected; run `make update` to resolve under the policy.\n# When the feature stabilizes, drop the [unstable] table and the nightly\n# resolver pin in the Makefile: the policy then binds all resolution.\n[unstable]\nmin-publish-age = true\n\n[registry]\nglobal-min-publish-age = \"14 days\"\n",
+    "clean_environment_version_passed": true,
+    "beacon_help_passed": true,
+    "has_nix_runtime_dependency": false,
+    "compile_elapsed_s": 184.7105853880057,
+    "sampled_peak_rss_bytes": 2908553216
+  },
+  "compiler_and_flags_match": true,
+  "production_deployed": false,
+  "live_comparison_run": false
+}

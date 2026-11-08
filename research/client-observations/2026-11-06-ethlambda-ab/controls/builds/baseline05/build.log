@@ -1,0 +1,36 @@
+   Compiling syn v1.0.109
+   Compiling ethlambda-ssz-tree v1.0.0 (/tmp/spawned-pr-security-review/ethlambda-spawned-baseline/crates/common/ssz-tree)
+   Compiling ethlambda-types v1.0.0 (/tmp/spawned-pr-security-review/ethlambda-spawned-baseline/crates/common/types)
+   Compiling data-encoding-macro-internal v0.1.18
+   Compiling data-encoding-macro v0.1.20
+   Compiling multibase v0.9.2
+   Compiling multiaddr v0.18.2
+   Compiling libp2p-core v0.44.0 (https://github.com/lambdaclass/rust-libp2p.git?rev=2f14d0ec9665a01cfb6a02326c90628c4bba521c#2f14d0ec)
+   Compiling ethlambda-metrics v1.0.0 (/tmp/spawned-pr-security-review/ethlambda-spawned-baseline/crates/common/metrics)
+   Compiling libp2p-swarm v0.48.0 (https://github.com/lambdaclass/rust-libp2p.git?rev=2f14d0ec9665a01cfb6a02326c90628c4bba521c#2f14d0ec)
+   Compiling libp2p-tls v0.7.0 (https://github.com/lambdaclass/rust-libp2p.git?rev=2f14d0ec9665a01cfb6a02326c90628c4bba521c#2f14d0ec)
+   Compiling ethlambda-telemetry v1.0.0 (/tmp/spawned-pr-security-review/ethlambda-spawned-baseline/crates/common/telemetry)
+   Compiling libp2p-gossipsub v0.50.0 (https://github.com/lambdaclass/rust-libp2p.git?rev=2f14d0ec9665a01cfb6a02326c90628c4bba521c#2f14d0ec)
+   Compiling ethlambda-crypto v1.0.0 (/tmp/spawned-pr-security-review/ethlambda-spawned-baseline/crates/common/crypto)
+   Compiling ethlambda-storage v1.0.0 (/tmp/spawned-pr-security-review/ethlambda-spawned-baseline/crates/storage)
+   Compiling ethlambda-state-transition v1.0.0 (/tmp/spawned-pr-security-review/ethlambda-spawned-baseline/crates/blockchain/state_transition)
+   Compiling ethlambda-network-api v1.0.0 (/tmp/spawned-pr-security-review/ethlambda-spawned-baseline/crates/net/api)
+   Compiling ethlambda-engine v1.0.0 (/tmp/spawned-pr-security-review/ethlambda-spawned-baseline/crates/net/engine)
+   Compiling ethlambda-test-fixtures v1.0.0 (/tmp/spawned-pr-security-review/ethlambda-spawned-baseline/crates/common/test-fixtures)
+   Compiling ethlambda-fork-choice v1.0.0 (/tmp/spawned-pr-security-review/ethlambda-spawned-baseline/crates/blockchain/fork_choice)
+   Compiling libp2p-noise v0.47.0 (https://github.com/lambdaclass/rust-libp2p.git?rev=2f14d0ec9665a01cfb6a02326c90628c4bba521c#2f14d0ec)
+   Compiling libp2p-yamux v0.48.0 (https://github.com/lambdaclass/rust-libp2p.git?rev=2f14d0ec9665a01cfb6a02326c90628c4bba521c#2f14d0ec)
+   Compiling libp2p-quic v0.14.0 (https://github.com/lambdaclass/rust-libp2p.git?rev=2f14d0ec9665a01cfb6a02326c90628c4bba521c#2f14d0ec)
+   Compiling libp2p-identify v0.48.0 (https://github.com/lambdaclass/rust-libp2p.git?rev=2f14d0ec9665a01cfb6a02326c90628c4bba521c#2f14d0ec)
+   Compiling libp2p-request-response v0.30.0 (https://github.com/lambdaclass/rust-libp2p.git?rev=2f14d0ec9665a01cfb6a02326c90628c4bba521c#2f14d0ec)
+   Compiling libp2p-tcp v0.45.0 (https://github.com/lambdaclass/rust-libp2p.git?rev=2f14d0ec9665a01cfb6a02326c90628c4bba521c#2f14d0ec)
+   Compiling libp2p-connection-limits v0.7.0 (https://github.com/lambdaclass/rust-libp2p.git?rev=2f14d0ec9665a01cfb6a02326c90628c4bba521c#2f14d0ec)
+   Compiling libp2p-allow-block-list v0.7.0 (https://github.com/lambdaclass/rust-libp2p.git?rev=2f14d0ec9665a01cfb6a02326c90628c4bba521c#2f14d0ec)
+   Compiling libp2p v0.57.0 (https://github.com/lambdaclass/rust-libp2p.git?rev=2f14d0ec9665a01cfb6a02326c90628c4bba521c#2f14d0ec)
+   Compiling ethlambda-blockchain v1.0.0 (/tmp/spawned-pr-security-review/ethlambda-spawned-baseline/crates/blockchain)
+   Compiling libp2p-mplex v0.44.0 (https://github.com/lambdaclass/rust-libp2p.git?rev=2f14d0ec9665a01cfb6a02326c90628c4bba521c#2f14d0ec)
+   Compiling ethlambda-validator v1.0.0 (/tmp/spawned-pr-security-review/ethlambda-spawned-baseline/crates/validator)
+   Compiling ethlambda-p2p v1.0.0 (/tmp/spawned-pr-security-review/ethlambda-spawned-baseline/crates/net/p2p)
+   Compiling ethlambda-rpc v1.0.0 (/tmp/spawned-pr-security-review/ethlambda-spawned-baseline/crates/net/rpc)
+   Compiling ethlambda v1.0.0 (/tmp/spawned-pr-security-review/ethlambda-spawned-baseline/bin/ethlambda)
+    Finished `release` profile [optimized] target(s) in 3m 04s

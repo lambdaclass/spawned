@@ -127,9 +127,12 @@ Ethlambda/EL traces, in the inspected outlier window. Absence there does not
 exclude retries, because target log coverage is unestablished.
 
 The remaining missing evidence is deployed EL identity/configuration and the
-correlated attempt/response logs. The [prepared controls](controls/README.md)
+correlated attempt/response logs. The [built controls](controls/README.md)
 separate the committed test instrumentation and networking graph from Spawned's
-version. Release and production rollout remain on hold pending a demonstrated
+version. Both matching-toolchain binaries pass startup checks, and the guarded
+collector passes historical extraction and rejection checks. Neither control
+has been deployed or measured live; eth5's deployment location/configuration is
+still needed. Release and production rollout remain on hold pending a demonstrated
 latency cause and validation; no new causal bug is claimed here.
 
 ## Other useful observations

@@ -1,0 +1,17 @@
+{
+  "start": "2026-11-07T23:23:47.690000Z",
+  "end": "2026-11-08T01:23:47.690000Z",
+  "expected_a": "4117c5a",
+  "expected_b": "c585f3d",
+  "expected_rustc": "rustc-v1.97.1",
+  "expected_target": "x86_64-unknown-linux-gnu",
+  "a": "beacon-eth4",
+  "b": "beacon-eth5",
+  "warmup_seconds": 1800,
+  "minimum_pairs": 100,
+  "metrics_off": true,
+  "purpose": "canary",
+  "out": "/private/tmp/ethlambda-ab-review-20261106/collector-checks-final/wrong-control",
+  "read_only": true,
+  "limitation": "Build labels do not prove image provenance or EL/hardware parity"
+}
