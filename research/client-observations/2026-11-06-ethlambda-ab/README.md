@@ -1,6 +1,6 @@
 # Ethlambda eth4 / eth5: startup effects and a matched-block comparison
 
-Read-only production observations, 6–7 November 2026 UTC. This is **not a
+Read-only production observations, 6–8 November 2026 UTC. This is **not a
 controlled Spawned version benchmark** or evidence of a causal scheduler change.
 Data came from the public [A/B dashboard](https://metrics.ethlambda.xyz/d/ethlambda-ab/ethlambda-a-b)
 through its existing Prometheus and ClickHouse query APIs. No node, runtime,
@@ -73,6 +73,65 @@ Prometheus's bucket-interpolated, rolling p99; they should not be interchanged.
 The [paired summary](data/paired-summary.json) includes sample counts, means,
 medians, p99, maxima and paired mean/median differences.
 
+## Longer and later warm-window checks
+
+The longer original warm window (23:00 November 6 to 01:55:39 November 7 UTC)
+matched **878 blocks**. Mean total was **87.57 vs 100.71 ms**; empirical p99 was
+**401.12 vs 414.91 ms**. This is a much smaller tail gap than the 150-block slice.
+The 456 blocks with no column wait on either node averaged **84.28 vs 91.26 ms**.
+This subset helps localize waiting, but it does not equalize all P2P work or EL
+conditions. [Raw long-window data](data/long-warm-paired.json) and
+[summary](data/long-warm-summary.json) retain the exact population and query.
+
+A fresh check on **November 8, 01:23:47 UTC** found both CL build labels and start
+times unchanged. Its preceding two hours matched **599 blocks**:
+
+| Mean elapsed time | eth4 | eth5 |
+|---|---:|---:|
+| Received → attestable | 63.29 ms | 67.83 ms |
+| STF | 29.16 ms | 30.08 ms |
+| Data-column wait | 4.98 ms | 6.14 ms |
+| Execution-client request | 43.79 ms | 48.60 ms |
+
+Empirical total p99 was **185.00 vs 221.82 ms**. Mean total gap had shrunk to about
+7.2%; it had not disappeared. This later interval contains different blocks and
+conditions, and unchanged CL labels do not exclude EL/configuration changes.
+It therefore supports further investigation rather than a causal warm-up claim.
+[Raw later data](data/current-warm-paired.json),
+[summary](data/current-warm-summary.json), [build labels](data/current-builds.json)
+and [start times](data/current-starts.json) are archived.
+
+## Custody workload and missing attempt evidence
+
+The nodes custody **disjoint sets of eight columns**, according to
+[peer-coverage labels](data/column-peer-coverage.json). In the original 150-block
+window, eth4 waited for columns on **46 blocks**, versus **77** on eth5. Mean
+column wait conditional on waiting was **20.75 vs 32.61 ms**. Over the longer 878
+blocks, the counts were 253 vs 369. Matching block roots alone does not match the
+custody network workload. Column KZG verification itself averaged approximately
+**2.47 vs 2.44 ms**; see [KZG data](data/column-kzg-mean.json).
+
+The trailing 30-minute estimated engine getBlobs call counts were 45.76 vs 78.31;
+reconstruction counts were 17.29 vs 46.78. These are extrapolated counter values,
+not exact matched-block counts. getBlobs mean round-trip time was about 5.88 vs
+6.60 ms, which does not support assuming a fixed extra 10 ms network RTT across
+all RPC methods. Both workload and service-time populations need controls.
+
+Engine newPayload and FCU calls retry non-RPC errors after a **500 ms** first
+backoff, then 1 s. That includes transport failures and malformed replies.
+getBlobs calls are single-attempt. Source review establishes this mechanism but
+not that any observed outlier retried. Each failed NP/FCU attempt logs
+`Engine call failed`; the accessible Loki interval had no matching Ethlambda
+attempt logs. The available ClickHouse trace table had Lighthouse traces, not
+Ethlambda/EL traces, in the inspected outlier window. Absence there does not
+exclude retries, because target log coverage is unestablished.
+
+The remaining missing evidence is deployed EL identity/configuration and the
+correlated attempt/response logs. The [prepared controls](controls/README.md)
+separate the committed test instrumentation and networking graph from Spawned's
+version. Release and production rollout remain on hold pending a demonstrated
+latency cause and validation; no new causal bug is claimed here.
+
 ## Other useful observations
 
 At 01:55:39 UTC, using a trailing 30-minute `increase`:
@@ -139,7 +198,11 @@ in this study, and no causal latency fix is claimed.
 three commits ahead. The branch updates Spawned, enables its metrics feature,
 appends the framework collector to the RPC metrics endpoint, updates the lockfile
 and fixes unrelated preset-dependent tests. There is no identified new mainnet
-state-transition algorithm in this source diff. The historical `f96f949` process
+state-transition algorithm in this source diff. Importantly, unchanged dependency
+versions do not imply an unchanged networking graph: hyper-util 0.1.20, quinn
+0.11.9 and quinn-udp 0.5.14 resolve socket2 0.5.10 on eth4 and 0.6.3 on eth5.
+See [exact dependency edges](data/networking-dependency-edges.json). No concrete
+Linux defect was identified in those versions. The historical `f96f949` process
 is a third build and must not be silently treated as the 0.6 build.
 
 The [eth5 metrics documentation](https://github.com/lambdaclass/ethlambda/blob/5259dee25b81cc5275a4b0f441f24361d4f4b940/docs/metrics.md#actor-runtime-spawned)

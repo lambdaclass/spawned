@@ -1,0 +1,22 @@
+{
+  "spawned_concurrency_features": [],
+  "hyper-util": {
+    "version": "0.1.20",
+    "socket2": "0.5.10"
+  },
+  "quinn": {
+    "version": "0.11.9",
+    "socket2": "0.5.10"
+  },
+  "quinn-udp": {
+    "version": "0.5.14",
+    "socket2": "0.5.10"
+  },
+  "source": "a2d9661b99de58baaa43a2316a16546f1d43c159",
+  "cargo_lock_sha256": "9fd73e8fb81fb5f8f7c5d1679970567b7a08a890c0df44c1426a7f5c2516321f",
+  "validation": "cargo metadata --locked --filter-platform x86_64-unknown-linux-gnu --format-version 1",
+  "binary_build_run": false,
+  "production_deployed": false,
+  "a2d9661b_and_5259dee_unmodified_lockfiles_identical": true,
+  "unmodified_lockfile_sha256": "ad15e73c9b14d59e709ceae04be02483e9285d0345f76278c17f381794a5d87f"
+}

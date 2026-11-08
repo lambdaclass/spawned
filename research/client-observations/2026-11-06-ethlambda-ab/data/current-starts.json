@@ -1,0 +1,32 @@
+{
+  "status": "success",
+  "data": {
+    "resultType": "vector",
+    "result": [
+      {
+        "metric": {
+          "__name__": "lean_node_start_time_seconds",
+          "job": "beacon",
+          "network": "mainnet",
+          "node": "beacon-eth4"
+        },
+        "value": [
+          1794101028.464,
+          "1793915719"
+        ]
+      },
+      {
+        "metric": {
+          "__name__": "lean_node_start_time_seconds",
+          "job": "beacon",
+          "network": "mainnet",
+          "node": "beacon-eth5"
+        },
+        "value": [
+          1794101028.464,
+          "1794003092"
+        ]
+      }
+    ]
+  }
+}

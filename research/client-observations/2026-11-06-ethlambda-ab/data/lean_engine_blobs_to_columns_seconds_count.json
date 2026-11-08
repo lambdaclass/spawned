@@ -1,0 +1,29 @@
+{
+  "query": "sum by(node,outcome) (increase(lean_engine_blobs_to_columns_seconds_count{job=\"beacon\",node=~\"beacon-eth[45]\"}[30m]))",
+  "response": {
+    "status": "success",
+    "data": {
+      "resultType": "vector",
+      "result": [
+        {
+          "metric": {
+            "node": "beacon-eth4"
+          },
+          "value": [
+            1794016539,
+            "17.28813559322034"
+          ]
+        },
+        {
+          "metric": {
+            "node": "beacon-eth5"
+          },
+          "value": [
+            1794016539,
+            "46.77966101694915"
+          ]
+        }
+      ]
+    }
+  }
+}

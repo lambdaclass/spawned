@@ -1,0 +1,219 @@
+{
+  "query": "lean_custody_column_peers{job=\"beacon\",node=~\"beacon-eth[45]\"}",
+  "response": {
+    "status": "success",
+    "data": {
+      "resultType": "vector",
+      "result": [
+        {
+          "metric": {
+            "__name__": "lean_custody_column_peers",
+            "column": "107",
+            "job": "beacon",
+            "network": "mainnet",
+            "node": "beacon-eth4"
+          },
+          "value": [
+            1794016539,
+            "15"
+          ]
+        },
+        {
+          "metric": {
+            "__name__": "lean_custody_column_peers",
+            "column": "116",
+            "job": "beacon",
+            "network": "mainnet",
+            "node": "beacon-eth4"
+          },
+          "value": [
+            1794016539,
+            "16"
+          ]
+        },
+        {
+          "metric": {
+            "__name__": "lean_custody_column_peers",
+            "column": "119",
+            "job": "beacon",
+            "network": "mainnet",
+            "node": "beacon-eth4"
+          },
+          "value": [
+            1794016539,
+            "14"
+          ]
+        },
+        {
+          "metric": {
+            "__name__": "lean_custody_column_peers",
+            "column": "12",
+            "job": "beacon",
+            "network": "mainnet",
+            "node": "beacon-eth4"
+          },
+          "value": [
+            1794016539,
+            "18"
+          ]
+        },
+        {
+          "metric": {
+            "__name__": "lean_custody_column_peers",
+            "column": "2",
+            "job": "beacon",
+            "network": "mainnet",
+            "node": "beacon-eth4"
+          },
+          "value": [
+            1794016539,
+            "15"
+          ]
+        },
+        {
+          "metric": {
+            "__name__": "lean_custody_column_peers",
+            "column": "24",
+            "job": "beacon",
+            "network": "mainnet",
+            "node": "beacon-eth4"
+          },
+          "value": [
+            1794016539,
+            "14"
+          ]
+        },
+        {
+          "metric": {
+            "__name__": "lean_custody_column_peers",
+            "column": "42",
+            "job": "beacon",
+            "network": "mainnet",
+            "node": "beacon-eth4"
+          },
+          "value": [
+            1794016539,
+            "11"
+          ]
+        },
+        {
+          "metric": {
+            "__name__": "lean_custody_column_peers",
+            "column": "96",
+            "job": "beacon",
+            "network": "mainnet",
+            "node": "beacon-eth4"
+          },
+          "value": [
+            1794016539,
+            "18"
+          ]
+        },
+        {
+          "metric": {
+            "__name__": "lean_custody_column_peers",
+            "column": "11",
+            "job": "beacon",
+            "network": "mainnet",
+            "node": "beacon-eth5"
+          },
+          "value": [
+            1794016539,
+            "16"
+          ]
+        },
+        {
+          "metric": {
+            "__name__": "lean_custody_column_peers",
+            "column": "118",
+            "job": "beacon",
+            "network": "mainnet",
+            "node": "beacon-eth5"
+          },
+          "value": [
+            1794016539,
+            "13"
+          ]
+        },
+        {
+          "metric": {
+            "__name__": "lean_custody_column_peers",
+            "column": "3",
+            "job": "beacon",
+            "network": "mainnet",
+            "node": "beacon-eth5"
+          },
+          "value": [
+            1794016539,
+            "11"
+          ]
+        },
+        {
+          "metric": {
+            "__name__": "lean_custody_column_peers",
+            "column": "32",
+            "job": "beacon",
+            "network": "mainnet",
+            "node": "beacon-eth5"
+          },
+          "value": [
+            1794016539,
+            "13"
+          ]
+        },
+        {
+          "metric": {
+            "__name__": "lean_custody_column_peers",
+            "column": "49",
+            "job": "beacon",
+            "network": "mainnet",
+            "node": "beacon-eth5"
+          },
+          "value": [
+            1794016539,
+            "11"
+          ]
+        },
+        {
+          "metric": {
+            "__name__": "lean_custody_column_peers",
+            "column": "53",
+            "job": "beacon",
+            "network": "mainnet",
+            "node": "beacon-eth5"
+          },
+          "value": [
+            1794016539,
+            "19"
+          ]
+        },
+        {
+          "metric": {
+            "__name__": "lean_custody_column_peers",
+            "column": "74",
+            "job": "beacon",
+            "network": "mainnet",
+            "node": "beacon-eth5"
+          },
+          "value": [
+            1794016539,
+            "11"
+          ]
+        },
+        {
+          "metric": {
+            "__name__": "lean_custody_column_peers",
+            "column": "76",
+            "job": "beacon",
+            "network": "mainnet",
+            "node": "beacon-eth5"
+          },
+          "value": [
+            1794016539,
+            "15"
+          ]
+        }
+      ]
+    }
+  }
+}

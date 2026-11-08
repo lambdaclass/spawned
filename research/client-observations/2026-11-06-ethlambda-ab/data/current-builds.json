@@ -1,0 +1,36 @@
+{
+  "status": "success",
+  "data": {
+    "resultType": "vector",
+    "result": [
+      {
+        "metric": {
+          "__name__": "lean_node_info",
+          "job": "beacon",
+          "name": "ethlambda",
+          "network": "mainnet",
+          "node": "beacon-eth4",
+          "version": "ethlambda/v1.0.0-HEAD-4117c5a/x86_64-unknown-linux-gnu/rustc-v1.97.1"
+        },
+        "value": [
+          1794101027.69,
+          "1"
+        ]
+      },
+      {
+        "metric": {
+          "__name__": "lean_node_info",
+          "job": "beacon",
+          "name": "ethlambda",
+          "network": "mainnet",
+          "node": "beacon-eth5",
+          "version": "ethlambda/v1.0.0-bump-spawned-0.6.0-5259dee/x86_64-unknown-linux-gnu/rustc-v1.97.1"
+        },
+        "value": [
+          1794101027.69,
+          "1"
+        ]
+      }
+    ]
+  }
+}
