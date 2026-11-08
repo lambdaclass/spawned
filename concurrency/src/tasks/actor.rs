@@ -220,6 +220,7 @@ pub struct Context<A: Actor> {
     links: LinkTable,
     linked_reason: LinkedExitReason,
     mailbox: crate::instrumentation::Mailbox,
+    managed: Option<Arc<crate::system::Scope>>,
 }
 
 impl<A: Actor> Clone for Context<A> {
@@ -234,6 +235,7 @@ impl<A: Actor> Clone for Context<A> {
             links: self.links.clone(),
             linked_reason: self.linked_reason.clone(),
             mailbox: self.mailbox.clone(),
+            managed: self.managed.clone(),
         }
     }
 }
@@ -258,6 +260,7 @@ impl<A: Actor> Context<A> {
             links: actor_ref.links.clone(),
             linked_reason: actor_ref.linked_reason.clone(),
             mailbox: actor_ref.mailbox.clone(),
+            managed: actor_ref.managed.clone(),
         }
     }
 
@@ -355,6 +358,7 @@ impl<A: Actor> Context<A> {
             links: self.links.clone(),
             linked_reason: self.linked_reason.clone(),
             mailbox: self.mailbox.clone(),
+            managed: self.managed.clone(),
         }
     }
 
@@ -397,8 +401,10 @@ impl<A: Actor> Context<A> {
         let target = target.clone();
         let actor_ref = self.actor_ref();
         let monitors = self.monitors.clone();
+        let registration = crate::monitor::MonitorRegistration(monitors.clone(), monitor_ref);
 
-        rt::spawn(async move {
+        self.spawn_framework(async move {
+            let _registration = registration;
             let reason = match futures::future::select(
                 Box::pin(active.cancelled()),
                 Box::pin(target.wait_exit_async()),
@@ -519,6 +525,64 @@ impl<A: Actor> Context<A> {
         })
     }
 
+    /// Spawn a lifecycle-owned helper on this actor's assigned execution group.
+    /// Construct runtime-bound work inside the async block. Closure of the scope
+    /// cancels the helper and waits for its future to drop before cleanup ends.
+    pub fn spawn_helper<F>(
+        &self,
+        future: F,
+    ) -> Result<crate::system::ScopedTask<F::Output>, crate::system::SystemError>
+    where
+        F: Future + Send + 'static,
+        F::Output: Send + 'static,
+    {
+        self.managed
+            .as_ref()
+            .ok_or(crate::system::SystemError::UnmanagedActor)?
+            .spawn_helper(future)
+    }
+
+    /// Register blocking work until the native closure actually finishes.
+    /// Cancellation cannot preempt it. Raw nested spawn calls are not implicitly
+    /// owned; use this method rather than detaching a blocking task inside a
+    /// cancellable async helper when recovery must await its resource cleanup.
+    pub fn spawn_blocking_helper<F, T>(
+        &self,
+        work: F,
+    ) -> Result<crate::system::ScopedTask<T>, crate::system::SystemError>
+    where
+        F: FnOnce() -> T + Send + 'static,
+        T: Send + 'static,
+    {
+        self.managed
+            .as_ref()
+            .ok_or(crate::system::SystemError::UnmanagedActor)?
+            .spawn_blocking_helper(work)
+    }
+
+    pub fn execution_group(&self) -> Option<crate::system::ExecutionGroup> {
+        self.managed.as_ref().map(|s| s.group())
+    }
+
+    /// Register this managed actor until its owned cleanup completes. Removal
+    /// compares identity and registration generation, preserving replacements.
+    pub fn register_name(&self, name: &str) -> Result<(), crate::registry::RegistryError> {
+        self.managed
+            .as_ref()
+            .ok_or(crate::registry::RegistryError::OwnerClosed)?
+            .register(name, self.id, self.actor_ref())
+    }
+
+    pub(crate) fn spawn_framework<F>(&self, future: F) -> JoinHandle<()>
+    where
+        F: Future<Output = ()> + Send + 'static,
+    {
+        match &self.managed {
+            Some(scope) => scope.spawn_framework(future),
+            None => rt::spawn(future),
+        }
+    }
+
     pub(crate) fn cancellation_token(&self) -> CancellationToken {
         self.cancellation_token.clone()
     }
@@ -595,6 +659,7 @@ pub struct ActorRef<A: Actor> {
     links: LinkTable,
     linked_reason: LinkedExitReason,
     mailbox: crate::instrumentation::Mailbox,
+    managed: Option<Arc<crate::system::Scope>>,
 }
 
 impl<A: Actor> Debug for ActorRef<A> {
@@ -615,11 +680,21 @@ impl<A: Actor> Clone for ActorRef<A> {
             links: self.links.clone(),
             linked_reason: self.linked_reason.clone(),
             mailbox: self.mailbox.clone(),
+            managed: self.managed.clone(),
         }
     }
 }
 
 impl<A: Actor> ActorRef<A> {
+    /// Await this managed instance's initial readiness barrier. Success does not
+    /// guarantee it remains alive afterward; ordinary request errors still apply.
+    pub async fn ready(&self) -> Result<(), crate::system::SystemError> {
+        self.managed
+            .as_ref()
+            .ok_or(crate::system::SystemError::UnmanagedActor)?
+            .wait_ready()
+            .await
+    }
     /// Send a fire-and-forget message to the actor.
     pub fn send<M>(&self, msg: M) -> Result<(), ActorError>
     where
@@ -773,13 +848,46 @@ where
 
 impl<A: Actor> ActorRef<A> {
     fn spawn(actor: A, backend: Backend, parent: Option<ChildHandle>) -> Self {
+        Self::spawn_inner(actor, backend, parent, None, None)
+    }
+
+    pub(crate) fn spawn_managed(
+        actor: A,
+        scope: Arc<crate::system::Scope>,
+        lease: crate::system::Lease,
+    ) -> Result<Self, crate::system::SystemError> {
+        if !scope.can_start() {
+            return Err(crate::system::SystemError::Closed);
+        }
+        Ok(Self::spawn_inner(
+            actor,
+            Backend::Async,
+            None,
+            Some(scope),
+            Some(lease),
+        ))
+    }
+
+    fn spawn_inner(
+        actor: A,
+        backend: Backend,
+        parent: Option<ChildHandle>,
+        managed: Option<Arc<crate::system::Scope>>,
+        lease: Option<crate::system::Lease>,
+    ) -> Self {
         let (tx, rx) = mpsc::channel::<Box<dyn Envelope<A> + Send>>();
-        let cancellation_token = CancellationToken::new();
+        let cancellation_token = managed
+            .as_ref()
+            .map(|s| s.token.clone())
+            .unwrap_or_default();
         let (completion_tx, completion_rx) = watch::channel(None);
         let monitors: MonitorTable = Arc::new(Mutex::new(Some(HashMap::new())));
         let trap_exit = new_trap_exit_flag();
         let links = new_link_table();
-        let linked_reason = new_linked_exit_reason();
+        let linked_reason = managed
+            .as_ref()
+            .map(|s| s.cause.clone())
+            .unwrap_or_else(new_linked_exit_reason);
 
         let actor_ref = ActorRef {
             id: ActorId::next(),
@@ -791,6 +899,7 @@ impl<A: Actor> ActorRef<A> {
             links: links.clone(),
             linked_reason: linked_reason.clone(),
             mailbox: crate::instrumentation::Mailbox::default(),
+            managed: managed.clone(),
         };
 
         let ctx = Context {
@@ -803,14 +912,23 @@ impl<A: Actor> ActorRef<A> {
             links: links.clone(),
             linked_reason: linked_reason.clone(),
             mailbox: actor_ref.mailbox.clone(),
+            managed: actor_ref.managed.clone(),
         };
+
+        if let Some(scope) = &managed {
+            scope.attach(actor_ref.child_handle());
+        }
 
         if let Some(parent) = parent {
             actor_ref.context().link(&parent);
         }
 
         #[cfg(feature = "backend-experiments")]
-        let scheduler = std::env::var("SPAWNED_EXPERIMENT_SCHEDULER").unwrap_or_default();
+        let scheduler = if managed.is_some() {
+            String::new()
+        } else {
+            std::env::var("SPAWNED_EXPERIMENT_SCHEDULER").unwrap_or_default()
+        };
         #[cfg(feature = "backend-experiments")]
         let turn = (backend == Backend::Async
             && matches!(
@@ -864,8 +982,24 @@ impl<A: Actor> ActorRef<A> {
                 turn,
             )
             .await;
-            cleanup.complete(reason);
+            cleanup.complete(reason.clone());
+            if let Some(scope) = &managed {
+                let actual = crate::system::lock(&scope.cause).clone().unwrap_or(reason);
+                scope.exited(actual);
+            }
         };
+
+        if let Some(lease) = lease {
+            let scope = actor_ref
+                .managed
+                .as_ref()
+                .expect("managed lease without scope");
+            scope.handle.spawn(crate::system::Tracked {
+                future: inner_future,
+                lease,
+            });
+            return actor_ref;
+        }
 
         match backend {
             Backend::Async => {
@@ -1019,6 +1153,12 @@ async fn run_actor_lifecycle<A: Actor>(
     #[cfg(feature = "backend-experiments")] mut turn: Option<MessageTurn>,
 ) -> ExitReason {
     let _monitor_cleanup = MonitorCleanup(ctx.monitors.clone());
+    if let Some(scope) = &ctx.managed {
+        if !scope.can_start() {
+            scope.stop(ExitReason::Shutdown);
+            return ExitReason::Normal;
+        }
+    }
     let start_result = AssertUnwindSafe(actor.started(&ctx)).catch_unwind().await;
     if let Err(panic) = start_result {
         let msg = panic_message(&*panic);
@@ -1027,7 +1167,16 @@ async fn run_actor_lifecycle<A: Actor>(
         return ExitReason::Panic(format!("panic in started(): {msg}"));
     }
 
+    if let Some(scope) = &ctx.managed {
+        if !scope.mark_ready() {
+            scope.stop(ExitReason::Shutdown);
+        }
+    }
+
     if cancellation_token.is_cancelled() {
+        if let Some(scope) = &ctx.managed {
+            scope.end_running();
+        }
         if let Err(panic) = AssertUnwindSafe(actor.stopped(&ctx)).catch_unwind().await {
             let msg = panic_message(&*panic);
             tracing::error!("Panic in stopped() callback: {msg}");
@@ -1100,6 +1249,9 @@ async fn run_actor_lifecycle<A: Actor>(
         }
     }
 
+    if let Some(scope) = &ctx.managed {
+        scope.end_running();
+    }
     cancellation_token.cancel();
     let stop_result = AssertUnwindSafe(actor.stopped(&ctx)).catch_unwind().await;
     if let Err(panic) = stop_result {
@@ -1122,6 +1274,14 @@ pub trait ActorStart: Actor {
     /// Start the actor with the default backend ([`Backend::Async`]).
     fn start(self) -> ActorRef<Self> {
         self.start_with_backend(Backend::default())
+    }
+
+    /// Admit this actor to an owned parked async execution group.
+    fn start_on(
+        self,
+        group: &crate::system::ExecutionGroup,
+    ) -> Result<ActorRef<Self>, crate::system::SystemError> {
+        group.start(self)
     }
 
     /// Start the actor with a specific [`Backend`].
@@ -1159,7 +1319,8 @@ where
     <U as Future>::Output: Send,
 {
     let cancellation_token = ctx.cancellation_token();
-    let join_handle = rt::spawn(async move {
+    let spawn_ctx = ctx.clone();
+    let join_handle = spawn_ctx.spawn_framework(async move {
         let is_cancelled = pin!(cancellation_token.cancelled());
         let signal = pin!(future);
         match future::select(is_cancelled, signal).await {
@@ -2630,6 +2791,7 @@ mod turn_regressions {
                 links: new_link_table(),
                 linked_reason: new_linked_exit_reason(),
                 mailbox: crate::instrumentation::Mailbox::default(),
+                managed: None,
             };
             let count = Arc::new(AtomicUsize::new(0));
             for _ in 0..2 {
@@ -2695,6 +2857,7 @@ mod idle_stop_regression {
                 links: new_link_table(),
                 linked_reason: new_linked_exit_reason(),
                 mailbox: crate::instrumentation::Mailbox::default(),
+                managed: None,
             };
             let count = Arc::new(AtomicUsize::new(0));
             let mut actor = Box::pin(run_actor(

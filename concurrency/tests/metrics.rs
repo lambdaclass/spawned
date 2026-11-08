@@ -135,6 +135,33 @@ fn metrics_conserve_work_across_all_lifecycle_paths() {
             Err(ActorError::ActorStopped)
         ));
         assert!(matches!(actor.wait_exit().await, ExitReason::Panic(_)));
+        // Managed restart/shutdown must conserve the same aggregate accounting.
+        let system = spawned_concurrency::system::ActorSystem::new().unwrap();
+        let group = system.async_group("metrics-recovery", 1).unwrap();
+        let mut tree = system
+            .supervisor(spawned_concurrency::supervision::SupervisorConfig::default())
+            .unwrap();
+        let child = tree
+            .add(spawned_concurrency::supervision::ChildSpec::new(
+                "probe",
+                &group,
+                |_| async { Ok::<_, String>(Probe { gate: None }) },
+            ))
+            .unwrap();
+        let supervisor = tree.start().await.unwrap();
+        let first = child.current().unwrap();
+        assert_eq!(first.query().await.unwrap(), 9);
+        assert!(first.request(Crash).await.is_err());
+        let next = tokio::time::timeout(Duration::from_secs(3), child.wait_for_generation(1))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_ne!(first.id(), next.id());
+        next.request(Ping).await.unwrap();
+        assert!(supervisor.shutdown(Duration::from_secs(3)).await.complete);
+        assert!(system.shutdown(Duration::from_secs(3)).await.complete);
+        assert_eq!(first.mailbox_depth(), 0);
+        assert_eq!(next.mailbox_depth(), 0);
     });
     // Both never-polled and actively-handling runtime aborts close accounting.
     for poll_first in [false, true] {
@@ -236,7 +263,8 @@ fn metrics_conserve_work_across_all_lifecycle_paths() {
             + s.requests_actor_stopped_total
             + s.requests_cancelled_total
     );
-    assert!(s.handlers_panicked_total >= 2);
+    assert!(s.actors_exited_shutdown_total >= 1);
+    assert!(s.handlers_panicked_total >= 3);
     assert!(s.handlers_aborted_total >= 1);
     assert!(s.messages_discarded_total >= 4);
     assert!(s.messages_rejected_total >= 3);

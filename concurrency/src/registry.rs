@@ -1,8 +1,14 @@
 use std::any::Any;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{OnceLock, RwLock};
 
-type Store = RwLock<HashMap<String, Box<dyn Any + Send + Sync>>>;
+struct Entry {
+    value: Box<dyn Any + Send + Sync>,
+    owner: Option<(crate::ActorId, u64)>,
+}
+type Store = RwLock<HashMap<String, Entry>>;
+static NEXT_REGISTRATION: AtomicU64 = AtomicU64::new(1);
 
 fn global_store() -> &'static Store {
     static STORE: OnceLock<Store> = OnceLock::new();
@@ -15,6 +21,8 @@ pub enum RegistryError {
     /// A value with this name is already registered.
     #[error("name '{0}' is already registered")]
     AlreadyRegistered(String),
+    #[error("registration requires a live managed actor scope")]
+    OwnerClosed,
 }
 
 /// Register a value by name in the global registry.
@@ -25,12 +33,15 @@ pub fn register<T: Clone + Send + Sync + 'static>(
     name: &str,
     value: T,
 ) -> Result<(), RegistryError> {
-    use std::collections::hash_map::Entry;
+    use std::collections::hash_map::Entry as MapEntry;
     let mut store = global_store().write().unwrap_or_else(|p| p.into_inner());
     match store.entry(name.to_string()) {
-        Entry::Occupied(e) => Err(RegistryError::AlreadyRegistered(e.key().clone())),
-        Entry::Vacant(e) => {
-            e.insert(Box::new(value));
+        MapEntry::Occupied(e) => Err(RegistryError::AlreadyRegistered(e.key().clone())),
+        MapEntry::Vacant(e) => {
+            e.insert(Entry {
+                value: Box::new(value),
+                owner: None,
+            });
             Ok(())
         }
     }
@@ -40,13 +51,62 @@ pub fn register<T: Clone + Send + Sync + 'static>(
 /// type doesn't match `T`.
 pub fn whereis<T: Clone + Send + Sync + 'static>(name: &str) -> Option<T> {
     let store = global_store().read().unwrap_or_else(|p| p.into_inner());
-    store.get(name)?.downcast_ref::<T>().cloned()
+    store.get(name)?.value.downcast_ref::<T>().cloned()
 }
 
 /// Remove a registration by name. No-op if the name is not registered.
 pub fn unregister(name: &str) {
+    let removed = global_store()
+        .write()
+        .unwrap_or_else(|p| p.into_inner())
+        .remove(name);
+    drop(removed);
+}
+
+/// Removes only this exact owned registration, including when a manual
+/// unregister/re-register used the same actor identity in between.
+pub struct RegistrationGuard {
+    name: String,
+    owner: (crate::ActorId, u64),
+}
+impl Drop for RegistrationGuard {
+    fn drop(&mut self) {
+        let removed = {
+            let mut store = global_store().write().unwrap_or_else(|p| p.into_inner());
+            if store
+                .get(&self.name)
+                .is_some_and(|entry| entry.owner == Some(self.owner))
+            {
+                store.remove(&self.name)
+            } else {
+                None
+            }
+        };
+        drop(removed);
+    }
+}
+
+pub fn register_owned<T: Clone + Send + Sync + 'static>(
+    name: &str,
+    owner: crate::ActorId,
+    value: T,
+) -> Result<RegistrationGuard, RegistryError> {
+    use std::collections::hash_map::Entry as MapEntry;
     let mut store = global_store().write().unwrap_or_else(|p| p.into_inner());
-    store.remove(name);
+    match store.entry(name.to_string()) {
+        MapEntry::Occupied(_) => Err(RegistryError::AlreadyRegistered(name.into())),
+        MapEntry::Vacant(slot) => {
+            let owner = (owner, NEXT_REGISTRATION.fetch_add(1, Ordering::Relaxed));
+            slot.insert(Entry {
+                value: Box::new(value),
+                owner: Some(owner),
+            });
+            Ok(RegistrationGuard {
+                name: name.into(),
+                owner,
+            })
+        }
+    }
 }
 
 /// List all registered names.
@@ -103,5 +163,17 @@ mod tests {
         let names = registered();
         assert!(names.contains(&"test_list_a".to_string()));
         assert!(names.contains(&"test_list_b".to_string()));
+    }
+
+    #[test]
+    fn old_guard_preserves_new_registration_even_with_same_actor_identity() {
+        let actor = crate::ActorId::next();
+        let old = register_owned("owned_generation_guard_test", actor, 1u64).unwrap();
+        unregister("owned_generation_guard_test");
+        let new = register_owned("owned_generation_guard_test", actor, 2u64).unwrap();
+        drop(old);
+        assert_eq!(whereis::<u64>("owned_generation_guard_test"), Some(2));
+        drop(new);
+        assert_eq!(whereis::<u64>("owned_generation_guard_test"), None);
     }
 }

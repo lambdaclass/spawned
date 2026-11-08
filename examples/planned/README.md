@@ -1,6 +1,6 @@
 # Proposed capability examples
 
-This is an example plan, not a set of available APIs. The current implementation
+This tracks example coverage and future work; rows with runnable links have an initial implementation on main (unreleased). The current implementation
 order is [the roadmap](../../docs/ROADMAP.md); the [ranked research backlog](../../docs/research/idea-priorities.md)
 explains value, dependencies and sources. Ranks are planning priorities, not
 independent sequential implementation steps.
@@ -13,17 +13,17 @@ backend drivers and their performance evidence under `benchmarks/` and
 
 | Rank | Proposed capability | Example to deliver with it |
 |---|---|---|
-| 1 | Runtime ownership / execution groups | Critical router and background workers in named groups; partial startup failure; explicit stop/join. [Manual two-runtime recipe works today](../capabilities/src/bin/runtime_isolation.rs). |
-| 2 | Supervision, paired with execution groups | OneForOne with child factories, restart modes and budget/backoff; restart in the same group, show an old reference failing and resolve the replacement explicitly. Then stop the supervisor during backoff and verify no new child starts. |
+| 1 | Runtime ownership / execution groups | Critical router and background workers in named groups; partial startup failure; explicit stop/join. [Owned groups example](../capabilities/src/bin/execution_groups.rs); dedicated/pinned group profiles remain planned. |
+| 2 | Supervision, paired with execution groups | OneForOne with child factories, restart modes and budget/backoff; restart in the same group, show an old reference failing and resolve the replacement explicitly. [Recovery example](../capabilities/src/bin/supervision_recovery.rs) is implemented; integration tests also stop during backoff. OneForAll/RestForOne remain planned. |
 | 3 | Tokio-free threads | Run protocol requests, timer, monitor and shutdown without Tokio in the dependency graph. Existing native-thread examples still compile Tokio. |
-| 4 | Lifecycle-owned registries | Register a service, crash it and verify its entry is removed without deleting a replacement's registration. |
-| 5 | Fallible startup / readiness | Fail initialization and report the error before admitting work; contrast successful readiness. |
+| 4 | Lifecycle-owned registries (managed generation guards implemented) | Register a service, crash it and verify its entry is removed without deleting a replacement's registration. |
+| 5 | Fallible startup / readiness (factory Results and managed readiness implemented) | Fail initialization and report the error before admitting work; contrast successful readiness. |
 | 6 | Coordinated shutdown | Close admission, drain dependencies within a deadline and report unfinished work. [Finite-batch recipe works today](../capabilities/src/bin/graceful_drain.rs). |
 | 7 | Deferred replies / delegation / pipe-to-self | Route a slow request while accepting another message; bound pending replies and demonstrate owner exit and late completion. |
 | 8 | Bounded mailboxes | A slow consumer reaches capacity; demonstrate explicit rejection and cancellable waiting without blocking actor progress. |
 | 9 | Byte/work credits | Reserve before decoding a large payload; pass credit across stages and reclaim it after rejection/panic. [Payload-budget adapter works today](../capabilities/src/bin/byte_budget_pipeline.rs). |
 | 10 | Inherited deadlines | Exhaust an ingress budget and skip stale queued work without granting downstream calls fresh time. [Current timeout behavior is demonstrated here](../capabilities/src/bin/timeout_outcomes.rs). |
-| 11 | Actor-owned helpers | Stop an actor with active helpers, reject new helper admission and await owned cleanup to a deadline. |
+| 11 | Actor-owned helpers (managed scope implemented) | Stop an actor with active helpers, reject new helper admission and await owned cleanup to a deadline. |
 | 12 | Fair control path | Observe lifecycle control behind a data backlog while checking ordinary work still progresses; no handler preemption. |
 | 13 | Causal tracing | Follow one ingress through fan-out/fan-in, preserving origin across awaits and runtime boundaries. |
 | 14 | Bounded cohort metrics | Separate busy importers from idle peers with a bounded label set and correct gauge cleanup. [Aggregate metrics work today](../capabilities/src/bin/framework_metrics.rs). |

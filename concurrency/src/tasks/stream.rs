@@ -14,7 +14,8 @@ where
     S: Send + Stream<Item = M> + 'static,
 {
     let cancellation_token = ctx.cancellation_token();
-    let join_handle = spawned_rt::tasks::spawn(async move {
+    let spawn_ctx = ctx.clone();
+    let join_handle = spawn_ctx.spawn_framework(async move {
         let mut pinned_stream = core::pin::pin!(stream);
         let is_cancelled = core::pin::pin!(cancellation_token.cancelled());
         let listener_loop = core::pin::pin!(async {

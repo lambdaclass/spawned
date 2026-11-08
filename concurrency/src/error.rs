@@ -4,7 +4,6 @@ pub enum ExitReason {
     /// Clean stop via `ctx.stop()` or channel closure.
     Normal,
     /// Ordered shutdown from a supervisor or linked actor.
-    /// Not yet produced — reserved for supervision tree implementation.
     Shutdown,
     /// Actor panicked in `started()`, a handler, or `stopped()`.
     Panic(String),

@@ -1,0 +1,364 @@
+{
+  "process_repeats": 20,
+  "iterations_per_repeat": 32,
+  "total_race_iterations": 640,
+  "producer_tasks_per_iteration": 8,
+  "request_attempts_per_producer": 16,
+  "schedules": "OS/Tokio scheduling; not seeded deterministic delivery",
+  "results": [
+    {
+      "gate": "final-test-style",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "spawned-concurrency",
+        "--test",
+        "execution_groups"
+      ],
+      "exit": 0,
+      "log": "spawned-system-final-test-style.log.gz"
+    },
+    {
+      "gate": "race-1",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "spawned-concurrency",
+        "--test",
+        "supervision",
+        "repeated_crash_producer_and_shutdown_races_never_overlap_generations",
+        "--",
+        "--exact"
+      ],
+      "exit": 0,
+      "log": "spawned-system-race-1.log.gz"
+    },
+    {
+      "gate": "race-2",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "spawned-concurrency",
+        "--test",
+        "supervision",
+        "repeated_crash_producer_and_shutdown_races_never_overlap_generations",
+        "--",
+        "--exact"
+      ],
+      "exit": 0,
+      "log": "spawned-system-race-2.log.gz"
+    },
+    {
+      "gate": "race-3",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "spawned-concurrency",
+        "--test",
+        "supervision",
+        "repeated_crash_producer_and_shutdown_races_never_overlap_generations",
+        "--",
+        "--exact"
+      ],
+      "exit": 0,
+      "log": "spawned-system-race-3.log.gz"
+    },
+    {
+      "gate": "race-4",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "spawned-concurrency",
+        "--test",
+        "supervision",
+        "repeated_crash_producer_and_shutdown_races_never_overlap_generations",
+        "--",
+        "--exact"
+      ],
+      "exit": 0,
+      "log": "spawned-system-race-4.log.gz"
+    },
+    {
+      "gate": "race-5",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "spawned-concurrency",
+        "--test",
+        "supervision",
+        "repeated_crash_producer_and_shutdown_races_never_overlap_generations",
+        "--",
+        "--exact"
+      ],
+      "exit": 0,
+      "log": "spawned-system-race-5.log.gz"
+    },
+    {
+      "gate": "race-6",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "spawned-concurrency",
+        "--test",
+        "supervision",
+        "repeated_crash_producer_and_shutdown_races_never_overlap_generations",
+        "--",
+        "--exact"
+      ],
+      "exit": 0,
+      "log": "spawned-system-race-6.log.gz"
+    },
+    {
+      "gate": "race-7",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "spawned-concurrency",
+        "--test",
+        "supervision",
+        "repeated_crash_producer_and_shutdown_races_never_overlap_generations",
+        "--",
+        "--exact"
+      ],
+      "exit": 0,
+      "log": "spawned-system-race-7.log.gz"
+    },
+    {
+      "gate": "race-8",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "spawned-concurrency",
+        "--test",
+        "supervision",
+        "repeated_crash_producer_and_shutdown_races_never_overlap_generations",
+        "--",
+        "--exact"
+      ],
+      "exit": 0,
+      "log": "spawned-system-race-8.log.gz"
+    },
+    {
+      "gate": "race-9",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "spawned-concurrency",
+        "--test",
+        "supervision",
+        "repeated_crash_producer_and_shutdown_races_never_overlap_generations",
+        "--",
+        "--exact"
+      ],
+      "exit": 0,
+      "log": "spawned-system-race-9.log.gz"
+    },
+    {
+      "gate": "race-10",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "spawned-concurrency",
+        "--test",
+        "supervision",
+        "repeated_crash_producer_and_shutdown_races_never_overlap_generations",
+        "--",
+        "--exact"
+      ],
+      "exit": 0,
+      "log": "spawned-system-race-10.log.gz"
+    },
+    {
+      "gate": "race-11",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "spawned-concurrency",
+        "--test",
+        "supervision",
+        "repeated_crash_producer_and_shutdown_races_never_overlap_generations",
+        "--",
+        "--exact"
+      ],
+      "exit": 0,
+      "log": "spawned-system-race-11.log.gz"
+    },
+    {
+      "gate": "race-12",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "spawned-concurrency",
+        "--test",
+        "supervision",
+        "repeated_crash_producer_and_shutdown_races_never_overlap_generations",
+        "--",
+        "--exact"
+      ],
+      "exit": 0,
+      "log": "spawned-system-race-12.log.gz"
+    },
+    {
+      "gate": "race-13",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "spawned-concurrency",
+        "--test",
+        "supervision",
+        "repeated_crash_producer_and_shutdown_races_never_overlap_generations",
+        "--",
+        "--exact"
+      ],
+      "exit": 0,
+      "log": "spawned-system-race-13.log.gz"
+    },
+    {
+      "gate": "race-14",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "spawned-concurrency",
+        "--test",
+        "supervision",
+        "repeated_crash_producer_and_shutdown_races_never_overlap_generations",
+        "--",
+        "--exact"
+      ],
+      "exit": 0,
+      "log": "spawned-system-race-14.log.gz"
+    },
+    {
+      "gate": "race-15",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "spawned-concurrency",
+        "--test",
+        "supervision",
+        "repeated_crash_producer_and_shutdown_races_never_overlap_generations",
+        "--",
+        "--exact"
+      ],
+      "exit": 0,
+      "log": "spawned-system-race-15.log.gz"
+    },
+    {
+      "gate": "race-16",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "spawned-concurrency",
+        "--test",
+        "supervision",
+        "repeated_crash_producer_and_shutdown_races_never_overlap_generations",
+        "--",
+        "--exact"
+      ],
+      "exit": 0,
+      "log": "spawned-system-race-16.log.gz"
+    },
+    {
+      "gate": "race-17",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "spawned-concurrency",
+        "--test",
+        "supervision",
+        "repeated_crash_producer_and_shutdown_races_never_overlap_generations",
+        "--",
+        "--exact"
+      ],
+      "exit": 0,
+      "log": "spawned-system-race-17.log.gz"
+    },
+    {
+      "gate": "race-18",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "spawned-concurrency",
+        "--test",
+        "supervision",
+        "repeated_crash_producer_and_shutdown_races_never_overlap_generations",
+        "--",
+        "--exact"
+      ],
+      "exit": 0,
+      "log": "spawned-system-race-18.log.gz"
+    },
+    {
+      "gate": "race-19",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "spawned-concurrency",
+        "--test",
+        "supervision",
+        "repeated_crash_producer_and_shutdown_races_never_overlap_generations",
+        "--",
+        "--exact"
+      ],
+      "exit": 0,
+      "log": "spawned-system-race-19.log.gz"
+    },
+    {
+      "gate": "race-20",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "spawned-concurrency",
+        "--test",
+        "supervision",
+        "repeated_crash_producer_and_shutdown_races_never_overlap_generations",
+        "--",
+        "--exact"
+      ],
+      "exit": 0,
+      "log": "spawned-system-race-20.log.gz"
+    }
+  ]
+}

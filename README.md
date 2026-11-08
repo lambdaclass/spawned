@@ -118,7 +118,7 @@ See the [examples guide](examples/README.md) for run commands, use cases and the
 
 | Example | Mode | Description |
 |---------|------|-------------|
-| [`capabilities`](examples/capabilities) | tasks | Runtime isolation, byte budgets, timeout outcomes, draining and optional metrics |
+| [`capabilities`](examples/capabilities) | tasks | Owned execution groups, OneForOne recovery, isolation, byte budgets, timeouts and metrics |
 | [`exit_reason`](examples/exit_reason) | tasks | Stop, panic, links, monitors and trapped exits |
 | [`name_server`](examples/name_server) | tasks | Key-value store — the classic Erlang name server |
 | [`bank`](examples/bank) | tasks | Bank account — deposit, withdraw, balance with error handling |
@@ -230,8 +230,8 @@ Protocols make this separation explicit: the trait defines *what* an actor does,
 
 Links, trapped exits and atomic linked startup are available in v0.6.0.
 See [link usage](docs/API-GUIDE.md#links-and-trapped-exits) and the
-[review and hardening notes](docs/reviews/pr-166-links.md). Automatic supervision
-and restart policies remain roadmap work.
+[review and hardening notes](docs/reviews/pr-166-links.md). OneForOne supervision and owned execution groups are implemented on main
+(unreleased); see the [usage guide](docs/EXECUTION-GROUPS.md).
 
 ## Roadmap
 
@@ -241,8 +241,8 @@ execution while improving production visibility and recovery.
 1. **Execution groups plus supervision** — an optional ActorSystem owns named
    runtime groups, worker budgets and shutdown. Child factories and OneForOne
    recovery add restart modes, limits/backoff, ordered startup/shutdown and clear
-   outcomes for stale references and pending work. Design them together; ship
-   placement first, then the minimal recovery lifecycle.
+   outcomes for stale references and pending work. The parked async + OneForOne
+   MVP is implemented on main, unreleased.
 2. **Tokio-free thread builds** — separate features and synchronization while
    preserving the current async defaults.
 3. **Workload-driven capabilities** — bounded admission/byte credits, inherited
@@ -251,7 +251,8 @@ execution while improving production visibility and recovery.
 Optional framework metrics and reproducible backend studies are already
 available. Client profiling, failure testing and full-workload validation continue
 alongside feature work. The [combined milestone design](docs/design/execution-groups-supervision.md)
-is a proposal; execution groups and automatic restart are not implemented yet.
+records the contracts. Parked async groups and OneForOne recovery are implemented
+on main, unreleased; dedicated/pinned groups and further strategies remain planned.
 
 See the [detailed roadmap](docs/ROADMAP.md) for acceptance criteria and the
 [Silver/flux research](docs/research/silver-flux.md) for transferable ideas.

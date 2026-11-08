@@ -7,7 +7,13 @@ one combined milestone, delivered as 1a then 1b.
 
 **Final AGY verdict: no remaining blocking design/API-contract gaps.** This is
 a static documentation review, not approval of implementation code, test
-coverage, a new release or a production rollout. Those APIs are not implemented.
+coverage, a new release or a production rollout. The APIs were unimplemented at
+the time of this design review. The subsequent implementation has a
+[separate review and validation record](execution-groups-supervision-implementation.md).
+
+The original reviewed documentation is preserved in commit `1288031`; the
+recorded hashes refer to that design snapshot. This page now links the later
+implementation record.
 
 ## Revisions from review
 

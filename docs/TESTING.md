@@ -162,3 +162,22 @@ Protocols continue to separate application logic from message dispatch. Each
 actor handles one message at a time, with both async and synchronous thread
 execution supported. No restart or queue-capacity policies are added by these
 tests. See CHANGELOG.md for the observable lifecycle corrections.
+
+
+## Managed execution and recovery (main, unreleased)
+
+`execution_groups` exercises foreign-thread helper routing, placement closure,
+readiness, shutdown report retention, scoped registrations, helper panic/abort,
+and native helper completion. `supervision` exercises fresh identities/state,
+restart modes, shared retry budgets, construction failures/panics, startup
+cancellation/rollback, reverse dependency shutdown, backoff cancellation and
+stuck helper/`stopped()` cleanup with no overlapping replacement. Policy tests
+exercise retry-window boundaries and reproducible capped backoff/jitter.
+These are controlled failure tests, not a deterministic executor or a claim that
+all OS schedules were explored. CI also runs both asserted capability examples.
+
+The [implementation review](reviews/execution-groups-supervision-implementation.md)
+archives 33 focused integration tests, full workspace/default/all-feature gates,
+strict Clippy, eight examples and 20 fresh-process repetitions of the 32-iteration
+crash/producer/shutdown race (640 iterations). These explore ordinary OS/Tokio
+scheduling; they are not deterministic delivery simulation.

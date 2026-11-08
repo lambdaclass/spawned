@@ -81,6 +81,8 @@ pub mod message;
 pub mod monitor;
 pub mod registry;
 pub mod response;
+pub mod supervision;
+pub mod system;
 pub mod tasks;
 pub mod threads;
 

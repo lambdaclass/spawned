@@ -161,6 +161,14 @@ impl ChildHandle {
         (self.cancel)();
     }
 
+    /// Request an ordered cooperative shutdown without replacing an earlier
+    /// committed cause. A cleanup panic remains an abnormal exit.
+    pub fn shutdown(&self) {
+        crate::link::stop_with_reason(&self.linked_reason, ExitReason::Shutdown, || {
+            (self.cancel)()
+        });
+    }
+
     /// Returns `true` if the actor is still running.
     pub fn is_alive(&self) -> bool {
         self.exit_reason().is_none()

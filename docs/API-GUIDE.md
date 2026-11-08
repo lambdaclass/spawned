@@ -495,5 +495,16 @@ not relabelled by a later peer failure; callback failures are still reported.
 A link to a closed peer creates no retained relationship and applies that peer's
 exit-signal rules for the attempt. Repeated live links are no-ops. Unlink prevents
 future propagation through the relationship but does not retract an exit already
-in flight. Links are a supervision primitive; automatic restart/backoff and
-reference replacement are separate work. See the [review and regression evidence](reviews/pr-166-links.md).
+in flight. Links are a supervision primitive. Managed OneForOne recovery is described in
+[execution groups and supervision](EXECUTION-GROUPS.md); additional restart strategies and
+transparent reference rebinding remain separate work. See the [review and regression evidence](reviews/pr-166-links.md).
+
+
+## Owned placement and OneForOne recovery (unreleased)
+
+Use `ActorSystem`, `ExecutionGroup` and `ActorStart::start_on` for explicit async
+worker budgets. Add `ChildSpec` factories to a system supervisor for automatic
+fresh-instance recovery. Existing `.start()` stays ambient and unmanaged.
+The [complete guide](EXECUTION-GROUPS.md) explains readiness, registered helpers,
+shutdown reports, reference behavior and the supported policy limits, with
+[runnable examples](../examples/capabilities/README.md).

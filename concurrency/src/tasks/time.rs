@@ -26,7 +26,8 @@ where
     let cancellation_token = CancellationToken::new();
     let cloned_token = cancellation_token.clone();
     let actor_cancellation_token = ctx.cancellation_token();
-    let join_handle = rt::spawn(async move {
+    let spawn_ctx = ctx.clone();
+    let join_handle = spawn_ctx.spawn_framework(async move {
         let cancel_token_fut = pin!(cloned_token.cancelled());
         let actor_cancel_fut = pin!(actor_cancellation_token.cancelled());
         let cancel_conditions = select(cancel_token_fut, actor_cancel_fut);
@@ -57,7 +58,8 @@ where
     let cancellation_token = CancellationToken::new();
     let cloned_token = cancellation_token.clone();
     let actor_cancellation_token = ctx.cancellation_token();
-    let join_handle = rt::spawn(async move {
+    let spawn_ctx = ctx.clone();
+    let join_handle = spawn_ctx.spawn_framework(async move {
         loop {
             let cancel_token_fut = pin!(cloned_token.cancelled());
             let actor_cancel_fut = pin!(actor_cancellation_token.cancelled());

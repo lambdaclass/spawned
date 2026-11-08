@@ -1,6 +1,6 @@
 # Spawned examples
 Start with the [capability guide](capabilities/README.md) for finite, asserted
-programs showing dedicated-thread helpers, runtime isolation, byte-budgeted pipelines, timeout outcomes,
+programs showing owned execution groups, OneForOne recovery, dedicated-thread helpers, runtime isolation, byte-budgeted pipelines, timeout outcomes,
 shutdown draining and framework metrics. Each explains why it is useful and its
 limits. The [proposed example catalog](planned/README.md) maps every ranked
 roadmap idea to the scenario it should eventually demonstrate; proposed APIs are

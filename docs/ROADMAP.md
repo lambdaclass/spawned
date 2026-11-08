@@ -10,59 +10,48 @@ handlers and the existing default behavior. New policies are explicit and opt-in
 
 Typed protocols, async/blocking/thread execution, actor identities, monitors,
 links and trapped exits, linked startup, shutdown fixes, optional framework
-metrics, and reproducible backend research. Automatic supervision is not yet
-implemented. Thread actors need no active Tokio executor but still compile Tokio.
+metrics, and reproducible backend research. v0.6.0 does not include automatic
+supervision. Thread actors need no active Tokio executor but still compile Tokio.
 
 ## 1. Execution groups plus supervision
 
-This is the next combined capability milestone. Design ownership and recovery
-together, then ship the following two increments. See the
+The parked async + OneForOne MVP is implemented on main and unreleased.
+See the [usage guide](EXECUTION-GROUPS.md) and the
 [MVP design and acceptance criteria](design/execution-groups-supervision.md).
 
-### 1a. ActorSystem and execution groups
+### 1a. ActorSystem and execution groups — implemented
 
-Introduce explicit runtime handles and execution groups through a supported API.
-Start with a parked shared/isolated pool, bounded workers and explicit ownership.
-An optional ActorSystem owns named groups, admitted actors and registered helper
-scopes. Keep `.start()` unchanged; placement API names are still proposals. Start
-with parked async pools. Sized blocking pools, dedicated/pinned profiles and a
-general resource scheduler can graduate in subsequent increments with their own
-resource and shutdown contracts.
+- Named parked async pools with explicit worker budgets and `start_on(&group)`.
+  Ordinary `.start()` remains ambient and unmanaged.
+- Ownership of admitted actors, registered async/blocking helpers and runtime
+  teardown. Managed timers/listeners/monitors use the assigned group.
+- Readiness, closed admission, reverse shutdown and incomplete reports that
+  retain actual cleanup without overlapping replacement generations.
 
-- Own runtime/helper lifetimes and define failed spawn, stop/join and shutdown.
-  Construction must unwind partial worker startup without waiting for workers
-  that failed to start; admit actors only after successful runtime construction.
-- Design helper-registration closure, cancellation and joined completion before
-  freezing the public ownership API. Begin with explicit stop-and-join; bounded
-  draining is a separate opt-in policy that reports unfinished work at expiry.
-- Start with parked pools and explicit thread/CPU budgets; affinity is optional
-  with documented platform support. Spinning remains experimental.
-- Validate communicating runtimes and one Ethrex/Ethlambda workload under equal
-  resource budgets. Synthetic pipeline/isolation gains are workload-specific.
-  Local Ethlambda EngineClient/actor probes have run, including concurrent RPCs
-  and idle gaps; a full-client replay or same-node production canary is still
-  outstanding. These are different validation levels.
+Still to add: dedicated/pinned groups, sized blocking-actor pools and additional
+platform/resource contracts. Spinning remains experimental. Worker budgets count
+async workers, not all OS threads or reserved CPU cores.
 
-### 1b. Automatic supervision and recovery
+### 1b. Automatic supervision — implemented OneForOne
 
-Start with ChildSpec factories and **OneForOne**, with Permanent, Transient and
-Temporary modes. Remember each child's execution group across restarts.
+- Fresh-instance ChildSpec factories with fallible startup, readiness and retained
+  group placement; Permanent, Transient and Temporary restart modes.
+- Shared rolling retry limits, per-child capped backoff/jitter, ordered startup
+  and reverse shutdown. Lifecycle observation bypasses the user-message backlog.
+- Instance-bound references and explicit replacement lookup. Queued work is
+  discarded; no replay, automatic durable state recovery or exactly-once effects.
+- Runnable examples and failure tests for startup/cleanup deadlines, constructor
+  cancellation, restart storms and concurrent shutdown. Blocking code remains
+  cooperative; helper admission closes at shutdown start, with no drain policy.
 
-- Define fallible startup/readiness, declaration-order startup and reverse-order
-  shutdown, restart intensity/window, capped exponential backoff and jitter.
-- Suppress restarts before system/supervisor shutdown starts. Use an internal
-  lifecycle-control path that cannot be buried behind application traffic;
-  bound/coalesce it and preserve fairness. No public user-message priorities yet.
-- A restarted child is a fresh actor with a new identity. Existing ActorRef
-  values remain instance-bound; an explicit supervised-child handle can resolve
-  the current instance. Queued work is discarded and unanswered requests fail
-  when an instance exits. No automatic replay, state restoration or effect retry.
-- Add OneForAll and RestForOne after the basic lifecycle and cleanup are proven.
-  Non-cooperative blocking code still cannot be forcibly terminated.
-- Ship runnable recovery/placement examples and deterministic failure scenarios
-  with the API, including restart storms and shutdown during backoff/startup.
+Still to add: nested supervisor child specs, OneForAll and RestForOne after the
+basic recovery lifecycle is proven in applications.
 
-See [backend usage](BACKENDS.md) and the [runtime-isolation study](../research/backend-experiments/2026-11-06-runtime-isolation/README.md).
+Full Ethrex/Ethlambda replay or a same-node production canary remains a validation
+gate. Existing local EngineClient probes and synthetic isolation/pipeline studies
+are different evidence levels; do not transfer their ratios to a production client.
+See [backend usage](BACKENDS.md), the [runtime-isolation study](../research/backend-experiments/2026-11-06-runtime-isolation/README.md)
+and the [implementation review](reviews/execution-groups-supervision-implementation.md).
 
 ## 2. Genuinely Tokio-free thread builds
 

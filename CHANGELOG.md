@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+### Added
+
+- Optional ActorSystem with named parked async execution groups and explicit
+  worker budgets. `start_on(&group)` selects placement without changing message
+  handlers or ambient `.start()`. Scoped async/blocking helpers, framework
+  timers/listeners/monitors and owned registrations join managed cleanup.
+- OneForOne supervision with fallible fresh-instance factories, readiness,
+  Permanent/Transient/Temporary modes, supervisor-wide rolling retry limits,
+  per-child capped backoff/jitter and ordered startup/reverse shutdown.
+  References remain instance-bound; replacement lookup is explicit. No replay
+  or automatic state recovery. Expired cleanup reports retain closed runtimes
+  and suppress overlapping replacements; blocking code is not preempted.
+- Asserted execution-group and recovery examples plus lifecycle failure tests.
+
+These capabilities are unreleased and require the next minor release. The
+separate dedicated-runtime patch remains documented in the 0.6.1 draft; do not
+publish these new public APIs as that patch release.
+
 ### Fixed
 
 - Bound each dedicated async actor runtime to one async helper worker instead

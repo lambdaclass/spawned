@@ -254,9 +254,17 @@ impl Drop for LinkCleanup {
 /// A local stop commits its cause before cancelling. A linked failure recorded
 /// first wins; a late linked failure cannot relabel an already-requested stop.
 pub(crate) fn normal_stop(reason: &LinkedExitReason, cancel: impl FnOnce()) {
+    stop_with_reason(reason, ExitReason::Normal, cancel);
+}
+
+pub(crate) fn stop_with_reason(
+    reason: &LinkedExitReason,
+    cause: ExitReason,
+    cancel: impl FnOnce(),
+) {
     let mut slot = reason.lock().unwrap_or_else(|p| p.into_inner());
     if slot.is_none() {
-        *slot = Some(ExitReason::Normal);
+        *slot = Some(cause);
     }
     drop(slot);
     cancel();

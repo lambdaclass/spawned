@@ -1,6 +1,8 @@
-# Execution groups plus supervision: MVP proposal
+# Execution groups plus supervision: MVP contract
 
-Status: **design proposal, not an implemented API**. Updated 2026-11-08.
+Status: **parked async groups + OneForOne implemented on main, unreleased**. Updated 2026-11-08.
+See the [usage guide](../EXECUTION-GROUPS.md) for actual signatures and supported limits.
+This document records the design contract; illustrative API shapes below are not copyable code.
 This is the next capability milestone, separate from the proposed 0.6.1 runtime
 worker-budget patch. Ordinary handlers, protocols and `.start()` remain usable.
 
@@ -18,7 +20,7 @@ group with predictable resource, reference and shutdown behavior.
 
 Design 1a and 1b together before freezing the API. Ship each working increment
 with asserted examples and failure tests. Do not expose placeholder backend
-variants or portray this proposal as code that runs today.
+variants; the usage guide distinguishes implemented profiles from later increments.
 
 ## Ownership and proposed API shape
 
@@ -113,8 +115,7 @@ Once supervisor/system shutdown or explicit child removal begins, **all modes
 suppress restart**. Sending a stop to a Permanent child while its supervisor is
 still running does not remove it: its restart is intentional policy behavior.
 Current `ExitReason::is_abnormal()` is useful for Transient classification, not
-for deciding whether Permanent children restart. Shutdown is currently reserved;
-producing an ordered shutdown reason is implementation work in this milestone.
+for deciding whether Permanent children restart. Managed shutdown now produces Shutdown.
 The new supervisor stop primitive commits Shutdown before cancelling through
 the existing wakeup path, without replacing an already committed cause. Current
 `normal_stop` already preserves an earlier cause; it is not an unconditional

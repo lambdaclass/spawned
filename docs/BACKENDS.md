@@ -45,6 +45,17 @@ for actor completion, not detached helper completion or final runtime destructio
 nonterminating blocking helpers can keep the native thread alive during teardown.
 `spawned_rt::threads::block_on` uses the same one-worker runtime configuration.
 
+## Owned async groups (main, unreleased)
+
+`ActorSystem::async_group(name, workers)` creates a parked async pool with an
+explicit worker budget. `actor.start_on(&group)` places an actor there; ordinary
+ActorRef request/reply crosses groups. The system owns admission, registered
+helpers and runtime teardown, with incomplete shutdown reports at expiry.
+[Usage and recovery](EXECUTION-GROUPS.md) and
+[asserted examples](../examples/capabilities/README.md) describe the contracts.
+The budget counts async workers; owners/control and blocking helpers add threads.
+These groups do not currently expose CPU affinity or spinning.
+
 ## Experimental fixed-core profiles
 
 The `backend-experiments` feature contains private research selectors, separate
@@ -94,9 +105,8 @@ have runtime ownership requirements; sending an `ActorRef` does not migrate thos
 resources or an existing actor.
 
 The current private experiment selector is process-wide: it does not provide a
-new per-actor public API for mixing pinned and default policies. A supported
-mixed-runtime configuration needs explicit ownership/placement and application
-measurements before API design. Communication compatibility alone is not a
+new per-actor public API for mixing pinned and default policies. Owned parked async groups now provide explicit ownership/placement; mixing
+pinned policies still uses research configuration and needs application measurements. Communication compatibility alone is not a
 reason to create more runtimes.
 
 

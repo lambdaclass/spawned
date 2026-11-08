@@ -9,6 +9,7 @@ metrics = ["spawned-concurrency/metrics"]
 
 [dependencies]
 spawned-concurrency = { workspace = true }
+spawned-rt = { workspace = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 
 [[bin]]

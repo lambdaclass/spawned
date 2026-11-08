@@ -1,0 +1,993 @@
+//! OneForOne recovery on explicitly owned execution groups.
+//!
+//! A replacement is a fresh actor instance. Old ActorRef values never rebind,
+//! accepted work is not replayed, and constructors do not recover state unless
+//! application code explicitly does so.
+use crate::{
+    system::{
+        self, ActorSystem, Admission, ExecutionGroup, Scope, ScopedTask, ShutdownUnit, SystemError,
+        Tracked,
+    },
+    tasks::{Actor, ActorRef},
+    ActorId, ExitReason,
+};
+use futures::{
+    future::{select, BoxFuture, Either},
+    FutureExt,
+};
+use spawned_rt::tasks::{self as rt, watch, CancellationToken};
+use std::{
+    collections::VecDeque,
+    future::Future,
+    panic::AssertUnwindSafe,
+    sync::{Arc, Mutex, Weak},
+    time::{Duration, Instant},
+};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RestartMode {
+    Permanent,
+    Transient,
+    Temporary,
+}
+impl RestartMode {
+    fn restarts(self, reason: Option<&ExitReason>) -> bool {
+        match self {
+            Self::Permanent => true,
+            Self::Transient => reason.map(ExitReason::is_abnormal).unwrap_or(true),
+            Self::Temporary => false,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Backoff {
+    pub initial: Duration,
+    pub maximum: Duration,
+    pub stable_after: Duration,
+    pub jitter: bool,
+    /// Reproducible policy testing. This is scheduling jitter, not cryptography.
+    pub seed: Option<u64>,
+}
+impl Default for Backoff {
+    fn default() -> Self {
+        Self {
+            initial: Duration::from_millis(10),
+            maximum: Duration::from_secs(5),
+            stable_after: Duration::from_secs(30),
+            jitter: true,
+            seed: None,
+        }
+    }
+}
+impl Backoff {
+    fn delay(&self, failures: u32, rng: &mut u64) -> Duration {
+        let bound = self
+            .initial
+            .saturating_mul(1u32 << failures.min(31))
+            .min(self.maximum);
+        if !self.jitter {
+            return bound;
+        }
+        *rng = rng
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        let nanos = bound.as_nanos().min(u64::MAX as u128) as u64;
+        Duration::from_nanos(if nanos == u64::MAX {
+            *rng
+        } else {
+            *rng % (nanos + 1)
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct SupervisorConfig {
+    pub max_restarts: usize,
+    pub restart_window: Duration,
+    pub max_children: usize,
+    pub backoff: Backoff,
+}
+impl Default for SupervisorConfig {
+    fn default() -> Self {
+        Self {
+            max_restarts: 5,
+            restart_window: Duration::from_secs(30),
+            max_children: 1024,
+            backoff: Backoff::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, thiserror::Error)]
+pub enum SupervisorError {
+    #[error(transparent)]
+    System(#[from] SystemError),
+    #[error("invalid supervisor configuration: {0}")]
+    Configuration(String),
+    #[error("child name already exists: {0}")]
+    DuplicateChild(String),
+    #[error("child capacity exceeded")]
+    Capacity,
+    #[error("supervisor stopped before startup completed")]
+    Stopped,
+    #[error("supervisor failed: {0}")]
+    Failed(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChildState {
+    Waiting,
+    Starting,
+    Running,
+    Backoff,
+    Stopping,
+    Stopped,
+    Failed,
+}
+
+#[derive(Debug, Clone)]
+pub struct ChildSnapshot {
+    pub name: String,
+    pub state: ChildState,
+    pub generation: u64,
+    pub actor_id: Option<ActorId>,
+    pub last_exit: Option<ExitReason>,
+    pub last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, thiserror::Error)]
+#[error("child is not currently ready: {0:?}")]
+pub struct ChildUnavailable(pub ChildState);
+
+/// The construction scope is allocated before an ActorId exists. Its helpers
+/// run on the assigned group and are included in cleanup before a retry.
+#[derive(Clone)]
+pub struct FactoryContext {
+    scope: Arc<Scope>,
+    generation: u64,
+}
+impl FactoryContext {
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+    pub fn execution_group(&self) -> ExecutionGroup {
+        self.scope.group()
+    }
+    pub fn spawn_helper<F>(&self, future: F) -> Result<ScopedTask<F::Output>, SystemError>
+    where
+        F: Future + Send + 'static,
+        F::Output: Send + 'static,
+    {
+        self.scope.spawn_helper(future)
+    }
+    pub async fn cancelled(&self) {
+        self.scope.token.cancelled().await;
+    }
+    pub fn spawn_blocking_helper<F, T>(&self, work: F) -> Result<ScopedTask<T>, SystemError>
+    where
+        F: FnOnce() -> T + Send + 'static,
+        T: Send + 'static,
+    {
+        self.scope.spawn_blocking_helper(work)
+    }
+}
+
+type Factory<A> =
+    Arc<dyn Fn(FactoryContext) -> BoxFuture<'static, Result<A, String>> + Send + Sync>;
+pub struct ChildSpec<A: Actor> {
+    name: String,
+    group: ExecutionGroup,
+    factory: Factory<A>,
+    restart: RestartMode,
+    startup_timeout: Duration,
+    shutdown_timeout: Duration,
+}
+impl<A: Actor> ChildSpec<A> {
+    pub fn new<F, U, E>(name: impl Into<String>, group: &ExecutionGroup, factory: F) -> Self
+    where
+        F: Fn(FactoryContext) -> U + Send + Sync + 'static,
+        U: Future<Output = Result<A, E>> + Send + 'static,
+        E: std::fmt::Display,
+    {
+        let factory = Arc::new(factory);
+        Self {
+            name: name.into(),
+            group: group.clone(),
+            factory: Arc::new(move |ctx| {
+                let factory = factory.clone();
+                Box::pin(async move { factory(ctx).await.map_err(|e| e.to_string()) })
+            }),
+            restart: RestartMode::Permanent,
+            startup_timeout: Duration::from_secs(5),
+            shutdown_timeout: Duration::from_secs(5),
+        }
+    }
+    pub fn restart(mut self, restart: RestartMode) -> Self {
+        self.restart = restart;
+        self
+    }
+    pub fn startup_timeout(mut self, timeout: Duration) -> Self {
+        self.startup_timeout = timeout;
+        self
+    }
+    pub fn shutdown_timeout(mut self, timeout: Duration) -> Self {
+        self.shutdown_timeout = timeout;
+        self
+    }
+}
+
+struct ViewData<A: Actor> {
+    snapshot: ChildSnapshot,
+    current: Option<ActorRef<A>>,
+    scope: Option<Arc<Scope>>,
+}
+struct View<A: Actor> {
+    data: Mutex<ViewData<A>>,
+    gate: Arc<Admission>,
+    changed: watch::Sender<u64>,
+    initial: watch::Sender<bool>,
+    stop_turn: CancellationToken,
+    done: watch::Sender<bool>,
+    shutdown_timeout: Duration,
+}
+impl<A: Actor> View<A> {
+    fn change(&self, f: impl FnOnce(&mut ViewData<A>)) {
+        {
+            f(&mut system::lock(&self.data));
+        }
+        self.changed.send_modify(|n| *n = n.wrapping_add(1));
+    }
+    fn finish(&self, failed: bool) {
+        self.change(|data| {
+            data.current = None;
+            data.scope = None;
+            data.snapshot.state = if failed {
+                ChildState::Failed
+            } else {
+                ChildState::Stopped
+            };
+        });
+        self.done.send_replace(true);
+    }
+}
+
+/// Explicit lookup of a replacement, not a rebound ActorRef. Resolution can
+/// race with a subsequent crash; callers must still handle delivery errors.
+pub struct SupervisedChild<A: Actor> {
+    view: Arc<View<A>>,
+}
+impl<A: Actor> Clone for SupervisedChild<A> {
+    fn clone(&self) -> Self {
+        Self {
+            view: self.view.clone(),
+        }
+    }
+}
+impl<A: Actor> SupervisedChild<A> {
+    pub fn snapshot(&self) -> ChildSnapshot {
+        system::lock(&self.view.data).snapshot.clone()
+    }
+    pub fn current(&self) -> Result<ActorRef<A>, ChildUnavailable> {
+        self.view
+            .gate
+            .if_open(|| {
+                let data = system::lock(&self.view.data);
+                if data.scope.as_ref().is_some_and(|s| s.token.is_cancelled()) {
+                    return Err(ChildUnavailable(ChildState::Stopping));
+                }
+                data.current
+                    .clone()
+                    .ok_or(ChildUnavailable(data.snapshot.state))
+            })
+            .unwrap_or(Err(ChildUnavailable(ChildState::Stopping)))
+    }
+    pub async fn wait_ready(&self) -> Result<ActorRef<A>, ChildUnavailable> {
+        self.wait_for_generation(0).await
+    }
+    /// Wait for a ready generation strictly greater than the supplied value.
+    pub async fn wait_for_generation(&self, after: u64) -> Result<ActorRef<A>, ChildUnavailable> {
+        let mut changes = self.view.changed.subscribe();
+        loop {
+            changes.borrow_and_update();
+            let snapshot = self.snapshot();
+            if snapshot.generation > after {
+                if let Ok(actor) = self.current() {
+                    return Ok(actor);
+                }
+            }
+            if matches!(snapshot.state, ChildState::Stopped | ChildState::Failed) {
+                return Err(ChildUnavailable(snapshot.state));
+            }
+            if !self.view.gate.is_open() {
+                return Err(ChildUnavailable(ChildState::Stopping));
+            }
+            if changes.changed().await.is_err() {
+                return Err(ChildUnavailable(ChildState::Stopped));
+            }
+        }
+    }
+}
+
+trait ChildControl: Send + Sync {
+    fn snapshot(&self) -> ChildSnapshot;
+    fn close_admission(&self);
+    fn stop(&self);
+    fn done(&self) -> watch::Receiver<bool>;
+    fn initial(&self) -> watch::Receiver<bool>;
+    fn shutdown_timeout(&self) -> Duration;
+    fn finish_unstarted(&self);
+}
+impl<A: Actor> ChildControl for View<A> {
+    fn snapshot(&self) -> ChildSnapshot {
+        system::lock(&self.data).snapshot.clone()
+    }
+    fn close_admission(&self) {
+        let (scope, constructing) = {
+            let data = system::lock(&self.data);
+            (data.scope.clone(), data.current.is_none())
+        };
+        if let Some(scope) = scope {
+            scope.close_admission();
+            if constructing {
+                scope.stop(ExitReason::Shutdown);
+            }
+        }
+        self.changed.send_modify(|n| *n = n.wrapping_add(1));
+    }
+    fn stop(&self) {
+        self.stop_turn.cancel();
+        if let Some(scope) = system::lock(&self.data).scope.clone() {
+            scope.stop(ExitReason::Shutdown);
+        }
+    }
+    fn done(&self) -> watch::Receiver<bool> {
+        self.done.subscribe()
+    }
+    fn initial(&self) -> watch::Receiver<bool> {
+        self.initial.subscribe()
+    }
+    fn shutdown_timeout(&self) -> Duration {
+        self.shutdown_timeout
+    }
+    fn finish_unstarted(&self) {
+        if self.snapshot().generation == 0 {
+            self.finish(false);
+        }
+    }
+}
+
+struct RetryBudget {
+    attempts: VecDeque<Instant>,
+    max: usize,
+    window: Duration,
+}
+impl RetryBudget {
+    fn take(&mut self, now: Instant) -> bool {
+        while self
+            .attempts
+            .front()
+            .is_some_and(|t| now.saturating_duration_since(*t) >= self.window)
+        {
+            self.attempts.pop_front();
+        }
+        if self.attempts.len() >= self.max {
+            return false;
+        }
+        self.attempts.push_back(now);
+        true
+    }
+}
+
+struct Core {
+    gate: Arc<Admission>,
+    cancel: CancellationToken,
+    admission_closed: CancellationToken,
+    done: watch::Sender<bool>,
+    ready: watch::Sender<bool>,
+    failure: Mutex<Option<String>>,
+    children: Mutex<Vec<Arc<dyn ChildControl>>>,
+    budget: Mutex<RetryBudget>,
+    config: SupervisorConfig,
+}
+impl Core {
+    fn close_admission(&self) {
+        self.gate.close();
+        self.admission_closed.cancel();
+        let children = system::lock(&self.children).clone();
+        for child in children {
+            child.close_admission();
+        }
+    }
+    fn close(&self) {
+        self.close_admission();
+        self.cancel.cancel();
+    }
+    fn stop_remaining(&self) {
+        self.close();
+        let children = system::lock(&self.children).clone();
+        for child in children.iter().rev() {
+            child.stop();
+        }
+    }
+    fn fail(&self, error: String) {
+        let mut failure = system::lock(&self.failure);
+        if failure.is_none() {
+            *failure = Some(error);
+        }
+        drop(failure);
+        self.close();
+    }
+    fn retry(&self) -> bool {
+        self.gate
+            .if_open(|| system::lock(&self.budget).take(Instant::now()))
+            .unwrap_or(false)
+    }
+}
+impl ShutdownUnit for Core {
+    fn close_admission(&self) {
+        Core::close_admission(self);
+    }
+    fn stop(&self) {
+        Core::close(self);
+    }
+    fn stop_remaining(&self) {
+        Core::stop_remaining(self);
+    }
+    fn joined(&self) -> BoxFuture<'_, ()> {
+        Box::pin(async move {
+            let _ = system::wait_true(self.done.subscribe()).await;
+        })
+    }
+    fn is_done(&self) -> bool {
+        *self.done.borrow()
+    }
+    fn failure(&self) -> Option<String> {
+        system::lock(&self.failure).clone()
+    }
+}
+
+trait Runner: Send {
+    fn run(self: Box<Self>, core: Arc<Core>) -> BoxFuture<'static, ()>;
+}
+struct TypedRunner<A: Actor> {
+    spec: ChildSpec<A>,
+    view: Arc<View<A>>,
+}
+impl<A: Actor> Runner for TypedRunner<A> {
+    fn run(self: Box<Self>, core: Arc<Core>) -> BoxFuture<'static, ()> {
+        let view = self.view.clone();
+        Box::pin(async move {
+            if let Err(payload) = AssertUnwindSafe(run_child(self.spec, self.view, core.clone()))
+                .catch_unwind()
+                .await
+            {
+                core.fail(format!(
+                    "child controller panicked: {}",
+                    crate::error::panic_message(&*payload)
+                ));
+                let scope = system::lock(&view.data).scope.clone();
+                if let Some(scope) = scope {
+                    scope.stop(ExitReason::Shutdown);
+                    scope.joined().await;
+                }
+                view.finish(true);
+            }
+        })
+    }
+}
+
+pub struct SupervisorBuilder {
+    owner: Weak<system::SystemInner>,
+    core: Arc<Core>,
+    runners: Vec<Box<dyn Runner>>,
+    started: bool,
+}
+impl SupervisorBuilder {
+    pub(crate) fn new(
+        system: &ActorSystem,
+        config: SupervisorConfig,
+    ) -> Result<Self, SupervisorError> {
+        if config.restart_window.is_zero()
+            || config.max_children == 0
+            || config.max_children > 65536
+            || config.max_restarts > 65536
+            || config.backoff.maximum < config.backoff.initial
+        {
+            return Err(SupervisorError::Configuration(
+                "invalid limits or backoff".into(),
+            ));
+        }
+        let (done, _) = watch::channel(false);
+        let (ready, _) = watch::channel(false);
+        let core = Arc::new(Core {
+            gate: Admission::new(),
+            cancel: CancellationToken::new(),
+            admission_closed: CancellationToken::new(),
+            done,
+            ready,
+            failure: Mutex::new(None),
+            children: Mutex::new(Vec::new()),
+            budget: Mutex::new(RetryBudget {
+                attempts: VecDeque::new(),
+                max: config.max_restarts,
+                window: config.restart_window,
+            }),
+            config,
+        });
+        Ok(Self {
+            owner: Arc::downgrade(&system.inner),
+            core,
+            runners: Vec::new(),
+            started: false,
+        })
+    }
+
+    pub fn add<A: Actor>(
+        &mut self,
+        spec: ChildSpec<A>,
+    ) -> Result<SupervisedChild<A>, SupervisorError> {
+        self.owner
+            .upgrade()
+            .ok_or(SystemError::Closed)?
+            .accepts_group(&spec.group)?;
+        if spec.name.is_empty()
+            || spec.name.contains('\0')
+            || spec.startup_timeout.is_zero()
+            || spec.shutdown_timeout.is_zero()
+        {
+            return Err(SupervisorError::Configuration(
+                "invalid child name or timeout".into(),
+            ));
+        }
+        let mut children = system::lock(&self.core.children);
+        if children.len() >= self.core.config.max_children {
+            return Err(SupervisorError::Capacity);
+        }
+        if children.iter().any(|c| c.snapshot().name == spec.name) {
+            return Err(SupervisorError::DuplicateChild(spec.name));
+        }
+        let (changed, _) = watch::channel(0);
+        let (initial, _) = watch::channel(false);
+        let (done, _) = watch::channel(false);
+        let view = Arc::new(View {
+            data: Mutex::new(ViewData {
+                snapshot: ChildSnapshot {
+                    name: spec.name.clone(),
+                    state: ChildState::Waiting,
+                    generation: 0,
+                    actor_id: None,
+                    last_exit: None,
+                    last_error: None,
+                },
+                current: None,
+                scope: None,
+            }),
+            gate: self.core.gate.clone(),
+            changed,
+            initial,
+            done,
+            stop_turn: CancellationToken::new(),
+            shutdown_timeout: spec.shutdown_timeout,
+        });
+        children.push(view.clone());
+        self.runners.push(Box::new(TypedRunner {
+            spec,
+            view: view.clone(),
+        }));
+        Ok(SupervisedChild { view })
+    }
+
+    /// Start children in declaration order. Cancellation of this startup future
+    /// requests cleanup; it does not leave an orphaned background tree.
+    pub async fn start(mut self) -> Result<Supervisor, SupervisorError> {
+        let owner = self.owner.upgrade().ok_or(SystemError::Closed)?;
+        // Registration and controller dispatch happen without an intervening await.
+        owner.register_unit(self.core.clone())?;
+        self.started = true;
+        let runners = std::mem::take(&mut self.runners);
+        let core = self.core.clone();
+        owner
+            .control
+            .handle
+            .spawn(run_supervisor(core.clone(), runners));
+        let mut guard = StartupGuard {
+            core: core.clone(),
+            armed: true,
+        };
+        let ready = core.ready.subscribe();
+        let cancelled = core.cancel.cancelled();
+        let result = match select(Box::pin(cancelled), Box::pin(system::wait_true(ready))).await {
+            Either::Right((true, _)) if core.gate.is_open() => {
+                guard.armed = false;
+                Ok(Supervisor { core: core.clone() })
+            }
+            _ => Err(system::lock(&core.failure)
+                .clone()
+                .map(SupervisorError::Failed)
+                .unwrap_or(SupervisorError::Stopped)),
+        };
+        result
+    }
+}
+impl Drop for SupervisorBuilder {
+    fn drop(&mut self) {
+        if !self.started {
+            self.core.close();
+            for child in system::lock(&self.core.children).iter() {
+                child.finish_unstarted();
+            }
+        }
+    }
+}
+struct StartupGuard {
+    core: Arc<Core>,
+    armed: bool,
+}
+impl Drop for StartupGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            self.core.close();
+        }
+    }
+}
+
+/// Owned by ActorSystem even if public handles are dropped.
+#[derive(Clone)]
+pub struct Supervisor {
+    core: Arc<Core>,
+}
+#[derive(Debug, Clone)]
+pub struct SupervisorReport {
+    pub complete: bool,
+    pub failure: Option<String>,
+    pub children: Vec<ChildSnapshot>,
+}
+impl Supervisor {
+    pub fn stop(&self) {
+        self.core.close();
+    }
+    pub fn snapshots(&self) -> Vec<ChildSnapshot> {
+        system::lock(&self.core.children)
+            .iter()
+            .map(|c| c.snapshot())
+            .collect()
+    }
+    pub fn failure(&self) -> Option<String> {
+        system::lock(&self.core.failure).clone()
+    }
+    pub async fn join(&self) {
+        let _ = system::wait_true(self.core.done.subscribe()).await;
+    }
+    pub async fn shutdown(&self, deadline: Duration) -> SupervisorReport {
+        self.stop();
+        let complete = rt::timeout(deadline, system::wait_true(self.core.done.subscribe()))
+            .await
+            .unwrap_or(false);
+        if !complete {
+            self.core.stop_remaining();
+        }
+        SupervisorReport {
+            complete,
+            failure: self.failure(),
+            children: self.snapshots(),
+        }
+    }
+}
+
+async fn run_supervisor(core: Arc<Core>, runners: Vec<Box<dyn Runner>>) {
+    let children = system::lock(&core.children).clone();
+    let mut tasks = Vec::new();
+    for (index, runner) in runners.into_iter().enumerate() {
+        if !core.gate.is_open() {
+            break;
+        }
+        tasks.push(rt::spawn(runner.run(core.clone())));
+        let event = select(
+            Box::pin(core.admission_closed.cancelled()),
+            Box::pin(system::wait_true(children[index].initial())),
+        )
+        .await;
+        if !matches!(event, Either::Right((true, _))) {
+            break;
+        }
+    }
+    for child in &children {
+        child.finish_unstarted();
+    }
+    if core.gate.is_open() {
+        core.ready.send_replace(true);
+    }
+    core.cancel.cancelled().await;
+    for child in children.iter().rev() {
+        child.stop();
+        if rt::timeout(child.shutdown_timeout(), system::wait_true(child.done()))
+            .await
+            .is_err()
+        {
+            core.fail(format!(
+                "child cleanup deadline exceeded: {}",
+                child.snapshot().name
+            ));
+        }
+    }
+    for task in tasks {
+        if let Err(error) = task.await {
+            core.fail(format!("child controller failed: {error}"));
+        }
+    }
+    core.done.send_replace(true);
+}
+
+async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, core: Arc<Core>) {
+    let mut first = true;
+    let mut failures = 0u32;
+    let seed = core.config.backoff.seed.unwrap_or_else(|| {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as u64
+            ^ NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    });
+    let mut rng = seed
+        ^ system::lock(&view.data)
+            .snapshot
+            .name
+            .bytes()
+            .fold(0u64, |a, b| a.wrapping_mul(31).wrapping_add(b as u64));
+    loop {
+        if !core.gate.is_open() {
+            break;
+        }
+        if !first {
+            if core.config.max_restarts == 0 {
+                core.fail(format!("restart budget exhausted by {}", spec.name));
+                break;
+            }
+            let delay = core.config.backoff.delay(failures, &mut rng);
+            failures = failures.saturating_add(1);
+            view.change(|v| v.snapshot.state = ChildState::Backoff);
+            if matches!(
+                select(
+                    Box::pin(core.admission_closed.cancelled()),
+                    Box::pin(rt::sleep(delay))
+                )
+                .await,
+                Either::Left(_)
+            ) {
+                break;
+            }
+            if !core.retry() {
+                if core.gate.is_open() {
+                    core.fail(format!("restart budget exhausted by {}", spec.name));
+                }
+                break;
+            }
+        }
+        first = false;
+        let (scope, lease) = match spec.group.reserve(Some(core.gate.clone())) {
+            Ok(attempt) => attempt,
+            Err(e) => {
+                if core.gate.is_open() {
+                    core.fail(format!("placement failed for {}: {e}", spec.name));
+                }
+                break;
+            }
+        };
+        let generation = core.gate.if_open(|| {
+            view.change(|v| {
+                v.snapshot.generation += 1;
+                v.snapshot.state = ChildState::Starting;
+                v.snapshot.actor_id = None;
+                v.current = None;
+                v.scope = Some(scope.clone());
+            });
+            system::lock(&view.data).snapshot.generation
+        });
+        let Some(generation) = generation else {
+            scope.stop(ExitReason::Shutdown);
+            drop(lease);
+            break;
+        };
+        let ctx = FactoryContext {
+            scope: scope.clone(),
+            generation,
+        };
+        let factory = spec.factory.clone();
+        let attempt_scope = scope.clone();
+        let construction = async move {
+            if !attempt_scope.can_start() {
+                return Err("scope closed before construction".into());
+            }
+            let factory_work = AssertUnwindSafe(async move { factory(ctx).await }).catch_unwind();
+            let result = match select(
+                Box::pin(attempt_scope.token.cancelled()),
+                Box::pin(factory_work),
+            )
+            .await
+            {
+                Either::Left(_) => return Err("construction cancelled".into()),
+                Either::Right((Ok(result), _)) => result,
+                Either::Right((Err(payload), _)) => {
+                    return Err(format!(
+                        "factory panicked: {}",
+                        crate::error::panic_message(&*payload)
+                    ))
+                }
+            };
+            let actor = result?;
+            let actor_lease = attempt_scope.actor_lease().map_err(|e| e.to_string())?;
+            ActorRef::spawn_managed(actor, attempt_scope.clone(), actor_lease)
+                .map_err(|e| e.to_string())
+        };
+        let task = scope.handle.spawn(Tracked {
+            future: construction,
+            lease,
+        });
+        let startup = async {
+            let actor = task
+                .await
+                .map_err(|e| format!("construction task failed: {e}"))??;
+            actor.ready().await.map_err(|e| e.to_string())?;
+            Ok::<_, String>(actor)
+        };
+        let mut startup_timed_out = false;
+        let began = match select(
+            Box::pin(core.admission_closed.cancelled()),
+            Box::pin(rt::timeout(spec.startup_timeout, startup)),
+        )
+        .await
+        {
+            Either::Left(_) => Err("supervisor stopping".to_string()),
+            Either::Right((Err(_), _)) => {
+                startup_timed_out = true;
+                Err("startup deadline exceeded".to_string())
+            }
+            Either::Right((Ok(result), _)) => result,
+        };
+        let mut ready_at = None;
+        let mut exit = None;
+        let mut cleanup_until = None;
+        match began {
+            Ok(actor) => {
+                let published = core
+                    .gate
+                    .if_open(|| {
+                        view.change(|v| {
+                            v.snapshot.state = ChildState::Running;
+                            v.snapshot.actor_id = Some(actor.id());
+                            v.current = Some(actor.clone());
+                        })
+                    })
+                    .is_some();
+                if published {
+                    ready_at = Some(Instant::now());
+                    view.initial.send_replace(true);
+                    let child = actor.child_handle();
+                    // Cancellation precedes terminal publication when stopped()
+                    // hangs. Start its cleanup deadline at stop observation,
+                    // rather than waiting forever for the completion channel.
+                    let ended = select(
+                        Box::pin(core.cancel.cancelled()),
+                        Box::pin(scope.token.cancelled()),
+                    )
+                    .await;
+                    if matches!(ended, Either::Left(_)) {
+                        view.stop_turn.cancelled().await;
+                        scope.stop(ExitReason::Shutdown);
+                    }
+                    view.change(|v| {
+                        v.current = None;
+                        v.snapshot.state = ChildState::Stopping;
+                    });
+                    let cleanup_started = Instant::now();
+                    cleanup_until = Some(cleanup_started);
+                    exit = Some(
+                        match rt::timeout(spec.shutdown_timeout, child.wait_exit_async()).await {
+                            Ok(reason) => reason,
+                            Err(_) => {
+                                core.fail(format!("actor cleanup stuck for {}", spec.name));
+                                child.wait_exit_async().await
+                            }
+                        },
+                    );
+                }
+            }
+            Err(error) => view.change(|v| v.snapshot.last_error = Some(error)),
+        }
+        scope.stop(exit.clone().unwrap_or(ExitReason::Shutdown));
+        view.change(|v| {
+            v.current = None;
+            v.snapshot.last_exit = exit.clone();
+            v.snapshot.state = ChildState::Stopping;
+        });
+        let remaining = cleanup_until
+            .map(|started| spec.shutdown_timeout.saturating_sub(started.elapsed()))
+            .unwrap_or(spec.shutdown_timeout);
+        if rt::timeout(remaining, scope.joined()).await.is_err() {
+            core.fail(format!("owned cleanup stuck for {}", spec.name));
+            scope.joined().await;
+            break;
+        }
+        if exit.is_none() {
+            exit = scope.child().and_then(|child| child.exit_reason());
+        }
+        view.change(|v| {
+            v.snapshot.last_exit = exit.clone();
+            if v.snapshot.actor_id.is_none() {
+                v.snapshot.actor_id = scope.child().map(|child| child.id());
+            }
+            v.scope = None;
+        });
+        if !core.gate.is_open() {
+            break;
+        }
+        if spec.group.is_closed() {
+            core.fail(format!("execution group closed for {}", spec.name));
+            break;
+        }
+        if scope.was_stable(core.config.backoff.stable_after) {
+            failures = 0;
+        }
+        let restart = if startup_timed_out {
+            spec.restart != RestartMode::Temporary
+        } else {
+            spec.restart.restarts(exit.as_ref())
+        };
+        if !restart {
+            if ready_at.is_none() {
+                core.fail(format!(
+                    "non-restartable child failed startup: {}",
+                    spec.name
+                ));
+            }
+            break;
+        }
+    }
+    view.finish(system::lock(&core.failure).is_some());
+}
+
+#[cfg(test)]
+mod policy_tests {
+    use super::*;
+    #[test]
+    fn retry_window_releases_capacity_at_boundary_and_does_not_bank_unused_retries() {
+        let now = Instant::now();
+        let mut budget = RetryBudget {
+            attempts: VecDeque::new(),
+            max: 2,
+            window: Duration::from_secs(10),
+        };
+        assert!(budget.take(now));
+        assert!(budget.take(now + Duration::from_secs(1)));
+        assert!(!budget.take(now + Duration::from_secs(9)));
+        assert!(budget.take(now + Duration::from_secs(10)));
+        assert!(!budget.take(now + Duration::from_secs(10)));
+        assert!(budget.take(now + Duration::from_secs(100)));
+        assert!(budget.take(now + Duration::from_secs(100)));
+        assert!(!budget.take(now + Duration::from_secs(100)));
+    }
+    #[test]
+    fn capped_backoff_and_seeded_jitter_remain_bounded_after_long_failure_streaks() {
+        let mut policy = Backoff {
+            initial: Duration::from_millis(10),
+            maximum: Duration::from_millis(35),
+            jitter: false,
+            ..Backoff::default()
+        };
+        let mut seed = 7;
+        assert_eq!(
+            [0, 1, 2, 32, u32::MAX].map(|n| policy.delay(n, &mut seed)),
+            [10, 20, 35, 35, 35].map(Duration::from_millis)
+        );
+        policy.jitter = true;
+        let mut a = 42;
+        let mut b = 42;
+        let first: Vec<_> = (0..100).map(|n| policy.delay(n, &mut a)).collect();
+        let replay: Vec<_> = (0..100).map(|n| policy.delay(n, &mut b)).collect();
+        assert_eq!(first, replay);
+        assert!(first.iter().all(|d| *d <= policy.maximum));
+        assert!(first.windows(2).any(|pair| pair[0] != pair[1]));
+    }
+}

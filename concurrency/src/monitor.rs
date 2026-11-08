@@ -71,6 +71,16 @@ impl Drop for MonitorCleanup {
     }
 }
 
+/// Also removes a waiter whose never-polled future is rejected or aborted.
+pub(crate) struct MonitorRegistration(pub MonitorTable, pub MonitorRef);
+impl Drop for MonitorRegistration {
+    fn drop(&mut self) {
+        if let Some(entries) = self.0.lock().unwrap_or_else(|p| p.into_inner()).as_mut() {
+            entries.remove(&self.1);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

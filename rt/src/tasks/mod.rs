@@ -30,6 +30,23 @@ pub use crate::tasks::tokio::{
 pub use crate::tasks::tokio::{BroadcastStream, ReceiverStream};
 use std::future::Future;
 
+/// Build an explicitly sized async runtime. Runtime owners must destroy it
+/// outside an async executor thread.
+pub fn worker_runtime(name: &str, workers: usize) -> std::io::Result<Runtime> {
+    ::tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(workers)
+        .thread_name(name)
+        .enable_all()
+        .build()
+}
+
+/// Build a single-thread control runtime, driven by its owning native thread.
+pub fn control_runtime() -> std::io::Result<Runtime> {
+    ::tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+}
+
 /// Create a tokio runtime, initialize tracing, and block on the given future.
 pub fn run<F: Future>(future: F) -> F::Output {
     init_tracing();
