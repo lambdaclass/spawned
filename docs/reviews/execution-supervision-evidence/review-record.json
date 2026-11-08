@@ -1,0 +1,35 @@
+{
+  "base_commit": "263faa0f0bc0c055e8a9003ad2985d53a1c26caf",
+  "reviewer": "AGY CLI, configured default model",
+  "scope": "Static design/API-contract documentation only; no implementation/tests/rollout approval",
+  "final_review_status": "SUCCESS",
+  "final_review_findings": "No remaining blocking design gaps",
+  "packet_sha256": "299c1cb0c0b0478f54c4bd10b0298335975351f16ae73f92483ebe5cc1a88f61",
+  "reviewed_files_sha256": {
+    "docs/design/execution-groups-supervision.md": "25c33995670729038f2308707f315c2e66260f997da894c3925f818f865b7e98",
+    "docs/ROADMAP.md": "f7abb70b8396a932c00a9d51cc6bae7f7009a9a438a13beb628b3faf3e9d1624",
+    "README.md": "2ca27abdaf92da78cb9b495d1137408747e086ef8e579276785e822d55ced2c7",
+    "docs/research/idea-priorities.md": "11d5b126ff8dff30d7623679624e3043ddd23e0e92673843d2af691aaeb30db0",
+    "examples/planned/README.md": "1abd02d7dc8afe2f596223bb19ea8647efe0e5562c4bcabb4fe9f47c283abadc"
+  },
+  "earlier_attempts": {
+    "initial-read-denied.json": "Preamble only; RunCommand denied. Not an approval.",
+    "comments-stream-error.json": "Substantive comments received but client stream error; comments only, not final approval."
+  },
+  "post_review_editorial_delta": {
+    "file": "README.md",
+    "before_sha256": "2ca27abdaf92da78cb9b495d1137408747e086ef8e579276785e822d55ced2c7",
+    "after_sha256": "ba7943ba8bbb0e9d82385d170e9442355b8dc60ac5d56b1af9304fc57a88b79c",
+    "packet_sha256": "6e3f9c4292a29858b3a863b9946249835b0a4078cfe37531b4b8ed7cb8b5dab9",
+    "status": "SUCCESS",
+    "evidence": "readme-clarification.json",
+    "change": "Clarify that Tokio-free thread builds do not commit to replacing Tokio for async applications."
+  },
+  "final_files_sha256": {
+    "docs/design/execution-groups-supervision.md": "25c33995670729038f2308707f315c2e66260f997da894c3925f818f865b7e98",
+    "docs/ROADMAP.md": "f7abb70b8396a932c00a9d51cc6bae7f7009a9a438a13beb628b3faf3e9d1624",
+    "README.md": "ba7943ba8bbb0e9d82385d170e9442355b8dc60ac5d56b1af9304fc57a88b79c",
+    "docs/research/idea-priorities.md": "11d5b126ff8dff30d7623679624e3043ddd23e0e92673843d2af691aaeb30db0",
+    "examples/planned/README.md": "1abd02d7dc8afe2f596223bb19ea8647efe0e5562c4bcabb4fe9f47c283abadc"
+  }
+}

@@ -14,8 +14,8 @@ backend drivers and their performance evidence under `benchmarks/` and
 | Rank | Proposed capability | Example to deliver with it |
 |---|---|---|
 | 1 | Runtime ownership / execution groups | Critical router and background workers in named groups; partial startup failure; explicit stop/join. [Manual two-runtime recipe works today](../capabilities/src/bin/runtime_isolation.rs). |
-| 2 | Tokio-free threads | Run protocol requests, timer, monitor and shutdown without Tokio in the dependency graph. Existing native-thread examples still compile Tokio. |
-| 3 | Supervision | Restart a failed child with a factory and a restart budget; show an old instance reference failing and escalation on repeated failure. |
+| 2 | Supervision, paired with execution groups | OneForOne with child factories, restart modes and budget/backoff; restart in the same group, show an old reference failing and resolve the replacement explicitly. Then stop the supervisor during backoff and verify no new child starts. |
+| 3 | Tokio-free threads | Run protocol requests, timer, monitor and shutdown without Tokio in the dependency graph. Existing native-thread examples still compile Tokio. |
 | 4 | Lifecycle-owned registries | Register a service, crash it and verify its entry is removed without deleting a replacement's registration. |
 | 5 | Fallible startup / readiness | Fail initialization and report the error before admitting work; contrast successful readiness. |
 | 6 | Coordinated shutdown | Close admission, drain dependencies within a deadline and report unfinished work. [Finite-batch recipe works today](../capabilities/src/bin/graceful_drain.rs). |

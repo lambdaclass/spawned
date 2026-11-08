@@ -238,19 +238,25 @@ and restart policies remain roadmap work.
 Preserve typed protocols, dynamic actors, and both async and synchronous thread
 execution while improving production visibility and recovery.
 
-1. **Optional runtime metrics** — mailbox depth and age, queue wait, handler
-   duration, request outcomes, and lifecycle events without editing handlers.
-2. **Representative benchmarks** — measure latency, throughput, memory, and
-   instrumentation overhead; instrument one Ethrex or Ethlambda workload.
-3. **Evidence-driven improvements** — evaluate bounded mailboxes, batching,
-   allocation reduction, or optional core affinity when measurements justify them.
-4. **Supervision** — explicit restart policies, limits, backoff, and defined
-   behavior for state, references, and requests across actor failure.
+1. **Execution groups plus supervision** — an optional ActorSystem owns named
+   runtime groups, worker budgets and shutdown. Child factories and OneForOne
+   recovery add restart modes, limits/backoff, ordered startup/shutdown and clear
+   outcomes for stale references and pending work. Design them together; ship
+   placement first, then the minimal recovery lifecycle.
+2. **Tokio-free thread builds** — separate features and synchronization while
+   preserving the current async defaults.
+3. **Workload-driven capabilities** — bounded admission/byte credits, inherited
+   deadlines, deferred replies and targeted batching/dispatch improvements.
+
+Optional framework metrics and reproducible backend studies are already
+available. Client profiling, failure testing and full-workload validation continue
+alongside feature work. The [combined milestone design](docs/design/execution-groups-supervision.md)
+is a proposal; execution groups and automatic restart are not implemented yet.
 
 See the [detailed roadmap](docs/ROADMAP.md) for acceptance criteria and the
 [Silver/flux research](docs/research/silver-flux.md) for transferable ideas.
 A custom runtime, busy spinning, and shared-memory transport remain research;
-removing Tokio is not a committed direction.
+replacing Tokio for async applications is not a committed direction.
 
 ## Optional framework metrics
 

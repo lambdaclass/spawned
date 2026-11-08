@@ -1,8 +1,8 @@
 # Ranked library ideas
 
-Assessment updated 2026-11-06 against v0.6.0. These rankings are engineering
+Assessment updated 2026-11-08 against v0.6.0. These rankings are engineering
 judgment, not measured speedup predictions or release commitments. The current
-[roadmap](../ROADMAP.md) fixes the first three milestones. Rankings indicate value
+[roadmap](../ROADMAP.md) makes execution groups plus supervision the next combined milestone. Rankings indicate value
 and sequence of investigation, not a strictly serial design schedule. Runtime
 ownership, helper completion, shutdown and control-event contracts must be
 designed together before their public APIs are frozen.
@@ -11,18 +11,18 @@ designed together before their public APIs are frozen.
 
 | Rank | Idea | Assessment / dependency |
 |---|---|---|
-| 1 | Public runtime handles, execution groups and placement | Requested first implementation priority, not a general benchmark winner. Start with a parked pool, bounded workers, fallible construction and stop/join ownership; preserve `.start()`. Partial startup must unwind safely. Affinity and actor-system/registry namespaces can graduate separately. |
-| 2 | True Tokio-free thread feature | Clear, independently useful build capability. Completion, Response, monitoring, timers and macro output all need a feature plan and dependency-graph CI. |
-| 3 | Supervision/restart policies | Major application capability. Factories, identity, state recovery, restart limits/backoff and escalation; not automatic retry of unknown effects. |
+| 1 | ActorSystem, execution groups and placement | Phase 1a of the next combined milestone. Optional system ownership, parked pools, bounded workers, fallible construction and stop/join ownership; preserve `.start()`. Design recovery placement and helper lifetimes with phase 1b. Affinity and additional execution profiles graduate separately. |
+| 2 | Automatic supervision/restart policies | Phase 1b. ChildSpec factories, OneForOne, Permanent/Transient/Temporary modes, restart intensity/window, backoff/jitter and ordered shutdown. Instance-bound ActorRef; explicit replacement lookup. No implicit state restoration or effect replay. OneForAll/RestForOne follow later. |
+| 3 | True Tokio-free thread feature | Independently useful build capability after/alongside the combined milestone. Completion, Response, monitoring, timers and macro output need a feature plan and dependency-graph CI. |
 | 4 | Scoped, lifecycle-owned registries | High-value smaller foundation for systems and supervision. Use registration generations/compare-and-remove so an old guard cannot remove its replacement. |
 | 5 | Fallible startup / readiness | High value for reliable boot and supervision. Preserve old lifecycle implementations; define typed startup failure and when a reference becomes usable. The remote `result_on_start` branch exists but is not an approved implementation. |
-| 6 | Coordinated shutdown and bounded draining | Ownership/shutdown design gate for 1, then recovery policy for 3. Start with explicit stop-and-join; full draining closes admission, handles queued work by policy, joins helpers and reports unfinished work. Keep current stop/discard as the default. |
-| 7 | Deferred typed replies, forwarding and pipe-to-self | First capability after the requested top three. Distinguish delegation, deferred reply ownership and completion messages; bound outstanding promises, propagate deadlines and define late-result/owner-exit behavior without general reentrancy. |
+| 6 | Coordinated shutdown and bounded draining | Ownership/shutdown design gate for 1/2. Start with explicit stop-and-join; full draining closes admission, handles queued work by policy, joins helpers and reports unfinished work. Keep current stop/discard as the default. |
+| 7 | Deferred typed replies, forwarding and pipe-to-self | High-value capability after the foundation. Distinguish delegation, deferred reply ownership and completion messages; bound outstanding promises, propagate deadlines and define late-result/owner-exit behavior without general reentrancy. |
 | 8 | Bounded mailboxes and admission | Design with 9/10, opt-in alongside unbounded transport. Define reject/wait semantics, cancellation/deadlines and cyclic-send deadlocks. |
 | 9 | Pre-allocation byte credits | Design with 8/10: independently of optional metrics, bound allocated/in-flight bytes, not just queue slots. Credits can cover a whole pipeline; oversize requests must not wait forever. |
 | 10 | Propagated budgets / stale-work skipping | Design with admission; cheap stale-work rejection need not wait for a complete credit system. Opt-in expiry before dispatch, inherited monotonic deadlines and distinct outcomes. Timeout is not rollback; current requests still run after caller timeout/drop. |
 | 11 | Actor-owned helper completion scopes | Ownership design gate for 1/6, not a late add-on. Gate new helper registration, cancel, then explicitly join; helpers depending on their stopped owner can deadlock. |
-| 12 | Separate fair control path | Design a minimal lifecycle path with 3/6; defer a generic public priority API. Specify boundedness and ordering for startup, monitor and trapped-exit events. Current stop cancellation already bypasses the queue. Priority cannot preempt a running handler or starve user work. |
+| 12 | Separate fair control path | Part of the supervision/shutdown design in 2/6; defer a generic public priority API. Specify boundedness and ordering for startup, monitor and trapped-exit events. Current stop cancellation already bypasses the queue. Priority cannot preempt a running handler or starve user work. |
 
 ## Add capabilities against a client need
 
@@ -59,8 +59,9 @@ designed together before their public APIs are frozen.
 ## Parallel validation track
 
 Start client profiling in parallel with the first milestone; run one instrumented
-Ethrex/Ethlambda workload before promoting performance policies. No actual client
-performance run has been completed in this research. A real block/gossip replay
+Ethrex/Ethlambda workload before promoting performance policies. Local Ethlambda
+EngineClient/actor probes have run; a full-client replay/canary is still needed.
+A real block/gossip replay
 should establish where time/bytes wait and which regression bounds matter.
 Synthetic ratios do not transfer automatically.
 

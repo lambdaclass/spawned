@@ -1,0 +1,10 @@
+{
+  "status": "SUCCESS",
+  "response": "I will start by reading the changed documentation/design files and the relevant runtime/lifecycle source files in `concurrency` and `rt` to review the Execution Groups plus Automatic Supervision design against the existing codebase.\nNow I will read the rest of `concurrency/src/tasks/actor.rs`, `concurrency/src/threads/actor.rs`, `concurrency/src/actor_cleanup.rs`, `concurrency/src/monitor.rs`, and `git status` / `git diff` to see all uncommitted changes and understand the exact actor loop, cleanup, timer, and registry semantics.\n",
+  "denied_actions": [
+    {
+      "action": "command",
+      "display_name": "RunCommand"
+    }
+  ]
+}

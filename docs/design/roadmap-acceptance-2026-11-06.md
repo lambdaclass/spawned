@@ -2,7 +2,9 @@
 
 This document preserves the earlier acceptance criteria, not the current
 implementation order. See the [current roadmap](../ROADMAP.md) for public runtime
-placement, Tokio-free threads and supervision in that order.
+placement plus supervision as the next combined milestone, followed by
+Tokio-free threads. The [current MVP design](execution-groups-supervision.md)
+supersedes ordering assumptions in this archive.
 
 Updated 2026-11-06. This is a proposed implementation order, not a release-date
 commitment. Each milestone needs its own design, tests, and review.
