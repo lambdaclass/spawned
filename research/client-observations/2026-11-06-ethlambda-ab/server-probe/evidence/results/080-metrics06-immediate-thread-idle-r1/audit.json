@@ -1,0 +1,29 @@
+{
+  "variant": "metrics06",
+  "binary": "metrics06",
+  "sample": 1,
+  "repeat": 1,
+  "scenario": "immediate",
+  "placement": "thread",
+  "load": "idle",
+  "seconds": 3,
+  "warmup": 8,
+  "command": [
+    "taskset",
+    "-c",
+    "2,3,4",
+    "/tmp/spawned-pr-security-review/engine-actor-probe/bin/metrics06",
+    "http://127.0.0.1:40417",
+    "thread",
+    "idle",
+    "3",
+    "8",
+    "1"
+  ],
+  "returncode": 0,
+  "sampled_peak_rss_bytes": 37158912,
+  "sampled_peak_threads": 11,
+  "sampled_peak_fds": 21,
+  "artifact_sha256": "47188727e6d3618eae4c66891b4d10e8a9c8c2b45a8a8899b6f8096366b0b470",
+  "elapsed_s_including_setup": 3.5596175809623674
+}

@@ -1,0 +1,29 @@
+{
+  "variant": "baseline05",
+  "binary": "baseline05",
+  "sample": 0,
+  "repeat": 0,
+  "scenario": "immediate",
+  "placement": "thread",
+  "load": "busy",
+  "seconds": 3,
+  "warmup": 8,
+  "command": [
+    "taskset",
+    "-c",
+    "2,3,4",
+    "/tmp/spawned-pr-security-review/engine-actor-probe/bin/baseline05",
+    "http://127.0.0.1:33115",
+    "thread",
+    "busy",
+    "3",
+    "8",
+    "0"
+  ],
+  "returncode": 0,
+  "sampled_peak_rss_bytes": 32976896,
+  "sampled_peak_threads": 11,
+  "sampled_peak_fds": 21,
+  "artifact_sha256": "0056c6aa3ccbc08821fbda8106e9d30888a39f60cac0ce720bc32fd43e1c0bc1",
+  "elapsed_s_including_setup": 3.5424609560286626
+}

@@ -143,3 +143,8 @@ output directory. Its historical output uses the **original deployed builds**;
 it is not a run of either newly built binary. Full validation inputs and outputs
 are archived alongside that record. Release remains held while the latency
 cause is unresolved.
+
+For diagnostics without access to eth5, see the
+[fede Engine-client / actor probe](../server-probe/README.md). It compares the
+published frameworks on loopback with controlled replies and actor load; it
+does not run the full beacon client or change a production node.

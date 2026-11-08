@@ -3,3 +3,6 @@ controls/collector-validation/** linguist-generated=true
 controls/builds/**/*.log -whitespace
 controls/builds/**/*.stdout -whitespace
 controls/builds/**/*.stderr -whitespace
+server-probe/evidence/** linguist-generated=true
+server-probe/report/** linguist-generated=true
+server-probe/evidence/**/*.log -whitespace
