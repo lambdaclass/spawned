@@ -1,0 +1,33 @@
+{
+  "variant": "metrics06",
+  "binary": "metrics06",
+  "sample": 1,
+  "repeat": 2,
+  "scenario": "immediate",
+  "placement": "thread",
+  "load": "busy",
+  "seconds": 3,
+  "warmup": 8,
+  "concurrency": 4,
+  "gap_ms": 0,
+  "command": [
+    "taskset",
+    "-c",
+    "2,3,4",
+    "/tmp/spawned-pr-security-review/engine-concurrent-probe/bin/metrics06",
+    "http://127.0.0.1:43309",
+    "thread",
+    "busy",
+    "3",
+    "8",
+    "1",
+    "4",
+    "0"
+  ],
+  "returncode": 0,
+  "sampled_peak_rss_bytes": 33603584,
+  "sampled_peak_threads": 14,
+  "sampled_peak_fds": 27,
+  "artifact_sha256": "466d5f7e2e67e961823de724b47c5b95a0ea0953482c2afcb815e6f0dc3c6e37",
+  "elapsed_s_including_setup": 3.5179825930390507
+}

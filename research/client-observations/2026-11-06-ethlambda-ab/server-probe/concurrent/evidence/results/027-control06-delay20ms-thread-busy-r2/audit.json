@@ -1,0 +1,33 @@
+{
+  "variant": "control06",
+  "binary": "control06",
+  "sample": 0,
+  "repeat": 2,
+  "scenario": "delay20ms",
+  "placement": "thread",
+  "load": "busy",
+  "seconds": 3,
+  "warmup": 8,
+  "concurrency": 4,
+  "gap_ms": 0,
+  "command": [
+    "taskset",
+    "-c",
+    "2,3,4",
+    "/tmp/spawned-pr-security-review/engine-concurrent-probe/bin/control06",
+    "http://127.0.0.1:41771",
+    "thread",
+    "busy",
+    "3",
+    "8",
+    "0",
+    "4",
+    "0"
+  ],
+  "returncode": 0,
+  "sampled_peak_rss_bytes": 27058176,
+  "sampled_peak_threads": 13,
+  "sampled_peak_fds": 25,
+  "artifact_sha256": "383c88b56aa0220f2f11bf05f9aff43a46054f7d6402b0f3757b4016b22f5b12",
+  "elapsed_s_including_setup": 3.6195889390073717
+}

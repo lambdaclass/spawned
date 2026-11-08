@@ -1,0 +1,7 @@
+{
+  "requests": 32074,
+  "injected_failures": 0,
+  "connections": 6,
+  "unique_calls": 32074,
+  "scenario": "immediate"
+}

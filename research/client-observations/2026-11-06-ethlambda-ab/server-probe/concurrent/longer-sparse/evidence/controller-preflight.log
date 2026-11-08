@@ -1,0 +1,5 @@
+Traceback (most recent call last):
+  File "/tmp/spawned-pr-security-review/engine-sparse-run.py", line 13, in <module>
+    exec(compile(source, 'longer-sparse-controller', 'exec'))
+  File "longer-sparse-controller", line 10, in <module>
+ValueError: substring not found

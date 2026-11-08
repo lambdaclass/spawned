@@ -1,0 +1,33 @@
+{
+  "variant": "fixed06",
+  "binary": "fixed06",
+  "sample": 0,
+  "repeat": 2,
+  "scenario": "delay20ms",
+  "placement": "thread",
+  "load": "busy",
+  "seconds": 3,
+  "warmup": 8,
+  "concurrency": 16,
+  "gap_ms": 0,
+  "command": [
+    "taskset",
+    "-c",
+    "2,3,4",
+    "/tmp/spawned-pr-security-review/engine-concurrent-probe/bin/fixed06",
+    "http://127.0.0.1:38271",
+    "thread",
+    "busy",
+    "3",
+    "8",
+    "0",
+    "16",
+    "0"
+  ],
+  "returncode": 0,
+  "sampled_peak_rss_bytes": 28655616,
+  "sampled_peak_threads": 24,
+  "sampled_peak_fds": 51,
+  "artifact_sha256": "34b4d5de2e8691ae1ac0b75a55c25aa2d0f3958b7b2bb6582cb0128132665faa",
+  "elapsed_s_including_setup": 3.6495641840156168
+}

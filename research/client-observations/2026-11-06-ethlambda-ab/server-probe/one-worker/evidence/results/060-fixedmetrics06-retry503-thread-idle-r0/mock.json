@@ -1,0 +1,7 @@
+{
+  "requests": 6,
+  "injected_failures": 3,
+  "connections": 5,
+  "unique_calls": 3,
+  "scenario": "retry503"
+}

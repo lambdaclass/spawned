@@ -1,0 +1,6 @@
+   Compiling ethlambda-ssz-tree v1.0.0 (/tmp/spawned-pr-security-review/engine-one-worker-probe/source/crates/common/ssz-tree)
+   Compiling spawned-rt v0.6.0 (/tmp/spawned-pr-security-review/engine-one-worker-probe/spawned-rt)
+   Compiling ethlambda-types v1.0.0 (/tmp/spawned-pr-security-review/engine-one-worker-probe/source/crates/common/types)
+   Compiling spawned-concurrency v0.6.0
+   Compiling ethlambda-engine v1.0.0 (/tmp/spawned-pr-security-review/engine-one-worker-probe/source/crates/net/engine)
+    Finished `release` profile [optimized] target(s) in 22.51s

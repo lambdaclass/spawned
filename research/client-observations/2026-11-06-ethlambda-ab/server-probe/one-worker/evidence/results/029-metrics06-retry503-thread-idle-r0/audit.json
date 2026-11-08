@@ -1,0 +1,29 @@
+{
+  "variant": "metrics06",
+  "binary": "metrics06",
+  "sample": 1,
+  "repeat": 0,
+  "scenario": "retry503",
+  "placement": "thread",
+  "load": "idle",
+  "seconds": 1,
+  "warmup": 1,
+  "command": [
+    "taskset",
+    "-c",
+    "2,3,4",
+    "/tmp/spawned-pr-security-review/engine-one-worker-probe/bin/metrics06",
+    "http://127.0.0.1:34885",
+    "thread",
+    "idle",
+    "1",
+    "1",
+    "1"
+  ],
+  "returncode": 0,
+  "sampled_peak_rss_bytes": 26365952,
+  "sampled_peak_threads": 10,
+  "sampled_peak_fds": 19,
+  "artifact_sha256": "47188727e6d3618eae4c66891b4d10e8a9c8c2b45a8a8899b6f8096366b0b470",
+  "elapsed_s_including_setup": 2.0065451359841973
+}

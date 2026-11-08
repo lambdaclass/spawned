@@ -1,0 +1,98 @@
+[
+  {
+    "variant": "fixed06",
+    "artifact_sha256": "cd1ca1f154706ebb8669809d6533615a9c1a0b05c6f3b9ea36521af5cc932b44",
+    "runtime_original_sha256": "e883ad5abd72758b8b3603d8549f97593c20a72d782a199cae5f4ef9dff57899",
+    "runtime_fixed_sha256": "dd591f5b29dcf48ab162308451ab7ef3fc9857de7208a413c33c044ecfd4072b",
+    "engine_client_sha256": "7d2dbb6386cb5940188583c3e3c5307cb06fe0abc659b7ca60ee1f74ef3ede79",
+    "probe_sha256": "68b5b2e7996498dc256b3f46b4869ac4c61a3324baf128213e26d60b95f7b71f",
+    "command": [
+      "/tmp/spawned-pr-security-review/ethlambda-control-toolchain/installed/bin/cargo",
+      "build",
+      "--offline",
+      "--locked",
+      "--release",
+      "-p",
+      "ethlambda-engine",
+      "--example",
+      "engine_actor_probe"
+    ],
+    "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)\nbinary: rustc\ncommit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452\ncommit-date: 2026-07-14\nhost: x86_64-unknown-linux-gnu\nrelease: 1.97.1\nLLVM version: 22.1.6\n",
+    "elapsed_s": 22.7991376160644,
+    "sampled_peak_rss_bytes": 1233805312,
+    "lock_diff": "diff --git a/Cargo.lock b/Cargo.lock\nindex 699beea..ba1e47b 100644\n--- a/Cargo.lock\n+++ b/Cargo.lock\n@@ -2078,6 +2078,7 @@ dependencies = [\n  \"serde\",\n  \"serde_json\",\n  \"sha2\",\n+ \"spawned-concurrency 0.6.0\",\n  \"thiserror 2.0.18\",\n  \"tokio\",\n  \"tracing\",\n@@ -6668,8 +6669,6 @@ dependencies = [\n [[package]]\n name = \"spawned-rt\"\n version = \"0.6.0\"\n-source = \"registry+https://github.com/rust-lang/crates.io-index\"\n-checksum = \"a8407acadfee8c48346315581459d2c0ee7171ebf4e5a02d9aec64a427012e55\"\n dependencies = [\n  \"ctrlc\",\n  \"loom\",\ndiff --git a/Cargo.toml b/Cargo.toml\nindex 3d14e6c..e43b7d9 100644\n--- a/Cargo.toml\n+++ b/Cargo.toml\n@@ -188,3 +188,6 @@ jemalloc_pprof = { version = \"0.8\", features = [\"flamegraph\"] }\n # in `shadow/quinn-udp-patch` (no GSO/GRO batch syscalls). A Cargo `[patch]`\n # cannot be feature-gated, so it is NOT committed here; `shadow/build.sh` injects\n # it into this manifest at build time. See `make shadow-build`.\n+\n+[patch.crates-io]\n+spawned-rt = { path = \"/tmp/spawned-pr-security-review/engine-one-worker-probe/spawned-rt\" }\ndiff --git a/crates/net/engine/Cargo.toml b/crates/net/engine/Cargo.toml\nindex 501dbb2..5af0872 100644\n--- a/crates/net/engine/Cargo.toml\n+++ b/crates/net/engine/Cargo.toml\n@@ -23,6 +23,7 @@ tokio = { workspace = true, features = [\"time\"] }\n tracing.workspace = true\n \n [dev-dependencies]\n+spawned-concurrency.workspace = true\n tokio = { workspace = true, features = [\n     \"io-util\",\n     \"macros\",\n@@ -30,3 +31,6 @@ tokio = { workspace = true, features = [\n     \"rt-multi-thread\",\n     \"sync\",\n ] }\n+\n+[features]\n+probe-metrics = [\"spawned-concurrency/metrics\"]\n"
+  },
+  {
+    "variant": "fixedmetrics06",
+    "artifact_sha256": "26f5f077d9898490b2d9bb1a5777c5873dbe8d355021db5ac8b8cc806d2c14e1",
+    "runtime_original_sha256": "e883ad5abd72758b8b3603d8549f97593c20a72d782a199cae5f4ef9dff57899",
+    "runtime_fixed_sha256": "dd591f5b29dcf48ab162308451ab7ef3fc9857de7208a413c33c044ecfd4072b",
+    "engine_client_sha256": "7d2dbb6386cb5940188583c3e3c5307cb06fe0abc659b7ca60ee1f74ef3ede79",
+    "probe_sha256": "68b5b2e7996498dc256b3f46b4869ac4c61a3324baf128213e26d60b95f7b71f",
+    "command": [
+      "/tmp/spawned-pr-security-review/ethlambda-control-toolchain/installed/bin/cargo",
+      "build",
+      "--offline",
+      "--locked",
+      "--release",
+      "-p",
+      "ethlambda-engine",
+      "--example",
+      "engine_actor_probe",
+      "--features",
+      "probe-metrics"
+    ],
+    "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)\nbinary: rustc\ncommit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452\ncommit-date: 2026-07-14\nhost: x86_64-unknown-linux-gnu\nrelease: 1.97.1\nLLVM version: 22.1.6\n",
+    "elapsed_s": 12.173805468948558,
+    "sampled_peak_rss_bytes": 645668864,
+    "lock_diff": "diff --git a/Cargo.lock b/Cargo.lock\nindex 699beea..ba1e47b 100644\n--- a/Cargo.lock\n+++ b/Cargo.lock\n@@ -2078,6 +2078,7 @@ dependencies = [\n  \"serde\",\n  \"serde_json\",\n  \"sha2\",\n+ \"spawned-concurrency 0.6.0\",\n  \"thiserror 2.0.18\",\n  \"tokio\",\n  \"tracing\",\n@@ -6668,8 +6669,6 @@ dependencies = [\n [[package]]\n name = \"spawned-rt\"\n version = \"0.6.0\"\n-source = \"registry+https://github.com/rust-lang/crates.io-index\"\n-checksum = \"a8407acadfee8c48346315581459d2c0ee7171ebf4e5a02d9aec64a427012e55\"\n dependencies = [\n  \"ctrlc\",\n  \"loom\",\ndiff --git a/Cargo.toml b/Cargo.toml\nindex 3d14e6c..e43b7d9 100644\n--- a/Cargo.toml\n+++ b/Cargo.toml\n@@ -188,3 +188,6 @@ jemalloc_pprof = { version = \"0.8\", features = [\"flamegraph\"] }\n # in `shadow/quinn-udp-patch` (no GSO/GRO batch syscalls). A Cargo `[patch]`\n # cannot be feature-gated, so it is NOT committed here; `shadow/build.sh` injects\n # it into this manifest at build time. See `make shadow-build`.\n+\n+[patch.crates-io]\n+spawned-rt = { path = \"/tmp/spawned-pr-security-review/engine-one-worker-probe/spawned-rt\" }\ndiff --git a/crates/net/engine/Cargo.toml b/crates/net/engine/Cargo.toml\nindex 501dbb2..5af0872 100644\n--- a/crates/net/engine/Cargo.toml\n+++ b/crates/net/engine/Cargo.toml\n@@ -23,6 +23,7 @@ tokio = { workspace = true, features = [\"time\"] }\n tracing.workspace = true\n \n [dev-dependencies]\n+spawned-concurrency.workspace = true\n tokio = { workspace = true, features = [\n     \"io-util\",\n     \"macros\",\n@@ -30,3 +31,6 @@ tokio = { workspace = true, features = [\n     \"rt-multi-thread\",\n     \"sync\",\n ] }\n+\n+[features]\n+probe-metrics = [\"spawned-concurrency/metrics\"]\n"
+  },
+  {
+    "variant": "control06",
+    "source_commit": "c585f3d2b8e816e24e7029e418a484ee3396c30a",
+    "command": [
+      "/tmp/spawned-pr-security-review/ethlambda-control-toolchain/installed/bin/cargo",
+      "build",
+      "--offline",
+      "--locked",
+      "--release",
+      "-p",
+      "ethlambda-engine",
+      "--example",
+      "engine_actor_probe"
+    ],
+    "sha256": "0417ace3fd73676e6e4449ff0a099ffff356fb5553ee422860313ee09ee14d41",
+    "lock_sha256": "b0ffb59b29ddd24a05a1e10fc6902ddd5a0eee385f5ee72bb35d589fc32c6383",
+    "engine_client_sha256": "7d2dbb6386cb5940188583c3e3c5307cb06fe0abc659b7ca60ee1f74ef3ede79",
+    "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)\nbinary: rustc\ncommit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452\ncommit-date: 2026-07-14\nhost: x86_64-unknown-linux-gnu\nrelease: 1.97.1\nLLVM version: 22.1.6\n",
+    "elapsed_s": 21.771900072926655,
+    "sampled_peak_rss_bytes": 1259220992,
+    "returncode": 0,
+    "source_diff": "diff --git a/Cargo.lock b/Cargo.lock\nindex 699beea..498a170 100644\n--- a/Cargo.lock\n+++ b/Cargo.lock\n@@ -2078,6 +2078,7 @@ dependencies = [\n  \"serde\",\n  \"serde_json\",\n  \"sha2\",\n+ \"spawned-concurrency 0.6.0\",\n  \"thiserror 2.0.18\",\n  \"tokio\",\n  \"tracing\",\ndiff --git a/crates/net/engine/Cargo.toml b/crates/net/engine/Cargo.toml\nindex 501dbb2..5af0872 100644\n--- a/crates/net/engine/Cargo.toml\n+++ b/crates/net/engine/Cargo.toml\n@@ -23,6 +23,7 @@ tokio = { workspace = true, features = [\"time\"] }\n tracing.workspace = true\n \n [dev-dependencies]\n+spawned-concurrency.workspace = true\n tokio = { workspace = true, features = [\n     \"io-util\",\n     \"macros\",\n@@ -30,3 +31,6 @@ tokio = { workspace = true, features = [\n     \"rt-multi-thread\",\n     \"sync\",\n ] }\n+\n+[features]\n+probe-metrics = [\"spawned-concurrency/metrics\"]\n"
+  },
+  {
+    "variant": "metrics06",
+    "source_commit": "c585f3d2b8e816e24e7029e418a484ee3396c30a",
+    "command": [
+      "/tmp/spawned-pr-security-review/ethlambda-control-toolchain/installed/bin/cargo",
+      "build",
+      "--offline",
+      "--locked",
+      "--release",
+      "-p",
+      "ethlambda-engine",
+      "--example",
+      "engine_actor_probe",
+      "--features",
+      "probe-metrics"
+    ],
+    "sha256": "47188727e6d3618eae4c66891b4d10e8a9c8c2b45a8a8899b6f8096366b0b470",
+    "lock_sha256": "b0ffb59b29ddd24a05a1e10fc6902ddd5a0eee385f5ee72bb35d589fc32c6383",
+    "engine_client_sha256": "7d2dbb6386cb5940188583c3e3c5307cb06fe0abc659b7ca60ee1f74ef3ede79",
+    "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)\nbinary: rustc\ncommit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452\ncommit-date: 2026-07-14\nhost: x86_64-unknown-linux-gnu\nrelease: 1.97.1\nLLVM version: 22.1.6\n",
+    "elapsed_s": 12.12385588802863,
+    "sampled_peak_rss_bytes": 646225920,
+    "returncode": 0,
+    "source_diff": "diff --git a/Cargo.lock b/Cargo.lock\nindex 699beea..498a170 100644\n--- a/Cargo.lock\n+++ b/Cargo.lock\n@@ -2078,6 +2078,7 @@ dependencies = [\n  \"serde\",\n  \"serde_json\",\n  \"sha2\",\n+ \"spawned-concurrency 0.6.0\",\n  \"thiserror 2.0.18\",\n  \"tokio\",\n  \"tracing\",\ndiff --git a/crates/net/engine/Cargo.toml b/crates/net/engine/Cargo.toml\nindex 501dbb2..5af0872 100644\n--- a/crates/net/engine/Cargo.toml\n+++ b/crates/net/engine/Cargo.toml\n@@ -23,6 +23,7 @@ tokio = { workspace = true, features = [\"time\"] }\n tracing.workspace = true\n \n [dev-dependencies]\n+spawned-concurrency.workspace = true\n tokio = { workspace = true, features = [\n     \"io-util\",\n     \"macros\",\n@@ -30,3 +31,6 @@ tokio = { workspace = true, features = [\n     \"rt-multi-thread\",\n     \"sync\",\n ] }\n+\n+[features]\n+probe-metrics = [\"spawned-concurrency/metrics\"]\n"
+  }
+]

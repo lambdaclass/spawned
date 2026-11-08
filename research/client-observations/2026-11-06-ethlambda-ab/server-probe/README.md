@@ -66,6 +66,11 @@ timings. These results make scheduling and retry behavior testable hypotheses;
 they do not establish the cause of eth5's remaining latency difference. No new
 release or production deployment was performed.
 
+The [worker-budget follow-ups](one-worker/README.md) separately compare the
+unreleased one-worker fix with the published runtime, including concurrent RPCs
+and requests spaced by idle gaps. Their results are separate from the 84-run
+version comparison above.
+
 ## What is exercised
 
 [`engine_actor_probe.rs`](engine_actor_probe.rs) is installed as an example in

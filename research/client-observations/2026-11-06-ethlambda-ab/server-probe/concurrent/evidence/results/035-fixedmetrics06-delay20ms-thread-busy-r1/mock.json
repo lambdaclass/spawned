@@ -1,0 +1,7 @@
+{
+  "requests": 2354,
+  "injected_failures": 0,
+  "connections": 23,
+  "unique_calls": 2354,
+  "scenario": "delay20ms"
+}

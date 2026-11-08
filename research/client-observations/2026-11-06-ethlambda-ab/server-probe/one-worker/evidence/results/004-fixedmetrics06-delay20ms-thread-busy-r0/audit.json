@@ -1,0 +1,29 @@
+{
+  "variant": "fixedmetrics06",
+  "binary": "fixedmetrics06",
+  "sample": 1,
+  "repeat": 0,
+  "scenario": "delay20ms",
+  "placement": "thread",
+  "load": "busy",
+  "seconds": 3,
+  "warmup": 3,
+  "command": [
+    "taskset",
+    "-c",
+    "2,3,4",
+    "/tmp/spawned-pr-security-review/engine-one-worker-probe/bin/fixedmetrics06",
+    "http://127.0.0.1:46697",
+    "thread",
+    "busy",
+    "3",
+    "3",
+    "1"
+  ],
+  "returncode": 0,
+  "sampled_peak_rss_bytes": 26550272,
+  "sampled_peak_threads": 8,
+  "sampled_peak_fds": 19,
+  "artifact_sha256": "26f5f077d9898490b2d9bb1a5777c5873dbe8d355021db5ac8b8cc806d2c14e1",
+  "elapsed_s_including_setup": 3.544246045057662
+}

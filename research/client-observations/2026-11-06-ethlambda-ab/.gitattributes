@@ -6,3 +6,8 @@ controls/builds/**/*.stderr -whitespace
 server-probe/evidence/** linguist-generated=true
 server-probe/report/** linguist-generated=true
 server-probe/evidence/**/*.log -whitespace
+server-probe/**/evidence/** linguist-generated=true
+server-probe/**/evidence/**/*.log -whitespace
+server-probe/followup-report/** linguist-generated=true
+server-probe/sparse-report/** linguist-generated=true
+server-probe/**/*.patch -whitespace
