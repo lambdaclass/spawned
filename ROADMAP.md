@@ -4,6 +4,9 @@ Updated 2026-11-09. This is the single planning document: the phases below give
 the implementation order in brief, and the [ranked backlog](#ranked-backlog)
 holds the detail, tradeoffs and client evidence behind it. It is an order, not
 a release schedule, and no speculative feature is promised by a date.
+Maintained [research notes](docs/research/README.md) (virtual actors,
+systematic testing, Ethereum client testing, request semantics) give the prior
+art and sources behind several items.
 
 Business handlers stay ordinary Rust. The framework owns dispatch and lifecycle.
 Keep typed messages/replies, dynamic actors, addressed delivery, cooperative
@@ -50,12 +53,16 @@ handlers and the existing default behavior. New policies are explicit and opt-in
    path. After the tag: migrate Ethlambda (shutdown
    deadline via `ActorSystem`, supervision, per-method timeouts) with fault
    injection, then Ethrex (racy Ctrl-C shutdown, `ActorStopped` exits).
+   Once the canary runs, check its lifecycle traces with production monitors
+   derived from the TLA+ invariants (rank 5c, [PObserve-style](docs/research/systematic-testing.md#a-pobserve-for-spawned)).
    In parallel, the developer-experience track (ranks 6-10: test kit, whose
    phase A starts the `spawned-test` crate, in review in #198, deadlock
    detection, stall watchdog, flight recorder, published snapshots), motivated
    by the [client sweep](#client-sweep-production-pain).
 4. **Request semantics:** deferred replies and pipe-to-self (ranks 11-16), with
-   the dynamic supervisor (rank 12a) alongside the keyed registry; then
+   the dynamic supervisor (rank 12a) alongside the keyed registry, with
+   promise pipelining and transactional turns as design inputs (rank 11a,
+   [references](docs/research/request-semantics-references.md)); then
    admission, credits and deadlines as one design package (ranks 17-19). Each
    ships under the [verification rule](#verification-rule). Before starting,
    re-rank phases 4-6 with what the Ethlambda and Ethrex migrations taught,
@@ -64,13 +71,19 @@ handlers and the existing default behavior. New policies are explicit and opt-in
    ordering exploration at the actor level (Coyote-style controlled delivery), per-actor crash tapes, then record
    in production and replay in simulation. After phase 4, because exploration
    and replay need well-defined reply, registry and mailbox semantics. The
-   go/no-go: a reintroduced known race reproduces every time.
+   go/no-go: a reintroduced known race reproduces every time. Then
+   environment simulation (rank 22a): turmoil/madsim-style network, disk and
+   clock faults from the same seed; multi-client runs belong on ethshadow or
+   Attacknet ([Ethereum testing](docs/research/ethereum-testing.md)). Prior art:
+   [systematic testing](docs/research/systematic-testing.md).
 6. **Needs-driven (ranks 23-41):** scaling patterns (virtual actors, groups,
    streams), observability, ergonomics (middleware, `gen_statem`-style
    behavior, batch handlers), load policies and integrations. Nothing here is
    scheduled; each item needs a client or user first.
 7. **Research or separate products (ranks 42-51):** distribution, durability
-   (outbox, durable timers, Temporal-style execution) and language-level ideas.
+   (outbox, durable timers, Temporal-style execution, with Restate as the
+   reference design; see [virtual actors](docs/research/virtual-actors.md#what-it-means-for-spawned))
+   and language-level ideas (session types and choreographies, ranks 47-47a).
    Likely separate crates, only if someone builds a multi-node or durable system
    on Spawned.
 
@@ -109,6 +122,17 @@ OneForOne, OneForAll/RestForOne and nested supervision did. Release is blocked
 until they pass. Everything also keeps ordinary tests, an example, clippy and
 ThreadSanitizer.
 
+**Production arm (rank 5c).** Trace validation checks test runs. After the
+Ethlambda canary, the same invariants (`AtMostOneGeneration`,
+`PublishedIsLive`, `BudgetBounded`, `ReverseShutdown`, and, once the base
+lifecycle model exists, every accepted request answered or `ActorStopped`) run
+as Rust monitors over the lifecycle trace stream: online in a live node with
+bounded memory, reporting through `tracing` and metrics, and offline over
+recorded traces in CI and canary runs. TLA+ stays the source of truth: a
+monitor ships only if it flags every negative-control trace TLC rejects for its
+property and passes every accepted trace. Design and limits:
+[A PObserve for Spawned](docs/research/systematic-testing.md#a-pobserve-for-spawned).
+
 | Needs a model | What the model must show |
 |---|---|
 | Dynamic supervisor (rank 12a) | Children starting and stopping while others restart or the supervisor shuts down; `max_children` is never exceeded, counting restarting children; no start succeeds after shutdown begins. |
@@ -117,6 +141,7 @@ ThreadSanitizer.
 | Draining shutdown (rank 13) | Queued work is handled or reported; shutdown finishes within its deadline. |
 | Bounded mailboxes and credits (ranks 17-18) | No credit leaks; waiting senders cannot deadlock. |
 | Base actor lifecycle | Links, monitors, `Down` exactly once, every request answered or `ActorStopped`; reintroducing the PR #182/#185 bugs must fail ([next model](verification/tla/README.md#next-model)). |
+| Production monitors (rank 5c) | No new model: each monitor is checked against an existing model's accepted traces and negative controls. |
 
 No model needed (tests, examples and review suffice): the per-method timeout
 (5a), examples (5b), the migration guide, metrics, snapshots (10), the test kit
@@ -138,9 +163,12 @@ cargo-mutants and TLA+ with trace replay. Release gates and remaining gaps:
 | After v0.7 | Long-running soak tests | Memory, file descriptors, threads and tasks stay flat over hours of actor churn and restarts. The ethrex 1.5 GB/day mailbox leak is the motivating bug. Nightly, not per PR. |
 | With ranks 11-13 | Loom on the new primitives | Reply slots, registry compare-and-remove and mailbox publication versus stop. |
 | Ongoing | Coverage report (`cargo-llvm-cov`) | Find untested branches in supervision and system code; pairs with the surviving mutants. Report only, no threshold. |
+| After v0.7 | Porcupine-style linearizability checker for `request_histories` | The current oracle is a bounded search (16 operations, 100,000 states). Partition histories per key (P-compositionality), memoize search states and render a failing history, so longer histories from proptest, soak and canary runs can be checked. See [Porcupine](docs/research/systematic-testing.md#history-checkers). |
+| With rank 5c | Offline lifecycle monitors over canary traces | The Ethlambda canary writes lifecycle traces; monitors check them after each run without a JVM. |
 
 Deterministic simulation and record/replay remain the testing flagship (ranks
-20-22).
+20-22), followed by environment simulation (rank 22a). Prior art and how
+databases combine these techniques: [systematic testing](docs/research/systematic-testing.md).
 
 The [archived v0.7 gate review](legacy/docs/reviews/v07-release-gates.md) records
 the original scans and their limits. The corrected [testing guide](docs/TESTING.md)
@@ -164,6 +192,8 @@ stays stable.
 | Lifecycle trace recording (`lifecycle-trace`, exists) | Fault injection: kill or restart an actor, delay a message, fire a timeout (phase A in #198) |
 | Deadlock detection and the stall watchdog (ranks 7-8): they protect production | Ordering exploration, `explore` (rank 20) |
 | | Crash tapes and production record/replay (ranks 21-22) |
+| | Environment simulation: network, disk and clock faults (rank 22a) |
+| Production lifecycle monitors (rank 5c): they run in live nodes | Offline monitor runner over recorded traces (rank 5c) |
 | | Helpers to check recorded traces against the TLA+ models |
 
 The TLA+ models and checkers stay in `verification/`; they verify Spawned's own
@@ -184,6 +214,11 @@ How the tools compare:
 | Shuttle | Random thread schedules | Framework-internal races (after v0.7) |
 | Coyote (Microsoft, formerly P#) / rank 20 | Orderings of message deliveries, with seeded failures and timers and replayable traces | User-level actor bugs in whole applications |
 | TLA+ | A model of the design, not the code | Lifecycle protocols, under the [verification rule](#verification-rule) |
+| Stateright | States of a Rust actor model that can also run on a real network | Prior art for rank 20; it owns its runtime, so not a dependency |
+| turmoil / madsim | Seeded network, clock (and with turmoil, filesystem) faults in one thread | Pattern for rank 22a |
+| PObserve (P) | Spec monitors over service logs, in tests or production | Pattern for rank 5c, with TLA+-derived Rust monitors |
+
+Survey and sources: [systematic testing](docs/research/systematic-testing.md).
 
 Coyote takes over scheduling at the points that matter, searches orderings with
 strategies such as PCT, injects timeouts and failures, and records every
@@ -202,7 +237,12 @@ serial design schedule. Runtime ownership, helper completion, shutdown and
 control-event contracts must be designed together before their public APIs are
 frozen. No item below changes released behavior by appearing here.
 
-Background notes (sources, design notes and experiments, without rankings of
+Maintained [research notes](docs/research/README.md) cover
+[virtual actors](docs/research/virtual-actors.md),
+[systematic testing](docs/research/systematic-testing.md),
+[Ethereum client testing](docs/research/ethereum-testing.md) and
+[request semantics references](docs/research/request-semantics-references.md).
+Older background notes (sources, design notes and experiments, without rankings of
 their own) are archived in [legacy](legacy/README.md):
 [framework ideas](legacy/docs/research/framework-ideas.md),
 [concurrency ideas](legacy/docs/research/concurrency-ideas.md),
@@ -286,6 +326,7 @@ PRs #180, #182 and #185. Plan and acceptance criteria: [verification strategy](l
 | 5 | Release v0.7 and run it in Ethlambda | **Include the per-method request timeout (rank 5a below) and a migration guide for the clients' hand-wired shutdown and startup (see [client sweep](#client-sweep-production-pain)).** The roadmap's validation gate. A full-client replay or same-node canary outranks further synthetic research. Local EngineClient probes are a different evidence level. |
 | 5a | Per-method request timeout in `#[protocol]` | **Implemented, unreleased:** protocol/method Duration defaults and a configured concrete-handle override, retaining five seconds by default. Existing fakes remain compatible. See the [migration guide](docs/MIGRATION.md#protocol-request-timeouts). |
 | 5b | An example for every way of using the library | Runnable examples with assertions for every user-facing feature, in both execution modes where it exists in both. The previous stream/recipient/timeout/native-lifecycle/registration/testing gaps are now covered below. Tracked in [examples to add](#examples-to-add); each new capability ships with its example. |
+| 5c | PObserve-style production lifecycle monitors | **After the Ethlambda canary runs.** Extends TLA+ trace validation (rank 2) from test runs to live nodes. Rust state machines derived from the TLA+ invariants consume the lifecycle trace stream online with bounded memory (state per live supervisor or actor, a fixed cap with a counted overflow) and report violations via `tracing` and metrics without stopping the node; the same monitors run offline over recorded traces in CI and on fede256 canary runs. Needs a production trace sink (bounded, per-entity ordering, counted gaps) instead of the test recorder's global section and unbounded buffer, and request events defined by the base lifecycle model. TLA+ stays the source of truth; each monitor must agree with TLC on the negative controls. See [A PObserve for Spawned](docs/research/systematic-testing.md#a-pobserve-for-spawned). |
 
 ### Step 3: cheap developer-experience track (in parallel)
 
@@ -304,7 +345,8 @@ Small, independent of the scheduler and lifecycle design, and visible to users.
 | Rank | Idea | Assessment |
 |---|---|---|
 | 11 | Deferred typed replies, forwarding and pipe-to-self | Highest-value capability after the foundation; confirmed by the client search: ethrex hand-builds deferred replies with timeouts (`outgoing_request`/`current_requests`) and ethlambda hand-builds bounded pipe-to-self with exactly-one completion. Include reply timeouts and exactly-one completion on panic. Distinguish delegation, deferred reply ownership and completion messages; bound outstanding promises, propagate deadlines and define late-result/owner-exit behavior without general reentrancy. `ctx.spawn_ordered` (parallel stateless compute, then commit in arrival order, revalidating state at commit) is a follow-on specialization. |
-| 12 | Scoped, lifecycle-owned registries | **Client evidence:** ethrex's per-peer connection map and its `ConnectionId` guard (#7435). Keyed registration that owns the actor's lifetime, with generations so an old cleanup cannot remove its replacement. Also scope the registry to an `ActorSystem` instead of the process-global static, so parallel tests and multi-node simulations do not share names. Prerequisite for groups/pub-sub. |
+| 11a | Design inputs to rank 11: promise pipelining and transactional turns | Decide within the rank 11 design, not as a separate API: (1) whether a pipelined send ("on reply to R, send M to the target R names") is expressible without an extra handler turn, with M failing like R rather than being dropped (E/Cap'n Proto/Goblins pipelining; the main latency tool if rank 44 ever ships); (2) whether deferred replies and completions are sent at the end of a turn or immediately, and an opt-in Goblins-style transactional turn that holds a handler's sends until it returns and discards them on panic (state rollback only for snapshot-able state; external effects are never rolled back); (3) whether per-turn snapshots can serve ranks 21 and 30 too. The rank 11 TLA+ model must cover a reply sent by a turn that then panics. See [request semantics references](docs/research/request-semantics-references.md). |
+| 12 | Scoped, lifecycle-owned registries | **Client evidence:** ethrex's per-peer connection map and its `ConnectionId` guard (#7435). Keyed registration that owns the actor's lifetime, with generations so an old cleanup cannot remove its replacement. Also scope the registry to an `ActorSystem` instead of the process-global static, so parallel tests and multi-node simulations do not share names. Prerequisite for groups/pub-sub. Orleans keeps the same one-live-instance-per-key invariant ([virtual actors](docs/research/virtual-actors.md#what-it-means-for-spawned)). |
 | 12a | Dynamic supervisor (`DynamicSupervisor` / `simple_one_for_one`) | **Client evidence:** ethrex starts one connection actor per peer at runtime and cleans it up by hand (see [per-key actor maps](#client-search-results)); today's `Supervisor` only owns the fixed child list declared at build time. Proposed contract: children are started at runtime from one `ChildSpec` template with per-call arguments, sharing its restart mode (Elixir-style heterogeneous specs only if a user needs them). The restart budget is supervisor-wide, as in OTP: exhausting it fails the supervisor and escalates to its parent, so a flapping child cannot restart forever. `max_children` counts restarting children, so a new start cannot take a slot mid-restart, and rejects with a typed error rather than queueing. `start_child` after shutdown begins is rejected, never dropped or leaked. Explicitly stopping a child does not restart it. Shutdown stops all live children concurrently under one supervisor deadline (OTP does not order dynamic children; sequential stops would multiply per-child timeouts). Usable inside a nested tree. Independent of rank 12 (`start_child` returns a handle); when combined, a restarted child re-registers under a new generation so an old cleanup cannot remove it. Planned after v0.7, not part of it; extend the TLA+ model (start/stop racing restart and shutdown, cap including restarting children) before release, as for OneForAll/RestForOne. The other OTP variants stay out: `Task.Supervisor` folds into ranks 11/15, `PartitionSupervisor` is sharding, and significant children/`auto_shutdown` wait for a user. |
 | 13 | Coordinated shutdown and bounded draining | Ordered stop exists; add explicit draining as a policy: close admission, handle queued work by policy, join helpers and report unfinished work. Keep current stop/discard as the default. |
 | 14 | Separate fair control path | Part of supervision/shutdown design; defer a generic public priority API. Non-trapping actors already receive abnormal exits through cancellation; queued `ExitEnvelope` only matters for trapping actors. Specify boundedness and per-sender ordering for startup, monitor and trapped-exit events. Priority cannot preempt a running handler or starve user work. |
@@ -323,9 +365,10 @@ Small, independent of the scheduler and lifecycle design, and visible to users.
 
 | Rank | Idea | Assessment |
 |---|---|---|
-| 20 | Actor-level ordering exploration (`spawned::sim::explore`) | Treat one handler turn as an atomic step and control delivery at the mailbox boundary; only deliveries racing at the same actor, timer or exit branch the schedule (actor-level partial-order reduction, as in P#/Coyote). Failures shrink to readable delivery lists and can print as sequence diagrams. Start here rather than full environment simulation. Shuttle stays an internal tool for framework races (see verification strategy). Handlers that use Tokio I/O, `spawn_blocking` or wall-clock time directly remain outside control. |
+| 20 | Actor-level ordering exploration (`spawned::sim::explore`) | Treat one handler turn as an atomic step and control delivery at the mailbox boundary; only deliveries racing at the same actor, timer or exit branch the schedule (actor-level partial-order reduction, as in P#/Coyote). Failures shrink to readable delivery lists and can print as sequence diagrams. Start here rather than full environment simulation. Shuttle stays an internal tool for framework races (see verification strategy). Handlers that use Tokio I/O, `spawn_blocking` or wall-clock time directly remain outside control. Prior art: Coyote/P# for the design; Stateright (Rust actors that are model-checked and also run on a real network) and Dropbox's Trinity (a Rust engine under a custom test executor) for the Rust side ([systematic testing](docs/research/systematic-testing.md)). |
 | 21 | Per-actor crash tape | Record one actor's inputs and replay its crash in a unit test. Inputs include replies to its own requests, clock reads and I/O, and replay needs a state snapshot at the tape start (or a tape since `started()`); the last N messages into a fresh instance do not reproduce state. Does not reproduce cross-actor races. |
 | 22 | Record in production, replay in simulation | Record ingress plus mailbox delivery order (`(actor_id, seq)` per dequeue) in a bounded black box, replay with enforced order, detect divergence with per-handler hashes. Needs ranks 20 and 21, `ctx.now()`/`ctx.rng()` discipline in client code and DB snapshots. Go/no-go: replay a reintroduced known race every time. Highest ceiling; not started before 20 and 21. |
+| 22a | Environment simulation in `spawned-test` | Extends phase 5 after ranks 20-22: turmoil/madsim-style simulated network (partition, delay, hold), disk (failed or slow writes) and clock (jumps, skew) driven by the same seed as `explore`, so a test can fail a peer's connection or a write at a chosen delivery. Prefer adapting turmoil (tokio-rs, `tokio::net`-shaped) to owning a simulator; only I/O routed through the simulated layer is controlled. Multi-client network runs stay outside the crate, on ethshadow (deterministic, real binaries) or Attacknet (Chaos Mesh on Kurtosis devnets), see [Ethereum testing](docs/research/ethereum-testing.md). Same-seed reruns should produce identical traces (S2's check). |
 
 ### When step 0 or a user justifies them
 
@@ -334,7 +377,7 @@ Small, independent of the scheduler and lifecycle design, and visible to users.
 | — | OneForAll/RestForOne and nested supervisor specs | Implemented for v0.7; expand the formal model before claiming these strategies formally verified. |
 | — | Dedicated/pinned execution groups | Implemented: fixed native actor slots sharing one helper runtime, and parked Linux pinned shards. Client placement changes still need measurements. |
 | — | Genuinely Tokio-free thread builds | Implemented with an isolated dependency graph and CI. Both clients still require Tokio; this is a separate native build capability. |
-| 26 | Virtual (per-key) actors, in-process | **Client search:** ethrex keeps a per-peer actor map, but peers are created by dial/accept rather than a first message, so the keyed registry (rank 12) is the better fit first.  Address by key; created on first message, stopped when idle, recreated on demand, with activation/deactivation hooks, one live instance per key, ordered handoff and reload after crash. No storage or distribution layer. Promote if step 0 finds hand-written per-key actor maps; Orleans-style distributed placement stays at rank 44. |
+| 26 | Virtual (per-key) actors, in-process | **Client search:** ethrex keeps a per-peer actor map, but peers are created by dial/accept rather than a first message, so the keyed registry (rank 12) is the better fit first.  Address by key; created on first message, stopped when idle, recreated on demand, with activation/deactivation hooks, one live instance per key, ordered handoff and reload after crash. No storage or distribution layer. Promote if step 0 finds hand-written per-key actor maps; Orleans-style distributed placement stays at rank 44. Orleans, Akka sharding, Dapr and Restate compared in [virtual actors](docs/research/virtual-actors.md). |
 | 27 | Process groups, typed topics and routers | After rank 12. Membership cleanup, per-recipient backpressure and partial-failure semantics matter more than a broadcast convenience method. Pools with round-robin, least-busy or key-hash routing (key hash preserves per-key order) belong here. Broadcast can share one payload behind an `Arc` instead of cloning it per member; each mailbox still needs its own queue entry, so this saves payload copies, not per-recipient allocation. |
 | 28 | Causal tracing and ingress context | Preserve span context across awaits/fan-out and bound retention/sampling cost. |
 | 29 | Bounded role/cohort metrics, oldest age, active monitor counts | Bound cohort/role cardinality and define gauge lifetime; avoid actor-ID label growth. Exact queue age needs a transport contract independent of sampled timing. |
@@ -357,14 +400,20 @@ Small, independent of the scheduler and lifecycle design, and visible to users.
 |---|---|---|
 | 42 | CoDel-inspired mailbox shedding | Isolated experiment for explicitly droppable traffic after admission/deadlines. Network CoDel constants are not actor defaults; sampled metrics timestamps are insufficient for its controller. Compare against simpler policies. |
 | 43 | Out-of-process/shared-memory flight recorder | If real hangs defeat in-process inspection. A bounded versioned last-known snapshot is a smaller first step; a recorder also needs ordered events, sequence/gap reporting and loss accounting. |
-| 44 | Distributed actors | Large optional layer needing wire/version/security/failure contracts. Virtual actors (rank 26) keep the addressing path open. |
+| 44 | Distributed actors | Large optional layer needing wire/version/security/failure contracts. Virtual actors (rank 26) keep the addressing path open; Orleans' directory and placement are the reference ([virtual actors](docs/research/virtual-actors.md)), and promise pipelining (rank 11a) is the latency tool. |
 | 45 | Compile-time actor graph | Macro-generated topology for diagrams and static request-cycle checks; hard with dynamic actors. |
 | 46 | Sparse-work root-driver yield hypothesis | Private experiment when profiles show deferred-wake delay; not a default or backend. |
 | 47 | Session-typed protocols | Opt-in experiment for a fixed two-party protocol. Does not prove deadlock freedom for arbitrary dynamic actors, blocking handlers or failing external systems. |
+| 47a | Choreographic protocols | Next to rank 47: one global description of a fixed multi-party exchange, projected into each actor's typed messages and handlers (ChoRus in Rust, HasChor in Haskell), instead of session-typed channels. Same limits as rank 47. See [request semantics references](docs/research/request-semantics-references.md#choreographic-programming-chorus-haschor). |
 | 48 | Fair join patterns | Until real coordination code needs them. Bound unmatched messages and define fairness, cancellation and interactions with ordinary handlers. |
 | 49 | Durable outbox/idempotency recipe | Application-layer example when recovery needs it. Commit intent/dedup with effects; do not persist arbitrary boxed Rust envelopes. |
 | 50 | Durable timers/reminders | Separate persistence contract: identity, clock changes, missed executions and duplication across restart. |
 | 51 | Temporal-style durable execution | A separate product-scale subsystem: persisted decisions, deterministic replay, external effects and upgrades. Supervision alone does not provide it. |
+
+Reference design for ranks 49-51: Restate (a Rust server) journals each handler
+step with its result and replays the journal after a failure, with keyed
+single-writer virtual objects and durable timers. Compare it with Temporal
+before designing any of the three; see [virtual actors](docs/research/virtual-actors.md#restate-virtual-objects).
 
 ### Parallel validation track
 
@@ -459,11 +508,13 @@ that already run today.
 
 | Rank | Capability | Example to deliver with it |
 |---|---|---|
+| 5c | Production lifecycle monitors | Inject a stale-generation publication in a test build; the online monitor reports it through `tracing` and a counter, and the offline runner flags the recorded trace. |
 | 6 | Test kit (phase A in #198) | Mock a protocol dependency, probe sends, inject a slow reply, a crash and a supervised kill (`test_kit` example in #198). Still to deliver: an actor holding a concrete `ActorRef<B>` with `B` mocked. |
 | 7 | Deadlock detection | Two actors requesting each other fail fast with the named cycle. |
 | 8 | Stall watchdog | A handler blocking a worker versus one stuck across an `.await`, each reported with actor and message type. |
 | 10 | Published snapshots | Readers keep answering from a snapshot while the owner runs a long handler. |
 | 11 | Deferred replies / delegation / pipe-to-self | Route a slow request while accepting another message; bound pending replies and demonstrate owner exit and late completion. |
+| 11a | Pipelining / transactional turns | A pipelined send that fails with its source request; a handler that panics after sending, with sends held until the turn ends. |
 | 12 | Lifecycle-owned registries (managed generation guards implemented) | Register a service, crash it and verify its entry is removed without deleting a replacement's registration. |
 | 12a | Dynamic supervisor | Start one supervised actor per incoming connection; crash a restartable child and see only it restart; stop one explicitly and see it stay stopped; hit `max_children` and get a rejection; then shut down with every live child stopped within the deadline. |
 | 13 | Coordinated shutdown | Close admission, drain dependencies within a deadline and report unfinished work. [Finite-batch recipe works today](examples/capabilities/src/bin/graceful_drain.rs). |
@@ -493,6 +544,7 @@ that already run today.
 | 44 | Distribution | Authenticate peers, reject incompatible wire versions and demonstrate a partition's ambiguous request outcome. |
 | 46 | Sparse-work driver yield | Replay sparse bursts; compare wake latency and idle CPU, including a missed-wakeup check. |
 | 47 | Session types | Demonstrate a valid two-party conversation and a compile-fail invalid sequence, with the proof's limits stated. |
+| 47a | Choreographies | Project a three-party handshake into handlers and show a mismatched step cannot be expressed. |
 | 48 | Fair join patterns | Match votes by round with bounded unmatched storage, cancellation and competing ready matches. |
 | 49 | Durable outbox / idempotency | Crash after committing intent, retry and deduplicate effects using application storage; no arbitrary-envelope persistence. |
 | 50 | Durable reminders | Restart a process and demonstrate missed-tick and duplicate-delivery policy against persisted state. |

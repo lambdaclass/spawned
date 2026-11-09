@@ -19,6 +19,7 @@ class of bug. Status as of the unreleased main branch:
 | Primitives | Loom | Atomic and memory-ordering bugs in cancellation, ready gate and wakeups | Exists; expand to mailbox publication versus shutdown |
 | Whole runtime | Shuttle | Scheduling races in multi-actor tests too large for Loom | Not started |
 | User level | Actor-level ordering exploration | Bugs in users' actor systems, reproducible from a seed | Planned ([roadmap](../ROADMAP.md) rank 20) |
+| Production | Lifecycle monitors derived from the TLA+ invariants | A live node or recorded canary run breaking a modelled invariant | Planned ([roadmap](../ROADMAP.md) rank 5c; [design](research/systematic-testing.md#a-pobserve-for-spawned)) |
 | Memory safety | ThreadSanitizer, Miri | Data races and undefined behavior | TSAN in CI; Miri waits until unsafe code is proposed (all crates `#![forbid(unsafe_code)]`) |
 | Test quality | cargo-mutants | Tests that still pass when the code is broken | Weekly over supervision and system code |
 | Compatibility | cargo-semver-checks | Unexpected public API removals | Defaults/metrics and the explicit-async migration must remain patch-compatible with v0.6; raw no-default removals are checked against an exact declared list, not reported as compatible. Protocol macros also need trybuild. |

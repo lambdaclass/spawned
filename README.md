@@ -97,6 +97,7 @@ For every feature (timers, type erasure, registry, backends, links, supervision,
 | [Roadmap](ROADMAP.md) | Planned work and the ranked backlog |
 | [Testing](docs/TESTING.md) | Test suites, verification layers and the formal model |
 | [Design](docs/design/README.md) | Active design contracts |
+| [Research](docs/research/README.md) | Research notes behind roadmap items: virtual actors, systematic testing, Ethereum client testing, request semantics |
 | [Benchmarks](benchmarks/README.md) | Running the benchmark harness |
 | [Legacy](legacy/README.md) | Archived designs, reviews, research notes and raw experiment data (not maintained) |
 

@@ -22,7 +22,7 @@ spawned/
 │       └── threads/ # Thread-based runtime
 ├── macros/          # Proc macros (#[protocol], #[actor])
 ├── examples/        # Usage examples (name_server, bank, ping_pong, capabilities, etc.)
-├── docs/            # GUIDE.md, MIGRATION.md, TESTING.md, design/ (active contract)
+├── docs/            # GUIDE.md, MIGRATION.md, TESTING.md, design/ (active contract), research/
 ├── benchmarks/      # Benchmark harness and render scripts
 ├── verification/    # TLA+ models/trace checks and explicit API compatibility policy
 └── legacy/          # Archived research, reviews, reports, raw data (not maintained)
@@ -39,11 +39,12 @@ spawned/
 | `docs/MIGRATION.md` | Per-version upgrade notes |
 | `docs/TESTING.md` | Test suites, verification layers, TLA+ model |
 | `docs/design/execution-groups-supervision.md` | Active design contract |
+| `docs/research/` | Maintained research notes behind roadmap items (virtual actors, systematic testing, Ethereum testing, request semantics) |
 | `examples/README.md` | Feature → example index, with gaps |
 | `benchmarks/README.md` | How to run the benchmark harness |
 | `verification/tla/README.md` | Running the model and trace validation |
 
-Do not add new top-level docs; extend these. Put historical material in `legacy/`.
+Do not add new top-level docs; extend these. Maintained research goes in `docs/research/`; put historical material in `legacy/`.
 
 ## Two Execution Modes
 
