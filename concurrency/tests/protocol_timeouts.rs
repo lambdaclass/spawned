@@ -32,6 +32,8 @@ pub trait OwnedProtocol: Send + Sync {
 pub trait NamingProtocol: Send + Sync + std::fmt::Debug {
     fn timeout(&self) -> Response<u64>;
     fn actor_ref(&self) -> Response<u64>;
+    fn __timeout_override(&self) -> Response<u64>;
+    fn __dispatch_0(&self) -> Response<u64>;
 }
 
 // Existing manually implemented protocols do not acquire new required methods.
@@ -175,12 +177,26 @@ mod synchronous {
             32
         }
     }
+    impl Handler<naming_protocol::TimeoutOverride> for Worker {
+        fn handle(&mut self, _: naming_protocol::TimeoutOverride, _: &Context<Self>) -> u64 {
+            33
+        }
+    }
+    impl Handler<naming_protocol::Dispatch0> for Worker {
+        fn handle(&mut self, _: naming_protocol::Dispatch0, _: &Context<Self>) -> u64 {
+            34
+        }
+    }
     #[test]
     fn configured_handles_do_not_shadow_protocol_method_names() {
         let actor = Worker.start();
         let configured = actor.with_request_timeout(Duration::from_secs(1));
         assert_eq!(configured.timeout().unwrap(), 31);
         assert_eq!(configured.actor_ref().unwrap(), 32);
+        assert_eq!(actor.__timeout_override().unwrap(), 33);
+        assert_eq!(configured.__timeout_override().unwrap(), 33);
+        assert_eq!(actor.__dispatch_0().unwrap(), 34);
+        assert_eq!(configured.__dispatch_0().unwrap(), 34);
         let erased = configured.to_naming_ref();
         assert_eq!(erased.timeout().unwrap(), 31);
         actor.context().stop();

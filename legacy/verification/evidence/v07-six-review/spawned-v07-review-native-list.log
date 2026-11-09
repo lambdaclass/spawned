@@ -1,0 +1,166 @@
+   Compiling spawned-concurrency v0.6.0 (/tmp/spawned-v07/concurrency)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.07s
+     Running unittests src/lib.rs (/tmp/spawned-pr-security-review/system-target/debug/deps/spawned_concurrency-50cb2f1f29855493)
+child_handle::closed_completion_tests::closed_without_reason_is_dead_and_all_waits_agree: test
+child_handle::closed_completion_tests::closure_preserves_the_final_published_reason: test
+child_handle::tests::actor_id_display: test
+child_handle::tests::actor_id_is_unique: test
+child_handle::tests::child_handle_equality_by_id: test
+child_handle::tests::child_handle_from_threads_actor_ref: test
+child_handle::tests::child_handle_from_threads_basics: test
+child_handle::tests::child_handle_observes_panic_in_threads_actor: test
+child_handle::tests::child_handle_stop: test
+error::tests::exit_reason_display: test
+error::tests::exit_reason_is_abnormal_classification: test
+error::tests::exit_reason_partial_eq: test
+error::tests::test_error_into_std_error: test
+link::tests::closure_is_terminal_and_delivers_each_edge_once: test
+link::tests::concurrent_link_unlink_preserves_symmetry: test
+link::tests::exit_is_clone_and_eq: test
+link::tests::new_state_is_open_and_empty: test
+link::tests::normal_stop_cause_is_not_replaced_by_late_failure: test
+link::tests::self_link_is_noop: test
+link::tests::trap_exit_defaults_false: test
+link::tests::weak_edges_do_not_keep_link_tables_alive: test
+monitor::tests::monitor_ref_display: test
+monitor::tests::monitor_ref_is_unique: test
+native_link_regression_tests::start_linked_registers_before_threads_started: test
+registry::tests::duplicate_register_fails: test
+registry::tests::old_guard_preserves_new_registration_even_with_same_actor_identity: test
+registry::tests::register_and_whereis: test
+registry::tests::registered_lists_names: test
+registry::tests::unregister_removes_entry: test
+registry::tests::whereis_missing_returns_none: test
+registry::tests::whereis_wrong_type_returns_none: test
+response::tests::map_transforms_value: test
+response::tests::ready_err_is_err: test
+response::tests::ready_err_unwrap_panics: test
+response::tests::ready_ok_unwrap: test
+threads::actor::early_stop_regression::panic_during_early_stop_is_reported: test
+threads::actor::idle_stop_regression::stop_while_receiving_does_not_dispatch_a_later_request: test
+threads::actor::monitor_cleanup_regressions::closed_monitor_table_rejects_late_registration: test
+threads::actor::monitor_cleanup_regressions::demonitor_releases_waiter: test
+threads::actor::monitor_cleanup_regressions::stopped_observer_releases_waiter: test
+threads::actor::stop_wakeup_regression::cancellation_wakes_the_real_blocking_receive_boundary: test
+threads::actor::stop_wakeup_regression::concurrent_cancellation_enqueues_exactly_one_shutdown: test
+threads::actor::stop_wakeup_regression::every_stop_route_wakes_an_idle_thread: test
+threads::actor::stop_wakeup_regression::repeated_stop_during_a_handler_discards_queued_requests: test
+threads::actor::tests::basic_send_and_request: test
+threads::actor::tests::demonitor_before_target_dies_suppresses_down: test
+threads::actor::tests::exit_reason_normal_on_clean_stop: test
+threads::actor::tests::exit_reason_panic_in_handler: test
+threads::actor::tests::exit_reason_panic_in_started: test
+threads::actor::tests::exit_reason_poll_returns_none_while_running: test
+threads::actor::tests::join_multiple_callers: test
+threads::actor::tests::join_waits_for_completion: test
+threads::actor::tests::link_delivers_exit_to_trapping_peer_threads: test
+threads::actor::tests::link_propagates_panic_to_non_trapping_peer_threads: test
+threads::actor::tests::monitor_already_dead_actor_delivers_down_immediately: test
+threads::actor::tests::monitor_observes_panic_reason: test
+threads::actor::tests::monitor_running_actor_delivers_down_on_exit: test
+threads::actor::tests::multiple_monitors_each_get_own_ref_and_down: test
+threads::actor::tests::panic_in_handler_stops_actor: test
+threads::actor::tests::panic_in_started_stops_actor: test
+threads::actor::tests::panic_in_stopped_still_completes: test
+threads::actor::tests::recipient_type_erasure: test
+threads::actor::tests::send_message_on_delivers: test
+threads::actor::tests::start_linked_threads: test
+threads::stream_tests::listener_consumes_iterator: test
+threads::stream_tests::listener_stops_on_cancellation: test
+threads::stream_tests::stopped_actor_does_not_poll_iterator: test
+threads::timer_tests::test_send_after_actor_shutdown: test
+threads::timer_tests::test_send_after_and_cancellation: test
+threads::timer_tests::test_send_interval_and_cancellation: test
+
+70 tests, 0 benchmarks
+     Running tests/actor_scenarios.rs (/tmp/spawned-pr-security-review/system-target/debug/deps/actor_scenarios-d03fea0735d18609)
+concurrent_producers_preserve_order_and_reply_identity: test
+demonitor_before_exit_suppresses_notification_and_races_do_not_duplicate: test
+generated_actor_scenarios: test
+lifecycle_race_regression: test
+sustained_actor_churn: test
+
+5 tests, 0 benchmarks
+     Running tests/backend_experiments.rs (/tmp/spawned-pr-security-review/system-target/debug/deps/backend_experiments-f384f3366eb3a2c9)
+0 tests, 0 benchmarks
+     Running tests/backend_resource_limits.rs (/tmp/spawned-pr-security-review/system-target/debug/deps/backend_resource_limits-dd290fdef7c6ab9c)
+0 tests, 0 benchmarks
+     Running tests/benchmark_startup.rs (/tmp/spawned-pr-security-review/system-target/debug/deps/benchmark_startup-6cc7be2fa482ac2e)
+0 tests, 0 benchmarks
+     Running tests/cfg_gated_protocol.rs (/tmp/spawned-pr-security-review/system-target/debug/deps/cfg_gated_protocol-3239088a7f37a0e0)
+0 tests, 0 benchmarks
+     Running tests/cohort_trace.rs (/tmp/spawned-pr-security-review/system-target/debug/deps/cohort_trace-6403def3b5fe7aa3)
+0 tests, 0 benchmarks
+     Running tests/dedicated_runtime.rs (/tmp/spawned-pr-security-review/system-target/debug/deps/dedicated_runtime-795827c092d8ff2e)
+0 tests, 0 benchmarks
+     Running tests/delivery_simulation.rs (/tmp/spawned-pr-security-review/system-target/debug/deps/delivery_simulation-dbc729cc8e0fb4c6)
+finite_model_witnesses_replay_against_all_execution_modes: test
+seeded_handler_interleavings_have_identical_audit_fingerprints: test
+
+2 tests, 0 benchmarks
+     Running tests/execution_groups.rs (/tmp/spawned-pr-security-review/system-target/debug/deps/execution_groups-346675ec6c0c8871)
+0 tests, 0 benchmarks
+     Running tests/execution_profiles.rs (/tmp/spawned-pr-security-review/system-target/debug/deps/execution_profiles-842375400d4b5420)
+0 tests, 0 benchmarks
+     Running tests/failure_windows.rs (/tmp/spawned-pr-security-review/system-target/debug/deps/failure_windows-54fdd5a61d3c7f9f)
+controlled_failures_reach_every_required_window_on_every_backend: test
+
+1 test, 0 benchmarks
+     Running tests/full_actor_shards.rs (/tmp/spawned-pr-security-review/system-target/debug/deps/full_actor_shards-06fb9fa57b527ca2)
+0 tests, 0 benchmarks
+     Running tests/linked_exit_macro.rs (/tmp/spawned-pr-security-review/system-target/debug/deps/linked_exit_macro-8a8b382ef1446795)
+synchronous::macro_receives_linked_exit: test
+
+1 test, 0 benchmarks
+     Running tests/metrics.rs (/tmp/spawned-pr-security-review/system-target/debug/deps/metrics-82bd36b51a0b51e2)
+0 tests, 0 benchmarks
+     Running tests/metrics_counts_only.rs (/tmp/spawned-pr-security-review/system-target/debug/deps/metrics_counts_only-9ef41c331abce9f4)
+0 tests, 0 benchmarks
+     Running tests/metrics_sampling.rs (/tmp/spawned-pr-security-review/system-target/debug/deps/metrics_sampling-284372db22dde3f5)
+0 tests, 0 benchmarks
+     Running tests/native_dispatcher.rs (/tmp/spawned-pr-security-review/system-target/debug/deps/native_dispatcher-cd085386db5f4531)
+0 tests, 0 benchmarks
+     Running tests/nested_supervision.rs (/tmp/spawned-pr-security-review/system-target/debug/deps/nested_supervision-31433a50c820eb1f)
+0 tests, 0 benchmarks
+     Running tests/payload_stress.rs (/tmp/spawned-pr-security-review/system-target/debug/deps/payload_stress-23ca794a6ef33f28)
+many_producers_preserve_fifo_or_discard_every_owned_payload_before_completion: test
+
+1 test, 0 benchmarks
+     Running tests/process_failures.rs (/tmp/spawned-pr-security-review/system-target/debug/deps/process_failures-e0c411d7a038714c)
+0 tests, 0 benchmarks
+     Running tests/protocol_compile.rs (/tmp/spawned-pr-security-review/system-target/debug/deps/protocol_compile-ae2b5474d233970d)
+0 tests, 0 benchmarks
+     Running tests/protocol_timeouts.rs (/tmp/spawned-pr-security-review/system-target/debug/deps/protocol_timeouts-1fac36197e722324)
+fake_protocols_remain_source_compatible: test
+generated_messages_keep_their_original_reply_types: test
+synchronous::configured_handles_do_not_shadow_protocol_method_names: test
+synchronous::method_override_and_configured_type_erasure_work_without_async: test
+synchronous::protocol_timeout_is_used_by_native_requests: test
+synchronous::timeout_expression_precedes_argument_moves_without_capturing_user_names: test
+
+6 tests, 0 benchmarks
+     Running tests/ready_gate_loom.rs (/tmp/spawned-pr-security-review/system-target/debug/deps/ready_gate_loom-ec9ed3f013fa3979)
+0 tests, 0 benchmarks
+     Running tests/request_histories.rs (/tmp/spawned-pr-security-review/system-target/debug/deps/request_histories-095d27932a266c4a)
+checker_rejects_wrong_replies_duplicate_dispatch_and_lost_acknowledged_effects: test
+concurrent_histories_have_a_legal_sequential_explanation: test
+
+2 tests, 0 benchmarks
+     Running tests/resource_cleanup.rs (/tmp/spawned-pr-security-review/system-target/debug/deps/resource_cleanup-231d57c74514dd47)
+thread_exit_waits_work_inside_futures_executor: test
+timers_release_payloads_on_actor_exit: test
+
+2 tests, 0 benchmarks
+     Running tests/shutdown_publication.rs (/tmp/spawned-pr-security-review/system-target/debug/deps/shutdown_publication-9a834b5768465fec)
+0 tests, 0 benchmarks
+     Running tests/supervision.rs (/tmp/spawned-pr-security-review/system-target/debug/deps/supervision-d83b8757d55d6363)
+0 tests, 0 benchmarks
+     Running tests/supervision_strategies.rs (/tmp/spawned-pr-security-review/system-target/debug/deps/supervision_strategies-145b95ffdab08bb5)
+0 tests, 0 benchmarks
+     Running tests/supervision_trace.rs (/tmp/spawned-pr-security-review/system-target/debug/deps/supervision_trace-6a4b560be0110db0)
+0 tests, 0 benchmarks
+     Running tests/supervisor_policies.rs (/tmp/spawned-pr-security-review/system-target/debug/deps/supervisor_policies-d7dd13522e8e1eaa)
+0 tests, 0 benchmarks
+     Running tests/tree_trace.rs (/tmp/spawned-pr-security-review/system-target/debug/deps/tree_trace-01a60efec0e05c08)
+0 tests, 0 benchmarks
+Native integration coverage present: 11 required tests

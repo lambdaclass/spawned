@@ -36,9 +36,13 @@ python3 scripts/check-api.py semver --baseline v0.6.0
 
 Install cargo-hack 0.6.46 for the first command. CI pins cargo-semver-checks
 0.51.0 and its Rust 1.99.1 rustdoc producer together through Nix for the second;
-see `.github/workflows/ci.yml`. The feature matrix uses Rust 1.93.0. It runs in a
-disposable source copy because cargo-hack's `--no-dev-deps` rewrites manifests
-and the lockfile. Its stable `CARGO_TARGET_DIR` lets the CI cache apply.
+see `.github/workflows/ci.yml`. The feature matrix uses Rust 1.93.0. It refreshes
+an isolated copy at `target/feature-check/source` because cargo-hack's
+`--no-dev-deps` rewrites manifests and the lockfile. Builds use the stable
+`target/feature-check/build` directory, separate from ordinary Cargo builds.
+A nonblocking POSIX file lock prevents concurrent checks from modifying the same
+copy; Linux and macOS are supported. A custom `CARGO_TARGET_DIR` relocates this
+whole feature-check subtree. The baseline policy is validated before any builds.
 The semver tool handles `--baseline-rev` directly; no Python 3.12 tarfile APIs are
 used. The script is compatible with Python 3.9+.
 
@@ -56,7 +60,10 @@ and dependency-graph checks remain separate.
 
 Protocol expansion regressions cover `Debug` and custom supertraits, direct and
 configured handles, handwritten fakes, cfg methods and rejected conditional
-timeouts. A real two-crate contract/consumer fixture also checks concrete and
+timeouts, plus owner-crate `Box<T>`/`&T` forwarding implementations of protocols
+and converters. Public impls remain concrete ActorRef/configured-ActorRef types;
+shared private transport helpers do not introduce an uncovered blanket impl.
+A real two-crate contract/consumer fixture also checks concrete and
 generic downstream fakes and `where Self: Debug`; a same-crate compile test alone
 would not establish that coverage.
 

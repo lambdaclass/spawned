@@ -1,0 +1,53 @@
+   Compiling spawned-macros v0.6.0 (/tmp/spawned-v07/macros)
+   Compiling spawned-concurrency v0.6.0 (/tmp/spawned-v07/concurrency)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.12s
+     Running tests/protocol_compile.rs (/tmp/spawned-pr-security-review/system-target/debug/deps/protocol_compile-5aa3cce3e9e6ac13)
+
+running 1 test
+   Compiling spawned-macros v0.6.0 (/tmp/spawned-v07/macros)
+   Compiling spawned-concurrency v0.6.0 (/tmp/spawned-v07/concurrency)
+   Compiling spawned-concurrency-tests v0.0.0 (/tmp/spawned-pr-security-review/system-target/tests/trybuild/spawned-concurrency)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.47s
+
+
+test tests/ui-pass/protocol_actor.rs [should pass] ... ok
+test tests/ui-pass/protocol_forwarding.rs [should pass] ... ok
+test tests/ui-pass/protocol_supertraits.rs [should pass] ... ok
+test tests/ui/associated_type.rs [should fail to compile] ... ok
+test tests/ui/async_method.rs [should fail to compile] ... ok
+test tests/ui/conditional_timeout_disabled.rs [should fail to compile] ... ok
+test tests/ui/conditional_timeout_enabled.rs [should fail to compile] ... ok
+test tests/ui/conditional_timeout_nested.rs [should fail to compile] ... ok
+test tests/ui/duplicate_timeout.rs [should fail to compile] ... ok
+test tests/ui/missing_receiver.rs [should fail to compile] ... ok
+test tests/ui/timeout_on_send.rs [should fail to compile] ... ok
+test tests/ui/timeout_option.rs [should fail to compile] ... ok
+
+
+test protocol_diagnostics ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 8.25s
+
+     Running tests/protocol_timeouts.rs (/tmp/spawned-pr-security-review/system-target/debug/deps/protocol_timeouts-6c0280383ae6dcfc)
+
+running 7 tests
+test fake_protocols_remain_source_compatible ... ok
+test generated_messages_keep_their_original_reply_types ... ok
+test synchronous::configured_handles_do_not_shadow_protocol_method_names ... ok
+test synchronous::protocol_timeout_is_used_by_native_requests ... ok
+test synchronous::timeout_expression_precedes_argument_moves_without_capturing_user_names ... ok
+test asynchronous::protocol_method_and_handle_overrides_have_explicit_precedence ... ok
+test synchronous::method_override_and_configured_type_erasure_work_without_async ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+
+     Running tests/supervisor_policies.rs (/tmp/spawned-pr-security-review/system-target/debug/deps/supervisor_policies-e39b51f993c3f511)
+
+running 3 tests
+test a_waiting_earlier_child_cannot_hide_a_later_extra_reconstruction - should panic ... ok
+test retired_temporary_and_transient_slots_stay_retired_across_later_recoveries ... ok
+test generated_restart_modes_strategies_and_shutdown_follow_the_contract ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.44s
+
+RESOURCE GUARD peak_rss_kib= 489168 exit= 0

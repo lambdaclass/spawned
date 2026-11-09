@@ -7,7 +7,6 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
-import tempfile
 
 
 def run(*command, cwd):
@@ -46,6 +45,9 @@ def declared_break(command, expected, root):
 
 
 def semver(root, baseline):
+    declarations = json.loads((root / "verification/api/v0.6.0-no-default.json").read_text())
+    if baseline != declarations["baseline"]:
+        raise ValueError("the declared feature-split audit requires baseline " + declarations["baseline"])
     base = ["cargo", "semver-checks", "--color", "never", "--release-type", "patch", "--baseline-rev", baseline]
     libraries = ["-p", "spawned-concurrency", "-p", "spawned-rt"]
     # Old no-default consumers restore the previous API by explicitly enabling
@@ -58,9 +60,6 @@ def semver(root, baseline):
     ]:
         print("Checking API profile: " + profile, flush=True)
         run(*base, *features, *packages, cwd=root)
-    declarations = json.loads((root / "verification/api/v0.6.0-no-default.json").read_text())
-    if baseline != declarations["baseline"]:
-        raise ValueError("the declared feature-split audit requires baseline " + declarations["baseline"])
     for package, expected in declarations["packages"].items():
         print("Auditing raw no-default API: " + package, flush=True)
         command = base + ["--only-explicit-features", "-p", package]
@@ -68,6 +67,38 @@ def semver(root, baseline):
         if package == "spawned-concurrency":
             print("Auditing raw no-default + metrics API", flush=True)
             declared_break(command + ["--features", "metrics"], expected, root)
+
+
+def features(root, cache, offline):
+    # A stable source path avoids a fresh set of Cargo fingerprints on every run.
+    # The separate build tree never holds the normal workspace target lock.
+    import fcntl
+    workspace = cache / "feature-check"
+    workspace.mkdir(parents=True, exist_ok=True)
+    with (workspace / "workspace.lock").open("a") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise RuntimeError("another feature check is using " + str(workspace)) from None
+        files = subprocess.check_output(
+            ["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"], cwd=root,
+        ).decode().split("\0")
+        current = workspace / "source"
+        if current.exists():
+            shutil.rmtree(current)
+        current.mkdir()
+        for name in filter(None, files):
+            source = root / name
+            # Custom target dirs may not be gitignored. Never copy a cache into
+            # its own source workspace (or copy unrelated build output).
+            if source.is_file() and not source.resolve().is_relative_to(cache):
+                destination = current / name
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source, destination)
+        os.environ["CARGO_TARGET_DIR"] = str(workspace / "build")
+        run("cargo", "hack", "check", "--each-feature", "--no-dev-deps",
+            *(["--offline"] if offline else []),
+            "-p", "spawned-concurrency", "-p", "spawned-rt", "--lib", cwd=current)
 
 
 def main():
@@ -86,22 +117,7 @@ def main():
         # no hand-rolled extraction or copying of the Git baseline is needed.
         semver(root, args.baseline)
         return
-    files = subprocess.check_output(
-        ["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"], cwd=root,
-    ).decode().split("\0")
-    with tempfile.TemporaryDirectory(prefix="spawned-features-") as temporary:
-        current = Path(temporary)
-        for name in filter(None, files):
-            source = root / name
-            if source.is_file():
-                destination = current / name
-                destination.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(source, destination)
-        # cargo-hack --no-dev-deps rewrites manifests/lockfiles. Keep that isolated
-        # without letting dev-dependency feature unification hide missing features.
-        run("cargo", "hack", "check", "--each-feature", "--no-dev-deps",
-            *(["--offline"] if args.offline else []),
-            "-p", "spawned-concurrency", "-p", "spawned-rt", "--lib", cwd=current)
+    features(root, Path(os.environ["CARGO_TARGET_DIR"]), args.offline)
 
 
 if __name__ == "__main__":

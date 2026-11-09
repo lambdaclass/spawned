@@ -1,0 +1,196 @@
+   Compiling spawned-concurrency v0.6.0 (/tmp/spawned-v07/concurrency)
+error[E0034]: multiple applicable items in scope
+   --> concurrency/tests/protocol_timeouts.rs:196:26
+    |
+196 |         assert_eq!(actor.__timeout_override().unwrap(), 33);
+    |                          ^^^^^^^^^^^^^^^^^^ multiple `__timeout_override` found
+    |
+note: candidate #1 is defined in an impl of the trait `NamingProtocol` for the type `__T`
+   --> concurrency/tests/protocol_timeouts.rs:31:1
+    |
+ 31 | #[protocol]
+    | ^^^^^^^^^^^
+note: candidate #2 is defined in an impl of the trait `__NamingProtocolTarget` for the type `spawned_concurrency::threads::ActorRef<__A>`
+   --> concurrency/tests/protocol_timeouts.rs:31:1
+    |
+ 31 | #[protocol]
+    | ^^^^^^^^^^^
+note: candidate #3 is defined in an impl of the trait `__OwnedProtocolTarget` for the type `spawned_concurrency::threads::ActorRef<__A>`
+   --> concurrency/tests/protocol_timeouts.rs:25:1
+    |
+ 25 | #[protocol]
+    | ^^^^^^^^^^^
+note: candidate #4 is defined in an impl of the trait `__TimedProtocolTarget` for the type `spawned_concurrency::threads::ActorRef<__A>`
+   --> concurrency/tests/protocol_timeouts.rs:4:1
+    |
+  4 | #[protocol(timeout = Duration::from_secs(10))]
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    = note: this error originates in the attribute macro `protocol` (in Nightly builds, run with -Z macro-backtrace for more info)
+help: disambiguate the method for candidate #1
+    |
+196 -         assert_eq!(actor.__timeout_override().unwrap(), 33);
+196 +         assert_eq!(NamingProtocol::__timeout_override(&actor).unwrap(), 33);
+    |
+help: disambiguate the method for candidate #2
+    |
+196 -         assert_eq!(actor.__timeout_override().unwrap(), 33);
+196 +         assert_eq!(__NamingProtocolTarget::__timeout_override(&actor).unwrap(), 33);
+    |
+help: disambiguate the method for candidate #3
+    |
+196 -         assert_eq!(actor.__timeout_override().unwrap(), 33);
+196 +         assert_eq!(__OwnedProtocolTarget::__timeout_override(&actor).unwrap(), 33);
+    |
+help: disambiguate the method for candidate #4
+    |
+196 -         assert_eq!(actor.__timeout_override().unwrap(), 33);
+196 +         assert_eq!(__TimedProtocolTarget::__timeout_override(&actor).unwrap(), 33);
+    |
+
+error[E0034]: multiple applicable items in scope
+   --> concurrency/tests/protocol_timeouts.rs:197:31
+    |
+197 |         assert_eq!(configured.__timeout_override().unwrap(), 33);
+    |                               ^^^^^^^^^^^^^^^^^^ multiple `__timeout_override` found
+    |
+note: candidate #1 is defined in an impl of the trait `__NamingProtocolTarget` for the type `RequestOptions<__T>`
+   --> concurrency/tests/protocol_timeouts.rs:31:1
+    |
+ 31 | #[protocol]
+    | ^^^^^^^^^^^
+note: candidate #2 is defined in an impl of the trait `__OwnedProtocolTarget` for the type `RequestOptions<__T>`
+   --> concurrency/tests/protocol_timeouts.rs:25:1
+    |
+ 25 | #[protocol]
+    | ^^^^^^^^^^^
+note: candidate #3 is defined in an impl of the trait `__TimedProtocolTarget` for the type `RequestOptions<__T>`
+   --> concurrency/tests/protocol_timeouts.rs:4:1
+    |
+  4 | #[protocol(timeout = Duration::from_secs(10))]
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+note: candidate #4 is defined in an impl of the trait `NamingProtocol` for the type `__T`
+   --> concurrency/tests/protocol_timeouts.rs:31:1
+    |
+ 31 | #[protocol]
+    | ^^^^^^^^^^^
+    = note: this error originates in the attribute macro `protocol` (in Nightly builds, run with -Z macro-backtrace for more info)
+help: disambiguate the method for candidate #1
+    |
+197 -         assert_eq!(configured.__timeout_override().unwrap(), 33);
+197 +         assert_eq!(__NamingProtocolTarget::__timeout_override(&configured).unwrap(), 33);
+    |
+help: disambiguate the method for candidate #2
+    |
+197 -         assert_eq!(configured.__timeout_override().unwrap(), 33);
+197 +         assert_eq!(__OwnedProtocolTarget::__timeout_override(&configured).unwrap(), 33);
+    |
+help: disambiguate the method for candidate #3
+    |
+197 -         assert_eq!(configured.__timeout_override().unwrap(), 33);
+197 +         assert_eq!(__TimedProtocolTarget::__timeout_override(&configured).unwrap(), 33);
+    |
+help: disambiguate the method for candidate #4
+    |
+197 -         assert_eq!(configured.__timeout_override().unwrap(), 33);
+197 +         assert_eq!(NamingProtocol::__timeout_override(&configured).unwrap(), 33);
+    |
+
+error[E0034]: multiple applicable items in scope
+   --> concurrency/tests/protocol_timeouts.rs:198:26
+    |
+198 |         assert_eq!(actor.__dispatch_0().unwrap(), 34);
+    |                          ^^^^^^^^^^^^ multiple `__dispatch_0` found
+    |
+note: candidate #1 is defined in an impl of the trait `NamingProtocol` for the type `__T`
+   --> concurrency/tests/protocol_timeouts.rs:31:1
+    |
+ 31 | #[protocol]
+    | ^^^^^^^^^^^
+note: candidate #2 is defined in an impl of the trait `__NamingProtocolTarget` for the type `spawned_concurrency::threads::ActorRef<__A>`
+   --> concurrency/tests/protocol_timeouts.rs:31:1
+    |
+ 31 | #[protocol]
+    | ^^^^^^^^^^^
+note: candidate #3 is defined in an impl of the trait `__OwnedProtocolTarget` for the type `spawned_concurrency::threads::ActorRef<__A>`
+   --> concurrency/tests/protocol_timeouts.rs:25:1
+    |
+ 25 | #[protocol]
+    | ^^^^^^^^^^^
+note: candidate #4 is defined in an impl of the trait `__TimedProtocolTarget` for the type `spawned_concurrency::threads::ActorRef<__A>`
+   --> concurrency/tests/protocol_timeouts.rs:4:1
+    |
+  4 | #[protocol(timeout = Duration::from_secs(10))]
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    = note: this error originates in the attribute macro `protocol` (in Nightly builds, run with -Z macro-backtrace for more info)
+help: disambiguate the method for candidate #1
+    |
+198 -         assert_eq!(actor.__dispatch_0().unwrap(), 34);
+198 +         assert_eq!(NamingProtocol::__dispatch_0(&actor).unwrap(), 34);
+    |
+help: disambiguate the method for candidate #2
+    |
+198 -         assert_eq!(actor.__dispatch_0().unwrap(), 34);
+198 +         assert_eq!(__NamingProtocolTarget::__dispatch_0(&actor).unwrap(), 34);
+    |
+help: disambiguate the method for candidate #3
+    |
+198 -         assert_eq!(actor.__dispatch_0().unwrap(), 34);
+198 +         assert_eq!(__OwnedProtocolTarget::__dispatch_0(&actor).unwrap(), 34);
+    |
+help: disambiguate the method for candidate #4
+    |
+198 -         assert_eq!(actor.__dispatch_0().unwrap(), 34);
+198 +         assert_eq!(__TimedProtocolTarget::__dispatch_0(&actor).unwrap(), 34);
+    |
+
+error[E0034]: multiple applicable items in scope
+   --> concurrency/tests/protocol_timeouts.rs:199:31
+    |
+199 |         assert_eq!(configured.__dispatch_0().unwrap(), 34);
+    |                               ^^^^^^^^^^^^ multiple `__dispatch_0` found
+    |
+note: candidate #1 is defined in an impl of the trait `__NamingProtocolTarget` for the type `RequestOptions<__T>`
+   --> concurrency/tests/protocol_timeouts.rs:31:1
+    |
+ 31 | #[protocol]
+    | ^^^^^^^^^^^
+note: candidate #2 is defined in an impl of the trait `__OwnedProtocolTarget` for the type `RequestOptions<__T>`
+   --> concurrency/tests/protocol_timeouts.rs:25:1
+    |
+ 25 | #[protocol]
+    | ^^^^^^^^^^^
+note: candidate #3 is defined in an impl of the trait `__TimedProtocolTarget` for the type `RequestOptions<__T>`
+   --> concurrency/tests/protocol_timeouts.rs:4:1
+    |
+  4 | #[protocol(timeout = Duration::from_secs(10))]
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+note: candidate #4 is defined in an impl of the trait `NamingProtocol` for the type `__T`
+   --> concurrency/tests/protocol_timeouts.rs:31:1
+    |
+ 31 | #[protocol]
+    | ^^^^^^^^^^^
+    = note: this error originates in the attribute macro `protocol` (in Nightly builds, run with -Z macro-backtrace for more info)
+help: disambiguate the method for candidate #1
+    |
+199 -         assert_eq!(configured.__dispatch_0().unwrap(), 34);
+199 +         assert_eq!(__NamingProtocolTarget::__dispatch_0(&configured).unwrap(), 34);
+    |
+help: disambiguate the method for candidate #2
+    |
+199 -         assert_eq!(configured.__dispatch_0().unwrap(), 34);
+199 +         assert_eq!(__OwnedProtocolTarget::__dispatch_0(&configured).unwrap(), 34);
+    |
+help: disambiguate the method for candidate #3
+    |
+199 -         assert_eq!(configured.__dispatch_0().unwrap(), 34);
+199 +         assert_eq!(__TimedProtocolTarget::__dispatch_0(&configured).unwrap(), 34);
+    |
+help: disambiguate the method for candidate #4
+    |
+199 -         assert_eq!(configured.__dispatch_0().unwrap(), 34);
+199 +         assert_eq!(NamingProtocol::__dispatch_0(&configured).unwrap(), 34);
+    |
+
+For more information about this error, try `rustc --explain E0034`.
+error: could not compile `spawned-concurrency` (test "protocol_timeouts") due to 4 previous errors
+RESOURCE GUARD peak_rss_kib= 21244 exit= 101

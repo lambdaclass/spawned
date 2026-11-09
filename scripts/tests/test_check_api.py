@@ -2,6 +2,8 @@
 import importlib.util
 from pathlib import Path
 import subprocess
+import tempfile
+import os
 import unittest
 from unittest.mock import patch
 
@@ -40,6 +42,33 @@ class FeatureSplitAudit(unittest.TestCase):
     def test_diagnostic_format_changes_fail_closed(self):
         with self.assertRaises(ValueError):
             self.audit(100, "--- failure module_missing: bad format\n")
+
+    def test_wrong_baseline_is_rejected_before_building(self):
+        root = Path(__file__).resolve().parents[2]
+        with patch.object(api, "run") as build, patch.object(api.subprocess, "run") as tool:
+            with self.assertRaisesRegex(ValueError, "requires baseline"):
+                api.semver(root, "v0.5.0")
+            build.assert_not_called()
+            tool.assert_not_called()
+
+    def test_feature_checks_reuse_paths_and_refresh_only_the_copy(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "Cargo.toml").write_text("original")
+            cache = root / "target"
+            locations = []
+
+            def fake_build(*command, cwd):
+                locations.append((cwd, os.environ["CARGO_TARGET_DIR"]))
+                self.assertEqual((cwd / "Cargo.toml").read_text(), "original")
+                (cwd / "Cargo.toml").write_text("stripped by cargo-hack")
+
+            with patch.object(api.subprocess, "check_output", return_value=b"Cargo.toml\0"), patch.object(api, "run", side_effect=fake_build), patch.dict(os.environ):
+                api.features(root, cache, True)
+                api.features(root, cache, True)
+            self.assertEqual(locations[0], locations[1])
+            self.assertEqual(locations[0], (cache / "feature-check/source", str(cache / "feature-check/build")))
+            self.assertEqual((root / "Cargo.toml").read_text(), "original")
 
 
 if __name__ == "__main__":

@@ -1,0 +1,4 @@
+   Compiling spawned-capability-examples v0.1.0 (/tmp/spawned-v07/examples/capabilities)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.74s
+     Running `/tmp/spawned-pr-security-review/system-target/debug/streams_and_recipients`
+Recipients hide actor types; listeners stop cooperatively. Mailboxes remain unbounded.

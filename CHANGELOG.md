@@ -126,6 +126,14 @@ rather than tagging current main.
 
 ### Fixed
 
+- Preserve user-written `Box<T>`/`&T` protocol and converter forwarding by keeping
+  generated public impls concrete. Shared transport helpers are associated
+  functions, so protocol methods can use their names without ambiguity.
+- Keep supervisor test watchdogs cooperative on immediate notifications; diagnose
+  premature retirement. Stream examples have bounded, descriptive waits. Feature
+  checks reuse an isolated locked source/build subtree, and API checks reject an
+  unsupported baseline before building.
+
 - A supervisor that was stopped normally could record a failure: the admission
   check and the failure were separate steps for a child with `max_restarts == 0`
   and for a non-restartable startup failure. The check, decision and failure are

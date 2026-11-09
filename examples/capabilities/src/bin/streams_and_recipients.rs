@@ -1,5 +1,7 @@
 //! Type erasure, listener cancellation, and a blocking iterator's limit.
 use spawned_concurrency::{message::Message, ActorError};
+use std::time::Duration;
+const LIMIT: Duration = Duration::from_secs(30);
 #[derive(Clone)]
 struct Item(u64);
 impl Message for Item {
@@ -40,12 +42,20 @@ mod asynchronous {
             std::future::pending::<Item>().await
         }));
         let listener = tasks::spawn_listener(first.context(), source);
-        progress.await.unwrap();
+        tokio::time::timeout(LIMIT, progress)
+            .await
+            .expect("async listener did not queue its finite input")
+            .expect("async listener dropped its progress signal");
         assert_eq!(first.request(Total).await.unwrap(), 6);
         assert!(!listener.is_finished());
         first.context().stop();
-        first.join().await;
-        listener.await.unwrap();
+        tokio::time::timeout(LIMIT, first.join())
+            .await
+            .expect("async counter did not stop");
+        tokio::time::timeout(LIMIT, listener)
+            .await
+            .expect("async listener did not observe cancellation")
+            .expect("async listener panicked");
         assert!(matches!(
             recipients[0].send(Item(1)),
             Err(ActorError::ActorStopped)
@@ -53,7 +63,9 @@ mod asynchronous {
         recipients[1].send(Item(1)).unwrap();
         assert_eq!(second.request(Total).await.unwrap(), 4);
         second.context().stop();
-        second.join().await;
+        tokio::time::timeout(LIMIT, second.join())
+            .await
+            .expect("second async counter did not stop");
     }
 }
 mod synchronous {
@@ -83,13 +95,13 @@ mod synchronous {
                 return Some(Item(1));
             }
             self.entered.send(()).unwrap();
-            // An explicit gate, not a scheduling deadline: the example's outer
-            // CI watchdog detects a hang without racing actor cleanup here.
-            self.release.recv().unwrap();
+            self.release
+                .recv_timeout(LIMIT)
+                .expect("native iterator release gate was not opened");
             None
         }
     }
-    pub fn run() {
+    pub async fn run() {
         let first = Counter::<1>(0).start();
         let second = Counter::<2>(0).start();
         let recipients: Vec<Recipient<Item>> = vec![first.recipient(), second.recipient()];
@@ -106,14 +118,26 @@ mod synchronous {
                 release: gate,
             },
         );
-        waiting.recv().unwrap();
+        waiting
+            .recv_timeout(LIMIT)
+            .expect("native listener did not enter its blocking next()");
         assert_eq!(first.request(Total).unwrap(), 6);
         first.context().stop();
-        first.join();
         // Cancellation cannot interrupt a next() that already blocks.
+        // Release it before awaiting actor cleanup; cleanup does not race the gate deadline.
         assert!(!listener.is_finished());
         release.send(()).unwrap();
-        listener.join().unwrap();
+        tokio::time::timeout(LIMIT, async {
+            while !listener.is_finished() {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("native listener did not finish after its iterator was released");
+        listener.join().expect("native listener panicked");
+        tokio::time::timeout(LIMIT, first.child_handle().wait_exit_async())
+            .await
+            .expect("native counter did not stop");
         assert!(matches!(
             recipients[0].send(Item(1)),
             Err(ActorError::ActorStopped)
@@ -121,13 +145,15 @@ mod synchronous {
         recipients[1].send(Item(1)).unwrap();
         assert_eq!(second.request(Total).unwrap(), 4);
         second.context().stop();
-        second.join();
+        tokio::time::timeout(LIMIT, second.child_handle().wait_exit_async())
+            .await
+            .expect("second native counter did not stop");
     }
 }
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
     asynchronous::run().await;
-    synchronous::run();
+    synchronous::run().await;
     println!(
         "Recipients hide actor types; listeners stop cooperatively. Mailboxes remain unbounded."
     );

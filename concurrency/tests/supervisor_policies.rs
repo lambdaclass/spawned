@@ -152,7 +152,15 @@ async fn observe(children: &[SupervisedChild<Probe>], expected: &[Expected]) {
                     "unexpected generation wait failure: child {}; {error:?}",
                     pending[index]
                 );
+                assert_eq!(
+                    children[pending[index]].snapshot().generation,
+                    expected[pending[index]].generation,
+                    "child retired before its expected generation"
+                );
             }
+            // A terminal notification can be immediately ready. Always give
+            // the watchdog timer a polling opportunity, even for broken state.
+            tokio::task::yield_now().await;
         }
     })
     .await;
@@ -349,4 +357,53 @@ fn a_waiting_earlier_child_cannot_hide_a_later_extra_reconstruction() {
         2
     ];
     unsettled(&actual, &expected);
+}
+
+#[tokio::test]
+async fn an_already_retired_child_reports_a_generation_error_without_spinning() {
+    use futures::FutureExt;
+    use std::panic::AssertUnwindSafe;
+    let system = ActorSystem::new().unwrap();
+    let group = system.async_group("retired-observer-control", 1).unwrap();
+    let mut tree = system.supervisor(SupervisorConfig::default()).unwrap();
+    let child = tree
+        .add(
+            ChildSpec::new("retired", &group, |ctx| async move {
+                Ok::<_, String>(Probe(ctx.generation()))
+            })
+            .restart(RestartMode::Temporary),
+        )
+        .unwrap();
+    let supervisor = tree.start().await.unwrap();
+    child.current().unwrap().context().stop();
+    assert!(tokio::time::timeout(LIMIT, child.wait_for_generation(1))
+        .await
+        .unwrap()
+        .is_err());
+    // Deliberately wrong oracle: this child retired at generation one. Its
+    // generation notification returns immediately, so the observer must diagnose
+    // the mismatch rather than repeatedly polling a ready future forever.
+    let invalid = [Expected {
+        generation: 2,
+        live: false,
+    }];
+    let result = tokio::time::timeout(
+        Duration::from_millis(200),
+        AssertUnwindSafe(observe(&[child], &invalid)).catch_unwind(),
+    )
+    .await;
+    assert!(supervisor.shutdown(LIMIT).await.complete);
+    assert!(system.shutdown(LIMIT).await.complete);
+    let panic = result
+        .expect("observer did not cooperate with its watchdog")
+        .expect_err("invalid retirement was accepted");
+    let message = panic
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| panic.downcast_ref::<&str>().copied())
+        .unwrap_or("unknown panic");
+    assert!(
+        message.contains("child retired before its expected generation"),
+        "{message}"
+    );
 }

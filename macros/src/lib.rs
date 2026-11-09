@@ -319,6 +319,30 @@ struct ProtocolInfo<'a> {
     target_trait: &'a Ident,
 }
 
+/// One transport signature used in declarations, runtime impls and delegation.
+fn transport_signature(
+    info: &ProtocolInfo,
+    method: &ProtocolMethodInfo,
+    index: usize,
+) -> (Ident, proc_macro2::TokenStream) {
+    let name = format_ident!("__dispatch_{}", index);
+    let module = info.mod_name;
+    let message = &method.struct_name;
+    let (timeout, result) = match &method.kind {
+        MethodKind::Send => (
+            quote! {},
+            quote! { ::std::result::Result<(), spawned_concurrency::ActorError> },
+        ),
+        MethodKind::Request(result) => (
+            quote! { , timeout: ::std::time::Duration },
+            quote! { spawned_concurrency::Response<#result> },
+        ),
+    };
+    let signature =
+        quote! { fn #name(target: &Self, message: #module::#message #timeout) -> #result };
+    (name, signature)
+}
+
 /// Runtime-specific transport primitives, shared by plain and configured handles.
 /// Cfg-gated Handler bounds are represented by one marker set per runtime.
 fn generate_target_impl(
@@ -416,37 +440,16 @@ fn generate_target_impl(
     }
 
     let method_impls = methods.iter().enumerate().map(|(index, m)| {
-        let name = format_ident!("__dispatch_{}", index);
-        let message = &m.struct_name;
+        let (_, signature) = transport_signature(info, m, index);
         let cfg = &m.cfg_attrs;
-        match &m.kind {
-            MethodKind::Send => quote! {
-                #(#cfg)*
-                fn #name(&self, message: #mod_name::#message)
-                    -> ::std::result::Result<(), spawned_concurrency::ActorError>
-                {
-                    self.send(message)
-                }
+        let body = match &m.kind {
+            MethodKind::Send => quote! { target.send(message) },
+            MethodKind::Request(_) => match mode {
+                RuntimeMode::Tasks => quote! { spawned_concurrency::Response::from_with_timeout(target.request_raw(message), timeout) },
+                RuntimeMode::Threads => quote! { spawned_concurrency::Response::ready(target.request_with_timeout(message, timeout)) },
             },
-            MethodKind::Request(result) => {
-                let body = match mode {
-                    RuntimeMode::Tasks => quote! {
-                        spawned_concurrency::Response::from_with_timeout(self.request_raw(message), timeout)
-                    },
-                    RuntimeMode::Threads => quote! {
-                        spawned_concurrency::Response::ready(self.request_with_timeout(message, timeout))
-                    },
-                };
-                quote! {
-                    #(#cfg)*
-                    fn #name(&self, message: #mod_name::#message, timeout: ::std::time::Duration)
-                        -> spawned_concurrency::Response<#result>
-                    {
-                        #body
-                    }
-                }
-            }
-        }
+        };
+        quote! { #(#cfg)* #signature { #body } }
     });
     quote! {
         #(#marker_trait_defs)*
@@ -458,8 +461,8 @@ fn generate_target_impl(
     }
 }
 
-/// Generate business-facing methods once. Supertraits constrain this impl rather
-/// than imposing new requirements on every configured handle at macro expansion.
+/// Share transport bodies and one method template while keeping public protocol
+/// impls concrete. Supertraits constrain each nominal target independently.
 fn generate_protocol_adapters(
     info: &ProtocolInfo,
     methods: &[ProtocolMethodInfo],
@@ -474,47 +477,23 @@ fn generate_protocol_adapters(
         target_trait,
     } = info;
     let signatures = methods.iter().enumerate().map(|(index, m)| {
-        let name = format_ident!("__dispatch_{}", index);
-        let message = &m.struct_name;
+        let (_, signature) = transport_signature(info, m, index);
         let cfg = &m.cfg_attrs;
-        match &m.kind {
-            MethodKind::Send => quote! {
-                #(#cfg)*
-                fn #name(&self, message: #mod_name::#message)
-                    -> ::std::result::Result<(), spawned_concurrency::ActorError>;
-            },
-            MethodKind::Request(result) => quote! {
-                #(#cfg)*
-                fn #name(&self, message: #mod_name::#message, timeout: ::std::time::Duration)
-                    -> spawned_concurrency::Response<#result>;
-            },
-        }
+        quote! { #(#cfg)* #signature; }
     });
     let delegates = methods.iter().enumerate().map(|(index, m)| {
-        let name = format_ident!("__dispatch_{}", index);
-        let message = &m.struct_name;
+        let (name, signature) = transport_signature(info, m, index);
         let cfg = &m.cfg_attrs;
-        let actor = quote! { spawned_concurrency::response::RequestOptions::actor_ref(self) };
-        match &m.kind {
-            MethodKind::Send => quote! {
-                #(#cfg)*
-                fn #name(&self, message: #mod_name::#message)
-                    -> ::std::result::Result<(), spawned_concurrency::ActorError>
-                {
-                    <__T as #target_trait>::#name(#actor, message)
-                }
-            },
-            MethodKind::Request(result) => quote! {
-                #(#cfg)*
-                fn #name(&self, message: #mod_name::#message, timeout: ::std::time::Duration)
-                    -> spawned_concurrency::Response<#result>
-                {
-                    <__T as #target_trait>::#name(#actor, message, timeout)
-                }
-            },
+        let timeout = match &m.kind { MethodKind::Send => quote! {}, MethodKind::Request(_) => quote! { , timeout } };
+        quote! {
+            #(#cfg)* #signature {
+                <__T as #target_trait>::#name(
+                    spawned_concurrency::response::RequestOptions::actor_ref(target), message #timeout
+                )
+            }
         }
     });
-    let method_impls = methods.iter().enumerate().map(|(index, m)| {
+    let method_impls: Vec<_> = methods.iter().enumerate().map(|(index, m)| {
         let method = &m.method_name;
         let dispatch = format_ident!("__dispatch_{}", index);
         let params = &m.params;
@@ -554,43 +533,60 @@ fn generate_protocol_adapters(
             #(#attrs)*
             fn #method(&self, #(#params),*) #result { #body }
         }
-    });
-    let mut predicates: Vec<_> = definition
-        .generics
-        .where_clause
-        .iter()
-        .flat_map(|clause| clause.predicates.iter())
-        .map(|predicate| quote! { #predicate })
-        .collect();
-    let supertraits = &definition.supertraits;
-    if !supertraits.is_empty() {
-        predicates.push(quote! { __T: #supertraits });
+    }).collect();
+    // Keep public impls nominal. A blanket impl over the hidden target trait
+    // conflicts with existing Box<T>/&T protocol forwarding implementations.
+    let mut public_impls = Vec::new();
+    for (runtime, asynchronous) in [
+        (quote! { spawned_concurrency::tasks }, true),
+        (quote! { spawned_concurrency::threads }, false),
+    ] {
+        let actor = quote! { #runtime::ActorRef<__A> };
+        for target in [
+            actor.clone(),
+            quote! { spawned_concurrency::response::RequestOptions<#actor> },
+        ] {
+            let mut predicates: Vec<_> = definition
+                .generics
+                .where_clause
+                .iter()
+                .flat_map(|clause| clause.predicates.iter())
+                .map(|p| quote! { #p })
+                .collect();
+            let supertraits = &definition.supertraits;
+            if !supertraits.is_empty() {
+                predicates.push(quote! { Self: #supertraits });
+            }
+            let implementation = quote! {
+                impl<__A: #runtime::Actor> #trait_name for #target
+                    where Self: #target_trait, #(#predicates,)*
+                { #(#method_impls)* }
+                impl<__A: #runtime::Actor> #converter_trait for #target
+                    where Self: #target_trait + #trait_name
+                {
+                    fn #converter_method(&self) -> #ref_name { ::std::sync::Arc::new(self.clone()) }
+                }
+            };
+            public_impls.push(if asynchronous {
+                quote! { spawned_concurrency::__spawned_async_items! { #implementation } }
+            } else {
+                implementation
+            });
+        }
     }
-    let where_clause = if predicates.is_empty() {
-        quote! {}
-    } else {
-        quote! { where #(#predicates,)* }
-    };
     quote! {
         #[doc(hidden)]
         trait #target_trait: Clone + Send + Sync + 'static {
-            fn __timeout_override(&self) -> Option<::std::time::Duration> { None }
+            fn __timeout_override(_target: &Self) -> Option<::std::time::Duration> { None }
             #(#signatures)*
         }
         impl<__T: #target_trait> #target_trait for spawned_concurrency::response::RequestOptions<__T> {
-            fn __timeout_override(&self) -> Option<::std::time::Duration> {
-                Some(spawned_concurrency::response::RequestOptions::timeout(self))
+            fn __timeout_override(target: &Self) -> Option<::std::time::Duration> {
+                Some(spawned_concurrency::response::RequestOptions::timeout(target))
             }
             #(#delegates)*
         }
-        impl<__T: #target_trait> #trait_name for __T #where_clause {
-            #(#method_impls)*
-        }
-        impl<__T: #target_trait + #trait_name> #converter_trait for __T {
-            fn #converter_method(&self) -> #ref_name {
-                ::std::sync::Arc::new(self.clone())
-            }
-        }
+        #(#public_impls)*
     }
 }
 
