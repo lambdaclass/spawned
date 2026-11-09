@@ -162,6 +162,30 @@ is asserted; allocator retention can differ between platforms.
    The listener now checks cancellation before polling the iterator.
 3. Stopping inside `started()` swallowed a subsequent `stopped()` panic and
    reported Normal. Both execution modes now preserve the panic exit reason.
+4. PR #166, links: a `Context::link` made after the target drained its link
+   table but before it published completion received no exit signal
+   (`linking_in_post_drain_pre_completion_window_delivers_exit`). Link closure now
+   stores the terminal reason under the registration mutex.
+5. PR #166, links: dropping the owning runtime before a linked actor was first
+   polled left its peer running instead of propagating the abnormal exit
+   (`never_polled_actor_propagates_runtime_shutdown_to_peer`). Cleanup is now
+   built before dispatch. Both #166 regressions are in
+   `concurrency/src/link_regression_tests.rs` and failed on the original patch.
+6. PR #168, thread mailboxes: the original patch replaced the 100 ms mailbox
+   poll with a blocking receive but only woke it from `Context::stop` and `ChildHandle` stop, leaving
+   linked exits and framework cancellation unable to wake an idle
+   thread actor. One cancellation callback registered at mailbox creation now
+   wakes it on every route (`every_stop_route_wakes_an_idle_thread`,
+   `cancellation_wakes_the_real_blocking_receive_boundary`).
+7. PR #168, thread mailboxes: in the original patch each stop call queued another private Shutdown item,
+   so repeated stops during a busy handler grew the control queue without bound.
+   At most one is now sent per actor
+   (`concurrent_cancellation_enqueues_exactly_one_shutdown`,
+   `repeated_stop_during_a_handler_discards_queued_requests`). The #168 tests are
+   in `concurrency/src/threads/actor.rs`.
+
+Reviews and evidence: [PR #166](../legacy/docs/reviews/pr-166-links.md) and
+[PR #168](../legacy/docs/reviews/pr-168-security.md).
 
 Thread actor completion now uses a watch notification, so async exit waits can
 be cancelled without leaving a blocking-pool worker waiting for target exit.

@@ -4,7 +4,7 @@ Measured on fede-256gb, 2026-11-06. This campaign adds reliability evidence and
 application examples; it does not add production backends or change actor APIs.
 The [capability guide](../../../../examples/capabilities/README.md) demonstrates what
 works today. The [roadmap](../../../../ROADMAP.md) and
-[ranked backlog](../../../docs/research/idea-priorities.md) describe future work.
+[ranked backlog](../../../../ROADMAP.md#ranked-backlog) describe future work.
 
 ## What we learned
 

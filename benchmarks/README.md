@@ -63,6 +63,29 @@ python3 -m venv /tmp/spawned-plots
   --output /tmp/full-actors-report
 ```
 
+## Conclusions
+
+The archived campaigns support these conclusions. They are synthetic results on
+specific hosts; do not transfer the ratios to a client.
+
+- **Keep Tokio as the default.** On the large recursive actor graph (1,920
+  actors, four actor cores), Tokio reached a median 885k roots/s; the corrected
+  custom Root, Runnable and Deque schedulers reached 518k–604k across their
+  settings. On eight cores Tokio led 1.40M to 732k.
+- **Pinned parked shards suit fixed streaming pipelines.** On an eight-stage,
+  eight-core pipeline with one actor per core, pinned parked shards reached a
+  median 1.88M roots/s against Tokio's 1.01M (p99 0.19 ms against 0.54 ms).
+  Spinning shards reached 2.11M but kept all eight cores busy while idle. At one
+  to four cores the results were mixed, so this is not a universal win. Parked
+  pinned shards became the public pinned execution group.
+- **Size persistent backends explicitly.** `Backend::Blocking` with 1,024 actors
+  exhausted Tokio's default 512-thread blocking pool, and per-actor runtimes hit
+  a 4,096 descriptor limit at 1,024 actors; see the
+  [guide](../docs/GUIDE.md#execution-modes-and-backends).
+
+Sources: [backend study findings](../legacy/research/backend-experiments/2026-11-06-fede/FINDINGS.md)
+and [design findings](../legacy/benchmarks/DESIGN-FINDINGS.md).
+
 ## Archived reports and protocols
 
 Measurement definitions, protocols, findings, validation notes, reviews, rendered

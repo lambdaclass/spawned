@@ -1,9 +1,0 @@
-Preparing worktree (detached HEAD c585f3d)
-HEAD is now at c585f3d control: restore baseline networking with Spawned 0.6 metrics off
-     Locking 1 package to latest Rust 1.97.1 compatible version
-      Adding spawned-rt v0.6.0 (/tmp/spawned-pr-security-review/engine-concurrent-probe/spawned-rt)
-Traceback (most recent call last):
-  File "/tmp/spawned-pr-security-review/engine-concurrent-build.py", line 32, in <module>
-    exec(compile(source, 'concurrent-probe-build', 'exec'))
-  File "concurrent-probe-build", line 74, in <module>
-AssertionError: wrong runtime source

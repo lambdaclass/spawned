@@ -1,7 +1,0 @@
-{
-  "requests": 750,
-  "injected_failures": 0,
-  "connections": 2,
-  "unique_calls": 750,
-  "scenario": "immediate"
-}

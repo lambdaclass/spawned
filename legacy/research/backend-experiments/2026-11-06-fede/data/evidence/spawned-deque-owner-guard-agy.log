@@ -1,5 +1,0 @@
-**APPROVE FOR TESTING**
-
-- **Compile-time thread affinity (`!Send` / `!Sync`)**: Adding `_not_send: std::marker::PhantomData<*const ()>` to `OwnerGuard` idiomatically opts out of both `Send` and `Sync` in stable Rust without requiring `unsafe` or unstable negative trait impls.
-- **TLS drop soundness**: Because `OwnerGuard::drop` clears the current thread's TLS, preventing cross-thread movement guarantees the guard is always dropped on the same thread that called `install`.
-- **Placement & API surface**: Keeping `OwnerGuard` private (`pub(super)`) and constructing it strictly inside the worker thread closure and owning test threads preserves all public APIs and runtime semantics. No tests have been executed in this review.

@@ -1,5 +1,0 @@
-tid,name,runtime_ns,runqueue_wait_ns,slices,voluntary_switches,involuntary_switches
-769359,spawned-shard-2,1275967548,10019506,35,28,7
-769360,spawned-shard-3,1336252637,16401,19,15,4
-769358,spawned-shard-1,1336353125,31368,21,14,7
-769357,spawned-shard-0,1332005308,12506613,28,16,12

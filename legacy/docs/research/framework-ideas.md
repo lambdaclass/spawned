@@ -1,8 +1,10 @@
 # Research: ideas that would make Spawned much more useful
 
+> Historical; superseded by the [roadmap](../../../ROADMAP.md). Implemented since: execution groups including `pinned_group`, OneForOne/OneForAll/RestForOne supervision with nested trees, and Tokio-free synchronous builds (all unreleased). Statuses and rank numbers below are as of writing.
+
 Date: 2026-11-08. Status: reference material (idea catalog and design notes),
 not a commitment or release plan. **Rankings and order live only in the single
-backlog, [idea priorities](idea-priorities.md), and the [roadmap](../../../ROADMAP.md).** Written against
+backlog, [ranked backlog](../../../ROADMAP.md#ranked-backlog), and the [roadmap](../../../ROADMAP.md).** Written against
 `0ef612dd21e8e8a401422eb06e1f31f5197cd4b2` (v0.6.0), before execution groups and
 OneForOne supervision landed on main; see [Status since writing](#status-since-writing).
 See also the [concurrency ideas research](concurrency-ideas.md) and the
@@ -13,7 +15,7 @@ benchmarks, bounded mailboxes, batching, affinity, sharding, runtime ownership,
 supervision, propagated deadlines, seeded delivery simulation, causal context,
 helper scopes, credits and durable outboxes. This document collects the ideas
 that are *not* yet covered, or that push a covered idea substantially further.
-Their placement in the backlog is recorded in [idea priorities](idea-priorities.md).
+Their placement in the backlog is recorded in [ranked backlog](../../../ROADMAP.md#ranked-backlog).
 
 Cost estimates are engineering judgment, not measurements. Before committing to
 items 1–3 and 6 in the catalog, check Ethrex and Ethlambda for the patterns they
@@ -53,7 +55,7 @@ team chose to build execution groups together with supervision, and did.
 
 The ranking differences this catalog originally recorded (test kit, deadlock
 detection, watchdog, snapshots, virtual actors, pub-sub, verification) were
-resolved by folding every item into [idea priorities](idea-priorities.md).
+resolved by folding every item into [ranked backlog](../../../ROADMAP.md#ranked-backlog).
 
 ## The idea catalog
 
@@ -150,7 +152,7 @@ blocking worker leasing (`benchmarks/RESEARCH-NEXT.md`), Tokio-free thread mode
 
 ## Positioning
 
-Rankings were moved to [idea priorities](idea-priorities.md). The positioning
+Rankings were moved to [ranked backlog](../../../ROADMAP.md#ranked-backlog). The positioning
 argument remains: the cheap items (test kit with `ActorRef::mock()`, deferred
 replies plus stash, deadlock detection, pub-sub, virtual actors) drive adoption,
 while the distinctive long-term story is **Erlang semantics plus reproducible

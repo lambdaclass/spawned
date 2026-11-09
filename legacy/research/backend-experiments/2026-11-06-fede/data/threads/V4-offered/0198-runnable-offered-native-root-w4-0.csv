@@ -1,7 +1,0 @@
-tid,name,runtime_ns,runqueue_wait_ns,slices,voluntary_switches,involuntary_switches
-3184131,actor-worker-n3,916890861,38705019,2150,2131,19
-3184126,actor-reactor-o,0,0,0,0,0
-3184129,actor-worker-n1,924243254,43880887,2054,2045,9
-3184127,actor-reactor,2631099,16740645,1148,1141,7
-3184130,actor-worker-n2,920392491,42184306,2050,2036,14
-3184128,actor-worker-n0,896830704,62744876,2149,2136,13

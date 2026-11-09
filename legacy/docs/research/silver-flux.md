@@ -1,5 +1,7 @@
 # Research: Silver / flux and what Spawned can adopt
 
+> Historical; superseded by the [roadmap](../../../ROADMAP.md), whose [non-goals](../../../ROADMAP.md#non-goals) carry forward this note's defaults to avoid. Implemented since: parked pinned shards as `ActorSystem::pinned_group` and Tokio-free synchronous builds (both unreleased).
+
 Date: 2026-11-05. Status: source analysis and proposed experiments, not a benchmark
 report or a commitment to replace Spawned's runtime. See the [roadmap](../../../ROADMAP.md).
 
@@ -212,7 +214,7 @@ then explains those results; the two efforts can proceed together.
 Keep Tokio removal, busy spinning, shared-memory transport and specialized thread
 execution as distinct, evidence-gated research projects, and preserve Spawned's
 protocol and actor model. This page is reference material; order and priority
-live only in [idea priorities](idea-priorities.md) and the
+live only in [ranked backlog](../../../ROADMAP.md#ranked-backlog) and the
 [roadmap](../../../ROADMAP.md). Optional metrics and OneForOne supervision, which an
 earlier version of this section recommended next, have since been implemented.
 
