@@ -148,6 +148,11 @@ No model needed (tests, examples and review suffice): the per-method timeout
 (6) and macro work. Deadlock detection (7) and the stall watchdog (8) are
 optional; their risk is false alarms, which tests catch better.
 
+**Every fixed bug keeps a reproducing test.** A bug fix lands with a test that
+fails on the code before the fix (as the PR #166/#168/#182/#185 regressions and
+the supervision gate races do), and TESTING.md lists it. Where the bug is a
+protocol race, its trace also becomes a negative control for the model.
+
 ### Testing to add
 
 Existing layers are listed in [TESTING.md](docs/TESTING.md): unit and
@@ -165,6 +170,22 @@ cargo-mutants and TLA+ with trace replay. Release gates and remaining gaps:
 | Ongoing | Coverage report (`cargo-llvm-cov`) | Find untested branches in supervision and system code; pairs with the surviving mutants. Report only, no threshold. |
 | After v0.7 | Porcupine-style linearizability checker for `request_histories` | The current oracle is a bounded search (16 operations, 100,000 states). Partition histories per key (P-compositionality), memoize search states and render a failing history, so longer histories from proptest, soak and canary runs can be checked. See [Porcupine](docs/research/systematic-testing.md#history-checkers). |
 | With rank 5c | Offline lifecycle monitors over canary traces | The Ethlambda canary writes lifecycle traces; monitors check them after each run without a JVM. |
+| After v0.7 | Test cases generated from the TLA+ models | The half of MongoDB's eXtreme Modelling study that worked (100% branch coverage): enumerate interesting model states (crash during backoff while shutdown starts, restart racing a deadline) and emit each as a concrete Rust test. Complements trace checking, which only judges runs we happened to write. |
+| After v0.7 | Cancellation-safety tests | Drop every public future (`request`, `join`, `shutdown`, `restart_child`, group starts) at each of its await points in turn and check framework state stays consistent. Dropping halfway is the commonest async Rust bug; nothing tests it systematically. |
+| After v0.7 | Panic-safety tests | Inject a panic into each user callback in turn (`started`, `stopped`, handlers, factories, a message's `Drop`) and check registries, links, monitors and supervisors stay consistent. Today only handler panics are covered. |
+| After v0.7 | Leak tests and LeakSanitizer | After shutdown every actor, task, thread and registry entry is gone and `ActorRef` strong counts reach zero (reference cycles between actors are the classic leak). LeakSanitizer job alongside TSAN. |
+| v0.7 | Single-CPU runs | Run the suite with one worker thread and under `taskset` on one core; exposes hidden ordering and starvation assumptions cheaply. |
+| After v0.7 | Kani proofs of small functions | Bounded proofs of no overflow/panic and stated properties for backoff math, the restart-budget window and generation counters. `Backoff::delay` mutants survived the mutation run. |
+| After v0.7 | Cross-backend (metamorphic) testing | Run one workload on async, blocking, thread, native-pool and pinned backends; observable results (replies, exit reasons, ordering per sender) must match. Catches backend-specific bugs without a hand-written oracle. |
+| After v0.7 | Failpoints (`BUGGIFY`-style) | Named fault points in Spawned's own lifecycle code (fail or delay during restart, shutdown, registration), compiled out by default and switchable from tests and `spawned-test`. FoundationDB and etcd use them to reach rare paths on purpose. |
+| After v0.7 | Clock-jump tests | Paused time, large forward/backward wall-clock jumps and slot-aligned ticks; needed before timer policies (rank 38) and for clients that align to wall-clock slots. |
+| With ranks 8, 14 | Fairness and starvation tests | Under load no actor waits beyond a bound, and lifecycle/control messages keep moving behind a data backlog. |
+| After v0.7 | Allocation budgets (dhat) | Fail when handling one message allocates more than a set count; keeps per-message cost from regressing silently. |
+| v0.7 | Supply-chain checks | `cargo-deny`, `cargo-audit` (and later `cargo-vet`) in CI. |
+| After v0.7 | Deterministic performance tests | Benchmarks whose results do not depend on hardware noise (simulated time or instruction counts), as TigerBeetle does, so performance changes are comparable across runs and machines. |
+| Ongoing | Flaky-test tracking | Record reruns and quarantine flaky concurrency tests instead of retrying them green. |
+| After v0.7 | Platform matrix | Linux and macOS, x86 and ARM, several core counts; matters most for pinned shards. |
+| After v0.7 | Open-loop load generation | Benchmarks issue load on a schedule, not after each reply, so tail latency is not understated (coordinated omission). |
 
 Deterministic simulation and record/replay remain the testing flagship (ranks
 20-22), followed by environment simulation (rank 22a). Prior art and how
@@ -381,7 +402,7 @@ Small, independent of the scheduler and lifecycle design, and visible to users.
 | 27 | Process groups, typed topics and routers | After rank 12. Membership cleanup, per-recipient backpressure and partial-failure semantics matter more than a broadcast convenience method. Pools with round-robin, least-busy or key-hash routing (key hash preserves per-key order) belong here. Broadcast can share one payload behind an `Arc` instead of cloning it per member; each mailbox still needs its own queue entry, so this saves payload copies, not per-recipient allocation. |
 | 28 | Causal tracing and ingress context | Preserve span context across awaits/fan-out and bound retention/sampling cost. |
 | 29 | Bounded role/cohort metrics, oldest age, active monitor counts | Bound cohort/role cardinality and define gauge lifetime; avoid actor-ID label growth. Exact queue age needs a transport contract independent of sampled timing. |
-| 30 | Read-only runtime inspection | Safe status/last-known snapshots: id, type, parent/links, mailbox depth, idle/polling/suspended status, current message type, turn age, wait-for edges. Actor state `Debug` only between turns, because the handler future holds `&mut A` across awaits. |
+| 30 | Read-only runtime inspection | Safe status/last-known snapshots: id, type, parent/links, mailbox depth, idle/polling/suspended status, current message type, turn age, wait-for edges. Actor state `Debug` only between turns, because the handler future holds `&mut A` across awaits. A concrete first tool: `spawned-top`, an Erlang-observer-style live view that attaches to a running node and lists actors with mailbox depth, state, links and current message. |
 | 31 | Handler middleware (Tower-style) | Tracing, rate limits, timeouts, retries and dedup without handler edits; deadlines and tracing could be middleware rather than core special cases. |
 | 32 | State-machine behavior | `gen_statem`-style per-state handlers and timeouts, built on bounded stashing (rank 16). |
 | 33 | Typed streams and demand-driven pipelines | **Client evidence:** unbounded and lag-dropping `spawn_listener` inputs in both clients; promote with credits. After credits. Specify subscription ownership, slow consumers, failure, credit release and bounded completion-watermark windows. Ownership release differs from explicit acknowledgement. Start with one concrete producer/consumer. |
