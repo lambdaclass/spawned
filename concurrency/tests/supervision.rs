@@ -888,3 +888,276 @@ async fn supervisor_report_deadline_signals_remaining_siblings() {
     assert!(supervisor.shutdown(LIMIT).await.complete);
     assert!(system.shutdown(LIMIT).await.complete);
 }
+
+// ---------------------------------------------------------------------------
+// Gaps found by mutation testing (cargo-mutants on supervision.rs/system.rs).
+// Each test below fails when the corresponding mutant is applied.
+// ---------------------------------------------------------------------------
+
+async fn restart_latency(
+    child: &spawned_concurrency::supervision::SupervisedChild<Counter>,
+) -> Duration {
+    let old = child.current().unwrap();
+    let generation = child.snapshot().generation;
+    let began = std::time::Instant::now();
+    assert!(old.request(Crash).await.is_err());
+    tokio::time::timeout(LIMIT, child.wait_for_generation(generation))
+        .await
+        .unwrap()
+        .unwrap();
+    began.elapsed()
+}
+
+/// Backoff grows across consecutive failures and resets only after a
+/// generation stayed ready for `stable_after` (Scope::was_stable/end_running).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn backoff_exponent_resets_only_after_a_stable_generation() {
+    let system = ActorSystem::new().unwrap();
+    let group = system.async_group("backoff-reset", 1).unwrap();
+    let mut tree = system
+        .supervisor(SupervisorConfig {
+            max_restarts: 20,
+            backoff: Backoff {
+                initial: Duration::from_millis(20),
+                maximum: Duration::from_secs(2),
+                stable_after: Duration::from_millis(300),
+                jitter: false,
+                seed: Some(7),
+            },
+            ..SupervisorConfig::default()
+        })
+        .unwrap();
+    let child = tree
+        .add(ChildSpec::new("flappy", &group, |_| async {
+            Ok::<_, String>(Counter(0))
+        }))
+        .unwrap();
+    let supervisor = tree.start().await.unwrap();
+    let snapshots = supervisor.snapshots();
+    assert_eq!(snapshots.len(), 1);
+    assert_eq!(snapshots[0].name, "flappy");
+    // Four quick failures: delays 20, 40, 80, 160 ms; the fifth would be 320 ms.
+    for _ in 0..4 {
+        restart_latency(&child).await;
+    }
+    let unstable = restart_latency(&child).await;
+    assert!(
+        unstable >= Duration::from_millis(250),
+        "backoff did not grow without a stable generation: {unstable:?}"
+    );
+    // Stay ready past stable_after: the next restart uses the initial delay.
+    tokio::time::sleep(Duration::from_millis(450)).await;
+    let reset = restart_latency(&child).await;
+    assert!(
+        reset < Duration::from_millis(200),
+        "backoff did not reset after a stable generation: {reset:?}"
+    );
+    assert!(supervisor.shutdown(LIMIT).await.complete);
+    assert!(system.shutdown(LIMIT).await.complete);
+}
+
+/// Dropping a builder that was never started finishes its children, so
+/// waiters observe Stopped instead of hanging (Drop for SupervisorBuilder).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn dropping_an_unstarted_builder_releases_child_waiters() {
+    let system = ActorSystem::new().unwrap();
+    let group = system.async_group("unstarted", 1).unwrap();
+    let mut tree = system.supervisor(config(5)).unwrap();
+    let child = tree
+        .add(ChildSpec::new("never", &group, |_| async {
+            Ok::<_, String>(Counter(0))
+        }))
+        .unwrap();
+    drop(tree);
+    let waited = tokio::time::timeout(LIMIT, child.wait_ready())
+        .await
+        .expect("waiter hung after the builder was dropped");
+    assert!(waited.is_err());
+    assert_eq!(
+        child.snapshot().state,
+        spawned_concurrency::supervision::ChildState::Stopped
+    );
+    assert!(system.shutdown(LIMIT).await.complete);
+}
+
+/// Aborting the public startup future alone (without a system shutdown)
+/// cancels construction and its owned helpers (Drop for StartupGuard).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn aborted_startup_cancels_construction_without_system_shutdown() {
+    let system = ActorSystem::new().unwrap();
+    let group = system.async_group("abort-startup", 1).unwrap();
+    let (entered_tx, entered) = tokio::sync::oneshot::channel();
+    let entered_tx = Arc::new(std::sync::Mutex::new(Some(entered_tx)));
+    let live = Arc::new(AtomicBool::new(false));
+    let live_factory = live.clone();
+    let mut tree = system.supervisor(config(5)).unwrap();
+    tree.add(ChildSpec::new("pending", &group, move |ctx| {
+        let entered = entered_tx.lock().unwrap().take();
+        let live = live_factory.clone();
+        async move {
+            live.store(true, Ordering::SeqCst);
+            let drop_flag = DropFlag(live);
+            ctx.spawn_helper(async move {
+                let _drop_flag = drop_flag;
+                std::future::pending::<()>().await;
+            })
+            .unwrap();
+            let _ = entered.unwrap().send(());
+            std::future::pending::<Result<Counter, String>>().await
+        }
+    }))
+    .unwrap();
+    let startup = tokio::spawn(tree.start());
+    tokio::time::timeout(LIMIT, entered).await.unwrap().unwrap();
+    startup.abort();
+    assert!(startup.await.is_err());
+    tokio::time::timeout(LIMIT, async {
+        while live.load(Ordering::SeqCst) {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("aborting startup did not cancel construction helpers");
+    assert!(system.shutdown(LIMIT).await.complete);
+}
+
+/// A failed supervisor's error appears in the system shutdown report
+/// (ShutdownUnit::failure for Core).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn system_shutdown_reports_supervisor_failures() {
+    let system = ActorSystem::new().unwrap();
+    let group = system.async_group("report-failure", 1).unwrap();
+    let mut tree = system.supervisor(config(0)).unwrap();
+    let child = tree
+        .add(ChildSpec::new("fragile", &group, |_| async {
+            Ok::<_, String>(Counter(0))
+        }))
+        .unwrap();
+    let supervisor = tree.start().await.unwrap();
+    assert!(child.current().unwrap().request(Crash).await.is_err());
+    tokio::time::timeout(LIMIT, supervisor.join())
+        .await
+        .unwrap();
+    assert!(supervisor.failure().is_some());
+    let report = system.shutdown(LIMIT).await;
+    assert!(report.complete);
+    assert_eq!(
+        report.supervisor_failures.len(),
+        1,
+        "{:?}",
+        report.supervisor_failures
+    );
+    assert!(report.supervisor_failures[0].contains("restart budget exhausted"));
+}
+
+/// When the system deadline expires on a stuck later child, earlier
+/// supervised siblings are still signalled (ShutdownUnit::stop_remaining).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn system_deadline_signals_remaining_supervised_siblings() {
+    let system = ActorSystem::new().unwrap();
+    let group = system.async_group("system-report-grace", 1).unwrap();
+    let (entered_tx, entered) = tokio::sync::oneshot::channel();
+    let (release, release_rx) = tokio::sync::oneshot::channel();
+    let args = Arc::new(std::sync::Mutex::new(Some((entered_tx, release_rx))));
+    let mut tree = system.supervisor(config(5)).unwrap();
+    let first = tree
+        .add(ChildSpec::new("first", &group, |_| async {
+            Ok::<_, String>(Counter(0))
+        }))
+        .unwrap();
+    tree.add(
+        ChildSpec::new("last", &group, move |_| {
+            let (entered, release) = args.lock().unwrap().take().unwrap();
+            async move {
+                Ok::<_, String>(SlowStop {
+                    entered: Some(entered),
+                    release: Some(release),
+                })
+            }
+        })
+        .shutdown_timeout(Duration::from_secs(60)),
+    )
+    .unwrap();
+    let _supervisor = tree.start().await.unwrap();
+    let actor = first.current().unwrap();
+    let report = system.shutdown(Duration::from_millis(50)).await;
+    assert!(!report.complete);
+    tokio::time::timeout(LIMIT, entered).await.unwrap().unwrap();
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(1), actor.wait_exit())
+            .await
+            .expect("earlier sibling was not stopped after the system deadline"),
+        ExitReason::Shutdown
+    );
+    release.send(()).unwrap();
+    assert!(report.wait(LIMIT).await.complete);
+}
+
+/// Invalid child names and zero timeouts are rejected
+/// (SupervisorBuilder::add validation).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn child_specs_reject_invalid_names_and_zero_timeouts() {
+    let system = ActorSystem::new().unwrap();
+    let group = system.async_group("validation", 1).unwrap();
+    let mut tree = system.supervisor(config(5)).unwrap();
+    let factory = |_| async { Ok::<_, String>(Counter(0)) };
+    for spec in [
+        ChildSpec::new("", &group, factory),
+        ChildSpec::new("nul\0name", &group, factory),
+        ChildSpec::new("zero-startup", &group, factory).startup_timeout(Duration::ZERO),
+        ChildSpec::new("zero-shutdown", &group, factory).shutdown_timeout(Duration::ZERO),
+    ] {
+        assert!(matches!(
+            tree.add(spec),
+            Err(spawned_concurrency::supervision::SupervisorError::Configuration(_))
+        ));
+    }
+    drop(tree);
+    assert!(system.shutdown(LIMIT).await.complete);
+}
+
+struct Named(&'static str);
+impl Actor for Named {
+    async fn started(&mut self, ctx: &Context<Self>) {
+        ctx.register_name(self.0)
+            .expect("previous generation's registration was not released");
+    }
+}
+impl Handler<Crash> for Named {
+    async fn handle(&mut self, _: Crash, _: &Context<Self>) {
+        panic!("crash a registered child");
+    }
+}
+
+/// A generation's owned name registration is released before its
+/// replacement starts, so the replacement can register the same name
+/// (Drop for Lease accounting).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn owned_registration_is_released_before_the_replacement_registers() {
+    let system = ActorSystem::new().unwrap();
+    let group = system.async_group("registered", 1).unwrap();
+    let mut tree = system.supervisor(config(5)).unwrap();
+    let child = tree
+        .add(ChildSpec::new("named", &group, |_| async {
+            Ok::<_, String>(Named("supervision-gap-registered"))
+        }))
+        .unwrap();
+    let supervisor = tree.start().await.unwrap();
+    for generation in 1..=3 {
+        let actor = child.current().unwrap();
+        assert!(actor.request(Crash).await.is_err());
+        let replacement = tokio::time::timeout(LIMIT, child.wait_for_generation(generation))
+            .await
+            .unwrap()
+            .expect("replacement failed to start");
+        assert_ne!(replacement.id(), actor.id());
+    }
+    assert!(supervisor.shutdown(LIMIT).await.complete);
+    assert!(system.shutdown(LIMIT).await.complete);
+    assert!(
+        spawned_concurrency::registry::whereis::<spawned_concurrency::tasks::ActorRef<Named>>(
+            "supervision-gap-registered"
+        )
+        .is_none()
+    );
+}

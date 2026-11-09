@@ -559,3 +559,48 @@ async fn ordered_shutdown_preserves_ordinary_calls_but_closes_new_helper_admissi
         .iter()
         .all(|e| e.reason == ExitReason::Shutdown));
 }
+
+// Gaps found by mutation testing (cargo-mutants on system.rs).
+
+/// Aborting a registered helper makes its join report cancellation
+/// (ScopedTask::abort and the cancelled branch of ScopedTask::join).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn aborted_scoped_helper_joins_as_cancelled() {
+    let system = ActorSystem::new().unwrap();
+    let group = system.async_group("helper-abort", 1).unwrap();
+    let actor = Worker.start_on(&group).unwrap();
+    actor.ready().await.unwrap();
+    let helper = actor
+        .context()
+        .spawn_helper(std::future::pending::<()>())
+        .unwrap();
+    helper.abort();
+    let joined = tokio::time::timeout(LIMIT, helper.join())
+        .await
+        .expect("aborted helper never completed");
+    assert_eq!(
+        joined,
+        Err(spawned_concurrency::system::HelperError::Cancelled)
+    );
+    assert!(system.shutdown(LIMIT).await.complete);
+}
+
+/// Group names and worker budgets are validated and reported back.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn groups_validate_names_and_report_their_budget() {
+    let system = ActorSystem::new().unwrap();
+    for name in ["", "nul\0name"] {
+        assert!(matches!(
+            system.async_group(name, 1),
+            Err(spawned_concurrency::system::SystemError::InvalidName)
+        ));
+    }
+    assert!(matches!(
+        system.async_group("zero", 0),
+        Err(spawned_concurrency::system::SystemError::InvalidWorkerBudget)
+    ));
+    let group = system.async_group("budgeted", 3).unwrap();
+    assert_eq!(group.name().as_deref(), Some("budgeted"));
+    assert_eq!(group.worker_budget(), Some(3));
+    assert!(system.shutdown(LIMIT).await.complete);
+}

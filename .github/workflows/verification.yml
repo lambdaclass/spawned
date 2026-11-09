@@ -1,0 +1,84 @@
+name: Verification
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+  workflow_dispatch:
+  schedule:
+    - cron: '41 4 * * 1'
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # TLA+ model of the supervisor plus trace validation of real runs
+  # (verification/tla). TLC comes from the flake.
+  tla:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/nix-installer-action@v16
+      - uses: DeterminateSystems/magic-nix-cache-action@v8
+      - uses: dtolnay/rust-toolchain@1.93.0
+      - uses: Swatinem/rust-cache@v2
+      - name: Record supervisor lifecycle traces
+        env:
+          LIFECYCLE_TRACE_DIR: ${{ github.workspace }}/lifecycle-traces
+        run: cargo test --locked -p spawned-concurrency --features lifecycle-trace --test supervision_trace
+      - name: Model-check (fast configuration) and validate traces
+        run: nix run .#check-tla -- --traces lifecycle-traces
+      - name: Model-check (deep configuration)
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        run: nix run .#check-tla -- --deep
+
+  # Data races in the runtime and its dependencies. The crates forbid
+  # unsafe code, so ThreadSanitizer is the sanitizer that matters here.
+  tsan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: tsan
+      - name: Lifecycle tests under ThreadSanitizer
+        env:
+          RUSTFLAGS: -Zsanitizer=thread
+          RUSTDOCFLAGS: -Zsanitizer=thread
+          TSAN_OPTIONS: halt_on_error=1 second_deadlock_stack=1
+        run: >
+          cargo +nightly test -Zbuild-std --target x86_64-unknown-linux-gnu
+          -p spawned-concurrency --lib
+          --test supervision --test execution_groups --test shutdown_publication
+          --test resource_cleanup --test linked_exit_macro
+
+  # Weekly mutation testing of the supervision and execution-group code.
+  mutants:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.93.0
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-mutants
+      - name: Mutate supervision and system code
+        run: >
+          cargo mutants -p spawned-concurrency
+          -f concurrency/src/supervision.rs -f concurrency/src/system.rs
+          -j 2 --timeout 120 || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mutants
+          path: mutants.out
