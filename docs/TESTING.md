@@ -181,3 +181,36 @@ archives 33 focused integration tests, full workspace/default/all-feature gates,
 strict Clippy, eight examples and 20 fresh-process repetitions of the 32-iteration
 crash/producer/shutdown race (640 iterations). These explore ordinary OS/Tokio
 scheduling; they are not deterministic delivery simulation.
+
+## Formal model, trace validation and mutation testing
+
+`verification/tla/Supervision.tla` models the implemented OneForOne supervisor
+(`run_supervisor`/`run_child`): restart modes, the shared rolling budget,
+ordered startup, reverse shutdown, shutdown deadlines and stuck cleanup. TLC
+checks seven safety invariants (including at most one live generation per child,
+no publication of a stale generation, and no ready report for a partly started
+tree), action properties (no start after close, restarts follow the design's
+mode table, reverse-order shutdown) and liveness (a closed supervisor finishes).
+Five bugs injected into the model are each caught, so the properties are not
+vacuous. See [the model README](../verification/tla/README.md).
+
+With the `lifecycle-trace` feature (off by default; compiled out otherwise) the
+supervisor records one event per model action. `supervision_trace` drives real
+actors through restart, failure, backoff, timeout and deadline scenarios plus
+seeded random runs, and TLC checks every recorded trace is a behavior of the
+model. Hand-edited traces are rejected at the edited event. Trace validation
+found one model gap (a running child may exit with `Shutdown` while the
+supervisor is open, via `ChildHandle::shutdown`); no implementation deviation.
+
+```bash
+nix run .#check-tla                                   # model check (TLC via the flake)
+cargo test -p spawned-concurrency --features lifecycle-trace --test supervision_trace
+nix run .#check-tla -- --traces target/lifecycle-traces
+```
+
+All crates are `#![forbid(unsafe_code)]`, so Miri is not run; ThreadSanitizer
+runs the lifecycle tests in CI. `cargo mutants` over `supervision.rs` and
+`system.rs` runs weekly. The remaining surviving mutants are race-only guards
+(`can_start`, `register`, `lease` checks only reachable in narrow windows),
+redundant system-level safety nets (group teardown also stops supervised
+children), jitter seed mixing and simple accessors.

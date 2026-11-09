@@ -4,6 +4,7 @@
 //! accepted work is not replayed, and constructors do not recover state unless
 //! application code explicitly does so.
 use crate::{
+    lifecycle_trace::{self as trace, Event, TraceId},
     system::{
         self, ActorSystem, Admission, ExecutionGroup, Scope, ScopedTask, ShutdownUnit, SystemError,
         Tracked,
@@ -230,6 +231,8 @@ struct View<A: Actor> {
     stop_turn: CancellationToken,
     done: watch::Sender<bool>,
     shutdown_timeout: Duration,
+    /// 1-based declaration index: the model's child id in lifecycle traces.
+    index: usize,
 }
 impl<A: Actor> View<A> {
     fn change(&self, f: impl FnOnce(&mut ViewData<A>)) {
@@ -389,10 +392,19 @@ struct Core {
     children: Mutex<Vec<Arc<dyn ChildControl>>>,
     budget: Mutex<RetryBudget>,
     config: SupervisorConfig,
+    trace: TraceId,
+    #[cfg(feature = "lifecycle-trace")]
+    deadline_recorded: std::sync::atomic::AtomicBool,
 }
 impl Core {
     fn close_admission(&self) {
-        self.gate.close();
+        trace::atomic(|| {
+            #[cfg(feature = "lifecycle-trace")]
+            if self.gate.is_open() && !trace::close_suppressed() {
+                trace::emit(self.trace, || Event::sup("Close"));
+            }
+            self.gate.close();
+        });
         self.admission_closed.cancel();
         let children = system::lock(&self.children).clone();
         for child in children {
@@ -404,7 +416,17 @@ impl Core {
         self.cancel.cancel();
     }
     fn stop_remaining(&self) {
-        self.close();
+        trace::atomic(|| {
+            self.close();
+            #[cfg(feature = "lifecycle-trace")]
+            if !*self.done.borrow()
+                && !self
+                    .deadline_recorded
+                    .swap(true, std::sync::atomic::Ordering::Relaxed)
+            {
+                trace::emit(self.trace, || Event::sup("ShutdownDeadline"));
+            }
+        });
         let children = system::lock(&self.children).clone();
         for child in children.iter().rev() {
             child.stop();
@@ -418,9 +440,28 @@ impl Core {
         drop(failure);
         self.close();
     }
-    fn retry(&self) -> bool {
+    /// `fail` as part of the model action `event` (whose `Fail` closes the
+    /// gate), so the gate flip is not traced as a separate `Close`.
+    fn fail_as(&self, error: String, event: impl FnOnce() -> Option<Event>) {
+        trace::failing(|| {
+            trace::emit_some(self.trace, event);
+            self.fail(error);
+        });
+    }
+    /// Records under the gate lock: callers must already be inside a
+    /// `trace::atomic` section (lock order is section, then gate).
+    fn retry(&self, child: usize) -> bool {
         self.gate
-            .if_open(|| system::lock(&self.budget).take(Instant::now()))
+            .if_open(|| {
+                let mut budget = system::lock(&self.budget);
+                let taken = budget.take(Instant::now());
+                if taken {
+                    trace::emit(self.trace, || {
+                        Event::new("BackoffDone", child, "retry").count(budget.attempts.len())
+                    });
+                }
+                taken
+            })
             .unwrap_or(false)
     }
 }
@@ -462,10 +503,13 @@ impl<A: Actor> Runner for TypedRunner<A> {
                 .catch_unwind()
                 .await
             {
-                core.fail(format!(
-                    "child controller panicked: {}",
-                    crate::error::panic_message(&*payload)
-                ));
+                core.fail_as(
+                    format!(
+                        "child controller panicked: {}",
+                        crate::error::panic_message(&*payload)
+                    ),
+                    || Some(Event::new("Unmodelled", view.index, "ControllerPanicked")),
+                );
                 let scope = system::lock(&view.data).scope.clone();
                 if let Some(scope) = scope {
                     scope.stop(ExitReason::Shutdown);
@@ -514,6 +558,9 @@ impl SupervisorBuilder {
                 window: config.restart_window,
             }),
             config,
+            trace: TraceId::next(),
+            #[cfg(feature = "lifecycle-trace")]
+            deadline_recorded: Default::default(),
         });
         Ok(Self {
             owner: Arc::downgrade(&system.inner),
@@ -521,6 +568,13 @@ impl SupervisorBuilder {
             runners: Vec::new(),
             started: false,
         })
+    }
+
+    /// Lifecycle trace id of this supervisor (`lifecycle_trace::take`).
+    #[cfg(feature = "lifecycle-trace")]
+    #[doc(hidden)]
+    pub fn trace_id(&self) -> u64 {
+        self.core.trace.0
     }
 
     pub fn add<A: Actor>(
@@ -569,6 +623,7 @@ impl SupervisorBuilder {
             done,
             stop_turn: CancellationToken::new(),
             shutdown_timeout: spec.shutdown_timeout,
+            index: children.len() + 1,
         });
         children.push(view.clone());
         self.runners.push(Box::new(TypedRunner {
@@ -647,6 +702,12 @@ impl Supervisor {
     pub fn stop(&self) {
         self.core.close();
     }
+    /// Lifecycle trace id of this supervisor (`lifecycle_trace::take`).
+    #[cfg(feature = "lifecycle-trace")]
+    #[doc(hidden)]
+    pub fn trace_id(&self) -> u64 {
+        self.core.trace.0
+    }
     pub fn snapshots(&self) -> Vec<ChildSnapshot> {
         system::lock(&self.core.children)
             .iter()
@@ -679,7 +740,14 @@ async fn run_supervisor(core: Arc<Core>, runners: Vec<Box<dyn Runner>>) {
     let children = system::lock(&core.children).clone();
     let mut tasks = Vec::new();
     for (index, runner) in runners.into_iter().enumerate() {
-        if !core.gate.is_open() {
+        let open = trace::atomic(|| {
+            let open = core.gate.is_open();
+            if open {
+                trace::emit(core.trace, || Event::new("SupLaunch", index + 1, ""));
+            }
+            open
+        });
+        if !open {
             break;
         }
         tasks.push(rt::spawn(runner.run(core.clone())));
@@ -695,28 +763,44 @@ async fn run_supervisor(core: Arc<Core>, runners: Vec<Box<dyn Runner>>) {
     for child in &children {
         child.finish_unstarted();
     }
-    if core.gate.is_open() {
-        core.ready.send_replace(true);
-    }
+    trace::atomic(|| {
+        let open = core.gate.is_open();
+        trace::emit(core.trace, || {
+            Event::new("SupStartDone", 0, trace::flag(open))
+        });
+        if open {
+            core.ready.send_replace(true);
+        }
+    });
     core.cancel.cancelled().await;
-    for child in children.iter().rev() {
+    trace::emit(core.trace, || Event::sup("SupCancelSeen"));
+    for (index, child) in children.iter().enumerate().rev() {
+        let c = index + 1;
+        trace::emit(core.trace, || Event::new("SupStopTurn", c, ""));
         child.stop();
         if rt::timeout(child.shutdown_timeout(), system::wait_true(child.done()))
             .await
             .is_err()
         {
-            core.fail(format!(
-                "child cleanup deadline exceeded: {}",
-                child.snapshot().name
-            ));
+            core.fail_as(
+                format!("child cleanup deadline exceeded: {}", child.snapshot().name),
+                || Some(Event::new("SupChildTimeout", c, "")),
+            );
+        } else {
+            trace::emit(core.trace, || Event::new("SupChildDone", c, ""));
         }
     }
     for task in tasks {
         if let Err(error) = task.await {
-            core.fail(format!("child controller failed: {error}"));
+            core.fail_as(format!("child controller failed: {error}"), || {
+                Some(Event::new("Unmodelled", 0, "ControllerFailed"))
+            });
         }
     }
-    core.done.send_replace(true);
+    trace::atomic(|| {
+        trace::emit(core.trace, || Event::sup("SupJoin"));
+        core.done.send_replace(true);
+    });
 }
 
 async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, core: Arc<Core>) {
@@ -736,13 +820,28 @@ async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, core: Arc<C
             .name
             .bytes()
             .fold(0u64, |a, b| a.wrapping_mul(31).wrapping_add(b as u64));
+    let c = view.index;
     loop {
-        if !core.gate.is_open() {
+        let open = trace::atomic(|| {
+            let open = core.gate.is_open();
+            let branch = if !open {
+                "finish"
+            } else if first {
+                "attempt"
+            } else {
+                "backoff"
+            };
+            trace::emit(core.trace, || Event::new("LoopTop", c, branch));
+            open
+        });
+        if !open {
             break;
         }
         if !first {
             if core.config.max_restarts == 0 {
-                core.fail(format!("restart budget exhausted by {}", spec.name));
+                core.fail_as(format!("restart budget exhausted by {}", spec.name), || {
+                    Some(Event::new("BackoffDone", c, "exhausted"))
+                });
                 break;
             }
             let delay = core.config.backoff.delay(failures, &mut rng);
@@ -756,12 +855,24 @@ async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, core: Arc<C
                 .await,
                 Either::Left(_)
             ) {
+                trace::emit(core.trace, || Event::new("BackoffDone", c, "closed"));
                 break;
             }
-            if !core.retry() {
-                if core.gate.is_open() {
-                    core.fail(format!("restart budget exhausted by {}", spec.name));
+            let retried = trace::atomic(|| {
+                let retried = core.retry(c);
+                if !retried {
+                    if core.gate.is_open() {
+                        core.fail_as(format!("restart budget exhausted by {}", spec.name), || {
+                            let held = system::lock(&core.budget).attempts.len();
+                            Some(Event::new("BackoffDone", c, "exhausted").count(held))
+                        });
+                    } else {
+                        trace::emit(core.trace, || Event::new("BackoffDone", c, "closed"));
+                    }
                 }
+                retried
+            });
+            if !retried {
                 break;
             }
         }
@@ -769,21 +880,33 @@ async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, core: Arc<C
         let (scope, lease) = match spec.group.reserve(Some(core.gate.clone())) {
             Ok(attempt) => attempt,
             Err(e) => {
-                if core.gate.is_open() {
-                    core.fail(format!("placement failed for {}: {e}", spec.name));
-                }
+                trace::atomic(|| {
+                    if core.gate.is_open() {
+                        core.fail_as(format!("placement failed for {}: {e}", spec.name), || {
+                            Some(Event::new("Unmodelled", c, "PlacementFailed"))
+                        });
+                    } else {
+                        trace::emit(core.trace, || Event::new("Attempt", c, "false"));
+                    }
+                });
                 break;
             }
         };
-        let generation = core.gate.if_open(|| {
-            view.change(|v| {
-                v.snapshot.generation += 1;
-                v.snapshot.state = ChildState::Starting;
-                v.snapshot.actor_id = None;
-                v.current = None;
-                v.scope = Some(scope.clone());
+        let generation = trace::atomic(|| {
+            let generation = core.gate.if_open(|| {
+                view.change(|v| {
+                    v.snapshot.generation += 1;
+                    v.snapshot.state = ChildState::Starting;
+                    v.snapshot.actor_id = None;
+                    v.current = None;
+                    v.scope = Some(scope.clone());
+                });
+                system::lock(&view.data).snapshot.generation
             });
-            system::lock(&view.data).snapshot.generation
+            trace::emit(core.trace, || {
+                Event::new("Attempt", c, trace::flag(generation.is_some()))
+            });
+            generation
         });
         let Some(generation) = generation else {
             scope.stop(ExitReason::Shutdown);
@@ -849,18 +972,29 @@ async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, core: Arc<C
         let mut ready_at = None;
         let mut exit = None;
         let mut cleanup_until = None;
+        // Trace bookkeeping: the model's StartupFailed (whose reason is known
+        // only after cleanup) and CleanupStuck (which skips CleanupDone and
+        // Decide).
+        let startup_failed = began.is_err();
+        let mut stuck = false;
         match began {
             Ok(actor) => {
-                let published = core
-                    .gate
-                    .if_open(|| {
-                        view.change(|v| {
-                            v.snapshot.state = ChildState::Running;
-                            v.snapshot.actor_id = Some(actor.id());
-                            v.current = Some(actor.clone());
+                let published = trace::atomic(|| {
+                    let published = core
+                        .gate
+                        .if_open(|| {
+                            view.change(|v| {
+                                v.snapshot.state = ChildState::Running;
+                                v.snapshot.actor_id = Some(actor.id());
+                                v.current = Some(actor.clone());
+                            })
                         })
-                    })
-                    .is_some();
+                        .is_some();
+                    trace::emit(core.trace, || {
+                        Event::new("BecomeReady", c, trace::flag(published))
+                    });
+                    published
+                });
                 if published {
                     ready_at = Some(Instant::now());
                     view.initial.send_replace(true);
@@ -873,8 +1007,10 @@ async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, core: Arc<C
                         Box::pin(scope.token.cancelled()),
                     )
                     .await;
-                    if matches!(ended, Either::Left(_)) {
+                    let stop_turn = matches!(ended, Either::Left(_));
+                    if stop_turn {
                         view.stop_turn.cancelled().await;
+                        trace::emit(core.trace, || Event::new("StopObserved", c, ""));
                         scope.stop(ExitReason::Shutdown);
                     }
                     view.change(|v| {
@@ -885,9 +1021,25 @@ async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, core: Arc<C
                     cleanup_until = Some(cleanup_started);
                     exit = Some(
                         match rt::timeout(spec.shutdown_timeout, child.wait_exit_async()).await {
-                            Ok(reason) => reason,
+                            Ok(reason) => {
+                                if !stop_turn {
+                                    trace::emit(core.trace, || {
+                                        Event::new("SelfExit", c, trace::reason(Some(&reason)))
+                                    });
+                                }
+                                reason
+                            }
                             Err(_) => {
-                                core.fail(format!("actor cleanup stuck for {}", spec.name));
+                                if !stop_turn {
+                                    trace::emit(core.trace, || {
+                                        Event::new("SelfExit", c, "unknown")
+                                    });
+                                }
+                                stuck = true;
+                                core.fail_as(
+                                    format!("actor cleanup stuck for {}", spec.name),
+                                    || Some(Event::new("CleanupStuck", c, "")),
+                                );
                                 child.wait_exit_async().await
                             }
                         },
@@ -896,6 +1048,13 @@ async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, core: Arc<C
             }
             Err(error) => view.change(|v| v.snapshot.last_error = Some(error)),
         }
+        let startup_reason = |exit: Option<&ExitReason>| {
+            if startup_timed_out {
+                "timeout"
+            } else {
+                trace::reason(exit)
+            }
+        };
         scope.stop(exit.clone().unwrap_or(ExitReason::Shutdown));
         view.change(|v| {
             v.current = None;
@@ -906,12 +1065,35 @@ async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, core: Arc<C
             .map(|started| spec.shutdown_timeout.saturating_sub(started.elapsed()))
             .unwrap_or(spec.shutdown_timeout);
         if rt::timeout(remaining, scope.joined()).await.is_err() {
-            core.fail(format!("owned cleanup stuck for {}", spec.name));
+            core.fail_as(format!("owned cleanup stuck for {}", spec.name), || {
+                if stuck {
+                    return None;
+                }
+                if startup_failed {
+                    let reason = match scope.child().map(|child| child.exit_reason()) {
+                        Some(None) if !startup_timed_out => "unknown",
+                        Some(reason) => startup_reason(reason.as_ref()),
+                        None => startup_reason(None),
+                    };
+                    trace::emit(core.trace, || Event::new("StartupFailed", c, reason));
+                }
+                Some(Event::new("CleanupStuck", c, ""))
+            });
             scope.joined().await;
             break;
         }
         if exit.is_none() {
             exit = scope.child().and_then(|child| child.exit_reason());
+        }
+        if !stuck {
+            trace::atomic(|| {
+                if startup_failed {
+                    trace::emit(core.trace, || {
+                        Event::new("StartupFailed", c, startup_reason(exit.as_ref()))
+                    });
+                }
+                trace::emit(core.trace, || Event::new("CleanupDone", c, ""));
+            });
         }
         view.change(|v| {
             v.snapshot.last_exit = exit.clone();
@@ -920,13 +1102,8 @@ async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, core: Arc<C
             }
             v.scope = None;
         });
-        if !core.gate.is_open() {
-            break;
-        }
-        if spec.group.is_closed() {
-            core.fail(format!("execution group closed for {}", spec.name));
-            break;
-        }
+        // Computed before the gate check (local state only) so that the
+        // traced Decide records the decision taken at that check.
         if scope.was_stable(core.config.backoff.stable_after) {
             failures = 0;
         }
@@ -935,16 +1112,41 @@ async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, core: Arc<C
         } else {
             spec.restart.restarts(exit.as_ref())
         };
+        let open = trace::atomic(|| {
+            let open = core.gate.is_open();
+            // A non-restartable failed startup records Decide with its Fail.
+            if !stuck && (!open || restart || ready_at.is_some()) {
+                let outcome = if !open {
+                    "closed"
+                } else if restart {
+                    "restart"
+                } else {
+                    "stop"
+                };
+                trace::emit(core.trace, || Event::new("Decide", c, outcome));
+            }
+            open
+        });
+        if !open {
+            break;
+        }
+        if spec.group.is_closed() {
+            core.fail_as(format!("execution group closed for {}", spec.name), || {
+                Some(Event::new("Unmodelled", c, "GroupClosed"))
+            });
+            break;
+        }
         if !restart {
             if ready_at.is_none() {
-                core.fail(format!(
-                    "non-restartable child failed startup: {}",
-                    spec.name
-                ));
+                core.fail_as(
+                    format!("non-restartable child failed startup: {}", spec.name),
+                    || Some(Event::new("Decide", c, "fail")),
+                );
             }
             break;
         }
     }
+    trace::emit(core.trace, || Event::new("Finish", c, ""));
     view.finish(system::lock(&core.failure).is_some());
 }
 

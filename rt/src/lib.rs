@@ -11,6 +11,7 @@
 //!   `mpsc`, `oneshot`, `watch`, `timeout`, `sleep`
 //! - [`threads`] — blocking runtime using OS threads: `CancellationToken`,
 //!   `mpsc`, `oneshot`, `sleep`
+#![forbid(unsafe_code)]
 
 pub mod tasks;
 pub mod threads;

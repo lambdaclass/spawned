@@ -73,9 +73,11 @@
 //! - [`message::Message`] trait for manual message definitions without `#[protocol]`
 //! - `Recipient<M>` (`Arc<dyn Receiver<M>>`) for type-erased per-message references
 //! - [`tasks::Backend`] enum for choosing async runtime, blocking pool, or OS thread
+#![forbid(unsafe_code)]
 
 pub mod child_handle;
 pub mod error;
+pub mod lifecycle_trace;
 pub mod link;
 pub mod message;
 pub mod monitor;
