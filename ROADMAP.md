@@ -44,7 +44,8 @@ handlers and the existing default behavior. New policies are explicit and opt-in
    watchdog, flight recorder, published snapshots), motivated by the
    [client sweep](#client-sweep-production-pain).
 4. **Then, guided by application needs:** request semantics, starting with
-   deferred replies and pipe-to-self (ranks 11-16); admission, credits and
+   deferred replies and pipe-to-self (ranks 11-16), with the dynamic
+   supervisor (rank 12a) alongside the keyed registry; admission, credits and
    deadlines as one design package (ranks 17-19); the testing flagship (ranks
    20-22); then ranks 23-41 when a client or user justifies them.
 
@@ -74,6 +75,47 @@ default (from the [Silver/flux study](legacy/docs/research/silver-flux.md#what-m
 - application handlers owning poll loops, reply routing or runtime
   infrastructure to make a backend faster;
 - mandatory dedicated cores or spinning for ordinary actors.
+
+### Verification rule
+
+Any feature that touches lifecycle, replies or ownership ships with a TLA+
+model, trace replay of real Rust runs and negative checks that must fail, as
+OneForOne, OneForAll/RestForOne and nested supervision did. Release is blocked
+until they pass. Everything also keeps ordinary tests, an example, clippy and
+ThreadSanitizer.
+
+| Needs a model | What the model must show |
+|---|---|
+| Dynamic supervisor (rank 12a) | Children starting and stopping while others restart or the supervisor shuts down; `max_children` is never exceeded, counting restarting children; no start succeeds after shutdown begins. |
+| Deferred replies and pipe-to-self (rank 11) | Every accepted request gets exactly one reply, including on owner exit or panic; a late result never reaches a restarted instance. |
+| Keyed registry (rank 12) | An old entry's cleanup never removes its replacement (ethrex #7435). |
+| Draining shutdown (rank 13) | Queued work is handled or reported; shutdown finishes within its deadline. |
+| Bounded mailboxes and credits (ranks 17-18) | No credit leaks; waiting senders cannot deadlock. |
+| Base actor lifecycle | Links, monitors, `Down` exactly once, every request answered or `ActorStopped`; reintroducing the PR #182/#185 bugs must fail ([next model](verification/tla/README.md#next-model)). |
+
+No model needed (tests, examples and review suffice): the per-method timeout
+(5a), examples (5b), the migration guide, metrics, snapshots (10), the test kit
+(6) and macro work. Deadlock detection (7) and the stall watchdog (8) are
+optional; their risk is false alarms, which tests catch better.
+
+### Testing to add
+
+Existing layers are listed in [TESTING.md](docs/TESTING.md): unit and
+integration tests, proptest scenarios, trybuild, Loom, ThreadSanitizer,
+cargo-mutants and TLA+ with trace replay. Gaps, in order:
+
+| When | Test | Why |
+|---|---|---|
+| v0.7 | `cargo-semver-checks` and a `cargo-hack --each-feature` build matrix | First release with Tokio-free builds and many new features; catches accidental API breaks and feature combinations that do not compile. |
+| v0.7 | Supervisor policies under proptest | Generated crash/exit/shutdown sequences checked against the same restart table the TLA+ model uses. `actor_scenarios` does not cover supervision today. |
+| v0.7 | Fault injection in the Ethlambda canary | Kill and restart supervised actors in a running client and check it recovers; the release gate (rank 5) should exercise failures, not just the happy path. |
+| After v0.7 | Shuttle for multi-actor framework races | Randomised schedules over whole supervisor/registry tests too large for Loom. Listed in TESTING.md, not started. Internal tool, separate from rank 20. |
+| After v0.7 | Long-running soak tests | Memory, file descriptors, threads and tasks stay flat over hours of actor churn and restarts. The ethrex 1.5 GB/day mailbox leak is the motivating bug. Nightly, not per PR. |
+| With ranks 11-13 | Loom on the new primitives | Reply slots, registry compare-and-remove and mailbox publication versus stop. |
+| Ongoing | Coverage report (`cargo-llvm-cov`) | Find untested branches in supervision and system code; pairs with the surviving mutants. Report only, no threshold. |
+
+Deterministic simulation and record/replay remain the testing flagship (ranks
+20-22).
 
 ## Ranked backlog
 
@@ -185,7 +227,8 @@ Small, independent of the scheduler and lifecycle design, and visible to users.
 | Rank | Idea | Assessment |
 |---|---|---|
 | 11 | Deferred typed replies, forwarding and pipe-to-self | Highest-value capability after the foundation; confirmed by the client search: ethrex hand-builds deferred replies with timeouts (`outgoing_request`/`current_requests`) and ethlambda hand-builds bounded pipe-to-self with exactly-one completion. Include reply timeouts and exactly-one completion on panic. Distinguish delegation, deferred reply ownership and completion messages; bound outstanding promises, propagate deadlines and define late-result/owner-exit behavior without general reentrancy. `ctx.spawn_ordered` (parallel stateless compute, then commit in arrival order, revalidating state at commit) is a follow-on specialization. |
-| 12 | Scoped, lifecycle-owned registries | **Client evidence:** ethrex's per-peer connection map and its `ConnectionId` guard (#7435). Keyed registration that owns the actor's lifetime, with generations so an old cleanup cannot remove its replacement. Use registration generations/compare-and-remove so an old guard cannot remove its replacement. Also scope the registry to an `ActorSystem` instead of the process-global static, so parallel tests and multi-node simulations do not share names. Prerequisite for groups/pub-sub. |
+| 12 | Scoped, lifecycle-owned registries | **Client evidence:** ethrex's per-peer connection map and its `ConnectionId` guard (#7435). Keyed registration that owns the actor's lifetime, with generations so an old cleanup cannot remove its replacement. Also scope the registry to an `ActorSystem` instead of the process-global static, so parallel tests and multi-node simulations do not share names. Prerequisite for groups/pub-sub. |
+| 12a | Dynamic supervisor (`DynamicSupervisor` / `simple_one_for_one`) | **Client evidence:** ethrex starts one connection actor per peer at runtime and cleans it up by hand (see [per-key actor maps](#client-search-results)); today's `Supervisor` only owns the fixed child list declared at build time. Proposed contract: children are started at runtime from one `ChildSpec` template with per-call arguments, sharing its restart mode (Elixir-style heterogeneous specs only if a user needs them). The restart budget is supervisor-wide, as in OTP: exhausting it fails the supervisor and escalates to its parent, so a flapping child cannot restart forever. `max_children` counts restarting children, so a new start cannot take a slot mid-restart, and rejects with a typed error rather than queueing. `start_child` after shutdown begins is rejected, never dropped or leaked. Explicitly stopping a child does not restart it. Shutdown stops all live children concurrently under one supervisor deadline (OTP does not order dynamic children; sequential stops would multiply per-child timeouts). Usable inside a nested tree. Independent of rank 12 (`start_child` returns a handle); when combined, a restarted child re-registers under a new generation so an old cleanup cannot remove it. Planned after v0.7, not part of it; extend the TLA+ model (start/stop racing restart and shutdown, cap including restarting children) before release, as for OneForAll/RestForOne. The other OTP variants stay out: `Task.Supervisor` folds into ranks 11/15, `PartitionSupervisor` is sharding, and significant children/`auto_shutdown` wait for a user. |
 | 13 | Coordinated shutdown and bounded draining | Ordered stop exists; add explicit draining as a policy: close admission, handle queued work by policy, join helpers and report unfinished work. Keep current stop/discard as the default. |
 | 14 | Separate fair control path | Part of supervision/shutdown design; defer a generic public priority API. Non-trapping actors already receive abnormal exits through cancellation; queued `ExitEnvelope` only matters for trapping actors. Specify boundedness and per-sender ordering for startup, monitor and trapped-exit events. Priority cannot preempt a running handler or starve user work. |
 | 15 | Actor-owned helper completion scopes | **Client evidence:** ethlambda hand-owns its aggregation worker; add cancel-previous, generation fencing and join-with-deadline. Ownership design gate for shutdown, partly addressed by group-owned helpers. Gate new helper registration, cancel, then explicitly join; helpers depending on their stopped owner can deadlock. |
@@ -347,6 +390,7 @@ that already run today.
 | 10 | Published snapshots | Readers keep answering from a snapshot while the owner runs a long handler. |
 | 11 | Deferred replies / delegation / pipe-to-self | Route a slow request while accepting another message; bound pending replies and demonstrate owner exit and late completion. |
 | 12 | Lifecycle-owned registries (managed generation guards implemented) | Register a service, crash it and verify its entry is removed without deleting a replacement's registration. |
+| 12a | Dynamic supervisor | Start one supervised actor per incoming connection; crash a restartable child and see only it restart; stop one explicitly and see it stay stopped; hit `max_children` and get a rejection; then shut down with every live child stopped within the deadline. |
 | 13 | Coordinated shutdown | Close admission, drain dependencies within a deadline and report unfinished work. [Finite-batch recipe works today](examples/capabilities/src/bin/graceful_drain.rs). |
 | 14 | Fair control path | Observe lifecycle control behind a data backlog while checking ordinary work still progresses; no handler preemption. |
 | 15 | Actor-owned helpers (managed scope implemented) | Stop an actor with active helpers, reject new helper admission and await owned cleanup to a deadline. |
