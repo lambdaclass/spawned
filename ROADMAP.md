@@ -38,7 +38,7 @@ sections and [research notes](docs/research/README.md).
 - **Observability:** metrics (29), `spawned-top` and inspection (30), causal tracing (28), flight recorder (9, 43) ([observability](docs/research/observability.md)).
 - **Verification:** TLA+ with trace replay under the [verification rule](#verification-rule), production monitors (5c), Kani, Loom/Shuttle, sanitizers, mutants ([verification tools](docs/research/verification-tools.md), [systematic testing](docs/research/systematic-testing.md)).
 - **Deterministic testing:** [`spawned-test`](#testing-crate-spawned-test) (6), failpoints, the [simulation backend spike](#simulation-backend-spike), then `explore` (20), replay (21-22) and environment simulation (22a) ([actor testing](docs/research/actor-testing.md), [test techniques](docs/research/test-techniques.md)).
-- **Client validation:** Ethlambda and Ethrex canaries (rank 5, [step 2](#step-2-release-and-run-in-a-client)), with umbrella PRs [lambdaclass/ethlambda#783](https://github.com/lambdaclass/ethlambda/pull/783) and [lambdaclass/ethrex#7517](https://github.com/lambdaclass/ethrex/pull/7517) ([Ethereum testing](docs/research/ethereum-testing.md)).
+- **Client validation:** Ethlambda and Ethrex canaries (rank 5, [step 2](#step-2-release-and-run-in-a-client)), with umbrella PRs [lambdaclass/ethlambda#783](https://github.com/lambdaclass/ethlambda/pull/783) and [lambdaclass/ethrex#7518](https://github.com/lambdaclass/ethrex/pull/7518) ([Ethereum testing](docs/research/ethereum-testing.md)).
 - **Durability (research):** ranks 49-51 ([event sourcing](docs/research/event-sourcing.md), [virtual actors](docs/research/virtual-actors.md)).
 
 ## Phases
@@ -313,7 +313,7 @@ Erlang ([actor testing](docs/research/actor-testing.md)). Rank 20 then adds
 delivery control at the mailbox boundary on top of this executor.
 
 The same program applies to the clients: ethrex's plan is
-[lambdaclass/ethrex#7517](https://github.com/lambdaclass/ethrex/pull/7517);
+[lambdaclass/ethrex#7518](https://github.com/lambdaclass/ethrex/pull/7518);
 Ethlambda's follows its upgrade branch.
 
 ### Testing crate (`spawned-test`)
