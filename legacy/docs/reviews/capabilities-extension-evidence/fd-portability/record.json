@@ -1,0 +1,10 @@
+{
+  "parent": "be81a32943a4758b41bf8f8f306edcf2508e3548",
+  "failed_ci": 42554775491,
+  "failed_verification": 42554775278,
+  "failure": "Both failed the calibrated OS FD-exhaustion fixture; no ThreadSanitizer race report.",
+  "production_change": "Add shard index to pinned runtime construction errors; normal execution and rollback unchanged.",
+  "fixture": "Isolated process, bounded incremental real descriptor exhaustion, normal and sparse release layouts, explicit shard-1 failure, RAII limit restore, FD baseline and subsequent admission checks.",
+  "review": "AGY approved core proof/runtime context; minor zero-test child and sparse allocation-order findings both addressed.",
+  "validation": "Six profile tests, five strict Clippy configurations, 20 full selected-suite stress repetitions; final descriptor release-order adjustment additionally repeated 20 times."
+}

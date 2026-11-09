@@ -73,3 +73,14 @@ Tokio-free graph/fixture checks, strict documentation and Clippy, finite example
 resource-failure injection, repeated lifecycle stress, and retained OneForOne traces.
 Production Ethlambda/Ethrex replay/canary and expanded formal coverage remain
 separate validation work.
+
+## CI portability follow-up
+
+The first GitHub default/TSAN runs both failed the calibrated descriptor-exhaustion
+fixture, without a sanitizer race report. Replaced FD-cost arithmetic with bounded
+incremental exhaustion in isolated child processes, ordinary and sparse descriptor
+release orders, explicit second-shard construction errors, RAII limit restoration,
+and post-rollback descriptor/liveness assertions. The runtime change only adds a
+shard index to construction errors. The [follow-up evidence](capabilities-extension-evidence/fd-portability/)
+records the failure, review and focused validation. The original full-matrix logs
+remain preserved at their original source revision.

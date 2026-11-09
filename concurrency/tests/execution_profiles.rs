@@ -307,24 +307,38 @@ mod tls_join {
 #[test]
 fn partial_pinned_construction_rolls_back_before_returning_error() {
     const CHILD: &str = "SPAWNED_PROFILE_FD_FAULT_CHILD";
-    if std::env::var_os(CHILD).is_none() {
-        let output = std::process::Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "partial_pinned_construction_rolls_back_before_returning_error",
-                "--nocapture",
-            ])
-            .env(CHILD, "1")
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "isolated FD fault failed: {}\n{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
+    let layout = std::env::var(CHILD).ok();
+    if layout.is_none() {
+        for layout in ["ordinary", "sparse"] {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "partial_pinned_construction_rolls_back_before_returning_error",
+                    "--nocapture",
+                ])
+                .env(CHILD, layout)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success()
+                    && String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+                "isolated FD fault ({layout}) failed or matched no test: {}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
         return;
     }
+    // Keep every other descriptor alive to exercise holes in the inherited layout.
+    let _sparse = (layout.as_deref() == Some("sparse")).then(|| {
+        (0..16)
+            .map(|_| std::fs::File::open("/dev/null").unwrap())
+            .collect::<Vec<_>>()
+            .into_iter()
+            .enumerate()
+            .filter_map(|(index, file)| (index % 2 == 0).then_some(file))
+            .collect::<Vec<_>>()
+    });
     // This process has exactly one test. Never change a shared test runner's FD limit.
     let cpus = spawned_rt::tasks::affinity::available_cpus().unwrap();
     if cpus.len() < 2 {
@@ -336,28 +350,58 @@ fn partial_pinned_construction_rolls_back_before_returning_error() {
     }
     let system = ActorSystem::new().unwrap();
     let baseline = fds();
-    let (ready_tx, ready) = std::sync::mpsc::channel();
-    let (release, release_rx) = std::sync::mpsc::channel();
-    let probe = std::thread::spawn(move || {
-        let runtime = spawned_rt::tasks::control_runtime().unwrap();
-        ready_tx.send(()).unwrap();
-        release_rx.recv_timeout(LIMIT).unwrap();
-        drop(runtime);
-    });
-    ready.recv_timeout(LIMIT).unwrap();
-    let cost = fds() - baseline;
-    release.send(()).unwrap();
-    probe.join().unwrap();
-    assert!(cost >= 2, "unexpected reactor FD cost: {cost}");
-    assert_eq!(fds(), baseline);
-    use nix::sys::resource::{getrlimit, setrlimit, Resource};
+    use nix::sys::resource::{getrlimit, rlim_t, setrlimit, Resource};
+    struct Restore(Option<(rlim_t, rlim_t)>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            if let Some((soft, hard)) = self.0 {
+                let _ = setrlimit(Resource::RLIMIT_NOFILE, soft, hard);
+            }
+        }
+    }
     let (soft, hard) = getrlimit(Resource::RLIMIT_NOFILE).unwrap();
-    setrlimit(Resource::RLIMIT_NOFILE, baseline + 2 * cost - 1, hard).unwrap();
-    let failure = system.pinned_group("rollback-fd", cpus[..2].to_vec());
+    let mut restore = Restore(Some((soft, hard)));
+    let ceiling = soft.min(baseline + 64);
+    setrlimit(Resource::RLIMIT_NOFILE, ceiling, hard).unwrap();
+    let mut ballast = Vec::new();
+    loop {
+        match std::fs::File::open("/dev/null") {
+            Ok(file) => ballast.push(file),
+            Err(error) if error.raw_os_error() == Some(nix::libc::EMFILE) => break,
+            Err(error) => panic!("unexpected descriptor exhaustion error: {error}"),
+        }
+        assert!(ballast.len() <= ceiling as usize);
+    }
+    // Release one real descriptor slot per attempt. Counting open FDs or
+    // measuring a raw reactor is insufficient: inherited holes and live runtime
+    // descriptor ownership differ across runners and sanitizer configurations.
+    if layout.as_deref() == Some("sparse") {
+        // Release the low, noncontiguous holes first; ordinary mode releases
+        // contiguous high descriptors. Ballast initially fills both layouts.
+        ballast.reverse();
+    }
+    let mut partial_failure = None;
+    let mut unexpected = None;
+    while let Some(file) = ballast.pop() {
+        drop(file);
+        match system.pinned_group("rollback-fd", cpus[..2].to_vec()) {
+            Err(SystemError::Runtime(error)) if error.starts_with("pinned shard 1 failed:") => {
+                partial_failure = Some(error);
+                break;
+            }
+            Err(SystemError::Runtime(_)) => (),
+            other => {
+                unexpected = Some(format!("{other:?}"));
+                break;
+            }
+        }
+    }
     setrlimit(Resource::RLIMIT_NOFILE, soft, hard).unwrap();
+    restore.0 = None;
+    drop(ballast);
     assert!(
-        matches!(failure, Err(SystemError::Runtime(_))),
-        "second reactor must fail after the first starts"
+        partial_failure.is_some(),
+        "failed to inject second-shard construction failure: {unexpected:?}"
     );
     assert_eq!(
         fds(),

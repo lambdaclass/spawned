@@ -48,7 +48,10 @@ impl GroupInner {
                             Some(*cpu),
                             stop.clone(),
                             &mut owners,
-                        )?;
+                        )
+                        .map_err(|error| {
+                            SystemError::Runtime(format!("pinned shard {index} failed: {error}"))
+                        })?;
                         targets.push(Target {
                             handle,
                             native: None,
