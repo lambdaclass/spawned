@@ -1,0 +1,59 @@
+name: Failpoints
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  failpoints:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.93.0
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Failpoint registry unit tests
+        run: cargo test --locked -p spawned-concurrency --features failpoints --lib failpoints
+      - name: Lifecycle failpoint scenarios
+        run: cargo test --locked -p spawned-concurrency --features failpoints --test failpoints
+      - name: Thread-only build with failpoints
+        run: |
+          cargo test --locked -p spawned-concurrency --no-default-features --features threads,failpoints --lib failpoints
+          cargo clippy --locked -p spawned-concurrency --no-default-features --features threads,failpoints --all-targets -- -D warnings
+      - name: Clippy with failpoints
+        run: cargo clippy --locked -p spawned-concurrency --features failpoints --all-targets -- -D warnings
+
+  compiled-out:
+    # Default builds must contain no failpoint code: site names are string
+    # literals and the registry has `failpoints` in its symbol paths, so both
+    # are absent unless the feature is enabled. The feature build is the
+    # positive control that the check can see them.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.93.0
+      - uses: Swatinem/rust-cache@v2
+      - name: Feature build contains sites (positive control)
+        run: |
+          cargo build --locked --release -p name_server --features spawned-concurrency/failpoints
+          grep -a -q 'actor.before_started' target/release/name_server
+          nm -C target/release/name_server | grep -q 'failpoints::'
+      - name: Default build contains no failpoint code
+        run: |
+          cargo build --locked --release -p name_server
+          if grep -a -q -E 'actor\.before_started|supervisor\.before_restart|failpoint' target/release/name_server; then
+            echo "failpoint strings found in default build" >&2
+            exit 1
+          fi
+          if nm -C target/release/name_server | grep -q -i 'failpoint'; then
+            echo "failpoint symbols found in default build" >&2
+            exit 1
+          fi

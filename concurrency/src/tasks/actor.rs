@@ -427,6 +427,7 @@ impl<A: Actor> Context<A> {
     where
         A: Handler<Down>,
     {
+        fail_point!("monitor.before_install");
         let monitor_ref = MonitorRef::next();
         let active = spawned_rt::tasks::CancellationToken::new();
 
@@ -1236,9 +1237,12 @@ async fn run_actor_lifecycle<A: Actor>(
             return ExitReason::Normal;
         }
     }
-    let start_result = AssertUnwindSafe(async { actor.started(&ctx).await })
-        .catch_unwind()
-        .await;
+    let start_result = AssertUnwindSafe(async {
+        fail_point!("actor.before_started", async);
+        actor.started(&ctx).await
+    })
+    .catch_unwind()
+    .await;
     if let Err(panic) = start_result {
         let msg = panic_message(&*panic);
         crate::actor_cleanup::log_safely(|| {
@@ -1248,6 +1252,7 @@ async fn run_actor_lifecycle<A: Actor>(
         return ExitReason::Panic(format!("panic in started(): {msg}"));
     }
 
+    fail_point!("actor.after_started_before_ready", async);
     if let Some(scope) = &ctx.managed {
         if !scope.mark_ready() {
             scope.stop(ExitReason::Shutdown);
@@ -1258,9 +1263,12 @@ async fn run_actor_lifecycle<A: Actor>(
         if let Some(scope) = &ctx.managed {
             scope.end_running();
         }
-        if let Err(panic) = AssertUnwindSafe(async { actor.stopped(&ctx).await })
-            .catch_unwind()
-            .await
+        if let Err(panic) = AssertUnwindSafe(async {
+            fail_point!("actor.before_stopped", async);
+            actor.stopped(&ctx).await
+        })
+        .catch_unwind()
+        .await
         {
             let msg = panic_message(&*panic);
             crate::actor_cleanup::log_safely(|| {
@@ -1348,9 +1356,12 @@ async fn run_actor_lifecycle<A: Actor>(
         scope.end_running();
     }
     cancellation_token.cancel();
-    let stop_result = AssertUnwindSafe(async { actor.stopped(&ctx).await })
-        .catch_unwind()
-        .await;
+    let stop_result = AssertUnwindSafe(async {
+        fail_point!("actor.before_stopped", async);
+        actor.stopped(&ctx).await
+    })
+    .catch_unwind()
+    .await;
     if let Err(panic) = stop_result {
         let msg = panic_message(&*panic);
         crate::actor_cleanup::log_safely(|| {

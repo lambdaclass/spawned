@@ -492,6 +492,7 @@ impl SystemInner {
                 // At the initial shutdown deadline, signal remaining targets rather
                 // than leaving earlier dependencies running behind stuck cleanup.
                 for target in targets.iter().rev() {
+                    fail_point!("system.shutdown_before_target", async);
                     let remaining = grace.saturating_sub(began.elapsed());
                     match target {
                         ShutdownTarget::Unit(entry) => {
@@ -793,6 +794,7 @@ impl ExecutionGroup {
         &self,
         parent: Option<Arc<Admission>>,
     ) -> Result<(Arc<Scope>, Lease), SystemError> {
+        fail_point!("system.reserve" => return Err(SystemError::Capacity));
         let _parent = parent.as_ref().map(|p| lock(&p.0));
         if _parent.as_deref() == Some(&false) {
             return Err(SystemError::Closed);
@@ -920,6 +922,9 @@ impl Scope {
         id: crate::ActorId,
         actor: impl Clone + Send + Sync + 'static,
     ) -> Result<(), crate::registry::ManagedRegistrationError> {
+        fail_point!("registry.before_register" => {
+            return Err(crate::registry::ManagedRegistrationError::OwnerClosed)
+        });
         let parent = self.parent.as_ref().map(|p| lock(&p.0));
         let Some(group) = self.group.upgrade() else {
             return Err(crate::registry::ManagedRegistrationError::OwnerClosed);

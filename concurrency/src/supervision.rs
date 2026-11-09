@@ -1448,7 +1448,7 @@ async fn run_supervisor_body(
     for (index, child) in children.iter().enumerate().rev() {
         let c = index + 1;
         trace::emit(core.trace, || Event::new("SupStopTurn", c, ""));
-
+        fail_point!("shutdown.before_stop_child", async);
         child.stop();
         let finished = rt::timeout(child.shutdown_timeout(), system::wait_true(child.done()))
             .await
@@ -1700,6 +1700,7 @@ async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, core: Arc<C
         let mut backoff = Duration::ZERO;
         let mut retry_reservation = None;
         if !first {
+            fail_point!("supervisor.before_restart", async);
             let Some(reservation) = core.reserve_retry(c) else {
                 // A concurrent stop wins: only fail a supervisor that is still open.
                 trace::atomic(|| {
@@ -1754,7 +1755,7 @@ async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, core: Arc<C
                 trace::emit(core.trace, || Event::new("BackoffDone", c, "closed"));
                 break;
             }
-
+            fail_point!("supervisor.during_backoff", async);
             if view.recovery(last_recovery).is_some() {
                 continue;
             }
@@ -1889,7 +1890,11 @@ async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, core: Arc<C
             if !attempt_scope.can_start() {
                 return Err("scope closed before construction".into());
             }
-            let factory_work = AssertUnwindSafe(async move { factory(ctx).await }).catch_unwind();
+            let factory_work = AssertUnwindSafe(async move {
+                fail_point!("child.factory", async => return Err("failpoint child.factory".into()));
+                factory(ctx).await
+            })
+            .catch_unwind();
             let result = match select(
                 Box::pin(attempt_scope.token.cancelled()),
                 Box::pin(factory_work),
@@ -1934,6 +1939,17 @@ async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, core: Arc<C
                 Err("startup deadline exceeded".to_string())
             }
             Either::Right((Ok(result), _)) => result,
+        };
+        #[cfg(feature = "failpoints")]
+        let began = match began {
+            Ok(actor) => {
+                let mut began = Ok(actor);
+                fail_point!("child.after_ready_before_publish", async => {
+                    began = Err("failpoint child.after_ready_before_publish".to_string())
+                });
+                began
+            }
+            failed => failed,
         };
         let mut ready_at = None;
         let mut exit = None;
@@ -2050,7 +2066,7 @@ async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, core: Arc<C
             v.snapshot.last_exit = exit.clone();
             v.snapshot.state = ChildState::Stopping;
         });
-
+        fail_point!("child.before_cleanup_join", async);
         let remaining = cleanup_until
             .map(|started| spec.shutdown_timeout.saturating_sub(started.elapsed()))
             .unwrap_or(spec.shutdown_timeout);

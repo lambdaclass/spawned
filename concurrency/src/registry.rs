@@ -83,6 +83,7 @@ pub struct RegistrationGuard {
 }
 impl Drop for RegistrationGuard {
     fn drop(&mut self) {
+        fail_point!("registry.before_unregister");
         let removed = {
             let mut store = global_store().write().unwrap_or_else(|p| p.into_inner());
             if store
