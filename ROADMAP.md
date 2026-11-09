@@ -39,15 +39,38 @@ handlers and the existing default behavior. New policies are explicit and opt-in
 3. **Release v0.7 and run it in Ethlambda** (rank 5), including the per-method
    request timeout (rank 5a), a migration guide for the clients' hand-wired
    shutdown and startup, and an example for every way of using the library
-   (rank 5b, [examples to add](#examples-to-add)). In parallel, the
-   developer-experience track (ranks 6-10: test kit, deadlock detection, stall
-   watchdog, flight recorder, published snapshots), motivated by the
-   [client sweep](#client-sweep-production-pain).
-4. **Then, guided by application needs:** request semantics, starting with
-   deferred replies and pipe-to-self (ranks 11-16), with the dynamic
-   supervisor (rank 12a) alongside the keyed registry; admission, credits and
-   deadlines as one design package (ranks 17-19); the testing flagship (ranks
-   20-22); then ranks 23-41 when a client or user justifies them.
+   (rank 5b, [examples to add](#examples-to-add)). Release blockers from the
+   review of the timeout and release-gate commits: `#[protocol]` traits with
+   supertraits such as `Debug` must keep compiling; the API gate must also
+   compare `--no-default-features` and `metrics` against v0.6.0 (the new default
+   `async` feature moves `tasks` behind it), with a migration note;
+   `cfg_attr(request_timeout)` must work or be rejected; the API script must run
+   on stock Python; no flaky examples. Before tagging, move dated review reports
+   and run evidence into `legacy/`. After the tag: migrate Ethlambda (shutdown
+   deadline via `ActorSystem`, supervision, per-method timeouts) with fault
+   injection, then Ethrex (racy Ctrl-C shutdown, `ActorStopped` exits).
+   In parallel, the developer-experience track (ranks 6-10: test kit, deadlock
+   detection, stall watchdog, flight recorder, published snapshots), motivated
+   by the [client sweep](#client-sweep-production-pain).
+4. **Request semantics:** deferred replies and pipe-to-self (ranks 11-16), with
+   the dynamic supervisor (rank 12a) alongside the keyed registry; then
+   admission, credits and deadlines as one design package (ranks 17-19). Each
+   ships under the [verification rule](#verification-rule). Before starting,
+   re-rank phases 4-6 with what the Ethlambda and Ethrex migrations taught,
+   as rank 0 did with the client search.
+5. **The testing flagship (ranks 20-22):** ordering exploration at the actor
+   level (Coyote-style controlled delivery), per-actor crash tapes, then record
+   in production and replay in simulation. After phase 4, because exploration
+   and replay need well-defined reply, registry and mailbox semantics. The
+   go/no-go: a reintroduced known race reproduces every time.
+6. **Needs-driven (ranks 23-41):** scaling patterns (virtual actors, groups,
+   streams), observability, ergonomics (middleware, `gen_statem`-style
+   behavior, batch handlers), load policies and integrations. Nothing here is
+   scheduled; each item needs a client or user first.
+7. **Research or separate products (ranks 42-51):** distribution, durability
+   (outbox, durable timers, Temporal-style execution) and language-level ideas.
+   Likely separate crates, only if someone builds a multi-node or durable system
+   on Spawned.
 
 A full Ethrex/Ethlambda replay or same-node canary remains the validation gate.
 Local EngineClient probes and synthetic isolation/pipeline studies are different
