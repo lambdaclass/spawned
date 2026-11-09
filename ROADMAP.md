@@ -46,7 +46,9 @@ handlers and the existing default behavior. New policies are explicit and opt-in
    `async` feature moves `tasks` behind it), with a migration note;
    `cfg_attr(request_timeout)` must work or be rejected; the API script must run
    on stock Python; no flaky examples. Before tagging, move dated review reports
-   and run evidence into `legacy/`. After the tag: migrate Ethlambda (shutdown
+   and run evidence into `legacy/`. Both clients pin spawned 0.5.0, so their
+   upgrade crosses 0.6 as well; the migration guide must cover 0.5 to 0.7 in one
+   path. After the tag: migrate Ethlambda (shutdown
    deadline via `ActorSystem`, supervision, per-method timeouts) with fault
    injection, then Ethrex (racy Ctrl-C shutdown, `ActorStopped` exits).
    In parallel, the developer-experience track (ranks 6-10: test kit, which
