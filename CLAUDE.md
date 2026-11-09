@@ -9,7 +9,13 @@ spawned/
 ├── concurrency/     # Main library: Actor trait, timers, streams
 │   └── src/
 │       ├── tasks/   # Async version (requires tokio runtime)
-│       └── threads/ # Sync version (native OS threads)
+│       ├── threads/ # Sync version (native OS threads)
+│       ├── system.rs       # ActorSystem, ExecutionGroup (unreleased)
+│       ├── supervision.rs  # Supervisor, ChildSpec, OneForOne (unreleased)
+│       ├── child_handle.rs # ChildHandle, ActorId, ExitReason
+│       ├── monitor.rs      # MonitorRef, Down
+│       ├── link.rs         # links, Exit, trap_exit
+│       └── metrics.rs      # optional `metrics` feature
 ├── rt/              # Runtime abstractions (wraps tokio, provides CancellationToken)
 │   └── src/
 │       ├── tasks/   # Tokio-based runtime
@@ -36,6 +42,12 @@ Both provide identical Actor API. The `tasks` module has `Backend` enum: `Async`
 | `Recipient<M>` | Type-erased per-message reference (`Arc<dyn Receiver<M>>`) |
 | `CancellationToken` | Signal cancellation to timers/actors |
 | `TimerHandle` | Handle for `send_after`/`send_interval` |
+| `ChildHandle` / `ActorId` | Type-erased handle and identity for monitors, links and exits |
+| `ExitReason` | `Normal`, `Shutdown`, `Panic(String)`, `Kill` |
+| `MonitorRef` / `Down` | Unidirectional death observation (`ctx.monitor`) |
+| `Exit` / `#[exit_received]` | Bidirectional links and trapped exits (`ctx.link`, `ctx.trap_exit`) |
+| `ActorSystem` / `ExecutionGroup` | Owned placement with worker budgets and ordered shutdown (unreleased) |
+| `Supervisor` / `ChildSpec` / `SupervisedChild` | OneForOne supervision (unreleased) |
 
 ## Actor Lifecycle
 

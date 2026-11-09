@@ -150,7 +150,7 @@ For developers familiar with Erlang/OTP:
 | `gen_server:call/2` | `ns.find(...)` | Direct method call on ActorRef |
 | `gen_server:cast/2` | `ns.notify(...)` | Direct method call (send variant) |
 | `Pid` | `ActorRef<T>` | Handle to a running actor |
-| `start_link/0` | `actor.start()` | Start the actor |
+| `start_link/0` | `actor.start_linked(&ctx)` | Start the actor |
 | `register/2` | `registry::register(name, ref)` | Register an actor by name |
 | `whereis/1` | `registry::whereis(name)` | Look up an actor by name |
 

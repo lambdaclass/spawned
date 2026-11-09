@@ -17,6 +17,8 @@ Complete reference for the spawned actor framework. For a quick introduction, se
 - [Message Trait](#message-trait)
 - [Error Handling](#error-handling)
 - [spawned-rt](#spawned-rt)
+- [Links and trapped exits](#links-and-trapped-exits)
+- [Owned placement and OneForOne recovery (unreleased)](#owned-placement-and-oneforone-recovery-unreleased)
 
 ---
 
@@ -80,6 +82,15 @@ From outside, there is no direct stop method on `ActorRef`. Design your protocol
 | `ctx.request_raw(msg)` | Send a request and get a raw oneshot receiver |
 | `ctx.recipient::<M>()` | Get a type-erased `Recipient<M>` for this actor |
 | `ctx.actor_ref()` | Get an `ActorRef<A>` from the context |
+| `ctx.id()` | This actor's `ActorId` |
+| `ctx.monitor(&child_handle)` | Receive a `Down` message when the target exits; returns a `MonitorRef` |
+| `ctx.demonitor(monitor_ref)` | Cancel a monitor |
+| `ctx.link(&child_handle)` / `ctx.unlink(&child_handle)` | Bidirectional exit propagation (see [Links and trapped exits](#links-and-trapped-exits)) |
+| `ctx.trap_exit(bool)` | Receive linked exits as messages instead of being cancelled |
+| `ctx.spawn_helper(future)` / `ctx.spawn_blocking_helper(f)` | Actor-owned helper tasks, cancelled and joined before cleanup completes (unreleased) |
+| `ctx.register_name(name)` | Register this actor under a name, released with its generation (unreleased) |
+| `ctx.execution_group()` | The `ExecutionGroup` a managed actor runs on (unreleased) |
+| `ctx.mailbox_depth()` | Queued messages (with the `metrics` feature) |
 
 `Context::from_ref(&actor_ref)` creates a context from an `ActorRef`, useful for setting up timers or stream listeners from outside the actor.
 
@@ -109,6 +120,11 @@ async fn handle_tick(&mut self, _msg: Tick, ctx: &Context<Self>) {
 | `actor_ref.recipient::<M>()` | Get a type-erased `Recipient<M>` |
 | `actor_ref.context()` | Get a `Context<A>` (for timer setup, etc.) |
 | `actor_ref.join()` | Wait until the actor has fully stopped (tasks: `.await`, threads: blocking) |
+| `actor_ref.id()` | The actor's `ActorId` |
+| `actor_ref.child_handle()` | Type-erased `ChildHandle` for monitors, links and exit observation |
+| `actor_ref.exit_reason()` / `actor_ref.wait_exit()` | The `ExitReason` once stopped |
+| `actor_ref.ready()` | Wait until a managed actor's `started()` completed (unreleased) |
+| `actor_ref.mailbox_depth()` | Queued messages (with the `metrics` feature) |
 
 ### Starting an actor
 

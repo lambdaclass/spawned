@@ -39,7 +39,8 @@ No single tool covers the problem. Each layer catches a different class of bug.
 
 ### What to model first
 
-The current lifecycle contract, before supervision:
+The base actor lifecycle first, then the implemented OneForOne supervision
+contract (before OneForAll/RestForOne are designed):
 
 - exit reasons (`Normal`, `Shutdown`, `Panic`, `Kill`);
 - monitors and demonitor;
@@ -135,7 +136,8 @@ definition of correct behavior for the implementation.
 ## Order
 
 1. Miri and ThreadSanitizer in CI (hours).
-2. TLA+ spec of the current lifecycle (before supervision design).
+2. TLA+ spec of the base lifecycle and the implemented OneForOne contract
+   (before OneForAll/RestForOne).
 3. Trace validation against existing scenario and churn tests.
 4. Shuttle for whole-runtime scenarios.
 5. cargo-mutants periodically.

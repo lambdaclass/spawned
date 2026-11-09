@@ -28,8 +28,9 @@ design before their APIs are frozen.
 
 Actor systems and supervision are capabilities, not scheduler micro-optimizations.
 They can keep business methods ordinary Rust while the wiring layer selects
-execution/recovery/resource policy. This is a design direction, not an existing
-v0.6.0 API. Tokio remains the default. Lower-overhead optional metrics (for example
+execution/recovery/resource policy. Execution groups and OneForOne supervision
+are now implemented on main (unreleased, not in v0.6.0); the rest is a design
+direction. Tokio remains the default. Lower-overhead optional metrics (for example
 bounded per-worker aggregation) are another hypothesis to profile; the measured
 metrics overhead does not isolate shared atomics as its sole cause.
 
