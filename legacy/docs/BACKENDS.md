@@ -28,7 +28,7 @@ let isolated = MyActor::new().start_with_backend(Backend::Thread);
 Stop and await actors when their work is finished. A dedicated thread does not
 make one long-running handler preemptible, and a persistent blocking actor does
 not release its worker between messages. Size persistent populations accordingly.
-The [API guide](API-GUIDE.md#backend-selection-tasks-mode) covers these APIs.
+The [API guide](../../docs/GUIDE.md#execution-modes-and-backends) covers these APIs.
 
 `Backend::Thread` drives actor lifecycle hooks and handlers on its dedicated root
 thread. Its isolated multithread Tokio runtime has one async worker, explicitly
@@ -51,8 +51,8 @@ nonterminating blocking helpers can keep the native thread alive during teardown
 explicit worker budget. `actor.start_on(&group)` places an actor there; ordinary
 ActorRef request/reply crosses groups. The system owns admission, registered
 helpers and runtime teardown, with incomplete shutdown reports at expiry.
-[Usage and recovery](EXECUTION-GROUPS.md) and
-[asserted examples](../examples/capabilities/README.md) describe the contracts.
+[Usage and recovery](../../docs/GUIDE.md#execution-groups-and-supervision) and
+[asserted examples](../../examples/capabilities/README.md) describe the contracts.
 The budget counts async workers; owners/control and blocking helpers add threads.
 These groups do not currently expose CPU affinity or spinning.
 

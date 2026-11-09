@@ -1,7 +1,7 @@
 # Proposed capability examples
 
 This tracks example coverage and future work; rows with runnable links have an initial implementation on main (unreleased). The current implementation
-order is [the roadmap](../../docs/ROADMAP.md); the [ranked research backlog](../../docs/research/idea-priorities.md)
+order is [the roadmap](../../../ROADMAP.md); the [ranked research backlog](../../docs/research/idea-priorities.md)
 explains value, dependencies and sources. Ranks are planning priorities, not
 independent sequential implementation steps. The rank column uses the backlog's
 current numbering.
@@ -44,20 +44,20 @@ New examples the client evidence asks for, beyond the table below:
 
 | Backlog rank | Proposed capability | Example to deliver with it |
 |---|---|---|
-| Implemented | Runtime ownership / execution groups | Critical router and background workers in named groups; partial startup failure; explicit stop/join. [Owned groups example](../capabilities/src/bin/execution_groups.rs); dedicated/pinned group profiles remain planned. |
-| Implemented; 23 | Supervision, paired with execution groups | OneForOne with child factories, restart modes and budget/backoff; restart in the same group, show an old reference failing and resolve the replacement explicitly. [Recovery example](../capabilities/src/bin/supervision_recovery.rs) is implemented; integration tests also stop during backoff. OneForAll/RestForOne remain planned. |
+| Implemented | Runtime ownership / execution groups | Critical router and background workers in named groups; partial startup failure; explicit stop/join. [Owned groups example](../../../examples/capabilities/src/bin/execution_groups.rs); dedicated/pinned group profiles remain planned. |
+| Implemented; 23 | Supervision, paired with execution groups | OneForOne with child factories, restart modes and budget/backoff; restart in the same group, show an old reference failing and resolve the replacement explicitly. [Recovery example](../../../examples/capabilities/src/bin/supervision_recovery.rs) is implemented; integration tests also stop during backoff. OneForAll/RestForOne remain planned. |
 | 25 | Tokio-free threads | Run protocol requests, timer, monitor and shutdown without Tokio in the dependency graph. Existing native-thread examples still compile Tokio. |
 | 12 | Lifecycle-owned registries (managed generation guards implemented) | Register a service, crash it and verify its entry is removed without deleting a replacement's registration. |
 | Implemented | Fallible startup / readiness (factory Results and managed readiness implemented) | Fail initialization and report the error before admitting work; contrast successful readiness. |
-| 13 | Coordinated shutdown | Close admission, drain dependencies within a deadline and report unfinished work. [Finite-batch recipe works today](../capabilities/src/bin/graceful_drain.rs). |
+| 13 | Coordinated shutdown | Close admission, drain dependencies within a deadline and report unfinished work. [Finite-batch recipe works today](../../../examples/capabilities/src/bin/graceful_drain.rs). |
 | 11 | Deferred replies / delegation / pipe-to-self | Route a slow request while accepting another message; bound pending replies and demonstrate owner exit and late completion. |
 | 17 | Bounded mailboxes | A slow consumer reaches capacity; demonstrate explicit rejection and cancellable waiting without blocking actor progress. |
-| 18 | Byte/work credits | Reserve before decoding a large payload; pass credit across stages and reclaim it after rejection/panic. [Payload-budget adapter works today](../capabilities/src/bin/byte_budget_pipeline.rs). |
-| 5a, 19 | Inherited deadlines | Exhaust an ingress budget and skip stale queued work without granting downstream calls fresh time. [Current timeout behavior is demonstrated here](../capabilities/src/bin/timeout_outcomes.rs). |
+| 18 | Byte/work credits | Reserve before decoding a large payload; pass credit across stages and reclaim it after rejection/panic. [Payload-budget adapter works today](../../../examples/capabilities/src/bin/byte_budget_pipeline.rs). |
+| 5a, 19 | Inherited deadlines | Exhaust an ingress budget and skip stale queued work without granting downstream calls fresh time. [Current timeout behavior is demonstrated here](../../../examples/capabilities/src/bin/timeout_outcomes.rs). |
 | 15 | Actor-owned helpers (managed scope implemented) | Stop an actor with active helpers, reject new helper admission and await owned cleanup to a deadline. |
 | 14 | Fair control path | Observe lifecycle control behind a data backlog while checking ordinary work still progresses; no handler preemption. |
 | 28 | Causal tracing | Follow one ingress through fan-out/fan-in, preserving origin across awaits and runtime boundaries. |
-| 29 | Bounded cohort metrics | Separate busy importers from idle peers with a bounded label set and correct gauge cleanup. [Aggregate metrics work today](../capabilities/src/bin/framework_metrics.rs). |
+| 29 | Bounded cohort metrics | Separate busy importers from idle peers with a bounded label set and correct gauge cleanup. [Aggregate metrics work today](../../../examples/capabilities/src/bin/framework_metrics.rs). |
 | 33 | Typed streams / completion watermarks | Pull a bounded stream, stall an early item, then show released ownership differs from explicit successful acknowledgement. |
 | 34 | Blocking worker leasing | Thousands of mostly idle actors share a bounded blocking pool while each actor stays serial. |
 | 35 | Batching | Batch database writes up to a count/time budget; preserve documented ordering and individual reply/failure accounting. |
@@ -81,7 +81,7 @@ New examples the client evidence asks for, beyond the table below:
 
 Full deterministic environment simulation remains research. Existing controlled
 handler-progress replays, failure windows and request-history checks are in
-[`concurrency/tests`](../../concurrency/tests) and documented in
-[testing](../../docs/TESTING.md); they do not implement the future capabilities
+[`concurrency/tests`](../../../concurrency/tests) and documented in
+[testing](../../../docs/TESTING.md); they do not implement the future capabilities
 listed above. A real Ethrex/Ethlambda workload should validate runtime and
 admission choices alongside implementation, not wait for the entire list.

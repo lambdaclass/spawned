@@ -1,8 +1,8 @@
 # Execution groups and OneForOne: implementation review
 
 Reviewed 2026-11-08 at the user's request. This implements the initial
-[ownership/recovery contract](../design/execution-groups-supervision.md), with
-[usage guidance](../EXECUTION-GROUPS.md) and two asserted examples. It remains
+[ownership/recovery contract](../../../docs/design/execution-groups-supervision.md), with
+[usage guidance](../../../docs/GUIDE.md#execution-groups-and-supervision) and two asserted examples. It remains
 unreleased. This record covers parked async groups and OneForOne only.
 
 **Final AGY verdict: PASS — Ready to merge. No Critical, High, or Medium issues remain.**

@@ -2,7 +2,7 @@
 
 Assessment updated 2026-11-09 against main after execution groups and OneForOne
 supervision landed (`12baea41`). **This is the single ranked backlog.** The
-[roadmap](../ROADMAP.md) states the current order in brief; this page holds the
+[roadmap](../../../ROADMAP.md) states the current order in brief; this page holds the
 detail. Other research pages ([framework ideas](framework-ideas.md),
 [concurrency ideas](concurrency-ideas.md), [Commonware](commonware.md),
 [Silver/flux](silver-flux.md), [verification strategy](verification-strategy.md))
@@ -182,7 +182,7 @@ capabilities above. Keep generated cases/Loom, add semantic failure coverage,
 independent short request histories and controlled handler-progress replays.
 Those replays do not yet control arbitrary Tokio/OS scheduling, timer firing or
 all link/monitor interleavings. Freeze only deliberately stable lifecycle
-contracts in conformance fixtures. See [testing](../TESTING.md).
+contracts in conformance fixtures. See [testing](../../../docs/TESTING.md).
 
 Backend research (schedulers, queues, affinity, I/O engines) stays frozen until a
 client profile supplies a concrete reason.

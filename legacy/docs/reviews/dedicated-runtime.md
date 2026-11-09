@@ -42,7 +42,7 @@ On fede, logical CPUs 2–5, nice 10, Rust 1.93.0, build jobs 2:
   churn and both Loom models pass. Clippy uses the installed matching 1.98.1
   Rust/Clippy pair; ordinary tests use 1.93.0. Exact commands and sampled resource
   peaks are in [check records](dedicated-runtime-evidence/checks/runs.json).
-- The [dedicated-thread example](../../examples/capabilities/src/bin/dedicated_thread.rs)
+- The [dedicated-thread example](../../../examples/capabilities/src/bin/dedicated_thread.rs)
   runs successfully and demonstrates independent helper progress. CI runs it
   alongside the other capability examples.
 

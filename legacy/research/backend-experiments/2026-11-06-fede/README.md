@@ -49,7 +49,7 @@ not Flux's broadcast, Copy-only payload or overwrite semantics.
 The raw dataset is deliberately retained as requested, with a hash manifest and
 original diagnostics. Generated artifacts are marked in GitHub diffs. This is a
 bounded research snapshot, not application source or a supported feature set.
-Plot versions are pinned in [requirements-research.txt](../../../benchmarks/requirements-research.txt);
+Plot versions are pinned in [requirements-research.txt](../../../../benchmarks/requirements-research.txt);
 the recorded analysis orchestration files are in [orchestration/](orchestration/).
 See the [transcript index](reviews/INDEX.md) for failed or incomplete review attempts.
 

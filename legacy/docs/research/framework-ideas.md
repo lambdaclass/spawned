@@ -2,7 +2,7 @@
 
 Date: 2026-11-08. Status: reference material (idea catalog and design notes),
 not a commitment or release plan. **Rankings and order live only in the single
-backlog, [idea priorities](idea-priorities.md), and the [roadmap](../ROADMAP.md).** Written against
+backlog, [idea priorities](idea-priorities.md), and the [roadmap](../../../ROADMAP.md).** Written against
 `0ef612dd21e8e8a401422eb06e1f31f5197cd4b2` (v0.6.0), before execution groups and
 OneForOne supervision landed on main; see [Status since writing](#status-since-writing).
 See also the [concurrency ideas research](concurrency-ideas.md) and the

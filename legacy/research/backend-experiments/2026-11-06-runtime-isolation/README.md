@@ -3,7 +3,7 @@
 Actors on separate Tokio runtimes communicate through the same `ActorRef` and
 typed request/reply APIs. Keep the runtimes alive, start each actor while entered
 into its intended runtime, and stop/await actors before dropping their runtimes.
-The [complete executable example](../../../concurrency/benches/runtime_isolation.rs)
+The [complete executable example](../../../../concurrency/benches/runtime_isolation.rs)
 exercises this with ordinary actors; no new public backend API is required.
 
 A split can protect a critical path from other runnable work, but only if the
@@ -98,7 +98,7 @@ taskset -c 2,3,4,5 <runtime_isolation-executable> \
 
 Use `shared`/`split`, `direct`/`relay` and `idle`/`busy` to select a cell. The
 [controller](isolation10.py) records source/binary/controller hashes and the full
-32-process schedule. [Plot dependencies](../../../benchmarks/requirements-research.txt)
+32-process schedule. [Plot dependencies](../../../../benchmarks/requirements-research.txt)
 record the used Python 3.12.3 environment. Rebuild the report on fede with:
 
 ```sh

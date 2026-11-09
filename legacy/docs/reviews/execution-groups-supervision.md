@@ -1,8 +1,8 @@
 # AGY review: execution groups plus supervision
 
 Reviewed 2026-11-08 at the user's request. The
-[MVP proposal](../design/execution-groups-supervision.md) and
-[roadmap](../ROADMAP.md) make runtime ownership/placement and automatic recovery
+[MVP proposal](../../../docs/design/execution-groups-supervision.md) and
+[roadmap](../../../ROADMAP.md) make runtime ownership/placement and automatic recovery
 one combined milestone, delivered as 1a then 1b.
 
 **Final AGY verdict: no remaining blocking design/API-contract gaps.** This is

@@ -1,9 +1,9 @@
 # Archived roadmap acceptance criteria
 
 This document preserves the earlier acceptance criteria, not the current
-implementation order. See the [current roadmap](../ROADMAP.md) for public runtime
+implementation order. See the [current roadmap](../../../ROADMAP.md) for public runtime
 placement plus supervision as the next combined milestone, followed by
-Tokio-free threads. The [current MVP design](execution-groups-supervision.md)
+Tokio-free threads. The [current MVP design](../../../docs/design/execution-groups-supervision.md)
 supersedes ordering assumptions in this archive.
 
 Updated 2026-11-06. This is a proposed implementation order, not a release-date
@@ -47,7 +47,7 @@ initial metrics feature is described below.
 
 The initial `metrics` feature in v0.6.0 implements fixed aggregate counters,
 mailbox-depth access, sampled timing and pull-based Prometheus text output;
-see [the metrics guide](../METRICS.md). Oldest-message age, active-monitor counts,
+see [the metrics guide](../../../docs/GUIDE.md#metrics). Oldest-message age, active-monitor counts,
 causal context and additional exporters remain future work. An application
 benchmark must still establish useful labels, collection cost and sampling.
 
@@ -158,7 +158,7 @@ actors, and a project website remain separate research or product work.
 
 Deterministic testing is distinct from replacing the production runtime:
 current generated seeds reproduce operations, not thread schedules. Continue
-improving [tests](../TESTING.md) throughout every milestone.
+improving [tests](../../../docs/TESTING.md) throughout every milestone.
 
 ## Backend research checkpoint
 
@@ -188,7 +188,7 @@ Exit reasons ([PR163](https://github.com/lambdaclass/spawned/pull/163)), typed
 child handles/identities ([PR164](https://github.com/lambdaclass/spawned/pull/164)),
 monitors ([PR165](https://github.com/lambdaclass/spawned/pull/165)), and links
 ([PR166](https://github.com/lambdaclass/spawned/pull/166)) are implemented. See the
-[usage guide](../API-GUIDE.md#links-and-trapped-exits) and
+[usage guide](../../../docs/GUIDE.md#links-and-trapped-exits) and
 [lifecycle review](../reviews/pr-166-links.md) for current behavior. Normal linked
 exits are ignored unless trapped; abnormal exits cancel non-trapping peers;
 `Kill` cannot be trapped but remains cooperative. The current exit-reason variants
@@ -208,4 +208,4 @@ predates the current APIs and contains outdated status and competitor claims.
 
 Other contract-focused candidates are described in the [concurrency ideas research](../research/concurrency-ideas.md). The single ranked backlog is [idea priorities](../research/idea-priorities.md).
 
-The [Commonware and capability review](../research/commonware.md) assesses actor systems/execution groups, supervision, admission control and typed streams as research capabilities. The [current roadmap](../ROADMAP.md) defines implementation order; these do not change the current release contract.
+The [Commonware and capability review](../research/commonware.md) assesses actor systems/execution groups, supervision, admission control and typed streams as research capabilities. The [current roadmap](../../../ROADMAP.md) defines implementation order; these do not change the current release contract.

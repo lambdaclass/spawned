@@ -119,6 +119,6 @@ found no blockers, did not execute tests, and lists boundaries checked separatel
 by the maintainer. A prior broad attempt produced only preambles and is not an
 approval. Review and tests are not a proof of every schedule.
 
-See [metrics usage and limits](../../../docs/METRICS.md) for exported definitions,
+See [metrics usage and limits](../../../../docs/GUIDE.md#metrics) for exported definitions,
 sampling bias and raw receiver limitations. Oldest-message age, active-monitor
 counts, causal tracing and an instrumented client workload remain separate work.

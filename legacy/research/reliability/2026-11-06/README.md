@@ -2,8 +2,8 @@
 
 Measured on fede-256gb, 2026-11-06. This campaign adds reliability evidence and
 application examples; it does not add production backends or change actor APIs.
-The [capability guide](../../../examples/capabilities/README.md) demonstrates what
-works today. The [roadmap](../../../docs/ROADMAP.md) and
+The [capability guide](../../../../examples/capabilities/README.md) demonstrates what
+works today. The [roadmap](../../../../ROADMAP.md) and
 [ranked backlog](../../../docs/research/idea-priorities.md) describe future work.
 
 ## What we learned
@@ -144,7 +144,7 @@ python3 benchmarks/report_reliability.py --input /tmp/spawned-reliability --out 
 Plotting requires matplotlib. The measured environment used matplotlib 3.11.2 and
 NumPy 2.5.4. `--phase tests`, `stress`, `startup` or `bench` can run separate parts.
 Use `--clippy-rustc`/`--clippy-rustdoc` only when the installed Clippy pair differs.
-Run [examples](../../../examples/capabilities/README.md) with the listed Cargo
+Run [examples](../../../../examples/capabilities/README.md) with the listed Cargo
 commands; CI also executes them. Resource budgets are adjustable and recorded.
 Builds allow 2GiB sampled aggregate RSS; runtime stress defaults to 512MiB, 768
 threads and 2,048 descriptors, with phase-specific time limits. Sampling can miss
@@ -161,7 +161,7 @@ brief peaks and can double count shared pages across processes.
 - [Independent Agy reliability review](evidence/agy-reliability-review.json): no
   blockers on supplied tests/runner. This review preceded the startup-driver fix;
   it is not approval of later code or a claim the reviewer executed tests.
-- [Report generator](../../../benchmarks/report_reliability.py) validates expected
+- [Report generator](../../../../benchmarks/report_reliability.py) validates expected
   completed case counts and emits tables/CSV/JSON/PNG/SVG. `SHA256SUMS` covers the
   archived study files; source revision and immutable data distinguish reruns.
 

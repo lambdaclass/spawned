@@ -1,7 +1,7 @@
 # Research: Silver / flux and what Spawned can adopt
 
 Date: 2026-11-05. Status: source analysis and proposed experiments, not a benchmark
-report or a commitment to replace Spawned's runtime. See the [roadmap](../ROADMAP.md).
+report or a commitment to replace Spawned's runtime. See the [roadmap](../../../ROADMAP.md).
 
 ## Revisions and scope
 
@@ -213,7 +213,7 @@ Keep Tokio removal, busy spinning, shared-memory transport and specialized threa
 execution as distinct, evidence-gated research projects, and preserve Spawned's
 protocol and actor model. This page is reference material; order and priority
 live only in [idea priorities](idea-priorities.md) and the
-[roadmap](../ROADMAP.md). Optional metrics and OneForOne supervision, which an
+[roadmap](../../../ROADMAP.md). Optional metrics and OneForOne supervision, which an
 earlier version of this section recommended next, have since been implemented.
 
 For Ethrex and Ethlambda, section A (a Tokio-free build) does not help: both

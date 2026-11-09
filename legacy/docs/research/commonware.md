@@ -12,7 +12,7 @@ Client profiling should begin in parallel with the first implementation mileston
 ## Library capabilities suggested by this review
 
 This page is reference material; it does not rank. Order and priority live only
-in [idea priorities](idea-priorities.md) and the [roadmap](../ROADMAP.md).
+in [idea priorities](idea-priorities.md) and the [roadmap](../../../ROADMAP.md).
 Execution groups and OneForOne supervision (the first two rows) have since been
 implemented on main. Related ownership, shutdown and control-event contracts need
 design before their APIs are frozen.

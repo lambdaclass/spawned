@@ -107,5 +107,5 @@ library subsystem. Useful once a client recovery need is identified.
 The [deeper Commonware review](commonware.md) adds policy-based overload,
 completion watermarks, explicit acknowledgement, lifecycle-bound work ownership,
 scoped metrics and library capabilities. It also records
-Seastar/CAF/cancellation-safety follow-ups. See [testing](../TESTING.md) for the
+Seastar/CAF/cancellation-safety follow-ups. See [testing](../../../docs/TESTING.md) for the
 implemented reliability work; research proposals are not implemented features.

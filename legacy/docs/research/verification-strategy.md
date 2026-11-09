@@ -2,7 +2,7 @@
 
 Date: 2026-11-08. Status: proposal, not a commitment. Inspected revision:
 `0ef612dd21e8e8a401422eb06e1f31f5197cd4b2` (v0.6.0). Companion to
-[framework ideas](framework-ideas.md); see also [TESTING.md](../TESTING.md).
+[framework ideas](framework-ideas.md); see also [TESTING.md](../../../docs/TESTING.md).
 
 ## Where we are
 
@@ -49,7 +49,7 @@ contract (before OneForAll/RestForOne are designed):
 - request acceptance vs. rejection around shutdown (the PR #182 class);
 - delivery of exit signals relative to queued messages.
 
-Sources for the rules: [API guide](../API-GUIDE.md#links-and-trapped-exits) and
+Sources for the rules: [API guide](../../../docs/GUIDE.md#links-and-trapped-exits) and
 the [PR 166 lifecycle review](../reviews/pr-166-links.md). Keep the model small:
 three to four actors, bounded mailboxes, bounded message counts.
 
