@@ -19,16 +19,25 @@
   the supervisor records one event per action of its TLA+ model so recorded runs
   can be checked against the model. No behavior or cost change when disabled.
 
-These capabilities are unreleased and require the next minor release. The
-separate dedicated-runtime patch remains documented in the 0.6.1 draft; do not
-publish these new public APIs as that patch release.
+These capabilities are unreleased and require the next minor release; do not
+publish these new public APIs as a patch release. The dedicated-runtime fix
+below was drafted as a separate 0.6.1 patch (draft notes archived under
+`legacy/docs/releases/`); if it ships separately, prepare a patch-only lineage
+rather than tagging current main.
 
 ### Documentation
 
-- One ranked backlog (`docs/research/idea-priorities.md`) replaces the separate
-  research rankings, and the roadmap points to it. Other research documents are
-  reference material: framework ideas, verification strategy, Commonware and
-  Silver/flux notes.
+- Documentation restructured into a small live set: `README.md`,
+  `CHANGELOG.md`, `ROADMAP.md` (phases plus the single ranked backlog and the
+  examples still to add), `docs/GUIDE.md` (the former API guide with backends,
+  execution groups and metrics folded in), `docs/MIGRATION.md`,
+  `docs/TESTING.md`, the execution-groups design contract and an
+  `examples/README.md` feature index. Research notes, reviews, release drafts,
+  superseded designs, benchmark reports and raw experiment data moved to
+  `legacy/` (kept for reference, not maintained).
+- One ranked backlog replaces the separate research rankings. Other research
+  documents are reference material: framework ideas, verification strategy,
+  Commonware and Silver/flux notes.
 - Ethrex and Ethlambda client evidence recorded in the backlog: hand-built
   deferred replies and pipe-to-self, a per-peer actor registry with a generation
   guard, a hardwired request timeout that exited a node, an unbounded-mailbox
@@ -62,10 +71,15 @@ publish these new public APIs as that patch release.
   and for a non-restartable startup failure. The check, decision and failure are
   now one step, and a child finishing exactly at its cleanup deadline is no
   longer reported as timed out.
-- Bound each dedicated async actor runtime to one async helper worker instead
-  of creating a machine-sized Tokio worker pool per actor. The actor remains
+- Bound each dedicated async actor runtime (`tasks::Backend::Thread`) to one
+  async helper worker instead of creating a machine-sized Tokio worker pool per
+  actor; `spawned_rt::threads::block_on` uses the same bound. The actor remains
   on its dedicated thread; blocking-helper progress, `block_in_place`, timers
-  and I/O remain supported. Blocking operations can still create extra threads.
+  and I/O remain supported. Blocking operations, DNS and filesystem work can
+  still create extra threads. `TOKIO_WORKER_THREADS` no longer changes this
+  runtime's helper count: applications that relied on a larger private helper
+  pool, or run CPU-heavy async helpers there, should validate their workload.
+  Actor/protocol signatures and the shared async backend are unchanged.
 
 
 ## 0.6.0 — 2026-11-06
@@ -113,3 +127,12 @@ publish these new public APIs as that patch release.
   automatic restart, persistent delivery or transparent reference replacement.
 - `ExitReason::Shutdown` remains reserved; linked `Kill` is untrappable but
   cooperative. Abrupt future destruction cannot guarantee async `stopped()`.
+
+### Upgrade notes
+
+- All three library crates use version 0.6.0. Existing handler/protocol
+  signatures are unchanged; metrics require explicit feature selection.
+- Synchronous thread actors do not require an active async executor but still
+  depend on Tokio synchronization through `spawned-rt`.
+- Stop and linked Kill remain cooperative; running blocking code is not
+  preempted. Enqueue success is not a handling or durability guarantee.

@@ -2,7 +2,7 @@
 
 Actor framework for Rust, inspired by Erlang/OTP. Define protocols as traits, implement handlers on actors, and call methods directly on actor references.
 
-This crate is part of [spawned](https://github.com/lambdaclass/spawned). See the [workspace README](https://github.com/lambdaclass/spawned/blob/main/README.md) for a full overview and the [API Guide](https://github.com/lambdaclass/spawned/blob/main/docs/API-GUIDE.md) for detailed documentation.
+This crate is part of [spawned](https://github.com/lambdaclass/spawned). See the [workspace README](https://github.com/lambdaclass/spawned/blob/main/README.md) for a full overview and the [Guide](https://github.com/lambdaclass/spawned/blob/main/docs/GUIDE.md) for detailed documentation.
 
 ## Quick Example
 

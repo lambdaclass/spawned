@@ -1,7 +1,7 @@
 # TLA+ models
 
 Formal models of Spawned lifecycle contracts, checked with TLC. See the
-[verification strategy](../../docs/research/verification-strategy.md) for how
+[verification strategy](../../legacy/docs/research/verification-strategy.md) for how
 this fits with Loom, Shuttle, Miri, ThreadSanitizer and mutation testing.
 
 | Model | Covers |

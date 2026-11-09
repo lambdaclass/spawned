@@ -4,8 +4,26 @@ Run `cargo test -p spawned-concurrency --test actor_scenarios`.
 
 The [capability examples](../examples/capabilities/README.md) demonstrate useful
 application behavior separately from these test oracles. CI runs their finite
-programs and assertions; future APIs have an explicitly
-[proposed example catalog](../examples/planned/README.md).
+programs and assertions; examples for future APIs are listed in the
+[roadmap](../ROADMAP.md#examples-to-add).
+
+## Verification layers
+
+No single tool covers lifecycle correctness; each layer catches a different
+class of bug. Status as of the unreleased main branch:
+
+| Layer | Tool | Catches | Status |
+|---|---|---|---|
+| Design | TLA+ | Holes in lifecycle and restart rules | OneForOne supervisor modelled (`verification/tla`); base lifecycle (links, monitors, trapped exits, stop) remains |
+| Spec and code | Trace validation | The implementation doing something the model forbids | Supervision traces checked by TLC; extend with the base lifecycle model |
+| Primitives | Loom | Atomic and memory-ordering bugs in cancellation, ready gate and wakeups | Exists; expand to mailbox publication versus shutdown |
+| Whole runtime | Shuttle | Scheduling races in multi-actor tests too large for Loom | Not started |
+| User level | Actor-level ordering exploration | Bugs in users' actor systems, reproducible from a seed | Planned ([roadmap](../ROADMAP.md) rank 20) |
+| Memory safety | ThreadSanitizer, Miri | Data races and undefined behavior | TSAN in CI; Miri waits until unsafe code is proposed (all crates `#![forbid(unsafe_code)]`) |
+| Test quality | cargo-mutants | Tests that still pass when the code is broken | Weekly over supervision and system code |
+
+The fuller rationale is archived in the
+[verification strategy note](../legacy/docs/research/verification-strategy.md).
 
 ## Controlled failures, histories and simulations
 
@@ -48,7 +66,7 @@ Use an available CPU set appropriate to the machine. The benchmark phase records
 closed-loop requests, actor-to-actor graphs, concentrated offered load and actor
 churn/idle soaks. Benchmarks describe their generator as well as actor work; high
 producer counts do not imply that many actor workers. See the
-[recorded campaign](../research/reliability/2026-11-06/README.md) for results,
+[recorded campaign](../legacy/research/reliability/2026-11-06/README.md) for results,
 excluded preflights and reproducibility details. No throughput threshold is
 enforced in shared CI. Nightly CI retains failure coverage and stress logs.
 
@@ -176,7 +194,7 @@ exercise retry-window boundaries and reproducible capped backoff/jitter.
 These are controlled failure tests, not a deterministic executor or a claim that
 all OS schedules were explored. CI also runs both asserted capability examples.
 
-The [implementation review](reviews/execution-groups-supervision-implementation.md)
+The [implementation review](../legacy/docs/reviews/execution-groups-supervision-implementation.md)
 archives 33 focused integration tests, full workspace/default/all-feature gates,
 strict Clippy, eight examples and 20 fresh-process repetitions of the 32-iteration
 crash/producer/shutdown race (640 iterations). These explore ordinary OS/Tokio

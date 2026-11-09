@@ -2,7 +2,7 @@
 
 These finite programs use the current public API and assert their expected
 outcomes. Run commands from the repository root. They use small worker budgets
-and no external services. The [proposed example catalog](../planned/README.md)
+and no external services. The [proposed example catalog](../../ROADMAP.md#examples-to-add)
 describes capabilities that are still on the roadmap.
 
 | Program | Why it is useful | What it demonstrates |
@@ -29,7 +29,7 @@ cargo run --locked -p spawned-capability-examples --features metrics --bin frame
 
 Runtime isolation consumes additional threads and can strand capacity. It does
 not pin workers or establish a performance improvement; measure an application
-under equal CPU budgets. See [backend guidance](../../docs/BACKENDS.md).
+under equal CPU budgets. See [backend guidance](../../docs/GUIDE.md#execution-modes-and-backends).
 
 The byte budget covers the illustrated payload vectors, not envelopes, task
 stacks or all application memory. All participating producers must acquire
@@ -39,11 +39,11 @@ defined cancellation, deadlines and rejection behavior.
 
 The drain fence covers completed actor handlers, not detached helpers or a
 durable external commit. An open service needs an admission gate and an explicit
-shutdown deadline. See [lifecycle semantics](../../docs/API-GUIDE.md).
+shutdown deadline. See [lifecycle semantics](../../docs/GUIDE.md).
 
 Metrics timings add overhead. Choose sampling for the workload and configure it
 before creating actors. There is no automatic network exporter or per-actor
-label set; see [metrics accounting](../../docs/METRICS.md).
+label set; see [metrics accounting](../../docs/GUIDE.md#metrics).
 
 When a proposed feature lands, add a runnable, asserted example here (or a
 dedicated example package), its run command and its operational limits in the
@@ -52,5 +52,5 @@ same change. Do not present speculative API names as working code.
 Execution groups and automatic supervision are available on main, unreleased.
 Groups currently support parked async pools; dedicated/pinned group profiles and
 OneForAll/RestForOne remain planned. Worker budgets count async workers, not all
-OS threads. See the [ownership and recovery guide](../../docs/EXECUTION-GROUPS.md)
+OS threads. See the [ownership and recovery guide](../../docs/GUIDE.md#execution-groups-and-supervision)
 for cooperative shutdown, helper admission, deadlines and reference semantics.

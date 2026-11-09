@@ -11,7 +11,7 @@ An actor framework for Rust, inspired by Erlang/OTP.
 
 **Spawned is actively maintained and used in production.** It powers the concurrency layer of [ethrex](https://github.com/lambdaclass/ethrex) (Ethereum L1/L2 execution client) and [ethlambda](https://github.com/lambdaclass/ethlambda) (Lean Ethereum consensus client), both developed by [LambdaClass](https://github.com/lambdaclass).
 
-The core API is stable, so periods without commits are expected (they mean things are working, not that the project is abandoned). New features land as those projects need them (see the [Roadmap](#roadmap)). Bug reports, questions, and pull requests are welcome and get answered.
+The core API is stable, so periods without commits are expected (they mean things are working, not that the project is abandoned). New features land as those projects need them (see the [roadmap](ROADMAP.md)). Bug reports, questions, and pull requests are welcome and get answered.
 
 ## Quick Example
 
@@ -84,7 +84,21 @@ fn main() {
 
 No message enums, no manual dispatch — just define a trait, implement the handlers, and call methods directly on the actor reference.
 
-For a complete API reference covering all features (timers, type erasure, registry, backend selection, and more), see the **[API Guide](docs/API-GUIDE.md)**.
+For every feature (timers, type erasure, registry, backends, links, supervision, metrics and more), see the **[Guide](docs/GUIDE.md)**.
+
+## Documentation
+
+| Document | Contents |
+|---|---|
+| [Guide](docs/GUIDE.md) | The user guide: lifecycle, messaging, execution modes and backends, timers, registry, links, execution groups, supervision and metrics |
+| [Examples](examples/README.md) | Every feature mapped to a runnable example |
+| [Migration](docs/MIGRATION.md) | Upgrade notes per version |
+| [Changelog](CHANGELOG.md) | Release history |
+| [Roadmap](ROADMAP.md) | Planned work and the ranked backlog |
+| [Testing](docs/TESTING.md) | Test suites, verification layers and the formal model |
+| [Design](docs/design/README.md) | Active design contracts |
+| [Benchmarks](benchmarks/README.md) | Running the benchmark harness |
+| [Legacy](legacy/README.md) | Archived designs, reviews, research notes and raw experiment data (not maintained) |
 
 ## Features
 
@@ -112,28 +126,10 @@ The return type on each protocol method determines the message kind:
 
 ## Examples
 
-See the [examples guide](examples/README.md) for run commands, use cases and the
-[planned capability examples](examples/planned/README.md).
-
-
-| Example | Mode | Description |
-|---------|------|-------------|
-| [`capabilities`](examples/capabilities) | tasks | Owned execution groups, OneForOne recovery, isolation, byte budgets, timeouts and metrics |
-| [`exit_reason`](examples/exit_reason) | tasks | Stop, panic, links, monitors and trapped exits |
-| [`name_server`](examples/name_server) | tasks | Key-value store — the classic Erlang name server |
-| [`bank`](examples/bank) | tasks | Bank account — deposit, withdraw, balance with error handling |
-| [`bank_threads`](examples/bank_threads) | threads | Bank account — same API, thread-based |
-| [`chat_room`](examples/chat_room) | tasks | Multi-actor chat — rooms and users via type-erased protocol refs |
-| [`chat_room_threads`](examples/chat_room_threads) | threads | Multi-actor chat — thread-based |
-| [`ping_pong`](examples/ping_pong) | tasks | Producer/consumer — bidirectional messaging between actors |
-| [`ping_pong_threads`](examples/ping_pong_threads) | threads | Producer/consumer — thread-based |
-| [`service_discovery`](examples/service_discovery) | tasks | Registry — register and discover actors by name |
-| [`signal_test`](examples/signal_test) | tasks | Timers — `send_interval` and `send_message_on` for cancellation |
-| [`signal_test_threads`](examples/signal_test_threads) | threads | Timers — thread-based |
-| [`updater`](examples/updater) | tasks | Periodic HTTP — recurrent timer-driven requests |
-| [`updater_threads`](examples/updater_threads) | threads | Periodic HTTP — thread-based |
-| [`blocking_genserver`](examples/blocking_genserver) | tasks | Backend comparison — async vs blocking vs thread isolation |
-| [`busy_genserver_warning`](examples/busy_genserver_warning) | tasks | Blocking detection — runtime warning for slow handlers |
+The [examples index](examples/README.md) maps every user-facing feature to a
+runnable example, in `tasks` and `threads` mode, with run commands. Run one with
+`cargo run --locked -p <package>` from the repository root, for example
+`cargo run --locked -p name_server`.
 
 ## Erlang to Spawned
 
@@ -187,23 +183,11 @@ Both provide the same `Actor`, `Handler<M>`, `ActorRef<A>`, and `Context<A>` typ
 Use Tokio (`Backend::Async`) for general async applications and dynamic actor
 populations. Use `Backend::Blocking` for persistent blocking work, or
 `Backend::Thread` when an actor needs a dedicated thread. Each blocking actor
-occupies a worker until it stops. Each dedicated async actor has its own root
-thread and an isolated runtime with one async helper worker; blocking helpers
-can create additional threads. See [backend resource sizing](docs/BACKENDS.md).
-
-The experimental pinned profiles target fixed streaming pipelines. Parked shards
-showed promising eight-core results; spinning can improve some tails but consumes
-the assigned cores while idle. These remain private experiments, and Tokio stays
-the supported default. Actor APIs, ordinary messages and request/reply are unchanged.
-
-See [backend selection and usage](docs/BACKENDS.md), including actors communicating
-across runtimes, and the [backend research folder](research/backend-experiments/README.md)
-for graphs, analysis, raw results and reproduction instructions.
-The [shared-versus-split runtime study](research/backend-experiments/2026-11-06-runtime-isolation/README.md)
-measures communication across runtimes, latency isolation and background-throughput
-tradeoffs; the [client audit](research/backend-experiments/2026-11-06-runtime-isolation/CLIENT-WORKLOADS.md)
-explains where to investigate ethrex and ethlambda. Smaller-core pinned results
-are mixed, so the eight-core pipeline benefit is not a general backend ranking.
+occupies a worker until it stops; each dedicated actor has its own root thread
+and an isolated runtime with one async helper worker. See
+[execution modes and backends](docs/GUIDE.md#execution-modes-and-backends) for
+resource sizing. Experimental pinned/spinning profiles remain private research;
+Tokio stays the supported default.
 
 ## Project Structure
 
@@ -215,7 +199,11 @@ spawned/
 │       └── threads/   # Sync implementation (OS threads)
 ├── macros/        # Proc macros (#[protocol], #[actor]) — re-exported by concurrency
 ├── rt/            # Runtime abstraction (wraps tokio, provides CancellationToken)
-└── examples/      # Usage examples and capability guides
+├── examples/      # Usage examples and capability guides
+├── docs/          # Guide, migration, testing, design contracts
+├── benchmarks/    # Benchmark harness
+├── verification/  # TLA+ model
+└── legacy/        # Archived research and history (not maintained)
 ```
 
 Users depend only on `spawned-concurrency` (which re-exports the macros) and `spawned-rt`.
@@ -228,44 +216,25 @@ Inspired by Erlang/OTP, the goal of `spawned` is to keep concurrency logic separ
 
 Protocols make this separation explicit: the trait defines *what* an actor does, the `#[actor]` impl defines *how*, and the framework handles message routing, mailboxes, and lifecycle. Your business logic is plain Rust methods — no channels, no `match` on enums, no concurrency primitives.
 
-Links, trapped exits and atomic linked startup are available in v0.6.0.
-See [link usage](docs/API-GUIDE.md#links-and-trapped-exits) and the
-[review and hardening notes](docs/reviews/pr-166-links.md). OneForOne supervision and owned execution groups are implemented on main
-(unreleased); see the [usage guide](docs/EXECUTION-GROUPS.md).
+Links, trapped exits and atomic linked startup are available in v0.6.0
+([links](docs/GUIDE.md#links-and-trapped-exits)). OneForOne supervision and
+owned execution groups are implemented on main, unreleased
+([execution groups and supervision](docs/GUIDE.md#execution-groups-and-supervision)).
 
 ## Roadmap
 
 Preserve typed protocols, dynamic actors, and both async and synchronous thread
-execution while improving production visibility and recovery.
-
-1. **Execution groups plus supervision** — an optional ActorSystem owns named
-   runtime groups, worker budgets and shutdown. Child factories and OneForOne
-   recovery add restart modes, limits/backoff, ordered startup/shutdown and clear
-   outcomes for stale references and pending work. The parked async + OneForOne
-   MVP is implemented on main, unreleased.
-2. **Tokio-free thread builds** — separate features and synchronization while
-   preserving the current async defaults.
-3. **Workload-driven capabilities** — bounded admission/byte credits, inherited
-   deadlines, deferred replies and targeted batching/dispatch improvements.
-
-Optional framework metrics and reproducible backend studies are already
-available. Client profiling, failure testing and full-workload validation continue
-alongside feature work. The [combined milestone design](docs/design/execution-groups-supervision.md)
-records the contracts. Parked async groups and OneForOne recovery are implemented
-on main, unreleased; dedicated/pinned groups and further strategies remain planned.
-
-See the [detailed roadmap](docs/ROADMAP.md) for acceptance criteria and the
-[Silver/flux research](docs/research/silver-flux.md) for transferable ideas.
-A custom runtime, busy spinning, and shared-memory transport remain research;
-replacing Tokio for async applications is not a committed direction.
+execution while improving production visibility and recovery. Next: verify the
+base lifecycle, release v0.7 with execution groups and supervision, then deferred
+replies, bounded admission and deadlines as client workloads require. See the
+[roadmap](ROADMAP.md) for the phases and the full ranked backlog.
 
 ## Optional framework metrics
 
 Enable the `metrics` Cargo feature for mailbox depth, sampled queue/handler/request
-latency, request outcomes and actor lifecycle counters. Collection uses fixed
-aggregate series and adds no business-handler instrumentation. Metrics are
-compiled out by default. See the [metrics guide](docs/METRICS.md) for sampling,
-Prometheus text export, accounting boundaries and measured overhead.
+latency, request outcomes and actor lifecycle counters, with pull-based Prometheus
+text export. Metrics are compiled out by default and need no handler changes. See
+[metrics](docs/GUIDE.md#metrics).
 
 ## Inspiration
 
@@ -283,13 +252,11 @@ Prometheus text export, accounting boundaries and measured overhead.
 
 ## Performance
 
-See the [reproducible baseline harness](benchmarks/README.md) and
-[initial local analysis](benchmarks/REPORT-2026-11-05.md). These microbenchmarks
-measure existing backends and document limits; they are not client-level results.
-The [backend research index](research/backend-experiments/README.md) brings together
-the studies, including the completed fede scheduler and pinned-pipeline analysis.
+The [benchmark harness](benchmarks/README.md) measures the existing backends in
+fresh processes. Microbenchmarks document limits; they are not client-level
+results. Earlier reports and backend studies are archived in [legacy](legacy/README.md).
 
 ## Testing
 
-Run `cargo test --workspace`. See the [actor scenario testing guide](docs/TESTING.md)
-for generated lifecycle races, failure replay, and longer test campaigns.
+Run `cargo test --workspace`. See [testing](docs/TESTING.md) for generated
+lifecycle races, failure replay, the TLA+ model and longer campaigns.

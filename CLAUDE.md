@@ -20,8 +20,30 @@ spawned/
 │   └── src/
 │       ├── tasks/   # Tokio-based runtime
 │       └── threads/ # Thread-based runtime
-└── examples/        # Usage examples (name_server, bank, ping_pong, etc.)
+├── macros/          # Proc macros (#[protocol], #[actor])
+├── examples/        # Usage examples (name_server, bank, ping_pong, capabilities, etc.)
+├── docs/            # GUIDE.md, MIGRATION.md, TESTING.md, design/ (active contract)
+├── benchmarks/      # Benchmark harness and render scripts
+├── verification/    # TLA+ model of OneForOne supervision
+└── legacy/          # Archived research, reviews, reports, raw data (not maintained)
 ```
+
+## Documentation Map
+
+| File | Purpose |
+|------|---------|
+| `README.md` | What/why, quick start, doc map |
+| `CHANGELOG.md` | The only release history (keep `Unreleased` current) |
+| `ROADMAP.md` | Single planning doc: phases + ranked backlog + examples to add |
+| `docs/GUIDE.md` | User guide (lifecycle, backends, links, execution groups, supervision, metrics) |
+| `docs/MIGRATION.md` | Per-version upgrade notes |
+| `docs/TESTING.md` | Test suites, verification layers, TLA+ model |
+| `docs/design/execution-groups-supervision.md` | Active design contract |
+| `examples/README.md` | Feature → example index, with gaps |
+| `benchmarks/README.md` | How to run the benchmark harness |
+| `verification/tla/README.md` | Running the model and trace validation |
+
+Do not add new top-level docs; extend these. Put historical material in `legacy/`.
 
 ## Two Execution Modes
 

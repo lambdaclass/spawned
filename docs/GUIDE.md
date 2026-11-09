@@ -1,13 +1,17 @@
-# Spawned API Guide
+# Spawned Guide
 
-Complete reference for the spawned actor framework. For a quick introduction, see the [README](../README.md).
+The user guide for the spawned actor framework: lifecycle, messaging, execution
+modes, timers, type erasure, the registry, links, execution groups, supervision
+and metrics. For a quick introduction, see the [README](../README.md); for
+upgrades, see [MIGRATION.md](MIGRATION.md); for runnable programs, see the
+[examples index](../examples/README.md).
 
 ## Table of Contents
 
 - [Actor Lifecycle](#actor-lifecycle)
 - [Context](#context)
 - [ActorRef](#actorref)
-- [Backend Selection (tasks mode)](#backend-selection-tasks-mode)
+- [Execution Modes and Backends](#execution-modes-and-backends)
 - [Timers](#timers)
 - [send\_message\_on](#send_message_on)
 - [spawn\_listener](#spawn_listener)
@@ -18,7 +22,9 @@ Complete reference for the spawned actor framework. For a quick introduction, se
 - [Error Handling](#error-handling)
 - [spawned-rt](#spawned-rt)
 - [Links and trapped exits](#links-and-trapped-exits)
-- [Owned placement and OneForOne recovery (unreleased)](#owned-placement-and-oneforone-recovery-unreleased)
+- [Execution groups and supervision](#execution-groups-and-supervision) (unreleased)
+- [Metrics](#metrics)
+- [Further reading](#further-reading)
 
 ---
 
@@ -139,30 +145,72 @@ let actor_ref = MyActor::new().start_with_backend(Backend::Thread);
 
 ---
 
-## Backend Selection (tasks mode)
+## Execution Modes and Backends
 
-The `Backend` enum controls where the actor's message loop runs. Only available in `tasks` mode.
-See [backend selection and usage](BACKENDS.md) for resource sizing, multiple
-runtimes, and the separate status of experimental pinned profiles.
+Spawned has two execution modes with the same `Actor`, `Handler<M>`,
+`ActorRef<A>` and `Context<A>` types. Switching requires changing imports and
+adding/removing `async`/`.await` on handlers and lifecycle hooks.
 
-| Backend | When to use |
-|---------|-------------|
-| `Backend::Async` (default) | Standard async actors. Runs on the tokio runtime. Handlers must not block. |
-| `Backend::Blocking` | Actors that do blocking I/O (file system, synchronous HTTP). Runs on tokio's blocking thread pool. |
-| `Backend::Thread` | CPU-bound work or dedicated execution. One root OS thread plus an isolated Tokio runtime with one async helper worker; blocking helpers can add threads. |
+- **`tasks`** (`spawned_concurrency::tasks`): async/await on Tokio. Use it for
+  async I/O, many dynamic actors (thousands) and integration with async libraries.
+- **`threads`** (`spawned_concurrency::threads`): synchronous handlers, one native
+  OS thread per actor. Use it for simplicity or CPU-bound actors with a moderate
+  actor count. It needs no active Tokio executor but still compiles Tokio through
+  `spawned-rt`.
+
+In `tasks` mode, the `Backend` enum controls where an actor's message loop runs.
+Existing actor/protocol definitions work with every value. `Backend::Async` is the
+supported default; choose another backend for a specific isolation or blocking
+requirement, then measure the application.
+
+| Mode | Appropriate work | Resource model |
+|---|---|---|
+| `Backend::Async` (default) | Async I/O, many dynamic actors, general request/reply | Actors share Tokio workers; a running handler must cooperate and must not block |
+| `Backend::Blocking` | Persistent actors that perform blocking calls (file system, synchronous HTTP) | Each actor occupies a Tokio blocking-pool worker until it stops; excess actors queue, including startup |
+| `Backend::Thread` | Actors needing a dedicated execution thread (CPU-bound or isolated work) | One dedicated root thread plus an isolated Tokio runtime with one async helper worker per actor; blocking helpers can add threads |
+| `threads` module | Synchronous actor handlers | One native OS thread per actor; synchronous API |
 
 ```rust
-// Default — async on tokio
-let a = MyActor::new().start();
+use spawned_concurrency::tasks::{ActorStart as _, Backend};
 
-// Blocking I/O
-let b = MyActor::new().start_with_backend(Backend::Blocking);
-
-// Dedicated thread
-let c = MyActor::new().start_with_backend(Backend::Thread);
+let a = MyActor::new().start();                                // async on Tokio
+let b = MyActor::new().start_with_backend(Backend::Blocking);  // blocking I/O
+let c = MyActor::new().start_with_backend(Backend::Thread);    // dedicated thread
 ```
 
-`Backend::Async` will emit a tracing warning (debug builds only) if a poll takes longer than 10ms — use `Backend::Blocking` or `Backend::Thread` for slow work.
+`Backend::Async` emits a tracing warning (debug builds only) if a poll takes
+longer than 10 ms; use `Backend::Blocking` or `Backend::Thread` for slow work.
+
+Stop and await actors when their work is finished. A dedicated thread does not
+make one long-running handler preemptible, and a persistent blocking actor does
+not release its worker between messages. Size persistent populations accordingly.
+
+`Backend::Thread` drives lifecycle hooks and handlers on its dedicated root
+thread. Its isolated multithread Tokio runtime has one async worker, configured
+independently of `TOKIO_WORKER_THREADS`. Async helpers, timers and nested
+`Backend::Async` actors progress on that worker while the root thread blocks;
+`block_in_place` remains supported. One blocked async worker can still stall
+other work assigned to it, so await blocking helpers instead of assuming
+unlimited parallel progress. Tokio can create additional threads for
+`spawn_blocking`, filesystem or DNS work, and each isolated runtime consumes
+reactor descriptors. Stop and join nested actors before their owning runtime
+exits: actor `join()` waits for the actor, not for detached helpers or runtime
+destruction. `spawned_rt::threads::block_on` uses the same one-worker runtime.
+
+### Actors on different runtimes
+
+Actors hosted on separate Tokio runtimes exchange ordinary messages and
+request/reply through `ActorRef`. Sending an `ActorRef` does not migrate an actor
+or its Tokio I/O resources. Separate runtimes add threads and inter-runtime
+wakeups, and their capacity cannot rebalance automatically; communication
+compatibility alone is not a reason to create more runtimes. For owned,
+budgeted runtimes use [execution groups](#execution-groups-and-supervision).
+
+The `backend-experiments` feature contains private research selectors (pinned
+and spinning shards, alternative schedulers). They are not stable configuration
+APIs, and Tokio stays the default. Their measurements and reproduction guides are
+archived in [the backend notes](../legacy/docs/BACKENDS.md) and the
+[backend research index](../legacy/research/backend-experiments/README.md).
 
 ---
 
@@ -458,14 +506,8 @@ Wraps standard library primitives:
 | `oneshot` | Single-use channel (wraps `std::sync::mpsc`) |
 | `ctrl_c()` | Returns a closure that blocks until Ctrl+C. Supports multiple subscribers. |
 
-### Choosing tasks vs threads
-
-Use **`tasks`** when you need async I/O, high actor counts (thousands), or integration with async libraries.
-
-Use **`threads`** when you want simplicity, no async runtime, or CPU-bound actors that benefit from dedicated OS threads. Each actor gets its own thread, so this mode works best with a moderate number of actors.
-
-Both modes provide the same `Actor`, `Handler<M>`, `ActorRef<A>`, and `Context<A>` types. Switching requires changing imports and adding/removing `async`/`.await` on handlers and lifecycle hooks.
-
+See [Execution Modes and Backends](#execution-modes-and-backends) for choosing between
+`tasks` and `threads`.
 
 <a id="links-and-trapped-exits-unreleased-main"></a>
 
@@ -512,15 +554,324 @@ A link to a closed peer creates no retained relationship and applies that peer's
 exit-signal rules for the attempt. Repeated live links are no-ops. Unlink prevents
 future propagation through the relationship but does not retract an exit already
 in flight. Links are a supervision primitive. Managed OneForOne recovery is described in
-[execution groups and supervision](EXECUTION-GROUPS.md); additional restart strategies and
-transparent reference rebinding remain separate work. See the [review and regression evidence](reviews/pr-166-links.md).
+[execution groups and supervision](#execution-groups-and-supervision); additional restart strategies and
+transparent reference rebinding remain separate work. The [review and regression evidence](../legacy/docs/reviews/pr-166-links.md) is archived.
 
+---
 
-## Owned placement and OneForOne recovery (unreleased)
+## Execution groups and supervision
 
-Use `ActorSystem`, `ExecutionGroup` and `ActorStart::start_on` for explicit async
-worker budgets. Add `ChildSpec` factories to a system supervisor for automatic
-fresh-instance recovery. Existing `.start()` stays ambient and unmanaged.
-The [complete guide](EXECUTION-GROUPS.md) explains readiness, registered helpers,
-shutdown reports, reference behavior and the supported policy limits, with
-[runnable examples](../examples/capabilities/README.md).
+Available on main, unreleased. These are opt-in capabilities for async actors;
+ordinary `.start()`, message types, handlers and protocols retain their behavior.
+The initial profiles are parked async pools and OneForOne recovery. A supervisor
+owns one ordered child set; nested supervisor child specs are not implemented. Pinned or
+spinning groups, sized blocking-actor pools, OneForAll and RestForOne remain planned.
+
+### Choose an owner and a worker budget
+
+```rust
+use spawned_concurrency::{system::ActorSystem, tasks::ActorStart};
+use std::time::Duration;
+
+// MyActor is your application-defined async actor.
+let system = ActorSystem::new()?;
+let critical = system.async_group("critical", 1)?;
+let background = system.async_group("background", 3)?;
+let actor = MyActor::new().start_on(&critical)?;
+actor.ready().await?;
+let report = system.shutdown(Duration::from_secs(5)).await;
+assert!(report.complete);
+```
+
+Groups own separate Tokio runtimes. ActorRef messages and requests cross those
+runtimes normally; moving a reference does not move an actor or an I/O resource.
+Use a small number of subsystem groups, rather than creating a pool per actor.
+Groups do not currently expose CPU affinity or spinning.
+Construct groups during application setup: construction is synchronous and
+fallible, and no actor is admitted to a failed group.
+
+The worker budget counts async workers, not all process threads. Each system
+also has a control thread and each group a runtime-owner thread. Tokio blocking
+operations can create extra threads. A group is neither CPU affinity nor an OS
+CPU reservation; blocking a worker or a handler still requires cooperation.
+
+ActorSystem owns managed lifetimes. Cloned group/reference/context handles do
+not retain live workers after successful system shutdown. Dropping ActorSystem
+requests shutdown without blocking its calling thread; await `shutdown` when
+cleanup completion matters. Keeping an incomplete report lets you await again:
+
+```rust
+let report = system.shutdown(Duration::from_millis(50)).await;
+if !report.complete {
+    eprintln!("unfinished groups: {:?}", report.unfinished_groups);
+    let final_report = report.wait(Duration::from_secs(10)).await;
+    // Report/escalate unfinished work if it is still incomplete.
+}
+```
+
+Timeout closes admission and reports unfinished groups/actor scopes and observed exits.
+An exited actor can still have an unfinished scope while registered helpers clean
+up, so its ID may appear in both fields. System shutdown orders supervisor trees
+and standalone actors together by reverse admission. The first shutdown deadline
+bounds these serial waits; at expiry it signals the remaining targets and retains
+all actual cleanup. Drop uses a five-second ordering grace. Later report waits do
+not reopen admission or extend that initial ordering grace.
+It does not kill native code or abandon runtime ownership. The cleanup coordinator
+keeps closed runtimes alive until tracked work actually finishes, even if an
+incomplete report is dropped. An uncooperative operation can therefore keep
+threads/resources alive indefinitely; the host decides process-level escalation.
+
+### Construct fresh children after failure
+
+```rust
+use spawned_concurrency::supervision::{ChildSpec, RestartMode, SupervisorConfig};
+
+let mut tree = system.supervisor(SupervisorConfig::default())?;
+let service = tree.add(
+    ChildSpec::new("service", &critical, |factory_ctx| async move {
+        // This factory is invoked and polled on the assigned execution group.
+        // Return a fresh, unstarted actor; loading durable state is application work.
+        Ok::<_, String>(MyActor::new())
+    }).restart(RestartMode::Transient)
+)?;
+let supervisor = tree.start().await?;
+let current = service.current()?;
+// After failure, explicitly resolve a generation greater than a saved snapshot.
+let generation = service.snapshot().generation;
+// let replacement = service.wait_for_generation(generation).await?;
+let report = supervisor.shutdown(Duration::from_secs(5)).await;
+```
+
+A factory may return an error or panic. Registered construction helpers are
+cancelled and joined before retry, including when the factory never returns an
+actor. Existing `started()` and `stopped()` hooks keep their signatures. Readiness
+commits after `started()` returns and admission remains open; no ordinary handler
+runs before that barrier. Enqueued startup messages are discarded if startup fails.
+Calling `ready()` later reports that historical barrier, not current liveness.
+Failed readiness waits for the actual startup outcome, so a non-returning hook
+can keep it pending; use a timeout. A startup deadline is a failed attempt and can retry under Permanent/Transient
+policy after cleanup, whether it expired in the factory or in `started()`.
+A self-requested normal stop before readiness is still a
+startup failure: a Transient/Temporary spec fails the tree rather than claiming
+a ready service; a Permanent spec can retry within its budget.
+
+A supervisor accepts only groups owned by its ActorSystem. ActorRefs can still
+communicate between independent systems. Children start in declaration order
+and shut down in reverse order. Startup
+future cancellation requests rollback of the partially started tree. Each spec
+has a startup and cleanup timeout (default five seconds). A stuck actor, startup
+hook or registered helper fails the supervisor and suppresses replacements until
+actual cleanup completes. There is at most one live generation per child slot.
+Stop observation uses internal tokens/completion state, independently of ordinary
+mailbox traffic. It does not interrupt a running handler. If a supervisor report deadline expires,
+remaining siblings are also signalled before returning the incomplete report;
+actual completion still waits for the stuck work.
+
+| Restart mode while supervisor is running | Normal / Shutdown | Panic / Kill |
+|---|---|---|
+| Permanent (default) | Restart | Restart |
+| Transient | Stay stopped | Restart |
+| Temporary | Stay stopped | Stay stopped |
+
+System/supervisor shutdown suppresses every restart mode. Stopping an individual
+Permanent child while its supervisor is open intentionally restarts it. Use
+supervisor shutdown to close the tree. `ChildHandle::shutdown()` commits Shutdown
+before cooperative cancellation while preserving a previously committed cause;
+actual handler or cleanup panics remain failures. Existing link propagation still
+applies and can affect siblings explicitly linked by the application.
+
+The default shared budget permits five retry attempts per rolling 30-second
+window. Initial construction does not consume a retry; every subsequent attempt
+does, including failed factories and normal replacements of Permanent children.
+A zero retry budget fails immediately without waiting for backoff. Otherwise
+retry accounting is stamped immediately before factory admission, after the
+cancellable delay; retries spaced beyond the rolling window are permitted by
+design. This is a rate limit, not a lifetime retry cap. Exhaustion fails the whole supervisor and stops its remaining children. Backoff
+is capped exponential with optional jitter, independently per child; a stable
+ready lifetime resets that child's exponent. Cleanup time is not healthy uptime.
+Use `Backoff::seed` for reproducible policy tests, not security randomness.
+
+### References and effects
+
+A restarted actor has fresh state, a fresh mailbox and a fresh ActorId. Old
+ActorRef/Recipient values remain attached to the stopped instance. `current()`
+returns a ready instance or an unavailable state; `wait_for_generation(n)` waits
+for a ready generation strictly newer than `n`. Either can race with a later
+failure, so delivery errors remain normal outcomes. Snapshot generations count
+construction attempts, including failed attempts before an ActorId exists.
+Snapshots are asynchronous diagnostics and may briefly show Running after a stop
+signal; `current()` already rejects lookup when supervisor admission closes.
+
+Queued messages are discarded, incomplete request channels fail when their owner
+is dropped, and caller timeouts can occur earlier. No messages are replayed.
+Effects already performed are not rolled back. Supervision supplies neither
+automatic durable state recovery nor exactly-once effects.
+
+### Owned helpers and registrations
+
+Managed `Context` and `FactoryContext` offer `spawn_helper` and
+`spawn_blocking_helper`. Dropping the returned join handle does not detach scope
+ownership. Async helpers are cooperatively cancelled on actor stop; running
+blocking helpers cannot be aborted and retain cleanup ownership until their
+native closure returns. Helpers report cancellation/panic via `HelperError`.
+Rejected helper admission returns an error. System/supervisor shutdown closes
+helper/timer/monitor/registration admission for the whole managed tree immediately,
+including earlier actors awaiting their stop turn. Those actors may still serve
+ordinary requests, but must handle helper rejection. Prepare shutdown resources
+in advance; this is stop-and-join, not an admission-preserving drain mode. Never synchronously wait for a helper
+on the sole async worker it needs in order to make progress.
+
+Framework timers, stream listeners, deferred message helpers and monitor waiters
+use the managed actor's group even when registered from another runtime or a
+plain thread. Their existing infallible APIs return inert/cancelled work after
+closure, with no ambient fallback. Aborting their task handle releases its scope
+ownership after payload destruction. Legacy timers remain tied to the old
+instance; they never retarget a replacement.
+
+`ctx.register_name(name)` owns a registry guard until that generation's actor and
+registered helpers finish cleanup. Guard removal checks an ownership nonce so
+an old generation cannot delete a newer registration. Named registry instances
+and transparent reference rebinding are not implemented.
+
+Arbitrary `tokio::spawn`, nested blocking/native work and ambient `.start()` do not
+automatically enroll in a scope. Track them explicitly or accept their unmanaged
+lifetime. An ambient actor created inside a group may be aborted by runtime
+teardown without running `stopped()`. Actor `join()` still waits for that actor;
+use supervisor/system shutdown to await registered helpers and runtime teardown.
+
+### Run the examples
+
+- [Execution groups](../examples/capabilities/src/bin/execution_groups.rs): router/worker cross-group request, target-group helper and owned shutdown.
+- [Supervision recovery](../examples/capabilities/src/bin/supervision_recovery.rs): crash, new identity/fresh state, stale reference failure and explicit replacement lookup.
+
+```sh
+cargo run --locked -p spawned-capability-examples --bin execution_groups
+cargo run --locked -p spawned-capability-examples --bin supervision_recovery
+```
+
+The [design contract](design/execution-groups-supervision.md) records the fuller
+boundaries. [Failure tests](TESTING.md#managed-execution-and-recovery-main-unreleased)
+exercise readiness, cancellation, rollback, restart limits and incomplete cleanup.
+These APIs do not establish a full-client performance improvement; measure actual
+application workloads with equal resource budgets.
+
+---
+
+## Metrics
+
+Enable the optional `metrics` feature on `spawned-concurrency` (available in v0.6.0):
+
+```toml
+spawned-concurrency = { version = "0.6", features = ["metrics"] }
+```
+
+The default build compiles out collection, timing metadata and response observers.
+No handler, protocol, message or result type needs changing. Metrics do not change
+request timeouts, cancel queued work, restart actors or change mailbox capacity.
+
+Configure before starting actors or constructing observed requests:
+
+```rust
+use spawned_concurrency::metrics::{self, Config};
+
+metrics::configure(Config { timing_sample_every: 16 }).unwrap();
+// Counters include every operation; one in 16 observations gets timing samples.
+let snapshot = metrics::snapshot();
+let prometheus_text = metrics::render_prometheus();
+```
+
+Default sampling is 1 (all timings). Use 0 for counters/gauges without clocks or
+histogram observations. Configuration is process-wide and immutable after first
+instrumentation; `configure` returns `Err(config)` if already initialized.
+
+### What is measured
+
+| Measurement | Definition |
+|---|---|
+| Mailbox depth | Waiting user envelopes, including submissions in progress; excludes the active handler and internal Exit/Shutdown controls. Read an individual actor with `actor.mailbox_depth()` or `actor.context().mailbox_depth()`. The snapshot gauge sums all actors. |
+| Queue wait | Sampled submission to handler start, including transport/scheduler delay. Submission timing begins before channel publication. |
+| Handler duration | Sampled dispatch to completion, panic or future destruction; includes awaited time, not just CPU time. Lifecycle hooks and internal exit callbacks are excluded. |
+| Request latency | Caller-wrapper lifetime to observed reply, timeout, actor-stop error or caller cancellation. Includes time awaiting a reply, including scheduling. |
+| Request outcomes | Started, active, replied, timed out, actor stopped, and caller cancelled. Transport replies are successful even if the application result itself contains an error. |
+| Lifecycle | Actor instances admitted, active, and exited by Normal/Shutdown/Panic/Kill; handler starts, active handlers, completions, panics and interrupted futures. |
+| Delivery accounting | Enqueue acceptance/rejection, discarded queued messages, replies sent to channels, and reply receivers already dropped. Enqueue success does not promise handling or durable delivery. |
+
+Counters end in `_total`. Duration histograms use fixed nanosecond buckets
+internally and seconds in Prometheus export; their count/sum/max describe sampled
+observations only. Counts are not multiplied by the sampling rate. Do not compare
+sampled histogram counts to total request counters as if every request was timed.
+Sampling is deterministic round-robin per message/request category, not random;
+periodic traffic can bias samples. Quantiles are bucket-based estimates.
+
+Mailbox depth reserves accounting before publication to avoid consumer races.
+A stalled producer may temporarily appear in depth before send acceptance. A
+failed send rolls that reservation back and increments rejection. This is not a
+transactional channel-length API. Counters/gauges are independent atomic reads;
+conservation relationships apply after operations quiesce:
+
+- accepted messages = handled + discarded + waiting;
+- handled = completed handlers + panicked handlers + aborted handlers + active;
+- observed requests = replied + timed out + actor stopped + cancelled + active;
+- spawned actor instances = exited + active.
+
+An actor is active from creation of its lifecycle guard until terminal cleanup,
+including waiting for a blocking-pool slot, `started()` and `stopped()`. A runtime
+abort before its first poll still closes lifecycle and mailbox accounting. A
+handler future destroyed without returning an outcome counts as aborted; this
+does not imply its business effects were rolled back. Native blocking handlers
+still stop cooperatively.
+
+### Caller and raw receiver boundaries
+
+Direct `ActorRef::request`, `Context::request`, and erased-recipient `request`
+measure from their execution to return. Async methods start when first polled.
+Protocol-generated task requests use `Response`: observation starts at response
+construction, after the raw send, and ends when the caller polls the result or
+drops the wrapper. An unpolled wrapper dropped by its caller counts as cancelled.
+A completed reply left unpolled is not a caller-observed reply yet. Timed Response
+waits retain their existing first-poll timeout behavior. Synchronous protocol
+requests are observed by their blocking request; `Response::ready` does not count
+that result a second time. Manually constructed ready results are not requests.
+
+`request_raw` returns the existing mode-specific raw receiver. It cannot observe
+custom timeouts or how the caller waits without changing that API. Such requests
+still contribute message, handler, queue and reply-delivery metrics, but only a
+framework request/Response wrapper contributes caller-outcome/latency metrics.
+Reply delivery means a successful channel send, not proof the caller consumed it.
+Dropping/timing out a caller does not cancel accepted actor work.
+
+### Collection and exporting limits
+
+Collection uses fixed aggregate atomic counters and three fixed 32-bucket
+histograms, plus one shared depth counter per live actor/reference set. There is
+no global actor registry, label map, per-message metrics allocation, retained
+payload/span, callback or exporter queue. Envelopes contain an inline observation
+and reuse the actor's shared depth counter. The disabled build has no shared
+metrics counter or timing metadata. Internal control messages are not reported
+as application traffic.
+
+Call `snapshot` or `render_prometheus` from your own exporter/HTTP task. Export is
+pull-based: collection never calls an exporter, performs network I/O or waits for
+an exporter lock. Text output has a fixed set of series without actor/message
+names, payloads or actor IDs. An application can add bounded, explicit labels
+outside the library. Histogram sums saturate at `u64::MAX` nanoseconds; counters
+can wrap after `u64::MAX` events. Scrapes are approximate concurrent observations.
+
+There is no built-in HTTP server, OpenTelemetry exporter, causal tracing,
+oldest-queued-message age, per-actor histogram or active-monitor gauge in this
+initial implementation. These can be evaluated independently of the existing
+metrics and without inserting exporter work into handlers.
+
+Use application measurements before choosing a sampling rate; shared atomic
+counters themselves can contend under high actor/producer concurrency. The
+original [overhead measurements](../legacy/research/framework-metrics/2026-11-06/README.md)
+are archived.
+
+---
+
+## Further reading
+
+- [Execution groups and supervision design contract](design/execution-groups-supervision.md): the fuller boundaries of the unreleased APIs.
+- [Testing](TESTING.md): scenario tests, failure windows, the TLA+ model and trace validation.
+- [Roadmap](../ROADMAP.md): what is planned and why.
+- [Legacy](../legacy/README.md): archived backend research, benchmark reports, reviews and earlier designs.

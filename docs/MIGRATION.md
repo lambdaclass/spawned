@@ -1,8 +1,17 @@
-# Migrating to Spawned 0.5
+# Migration guide
+
+Upgrade notes per release, newest first. The [CHANGELOG](../CHANGELOG.md) lists
+every change; this guide covers what you need to edit when upgrading.
+
+- **0.7 (unreleased):** see the [CHANGELOG Unreleased section](../CHANGELOG.md#unreleased).
+- **0.6:** no breaking API changes; existing handler/protocol signatures are
+  unchanged. See the [CHANGELOG 0.6.0 section](../CHANGELOG.md#060--2026-11-06).
+
+## Upgrading to 0.5
 
 Spawned 0.5 replaces the enum-based `Actor` trait with protocol macros. The new API eliminates message enum boilerplate and manual dispatch — you define a trait, implement handlers, and call methods directly on actor references.
 
-## Concept Mapping
+### Concept Mapping
 
 | 0.4 (old) | 0.5 (new) | Notes |
 |-----------|-----------|-------|
@@ -26,7 +35,7 @@ Spawned 0.5 replaces the enum-based `Actor` trait with protocol macros. The new 
 | `GenServerHandle<A>` | `ActorRef<A>` | Renamed |
 | `Unused` | *(removed)* | No placeholder types needed |
 
-## Before/After: Messages
+### Before/After: Messages
 
 **0.4** — Hand-written enums for requests and replies:
 
@@ -68,7 +77,7 @@ pub trait NameServerProtocol: Send + Sync {
 
 `Response<T>` works in both execution modes — use `.await.unwrap()` in tasks mode or `.unwrap()` directly in threads mode. A single protocol definition works for both runtimes.
 
-### Generated module naming
+#### Generated module naming
 
 `#[protocol]` generates a submodule containing the message structs. The naming rules:
 
@@ -82,7 +91,7 @@ Import message structs from the generated module:
 use crate::protocols::foo_bar_protocol::{DoThing, GetStatus};
 ```
 
-### Mixed send + request protocols
+#### Mixed send + request protocols
 
 A single protocol can have both request (awaitable) and send (fire-and-forget) methods. The return type determines the kind:
 
@@ -114,7 +123,7 @@ impl Worker {
 }
 ```
 
-## Before/After: Actor Implementation
+### Before/After: Actor Implementation
 
 **0.4** — Single `handle_request` with `match`:
 
@@ -173,7 +182,7 @@ impl NameServer {
 }
 ```
 
-### Handler attributes
+#### Handler attributes
 
 The `#[actor]` macro supports three handler attributes:
 
@@ -187,7 +196,7 @@ All three generate the same `impl Handler<M>` code. The distinction is semantic:
 
 Handler signature: `fn name(&mut self, msg: MessageType, ctx: &Context<Self>) -> ReturnType`
 
-## Before/After: Calling an Actor
+### Before/After: Calling an Actor
 
 **0.4** — Static methods wrapping `actor_ref.request(enum)`:
 
@@ -214,7 +223,7 @@ let result = ns.find("Joe".into()).await.unwrap();
 assert_eq!(result, FindResult::Found { value: "At Home".into() });
 ```
 
-### Send methods are now synchronous
+#### Send methods are now synchronous
 
 In 0.4, `handle.cast(msg).await` was async. In 0.5, send-only protocol methods return `Result<(), ActorError>` synchronously — no `.await` needed:
 
@@ -246,7 +255,7 @@ impl MyService {
 }
 ```
 
-## Before/After: Timers
+### Before/After: Timers
 
 Timer functions (`send_after`, `send_interval`) now take `Context<A>` instead of `ActorRef<A>`.
 
@@ -271,7 +280,7 @@ send_after(duration, actor_ref.context(), Tick);
 
 `ActorRef::context()` converts an `ActorRef<A>` to a `Context<A>`. Use it when scheduling timers from outside a handler (e.g., in a `spawn()` block or from `main()`).
 
-### Self-rescheduling tick pattern
+#### Self-rescheduling tick pattern
 
 A common pattern is an actor that reschedules itself with variable delays:
 
@@ -295,7 +304,7 @@ async fn handle_tick(&mut self, _msg: Tick, ctx: &Context<Self>) {
 }
 ```
 
-## Before/After: Lifecycle Hooks
+### Before/After: Lifecycle Hooks
 
 **0.4:**
 ```rust
@@ -320,7 +329,7 @@ impl MyActor {
 
 **Panic behavior:** If `#[started]` panics, the panic is caught, logged via `tracing::error!`, and the actor exits immediately — subsequent sends will receive `ActorError::ActorStopped`. The `#[stopped]` hook is *not* called in this case. This applies to both tasks and threads modes.
 
-## Before/After: Stopping an Actor
+### Before/After: Stopping an Actor
 
 **0.4** — Return `RequestResponse::Stop`:
 ```rust
@@ -335,7 +344,7 @@ async fn handle_shutdown(&mut self, _msg: Shutdown, ctx: &Context<Self>) {
 }
 ```
 
-## New: Type-Erased Protocol References
+### New: Type-Erased Protocol References
 
 Each `#[protocol]` trait generates an `XRef` type alias — e.g., `NameServerRef = Arc<dyn NameServerProtocol>`. This lets actors hold references to protocol implementors without knowing the concrete type:
 
@@ -352,7 +361,7 @@ let ns: ActorRef<NameServer> = NameServer::new().start();
 let ns_ref: NameServerRef = ns.to_name_server_ref();
 ```
 
-## New: Actor Registry
+### New: Actor Registry
 
 A global, name-keyed registry for discovering actors at runtime:
 
@@ -372,7 +381,7 @@ let names: Vec<String> = registry::registered();
 registry::unregister("main_server");
 ```
 
-## Import Changes
+### Import Changes
 
 | 0.4 | 0.5 |
 |-----|-----|
@@ -386,11 +395,11 @@ registry::unregister("main_server");
 | *(n/a)* | `spawned_concurrency::{actor, protocol}` |
 | *(n/a)* | `spawned_concurrency::registry` |
 
-## spawned-rt Changes
+### spawned-rt Changes
 
 `spawned-rt` has **no breaking API changes** in 0.5. Both `spawned_rt::tasks` and `spawned_rt::threads` retain the same public exports (`spawn`, `sleep`, `CancellationToken`, `mpsc`, `oneshot`, etc.). Update the version in your `Cargo.toml` but no code changes are needed for `spawned-rt` imports.
 
-## Escape Hatches
+### Escape Hatches
 
 If the macros don't fit your use case:
 
