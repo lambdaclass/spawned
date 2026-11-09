@@ -64,6 +64,35 @@ jobs:
           --test execution_groups --test execution_profiles --test shutdown_publication
           --test resource_cleanup --test linked_exit_macro
 
+  # Leaks after shutdown: LeakSanitizer reports heap allocations that are
+  # unreachable at process exit (e.g. reference cycles between actor handles).
+  # Same nightly/build-std setup as tsan. concurrency/tests/leaks.rs adds
+  # explicit Weak/TLS/task-count assertions for what is observable in-process.
+  lsan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: lsan
+      - name: Lifecycle and leak tests under LeakSanitizer
+        env:
+          RUSTFLAGS: -Zsanitizer=leak
+          RUSTDOCFLAGS: -Zsanitizer=leak
+          LSAN_OPTIONS: report_objects=1
+          PROPTEST_CASES: '8'
+        run: >
+          cargo +nightly test -Zbuild-std --target x86_64-unknown-linux-gnu
+          -p spawned-concurrency --lib
+          --test supervision --test supervision_strategies --test nested_supervision
+          --test supervisor_policies
+          --test execution_groups --test execution_profiles --test shutdown_publication
+          --test resource_cleanup --test linked_exit_macro --test leaks
+
   # Weekly mutation testing of the supervision and execution-group code.
   mutants:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
