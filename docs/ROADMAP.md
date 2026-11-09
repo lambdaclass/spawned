@@ -55,40 +55,63 @@ and the [implementation review](reviews/execution-groups-supervision-implementat
 
 ## 2. Verify what landed, before building on it
 
-Supervision shipped before the lifecycle model meant to precede it. Before
-OneForAll/RestForOne and before a release that includes supervision:
+Supervision shipped before the lifecycle model meant to precede it. Status:
 
-- a TLA+ (or P/Stateright) model of the lifecycle and the implemented OneForOne
-  contract, with trace validation against the existing scenario, churn and
-  supervision failure tests;
-- Miri and ThreadSanitizer in CI;
-- a `cargo-mutants` pass over supervision, system and lifecycle code.
+- **Done** ([#192](https://github.com/lambdaclass/spawned/pull/192)): a TLA+ model
+  of the implemented OneForOne supervisor with trace validation of real runs,
+  ThreadSanitizer and weekly `cargo-mutants` in CI, mutation-guided tests, and
+  `#![forbid(unsafe_code)]` in all crates (Miri waits until unsafe is proposed).
+  The model and traces found no supervisor deviation; review of the tracing work
+  fixed a race where a normally stopped supervisor could record a failure.
+- **Remaining before OneForAll/RestForOne:** extend the model and traces to the
+  base lifecycle (links, monitors, trapped exits, stop).
+- **Done:** the client search of Ethrex and Ethlambda
+  ([results](research/idea-priorities.md#client-search-results)). Both clients
+  hand-build deferred replies or pipe-to-self, Ethrex hand-builds a per-peer actor
+  registry with a generation guard after a real bug, and generic stashing has no
+  client use.
 
-Start with a one-day search of the pinned client revisions for hand-built pending
-queues, per-key actor maps, requests awaited in handlers and broadcast lists; it
-settles where several backlog items belong. See the
-[verification strategy](research/verification-strategy.md).
+See the [verification strategy](research/verification-strategy.md).
 
 ## 3. Release and run in a client
 
-Release v0.7 with execution groups and supervision and run it in Ethlambda. In
-parallel, a small developer-experience track: a test kit with `ActorRef::mock()`,
-request deadlock detection and a stall watchdog.
+Release v0.7 with execution groups and supervision and run it in Ethlambda. The
+release also includes:
+
+- a per-method request timeout and per-call override in `#[protocol]` (the
+  hardwired 5 s default exited an Ethrex node under mailbox pressure);
+- a migration guide replacing the clients' hand-wired shutdown and startup
+  (per-actor Ctrl-C listeners, sleep-and-hope, manual stop/join with no deadline)
+  with `ActorSystem` shutdown and OneForOne supervision;
+- an example for every way of using the library, in both execution modes where
+  the feature exists in both ([planned examples](../examples/planned/README.md)).
+
+In parallel, a small developer-experience track: a test kit with
+`ActorRef::mock()`, request deadlock detection and a stall watchdog. The
+[client sweep](research/idea-priorities.md#client-sweep-production-pain) found
+wedged handlers and hand-stubbed test protocols in both clients.
 
 ## Then, guided by application needs
 
-- Deferred typed replies, delegation and pipe-to-self first: distinguish reply
-  ownership from dispatch, bound pending work and define late/owner-exit results.
-  Bounded stashing follows as a reply-ownership variant.
+- Deferred typed replies, delegation and pipe-to-self first, confirmed by both
+  clients: reply timeouts, bounded pending work, exactly-one completion including
+  on panic, and defined late/owner-exit results. Then a lifecycle-owned keyed
+  registry with generation guards (Ethrex's per-peer map) and published state
+  snapshots for read-heavy central actors (Ethrex's peer table). Bounded stashing
+  is demoted until a client needs it.
 - Bounded admission, pre-allocation byte credits and opt-in inherited request
-  deadlines as one design package. Credits work independently of optional metrics.
+  deadlines as one design package, now with production evidence: unbounded
+  per-connection mailboxes leaked ~1.5 GB/day in Ethrex. Credits work
+  independently of optional metrics. Bounded, lag-aware stream listeners follow.
+- Timer policies (fixed-delay, wall-clock aligned, skip/catch-up, pause/resume),
+  which both clients hand-roll today.
 - Actor-level ordering exploration, then per-actor crash tapes, then
   record/replay.
 - Typed streams, causal tracing, cohort metrics, runtime inspection, batching,
   coalescing and targeted dispatch optimizations.
 - When a client or user justifies them: OneForAll/RestForOne, a lighter
   dedicated-thread backend, virtual actors, process groups/pub-sub, and
-  Tokio-free thread builds.
+  Tokio-free thread builds (being explored separately).
 
 **Tokio-free builds versus the clients.** A Tokio-free *build* lets thread-only
 applications avoid compiling Tokio; it does not help Ethrex or Ethlambda, which
