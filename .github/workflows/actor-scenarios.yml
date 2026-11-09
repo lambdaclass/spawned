@@ -72,3 +72,39 @@ jobs:
       - run: cargo test --locked -p spawned-rt --test cancellation_loom
         env:
           RUSTFLAGS: '--cfg spawned_loom'
+
+  # Flaky-test tracking: run the workspace suite FLAKY_RUNS times under
+  # nextest with retries; a test that needed a retry or both passed and failed
+  # is reported FLAKY and fails this job (it is never silently passed). JUnit
+  # reports and the summary are kept as an artifact. See docs/TESTING.md.
+  flaky-tracking:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      FLAKY_RUNS: '5'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.93.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: nextest
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest@0.9.151
+      - name: Repeated runs
+        run: |
+          mkdir -p flaky-reports
+          for run in $(seq 1 "$FLAKY_RUNS"); do
+            cargo nextest run --locked --workspace --profile flaky --no-tests=warn || true
+            cp target/nextest/flaky/junit.xml "flaky-reports/junit-$run.xml"
+          done
+      - name: Report flaky and failing tests
+        run: |
+          set -o pipefail
+          python3 scripts/flaky-report.py flaky-reports/junit-*.xml | tee flaky-reports/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: flaky-test-reports
+          path: flaky-reports
+          if-no-files-found: ignore
