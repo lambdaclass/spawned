@@ -43,11 +43,12 @@ const FAULTS: [Fault; 9] = [
     Fault::QueuedMessageDrop,
 ];
 
-/// The reason a victim must report. `None`: the fault is outside every
-/// `catch_unwind` (a queued message dropped during stop) and the reason is
-/// mode-specific; see `queued_drop_reason`.
-fn expected(fault: Fault) -> Option<ExitReason> {
-    let panic = |s: &str| Some(ExitReason::Panic(s.to_string()));
+/// The reason a victim must report, identical in both modes. A queued message
+/// whose Drop panics while a stopping actor discards its mailbox is outside the
+/// handler's `catch_unwind`, so the shutdown path publishes the trappable
+/// framework panic reason.
+fn expected(fault: Fault) -> ExitReason {
+    let panic = |s: &str| ExitReason::Panic(s.to_string());
     match fault {
         Fault::Started => panic("panic in started(): injected started panic"),
         Fault::SendHandler | Fault::RequestHandler => {
@@ -58,7 +59,7 @@ fn expected(fault: Fault) -> Option<ExitReason> {
         Fault::DownHandler => panic("panic in handler: injected Down panic"),
         Fault::MessageDrop => panic("panic in handler: injected message drop panic"),
         Fault::ReplyDrop => panic("panic in handler: injected reply drop panic"),
-        Fault::QueuedMessageDrop => None,
+        Fault::QueuedMessageDrop => panic("unexpected framework panic"),
     }
 }
 
@@ -409,11 +410,7 @@ fn exercise(h: &dyn Harness, fault: Fault, gate: &Gate, events: &Events) -> Exit
         }
     }
     let reason = h.wait_exit(&victim);
-    if let Some(expected) = expected(fault) {
-        assert_eq!(reason, expected, "{fault:?}");
-    } else {
-        assert!(reason.is_abnormal(), "{fault:?}: {reason:?}");
-    }
+    assert_eq!(reason, expected(fault), "{fault:?}");
     // Exactly one Down and one Exit, both carrying the published reason.
     let both = |e: &[Event]| e.len() >= 2;
     events.wait_until(
@@ -526,10 +523,7 @@ mod threads_mode {
                 observer,
                 triggers: Mutex::new(Vec::new()),
             };
-            let reason = exercise(&h, fault, &gate, &events);
-            if fault == Fault::QueuedMessageDrop {
-                assert_eq!(reason, queued_drop_reason(), "{fault:?}");
-            }
+            exercise(&h, fault, &gate, &events);
             for trigger in h.triggers.lock().unwrap().iter() {
                 trigger.stop();
                 wait_native(trigger);
@@ -538,14 +532,6 @@ mod threads_mode {
             assert_eq!(wait_native(&h.observer_child()), ExitReason::Normal);
         }
     }
-}
-
-/// Reason for a queued message whose Drop panics while the actor discards it.
-/// The panic escapes every catch_unwind, so the fallback terminal reason is
-/// published. Threads mode publishes a trappable Panic; tasks mode publishes
-/// an untrappable Kill instead (known bug, see `tasks_mode::queued_drop_*`).
-fn queued_drop_reason() -> ExitReason {
-    ExitReason::Panic("unexpected framework panic".into())
 }
 
 // ---------------------------------------------------------------------------
@@ -578,19 +564,6 @@ mod tasks_mode {
         Place::Thread,
         Place::GroupAsync,
         Place::GroupThread,
-    ];
-    /// QueuedMessageDrop is excluded: in tasks mode it publishes an untrappable
-    /// Kill that also kills the trapping observer (and two such messages abort
-    /// the process). The `queued_drop_*` tests below are the failing repros.
-    const TASK_FAULTS: [Fault; 8] = [
-        Fault::Started,
-        Fault::SendHandler,
-        Fault::RequestHandler,
-        Fault::Stopped,
-        Fault::ExitReceived,
-        Fault::DownHandler,
-        Fault::MessageDrop,
-        Fault::ReplyDrop,
     ];
 
     struct Env {
@@ -711,7 +684,7 @@ mod tasks_mode {
     #[test]
     fn every_callback_panic_is_contained_in_tasks_mode() {
         for place in PLACES {
-            for fault in TASK_FAULTS {
+            for fault in FAULTS {
                 let env = Env::new(place);
                 let gate = Arc::new(Gate::default());
                 let events: Events = Recorder::new();
@@ -779,7 +752,7 @@ mod tasks_mode {
     #[test]
     fn supervised_callback_panics_restart_once() {
         for place in [Place::GroupAsync, Place::GroupThread] {
-            for fault in TASK_FAULTS {
+            for fault in FAULTS {
                 let env = Env::new(place);
                 let group = env.group.clone().unwrap();
                 let gate = Arc::new(Gate::default());
@@ -802,7 +775,7 @@ mod tasks_mode {
                     let next = env.bounded(child.wait_ready()).unwrap();
                     assert_eq!(env.bounded(next.request(Ask)).unwrap(), 1);
                     assert_eq!(child.snapshot().generation, 2);
-                    assert_eq!(child.snapshot().last_exit, expected(fault));
+                    assert_eq!(child.snapshot().last_exit, Some(expected(fault)));
                 } else {
                     let first = child.current().unwrap();
                     let h = TasksHarness {
@@ -872,79 +845,5 @@ mod tasks_mode {
                 env.finish();
             }
         }
-    }
-
-    /// BUG (known, not fixed here): a queued message whose Drop panics while a
-    /// stopping tasks-mode actor discards its mailbox escapes every catch_unwind
-    /// in the drain loop (concurrency/src/tasks/actor.rs, `run_actor`). The
-    /// cleanup guard then publishes its fallback `ExitReason::Kill`
-    /// (concurrency/src/tasks/actor.rs, `ActorCleanup::new(.., ExitReason::Kill, ..)`),
-    /// which is untrappable, so a trapping linked observer is killed instead of
-    /// receiving `Exit`. Threads mode publishes a trappable Panic for the same
-    /// fault and the observer survives. Run with `--ignored` to reproduce.
-    #[test]
-    #[ignore = "known bug: queued-message Drop panic publishes untrappable Kill in tasks mode"]
-    fn queued_drop_panic_is_trappable_like_threads_mode() {
-        let env = Env::new(Place::Async);
-        let gate = Arc::new(Gate::default());
-        let events: Events = Recorder::new();
-        let observer = env.start(TaskObserver(Observer {
-            events: events.clone(),
-        }));
-        let victim = env.start(TaskVictim(Victim::new(None, &gate)));
-        let h = TasksHarness {
-            env: &env,
-            victim,
-            observer,
-            triggers: Mutex::new(Vec::new()),
-        };
-        let reason = exercise(&h, Fault::QueuedMessageDrop, &gate, &events);
-        assert_eq!(reason, queued_drop_reason());
-    }
-
-    /// BUG (known, not fixed here): two queued messages whose Drop panics abort
-    /// the whole process in tasks mode: the second drop runs while the first
-    /// panic unwinds through the drain loop. Threads mode survives the same
-    /// input. Runs the scenario in a child process so the abort is observable.
-    #[test]
-    #[ignore = "known bug: two queued-message Drop panics abort the process in tasks mode"]
-    fn queued_drop_panics_do_not_abort_the_process() {
-        let output = std::process::Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "tasks_mode::queued_drop_abort_child",
-                "--ignored",
-                "--nocapture",
-            ])
-            .env("SPAWNED_PANIC_ABORT_CHILD", "1")
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "child process failed: {:?}\n{}",
-            output.status,
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-    #[test]
-    #[ignore = "child process for queued_drop_panics_do_not_abort_the_process"]
-    fn queued_drop_abort_child() {
-        if std::env::var_os("SPAWNED_PANIC_ABORT_CHILD").is_none() {
-            return;
-        }
-        let env = Env::new(Place::Async);
-        let gate = Arc::new(Gate::default());
-        let victim = env.start(TaskVictim(Victim::new(None, &gate)));
-        victim.send(Hold).unwrap();
-        victim
-            .send(Payload(Bomb(Some("first queued drop"))))
-            .unwrap();
-        victim
-            .send(Payload(Bomb(Some("second queued drop"))))
-            .unwrap();
-        victim.child_handle().stop();
-        gate.release();
-        let reason = env.bounded(victim.wait_exit());
-        assert!(reason.is_abnormal());
     }
 }

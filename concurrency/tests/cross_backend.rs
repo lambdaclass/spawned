@@ -1209,7 +1209,7 @@ fn fixed_workloads_match_across_placements() {
 }
 
 // ---------------------------------------------------------------------------
-// Documented divergence: stop before the first poll
+// Contract: stop before the first poll (managed versus legacy)
 // ---------------------------------------------------------------------------
 
 mod early_stop {
@@ -1222,6 +1222,11 @@ mod early_stop {
         type Result = ();
     }
     pub struct Hooks(pub Arc<Recorder<&'static str>>);
+    impl Drop for Hooks {
+        fn drop(&mut self) {
+            self.0.push("dropped");
+        }
+    }
     impl spawned_concurrency::tasks::Actor for Hooks {
         async fn started(&mut self, _: &spawned_concurrency::tasks::Context<Self>) {
             self.0.push("started");
@@ -1247,13 +1252,14 @@ mod early_stop {
     }
 }
 
-/// An actor stopped before its first poll: unmanaged tasks actors and threads
-/// actors still run started() then stopped(); an execution-group actor whose
-/// scope is already cancelled skips both (admission check in
-/// `run_actor_lifecycle`). All report Normal. This pins the current behavior so
-/// a change is deliberate; it is listed as an allowed difference in TESTING.md.
+/// The intended contract for an actor stopped before its first poll (GUIDE.md,
+/// "Startup"): a managed actor whose admission closes before `started()` begins
+/// skips both hooks and drops its state; legacy unmanaged tasks actors and
+/// threads actors retain their existing behavior of running `started()` then
+/// `stopped()`. All report Normal and every actor's state is dropped exactly
+/// once. Listed as an allowed difference in TESTING.md.
 #[test]
-fn stop_before_first_poll_lifecycle_differs_between_unmanaged_and_managed() {
+fn stop_before_first_poll_follows_managed_and_legacy_contract() {
     use early_stop::*;
     // Unmanaged Async: a current-thread runtime that is not running yet.
     let rt = tokio::runtime::Builder::new_current_thread()
@@ -1268,17 +1274,19 @@ fn stop_before_first_poll_lifecycle_differs_between_unmanaged_and_managed() {
     actor.child_handle().stop();
     let reason = rt.block_on(async { tokio::time::timeout(LIMIT, actor.wait_exit()).await });
     assert_eq!(reason.unwrap(), ExitReason::Normal);
-    assert_eq!(hooks.snapshot(), ["started", "stopped"]);
+    let done = |e: &[&str]| e.contains(&"dropped");
+    let legacy = ["started", "stopped", "dropped"];
+    assert_eq!(hooks.wait_until(LIMIT, "legacy tasks drop", done), legacy);
 
-    // Threads mode: no admission check either.
+    // Legacy threads mode: no admission check either.
     let hooks = Recorder::new();
     let actor = spawned_concurrency::threads::ActorStart::start(Hooks(hooks.clone()));
     actor.child_handle().stop();
     assert_eq!(actor.wait_exit(), ExitReason::Normal);
-    assert_eq!(hooks.snapshot(), ["started", "stopped"]);
+    assert_eq!(hooks.wait_until(LIMIT, "threads drop", done), legacy);
 
     // Managed: the group's single worker is blocked, so the actor is admitted
-    // but not yet polled when it is stopped.
+    // but not yet polled when it is stopped. Neither hook runs; state drops.
     let rt = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(1)
         .enable_all()
@@ -1303,7 +1311,7 @@ fn stop_before_first_poll_lifecycle_differs_between_unmanaged_and_managed() {
     release.send(()).unwrap();
     let reason = rt.block_on(async { tokio::time::timeout(LIMIT, actor.wait_exit()).await });
     assert_eq!(reason.unwrap(), ExitReason::Normal);
-    assert_eq!(hooks.snapshot(), Vec::<&str>::new());
+    assert_eq!(hooks.wait_until(LIMIT, "managed drop", done), ["dropped"]);
     let report = rt.block_on(system.shutdown(LIMIT));
     assert!(report.complete);
 }
