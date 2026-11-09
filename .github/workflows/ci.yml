@@ -202,3 +202,11 @@ jobs:
           # order by release.yaml; its package is also validated before release.
           cargo package --package spawned-macros --no-verify
           cargo package --package spawned-rt --no-verify
+
+      - name: Verify spawned-test publication against unreleased siblings
+        run: |
+          # Match the release dependency order without publishing from a PR.
+          cargo publish --package spawned-test --dry-run \
+            --config "patch.crates-io.spawned-concurrency.path=\"$PWD/concurrency\"" \
+            --config "patch.crates-io.spawned-rt.path=\"$PWD/rt\"" \
+            --config "patch.crates-io.spawned-macros.path=\"$PWD/macros\""

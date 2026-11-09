@@ -9,7 +9,7 @@ repository.workspace = true
 [dependencies]
 # Path dependency (not `workspace = true`) so `--no-default-features` really
 # drops the async runtime: the workspace entry keeps spawned-concurrency's defaults.
-spawned-concurrency = { path = "../concurrency", version = "0.7.0", default-features = false }
+spawned-concurrency = { path = "../concurrency", version = "0.7.1", default-features = false }
 spawned-rt = { workspace = true }
 tracing = { workspace = true }
 
@@ -18,6 +18,5 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "test-
 
 [features]
 default = ["async"]
-# `tasks` mode helpers, ActorSystem/supervision helpers and `ExitReason::Kill`
-# injection. Without it the crate builds Tokio-free with the `threads` helpers.
+# `tasks` mode helpers and ActorSystem/supervision helpers. Without it the crate builds Tokio-free with the `threads` helpers.
 async = ["spawned-concurrency/async", "spawned-rt/async"]
