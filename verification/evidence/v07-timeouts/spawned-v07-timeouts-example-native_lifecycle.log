@@ -1,0 +1,11 @@
+   Compiling spawned-capability-examples v0.1.0 (/tmp/spawned-v07/examples/capabilities)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.31s
+     Running `/tmp/spawned-pr-security-review/system-target/debug/native_lifecycle`
+
+thread '<unnamed>' (913383) panicked at examples/capabilities/src/bin/native_lifecycle.rs:41:9:
+intentional linked startup failure
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread '<unnamed>' (913388) panicked at examples/capabilities/src/bin/native_lifecycle.rs:41:9:
+intentional linked startup failure
+Native monitor/link notifications preserve reasons; trapped peers keep running.

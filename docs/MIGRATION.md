@@ -3,9 +3,118 @@
 Upgrade notes per release, newest first. The [CHANGELOG](../CHANGELOG.md) lists
 every change; this guide covers what you need to edit when upgrading.
 
-- **0.7 (unreleased):** see the [CHANGELOG Unreleased section](../CHANGELOG.md#unreleased).
+- **0.7 (unreleased):** [timeout configuration and client shutdown migration](#preparing-for-07).
 - **0.6:** no breaking API changes; existing handler/protocol signatures are
   unchanged. See the [CHANGELOG 0.6.0 section](../CHANGELOG.md#060--2026-11-06).
+
+## Preparing for 0.7
+
+These APIs are implemented on main and are unreleased. Keep ordinary `.start()`
+and the default Tokio backend unless adopting explicit ownership/placement.
+A dependency upgrade alone does not place existing actors in an `ActorSystem`.
+
+### Protocol request timeouts
+
+The default remains five seconds. Choose a protocol default, override individual
+request methods, or configure one cloned concrete handle:
+
+```rust
+#[protocol(timeout = std::time::Duration::from_secs(30))]
+trait ChainProtocol: Send + Sync {
+    fn import_block(&self, bytes: Vec<u8>) -> Response<()>;
+    #[request_timeout(std::time::Duration::from_secs(2))]
+    fn status(&self) -> Response<Status>;
+}
+
+// actor is a concrete ActorRef implementing ChainProtocol.
+let status = actor.with_request_timeout(std::time::Duration::from_secs(5))
+    .status().await?;
+```
+
+Precedence is handle override, method attribute, protocol attribute, five-second
+default. Configure before type erasure:
+`actor.with_request_timeout(limit).to_chain_ref()`. A previously erased `ChainRef`
+does not expose concrete-handle configuration. Existing handwritten protocol
+fakes need no additional trait methods.
+
+The synchronous API uses the same settings and blocks at the protocol method
+call, returning `Response::ready`; extract with `.unwrap()`/`.expect()` or inspect
+the result. A timeout still leaves the outcome of accepted work indeterminate:
+queued or running handlers may execute after the caller returns. It is not a
+cancellation or rollback mechanism. Retrying a state-changing operation still
+needs an application-level idempotency decision.
+
+### Ethrex and Ethlambda: own startup and shutdown
+
+The [client audit](../ROADMAP.md#client-sweep-production-pain) pins the inspected
+revisions: Ethrex `1dfaa09ec`, Ethlambda `c3f5f566`. Verify deployment revisions
+before applying a recipe. This guide describes a migration, not a claim that
+either client has already adopted these APIs.
+
+| Existing pattern | Migration |
+|---|---|
+| Independent Ctrl-C listeners in several Ethrex actors | Keep one application signal owner. Stop ingress/producers, then invoke one system shutdown. Preserve SIGTERM handling for containers as well as SIGINT. Spawned does not install OS signal handlers. |
+| Cancel the main token, query peer state after actors may have stopped, or save an empty list on `ActorStopped` | Query/snapshot and persist required state while dependencies are still live. Treat a failed snapshot explicitly; an empty fallback can overwrite useful peer data. |
+| Fixed sleeps to allow shutdown | Await `system.shutdown(deadline)`, inspect the report and retain it if cleanup is incomplete. A sleep is not a join. |
+| Ethlambda's hand-wired actor stops with no common deadline | Declare dependencies once, stop dependents before their dependencies, and choose a process/container grace period that includes snapshot persistence and cleanup. |
+| Sequential startup that logs a failed child and continues with a partly initialized subsystem | Put fallible initialization in `ChildSpec` factories, await tree startup, and propagate failure. Failed partial startup rolls back owned resources. |
+| Detached workers or listeners that outlive an actor generation | Use managed helpers where appropriate; keep existing session/generation fencing for late external results. Arbitrary raw spawns do not become owned automatically. |
+
+A migration can proceed subsystem by subsystem:
+
+1. Keep one `ActorSystem` alive at the application root. Build a small number of
+   named `async_group`s with explicit worker budgets. Both clients depend on
+   Tokio; a Tokio-free build is not this migration.
+2. Admit standalone managed actors with `start_on(&group)` or declare a
+   supervisor tree with `ChildSpec` factories. Declare dependencies before
+   dependents and resolve dependencies again inside each fresh factory.
+3. Start with OneForOne for independent children. If a dependent retains an
+   instance-bound reference to an earlier child, use RestForOne or explicitly
+   re-resolve the dependency after failure. Rebuilding only the upstream child
+   does not rebind the downstream actor's old reference.
+4. Await readiness before opening external ingress. Choose restart mode, shared
+   retry intensity/window and backoff from the subsystem's recovery contract.
+   A restart creates fresh state; storage recovery is application code.
+5. On shutdown, stop admission at the application boundary and join producers.
+   Take required snapshots, flush application work and await persistence.
+   Only then close the system. Ordinary framework stop discards queued work;
+   it does not automatically drain mailboxes.
+6. Await the report. An incomplete report retains cleanup ownership and can be
+   waited on again. Do not drop the owner and assume a stuck blocking helper was
+   killed: handlers and native closures must return cooperatively.
+
+The runnable [coordinated shutdown example](../examples/capabilities/src/bin/coordinated_shutdown.rs)
+asserts a two-group dependency tree, a joined finite producer, a snapshot before
+closure and reverse shutdown. Its FIFO fence relies on all producers already
+having joined and does not acknowledge disk durability. The
+[named registration example](../examples/capabilities/src/bin/registrations_and_fakes.rs)
+shows replacement lookup and automatic managed-name cleanup.
+
+Set restart budgets and container termination budgets separately. A shutdown
+report deadline bounds how long the caller waits for a report; it cannot bound
+how long arbitrary blocking application code takes to release resources.
+Use `ctx.spawn_helper`/`spawn_blocking_helper` for scoped work and await its
+resource cleanup. The framework does not infer an application's persistence
+dependencies or retry safety.
+
+### Validation before rollout
+
+Pin the same client source/configuration and compare the same replay or canary
+workload with only the Spawned dependency changed. Record startup, ready/stop
+outcomes, unexpected restarts, queue wait, handler time, request timeouts, CPU,
+RSS and OS thread count. Separate warmup from steady state and match imported
+blocks; unrelated EngineClient or storage differences are not framework evidence.
+
+Ethlambda's current [import replay implementation](https://github.com/lambdaclass/ethlambda/blob/c3f5f566cb3a61e3d388c66ce21794c18a6618ce/bin/ethlambda/src/benchmark/import/replay.rs)
+calls the import function directly, bypassing actor mailboxes, the tick loop and
+P2P. `replay-era` similarly targets the state transition. They are useful
+component checks; neither alone validates the actor runtime. Use a real node
+canary or an actor-backed replay path for this release gate.
+
+The library's tests, bounded models and examples are necessary checks. Full-client
+replay or a same-node Ethlambda canary remains the release gate. Do not promote
+synthetic backend speedup ratios to client claims. Pinned/native groups remain
+opt-in; profile the client before changing its placement.
 
 ## Upgrading to 0.5
 

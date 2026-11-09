@@ -587,6 +587,13 @@ impl<A: Actor> Clone for ActorRef<A> {
 }
 
 impl<A: Actor> ActorRef<A> {
+    /// Clone this handle with a timeout override for generated protocol calls.
+    /// Per-call override wins over method and protocol defaults. No message is
+    /// sent until a protocol method is called; timeout does not cancel its work.
+    pub fn with_request_timeout(&self, timeout: Duration) -> crate::response::RequestOptions<Self> {
+        crate::response::RequestOptions::new(self.clone(), timeout)
+    }
+
     /// Send a fire-and-forget message to the actor.
     pub fn send<M>(&self, msg: M) -> Result<(), ActorError>
     where

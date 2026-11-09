@@ -122,6 +122,7 @@ async fn handle_tick(&mut self, _msg: Tick, ctx: &Context<Self>) {
 | `actor_ref.send(msg)` | Fire-and-forget. Returns `Result<(), ActorError>` |
 | `actor_ref.request(msg)` | Request with default 5s timeout. Tasks: `.await`, Threads: blocking |
 | `actor_ref.request_with_timeout(msg, duration)` | Request with custom timeout |
+| `actor_ref.with_request_timeout(duration)` | Clone a configured handle for generated protocol methods (unreleased) |
 | `actor_ref.request_raw(msg)` | Returns a raw oneshot receiver |
 | `actor_ref.recipient::<M>()` | Get a type-erased `Recipient<M>` |
 | `actor_ref.context()` | Get a `Context<A>` (for timer setup, etc.) |
@@ -467,6 +468,45 @@ let result = ns.find("Joe".into()).unwrap();
 `Response::ready(result)` creates a pre-computed response — this is what the `#[protocol]` macro generates for threads-mode blanket impls.
 
 ---
+
+### Protocol timeout configuration (unreleased)
+
+Generated requests retain the five-second default. Set a default for one
+protocol and override selected request methods:
+
+```rust
+#[protocol(timeout = std::time::Duration::from_secs(30))]
+trait ImportProtocol: Send + Sync {
+    fn import(&self, block: Vec<u8>) -> Response<()>;
+    #[request_timeout(std::time::Duration::from_secs(2))]
+    fn status(&self) -> Response<u64>;
+}
+```
+
+Use `actor.with_request_timeout(limit).status()` for a call-specific override.
+It returns a cloned configured handle, so retaining it applies that setting to
+its subsequent protocol calls. The original handle is unchanged. Priority is
+handle setting, method attribute, protocol default, five seconds.
+
+Configure before converting to a protocol reference:
+`actor.with_request_timeout(limit).to_import_ref()`. The configured handle also
+implements the protocol, including cfg-gated methods and its `ToXRef` converter.
+Existing manually implemented protocol fakes need no new methods. An already
+erased `ImportRef` does not expose the concrete-handle builder.
+
+Settings are `std::time::Duration` expressions; method expressions are evaluated
+before message arguments move. Send-only methods have no timeout, and a
+`request_timeout` attribute on one is a compile error. Manual message calls use
+`request_with_timeout(msg, limit)`.
+
+Enqueue still happens when the generated method is called. In async mode the
+response timer starts when its future is first polled. In native mode the
+protocol call blocks immediately. Timeout/drop does not cancel accepted work or
+roll back side effects; decide retry safety in application code. These settings
+do not propagate deadlines to downstream requests.
+
+Run the [asserted example](../examples/capabilities/src/bin/protocol_timeouts.rs)
+in both modes, or follow the [0.7 client migration guide](MIGRATION.md#preparing-for-07).
 
 ## Message Trait
 

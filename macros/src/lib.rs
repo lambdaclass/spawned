@@ -310,6 +310,7 @@ fn generate_blanket_impl(
     methods: &[ProtocolMethodInfo],
     runtime_path: &proc_macro2::TokenStream,
     mode: RuntimeMode,
+    override_timeout: bool,
 ) -> proc_macro2::TokenStream {
     let ProtocolInfo {
         trait_name,
@@ -400,6 +401,20 @@ fn generate_blanket_impl(
         marker_trait_bounds.push(quote! { + #marker_name });
     }
 
+    if override_timeout {
+        marker_trait_defs.clear();
+    }
+    let target = if override_timeout {
+        quote! { spawned_concurrency::response::RequestOptions<#runtime_path::ActorRef<__A>> }
+    } else {
+        quote! { #runtime_path::ActorRef<__A> }
+    };
+    let receiver = if override_timeout {
+        quote! { spawned_concurrency::response::RequestOptions::actor_ref(self) }
+    } else {
+        quote! { self }
+    };
+
     // Generate method implementations (no where clauses needed — bounds come from
     // marker traits or the impl block).
     let method_impls: Vec<_> = methods
@@ -410,6 +425,12 @@ fn generate_blanket_impl(
             let params: Vec<_> = m.params.iter().collect();
             let ret_ty = &m.ret_type;
             let method_attrs = &m.method_attrs;
+            let timeout = if override_timeout {
+                quote! { spawned_concurrency::response::RequestOptions::timeout(self) }
+            } else {
+                let timeout = &m.timeout;
+                quote! { #timeout }
+            };
 
             let struct_name = &m.struct_name;
             let msg_construct = if field_names.is_empty() {
@@ -425,9 +446,9 @@ fn generate_blanket_impl(
                         ReturnType::Type(_, ty) => is_unit_type(ty),
                     };
                     let body = if is_unit_return {
-                        quote! { let _ = self.send(#msg_construct); }
+                        quote! { let _ = #receiver.send(#msg_construct); }
                     } else {
-                        quote! { self.send(#msg_construct) }
+                        quote! { #receiver.send(#msg_construct) }
                     };
                     quote! {
                         #(#method_attrs)*
@@ -437,22 +458,28 @@ fn generate_blanket_impl(
                     }
                 }
                 MethodKind::Request(_) => {
+                    let timeout_binding = syn::Ident::new(
+                        "__spawned_request_timeout",
+                        proc_macro2::Span::mixed_site(),
+                    );
                     let body = match mode {
                         RuntimeMode::Tasks => quote! {
                             spawned_concurrency::Response::from_with_timeout(
-                                self.request_raw(#msg_construct),
-                                spawned_concurrency::tasks::DEFAULT_REQUEST_TIMEOUT,
+                                #receiver.request_raw(#msg_construct),
+                                #timeout_binding,
                             )
                         },
                         RuntimeMode::Threads => quote! {
                             spawned_concurrency::Response::ready(
-                                self.request(#msg_construct),
+                                #receiver.request_with_timeout(#msg_construct, #timeout_binding),
                             )
                         },
                     };
                     quote! {
                         #(#method_attrs)*
                         fn #method_name(&self, #(#params),*) #ret_ty {
+                            // Evaluate before message construction can move arguments.
+                            let #timeout_binding: ::std::time::Duration = #timeout;
                             #body
                         }
                     }
@@ -465,13 +492,13 @@ fn generate_blanket_impl(
         #(#marker_trait_defs)*
 
         impl<__A: #runtime_path::Actor #(+ #handler_bounds)* #(#marker_trait_bounds)*> #trait_name
-            for #runtime_path::ActorRef<__A>
+            for #target
         {
             #(#method_impls)*
         }
 
         impl<__A: #runtime_path::Actor #(+ #handler_bounds)* #(#marker_trait_bounds)*> #converter_trait
-            for #runtime_path::ActorRef<__A>
+            for #target
         {
             fn #converter_method(&self) -> #ref_name {
                 ::std::sync::Arc::new(self.clone())
@@ -491,6 +518,7 @@ struct ProtocolMethodInfo {
     /// Doc + cfg attributes to propagate to blanket impl methods.
     method_attrs: Vec<Attribute>,
     cfg_attrs: Vec<Attribute>,
+    timeout: syn::Expr,
 }
 
 /// Generates message types and blanket implementations from a protocol trait.
@@ -558,9 +586,36 @@ struct ProtocolMethodInfo {
 /// // - pub trait ToCounterRef { fn to_counter_ref(&self) -> CounterRef; }
 /// // - impl CounterProtocol for ActorRef<A> where A: Handler<Increment> + Handler<GetCount>
 /// ```
+/// # Request timeouts
+///
+/// `#[protocol(timeout = Duration::from_secs(30))]` sets a protocol default;
+/// `#[request_timeout(Duration::from_secs(2))]` overrides a request method.
+/// Without either setting, requests keep their five-second default.
+/// `actor.with_request_timeout(limit).method(...)` takes precedence and also
+/// supports conversion with the generated `ToXRef` trait. Configure before
+/// erasing the concrete handle. These are reply-wait limits, not cancellation
+/// or inherited deadlines; accepted work may still execute after timeout.
+/// Native protocol calls block immediately; async response timers start on poll.
 #[proc_macro_attribute]
-pub fn protocol(_attr: TokenStream, item: TokenStream) -> TokenStream {
-    let trait_def = parse_macro_input!(item as ItemTrait);
+pub fn protocol(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let options = parse_macro_input!(attr with syn::punctuated::Punctuated::<syn::MetaNameValue, syn::Token![,]>::parse_terminated);
+    let mut protocol_timeout = None;
+    for option in options {
+        if !option.path.is_ident("timeout") {
+            return syn::Error::new_spanned(
+                option.path,
+                "unsupported protocol option; expected timeout = Duration expression",
+            )
+            .to_compile_error()
+            .into();
+        }
+        if protocol_timeout.replace(option.value).is_some() {
+            return syn::Error::new_spanned(option.path, "duplicate protocol timeout")
+                .to_compile_error()
+                .into();
+        }
+    }
+    let mut trait_def = parse_macro_input!(item as ItemTrait);
     let trait_name = &trait_def.ident;
     let trait_vis = &trait_def.vis;
 
@@ -581,7 +636,7 @@ pub fn protocol(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
     let mut methods: Vec<ProtocolMethodInfo> = Vec::new();
 
-    for item in &trait_def.items {
+    for item in &mut trait_def.items {
         if !matches!(item, TraitItem::Fn(_)) {
             return syn::Error::new_spanned(
                 item,
@@ -654,6 +709,39 @@ pub fn protocol(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 }
             };
 
+            let mut method_timeout = None;
+            for attr in method
+                .attrs
+                .iter()
+                .filter(|a| a.path().is_ident("request_timeout"))
+            {
+                if !matches!(kind, MethodKind::Request(_)) {
+                    return syn::Error::new_spanned(
+                        attr,
+                        "request_timeout is only valid on Response<T> methods",
+                    )
+                    .to_compile_error()
+                    .into();
+                }
+                let expression = match attr.parse_args::<syn::Expr>() {
+                    Ok(expression) => expression,
+                    Err(error) => return error.to_compile_error().into(),
+                };
+                if method_timeout.replace(expression).is_some() {
+                    return syn::Error::new_spanned(attr, "duplicate request_timeout")
+                        .to_compile_error()
+                        .into();
+                }
+            }
+            method
+                .attrs
+                .retain(|a| !a.path().is_ident("request_timeout"));
+            let timeout = method_timeout
+                .or_else(|| protocol_timeout.clone())
+                .unwrap_or_else(
+                    || syn::parse_quote! { spawned_concurrency::response::DEFAULT_REQUEST_TIMEOUT },
+                );
+
             let method_attrs: Vec<Attribute> = method
                 .attrs
                 .iter()
@@ -681,6 +769,7 @@ pub fn protocol(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 ret_type: method.sig.output.clone(),
                 method_attrs,
                 cfg_attrs,
+                timeout,
             });
         }
     }
@@ -738,10 +827,18 @@ pub fn protocol(_attr: TokenStream, item: TokenStream) -> TokenStream {
         converter_trait: &converter_trait,
         converter_method: &converter_method,
     };
-    let tasks_impl = generate_blanket_impl(&proto_info, &methods, &tasks, RuntimeMode::Tasks);
-    let threads_impl = generate_blanket_impl(&proto_info, &methods, &threads, RuntimeMode::Threads);
-    let blanket_impls =
-        quote! { spawned_concurrency::__spawned_async_items! { #tasks_impl } #threads_impl };
+    let tasks_impl =
+        generate_blanket_impl(&proto_info, &methods, &tasks, RuntimeMode::Tasks, false);
+    let threads_impl =
+        generate_blanket_impl(&proto_info, &methods, &threads, RuntimeMode::Threads, false);
+    let tasks_options =
+        generate_blanket_impl(&proto_info, &methods, &tasks, RuntimeMode::Tasks, true);
+    let threads_options =
+        generate_blanket_impl(&proto_info, &methods, &threads, RuntimeMode::Threads, true);
+    let blanket_impls = quote! {
+        spawned_concurrency::__spawned_async_items! { #tasks_impl #tasks_options }
+        #threads_impl #threads_options
+    };
 
     let ref_doc = format!(
         "Type-erased reference to any actor implementing [`{trait_name}`].\n\n\

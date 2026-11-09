@@ -20,18 +20,18 @@ Usage of each feature is documented in the [guide](../docs/GUIDE.md).
 | Backend selection (`Async`, `Blocking`, `Thread`) | [blocking_genserver](blocking_genserver), [signal_test](signal_test) | n/a |
 | Blocking-handler warning | [busy_genserver_warning](busy_genserver_warning) | n/a |
 | Dedicated-thread actor with async helpers | [dedicated_thread](capabilities/src/bin/dedicated_thread.rs) | n/a |
-| Global registry (`registry::register`/`whereis`) | [service_discovery](service_discovery) | gap |
-| Exit reasons, `join`, `wait_exit`, monitors, links, trapped exits | [exit_reason](exit_reason) | gap |
+| Global registry (`registry::register`/`whereis`) | [service_discovery](service_discovery), [registrations and fakes](capabilities/src/bin/registrations_and_fakes.rs) | [registrations and fakes](capabilities/src/bin/registrations_and_fakes.rs), [thread_only](thread_only/README.md) |
+| Exit reasons, `join`, `wait_exit`, monitors, links, trapped exits | [exit_reason](exit_reason) | [native_lifecycle](capabilities/src/bin/native_lifecycle.rs) |
 | Execution groups (`ActorSystem`, `start_on`, owned helpers), unreleased | [execution_groups](capabilities/src/bin/execution_groups.rs) | n/a |
 | Supervision, unreleased | [supervision_recovery](capabilities/src/bin/supervision_recovery.rs) | n/a |
 | Fixed native actor pools / parked Linux pinned shards, unreleased | [execution_profiles](capabilities/src/bin/execution_profiles.rs) | n/a |
 | Nested supervisors, OneForAll / RestForOne, unreleased | [supervision_tree](capabilities/src/bin/supervision_tree.rs) | n/a |
 | Tokio-free dependency graph, protocols, lifecycle, monitors and links, unreleased | n/a | [thread_only](thread_only/README.md) (isolated workspace) |
 | Actors on separate runtimes | [runtime_isolation](capabilities/src/bin/runtime_isolation.rs) | n/a |
-| Request timeout outcomes | [timeout_outcomes](capabilities/src/bin/timeout_outcomes.rs) | gap |
+| Request timeout outcomes | [timeout_outcomes](capabilities/src/bin/timeout_outcomes.rs), [protocol_timeouts](capabilities/src/bin/protocol_timeouts.rs) | [protocol_timeouts](capabilities/src/bin/protocol_timeouts.rs) |
 | Draining a finite batch before stop | [graceful_drain](capabilities/src/bin/graceful_drain.rs) | gap |
 | Byte-budgeted pipeline (application adapter) | [byte_budget_pipeline](capabilities/src/bin/byte_budget_pipeline.rs) | gap |
-| Framework metrics (`metrics` feature) | [framework_metrics](capabilities/src/bin/framework_metrics.rs) | gap |
+| Framework metrics (`metrics` feature) | [framework_metrics](capabilities/src/bin/framework_metrics.rs) | [thread_only](thread_only/README.md) with metrics |
 
 "n/a" means the feature exists only in tasks mode; "gap" means it exists in
 threads mode but has no example yet.
@@ -46,3 +46,9 @@ covers native monitors and links. The
 each should get, plus the examples planned with future capabilities. When a
 feature lands, add its runnable, asserted example and a row here in the same
 change.
+
+
+The [streams and recipients example](capabilities/src/bin/streams_and_recipients.rs)
+covers both runtime modes. [Protocol fakes and named recovery](capabilities/src/bin/registrations_and_fakes.rs)
+show current testing and registration patterns; [coordinated shutdown](capabilities/src/bin/coordinated_shutdown.rs)
+supports the [Ethrex/Ethlambda migration guide](../docs/MIGRATION.md#preparing-for-07).

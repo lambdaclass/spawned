@@ -18,7 +18,7 @@ pin-project-lite = "0.2"
 [dev-dependencies]
 # This tokio imports are only used in tests, we should not use them in the library code.
 tokio-stream = { version = "0.1.17" }
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1", features = ["full", "test-util"] }
 proptest = { version = "1", default-features = false, features = ["std"] }
 trybuild = "1"
 

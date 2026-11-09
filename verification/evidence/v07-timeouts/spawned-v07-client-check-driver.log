@@ -1,0 +1,104 @@
+{
+  "client_base": "c3f5f566cb3a61e3d388c66ce21794c18a6618ce",
+  "spawned_source": "6ecec728 plus unreleased timeout/examples working tree",
+  "source_archive_sha256": "33c50a8506e1a4e8f01e2396f31812f942c3428a9f75f3b7c8dd047b0fd12c35",
+  "production_deployed": false,
+  "kind": "compile compatibility only, not a runtime canary",
+  "compiler": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+  "version_replacements": {
+    "wasm-bindgen-macro-support": {
+      "old": [
+        "0.2.121"
+      ],
+      "new": [
+        "0.2.129"
+      ]
+    },
+    "wasm-bindgen-shared": {
+      "old": [
+        "0.2.121"
+      ],
+      "new": [
+        "0.2.129"
+      ]
+    },
+    "wasm-bindgen-macro": {
+      "old": [
+        "0.2.121"
+      ],
+      "new": [
+        "0.2.129"
+      ]
+    },
+    "web-sys": {
+      "old": [
+        "0.3.98"
+      ],
+      "new": [
+        "0.3.106"
+      ]
+    },
+    "objc2": {
+      "old": [
+        "0.6.4"
+      ],
+      "new": [
+        "0.6.3"
+      ]
+    },
+    "wasip2": {
+      "old": [
+        "1.0.3+wasi-0.2.9"
+      ],
+      "new": [
+        "1.0.2+wasi-0.2.9"
+      ]
+    },
+    "js-sys": {
+      "old": [
+        "0.3.98"
+      ],
+      "new": [
+        "0.3.106"
+      ]
+    },
+    "dispatch2": {
+      "old": [
+        "0.3.1"
+      ],
+      "new": [
+        "0.3.0"
+      ]
+    },
+    "wasm-bindgen-futures": {
+      "old": [
+        "0.4.71"
+      ],
+      "new": [
+        "0.4.79"
+      ]
+    },
+    "wasm-bindgen": {
+      "old": [
+        "0.2.121"
+      ],
+      "new": [
+        "0.2.129"
+      ]
+    }
+  },
+  "cargo_lock_sha256": "8fd669f304c6f5125292526884b3a348c03141c07f54196083974e77126db1ac",
+  "command": [
+    "/tmp/spawned-pr-security-review/ethlambda-control-toolchain/installed/bin/cargo",
+    "check",
+    "--locked",
+    "--offline",
+    "--release",
+    "-p",
+    "ethlambda"
+  ],
+  "stage": "client compile",
+  "returncode": 0,
+  "elapsed_seconds": 97.41337355191354
+}
+RESOURCE GUARD peak_rss_kib= 940524 exit= 0

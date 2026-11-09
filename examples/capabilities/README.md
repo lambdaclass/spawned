@@ -16,6 +16,11 @@ describes capabilities that are still on the roadmap.
 | [byte_budget_pipeline](src/bin/byte_budget_pipeline.rs) | Limit payload allocation across multiple stages | Eight producers reserve bytes before constructing payloads; a permit travels through two actors and returns after payload destruction. This is an application adapter, not a bounded framework mailbox. |
 | [timeout_outcomes](src/bin/timeout_outcomes.rs) | Understand whether retrying a timeout is safe | A gate proves an effect happened before the caller timed out. The actor finishes afterward; timeout is not cancellation or rollback. |
 | [graceful_drain](src/bin/graceful_drain.rs) | Finish a finite batch before shutdown | Join every producer, issue a FIFO fence, then stop/join the actor. This recipe requires exclusive control of admission; ordinary stop still discards queued work. |
+| [protocol_timeouts](src/bin/protocol_timeouts.rs) | Tune requests without changing handlers | Protocol/method defaults, a cloned-handle override, type-erased configured refs and timeout outcomes in both modes. |
+| [streams_and_recipients](src/bin/streams_and_recipients.rs) | Share one message interface across actor types | Broadcast through typed recipients, reject stopped members, cancel an async source and release a blocking native iterator cooperatively. |
+| [registrations_and_fakes](src/bin/registrations_and_fakes.rs) | Test protocol clients and resolve named replacements | A fake implements the same protocol; managed names follow fresh generations; manual guards preserve newer registrations. |
+| [native_lifecycle](src/bin/native_lifecycle.rs) | Handle failures from synchronous actors | Monitors, demonitoring, trapped exits and linked startup, with no ambient Tokio runtime. |
+| [coordinated_shutdown](src/bin/coordinated_shutdown.rs) | Migrate hand-wired client shutdown | Join producers, snapshot a live dependency, then join a two-group tree in reverse dependency order. |
 | [framework_metrics](src/bin/framework_metrics.rs) | Observe actor activity without modifying handlers | Configure sampled timing, issue requests and render process-wide Prometheus text. Metrics are explicitly enabled for this binary. |
 
 ```sh
@@ -28,6 +33,11 @@ cargo run --locked -p spawned-capability-examples --bin runtime_isolation
 cargo run --locked -p spawned-capability-examples --bin byte_budget_pipeline
 cargo run --locked -p spawned-capability-examples --bin timeout_outcomes
 cargo run --locked -p spawned-capability-examples --bin graceful_drain
+cargo run --locked -p spawned-capability-examples --bin protocol_timeouts
+cargo run --locked -p spawned-capability-examples --bin streams_and_recipients
+cargo run --locked -p spawned-capability-examples --bin registrations_and_fakes
+cargo run --locked -p spawned-capability-examples --bin native_lifecycle
+cargo run --locked -p spawned-capability-examples --bin coordinated_shutdown
 cargo run --locked -p spawned-capability-examples --features metrics --bin framework_metrics
 ```
 
@@ -63,3 +73,11 @@ cooperative shutdown, helper admission, deadlines and reference semantics.
 The separate [thread-only example](../thread_only/README.md) proves the native
 synchronous API builds without Tokio. It is an independent Cargo workspace;
 ActorSystem/supervision still require the async feature.
+
+
+The new timeout API is unreleased. A configured concrete handle can be converted
+to its protocol ref; an already erased ref cannot use the concrete builder.
+Listener forwarding still uses unbounded mailboxes. A blocking native iterator
+must return from an in-progress `next()` before it can join. The coordinated
+shutdown example does not persist data to disk; real clients must await their
+persistence contract before closing their dependencies.

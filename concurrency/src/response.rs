@@ -7,6 +7,29 @@ use std::time::Duration;
 
 pub const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// A cloned actor handle with an explicit timeout for generated protocol calls.
+/// Create with `ActorRef::with_request_timeout`. Configure before converting to
+/// a type-erased protocol reference; the underlying actor and mailbox are shared.
+#[derive(Clone)]
+pub struct RequestOptions<R> {
+    actor: R,
+    timeout: Duration,
+}
+impl<R> RequestOptions<R> {
+    pub(crate) fn new(actor: R, timeout: Duration) -> Self {
+        Self { actor, timeout }
+    }
+    /// Underlying handle for manual message APIs. Associated functions avoid
+    /// shadowing protocol methods with the same name.
+    pub fn actor_ref(options: &Self) -> &R {
+        &options.actor
+    }
+    /// Timeout selected for generated request methods on this handle.
+    pub fn timeout(options: &Self) -> Duration {
+        options.timeout
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Response<T> — unified wrapper for protocol request-response (tasks + threads)
 //

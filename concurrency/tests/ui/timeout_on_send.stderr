@@ -1,0 +1,13 @@
+error: request_timeout is only valid on Response<T> methods
+ --> tests/ui/timeout_on_send.rs:5:5
+  |
+5 |     #[request_timeout(Duration::ZERO)]
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `std::time::Duration`
+ --> tests/ui/timeout_on_send.rs:2:5
+  |
+2 | use std::time::Duration;
+  |     ^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default

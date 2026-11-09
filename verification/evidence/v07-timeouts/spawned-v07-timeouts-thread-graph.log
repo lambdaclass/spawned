@@ -1,0 +1,81 @@
+spawned-thread-only-example v0.1.0 (/tmp/spawned-v07/examples/thread_only)
+spawned-concurrency v0.6.0 (/tmp/spawned-v07/concurrency)
+futures v0.3.31
+futures-channel v0.3.31
+futures-core v0.3.31
+futures-sink v0.3.31
+futures-core v0.3.31
+futures-executor v0.3.31
+futures-core v0.3.31
+futures-task v0.3.31
+futures-util v0.3.31
+futures-channel v0.3.31 (*)
+futures-core v0.3.31
+futures-io v0.3.31
+futures-macro v0.3.31 (proc-macro)
+proc-macro2 v1.0.103
+unicode-ident v1.0.22
+quote v1.0.42
+proc-macro2 v1.0.103 (*)
+syn v2.0.111
+proc-macro2 v1.0.103 (*)
+quote v1.0.42 (*)
+unicode-ident v1.0.22
+futures-sink v0.3.31
+futures-task v0.3.31
+memchr v2.7.6
+pin-project-lite v0.2.16
+pin-utils v0.1.0
+slab v0.4.11
+futures-io v0.3.31
+futures-sink v0.3.31
+futures-task v0.3.31
+futures-util v0.3.31 (*)
+pin-project-lite v0.2.16
+spawned-macros v0.6.0 (proc-macro) (/tmp/spawned-v07/macros)
+proc-macro2 v1.0.103 (*)
+quote v1.0.42 (*)
+syn v2.0.111 (*)
+spawned-rt v0.6.0 (/tmp/spawned-v07/rt)
+ctrlc v3.5.1
+nix v0.30.1
+bitflags v2.10.0
+cfg-if v1.0.4
+libc v0.2.178
+cfg_aliases v0.2.1
+tracing v0.1.43
+log v0.4.29
+pin-project-lite v0.2.16
+tracing-attributes v0.1.31 (proc-macro)
+proc-macro2 v1.0.103 (*)
+quote v1.0.42 (*)
+syn v2.0.111 (*)
+tracing-core v0.1.35
+once_cell v1.21.3
+tracing-subscriber v0.3.22
+matchers v0.2.0
+regex-automata v0.4.13
+regex-syntax v0.8.8
+nu-ansi-term v0.50.3
+once_cell v1.21.3
+regex-automata v0.4.13 (*)
+sharded-slab v0.1.7
+lazy_static v1.5.0
+smallvec v1.15.1
+thread_local v1.1.9
+cfg-if v1.0.4
+tracing v0.1.43 (*)
+tracing-core v0.1.35 (*)
+tracing-log v0.2.0
+log v0.4.29
+once_cell v1.21.3
+tracing-core v0.1.35 (*)
+thiserror v2.0.17
+thiserror-impl v2.0.17 (proc-macro)
+proc-macro2 v1.0.103 (*)
+quote v1.0.42 (*)
+syn v2.0.111 (*)
+tracing v0.1.43 (*)
+spawned-rt v0.6.0 (/tmp/spawned-v07/rt) (*)
+
+PASS: no Tokio package in the synchronous-only dependency graph

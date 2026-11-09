@@ -1,0 +1,13 @@
+error: unsupported protocol option; expected timeout = Duration expression
+ --> tests/ui/timeout_option.rs:2:12
+  |
+2 | #[protocol(unknown = 10)]
+  |            ^^^^^^^
+
+warning: unused import: `Response`
+ --> tests/ui/timeout_option.rs:1:37
+  |
+1 | use spawned_concurrency::{protocol, Response};
+  |                                     ^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default

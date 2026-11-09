@@ -13,6 +13,7 @@ use std::{
 };
 #[protocol]
 pub trait CounterProtocol: Send + Sync {
+    #[request_timeout(Duration::from_millis(500))]
     fn next(&self) -> Response<usize>;
 }
 struct Counter(usize);
@@ -43,13 +44,21 @@ impl Handler<Tick> for Observer {
 fn main() {
     let counter = Counter(0).start();
     assert_eq!(counter.next().unwrap(), 1);
-    assert_eq!(spawned_rt::threads::block_on(counter.next()).unwrap(), 2);
+    assert_eq!(
+        counter
+            .with_request_timeout(Duration::from_secs(1))
+            .to_counter_ref()
+            .next()
+            .unwrap(),
+        2
+    );
+    assert_eq!(spawned_rt::threads::block_on(counter.next()).unwrap(), 3);
     spawned_concurrency::registry::register("thread-only-counter", counter.clone()).unwrap();
     let named = spawned_concurrency::registry::whereis::<
         spawned_concurrency::threads::ActorRef<Counter>,
     >("thread-only-counter")
     .unwrap();
-    assert_eq!(named.next().unwrap(), 3);
+    assert_eq!(named.next().unwrap(), 4);
     let events = Arc::new(AtomicUsize::new(0));
     let observer = Observer(events.clone()).start();
     observer.context().monitor(&counter.child_handle());

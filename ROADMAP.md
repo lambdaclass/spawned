@@ -207,8 +207,8 @@ PRs #180, #182 and #185. Plan and acceptance criteria: [verification strategy](l
 | Rank | Idea | Assessment |
 |---|---|---|
 | 5 | Release v0.7 and run it in Ethlambda | **Include the per-method request timeout (rank 5a below) and a migration guide for the clients' hand-wired shutdown and startup (see [client sweep](#client-sweep-production-pain)).** The roadmap's validation gate. A full-client replay or same-node canary outranks further synthetic research. Local EngineClient probes are a different evidence level. |
-| 5a | Per-method request timeout in `#[protocol]` | **New from the client sweep.** The macro hardwires the 5 s default with no per-method or per-call override; a timeout under mailbox pressure exited an ethrex node. Add a protocol/method attribute and a per-call override; keep the default. Small. |
-| 5b | An example for every way of using the library | Runnable examples with assertions for every user-facing feature, in both execution modes where it exists in both. Gaps today: stream listeners, `Recipient` type erasure, request timeouts, monitors and links in thread mode, name registration, and testing actors. Tracked in [examples to add](#examples-to-add); each new capability ships with its example. |
+| 5a | Per-method request timeout in `#[protocol]` | **Implemented, unreleased:** protocol/method Duration defaults and a configured concrete-handle override, retaining five seconds by default. Existing fakes remain compatible. See the [migration guide](docs/MIGRATION.md#protocol-request-timeouts). |
+| 5b | An example for every way of using the library | Runnable examples with assertions for every user-facing feature, in both execution modes where it exists in both. The previous stream/recipient/timeout/native-lifecycle/registration/testing gaps are now covered below. Tracked in [examples to add](#examples-to-add); each new capability ships with its example. |
 
 ### Step 3: cheap developer-experience track (in parallel)
 
@@ -363,18 +363,17 @@ names as working code. The [examples index](examples/README.md) lists what
 exists today. Experimental backend drivers and their evidence stay under
 `benchmarks/` and [legacy](legacy/README.md).
 
-### Existing features without a dedicated example
+### Release example coverage
 
-These features ship today without one (rank 5b, 2026-11-09):
+The former rank 5b gaps now have asserted examples on unreleased main:
 
-| Feature | Example to add |
+| Feature | Runnable example |
 |---|---|
-| Stream listeners (`spawn_listener`) | Feed an actor from a stream, stop it mid-stream, and show the listener ending with the actor; note that the input is unbounded today. |
-| `Recipient<M>` type erasure | Several actor types behind one `Recipient<M>` list (a simple broadcast), including a member that has stopped. |
-| Request timeouts | `request_with_timeout`, the caller-side timeout versus work that keeps running, and an actor busy past the default. Pair with rank 5a once per-method timeouts exist. |
-| Monitors and links in thread mode | The tasks-mode `exit_reason` example has no thread-mode counterpart; cover monitor, link, `trap_exit` and `start_linked` in both modes. |
-| Name registration | `register_name` released with its generation versus the global `registry::register`, showing a replacement re-registering. |
-| Testing actors | How to unit-test an actor today (a fake actor implementing the same protocol); replace with the test kit (rank 6) when it lands. |
+| Stream listeners and `Recipient<M>` | [Streams and recipients](examples/capabilities/src/bin/streams_and_recipients.rs), both modes, including a stopped recipient and cooperative iterator cancellation. |
+| Request timeout configuration/outcomes | [Protocol timeouts](examples/capabilities/src/bin/protocol_timeouts.rs), both modes; [timeout outcomes](examples/capabilities/src/bin/timeout_outcomes.rs) for effects before replies. |
+| Native monitors, links, trapped exits and linked startup | [Native lifecycle](examples/capabilities/src/bin/native_lifecycle.rs); [thread-only graph](examples/thread_only/README.md). |
+| Name registration and protocol fakes | [Registrations and fakes](examples/capabilities/src/bin/registrations_and_fakes.rs), managed replacement and explicit manual cleanup. |
+| Migrating client shutdown | [Coordinated shutdown](examples/capabilities/src/bin/coordinated_shutdown.rs), with producer join and snapshot before dependency closure. |
 
 ### Capability examples for planned work
 
@@ -383,7 +382,6 @@ that already run today.
 
 | Rank | Capability | Example to deliver with it |
 |---|---|---|
-| 5a | Per-method request timeout | A protocol with a slow method configured above the default and a per-call override; a timed-out call that is handled, not fatal. |
 | 6 | Test kit | Unit-test an actor that holds a concrete `ActorRef<B>` by mocking `B`. |
 | 7 | Deadlock detection | Two actors requesting each other fail fast with the named cycle. |
 | 8 | Stall watchdog | A handler blocking a worker versus one stuck across an `.await`, each reported with actor and message type. |

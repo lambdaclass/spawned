@@ -37,6 +37,12 @@ below was drafted as a separate 0.6.1 patch (draft notes archived under
 `legacy/docs/releases/`); if it ships separately, prepare a patch-only lineage
 rather than tagging current main.
 
+- Protocol/method request timeout configuration and per-call configured handles,
+  preserving the five-second default and handwritten protocol implementations.
+  Configured handles support type-erased protocol refs in both runtime modes.
+- Asserted timeout, listener/recipient, native lifecycle, registration/fake and
+  coordinated shutdown examples, plus an Ethrex/Ethlambda migration guide.
+
 ### Review fixes
 
 - Context-derived native placement selects a free slot; explicit pinned placement

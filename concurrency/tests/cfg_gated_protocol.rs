@@ -56,6 +56,10 @@ fn cfg_gated_method_works_via_blanket_impl() {
 
         let val = actor.get_value().await.unwrap();
         assert_eq!(val, 11);
+        let configured = actor.with_request_timeout(std::time::Duration::from_secs(1));
+        assert_eq!(configured.test_only_increment().await.unwrap(), 12);
+        actor.context().stop();
+        actor.join().await;
     });
 }
 
@@ -72,5 +76,11 @@ fn cfg_gated_method_works_via_protocol_ref() {
 
         let val = proto_ref.test_only_increment().await.unwrap();
         assert_eq!(val, 1);
+        let configured = actor
+            .with_request_timeout(std::time::Duration::from_secs(1))
+            .to_mixed_ref();
+        assert_eq!(configured.test_only_increment().await.unwrap(), 2);
+        actor.context().stop();
+        actor.join().await;
     });
 }

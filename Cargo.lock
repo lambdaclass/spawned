@@ -1686,6 +1686,7 @@ dependencies = [
 name = "spawned-capability-examples"
 version = "0.1.0"
 dependencies = [
+ "futures",
  "spawned-concurrency",
  "spawned-rt",
  "tokio",
