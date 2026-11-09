@@ -7,8 +7,8 @@ pub enum ExitReason {
     Shutdown,
     /// Actor panicked in `started()`, a handler, or `stopped()`.
     Panic(String),
-    /// Untrappable exit signal, also used when an async task is aborted externally.
-    /// A linked Kill cancels cooperatively: an active handler may finish and the
+    /// Direct kill outcome, also used when an async task is aborted externally.
+    /// Propagated link notices carrying Kill are trappable. An active handler may finish and the
     /// actor still runs `stopped()`. An externally dropped future cannot guarantee
     /// execution of that async cleanup hook. No blocking Rust code is preempted.
     Kill,

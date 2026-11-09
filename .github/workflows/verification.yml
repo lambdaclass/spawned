@@ -37,6 +37,20 @@ jobs:
         if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         run: nix run .#check-tla -- --deep
 
+  mailbox-loom:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.93.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: mailbox-loom
+      - name: Model-check the production mailbox admission algorithm
+        env:
+          RUSTFLAGS: --cfg spawned_scheduler_loom
+        run: cargo test --locked -p spawned-concurrency --no-default-features --test mailbox_admission_loom
+
   # Data races in the runtime and its dependencies. The crates forbid
   # unsafe code, so ThreadSanitizer is the sanitizer that matters here.
   tsan:
@@ -63,6 +77,7 @@ jobs:
           --test supervisor_policies
           --test execution_groups --test execution_profiles --test shutdown_publication
           --test resource_cleanup --test linked_exit_macro
+          --test mailbox_drop_panic --test native_mailbox_drop --test startup_admission
 
   # Leaks after shutdown: LeakSanitizer reports heap allocations that are
   # unreachable at process exit (e.g. reference cycles between actor handles).

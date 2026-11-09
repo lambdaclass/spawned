@@ -1,0 +1,13 @@
+{"schema":"tree-v1","name":"nested-stuck-native-helper","root":9,"events":[{"a":"TCreate","node":9,"slot":0,"gen":0,"peer":0,"arity":1,"cancelled":false},
+{"a":"TBegin","node":9,"slot":1,"gen":1,"peer":0,"arity":0,"cancelled":false},
+{"a":"TAttach","node":9,"slot":1,"gen":1,"peer":10,"arity":1,"cancelled":false},
+{"a":"TCreate","node":10,"slot":0,"gen":0,"peer":0,"arity":1,"cancelled":false},
+{"a":"TBegin","node":10,"slot":1,"gen":1,"peer":0,"arity":0,"cancelled":false},
+{"a":"TClose","node":10,"slot":0,"gen":0,"peer":0,"arity":0,"cancelled":false},
+{"a":"TCancel","node":10,"slot":0,"gen":0,"peer":0,"arity":0,"cancelled":false},
+{"a":"TClose","node":9,"slot":0,"gen":0,"peer":0,"arity":0,"cancelled":false},
+{"a":"TCancel","node":9,"slot":0,"gen":0,"peer":0,"arity":0,"cancelled":false},
+{"a":"TJoined","node":10,"slot":1,"gen":1,"peer":0,"arity":0,"cancelled":false},
+{"a":"TDone","node":10,"slot":0,"gen":0,"peer":0,"arity":0,"cancelled":false},
+{"a":"TJoined","node":9,"slot":1,"gen":1,"peer":0,"arity":0,"cancelled":false},
+{"a":"TDone","node":9,"slot":0,"gen":0,"peer":0,"arity":0,"cancelled":false}]}

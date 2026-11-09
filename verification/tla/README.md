@@ -11,6 +11,7 @@ this fits with Loom, Shuttle, Miri, ThreadSanitizer and mutation testing.
 | `MCSupervisionDeep.tla/.cfg` | Deep instance (weekly, `--deep`): three children, one per restart mode, safety and action properties. |
 | `TraceSupervision.tla` | Trace validation: replays a lifecycle trace recorded from real Rust runs as a behavior of `Supervision.tla`. |
 | `Cohorts.tla`, `MCCohorts*.tla/.cfg` | OneForAll/RestForOne range selection, reverse cleanup, whole-cohort join barrier, ordered resume, stale notifications, superseding rounds and retired slots. Three-child mixed-mode and two-round configurations. |
+| `Coordinator.tla`, `MCCoordinator.tla/.cfg` | Abstract panic fallback: signal all remaining roots, record failure, retain runtime ownership until joins; cooperative cleanup liveness and three negative mutations. |
 | `NestedSupervision.tla`, `MCNested.tla/.cfg` | Dynamic subtree ownership and shutdown delivery; parent scope completion waits for descendant completion. Bounded three-node/two-generation model with fair cleanup. |
 | `TraceCohorts.tla`, `TraceNested.tla` | Policy and ownership projections of real cohort/nested Rust executions. |
 | `trace_check.py`, `negative_checks.py` | Replay recorded traces; deliberately wrong selections, premature resume/join and broken propagation must be rejected or produce counterexamples. |
@@ -68,8 +69,10 @@ How it works:
   so recorded order is a valid linearization. A `Core::fail` that is part of a
   model action (budget exhausted, cleanup stuck, non-restartable startup
   failure, child cleanup deadline) is recorded as that action, not as `Close`.
-- The rolling window is not observable: `WindowExpire` may stutter before a
-  `BackoffDone`, and the logged budget count after `Core::retry` pins it.
+- Retry capacity is reserved before backoff (`RetryReserve`) and refunded on
+  cancellation (`RetryRelease`). Only a grant enters the rolling time window.
+  `WindowExpire` may stutter before reservation or `BackoffDone`; logged total
+  capacity pins the abstract count, and pending reservations cannot expire.
 - An exit reason not yet known when cleanup gets stuck is logged as
   `unknown` and matches any reason. Paths the model does not cover (placement
   failure, execution-group closure, controller panic) record an `Unmodelled`
@@ -121,6 +124,8 @@ existing reason model. A negative control erases Kill and must reject the
 resulting transient restart; the entry point adds no new model transition.
 `queued_drop_panic` checks a queued destructor fault during ordinary stop and
 the resulting transient restart. Erasing its Panic exit must reject the tape.
+`queued_drop_preserves_shutdown` retains a committed Shutdown despite a destructor
+failure; escalating it to Panic must reject transient retirement.
 All library crates continue to forbid unsafe Rust; native synchronization and
 Linux affinity use safe interfaces. No unsafe exemption was introduced.
 
@@ -181,3 +186,12 @@ received idle work dispatched after stop) into the model must each produce a
 counterexample, as the five injected supervision bugs do today. Trace validation
 should then cover the lifecycle scenarios the same way it covers supervision.
 Source: [verification strategy](../../legacy/docs/research/verification-strategy.md#acceptance).
+
+`Coordinator.tla` checks coordinator failure ownership independently of the actor
+policy models: a panic closes admission, records failure, signals remaining
+roots, and retains runtime ownership until all roots finish. Liveness assumes
+signalled work eventually completes; uncooperative native code remains a host
+escalation decision. Negative controls remove failure reporting, omit emergency
+signals, or release runtime ownership early. This is an abstract fault model,
+not a replay of Rust failpoint traces. Private Rust tests separately inject
+supervisor-launch and system-shutdown panics with real actor/helper cleanup.

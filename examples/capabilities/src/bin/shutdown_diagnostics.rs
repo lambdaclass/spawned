@@ -28,7 +28,7 @@ impl Message for Unhealthy {
 impl Handler<Unhealthy> for Worker {
     async fn handle(&mut self, _: Unhealthy, ctx: &Context<Self>) {
         // Cooperative abnormal exit, without a panic or forced interruption.
-        ctx.stop_with_reason(ExitReason::Kill);
+        ctx.stop_with_reason(ExitReason::Panic("reported unhealthy worker".into()));
     }
 }
 

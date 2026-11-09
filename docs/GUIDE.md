@@ -636,8 +636,10 @@ impl Supervisor {
 
 Use synchronous methods and the `threads` imports in synchronous mode. The hook
 is optional and defaults to doing nothing. Trapped exits use the ordinary actor
-mailbox; they do not interrupt a running handler. Kill bypasses trapping and
-requests cancellation, also cooperatively. A normal stop already committed is
+mailbox; they do not interrupt a running handler. A direct
+`stop_with_reason(ExitReason::Kill)` bypasses trapping and requests cooperative
+cancellation. Propagated Kill notices are trappable, so they cannot bypass
+another actor's failure boundary. The notice keeps the existing Kill enum value. A normal stop already committed is
 not relabelled by a later peer failure; callback failures are still reported.
 
 A link to a closed peer creates no retained relationship and applies that peer's
@@ -681,6 +683,7 @@ fallible, and no actor is admitted to a failed group.
 
 | Constructor | Actor execution | Admission and thread cost |
 |---|---|---|
+| `async_group_on(name, &Handle)` | Managed scopes on an existing Tokio runtime | No new async pool; caller keeps the shared runtime alive and driven through shutdown. One join coordinator; worker count describes shared capacity. |
 | `async_group(name, workers)` | Cooperative actors on a multithread Tokio pool | Any actor count; `workers` async workers plus one runtime owner and one join coordinator. |
 | `thread_group(name, workers)` / `thread_group_with_helpers(name, workers, helper_workers)` | Fixed native workers, one actor root per slot | At most `workers` live scopes; one shared helper runtime with one async worker by default (or the explicit helper budget), one owner and one join coordinator. Both worker budgets must be between 1 and 1024. Idle actors retain slots. Full admission returns `SystemError::Capacity`. |
 | `pinned_group(name, cpus)` | One parked current-thread Tokio runtime per specified Linux CPU | Any actor count; one native runtime owner per CPU plus one join coordinator. Actors sharing a shard cooperate. |
@@ -745,9 +748,33 @@ bounds these serial waits; at expiry it signals the remaining targets and retain
 all actual cleanup. Drop uses a five-second ordering grace. Later report waits do
 not reopen admission or extend that initial ordering grace.
 It does not kill native code or abandon runtime ownership. The cleanup coordinator
-keeps closed runtimes alive until tracked work actually finishes, even if an
+keeps closed owned runtimes alive until tracked work actually finishes, even if an
 incomplete report is dropped. An uncooperative operation can therefore keep
 threads/resources alive indefinitely; the host decides process-level escalation.
+
+To adopt ownership incrementally, use
+`system.async_group_on("client", &tokio::runtime::Handle::current())?` and
+`actor.start_on(&group)`. Group shutdown closes admission and joins only managed
+actors and their registered helpers. It leaves the borrowed runtime and ambient
+`.start()`/`tokio::spawn` tasks running. Keep the runtime alive and driven until
+cleanup completes; cloning a Tokio handle does not keep its runtime alive. On a
+current-thread runtime, keep calling `Runtime::block_on` while awaiting shutdown.
+Use an owned `async_group` for independent scheduling capacity and runtime
+lifetime guarantees. Ambient `.start()` remains unmanaged, including inside a
+managed handler; use `ctx.execution_group().start(...)` for owned child work.
+
+The restart limit counts admitted child retry attempts across the supervisor,
+including collateral OneForAll/RestForOne replacements, retaining v0.7 behavior.
+A six-child OneForAll round needs six available grants. This differs from OTP
+intensity accounting per recovery round; it is not changed silently in this patch.
+
+Retry capacity is checked and reserved before a backoff. An exhausted window
+fails immediately, even if an older grant would expire during the proposed wait.
+Concurrent children cannot reserve the same remaining capacity. A canceled or
+superseded backoff releases its reservation; the rolling window records the
+actual retry grant after the wait. `restart_scheduled` reports only a granted
+replacement, after backoff and supersession checks, rather than promising a
+replacement that may never be admitted.
 
 ### Shutdown diagnostics and ordering
 
@@ -755,8 +782,8 @@ An incomplete `ShutdownReport` includes `unfinished_actor_details`: ActorId,
 ChildSpec name (or first successful managed registration), and Rust actor type.
 An actor can already appear in `exits` while its registered helper keeps its
 scope unfinished. Enable `spawned-concurrency/diagnostics` to also capture the
-active message type and elapsed turn time. This costs a clock read and scope
-locking per managed turn; it is disabled by default and independent of metrics
+active message type and elapsed turn time. This costs a clock read and two accesses to a dedicated diagnostic slot
+per managed turn, without locking lifecycle state or cloning scope ownership; it is disabled by default and independent of metrics
 sampling. Idle actors, lifecycle hooks and helper-only cleanup have no active
 message/turn age. Snapshots are approximate; no message payloads are retained.
 
@@ -843,12 +870,24 @@ supervisor shutdown to close the tree. `ChildHandle::shutdown()` commits Shutdow
 before cooperative cancellation while preserving a previously committed cause;
 actual handler or cleanup panics remain failures. Existing link propagation still
 applies and can affect siblings explicitly linked by the application.
-During ordinary task shutdown, queued envelopes are discarded one at a time
-behind individual panic boundaries. A destructor panic produces a trappable
-Panic exit (preserving an earlier handler/hook panic); remaining queued handlers
-never run and their reply channels are released before completion. This relies
-on unwinding: `panic=abort`, an aborting panic hook, or multiple field destructors
-panicking during the same unwind cannot be recovered by a mailbox boundary.
+Receiver-owned cleanup discards queued envelopes individually during completion,
+cancellation and unwinding in both modes. An otherwise completed Normal exit
+becomes `Panic("queued message destructor: ...")` when a queued destructor fails.
+Committed Shutdown, Kill and linked/handler panics keep their primary reason;
+`child_handle.mailbox_cleanup_failure()` records the secondary destructor failure
+independently. In particular, canceled managed startup remains Shutdown and does
+not become restartable because of discarded messages. Runtime-abort fallback
+Kill is retained. Every accepted queued reply sender is released before actor
+completion, even while ActorRefs remain alive.
+
+Async sends retain their channel fast path; receiver cleanup closes Tokio's
+channel and receives through EOF without cooperative-budget deferral. Native
+sends use a publication gate (two atomic operations per send, no per-send heap
+allocation); receiver teardown closes it and waits for accepted sends before
+emptying the channel. Cleanup is synchronous and cannot preempt a blocked user
+Drop implementation or an unfinished send. This relies on unwinding:
+`panic=abort`, an aborting panic hook, or multiple panicking fields in the same
+user value cannot be recovered by the envelope boundary.
 
 `ctx.stop_with_reason(ExitReason::Shutdown)` requests a cooperative shutdown;
 `ExitReason::Kill` requests an abnormal exit without panicking. Both modes finish
@@ -989,12 +1028,14 @@ These APIs do not establish a full-client performance improvement; measure actua
 application workloads with equal resource budgets.
 
 
+
+
 ## Metrics
 
 Enable the optional `metrics` feature on `spawned-concurrency` (available in v0.6.0):
 
 ```toml
-spawned-concurrency = { version = "0.6", features = ["metrics"] }
+spawned-concurrency = { version = "0.7.1", features = ["metrics"] }
 ```
 
 The default build compiles out collection, timing metadata and response observers.
@@ -1013,8 +1054,19 @@ let prometheus_text = metrics::render_prometheus();
 ```
 
 Default sampling is 1 (all timings). Use 0 for counters/gauges without clocks or
-histogram observations. Configuration is process-wide and immutable after first
-instrumentation; `configure` returns `Err(config)` if already initialized.
+histogram observations. Configuration is process-wide. The one-time `configure` call returns
+`Err(config)` if already initialized. The opt-in composable API below can merge
+requirements later, including with a policy previously set by `configure`.
+
+For embedded components that initialize independently, use
+`metrics::configure_composable(Config { timing_sample_every: 16 })` instead.
+It can be called after actors start. The smallest nonzero interval requested by
+any component wins; zero means “I only require counters” and never disables
+another component's timings. Requirements last for the process lifetime. Instrumentation initially samples every observation until an explicit policy
+is supplied; that implicit default is not a competing component requirement.
+A zero policy in the host can disable clocks until components opt into timings. Inspect the
+effective policy with `metrics::configuration()`. This composes sampling, while
+counters and histograms still aggregate the whole process.
 
 ### What is measured
 
@@ -1218,7 +1270,7 @@ capture it when called, since `#[track_caller]` does not reach into an
 
 | Fault | How |
 |---|---|
-| Stop any actor with a chosen reason | `faults::exit(&handle, reason)`: `Normal` calls `stop()` and `Shutdown` calls `shutdown()`; both stop the actor even if it traps exits (unlike Erlang's `exit(Pid, normal)`, which a non-trapping process ignores). `Panic(msg)` and `Kill` arrive as from a crashed linked peer: trapping actors receive `Exit` for `Panic`, `Kill` cannot be trapped and needs the `async` feature. Because the panic travels through a link, the actor exits with `Panic("panic in handler: {msg}")`, and the default panic hook prints `msg`. An already-exited target is left alone. Never blocks the caller, even on a `current_thread` runtime. |
+| Stop any actor with a chosen reason | `faults::exit(&handle, reason)`: `Normal` calls `stop()` and `Shutdown` calls `shutdown()`; both stop the actor even if it traps exits (unlike Erlang's `exit(Pid, normal)`, which a non-trapping process ignores). `Panic(msg)` arrives from a crashed linked peer and can be trapped. `Kill` uses a direct `ChildHandle::stop_with_reason(Kill)`, bypassing the target's trapping flag in both modes; its linked peers can trap the resulting notice. Because the panic travels through a link, the actor exits with `Panic("panic in handler: {msg}")`, and the default panic hook prints `msg`. An already-exited target is left alone. Never blocks the caller, even on a `current_thread` runtime. |
 | Crash a supervised child and get its replacement | `tasks::restart_child(&child, reason, deadline)`: the returned instance always replaces the one it targeted, even if the child was already restarting; `deadline` bounds the whole call |
 | Slow dependency / forced request timeout | `Mock::delay::<M>(d)` with a caller timeout shorter than `d` (`with_request_timeout`, `#[protocol(timeout = ..)]`) |
 | Lost message | `Mock::discard::<M>()` (fire-and-forget messages: a request returning `Response<()>` still gets `()`; to lose a request, `delay` it past the caller's timeout) |

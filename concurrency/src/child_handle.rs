@@ -67,6 +67,7 @@ pub struct ChildHandle {
     links: LinkTable,
     linked_reason: LinkedExitReason,
     send_exit: SendExitFn,
+    mailbox_failures: Option<Arc<crate::mailbox::DropFailures>>,
 }
 
 impl std::fmt::Debug for ChildHandle {
@@ -101,6 +102,7 @@ impl ChildHandle {
             links,
             linked_reason,
             send_exit,
+            mailbox_failures: None,
         }
     }
 
@@ -126,7 +128,22 @@ impl ChildHandle {
             links,
             linked_reason,
             send_exit,
+            mailbox_failures: None,
         }
+    }
+    pub(crate) fn with_mailbox_failures(
+        mut self,
+        failures: Arc<crate::mailbox::DropFailures>,
+    ) -> Self {
+        self.mailbox_failures = Some(failures);
+        self
+    }
+
+    /// First queued-message destructor failure, recorded independently of the
+    /// primary exit reason. Complete after actor termination; Shutdown, Kill
+    /// and an existing panic are never replaced by this secondary failure.
+    pub fn mailbox_cleanup_failure(&self) -> Option<String> {
+        self.mailbox_failures.as_ref().and_then(|f| f.first())
     }
 
     /// Crate-internal accessors used by `ctx.link()` to wire up signal propagation.
@@ -161,6 +178,13 @@ impl ChildHandle {
     /// run `stopped()`, and exit.
     pub fn stop(&self) {
         (self.cancel)();
+    }
+
+    /// Direct cooperative stop with a chosen reason. Trapping only affects
+    /// linked exit notices and cannot intercept this request. Kill remains
+    /// trappable when this actor's final reason is propagated to its peers.
+    pub fn stop_with_reason(&self, reason: ExitReason) {
+        crate::link::stop_with_reason(&self.linked_reason, reason, || (self.cancel)());
     }
 
     /// Request an ordered cooperative shutdown without replacing an earlier

@@ -59,7 +59,7 @@ fn expected(fault: Fault) -> ExitReason {
         Fault::DownHandler => panic("panic in handler: injected Down panic"),
         Fault::MessageDrop => panic("panic in handler: injected message drop panic"),
         Fault::ReplyDrop => panic("panic in handler: injected reply drop panic"),
-        Fault::QueuedMessageDrop => panic("unexpected framework panic"),
+        Fault::QueuedMessageDrop => panic("queued message destructor: injected queued drop panic"),
     }
 }
 

@@ -3,6 +3,39 @@
 Upgrade notes per release, newest first. The [CHANGELOG](../CHANGELOG.md) lists
 every change; this guide covers what you need to edit when upgrading.
 
+## 0.7.1 (candidate)
+
+`ActorId` Display now prints a bare decimal number, for example `3` instead of
+`ActorId(3)`. Debug (`{:?}`) retains the tagged `ActorId(3)` representation.
+
+Upgrade all Spawned dependencies together when adopting 0.7.1. This candidate
+also prepares `spawned-test` for publication as a dev-dependency. Existing default-feature and Tokio-free builds retain
+their feature selection.
+
+A Kill received over a link is now trappable. Only a direct Kill (for example,
+`child.stop_with_reason(ExitReason::Kill)`) bypasses `trap_exit`; this prevents a
+direct kill from killing an entire graph of trapping observers. No exit-reason
+variant was added. Committed abnormal/Shutdown causes survive queued-message
+and actor-state destructor failures during cleanup.
+
+Restart capacity is reserved before backoff. Exhaustion fails immediately;
+interrupted reservations are refunded, and only actual grants enter the rolling
+window. Charging and retry-generation admission are atomic; a placement or
+supersession that prevents admission refunds its reservation. A constructor or
+`started()` failure after admission still consumes that retry grant. Cohort
+recovery retains v0.7's per-child accounting: collateral OneForAll/RestForOne
+replacements also consume grants (six replacements need six grants).
+Give-up logs identify the originating child once. `restart_scheduled`
+now reports a granted replacement after backoff/placement checks.
+
+Embedded libraries can use `metrics::configure_composable` after actors start;
+the smallest explicitly requested nonzero timing interval wins. A zero request
+never disables another library's timings. Legacy `configure` retains its
+first-initializer contract. For incremental managed ownership on an existing
+Tokio runtime, use `system.async_group_on(name, &handle)` and keep the runtime
+alive and driven through shutdown. Ambient `.start()` stays unmanaged.
+
+
 - **0.7:** [timeout configuration and client shutdown migration](#preparing-for-07).
 - **0.6:** no breaking API changes; existing handler/protocol signatures are
   unchanged. See the [CHANGELOG 0.6.0 section](../CHANGELOG.md#060--2026-11-06).

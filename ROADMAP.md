@@ -26,6 +26,13 @@ handlers and the existing default behavior. New policies are explicit and opt-in
   See the [guide](docs/GUIDE.md#execution-groups-and-supervision) and the
   [design contract](docs/design/execution-groups-supervision.md).
 
+The v0.7.1 fix branch is validating canary shutdown, destructor-panic and restart
+budget fixes. Already-erased protocol timeout configuration remains a separate
+API follow-up: configure the concrete handle before `to_x_ref()` today. Native
+calls block before returning a Response, so a generic wrapper around an already
+returned response cannot correctly apply that timeout. Preserve handwritten
+protocol/forwarding compatibility when designing an explicit erased dispatch API.
+
 ## North star
 
 Spawned aims to be the best-designed and best-tested actor framework. This list

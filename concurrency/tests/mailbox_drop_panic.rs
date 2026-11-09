@@ -7,15 +7,15 @@ use spawned_concurrency::{
     Down, Exit, ExitReason,
 };
 use std::{
-    io::Read,
-    process::{Command, Stdio},
     sync::{
         atomic::{AtomicUsize, Ordering},
         Arc,
     },
-    time::{Duration, Instant},
+    time::Duration,
 };
 use tokio::sync::{mpsc, oneshot};
+#[path = "support/drop_subprocess.rs"]
+mod subprocess;
 const LIMIT: Duration = Duration::from_secs(10);
 
 struct Hold(oneshot::Sender<()>, oneshot::Receiver<()>, bool);
@@ -32,7 +32,12 @@ impl Drop for Bomb {
         panic!("queued message destructor");
     }
 }
-struct Victim(Arc<AtomicUsize>);
+struct Victim(Arc<AtomicUsize>, bool);
+impl Drop for Victim {
+    fn drop(&mut self) {
+        assert!(!self.1, "actor state destructor");
+    }
+}
 impl Actor for Victim {}
 impl Handler<Hold> for Victim {
     async fn handle(&mut self, msg: Hold, _: &Context<Self>) {
@@ -67,44 +72,7 @@ impl Handler<Ping> for Observer {
 
 #[test]
 fn queued_destructor_panics_do_not_abort_or_kill_trapping_observers() {
-    let mut child = Command::new(std::env::current_exe().unwrap())
-        .args(["--exact", "mailbox_drop_child", "--ignored", "--nocapture"])
-        .env("SPAWNED_MAILBOX_DROP_CHILD", "1")
-        .env("RUST_BACKTRACE", "0")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    let mut stderr = child.stderr.take().unwrap();
-    let mut stdout = child.stdout.take().unwrap();
-    let reader = std::thread::spawn(move || {
-        let mut output = String::new();
-        stderr.read_to_string(&mut output).unwrap();
-        output
-    });
-    let until = Instant::now() + Duration::from_secs(120);
-    let status = loop {
-        if let Some(status) = child.try_wait().unwrap() {
-            break status;
-        }
-        if Instant::now() >= until {
-            child.kill().unwrap();
-            let _ = child.wait();
-            panic!("mailbox panic child timed out: {}", reader.join().unwrap());
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    };
-    let errors = reader.join().unwrap();
-    assert!(
-        status.success(),
-        "mailbox panic child failed {status}: {errors}"
-    );
-    let mut output = String::new();
-    stdout.read_to_string(&mut output).unwrap();
-    assert!(
-        output.contains("validated 30 queued panic cases"),
-        "child did not exercise the expected matrix: {output}"
-    );
+    subprocess::run("mailbox_drop_child", "validated 30 queued panic cases");
 }
 
 #[test]
@@ -113,6 +81,8 @@ fn mailbox_drop_child() {
     if std::env::var_os("SPAWNED_MAILBOX_DROP_CHILD").is_none() {
         return;
     }
+    // Positive control for stdout drainage: this exceeds typical pipe capacity.
+    println!("{}", "x".repeat(128 * 1024));
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()
@@ -121,7 +91,7 @@ fn mailbox_drop_child() {
     runtime.block_on(async {
         // Async, blocking, dedicated thread, managed async, managed native roots.
         for placement in 0..5 {
-            for bombs in [1, 2, 16] {
+            for bombs in [1, 2, 256] {
                 for handler_panics in [false, true] {
                     let system = ActorSystem::new().unwrap();
                     let group = match placement {
@@ -132,12 +102,14 @@ fn mailbox_drop_child() {
                     let handled = Arc::new(AtomicUsize::new(0));
                     let dropped = Arc::new(AtomicUsize::new(0));
                     let victim = match &group {
-                        Some(group) => Victim(handled.clone()).start_on(group).unwrap(),
-                        None => Victim(handled.clone()).start_with_backend(match placement {
-                            0 => Backend::Async,
-                            1 => Backend::Blocking,
-                            _ => Backend::Thread,
-                        }),
+                        Some(group) => Victim(handled.clone(), false).start_on(group).unwrap(),
+                        None => {
+                            Victim(handled.clone(), false).start_with_backend(match placement {
+                                0 => Backend::Async,
+                                1 => Backend::Blocking,
+                                _ => Backend::Thread,
+                            })
+                        }
                     };
                     let (send, mut events) = mpsc::unbounded_channel();
                     let observer = Observer(send).start();
@@ -165,7 +137,9 @@ fn mailbox_drop_child() {
                     } else {
                         assert_eq!(
                             reason,
-                            ExitReason::Panic("unexpected framework panic".into())
+                            ExitReason::Panic(
+                                "queued message destructor: queued message destructor".into()
+                            )
                         );
                     }
                     let first = tokio::time::timeout(LIMIT, events.recv())
@@ -208,4 +182,113 @@ fn mailbox_drop_child() {
     });
     runtime.shutdown_timeout(LIMIT);
     println!("validated 30 queued panic cases");
+}
+
+#[test]
+fn abandoned_receivers_and_committed_causes_are_safe() {
+    subprocess::run(
+        "abandoned_receiver_child",
+        "validated abandoned receivers and causes",
+    );
+}
+#[test]
+#[ignore = "subprocess helper exercised by enabled parent"]
+fn abandoned_receiver_child() {
+    if std::env::var_os("SPAWNED_MAILBOX_DROP_CHILD").is_none() {
+        return;
+    }
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        for polled in [false, true] {
+            for state_panics in [false, true] {
+                let (send, arrival) = oneshot::channel();
+                let (shutdown, stopped) = std::sync::mpsc::channel();
+                let (entered, active) = oneshot::channel();
+                let (hold, gate) = oneshot::channel();
+                let owner = std::thread::spawn(move || {
+                    let mut builder = if polled { tokio::runtime::Builder::new_multi_thread() }
+                        else { tokio::runtime::Builder::new_current_thread() };
+                    let runtime = builder.worker_threads(1).enable_all().build().unwrap();
+                    {
+                        let _entered = runtime.enter();
+                        let actor = Victim(Arc::default(), state_panics).start();
+                        if polled { actor.send(Hold(entered, gate, false)).unwrap(); }
+                        send.send(actor).unwrap();
+                    }
+                    stopped.recv_timeout(LIMIT).unwrap();
+                    runtime.shutdown_timeout(LIMIT);
+                });
+                let actor = tokio::time::timeout(LIMIT, arrival).await.unwrap().unwrap();
+                if polled { tokio::time::timeout(LIMIT, active).await.unwrap().unwrap(); }
+                let dropped = Arc::new(AtomicUsize::new(0));
+                let replies: Vec<_> = (0..2).map(|_| actor.request_raw(Bomb(dropped.clone())).unwrap()).collect();
+                shutdown.send(()).unwrap();
+                let reason = tokio::time::timeout(LIMIT, actor.wait_exit()).await.unwrap();
+                if state_panics && !polled { assert!(matches!(reason, ExitReason::Panic(ref message) if message.contains("actor state destructor"))); }
+                else { assert_eq!(reason, ExitReason::Kill); }
+                assert_eq!(dropped.load(Ordering::SeqCst), 2);
+                assert_eq!(actor.child_handle().mailbox_cleanup_failure().as_deref(), Some("queued message destructor"));
+                for reply in replies { assert!(tokio::time::timeout(LIMIT, reply).await.unwrap().is_err()); }
+                drop(hold);
+                owner.join().unwrap();
+            }
+        }
+        // A committed stop on a never-polled startup must also survive a
+        // panicking actor-state destructor and two queued destructor failures.
+        for committed in [ExitReason::Shutdown, ExitReason::Kill] {
+            let owner = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+            let actor = {
+                let _entered = owner.enter();
+                Victim(Arc::default(), true).start()
+            };
+            let dropped = Arc::new(AtomicUsize::new(0));
+            for _ in 0..2 { actor.send(Bomb(dropped.clone())).unwrap(); }
+            actor.context().stop_with_reason(committed.clone());
+            owner.shutdown_background();
+            assert_eq!(tokio::time::timeout(LIMIT, actor.wait_exit()).await.unwrap(), committed);
+            assert_eq!(dropped.load(Ordering::SeqCst), 2);
+        }
+        for (managed, state_panics) in [(false, false), (false, true), (true, false), (true, true)] {
+            for committed in [ExitReason::Shutdown, ExitReason::Kill, ExitReason::Panic("linked peer cause".into())] {
+                let system = ActorSystem::new().unwrap();
+                let group = system.async_group("preserve-cause", 1).unwrap();
+                let actor = if managed { Victim(Arc::default(), state_panics).start_on(&group).unwrap() }
+                    else { Victim(Arc::default(), state_panics).start() };
+                let (entered, arrival) = oneshot::channel();
+                let (release, gate) = oneshot::channel();
+                actor.send(Hold(entered, gate, false)).unwrap();
+                tokio::time::timeout(LIMIT, arrival).await.unwrap().unwrap();
+                let dropped = Arc::new(AtomicUsize::new(0));
+                for _ in 0..2 { actor.send(Bomb(dropped.clone())).unwrap(); }
+                if matches!(committed, ExitReason::Panic(_)) {
+                    let peer = Victim(Arc::default(), false).start();
+                    actor.context().link(&peer.child_handle());
+                    peer.context().stop_with_reason(committed.clone());
+                    tokio::time::timeout(LIMIT, peer.wait_exit()).await.unwrap();
+                } else { actor.context().stop_with_reason(committed.clone()); }
+                release.send(()).unwrap();
+                assert_eq!(tokio::time::timeout(LIMIT, actor.wait_exit()).await.unwrap(), committed);
+                assert_eq!(dropped.load(Ordering::SeqCst), 2);
+                assert_eq!(actor.child_handle().mailbox_cleanup_failure().as_deref(), Some("queued message destructor"));
+                assert!(system.shutdown(LIMIT).await.complete);
+            }
+        }
+        // An actor-state panic must not unwind through an unguarded mailbox.
+        let actor = Victim(Arc::default(), true).start();
+        let (entered, arrival) = oneshot::channel();
+        let (release, gate) = oneshot::channel();
+        actor.send(Hold(entered, gate, false)).unwrap();
+        tokio::time::timeout(LIMIT, arrival).await.unwrap().unwrap();
+        let dropped = Arc::new(AtomicUsize::new(0));
+        for _ in 0..2 { actor.send(Bomb(dropped.clone())).unwrap(); }
+        actor.context().stop(); release.send(()).unwrap();
+        assert!(matches!(tokio::time::timeout(LIMIT, actor.wait_exit()).await.unwrap(), ExitReason::Panic(_)));
+        assert_eq!(dropped.load(Ordering::SeqCst), 2);
+    });
+    runtime.shutdown_timeout(LIMIT);
+    println!("validated abandoned receivers and causes");
 }

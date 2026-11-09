@@ -107,6 +107,7 @@ mod link_regression_tests;
 mod native_link_regression_tests;
 
 mod actor_cleanup;
+mod mailbox;
 
 mod instrumentation;
 #[cfg(feature = "metrics")]

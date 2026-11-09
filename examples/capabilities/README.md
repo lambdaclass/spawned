@@ -1,14 +1,14 @@
 # Capability examples
 
-`cargo run --locked -p spawned-capability-examples --features diagnostics --bin shutdown_diagnostics`
-shows cooperative abnormal exit/recovery and identifies a handler that holds up
-shutdown, then releases it and joins the retained cleanup. Active message/turn
-tracking is opt-in; it adds per-turn clock/locking costs, not payload logging.
-
 These finite programs use the current public API and assert their expected
 outcomes. Run commands from the repository root. They use small worker budgets
 and no external services. The [proposed example catalog](../../ROADMAP.md#examples-to-add)
 describes capabilities that are still on the roadmap.
+
+`cargo run --locked -p spawned-capability-examples --features diagnostics --bin shutdown_diagnostics`
+shows cooperative abnormal exit/recovery and identifies a handler that holds up
+shutdown, then releases it and joins the retained cleanup. Active message/turn
+tracking is opt-in; it adds per-turn clock/locking costs, not payload logging.
 
 | Program | Why it is useful | What it demonstrates |
 |---|---|---|

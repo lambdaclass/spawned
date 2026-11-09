@@ -36,11 +36,18 @@ in the same crate.
 
 ## Verification layers
 
-`mailbox_drop_panic` runs a subprocess matrix of five task placements, 1/2/16
+`mailbox_drop_panic` runs a subprocess matrix of five task placements, 1/2/256
 queued panicking destructors and both ordinary/handler-panic shutdown. Its enabled
 parent test checks that the child actually ran all 30 cases, observes one Exit
 and one Down, verifies pending reply release and preserves the earlier failure.
-Only the subprocess helper is ignored; the regression runs in normal CI.
+Both stdout and stderr are drained concurrently, with a 128 KiB stdout control.
+Only subprocess helpers are ignored; enabled parent regressions run in normal CI.
+Additional cases cover never-polled runtime teardown, cancellation mid-handler,
+state-destructor unwind, preserved Shutdown/Kill/linked-panic causes, and native
+queued-reply release while ActorRefs remain alive. Native coverage runs without
+async features. A never-polled Tracked future test checks cleanup before its lease
+is released. The production native send-gate algorithm is also used directly by
+`mailbox_admission_loom`; CI explores close/publication races and lost notifications.
 `startup_admission` forces a managed root to stay unpolled and contrasts its
 no-hook cleanup with legacy ambient startup. The `queued_drop_panic` lifecycle
 trace checks transient restart, with a negative control that erases the panic.
@@ -362,11 +369,13 @@ cancels in-flight factories.
 
 **Queued-message destructor panics:** a queued message whose `Drop` panics
 while a stopping actor discards its mailbox publishes the trappable
-`Panic("unexpected framework panic")` in both modes, on every tasks placement
+`Panic("queued message destructor: <panic payload>")` in both modes, on every tasks placement
 and under supervision; a trapping linked observer receives one `Exit` and one
-`Down` and survives. These were tasks-mode bugs (untrappable `Kill`, and an
-abort with two such messages) until the shutdown drain fix; `panic_safety` now
-runs this fault in its regular matrix.
+`Down` and survives. The receiver-owned boundary also runs when an actor future is canceled or never
+polled. A previously committed Shutdown/Kill/linked-panic cause takes precedence;
+`ChildHandle::mailbox_cleanup_failure()` retains the secondary queued failure.
+The enabled subprocess matrix covers multiple panicking destructors and actor
+state destruction without depending on the last ActorRef being dropped.
 
 ## Toolchain
 
@@ -374,6 +383,16 @@ The repository's `.tool-versions` selects Rust 1.93.0. The workspace tests,
 including generated cases and compile diagnostics, have been validated with
 that compiler. Proptest and trybuild are dev-dependencies; proptest's unused
 default features are disabled. Cargo generates the lockfile.
+
+## Debug future layouts
+
+The [v0.7.1 layout probe](../legacy/verification/evidence/v071-review-fixes/README.md)
+compares v0.5.0, v0.7.0 and the fix candidate with matched metrics settings.
+Request-future size is unchanged between v0.7.0 and the candidate. The reported
+Ethrex HTTP-future warning has not been reproduced with a pinned application
+revision/feature graph; it is not evidence of a request hot-path regression in
+these fixes. Large inline actor state and feature-dependent instrumentation
+remain separate profiling questions.
 
 ## Execution guarantees
 
@@ -483,6 +502,7 @@ start from the real initial values and do not explore exhaustion. The
 `changed` watch counters use `wrapping_add` but only signal a change; their
 values are never compared. Times are from Kani 0.68 on an Apple M-series
 laptop; CI pins the same Kani version (`.github/workflows/kani.yml`).
+
 
 ## Native integration matrix
 

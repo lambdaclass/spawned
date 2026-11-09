@@ -358,7 +358,7 @@ fn never_polled_monitor_owner_releases_waiter_and_refuses_late_registration() {
 }
 
 #[test]
-fn linked_runtime_abort_is_untrappable() {
+fn linked_runtime_abort_is_trappable() {
     #[cfg(feature = "backend-experiments")]
     {
         let selector = std::env::var("SPAWNED_EXPERIMENT_SCHEDULER").unwrap_or_default();
@@ -383,12 +383,25 @@ fn linked_runtime_abort_is_untrappable() {
     peer.context().trap_exit(true);
     peer.context().link(&target.child_handle());
     drop(owner);
-    let result = survivor
-        .block_on(async { tokio::time::timeout(Duration::from_secs(1), peer.wait_exit()).await });
+    survivor.block_on(async {
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while events.lock().unwrap().is_empty() {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .unwrap();
+    });
+    assert!(peer.child_handle().is_alive());
+    assert_eq!(
+        *events.lock().unwrap(),
+        vec![Exit {
+            from: target.id(),
+            reason: ExitReason::Kill
+        }]
+    );
     peer.child_handle().stop();
-    survivor.block_on(peer.wait_exit());
-    assert_eq!(result, Ok(ExitReason::Kill));
-    assert!(events.lock().unwrap().is_empty());
+    assert_eq!(survivor.block_on(peer.wait_exit()), ExitReason::Normal);
 }
 
 #[test]
@@ -463,7 +476,6 @@ fn linked_runtime_abort_cancels_an_idle_threads_actor() {
         Idler.start()
     };
     let peer = ThreadPeer.start();
-    peer.context().trap_exit(true);
     peer.context().link(&target.child_handle());
     drop(owner);
     let result = waiter.block_on(async {

@@ -1,6 +1,5 @@
-use spawned_rt::threads::{
-    self as rt, mpsc, oneshot, oneshot::RecvTimeoutError, CancellationToken,
-};
+use crate::mailbox::threads as mpsc;
+use spawned_rt::threads::{self as rt, oneshot, oneshot::RecvTimeoutError, CancellationToken};
 use std::{
     collections::HashMap,
     fmt::Debug,
@@ -476,7 +475,7 @@ impl<A: Actor> Context<A> {
     /// - `true`: the signal is converted to an `Exit` message and delivered to
     ///   [`Actor::exit_received`].
     ///
-    /// `Kill` is untrappable.
+    /// Direct Kill requests cannot be trapped; propagated Kill notices can.
     pub fn trap_exit(&self, enabled: bool) {
         self.trap_exit.store(enabled, Ordering::Release);
     }
@@ -710,6 +709,7 @@ impl<A: Actor> ActorRef<A> {
 
 impl<A: Actor> From<ActorRef<A>> for ChildHandle {
     fn from(actor_ref: ActorRef<A>) -> Self {
+        let failures = actor_ref.sender.failures();
         let sender = actor_ref.sender.clone();
         let send_exit: SendExitFn = Arc::new(move |exit: Exit| {
             let envelope: Box<dyn Envelope<A> + Send> = Box::new(ExitEnvelope { exit });
@@ -726,6 +726,7 @@ impl<A: Actor> From<ActorRef<A>> for ChildHandle {
             actor_ref.linked_reason,
             send_exit,
         )
+        .with_mailbox_failures(failures)
     }
 }
 
@@ -797,13 +798,24 @@ impl<A: Actor> ActorRef<A> {
             completion_tx,
             ExitReason::Panic("unexpected framework panic".into()),
             move || cleanup_token.cancel(),
-        );
+        )
+        .with_mailbox_failures(actor_ref.sender.failures());
         let startup =
             crate::actor_cleanup::ActorStartup::new((actor, ctx, rx, cancellation_token), cleanup);
         let _thread_handle = rt::spawn(move || {
             let ((actor, ctx, rx, cancellation_token), mut cleanup) = startup.into_parts();
-            let reason = run_actor(actor, ctx, rx, cancellation_token);
-            cleanup.complete(reason);
+            match catch_unwind(AssertUnwindSafe(|| {
+                run_actor(actor, ctx, rx, cancellation_token)
+            })) {
+                Ok(reason) => cleanup.complete(reason),
+                Err(payload) => {
+                    let message = panic_message(&*payload);
+                    crate::mailbox::dispose_panic(payload);
+                    cleanup.complete_secondary(ExitReason::Panic(format!(
+                        "actor lifecycle destructor: {message}"
+                    )));
+                }
+            }
         });
 
         actor_ref
@@ -919,7 +931,7 @@ fn run_actor_receiving<A: Actor>(
     // Message destructors and reply cancellation may re-enter monitor state.
     // Preserve stopped() -> monitor cleanup -> undelivered-message drop.
     drop(_monitor_cleanup);
-    drop(discarded);
+    ctx.sender.failures().discard(discarded);
     exit_reason
 }
 

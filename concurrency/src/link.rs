@@ -91,16 +91,8 @@ pub(crate) fn make_signal(
     peer_linked_reason: LinkedExitReason,
 ) -> ExitSignalFn {
     Arc::new(move |sender_id, reason| {
-        // Kill is untrappable — always cancel (with Kill as the linked reason)
-        if matches!(reason, ExitReason::Kill) {
-            let mut slot = peer_linked_reason.lock().unwrap_or_else(|p| p.into_inner());
-            if slot.is_none() {
-                *slot = Some(ExitReason::Kill);
-            }
-            drop(slot);
-            peer_cancel();
-            return;
-        }
+        // A propagated notice is trappable, including Kill. Only a direct
+        // stop_with_reason(Kill) bypasses the target's trap_exit flag.
         // Normal exit signals are silently dropped unless the peer is trapping
         let trapping = peer_trap_exit.load(Ordering::Acquire);
         if matches!(reason, ExitReason::Normal) && !trapping {
@@ -156,6 +148,7 @@ pub(crate) fn register_link(
     if own_id == peer_id || Arc::ptr_eq(own, peer) {
         return;
     }
+
     let closed = with_pair(own, peer, |a, b| {
         if a.exited.is_some() || a.entries.iter().any(|e| e.peer_id == peer_id) {
             return None;

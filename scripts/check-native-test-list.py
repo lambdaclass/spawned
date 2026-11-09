@@ -4,6 +4,9 @@ from pathlib import Path
 import sys
 
 required = {
+    "native::links_monitors_trapping_and_exit_reasons_form_a_complete_native_matrix",
+    "native_propagated_kill_is_trappable_but_direct_kill_is_not",
+    "native_mailbox_drop_panics_are_contained_before_completion",
     "native_explicit_exit_is_cooperative_and_first_reason_wins",
     "generated_actor_scenarios",
     "lifecycle_race_regression",

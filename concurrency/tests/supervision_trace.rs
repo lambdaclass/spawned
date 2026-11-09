@@ -122,9 +122,10 @@ impl Handler<DropBomb> for Worker {
 async fn trace_queued_destructor_panic_restarts_transient_child() {
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("trace-drain-panic", 1).unwrap();
-    let modes = [RestartMode::Transient];
     let mut tree = system.supervisor(config(5)).unwrap();
-    let child = tree.add(worker("drain", &group).restart(modes[0])).unwrap();
+    let child = tree
+        .add(worker("drain", &group).restart(RestartMode::Transient))
+        .unwrap();
     let supervisor = tree.start().await.unwrap();
     let actor = child.current().unwrap();
     let (entered, arrival) = tokio::sync::oneshot::channel();
@@ -142,11 +143,51 @@ async fn trace_queued_destructor_panic_restarts_transient_child() {
     assert_eq!(
         child.snapshot().last_exit,
         Some(spawned_concurrency::ExitReason::Panic(
-            "unexpected framework panic".into()
+            "queued message destructor: injected queued destructor panic".into()
         ))
     );
     assert!(supervisor.shutdown(LIMIT).await.complete);
-    write_trace("queued_drop_panic", supervisor.trace_id(), &modes, 5);
+    write_trace(
+        "queued_drop_panic",
+        supervisor.trace_id(),
+        &[RestartMode::Transient],
+        5,
+    );
+    assert!(system.shutdown(LIMIT).await.complete);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn trace_queued_destructor_failure_preserves_shutdown() {
+    use spawned_concurrency::ExitReason;
+    let system = ActorSystem::new().unwrap();
+    let group = system.async_group("trace-drain-shutdown", 1).unwrap();
+    let mut tree = system.supervisor(config(5)).unwrap();
+    let child = tree
+        .add(worker("drain", &group).restart(RestartMode::Transient))
+        .unwrap();
+    let supervisor = tree.start().await.unwrap();
+    let actor = child.current().unwrap();
+    let (entered, arrival) = tokio::sync::oneshot::channel();
+    let (release, gate) = tokio::sync::oneshot::channel();
+    actor.send(HoldForDrain(entered, gate)).unwrap();
+    tokio::time::timeout(LIMIT, arrival).await.unwrap().unwrap();
+    actor.send(DropBomb).unwrap();
+    actor.child_handle().shutdown();
+    release.send(()).unwrap();
+    wait_state(&child, ChildState::Stopped).await;
+    assert_eq!(child.snapshot().generation, 1);
+    assert_eq!(child.snapshot().last_exit, Some(ExitReason::Shutdown));
+    assert_eq!(
+        actor.child_handle().mailbox_cleanup_failure().as_deref(),
+        Some("injected queued destructor panic")
+    );
+    assert!(supervisor.shutdown(LIMIT).await.complete);
+    write_trace(
+        "queued_drop_preserves_shutdown",
+        supervisor.trace_id(),
+        &[RestartMode::Transient],
+        5,
+    );
     assert!(system.shutdown(LIMIT).await.complete);
 }
 impl Handler<Crash> for Worker {
