@@ -37,6 +37,7 @@ again on an incomplete report. Run with `--features diagnostics`.
 | Request timeout outcomes | [timeout_outcomes](capabilities/src/bin/timeout_outcomes.rs), [protocol_timeouts](capabilities/src/bin/protocol_timeouts.rs) | [protocol_timeouts](capabilities/src/bin/protocol_timeouts.rs) |
 | Draining a finite batch before stop | [graceful_drain](capabilities/src/bin/graceful_drain.rs) | gap |
 | Byte-budgeted pipeline (application adapter) | [byte_budget_pipeline](capabilities/src/bin/byte_budget_pipeline.rs) | gap |
+| Testing actors: mocks, probes, harness and fault injection (`spawned-test`), unreleased | [test_kit](capabilities/src/bin/test_kit.rs) | [test_kit](capabilities/src/bin/test_kit.rs) (native mock and injected stop) |
 | Framework metrics (`metrics` feature) | [framework_metrics](capabilities/src/bin/framework_metrics.rs) | [thread_only](thread_only/README.md) with metrics |
 
 "n/a" means the feature exists only in tasks mode; "gap" means it exists in
@@ -52,5 +53,6 @@ and a row here in the same change.
 
 The [streams and recipients example](capabilities/src/bin/streams_and_recipients.rs)
 covers both runtime modes. [Protocol fakes and named recovery](capabilities/src/bin/registrations_and_fakes.rs)
-show current testing and registration patterns; [coordinated shutdown](capabilities/src/bin/coordinated_shutdown.rs)
+show plain protocol fakes and registration patterns; the [test kit](capabilities/src/bin/test_kit.rs)
+shows `spawned-test` mocks, probes and fault injection; [coordinated shutdown](capabilities/src/bin/coordinated_shutdown.rs)
 supports the [Ethrex/Ethlambda migration guide](../docs/MIGRATION.md#preparing-for-07).

@@ -56,7 +56,7 @@ handlers and the existing default behavior. New policies are explicit and opt-in
    Once the canary runs, check its lifecycle traces with production monitors
    derived from the TLA+ invariants (rank 5c, [PObserve-style](docs/research/systematic-testing.md#a-pobserve-for-spawned)).
    In parallel, the developer-experience track (ranks 6-10: test kit, whose
-   phase A starts the `spawned-test` crate, in review in #198, deadlock
+   phase A started the `spawned-test` crate, deadlock
    detection, stall watchdog with cooperative budgets and per-turn work
    measurement (rank 8a), flight recorder, published snapshots), motivated
    by the [client sweep](#client-sweep-production-pain).
@@ -243,8 +243,8 @@ Ethlambda's follows its upgrade branch.
 
 ### Testing crate (`spawned-test`)
 
-User-facing testing tools live in one crate in this workspace (`testing/`,
-package `spawned-test`; phase A in review in #198), used as a
+User-facing testing tools live in one crate in this workspace,
+[`testing/`](testing/) (`spawned-test`, unreleased), used as a
 dev-dependency (as `tokio-test` is to Tokio), not in a separate repository and
 not as a framework for any actor library. It needs hooks at Spawned's mailboxes,
 dispatch, timers, exits and restarts, which must change together with the core;
@@ -255,8 +255,8 @@ stays stable.
 
 | In the core (small, behind a feature or cfg) | In `spawned-test` |
 |---|---|
-| Hook points at delivery, timers, exits and restarts that a controlled scheduler can take over | Test kit and actor mocks (rank 6; phase A in #198) |
-| Lifecycle trace recording (`lifecycle-trace`, exists) | Fault injection: kill or restart an actor, delay a message, fire a timeout (phase A in #198) |
+| Hook points at delivery, timers, exits and restarts that a controlled scheduler can take over | Test kit and actor mocks (rank 6; phase A exists) |
+| Lifecycle trace recording (`lifecycle-trace`, exists) | Fault injection: kill or restart an actor, delay a message, fire a timeout (phase A exists) |
 | Deadlock detection and the stall watchdog (ranks 7-8): they protect production | Ordering exploration, `explore` (rank 20) |
 | | Crash tapes and production record/replay (ranks 21-22) |
 | | Environment simulation: network, disk and clock faults (rank 22a) |
@@ -266,11 +266,11 @@ stays stable.
 The TLA+ models and checkers stay in `verification/`; they verify Spawned's own
 design, not user code.
 
-Order: build it now, not after v0.7. Phase A of the test kit (rank 6), in
-review in #198: mocks, probes, bounded harness waits and fault injection through
-public APIs only, ready for the Ethlambda canary. Next, the concrete-`ActorRef<B>`
-mock hook and controllable timer time if a client needs them. `explore` and
-replay (ranks 20-22) come later, in phase 6. Do not build the controlled scheduler before
+Order: the crate now exists with phase A of the test kit (rank 6): mocks,
+probes, bounded harness waits and fault injection through public APIs only,
+ready for the Ethlambda canary. Next, the concrete-`ActorRef<B>` mock hook and
+controllable timer time if a client needs them. `explore` and replay (ranks
+20-22) come later, in phase 6. Do not build the controlled scheduler before
 phase 5 settles reply and mailbox semantics.
 
 How the tools compare:
@@ -366,7 +366,7 @@ A broader read of the same revisions for workarounds, incidents and comments
 | Polling for a free peer | Sync code calls `get_best_peer` then sleeps 10 ms in a loop at five sites; a permit's `Drop` returns capacity with a fire-and-forget send whose failure is ignored. | A request answered when capacity frees up is a deferred reply (rank 11); a lease pool with waiters fits admission (rank 17). |
 | Hand-rolled timer policies | ~14 ethrex actors reschedule with `send_after` so the next tick waits for the current one; a committer uses its timer's cancellation token as a pause flag; ethlambda aligns ticks to wall-clock slots and measures lateness by hand; the swarm loop uses `MissedTickBehavior::Skip`. | Timer drift policies (rank 38) promoted: fixed-delay, wall-clock aligned (`send_at`), skip/catch-up, pause/resume, tick coalescing. Low cost. |
 | Helper tasks owned by hand or not at all | Ethlambda's aggregation session holds a token, `JoinHandle` and session id to drop stale results, joined with a 2 s timeout before a new session and on stop. Ethrex `tokio::spawn`s unowned work per transaction batch, header chunk and subscription. | Owned helpers (`ctx.spawn_helper`, on main) plus cancel-previous, generation fencing for stale results and join-with-deadline on stop (rank 15). |
-| Test doubles | Ethlambda stubs an entire protocol by hand three times in tests; ethrex tests spawn real actors with dummy contexts. | Test kit with `ActorRef::mock()` (rank 6); phase A in `spawned-test` (#198). |
+| Test doubles | Ethlambda stubs an entire protocol by hand three times in tests; ethrex tests spawn real actors with dummy contexts. | Test kit with `ActorRef::mock()` (rank 6); phase A in `spawned-test`. |
 | Cyclic wiring after spawn | Actors that reference each other are wired with `InitP2P`/`InitBlockChain` messages, forcing `Option<Ref>` fields. | **New:** late binding or two-phase start for actor cycles (with rank 12's keyed registry). |
 | Self-only messages in macros | Ten `#[allow(dead_code)] // invoked via send_after` on one protocol, plus ~18 manual `impl Handler` blocks. | **New, small:** private/self-only messages in `#[actor]`/`#[protocol]`. |
 | Hand-built observability | Ethlambda threads `Instant` stamps through messages to measure mailbox wait; ethrex polls the peer table every second for counts and checks actor health with an ordinary request (inferred: it times out while a blocking actor works); ethlambda's metadata is a hand-built `Arc<RwLock>` snapshot. | v0.6 metrics already measure queue wait (adoption, rank 5); out-of-band health/inspection (rank 30); published snapshots (rank 10). |
@@ -403,7 +403,7 @@ Small, independent of the scheduler and lifecycle design, and visible to users.
 
 | Rank | Idea | Assessment |
 |---|---|---|
-| 6 | Test kit with `ActorRef::mock()` | **Phase A in review (#198)** in [`spawned-test`](#testing-crate-spawned-test): closure-backed `Mock` actors that implement `Handler<M>` for every message, so `ActorRef<Mock>` satisfies any `#[protocol]` and replaces hand-stubbed protocol refs with no production change; recording `Probe<M>` recipients (`expect`, `expect_no_message`); bounded harness waits; fault injection (`faults::exit`, `restart_child`, mock delay/discard/crash). Unmocked messages fail loudly. **Remaining:** mocking a field typed as a concrete `ActorRef<B>` needs an `Envelope` hook that downcasts to the concrete message and yields message and reply sender (a core change, deferred); controllable time for timers; a generic idle check; core `ChildHandle::exit(reason)` would make injected exits exact (today `Panic` and `Kill` go through a linked helper, so a panic surfaces as `Panic("panic in handler: ...")`). **Client evidence:** hand-stubbed protocols in ethlambda tests (`RecordingChain` in `column_checks.rs`, also `envelope_checks.rs`, `verdict.rs`). |
+| 6 | Test kit with `ActorRef::mock()` | **Phase A implemented** in [`spawned-test`](#testing-crate-spawned-test) (unreleased): closure-backed `Mock` actors that implement `Handler<M>` for every message, so `ActorRef<Mock>` satisfies any `#[protocol]` and replaces hand-stubbed protocol refs with no production change; recording `Probe<M>` recipients (`expect`, `expect_no_message`); bounded harness waits; fault injection (`faults::exit`, `restart_child`, mock delay/discard/crash). Unmocked messages fail loudly. **Remaining:** mocking a field typed as a concrete `ActorRef<B>` needs an `Envelope` hook that downcasts to the concrete message and yields message and reply sender (a core change, deferred); controllable time for timers; a generic idle check. **Client evidence:** hand-stubbed protocols in ethlambda tests (`RecordingChain` in `column_checks.rs`, also `envelope_checks.rs`, `verdict.rs`). |
 | 7 | Request deadlock detection | **Client evidence:** requests awaited inside handlers exist (ethrex peer table), no cycle found; keep as a cheap safety net.  `ActorError::WouldDeadlock` naming the cycle instead of a timeout. `ActorRef::request` takes only `&self`, so set a thread-local `CURRENT_ACTOR` only while the actor's own handler future is polled (and around the synchronous handler in thread mode); detached helpers create no edges. Keep a small wait set per actor for `join!`. Measure cost before enabling outside debug builds. |
 | 8 | Stall watchdog | **Client evidence:** wedged and runtime-starving handlers in both clients (see sweep). Upgrade the debug-only `WarnOnBlocking` (whole-loop type name, 10 ms per poll, Async backend only): name the actor and message type, separate "one poll blocked a worker" from "handler stuck across awaits", optional in release builds. Long handler time alone does not establish deadlock. |
 | 8a | Cooperative budgets and per-turn work measurement | **Client evidence:** the same incidents as rank 8 (ethrex d958dcba4 filled every runtime worker; ethlambda moved its chain actor to `Backend::Thread`). Spawned cannot preempt Rust code; do what the BEAM does for native code instead. (A) Fairness between messages: an opt-in dispatch policy that yields after N messages or T µs per poll (today's private `MessageTurn` experiment), framework operations that consume Tokio's coop budget, and per-actor work metrics (poll time per message, polls per turn, long polls) feeding ranks 8, 29 and 39. (B) Opt-in `ctx.checkpoint().await` and a budgeted iterator that yield only when the turn is over budget. (C) Synchronous code is detected (rank 8) and isolated (placement, rank 11b), never preempted. Rejected: auto-instrumentation by macro, signal-based preemption. Acceptance: single-CPU starvation bound; watchdog fires on a blocking handler. See [preemption and budgets](docs/research/concurrency-models.md#3-preemption-reduction-counting-and-cooperative-budgets). |
@@ -584,7 +584,7 @@ that already run today.
 | Rank | Capability | Example to deliver with it |
 |---|---|---|
 | 5c | Production lifecycle monitors | Inject a stale-generation publication in a test build; the online monitor reports it through `tracing` and a counter, and the offline runner flags the recorded trace. |
-| 6 | Test kit (phase A in #198) | Mock a protocol dependency, probe sends, inject a slow reply, a crash and a supervised kill (`test_kit` example in #198). Still to deliver: an actor holding a concrete `ActorRef<B>` with `B` mocked. |
+| 6 | Test kit (phase A implemented) | [Test kit](examples/capabilities/src/bin/test_kit.rs): mock a protocol dependency, probe sends, inject a slow reply, a crash and a supervised kill. Still to deliver: an actor holding a concrete `ActorRef<B>` with `B` mocked. |
 | 7 | Deadlock detection | Two actors requesting each other fail fast with the named cycle. |
 | 8 | Stall watchdog | A handler blocking a worker versus one stuck across an `.await`, each reported with actor and message type. |
 | 8a | Cooperative budgets | On one CPU, an actor flooding itself with messages and one running a long async loop with `ctx.checkpoint()` both leave a second actor's latency under a bound; per-actor work metrics show the busy actor. |

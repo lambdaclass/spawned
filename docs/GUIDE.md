@@ -1,8 +1,8 @@
 # Spawned Guide
 
 The user guide for the spawned actor framework: lifecycle, messaging, execution
-modes, timers, type erasure, the registry, links, execution groups, supervision
-and metrics. For a quick introduction, see the [README](../README.md); for
+modes, timers, type erasure, the registry, links, execution groups, supervision,
+metrics and testing. For a quick introduction, see the [README](../README.md); for
 upgrades, see [MIGRATION.md](MIGRATION.md); for runnable programs, see the
 [examples index](../examples/README.md).
 
@@ -24,6 +24,7 @@ upgrades, see [MIGRATION.md](MIGRATION.md); for runnable programs, see the
 - [Links and trapped exits](#links-and-trapped-exits)
 - [Execution groups and supervision](#execution-groups-and-supervision) (v0.7)
 - [Metrics](#metrics)
+- [Testing your actors](#testing-your-actors) (unreleased)
 - [Further reading](#further-reading)
 
 ---
@@ -1099,6 +1100,111 @@ Use application measurements before choosing a sampling rate; shared atomic
 counters themselves can contend under high actor/producer concurrency. The
 original [overhead measurements](../legacy/research/framework-metrics/2026-11-06/README.md)
 are archived.
+
+---
+
+## Testing your actors
+
+The `spawned-test` crate (unreleased, in this workspace) is a dev-dependency
+for unit-testing actors in both execution modes. It uses only the public
+`spawned-concurrency` API. The `tasks` helpers need its default `async`
+feature; with `default-features = false` it builds Tokio-free with the
+`threads` helpers.
+
+```toml
+[dev-dependencies]
+spawned-test = { path = "../testing" } # published with the next release
+```
+
+### Mock a dependency
+
+`Mock` is an actor that implements `Handler<M>` for **every** message type, so
+`ActorRef<Mock>` satisfies every `#[protocol]` blanket impl: call protocol
+methods on it, or convert it with the generated `to_x_ref()` and hand it to the
+code under test. Code that holds a protocol reference (`XRef`) or a
+`Recipient<M>` needs no change.
+
+```rust
+use spawned_test::tasks::{Mock, Probe};
+
+let rates = Mock::new()
+    .on::<rates_protocol::Rate>(|msg| if msg.currency == "EUR" { 110 } else { 100 })
+    .start();
+let out = Probe::<Converted>::new();
+let converter = Converter { rates: rates.to_rates_ref(), out: out.recipient() }.start();
+
+assert_eq!(converter.convert("EUR".into(), 3).await.unwrap(), Ok(330));
+assert_eq!(out.expect(Duration::from_secs(1)).await.cents, 330);
+let asked: rates_protocol::Rate = rates.expect(Duration::from_secs(1)).await;
+assert_eq!(asked.currency, "EUR");
+out.expect_no_message(Duration::from_millis(20)).await;
+```
+
+- `on::<M>(|msg: &M| reply)` answers each `M`; the message is still logged.
+- `allow_sends()` acknowledges every fire-and-forget message without a rule;
+  stubbing a wide protocol to observe one method is then a single line.
+- A message without a rule makes the mock panic with the type name and the
+  rule to add. The caller sees `ActorStopped`; `received()` lists it as
+  `Outcome::Unexpected` and `assert_no_unexpected()` fails the test.
+- `expect::<M>(timeout)` returns the oldest not-yet-expected `M` (other types
+  stay queued); `expect_no_message(window)`, `count::<M>()`, `take_all::<M>()`,
+  `received()` and `settle()` (wait until everything sent before is handled)
+  read the same log.
+
+`MockRef` dereferences to `ActorRef<Mock>`. Its own methods win over protocol
+methods with the same name; call those through `actor_ref()` or the `XRef`.
+
+A field typed as a concrete `ActorRef<B>` cannot hold a mock: substituting the
+handler behind a concrete reference needs a core hook (an envelope downcast)
+that phase A does not add. Declare dependencies as protocol references, as
+Ethlambda does (`P2PToBlockChainRef`, `RpcToP2PRef`), or as `Recipient<M>`.
+Plain trait fakes (`impl RatesProtocol for FixedRates`) still work and need no
+runtime; a mock adds the message log, strictness and faults.
+
+### Probe a recipient
+
+`Probe<M>` is a `Recipient<M>` that records what it is sent, without an actor.
+`Probe::replying(|msg| reply)` also answers requests; a plain probe logs a
+request as unexpected and drops its reply. `close()` makes it behave like a
+stopped recipient.
+
+### Harness helpers
+
+These helpers fail with a report instead of hanging the test:
+
+| Helper | Fails when |
+|---|---|
+| `settle(&actor, fence, timeout)` | a cheap request does not return, so earlier sends from this caller are not all handled |
+| `exit_within(&handle, deadline)` / `join_within(&actor, deadline)` | the actor has not exited, naming it |
+| `wait_until(timeout, "what", condition)` | a condition never holds |
+| `wait_for_generation(&child, after, deadline)` | a supervised child does not reach a new generation, printing its snapshot |
+| `shutdown_supervisor(&supervisor, deadline)` | the supervisor report is incomplete, listing its children |
+| `shutdown_system(&system, deadline)` / `TestSystem::shutdown` | the `ActorSystem` report is incomplete, listing unfinished groups, actors, exits and failures |
+
+`TestSystem::new()` owns an `ActorSystem` with a two-worker async group named
+`test`, and starts actors and mocks on it. The `threads` module has the
+blocking versions of `settle`, `exit_within`, `join_within` and `wait_until`.
+There is no generic "actor is idle" check: an actor's mailbox can receive from
+any sender at any time, so `settle` fences the senders the test controls.
+
+### Fault injection
+
+| Fault | How |
+|---|---|
+| Stop any actor with a chosen reason | `faults::exit(&handle, reason)`: `Normal` stops, `Shutdown` shuts down, `Panic(msg)` and `Kill` arrive as from a crashed linked peer (trapping actors receive `Exit` for `Panic`; `Kill` cannot be trapped and needs the `async` feature). A panic yields `Panic("panic in handler: {msg}")`. |
+| Crash a supervised child and get its replacement | `tasks::restart_child(&child, reason, deadline)` |
+| Slow dependency / forced request timeout | `Mock::delay::<M>(d)` with a caller timeout shorter than `d` (`with_request_timeout`, `#[protocol(timeout = ..)]`) |
+| Lost message | `Mock::discard::<M>()` (fire-and-forget messages only) |
+| Crashed dependency | `Mock::crash_on::<M>(reason)` |
+| Stopped recipient | `Probe::close()` |
+
+Stopping is cooperative: a running handler finishes first, and blocking code is
+never preempted. There is no controlled scheduler yet: tests run on the real
+Tokio or OS scheduler, so they observe one interleaving per run. Ordering
+exploration and replay (roadmap ranks 20-22) come later in the same crate.
+
+The [test kit example](../examples/capabilities/src/bin/test_kit.rs) runs a mock,
+a probe and each fault with assertions in both modes.
 
 ---
 
