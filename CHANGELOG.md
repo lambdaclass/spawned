@@ -33,6 +33,11 @@
   (RUSTSEC-2026-0463). The `updater` examples move to reqwest 0.12
   (h2 RUSTSEC-2026-0258, unmaintained rustls-pemfile). Examples are marked
   `publish = false`.
+- Kani bounded model-checking proofs (`concurrency/src/kani_proofs.rs`, weekly
+  and on `concurrency/src` PRs) for backoff capping, monotonicity and jitter
+  range, per-child jitter seed mixing, the rolling restart budget and recovery
+  round ids. Pure helpers were extracted from the supervisor without behavior
+  change.
 
 ## 0.7.0 — 2026-11-09
 
