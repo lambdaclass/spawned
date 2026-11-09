@@ -2,7 +2,7 @@
 //!
 //! Counters cover all operations; histograms contain sampled elapsed times.
 //! There are no actor/message labels, callbacks, background tasks or network I/O.
-//! See `docs/METRICS.md` for accounting and raw-receiver limitations.
+//! See `docs/GUIDE.md` (Metrics section) for accounting and raw-receiver limitations.
 //!
 //! ```
 //! use spawned_concurrency::metrics::{self, Config};

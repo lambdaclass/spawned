@@ -100,7 +100,7 @@ def main():
          f"{meta['platform']}; {meta['rustc']}; nice={meta['nice']}. Actors inherit CPUs `{meta['actor_cpus']}`; new graph/load producers use `{meta['driver_cpus']}` and collectors/samplers use `{meta.get('collector_cpus','shared with producers')}`. Both budgets use the same four-core actor affinity mask; workers are not individually pinned. Other users and frequency scaling remain uncontrolled.",'',
          '[Protocol and limitations](../../RESEARCH-FEDE-PROTOCOL.md) · [Raw inputs and exact schedule](../../results/fede-research-2026-11-06/metadata.json)','',
          'The earlier 9b22346 study is separate: these workloads use corrected source, different graphs/load and explicit driver CPU separation. Compare policies inside each case. Bars/lines are medians; whiskers/ranges show fresh-process min/max, not confidence intervals.','']
-    findings=Path(__file__).with_name('FINDINGS-FEDE-RESEARCH.md')
+    findings=Path(__file__).resolve().parent.parent/'legacy'/'benchmarks'/'FINDINGS-FEDE-RESEARCH.md'
     if findings.exists():doc.extend([findings.read_text(),''])
     doc.extend(['## Actor-to-actor graphs','','Each logical request traverses eight actual handlers (chain or seven-way fan-out). Short graph cells use 65,536 requests; graph-long confirmations use 1,048,576 and are kept separate. The logical graph, count and work are identical across placement controls. Same/cross placement is enforced only for sharded actors; under Tokio it is a spawn-order control. Producers await each root reply.',''])
     for graph_phase,w in sorted({(r['phase'],int(r['workers'])) for r in rows if r['phase'] in ['graph','graph-long']}):
