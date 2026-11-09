@@ -180,7 +180,7 @@ maintenance capacity. Keep the current backend as the comparison baseline.
 
 ## Proposed performance study
 
-Do this before runtime replacement or transport redesign. It is proposed work;
+A precondition for runtime replacement or transport redesign. It is proposed work;
 this document contains no measured performance results.
 
 1. **Baselines:** current task/thread modes, relevant task backends, and equivalent
@@ -207,13 +207,20 @@ A baseline benchmark executable can collect caller latency, completion rate,
 allocations, memory, and CPU before production metrics exist. Framework timing
 then explains those results; the two efforts can proceed together.
 
-## Recommendation
+## Conclusion
 
-Implement optional observability and establish realistic baselines first. Use
-those measurements to choose performance work. Develop supervision as the next
-major recovery capability with explicit policies. Keep Tokio removal, busy
-spinning, shared-memory transport, and specialized thread execution as distinct,
-evidence-gated research projects. Preserve Spawned's protocol and actor model.
+Keep Tokio removal, busy spinning, shared-memory transport and specialized thread
+execution as distinct, evidence-gated research projects, and preserve Spawned's
+protocol and actor model. This page is reference material; order and priority
+live only in [idea priorities](idea-priorities.md) and the
+[roadmap](../ROADMAP.md). Optional metrics and OneForOne supervision, which an
+earlier version of this section recommended next, have since been implemented.
+
+For Ethrex and Ethlambda, section A (a Tokio-free build) does not help: both
+depend on Tokio throughout. The client-relevant item is a lighter
+dedicated-thread backend related to section B, because task-mode
+`Backend::Thread` creates a Tokio runtime per actor and Ethlambda's
+`BlockChainServer` uses it.
 
 ## Sources
 

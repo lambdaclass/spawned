@@ -206,6 +206,6 @@ having links. No release date or v1.0 commitment is made here.
 The [previous plan](roadmap-before-observability.md) is archived because it
 predates the current APIs and contains outdated status and competitor claims.
 
-Other contract-focused candidates are ranked in the [concurrency ideas research](../research/concurrency-ideas.md).
+Other contract-focused candidates are described in the [concurrency ideas research](../research/concurrency-ideas.md). The single ranked backlog is [idea priorities](../research/idea-priorities.md).
 
 The [Commonware and capability review](../research/commonware.md) assesses actor systems/execution groups, supervision, admission control and typed streams as research capabilities. The [current roadmap](../ROADMAP.md) defines implementation order; these do not change the current release contract.

@@ -1,9 +1,8 @@
 # Research: ideas that would make Spawned much more useful
 
-Date: 2026-11-08. Status: brainstorm catalog and design notes, not a commitment
-or release plan. **The canonical ranked backlog is
-[idea priorities](idea-priorities.md); where the two disagree, that document and
-the [roadmap](../ROADMAP.md) set the order.** Written against
+Date: 2026-11-08. Status: reference material (idea catalog and design notes),
+not a commitment or release plan. **Rankings and order live only in the single
+backlog, [idea priorities](idea-priorities.md), and the [roadmap](../ROADMAP.md).** Written against
 `0ef612dd21e8e8a401422eb06e1f31f5197cd4b2` (v0.6.0), before execution groups and
 OneForOne supervision landed on main; see [Status since writing](#status-since-writing).
 See also the [concurrency ideas research](concurrency-ideas.md) and the
@@ -13,19 +12,18 @@ The roadmap and earlier research already cover metrics, representative
 benchmarks, bounded mailboxes, batching, affinity, sharding, runtime ownership,
 supervision, propagated deadlines, seeded delivery simulation, causal context,
 helper scopes, credits and durable outboxes. This document collects the ideas
-that are *not* yet covered, or that push a covered idea substantially further,
-and ranks everything by expected return on investment.
+that are *not* yet covered, or that push a covered idea substantially further.
+Their placement in the backlog is recorded in [idea priorities](idea-priorities.md).
 
-Value and cost estimates are engineering judgment, not measurements. Before
-committing to items 1–3 and 6 in the catalog, check Ethrex and Ethlambda for
-the patterns they are meant to replace (see [Validation first](#validation-first)).
+Cost estimates are engineering judgment, not measurements. Before committing to
+items 1–3 and 6 in the catalog, check Ethrex and Ethlambda for the patterns they
+are meant to replace (see [Validation first](#validation-first)).
 
 ## Contents
 
 - [Status since writing](#status-since-writing)
 - [The idea catalog](#the-idea-catalog) (42 ideas, grouped; 31–42 from agy's review)
-- [Ranking by ROI](#ranking-by-roi)
-- [Best value vs. coolest](#best-value-vs-coolest)
+- [Positioning](#positioning)
 - [Design notes: request semantics](#design-notes-request-semantics)
 - [Design notes: per-key entities and state](#design-notes-per-key-entities-and-state)
 - [Design notes: live introspection](#design-notes-live-introspection)
@@ -51,29 +49,16 @@ update before it):
 The verdict on item 38 below ("don't make it a prerequisite") is superseded: the
 team chose to build execution groups together with supervision, and did.
 
-### Where this catalog and idea priorities disagree
+### Disagreements with the earlier backlog
 
-These are open questions for the team, not decisions:
-
-- **Not in idea priorities at all:** test kit / `ActorRef::mock()` (14, 31),
-  request deadlock detection (3), stall watchdog (21), published state
-  snapshots (32), `spawn_ordered` (33), per-actor crash tape (40). All are
-  cheap; this catalog ranks most of them in tier 1.
-- **Per-key (virtual) actors:** rank 33 there ("defer until a client needs it")
-  vs. rank 7 here. The in-process version described below needs no storage or
-  distribution layer; the disagreement is about whether clients already
-  hand-write per-key actor maps (see [Validation first](#validation-first)).
-- **Groups / pub-sub:** rank 20 there (after registry lifetimes) vs. rank 4 here.
-  The dependency on lifecycle-owned registries is a fair reason to wait.
-- **Simulation and formal verification:** idea priorities treats them as enabling
-  work; this catalog and the [verification strategy](verification-strategy.md)
-  argue the formal lifecycle model is now urgent, because supervision has
-  landed and enlarged the lifecycle state space.
+The ranking differences this catalog originally recorded (test kit, deadlock
+detection, watchdog, snapshots, virtual actors, pub-sub, verification) were
+resolved by folding every item into [idea priorities](idea-priorities.md).
 
 ## The idea catalog
 
 Items marked *(roadmap)* or *(research)* are already tracked elsewhere; they are
-listed so the ranking is complete.
+listed so the catalog is complete. Numbers are catalog identifiers, not ranks.
 
 ### A. Request and reply semantics
 
@@ -147,7 +132,7 @@ checking the claim against the code.
 | 32 | **Published state snapshots** (`Projected<S>`) | The actor publishes a read-only snapshot (an `ArcSwap` or `watch`-style slot); callers read the chain head or sync status without waiting in the mailbox behind a long import. | Low | **Adopt.** It replaces the `Arc<RwLock<_>>` escape hatch. Document that a snapshot can lag messages already sent, so it does not give read-your-writes. |
 | 33 | **`ctx.spawn_ordered`** (parallel compute, then ordered commit) | Stateless CPU work (BLS, decoding, hashing) runs on a pool; results commit to `&mut self` in arrival order and complete the original caller's reply. | Medium | **Adopt, as a specialization of deferred replies (1).** State can change between submission and commit, so the commit must revalidate. Needs a bound on in-flight work. Ethlambda already does this by hand with `spawn_blocking`. |
 | 34 | **Single-flight requests** | Identical in-flight requests share one execution and a cloned reply. | Medium | **Maybe.** Only sound for pure reads. Needs `Hash + Eq` arguments, a `Clone` reply and an index of the mailbox. Prove the thundering-herd problem exists in a client first. |
-| 35 | **Latest-wins coalescing and batch draining** | Coalescing overwrites stale queued updates; batching drains up to N messages per turn. | Medium | **Batching is already in roadmap item 26; coalescing is new.** Coalescing must be opt-in per message type and never silently drop a request, because a caller is waiting for its reply; superseded requests get an explicit error. |
+| 35 | **Latest-wins coalescing and batch draining** | Coalescing overwrites stale queued updates; batching drains up to N messages per turn. | Medium | **Batching was already tracked (catalog item 26); coalescing is new.** Coalescing must be opt-in per message type and never silently drop a request, because a caller is waiting for its reply; superseded requests get an explicit error. |
 | 36 | **Queue-wait shedding (CoDel)** | Drop messages marked sheddable when the oldest message has waited longer than a target, instead of using fixed length limits. | Medium | **Good for gossip.** Enqueue timestamps exist only with the `metrics` feature today, so shedding needs its own cheap timestamp. Requires an explicit reject path and counters. |
 | 37 | **Typed streams between actors** | Consumer-driven demand and bounded buffering between actors, cancelled when either side exits; replaces unbounded push from `spawn_listener`. | Medium | **Adopt after credits** (concurrency ideas #5). Shares the permit primitive. |
 | 38 | **`ActorSystem` and execution groups** | Named, explicitly owned execution pools (shared async, bounded blocking, dedicated threads, pinned shards) with system-wide shutdown. | High | **Design together with supervision (11) and graceful shutdown (12), but don't make it a prerequisite.** The `SPAWNED_EXPERIMENT_*` variables are private experiment knobs, not a user problem. The cited 19.0 ms → 0.040 ms p99 gain comes from a synthetic runtime-isolation benchmark, and the clients already isolate critical actors with `Backend::Thread` and `Backend::Blocking`. |
@@ -163,101 +148,14 @@ context (23), client workload benchmarks (roadmap milestone 2), per-handler
 blocking worker leasing (`benchmarks/RESEARCH-NEXT.md`), Tokio-free thread mode
 (27), and a sparse-work driver yield experiment (backend research only).
 
-## Ranking by ROI
+## Positioning
 
-ROI = expected value to Ethrex/Ethlambda and to adoption, divided by
-engineering cost.
-
-### Tier 1: do now
-
-| Rank | Idea | Value | Cost | Rationale |
-|---|---|---|---|---|
-| 1 | Test kit (14) | High | Low | Every user benefits immediately; biggest adoption lever per hour. |
-| 2 | Stall watchdog (21) | Medium–high | Very low | Half exists in `WarnOnBlocking`; finds a common production bug class. |
-| 3 | Request deadlock detection (3) | High | Low–medium | Turns mystery timeouts into a named cycle; no other Rust framework found offers it. |
-| 4 | Groups / pub-sub (7) | High | Low | Peer broadcast is everywhere; today it is a hand-managed list that leaks dead actors. |
-| 5 | Flight recorder (22) | Medium–high | Low | Crashes and stalls arrive with history; feeds record/replay. |
-
-### Tier 2: next
-
-| Rank | Idea | Value | Cost | Rationale |
-|---|---|---|---|---|
-| 6 | Deferred replies (1) | Very high | Medium | Fixes the most common actor liveness trap without changing callers. |
-| 7 | Per-key entities (6) | High | ~1 week | Removes manager boilerplate and its races; path to distribution. |
-| 8 | Stash / postpone (2) | High for consensus | Low once 6 exists | A `Reply` variant; cheap alongside deferred replies. |
-| 9 | Graceful shutdown (12) | Medium–high | Low–medium | Every server needs it; hard to get right by hand. |
-| 10 | Pools / routers (8) | Medium–high | Low–medium | CPU offload (signature checks) without blocking a mailbox. |
-| 11 | Formal lifecycle model (17) | High | Medium | Prevents the next lifecycle race; most valuable just before supervision. |
-| 12 | Handler middleware (10) | Medium–high | Medium | Keeps deadlines, tracing and rate limits out of the core. |
-
-### Tier 3: worth it, larger or dependent
-
-| Rank | Idea | Value | Cost | Rationale |
-|---|---|---|---|---|
-| 13 | AI-agent example (28) | Medium (positioning) | Low | Cheap; value is mostly positioning. |
-| 14 | Ready-made integrations (13) | Medium | Low each | Build on demand. |
-| 15 | Live introspection (20) | High | Medium | Metrics and the watchdog cover the urgent part first. |
-| 16 | Deterministic simulation (15) | Very high | Medium–high | Unlocks the correctness track; ranked by cost, not value. |
-| 17 | Supervision (11) | High | High | A client recovery need should set its timing, not ROI. |
-| 18 | Signal priority lane (4) | Medium | Medium | Matters once supervision runs under load; build with 17. |
-| 19 | Generated message enum (24) | Unknown until profiled | Medium | Possibly the cheapest speedup, possibly irrelevant. |
-| 20 | Propagated deadlines (5) | Medium | Medium | Much cheaper once middleware exists. |
-| 21 | Typed state-machine actor (9) | Medium | Medium | Stash plus ordinary enums cover most uses. |
-| 22 | Causal tracing (23) | Medium | Low–medium | Follows the metrics work. |
-
-### Tier 4: long-term bets and only-if-needed
-
-| Rank | Idea | Value | Cost | Rationale |
-|---|---|---|---|---|
-| 23 | Record / replay (18) | Very high (highest ceiling) | High | Needs 15 and client discipline; validate on a past race first. |
-| 24 | Durable outbox recipe (30) | Medium | Low (recipe) | When a client needs effectively-once effects. |
-| 25 | Reusable reply slots (25) | Low–medium | Medium | Only if 24 shows allocation matters. |
-| 26 | Ordering exploration (16) | Very high (research) | High | After simulation exists. |
-| 27 | Tokio-free / embedded (27) | Medium (new niche) | Medium–high | New market, not a current user need. |
-| 28 | Compile-time actor graph (19) | Medium | High | Hard with dynamic actors. |
-| 29 | Roadmap performance items (26) | Varies | Varies | Wait for measurements, per the roadmap. |
-| 30 | Distribution (29) | High eventually | Very high | Wait for a concrete user. |
-
-### Where the additional ideas (31–42) land
-
-| Idea | Tier | Placement |
-|---|---|---|
-| `ActorRef::mock()` (31) | 1 | Part of rank 1; it is the most valuable piece of the test kit. |
-| Published state snapshots (32) | 1 | Right after rank 5: cheap, and removes the main reason people bypass actors with locks. |
-| Fallible `started()` (39) | 1 | Cheap; a branch already exists. |
-| `ctx.spawn_ordered` (33) | 2 | With deferred replies (rank 6); same reply-ownership machinery. |
-| Instance- vs. slot-bound references (42) | 2 | A design decision to make before supervision code. |
-| Per-actor crash tape (40) | 3 | After the flight recorder; a cheap step toward record/replay. |
-| Queue-wait shedding (36) | 3 | After a client shows overload on droppable traffic. |
-| Latest-wins coalescing (35) | 3 | With batching, when profiling justifies it. |
-| `ActorSystem` / execution groups (38) | 3 | With supervision (rank 17). |
-| Typed streams (37) | 4 | After credits. |
-| Single-flight (34) | 4 | Only with evidence of duplicate-request storms. |
-| Out-of-process status table (41) | 4 | After in-process introspection. |
-
-**Five-item short list:** test kit built around `ActorRef::mock()`, stall
-watchdog, deadlock detection, deferred replies plus stash (and later
-`spawn_ordered`), per-key entities. Published state snapshots are a cheap
-sixth. Roughly 3–4 weeks of work.
-
-**Exception to ROI order:** start the simulation backend (15) early. Record/replay
-(18) and ordering exploration (16) both depend on it, and they are what would
-make Spawned unique rather than incrementally better.
-
-## Best value vs. coolest
-
-| Best value (cheap, everyone uses it) | Coolest (no other actor framework has it) |
-|---|---|
-| Test kit | Record in production, replay in simulation |
-| Deferred replies + stash | Systematic exploration of message orderings |
-| Per-key entities | Deadlock detection that names the cycle |
-| Request deadlock detection | Failing simulations printed as sequence diagrams |
-| Groups / pub-sub | Live introspection plus per-actor flight recorder |
-
-Deadlock detection is on both lists. The long-term positioning these ideas
-support is **Erlang semantics plus reproducible concurrency bugs**: simulation,
-then record/replay, then ordering exploration, with the best-value items driving
-adoption in the meantime.
+Rankings were moved to [idea priorities](idea-priorities.md). The positioning
+argument remains: the cheap items (test kit with `ActorRef::mock()`, deferred
+replies plus stash, deadlock detection, pub-sub, virtual actors) drive adoption,
+while the distinctive long-term story is **Erlang semantics plus reproducible
+concurrency bugs**: actor-level ordering exploration, then crash tapes, then
+record/replay, with failing simulations printed as sequence diagrams.
 
 ## Design notes: request semantics
 
