@@ -38,6 +38,9 @@
   range, per-child jitter seed mixing, the rolling restart budget and recovery
   round ids. Pure helpers were extracted from the supervisor without behavior
   change.
+- Add cross-backend metamorphic, cancellation-safety and panic-safety test
+  suites (`cross_backend`, `cancellation_safety`, `panic_safety`) plus a
+  nightly robustness workflow.
 
 ## 0.7.0 — 2026-11-09
 
