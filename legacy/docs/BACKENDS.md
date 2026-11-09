@@ -1,5 +1,7 @@
 # Choosing an execution backend
 
+> Historical; superseded by the [guide](../../docs/GUIDE.md#execution-modes-and-backends) and the [benchmark conclusions](../../benchmarks/README.md#conclusions). Parked pinned shards are now public as `ActorSystem::pinned_group` (unreleased); spinning shards and custom schedulers remain private experiments.
+
 Use `Backend::Async` for ordinary async actors. It runs on the current Tokio
 runtime and remains the supported default. Choose another execution mode for a
 specific isolation or blocking requirement, then measure the application.

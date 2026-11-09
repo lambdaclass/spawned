@@ -118,3 +118,23 @@ must be added to the formal model before claiming formal verification of them.
 The existing trace instrumentation is retained on the combined implementation.
 All library crates continue to forbid unsafe Rust; native synchronization and
 Linux affinity use safe interfaces. No unsafe exemption was introduced.
+
+## Next model
+
+The base actor lifecycle is not modelled yet: exit reasons, monitors and
+demonitor, links with `trap_exit` and `start_linked`, stop and cancellation while
+a handler runs, request acceptance or rejection around shutdown, and exit
+signals relative to queued messages. Keep it small (three or four actors,
+bounded mailboxes and message counts). It should check at least:
+
+- an actor linked to an abnormally exiting, non-trapping peer eventually stops;
+- every accepted request eventually gets a reply or `ActorStopped`, never neither;
+- no message is dispatched after the run loop has observed stop;
+- each monitor's `Down` is delivered exactly once.
+
+Acceptance: reintroducing the PR #182 bug (a request whose mailbox publication
+races shutdown is retained without a reply) and the PR #185 bug (newly
+received idle work dispatched after stop) into the model must each produce a
+counterexample, as the five injected supervision bugs do today. Trace validation
+should then cover the lifecycle scenarios the same way it covers supervision.
+Source: [verification strategy](../../legacy/docs/research/verification-strategy.md#acceptance).

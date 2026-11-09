@@ -58,6 +58,19 @@ Ethlambda, which depend on Tokio throughout. The client-relevant item is a
 fixed native actor pool, which shares one helper runtime rather than creating
 one per actor. Additional placement changes still need application measurements.
 
+### Non-goals
+
+Performance work may add opt-in profiles, but none of these may become the
+default (from the [Silver/flux study](legacy/docs/research/silver-flux.md#what-must-not-become-spawneds-default)):
+
+- static topology replacing dynamic actor creation;
+- Copy-only payload requirements replacing ordinary Rust message types;
+- broadcast replacing addressed delivery;
+- silent loss on mailbox overwrite, especially for requests;
+- application handlers owning poll loops, reply routing or runtime
+  infrastructure to make a backend faster;
+- mandatory dedicated cores or spinning for ordinary actors.
+
 ## Ranked backlog
 
 Rankings are engineering judgment, not measured speedup predictions or release

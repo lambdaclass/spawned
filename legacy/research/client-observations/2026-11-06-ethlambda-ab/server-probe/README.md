@@ -170,9 +170,8 @@ raw samples and plots accompany the report. Production diagnosis still needs
 the same-node canary or a real workload replay with matching data, identity and
 EL configuration; no production deployment or release is part of this probe.
 
-Evidence is in [evidence](evidence/), including [build hashes](evidence/builds.json),
-[the run plan](evidence/results/plan.json) and the [completion marker](evidence/results/COMPLETE).
-Raw `stdout.json.gz` files are losslessly compressed, with the original
-uncompressed hashes in [this index](evidence/uncompressed-stdout-sha256.json).
-For example, `gzip -dc evidence/results/000-*/stdout.json.gz` reads the first
-process's timing samples and summary.
+The raw evidence directory (`evidence/`: build hashes, run plan, completion
+marker and losslessly compressed `stdout.json.gz` samples with an uncompressed
+hash index) was removed from the tree; recover it from git history at commit
+`5273a5fa` (`git checkout 5273a5fa -- <path>`). The rendered [report](report/summary.csv)
+and [follow-up report](followup-report/summary.csv) summaries remain.

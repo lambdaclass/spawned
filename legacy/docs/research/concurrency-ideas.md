@@ -4,7 +4,7 @@ Researched 2026-11-06 by an independent research agent against current primary
 sources and Spawned's roadmap, backend guide and Silver/flux research. Proposed
 experiments below are our inference, not source performance claims. This page is
 reference material; section numbers are identifiers, not ranks. Order and
-priority live only in [idea priorities](idea-priorities.md).
+priority live only in [ranked backlog](../../../ROADMAP.md#ranked-backlog).
 
 Keep Tokio as the default, typed ordinary Rust payloads, addressed delivery,
 dynamic actors, request/reply and cooperative handlers. Existing backend research

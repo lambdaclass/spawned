@@ -184,6 +184,24 @@ longer than 10 ms; use `Backend::Blocking` or `Backend::Thread` for slow work.
 Stop and await actors when their work is finished. A dedicated thread does not
 make one long-running handler preemptible, and a persistent blocking actor does
 not release its worker between messages. Size persistent populations accordingly.
+Archived backend benchmarks found these limits:
+
+- **`Backend::Blocking` stalls past the blocking pool.** Tokio's blocking pool
+  defaults to 512 threads. With 1,024 persistent blocking actors every run hit
+  the benchmark watchdog; with 512 every run completed (macOS and Linux). Raise
+  `max_blocking_threads` on your runtime or keep the population below it.
+- **Per-actor runtimes cost file descriptors.** Each isolated runtime owns a
+  reactor. A per-actor current-thread runtime variant failed to start 1,024
+  actors under a 4,096-descriptor soft limit and completed once the limit was
+  raised to 16,384. `Backend::Thread` also creates one runtime per actor, so
+  check `ulimit -n` before running about a thousand of them.
+- **Spinning shards burn their cores when idle.** The private spinning pinned
+  profile measured about one busy core per worker with no traffic (eight
+  busy-core equivalents on eight workers). The public pinned groups park instead.
+
+Sources: [design findings](../legacy/benchmarks/DESIGN-FINDINGS.md) and the
+[backend study findings](../legacy/research/backend-experiments/2026-11-06-fede/FINDINGS.md);
+throughput conclusions are in the [benchmarks README](../benchmarks/README.md#conclusions).
 
 `Backend::Thread` drives lifecycle hooks and handlers on its dedicated root
 thread. Its isolated multithread Tokio runtime has one async worker, configured
@@ -196,6 +214,11 @@ unlimited parallel progress. Tokio can create additional threads for
 reactor descriptors. Stop and join nested actors before their owning runtime
 exits: actor `join()` waits for the actor, not for detached helpers or runtime
 destruction. `spawned_rt::threads::block_on` uses the same one-worker runtime.
+
+The runtime is deliberately not `current_thread`: there, async helpers only
+progress while the root thread polls them, so a handler that synchronously waits
+for a local async helper would deadlock, and `block_in_place` would panic. See
+the [dedicated-runtime review](../legacy/docs/reviews/dedicated-runtime.md).
 
 ### Actors on different runtimes
 

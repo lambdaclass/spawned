@@ -58,6 +58,12 @@ rather than tagging current main.
   example for every way of using the library, followed by deferred replies.
 - API guide, `CLAUDE.md` and README updated for monitors, links, owned helpers,
   name registration, execution groups and supervision.
+- Durable findings promoted out of `legacy/`: backend sizing warnings and why
+  `Backend::Thread` avoids a current-thread runtime (guide), benchmark
+  conclusions (benchmarks README), non-goals (roadmap), the next lifecycle
+  model's properties (TLA+ README) and the PR #166/#168 regressions (testing).
+  About 360 MB of raw benchmark data, duplicate HTML reports and superseded
+  notes were removed from `legacy/`; git history keeps them.
 
 ### Verification
 

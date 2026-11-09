@@ -1,5 +1,7 @@
 # Research: verification and testing strategy
 
+> Historical; superseded by [TESTING.md](../../../docs/TESTING.md) and the [TLA+ README](../../../verification/tla/README.md). Implemented since: the OneForOne TLA+ model with trace validation, ThreadSanitizer in CI and weekly cargo-mutants. The base-lifecycle model and its acceptance criteria are carried forward as the [next model](../../../verification/tla/README.md#next-model).
+
 Date: 2026-11-08. Status: proposal, not a commitment. Inspected revision:
 `0ef612dd21e8e8a401422eb06e1f31f5197cd4b2` (v0.6.0). Companion to
 [framework ideas](framework-ideas.md); see also [TESTING.md](../../../docs/TESTING.md).
@@ -31,7 +33,7 @@ No single tool covers the problem. Each layer catches a different class of bug.
 | Spec ↔ code | **Trace validation** | The implementation doing something the spec forbids | New; the key missing piece |
 | Primitives | **Loom** | Atomic and memory-ordering bugs in mailbox, ready gate, wakeups (exhaustive, small tests) | Exists; expand |
 | Whole runtime | **Shuttle** | Scheduling races in multi-actor tests too large for Loom (randomized schedules with probabilistic guarantees) | New |
-| User level | **Deterministic simulation** | Bugs in users' actor systems, reproducible from a seed | Backlog rank 20 in [idea priorities](idea-priorities.md) |
+| User level | **Deterministic simulation** | Bugs in users' actor systems, reproducible from a seed | Backlog rank 20 in [ranked backlog](../../../ROADMAP.md#ranked-backlog) |
 | Memory safety | **Miri**, **ThreadSanitizer** | Undefined behavior and data races, especially once unsafe code (e.g. generated envelopes) appears | New; cheap |
 | Test quality | **cargo-mutants** | Tests that still pass when the code is broken | New; periodic |
 
@@ -64,7 +66,7 @@ Then add the implemented OneForOne contract (restart modes, rolling limits,
 ordered startup and reverse shutdown, instance-bound replacement lookup,
 discarded queued work) and check it against the existing supervision failure
 tests via trace validation. Specify OneForAll and RestForOne in the model before
-implementing them. Per-key entity handoff (virtual actors, [idea priorities](idea-priorities.md) rank 26)
+implementing them. Per-key entity handoff (virtual actors, [ranked backlog](../../../ROADMAP.md#ranked-backlog) rank 26)
 is another good candidate.
 
 ### TLA+ or P

@@ -48,8 +48,10 @@ or waiting for the actor's final reply handler. They prompted a separate longer
 sparse comparison, not a claim that a latency SLO passed.
 
 [All 52 conditions and repeat ranges](../followup-report/summary.csv),
-[JSON summary](../followup-report/summary.json), [worker evidence](evidence/)
-and [concurrent evidence](../concurrent/evidence/) preserve the complete result.
+[JSON summary](../followup-report/summary.json) summarize the result. The raw
+worker evidence (`one-worker/evidence/`) and concurrent evidence
+(`concurrent/evidence/`) were removed from the tree; recover them from git
+history at commit `5273a5fa`.
 
 ## Longer sparse follow-up
 
@@ -84,8 +86,8 @@ reinforces that a request interval is not pure mock/server processing time.
 
 [The longer sparse summary](../sparse-report/summary.json) includes pooled
 statistics, each process's mean/p99 and dominant stages for slow calls.
-[Raw evidence](../concurrent/longer-sparse/evidence/) retains all samples and
-the six-repeat run plan. The same four concurrent-probe artifacts were reused;
+The raw evidence (`concurrent/longer-sparse/evidence/`, all samples and the
+six-repeat run plan) is recoverable from git history at commit `5273a5fa`. The same four concurrent-probe artifacts were reused;
 no library or probe implementation changed for this follow-up.
 
 The combined result supports a bounded-worker canary, with particularly useful

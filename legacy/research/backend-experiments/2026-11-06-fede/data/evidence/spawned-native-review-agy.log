@@ -1,2 +1,0 @@
-I will start by reading `/private/tmp/spawned-native-review.txt` to understand the requested final read-only review.
-I will now read the target files in `/private/tmp/spawned-fede-overnight`: `dispatch_gate.rs`, `experimental/dispatcher.rs`, `actor.rs`, `experimental.rs`, and `mod.rs`.

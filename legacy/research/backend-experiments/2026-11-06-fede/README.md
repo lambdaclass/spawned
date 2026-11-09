@@ -6,9 +6,10 @@ assigned cores while idle. The synthetic results do not establish a client
 speedup or change public actor APIs.
 
 Start with [findings and use-case recommendations](FINDINGS.md), then the
-[full report](report/REPORT.md) or [HTML report with embedded charts](report/REPORT.html).
-Download the HTML to open it locally; profile and evidence links also need this
-folder's data tree. There are 51 figures, 144 independent CPU profiles and 5,744
+[full report](report/REPORT.md). The raw `data/` tree (about 250 MB) and the
+generated `report/REPORT.html` were removed from the tree; recover them from git
+history at commit `5273a5fa` (`git checkout 5273a5fa -- <path>`). Profile and evidence
+links in the report point into that data tree. There are 51 figures, 144 independent CPU profiles and 5,744
 successful processes in 45 separate blocks, including smokes and historical
 prototypes with known limitations. Seventeen resource configurations ran for
 five minutes each. These are separate evidence blocks, not one timing sample.
@@ -19,7 +20,7 @@ five minutes each. These are separate evidence blocks, not one timing sample.
 |---|---|
 | [FINDINGS.md](FINDINGS.md) | Main results, source-specific tables, tradeoffs and use-case recommendations |
 | [report/](report/REPORT.md) | Full analysis, 51 PNG/SVG figures, summaries, resource tables and profile leaf counts |
-| [data/](data/metadata.json) | Original per-block CSV/metadata, combined raw rows, time series, profiles, diagnostics, source bundles and SHA 256 manifest |
+| `data/` (removed; in git history at `5273a5fa`) | Original per-block CSV/metadata, combined raw rows, time series, profiles, diagnostics, source bundles and SHA 256 manifest |
 | [PROTOCOL.md](PROTOCOL.md) | Plans, source boundaries, CPU masks, validity criteria, exclusions and limitations |
 | [CORRECTNESS.md](CORRECTNESS.md) | Discovered bugs, actual negative controls and reproduction commands |
 | [PINNED-PROFILES.md](PINNED-PROFILES.md) | Silver-inspired parked/spinning semantics and exact experimental usage |
@@ -46,8 +47,8 @@ controls. Those are not equivalent to these full actor workloads. No matched
 benchmark against Silver was run; the pinned profile borrows fixed-core placement,
 not Flux's broadcast, Copy-only payload or overwrite semantics.
 
-The raw dataset is deliberately retained as requested, with a hash manifest and
-original diagnostics. Generated artifacts are marked in GitHub diffs. This is a
+The raw dataset, hash manifest and original diagnostics were retained until
+commit `5273a5fa` and are recoverable from git history. Generated artifacts are marked in GitHub diffs. This is a
 bounded research snapshot, not application source or a supported feature set.
 Plot versions are pinned in [requirements-research.txt](../../../../benchmarks/requirements-research.txt);
 the recorded analysis orchestration files are in [orchestration/](orchestration/).
@@ -56,7 +57,7 @@ See the [transcript index](reviews/INDEX.md) for failed or incomplete review att
 ## Rebuild the report
 
 Run analysis on fede with the recorded plotting environment. From the repository
-root, after verifying the data manifest:
+root, after restoring `data/` from commit `5273a5fa` and verifying the data manifest:
 
 ```sh
 python benchmarks/render_fede_overnight.py \
