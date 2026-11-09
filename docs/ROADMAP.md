@@ -45,7 +45,7 @@ async workers, not all OS threads or reserved CPU cores.
   cooperative; helper admission closes at shutdown start, with no drain policy.
 
 Still to add: nested supervisor child specs, OneForAll and RestForOne after the
-basic recovery lifecycle is proven in applications.
+OneForOne lifecycle is verified (milestone 2) and proven in applications.
 
 Full Ethrex/Ethlambda replay or a same-node production canary remains a validation
 gate. Existing local EngineClient probes and synthetic isolation/pipeline studies
@@ -53,44 +53,65 @@ are different evidence levels; do not transfer their ratios to a production clie
 See [backend usage](BACKENDS.md), the [runtime-isolation study](../research/backend-experiments/2026-11-06-runtime-isolation/README.md)
 and the [implementation review](reviews/execution-groups-supervision-implementation.md).
 
-## 2. Genuinely Tokio-free thread builds
+## 2. Verify what landed, before building on it
 
-Separate features and synchronization so a thread-only application does not
-compile or transitively depend on Tokio. Preserve the existing default build.
+Supervision shipped before the lifecycle model meant to precede it. Before
+OneForAll/RestForOne and before a release that includes supervision:
 
-- Address shared Response, completion, monitoring, timers and macro-generated
-  code; removing one Cargo dependency is insufficient.
-- Design milestone 1's public ownership types with this feature boundary in mind;
-  keep Tokio-specific handles behind the async feature rather than requiring
-  Tokio types in the thread-only API.
-- Require a feature-matrix CI check showing no Tokio in the thread-only graph,
-  with working protocols, links, monitors, timers, metrics and shutdown.
+- a TLA+ (or P/Stateright) model of the lifecycle and the implemented OneForOne
+  contract, with trace validation against the existing scenario, churn and
+  supervision failure tests;
+- Miri and ThreadSanitizer in CI;
+- a `cargo-mutants` pass over supervision, system and lifecycle code.
 
-See [Silver/flux Project 1](research/silver-flux.md) for the dependency boundaries.
-This does not commit Spawned to replacing Tokio for async applications.
+Start with a one-day search of the pinned client revisions for hand-built pending
+queues, per-key actor maps, requests awaited in handlers and broadcast lists; it
+settles where several backlog items belong. See the
+[verification strategy](research/verification-strategy.md).
+
+## 3. Release and run in a client
+
+Release v0.7 with execution groups and supervision and run it in Ethlambda. In
+parallel, a small developer-experience track: a test kit with `ActorRef::mock()`,
+request deadlock detection and a stall watchdog.
 
 ## Then, guided by application needs
 
 - Deferred typed replies, delegation and pipe-to-self first: distinguish reply
   ownership from dispatch, bound pending work and define late/owner-exit results.
+  Bounded stashing follows as a reply-ownership variant.
 - Bounded admission, pre-allocation byte credits and opt-in inherited request
   deadlines as one design package. Credits work independently of optional metrics.
-- Typed streams with flow control, completion watermarks and explicit success
-  acknowledgement; ownership release alone does not establish business success.
-- Causal tracing, bounded role/cohort metrics and runtime inspection.
-- Explicit batching/coalescing and targeted dispatch optimizations.
+- Actor-level ordering exploration, then per-actor crash tapes, then
+  record/replay.
+- Typed streams, causal tracing, cohort metrics, runtime inspection, batching,
+  coalescing and targeted dispatch optimizations.
+- When a client or user justifies them: OneForAll/RestForOne, a lighter
+  dedicated-thread backend, virtual actors, process groups/pub-sub, and
+  Tokio-free thread builds.
+
+**Tokio-free builds versus the clients.** A Tokio-free *build* lets thread-only
+applications avoid compiling Tokio; it does not help Ethrex or Ethlambda, which
+depend on Tokio throughout. The client-relevant item is a lighter dedicated-thread
+backend: task-mode `Backend::Thread` creates a Tokio runtime per actor (capped to
+one helper worker), and Ethlambda's `BlockChainServer` uses it. See
+[Silver/flux](research/silver-flux.md) for the Tokio-free dependency boundaries;
+design public ownership types so Tokio-specific handles stay behind the async
+feature.
 
 Start client profiling in parallel from the first milestone, alongside failure
 testing, simulations and stress campaigns. A representative workload must establish
 the performance case before promoting a policy. The
 [local Engine-client probes](../research/client-observations/2026-11-06-ethlambda-ab/server-probe/README.md)
 are useful scheduling evidence, not a full-client performance result. Improve
-existing backends before adding names.
+existing backends before adding names; backend research stays frozen until a
+client profile supplies a concrete reason.
 
-The [ranked backlog](research/idea-priorities.md) records the wider proposals and
-tradeoffs. [Detailed acceptance criteria](design/roadmap-acceptance-2026-11-06.md)
-and [research conclusions](research/commonware.md) remain reference material;
-this page defines the current order. No speculative feature is promised by a date.
-A broader brainstorm catalog with design notes is in
-[framework ideas](research/framework-ideas.md); the formal-model and testing-tool
-plan is in [verification strategy](research/verification-strategy.md).
+[Idea priorities](research/idea-priorities.md) is the single ranked backlog with
+the detail and tradeoffs behind this order. Other research pages
+([framework ideas](research/framework-ideas.md),
+[verification strategy](research/verification-strategy.md),
+[Commonware](research/commonware.md), [concurrency ideas](research/concurrency-ideas.md),
+[Silver/flux](research/silver-flux.md)) and the
+[detailed acceptance criteria](design/roadmap-acceptance-2026-11-06.md) are
+reference material without rankings. No speculative feature is promised by a date.

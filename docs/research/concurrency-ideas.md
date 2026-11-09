@@ -1,9 +1,10 @@
 # Ideas from other concurrency frameworks
 
 Researched 2026-11-06 by an independent research agent against current primary
-sources and Spawned's roadmap, backend guide and Silver/flux research. Ranking
-and proposed experiments below are our inference, not source performance claims.
-These are research candidates, not additional promises in the v0.6.0 release.
+sources and Spawned's roadmap, backend guide and Silver/flux research. Proposed
+experiments below are our inference, not source performance claims. This page is
+reference material; section numbers are identifiers, not ranks. Order and
+priority live only in [idea priorities](idea-priorities.md).
 
 Keep Tokio as the default, typed ordinary Rust payloads, addressed delivery,
 dynamic actors, request/reply and cooperative handlers. Existing backend research
@@ -41,7 +42,7 @@ and shrink failures. This is delivery simulation, not full async schedule replay
 arbitrary awaits, native thread races, I/O and wall-clock reads remain uncontrolled.
 Ordinary Rust messages can stay in memory. A trace digest detects divergence; it
 does not reconstruct missing inputs. Cost: medium for a harness, high for a full
-runtime. This and stale-request deadlines are the first experiments recommended.
+runtime.
 
 ## 3. Causal context propagated with sampled envelopes
 
@@ -56,7 +57,7 @@ workers → aggregator, across existing backends. Verify sampling propagation,
 parent/link relationships and drop paths with a bounded in-memory collector.
 Measure envelope size and disabled/enabled overhead. Avoid unbounded retained
 spans, treating fan-out as one linear call chain, or confusing tracing with replay.
-Cost: low–medium; a complementary next observability feature.
+Cost: low–medium; complements the optional metrics.
 
 ## 4. Actor-owned helper completion scopes
 
@@ -101,10 +102,10 @@ Inject crashes around commit, send, effect and acknowledgement; assert the domai
 invariant after explicit restart. Dedup must commit with the effect or use a
 receiver's idempotency contract. Arbitrary boxed Rust envelopes are not a durable
 format; replay must not repeat external I/O. Cost: low for a recipe, high for a
-library subsystem. Prioritize only after a client recovery need is identified.
+library subsystem. Useful once a client recovery need is identified.
 
 The [deeper Commonware review](commonware.md) adds policy-based overload,
 completion watermarks, explicit acknowledgement, lifecycle-bound work ownership,
-scoped metrics and a ranked set of library capabilities. It also records
+scoped metrics and library capabilities. It also records
 Seastar/CAF/cancellation-safety follow-ups. See [testing](../TESTING.md) for the
 implemented reliability work; research proposals are not implemented features.

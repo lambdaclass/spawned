@@ -31,7 +31,7 @@ No single tool covers the problem. Each layer catches a different class of bug.
 | Spec ↔ code | **Trace validation** | The implementation doing something the spec forbids | New; the key missing piece |
 | Primitives | **Loom** | Atomic and memory-ordering bugs in mailbox, ready gate, wakeups (exhaustive, small tests) | Exists; expand |
 | Whole runtime | **Shuttle** | Scheduling races in multi-actor tests too large for Loom (randomized schedules with probabilistic guarantees) | New |
-| User level | **Deterministic simulation** | Bugs in users' actor systems, reproducible from a seed | Planned ([framework ideas](framework-ideas.md) #15) |
+| User level | **Deterministic simulation** | Bugs in users' actor systems, reproducible from a seed | Backlog rank 20 in [idea priorities](idea-priorities.md) |
 | Memory safety | **Miri**, **ThreadSanitizer** | Undefined behavior and data races, especially once unsafe code (e.g. generated envelopes) appears | New; cheap |
 | Test quality | **cargo-mutants** | Tests that still pass when the code is broken | New; periodic |
 
@@ -39,7 +39,8 @@ No single tool covers the problem. Each layer catches a different class of bug.
 
 ### What to model first
 
-The current lifecycle contract, before supervision:
+The base actor lifecycle first, then the implemented OneForOne supervision
+contract (before OneForAll/RestForOne are designed):
 
 - exit reasons (`Normal`, `Shutdown`, `Panic`, `Kill`);
 - monitors and demonitor;
@@ -63,7 +64,7 @@ Then add the implemented OneForOne contract (restart modes, rolling limits,
 ordered startup and reverse shutdown, instance-bound replacement lookup,
 discarded queued work) and check it against the existing supervision failure
 tests via trace validation. Specify OneForAll and RestForOne in the model before
-implementing them. Per-key entity handoff ([framework ideas](framework-ideas.md) #6)
+implementing them. Per-key entity handoff (virtual actors, [idea priorities](idea-priorities.md) rank 26)
 is another good candidate.
 
 ### TLA+ or P
@@ -135,7 +136,8 @@ definition of correct behavior for the implementation.
 ## Order
 
 1. Miri and ThreadSanitizer in CI (hours).
-2. TLA+ spec of the current lifecycle (before supervision design).
+2. TLA+ spec of the base lifecycle and the implemented OneForOne contract
+   (before OneForAll/RestForOne).
 3. Trace validation against existing scenario and churn tests.
 4. Shuttle for whole-runtime scenarios.
 5. cargo-mutants periodically.

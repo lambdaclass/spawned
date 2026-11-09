@@ -9,26 +9,28 @@ prior art; the earlier [framework research](concurrency-ideas.md) covered that i
 No actual Ethrex/Ethlambda performance run has been completed in this research.
 Client profiling should begin in parallel with the first implementation milestone.
 
-## Library features with the largest practical value
+## Library capabilities suggested by this review
 
-This table ranks research value, not implementation order. The current
-[roadmap](../ROADMAP.md) takes precedence: public runtime placement first,
-genuinely Tokio-free threads second, supervision third. Related ownership,
-shutdown and control-event contracts need design before their APIs are frozen.
+This page is reference material; it does not rank. Order and priority live only
+in [idea priorities](idea-priorities.md) and the [roadmap](../ROADMAP.md).
+Execution groups and OneForOne supervision (the first two rows) have since been
+implemented on main. Related ownership, shutdown and control-event contracts need
+design before their APIs are frozen.
 
-| Research priority | Capability | Improvement for applications | First design boundary |
-|---|---|---|---|
-| 1 | Actor systems and execution groups | Own runtime resources, separate CPU/latency/general workloads, isolate registries and apply group budgets through a supported API. | Start with a parked pool, bounded workers, failure-atomic construction and explicit stop/join ownership; preserve existing start/reference behavior. Affinity, namespaces and general resource scheduling can graduate separately. |
-| 2 | Supervision and recovery | Factories, restart policies, backoff, restart limits and escalation manage application failures. | Define new actor identity, stale references, state recovery and pending requests. No automatic retry of indeterminate effects. |
-| 3 | End-to-end resource admission | Bound in-flight bytes and work, including producers and active processing, before allocating expensive payloads. | Credits must work independently of optional metrics. Define ownership/release, oversize rejection, deadline behavior and cyclic dependencies. A queue count alone is insufficient. |
-| 4 | Typed streaming protocols | Framework-owned demand, bounded buffering, completion and cancellation for long actor pipelines. | Add opt-in stream protocols; ordinary requests keep existing semantics. Define slow-subscriber policy, bounded completion watermarks and explicit successful acknowledgement. |
-| 5 | Generated dispatch optimization | Investigate avoiding framework boxing/allocations for closed protocols while preserving the flexible message path. | Profile a client first. Enum dispatch requires codegen/transport bridging and retained manual Handler support; payload and reply allocation costs remain separate. It is not automatically zero-allocation. |
-| 6 | Explicit batching/coalescing | Amortize dispatch or replace obsolete state updates. | Per-protocol opt-in; transactional requests must not silently disappear or be acknowledged without their defined effect. |
+| Capability | Improvement for applications | First design boundary |
+|---|---|---|
+| Actor systems and execution groups | Own runtime resources, separate CPU/latency/general workloads, isolate registries and apply group budgets through a supported API. | Start with a parked pool, bounded workers, failure-atomic construction and explicit stop/join ownership; preserve existing start/reference behavior. Affinity, namespaces and general resource scheduling can graduate separately. |
+| Supervision and recovery | Factories, restart policies, backoff, restart limits and escalation manage application failures. | Define new actor identity, stale references, state recovery and pending requests. No automatic retry of indeterminate effects. |
+| End-to-end resource admission | Bound in-flight bytes and work, including producers and active processing, before allocating expensive payloads. | Credits must work independently of optional metrics. Define ownership/release, oversize rejection, deadline behavior and cyclic dependencies. A queue count alone is insufficient. |
+| Typed streaming protocols | Framework-owned demand, bounded buffering, completion and cancellation for long actor pipelines. | Add opt-in stream protocols; ordinary requests keep existing semantics. Define slow-subscriber policy, bounded completion watermarks and explicit successful acknowledgement. |
+| Generated dispatch optimization | Investigate avoiding framework boxing/allocations for closed protocols while preserving the flexible message path. | Profile a client first. Enum dispatch requires codegen/transport bridging and retained manual Handler support; payload and reply allocation costs remain separate. It is not automatically zero-allocation. |
+| Explicit batching/coalescing | Amortize dispatch or replace obsolete state updates. | Per-protocol opt-in; transactional requests must not silently disappear or be acknowledged without their defined effect. |
 
 Actor systems and supervision are capabilities, not scheduler micro-optimizations.
 They can keep business methods ordinary Rust while the wiring layer selects
-execution/recovery/resource policy. This is a design direction, not an existing
-v0.6.0 API. Tokio remains the default. Lower-overhead optional metrics (for example
+execution/recovery/resource policy. Execution groups and OneForOne supervision
+are now implemented on main (unreleased, not in v0.6.0); the rest is a design
+direction. Tokio remains the default. Lower-overhead optional metrics (for example
 bounded per-worker aggregation) are another hypothesis to profile; the measured
 metrics overhead does not isolate shared atomics as its sole cause.
 
@@ -143,7 +145,7 @@ values. Borrow ideas, not automatic memory-bound claims.
   supply consumer demand and actor-owned subscriptions, with explicit buffer
   overflow strategies. Research slow-subscriber isolation for typed streams.
 - [CAF delegation and response promises](https://actor-framework.readthedocs.io/en/stable/core/MessagePassing.html)
-  motivate an early capability after the roadmap's three milestones. Delegation
+  motivate deferred replies. Delegation
   transfers reply responsibility; deferred replies retain it while processing
   other messages. [Pekko pipe-to-self](https://pekko.apache.org/docs/pekko/current/typed/interaction-patterns.html#send-future-result-to-self)
   maps helper results into actor messages. Bound pending operations and define
