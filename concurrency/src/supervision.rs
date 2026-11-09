@@ -778,17 +778,21 @@ async fn run_supervisor(core: Arc<Core>, runners: Vec<Box<dyn Runner>>) {
         let c = index + 1;
         trace::emit(core.trace, || Event::new("SupStopTurn", c, ""));
         child.stop();
-        if rt::timeout(child.shutdown_timeout(), system::wait_true(child.done()))
+        let finished = rt::timeout(child.shutdown_timeout(), system::wait_true(child.done()))
             .await
-            .is_err()
-        {
-            core.fail_as(
-                format!("child cleanup deadline exceeded: {}", child.snapshot().name),
-                || Some(Event::new("SupChildTimeout", c, "")),
-            );
-        } else {
-            trace::emit(core.trace, || Event::new("SupChildDone", c, ""));
-        }
+            .is_ok();
+        // The child may finish between the deadline firing and this check;
+        // decide on its published completion, atomically with recording.
+        trace::atomic(|| {
+            if finished || *child.done().borrow() {
+                trace::emit(core.trace, || Event::new("SupChildDone", c, ""));
+            } else {
+                core.fail_as(
+                    format!("child cleanup deadline exceeded: {}", child.snapshot().name),
+                    || Some(Event::new("SupChildTimeout", c, "")),
+                );
+            }
+        });
     }
     for task in tasks {
         if let Err(error) = task.await {
@@ -839,8 +843,15 @@ async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, core: Arc<C
         }
         if !first {
             if core.config.max_restarts == 0 {
-                core.fail_as(format!("restart budget exhausted by {}", spec.name), || {
-                    Some(Event::new("BackoffDone", c, "exhausted"))
+                // A concurrent stop wins: only fail a supervisor that is still open.
+                trace::atomic(|| {
+                    if core.gate.is_open() {
+                        core.fail_as(format!("restart budget exhausted by {}", spec.name), || {
+                            Some(Event::new("BackoffDone", c, "exhausted"))
+                        });
+                    } else {
+                        trace::emit(core.trace, || Event::new("BackoffDone", c, "closed"));
+                    }
                 });
                 break;
             }
@@ -1112,42 +1123,45 @@ async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, core: Arc<C
         } else {
             spec.restart.restarts(exit.as_ref())
         };
-        let open = trace::atomic(|| {
-            let open = core.gate.is_open();
-            // A non-restartable failed startup records Decide with its Fail.
-            if !stuck && (!open || restart || ready_at.is_some()) {
-                let outcome = if !open {
-                    "closed"
-                } else if restart {
-                    "restart"
-                } else {
-                    "stop"
-                };
-                trace::emit(core.trace, || Event::new("Decide", c, outcome));
+        // Gate check, decision and any resulting failure happen in one step,
+        // so a concurrent stop is never followed by a failure of this child.
+        let again = trace::atomic(|| {
+            if !core.gate.is_open() {
+                if !stuck {
+                    trace::emit(core.trace, || Event::new("Decide", c, "closed"));
+                }
+                return false;
             }
-            open
-        });
-        if !open {
-            break;
-        }
-        if spec.group.is_closed() {
-            core.fail_as(format!("execution group closed for {}", spec.name), || {
-                Some(Event::new("Unmodelled", c, "GroupClosed"))
-            });
-            break;
-        }
-        if !restart {
-            if ready_at.is_none() {
+            if spec.group.is_closed() {
+                core.fail_as(format!("execution group closed for {}", spec.name), || {
+                    Some(Event::new("Unmodelled", c, "GroupClosed"))
+                });
+                return false;
+            }
+            if restart {
+                trace::emit(core.trace, || Event::new("Decide", c, "restart"));
+                return true;
+            }
+            if ready_at.is_some() {
+                trace::emit(core.trace, || Event::new("Decide", c, "stop"));
+            } else {
                 core.fail_as(
                     format!("non-restartable child failed startup: {}", spec.name),
                     || Some(Event::new("Decide", c, "fail")),
                 );
             }
+            false
+        });
+        if !again {
             break;
         }
     }
-    trace::emit(core.trace, || Event::new("Finish", c, ""));
-    view.finish(system::lock(&core.failure).is_some());
+    // Record Finish and publish completion together, so the supervisor's
+    // deadline check sees both or neither.
+    trace::atomic(|| {
+        trace::emit(core.trace, || Event::new("Finish", c, ""));
+        view.finish(system::lock(&core.failure).is_some());
+    });
 }
 
 #[cfg(test)]
