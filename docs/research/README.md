@@ -14,6 +14,14 @@ rather than repeat it.
 | [How the Ethereum ecosystem tests clients](ethereum-testing.md) | Ranks 5, 5c, 20-22 |
 | [Request semantics references](request-semantics-references.md) | Ranks 11, 11a, 47, 47a |
 | [Other concurrency models](concurrency-models.md) | Ranks 8a, 11b, 15a (new); notes on 11a, 13, 15, 19, 33, 34, 39, 48; research pointers 52-54 |
+| [Rust verification tools](verification-tools.md) | Phase 4 batch 1 (Kani), testing to add (Kani row), rank 3 |
+| [Observability](observability.md) | Ranks 9, 28, 29, 30 |
+| [Actor test kits](actor-testing.md) | Rank 6 (remaining work), rank 20 (Concuerror), Porcupine row, simulation backend spike |
+| [Rust actor landscape](rust-actor-landscape.md) | North star; notes on ranks 30, 44, 49 |
+| [Supervision models](supervision-models.md) | Ranks 12a, 13, 27 |
+| [Deadlock and stall detection](deadlock-and-stall-detection.md) | Ranks 7 (approach chosen), 8, 8a, 30; rank 6 idle check |
+| [Test techniques](test-techniques.md) | Testing to add (cancellation safety, dhat, open-loop load, platform matrix, metamorphic rows); TESTING.md planned layers |
+| [Event sourcing](event-sourcing.md) | Ranks 21, 49, 50, 51; phase 8 |
 
 **[Virtual actors](virtual-actors.md).** Orleans grains are always addressable
 by key, activated on first message, removed when idle, kept to one live
@@ -58,3 +66,52 @@ join calculus. Proposes a managed compute pool (rank 11b) backed by ethrex's
 hand-built rayon pools and its 0% CPU import deadlock, cancel scopes as the
 shared design of ranks 13, 15 and 19 (rank 15a), and cooperative budgets with
 per-turn work measurement next to the stall watchdog (rank 8a).
+
+**[Verification tools](verification-tools.md).** Kani (bounded model checking
+on CBMC, used by AWS on Firecracker and the Rust standard library verification
+effort), Prusti, Verus, Creusot, Flux and Miri, and when each fits. Spawned uses
+Kani for small arithmetic (backoff, jitter, the restart-budget window,
+generations; the surviving mutants) and TLA+ for protocols; Miri waits for
+unsafe code. *Landed in:* phase 4 batch 1 and the Kani row of testing to add;
+rank 3.
+
+**[Observability](observability.md).** Erlang observer and recon,
+tokio-console, kameo's console, OpenTelemetry context propagation across
+message boundaries, Akka Insights and Orleans meters, plus the Prometheus
+`_max` exposition bug the Ethlambda canary found (now fixed on main). *Landed in:* ranks 9, 28,
+29 (parser check for new families; `_max` already fixed) and 30 (`spawned-top` columns and safety rules,
+optional tokio-console integration).
+
+**[Actor testing](actor-testing.md).** Akka TestKit (TestProbe, BehaviorTestKit,
+ManualTime), ExUnit with Mox, Common Test, PropEr and Concuerror, Orleans test
+clusters, and the actix, ractor and kameo helpers, compared with
+`spawned-test` phase A. *Landed in:* rank 6 remaining work (synchronous
+behavior test kit, manual time, concrete `ActorRef<B>` mocks), rank 20
+(Concuerror as prior art), the simulation backend spike.
+
+**[Rust actor landscape](rust-actor-landscape.md).** actix, ractor, kameo,
+xtra, coerce, lunatic and bastion compared on supervision, typed messaging,
+request/reply, links and monitors, distribution, testing, verification and
+maintenance, with where Spawned stands. *Landed in:* the north star; notes on
+ranks 30, 44 and 49.
+
+**[Supervision models](supervision-models.md).** OTP and Elixir strategies,
+dynamic, partition and task supervisors, significant children, intensity and
+escalation; Akka classic and typed supervision with backoff; Orleans' lack of
+supervision; mapped to what Spawned implements. *Landed in:* ranks 12a
+(`terminate_child`, budget defaults, non-goals), 13 and 27.
+
+**[Deadlock and stall detection](deadlock-and-stall-detection.md).** Wait-for
+graphs, Go's global-only deadlock check and leak profiles, Erlang's call
+timeouts and `calling_self`, Java's `findDeadlockedThreads`, Akka's starvation
+detector and Tokio's console lints and task hooks. *Landed in:* rank 7
+(eager wait-for detection chosen), ranks 8, 8a and 30, and rank 6's idle check.
+
+**[Test techniques](test-techniques.md).** Cancellation safety in async Rust,
+dhat allocation-count tests, coordinated omission and open-loop load, a
+platform matrix, and metamorphic testing beyond databases. *Landed in:* the
+testing to add rows and the planned layers in [TESTING.md](../TESTING.md).
+
+**[Event sourcing](event-sourcing.md).** Akka Persistence, Orleans
+`JournaledGrain` and Restate's journal, and how they relate to durability and
+crash tapes. *Landed in:* ranks 21, 49, 50 and 51; phase 8.

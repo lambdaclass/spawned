@@ -60,6 +60,13 @@ class of bug. Coverage for v0.7.0:
 | Test quality | cargo-mutants | Tests that still pass when the code is broken | Weekly over supervision and system code |
 | Compatibility | cargo-semver-checks | Unexpected public API removals | Defaults/metrics and the explicit-async migration must remain patch-compatible with v0.6; raw no-default removals are checked against an exact declared list, not reported as compatible. Protocol macros also need trybuild. |
 | Feature separation | cargo-hack | Missing dependencies hidden by dev-dependency feature unification | CI builds each library feature, default, no-default and all features without dev dependencies; not the full feature powerset |
+| Small arithmetic | Kani | Overflow, panics and wrong bounds in backoff, jitter, the restart-budget window and generation counters | Planned ([roadmap](../ROADMAP.md#database-grade-testing-program) batch 1; [verification tools](research/verification-tools.md)) |
+| Rare lifecycle paths | Failpoints (`BUGGIFY`-style) | Restart, shutdown and registration windows reached on purpose | In review (PR #204) |
+| Whole runtime, deterministic | Simulation backend for `spawned-rt::tasks` | Async races replayed from a seed with virtual time | Planned spike ([roadmap](../ROADMAP.md#simulation-backend-spike)); first step toward rank 20 |
+| Cancellation and panic safety | Drop each public future at each await; panic in each user callback | State left inconsistent by a dropped future or a callback panic | Planned ([test techniques](research/test-techniques.md#cancellation-safety-in-async-rust)) |
+| Cross-backend | Metamorphic tests | Backend-specific differences in replies, exits and per-sender order | Planned ([test techniques](research/test-techniques.md)) |
+| Performance regressions | dhat allocation budgets; open-loop load (HdrHistogram) | Per-message allocation growth; tail latency hidden by coordinated omission | Planned ([test techniques](research/test-techniques.md)) |
+| Platforms | Linux and macOS, x86 and arm64 CI jobs | Ordering, affinity and atomics assumptions tied to one platform | Planned ([test techniques](research/test-techniques.md)) |
 
 The fuller rationale is archived in the
 [verification strategy note](../legacy/docs/research/verification-strategy.md).
