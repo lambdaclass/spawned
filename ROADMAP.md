@@ -15,21 +15,25 @@ handlers and the existing default behavior. New policies are explicit and opt-in
   identities, monitors, links and trapped exits, linked startup, shutdown fixes,
   optional framework metrics. No automatic supervision. Thread actors need no
   active Tokio executor but still compile Tokio.
-- **Main (unreleased):** `ActorSystem` with parked async execution groups and
-  OneForOne supervision (see [Implemented](#implemented-no-longer-ranked)), a
+- **Main (unreleased):** `ActorSystem` with async/native/pinned execution groups, Tokio-free
+  synchronous builds, and nested OneForOne/OneForAll/RestForOne supervision (see [Implemented](#implemented-no-longer-ranked)), a
   bounded dedicated-thread runtime, and the supervision verification of phase 2.
   See the [guide](docs/GUIDE.md#execution-groups-and-supervision) and the
   [design contract](docs/design/execution-groups-supervision.md).
 
 ## Phases
 
-1. **Execution groups plus supervision: implemented.** Still open: dedicated/pinned
-   groups and sized blocking-actor pools (rank 24); nested supervisor specs,
-   OneForAll and RestForOne (rank 23) after phase 2 and an application.
-2. **Verify what landed: supervision done** ([#192](https://github.com/lambdaclass/spawned/pull/192),
-   ranks 1-4). Remaining before OneForAll/RestForOne: extend the TLA+ model and
-   trace validation to the base lifecycle (links, monitors, trapped exits, stop).
-   The client search (rank 0) is done; see [client search results](#client-search-results).
+1. **Execution groups plus supervision: implemented.** Includes fixed native actor
+   pools, parked Linux pinned shards, nested supervisor specs, OneForAll and
+   RestForOne. Tokio-free synchronous builds are also implemented. All are
+   unreleased; examples and resource limits are in the guide.
+2. **Verify what landed:** #192's OneForOne model/trace validation is retained,
+   with expanded tests, ThreadSanitizer and mutation targets. The new cohort and
+   nested strategies have failure/stress tests and review; extend the model before
+   claiming formal verification of those strategies or the wider base lifecycle.
+   All crates retain `forbid(unsafe_code)`; Miri precedes any future unsafe proposal.
+   See the [implementation evidence](legacy/docs/reviews/capabilities-extension.md).
+   The client search is done; see [results](#client-search-results).
 3. **Release v0.7 and run it in Ethlambda** (rank 5), including the per-method
    request timeout (rank 5a), a migration guide for the clients' hand-wired
    shutdown and startup, and an example for every way of using the library
@@ -48,11 +52,11 @@ evidence levels; do not transfer their ratios to a production client. Backend
 research stays frozen until a client profile supplies a concrete reason (see the
 [parallel validation track](#parallel-validation-track)).
 
-**Tokio-free builds versus the clients.** A Tokio-free build (rank 25) lets
+**Tokio-free builds versus the clients.** The implemented native build lets
 thread-only applications avoid compiling Tokio; it does not help Ethrex or
 Ethlambda, which depend on Tokio throughout. The client-relevant item is a
-lighter dedicated-thread backend (rank 24). Design public ownership types so
-Tokio-specific handles stay behind the async feature.
+fixed native actor pool, which shares one helper runtime rather than creating
+one per actor. Additional placement changes still need application measurements.
 
 ## Ranked backlog
 
@@ -75,8 +79,9 @@ earlier [detailed acceptance criteria](legacy/docs/design/roadmap-acceptance-202
 
 | Idea | Status on main |
 |---|---|
-| ActorSystem and execution groups | Named parked async pools with explicit worker budgets, `start_on(&group)`, owned helpers, readiness and reverse teardown. Dedicated/pinned groups and sized blocking-actor pools remain open (rank 24). |
-| Automatic supervision, OneForOne | ChildSpec factories, Permanent/Transient/Temporary, rolling restart limits, capped backoff/jitter, ordered startup and reverse shutdown. OneForAll/RestForOne remain open (rank 23). |
+| ActorSystem and execution groups | Named parked async pools with explicit worker budgets, `start_on(&group)`, owned helpers, readiness and reverse teardown. Fixed native actor pools and parked Linux pinned shards are implemented; budgets exclude helper/owner/control/coordinator threads. |
+| Automatic supervision trees | ChildSpec factories, Permanent/Transient/Temporary, rolling restart limits, capped backoff/jitter, ordered startup and reverse shutdown. Nested specs and OneForAll/RestForOne are implemented, with actual cleanup barriers; formal trace coverage remains OneForOne. |
+| Tokio-free synchronous builds | Disable async defaults on both crates; isolated fixture and graph CI cover protocols, lifecycle and metrics. ActorSystem/supervision remain async-only. |
 | Fallible startup / readiness | Fallible startup and readiness for supervised children. The `result_on_start` branch is not the implementation; unsupervised `started()` still cannot fail. |
 | Instance-bound references | Decided: references are instance-bound; replacements are found by explicit lookup. Stable logical proxies remain an optional later design. |
 | Ordered shutdown | Implemented for groups and supervisors. No drain policy yet (rank 13). |
@@ -127,10 +132,9 @@ A broader read of the same revisions for workarounds, incidents and comments
 
 ### Step 1: verify what just landed
 
-Do this before OneForAll/RestForOne and before a release that includes
-supervision. Supervision shipped before the lifecycle model that was meant to
-precede it; restart and shutdown races are the bug class behind PRs #180, #182
-and #185. Plan and acceptance criteria: [verification strategy](legacy/docs/research/verification-strategy.md).
+Preserve this verification before a release and expand its scope for the new
+cohort/nested semantics. Restart and shutdown races are the bug class behind
+PRs #180, #182 and #185. Plan and acceptance criteria: [verification strategy](legacy/docs/research/verification-strategy.md).
 
 | Rank | Idea | Assessment |
 |---|---|---|
@@ -190,9 +194,9 @@ Small, independent of the scheduler and lifecycle design, and visible to users.
 
 | Rank | Idea | Assessment |
 |---|---|---|
-| 23 | OneForAll and RestForOne, nested supervisor specs | After the OneForOne lifecycle is verified (step 1) and proven in an application. Specify in the model before implementing. Optional in-memory state handoff to the replacement factory, only for planned restarts: after a crash the old state may be half-updated and must not be reused. |
-| 24 | Dedicated/pinned groups and a lighter dedicated-thread backend | **The Tokio-related item that matters to the clients.** Tasks-mode `Backend::Thread` creates a Tokio runtime per actor (capped to one helper worker in `bb1e2dd6`); Ethlambda's `BlockChainServer` uses it. A lighter dedicated-thread backend or group reduces that cost without removing Tokio. |
-| 25 | Genuinely Tokio-free thread builds | A build capability: thread-only applications that do not compile Tokio. It does **not** help Ethrex or Ethlambda, which depend on Tokio throughout. Address Response, completion, monitoring, timers and macro output with dependency-graph CI. Opens an embedded/Embassy path later. Do it when a user needs it. |
+| — | OneForAll/RestForOne and nested supervisor specs | Implemented for v0.7; expand the formal model before claiming these strategies formally verified. |
+| — | Dedicated/pinned execution groups | Implemented: fixed native actor slots sharing one helper runtime, and parked Linux pinned shards. Client placement changes still need measurements. |
+| — | Genuinely Tokio-free thread builds | Implemented with an isolated dependency graph and CI. Both clients still require Tokio; this is a separate native build capability. |
 | 26 | Virtual (per-key) actors, in-process | **Client search:** ethrex keeps a per-peer actor map, but peers are created by dial/accept rather than a first message, so the keyed registry (rank 12) is the better fit first.  Address by key; created on first message, stopped when idle, recreated on demand, with activation/deactivation hooks, one live instance per key, ordered handoff and reload after crash. No storage or distribution layer. Promote if step 0 finds hand-written per-key actor maps; Orleans-style distributed placement stays at rank 44. |
 | 27 | Process groups, typed topics and routers | After rank 12. Membership cleanup, per-recipient backpressure and partial-failure semantics matter more than a broadcast convenience method. Pools with round-robin, least-busy or key-hash routing (key hash preserves per-key order) belong here. Broadcast can share one payload behind an `Arc` instead of cloning it per member; each mailbox still needs its own queue entry, so this saves payload copies, not per-recipient allocation. |
 | 28 | Causal tracing and ingress context | Preserve span context across awaits/fan-out and bound retention/sampling cost. |
@@ -333,9 +337,9 @@ that already run today.
 | 17 | Bounded mailboxes | A slow consumer reaches capacity; demonstrate explicit rejection and cancellable waiting without blocking actor progress. |
 | 18 | Byte/work credits | Reserve before decoding a large payload; pass credit across stages and reclaim it after rejection/panic. [Payload-budget adapter works today](examples/capabilities/src/bin/byte_budget_pipeline.rs). |
 | 5a, 19 | Inherited deadlines | Exhaust an ingress budget and skip stale queued work without granting downstream calls fresh time. [Current timeout behavior](examples/capabilities/src/bin/timeout_outcomes.rs). |
-| 23 | OneForAll / RestForOne | Extend the [OneForOne recovery example](examples/capabilities/src/bin/supervision_recovery.rs) with dependent siblings restarted together or in order. |
-| 24 | Dedicated/pinned groups | Extend the [owned groups example](examples/capabilities/src/bin/execution_groups.rs) with a dedicated or pinned group profile. |
-| 25 | Tokio-free threads | Run protocol requests, timer, monitor and shutdown without Tokio in the dependency graph. Existing native-thread examples still compile Tokio. |
+| — | OneForAll/RestForOne and nested supervisor specs | Implemented for v0.7; expand the formal model before claiming these strategies formally verified. |
+| — | Dedicated/pinned execution groups | Implemented: fixed native actor slots sharing one helper runtime, and parked Linux pinned shards. Client placement changes still need measurements. |
+| — | Genuinely Tokio-free thread builds | Implemented with an isolated dependency graph and CI. Both clients still require Tokio; this is a separate native build capability. |
 | 26 | Virtual actors | Activate/deactivate a logical identity and demonstrate replacement, persistence and concurrent-activation policy. |
 | 27 | Groups / topics / routers | Join workers, route requests, remove crashed members and report partial broadcast failures. |
 | 28 | Causal tracing | Follow one ingress through fan-out/fan-in, preserving origin across awaits and runtime boundaries. |

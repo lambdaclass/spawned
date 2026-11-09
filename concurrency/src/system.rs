@@ -1,4 +1,4 @@
-//! Owned parked async execution groups and lifecycle-owned helper scopes.
+//! Owned execution groups and lifecycle-owned helper scopes.
 //!
 //! Ordinary `.start()` remains ambient and unmanaged. Explicit group admission
 //! owns actors/helpers and keeps their runtime alive until managed cleanup ends.
@@ -18,10 +18,60 @@ use std::{
     future::Future,
     sync::{
         atomic::{AtomicU64, Ordering},
-        Arc, Condvar, Mutex, Weak,
+        Arc, Mutex, Weak,
     },
     time::{Duration, Instant},
 };
+mod group;
+use group::GroupInner;
+
+/// Resource models are opt-in; thread pools reserve one native thread per live
+/// actor, while pinned shards multiplex actors cooperatively on fixed CPUs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExecutionProfile {
+    AsyncPool {
+        workers: usize,
+    },
+    ThreadPool {
+        workers: usize,
+        helper_workers: usize,
+    },
+    PinnedShards {
+        cpus: Vec<usize>,
+    },
+}
+impl ExecutionProfile {
+    fn validate(&self) -> Result<(), SystemError> {
+        let workers = match self {
+            Self::AsyncPool { workers } | Self::ThreadPool { workers, .. } => *workers,
+            Self::PinnedShards { cpus } => cpus.len(),
+        };
+        if !(1..=1024).contains(&workers) {
+            return Err(SystemError::InvalidWorkerBudget);
+        }
+        if let Self::PinnedShards { cpus } = self {
+            let allowed =
+                rt::affinity::available_cpus().map_err(|e| SystemError::Affinity(e.to_string()))?;
+            let mut seen = std::collections::BTreeSet::new();
+            if cpus
+                .iter()
+                .any(|cpu| !allowed.contains(cpu) || !seen.insert(*cpu))
+            {
+                return Err(SystemError::Affinity(
+                    "CPUs must be unique members of the caller's allowed affinity mask".into(),
+                ));
+            }
+        }
+        Ok(())
+    }
+    fn workers(&self) -> usize {
+        match self {
+            Self::AsyncPool { workers } | Self::ThreadPool { workers, .. } => *workers,
+            Self::PinnedShards { cpus } => cpus.len(),
+        }
+    }
+}
+
 static NEXT_ADMISSION: AtomicU64 = AtomicU64::new(1);
 fn next_admission() -> Result<u64, SystemError> {
     let mut current = NEXT_ADMISSION.load(Ordering::Relaxed);
@@ -41,6 +91,12 @@ fn next_admission() -> Result<u64, SystemError> {
 
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum SystemError {
+    #[error("no free persistent actor thread; stop/join a scope before admission")]
+    Capacity,
+    #[error("invalid shard index or profile without explicit shards")]
+    InvalidShard,
+    #[error("CPU affinity configuration failed: {0}")]
+    Affinity(String),
     #[error("system, group or actor scope is closed")]
     Closed,
     #[error("name must be nonempty and contain no NUL bytes")]
@@ -217,13 +273,41 @@ impl ActorSystem {
         name: impl Into<String>,
         workers: usize,
     ) -> Result<ExecutionGroup, SystemError> {
-        let name = name.into();
+        self.add_group(name.into(), ExecutionProfile::AsyncPool { workers })
+    }
+    /// Fixed native actor roots sharing a sized async helper runtime. Each live
+    /// scope reserves a worker even while idle; full admission returns Capacity.
+    pub fn thread_group(
+        &self,
+        name: impl Into<String>,
+        workers: usize,
+    ) -> Result<ExecutionGroup, SystemError> {
+        self.add_group(
+            name.into(),
+            ExecutionProfile::ThreadPool {
+                workers,
+                helper_workers: 1,
+            },
+        )
+    }
+    /// Parked single-thread runtime shards, pinned to explicit allowed Linux CPUs.
+    /// Use group.shard(i) to retain pipeline placement across actor generations.
+    pub fn pinned_group(
+        &self,
+        name: impl Into<String>,
+        cpus: Vec<usize>,
+    ) -> Result<ExecutionGroup, SystemError> {
+        self.add_group(name.into(), ExecutionProfile::PinnedShards { cpus })
+    }
+    fn add_group(
+        &self,
+        name: String,
+        profile: ExecutionProfile,
+    ) -> Result<ExecutionGroup, SystemError> {
         if name.is_empty() || name.contains('\0') {
             return Err(SystemError::InvalidName);
         }
-        if !(1..=1024).contains(&workers) {
-            return Err(SystemError::InvalidWorkerBudget);
-        }
+        profile.validate()?;
         let mut system = lock(&self.inner.state);
         if system.closing {
             return Err(SystemError::Closed);
@@ -231,9 +315,10 @@ impl ActorSystem {
         if system.groups.iter().any(|g| g.name == name) {
             return Err(SystemError::DuplicateName(name));
         }
-        let group = GroupInner::new(name, workers)?;
+        let group = GroupInner::new(name, profile)?;
         let result = ExecutionGroup {
             inner: Arc::downgrade(&group),
+            selection: None,
         };
         system.groups.push(group);
         Ok(result)
@@ -251,6 +336,7 @@ impl ActorSystem {
             unfinished_actors: Vec::new(),
             exits: Vec::new(),
             supervisor_failures: Vec::new(),
+            group_failures: Vec::new(),
         }
         .wait(deadline)
         .await
@@ -384,6 +470,7 @@ pub struct ShutdownReport {
     pub unfinished_actors: Vec<crate::ActorId>,
     pub exits: Vec<ActorExit>,
     pub supervisor_failures: Vec<String>,
+    pub group_failures: Vec<String>,
 }
 #[derive(Debug, Clone)]
 pub struct ActorExit {
@@ -427,6 +514,16 @@ impl ShutdownReport {
             .iter()
             .filter_map(|entry| entry.unit.failure())
             .collect();
+        self.group_failures = state
+            .groups
+            .iter()
+            .flat_map(|group| {
+                lock(&group.failures)
+                    .iter()
+                    .map(|error| format!("{}: {error}", group.name))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
         self.complete &= self.unfinished_groups.is_empty();
         drop(state);
         if self.complete {
@@ -449,67 +546,9 @@ pub(crate) async fn wait_true(mut rx: watch::Receiver<bool>) -> bool {
 
 struct GroupState {
     closing: bool,
+    retiring: bool,
     scopes: BTreeMap<u64, Arc<Scope>>,
-}
-pub(crate) struct GroupInner {
-    name: String,
-    workers: usize,
-    pub(crate) handle: Handle,
-    state: Mutex<GroupState>,
-    drained: Condvar,
-    done: watch::Receiver<bool>,
-}
-impl GroupInner {
-    fn new(name: String, workers: usize) -> Result<Arc<Self>, SystemError> {
-        let (tx, rx) = std::sync::mpsc::sync_channel(1);
-        let thread_name = format!("spawned-{name}");
-        std::thread::Builder::new()
-            .name(format!("{thread_name}-owner"))
-            .spawn(move || {
-                let built = std::panic::catch_unwind(|| rt::worker_runtime(&thread_name, workers));
-                let runtime = match built {
-                    Ok(Ok(runtime)) => runtime,
-                    Ok(Err(e)) => {
-                        let _ = tx.send(Err(e.to_string()));
-                        return;
-                    }
-                    Err(_) => {
-                        let _ = tx.send(Err("worker runtime panicked".into()));
-                        return;
-                    }
-                };
-                let (done_tx, done) = watch::channel(false);
-                let group = Arc::new(Self {
-                    name,
-                    workers,
-                    handle: runtime.handle().clone(),
-                    state: Mutex::new(GroupState {
-                        closing: false,
-                        scopes: BTreeMap::new(),
-                    }),
-                    drained: Condvar::new(),
-                    done,
-                });
-                if tx.send(Ok(group.clone())).is_ok() {
-                    let mut state = lock(&group.state);
-                    while !state.closing || !state.scopes.is_empty() {
-                        state = group.drained.wait(state).unwrap_or_else(|p| p.into_inner());
-                    }
-                }
-                // Even a slow unmanaged blocking task cannot block an async caller:
-                // only this native owner performs Runtime destruction.
-                drop(runtime);
-                done_tx.send_replace(true);
-            })
-            .map_err(|e| SystemError::Runtime(e.to_string()))?;
-        rx.recv()
-            .map_err(|e| SystemError::Runtime(e.to_string()))?
-            .map_err(SystemError::Runtime)
-    }
-    fn close_admission(&self) {
-        lock(&self.state).closing = true;
-        self.drained.notify_all();
-    }
+    free: Option<std::collections::BTreeSet<usize>>,
 }
 
 /// A non-owning placement capability. Cloning it cannot retain running workers
@@ -517,6 +556,7 @@ impl GroupInner {
 #[derive(Clone)]
 pub struct ExecutionGroup {
     pub(crate) inner: Weak<GroupInner>,
+    selection: Option<usize>,
 }
 impl std::fmt::Debug for ExecutionGroup {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -529,8 +569,30 @@ impl ExecutionGroup {
     pub fn name(&self) -> Option<String> {
         self.inner.upgrade().map(|g| g.name.clone())
     }
+    /// Async worker count, native actor-slot count, or pinned shard count.
+    /// Excludes helper, owner, join-coordinator and system-control threads.
     pub fn worker_budget(&self) -> Option<usize> {
-        self.inner.upgrade().map(|g| g.workers)
+        self.inner.upgrade().map(|g| g.profile.workers())
+    }
+    pub fn profile(&self) -> Option<ExecutionProfile> {
+        self.inner.upgrade().map(|g| g.profile.clone())
+    }
+    /// Select a pinned runtime shard or persistent native actor-thread slot.
+    /// Shared multi-thread async pools have no stable worker-index placement.
+    pub fn shard(&self, index: usize) -> Result<Self, SystemError> {
+        let group = self.inner.upgrade().ok_or(SystemError::Closed)?;
+        if matches!(group.profile, ExecutionProfile::AsyncPool { .. })
+            || index >= group.shard_count()
+        {
+            return Err(SystemError::InvalidShard);
+        }
+        if lock(&group.state).closing {
+            return Err(SystemError::Closed);
+        }
+        Ok(Self {
+            inner: self.inner.clone(),
+            selection: Some(index),
+        })
     }
     pub fn is_closed(&self) -> bool {
         self.inner
@@ -556,12 +618,15 @@ impl ExecutionGroup {
             return Err(SystemError::Closed);
         }
         let id = next_admission()?;
+        let target = group.choose(&mut state, self.selection)?;
         let (ready, _) = watch::channel(StartupState::Pending);
         let (done, _) = watch::channel(false);
         let scope = Arc::new(Scope {
             id,
             group: Arc::downgrade(&group),
-            handle: group.handle.clone(),
+            handle: group.handle(target),
+            target,
+            selection: self.selection,
             parent: parent.clone(),
             token: CancellationToken::new(),
             cause: crate::link::new_linked_exit_reason(),
@@ -599,6 +664,8 @@ struct ScopeState {
 }
 pub(crate) struct Scope {
     id: u64,
+    target: usize,
+    selection: Option<usize>,
     group: Weak<GroupInner>,
     pub(crate) handle: Handle,
     parent: Option<Arc<Admission>>,
@@ -612,6 +679,7 @@ impl Scope {
     pub(crate) fn group(&self) -> ExecutionGroup {
         ExecutionGroup {
             inner: self.group.clone(),
+            selection: self.selection,
         }
     }
     pub(crate) fn ready_rx(&self) -> watch::Receiver<StartupState> {
@@ -751,6 +819,25 @@ impl Scope {
     pub(crate) fn actor_lease(self: &Arc<Self>) -> Result<Lease, SystemError> {
         self.lease(true)
     }
+    /// Internal lifecycle cleanup is deliberately not cancelled with ordinary
+    /// helpers: its lease must survive until the owned subtree actually joins.
+    pub(crate) fn dispatch_actor<F>(&self, future: F) -> Result<(), SystemError>
+    where
+        F: Future<Output = ()> + Send + 'static,
+    {
+        self.group
+            .upgrade()
+            .ok_or(SystemError::Closed)?
+            .dispatch(self.target, future)
+    }
+    pub(crate) fn track_lifecycle<F>(self: &Arc<Self>, future: F) -> Result<(), SystemError>
+    where
+        F: Future<Output = ()> + Send + 'static,
+    {
+        let lease = self.lease(false)?;
+        drop(self.handle.spawn(Tracked { future, lease }));
+        Ok(())
+    }
     pub(crate) fn spawn_framework<F>(self: &Arc<Self>, future: F) -> JoinHandle<()>
     where
         F: Future<Output = ()> + Send + 'static,
@@ -883,8 +970,7 @@ impl Drop for Lease {
         if last {
             drop(registrations);
             if let Some(g) = self.scope.group.upgrade() {
-                lock(&g.state).scopes.remove(&self.scope.id);
-                g.drained.notify_all();
+                g.remove_scope(self.scope.id);
             }
             self.scope.done.send_replace(true);
         }

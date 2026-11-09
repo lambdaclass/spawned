@@ -7,12 +7,14 @@
 //!
 //! # Modules
 //!
-//! - [`tasks`] — async runtime backed by tokio: `run()`, `spawn()`, `CancellationToken`,
+//! - `tasks` — async runtime backed by tokio: `run()`, `spawn()`, `CancellationToken`,
 //!   `mpsc`, `oneshot`, `watch`, `timeout`, `sleep`
 //! - [`threads`] — blocking runtime using OS threads: `CancellationToken`,
 //!   `mpsc`, `oneshot`, `sleep`
 #![forbid(unsafe_code)]
 
+pub mod sync;
+#[cfg(feature = "async")]
 pub mod tasks;
 pub mod threads;
 mod tracing;

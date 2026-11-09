@@ -1,3 +1,4 @@
+#![cfg(feature = "async")]
 #![cfg(feature = "backend-experiments")]
 //! Same actor semantics on default Tokio, batched Tokio and the opt-in shard pool.
 use spawned_concurrency::{

@@ -1,3 +1,4 @@
+#![cfg(feature = "async")]
 #![cfg(feature = "backend-experiments")]
 //! Keep this as the sole test in its binary: terminal shutdown closes the process registry.
 //! Terminal executor lifecycle and drop-panic isolation in a fresh test process.

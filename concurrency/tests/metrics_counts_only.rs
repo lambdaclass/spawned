@@ -1,3 +1,4 @@
+#![cfg(feature = "async")]
 #![cfg(feature = "metrics")]
 use spawned_concurrency::{
     message::Message,

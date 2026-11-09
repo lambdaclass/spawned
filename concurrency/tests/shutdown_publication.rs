@@ -1,3 +1,4 @@
+#![cfg(feature = "async")]
 //! Hold a channel-block allocation after send admission to exercise shutdown
 //! against a sender that has reserved a queue position but not published it.
 use spawned_concurrency::{

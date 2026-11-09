@@ -1,0 +1,627 @@
+#![cfg(feature = "async")]
+use spawned_concurrency::{
+    message::Message,
+    supervision::{Backoff, ChildSpec, RestartMode, SupervisorConfig, SupervisorStrategy},
+    system::ActorSystem,
+    tasks::{Actor, Context, Handler},
+};
+use std::{
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc, Mutex,
+    },
+    time::Duration,
+};
+const LIMIT: Duration = Duration::from_secs(5);
+fn policy(strategy: SupervisorStrategy) -> SupervisorConfig {
+    SupervisorConfig {
+        strategy,
+        max_restarts: 100,
+        backoff: Backoff {
+            initial: Duration::from_millis(1),
+            maximum: Duration::from_millis(4),
+            jitter: false,
+            ..Backoff::default()
+        },
+        ..SupervisorConfig::default()
+    }
+}
+struct Next;
+impl Message for Next {
+    type Result = usize;
+}
+struct Crash;
+impl Message for Crash {
+    type Result = ();
+}
+struct CrashTogether(Arc<std::sync::Barrier>);
+impl Message for CrashTogether {
+    type Result = ();
+}
+struct Probe {
+    index: usize,
+    generation: usize,
+    value: usize,
+    live: Arc<Vec<AtomicUsize>>,
+    events: Arc<Mutex<Vec<String>>>,
+}
+impl Actor for Probe {
+    async fn started(&mut self, _: &Context<Self>) {
+        self.events
+            .lock()
+            .unwrap()
+            .push(format!("start:{}:{}", self.index, self.generation));
+    }
+    async fn stopped(&mut self, _: &Context<Self>) {
+        self.events
+            .lock()
+            .unwrap()
+            .push(format!("stop:{}:{}", self.index, self.generation));
+    }
+}
+impl Drop for Probe {
+    fn drop(&mut self) {
+        assert_eq!(self.live[self.index].fetch_sub(1, Ordering::SeqCst), 1);
+    }
+}
+impl Handler<Next> for Probe {
+    async fn handle(&mut self, _: Next, _: &Context<Self>) -> usize {
+        self.value += 1;
+        self.value
+    }
+}
+impl Handler<Crash> for Probe {
+    async fn handle(&mut self, _: Crash, _: &Context<Self>) {
+        panic!("injected cohort failure");
+    }
+}
+impl Handler<CrashTogether> for Probe {
+    async fn handle(&mut self, msg: CrashTogether, _: &Context<Self>) {
+        msg.0.wait();
+        panic!("simultaneous cohort failure");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn strategies_select_affected_children_and_reconstruct_in_dependency_order() {
+    for strategy in [
+        SupervisorStrategy::OneForOne,
+        SupervisorStrategy::OneForAll,
+        SupervisorStrategy::RestForOne,
+    ] {
+        let system = ActorSystem::new().unwrap();
+        let group = system.async_group("strategy-selection", 2).unwrap();
+        let counts = Arc::new((0..3).map(|_| AtomicUsize::new(0)).collect::<Vec<_>>());
+        let live = Arc::new((0..3).map(|_| AtomicUsize::new(0)).collect::<Vec<_>>());
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let mut tree = system.supervisor(policy(strategy)).unwrap();
+        let mut children = Vec::new();
+        for index in 0..3 {
+            let counts = counts.clone();
+            let live = live.clone();
+            let events = events.clone();
+            children.push(
+                tree.add(ChildSpec::new(
+                    format!("child-{index}"),
+                    &group,
+                    move |_| {
+                        assert_eq!(
+                            live[index].fetch_add(1, Ordering::SeqCst),
+                            0,
+                            "overlapping generation"
+                        );
+                        let generation = counts[index].fetch_add(1, Ordering::SeqCst) + 1;
+                        let live = live.clone();
+                        let events = events.clone();
+                        async move {
+                            Ok::<_, String>(Probe {
+                                index,
+                                generation,
+                                value: 0,
+                                live,
+                                events,
+                            })
+                        }
+                    },
+                ))
+                .unwrap(),
+            );
+        }
+        let supervisor = tree.start().await.unwrap();
+        let old: Vec<_> = children
+            .iter()
+            .map(|child| child.current().unwrap())
+            .collect();
+        for actor in &old {
+            assert_eq!(actor.request(Next).await.unwrap(), 1);
+        }
+        assert!(old[1].request(Crash).await.is_err());
+        for index in 0..3 {
+            let affected = match strategy {
+                SupervisorStrategy::OneForOne => index == 1,
+                SupervisorStrategy::OneForAll => true,
+                SupervisorStrategy::RestForOne => index >= 1,
+            };
+            if affected {
+                let next = tokio::time::timeout(LIMIT, children[index].wait_for_generation(1))
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert_ne!(next.id(), old[index].id());
+                assert_eq!(next.request(Next).await.unwrap(), 1);
+            } else {
+                assert_eq!(children[index].current().unwrap().id(), old[index].id());
+                assert_eq!(old[index].request(Next).await.unwrap(), 2);
+            }
+        }
+        if strategy != SupervisorStrategy::OneForOne {
+            let events = events.lock().unwrap();
+            let starts: Vec<_> = events
+                .iter()
+                .filter(|s| s.starts_with("start:") && s.ends_with(":2"))
+                .cloned()
+                .collect();
+            let expected = if strategy == SupervisorStrategy::OneForAll {
+                vec!["start:0:2", "start:1:2", "start:2:2"]
+            } else {
+                vec!["start:1:2", "start:2:2"]
+            };
+            assert_eq!(starts, expected);
+            let last_stop = events
+                .iter()
+                .rposition(|s| s.starts_with("stop:") && s.ends_with(":1"))
+                .unwrap();
+            let first_start = events
+                .iter()
+                .position(|s| s.starts_with("start:") && s.ends_with(":2"))
+                .unwrap();
+            assert!(
+                last_stop < first_start,
+                "reconstructed before cohort cleanup: {events:?}"
+            );
+        }
+        assert!(supervisor.shutdown(LIMIT).await.complete);
+        assert!(system.shutdown(LIMIT).await.complete);
+        assert!(live.iter().all(|count| count.load(Ordering::SeqCst) == 0));
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn temporary_collateral_child_stops_without_reconstruction() {
+    let system = ActorSystem::new().unwrap();
+    let group = system.async_group("temporary-collateral", 1).unwrap();
+    let counts = Arc::new((0..2).map(|_| AtomicUsize::new(0)).collect::<Vec<_>>());
+    let live = Arc::new((0..2).map(|_| AtomicUsize::new(0)).collect::<Vec<_>>());
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let mut tree = system
+        .supervisor(policy(SupervisorStrategy::OneForAll))
+        .unwrap();
+    let mut children = Vec::new();
+    for index in 0..2 {
+        let counts = counts.clone();
+        let live = live.clone();
+        let events = events.clone();
+        children.push(
+            tree.add(
+                ChildSpec::new(format!("child-{index}"), &group, move |_| {
+                    live[index].fetch_add(1, Ordering::SeqCst);
+                    let generation = counts[index].fetch_add(1, Ordering::SeqCst) + 1;
+                    let live = live.clone();
+                    let events = events.clone();
+                    async move {
+                        Ok::<_, String>(Probe {
+                            index,
+                            generation,
+                            value: 0,
+                            live,
+                            events,
+                        })
+                    }
+                })
+                .restart(if index == 1 {
+                    RestartMode::Temporary
+                } else {
+                    RestartMode::Permanent
+                }),
+            )
+            .unwrap(),
+        );
+    }
+    let supervisor = tree.start().await.unwrap();
+    assert!(children[0].current().unwrap().request(Crash).await.is_err());
+    tokio::time::timeout(LIMIT, children[0].wait_for_generation(1))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        tokio::time::timeout(LIMIT, children[1].wait_for_generation(1))
+            .await
+            .unwrap()
+            .is_err()
+    );
+    assert_eq!(counts[1].load(Ordering::SeqCst), 1);
+    assert!(supervisor.shutdown(LIMIT).await.complete);
+    assert!(system.shutdown(LIMIT).await.complete);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn failed_cohort_construction_retries_that_child_before_starting_later_dependents() {
+    let system = ActorSystem::new().unwrap();
+    let group = system.async_group("cohort-factory", 1).unwrap();
+    let counts = Arc::new((0..3).map(|_| AtomicUsize::new(0)).collect::<Vec<_>>());
+    let live = Arc::new((0..3).map(|_| AtomicUsize::new(0)).collect::<Vec<_>>());
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let mut tree = system
+        .supervisor(policy(SupervisorStrategy::OneForAll))
+        .unwrap();
+    let mut children = Vec::new();
+    for index in 0..3 {
+        let counts = counts.clone();
+        let live = live.clone();
+        let events = events.clone();
+        children.push(
+            tree.add(ChildSpec::new(
+                format!("child-{index}"),
+                &group,
+                move |_| {
+                    let generation = counts[index].fetch_add(1, Ordering::SeqCst) + 1;
+                    let live = live.clone();
+                    let events = events.clone();
+                    async move {
+                        if index == 1 && generation == 2 {
+                            return Err("injected factory error".to_string());
+                        }
+                        assert_eq!(live[index].fetch_add(1, Ordering::SeqCst), 0);
+                        Ok(Probe {
+                            index,
+                            generation,
+                            value: 0,
+                            live,
+                            events,
+                        })
+                    }
+                },
+            ))
+            .unwrap(),
+        );
+    }
+    let supervisor = tree.start().await.unwrap();
+    assert!(children[0].current().unwrap().request(Crash).await.is_err());
+    tokio::time::timeout(LIMIT, children[2].wait_for_generation(1))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        counts
+            .iter()
+            .map(|n| n.load(Ordering::SeqCst))
+            .collect::<Vec<_>>(),
+        vec![2, 3, 2]
+    );
+    assert!(supervisor.shutdown(LIMIT).await.complete);
+    assert!(system.shutdown(LIMIT).await.complete);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cohort_reconstruction_consumes_shared_factory_attempt_budget() {
+    let system = ActorSystem::new().unwrap();
+    let group = system.async_group("cohort-budget", 1).unwrap();
+    let mut config = policy(SupervisorStrategy::OneForAll);
+    config.max_restarts = 2;
+    let mut tree = system.supervisor(config).unwrap();
+    let mut children = Vec::new();
+    let live = Arc::new((0..3).map(|_| AtomicUsize::new(0)).collect::<Vec<_>>());
+    let events = Arc::new(Mutex::new(Vec::new()));
+    for index in 0..3 {
+        let live = live.clone();
+        let events = events.clone();
+        children.push(
+            tree.add(ChildSpec::new(
+                format!("child-{index}"),
+                &group,
+                move |ctx| {
+                    let live = live.clone();
+                    let events = events.clone();
+                    async move {
+                        assert_eq!(live[index].fetch_add(1, Ordering::SeqCst), 0);
+                        Ok::<_, String>(Probe {
+                            index,
+                            generation: ctx.generation() as usize,
+                            value: 0,
+                            live,
+                            events,
+                        })
+                    }
+                },
+            ))
+            .unwrap(),
+        );
+    }
+    let supervisor = tree.start().await.unwrap();
+    assert!(children[0].current().unwrap().request(Crash).await.is_err());
+    tokio::time::timeout(LIMIT, supervisor.join())
+        .await
+        .unwrap();
+    assert!(supervisor.failure().unwrap().contains("budget exhausted"));
+    assert!(system.shutdown(LIMIT).await.complete);
+    assert!(live.iter().all(|n| n.load(Ordering::SeqCst) == 0));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn simultaneous_failures_and_shutdown_do_not_overlap_cohorts_or_generations() {
+    for strategy in [
+        SupervisorStrategy::OneForAll,
+        SupervisorStrategy::RestForOne,
+    ] {
+        for _ in 0..16 {
+            let system = ActorSystem::new().unwrap();
+            let group = system.async_group("simultaneous-cohorts", 2).unwrap();
+            let live = Arc::new((0..2).map(|_| AtomicUsize::new(0)).collect::<Vec<_>>());
+            let events = Arc::new(Mutex::new(Vec::new()));
+            let mut tree = system.supervisor(policy(strategy)).unwrap();
+            let mut children = Vec::new();
+            for index in 0..2 {
+                let live = live.clone();
+                let events = events.clone();
+                children.push(
+                    tree.add(ChildSpec::new(
+                        format!("child-{index}"),
+                        &group,
+                        move |ctx| {
+                            let live = live.clone();
+                            let events = events.clone();
+                            async move {
+                                assert_eq!(
+                                    live[index].fetch_add(1, Ordering::SeqCst),
+                                    0,
+                                    "overlapping cohort generations"
+                                );
+                                Ok::<_, String>(Probe {
+                                    index,
+                                    generation: ctx.generation() as usize,
+                                    value: 0,
+                                    live,
+                                    events,
+                                })
+                            }
+                        },
+                    ))
+                    .unwrap(),
+                );
+            }
+            let supervisor = tree.start().await.unwrap();
+            let barrier = Arc::new(std::sync::Barrier::new(3));
+            for child in &children {
+                child
+                    .current()
+                    .unwrap()
+                    .send(CrashTogether(barrier.clone()))
+                    .unwrap();
+            }
+            barrier.wait();
+            for child in &children {
+                tokio::time::timeout(LIMIT, child.wait_for_generation(1))
+                    .await
+                    .unwrap()
+                    .unwrap();
+            }
+            assert!(supervisor.shutdown(LIMIT).await.complete);
+            assert!(system.shutdown(LIMIT).await.complete);
+            assert!(live.iter().all(|n| n.load(Ordering::SeqCst) == 0));
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn blocked_collateral_helper_prevents_entire_cohort_reconstruction() {
+    for strategy in [
+        SupervisorStrategy::OneForAll,
+        SupervisorStrategy::RestForOne,
+    ] {
+        let system = ActorSystem::new().unwrap();
+        let group = system.async_group("cohort-helper-barrier", 2).unwrap();
+        let counts = Arc::new((0..2).map(|_| AtomicUsize::new(0)).collect::<Vec<_>>());
+        let live = Arc::new((0..2).map(|_| AtomicUsize::new(0)).collect::<Vec<_>>());
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let mut tree = system.supervisor(policy(strategy)).unwrap();
+        let mut children = Vec::new();
+        for index in 0..2 {
+            let counts = counts.clone();
+            let live = live.clone();
+            let events = events.clone();
+            children.push(
+                tree.add(
+                    ChildSpec::new(format!("slot-{index}"), &group, move |_| {
+                        let generation = counts[index].fetch_add(1, Ordering::SeqCst) + 1;
+                        assert_eq!(live[index].fetch_add(1, Ordering::SeqCst), 0);
+                        let live = live.clone();
+                        let events = events.clone();
+                        async move {
+                            Ok::<_, String>(Probe {
+                                index,
+                                generation,
+                                value: 0,
+                                live,
+                                events,
+                            })
+                        }
+                    })
+                    .shutdown_timeout(Duration::from_millis(15)),
+                )
+                .unwrap(),
+            );
+        }
+        let supervisor = tree.start().await.unwrap();
+        let (entered_tx, entered) = tokio::sync::oneshot::channel();
+        let (release, release_rx) = std::sync::mpsc::channel();
+        let collateral = children[1].current().unwrap();
+        let helper = collateral
+            .context()
+            .spawn_blocking_helper(move || {
+                let _ = entered_tx.send(());
+                release_rx.recv_timeout(LIMIT).unwrap();
+            })
+            .unwrap();
+        tokio::time::timeout(LIMIT, entered).await.unwrap().unwrap();
+        assert!(children[0].current().unwrap().request(Crash).await.is_err());
+        let failure = tokio::time::timeout(LIMIT, async {
+            loop {
+                if let Some(failure) = supervisor.failure() {
+                    break failure;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(failure.contains("cleanup"), "{failure}");
+        assert!(
+            counts.iter().all(|c| c.load(Ordering::SeqCst) == 1),
+            "a dependency restarted before collateral cleanup"
+        );
+        let report = supervisor.shutdown(Duration::from_millis(5)).await;
+        assert!(!report.complete);
+        release.send(()).unwrap();
+        drop(helper);
+        assert!(supervisor.shutdown(LIMIT).await.complete);
+        assert!(system.shutdown(LIMIT).await.complete);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn upstream_failure_supersedes_a_round_while_a_dependent_factory_is_pending() {
+    for strategy in [
+        SupervisorStrategy::OneForAll,
+        SupervisorStrategy::RestForOne,
+    ] {
+        for temporary in [false, true] {
+            let system = ActorSystem::new().unwrap();
+            let group = system.async_group("superseded-cohort", 2).unwrap();
+            let pending = Arc::new(tokio::sync::Notify::new());
+            let live = Arc::new((0..3).map(|_| AtomicUsize::new(0)).collect::<Vec<_>>());
+            let events = Arc::new(Mutex::new(Vec::new()));
+            let mut tree = system.supervisor(policy(strategy)).unwrap();
+            let mut children = Vec::new();
+            for index in 0..3 {
+                let live = live.clone();
+                let events = events.clone();
+                let pending = pending.clone();
+                children.push(
+                    tree.add(
+                        ChildSpec::new(format!("dependency-{index}"), &group, move |ctx| {
+                            let live = live.clone();
+                            let events = events.clone();
+                            let pending = pending.clone();
+                            async move {
+                                if index == 1 && ctx.generation() == 2 {
+                                    pending.notify_one();
+                                    std::future::pending::<()>().await;
+                                }
+                                assert_eq!(live[index].fetch_add(1, Ordering::SeqCst), 0);
+                                Ok::<_, String>(Probe {
+                                    index,
+                                    generation: ctx.generation() as usize,
+                                    value: 0,
+                                    live,
+                                    events,
+                                })
+                            }
+                        })
+                        .startup_timeout(Duration::from_secs(30))
+                        .restart(if index == 2 && temporary {
+                            RestartMode::Temporary
+                        } else {
+                            RestartMode::Permanent
+                        }),
+                    )
+                    .unwrap(),
+                );
+            }
+            let supervisor = tree.start().await.unwrap();
+            assert!(children[1].current().unwrap().request(Crash).await.is_err());
+            tokio::time::timeout(LIMIT, pending.notified())
+                .await
+                .unwrap();
+            let generation = children[0].snapshot().generation;
+            assert!(children[0].current().unwrap().request(Crash).await.is_err());
+            tokio::time::timeout(LIMIT, children[0].wait_for_generation(generation))
+                .await
+                .unwrap()
+                .unwrap();
+            tokio::time::timeout(LIMIT, children[1].wait_for_generation(2))
+                .await
+                .unwrap()
+                .unwrap();
+            // This slot was still parked on the superseded round's resume token.
+            let tail = tokio::time::timeout(LIMIT, children[2].wait_for_generation(1))
+                .await
+                .unwrap();
+            assert_eq!(tail.is_err(), temporary);
+            assert!(supervisor.failure().is_none());
+            assert!(system.shutdown(LIMIT).await.complete);
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ready_dependency_failure_rolls_back_slow_initial_tree_startup() {
+    for strategy in [
+        SupervisorStrategy::OneForAll,
+        SupervisorStrategy::RestForOne,
+    ] {
+        let system = ActorSystem::new().unwrap();
+        let group = system.async_group("initial-cohort", 2).unwrap();
+        let live = Arc::new((0..3).map(|_| AtomicUsize::new(0)).collect::<Vec<_>>());
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let mut tree = system.supervisor(policy(strategy)).unwrap();
+        let mut children = Vec::new();
+        for index in 0..3 {
+            let live = live.clone();
+            let events = events.clone();
+            let entered = entered.clone();
+            children.push(
+                tree.add(
+                    ChildSpec::new(format!("startup-dependency-{index}"), &group, move |ctx| {
+                        let live = live.clone();
+                        let events = events.clone();
+                        let entered = entered.clone();
+                        async move {
+                            if index == 2 {
+                                entered.notify_one();
+                                std::future::pending::<()>().await;
+                            }
+                            assert_eq!(live[index].fetch_add(1, Ordering::SeqCst), 0);
+                            Ok::<_, String>(Probe {
+                                index,
+                                generation: ctx.generation() as usize,
+                                value: 0,
+                                live,
+                                events,
+                            })
+                        }
+                    })
+                    .startup_timeout(Duration::from_secs(30)),
+                )
+                .unwrap(),
+            );
+        }
+        let startup = tokio::spawn(tree.start());
+        tokio::time::timeout(LIMIT, entered.notified())
+            .await
+            .unwrap();
+        assert!(children[0].current().unwrap().request(Crash).await.is_err());
+        assert!(tokio::time::timeout(LIMIT, startup)
+            .await
+            .unwrap()
+            .unwrap()
+            .is_err());
+        assert_eq!(
+            children[0].snapshot().generation,
+            1,
+            "must not replace the dependency alone"
+        );
+        assert!(system.shutdown(LIMIT).await.complete);
+        assert!(live.iter().all(|n| n.load(Ordering::SeqCst) == 0));
+    }
+}

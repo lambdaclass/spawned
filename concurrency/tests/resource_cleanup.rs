@@ -1,3 +1,4 @@
+#![cfg(feature = "async")]
 use spawned_concurrency::{message::Message, tasks, threads};
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};

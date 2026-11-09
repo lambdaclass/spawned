@@ -186,8 +186,9 @@ populations. Use `Backend::Blocking` for persistent blocking work, or
 occupies a worker until it stops; each dedicated actor has its own root thread
 and an isolated runtime with one async helper worker. See
 [execution modes and backends](docs/GUIDE.md#execution-modes-and-backends) for
-resource sizing. Experimental pinned/spinning profiles remain private research;
-Tokio stays the supported default.
+resource sizing. Owned parked pinned groups and fixed native actor pools are available on main,
+unreleased. Spinning remains private research; Tokio stays the async default.
+A [thread-only example](examples/thread_only/README.md) also builds without Tokio.
 
 ## Project Structure
 
@@ -217,8 +218,8 @@ Inspired by Erlang/OTP, the goal of `spawned` is to keep concurrency logic separ
 Protocols make this separation explicit: the trait defines *what* an actor does, the `#[actor]` impl defines *how*, and the framework handles message routing, mailboxes, and lifecycle. Your business logic is plain Rust methods — no channels, no `match` on enums, no concurrency primitives.
 
 Links, trapped exits and atomic linked startup are available in v0.6.0
-([links](docs/GUIDE.md#links-and-trapped-exits)). OneForOne supervision and
-owned execution groups are implemented on main, unreleased
+([links](docs/GUIDE.md#links-and-trapped-exits)). Nested supervision with OneForOne/OneForAll/RestForOne and
+owned async/native/pinned execution groups are implemented on main, unreleased
 ([execution groups and supervision](docs/GUIDE.md#execution-groups-and-supervision)).
 
 ## Roadmap

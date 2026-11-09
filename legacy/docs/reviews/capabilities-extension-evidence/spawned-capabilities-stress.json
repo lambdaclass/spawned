@@ -1,0 +1,122 @@
+[
+  {
+    "round": 1,
+    "code": 0,
+    "seconds": 14.239633416058496,
+    "log": "/tmp/spawned-capabilities-stress-1.log"
+  },
+  {
+    "round": 2,
+    "code": 0,
+    "seconds": 1.5475517279701307,
+    "log": "/tmp/spawned-capabilities-stress-2.log"
+  },
+  {
+    "round": 3,
+    "code": 0,
+    "seconds": 1.5472026079660282,
+    "log": "/tmp/spawned-capabilities-stress-3.log"
+  },
+  {
+    "round": 4,
+    "code": 0,
+    "seconds": 1.5483145699836314,
+    "log": "/tmp/spawned-capabilities-stress-4.log"
+  },
+  {
+    "round": 5,
+    "code": 0,
+    "seconds": 1.5517312089214101,
+    "log": "/tmp/spawned-capabilities-stress-5.log"
+  },
+  {
+    "round": 6,
+    "code": 0,
+    "seconds": 1.549511990044266,
+    "log": "/tmp/spawned-capabilities-stress-6.log"
+  },
+  {
+    "round": 7,
+    "code": 0,
+    "seconds": 1.5588298939401284,
+    "log": "/tmp/spawned-capabilities-stress-7.log"
+  },
+  {
+    "round": 8,
+    "code": 0,
+    "seconds": 1.5478523969650269,
+    "log": "/tmp/spawned-capabilities-stress-8.log"
+  },
+  {
+    "round": 9,
+    "code": 0,
+    "seconds": 1.5477333989692852,
+    "log": "/tmp/spawned-capabilities-stress-9.log"
+  },
+  {
+    "round": 10,
+    "code": 0,
+    "seconds": 1.5470601510023698,
+    "log": "/tmp/spawned-capabilities-stress-10.log"
+  },
+  {
+    "round": 11,
+    "code": 0,
+    "seconds": 1.5474956140387803,
+    "log": "/tmp/spawned-capabilities-stress-11.log"
+  },
+  {
+    "round": 12,
+    "code": 0,
+    "seconds": 1.547234179917723,
+    "log": "/tmp/spawned-capabilities-stress-12.log"
+  },
+  {
+    "round": 13,
+    "code": 0,
+    "seconds": 1.5499685360118747,
+    "log": "/tmp/spawned-capabilities-stress-13.log"
+  },
+  {
+    "round": 14,
+    "code": 0,
+    "seconds": 1.548437519930303,
+    "log": "/tmp/spawned-capabilities-stress-14.log"
+  },
+  {
+    "round": 15,
+    "code": 0,
+    "seconds": 1.547651519998908,
+    "log": "/tmp/spawned-capabilities-stress-15.log"
+  },
+  {
+    "round": 16,
+    "code": 0,
+    "seconds": 1.5480648620286956,
+    "log": "/tmp/spawned-capabilities-stress-16.log"
+  },
+  {
+    "round": 17,
+    "code": 0,
+    "seconds": 1.5516043099341914,
+    "log": "/tmp/spawned-capabilities-stress-17.log"
+  },
+  {
+    "round": 18,
+    "code": 0,
+    "seconds": 1.5521633250173181,
+    "log": "/tmp/spawned-capabilities-stress-18.log"
+  },
+  {
+    "round": 19,
+    "code": 0,
+    "seconds": 1.5512132869334891,
+    "log": "/tmp/spawned-capabilities-stress-19.log"
+  },
+  {
+    "round": 20,
+    "code": 0,
+    "seconds": 1.5493669479619712,
+    "log": "/tmp/spawned-capabilities-stress-20.log"
+  }
+]

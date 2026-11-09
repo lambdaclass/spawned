@@ -51,7 +51,7 @@
 //!
 //! # Modules
 //!
-//! - [`tasks`] — async actor runtime (requires tokio)
+//! - `tasks` — async actor runtime (default `async` feature; requires Tokio)
 //! - [`threads`] — blocking actor runtime (native OS threads)
 //! - [`registry`] — global name-based actor registry
 //! - [`response`] — `Response<T>` unified wrapper for request-response
@@ -72,19 +72,23 @@
 //!
 //! - [`message::Message`] trait for manual message definitions without `#[protocol]`
 //! - `Recipient<M>` (`Arc<dyn Receiver<M>>`) for type-erased per-message references
-//! - [`tasks::Backend`] enum for choosing async runtime, blocking pool, or OS thread
+//! - `tasks::Backend` enum for choosing async runtime, blocking pool, or OS thread
 #![forbid(unsafe_code)]
 
 pub mod child_handle;
 pub mod error;
+#[cfg(feature = "async")]
 pub mod lifecycle_trace;
 pub mod link;
 pub mod message;
 pub mod monitor;
 pub mod registry;
 pub mod response;
+#[cfg(feature = "async")]
 pub mod supervision;
+#[cfg(feature = "async")]
 pub mod system;
+#[cfg(feature = "async")]
 pub mod tasks;
 pub mod threads;
 
@@ -95,11 +99,26 @@ pub use monitor::{Down, MonitorRef};
 pub use response::Response;
 pub use spawned_macros::{actor, protocol};
 
-#[cfg(test)]
+#[cfg(all(test, feature = "async"))]
 mod link_regression_tests;
+#[cfg(test)]
+mod native_link_regression_tests;
 
 mod actor_cleanup;
 
 mod instrumentation;
 #[cfg(feature = "metrics")]
 pub mod metrics;
+
+// Resolve feature gating in the defining crate, not in a protocol consumer's
+// unrelated feature namespace. Proc macros use this for their async blanket impl.
+#[doc(hidden)]
+#[macro_export]
+#[cfg(feature = "async")]
+macro_rules! __spawned_async_items { ($($item:item)*) => { $($item)* }; }
+#[doc(hidden)]
+#[macro_export]
+#[cfg(not(feature = "async"))]
+macro_rules! __spawned_async_items {
+    ($($item:item)*) => {};
+}

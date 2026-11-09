@@ -1,3 +1,4 @@
+#![cfg(feature = "async")]
 //! Controlled handler-progress simulation, not a replacement Tokio/OS scheduler.
 #[path = "support/failure_actor.rs"]
 mod actor;

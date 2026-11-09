@@ -1,3 +1,4 @@
+#![cfg(feature = "async")]
 //! Generated lifecycle scenarios. See docs/TESTING.md for replay and guarantees.
 use proptest::prelude::*;
 use spawned_concurrency::{

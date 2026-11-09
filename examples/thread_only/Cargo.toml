@@ -1,0 +1,19 @@
+[package]
+name = "spawned-thread-only-example"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Separate dependency graph: workspace feature unification must not make a
+# synchronous build accidentally pass by compiling Tokio through another example.
+[workspace]
+
+[dependencies]
+spawned-concurrency = { path = "../../concurrency", default-features = false, features = ["threads"] }
+spawned-rt = { path = "../../rt", default-features = false }
+
+[features]
+metrics = ["spawned-concurrency/metrics"]
+# Deliberately belongs to the consumer, not the dependency. Protocol expansion
+# must still omit async runtime impls when this unrelated feature is enabled.
+async = []

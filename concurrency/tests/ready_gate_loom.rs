@@ -1,3 +1,4 @@
+#![cfg(feature = "async")]
 #![cfg(spawned_scheduler_loom)]
 #[path = "../benches/support/ready_gate.rs"]
 mod ready_gate;

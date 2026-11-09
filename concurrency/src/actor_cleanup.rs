@@ -5,7 +5,7 @@ use crate::{
     link::{LinkCleanup, LinkTable, LinkedExitReason},
     monitor::{MonitorCleanup, MonitorTable},
 };
-use spawned_rt::tasks::watch;
+use spawned_rt::sync::watch;
 
 /// Constructed before dispatch, so even a never-polled actor has cleanup.
 /// Completion owns its sender until links and outgoing monitors are closed.

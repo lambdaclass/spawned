@@ -8,7 +8,7 @@ repository.workspace = true
 
 [dependencies]
 monoio = { version = "0.2.4", optional = true, default-features = false, features = ["legacy", "iouring", "sync"] }
-spawned-rt = { workspace = true }
+spawned-rt = { workspace = true, default-features = false }
 spawned-macros = { workspace = true }
 tracing = { workspace = true }
 futures = "0.3.1"
@@ -25,17 +25,23 @@ trybuild = "1"
 [[bench]]
 name = "baseline"
 harness = false
+required-features = ["async"]
 
 [features]
+default = ["async"]
+async = ["spawned-rt/async"]
+# Native actors remain available in every build; this explicit alias is useful
+# with --no-default-features --features threads.
+threads = []
 # Fixed-cardinality counters and sampled timings; disabled by default.
 metrics = []
 # Record supervisor lifecycle events for TLA+ trace validation
 # (verification/tla/README.md). Test-only; disabled by default.
-lifecycle-trace = []
-io-experiments = ["dep:monoio"]
+lifecycle-trace = ["async"]
+io-experiments = ["async", "dep:monoio"]
 # Private benchmark prototypes; no stable runtime-selection API.
-backend-experiments = ["spawned-rt/backend-experiments"]
-profiling-experiments = ["dep:pprof"]
+backend-experiments = ["async", "spawned-rt/backend-experiments"]
+profiling-experiments = ["async", "dep:pprof"]
 
 [[bench]]
 name = "designs"
@@ -79,3 +85,7 @@ required-features = ["backend-experiments"]
 [[bench]]
 name = "metrics_overhead"
 harness = false
+required-features = ["async"]
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+nix = { version = "0.30.1", features = ["resource"] }

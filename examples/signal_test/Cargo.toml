@@ -9,5 +9,5 @@ path = "src/main.rs"
 
 [dependencies]
 spawned-concurrency = { workspace = true }
-spawned-rt = { workspace = true }
+spawned-rt = { workspace = true, features = ["async"] }
 tracing = { workspace = true }

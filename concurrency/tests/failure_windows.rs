@@ -1,3 +1,4 @@
+#![cfg(feature = "async")]
 //! Handshake-controlled failures with semantic coverage, not random hit counts.
 #[path = "support/failure_actor.rs"]
 mod actor;

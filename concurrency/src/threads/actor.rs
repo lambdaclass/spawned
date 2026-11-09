@@ -173,7 +173,7 @@ pub struct Context<A: Actor> {
     id: ActorId,
     sender: mpsc::Sender<MailboxItem<A>>,
     cancellation_token: CancellationToken,
-    completion: spawned_rt::tasks::watch::Receiver<Option<ExitReason>>,
+    completion: spawned_rt::sync::watch::Receiver<Option<ExitReason>>,
     monitors: MonitorTable,
     trap_exit: TrapExitFlag,
     links: LinkTable,
@@ -341,7 +341,7 @@ impl<A: Actor> Context<A> {
         A: Handler<Down>,
     {
         let monitor_ref = MonitorRef::next();
-        let active = spawned_rt::tasks::CancellationToken::new();
+        let active = spawned_rt::sync::CancellationToken::new();
 
         {
             let mut monitors = self.monitors.lock().unwrap_or_else(|p| p.into_inner());
@@ -360,8 +360,10 @@ impl<A: Actor> Context<A> {
         let target = target.clone();
         let actor_ref = self.actor_ref();
         let monitors = self.monitors.clone();
+        let registration = crate::monitor::MonitorRegistration(monitors.clone(), monitor_ref);
 
         rt::spawn(move || {
+            let _registration = registration;
             let reason = futures::executor::block_on(async {
                 match futures::future::select(
                     Box::pin(active.cancelled()),
@@ -554,7 +556,7 @@ pub struct ActorRef<A: Actor> {
     id: ActorId,
     sender: mpsc::Sender<MailboxItem<A>>,
     cancellation_token: CancellationToken,
-    completion: spawned_rt::tasks::watch::Receiver<Option<ExitReason>>,
+    completion: spawned_rt::sync::watch::Receiver<Option<ExitReason>>,
     monitors: MonitorTable,
     trap_exit: TrapExitFlag,
     links: LinkTable,
@@ -732,7 +734,7 @@ impl<A: Actor> ActorRef<A> {
         let (tx, rx) = mpsc::channel::<MailboxItem<A>>();
         let cancellation_token = CancellationToken::new();
         register_stop_wakeup(&cancellation_token, tx.clone());
-        let (completion_tx, completion) = spawned_rt::tasks::watch::channel(None);
+        let (completion_tx, completion) = spawned_rt::sync::watch::channel(None);
         let id = ActorId::next();
         let monitors: MonitorTable = Arc::new(Mutex::new(Some(HashMap::new())));
         let trap_exit = new_trap_exit_flag();
@@ -1629,7 +1631,7 @@ mod idle_stop_regression {
     fn stop_while_receiving_does_not_dispatch_a_later_request() {
         let (tx, rx) = mpsc::channel();
         let token = CancellationToken::new();
-        let (_, completion_rx) = spawned_rt::tasks::watch::channel(None);
+        let (_, completion_rx) = spawned_rt::sync::watch::channel(None);
         let monitors = Arc::new(Mutex::new(Some(HashMap::new())));
         let events = Arc::new(Mutex::new(Vec::new()));
         let ctx = Context {
@@ -1745,7 +1747,7 @@ mod stop_wakeup_regression {
         let (tx, rx) = mpsc::channel();
         let token = CancellationToken::new();
         register_stop_wakeup(&token, tx.clone());
-        let (_, completion) = spawned_rt::tasks::watch::channel(None);
+        let (_, completion) = spawned_rt::sync::watch::channel(None);
         let ctx = Context {
             id: ActorId::next(),
             sender: tx,

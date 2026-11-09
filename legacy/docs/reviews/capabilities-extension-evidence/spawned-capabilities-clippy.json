@@ -1,0 +1,95 @@
+[
+  {
+    "name": "default",
+    "command": [
+      "cargo",
+      "clippy",
+      "--locked",
+      "--workspace",
+      "--all-targets",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "code": 0,
+    "seconds": 3.584178358083591,
+    "log": "/tmp/spawned-capabilities-clippy-default.log"
+  },
+  {
+    "name": "allfeatures",
+    "command": [
+      "cargo",
+      "clippy",
+      "--locked",
+      "--workspace",
+      "--all-targets",
+      "--all-features",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "code": 0,
+    "seconds": 4.599940895917825,
+    "log": "/tmp/spawned-capabilities-clippy-allfeatures.log"
+  },
+  {
+    "name": "native-bare",
+    "command": [
+      "cargo",
+      "clippy",
+      "--locked",
+      "-p",
+      "spawned-rt",
+      "-p",
+      "spawned-concurrency",
+      "--no-default-features",
+      "--all-targets",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "code": 0,
+    "seconds": 1.044845698052086,
+    "log": "/tmp/spawned-capabilities-clippy-native-bare.log"
+  },
+  {
+    "name": "native-metrics",
+    "command": [
+      "cargo",
+      "clippy",
+      "--locked",
+      "-p",
+      "spawned-rt",
+      "-p",
+      "spawned-concurrency",
+      "--no-default-features",
+      "--features",
+      "spawned-concurrency/metrics",
+      "--all-targets",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "code": 0,
+    "seconds": 1.5517715699970722,
+    "log": "/tmp/spawned-capabilities-clippy-native-metrics.log"
+  },
+  {
+    "name": "fixture",
+    "command": [
+      "cargo",
+      "clippy",
+      "--locked",
+      "--manifest-path",
+      "examples/thread_only/Cargo.toml",
+      "--features",
+      "metrics,async",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "code": 0,
+    "seconds": 4.091272337012924,
+    "log": "/tmp/spawned-capabilities-clippy-fixture.log"
+  }
+]

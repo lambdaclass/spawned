@@ -1,6 +1,6 @@
 # Execution groups plus supervision: MVP contract
 
-Status: **parked async groups + OneForOne implemented on main, unreleased**. Updated 2026-11-08.
+Status: **owned async/native/pinned groups and nested supervision strategies implemented on main, unreleased**. Updated 2026-11-08.
 See the [usage guide](../GUIDE.md#execution-groups-and-supervision) for actual signatures and supported limits.
 This document records the design contract; illustrative API shapes below are not copyable code.
 This is the next capability milestone, separate from the proposed 0.6.1 runtime
@@ -16,7 +16,7 @@ group with predictable resource, reference and shutdown behavior.
 |---|---|---|
 | 1a | Optional ActorSystem owning named execution groups, fallible group construction, placement, registered helper scopes and explicit shutdown | Critical router and background work on separate parked async pools; messages cross groups; partial construction unwinds; actors/helpers stop before group teardown. |
 | 1b | ChildSpec factories, OneForOne, restart modes, restart budget/backoff/jitter, readiness and internal lifecycle control | Fail one child, reconstruct it in its original group, reject an old instance reference, resolve the replacement explicitly, then shut down during restart backoff. |
-| Subsequent increments | Sized blocking pools and dedicated/pinned group profiles; OneForAll and RestForOne | Validate each profile's budgets/platform limits; exercise dependency-order restart and partial failure. |
+| Implemented follow-up | Sized persistent native actor pools and parked Linux pinned shards; nested supervisors, OneForAll and RestForOne | Resource/capacity contracts, explicit shards, ordered cohort barriers, retained subtree cleanup and partial-construction rollback tests. |
 
 Design 1a and 1b together before freezing the API. Ship each working increment
 with asserted examples and failure tests. Do not expose placeholder backend
@@ -73,7 +73,7 @@ application `tokio::spawn`: group teardown may abort it without an async
 admission. This distinction also applies to arbitrary native threads.
 
 Begin with owned parked async groups. Keep synchronization/ownership interfaces
-compatible with the planned Tokio-free build boundary. Additional profiles need
+compatible with the now-implemented Tokio-free native build boundary. Additional profiles need
 explicit contracts: blocking actors currently occupy a blocking worker for their
 whole lifetime; dedicated actors consume root threads and helper capacity;
 pinning needs platform support and fallible affinity setup. A worker count is
@@ -265,3 +265,13 @@ The [local Engine-client studies](../../legacy/research/client-observations/2026
 support explicit placement and worker budgets. A real client canary/replay is
 still needed before claiming a production performance benefit. Recovery policy
 has its own correctness gates; performance gains do not establish recovery safety.
+
+## Implemented follow-up contracts
+
+The [usage guide](../GUIDE.md#execution-groups-and-supervision) defines the current resource models,
+cohort policies and subtree API. Native pools lease one persistent worker per live
+scope; per-handler leasing remains research. Pinned groups are parked Linux
+reactors, with no spin policy. All actual cleanup precedes replacement; each retry
+factory (including collateral children) consumes the rolling restart budget.
+Nested adapters retain an uncancelled ownership lease through descendant cleanup.
+Thread-only native actors omit Tokio, while ActorSystem/supervision remain async.

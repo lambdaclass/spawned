@@ -14,8 +14,8 @@ static NEXT_MONITOR_ID: AtomicU64 = AtomicU64::new(1);
 /// Multiple independent monitors are allowed on the same target — each call
 /// to `monitor` returns a distinct `MonitorRef`.
 ///
-/// [`Context::monitor`]: crate::tasks::actor::Context::monitor
-/// [`Context::demonitor`]: crate::tasks::actor::Context::demonitor
+/// [`Context::monitor`]: crate::threads::Context::monitor
+/// [`Context::demonitor`]: crate::threads::Context::demonitor
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct MonitorRef(u64);
 
@@ -54,7 +54,7 @@ impl Message for Down {
 /// Each monitor owns a cancellation token that wakes its waiter immediately.
 pub(crate) type MonitorTable = std::sync::Arc<
     std::sync::Mutex<
-        Option<std::collections::HashMap<MonitorRef, spawned_rt::tasks::CancellationToken>>,
+        Option<std::collections::HashMap<MonitorRef, spawned_rt::sync::CancellationToken>>,
     >,
 >;
 

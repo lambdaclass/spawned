@@ -728,7 +728,7 @@ pub fn protocol(_attr: TokenStream, item: TokenStream) -> TokenStream {
         })
         .collect();
 
-    // Always generate blanket impls for both runtimes
+    // Gate async impls using the dependency feature namespace, not the consumer.
     let tasks = quote! { spawned_concurrency::tasks };
     let threads = quote! { spawned_concurrency::threads };
     let proto_info = ProtocolInfo {
@@ -740,7 +740,8 @@ pub fn protocol(_attr: TokenStream, item: TokenStream) -> TokenStream {
     };
     let tasks_impl = generate_blanket_impl(&proto_info, &methods, &tasks, RuntimeMode::Tasks);
     let threads_impl = generate_blanket_impl(&proto_info, &methods, &threads, RuntimeMode::Threads);
-    let blanket_impls = quote! { #tasks_impl #threads_impl };
+    let blanket_impls =
+        quote! { spawned_concurrency::__spawned_async_items! { #tasks_impl } #threads_impl };
 
     let ref_doc = format!(
         "Type-erased reference to any actor implementing [`{trait_name}`].\n\n\

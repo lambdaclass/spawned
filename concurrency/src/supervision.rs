@@ -25,6 +25,9 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod nested;
+pub use nested::{SupervisedSupervisor, SupervisorSpec};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RestartMode {
     Permanent,
@@ -82,8 +85,18 @@ impl Backoff {
     }
 }
 
+/// The affected children are fully joined before ordered reconstruction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SupervisorStrategy {
+    #[default]
+    OneForOne,
+    OneForAll,
+    RestForOne,
+}
+
 #[derive(Debug, Clone)]
 pub struct SupervisorConfig {
+    pub strategy: SupervisorStrategy,
     pub max_restarts: usize,
     pub restart_window: Duration,
     pub max_children: usize,
@@ -92,6 +105,7 @@ pub struct SupervisorConfig {
 impl Default for SupervisorConfig {
     fn default() -> Self {
         Self {
+            strategy: SupervisorStrategy::OneForOne,
             max_restarts: 5,
             restart_window: Duration::from_secs(30),
             max_children: 1024,
@@ -218,12 +232,53 @@ impl<A: Actor> ChildSpec<A> {
     }
 }
 
+struct RecoveryMeta {
+    id: u64,
+    origin: usize,
+    finished: std::sync::atomic::AtomicBool,
+}
+struct RecoverySlot {
+    meta: Arc<RecoveryMeta>,
+    stop: CancellationToken,
+    resume: CancellationToken,
+    cleaned: watch::Sender<bool>,
+    ready: watch::Sender<bool>,
+}
+impl RecoverySlot {
+    fn new(meta: Arc<RecoveryMeta>) -> Arc<Self> {
+        let (cleaned, _) = watch::channel(false);
+        let (ready, _) = watch::channel(false);
+        Arc::new(Self {
+            meta,
+            stop: CancellationToken::new(),
+            resume: CancellationToken::new(),
+            cleaned,
+            ready,
+        })
+    }
+}
+struct RecoveryQueue {
+    pending: Vec<bool>,
+    covered: Vec<u64>,
+    next_id: u64,
+}
+impl RecoveryQueue {
+    fn request(&mut self, index: usize, after: u64) -> bool {
+        if after < self.covered[index] {
+            return false;
+        }
+        self.pending[index] = true;
+        true
+    }
+}
 struct ViewData<A: Actor> {
+    recovery: Option<Arc<RecoverySlot>>,
     snapshot: ChildSnapshot,
     current: Option<ActorRef<A>>,
     scope: Option<Arc<Scope>>,
 }
 struct View<A: Actor> {
+    index: usize,
     data: Mutex<ViewData<A>>,
     gate: Arc<Admission>,
     changed: watch::Sender<u64>,
@@ -232,7 +287,7 @@ struct View<A: Actor> {
     done: watch::Sender<bool>,
     shutdown_timeout: Duration,
     /// 1-based declaration index: the model's child id in lifecycle traces.
-    index: usize,
+    trace_index: usize,
 }
 impl<A: Actor> View<A> {
     fn change(&self, f: impl FnOnce(&mut ViewData<A>)) {
@@ -240,6 +295,43 @@ impl<A: Actor> View<A> {
             f(&mut system::lock(&self.data));
         }
         self.changed.send_modify(|n| *n = n.wrapping_add(1));
+    }
+    fn recovery(&self, after: u64) -> Option<Arc<RecoverySlot>> {
+        system::lock(&self.data)
+            .recovery
+            .clone()
+            .filter(|r| r.meta.id > after)
+    }
+    async fn next_recovery(&self, after: u64) -> Arc<RecoverySlot> {
+        let mut changes = self.changed.subscribe();
+        loop {
+            changes.borrow_and_update();
+            if let Some(round) = self.recovery(after) {
+                return round;
+            }
+            let _ = changes.changed().await;
+        }
+    }
+    async fn recovery_stopping(&self, after: u64) {
+        self.next_recovery(after).await.stop.cancelled().await;
+    }
+    fn finish_unless_recovering(&self, after: u64, failed: bool) -> bool {
+        {
+            let mut data = system::lock(&self.data);
+            if !failed && data.recovery.as_ref().is_some_and(|r| r.meta.id > after) {
+                return false;
+            }
+            data.current = None;
+            data.scope = None;
+            data.snapshot.state = if failed {
+                ChildState::Failed
+            } else {
+                ChildState::Stopped
+            };
+        }
+        self.changed.send_modify(|n| *n = n.wrapping_add(1));
+        self.done.send_replace(true);
+        true
     }
     fn finish(&self, failed: bool) {
         self.change(|data| {
@@ -313,6 +405,8 @@ impl<A: Actor> SupervisedChild<A> {
 }
 
 trait ChildControl: Send + Sync {
+    fn assign_recovery(&self, slot: Arc<RecoverySlot>) -> bool;
+    fn stop_generation(&self, slot: &RecoverySlot);
     fn snapshot(&self) -> ChildSnapshot;
     fn close_admission(&self);
     fn stop(&self);
@@ -322,6 +416,34 @@ trait ChildControl: Send + Sync {
     fn finish_unstarted(&self);
 }
 impl<A: Actor> ChildControl for View<A> {
+    fn assign_recovery(&self, slot: Arc<RecoverySlot>) -> bool {
+        let old = {
+            let mut data = system::lock(&self.data);
+            if matches!(
+                data.snapshot.state,
+                ChildState::Stopped | ChildState::Failed
+            ) {
+                return false;
+            }
+            let old = data.recovery.replace(slot);
+            data.current = None;
+            data.snapshot.state = ChildState::Stopping;
+            if let Some(scope) = &data.scope {
+                scope.close_admission();
+            }
+            old
+        };
+        drop(old);
+        self.changed.send_modify(|n| *n = n.wrapping_add(1));
+        true
+    }
+    fn stop_generation(&self, slot: &RecoverySlot) {
+        slot.stop.cancel();
+        let scope = system::lock(&self.data).scope.clone();
+        if let Some(scope) = scope {
+            scope.stop(ExitReason::Shutdown);
+        }
+    }
     fn snapshot(&self) -> ChildSnapshot {
         system::lock(&self.data).snapshot.clone()
     }
@@ -383,12 +505,15 @@ impl RetryBudget {
 }
 
 struct Core {
+    recovery: Mutex<RecoveryQueue>,
+    recovery_changed: watch::Sender<u64>,
     gate: Arc<Admission>,
     cancel: CancellationToken,
     admission_closed: CancellationToken,
     done: watch::Sender<bool>,
     ready: watch::Sender<bool>,
     failure: Mutex<Option<String>>,
+    cleanup_failure: Mutex<Option<String>>,
     children: Mutex<Vec<Arc<dyn ChildControl>>>,
     budget: Mutex<RetryBudget>,
     config: SupervisorConfig,
@@ -439,6 +564,32 @@ impl Core {
         }
         drop(failure);
         self.close();
+    }
+    fn record_cleanup_failure(&self, error: &str) {
+        let mut failure = system::lock(&self.cleanup_failure);
+        if failure.is_none() {
+            *failure = Some(error.to_string());
+        }
+    }
+    fn fail_cleanup(&self, error: String) {
+        self.record_cleanup_failure(&error);
+        self.fail(error);
+    }
+    fn fail_cleanup_as(&self, error: String, event: impl FnOnce() -> Option<Event>) {
+        self.record_cleanup_failure(&error);
+        self.fail_as(error, event);
+    }
+    fn request_recovery(&self, index: usize, after: u64) {
+        self.gate.if_open(|| {
+            let mut queue = system::lock(&self.recovery);
+            // The coordinator publishes coverage before assigning per-child slots.
+            // A late report for an older generation is absorbed by that round.
+            if !queue.request(index, after) {
+                return;
+            }
+            self.recovery_changed
+                .send_modify(|n| *n = n.wrapping_add(1));
+        });
     }
     /// `fail` as part of the model action `event` (whose `Fail` closes the
     /// gate), so the gate flip is not traced as a separate `Close`.
@@ -508,7 +659,13 @@ impl<A: Actor> Runner for TypedRunner<A> {
                         "child controller panicked: {}",
                         crate::error::panic_message(&*payload)
                     ),
-                    || Some(Event::new("Unmodelled", view.index, "ControllerPanicked")),
+                    || {
+                        Some(Event::new(
+                            "Unmodelled",
+                            view.trace_index,
+                            "ControllerPanicked",
+                        ))
+                    },
                 );
                 let scope = system::lock(&view.data).scope.clone();
                 if let Some(scope) = scope {
@@ -532,6 +689,12 @@ impl SupervisorBuilder {
         system: &ActorSystem,
         config: SupervisorConfig,
     ) -> Result<Self, SupervisorError> {
+        Self::from_owner(Arc::downgrade(&system.inner), config)
+    }
+    fn from_owner(
+        owner: Weak<system::SystemInner>,
+        config: SupervisorConfig,
+    ) -> Result<Self, SupervisorError> {
         if config.restart_window.is_zero()
             || config.max_children == 0
             || config.max_children > 65536
@@ -544,13 +707,21 @@ impl SupervisorBuilder {
         }
         let (done, _) = watch::channel(false);
         let (ready, _) = watch::channel(false);
+        let (recovery_changed, _) = watch::channel(0);
         let core = Arc::new(Core {
+            recovery: Mutex::new(RecoveryQueue {
+                pending: Vec::new(),
+                covered: Vec::new(),
+                next_id: 1,
+            }),
+            recovery_changed,
             gate: Admission::new(),
             cancel: CancellationToken::new(),
             admission_closed: CancellationToken::new(),
             done,
             ready,
             failure: Mutex::new(None),
+            cleanup_failure: Mutex::new(None),
             children: Mutex::new(Vec::new()),
             budget: Mutex::new(RetryBudget {
                 attempts: VecDeque::new(),
@@ -563,7 +734,7 @@ impl SupervisorBuilder {
             deadline_recorded: Default::default(),
         });
         Ok(Self {
-            owner: Arc::downgrade(&system.inner),
+            owner,
             core,
             runners: Vec::new(),
             started: false,
@@ -577,6 +748,12 @@ impl SupervisorBuilder {
         self.core.trace.0
     }
 
+    pub fn add_supervisor(
+        &mut self,
+        spec: SupervisorSpec,
+    ) -> Result<SupervisedSupervisor, SupervisorError> {
+        nested::add(self, spec)
+    }
     pub fn add<A: Actor>(
         &mut self,
         spec: ChildSpec<A>,
@@ -605,7 +782,9 @@ impl SupervisorBuilder {
         let (initial, _) = watch::channel(false);
         let (done, _) = watch::channel(false);
         let view = Arc::new(View {
+            index: children.len(),
             data: Mutex::new(ViewData {
+                recovery: None,
                 snapshot: ChildSnapshot {
                     name: spec.name.clone(),
                     state: ChildState::Waiting,
@@ -623,9 +802,14 @@ impl SupervisorBuilder {
             done,
             stop_turn: CancellationToken::new(),
             shutdown_timeout: spec.shutdown_timeout,
-            index: children.len() + 1,
+            trace_index: children.len() + 1,
         });
         children.push(view.clone());
+        {
+            let mut queue = system::lock(&self.core.recovery);
+            queue.pending.push(false);
+            queue.covered.push(0);
+        }
         self.runners.push(Box::new(TypedRunner {
             spec,
             view: view.clone(),
@@ -635,10 +819,15 @@ impl SupervisorBuilder {
 
     /// Start children in declaration order. Cancellation of this startup future
     /// requests cleanup; it does not leave an orphaned background tree.
-    pub async fn start(mut self) -> Result<Supervisor, SupervisorError> {
+    pub async fn start(self) -> Result<Supervisor, SupervisorError> {
+        self.start_owned(true).await
+    }
+    async fn start_owned(mut self, register_root: bool) -> Result<Supervisor, SupervisorError> {
         let owner = self.owner.upgrade().ok_or(SystemError::Closed)?;
         // Registration and controller dispatch happen without an intervening await.
-        owner.register_unit(self.core.clone())?;
+        if register_root {
+            owner.register_unit(self.core.clone())?;
+        }
         self.started = true;
         let runners = std::mem::take(&mut self.runners);
         let core = self.core.clone();
@@ -672,6 +861,7 @@ impl Drop for SupervisorBuilder {
             for child in system::lock(&self.core.children).iter() {
                 child.finish_unstarted();
             }
+            self.core.done.send_replace(true);
         }
     }
 }
@@ -739,6 +929,23 @@ impl Supervisor {
 async fn run_supervisor(core: Arc<Core>, runners: Vec<Box<dyn Runner>>) {
     let children = system::lock(&core.children).clone();
     let mut tasks = Vec::new();
+    let coordination = if core.config.strategy == SupervisorStrategy::OneForOne {
+        None
+    } else {
+        let coordinator = core.clone();
+        Some(rt::spawn(async move {
+            if let Err(payload) = AssertUnwindSafe(run_recoveries(coordinator.clone()))
+                .catch_unwind()
+                .await
+            {
+                coordinator.fail(format!(
+                    "recovery coordinator panicked: {}",
+                    crate::error::panic_message(&*payload)
+                ));
+                coordinator.stop_remaining();
+            }
+        }))
+    };
     for (index, runner) in runners.into_iter().enumerate() {
         let open = trace::atomic(|| {
             let open = core.gate.is_open();
@@ -772,6 +979,9 @@ async fn run_supervisor(core: Arc<Core>, runners: Vec<Box<dyn Runner>>) {
             core.ready.send_replace(true);
         }
     });
+    if !core.gate.is_open() {
+        core.close();
+    }
     core.cancel.cancelled().await;
     trace::emit(core.trace, || Event::sup("SupCancelSeen"));
     for (index, child) in children.iter().enumerate().rev() {
@@ -787,7 +997,7 @@ async fn run_supervisor(core: Arc<Core>, runners: Vec<Box<dyn Runner>>) {
             if finished || *child.done().borrow() {
                 trace::emit(core.trace, || Event::new("SupChildDone", c, ""));
             } else {
-                core.fail_as(
+                core.fail_cleanup_as(
                     format!("child cleanup deadline exceeded: {}", child.snapshot().name),
                     || Some(Event::new("SupChildTimeout", c, "")),
                 );
@@ -801,14 +1011,150 @@ async fn run_supervisor(core: Arc<Core>, runners: Vec<Box<dyn Runner>>) {
             });
         }
     }
+    if let Some(coordination) = coordination {
+        if let Err(error) = coordination.await {
+            core.fail(format!("recovery coordinator failed: {error}"));
+        }
+    }
     trace::atomic(|| {
         trace::emit(core.trace, || Event::sup("SupJoin"));
         core.done.send_replace(true);
     });
 }
 
+async fn run_recoveries(core: Arc<Core>) {
+    let children = system::lock(&core.children).clone();
+    let mut changes = core.recovery_changed.subscribe();
+    'rounds: loop {
+        changes.borrow_and_update();
+        if !core.gate.is_open() {
+            return;
+        }
+        let round = {
+            let mut queue = system::lock(&core.recovery);
+            queue
+                .pending
+                .iter()
+                .position(|pending| *pending)
+                .map(|origin| {
+                    let start = if core.config.strategy == SupervisorStrategy::OneForAll {
+                        0
+                    } else {
+                        origin
+                    };
+                    for pending in &mut queue.pending[start..] {
+                        *pending = false;
+                    }
+                    let id = queue.next_id;
+                    queue.next_id = id.checked_add(1).expect("recovery IDs exhausted");
+                    queue.covered[start..].fill(id);
+                    let meta = Arc::new(RecoveryMeta {
+                        id,
+                        origin,
+                        finished: std::sync::atomic::AtomicBool::new(false),
+                    });
+                    (start, meta)
+                })
+        };
+        let Some((start, meta)) = round else {
+            if matches!(
+                select(
+                    Box::pin(core.admission_closed.cancelled()),
+                    Box::pin(changes.changed())
+                )
+                .await,
+                Either::Left(_)
+            ) {
+                return;
+            }
+            continue;
+        };
+        let mut affected = Vec::new();
+        for child in children.iter().skip(start) {
+            let slot = RecoverySlot::new(meta.clone());
+            if child.assign_recovery(slot.clone()) {
+                affected.push((child.clone(), slot));
+            }
+        }
+        for (child, slot) in affected.iter().rev() {
+            if !core.gate.is_open() {
+                return;
+            }
+            child.stop_generation(slot);
+            match select(
+                Box::pin(core.admission_closed.cancelled()),
+                Box::pin(rt::timeout(
+                    child.shutdown_timeout(),
+                    system::wait_true(slot.cleaned.subscribe()),
+                )),
+            )
+            .await
+            {
+                Either::Left(_) => return,
+                Either::Right((Ok(true), _)) => (),
+                _ => {
+                    core.fail_cleanup(format!(
+                        "coordinated cleanup stuck for {}",
+                        child.snapshot().name
+                    ));
+                    core.stop_remaining();
+                    return;
+                }
+            }
+        }
+        for (_, slot) in &affected {
+            if !core.gate.is_open() {
+                return;
+            }
+            if system::lock(&core.recovery)
+                .pending
+                .iter()
+                .any(|pending| *pending)
+            {
+                meta.finished
+                    .store(true, std::sync::atomic::Ordering::Release);
+                continue 'rounds;
+            }
+            slot.resume.cancel();
+            loop {
+                changes.borrow_and_update();
+                // A ready upstream or previously unaffected dependency can fail
+                // while this child initializes. Supersede the round rather than
+                // await a dependent that cannot start without that upstream.
+                if system::lock(&core.recovery)
+                    .pending
+                    .iter()
+                    .any(|pending| *pending)
+                {
+                    meta.finished
+                        .store(true, std::sync::atomic::Ordering::Release);
+                    continue 'rounds;
+                }
+                match select(
+                    Box::pin(core.admission_closed.cancelled()),
+                    Box::pin(select(
+                        Box::pin(system::wait_true(slot.ready.subscribe())),
+                        Box::pin(changes.changed()),
+                    )),
+                )
+                .await
+                {
+                    Either::Left(_) => return,
+                    Either::Right((Either::Left((true, _)), _)) => break,
+                    Either::Right((Either::Left((false, _)), _)) => return,
+                    Either::Right((Either::Right(_), _)) => (),
+                }
+            }
+        }
+        meta.finished
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+}
+
 async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, core: Arc<Core>) {
     let mut first = true;
+    let mut last_recovery = 0;
+    let mut collateral = false;
     let mut failures = 0u32;
     let seed = core.config.backoff.seed.unwrap_or_else(|| {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -824,7 +1170,7 @@ async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, core: Arc<C
             .name
             .bytes()
             .fold(0u64, |a, b| a.wrapping_mul(31).wrapping_add(b as u64));
-    let c = view.index;
+    let c = view.trace_index;
     loop {
         let open = trace::atomic(|| {
             let open = core.gate.is_open();
@@ -841,6 +1187,45 @@ async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, core: Arc<C
         if !open {
             break;
         }
+        if let Some(round) = view.recovery(last_recovery) {
+            if matches!(
+                select(
+                    Box::pin(core.admission_closed.cancelled()),
+                    Box::pin(round.stop.cancelled())
+                )
+                .await,
+                Either::Left(_)
+            ) {
+                break;
+            }
+            round.cleaned.send_replace(true);
+            match select(
+                Box::pin(core.admission_closed.cancelled()),
+                Box::pin(select(
+                    Box::pin(view.next_recovery(round.meta.id)),
+                    Box::pin(round.resume.cancelled()),
+                )),
+            )
+            .await
+            {
+                Either::Left(_) => break,
+                Either::Right((Either::Left(_), _)) => continue,
+                Either::Right((Either::Right(_), _)) => (),
+            }
+            last_recovery = round.meta.id;
+            if spec.restart == RestartMode::Temporary {
+                let failed = system::lock(&core.failure).is_some();
+                // Publish terminal state under the same lock as assignment before
+                // acknowledging the round. A superseding coordinator must either
+                // skip this finished slot or be serviced by this controller.
+                if view.finish_unless_recovering(last_recovery, failed) {
+                    round.ready.send_replace(true);
+                    return;
+                }
+                continue;
+            }
+            collateral = round.meta.origin != view.index;
+        }
         if !first {
             if core.config.max_restarts == 0 {
                 // A concurrent stop wins: only fail a supervisor that is still open.
@@ -855,19 +1240,32 @@ async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, core: Arc<C
                 });
                 break;
             }
-            let delay = core.config.backoff.delay(failures, &mut rng);
-            failures = failures.saturating_add(1);
+            let delay = if collateral {
+                Duration::ZERO
+            } else {
+                core.config.backoff.delay(failures, &mut rng)
+            };
+            if !collateral {
+                failures = failures.saturating_add(1);
+            }
+            collateral = false;
             view.change(|v| v.snapshot.state = ChildState::Backoff);
             if matches!(
                 select(
                     Box::pin(core.admission_closed.cancelled()),
-                    Box::pin(rt::sleep(delay))
+                    Box::pin(select(
+                        Box::pin(view.recovery_stopping(last_recovery)),
+                        Box::pin(rt::sleep(delay))
+                    ))
                 )
                 .await,
                 Either::Left(_)
             ) {
                 trace::emit(core.trace, || Event::new("BackoffDone", c, "closed"));
                 break;
+            }
+            if view.recovery(last_recovery).is_some() {
+                continue;
             }
             let retried = trace::atomic(|| {
                 let retried = core.retry(c);
@@ -904,16 +1302,25 @@ async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, core: Arc<C
             }
         };
         let generation = trace::atomic(|| {
-            let generation = core.gate.if_open(|| {
-                view.change(|v| {
-                    v.snapshot.generation += 1;
-                    v.snapshot.state = ChildState::Starting;
-                    v.snapshot.actor_id = None;
-                    v.current = None;
-                    v.scope = Some(scope.clone());
-                });
-                system::lock(&view.data).snapshot.generation
-            });
+            let generation = core
+                .gate
+                .if_open(|| {
+                    let mut data = system::lock(&view.data);
+                    if data
+                        .recovery
+                        .as_ref()
+                        .is_some_and(|r| r.meta.id > last_recovery)
+                    {
+                        return None;
+                    }
+                    data.snapshot.generation += 1;
+                    data.snapshot.state = ChildState::Starting;
+                    data.snapshot.actor_id = None;
+                    data.current = None;
+                    data.scope = Some(scope.clone());
+                    Some(data.snapshot.generation)
+                })
+                .flatten();
             trace::emit(core.trace, || {
                 Event::new("Attempt", c, trace::flag(generation.is_some()))
             });
@@ -922,8 +1329,13 @@ async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, core: Arc<C
         let Some(generation) = generation else {
             scope.stop(ExitReason::Shutdown);
             drop(lease);
-            break;
+            if core.gate.is_open() {
+                continue;
+            } else {
+                break;
+            }
         };
+        view.changed.send_modify(|n| *n = n.wrapping_add(1));
         let ctx = FactoryContext {
             scope: scope.clone(),
             generation,
@@ -994,21 +1406,33 @@ async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, core: Arc<C
                     let published = core
                         .gate
                         .if_open(|| {
-                            view.change(|v| {
-                                v.snapshot.state = ChildState::Running;
-                                v.snapshot.actor_id = Some(actor.id());
-                                v.current = Some(actor.clone());
-                            })
+                            let mut data = system::lock(&view.data);
+                            if data
+                                .recovery
+                                .as_ref()
+                                .is_some_and(|r| r.meta.id > last_recovery)
+                            {
+                                return false;
+                            }
+                            data.snapshot.state = ChildState::Running;
+                            data.snapshot.actor_id = Some(actor.id());
+                            data.current = Some(actor.clone());
+                            true
                         })
-                        .is_some();
+                        .unwrap_or(false);
                     trace::emit(core.trace, || {
                         Event::new("BecomeReady", c, trace::flag(published))
                     });
                     published
                 });
+                view.changed.send_modify(|n| *n = n.wrapping_add(1));
                 if published {
                     ready_at = Some(Instant::now());
                     view.initial.send_replace(true);
+                    let round = system::lock(&view.data).recovery.clone();
+                    if let Some(round) = round.filter(|r| r.meta.id == last_recovery) {
+                        round.ready.send_replace(true);
+                    }
                     let child = actor.child_handle();
                     // Cancellation precedes terminal publication when stopped()
                     // hangs. Start its cleanup deadline at stop observation,
@@ -1047,7 +1471,7 @@ async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, core: Arc<C
                                     });
                                 }
                                 stuck = true;
-                                core.fail_as(
+                                core.fail_cleanup_as(
                                     format!("actor cleanup stuck for {}", spec.name),
                                     || Some(Event::new("CleanupStuck", c, "")),
                                 );
@@ -1076,7 +1500,7 @@ async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, core: Arc<C
             .map(|started| spec.shutdown_timeout.saturating_sub(started.elapsed()))
             .unwrap_or(spec.shutdown_timeout);
         if rt::timeout(remaining, scope.joined()).await.is_err() {
-            core.fail_as(format!("owned cleanup stuck for {}", spec.name), || {
+            core.fail_cleanup_as(format!("owned cleanup stuck for {}", spec.name), || {
                 if stuck {
                     return None;
                 }
@@ -1113,6 +1537,9 @@ async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, core: Arc<C
             }
             v.scope = None;
         });
+        if core.gate.is_open() && view.recovery(last_recovery).is_some() {
+            continue;
+        }
         // Computed before the gate check (local state only) so that the
         // traced Decide records the decision taken at that check.
         if scope.was_stable(core.config.backoff.stable_after) {
@@ -1139,6 +1566,22 @@ async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, core: Arc<C
                 return false;
             }
             if restart {
+                if core.config.strategy != SupervisorStrategy::OneForOne
+                    && !*core.ready.borrow()
+                    && ready_at.is_some()
+                {
+                    // A dependency already published ready but died before the
+                    // initial tree committed. Roll back the whole startup rather
+                    // than leave later factories bound to its obsolete instance.
+                    core.fail_as(
+                        format!(
+                            "ready child exited during initial tree startup: {}",
+                            spec.name
+                        ),
+                        || Some(Event::new("Unmodelled", c, "InitialCohortFailed")),
+                    );
+                    return false;
+                }
                 trace::emit(core.trace, || Event::new("Decide", c, "restart"));
                 return true;
             }
@@ -1153,7 +1596,35 @@ async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, core: Arc<C
             false
         });
         if !again {
-            break;
+            if core.config.strategy == SupervisorStrategy::OneForOne || !core.gate.is_open() {
+                break;
+            }
+            let failed = system::lock(&core.failure).is_some();
+            if view.finish_unless_recovering(last_recovery, failed) {
+                return;
+            }
+            continue;
+        }
+        let in_initial_cohort = system::lock(&view.data).recovery.as_ref().is_some_and(|r| {
+            r.meta.id == last_recovery
+                && !*r.ready.borrow()
+                && !r.meta.finished.load(std::sync::atomic::Ordering::Acquire)
+        });
+        if core.config.strategy != SupervisorStrategy::OneForOne
+            && *core.ready.borrow()
+            && !in_initial_cohort
+        {
+            core.request_recovery(view.index, last_recovery);
+            if matches!(
+                select(
+                    Box::pin(core.admission_closed.cancelled()),
+                    Box::pin(view.next_recovery(last_recovery))
+                )
+                .await,
+                Either::Left(_)
+            ) {
+                break;
+            }
         }
     }
     // Record Finish and publish completion together, so the supervisor's
@@ -1167,6 +1638,24 @@ async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, core: Arc<C
 #[cfg(test)]
 mod policy_tests {
     use super::*;
+    #[test]
+    fn delayed_failure_notifications_are_absorbed_by_the_already_assigned_round() {
+        let mut queue = RecoveryQueue {
+            pending: vec![false; 3],
+            covered: vec![0; 3],
+            next_id: 1,
+        };
+        assert!(queue.request(1, 0));
+        queue.pending.fill(false);
+        // The coordinator publishes coverage before per-child assignment.
+        queue.covered[1..].fill(1);
+        assert!(!queue.request(2, 0));
+        assert!(!queue.pending.iter().any(|value| *value));
+        // A new failure in a reconstructed generation must still be admitted.
+        assert!(queue.request(2, 1));
+        assert!(queue.request(0, 0)); // unaffected upstream in RestForOne
+    }
+
     #[test]
     fn retry_window_releases_capacity_at_boundary_and_does_not_bank_unused_retries() {
         let now = Instant::now();

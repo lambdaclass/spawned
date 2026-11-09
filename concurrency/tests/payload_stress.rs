@@ -1,3 +1,4 @@
+#![cfg(feature = "async")]
 //! Bounded unique-payload pressure, including shutdown with an admitted backlog.
 #[path = "support/failure_actor.rs"]
 mod actor;

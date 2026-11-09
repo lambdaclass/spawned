@@ -1,3 +1,4 @@
+#![cfg(feature = "async")]
 use spawned_concurrency::{
     message::Message,
     supervision::{Backoff, ChildSpec, RestartMode, SupervisorConfig},

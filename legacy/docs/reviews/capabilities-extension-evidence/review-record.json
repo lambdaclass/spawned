@@ -1,0 +1,40 @@
+{
+  "base": "1c450780148547d7c834d7bc26d6ec440c782dc2",
+  "review_type": "AGY supplied-source static review, not independent execution",
+  "unsafe_policy": "forbid(unsafe_code) retained in all library crates; no unsafe exception",
+  "limits": {
+    "cpus": [
+      2,
+      3,
+      4,
+      5
+    ],
+    "nice": 10,
+    "build_jobs": 1,
+    "test_threads": 4,
+    "rss_kib": 2097152,
+    "per_check_timeout_seconds": 1800
+  },
+  "scope": "Tokio-free native build, nested/cohort supervision, owned native/pinned execution groups",
+  "formal_scope": "Existing OneForOne model/traces only; cohort/nested semantics not formally verified",
+  "supervision_review": "capabilities-agy-final.json",
+  "final_review_notes": [
+    "Low readiness-commit boundary race can return a ready handle immediately before tree failure; handle readiness does not promise future liveness.",
+    "Finish trace events for coordinated strategy early returns are not yet complete; model covers only OneForOne."
+  ],
+  "native_wakeup_review": "native-parker-agy.json",
+  "debug_profile": "CARGO_PROFILE_TEST_DEBUG=1 and CARGO_PROFILE_DEV_DEBUG=1 after a debug=2 compiler-only memory cap failure",
+  "server_validation": "All 19 matrix/example checks, five strict Clippy configurations, six native runtime tests and 20 stress repetitions passed.",
+  "trace_validation": "TLC accepted all 20 recorded OneForOne traces; no cohort/nested formal verification claim.",
+  "test_only_followup": "Cancellation-waker probe now records unexpected wakes and asserts immediate Arc reclamation; stricter Clippy found the previous no-op implementation. Runtime behavior unchanged.",
+  "documentation_rebase": {
+    "base": "17395709",
+    "prior_reviewed_commit": "1d64254b",
+    "compiled_files_compared": 172,
+    "comment_only_changes": [
+      "concurrency/benches/designs.rs",
+      "concurrency/src/metrics.rs"
+    ],
+    "note": "Reviewed/validated runtime code and build configuration preserved; guide/roadmap/review archive follow #193 layout."
+  }
+}

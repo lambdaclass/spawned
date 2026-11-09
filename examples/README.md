@@ -23,7 +23,10 @@ Usage of each feature is documented in the [guide](../docs/GUIDE.md).
 | Global registry (`registry::register`/`whereis`) | [service_discovery](service_discovery) | gap |
 | Exit reasons, `join`, `wait_exit`, monitors, links, trapped exits | [exit_reason](exit_reason) | gap |
 | Execution groups (`ActorSystem`, `start_on`, owned helpers), unreleased | [execution_groups](capabilities/src/bin/execution_groups.rs) | n/a |
-| OneForOne supervision, unreleased | [supervision_recovery](capabilities/src/bin/supervision_recovery.rs) | n/a |
+| Supervision, unreleased | [supervision_recovery](capabilities/src/bin/supervision_recovery.rs) | n/a |
+| Fixed native actor pools / parked Linux pinned shards, unreleased | [execution_profiles](capabilities/src/bin/execution_profiles.rs) | n/a |
+| Nested supervisors, OneForAll / RestForOne, unreleased | [supervision_tree](capabilities/src/bin/supervision_tree.rs) | n/a |
+| Tokio-free dependency graph, protocols, lifecycle, monitors and links, unreleased | n/a | [thread_only](thread_only/README.md) (isolated workspace) |
 | Actors on separate runtimes | [runtime_isolation](capabilities/src/bin/runtime_isolation.rs) | n/a |
 | Request timeout outcomes | [timeout_outcomes](capabilities/src/bin/timeout_outcomes.rs) | gap |
 | Draining a finite batch before stop | [graceful_drain](capabilities/src/bin/graceful_drain.rs) | gap |
@@ -36,8 +39,9 @@ threads mode but has no example yet.
 ## Gaps
 
 These features ship today without a dedicated example: stream listeners
-(`spawn_listener`), `Recipient<M>` type erasure, `request_with_timeout`, monitors
-and links in thread mode, `ctx.register_name`, and testing actors. The
+(`spawn_listener`), `Recipient<M>` type erasure, `request_with_timeout`,
+`ctx.register_name`, and testing actors. The isolated thread-only example now
+covers native monitors and links. The
 [roadmap's examples to add](../ROADMAP.md#examples-to-add) describes the example
 each should get, plus the examples planned with future capabilities. When a
 feature lands, add its runnable, asserted example and a row here in the same

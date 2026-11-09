@@ -21,7 +21,9 @@ pub use std::{
     thread::{sleep, spawn, JoinHandle},
 };
 
-use crate::{tasks::Runtime, tracing::init_tracing};
+#[cfg(feature = "async")]
+use crate::tasks::Runtime;
+use crate::tracing::init_tracing;
 
 /// Global list of Ctrl+C subscribers
 static CTRL_C_SUBSCRIBERS: OnceLock<Mutex<Vec<std_mpsc::Sender<()>>>> = OnceLock::new();
@@ -39,6 +41,7 @@ pub fn run(f: fn()) {
 /// additional worker, so they can progress while that thread blocks. Tokio may
 /// create further threads for `spawn_blocking`, filesystem or DNS operations.
 /// The worker count is explicit and independent of `TOKIO_WORKER_THREADS`.
+#[cfg(feature = "async")]
 pub fn block_on<F: Future>(future: F) -> F::Output {
     #[cfg(feature = "backend-experiments")]
     if std::env::var("SPAWNED_EXPERIMENT_RUNTIME").as_deref() == Ok("managed") {
@@ -74,6 +77,7 @@ pub fn block_on<F: Future>(future: F) -> F::Output {
 
 // Keep a multithread runtime for block_in_place and independently scheduled
 // helpers, but never allocate a machine-sized worker pool for each actor.
+#[cfg(feature = "async")]
 fn isolated_runtime() -> Runtime {
     tokio::runtime::Builder::new_multi_thread()
         .worker_threads(1)
@@ -202,5 +206,95 @@ pub fn ctrl_c() -> impl FnOnce() + Send + 'static {
 
     move || {
         let _ = rx.recv();
+    }
+}
+
+/// Park the caller while polling an executor-independent future. Thread-only
+/// builds have no Tokio reactor, timer driver or implicit helper workers.
+#[cfg(not(feature = "async"))]
+pub fn block_on<F: Future>(future: F) -> F::Output {
+    use std::task::{Context, Poll, Wake, Waker};
+    struct Parker {
+        notified: std::sync::Mutex<bool>,
+        signal: std::sync::Condvar,
+    }
+    impl Parker {
+        fn notify(&self) {
+            *self.notified.lock().unwrap_or_else(|p| p.into_inner()) = true;
+            self.signal.notify_one();
+        }
+        fn wait(&self) {
+            let mut notified = self.notified.lock().unwrap_or_else(|p| p.into_inner());
+            while !*notified {
+                notified = self
+                    .signal
+                    .wait(notified)
+                    .unwrap_or_else(|p| p.into_inner());
+            }
+            *notified = false;
+        }
+    }
+    impl Wake for Parker {
+        fn wake(self: std::sync::Arc<Self>) {
+            self.notify();
+        }
+        fn wake_by_ref(self: &std::sync::Arc<Self>) {
+            self.notify();
+        }
+    }
+    // Each invocation owns its wake permit. Nested blocking waits must not
+    // consume a wake intended for their caller's still-pending future.
+    let parker = std::sync::Arc::new(Parker {
+        notified: std::sync::Mutex::new(false),
+        signal: std::sync::Condvar::new(),
+    });
+    let waker = Waker::from(parker.clone());
+    let mut context = Context::from_waker(&waker);
+    let mut future = std::pin::pin!(future);
+    loop {
+        match future.as_mut().poll(&mut context) {
+            Poll::Ready(value) => return value,
+            Poll::Pending => parker.wait(),
+        }
+    }
+}
+
+#[cfg(all(test, not(feature = "async")))]
+mod parking_tests {
+    #[test]
+    fn nested_block_on_does_not_consume_the_outer_futures_wakeup() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let mut outer_polled = false;
+            let value = super::block_on(std::future::poll_fn(|cx| {
+                if outer_polled {
+                    return std::task::Poll::Ready(42);
+                }
+                outer_polled = true;
+                cx.waker().wake_by_ref();
+                let mut inner_polled = false;
+                super::block_on(std::future::poll_fn(|inner| {
+                    if inner_polled {
+                        std::task::Poll::Ready(())
+                    } else {
+                        inner_polled = true;
+                        inner.waker().wake_by_ref();
+                        std::task::Poll::Pending
+                    }
+                }));
+                std::task::Poll::Pending
+            }));
+            tx.send(value).unwrap();
+        });
+        let result = rx.recv_timeout(std::time::Duration::from_secs(1));
+        if result.is_err() {
+            // Rescue the old shared-thread-token executor so a regression is a
+            // finite assertion failure rather than a hanging test process.
+            worker.thread().unpark();
+            let _ = rx.recv_timeout(std::time::Duration::from_secs(1));
+        }
+        let value = result.expect("inner executor consumed the outer wake");
+        worker.join().unwrap();
+        assert_eq!(value, 42);
     }
 }

@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex, Weak};
 /// Without trapping, a linked actor's death cancels the receiver's actor
 /// instead of delivering this message.
 ///
-/// [`Context::trap_exit(true)`]: crate::tasks::actor::Context::trap_exit
+/// [`Context::trap_exit(true)`]: crate::threads::Context::trap_exit
 #[derive(Debug, Clone, PartialEq)]
 pub struct Exit {
     /// The actor that died.

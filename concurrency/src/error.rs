@@ -70,6 +70,7 @@ impl<T> From<spawned_rt::threads::mpsc::SendError<T>> for ActorError {
     }
 }
 
+#[cfg(feature = "async")]
 impl<T> From<spawned_rt::tasks::mpsc::SendError<T>> for ActorError {
     fn from(_value: spawned_rt::tasks::mpsc::SendError<T>) -> Self {
         Self::ActorStopped

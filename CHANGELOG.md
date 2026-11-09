@@ -18,6 +18,18 @@
 - Optional `lifecycle-trace` feature (off by default, compiled out otherwise):
   the supervisor records one event per action of its TLA+ model so recorded runs
   can be checked against the model. No behavior or cost change when disabled.
+- Nested supervisor child specs and OneForAll/RestForOne strategies. Affected
+  scopes stop in reverse order, join actual cleanup, then reconstruct in order.
+  Collateral factory attempts count against the shared restart budget.
+- Parked Linux pinned runtime shards and sized persistent native actor-thread
+  pools sharing one helper runtime. Native slots reject excess admission and
+  remain reserved through helper cleanup. Group shutdown joins native owners
+  before completion, including runtime/thread-local teardown.
+- Tokio-free synchronous builds with `async` defaults disabled, std lifecycle
+  synchronization, feature-aware protocol generation and an isolated graph check.
+  ActorSystem/supervision remain async-only; default async behavior is retained.
+- Asserted execution-profile, nested recovery and thread-only examples, feature
+  matrix CI and lifecycle/resource-failure tests.
 
 These capabilities are unreleased and require the next minor release; do not
 publish these new public APIs as a patch release. The dedicated-runtime fix

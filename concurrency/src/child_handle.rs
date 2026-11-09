@@ -35,9 +35,10 @@ impl std::fmt::Display for ActorId {
 #[derive(Clone)]
 pub(crate) enum Completion {
     /// Tasks mode: watch channel carrying Option<ExitReason>.
-    Tasks(spawned_rt::tasks::watch::Receiver<Option<ExitReason>>),
+    #[cfg(feature = "async")]
+    Tasks(spawned_rt::sync::watch::Receiver<Option<ExitReason>>),
     /// Threads mode: watch channel, also waitable without an async runtime.
-    Threads(spawned_rt::tasks::watch::Receiver<Option<ExitReason>>),
+    Threads(spawned_rt::sync::watch::Receiver<Option<ExitReason>>),
 }
 
 // ---------------------------------------------------------------------------
@@ -79,10 +80,11 @@ impl std::fmt::Debug for ChildHandle {
 impl ChildHandle {
     /// Create a ChildHandle for tasks mode.
     #[allow(clippy::too_many_arguments)]
+    #[cfg(feature = "async")]
     pub(crate) fn from_tasks(
         id: ActorId,
         cancellation_token: spawned_rt::tasks::CancellationToken,
-        completion_rx: spawned_rt::tasks::watch::Receiver<Option<ExitReason>>,
+        completion_rx: spawned_rt::sync::watch::Receiver<Option<ExitReason>>,
         trap_exit: TrapExitFlag,
         links: LinkTable,
         linked_reason: LinkedExitReason,
@@ -107,7 +109,7 @@ impl ChildHandle {
     pub(crate) fn from_threads(
         id: ActorId,
         cancellation_token: spawned_rt::threads::CancellationToken,
-        completion: spawned_rt::tasks::watch::Receiver<Option<ExitReason>>,
+        completion: spawned_rt::sync::watch::Receiver<Option<ExitReason>>,
         trap_exit: TrapExitFlag,
         links: LinkTable,
         linked_reason: LinkedExitReason,
@@ -179,7 +181,9 @@ impl ChildHandle {
     /// matching the wait methods (for example, after runtime shutdown).
     pub fn exit_reason(&self) -> Option<ExitReason> {
         match &self.completion {
-            Completion::Tasks(rx) | Completion::Threads(rx) => poll_exit_reason(rx),
+            #[cfg(feature = "async")]
+            Completion::Tasks(rx) => poll_exit_reason(rx),
+            Completion::Threads(rx) => poll_exit_reason(rx),
         }
     }
 
@@ -199,6 +203,7 @@ impl ChildHandle {
     /// [`wait_exit_async`]: ChildHandle::wait_exit_async
     pub fn wait_exit_blocking(&self) -> ExitReason {
         match &self.completion {
+            #[cfg(feature = "async")]
             Completion::Tasks(rx) => wait_for_tasks_exit_blocking(rx.clone()),
             Completion::Threads(rx) => wait_for_thread_exit_blocking(rx.clone()),
         }
@@ -210,6 +215,7 @@ impl ChildHandle {
     /// Dropping this future releases its subscription immediately.
     pub async fn wait_exit_async(&self) -> ExitReason {
         match &self.completion {
+            #[cfg(feature = "async")]
             Completion::Tasks(rx) => wait_loop(rx.clone()).await,
             Completion::Threads(rx) => wait_loop(rx.clone()).await,
         }
@@ -221,7 +227,7 @@ impl ChildHandle {
 /// close between an earlier None borrow and a later closure check. The final
 /// published reason must win over the synthetic Kill.
 pub(crate) fn poll_exit_reason(
-    rx: &spawned_rt::tasks::watch::Receiver<Option<ExitReason>>,
+    rx: &spawned_rt::sync::watch::Receiver<Option<ExitReason>>,
 ) -> Option<ExitReason> {
     let closed = rx.has_changed().is_err();
     rx.borrow()
@@ -231,7 +237,7 @@ pub(crate) fn poll_exit_reason(
 
 /// Async loop that polls a watch channel until it carries an exit reason.
 /// Returns `ExitReason::Kill` if the watch sender is dropped without a reason.
-async fn wait_loop(mut rx: spawned_rt::tasks::watch::Receiver<Option<ExitReason>>) -> ExitReason {
+async fn wait_loop(mut rx: spawned_rt::sync::watch::Receiver<Option<ExitReason>>) -> ExitReason {
     loop {
         if let Some(reason) = rx.borrow_and_update().clone() {
             return reason;
@@ -245,7 +251,7 @@ async fn wait_loop(mut rx: spawned_rt::tasks::watch::Receiver<Option<ExitReason>
 /// Poll a watch subscription with a thread waker, without entering an executor.
 /// This preserves synchronous waits even inside an existing futures executor.
 pub(crate) fn wait_for_thread_exit_blocking(
-    rx: spawned_rt::tasks::watch::Receiver<Option<ExitReason>>,
+    rx: spawned_rt::sync::watch::Receiver<Option<ExitReason>>,
 ) -> ExitReason {
     use std::future::Future;
     use std::task::{Context, Poll, Wake, Waker};
@@ -281,8 +287,9 @@ pub(crate) fn wait_for_thread_exit_blocking(
 /// Returns `ExitReason::Kill` if the watch sender is dropped without setting a
 /// reason — this means the actor task was aborted externally (e.g., runtime
 /// shutdown) without going through the normal exit path.
+#[cfg(feature = "async")]
 fn wait_for_tasks_exit_blocking(
-    rx: spawned_rt::tasks::watch::Receiver<Option<ExitReason>>,
+    rx: spawned_rt::sync::watch::Receiver<Option<ExitReason>>,
 ) -> ExitReason {
     // Fast path: already done — works from any context, no runtime needed
     if let Some(reason) = poll_exit_reason(&rx) {
@@ -334,6 +341,7 @@ mod tests {
 
     // Shared tasks-mode fixture: an Idler actor that does nothing and never
     // stops on its own. Used by multiple tests below.
+    #[cfg(feature = "async")]
     mod tasks_fixtures {
         use crate::tasks::actor::Actor;
         pub struct Idler;
@@ -344,7 +352,7 @@ mod tests {
     /// ChildHandle surface (no real actor).
     fn test_handle(
         token: spawned_rt::threads::CancellationToken,
-        completion: spawned_rt::tasks::watch::Receiver<Option<ExitReason>>,
+        completion: spawned_rt::sync::watch::Receiver<Option<ExitReason>>,
     ) -> ChildHandle {
         let no_op_send_exit: SendExitFn = Arc::new(|_| Ok(()));
         ChildHandle::from_threads(
@@ -374,7 +382,7 @@ mod tests {
 
     #[test]
     fn child_handle_from_threads_basics() {
-        let (completion_tx, completion) = spawned_rt::tasks::watch::channel(None);
+        let (completion_tx, completion) = spawned_rt::sync::watch::channel(None);
         let token = spawned_rt::threads::CancellationToken::new();
         let handle = test_handle(token, completion.clone());
 
@@ -390,7 +398,7 @@ mod tests {
 
     #[test]
     fn child_handle_stop() {
-        let (_completion_tx, completion) = spawned_rt::tasks::watch::channel(None);
+        let (_completion_tx, completion) = spawned_rt::sync::watch::channel(None);
         let token = spawned_rt::threads::CancellationToken::new();
         assert!(!token.is_cancelled());
         let handle = test_handle(token.clone(), completion);
@@ -400,7 +408,7 @@ mod tests {
 
     #[test]
     fn child_handle_equality_by_id() {
-        let (_completion_tx, completion) = spawned_rt::tasks::watch::channel(None);
+        let (_completion_tx, completion) = spawned_rt::sync::watch::channel(None);
         let token = spawned_rt::threads::CancellationToken::new();
         let id = ActorId::next();
         let no_op_send_exit: SendExitFn = Arc::new(|_| Ok(()));
@@ -458,6 +466,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "async")]
     fn child_handle_from_tasks_actor_ref() {
         use crate::message::Message;
         use crate::tasks::actor::{Actor, ActorStart, Context, Handler};
@@ -491,6 +500,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "async")]
     fn child_handle_stop_from_tasks_actor() {
         use crate::tasks::actor::ActorStart;
         use tasks_fixtures::Idler;
@@ -508,6 +518,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "async")]
     fn child_handle_wait_blocking_inside_multithread_runtime() {
         use crate::tasks::actor::ActorStart;
         use tasks_fixtures::Idler;
@@ -526,6 +537,7 @@ mod tests {
 
     #[test]
     #[should_panic(expected = "non-multi-thread tokio runtime")]
+    #[cfg(feature = "async")]
     fn child_handle_wait_blocking_panics_on_current_thread_runtime() {
         use crate::tasks::actor::ActorStart;
         use tasks_fixtures::Idler;
@@ -545,6 +557,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "async")]
     fn child_handle_wait_blocking_fast_path_on_current_thread_runtime() {
         use crate::tasks::actor::ActorStart;
         use tasks_fixtures::Idler;
@@ -602,6 +615,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "async")]
     fn child_handle_observes_panic_in_tasks_actor() {
         use crate::message::Message;
         use crate::tasks::actor::{Actor, ActorStart, Context, Handler};
@@ -636,6 +650,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "async")]
     fn child_handle_observes_panic_in_started_callback() {
         use crate::tasks::actor::{Actor, ActorStart, Context};
 
@@ -668,8 +683,12 @@ mod closed_completion_tests {
     use crate::link::{new_link_table, new_linked_exit_reason, new_trap_exit_flag};
     #[test]
     fn closed_without_reason_is_dead_and_all_waits_agree() {
-        for threads in [false, true] {
-            let (tx, rx) = spawned_rt::tasks::watch::channel(None);
+        #[cfg(not(feature = "async"))]
+        let modes = [true];
+        #[cfg(feature = "async")]
+        let modes = [false, true];
+        for threads in modes {
+            let (tx, rx) = spawned_rt::sync::watch::channel(None);
             let child = if threads {
                 ChildHandle::from_threads(
                     ActorId::next(),
@@ -681,15 +700,20 @@ mod closed_completion_tests {
                     Arc::new(|_| Ok(())),
                 )
             } else {
-                ChildHandle::from_tasks(
-                    ActorId::next(),
-                    spawned_rt::tasks::CancellationToken::new(),
-                    rx,
-                    new_trap_exit_flag(),
-                    new_link_table(),
-                    new_linked_exit_reason(),
-                    Arc::new(|_| Ok(())),
-                )
+                #[cfg(not(feature = "async"))]
+                unreachable!();
+                #[cfg(feature = "async")]
+                {
+                    ChildHandle::from_tasks(
+                        ActorId::next(),
+                        spawned_rt::tasks::CancellationToken::new(),
+                        rx,
+                        new_trap_exit_flag(),
+                        new_link_table(),
+                        new_linked_exit_reason(),
+                        Arc::new(|_| Ok(())),
+                    )
+                }
             };
             assert!(child.is_alive());
             drop(tx);
@@ -716,8 +740,8 @@ mod closed_completion_tests {
     }
     #[test]
     fn closure_preserves_the_final_published_reason() {
-        let (tx, rx) = spawned_rt::tasks::watch::channel(None);
-        tx.send(Some(ExitReason::Normal)).unwrap();
+        let (tx, rx) = spawned_rt::sync::watch::channel(None);
+        tx.send_replace(Some(ExitReason::Normal));
         drop(tx);
         assert_eq!(poll_exit_reason(&rx), Some(ExitReason::Normal));
     }

@@ -1,3 +1,4 @@
+#![cfg(feature = "async")]
 #![cfg(feature = "backend-experiments")]
 //! Run each experiment mode in a separate process; never mutate env inside tests.
 use spawned_concurrency::{

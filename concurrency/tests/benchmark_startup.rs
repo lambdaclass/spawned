@@ -1,3 +1,4 @@
+#![cfg(feature = "async")]
 //! Exercise the actual benchmark rendezvous under startup failure.
 #[path = "../benches/support/start_gate.rs"]
 mod start_gate;

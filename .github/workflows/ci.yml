@@ -36,12 +36,34 @@ jobs:
         run: cargo test --locked --verbose
       - name: Run capability examples
         run: |
-          for example in execution_groups supervision_recovery dedicated_thread runtime_isolation byte_budget_pipeline timeout_outcomes graceful_drain; do
+          for example in execution_groups execution_profiles supervision_recovery supervision_tree dedicated_thread runtime_isolation byte_budget_pipeline timeout_outcomes graceful_drain; do
             timeout 60s cargo run --locked -p spawned-capability-examples --bin "$example"
           done
           timeout 60s cargo run --locked -p spawned-capability-examples --features metrics --bin framework_metrics
       - name: Test optional framework metrics
         run: cargo test --locked -p spawned-concurrency --features metrics
+
+  thread-only:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.93.0
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Native feature matrix
+        run: |
+          cargo test --locked -p spawned-rt --no-default-features
+          cargo test --locked -p spawned-concurrency --no-default-features
+          cargo test --locked -p spawned-concurrency --no-default-features --features threads,metrics
+          cargo clippy --locked -p spawned-rt -p spawned-concurrency --no-default-features --all-targets -- -D warnings
+          cargo clippy --locked -p spawned-rt -p spawned-concurrency --no-default-features --features spawned-concurrency/metrics --all-targets -- -D warnings
+          cargo run --locked --manifest-path examples/thread_only/Cargo.toml --features metrics,async
+          python3 scripts/check-thread-only.py
+          cargo clippy --locked --manifest-path examples/thread_only/Cargo.toml --features metrics,async -- -D warnings
+      - name: Native documentation
+        run: RUSTDOCFLAGS="-D warnings" cargo doc --locked -p spawned-concurrency --no-default-features --features threads,metrics --no-deps
 
   fmt:
     runs-on: ubuntu-latest
@@ -52,7 +74,9 @@ jobs:
         with:
           components: rustfmt, clippy
       - name: Run cargo fmt
-        run: cargo fmt --all -- --check
+        run: |
+          cargo fmt --all -- --check
+          cargo fmt --manifest-path examples/thread_only/Cargo.toml -- --check
 
   clippy:
     runs-on: ubuntu-latest

@@ -1,3 +1,4 @@
+#![cfg(feature = "async")]
 #[test]
 fn protocol_diagnostics() {
     let tests = trybuild::TestCases::new();

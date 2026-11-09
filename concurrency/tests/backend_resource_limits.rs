@@ -1,3 +1,4 @@
+#![cfg(feature = "async")]
 //! Deterministic characterization of executor capacity; no machine-wide tuning.
 use spawned_concurrency::{
     message::Message,

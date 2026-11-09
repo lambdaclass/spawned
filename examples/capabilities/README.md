@@ -8,6 +8,8 @@ describes capabilities that are still on the roadmap.
 | Program | Why it is useful | What it demonstrates |
 |---|---|---|
 | [execution_groups](src/bin/execution_groups.rs) | Own subsystem runtime budgets and cleanup | Router and worker communicate across named parked async groups; registered helpers use the assigned group, and system shutdown closes placement and joins cleanup. |
+| [execution_profiles](src/bin/execution_profiles.rs) | Choose a resource model explicitly | Fixed native roots share a helper runtime and reject excess admission; parked Linux shards pin stages to selected CPUs. |
+| [supervision_tree](src/bin/supervision_tree.rs) | Recover dependent subsystems | Nested failure escalates to OneForAll/RestForOne; reconstruction preserves ordering and old references stay stale. |
 | [supervision_recovery](src/bin/supervision_recovery.rs) | Recover a failed service without changing handlers | A OneForOne factory reconstructs fresh state in the same group; the old reference fails and the caller explicitly resolves the replacement. |
 | [dedicated_thread](src/bin/dedicated_thread.rs) | Isolate a blocking actor while allowing its async helpers to run | One dedicated actor root and one async helper worker, rather than a machine-sized pool per actor. This remains distinct from a Tokio-free synchronous actor. |
 | [runtime_isolation](src/bin/runtime_isolation.rs) | Keep a critical subsystem on a separate worker budget | Two owned Tokio runtimes; an actor on one requests an actor on the other, then both stop and join before runtime destruction. Placement uses `Runtime::enter()` today. |
@@ -18,6 +20,8 @@ describes capabilities that are still on the roadmap.
 
 ```sh
 cargo run --locked -p spawned-capability-examples --bin execution_groups
+cargo run --locked -p spawned-capability-examples --bin execution_profiles
+cargo run --locked -p spawned-capability-examples --bin supervision_tree
 cargo run --locked -p spawned-capability-examples --bin supervision_recovery
 cargo run --locked -p spawned-capability-examples --bin dedicated_thread
 cargo run --locked -p spawned-capability-examples --bin runtime_isolation
@@ -50,7 +54,12 @@ dedicated example package), its run command and its operational limits in the
 same change. Do not present speculative API names as working code.
 
 Execution groups and automatic supervision are available on main, unreleased.
-Groups currently support parked async pools; dedicated/pinned group profiles and
-OneForAll/RestForOne remain planned. Worker budgets count async workers, not all
-OS threads. See the [ownership and recovery guide](../../docs/GUIDE.md#execution-groups-and-supervision)
-for cooperative shutdown, helper admission, deadlines and reference semantics.
+Groups support parked async pools, fixed native actor-thread pools and parked
+Linux pinned shards. Supervisors support nested trees, OneForAll and RestForOne.
+Budgets describe actor workers/slots/shards, not all OS threads. See the
+[ownership and recovery guide](../../docs/GUIDE.md#execution-groups-and-supervision) for platform limits,
+cooperative shutdown, helper admission, deadlines and reference semantics.
+
+The separate [thread-only example](../thread_only/README.md) proves the native
+synchronous API builds without Tokio. It is an independent Cargo workspace;
+ActorSystem/supervision still require the async feature.

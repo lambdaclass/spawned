@@ -1,3 +1,4 @@
+#![cfg(feature = "async")]
 //! Default dedicated-thread runtime contracts; run without private runtime overrides.
 //! Timer delays below exercise the timer driver, not ordering between test steps.
 use spawned_concurrency::{

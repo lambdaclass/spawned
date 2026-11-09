@@ -1,3 +1,4 @@
+#![cfg(feature = "async")]
 //! Short concurrent histories; timed-out work is indeterminate, never assumed absent.
 #[path = "support/failure_actor.rs"]
 mod actor;

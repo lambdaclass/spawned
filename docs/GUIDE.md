@@ -206,13 +206,35 @@ wakeups, and their capacity cannot rebalance automatically; communication
 compatibility alone is not a reason to create more runtimes. For owned,
 budgeted runtimes use [execution groups](#execution-groups-and-supervision).
 
-The `backend-experiments` feature contains private research selectors (pinned
+Public owned parked pinned shards and bounded native pools are described under
+[execution groups](#execution-groups-and-supervision). The `backend-experiments`
+feature still contains private research selectors (pinned
 and spinning shards, alternative schedulers). They are not stable configuration
 APIs, and Tokio stays the default. Their measurements and reproduction guides are
 archived in [the backend notes](../legacy/docs/BACKENDS.md) and the
 [backend research index](../legacy/research/backend-experiments/README.md).
 
 ---
+
+### Tokio-free synchronous builds (unreleased)
+
+Disable the default `async` feature on both Spawned crates to use only the
+synchronous `threads::Actor` API without compiling Tokio. Native actors still
+use one OS thread per actor and native helper threads; this is a dependency
+boundary, not a shared worker pool. ActorSystem and supervision require async.
+Cargo feature unification can re-enable Tokio if another dependency enables async.
+
+The [isolated example](../examples/thread_only/README.md) exercises protocols,
+requests, links, monitors, timers, completion and optional metrics. Its independent
+workspace and graph check avoid accidental activation by other workspace examples:
+
+```sh
+cargo run --locked --manifest-path examples/thread_only/Cargo.toml --features metrics,async
+python3 scripts/check-thread-only.py
+```
+
+The fixture's own `async` feature is deliberately unrelated to the dependency's,
+so this also checks feature-aware protocol generation.
 
 ## Timers
 
@@ -563,9 +585,9 @@ transparent reference rebinding remain separate work. The [review and regression
 
 Available on main, unreleased. These are opt-in capabilities for async actors;
 ordinary `.start()`, message types, handlers and protocols retain their behavior.
-The initial profiles are parked async pools and OneForOne recovery. A supervisor
-owns one ordered child set; nested supervisor child specs are not implemented. Pinned or
-spinning groups, sized blocking-actor pools, OneForAll and RestForOne remain planned.
+Parked async pools, persistent native actor-thread pools and parked Linux pinned
+shards share the same ownership API. Supervisors support nested child specs,
+OneForOne, OneForAll and RestForOne. Spinning remains experimental.
 
 ### Choose an owner and a worker budget
 
@@ -586,14 +608,50 @@ assert!(report.complete);
 Groups own separate Tokio runtimes. ActorRef messages and requests cross those
 runtimes normally; moving a reference does not move an actor or an I/O resource.
 Use a small number of subsystem groups, rather than creating a pool per actor.
-Groups do not currently expose CPU affinity or spinning.
 Construct groups during application setup: construction is synchronous and
 fallible, and no actor is admitted to a failed group.
 
-The worker budget counts async workers, not all process threads. Each system
-also has a control thread and each group a runtime-owner thread. Tokio blocking
-operations can create extra threads. A group is neither CPU affinity nor an OS
-CPU reservation; blocking a worker or a handler still requires cooperation.
+| Constructor | Actor execution | Admission and thread cost |
+|---|---|---|
+| `async_group(name, workers)` | Cooperative actors on a multithread Tokio pool | Any actor count; `workers` async workers plus one runtime owner and one join coordinator. |
+| `thread_group(name, workers)` | Fixed native workers, one actor root per slot | At most `workers` live scopes; one shared helper runtime with one async worker, one owner and one join coordinator. Idle actors retain slots. Full admission returns `SystemError::Capacity`. |
+| `pinned_group(name, cpus)` | One parked current-thread Tokio runtime per specified Linux CPU | Any actor count; one native runtime owner per CPU plus one join coordinator. Actors sharing a shard cooperate. |
+
+Each system also has one control thread. Blocking helpers can create additional
+Tokio blocking threads; these profiles do not impose a global thread or memory
+limit. `worker_budget()` counts async workers, native actor slots, or pinned
+shards respectively. `profile()` describes the resource model explicitly.
+
+Pinned construction validates unique CPUs against the caller's allowed affinity
+mask, then pins each owner before building its reactor. Failure unwinds all
+started owners before returning an error. Hard affinity is Linux-only and does
+not reserve exclusive CPUs. Use `group.shard(index)` to place a pipeline stage
+or select a native worker slot; shared async pools have no stable shard index.
+Explicit selection survives supervised restarts. Default placement may choose a
+different shard for each generation. Pinned shards park when idle; no spin loop
+or Flux broadcast/loss semantics are introduced.
+
+```rust
+let roots = system.thread_group("blocking", 4)?;
+let cpus = spawned_rt::tasks::affinity::available_cpus()?; // Linux
+let pipeline = system.pinned_group("pipeline", cpus.into_iter().take(2).collect())?;
+let stage = MyActor::new().start_on(&pipeline.shard(0)?)?;
+```
+
+Native actor roots share a single async helper runtime, rather than creating a
+runtime per actor. Handlers/hooks execute on their reserved native worker;
+registered helpers and child factories execute on the shared helper runtime.
+This supports blocking actor turns while async timers/I/O helpers keep running.
+It is a persistent actor pool, not per-handler worker leasing. Helpers must finish
+before a slot is reusable. Thread-local resources belong to the persistent worker,
+not to each actor generation; they are destroyed when the group terminates.
+Pinned handlers and helpers run on their assigned shard; blocking either can
+stall the whole shard. Group completion waits for actual native owner joins,
+including runtime teardown and thread-local destructors. Join failures are reported
+in `ShutdownReport::group_failures`; `complete` means termination, not business success.
+See the [runnable profile example](../examples/capabilities/src/bin/execution_profiles.rs)
+and [backend studies](#execution-modes-and-backends). Published experiment ratios are not a performance
+claim for this public implementation.
 
 ActorSystem owns managed lifetimes. Cloned group/reference/context handles do
 not retain live workers after successful system shutdown. Dropping ActorSystem
@@ -691,6 +749,54 @@ is capped exponential with optional jitter, independently per child; a stable
 ready lifetime resets that child's exponent. Cleanup time is not healthy uptime.
 Use `Backoff::seed` for reproducible policy tests, not security randomness.
 
+### Recovery strategies and nested trees
+
+Set `SupervisorConfig::strategy` explicitly; OneForOne remains the default.
+
+| Strategy | After a restartable child exits |
+|---|---|
+| OneForOne | Replace that child only. |
+| OneForAll | Stop the child cohort, then rebuild it in declaration order. |
+| RestForOne | Stop that child and all later declared siblings, then rebuild those in order. |
+
+Cohorts stop in reverse order and wait for **all affected scopes** to finish
+before constructing any replacement. Stop/cleanup deadlines fail the tree instead
+of overlapping generations. Temporary collateral children stop without replacement;
+other collateral children are reconstructed even if their own exit was a normal
+shutdown. Non-restartable origin exits do not initiate a cohort. Concurrent failure
+notifications are coalesced into a bounded per-child pending set, with one recovery
+cohort at a time. A late old-generation failure is absorbed by its assigned
+round. A new upstream failure interrupts reconstruction and starts a fresh
+cleanup round, so dependent factories cannot hold recovery behind a dead upstream.
+Initial startup remains serial, retrying a failed construction attempt before
+starting dependents. For OneForAll/RestForOne, if an already-ready dependency
+exits restartably before the whole tree commits readiness, startup fails and rolls
+back the tree. It does not replace that dependency alone underneath initializing
+children. A parent supervisor can retry that whole subtree from its factory.
+
+The rolling restart budget charges every subsequent factory invocation, including
+collateral reconstruction and failed constructors. For a large OneForAll tree,
+configure `max_restarts` to accommodate the whole cohort. The origin uses its
+backoff; collateral children incur no extra exponent delay. Shutdown interrupts
+pending backoff and reconstruction.
+
+`SupervisorBuilder::add_supervisor(SupervisorSpec::new(name, &group, config, configure))`
+adds an ordered subtree slot. The configure closure declares a fresh child set for
+each subtree generation; async setup belongs in the child factories. Its placement
+group hosts an internal lifecycle adapter and declaration callback. An async group
+is usually the right adapter placement so it does not occupy a scarce native slot.
+Leaf specs can use other groups within the same ActorSystem.
+
+A failed subtree escalates through the adapter to its parent's restart policy.
+The adapter's ownership lease persists until all descendants actually finish,
+including startup cancellation and blocking helper cleanup after adapter exit.
+Late descendant cleanup failures are retained in the parent and system reports;
+they fail the parent rather than reporting a clean shutdown.
+Subtree generation replacement never implies durable state recovery. Old
+`Supervisor` handles remain attached to their old tree; resolve the current tree
+through `SupervisedSupervisor::current()` or `wait_for_generation()`.
+See the [nested example](../examples/capabilities/src/bin/supervision_tree.rs).
+
 ### References and effects
 
 A restarted actor has fresh state, a fresh mailbox and a fresh ActorId. Old
@@ -742,10 +848,14 @@ use supervisor/system shutdown to await registered helpers and runtime teardown.
 ### Run the examples
 
 - [Execution groups](../examples/capabilities/src/bin/execution_groups.rs): router/worker cross-group request, target-group helper and owned shutdown.
+- [Execution profiles](../examples/capabilities/src/bin/execution_profiles.rs): fixed native capacity, shared helpers and parked CPU placement.
+- [Supervision tree](../examples/capabilities/src/bin/supervision_tree.rs): nested recovery with OneForAll/RestForOne.
 - [Supervision recovery](../examples/capabilities/src/bin/supervision_recovery.rs): crash, new identity/fresh state, stale reference failure and explicit replacement lookup.
 
 ```sh
 cargo run --locked -p spawned-capability-examples --bin execution_groups
+cargo run --locked -p spawned-capability-examples --bin execution_profiles
+cargo run --locked -p spawned-capability-examples --bin supervision_tree
 cargo run --locked -p spawned-capability-examples --bin supervision_recovery
 ```
 
@@ -755,7 +865,6 @@ exercise readiness, cancellation, rollback, restart limits and incomplete cleanu
 These APIs do not establish a full-client performance improvement; measure actual
 application workloads with equal resource budgets.
 
----
 
 ## Metrics
 

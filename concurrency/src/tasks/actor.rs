@@ -186,6 +186,21 @@ where
 /// `exit_received` callback. Unlike `MessageEnvelope<M>`, this does not require
 /// `Handler<Exit>` on the actor — every actor can receive `Exit` via the
 /// trait's default-no-op `exit_received` callback.
+// Private lifecycle signal, excluded from application message/handler metrics.
+// Nested supervisor adapters have no public mailbox traffic to bury this signal.
+struct FailureEnvelope(String);
+impl<A: Actor> Envelope<A> for FailureEnvelope {
+    fn handle<'a>(
+        self: Box<Self>,
+        _: &'a mut A,
+        _: &'a Context<A>,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+        Box::pin(async move {
+            panic!("nested supervisor failed: {}", self.0);
+        })
+    }
+}
+
 struct ExitEnvelope {
     exit: Exit,
 }
@@ -573,6 +588,9 @@ impl<A: Actor> Context<A> {
             .register(name, self.id, self.actor_ref())
     }
 
+    pub(crate) fn managed_scope(&self) -> Option<&Arc<crate::system::Scope>> {
+        self.managed.as_ref()
+    }
     pub(crate) fn spawn_framework<F>(&self, future: F) -> JoinHandle<()>
     where
         F: Future<Output = ()> + Send + 'static,
@@ -694,6 +712,9 @@ impl<A: Actor> ActorRef<A> {
             .ok_or(crate::system::SystemError::UnmanagedActor)?
             .wait_ready()
             .await
+    }
+    pub(crate) fn signal_failure(&self, error: String) {
+        let _ = self.sender.send(Box::new(FailureEnvelope(error)));
     }
     /// Send a fire-and-forget message to the actor.
     pub fn send<M>(&self, msg: M) -> Result<(), ActorError>
@@ -849,6 +870,7 @@ where
 impl<A: Actor> ActorRef<A> {
     fn spawn(actor: A, backend: Backend, parent: Option<ChildHandle>) -> Self {
         Self::spawn_inner(actor, backend, parent, None, None)
+            .expect("unmanaged actor dispatch failed")
     }
 
     pub(crate) fn spawn_managed(
@@ -859,13 +881,7 @@ impl<A: Actor> ActorRef<A> {
         if !scope.can_start() {
             return Err(crate::system::SystemError::Closed);
         }
-        Ok(Self::spawn_inner(
-            actor,
-            Backend::Async,
-            None,
-            Some(scope),
-            Some(lease),
-        ))
+        Self::spawn_inner(actor, Backend::Async, None, Some(scope), Some(lease))
     }
 
     fn spawn_inner(
@@ -874,7 +890,7 @@ impl<A: Actor> ActorRef<A> {
         parent: Option<ChildHandle>,
         managed: Option<Arc<crate::system::Scope>>,
         lease: Option<crate::system::Lease>,
-    ) -> Self {
+    ) -> Result<Self, crate::system::SystemError> {
         let (tx, rx) = mpsc::channel::<Box<dyn Envelope<A> + Send>>();
         let cancellation_token = managed
             .as_ref()
@@ -994,11 +1010,11 @@ impl<A: Actor> ActorRef<A> {
                 .managed
                 .as_ref()
                 .expect("managed lease without scope");
-            scope.handle.spawn(crate::system::Tracked {
+            scope.dispatch_actor(crate::system::Tracked {
                 future: inner_future,
                 lease,
-            });
-            return actor_ref;
+            })?;
+            return Ok(actor_ref);
         }
 
         match backend {
@@ -1014,7 +1030,7 @@ impl<A: Actor> ActorRef<A> {
                         drop(MonitorCleanup(actor_ref.monitors.clone()));
                         tracing::error!("Experimental executor startup failed: {error}");
                     }
-                    return actor_ref;
+                    return Ok(actor_ref);
                 }
                 #[cfg(feature = "backend-experiments")]
                 if scheduler == "sharded" {
@@ -1023,7 +1039,7 @@ impl<A: Actor> ActorRef<A> {
                         drop(MonitorCleanup(actor_ref.monitors.clone()));
                         tracing::error!("Experimental shard startup failed: {error}");
                     }
-                    return actor_ref;
+                    return Ok(actor_ref);
                 }
                 let _handle = rt::spawn(inner_future);
             }
@@ -1051,7 +1067,7 @@ impl<A: Actor> ActorRef<A> {
             }
         }
 
-        actor_ref
+        Ok(actor_ref)
     }
 }
 

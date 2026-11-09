@@ -107,3 +107,14 @@ close together (`Core::close`), so they are one variable. Execution-group
 closure and placement failure are not modelled yet. Each action corresponds to
 a point in the Rust code so that recorded traces can be checked against the
 model (see Trace validation above).
+
+## Scope of the capability extension
+
+The public OneForAll/RestForOne coordinator and nested subtree adapters have
+separate integration/failure tests. The model and recorded traces above remain
+**OneForOne only**; their acceptance does not establish correctness of cohort
+selection, nested ownership or CPU-placement/resource teardown. Those extensions
+must be added to the formal model before claiming formal verification of them.
+The existing trace instrumentation is retained on the combined implementation.
+All library crates continue to forbid unsafe Rust; native synchronization and
+Linux affinity use safe interfaces. No unsafe exemption was introduced.

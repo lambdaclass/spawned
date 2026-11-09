@@ -1,3 +1,4 @@
+#![cfg(feature = "async")]
 //! Abrupt process failure is distinct from a recoverable actor panic.
 use spawned_concurrency::{
     message::Message,

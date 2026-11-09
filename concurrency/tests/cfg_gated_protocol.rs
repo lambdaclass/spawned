@@ -1,3 +1,4 @@
+#![cfg(feature = "async")]
 //! Integration test: verifies that #[cfg]-gated protocol methods compile and work
 //! correctly, including blanket impls and type-erased references.
 
