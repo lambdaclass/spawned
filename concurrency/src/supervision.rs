@@ -200,6 +200,8 @@ pub struct ChildSpec<A: Actor> {
     shutdown_timeout: Duration,
 }
 impl<A: Actor> ChildSpec<A> {
+    /// Create a permanent child with five-second startup and shutdown limits.
+    /// Set both limits explicitly when the application's deadlines are shorter.
     pub fn new<F, U, E>(name: impl Into<String>, group: &ExecutionGroup, factory: F) -> Self
     where
         F: Fn(FactoryContext) -> U + Send + Sync + 'static,
@@ -223,10 +225,14 @@ impl<A: Actor> ChildSpec<A> {
         self.restart = restart;
         self
     }
+    /// Limit construction plus readiness for each attempt (default: five seconds).
     pub fn startup_timeout(mut self, timeout: Duration) -> Self {
         self.startup_timeout = timeout;
         self
     }
+    /// Limit each generation's cleanup before failing the tree (default: five
+    /// seconds). System shutdown has a separate ordering/report deadline; expiry
+    /// signals remaining children but still retains ownership until cleanup joins.
     pub fn shutdown_timeout(mut self, timeout: Duration) -> Self {
         self.shutdown_timeout = timeout;
         self
@@ -1310,6 +1316,7 @@ async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, core: Arc<C
                         core.cohort(|| Event::new("CAck", c, "").round(round.meta.id));
                         round.ready.send_replace(true);
                     });
+                    log_child_finished(&spec, &view, &core);
                     return;
                 }
                 continue;
@@ -1336,6 +1343,16 @@ async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, core: Arc<C
             } else {
                 core.config.backoff.delay(failures, &mut rng)
             };
+            let previous = view.snapshot();
+            tracing::info!(
+                event = "restart_scheduled",
+                child = %spec.name,
+                generation = previous.generation,
+                reason = ?previous.last_exit,
+                error = ?previous.last_error,
+                ?delay,
+                "child restart scheduled"
+            );
             let count_attempt = !collateral;
             collateral = false;
             view.change(|v| v.snapshot.state = ChildState::Backoff);
@@ -1447,6 +1464,18 @@ async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, core: Arc<C
                 break;
             }
         };
+        scope.set_name(&spec.name);
+        if generation > 1 {
+            let previous = view.snapshot();
+            tracing::info!(
+                event = "restart_started",
+                child = %spec.name,
+                generation,
+                reason = ?previous.last_exit,
+                error = ?previous.last_error,
+                "starting replacement child"
+            );
+        }
         view.changed.send_modify(|n| *n = n.wrapping_add(1));
         let ctx = FactoryContext {
             scope: scope.clone(),
@@ -1742,6 +1771,7 @@ async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, core: Arc<C
                 }
                 finished
             }) {
+                log_child_finished(&spec, &view, &core);
                 return;
             }
             continue;
@@ -1775,6 +1805,29 @@ async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, core: Arc<C
         view.finish(system::lock(&core.failure).is_some());
         core.cohort(|| Event::new("CRetire", c, "").round(last_recovery));
     });
+    log_child_finished(&spec, &view, &core);
+}
+
+// Log only after releasing admission, view and trace locks: subscribers may
+// execute application code. Failure state is cloned before emitting the event.
+fn log_child_finished<A: Actor>(spec: &ChildSpec<A>, view: &View<A>, core: &Core) {
+    let failure = system::lock(&core.failure).clone();
+    if let Some(error) = failure {
+        let snapshot = view.snapshot();
+        let event = if error.starts_with("restart budget exhausted by ") {
+            "restart_budget_exhausted"
+        } else {
+            "supervision_give_up"
+        };
+        tracing::warn!(
+            event,
+            child = %spec.name,
+            generation = snapshot.generation,
+            reason = ?snapshot.last_exit,
+            %error,
+            "supervision stopped child after failure"
+        );
+    }
 }
 
 #[cfg(test)]

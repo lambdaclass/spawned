@@ -96,6 +96,10 @@ pub trait Handler<M: Message>: Actor {
 // ---------------------------------------------------------------------------
 
 trait Envelope<A: Actor>: Send {
+    #[cfg(feature = "diagnostics")]
+    fn message_type(&self) -> &'static str {
+        std::any::type_name::<Self>()
+    }
     #[cfg(feature = "metrics")]
     fn observation(&mut self) -> Option<crate::instrumentation::MessageObservation> {
         None
@@ -122,6 +126,10 @@ where
     A: Actor + Handler<M>,
     M: Message,
 {
+    #[cfg(feature = "diagnostics")]
+    fn message_type(&self) -> &'static str {
+        std::any::type_name::<M>()
+    }
     #[cfg(feature = "metrics")]
     fn observation(&mut self) -> Option<crate::instrumentation::MessageObservation> {
         self.observation.take()
@@ -295,7 +303,19 @@ impl<A: Actor> Context<A> {
     /// Signal the actor to stop. The current handler will finish, then
     /// `stopped()` is called and the actor exits.
     pub fn stop(&self) {
-        link::normal_stop(&self.linked_reason, || self.cancellation_token.cancel());
+        self.stop_with_reason(ExitReason::Normal);
+    }
+
+    /// Request a cooperative exit with an explicit reason, without unwinding.
+    /// The current handler finishes and `stopped()` runs. The first committed
+    /// stop/link reason wins; a cleanup panic can still make the exit abnormal.
+    /// `Shutdown` is non-abnormal; `Kill` requests an abnormal exit and can
+    /// trigger transient supervision or propagate through links. It does not
+    /// forcibly interrupt running Rust code.
+    pub fn stop_with_reason(&self, reason: ExitReason) {
+        link::stop_with_reason(&self.linked_reason, reason, || {
+            self.cancellation_token.cancel()
+        });
     }
 
     /// Send a fire-and-forget message to this actor.
@@ -543,6 +563,8 @@ impl<A: Actor> Context<A> {
     /// Spawn a lifecycle-owned helper on this actor's assigned execution group.
     /// Construct runtime-bound work inside the async block. Closure of the scope
     /// cancels the helper and waits for its future to drop before cleanup ends.
+    /// Returns [`crate::system::SystemError::UnmanagedActor`] for actors started
+    /// with `.start()`; use `.start_on(&group)` to establish cleanup ownership.
     pub fn spawn_helper<F>(
         &self,
         future: F,
@@ -561,6 +583,7 @@ impl<A: Actor> Context<A> {
     /// Cancellation cannot preempt it. Raw nested spawn calls are not implicitly
     /// owned; use this method rather than detaching a blocking task inside a
     /// cancellable async helper when recovery must await its resource cleanup.
+    /// Requires `.start_on(&group)`, like [`Self::spawn_helper`].
     pub fn spawn_blocking_helper<F, T>(
         &self,
         work: F,
@@ -942,7 +965,7 @@ impl<A: Actor> ActorRef<A> {
         };
 
         if let Some(scope) = &managed {
-            scope.attach(actor_ref.child_handle());
+            scope.attach::<A>(actor_ref.child_handle());
         }
 
         if let Some(parent) = parent {
@@ -1241,6 +1264,11 @@ async fn run_actor_lifecycle<A: Actor>(
         };
         match msg {
             Some(envelope) => {
+                #[cfg(feature = "diagnostics")]
+                let _turn = ctx
+                    .managed
+                    .as_ref()
+                    .map(|scope| scope.begin_turn(envelope.message_type()));
                 #[cfg(feature = "metrics")]
                 let mut envelope = envelope;
 
@@ -1251,6 +1279,8 @@ async fn run_actor_lifecycle<A: Actor>(
                 let result = AssertUnwindSafe(envelope.handle(&mut actor, &ctx))
                     .catch_unwind()
                     .await;
+                #[cfg(feature = "diagnostics")]
+                drop(_turn);
                 #[cfg(feature = "metrics")]
                 if let Some(observation) = observation {
                     observation.finish(result.is_err());

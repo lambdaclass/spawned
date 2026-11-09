@@ -22,7 +22,7 @@ impl ActorId {
 
 impl std::fmt::Display for ActorId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "ActorId({})", self.0)
+        self.0.fmt(f)
     }
 }
 
@@ -377,7 +377,8 @@ mod tests {
     fn actor_id_display() {
         let id = ActorId::next();
         let s = format!("{id}");
-        assert!(s.starts_with("ActorId("));
+        assert_eq!(s.parse::<u64>().unwrap(), id.0);
+        assert_eq!(format!("{id:?}"), format!("ActorId({})", id.0));
     }
 
     #[test]

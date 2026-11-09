@@ -116,6 +116,9 @@ The original `Supervision` / `TraceSupervision` pair checks OneForOne only.
 Separate cohort and nested ownership projections now cover the strategy and
 subtree extension below. These checks do not cover CPU placement or native
 resource teardown, and do not establish correctness of every Rust schedule.
+`context_exit_reasons` records explicit Context Shutdown/Kill exits against the
+existing reason model. A negative control erases Kill and must reject the
+resulting transient restart; the entry point adds no new model transition.
 All library crates continue to forbid unsafe Rust; native synchronization and
 Linux affinity use safe interfaces. No unsafe exemption was introduced.
 

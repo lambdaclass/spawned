@@ -353,6 +353,7 @@ impl ActorSystem {
             complete: false,
             unfinished_groups: Vec::new(),
             unfinished_actors: Vec::new(),
+            unfinished_actor_details: Vec::new(),
             exits: Vec::new(),
             supervisor_failures: Vec::new(),
             group_failures: Vec::new(),
@@ -487,6 +488,9 @@ pub struct ShutdownReport {
     /// Unfinished actor scopes, including registered helpers after actor exit.
     /// An ID may also appear in exits when only its helper cleanup remains.
     pub unfinished_actors: Vec<crate::ActorId>,
+    /// Named/type diagnostics for the same unfinished scopes. Message type and
+    /// turn age require the opt-in `diagnostics` feature; no payloads are retained.
+    pub unfinished_actor_details: Vec<ActorDiagnostic>,
     pub exits: Vec<ActorExit>,
     pub supervisor_failures: Vec<String>,
     pub group_failures: Vec<String>,
@@ -495,6 +499,19 @@ pub struct ShutdownReport {
 pub struct ActorExit {
     pub id: crate::ActorId,
     pub reason: ExitReason,
+}
+/// A point-in-time view; the actor may finish immediately after the snapshot.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct ActorDiagnostic {
+    pub id: crate::ActorId,
+    /// ChildSpec name, or the first successful managed registration name.
+    pub name: Option<String>,
+    pub actor_type: &'static str,
+    /// Active envelope type, absent when idle, in lifecycle hooks, or when
+    /// `diagnostics` is disabled. Payloads are never inspected.
+    pub message_type: Option<&'static str>,
+    pub turn_age: Option<Duration>,
 }
 impl ShutdownReport {
     pub async fn wait(mut self, deadline: Duration) -> Self {
@@ -511,12 +528,13 @@ impl ShutdownReport {
             .filter(|g| !*g.done.borrow())
             .map(|g| g.name.clone())
             .collect();
-        self.unfinished_actors = state
+        self.unfinished_actor_details = state
             .shutdown_scopes
             .iter()
             .filter(|s| !*s.done.borrow())
-            .filter_map(|s| s.child().map(|c| c.id()))
+            .filter_map(|s| s.diagnostic())
             .collect();
+        self.unfinished_actors = self.unfinished_actor_details.iter().map(|d| d.id).collect();
         self.exits = state
             .shutdown_scopes
             .iter()
@@ -654,6 +672,10 @@ impl ExecutionGroup {
                 leases: 1,
                 roots: 1,
                 actor: None,
+                name: None,
+                actor_type: "",
+                #[cfg(feature = "diagnostics")]
+                active_turn: None,
                 registrations: Vec::new(),
                 ready_at: None,
                 ended_at: None,
@@ -677,6 +699,10 @@ struct ScopeState {
     leases: usize,
     roots: usize,
     actor: Option<ChildHandle>,
+    name: Option<String>,
+    actor_type: &'static str,
+    #[cfg(feature = "diagnostics")]
+    active_turn: Option<(&'static str, Instant)>,
     registrations: Vec<crate::registry::RegistrationGuard>,
     ready_at: Option<Instant>,
     ended_at: Option<Instant>,
@@ -762,10 +788,40 @@ impl Scope {
         state
             .registrations
             .push(crate::registry::register_owned(name, id, actor)?);
+        if state.name.is_none() {
+            state.name = Some(name.to_owned());
+        }
         Ok(())
     }
-    pub(crate) fn attach(&self, child: ChildHandle) {
-        lock(&self.state).actor = Some(child);
+    pub(crate) fn set_name(&self, name: &str) {
+        lock(&self.state).name = Some(name.to_owned());
+    }
+    pub(crate) fn attach<A>(&self, child: ChildHandle) {
+        let mut state = lock(&self.state);
+        state.actor = Some(child);
+        state.actor_type = std::any::type_name::<A>();
+    }
+    fn diagnostic(&self) -> Option<ActorDiagnostic> {
+        let state = lock(&self.state);
+        #[cfg(feature = "diagnostics")]
+        let (message_type, turn_age) = match state.active_turn {
+            Some((message, start)) => (Some(message), Some(start.elapsed())),
+            None => (None, None),
+        };
+        #[cfg(not(feature = "diagnostics"))]
+        let (message_type, turn_age) = (None, None);
+        Some(ActorDiagnostic {
+            id: state.actor.as_ref()?.id(),
+            name: state.name.clone(),
+            actor_type: state.actor_type,
+            message_type,
+            turn_age,
+        })
+    }
+    #[cfg(feature = "diagnostics")]
+    pub(crate) fn begin_turn(self: &Arc<Self>, message: &'static str) -> TurnGuard {
+        lock(&self.state).active_turn = Some((message, Instant::now()));
+        TurnGuard(self.clone())
     }
     pub(crate) fn child(&self) -> Option<ChildHandle> {
         lock(&self.state).actor.clone()
@@ -930,6 +986,15 @@ impl Scope {
         Ok(ScopedTask(
             self.handle.spawn_blocking(move || owned.run(token)),
         ))
+    }
+}
+
+#[cfg(feature = "diagnostics")]
+pub(crate) struct TurnGuard(Arc<Scope>);
+#[cfg(feature = "diagnostics")]
+impl Drop for TurnGuard {
+    fn drop(&mut self) {
+        lock(&self.0.state).active_turn = None;
     }
 }
 

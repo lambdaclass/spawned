@@ -96,6 +96,13 @@ def main():
     parser.add_argument("--tlc", default=os.environ.get("TLC", "tlc"))
     args = parser.parse_args()
     traces = [json.loads(path.read_text()) for path in args.traces.glob("*.json")]
+    context = next(t for t in traces if t["name"] == "context_exit_reasons")
+    def erase_abnormal_exit(events):
+        for event in events:
+            if event.get("x") == "Kill":
+                event["x"] = "Normal"
+    require_rejected(context, erase_abnormal_exit,
+                     "transient restart after erased abnormal context exit", args.tlc)
     cohort = next(t for t in traces if t.get("schema") == "cohort-v1" and t["strategy"] == "OneForAll")
     tree = next(t for t in traces if t.get("schema") == "tree-v1" and any(e["a"] == "TPropagate" for e in t["events"]))
     require_rejected(cohort, move_resume_early, "resume before cohort cleanup", args.tlc)

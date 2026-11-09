@@ -35,6 +35,8 @@ async = ["spawned-rt/async"]
 threads = []
 # Fixed-cardinality counters and sampled timings; disabled by default.
 metrics = []
+# Managed actor message/turn diagnostics, with per-turn clock and lock costs.
+diagnostics = ["async"]
 # Record supervisor lifecycle events for TLA+ trace validation
 # (verification/tla/README.md). Test-only; disabled by default.
 lifecycle-trace = ["async"]

@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- Declare Prometheus histogram maxima as separate gauge families, preserving
+  series names. Add parser validation and an undeclared-max regression control.
+- Add structured supervision restart and give-up events with child name,
+  generation and exit reason; restart-budget exhaustion is a warning.
+- Add `Context::stop_with_reason` in both modes for cooperative shutdown or
+  abnormal exit without panicking. Existing `stop()` still requests Normal.
+- Include names and actor types in incomplete shutdown reports. Opt-in
+  `diagnostics` adds active message types and turn ages, with per-turn clock
+  and lock costs; default dispatch gains no new per-turn instrumentation.
+- Display ActorId as a decimal number; Debug retains `ActorId(n)`.
+- Clarify ChildSpec's five-second defaults, system deadline behavior, managed
+  helper requirements and the limits of dependency shutdown ordering.
+
 ## 0.7.0 — 2026-11-09
 
 ### Breaking changes for v0.7

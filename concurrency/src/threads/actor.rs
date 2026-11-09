@@ -236,7 +236,19 @@ impl<A: Actor> Context<A> {
     /// Signal the actor to stop. The current handler will finish, then
     /// `stopped()` is called and the actor exits.
     pub fn stop(&self) {
-        link::normal_stop(&self.linked_reason, || self.cancellation_token.cancel());
+        self.stop_with_reason(ExitReason::Normal);
+    }
+
+    /// Request a cooperative exit with an explicit reason, without unwinding.
+    /// The current handler finishes and `stopped()` runs. The first committed
+    /// stop/link reason wins; a cleanup panic can still make the exit abnormal.
+    /// `Shutdown` is non-abnormal; `Kill` requests an abnormal exit and can
+    /// trigger transient supervision or propagate through links. It does not
+    /// forcibly interrupt running Rust code.
+    pub fn stop_with_reason(&self, reason: ExitReason) {
+        link::stop_with_reason(&self.linked_reason, reason, || {
+            self.cancellation_token.cancel()
+        });
     }
 
     /// Send a fire-and-forget message to this actor.

@@ -1,5 +1,13 @@
 # Actor testing and reliability campaigns
 
+Canary regressions: `cargo test -p spawned-concurrency --features diagnostics,metrics --test canary_feedback --test context_exit`
+checks named incomplete reports, active-turn cleanup, explicit exit reasons and
+structured supervisor events. Run the same tests without `diagnostics` to check
+the uninstrumented path. CI pipes the metrics example through
+`scripts/check-metrics-exposition.py` (Prometheus Python client 0.21.1) and rejects
+the old undeclared-max output as a negative control. Explicit exit reasons also
+produce a real lifecycle trace.
+
 Run `cargo test -p spawned-concurrency --test actor_scenarios`.
 
 The [capability examples](../examples/capabilities/README.md) demonstrate useful

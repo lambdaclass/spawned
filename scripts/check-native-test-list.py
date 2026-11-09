@@ -4,6 +4,7 @@ from pathlib import Path
 import sys
 
 required = {
+    "native_explicit_exit_is_cooperative_and_first_reason_wins",
     "generated_actor_scenarios",
     "lifecycle_race_regression",
     "controlled_failures_reach_every_required_window_on_every_backend",

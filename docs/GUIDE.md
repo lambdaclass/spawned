@@ -748,6 +748,23 @@ keeps closed runtimes alive until tracked work actually finishes, even if an
 incomplete report is dropped. An uncooperative operation can therefore keep
 threads/resources alive indefinitely; the host decides process-level escalation.
 
+### Shutdown diagnostics and ordering
+
+An incomplete `ShutdownReport` includes `unfinished_actor_details`: ActorId,
+ChildSpec name (or first successful managed registration), and Rust actor type.
+An actor can already appear in `exits` while its registered helper keeps its
+scope unfinished. Enable `spawned-concurrency/diagnostics` to also capture the
+active message type and elapsed turn time. This costs a clock read and scope
+locking per managed turn; it is disabled by default and independent of metrics
+sampling. Idle actors, lifecycle hooks and helper-only cleanup have no active
+message/turn age. Snapshots are approximate; no message payloads are retained.
+
+Standalone actors stop in reverse admission order; there is no dependency DAG
+API. For dependencies, declare children dependency-first in a supervisor, as in
+[coordinated shutdown](../examples/capabilities/src/bin/coordinated_shutdown.rs).
+That supplies reverse declaration order within that tree. Across independent
+trees, close ingress and coordinate dependent subsystems explicitly.
+
 ### Construct fresh children after failure
 
 ```rust
@@ -794,6 +811,18 @@ mailbox traffic. It does not interrupt a running handler. If a supervisor report
 remaining siblings are also signalled before returning the incomplete report;
 actual completion still waits for the stuck work.
 
+Set `ChildSpec::startup_timeout` and `shutdown_timeout` explicitly for latency
+sensitive services, for example 500 ms and 1 s with a 3 s overall system deadline.
+Their defaults are each 5 s per attempt/generation, not shares of the overall
+deadline. System deadline expiry signals remaining children and returns a report;
+it does not kill Rust code or release resources before actual cleanup finishes.
+Defaults cannot be derived from a deadline supplied only at future shutdown.
+
+Supervision emits structured `tracing` events: `restart_scheduled` and
+`restart_started` at INFO; `restart_budget_exhausted` and `supervision_give_up`
+at WARN. Fields include `child`, `generation`, `reason` and an available error.
+Enable an application tracing subscriber to collect them; Spawned installs none.
+
 | Restart mode while supervisor is running | Normal / Shutdown | Panic / Kill |
 |---|---|---|
 | Permanent (default) | Restart | Restart |
@@ -806,6 +835,12 @@ supervisor shutdown to close the tree. `ChildHandle::shutdown()` commits Shutdow
 before cooperative cancellation while preserving a previously committed cause;
 actual handler or cleanup panics remain failures. Existing link propagation still
 applies and can affect siblings explicitly linked by the application.
+
+`ctx.stop_with_reason(ExitReason::Shutdown)` requests a cooperative shutdown;
+`ExitReason::Kill` requests an abnormal exit without panicking. Both modes finish
+the current handler and run `stopped()`. The first committed reason wins, while
+an actual cleanup panic can still make the exit abnormal. A transient supervisor
+restarts Kill exits but leaves Shutdown exits stopped. `ctx.stop()` keeps Normal.
 
 The default shared budget permits five retry attempts per rolling 30-second
 window. Initial construction does not consume a retry; every subsequent attempt
@@ -883,6 +918,11 @@ Effects already performed are not rolled back. Supervision supplies neither
 automatic durable state recovery nor exactly-once effects.
 
 ### Owned helpers and registrations
+
+`Context::spawn_helper` and `spawn_blocking_helper` require an actor started with
+`start_on(&group)` (or by a supervisor). An ambient `.start()` returns
+`SystemError::UnmanagedActor` from these methods, even inside a Tokio runtime.
+Use an ActorSystem to establish cleanup ownership; no detached fallback is used.
 
 Managed `Context` and `FactoryContext` offer `spawn_helper` and
 `spawn_blocking_helper`. Dropping the returned join handle does not detach scope
@@ -980,6 +1020,8 @@ observations only. Counts are not multiplied by the sampling rate. Do not compar
 sampled histogram counts to total request counters as if every request was timed.
 Sampling is deterministic round-robin per message/request category, not random;
 periodic traffic can bias samples. Quantiles are bucket-based estimates.
+Each exported `*_max` is a separate gauge holding the sampled lifetime maximum;
+it is not a histogram component or a rolling-window maximum.
 
 Mailbox depth reserves accounting before publication to avoid consumer races.
 A stalled producer may temporarily appear in depth before send acceptance. A

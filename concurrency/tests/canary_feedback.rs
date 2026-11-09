@@ -1,0 +1,308 @@
+#![cfg(feature = "async")]
+use spawned_concurrency::{
+    message::Message,
+    supervision::{Backoff, ChildSpec, RestartMode, SupervisorConfig},
+    system::ActorSystem,
+    tasks::{Actor, ActorStart, Context, Handler},
+    ExitReason,
+};
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
+use tokio::sync::oneshot;
+const LIMIT: Duration = Duration::from_secs(10);
+
+struct Hold {
+    entered: oneshot::Sender<()>,
+    release: oneshot::Receiver<()>,
+}
+impl Message for Hold {
+    type Result = ();
+}
+struct Quit(ExitReason);
+impl Message for Quit {
+    type Result = ();
+}
+struct Worker;
+impl Actor for Worker {}
+impl Handler<Hold> for Worker {
+    async fn handle(&mut self, hold: Hold, _: &Context<Self>) {
+        let _ = hold.entered.send(());
+        let _ = hold.release.await;
+    }
+}
+impl Handler<Quit> for Worker {
+    async fn handle(&mut self, quit: Quit, ctx: &Context<Self>) {
+        ctx.stop_with_reason(quit.0);
+    }
+}
+
+#[tokio::test]
+async fn unfinished_report_identifies_child_and_active_turn() {
+    let system = ActorSystem::new().unwrap();
+    let group = system.async_group("canary-diagnostics", 1).unwrap();
+    let mut builder = system.supervisor(SupervisorConfig::default()).unwrap();
+    let child = builder
+        .add(ChildSpec::new("canary-router", &group, |_| async {
+            Ok::<_, String>(Worker)
+        }))
+        .unwrap();
+    let _supervisor = builder.start().await.unwrap();
+    let actor = child.current().unwrap();
+    let (entered, arrival) = oneshot::channel();
+    let (release, gate) = oneshot::channel();
+    actor
+        .send(Hold {
+            entered,
+            release: gate,
+        })
+        .unwrap();
+    tokio::time::timeout(LIMIT, arrival).await.unwrap().unwrap();
+    let report = system.shutdown(Duration::from_millis(10)).await;
+    assert!(!report.complete);
+    let detail = report
+        .unfinished_actor_details
+        .iter()
+        .find(|d| d.id == actor.id())
+        .unwrap();
+    assert!(report.unfinished_actors.contains(&detail.id));
+    assert_eq!(detail.name.as_deref(), Some("canary-router"));
+    assert_eq!(detail.actor_type, std::any::type_name::<Worker>());
+    #[cfg(feature = "diagnostics")]
+    {
+        assert_eq!(detail.message_type, Some(std::any::type_name::<Hold>()));
+        assert!(detail.turn_age.unwrap() >= Duration::from_millis(10));
+    }
+    #[cfg(not(feature = "diagnostics"))]
+    {
+        assert_eq!(detail.message_type, None);
+        assert_eq!(detail.turn_age, None);
+    }
+    release.send(()).unwrap();
+    let report = report.wait(LIMIT).await;
+    assert!(report.complete);
+    assert!(report.unfinished_actor_details.is_empty());
+    assert_eq!(
+        actor.child_handle().exit_reason(),
+        Some(ExitReason::Shutdown)
+    );
+}
+
+#[tokio::test]
+async fn completed_turn_is_not_reported_while_helper_cleanup_remains() {
+    let system = ActorSystem::new().unwrap();
+    let group = system.async_group("canary-helper", 1).unwrap();
+    let actor = Worker.start_on(&group).unwrap();
+    actor.ready().await.unwrap();
+    actor.context().register_name("canary-standalone").unwrap();
+    let (entered, arrival) = oneshot::channel();
+    let (release, gate) = std::sync::mpsc::channel();
+    let helper = actor
+        .context()
+        .spawn_blocking_helper(move || {
+            let _ = entered.send(());
+            gate.recv_timeout(LIMIT)
+                .expect("test did not release blocking helper");
+        })
+        .unwrap();
+    tokio::time::timeout(LIMIT, arrival).await.unwrap().unwrap();
+    // The actor completes a turn and exits, but the helper retains its scope.
+    actor.request(Quit(ExitReason::Shutdown)).await.unwrap();
+    tokio::time::timeout(LIMIT, actor.join()).await.unwrap();
+    let report = system.shutdown(Duration::from_millis(10)).await;
+    assert!(!report.complete);
+    let detail = report
+        .unfinished_actor_details
+        .iter()
+        .find(|d| d.id == actor.id())
+        .unwrap();
+    assert_eq!(detail.name.as_deref(), Some("canary-standalone"));
+    assert_eq!(detail.message_type, None);
+    assert_eq!(detail.turn_age, None);
+    assert!(report
+        .exits
+        .iter()
+        .any(|e| e.id == actor.id() && e.reason == ExitReason::Shutdown));
+    release.send(()).unwrap();
+    helper.join().await.unwrap();
+    assert!(report.wait(LIMIT).await.complete);
+}
+
+type Fields = BTreeMap<String, String>;
+#[derive(Clone, Default)]
+struct Capture(Arc<Mutex<Vec<(tracing::Level, Fields)>>>);
+impl tracing::Subscriber for Capture {
+    fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+        true
+    }
+    fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        tracing::span::Id::from_u64(1)
+    }
+    fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+    fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+    fn enter(&self, _: &tracing::span::Id) {}
+    fn exit(&self, _: &tracing::span::Id) {}
+    fn event(&self, event: &tracing::Event<'_>) {
+        struct Visitor(Fields);
+        impl tracing::field::Visit for Visitor {
+            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+                self.0.insert(field.name().to_owned(), format!("{value:?}"));
+            }
+            fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+                self.0.insert(field.name().to_owned(), value.to_owned());
+            }
+        }
+        let mut visitor = Visitor(Fields::new());
+        event.record(&mut visitor);
+        self.0
+            .lock()
+            .unwrap()
+            .push((*event.metadata().level(), visitor.0));
+    }
+}
+
+#[tokio::test]
+async fn supervision_logs_restart_budget_exhaustion_and_give_up() {
+    let capture = Capture::default();
+    tracing::subscriber::set_global_default(capture.clone()).unwrap();
+    let system = ActorSystem::new().unwrap();
+    let group = system.async_group("canary-tracing", 1).unwrap();
+    let mut builder = system
+        .supervisor(SupervisorConfig {
+            max_restarts: 1,
+            backoff: Backoff {
+                initial: Duration::ZERO,
+                maximum: Duration::ZERO,
+                jitter: false,
+                ..Backoff::default()
+            },
+            ..SupervisorConfig::default()
+        })
+        .unwrap();
+    let child = builder
+        .add(
+            ChildSpec::new("canary-retry", &group, |_| async {
+                Ok::<_, String>(Worker)
+            })
+            .restart(RestartMode::Transient),
+        )
+        .unwrap();
+    let supervisor = builder.start().await.unwrap();
+    child
+        .current()
+        .unwrap()
+        .request(Quit(ExitReason::Kill))
+        .await
+        .unwrap();
+    let replacement = tokio::time::timeout(LIMIT, child.wait_for_generation(1))
+        .await
+        .unwrap()
+        .unwrap();
+    replacement.request(Quit(ExitReason::Kill)).await.unwrap();
+    tokio::time::timeout(LIMIT, supervisor.join())
+        .await
+        .unwrap();
+    assert!(supervisor
+        .failure()
+        .unwrap()
+        .contains("restart budget exhausted"));
+    let mut failing = system.supervisor(SupervisorConfig::default()).unwrap();
+    failing
+        .add(
+            ChildSpec::<Worker>::new("canary-give-up", &group, |_| async {
+                Err::<Worker, _>("cannot initialize")
+            })
+            .restart(RestartMode::Temporary),
+        )
+        .unwrap();
+    assert!(failing.start().await.is_err());
+    assert!(system.shutdown(LIMIT).await.complete);
+    let events = capture.0.lock().unwrap();
+    for (event, level, generation) in [
+        ("restart_scheduled", tracing::Level::INFO, "1"),
+        ("restart_started", tracing::Level::INFO, "2"),
+        ("restart_budget_exhausted", tracing::Level::WARN, "2"),
+    ] {
+        assert!(
+            events.iter().any(|(l, f)| *l == level
+                && f.get("event").map(String::as_str) == Some(event)
+                && f.get("child").map(String::as_str) == Some("canary-retry")
+                && f.get("generation").map(String::as_str) == Some(generation)
+                && f.get("reason").is_some_and(|r| r.contains("Kill"))),
+            "missing {event}: {events:?}"
+        );
+    }
+    assert!(events
+        .iter()
+        .any(|(level, fields)| *level == tracing::Level::WARN
+            && fields.get("event").map(String::as_str) == Some("supervision_give_up")
+            && fields.get("child").map(String::as_str) == Some("canary-give-up")
+            && fields
+                .get("error")
+                .is_some_and(|e| e.contains("non-restartable child"))));
+}
+
+#[tokio::test]
+async fn unmanaged_helpers_return_a_specific_error_without_executing_work() {
+    let actor = Worker.start();
+    assert!(matches!(
+        actor.context().spawn_helper(async {}),
+        Err(spawned_concurrency::system::SystemError::UnmanagedActor)
+    ));
+    assert!(matches!(
+        actor
+            .context()
+            .spawn_blocking_helper(|| panic!("must not run")),
+        Err(spawned_concurrency::system::SystemError::UnmanagedActor)
+    ));
+    actor.context().stop();
+    tokio::time::timeout(LIMIT, actor.join()).await.unwrap();
+}
+
+#[tokio::test]
+async fn panicked_turn_is_cleared_before_stopped_hook() {
+    struct Panicking {
+        entered: Option<oneshot::Sender<()>>,
+        release: Option<oneshot::Receiver<()>>,
+    }
+    impl Actor for Panicking {
+        async fn stopped(&mut self, _: &Context<Self>) {
+            let _ = self.entered.take().unwrap().send(());
+            let _ = self.release.take().unwrap().await;
+        }
+    }
+    impl Handler<Quit> for Panicking {
+        async fn handle(&mut self, _: Quit, _: &Context<Self>) {
+            panic!("diagnostic turn cleanup regression");
+        }
+    }
+    let system = ActorSystem::new().unwrap();
+    let group = system.async_group("canary-panic", 1).unwrap();
+    let (entered, arrival) = oneshot::channel();
+    let (release, gate) = oneshot::channel();
+    let actor = Panicking {
+        entered: Some(entered),
+        release: Some(gate),
+    }
+    .start_on(&group)
+    .unwrap();
+    actor.ready().await.unwrap();
+    assert!(actor.request(Quit(ExitReason::Kill)).await.is_err());
+    tokio::time::timeout(LIMIT, arrival).await.unwrap().unwrap();
+    let report = system.shutdown(Duration::from_millis(10)).await;
+    let detail = report
+        .unfinished_actor_details
+        .iter()
+        .find(|d| d.id == actor.id())
+        .unwrap();
+    assert_eq!(detail.message_type, None);
+    assert_eq!(detail.turn_age, None);
+    release.send(()).unwrap();
+    assert!(report.wait(LIMIT).await.complete);
+    assert!(matches!(
+        actor.child_handle().exit_reason(),
+        Some(ExitReason::Panic(_))
+    ));
+}

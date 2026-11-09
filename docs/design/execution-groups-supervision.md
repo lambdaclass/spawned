@@ -215,10 +215,14 @@ specify fairness between lifecycle control and ordinary messages. General
 user-defined message priorities are outside the MVP.
 
 System shutdown closes new actor/helper admission and cancels restart/startup
-activity first. Stop children in reverse declaration/dependency order, finish
+activity first. Stop supervised children in reverse declaration order, finish
 their registered cleanup, then tear down execution groups. The initial policy
 is explicit stop-and-join with existing queued-work discard semantics; bounded
 draining is an additional opt-in policy, not a silent change to ordinary stop.
+Standalone scopes currently stop in reverse admission order. There is no declared
+dependency graph. A future graph API must reject unknown dependencies and cycles,
+define ownership across supervisor boundaries, and preserve deadline signalling
+and cleanup ownership; it needs model/trace coverage before changing ordering.
 
 Track framework-owned and explicitly registered helpers. Arbitrary application
 `tokio::spawn`/native threads are not magically owned. Define helper admission,

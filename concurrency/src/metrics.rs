@@ -182,7 +182,7 @@ pub fn render_prometheus() -> String {
         // even if an observation arrived between independent atomic loads.
         writeln!(
             out,
-            "{name}_count {count}\n{name}_sum {}\n{name}_max {}",
+            "{name}_count {count}\n{name}_sum {}\n# TYPE {name}_max gauge\n{name}_max {}",
             hist.sum_ns as f64 / 1e9,
             hist.max_ns as f64 / 1e9
         )

@@ -84,6 +84,10 @@ struct Quit;
 impl Message for Quit {
     type Result = ();
 }
+struct ExitWith(spawned_concurrency::ExitReason);
+impl Message for ExitWith {
+    type Result = ();
+}
 struct Worker;
 impl Actor for Worker {}
 impl Handler<Crash> for Worker {
@@ -95,6 +99,43 @@ impl Handler<Quit> for Worker {
     async fn handle(&mut self, _: Quit, ctx: &Context<Self>) {
         ctx.stop();
     }
+}
+impl Handler<ExitWith> for Worker {
+    async fn handle(&mut self, msg: ExitWith, ctx: &Context<Self>) {
+        ctx.stop_with_reason(msg.0);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn trace_context_shutdown_and_abnormal_exit() {
+    use spawned_concurrency::ExitReason;
+    let system = ActorSystem::new().unwrap();
+    let group = system.async_group("trace-context-reasons", 1).unwrap();
+    let modes = [RestartMode::Transient, RestartMode::Transient];
+    let mut tree = system.supervisor(config(5)).unwrap();
+    let clean = tree.add(worker("clean", &group).restart(modes[0])).unwrap();
+    let failed = tree
+        .add(worker("failed", &group).restart(modes[1]))
+        .unwrap();
+    let supervisor = tree.start().await.unwrap();
+    let actor = clean.current().unwrap();
+    actor.request(ExitWith(ExitReason::Shutdown)).await.unwrap();
+    wait_state(&clean, ChildState::Stopped).await;
+    assert_eq!(
+        actor.child_handle().exit_reason(),
+        Some(ExitReason::Shutdown)
+    );
+    let actor = failed.current().unwrap();
+    actor.request(ExitWith(ExitReason::Kill)).await.unwrap();
+    let replacement = tokio::time::timeout(LIMIT, failed.wait_for_generation(1))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_ne!(replacement.id(), actor.id());
+    assert_eq!(actor.child_handle().exit_reason(), Some(ExitReason::Kill));
+    assert!(supervisor.shutdown(LIMIT).await.complete);
+    write_trace("context_exit_reasons", supervisor.trace_id(), &modes, 5);
+    assert!(system.shutdown(LIMIT).await.complete);
 }
 
 fn worker(name: &str, group: &spawned_concurrency::system::ExecutionGroup) -> ChildSpec<Worker> {

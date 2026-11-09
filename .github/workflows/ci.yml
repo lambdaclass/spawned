@@ -42,6 +42,13 @@ jobs:
           timeout 60s cargo run --locked -p spawned-capability-examples --features metrics --bin framework_metrics
       - name: Test optional framework metrics
         run: cargo test --locked -p spawned-concurrency --features metrics
+      - name: Parse Prometheus exposition and check canary diagnostics
+        run: |
+          python3 -m venv /tmp/spawned-prometheus-parser
+          /tmp/spawned-prometheus-parser/bin/pip install prometheus-client==0.21.1
+          cargo run --locked -q -p spawned-capability-examples --features metrics --bin framework_metrics | /tmp/spawned-prometheus-parser/bin/python scripts/check-metrics-exposition.py
+          cargo test --locked -p spawned-concurrency --features diagnostics --test canary_feedback
+          timeout 60s cargo run --locked -p spawned-capability-examples --features diagnostics --bin shutdown_diagnostics
 
   thread-only:
     runs-on: ubuntu-latest
