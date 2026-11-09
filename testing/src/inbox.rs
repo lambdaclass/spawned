@@ -1,5 +1,6 @@
 //! Shared message log behind mocks and probes: blocking and async waiters.
 use std::any::{Any, TypeId};
+use std::panic::Location;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
@@ -9,10 +10,15 @@ pub enum Outcome {
     /// Received, but its handling has not finished: the reply closure or a
     /// `delay` is still running. `expect` and `take_all` skip it until it is
     /// resolved; `expect_no_message` reports it. It stays `InFlight` if the
-    /// mock stopped before the reply existed (for example, killed mid-delay).
+    /// mock stopped before the reply existed (for example, killed mid-delay);
+    /// a `discard`ed message is recorded `Discarded` even then.
     InFlight,
-    /// A configured rule (or `allow_sends`) answered it. Recorded once the
-    /// reply value exists, after any `delay`.
+    /// A configured rule (or `allow_sends`) answered it. For a probe, recorded
+    /// once the reply is in the requester's reply channel. For a mock,
+    /// recorded when its handler returns the reply to the framework, after
+    /// any `delay`: the framework sends it right after, so a caller awaiting
+    /// the reply gets it, but `expect` may return a moment before the reply
+    /// reaches the caller's channel (a handler cannot observe the send).
     Handled,
     /// A `discard` rule swallowed it, as a lost message would be.
     Discarded,
@@ -56,7 +62,8 @@ impl Entry {
 /// [`finish`](Pending::finish) once its reply exists. Dropped unresolved, it
 /// records [`Outcome::Crashed`] until [`replied`](Pending::replied) (the reply
 /// closure panicked) and keeps [`Outcome::InFlight`] after it (the handler was
-/// dropped during its delay). Either way the message stays in the log.
+/// dropped during its delay), except that a discarded message is recorded
+/// [`Outcome::Discarded`] either way. The message always stays in the log.
 pub(crate) struct Pending {
     inbox: Arc<Inbox>,
     index: usize,
@@ -75,7 +82,13 @@ impl Pending {
 
     /// The reply value exists; [`finish`](Pending::finish) records `done`.
     pub(crate) fn replied(&mut self, done: Outcome) {
-        self.on_drop = Outcome::InFlight;
+        // A discarded message is lost whether or not the handler finishes its
+        // delay; any other outcome needs the reply to have been returned.
+        self.on_drop = if done == Outcome::Discarded {
+            Outcome::Discarded
+        } else {
+            Outcome::InFlight
+        };
         self.done = done;
     }
 
@@ -201,6 +214,7 @@ impl Inbox {
             .collect()
     }
 
+    #[track_caller]
     pub(crate) fn assert_no_unexpected(&self, who: &str) {
         let unexpected: Vec<_> = self
             .lock()
@@ -224,7 +238,13 @@ impl Inbox {
             .map(downcast::<M>)
     }
 
-    pub(crate) fn expect_blocking<M: 'static>(&self, timeout: Duration, who: &str) -> M {
+    #[track_caller]
+    pub(crate) fn expect_blocking<M: 'static>(
+        &self,
+        timeout: Duration,
+        who: &str,
+        at: &Location<'_>,
+    ) -> M {
         let deadline = Instant::now() + timeout;
         let mut entries = self.lock();
         loop {
@@ -233,7 +253,7 @@ impl Inbox {
             }
             let now = Instant::now();
             if now >= deadline {
-                missing::<M>(who, timeout, &entries);
+                missing::<M>(who, timeout, &entries, at);
             }
             // Spurious wakeups only loop back to the deadline check.
             entries = self
@@ -244,11 +264,12 @@ impl Inbox {
         }
     }
 
-    pub(crate) fn expect_none_blocking(&self, window: Duration, who: &str) {
+    #[track_caller]
+    pub(crate) fn expect_none_blocking(&self, window: Duration, who: &str, at: &Location<'_>) {
         let deadline = Instant::now() + window;
         let mut entries = self.lock();
         loop {
-            unwanted(who, window, &entries);
+            unwanted(who, window, &entries, at);
             let now = Instant::now();
             if now >= deadline {
                 return;
@@ -265,7 +286,12 @@ impl Inbox {
     // `std::time::Instant`), so they agree with `exit_within` and friends and
     // auto-advance under `#[tokio::test(start_paused = true)]`.
     #[cfg(feature = "async")]
-    pub(crate) async fn expect_async<M: 'static>(&self, timeout: Duration, who: &str) -> M {
+    pub(crate) async fn expect_async<M: 'static>(
+        &self,
+        timeout: Duration,
+        who: &str,
+        at: &Location<'_>,
+    ) -> M {
         let mut changes = self.changed.0.subscribe();
         let wait = async {
             loop {
@@ -284,24 +310,26 @@ impl Inbox {
                 // A push may have landed as the timer fired.
                 match Self::take_first::<M>(&mut entries) {
                     Some(msg) => msg,
-                    None => missing::<M>(who, timeout, &entries),
+                    None => missing::<M>(who, timeout, &entries, at),
                 }
             }
         }
     }
 
     #[cfg(feature = "async")]
-    pub(crate) async fn expect_none_async(&self, window: Duration, who: &str) {
+    pub(crate) async fn expect_none_async(&self, window: Duration, who: &str, at: &Location<'_>) {
         let mut changes = self.changed.0.subscribe();
         let watch = async {
             loop {
                 changes.borrow_and_update();
-                unwanted(who, window, &self.lock());
+                unwanted(who, window, &self.lock(), at);
                 changed_or_park(&mut changes).await;
             }
         };
         let _ = spawned_rt::tasks::timeout(window, watch).await;
-        unwanted(who, window, &self.lock());
+        // Also report a message that landed as the timer fired, matching the
+        // blocking variant, which checks once more after its last wait.
+        unwanted(who, window, &self.lock(), at);
     }
 }
 
@@ -329,19 +357,50 @@ fn pending_names(entries: &[Entry]) -> Vec<&'static str> {
         .collect()
 }
 
-fn missing<M>(who: &str, timeout: Duration, entries: &[Entry]) -> ! {
+#[track_caller]
+fn missing<M>(who: &str, timeout: Duration, entries: &[Entry], at: &Location<'_>) -> ! {
     panic!(
         "{who}: expected a `{}` within {timeout:?}, got none; {} message(s) received in total, \
-         not yet expected (including in flight): {:?}",
+         not yet expected (including in flight): {:?} (expect called at {at})",
         std::any::type_name::<M>(),
         entries.len(),
         pending_names(entries),
     )
 }
 
-fn unwanted(who: &str, window: Duration, entries: &[Entry]) {
+#[track_caller]
+fn unwanted(who: &str, window: Duration, entries: &[Entry], at: &Location<'_>) {
     let pending = pending_names(entries);
     if !pending.is_empty() {
-        panic!("{who}: expected no message for {window:?}, but has not-yet-expected {pending:?}");
+        panic!(
+            "{who}: expected no message for {window:?}, but has not-yet-expected {pending:?} \
+             (expect_no_message called at {at})"
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dropped_pending_keeps_discard_and_in_flight_apart() {
+        let inbox = Arc::new(Inbox::default());
+        // Dropped during a delay after a discard decision: still Discarded.
+        let mut discarded = inbox.arrive(1u32);
+        discarded.replied(Outcome::Discarded);
+        drop(discarded);
+        // Dropped during a delay before its reply was returned: InFlight.
+        let mut handled = inbox.arrive(2u32);
+        handled.replied(Outcome::Handled);
+        drop(handled);
+        // Dropped before the reply closure returned: Crashed.
+        drop(inbox.arrive(3u32));
+        let outcomes: Vec<_> = inbox.received().iter().map(|r| r.outcome).collect();
+        assert_eq!(
+            outcomes,
+            vec![Outcome::Discarded, Outcome::InFlight, Outcome::Crashed]
+        );
+        assert_eq!(inbox.take_all::<u32>(), vec![1, 3]);
     }
 }

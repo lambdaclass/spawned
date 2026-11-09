@@ -65,8 +65,8 @@ jobs:
           cargo test --locked -p spawned-concurrency --no-default-features
           cargo test --locked -p spawned-test --no-default-features
           cargo test --locked -p spawned-concurrency --no-default-features --features threads,metrics
-          cargo clippy --locked -p spawned-rt -p spawned-concurrency --no-default-features --all-targets -- -D warnings
-          cargo clippy --locked -p spawned-rt -p spawned-concurrency --no-default-features --features spawned-concurrency/metrics --all-targets -- -D warnings
+          cargo clippy --locked -p spawned-rt -p spawned-concurrency -p spawned-test --no-default-features --all-targets -- -D warnings
+          cargo clippy --locked -p spawned-rt -p spawned-concurrency -p spawned-test --no-default-features --features spawned-concurrency/metrics --all-targets -- -D warnings
           cargo run --locked --manifest-path examples/thread_only/Cargo.toml --features metrics,async
           python3 scripts/check-thread-only.py
           cargo clippy --locked --manifest-path examples/thread_only/Cargo.toml --features metrics,async -- -D warnings

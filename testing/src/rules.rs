@@ -53,8 +53,11 @@ pub(crate) struct Rules {
 /// `Some(())` as `M::Result` when that type is `()`: lets one generic handler
 /// acknowledge fire-and-forget messages without a rule.
 fn unit_result<M: Message>() -> Option<M::Result> {
-    let unit: Box<dyn Any> = Box::new(());
-    unit.downcast::<M::Result>().ok().map(|b| *b)
+    // No allocation: downcast a stack `Option<()>` through `&mut dyn Any`.
+    let mut unit = Some(());
+    (&mut unit as &mut dyn Any)
+        .downcast_mut::<Option<M::Result>>()
+        .and_then(Option::take)
 }
 
 impl Rules {
@@ -117,15 +120,17 @@ impl Rules {
                 }
             }
             inbox.push(msg, Outcome::Unexpected);
-            return Plan::Crash(format!(
-                "spawned-test Mock: no rule for message `{name}`; configure it with \
-                 `.on::<{name}>(..)`{}",
-                if unit_result::<M>().is_some() {
+            let hint = if unit_result::<M>().is_some() {
+                format!(
                     ", acknowledge it with `.allow_send::<{name}>()` or acknowledge every \
                      `()`-reply message with `.allow_sends()`"
-                } else {
-                    ""
-                }
+                )
+            } else {
+                String::new()
+            };
+            return Plan::Crash(format!(
+                "spawned-test Mock: no rule for message `{name}`; configure it with \
+                 `.on::<{name}>(..)`{hint}"
             ));
         };
         let delay = rule.delay;

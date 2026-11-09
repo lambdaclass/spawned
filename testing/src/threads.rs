@@ -12,6 +12,7 @@ use spawned_concurrency::threads::{
 use spawned_concurrency::{ChildHandle, ExitReason};
 use spawned_rt::threads::oneshot;
 use std::ops::Deref;
+use std::panic::Location;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -82,26 +83,32 @@ mock_ref_common!();
 
 impl MockRef {
     /// Block until the oldest not-yet-expected `M` arrives and return it.
+    #[track_caller]
     pub fn expect<M: Message>(&self, timeout: Duration) -> M {
-        self.inbox.expect_blocking::<M>(timeout, &self.who())
+        self.inbox
+            .expect_blocking::<M>(timeout, &self.who(), Location::caller())
     }
 
     /// Panic if any not-yet-expected message is (or arrives) within `window`.
+    #[track_caller]
     pub fn expect_no_message(&self, window: Duration) {
-        self.inbox.expect_none_blocking(window, &self.who())
+        self.inbox
+            .expect_none_blocking(window, &self.who(), Location::caller())
     }
 
     /// Block until the mock has handled everything this thread sent before.
     /// Panics if the mock has stopped or does not answer within 5 s; see
     /// [`settle_within`](MockRef::settle_within).
+    #[track_caller]
     pub fn settle(&self) {
         self.settle_within(SETTLE_TIMEOUT)
     }
 
     /// [`settle`](MockRef::settle) with a chosen bound.
+    #[track_caller]
     pub fn settle_within(&self, timeout: Duration) {
         if let Err(error) = self.actor.request_with_timeout(Fence, timeout) {
-            self.settle_failed(error);
+            self.settle_failed(error, Location::caller());
         }
     }
 }
@@ -116,18 +123,25 @@ probe_common!();
 
 impl<M: Message> Probe<M> {
     /// Block until the oldest not-yet-expected message arrives.
+    #[track_caller]
     pub fn expect(&self, timeout: Duration) -> M {
-        self.core.inbox.expect_blocking::<M>(timeout, "Probe")
+        self.core
+            .inbox
+            .expect_blocking::<M>(timeout, "Probe", Location::caller())
     }
 
     /// Panic if any not-yet-expected message is (or arrives) within `window`.
+    #[track_caller]
     pub fn expect_no_message(&self, window: Duration) {
-        self.core.inbox.expect_none_blocking(window, "Probe")
+        self.core
+            .inbox
+            .expect_none_blocking(window, "Probe", Location::caller())
     }
 }
 
 /// Request `fence` and return its reply: everything this thread sent to
 /// `actor` earlier has been handled. Panics on error.
+#[track_caller]
 pub fn settle<A, M>(actor: &ActorRef<A>, fence: M, timeout: Duration) -> M::Result
 where
     A: Handler<M>,
@@ -145,6 +159,10 @@ where
 }
 
 /// Block until `handle` exits, or panic after `deadline` instead of hanging.
+///
+/// Polls every millisecond: `ChildHandle` has no blocking wait with a
+/// timeout, and a waiter thread per call would leak on timeout.
+#[track_caller]
 pub fn exit_within(handle: &ChildHandle, deadline: Duration) -> ExitReason {
     let end = Instant::now() + deadline;
     loop {
@@ -163,11 +181,13 @@ pub fn exit_within(handle: &ChildHandle, deadline: Duration) -> ExitReason {
 }
 
 /// [`exit_within`] for a native `ActorRef`.
+#[track_caller]
 pub fn join_within<A: Actor>(actor: &ActorRef<A>, deadline: Duration) -> ExitReason {
     exit_within(&actor.child_handle(), deadline)
 }
 
 /// Poll `condition` every millisecond until it holds; panic naming `what` after `timeout`.
+#[track_caller]
 pub fn wait_until(timeout: Duration, what: &str, mut condition: impl FnMut() -> bool) {
     let deadline = Instant::now() + timeout;
     while !condition() {

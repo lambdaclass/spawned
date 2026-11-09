@@ -3,6 +3,11 @@
 //! Every async wait here is bounded by the Tokio timer only, so the helpers
 //! also work under `#[tokio::test(start_paused = true)]`, where idle time
 //! auto-advances.
+//!
+//! `#[track_caller]` does not reach into an `async fn`, so the waiting
+//! helpers are plain functions returning a future: they record the caller's
+//! location when called and name it in their failure message (`called at
+//! file:line`). The panic itself is still reported inside this crate.
 use crate::faults;
 use crate::inbox::{Inbox, Received};
 use crate::probe::ProbeCore;
@@ -19,6 +24,7 @@ use spawned_concurrency::{ChildHandle, ExitReason};
 use spawned_rt::tasks::{oneshot, sleep, timeout};
 use std::future::Future;
 use std::ops::Deref;
+use std::panic::Location;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -126,27 +132,36 @@ mock_ref_common!();
 impl MockRef {
     /// Wait for the oldest not-yet-expected `M` and return it. Other message
     /// types stay in the log. Panics with the log contents after `timeout`.
-    pub async fn expect<M: Message>(&self, timeout: Duration) -> M {
-        self.inbox.expect_async::<M>(timeout, &self.who()).await
+    #[track_caller]
+    pub fn expect<M: Message>(&self, timeout: Duration) -> impl Future<Output = M> + '_ {
+        let at = Location::caller();
+        async move { self.inbox.expect_async::<M>(timeout, &self.who(), at).await }
     }
 
     /// Panic if any not-yet-expected message is (or arrives) in the log within `window`.
-    pub async fn expect_no_message(&self, window: Duration) {
-        self.inbox.expect_none_async(window, &self.who()).await
+    #[track_caller]
+    pub fn expect_no_message(&self, window: Duration) -> impl Future<Output = ()> + '_ {
+        let at = Location::caller();
+        async move { self.inbox.expect_none_async(window, &self.who(), at).await }
     }
 
     /// Wait until the mock has handled every message sent to it before this
     /// call by this task (per-sender FIFO). Panics if the mock has stopped or
     /// does not answer within 5 s; see [`settle_within`](MockRef::settle_within).
-    pub async fn settle(&self) {
-        self.settle_within(SETTLE_TIMEOUT).await
+    #[track_caller]
+    pub fn settle(&self) -> impl Future<Output = ()> + '_ {
+        self.settle_within(SETTLE_TIMEOUT)
     }
 
     /// [`settle`](MockRef::settle) with a chosen bound, for mocks with long
     /// `delay` rules or tests that want to fail faster.
-    pub async fn settle_within(&self, timeout: Duration) {
-        if let Err(error) = self.actor.request_with_timeout(Fence, timeout).await {
-            self.settle_failed(error);
+    #[track_caller]
+    pub fn settle_within(&self, timeout: Duration) -> impl Future<Output = ()> + '_ {
+        let at = Location::caller();
+        async move {
+            if let Err(error) = self.actor.request_with_timeout(Fence, timeout).await {
+                self.settle_failed(error, at);
+            }
         }
     }
 }
@@ -168,13 +183,22 @@ probe_common!();
 
 impl<M: Message> Probe<M> {
     /// Wait for the oldest not-yet-expected message. Panics after `timeout`.
-    pub async fn expect(&self, timeout: Duration) -> M {
-        self.core.inbox.expect_async::<M>(timeout, "Probe").await
+    #[track_caller]
+    pub fn expect(&self, timeout: Duration) -> impl Future<Output = M> + '_ {
+        let at = Location::caller();
+        async move {
+            self.core
+                .inbox
+                .expect_async::<M>(timeout, "Probe", at)
+                .await
+        }
     }
 
     /// Panic if any not-yet-expected message is (or arrives) within `window`.
-    pub async fn expect_no_message(&self, window: Duration) {
-        self.core.inbox.expect_none_async(window, "Probe").await
+    #[track_caller]
+    pub fn expect_no_message(&self, window: Duration) -> impl Future<Output = ()> + '_ {
+        let at = Location::caller();
+        async move { self.core.inbox.expect_none_async(window, "Probe", at).await }
     }
 }
 
@@ -185,133 +209,188 @@ impl<M: Message> Probe<M> {
 /// Send `fence` as a request and wait for its reply: every message this task
 /// sent to `actor` earlier has then been handled (mailboxes are FIFO per
 /// sender). Use any cheap request the actor already handles. Panics on error.
-pub async fn settle<A, M>(actor: &ActorRef<A>, fence: M, timeout: Duration) -> M::Result
+#[track_caller]
+pub fn settle<A, M>(
+    actor: &ActorRef<A>,
+    fence: M,
+    timeout: Duration,
+) -> impl Future<Output = M::Result> + '_
 where
     A: Handler<M>,
     M: Message,
 {
-    match actor.request_with_timeout(fence, timeout).await {
-        Ok(reply) => reply,
-        Err(error) => panic!(
-            "actor {:?} did not settle on `{}` within {timeout:?}: {error}; exit reason {:?}",
-            actor.id(),
-            std::any::type_name::<M>(),
-            actor.exit_reason()
-        ),
+    let at = Location::caller();
+    async move {
+        match actor.request_with_timeout(fence, timeout).await {
+            Ok(reply) => reply,
+            Err(error) => panic!(
+                "actor {:?} did not settle on `{}` within {timeout:?}: {error}; exit reason \
+                 {:?} (settle called at {at})",
+                actor.id(),
+                std::any::type_name::<M>(),
+                actor.exit_reason()
+            ),
+        }
     }
 }
 
 /// Wait for `handle` to exit, or panic after `deadline` instead of hanging.
 /// Works for actors of either mode.
-pub async fn exit_within(handle: &ChildHandle, deadline: Duration) -> ExitReason {
+#[track_caller]
+pub fn exit_within(handle: &ChildHandle, deadline: Duration) -> impl Future<Output = ExitReason> {
+    exit_within_at(handle.clone(), deadline, Location::caller())
+}
+
+async fn exit_within_at(
+    handle: ChildHandle,
+    deadline: Duration,
+    at: &'static Location<'static>,
+) -> ExitReason {
     match timeout(deadline, handle.wait_exit_async()).await {
         Ok(reason) => reason,
         Err(_) => panic!(
             "actor {:?} did not exit within {deadline:?}; a handler may be blocked or the \
-             actor was never asked to stop",
+             actor was never asked to stop (exit_within called at {at})",
             handle.id()
         ),
     }
 }
 
 /// [`exit_within`] for an `ActorRef`.
-pub async fn join_within<A: Actor>(actor: &ActorRef<A>, deadline: Duration) -> ExitReason {
-    exit_within(&actor.child_handle(), deadline).await
+#[track_caller]
+pub fn join_within<A: Actor>(
+    actor: &ActorRef<A>,
+    deadline: Duration,
+) -> impl Future<Output = ExitReason> {
+    exit_within_at(actor.child_handle(), deadline, Location::caller())
 }
 
 /// Poll `condition` every millisecond until it holds; panic naming `what` after `timeout`.
 /// Measured on the Tokio clock, like every wait in this module.
-pub async fn wait_until(limit: Duration, what: &str, mut condition: impl FnMut() -> bool) {
-    let poll = async {
-        while !condition() {
-            sleep(Duration::from_millis(1)).await;
+#[track_caller]
+pub fn wait_until<'a>(
+    limit: Duration,
+    what: &'a str,
+    mut condition: impl FnMut() -> bool + 'a,
+) -> impl Future<Output = ()> + 'a {
+    let at = Location::caller();
+    async move {
+        let poll = async {
+            while !condition() {
+                sleep(Duration::from_millis(1)).await;
+            }
+        };
+        if timeout(limit, poll).await.is_err() {
+            panic!("timed out after {limit:?} waiting until {what} (wait_until called at {at})");
         }
-    };
-    if timeout(limit, poll).await.is_err() {
-        panic!("timed out after {limit:?} waiting until {what}");
     }
 }
 
 /// Wait for a ready generation strictly greater than `after`, or panic with
 /// the child's snapshot after `deadline`.
-pub async fn wait_for_generation<A: Actor>(
+#[track_caller]
+pub fn wait_for_generation<A: Actor>(
     child: &SupervisedChild<A>,
     after: u64,
     deadline: Duration,
-) -> ActorRef<A> {
-    match timeout(deadline, child.wait_for_generation(after)).await {
-        Ok(Ok(actor)) => actor,
-        Ok(Err(unavailable)) => panic!(
-            "supervised child will not reach a generation after {after}: {unavailable}; \
-             snapshot {:?}",
-            child.snapshot()
-        ),
-        Err(_) => panic!(
-            "supervised child did not reach a generation after {after} within {deadline:?}; \
-             snapshot {:?}",
-            child.snapshot()
-        ),
+) -> impl Future<Output = ActorRef<A>> + '_ {
+    let at = Location::caller();
+    async move {
+        match timeout(deadline, child.wait_for_generation(after)).await {
+            Ok(Ok(actor)) => actor,
+            Ok(Err(unavailable)) => panic!(
+                "supervised child will not reach a generation after {after}: {unavailable}; \
+                 snapshot {:?} (wait_for_generation called at {at})",
+                child.snapshot()
+            ),
+            Err(_) => panic!(
+                "supervised child did not reach a generation after {after} within \
+                 {deadline:?}; snapshot {:?} (wait_for_generation called at {at})",
+                child.snapshot()
+            ),
+        }
     }
 }
 
 /// Fault: make the current instance of `child` exit with `reason` (see
 /// [`faults::exit`]) and return its replacement once the supervisor has started
 /// it, or panic after `deadline` (for example when the restart mode does not
-/// restart that reason).
+/// restart that reason). `deadline` bounds the whole call: finding a running
+/// instance, injecting the fault and waiting for the replacement.
 ///
-/// The instance faulted and the generation waited past always belong
+/// The instance targeted and the generation waited past always belong
 /// together, even if the child restarts on its own meanwhile, so the returned
-/// reference is a replacement of the instance this call faulted.
-pub async fn restart_child<A: Actor>(
+/// reference is the first replacement of the targeted instance. A later
+/// instance is never faulted: the fault is aimed at the targeted instance's
+/// own handle, and a `Kill` is committed before `faults::exit` returns. If the
+/// targeted instance dies of its own cause first, the fault is a no-op and the
+/// replacement after that death is returned.
+#[track_caller]
+pub fn restart_child<A: Actor>(
     child: &SupervisedChild<A>,
     reason: ExitReason,
     deadline: Duration,
-) -> ActorRef<A> {
-    let (current, generation) = faultable_instance(child, deadline).await;
-    faults::exit(&current.child_handle(), reason);
-    wait_for_generation(child, generation, deadline).await
+) -> impl Future<Output = ActorRef<A>> + '_ {
+    let at = Location::caller();
+    async move {
+        // The generation faulted, once the fault is injected.
+        let faulted = std::cell::Cell::new(None);
+        let run = async {
+            let (current, generation) = faultable_instance(child).await;
+            faults::exit(&current.child_handle(), reason);
+            faulted.set(Some(generation));
+            child.wait_for_generation(generation).await
+        };
+        let outcome = timeout(deadline, run).await;
+        match (outcome, faulted.get()) {
+            (Ok(Ok(actor)), _) => actor,
+            (Ok(Err(unavailable)), generation) => panic!(
+                "supervised child will not reach a generation after {generation:?}: \
+                 {unavailable}; snapshot {:?} (restart_child called at {at})",
+                child.snapshot()
+            ),
+            (Err(_), None) => panic!(
+                "supervised child never had a stable instance to fault within {deadline:?}; \
+                 snapshot {:?} (restart_child called at {at})",
+                child.snapshot()
+            ),
+            (Err(_), Some(generation)) => panic!(
+                "supervised child did not reach a generation after {generation} within \
+                 {deadline:?} (one deadline for the whole call); snapshot {:?} \
+                 (restart_child called at {at})",
+                child.snapshot()
+            ),
+        }
+    }
 }
 
 /// The running instance and its generation, from views that agree. `current()`
 /// and `snapshot()` take the lock separately; a restart between them would
 /// pair instance N with generation N+1, so retry until the snapshot names the
-/// instance read.
-async fn faultable_instance<A: Actor>(
-    child: &SupervisedChild<A>,
-    deadline: Duration,
-) -> (ActorRef<A>, u64) {
-    let read = async {
-        loop {
-            match child.current() {
-                Ok(current) => {
-                    let snapshot = child.snapshot();
-                    if snapshot.actor_id == Some(current.id()) {
-                        return (current, snapshot.generation);
-                    }
+/// instance read. Unbounded here: the caller's deadline bounds it.
+async fn faultable_instance<A: Actor>(child: &SupervisedChild<A>) -> (ActorRef<A>, u64) {
+    loop {
+        match child.current() {
+            Ok(current) => {
+                let snapshot = child.snapshot();
+                if snapshot.actor_id == Some(current.id()) {
+                    return (current, snapshot.generation);
                 }
-                // A child that will never run again has nothing to fault.
-                Err(e)
-                    if matches!(
-                        child.snapshot().state,
-                        ChildState::Stopped | ChildState::Failed
-                    ) =>
-                {
-                    panic!("no running instance to fault: {e}")
-                }
-                // Between generations (an instance stopping, backoff,
-                // starting): wait for the next instance, up to `deadline`.
-                Err(_) => {}
             }
-            sleep(Duration::from_millis(1)).await;
+            // A child that will never run again has nothing to fault.
+            Err(e)
+                if matches!(
+                    child.snapshot().state,
+                    ChildState::Stopped | ChildState::Failed
+                ) =>
+            {
+                panic!("no running instance to fault: {e}")
+            }
+            // Between generations (an instance stopping, backoff,
+            // starting): wait for the next instance, up to the deadline.
+            Err(_) => {}
         }
-    };
-    match timeout(deadline, read).await {
-        Ok(pair) => pair,
-        Err(_) => panic!(
-            "supervised child never had a stable instance to fault within {deadline:?}; \
-             snapshot {:?}",
-            child.snapshot()
-        ),
+        sleep(Duration::from_millis(1)).await;
     }
 }
 

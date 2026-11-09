@@ -43,12 +43,14 @@
   both modes. `Mock` implements `Handler<M>` for every message, so
   `ActorRef<Mock>` satisfies any `#[protocol]` and converts to its `XRef`;
   replies are closures per message type, every message is logged (in flight
-  until its reply exists, so `expect` never runs ahead of the caller) and
-  unconfigured messages fail loudly. `Probe<M>` is a recording `Recipient<M>`
+  until its handler has returned the reply, so `expect` never runs ahead of
+  the handler) and unconfigured messages fail loudly. `Probe<M>` is a recording `Recipient<M>`
   with `expect`/`expect_no_message`. Harness helpers bound waits for exits,
   supervised generations and `ActorSystem`/supervisor shutdown, failing with a
-  report instead of hanging. Fault injection: `faults::exit` with any
-  `ExitReason`, `restart_child`, and mock delay/discard/crash rules. Public
+  report instead of hanging, and name the calling test line. Fault injection:
+  `faults::exit` with any `ExitReason` (never blocks the caller),
+  `restart_child` (one deadline for the whole call), and mock
+  delay/discard/crash rules. Public
   APIs only; no controlled scheduler yet. Tokio-free with
   `default-features = false` (threads helpers).
 - Generated supervision-policy scripts with an independent generation/retirement

@@ -1155,10 +1155,14 @@ out.expect_no_message(Duration::from_millis(20)).await;
   `received()` and `settle()` (wait until everything sent before is handled;
   5 s bound, `settle_within(d)` to choose it) read the same log.
 - A message that gets a reply is logged `Outcome::InFlight` on arrival and
-  becomes `Handled` (or `Discarded`) only after its reply closure and any
-  `delay` finish, so `expect` never returns before the caller can see the
-  reply. `expect_no_message` counts in-flight messages; a reply closure that
-  panics logs its message as `Crashed`.
+  becomes `Handled` (or `Discarded`) only when the mock's handler returns the
+  reply, after its reply closure and any `delay`. The framework sends the
+  reply right after; a handler cannot observe that send, so `expect` can
+  return a moment before the reply reaches the caller's channel (awaiting the
+  caller's request still gets it). `expect_no_message` counts in-flight
+  messages; a reply closure that panics logs its message as `Crashed`.
+- The log keeps one entry per message for the mock's lifetime, so it suits
+  unit tests rather than soak runs with millions of messages.
 
 `MockRef` dereferences to `ActorRef<Mock>`. Its own methods win over protocol
 methods with the same name; call those through `actor_ref()` or the `XRef`.
@@ -1176,6 +1180,14 @@ runtime; a mock adds the message log, strictness and faults.
 `Probe::replying(|msg| reply)` also answers requests; a plain probe logs a
 request as unexpected and drops its reply. `close()` makes it behave like a
 stopped recipient: once it returns, no further send or request is logged.
+
+There is no actor behind a probe: the reply closure runs on the requester's
+thread, inside its request, and a panic in it unwinds into the requester
+(the actor under test). Concurrent requests run the closure one at a time,
+so keep it short. It may call `close()` or send to the probe; a request to
+the same probe from inside its own closure panics instead of deadlocking. A
+probe logs a request `Handled` only once the reply is in the requester's
+channel.
 
 ### Harness helpers
 
@@ -1197,16 +1209,19 @@ There is no generic "actor is idle" check: an actor's mailbox can receive from
 any sender at any time, so `settle` fences the senders the test controls.
 Every async wait in `tasks` (`expect`, `expect_no_message`, `wait_until`,
 `exit_within` and the rest) is bounded by the Tokio timer, so the helpers also
-work under `#[tokio::test(start_paused = true)]`.
+work under `#[tokio::test(start_paused = true)]`. Failure messages name the
+test line that called the helper (`called at file:line`); the async helpers
+capture it when called, since `#[track_caller]` does not reach into an
+`async fn`.
 
 ### Fault injection
 
 | Fault | How |
 |---|---|
-| Stop any actor with a chosen reason | `faults::exit(&handle, reason)`: `Normal` calls `stop()` and `Shutdown` calls `shutdown()`; both stop the actor even if it traps exits (unlike Erlang's `exit(Pid, normal)`, which a non-trapping process ignores). `Panic(msg)` and `Kill` arrive as from a crashed linked peer: trapping actors receive `Exit` for `Panic`, `Kill` cannot be trapped and needs the `async` feature. Because the panic travels through a link, the actor exits with `Panic("panic in handler: {msg}")`, and the default panic hook prints `msg`. Never blocks the caller. |
-| Crash a supervised child and get its replacement | `tasks::restart_child(&child, reason, deadline)`: the returned instance always replaces the one it faulted, even if the child was already restarting |
+| Stop any actor with a chosen reason | `faults::exit(&handle, reason)`: `Normal` calls `stop()` and `Shutdown` calls `shutdown()`; both stop the actor even if it traps exits (unlike Erlang's `exit(Pid, normal)`, which a non-trapping process ignores). `Panic(msg)` and `Kill` arrive as from a crashed linked peer: trapping actors receive `Exit` for `Panic`, `Kill` cannot be trapped and needs the `async` feature. Because the panic travels through a link, the actor exits with `Panic("panic in handler: {msg}")`, and the default panic hook prints `msg`. An already-exited target is left alone. Never blocks the caller, even on a `current_thread` runtime. |
+| Crash a supervised child and get its replacement | `tasks::restart_child(&child, reason, deadline)`: the returned instance always replaces the one it targeted, even if the child was already restarting; `deadline` bounds the whole call |
 | Slow dependency / forced request timeout | `Mock::delay::<M>(d)` with a caller timeout shorter than `d` (`with_request_timeout`, `#[protocol(timeout = ..)]`) |
-| Lost message | `Mock::discard::<M>()` (fire-and-forget messages only) |
+| Lost message | `Mock::discard::<M>()` (fire-and-forget messages: a request returning `Response<()>` still gets `()`; to lose a request, `delay` it past the caller's timeout) |
 | Crashed dependency | `Mock::crash_on::<M>(reason)` |
 | Stopped recipient | `Probe::close()` |
 

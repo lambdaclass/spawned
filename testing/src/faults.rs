@@ -31,13 +31,20 @@ use spawned_concurrency::{message::Message, threads, ChildHandle, ExitReason};
 ///   its link stops the fuse first; that is logged and `exit` returns (the
 ///   target is gone, with its own reason). Any other failure to deliver the
 ///   panic panics here rather than dropping the fault silently.
-/// - `Kill`: a short-lived linked actor is aborted on a helper thread; the
-///   target exits with `Kill`, which cannot be trapped. Needs the `async`
-///   feature (Tokio-free builds panic here).
+/// - `Kill`: a short-lived linked actor on a private runtime is dropped
+///   unfinished, which publishes `Kill` over the link before `exit` returns;
+///   the target exits with `Kill`, which cannot be trapped. Failing to set
+///   this up panics here. Needs the `async` feature (Tokio-free builds panic
+///   here).
 ///
-/// Never waits for the target: it returns once the exit is requested (for
-/// `Kill`, once the helper thread is spawned), so it is safe to call from
-/// async code. Wait for the exit with `ChildHandle::wait_exit_async`,
+/// A target that has already exited is left alone (logged at debug level). A
+/// target that exits `Normal` or `Shutdown` concurrently with a `Panic`
+/// injection does not propagate that exit over the link, so the fuse still
+/// panics on its own and the default hook prints it; the target is unaffected.
+///
+/// Never waits for the target and never blocks: it returns once the exit is
+/// requested, so it is safe to call from async code, including a
+/// `current_thread` runtime. Wait for the exit with `ChildHandle::wait_exit_async`,
 /// [`tasks::exit_within`](crate::tasks::exit_within) or
 /// [`threads::exit_within`](crate::threads::exit_within).
 pub fn exit(target: &ChildHandle, reason: ExitReason) {
@@ -64,27 +71,45 @@ impl threads::Handler<Detonate> for Fuse {
 
 fn panic_linked(target: &ChildHandle, msg: String) {
     use threads::ActorStart as _;
+    if already_exited(target) {
+        return;
+    }
     let fuse = Fuse.start();
     // Registers both link edges synchronously, or, if the target has already
     // exited abnormally, signals that exit to the fuse right away.
     fuse.context().link(target);
     if let Err(error) = fuse.send(Detonate(msg)) {
         // Nothing else knows the fuse, so only the target's link can have
-        // stopped it: the target already exited abnormally before the fault.
-        // The fuse records that reason (its own exit is linked-reason driven).
-        let reason = fuse.child_handle().wait_exit_blocking();
-        match reason {
-            ExitReason::Normal => panic!(
+        // stopped it: the target exited abnormally before the fault landed.
+        // Read the outcome without waiting (the fuse's mailbox can close
+        // before its exit reason is published), so async callers never block.
+        match fuse.child_handle().exit_reason() {
+            Some(ExitReason::Normal) => panic!(
                 "spawned-test: could not inject a panic into {:?}: the fuse stopped \
                  ({error}) without a linked exit",
                 target.id()
             ),
             reason => tracing::debug!(
                 target = ?target.id(),
-                %reason,
-                "spawned-test: target had already exited; panic injection not needed"
+                fuse_reason = ?reason,
+                "spawned-test: target exited before the injected panic; not needed"
             ),
         }
+    }
+}
+
+/// `true` (and logged) if `target` already exited, so there is nothing to fault.
+fn already_exited(target: &ChildHandle) -> bool {
+    match target.exit_reason() {
+        Some(reason) => {
+            tracing::debug!(
+                target = ?target.id(),
+                %reason,
+                "spawned-test: target already exited; fault not injected"
+            );
+            true
+        }
+        None => false,
     }
 }
 
@@ -93,33 +118,25 @@ fn kill_linked(target: &ChildHandle) {
     use spawned_concurrency::tasks;
     struct Aborted;
     impl tasks::Actor for Aborted {}
-    let target = target.clone();
-    // Dropping a runtime that owns the linked actor's task drops the actor
-    // future without completing it, which publishes `Kill` to its links. A
-    // runtime cannot be dropped inside another, hence the dedicated thread.
-    // It is not joined, so async callers never block a runtime worker.
-    let spawned = std::thread::Builder::new()
-        .name("spawned-test-kill".into())
-        .spawn(move || {
-            let runtime = match spawned_rt::tasks::control_runtime() {
-                Ok(runtime) => runtime,
-                Err(error) => {
-                    tracing::error!(%error, "spawned-test: no runtime for the kill fuse");
-                    return;
-                }
-            };
-            let fuse = runtime.block_on(async { tasks::ActorStart::start(Aborted) });
-            // `link` needs no task to run: it inserts both edges into the link
-            // tables under their mutexes before returning (or signals the fuse
-            // at once if the target already exited). The fuse's cleanup guard
-            // is built before its task is spawned, so dropping the runtime
-            // publishes `Kill` over that link even if the task never ran.
-            fuse.context().link(&target);
-            drop(runtime);
-        });
-    if let Err(error) = spawned {
-        panic!("spawned-test: could not spawn the kill fuse thread: {error}");
+    if already_exited(target) {
+        return;
     }
+    // A private current-thread runtime owns the fuse's task and is never
+    // driven, so the fuse never runs. Shutting the runtime down drops the
+    // actor future unfinished, and its cleanup publishes `Kill` to its links
+    // on this thread. `shutdown_background` neither blocks nor panics inside
+    // another runtime, unlike dropping it, so this works from async code.
+    // Setup failures panic here instead of losing the fault.
+    let runtime = spawned_rt::tasks::control_runtime()
+        .unwrap_or_else(|error| panic!("spawned-test: no runtime for the kill fuse: {error}"));
+    let fuse = {
+        let _context = runtime.enter();
+        tasks::ActorStart::start(Aborted)
+    };
+    // `link` inserts both edges under their mutexes before returning (or
+    // signals the fuse at once if the target exited meanwhile).
+    fuse.context().link(target);
+    runtime.shutdown_background();
 }
 
 #[cfg(not(feature = "async"))]

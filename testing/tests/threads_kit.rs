@@ -7,7 +7,7 @@ use spawned_test::faults;
 use spawned_test::threads::{exit_within, join_within, settle, wait_until, Mock, Probe};
 use spawned_test::Outcome;
 use std::panic::AssertUnwindSafe;
-use std::sync::mpsc;
+use std::sync::{mpsc, Arc, OnceLock};
 use std::time::Duration;
 
 const WAIT: Duration = Duration::from_secs(2);
@@ -303,4 +303,106 @@ fn native_kill_injection_is_reliable() {
         faults::exit(&actor.child_handle(), ExitReason::Kill);
         assert_eq!(join_within(&actor, WAIT), ExitReason::Kill);
     }
+}
+
+/// Run `f` on a helper thread; panic if it does not finish within 10 s.
+fn without_deadlock(what: &str, f: impl FnOnce() + Send + 'static) {
+    let (done, finished) = mpsc::channel();
+    std::thread::spawn(move || {
+        f();
+        let _ = done.send(());
+    });
+    if finished.recv_timeout(Duration::from_secs(10)).is_err() {
+        panic!("{what}: deadlocked or panicked");
+    }
+}
+
+// Regression: a reply closure that closes its own probe, or sends to it,
+// while other requests wait for the closure, used to deadlock: a waiting
+// request held the admission lock that `close()` and `send()` need.
+#[test]
+fn native_reply_closure_may_close_or_send_to_its_probe() {
+    for closes in [false, true] {
+        without_deadlock("reply closure using its probe", move || {
+            let slot: Arc<OnceLock<Probe<Quote>>> = Arc::new(OnceLock::new());
+            let own = slot.clone();
+            let probe = Probe::<Quote>::replying(move |q| {
+                std::thread::sleep(Duration::from_micros(200));
+                if let Some(probe) = own.get() {
+                    if closes && q.0 == 7 {
+                        probe.close();
+                    } else {
+                        let _ = probe.recipient().send(Quote(0));
+                    }
+                }
+                q.0
+            });
+            let _ = slot.set(probe.clone());
+            let requesters: Vec<_> = (0..4)
+                .map(|_| {
+                    let recipient = probe.recipient();
+                    std::thread::spawn(move || {
+                        for i in 0..50 {
+                            // Requests after `close()` fail; that is expected.
+                            let _ = threads::request(&*recipient, Quote(i), WAIT);
+                        }
+                    })
+                })
+                .collect();
+            for requester in requesters {
+                requester.join().unwrap();
+            }
+            assert!(!probe.received().is_empty());
+        });
+    }
+}
+
+// A request to the same probe from inside its reply closure panics instead
+// of deadlocking; both requests are logged as Crashed.
+#[test]
+fn native_reentrant_probe_request_panics() {
+    without_deadlock("re-entrant probe request", || {
+        let slot: Arc<OnceLock<Probe<Quote>>> = Arc::new(OnceLock::new());
+        let own = slot.clone();
+        let probe = Probe::<Quote>::replying(move |q| {
+            if q.0 == 1 {
+                let inner = own.get().expect("set").recipient();
+                let _ = threads::request(&*inner, Quote(2), WAIT);
+            }
+            q.0
+        });
+        let _ = slot.set(probe.clone());
+        let recipient = probe.recipient();
+        let caught = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            threads::request(&*recipient, Quote(1), WAIT)
+        }));
+        let payload = caught.expect_err("the nested request panics");
+        let text = payload
+            .downcast_ref::<String>()
+            .cloned()
+            .unwrap_or_default();
+        assert!(text.contains("cannot request its own probe"), "{text}");
+        let outcomes: Vec<_> = probe.received().iter().map(|r| r.outcome).collect();
+        assert_eq!(outcomes, vec![Outcome::Crashed, Outcome::Crashed]);
+        // The probe still answers afterwards.
+        assert_eq!(threads::request(&*recipient, Quote(3), WAIT).unwrap(), 3);
+    });
+}
+
+// Blocking helpers point at the test line that called them.
+#[test]
+fn native_helpers_name_their_caller() {
+    let probe = Probe::<Quote>::new();
+    let caught = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        probe.expect(Duration::from_millis(1));
+    }));
+    let text = caught
+        .expect_err("expect times out")
+        .downcast_ref::<String>()
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        text.contains("(expect called at testing/tests/threads_kit.rs:"),
+        "{text}"
+    );
 }

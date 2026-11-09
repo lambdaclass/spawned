@@ -9,6 +9,12 @@
 macro_rules! mock_builder {
     () => {
         /// A strict mock: every message type needs a rule.
+        ///
+        /// The receive log keeps one entry per message for the mock's
+        /// lifetime (`expect`/`take_all` release the payload, not the entry),
+        /// so memory grows with the number of messages. That suits unit
+        /// tests; for soak-style tests sending millions of messages, use a
+        /// purpose-built counting actor instead.
         pub fn new() -> Self {
             Self {
                 rules: Rules::default(),
@@ -47,6 +53,14 @@ macro_rules! mock_builder {
 
         /// Fault: log each `M` as [`crate::Outcome::Discarded`] and do nothing
         /// else, as if the message were lost after a successful send.
+        ///
+        /// Meant for fire-and-forget messages. A handler cannot tell a send
+        /// from a request, so a *request* `M` (a protocol method returning
+        /// `Response<()>`) still gets its `()` reply and the caller sees
+        /// success, whereas a genuinely lost request would time out; use
+        /// [`delay`](Self::delay) beyond the caller's timeout for that. A
+        /// discarded message stays `Discarded` even if the mock dies during
+        /// a `delay` on it.
         pub fn discard<M: Message<Result = ()>>(mut self) -> Self {
             self.rules.discard::<M>();
             self
@@ -76,9 +90,11 @@ macro_rules! mock_ref_common {
                 format!("Mock {:?}", self.actor.id())
             }
 
-            fn settle_failed(&self, error: ActorError) -> ! {
+            #[track_caller]
+            fn settle_failed(&self, error: ActorError, at: &std::panic::Location<'_>) -> ! {
                 panic!(
-                    "{}: could not settle ({error}); exit reason {:?}, log {:?}",
+                    "{}: could not settle ({error}); exit reason {:?}, log {:?} \
+                     (settle called at {at})",
                     self.who(),
                     self.actor.exit_reason(),
                     self.received()
@@ -107,6 +123,7 @@ macro_rules! mock_ref_common {
             }
 
             /// Panic if any message had no rule.
+            #[track_caller]
             pub fn assert_no_unexpected(&self) {
                 self.inbox.assert_no_unexpected(&self.who());
             }
@@ -137,8 +154,10 @@ macro_rules! probe_common {
             }
             fn request_raw(&self, msg: M) -> Result<oneshot::Receiver<M::Result>, ActorError> {
                 let (tx, rx) = oneshot::channel();
-                if let Some(value) = self.request(msg)? {
+                if let Some((value, record)) = self.request(msg)? {
                     let _ = tx.send(value);
+                    // Logged `Handled` only once the reply is in the channel.
+                    record.finish();
                 }
                 Ok(rx)
             }
@@ -146,6 +165,10 @@ macro_rules! probe_common {
 
         impl<M: Message> Probe<M> {
             /// A probe for fire-and-forget messages.
+            ///
+            /// Like a mock's, the receive log keeps one entry per message for
+            /// the probe's lifetime, so it suits unit tests rather than soak
+            /// runs with millions of messages.
             pub fn new() -> Self {
                 Self {
                     core: Arc::new(ProbeCore::new(None)),
@@ -153,6 +176,17 @@ macro_rules! probe_common {
             }
 
             /// A probe that answers requests with `reply(&msg)`.
+            ///
+            /// There is no actor behind a probe: `reply` runs synchronously on
+            /// the requester's thread, inside its `request` call. A panic in
+            /// `reply` therefore unwinds into the requester (crashing the actor
+            /// under test, not "the dependency") and logs the request as
+            /// [`crate::Outcome::Crashed`]. Concurrent requests run `reply` one at
+            /// a time, so keep it short and non-blocking. It may call `close()`
+            /// or send to this probe; a request to this same probe from inside
+            /// `reply` panics (it could only deadlock). The request is logged
+            /// `Handled` only after the reply is in the requester's reply
+            /// channel.
             pub fn replying(reply: impl FnMut(&M) -> M::Result + Send + 'static) -> Self {
                 Self {
                     core: Arc::new(ProbeCore::new(Some(Box::new(reply)))),

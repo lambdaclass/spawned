@@ -11,7 +11,7 @@ use spawned_test::tasks::{
     TestSystem,
 };
 use spawned_test::{Outcome, Received};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -323,7 +323,7 @@ async fn mock_starts_on_a_test_group() {
     test.shutdown(WAIT).await;
 }
 
-struct Stuck;
+struct Stuck(Arc<AtomicBool>);
 struct Hang;
 impl Message for Hang {
     type Result = ();
@@ -331,6 +331,7 @@ impl Message for Hang {
 impl Actor for Stuck {}
 impl Handler<Hang> for Stuck {
     async fn handle(&mut self, _: Hang, _: &Context<Self>) {
+        self.0.store(true, Ordering::SeqCst);
         // Blocking code is never preempted, so shutdown cannot finish in time.
         std::thread::sleep(Duration::from_millis(500));
     }
@@ -340,9 +341,16 @@ impl Handler<Hang> for Stuck {
 #[should_panic(expected = "ActorSystem did not shut down within")]
 async fn bounded_shutdown_reports_unfinished_actors() {
     let test = TestSystem::new();
-    let stuck = test.start(Stuck);
+    let entered = Arc::new(AtomicBool::new(false));
+    let stuck = test.start(Stuck(entered.clone()));
     stuck.send(Hang).unwrap();
-    tokio::time::sleep(Duration::from_millis(20)).await;
+    // Shut down only once the handler is inside its blocking sleep, so the
+    // report is deterministic. Dropping the system during the unwind starts a
+    // background shutdown and does not join the blocked worker.
+    wait_until(WAIT, "the handler is blocking", || {
+        entered.load(Ordering::SeqCst)
+    })
+    .await;
     test.shutdown(Duration::from_millis(50)).await;
 }
 
@@ -368,7 +376,12 @@ async fn allow_sends_also_answers_unit_requests_but_allow_send_is_per_type() {
     let ExitReason::Panic(reason) = join_within(&strict, WAIT).await else {
         panic!("strict mock should panic on the unacknowledged request");
     };
-    assert!(reason.contains("allow_send::<"), "{reason}");
+    assert!(
+        reason.contains(
+            "acknowledge it with `.allow_send::<tasks_kit::ledger_protocol::Flush>()` or"
+        ),
+        "{reason}"
+    );
     assert_eq!(strict.count::<ledger_protocol::Note>(), 1);
 }
 
@@ -501,4 +514,64 @@ async fn restart_child_waits_out_a_restart_in_progress() {
     let report = shutdown_supervisor(&supervisor, WAIT).await;
     assert!(report.failure.is_none());
     test.shutdown(WAIT).await;
+}
+
+// Regression: injecting a panic or a kill never blocks the caller, even on a
+// current-thread runtime, where blocking would also stall the target.
+#[tokio::test]
+async fn exit_injection_never_blocks_a_current_thread_runtime() {
+    for reason in [ExitReason::Panic("injected".into()), ExitReason::Kill] {
+        let actor = Counter(Arc::default()).start();
+        faults::exit(&actor.child_handle(), reason.clone());
+        let observed = join_within(&actor, WAIT).await;
+        assert!(matches!(
+            (&reason, &observed),
+            (ExitReason::Panic(_), ExitReason::Panic(_)) | (ExitReason::Kill, ExitReason::Kill)
+        ));
+        // A second injection into the exited target is a non-blocking no-op.
+        faults::exit(&actor.child_handle(), reason);
+        assert_eq!(join_within(&actor, WAIT).await, observed);
+    }
+}
+
+// Regression: `deadline` bounds the whole call, not each of its phases. Each
+// phase here waits out a 400 ms backoff, so two phases exceed 600 ms.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[should_panic(expected = "one deadline for the whole call")]
+async fn restart_child_has_one_deadline_for_the_whole_call() {
+    let test = TestSystem::new();
+    let mut tree = test
+        .system()
+        .supervisor(SupervisorConfig {
+            backoff: Backoff {
+                initial: Duration::from_millis(400),
+                maximum: Duration::from_millis(400),
+                jitter: false,
+                ..Backoff::default()
+            },
+            ..SupervisorConfig::default()
+        })
+        .unwrap();
+    let child = tree
+        .add(ChildSpec::new("counter", test.group(), |_| async {
+            Ok::<_, String>(Counter(Arc::default()))
+        }))
+        .unwrap();
+    let _supervisor = tree.start().await.unwrap();
+    let first = child.wait_ready().await.unwrap();
+    faults::exit(&first.child_handle(), ExitReason::Panic("first".into()));
+    exit_within(&first.child_handle(), WAIT).await;
+    restart_child(
+        &child,
+        ExitReason::Panic("second".into()),
+        Duration::from_millis(600),
+    )
+    .await;
+}
+
+// Async helpers name the test line that called them.
+#[tokio::test]
+#[should_panic(expected = "(expect called at testing/tests/tasks_kit.rs:")]
+async fn async_expect_names_its_caller() {
+    Probe::<Sold>::new().expect(Duration::from_millis(1)).await;
 }
