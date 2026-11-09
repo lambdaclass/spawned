@@ -91,3 +91,6 @@ The [ranked backlog](research/idea-priorities.md) records the wider proposals an
 tradeoffs. [Detailed acceptance criteria](design/roadmap-acceptance-2026-11-06.md)
 and [research conclusions](research/commonware.md) remain reference material;
 this page defines the current order. No speculative feature is promised by a date.
+A broader brainstorm catalog with design notes is in
+[framework ideas](research/framework-ideas.md); the formal-model and testing-tool
+plan is in [verification strategy](research/verification-strategy.md).
