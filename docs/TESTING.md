@@ -61,6 +61,7 @@ class of bug. Coverage for v0.7.0:
 | Scheduling pressure | `taskset -c 0`, one Tokio worker | Code that assumes parallel progress; races that need preemption on one core | `single-cpu` CI job |
 | Supply chain | cargo-deny, cargo-audit | Vulnerable, unmaintained or unsound dependencies; license and source drift | `supply-chain` CI job; accepted advisories listed in `deny.toml` |
 | Flakiness | cargo-nextest with retries | Tests that pass only on retry | Nightly `flaky-tracking` job; a retry is reported, never silently passed |
+| Pure arithmetic | Kani | Overflow, panics and off-by-one in backoff, jitter, the restart window and recovery ids, for all inputs in a bound | `concurrency/src/kani_proofs.rs`, weekly and on `concurrency/src` PRs |
 | Test quality | cargo-mutants | Tests that still pass when the code is broken | Weekly over supervision and system code |
 | Compatibility | cargo-semver-checks | Unexpected public API removals | Defaults/metrics and the explicit-async migration must remain patch-compatible with v0.6; raw no-default removals are checked against an exact declared list, not reported as compatible. Protocol macros also need trybuild. |
 | Feature separation | cargo-hack | Missing dependencies hidden by dev-dependency feature unification | CI builds each library feature, default, no-default and all features without dev dependencies; not the full feature powerset |
@@ -375,7 +376,55 @@ runs the lifecycle tests in CI. `cargo mutants` over `supervision.rs` and
 `system.rs` runs weekly. The remaining surviving mutants are race-only guards
 (`can_start`, `register`, `lease` checks only reachable in narrow windows),
 redundant system-level safety nets (group teardown also stops supervised
-children), jitter seed mixing and simple accessors.
+children) and simple accessors. The backoff and jitter seed mixing mutants are
+killed by the Kani proofs below.
+
+## Kani proofs of supervisor arithmetic
+
+[Kani](https://model-checking.github.io/kani/) checks every input, not samples,
+for small pure functions the supervisor depends on. The harnesses live in
+`concurrency/src/kani_proofs.rs` behind `cfg(kani)`, so normal builds never see
+them. Kani cannot run async code or threads; the supervisor calls the same pure
+helpers (`Backoff::bound`/`delay`, `jitter_seed`, `admit_in_window`,
+`RecoveryQueue::select`/`request`) that the harnesses check.
+
+```bash
+cargo install --locked kani-verifier && cargo kani setup   # once
+cargo kani -p spawned-concurrency                          # all harnesses
+cargo kani -p spawned-concurrency --harness backoff_jitter_stays_in_range
+```
+
+| Harness | Proves | Bound | Time |
+|---|---|---|---|
+| `backoff_bound_is_capped` | Pre-jitter bound in `[initial, maximum]`, first retry waits `initial`, no panic | Any `Duration`s, any `u32` failures (Kissat) | 1.4 s |
+| `backoff_delay_without_jitter_is_bound` | No jitter: `delay == bound`, stream not advanced | Sub-second configs | 1.4 s |
+| `backoff_bound_is_monotone_whole_seconds` | Bound non-decreasing in failures | Whole-second configs (any `u64` s) | 4.0 s |
+| `backoff_bound_is_monotone_subsecond` | Same | Sub-second configs | 1.2 s |
+| `jitter_draw_stays_in_range` | Draw in `0..=nanos`, no panic (incl. 0 and `u64::MAX`) | All `u64` | <0.1 s |
+| `jitter_draw_reaches_both_ends` | Both ends of the draw range reachable | All `u64` | 0.7 s |
+| `jitter_clamp_stays_within_bound` | `u64` clamp never exceeds the true nanosecond count | Any `Duration` | 46 s |
+| `jitter_conversion_stays_within_bound` | Draw converted back to `Duration` stays within bound | Sub-second bounds | <0.1 s |
+| `backoff_jitter_stays_in_range` | End to end: jittered delay `<= bound <= maximum`, no panic | Sub-second configs, any failures and stream | 1.6 s |
+| `backoff_jitter_zero_bound` | Zero `initial` jitters to exactly zero, no panic | Any `maximum` | 0.1 s |
+| `jitter_seed_is_injective_in_seed` | Distinct seeds give distinct per-child streams | Names up to 4 bytes | 1.3 s |
+| `restart_window_admits_exactly_within_budget` | Admit iff fewer than `max` admissions inside the window, checked against an independent log | `max <= 2`, window <= 255 ns, 3 non-decreasing stamps (Kissat) | 5.6 s |
+| `recovery_rounds_are_fresh_and_monotone` | Round ids nonzero and strictly increasing, coverage never moves back, stale requests rejected, rounds clear what they cover | 3 children, 4 request/select steps, either strategy | 7.2 s |
+
+The config domain is what `SupervisorBuilder` accepts (`initial <= maximum`).
+The proofs kill the surviving cargo-mutants in this code: `nanos + 1` to
+`- 1`/`* 1` (overflow / remainder by zero at a zero bound) and the seed `^` to
+`|`/`&` (seed collision). Mixed seconds-and-nanos monotonicity and a deeper
+restart window (`max <= 3`, 5 stamps) time out after 5 minutes; they are kept
+behind `cfg(kani_slow)` (`RUSTFLAGS="--cfg kani_slow" cargo kani ...`).
+Symbolic `Duration` multiplication and `u64` division over the full domain is
+the expensive part, which is why some harnesses split the domain.
+Not proved: `ChildSnapshot::generation` is a `u64` incremented once per start
+attempt and recovery ids use `checked_add`; neither can wrap before 2^64
+attempts or rounds (about 584 years at one per nanosecond), so the harnesses
+start from the real initial values and do not explore exhaustion. The
+`changed` watch counters use `wrapping_add` but only signal a change; their
+values are never compared. Times are from Kani 0.68 on an Apple M-series
+laptop; CI pins the same Kani version (`.github/workflows/kani.yml`).
 
 ## Native integration matrix
 

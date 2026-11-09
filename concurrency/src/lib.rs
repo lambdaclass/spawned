@@ -99,6 +99,8 @@ pub use monitor::{Down, MonitorRef};
 pub use response::Response;
 pub use spawned_macros::{actor, protocol};
 
+#[cfg(all(kani, feature = "async"))]
+mod kani_proofs;
 #[cfg(all(test, feature = "async"))]
 mod link_regression_tests;
 #[cfg(test)]

@@ -66,24 +66,46 @@ impl Default for Backoff {
     }
 }
 impl Backoff {
-    fn delay(&self, failures: u32, rng: &mut u64) -> Duration {
-        let bound = self
-            .initial
+    /// Capped exponential delay before jitter.
+    pub(crate) fn bound(&self, failures: u32) -> Duration {
+        self.initial
             .saturating_mul(1u32 << failures.min(31))
-            .min(self.maximum);
+            .min(self.maximum)
+    }
+    /// With jitter, a draw from `0..=bound(failures)`.
+    pub(crate) fn delay(&self, failures: u32, rng: &mut u64) -> Duration {
+        let bound = self.bound(failures);
         if !self.jitter {
             return bound;
         }
-        *rng = rng
-            .wrapping_mul(6364136223846793005)
-            .wrapping_add(1442695040888963407);
-        let nanos = bound.as_nanos().min(u64::MAX as u128) as u64;
-        Duration::from_nanos(if nanos == u64::MAX {
-            *rng
-        } else {
-            *rng % (nanos + 1)
-        })
+        jitter(bound, rng)
     }
+}
+
+/// Advances the jitter stream and draws a delay in `0..=bound`.
+pub(crate) fn jitter(bound: Duration, rng: &mut u64) -> Duration {
+    *rng = rng
+        .wrapping_mul(6364136223846793005)
+        .wrapping_add(1442695040888963407);
+    let nanos = bound.as_nanos().min(u64::MAX as u128) as u64;
+    Duration::from_nanos(jitter_draw(nanos, *rng))
+}
+
+/// Maps a stream value onto `0..=nanos`.
+pub(crate) fn jitter_draw(nanos: u64, rng: u64) -> u64 {
+    if nanos == u64::MAX {
+        rng
+    } else {
+        rng % (nanos + 1)
+    }
+}
+
+/// Per-child jitter stream: the supervisor seed mixed with the child's name,
+/// so siblings sharing a seed draw different delays. Injective in `seed`.
+pub(crate) fn jitter_seed(seed: u64, name: &[u8]) -> u64 {
+    seed ^ name
+        .iter()
+        .fold(0u64, |a, b| a.wrapping_mul(31).wrapping_add(*b as u64))
 }
 
 /// The affected children are fully joined before ordered reconstruction.
@@ -264,13 +286,27 @@ impl RecoverySlot {
         })
     }
 }
-struct RecoveryQueue {
-    pending: Vec<bool>,
-    covered: Vec<u64>,
-    next_id: u64,
+pub(crate) struct RecoveryQueue {
+    pub(crate) pending: Vec<bool>,
+    pub(crate) covered: Vec<u64>,
+    pub(crate) next_id: u64,
 }
 impl RecoveryQueue {
-    fn request(&mut self, index: usize, after: u64) -> bool {
+    /// Opens the next round at the lowest pending origin: clears pending from
+    /// `start` on, stamps those children as covered by the fresh round id and
+    /// returns `(origin, start, id)`.
+    pub(crate) fn select(&mut self, one_for_all: bool) -> Option<(usize, usize, u64)> {
+        let origin = self.pending.iter().position(|pending| *pending)?;
+        let start = if one_for_all { 0 } else { origin };
+        for pending in &mut self.pending[start..] {
+            *pending = false;
+        }
+        let id = self.next_id;
+        self.next_id = id.checked_add(1).expect("recovery IDs exhausted");
+        self.covered[start..].fill(id);
+        Some((origin, start, id))
+    }
+    pub(crate) fn request(&mut self, index: usize, after: u64) -> bool {
         if after < self.covered[index] {
             return false;
         }
@@ -496,19 +532,30 @@ struct RetryBudget {
 }
 impl RetryBudget {
     fn take(&mut self, now: Instant) -> bool {
-        while self
-            .attempts
-            .front()
-            .is_some_and(|t| now.saturating_duration_since(*t) >= self.window)
-        {
-            self.attempts.pop_front();
-        }
-        if self.attempts.len() >= self.max {
-            return false;
-        }
-        self.attempts.push_back(now);
-        true
+        admit_in_window(&mut self.attempts, self.max, self.window, now, |now, t| {
+            now.saturating_duration_since(t)
+        })
     }
+}
+
+/// Rolling-window rate limit: forget stamps at least `window` old, then admit
+/// `now` only while fewer than `max` remain. `since(now, t)` is the elapsed
+/// time from `t` to `now`, generic so the window can be checked without clocks.
+pub(crate) fn admit_in_window<T: Copy>(
+    attempts: &mut VecDeque<T>,
+    max: usize,
+    window: Duration,
+    now: T,
+    since: impl Fn(T, T) -> Duration,
+) -> bool {
+    while attempts.front().is_some_and(|t| since(now, *t) >= window) {
+        attempts.pop_front();
+    }
+    if attempts.len() >= max {
+        return false;
+    }
+    attempts.push_back(now);
+    true
 }
 
 struct Core {
@@ -1089,21 +1136,8 @@ async fn run_recoveries(core: Arc<Core>) {
         let round = trace::atomic(|| {
             let mut queue = system::lock(&core.recovery);
             queue
-                .pending
-                .iter()
-                .position(|pending| *pending)
-                .map(|origin| {
-                    let start = if core.config.strategy == SupervisorStrategy::OneForAll {
-                        0
-                    } else {
-                        origin
-                    };
-                    for pending in &mut queue.pending[start..] {
-                        *pending = false;
-                    }
-                    let id = queue.next_id;
-                    queue.next_id = id.checked_add(1).expect("recovery IDs exhausted");
-                    queue.covered[start..].fill(id);
+                .select(core.config.strategy == SupervisorStrategy::OneForAll)
+                .map(|(origin, start, id)| {
                     let meta = Arc::new(RecoveryMeta {
                         id,
                         origin,
@@ -1247,12 +1281,7 @@ async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, core: Arc<C
             .as_nanos() as u64
             ^ NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     });
-    let mut rng = seed
-        ^ system::lock(&view.data)
-            .snapshot
-            .name
-            .bytes()
-            .fold(0u64, |a, b| a.wrapping_mul(31).wrapping_add(b as u64));
+    let mut rng = jitter_seed(seed, system::lock(&view.data).snapshot.name.as_bytes());
     let c = view.trace_index;
     loop {
         let open = trace::atomic(|| {
