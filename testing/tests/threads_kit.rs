@@ -6,6 +6,8 @@ use spawned_concurrency::{actor, protocol, ExitReason, Response};
 use spawned_test::faults;
 use spawned_test::threads::{exit_within, join_within, settle, wait_until, Mock, Probe};
 use spawned_test::Outcome;
+use std::panic::AssertUnwindSafe;
+use std::sync::mpsc;
 use std::time::Duration;
 
 const WAIT: Duration = Duration::from_secs(2);
@@ -193,4 +195,112 @@ fn native_exit_within_fails_instead_of_hanging() {
 #[should_panic(expected = "waiting until never")]
 fn native_wait_until_reports_condition() {
     wait_until(Duration::from_millis(10), "never", || false);
+}
+
+// Regression: a message is resolved only once its reply exists. The reply
+// closure waits on a channel, which holds the in-flight window open
+// deterministically.
+#[test]
+fn native_expect_waits_for_the_reply_closure() {
+    let (open, gate) = mpsc::channel::<()>();
+    let mock = Mock::new()
+        .on::<Quote>(move |q| {
+            gate.recv().unwrap();
+            q.0 * 10
+        })
+        .start();
+    let caller = {
+        let mock = mock.clone();
+        std::thread::spawn(move || mock.request_with_timeout(Quote(4), WAIT))
+    };
+    wait_until(WAIT, "the quote arrived", || mock.count::<Quote>() == 1);
+    assert_eq!(mock.received()[0].outcome, Outcome::InFlight);
+    assert!(
+        mock.take_all::<Quote>().is_empty(),
+        "in flight, not handled"
+    );
+    open.send(()).unwrap();
+    assert_eq!(caller.join().unwrap().unwrap(), 40);
+    assert_eq!(mock.expect::<Quote>(WAIT).0, 4);
+    assert_eq!(mock.received()[0].outcome, Outcome::Handled);
+}
+
+#[test]
+#[should_panic(expected = "expected no message")]
+fn native_expect_no_message_reports_in_flight_messages() {
+    let (_open, gate) = mpsc::channel::<()>();
+    let mock = Mock::new()
+        .on::<Quote>(move |q| {
+            let _ = gate.recv();
+            q.0
+        })
+        .start();
+    let _reply = mock.request_raw(Quote(1)).unwrap();
+    wait_until(WAIT, "the quote arrived", || mock.count::<Quote>() == 1);
+    mock.expect_no_message(Duration::from_millis(5));
+}
+
+#[test]
+fn native_panicking_reply_closure_still_logs_the_message() {
+    let mock = Mock::new()
+        .on::<Quote>(|_| panic!("reply exploded"))
+        .start();
+    assert!(mock.request_with_timeout(Quote(7), WAIT).is_err());
+    assert_eq!(
+        join_within(&mock, WAIT),
+        ExitReason::Panic("panic in handler: reply exploded".into())
+    );
+    assert_eq!(mock.received()[0].outcome, Outcome::Crashed);
+    assert_eq!(mock.expect::<Quote>(WAIT).0, 7);
+
+    let probe = Probe::<Quote>::replying(|_| panic!("probe reply exploded"));
+    let recipient = probe.recipient();
+    let caught = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        threads::request(&*recipient, Quote(8), WAIT)
+    }));
+    assert!(caught.is_err(), "the reply closure panics in the caller");
+    assert_eq!(probe.received()[0].outcome, Outcome::Crashed);
+    assert_eq!(probe.expect(WAIT).0, 8);
+}
+
+// Regression: once `close()` returns, no racing send is logged.
+#[test]
+fn native_nothing_is_logged_after_close_returns() {
+    for _ in 0..50 {
+        let probe = Probe::<Quote>::new();
+        let senders: Vec<_> = (0..4)
+            .map(|_| {
+                let recipient = probe.recipient();
+                // Each sender stops at its first rejected send.
+                std::thread::spawn(move || while recipient.send(Quote(0)).is_ok() {})
+            })
+            .collect();
+        wait_until(WAIT, "senders are running", || !probe.received().is_empty());
+        probe.close();
+        let at_close = probe.received().len();
+        for sender in senders {
+            sender.join().unwrap();
+        }
+        assert_eq!(probe.received().len(), at_close);
+    }
+}
+
+#[test]
+fn native_panic_injection_into_an_exited_target_is_a_no_op() {
+    let actor = Idle.start();
+    actor.child_handle().shutdown();
+    assert_eq!(join_within(&actor, WAIT), ExitReason::Shutdown);
+    // The target's link stops the fuse before it detonates: not an error.
+    faults::exit(&actor.child_handle(), ExitReason::Panic("late".into()));
+}
+
+// Regression: every Kill injection reaches its target.
+#[cfg(feature = "async")]
+#[test]
+fn native_kill_injection_is_reliable() {
+    for _ in 0..200 {
+        let actor = Idle.start();
+        faults::exit(&actor.child_handle(), ExitReason::Kill);
+        assert_eq!(join_within(&actor, WAIT), ExitReason::Kill);
+    }
 }

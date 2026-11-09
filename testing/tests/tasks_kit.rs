@@ -428,6 +428,35 @@ async fn helpers_follow_paused_tokio_time() {
     );
 }
 
+// Regression: a delayed reply is logged in flight on arrival and handled only
+// once the delay is over, so `expect` cannot run ahead of the caller.
+#[tokio::test(start_paused = true)]
+async fn delayed_reply_is_handled_only_after_the_delay() {
+    let delay = Duration::from_secs(60);
+    let mock = Mock::new()
+        .on::<inventory_protocol::Reserve>(|_| true)
+        .delay::<inventory_protocol::Reserve>(delay)
+        .start();
+    let caller = {
+        let mock = mock.clone();
+        tokio::spawn(async move {
+            mock.with_request_timeout(delay * 2)
+                .reserve("x".into())
+                .await
+        })
+    };
+    wait_until(WAIT, "the reservation arrived", || {
+        mock.count::<inventory_protocol::Reserve>() == 1
+    })
+    .await;
+    assert_eq!(mock.received()[0].outcome, Outcome::InFlight);
+    assert!(mock.take_all::<inventory_protocol::Reserve>().is_empty());
+    let asked: inventory_protocol::Reserve = mock.expect(delay * 2).await;
+    assert_eq!(asked.item, "x");
+    assert_eq!(mock.received()[0].outcome, Outcome::Handled);
+    assert!(caller.await.unwrap().unwrap());
+}
+
 #[tokio::test(start_paused = true)]
 #[should_panic(expected = "expected a `tasks_kit::Sold` within 3600s")]
 async fn expect_times_out_on_paused_time() {

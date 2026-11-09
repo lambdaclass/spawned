@@ -1,8 +1,9 @@
 //! Per-message-type rules shared by the `tasks` and `threads` mocks.
-use crate::inbox::{Inbox, Outcome};
+use crate::inbox::{Inbox, Outcome, Pending};
 use spawned_concurrency::message::Message;
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Duration;
 
 type ReplyFn<M> = Box<dyn FnMut(&M) -> <M as Message>::Result + Send>;
@@ -33,7 +34,13 @@ impl Message for Fence {
 
 /// What the mock handler should do after the rules have looked at a message.
 pub(crate) enum Plan<R> {
-    Reply { delay: Option<Duration>, value: R },
+    /// Wait `delay`, then [`Pending::finish`] (if any) and return `value`, so
+    /// the log shows the outcome only once the reply is about to be sent.
+    Reply {
+        delay: Option<Duration>,
+        value: R,
+        record: Option<Pending>,
+    },
     Crash(String),
 }
 
@@ -75,13 +82,20 @@ impl Rules {
         self.allow_sends = true;
     }
 
-    /// Log the message and decide the reply. The reply closure runs before any
-    /// configured delay; the caller only observes the reply after it.
-    pub(crate) fn plan<M: Message>(&mut self, inbox: &Inbox, msg: M) -> Plan<M::Result> {
+    /// Log the message and decide the reply.
+    ///
+    /// A message that gets a reply is logged [`Outcome::InFlight`] on arrival
+    /// and resolved by the handler after the delay, through the returned
+    /// [`Pending`]; `expect` only sees it then. The reply closure runs first;
+    /// if it panics, the message is still logged, as [`Outcome::Crashed`].
+    /// Crashes and unexpected messages are logged final right away: the
+    /// handler panics next.
+    pub(crate) fn plan<M: Message>(&mut self, inbox: &Arc<Inbox>, msg: M) -> Plan<M::Result> {
         if TypeId::of::<M>() == TypeId::of::<Fence>() {
             return Plan::Reply {
                 delay: None,
                 value: unit_result::<M>().expect("Fence replies with ()"),
+                record: None,
             };
         }
         let name = std::any::type_name::<M>();
@@ -93,8 +107,13 @@ impl Rules {
         let Some(rule) = rule else {
             if allow_sends {
                 if let Some(value) = unit_result::<M>() {
-                    inbox.push(msg, Outcome::Handled);
-                    return Plan::Reply { delay: None, value };
+                    let mut record = inbox.arrive(msg);
+                    record.replied(Outcome::Handled);
+                    return Plan::Reply {
+                        delay: None,
+                        value,
+                        record: Some(record),
+                    };
                 }
             }
             inbox.push(msg, Outcome::Unexpected);
@@ -115,24 +134,33 @@ impl Rules {
             return Plan::Crash(reason);
         }
         if rule.discard {
-            inbox.push(msg, Outcome::Discarded);
             let value = unit_result::<M>().expect("discard requires Result = ()");
-            return Plan::Reply { delay, value };
+            let mut record = inbox.arrive(msg);
+            record.replied(Outcome::Discarded);
+            return Plan::Reply {
+                delay,
+                value,
+                record: Some(record),
+            };
         }
+        if rule.reply.is_none() && unit_result::<M>().is_none() {
+            inbox.push(msg, Outcome::Unexpected);
+            return Plan::Crash(format!(
+                "spawned-test Mock: request `{name}` has a delay but no reply; \
+                 add `.on::<{name}>(..)`"
+            ));
+        }
+        let mut record = inbox.arrive(msg);
         let value = match rule.reply.as_mut() {
-            Some(reply) => reply(&msg),
-            None => match unit_result::<M>() {
-                Some(value) => value,
-                None => {
-                    inbox.push(msg, Outcome::Unexpected);
-                    return Plan::Crash(format!(
-                        "spawned-test Mock: request `{name}` has a delay but no reply; \
-                         add `.on::<{name}>(..)`"
-                    ));
-                }
-            },
+            // A panic here drops `record`, which logs the message as Crashed.
+            Some(reply) => reply(record.message::<M>()),
+            None => unit_result::<M>().expect("checked above"),
         };
-        inbox.push(msg, Outcome::Handled);
-        Plan::Reply { delay, value }
+        record.replied(Outcome::Handled);
+        Plan::Reply {
+            delay,
+            value,
+            record: Some(record),
+        }
     }
 }

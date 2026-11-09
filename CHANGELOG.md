@@ -42,7 +42,8 @@
 - `spawned-test`, a new dev-dependency crate (`testing/`) for testing actors in
   both modes. `Mock` implements `Handler<M>` for every message, so
   `ActorRef<Mock>` satisfies any `#[protocol]` and converts to its `XRef`;
-  replies are closures per message type, every message is logged and
+  replies are closures per message type, every message is logged (in flight
+  until its reply exists, so `expect` never runs ahead of the caller) and
   unconfigured messages fail loudly. `Probe<M>` is a recording `Recipient<M>`
   with `expect`/`expect_no_message`. Harness helpers bound waits for exits,
   supervised generations and `ActorSystem`/supervisor shutdown, failing with a

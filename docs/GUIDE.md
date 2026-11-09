@@ -1154,6 +1154,11 @@ out.expect_no_message(Duration::from_millis(20)).await;
   stay queued); `expect_no_message(window)`, `count::<M>()`, `take_all::<M>()`,
   `received()` and `settle()` (wait until everything sent before is handled;
   5 s bound, `settle_within(d)` to choose it) read the same log.
+- A message that gets a reply is logged `Outcome::InFlight` on arrival and
+  becomes `Handled` (or `Discarded`) only after its reply closure and any
+  `delay` finish, so `expect` never returns before the caller can see the
+  reply. `expect_no_message` counts in-flight messages; a reply closure that
+  panics logs its message as `Crashed`.
 
 `MockRef` dereferences to `ActorRef<Mock>`. Its own methods win over protocol
 methods with the same name; call those through `actor_ref()` or the `XRef`.
@@ -1170,7 +1175,7 @@ runtime; a mock adds the message log, strictness and faults.
 `Probe<M>` is a `Recipient<M>` that records what it is sent, without an actor.
 `Probe::replying(|msg| reply)` also answers requests; a plain probe logs a
 request as unexpected and drops its reply. `close()` makes it behave like a
-stopped recipient.
+stopped recipient: once it returns, no further send or request is logged.
 
 ### Harness helpers
 

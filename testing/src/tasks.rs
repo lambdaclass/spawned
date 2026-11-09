@@ -91,9 +91,16 @@ impl<M: Message> Handler<M> for Mock {
         let plan = self.rules.plan(&self.inbox, msg);
         async move {
             match plan {
-                Plan::Reply { delay, value } => {
+                Plan::Reply {
+                    delay,
+                    value,
+                    record,
+                } => {
                     if let Some(delay) = delay {
                         sleep(delay).await;
+                    }
+                    if let Some(record) = record {
+                        record.finish();
                     }
                     value
                 }

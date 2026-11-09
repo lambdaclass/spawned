@@ -53,9 +53,16 @@ impl Actor for Mock {}
 impl<M: Message> Handler<M> for Mock {
     fn handle(&mut self, msg: M, _: &Context<Self>) -> M::Result {
         match self.rules.plan(&self.inbox, msg) {
-            Plan::Reply { delay, value } => {
+            Plan::Reply {
+                delay,
+                value,
+                record,
+            } => {
                 if let Some(delay) = delay {
                     std::thread::sleep(delay);
+                }
+                if let Some(record) = record {
+                    record.finish();
                 }
                 value
             }
