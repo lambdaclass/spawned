@@ -57,6 +57,10 @@ class of bug. Coverage for v0.7.0:
 | User level | Actor-level ordering exploration | Bugs in users' actor systems, reproducible from a seed | Planned ([roadmap](../ROADMAP.md) rank 20) in `spawned-test`; mocks, probes and fault injection exist (phase A) |
 | Production | Lifecycle monitors derived from the TLA+ invariants | A live node or recorded canary run breaking a modelled invariant | Planned ([roadmap](../ROADMAP.md) rank 5c; [design](research/systematic-testing.md#a-pobserve-for-spawned)) |
 | Memory safety | ThreadSanitizer, Miri | Data races and undefined behavior | TSAN in CI; Miri waits until unsafe code is proposed (all crates `#![forbid(unsafe_code)]`) |
+| Leaks | LeakSanitizer, `leaks.rs` | Actors, threads, tasks, registry entries and handle cycles that outlive shutdown | LSan job beside TSAN; leak assertions in every test run ([CI hardening](#ci-hardening)) |
+| Scheduling pressure | `taskset -c 0`, one Tokio worker | Code that assumes parallel progress; races that need preemption on one core | `single-cpu` CI job |
+| Supply chain | cargo-deny, cargo-audit | Vulnerable, unmaintained or unsound dependencies; license and source drift | `supply-chain` CI job; accepted advisories listed in `deny.toml` |
+| Flakiness | cargo-nextest with retries | Tests that pass only on retry | Nightly `flaky-tracking` job; a retry is reported, never silently passed |
 | Test quality | cargo-mutants | Tests that still pass when the code is broken | Weekly over supervision and system code |
 | Compatibility | cargo-semver-checks | Unexpected public API removals | Defaults/metrics and the explicit-async migration must remain patch-compatible with v0.6; raw no-default removals are checked against an exact declared list, not reported as compatible. Protocol macros also need trybuild. |
 | Feature separation | cargo-hack | Missing dependencies hidden by dev-dependency feature unification | CI builds each library feature, default, no-default and all features without dev dependencies; not the full feature powerset |
@@ -386,4 +390,106 @@ example/dependency-graph check verifies the library's Tokio-free build.
 ```sh
 cargo test --locked -p spawned-concurrency --no-default-features --features threads,metrics
 cargo test --locked -p spawned-concurrency --no-default-features --test payload_stress -- --ignored
+```
+
+## CI hardening
+
+Batch 1 of the [database-grade testing program](../ROADMAP.md#database-grade-testing-program).
+
+### Reproducing-test rule
+
+Every bug fix ships with a test that fails without the fix: run it against the
+unfixed code before pushing, and name it in the PR (the
+[PR template](../.github/pull_request_template.md) asks for it). The list in
+[Bugs reproduced by these regressions](#bugs-reproduced-by-these-regressions)
+follows this rule.
+
+### Single-CPU runs
+
+The `single-cpu` job in `ci.yml` builds the tests normally, then runs
+`spawned-concurrency` with `TOKIO_WORKER_THREADS=1` and the whole workspace,
+both under `taskset -c 0`. `TOKIO_WORKER_THREADS` sizes every runtime built
+without an explicit worker count (`spawned_rt::tasks::run`, `Runtime::new`,
+`#[tokio::test(flavor = "multi_thread")]`). Tests that build runtimes with an
+explicit count (`worker_threads = 2`) keep it; `taskset` still confines all of
+their workers, dedicated actor threads and blocking-pool threads to one CPU.
+Tests that need two allowed CPUs check `affinity::available_cpus()` and skip
+with a message (`pinned_shards_preserve_explicit_cpu_placement_and_cross_shard_requests`,
+the partial-construction case in `execution_profiles`). Locally on Linux:
+
+```sh
+TOKIO_WORKER_THREADS=1 taskset -c 0 cargo test --locked -p spawned-concurrency
+taskset -c 0 cargo test --locked --workspace
+```
+
+macOS has no `taskset`; `TOKIO_WORKER_THREADS=1` alone exercises the worker
+setting but not CPU confinement.
+
+### Supply chain
+
+`deny.toml` configures cargo-deny (advisories, licenses, duplicate versions as
+warnings, crates.io as the only source) and `.cargo/audit.toml` configures
+cargo-audit; the `supply-chain` CI job runs both. Unmaintained, unsound and
+yanked crates fail the job like vulnerabilities. Accepted advisories, each
+reachable only through a private experiment feature:
+
+| Advisory | Crate | Path | Why accepted |
+|---|---|---|---|
+| RUSTSEC-2026-0194, RUSTSEC-2026-0195 | quick-xml 0.26 | pprof 0.15 → inferno 0.11, `profiling-experiments` (Linux) | Writes flamegraphs of our own profiles, parses no untrusted XML; pprof 0.15 is the latest release |
+| RUSTSEC-2025-0057 (unmaintained) | fxhash 0.2 | monoio 0.2, `io-experiments` | Benchmark-only backend; no monoio release drops it |
+
+The only license exception is CDDL-1.0 for `inferno` (same pprof path). Keep
+both ignore lists identical and drop entries when the upstream path moves.
+
+```sh
+cargo deny --all-features check
+cargo audit
+```
+
+### Leak tests and LeakSanitizer
+
+`concurrency/tests/leaks.rs` checks, through public APIs, that shutdown
+releases what an actor owned:
+
+| Resource | How it is observed |
+|---|---|
+| Actor state | A `Weak` sentinel held in the actor struct |
+| Dedicated actor threads, execution-group workers | A sentinel moved into a thread-local; only the thread-exit destructor releases it |
+| Tokio tasks (run loops, timers, monitor waiters) | `num_alive_tasks()` on a dedicated runtime, including demonitor, owner exit and target exit |
+| Registry entries | `registry::registered()` after supervisor and system shutdown, and after an owned guard drops |
+| User-held handles | `Arc::downgrade` of a `Recipient` (which wraps an `ActorRef`) stored in another actor |
+| Supervised generations | One sentinel shared by every generation of every child |
+
+It covers native actors, all three `tasks` backends, supervisors with restarts,
+`ActorSystem` groups and parked helpers. An actor reference cycle (A holds B's
+`ActorRef` and `Recipient`, B holds A's, plus a link) is released once both stop.
+Actors are not reference counted: an unstopped cycle keeps running after every
+external handle is dropped, by design, until something stops it
+(`unstopped_cycle_keeps_running_until_explicit_stop`).
+
+Framework-internal clones of `ActorRef`/`Context`, link tables and native
+monitor waiter threads have no public introspection. The `lsan` job in
+`verification.yml` covers them: it runs the lifecycle suites and `leaks.rs`
+with `-Zsanitizer=leak` on nightly (same `-Zbuild-std` setup as `tsan`), and
+LeakSanitizer reports any allocation unreachable at process exit, such as an
+`Arc` cycle between handles.
+
+```sh
+RUSTFLAGS=-Zsanitizer=leak cargo +nightly test -Zbuild-std \
+  --target x86_64-unknown-linux-gnu -p spawned-concurrency --test leaks
+```
+
+### Flaky tests
+
+The nightly `flaky-tracking` job (`actor-scenarios.yml`) runs the workspace
+five times with cargo-nextest's `flaky` profile (`.config/nextest.toml`: two
+retries, JUnit output). `scripts/flaky-report.py` merges the JUnit reports and
+fails the job if any test needed a retry or both passed and failed across runs;
+a retry never turns a flaky test into a pass. The reports and a summary table
+are uploaded as the `flaky-test-reports` artifact. A flaky test is a bug:
+reproduce it, fix it under the reproducing-test rule, or file it.
+
+```sh
+cargo nextest run --workspace --profile flaky
+python3 scripts/flaky-report.py target/nextest/flaky/junit.xml
 ```

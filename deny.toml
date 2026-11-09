@@ -1,0 +1,60 @@
+# cargo-deny policy (https://embarkstudios.github.io/cargo-deny/).
+# Run: cargo deny --all-features check
+# CI: .github/workflows/ci.yml (supply-chain job). Every exception below
+# names the dependency path and why it is accepted; see docs/TESTING.md.
+
+[graph]
+# Check every optional dependency, including the private experiment features.
+all-features = true
+
+[advisories]
+# Unmaintained and unsound advisories are errors unless listed here.
+ignore = [
+    # quick-xml 0.26 via pprof 0.15 -> inferno 0.11. Only reached through the
+    # private, Linux-only `profiling-experiments` feature (flamegraph output of
+    # our own benchmark profiles; no untrusted XML is parsed). pprof 0.15 is the
+    # latest release and still pins inferno 0.11. Drop when pprof moves on.
+    { id = "RUSTSEC-2026-0194", reason = "quick-xml via pprof/inferno; private profiling-experiments feature only, parses no untrusted input" },
+    { id = "RUSTSEC-2026-0195", reason = "quick-xml via pprof/inferno; private profiling-experiments feature only, parses no untrusted input" },
+    # fxhash (unmaintained) via monoio 0.2, only in the private `io-experiments`
+    # benchmark feature. No replacement release of monoio drops it yet.
+    { id = "RUSTSEC-2025-0057", reason = "fxhash via monoio; private io-experiments feature only" },
+]
+
+[licenses]
+# Keep in sync with the dependency graph: `cargo deny --all-features list -l license`.
+allow = [
+    "0BSD",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "MIT",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+]
+confidence-threshold = 0.9
+exceptions = [
+    # Weak copyleft, file-level. Only via pprof in the private, Linux-only
+    # `profiling-experiments` feature; never part of a default or published build.
+    { allow = ["CDDL-1.0"], crate = "inferno" },
+]
+
+[licenses.private]
+# Examples and fixtures are `publish = false` workspace members.
+ignore = true
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+# Path dependencies inside the workspace carry versions; allow the rest.
+allow-wildcard-paths = true
+highlight = "all"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

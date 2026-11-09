@@ -22,6 +22,17 @@
 - Display ActorId as a decimal number; Debug retains `ActorId(n)`.
 - Clarify ChildSpec's five-second defaults, system deadline behavior, managed
   helper requirements and the limits of dependency shutdown ordering.
+- CI hardening (database-grade testing, batch 1): a single-CPU job
+  (`taskset -c 0`, one Tokio worker), cargo-deny and cargo-audit
+  (`deny.toml`, `.cargo/audit.toml`), a LeakSanitizer job, leak tests for
+  actors, threads, tasks, registry entries, supervised generations and handle
+  cycles (`concurrency/tests/leaks.rs`), a nightly flaky-test job with
+  cargo-nextest, and a PR template with the reproducing-test rule.
+- Lockfile: bytes 1.12.1 (RUSTSEC-2026-0007), tokio 1.54.1 (RUSTSEC-2026-0386),
+  futures 0.3.34 (drops unmaintained pin-utils) and openssl 0.10.82
+  (RUSTSEC-2026-0463). The `updater` examples move to reqwest 0.12
+  (h2 RUSTSEC-2026-0258, unmaintained rustls-pemfile). Examples are marked
+  `publish = false`.
 
 ## 0.7.0 — 2026-11-09
 

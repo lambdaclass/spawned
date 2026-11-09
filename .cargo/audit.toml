@@ -1,0 +1,14 @@
+# cargo-audit configuration. The accepted advisories and their reasons are
+# documented in deny.toml ([advisories].ignore); keep both lists identical.
+[advisories]
+ignore = [
+    "RUSTSEC-2026-0194", # quick-xml via pprof/inferno (private profiling-experiments feature)
+    "RUSTSEC-2026-0195", # quick-xml via pprof/inferno (private profiling-experiments feature)
+    "RUSTSEC-2025-0057", # fxhash via monoio (private io-experiments feature)
+]
+informational_warnings = ["unmaintained", "unsound"]
+
+[output]
+# Unmaintained, unsound and yanked crates fail the job like vulnerabilities.
+deny = ["unmaintained", "unsound", "yanked"]
+quiet = false

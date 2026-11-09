@@ -50,6 +50,45 @@ jobs:
           cargo test --locked -p spawned-concurrency --features diagnostics --test canary_feedback
           timeout 60s cargo run --locked -p spawned-capability-examples --features diagnostics --bin shutdown_diagnostics
 
+  # Single-CPU scheduling: races that need preemption on one core, and code
+  # that silently assumes parallel progress. Tests that build their own
+  # runtimes keep their explicit worker counts; taskset still confines every
+  # worker to CPU 0. Tests that need two CPUs skip themselves (see
+  # docs/TESTING.md, "Single-CPU runs").
+  single-cpu:
+    runs-on: ubuntu-latest
+    needs: build
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.93.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: single-cpu
+      - name: Build tests (all CPUs)
+        run: cargo test --locked --workspace --no-run
+      - name: Concurrency suite, one Tokio worker, CPU 0 only
+        env:
+          TOKIO_WORKER_THREADS: '1'
+        run: taskset -c 0 cargo test --locked -p spawned-concurrency
+      - name: Workspace tests, CPU 0 only
+        run: taskset -c 0 cargo test --locked --workspace
+
+  # Advisories, licenses, duplicate versions and sources (deny.toml), plus
+  # cargo-audit (.cargo/audit.toml). Accepted advisories are documented in both.
+  supply-chain:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny@0.20.2,cargo-audit@0.22.2
+      - name: cargo deny
+        run: cargo deny --all-features check
+      - name: cargo audit
+        run: cargo audit
+
   thread-only:
     runs-on: ubuntu-latest
     timeout-minutes: 15
