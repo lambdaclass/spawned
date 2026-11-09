@@ -122,7 +122,7 @@ def main():
         "--findings",
         type=Path,
         default=Path(__file__).resolve().parents[1]
-        / "research/backend-experiments/2026-11-06-fede/FINDINGS.md",
+        / "legacy/research/backend-experiments/2026-11-06-fede/FINDINGS.md",
     )
     a = p.parse_args()
     out = a.output

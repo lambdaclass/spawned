@@ -1,7 +1,7 @@
 # Execution groups plus supervision: MVP contract
 
 Status: **parked async groups + OneForOne implemented on main, unreleased**. Updated 2026-11-08.
-See the [usage guide](../EXECUTION-GROUPS.md) for actual signatures and supported limits.
+See the [usage guide](../GUIDE.md#execution-groups-and-supervision) for actual signatures and supported limits.
 This document records the design contract; illustrative API shapes below are not copyable code.
 This is the next capability milestone, separate from the proposed 0.6.1 runtime
 worker-budget patch. Ordinary handlers, protocols and `.start()` remain usable.
@@ -261,7 +261,7 @@ relabeling every exit as successful Shutdown.
 - Exercise supported async/native-thread modes with the same policy contract.
   A profile is supported only when its placement/lifecycle adapter is tested.
 
-The [local Engine-client studies](../../research/client-observations/2026-11-06-ethlambda-ab/server-probe/one-worker/README.md)
+The [local Engine-client studies](../../legacy/research/client-observations/2026-11-06-ethlambda-ab/server-probe/one-worker/README.md)
 support explicit placement and worker budgets. A real client canary/replay is
 still needed before claiming a production performance benefit. Recovery policy
 has its own correctness gates; performance gains do not establish recovery safety.

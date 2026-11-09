@@ -8,7 +8,7 @@
 (* follows run_supervisor. Time is abstracted: backoff sleeps, startup and *)
 (* cleanup deadlines and the rolling restart window are nondeterministic   *)
 (* actions. Each action is named after the trace event the implementation *)
-(* emits for it (see TraceSupervision.tla and docs/verification).          *)
+(* emits for it (see TraceSupervision.tla and verification/tla/README.md).          *)
 (*                                                                         *)
 (* Abstractions:                                                           *)
 (*  - The admission gate and core.cancel are closed together by            *)

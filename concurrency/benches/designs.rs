@@ -1,4 +1,4 @@
-//! Experimental design driver; see benchmarks/EXPERIMENTS.md.
+//! Experimental design driver; see legacy/benchmarks/EXPERIMENTS.md.
 #[path = "support/actor_io.rs"]
 mod actor_io;
 #[path = "support/args.rs"]
