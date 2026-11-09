@@ -103,6 +103,13 @@ def main():
                 event["x"] = "Normal"
     require_rejected(context, erase_abnormal_exit,
                      "transient restart after erased abnormal context exit", args.tlc)
+    drain = next(t for t in traces if t["name"] == "queued_drop_panic")
+    def erase_drain_failure(events):
+        for event in events:
+            if event.get("x") == "Panic":
+                event["x"] = "Normal"
+    require_rejected(drain, erase_drain_failure,
+                     "transient restart after erased queued destructor panic", args.tlc)
     cohort = next(t for t in traces if t.get("schema") == "cohort-v1" and t["strategy"] == "OneForAll")
     tree = next(t for t in traces if t.get("schema") == "tree-v1" and any(e["a"] == "TPropagate" for e in t["events"]))
     require_rejected(cohort, move_resume_early, "resume before cohort cleanup", args.tlc)

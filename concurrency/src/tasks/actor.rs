@@ -1175,7 +1175,7 @@ async fn run_actor<A: Actor>(
     cancellation_token: CancellationToken,
     #[cfg(feature = "backend-experiments")] turn: Option<MessageTurn>,
 ) -> ExitReason {
-    let reason = run_actor_lifecycle(
+    let mut reason = run_actor_lifecycle(
         actor,
         ctx,
         &mut rx,
@@ -1190,7 +1190,20 @@ async fn run_actor<A: Actor>(
     // and receiving through EOF waits for those sends and discards queued work
     // before actor completion is published. No queued handlers run here.
     rx.close();
-    while rx.recv().await.is_some() {}
+    while let Some(envelope) = rx.recv().await {
+        // Catch each destructor separately. Unwinding through the receiver
+        // would drop the rest of the queue, allowing a second destructor panic
+        // to abort the process before terminal publication.
+        if let Err(panic) = std::panic::catch_unwind(AssertUnwindSafe(|| drop(envelope))) {
+            let msg = panic_message(&*panic);
+            tracing::error!("Panic dropping a queued message during stop: {msg}");
+            if !reason.is_abnormal() {
+                // Match the native backend's trappable destructor-failure
+                // outcome; keep an earlier handler/hook panic as the cause.
+                reason = ExitReason::Panic("unexpected framework panic".into());
+            }
+        }
+    }
     reason
 }
 

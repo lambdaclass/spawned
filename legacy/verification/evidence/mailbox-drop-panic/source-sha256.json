@@ -1,0 +1,11 @@
+{
+  "CHANGELOG.md": "4b24a3aab005ff66ec14949225e628326171bfe39024e3bcb9979851d443e09a",
+  "concurrency/src/tasks/actor.rs": "54074269c1bac0467253eb46640c1b33025876bc011620e5ffd5bb0f025c96ed",
+  "concurrency/tests/mailbox_drop_panic.rs": "8c803708a37d3b442cae0bcb08e98b7a6358d2494b3b68f60f9f871f2fc862c8",
+  "concurrency/tests/startup_admission.rs": "4fa0d3bbe3de52538b5d6f399fbb1234294152c44234638e34c135bdf8be5cf1",
+  "concurrency/tests/supervision_trace.rs": "45799644178048510132e056e4b23fc7d3d9c082cda28db4036b4f340a0aa5d7",
+  "docs/GUIDE.md": "b88708b237c1b74979d90db22dad444df03f179b314e389e1deef9b1eac3eaa7",
+  "docs/TESTING.md": "77a86a17297a7294306e4ad3a9aaa0ff8301df10869f79a1c54884973ae4497a",
+  "verification/tla/README.md": "4e3f2b42b3b6a69f336cb7de55710e57a1ae04a0eb75aeeb56764ae08b74a177",
+  "verification/tla/negative_checks.py": "70fdcd74fb76e091cf3d8adfb3aa896d230d1907db029c8577c1c9a515aef9b8"
+}

@@ -90,6 +90,65 @@ impl Message for ExitWith {
 }
 struct Worker;
 impl Actor for Worker {}
+struct HoldForDrain(
+    tokio::sync::oneshot::Sender<()>,
+    tokio::sync::oneshot::Receiver<()>,
+);
+impl Message for HoldForDrain {
+    type Result = ();
+}
+impl Handler<HoldForDrain> for Worker {
+    async fn handle(&mut self, msg: HoldForDrain, _: &Context<Self>) {
+        msg.0.send(()).unwrap();
+        let _ = msg.1.await;
+    }
+}
+struct DropBomb;
+impl Message for DropBomb {
+    type Result = ();
+}
+impl Drop for DropBomb {
+    fn drop(&mut self) {
+        panic!("injected queued destructor panic");
+    }
+}
+impl Handler<DropBomb> for Worker {
+    async fn handle(&mut self, _: DropBomb, _: &Context<Self>) {
+        panic!("discarded message must not be handled");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn trace_queued_destructor_panic_restarts_transient_child() {
+    let system = ActorSystem::new().unwrap();
+    let group = system.async_group("trace-drain-panic", 1).unwrap();
+    let modes = [RestartMode::Transient];
+    let mut tree = system.supervisor(config(5)).unwrap();
+    let child = tree.add(worker("drain", &group).restart(modes[0])).unwrap();
+    let supervisor = tree.start().await.unwrap();
+    let actor = child.current().unwrap();
+    let (entered, arrival) = tokio::sync::oneshot::channel();
+    let (release, gate) = tokio::sync::oneshot::channel();
+    actor.send(HoldForDrain(entered, gate)).unwrap();
+    tokio::time::timeout(LIMIT, arrival).await.unwrap().unwrap();
+    actor.send(DropBomb).unwrap();
+    actor.context().stop();
+    release.send(()).unwrap();
+    let replacement = tokio::time::timeout(LIMIT, child.wait_for_generation(1))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_ne!(replacement.id(), actor.id());
+    assert_eq!(
+        child.snapshot().last_exit,
+        Some(spawned_concurrency::ExitReason::Panic(
+            "unexpected framework panic".into()
+        ))
+    );
+    assert!(supervisor.shutdown(LIMIT).await.complete);
+    write_trace("queued_drop_panic", supervisor.trace_id(), &modes, 5);
+    assert!(system.shutdown(LIMIT).await.complete);
+}
 impl Handler<Crash> for Worker {
     async fn handle(&mut self, _: Crash, _: &Context<Self>) {
         panic!("injected child failure");

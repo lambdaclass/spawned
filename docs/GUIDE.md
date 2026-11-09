@@ -792,6 +792,13 @@ actor. Existing `started()` and `stopped()` hooks keep their signatures. Readine
 commits after `started()` returns and admission remains open; no ordinary handler
 runs before that barrier. Enqueued startup messages are discarded if startup fails.
 Calling `ready()` later reports that historical barrier, not current liveness.
+If a managed actor's admission closes before `started()` begins, neither
+`started()` nor `stopped()` runs; the unstarted state and queued messages are
+dropped. This applies to standalone `start_on` actors as well as supervised
+children. Resources acquired by a constructor must therefore be released by
+Drop, not only by `stopped()`. Legacy unmanaged `.start()` and synchronous
+`threads` actors retain their behavior of running both hooks after an early
+cooperative stop, provided startup itself succeeds.
 Failed readiness waits for the actual startup outcome, so a non-returning hook
 can keep it pending; use a timeout. A startup deadline is a failed attempt and can retry under Permanent/Transient
 policy after cleanup, whether it expired in the factory or in `started()`.
@@ -835,6 +842,12 @@ supervisor shutdown to close the tree. `ChildHandle::shutdown()` commits Shutdow
 before cooperative cancellation while preserving a previously committed cause;
 actual handler or cleanup panics remain failures. Existing link propagation still
 applies and can affect siblings explicitly linked by the application.
+During ordinary task shutdown, queued envelopes are discarded one at a time
+behind individual panic boundaries. A destructor panic produces a trappable
+Panic exit (preserving an earlier handler/hook panic); remaining queued handlers
+never run and their reply channels are released before completion. This relies
+on unwinding: `panic=abort`, an aborting panic hook, or multiple field destructors
+panicking during the same unwind cannot be recovered by a mailbox boundary.
 
 `ctx.stop_with_reason(ExitReason::Shutdown)` requests a cooperative shutdown;
 `ExitReason::Kill` requests an abnormal exit without panicking. Both modes finish

@@ -17,6 +17,15 @@ programs and assertions; examples for future APIs are listed in the
 
 ## Verification layers
 
+`mailbox_drop_panic` runs a subprocess matrix of five task placements, 1/2/16
+queued panicking destructors and both ordinary/handler-panic shutdown. Its enabled
+parent test checks that the child actually ran all 30 cases, observes one Exit
+and one Down, verifies pending reply release and preserves the earlier failure.
+Only the subprocess helper is ignored; the regression runs in normal CI.
+`startup_admission` forces a managed root to stay unpolled and contrasts its
+no-hook cleanup with legacy ambient startup. The `queued_drop_panic` lifecycle
+trace checks transient restart, with a negative control that erases the panic.
+
 No single tool covers lifecycle correctness; each layer catches a different
 class of bug. Coverage for v0.7.0:
 

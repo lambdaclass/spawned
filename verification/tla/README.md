@@ -119,6 +119,8 @@ resource teardown, and do not establish correctness of every Rust schedule.
 `context_exit_reasons` records explicit Context Shutdown/Kill exits against the
 existing reason model. A negative control erases Kill and must reject the
 resulting transient restart; the entry point adds no new model transition.
+`queued_drop_panic` checks a queued destructor fault during ordinary stop and
+the resulting transient restart. Erasing its Panic exit must reject the tape.
 All library crates continue to forbid unsafe Rust; native synchronization and
 Linux affinity use safe interfaces. No unsafe exemption was introduced.
 

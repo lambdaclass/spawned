@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Contain queued-message destructor panics individually during task shutdown.
+  They now produce trappable Panic rather than fallback Kill, and separately
+  queued panicking destructors no longer unwind through each other and abort.
+  Preserve an earlier handler/hook panic and drain reply senders before completion.
+- Add an enabled subprocess regression across all five task placements, a real
+  transient-supervisor trace, and deterministic tests documenting managed versus
+  legacy hook behavior when stopped before first poll.
+
 - Declare Prometheus histogram maxima as separate gauge families, preserving
   series names. Add parser validation and an undeclared-max regression control.
 - Add structured supervision restart and give-up events with child name,
