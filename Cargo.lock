@@ -1690,6 +1690,7 @@ dependencies = [
  "spawned-concurrency",
  "spawned-protocol-contract",
  "spawned-rt",
+ "spawned-test",
  "tokio",
 ]
 
@@ -1743,6 +1744,16 @@ dependencies = [
  "tokio-util",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "spawned-test"
+version = "0.7.0"
+dependencies = [
+ "spawned-concurrency",
+ "spawned-rt",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

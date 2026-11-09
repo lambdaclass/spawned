@@ -15,6 +15,25 @@ application behavior separately from these test oracles. CI runs their finite
 programs and assertions; examples for future APIs are listed in the
 [roadmap](../ROADMAP.md#examples-to-add).
 
+## Testing user actors: `spawned-test`
+
+The `spawned-test` crate (`testing/`) is the user-facing test kit: closure-backed
+mocks that answer any `#[protocol]`, `Recipient<M>` probes, harness helpers that
+fail with a report instead of hanging, and fault injection through public
+lifecycle APIs. See the [guide](GUIDE.md#testing-your-actors) and the
+[test kit example](../examples/capabilities/src/bin/test_kit.rs).
+
+```sh
+cargo test --locked -p spawned-test
+cargo test --locked -p spawned-test --no-default-features   # Tokio-free threads helpers
+cargo run --locked -p spawned-capability-examples --bin test_kit
+```
+
+Its own suites cover both modes (`tasks_kit`, `threads_kit`) and the Ethlambda
+protocol-stub pattern it replaces (`ethlambda_pattern`). It has no controlled
+scheduler: ordering exploration and replay (roadmap ranks 20-22) are later work
+in the same crate.
+
 ## Verification layers
 
 `mailbox_drop_panic` runs a subprocess matrix of five task placements, 1/2/16
@@ -35,7 +54,7 @@ class of bug. Coverage for v0.7.0:
 | Spec and code | Trace validation | The implementation doing something the model forbids | Real OneForOne/cohort/nested trace projections plus invalid-trace and model-mutation controls; not all runtime schedules |
 | Primitives | Loom | Atomic and memory-ordering bugs in cancellation, ready gate and wakeups | Exists; expand to mailbox publication versus shutdown |
 | Whole runtime | Shuttle | Scheduling races in multi-actor tests too large for Loom | Not started |
-| User level | Actor-level ordering exploration | Bugs in users' actor systems, reproducible from a seed | Planned ([roadmap](../ROADMAP.md) rank 20) |
+| User level | Actor-level ordering exploration | Bugs in users' actor systems, reproducible from a seed | Planned ([roadmap](../ROADMAP.md) rank 20) in `spawned-test`; mocks, probes and fault injection exist (phase A) |
 | Production | Lifecycle monitors derived from the TLA+ invariants | A live node or recorded canary run breaking a modelled invariant | Planned ([roadmap](../ROADMAP.md) rank 5c; [design](research/systematic-testing.md#a-pobserve-for-spawned)) |
 | Memory safety | ThreadSanitizer, Miri | Data races and undefined behavior | TSAN in CI; Miri waits until unsafe code is proposed (all crates `#![forbid(unsafe_code)]`) |
 | Test quality | cargo-mutants | Tests that still pass when the code is broken | Weekly over supervision and system code |

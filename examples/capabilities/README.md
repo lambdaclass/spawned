@@ -24,6 +24,7 @@ describes capabilities that are still on the roadmap.
 | [protocol_timeouts](src/bin/protocol_timeouts.rs) | Tune requests without changing handlers | Protocol/method defaults, a cloned-handle override, type-erased configured refs and timeout outcomes in both modes. |
 | [streams_and_recipients](src/bin/streams_and_recipients.rs) | Share one message interface across actor types | Broadcast through typed recipients, reject stopped members, cancel an async source and release a blocking native iterator cooperatively. |
 | [registrations_and_fakes](src/bin/registrations_and_fakes.rs) | Test protocol clients and resolve named replacements | A fake implements the same protocol; managed names follow fresh generations; manual guards preserve newer registrations. |
+| [test_kit](src/bin/test_kit.rs) | Unit-test an actor without its real dependencies | A `spawned-test` mock answers a protocol and a probe records sends; a slow reply forces a timeout, a crashed dependency and a killed supervised child are injected, and the same mock runs in threads mode. |
 | [native_lifecycle](src/bin/native_lifecycle.rs) | Handle failures from synchronous actors | Monitors, demonitoring, trapped exits and linked startup, with no ambient Tokio runtime. |
 | [coordinated_shutdown](src/bin/coordinated_shutdown.rs) | Migrate hand-wired client shutdown | Join producers, snapshot a live dependency, then join a two-group tree in reverse dependency order. |
 | [framework_metrics](src/bin/framework_metrics.rs) | Observe actor activity without modifying handlers | Configure sampled timing, issue requests and render process-wide Prometheus text. Metrics are explicitly enabled for this binary. |
@@ -41,6 +42,7 @@ cargo run --locked -p spawned-capability-examples --bin graceful_drain
 cargo run --locked -p spawned-capability-examples --bin protocol_timeouts
 cargo run --locked -p spawned-capability-examples --bin streams_and_recipients
 cargo run --locked -p spawned-capability-examples --bin registrations_and_fakes
+cargo run --locked -p spawned-capability-examples --bin test_kit
 cargo run --locked -p spawned-capability-examples --bin native_lifecycle
 cargo run --locked -p spawned-capability-examples --bin coordinated_shutdown
 cargo run --locked -p spawned-capability-examples --features metrics --bin framework_metrics

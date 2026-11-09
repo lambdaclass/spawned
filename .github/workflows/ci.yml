@@ -36,7 +36,7 @@ jobs:
         run: cargo test --locked --verbose
       - name: Run capability examples
         run: |
-          for example in execution_groups execution_profiles supervision_recovery supervision_tree dedicated_thread runtime_isolation byte_budget_pipeline timeout_outcomes graceful_drain protocol_timeouts streams_and_recipients registrations_and_fakes native_lifecycle coordinated_shutdown; do
+          for example in execution_groups execution_profiles supervision_recovery supervision_tree dedicated_thread runtime_isolation byte_budget_pipeline timeout_outcomes graceful_drain protocol_timeouts streams_and_recipients registrations_and_fakes native_lifecycle coordinated_shutdown test_kit; do
             timeout 60s cargo run --locked -p spawned-capability-examples --bin "$example"
           done
           timeout 60s cargo run --locked -p spawned-capability-examples --features metrics --bin framework_metrics
@@ -63,9 +63,10 @@ jobs:
         run: |
           cargo test --locked -p spawned-rt --no-default-features
           cargo test --locked -p spawned-concurrency --no-default-features
+          cargo test --locked -p spawned-test --no-default-features
           cargo test --locked -p spawned-concurrency --no-default-features --features threads,metrics
-          cargo clippy --locked -p spawned-rt -p spawned-concurrency --no-default-features --all-targets -- -D warnings
-          cargo clippy --locked -p spawned-rt -p spawned-concurrency --no-default-features --features spawned-concurrency/metrics --all-targets -- -D warnings
+          cargo clippy --locked -p spawned-rt -p spawned-concurrency -p spawned-test --no-default-features --all-targets -- -D warnings
+          cargo clippy --locked -p spawned-rt -p spawned-concurrency -p spawned-test --no-default-features --features spawned-concurrency/metrics --all-targets -- -D warnings
           cargo run --locked --manifest-path examples/thread_only/Cargo.toml --features metrics,async
           python3 scripts/check-thread-only.py
           cargo clippy --locked --manifest-path examples/thread_only/Cargo.toml --features metrics,async -- -D warnings
