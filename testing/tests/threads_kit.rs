@@ -107,6 +107,9 @@ fn native_message_faults_and_settle() {
     mock.record(1, 1).unwrap();
     mock.settle();
     assert_eq!(mock.received()[0].outcome, Outcome::Discarded);
+    mock.record(2, 1).unwrap();
+    mock.settle_within(WAIT);
+    assert_eq!(mock.count::<ledger_protocol::Record>(), 2);
     assert_eq!(
         settle(&mock, ledger_protocol::Balance { account: 1 }, WAIT),
         5

@@ -145,40 +145,48 @@ impl Inbox {
         }
     }
 
+    // The async waiters bound themselves with the runtime's timer only (no
+    // `std::time::Instant`), so they agree with `exit_within` and friends and
+    // auto-advance under `#[tokio::test(start_paused = true)]`.
     #[cfg(feature = "async")]
     pub(crate) async fn expect_async<M: 'static>(&self, timeout: Duration, who: &str) -> M {
         let mut changes = self.changed.0.subscribe();
-        let deadline = Instant::now() + timeout;
-        loop {
-            // Mark the version seen before checking, so no push is missed.
-            changes.borrow_and_update();
-            {
-                let mut entries = self.lock();
-                if let Some(msg) = Self::take_first::<M>(&mut entries) {
+        let wait = async {
+            loop {
+                // Mark the version seen before checking, so no push is missed.
+                changes.borrow_and_update();
+                if let Some(msg) = Self::take_first::<M>(&mut self.lock()) {
                     return msg;
                 }
-                if Instant::now() >= deadline {
-                    missing::<M>(who, timeout, &entries);
+                // The sender lives in `self`, so this only returns on a push.
+                let _ = changes.changed().await;
+            }
+        };
+        match spawned_rt::tasks::timeout(timeout, wait).await {
+            Ok(msg) => msg,
+            Err(_) => {
+                let mut entries = self.lock();
+                // A push may have landed as the timer fired.
+                match Self::take_first::<M>(&mut entries) {
+                    Some(msg) => msg,
+                    None => missing::<M>(who, timeout, &entries),
                 }
             }
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            let _ = spawned_rt::tasks::timeout(remaining, changes.changed()).await;
         }
     }
 
     #[cfg(feature = "async")]
     pub(crate) async fn expect_none_async(&self, window: Duration, who: &str) {
         let mut changes = self.changed.0.subscribe();
-        let deadline = Instant::now() + window;
-        loop {
-            changes.borrow_and_update();
-            unwanted(who, window, &self.lock());
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                return;
+        let watch = async {
+            loop {
+                changes.borrow_and_update();
+                unwanted(who, window, &self.lock());
+                let _ = changes.changed().await;
             }
-            let _ = spawned_rt::tasks::timeout(remaining, changes.changed()).await;
-        }
+        };
+        let _ = spawned_rt::tasks::timeout(window, watch).await;
+        unwanted(who, window, &self.lock());
     }
 }
 

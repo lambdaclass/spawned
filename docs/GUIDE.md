@@ -1141,15 +1141,19 @@ out.expect_no_message(Duration::from_millis(20)).await;
 ```
 
 - `on::<M>(|msg: &M| reply)` answers each `M`; the message is still logged.
-- `allow_sends()` acknowledges every fire-and-forget message without a rule;
-  stubbing a wide protocol to observe one method is then a single line.
+- `allow_sends()` acknowledges every message whose reply type is `()` without
+  a rule; stubbing a wide protocol to observe one method is then a single
+  line. A handler cannot tell a send from a request through the public API,
+  so this also answers requests returning `Response<()>`; requests with other
+  reply types still fail loudly. `allow_send::<M>()` acknowledges one type
+  only.
 - A message without a rule makes the mock panic with the type name and the
   rule to add. The caller sees `ActorStopped`; `received()` lists it as
   `Outcome::Unexpected` and `assert_no_unexpected()` fails the test.
 - `expect::<M>(timeout)` returns the oldest not-yet-expected `M` (other types
   stay queued); `expect_no_message(window)`, `count::<M>()`, `take_all::<M>()`,
-  `received()` and `settle()` (wait until everything sent before is handled)
-  read the same log.
+  `received()` and `settle()` (wait until everything sent before is handled;
+  5 s bound, `settle_within(d)` to choose it) read the same log.
 
 `MockRef` dereferences to `ActorRef<Mock>`. Its own methods win over protocol
 methods with the same name; call those through `actor_ref()` or the `XRef`.
@@ -1186,13 +1190,16 @@ These helpers fail with a report instead of hanging the test:
 blocking versions of `settle`, `exit_within`, `join_within` and `wait_until`.
 There is no generic "actor is idle" check: an actor's mailbox can receive from
 any sender at any time, so `settle` fences the senders the test controls.
+Every async wait in `tasks` (`expect`, `expect_no_message`, `wait_until`,
+`exit_within` and the rest) is bounded by the Tokio timer, so the helpers also
+work under `#[tokio::test(start_paused = true)]`.
 
 ### Fault injection
 
 | Fault | How |
 |---|---|
-| Stop any actor with a chosen reason | `faults::exit(&handle, reason)`: `Normal` stops, `Shutdown` shuts down, `Panic(msg)` and `Kill` arrive as from a crashed linked peer (trapping actors receive `Exit` for `Panic`; `Kill` cannot be trapped and needs the `async` feature). A panic yields `Panic("panic in handler: {msg}")`. |
-| Crash a supervised child and get its replacement | `tasks::restart_child(&child, reason, deadline)` |
+| Stop any actor with a chosen reason | `faults::exit(&handle, reason)`: `Normal` calls `stop()` and `Shutdown` calls `shutdown()`; both stop the actor even if it traps exits (unlike Erlang's `exit(Pid, normal)`, which a non-trapping process ignores). `Panic(msg)` and `Kill` arrive as from a crashed linked peer: trapping actors receive `Exit` for `Panic`, `Kill` cannot be trapped and needs the `async` feature. Because the panic travels through a link, the actor exits with `Panic("panic in handler: {msg}")`, and the default panic hook prints `msg`. Never blocks the caller. |
+| Crash a supervised child and get its replacement | `tasks::restart_child(&child, reason, deadline)`: the returned instance always replaces the one it faulted, even if the child was already restarting |
 | Slow dependency / forced request timeout | `Mock::delay::<M>(d)` with a caller timeout shorter than `d` (`with_request_timeout`, `#[protocol(timeout = ..)]`) |
 | Lost message | `Mock::discard::<M>()` (fire-and-forget messages only) |
 | Crashed dependency | `Mock::crash_on::<M>(reason)` |

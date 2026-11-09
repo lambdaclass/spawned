@@ -1,10 +1,12 @@
 //! Test kit for [Spawned](https://github.com/lambdaclass/spawned) actors.
 //!
-//! Use it as a dev-dependency, the way `tokio-test` is used with Tokio:
+//! Use it as a dev-dependency, the way `tokio-test` is used with Tokio. The
+//! crate is unreleased: depend on it by path (or from the repository) until
+//! the next release.
 //!
 //! ```toml
 //! [dev-dependencies]
-//! spawned-test = "0.6"
+//! spawned-test = { path = "../testing" } # published with the next release
 //! ```
 //!
 //! - **Mocks** ([`tasks::Mock`], [`threads::Mock`]): closure-backed actors that
@@ -17,7 +19,9 @@
 //!   [`tasks::wait_for_generation`], [`tasks::shutdown_system`] and
 //!   [`tasks::TestSystem`] turn hangs into test failures with a report.
 //! - **Fault injection**: [`faults::exit`] stops any actor with a chosen
-//!   [`ExitReason`](spawned_concurrency::ExitReason);
+//!   [`ExitReason`](spawned_concurrency::ExitReason) (`Panic` and `Kill`
+//!   travel through a link, so an injected panic surfaces as
+//!   `Panic("panic in handler: ..")` and the default panic hook prints it);
 //!   [`tasks::restart_child`] crashes a supervised child and returns its
 //!   replacement; mocks delay, discard or crash on chosen messages.
 //!
@@ -31,6 +35,9 @@
 #![forbid(unsafe_code)]
 // The docs point at `tasks` items, which a Tokio-free build does not compile.
 #![cfg_attr(not(feature = "async"), allow(rustdoc::broken_intra_doc_links))]
+
+#[macro_use]
+mod shared;
 
 pub mod faults;
 mod inbox;

@@ -102,7 +102,8 @@ impl Rules {
                 "spawned-test Mock: no rule for message `{name}`; configure it with \
                  `.on::<{name}>(..)`{}",
                 if unit_result::<M>().is_some() {
-                    " or acknowledge every fire-and-forget message with `.allow_sends()`"
+                    ", acknowledge it with `.allow_send::<{name}>()` or acknowledge every \
+                     `()`-reply message with `.allow_sends()`"
                 } else {
                     ""
                 }

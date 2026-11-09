@@ -345,3 +345,131 @@ async fn bounded_shutdown_reports_unfinished_actors() {
     tokio::time::sleep(Duration::from_millis(20)).await;
     test.shutdown(Duration::from_millis(50)).await;
 }
+
+#[protocol]
+pub trait LedgerProtocol: Send + Sync {
+    fn note(&self, amount: u32) -> Result<(), ActorError>;
+    fn flush(&self) -> Response<()>;
+}
+
+#[tokio::test]
+async fn allow_sends_also_answers_unit_requests_but_allow_send_is_per_type() {
+    // A handler cannot tell a send from a request, so `allow_sends` also
+    // acknowledges a request whose reply is `()`.
+    let lenient = Mock::new().allow_sends().start();
+    lenient.note(1).unwrap();
+    lenient.flush().await.unwrap();
+    lenient.assert_no_unexpected();
+
+    // `allow_send::<M>()` acknowledges only the chosen type.
+    let strict = Mock::new().allow_send::<ledger_protocol::Note>().start();
+    strict.note(1).unwrap();
+    assert!(strict.flush().await.is_err());
+    let ExitReason::Panic(reason) = join_within(&strict, WAIT).await else {
+        panic!("strict mock should panic on the unacknowledged request");
+    };
+    assert!(reason.contains("allow_send::<"), "{reason}");
+    assert_eq!(strict.count::<ledger_protocol::Note>(), 1);
+}
+
+#[tokio::test]
+#[should_panic(expected = "could not settle")]
+async fn settle_within_uses_the_given_bound() {
+    let mock = Mock::new()
+        .on::<inventory_protocol::Reserve>(|_| true)
+        .delay::<inventory_protocol::Reserve>(Duration::from_millis(500))
+        .start();
+    // Occupy the mock; the fence queues behind the slow reply.
+    let _pending = mock
+        .actor_ref()
+        .request_raw(inventory_protocol::Reserve { item: "x".into() });
+    mock.settle_within(Duration::from_millis(20)).await;
+}
+
+/// Under paused Tokio time, every async helper waits on the Tokio clock: idle
+/// waits auto-advance instead of spinning against the wall clock.
+#[tokio::test(start_paused = true)]
+async fn helpers_follow_paused_tokio_time() {
+    let real = std::time::Instant::now();
+    let hour = Duration::from_secs(3600);
+
+    // expect: a message sent after a long virtual sleep still arrives.
+    let probe = Probe::<Sold>::new();
+    let recipient = probe.recipient();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(600)).await;
+        recipient.send(Sold("later".into())).unwrap();
+    });
+    assert_eq!(probe.expect(hour).await, Sold("later".into()));
+
+    // expect_no_message: an hour-long window ends without real waiting.
+    probe.expect_no_message(hour).await;
+
+    // wait_until: the condition becomes true on the virtual clock.
+    let start = tokio::time::Instant::now();
+    wait_until(hour, "two virtual seconds passed", || {
+        start.elapsed() >= Duration::from_secs(2)
+    })
+    .await;
+
+    // exit_within: an actor stopped after a virtual delay.
+    let mock = Mock::new().start();
+    let handle = mock.child_handle();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(600)).await;
+        handle.stop();
+    });
+    assert_eq!(join_within(&mock, hour).await, ExitReason::Normal);
+
+    assert!(
+        real.elapsed() < Duration::from_secs(5),
+        "paused-time helpers took {:?} of real time",
+        real.elapsed()
+    );
+}
+
+#[tokio::test(start_paused = true)]
+#[should_panic(expected = "expected a `tasks_kit::Sold` within 3600s")]
+async fn expect_times_out_on_paused_time() {
+    Probe::<Sold>::new().expect(Duration::from_secs(3600)).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn restart_child_waits_out_a_restart_in_progress() {
+    let test = TestSystem::new();
+    let mut tree = test
+        .system()
+        .supervisor(SupervisorConfig {
+            backoff: Backoff {
+                initial: Duration::from_millis(100),
+                maximum: Duration::from_millis(100),
+                jitter: false,
+                ..Backoff::default()
+            },
+            ..SupervisorConfig::default()
+        })
+        .unwrap();
+    let child = tree
+        .add(ChildSpec::new("counter", test.group(), |_| async {
+            Ok::<_, String>(Counter(Arc::default()))
+        }))
+        .unwrap();
+    let supervisor = tree.start().await.unwrap();
+    let first = child.wait_ready().await.unwrap();
+    let initial = child.snapshot().generation;
+
+    // Crash the child behind restart_child's back: it is now between
+    // generations, so restart_child must fault the replacement instead of
+    // panicking or pairing a stale instance with a newer generation.
+    faults::exit(&first.child_handle(), ExitReason::Panic("first".into()));
+    exit_within(&first.child_handle(), WAIT).await;
+    let third = restart_child(&child, ExitReason::Panic("second".into()), WAIT).await;
+    let snapshot = child.snapshot();
+    assert_eq!(snapshot.generation, initial + 2);
+    assert_eq!(snapshot.actor_id, Some(third.id()));
+    assert_eq!(settle(&third, Get, WAIT).await, 0);
+
+    let report = shutdown_supervisor(&supervisor, WAIT).await;
+    assert!(report.failure.is_none());
+    test.shutdown(WAIT).await;
+}

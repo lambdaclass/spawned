@@ -3,6 +3,7 @@
 use crate::inbox::{Inbox, Received};
 use crate::probe::ProbeCore;
 use crate::rules::{Fence, Plan, Rules};
+use crate::shared::SETTLE_TIMEOUT;
 use spawned_concurrency::error::ActorError;
 use spawned_concurrency::message::Message;
 use spawned_concurrency::threads::{
@@ -29,41 +30,11 @@ impl Default for Mock {
 }
 
 impl Mock {
-    /// A strict mock: every message type needs a rule.
-    pub fn new() -> Self {
-        Self {
-            rules: Rules::default(),
-            inbox: Arc::new(Inbox::default()),
-        }
-    }
-
-    /// Answer each `M` with `reply(&msg)`; the message is still logged.
-    pub fn on<M: Message>(mut self, reply: impl FnMut(&M) -> M::Result + Send + 'static) -> Self {
-        self.rules.on::<M>(reply);
-        self
-    }
-
-    /// Acknowledge and log every message whose reply type is `()`.
-    pub fn allow_sends(mut self) -> Self {
-        self.rules.allow_sends();
-        self
-    }
+    mock_builder!();
 
     /// Fault: block the mock's thread for `delay` before replying to each `M`.
     pub fn delay<M: Message>(mut self, delay: Duration) -> Self {
         self.rules.delay::<M>(delay);
-        self
-    }
-
-    /// Fault: log each `M` as discarded and do nothing else.
-    pub fn discard<M: Message<Result = ()>>(mut self) -> Self {
-        self.rules.discard::<M>();
-        self
-    }
-
-    /// Fault: panic with `reason` on each `M`.
-    pub fn crash_on<M: Message>(mut self, reason: impl Into<String>) -> Self {
-        self.rules.crash_on::<M>(reason.into());
         self
     }
 
@@ -100,23 +71,9 @@ pub struct MockRef {
     inbox: Arc<Inbox>,
 }
 
-impl Deref for MockRef {
-    type Target = ActorRef<Mock>;
-    fn deref(&self) -> &ActorRef<Mock> {
-        &self.actor
-    }
-}
+mock_ref_common!();
 
 impl MockRef {
-    fn who(&self) -> String {
-        format!("Mock {:?}", self.actor.id())
-    }
-
-    /// The underlying actor reference.
-    pub fn actor_ref(&self) -> ActorRef<Mock> {
-        self.actor.clone()
-    }
-
     /// Block until the oldest not-yet-expected `M` arrives and return it.
     pub fn expect<M: Message>(&self, timeout: Duration) -> M {
         self.inbox.expect_blocking::<M>(timeout, &self.who())
@@ -128,38 +85,17 @@ impl MockRef {
     }
 
     /// Block until the mock has handled everything this thread sent before.
+    /// Panics if the mock has stopped or does not answer within 5 s; see
+    /// [`settle_within`](MockRef::settle_within).
     pub fn settle(&self) {
-        if let Err(error) = self
-            .actor
-            .request_with_timeout(Fence, Duration::from_secs(5))
-        {
-            panic!(
-                "{}: could not settle ({error}); exit reason {:?}, log {:?}",
-                self.who(),
-                self.actor.exit_reason(),
-                self.received()
-            );
+        self.settle_within(SETTLE_TIMEOUT)
+    }
+
+    /// [`settle`](MockRef::settle) with a chosen bound.
+    pub fn settle_within(&self, timeout: Duration) {
+        if let Err(error) = self.actor.request_with_timeout(Fence, timeout) {
+            self.settle_failed(error);
         }
-    }
-
-    /// Every message received so far, in arrival order.
-    pub fn received(&self) -> Vec<Received> {
-        self.inbox.received()
-    }
-
-    /// How many `M` were received so far.
-    pub fn count<M: Message>(&self) -> usize {
-        self.inbox.count::<M>()
-    }
-
-    /// Take every not-yet-expected `M`, oldest first.
-    pub fn take_all<M: Message>(&self) -> Vec<M> {
-        self.inbox.take_all::<M>()
-    }
-
-    /// Panic if any message had no rule.
-    pub fn assert_no_unexpected(&self) {
-        self.inbox.assert_no_unexpected(&self.who());
     }
 }
 
@@ -169,53 +105,9 @@ pub struct Probe<M: Message> {
     core: Arc<ProbeCore<M>>,
 }
 
-impl<M: Message> Clone for Probe<M> {
-    fn clone(&self) -> Self {
-        Self {
-            core: self.core.clone(),
-        }
-    }
-}
-
-impl<M: Message> Default for Probe<M> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl<M: Message> Receiver<M> for ProbeCore<M> {
-    fn send(&self, msg: M) -> Result<(), ActorError> {
-        ProbeCore::send(self, msg)
-    }
-    fn request_raw(&self, msg: M) -> Result<oneshot::Receiver<M::Result>, ActorError> {
-        let (tx, rx) = oneshot::channel();
-        if let Some(value) = self.request(msg)? {
-            let _ = tx.send(value);
-        }
-        Ok(rx)
-    }
-}
+probe_common!();
 
 impl<M: Message> Probe<M> {
-    /// A probe for fire-and-forget messages.
-    pub fn new() -> Self {
-        Self {
-            core: Arc::new(ProbeCore::new(None)),
-        }
-    }
-
-    /// A probe that answers requests with `reply(&msg)`.
-    pub fn replying(reply: impl FnMut(&M) -> M::Result + Send + 'static) -> Self {
-        Self {
-            core: Arc::new(ProbeCore::new(Some(Box::new(reply)))),
-        }
-    }
-
-    /// The probe as a native `Recipient<M>`.
-    pub fn recipient(&self) -> Recipient<M> {
-        self.core.clone()
-    }
-
     /// Block until the oldest not-yet-expected message arrives.
     pub fn expect(&self, timeout: Duration) -> M {
         self.core.inbox.expect_blocking::<M>(timeout, "Probe")
@@ -224,21 +116,6 @@ impl<M: Message> Probe<M> {
     /// Panic if any not-yet-expected message is (or arrives) within `window`.
     pub fn expect_no_message(&self, window: Duration) {
         self.core.inbox.expect_none_blocking(window, "Probe")
-    }
-
-    /// Every message received so far, in arrival order.
-    pub fn received(&self) -> Vec<Received> {
-        self.core.inbox.received()
-    }
-
-    /// Take every not-yet-expected message, oldest first.
-    pub fn take_all(&self) -> Vec<M> {
-        self.core.inbox.take_all::<M>()
-    }
-
-    /// Fault: behave like a stopped actor.
-    pub fn close(&self) {
-        self.core.close();
     }
 }
 

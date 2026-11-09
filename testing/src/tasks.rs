@@ -1,11 +1,16 @@
 //! Test kit for `tasks` (async) actors: [`Mock`], [`Probe`], harness helpers.
+//!
+//! Every async wait here is bounded by the Tokio timer only, so the helpers
+//! also work under `#[tokio::test(start_paused = true)]`, where idle time
+//! auto-advances.
 use crate::faults;
 use crate::inbox::{Inbox, Received};
 use crate::probe::ProbeCore;
 use crate::rules::{Fence, Plan, Rules};
+use crate::shared::SETTLE_TIMEOUT;
 use spawned_concurrency::error::ActorError;
 use spawned_concurrency::message::Message;
-use spawned_concurrency::supervision::{SupervisedChild, Supervisor, SupervisorReport};
+use spawned_concurrency::supervision::{ChildState, SupervisedChild, Supervisor, SupervisorReport};
 use spawned_concurrency::system::{ActorSystem, ExecutionGroup, ShutdownReport, SystemError};
 use spawned_concurrency::tasks::{
     Actor, ActorRef, ActorStart, Context, Handler, Receiver, Recipient,
@@ -15,7 +20,7 @@ use spawned_rt::tasks::{oneshot, sleep, timeout};
 use std::future::Future;
 use std::ops::Deref;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 // ---------------------------------------------------------------------------
 // Mock
@@ -50,47 +55,13 @@ impl Default for Mock {
 }
 
 impl Mock {
-    /// A strict mock: every message type needs a rule.
-    pub fn new() -> Self {
-        Self {
-            rules: Rules::default(),
-            inbox: Arc::new(Inbox::default()),
-        }
-    }
-
-    /// Answer each `M` with `reply(&msg)`. The message is still logged for
-    /// [`MockRef::expect`]. For fire-and-forget messages return `()`.
-    pub fn on<M: Message>(mut self, reply: impl FnMut(&M) -> M::Result + Send + 'static) -> Self {
-        self.rules.on::<M>(reply);
-        self
-    }
-
-    /// Acknowledge and log every message whose reply type is `()` (protocol
-    /// sends) even without a rule. Requests without a rule still fail loudly.
-    pub fn allow_sends(mut self) -> Self {
-        self.rules.allow_sends();
-        self
-    }
+    mock_builder!();
 
     /// Fault: hold each `M` for `delay` before replying. The mock handles one
     /// message at a time, so later messages wait too, as with a slow actor.
     /// A delay longer than the caller's timeout forces `RequestTimeout`.
     pub fn delay<M: Message>(mut self, delay: Duration) -> Self {
         self.rules.delay::<M>(delay);
-        self
-    }
-
-    /// Fault: log each `M` as [`crate::Outcome::Discarded`] and do nothing else, as if
-    /// the message were lost after a successful send.
-    pub fn discard<M: Message<Result = ()>>(mut self) -> Self {
-        self.rules.discard::<M>();
-        self
-    }
-
-    /// Fault: panic with `reason` on each `M`. The mock exits with
-    /// `ExitReason::Panic` and pending callers see `ActorStopped`.
-    pub fn crash_on<M: Message>(mut self, reason: impl Into<String>) -> Self {
-        self.rules.crash_on::<M>(reason.into());
         self
     }
 
@@ -143,23 +114,9 @@ pub struct MockRef {
     inbox: Arc<Inbox>,
 }
 
-impl Deref for MockRef {
-    type Target = ActorRef<Mock>;
-    fn deref(&self) -> &ActorRef<Mock> {
-        &self.actor
-    }
-}
+mock_ref_common!();
 
 impl MockRef {
-    fn who(&self) -> String {
-        format!("Mock {:?}", self.actor.id())
-    }
-
-    /// The underlying actor reference.
-    pub fn actor_ref(&self) -> ActorRef<Mock> {
-        self.actor.clone()
-    }
-
     /// Wait for the oldest not-yet-expected `M` and return it. Other message
     /// types stay in the log. Panics with the log contents after `timeout`.
     pub async fn expect<M: Message>(&self, timeout: Duration) -> M {
@@ -172,40 +129,18 @@ impl MockRef {
     }
 
     /// Wait until the mock has handled every message sent to it before this
-    /// call by this task (per-sender FIFO). Panics if the mock has stopped.
+    /// call by this task (per-sender FIFO). Panics if the mock has stopped or
+    /// does not answer within 5 s; see [`settle_within`](MockRef::settle_within).
     pub async fn settle(&self) {
-        if let Err(error) = self
-            .actor
-            .request_with_timeout(Fence, Duration::from_secs(5))
-            .await
-        {
-            panic!(
-                "{}: could not settle ({error}); exit reason {:?}, log {:?}",
-                self.who(),
-                self.actor.exit_reason(),
-                self.received()
-            );
+        self.settle_within(SETTLE_TIMEOUT).await
+    }
+
+    /// [`settle`](MockRef::settle) with a chosen bound, for mocks with long
+    /// `delay` rules or tests that want to fail faster.
+    pub async fn settle_within(&self, timeout: Duration) {
+        if let Err(error) = self.actor.request_with_timeout(Fence, timeout).await {
+            self.settle_failed(error);
         }
-    }
-
-    /// Every message received so far, in arrival order, including expected ones.
-    pub fn received(&self) -> Vec<Received> {
-        self.inbox.received()
-    }
-
-    /// How many `M` were received so far, including expected ones.
-    pub fn count<M: Message>(&self) -> usize {
-        self.inbox.count::<M>()
-    }
-
-    /// Take every not-yet-expected `M`, oldest first.
-    pub fn take_all<M: Message>(&self) -> Vec<M> {
-        self.inbox.take_all::<M>()
-    }
-
-    /// Panic if any message had no rule.
-    pub fn assert_no_unexpected(&self) {
-        self.inbox.assert_no_unexpected(&self.who());
     }
 }
 
@@ -222,53 +157,9 @@ pub struct Probe<M: Message> {
     core: Arc<ProbeCore<M>>,
 }
 
-impl<M: Message> Clone for Probe<M> {
-    fn clone(&self) -> Self {
-        Self {
-            core: self.core.clone(),
-        }
-    }
-}
-
-impl<M: Message> Default for Probe<M> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl<M: Message> Receiver<M> for ProbeCore<M> {
-    fn send(&self, msg: M) -> Result<(), ActorError> {
-        ProbeCore::send(self, msg)
-    }
-    fn request_raw(&self, msg: M) -> Result<oneshot::Receiver<M::Result>, ActorError> {
-        let (tx, rx) = oneshot::channel();
-        if let Some(value) = self.request(msg)? {
-            let _ = tx.send(value);
-        }
-        Ok(rx)
-    }
-}
+probe_common!();
 
 impl<M: Message> Probe<M> {
-    /// A probe for fire-and-forget messages.
-    pub fn new() -> Self {
-        Self {
-            core: Arc::new(ProbeCore::new(None)),
-        }
-    }
-
-    /// A probe that answers requests with `reply(&msg)`.
-    pub fn replying(reply: impl FnMut(&M) -> M::Result + Send + 'static) -> Self {
-        Self {
-            core: Arc::new(ProbeCore::new(Some(Box::new(reply)))),
-        }
-    }
-
-    /// The probe as a `Recipient<M>`, to hand to the code under test.
-    pub fn recipient(&self) -> Recipient<M> {
-        self.core.clone()
-    }
-
     /// Wait for the oldest not-yet-expected message. Panics after `timeout`.
     pub async fn expect(&self, timeout: Duration) -> M {
         self.core.inbox.expect_async::<M>(timeout, "Probe").await
@@ -277,22 +168,6 @@ impl<M: Message> Probe<M> {
     /// Panic if any not-yet-expected message is (or arrives) within `window`.
     pub async fn expect_no_message(&self, window: Duration) {
         self.core.inbox.expect_none_async(window, "Probe").await
-    }
-
-    /// Every message received so far, in arrival order, including expected ones.
-    pub fn received(&self) -> Vec<Received> {
-        self.core.inbox.received()
-    }
-
-    /// Take every not-yet-expected message, oldest first.
-    pub fn take_all(&self) -> Vec<M> {
-        self.core.inbox.take_all::<M>()
-    }
-
-    /// Fault: behave like a stopped actor; later sends and requests return
-    /// `ActorStopped`.
-    pub fn close(&self) {
-        self.core.close();
     }
 }
 
@@ -338,13 +213,15 @@ pub async fn join_within<A: Actor>(actor: &ActorRef<A>, deadline: Duration) -> E
 }
 
 /// Poll `condition` every millisecond until it holds; panic naming `what` after `timeout`.
-pub async fn wait_until(timeout: Duration, what: &str, mut condition: impl FnMut() -> bool) {
-    let deadline = Instant::now() + timeout;
-    while !condition() {
-        if Instant::now() >= deadline {
-            panic!("timed out after {timeout:?} waiting until {what}");
+/// Measured on the Tokio clock, like every wait in this module.
+pub async fn wait_until(limit: Duration, what: &str, mut condition: impl FnMut() -> bool) {
+    let poll = async {
+        while !condition() {
+            sleep(Duration::from_millis(1)).await;
         }
-        sleep(Duration::from_millis(1)).await;
+    };
+    if timeout(limit, poll).await.is_err() {
+        panic!("timed out after {limit:?} waiting until {what}");
     }
 }
 
@@ -374,17 +251,61 @@ pub async fn wait_for_generation<A: Actor>(
 /// [`faults::exit`]) and return its replacement once the supervisor has started
 /// it, or panic after `deadline` (for example when the restart mode does not
 /// restart that reason).
+///
+/// The instance faulted and the generation waited past always belong
+/// together, even if the child restarts on its own meanwhile, so the returned
+/// reference is a replacement of the instance this call faulted.
 pub async fn restart_child<A: Actor>(
     child: &SupervisedChild<A>,
     reason: ExitReason,
     deadline: Duration,
 ) -> ActorRef<A> {
-    let generation = child.snapshot().generation;
-    let current = child
-        .current()
-        .unwrap_or_else(|e| panic!("no running instance to fault: {e}"));
+    let (current, generation) = faultable_instance(child, deadline).await;
     faults::exit(&current.child_handle(), reason);
     wait_for_generation(child, generation, deadline).await
+}
+
+/// The running instance and its generation, from views that agree. `current()`
+/// and `snapshot()` take the lock separately; a restart between them would
+/// pair instance N with generation N+1, so retry until the snapshot names the
+/// instance read.
+async fn faultable_instance<A: Actor>(
+    child: &SupervisedChild<A>,
+    deadline: Duration,
+) -> (ActorRef<A>, u64) {
+    let read = async {
+        loop {
+            match child.current() {
+                Ok(current) => {
+                    let snapshot = child.snapshot();
+                    if snapshot.actor_id == Some(current.id()) {
+                        return (current, snapshot.generation);
+                    }
+                }
+                // A child that will never run again has nothing to fault.
+                Err(e)
+                    if matches!(
+                        child.snapshot().state,
+                        ChildState::Stopped | ChildState::Failed
+                    ) =>
+                {
+                    panic!("no running instance to fault: {e}")
+                }
+                // Between generations (an instance stopping, backoff,
+                // starting): wait for the next instance, up to `deadline`.
+                Err(_) => {}
+            }
+            sleep(Duration::from_millis(1)).await;
+        }
+    };
+    match timeout(deadline, read).await {
+        Ok(pair) => pair,
+        Err(_) => panic!(
+            "supervised child never had a stable instance to fault within {deadline:?}; \
+             snapshot {:?}",
+            child.snapshot()
+        ),
+    }
 }
 
 /// Shut a supervisor down within `deadline`, or panic with its report.

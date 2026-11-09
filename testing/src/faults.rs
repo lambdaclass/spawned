@@ -1,27 +1,40 @@
 //! Fault injection through public lifecycle APIs.
 //!
-//! [`exit`] follows Erlang's `exit(Pid, Reason)`: abnormal reasons are
-//! delivered the way a dying linked peer delivers them, so an actor that traps
-//! exits receives an [`Exit`](spawned_concurrency::Exit) message instead of
-//! stopping (except for `Kill`, which cannot be trapped). Stopping is
-//! cooperative: a running handler finishes first, then `stopped()` runs.
+//! [`exit`] makes an actor exit with a chosen [`ExitReason`]. It resembles
+//! Erlang's `exit(Pid, Reason)` for `Panic` and `Kill`, which arrive the way a
+//! dying linked peer delivers them, but **not** for `Normal` and `Shutdown`,
+//! which always stop the target (see [`exit`]). Stopping is cooperative: a
+//! running handler finishes first, then `stopped()` runs.
 //!
 //! Message-level faults (delay, discard, crash on a message, a reply slower
 //! than the caller's timeout) are configured on [`Mock`](crate::tasks::Mock)
 //! and [`Probe`](crate::tasks::Probe).
+//!
+//! The core has no `ChildHandle::exit(reason)` yet, so `Panic` and `Kill` go
+//! through a short-lived linked actor, and the reason the target reports is
+//! shaped by that link (see [`exit`]).
 use spawned_concurrency::{message::Message, threads, ChildHandle, ExitReason};
 
 /// Make `target` exit with `reason`.
 ///
-/// - `Normal`: [`ChildHandle::stop`].
-/// - `Shutdown`: [`ChildHandle::shutdown`].
-/// - `Panic(msg)`: a short-lived linked actor panics with `msg`; the target
-///   exits with `Panic("panic in handler: {msg}")`, as it would if a linked
-///   peer crashed. The panic message is printed by the default panic hook.
-/// - `Kill`: a short-lived linked actor is aborted; the target exits with
-///   `Kill`. Needs the `async` feature (Tokio-free builds panic here).
+/// - `Normal`: [`ChildHandle::stop`]. The target stops even if it traps
+///   exits; this differs from Erlang's `exit(Pid, normal)`, which a
+///   non-trapping process ignores and a trapping one receives as a message.
+/// - `Shutdown`: [`ChildHandle::shutdown`]. Also a direct stop that trapping
+///   cannot intercept.
+/// - `Panic(msg)`: a short-lived linked actor panics with `msg`. A
+///   non-trapping target exits with `Panic("panic in handler: {msg}")` (the
+///   wording the core uses for a handler panic), not `Panic(msg)`; a target
+///   that traps exits receives an [`Exit`](spawned_concurrency::Exit) carrying
+///   that reason instead of stopping. The panic is real, so the default panic
+///   hook prints `msg` to stderr.
+/// - `Kill`: a short-lived linked actor is aborted on a helper thread; the
+///   target exits with `Kill`, which cannot be trapped. Needs the `async`
+///   feature (Tokio-free builds panic here).
 ///
-/// Returns immediately; wait for the exit with `ChildHandle::wait_exit_async`,
+/// Never waits for the target: it returns once the exit is requested (for
+/// `Kill`, once the helper thread is spawned), so it is safe to call from
+/// async code. Wait for the exit with `ChildHandle::wait_exit_async`,
 /// [`tasks::exit_within`](crate::tasks::exit_within) or
 /// [`threads::exit_within`](crate::threads::exit_within).
 pub fn exit(target: &ChildHandle, reason: ExitReason) {
@@ -62,14 +75,24 @@ fn kill_linked(target: &ChildHandle) {
     // Dropping a runtime that owns the linked actor's task drops the actor
     // future without completing it, which publishes `Kill` to its links. A
     // runtime cannot be dropped inside another, hence the dedicated thread.
-    std::thread::spawn(move || {
-        let runtime = spawned_rt::tasks::control_runtime().expect("kill fuse runtime");
-        let fuse = runtime.block_on(async { tasks::ActorStart::start(Aborted) });
-        fuse.context().link(&target);
-        drop(runtime);
-    })
-    .join()
-    .expect("kill fuse thread");
+    // It is not joined, so async callers never block a runtime worker.
+    let spawned = std::thread::Builder::new()
+        .name("spawned-test-kill".into())
+        .spawn(move || {
+            let runtime = match spawned_rt::tasks::control_runtime() {
+                Ok(runtime) => runtime,
+                Err(error) => {
+                    tracing::error!(%error, "spawned-test: no runtime for the kill fuse");
+                    return;
+                }
+            };
+            let fuse = runtime.block_on(async { tasks::ActorStart::start(Aborted) });
+            fuse.context().link(&target);
+            drop(runtime);
+        });
+    if let Err(error) = spawned {
+        panic!("spawned-test: could not spawn the kill fuse thread: {error}");
+    }
 }
 
 #[cfg(not(feature = "async"))]
