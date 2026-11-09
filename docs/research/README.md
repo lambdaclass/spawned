@@ -13,6 +13,7 @@ rather than repeat it.
 | [Systematic testing, simulation and runtime monitoring](systematic-testing.md) | Verification rule, testing to add, ranks 5c, 20-22a |
 | [How the Ethereum ecosystem tests clients](ethereum-testing.md) | Ranks 5, 5c, 20-22 |
 | [Request semantics references](request-semantics-references.md) | Ranks 11, 11a, 47, 47a |
+| [Other concurrency models](concurrency-models.md) | Ranks 8a, 11b, 15a (new); notes on 11a, 13, 15, 19, 33, 34, 39, 48; research pointers 52-54 |
 
 **[Virtual actors](virtual-actors.md).** Orleans grains are always addressable
 by key, activated on first message, removed when idle, kept to one live
@@ -46,3 +47,14 @@ ethshadow can host the ethlambda canary's fault runs.
 (Goblins) as inputs to the deferred-reply design (ranks 11, 11a);
 choreographic programming (ChoRus, HasChor) as an alternative next to session
 types (ranks 47, 47a); Pony reference capabilities briefly, for vocabulary.
+
+**[Concurrency models](concurrency-models.md).** CPU compute pools (rayon,
+Akka dispatchers, Orleans `Task.Run`, Ray tasks, BEAM dirty schedulers),
+structured concurrency (Trio, Swift, Kotlin, Java `StructuredTaskScope`, Rust
+crates), preemption and cooperative budgets (BEAM reductions, Go async
+preemption, Tokio coop), and briefer notes on backpressured streams, STM,
+thread-per-core I/O, incremental dataflow, CRDTs and sagas, CSP, effects and
+join calculus. Proposes a managed compute pool (rank 11b) backed by ethrex's
+hand-built rayon pools and its 0% CPU import deadlock, cancel scopes as the
+shared design of ranks 13, 15 and 19 (rank 15a), and cooperative budgets with
+per-turn work measurement next to the stall watchdog (rank 8a).

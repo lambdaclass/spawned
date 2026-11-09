@@ -5,8 +5,8 @@ the implementation order in brief, and the [ranked backlog](#ranked-backlog)
 holds the detail, tradeoffs and client evidence behind it. It is an order, not
 a release schedule, and no speculative feature is promised by a date.
 Maintained [research notes](docs/research/README.md) (virtual actors,
-systematic testing, Ethereum client testing, request semantics) give the prior
-art and sources behind several items.
+systematic testing, Ethereum client testing, request semantics, other
+concurrency models) give the prior art and sources behind several items.
 
 Business handlers stay ordinary Rust. The framework owns dispatch and lifecycle.
 Keep typed messages/replies, dynamic actors, addressed delivery, cooperative
@@ -57,7 +57,8 @@ handlers and the existing default behavior. New policies are explicit and opt-in
    derived from the TLA+ invariants (rank 5c, [PObserve-style](docs/research/systematic-testing.md#a-pobserve-for-spawned)).
    In parallel, the developer-experience track (ranks 6-10: test kit, whose
    phase A starts the `spawned-test` crate, in review in #198, deadlock
-   detection, stall watchdog, flight recorder, published snapshots), motivated
+   detection, stall watchdog with cooperative budgets and per-turn work
+   measurement (rank 8a), flight recorder, published snapshots), motivated
    by the [client sweep](#client-sweep-production-pain).
 4. **Database-grade testing, before new capabilities.** Test Spawned the way
    FoundationDB, TigerBeetle, Dropbox, etcd and AWS test their systems, starting
@@ -67,7 +68,10 @@ handlers and the existing default behavior. New policies are explicit and opt-in
 5. **Request semantics:** deferred replies and pipe-to-self (ranks 11-16), with
    the dynamic supervisor (rank 12a) alongside the keyed registry, with
    promise pipelining and transactional turns as design inputs (rank 11a,
-   [references](docs/research/request-semantics-references.md)); then
+   [references](docs/research/request-semantics-references.md)); the managed
+   compute pool (rank 11b) as the first user of rank 11's completion contract;
+   cancel scopes (rank 15a, [concurrency models](docs/research/concurrency-models.md))
+   as the one ownership design behind draining, helpers and deadlines; then
    admission, credits and deadlines as one design package (ranks 17-19). Each
    ships under the [verification rule](#verification-rule). Before starting,
    re-rank phases 5-7 with what the Ethlambda and Ethrex migrations taught,
@@ -85,10 +89,13 @@ handlers and the existing default behavior. New policies are explicit and opt-in
    streams), observability, ergonomics (middleware, `gen_statem`-style
    behavior, batch handlers), load policies and integrations. Nothing here is
    scheduled; each item needs a client or user first.
-8. **Research or separate products (ranks 42-51):** distribution, durability
+8. **Research or separate products (ranks 42-54):** distribution, durability
    (outbox, durable timers, Temporal-style execution, with Restate as the
    reference design; see [virtual actors](docs/research/virtual-actors.md#what-it-means-for-spawned))
    and language-level ideas (session types and choreographies, ranks 47-47a).
+   Research pointers 52-54 (thread-per-core I/O, incremental dataflow, CRDTs
+   and sagas) record other concurrency models and why they wait
+   ([concurrency models](docs/research/concurrency-models.md)).
    Likely separate crates, only if someone builds a multi-node or durable system
    on Spawned.
 
@@ -143,6 +150,8 @@ property and passes every accepted trace. Design and limits:
 |---|---|
 | Dynamic supervisor (rank 12a) | Children starting and stopping while others restart or the supervisor shuts down; `max_children` is never exceeded, counting restarting children; no start succeeds after shutdown begins. |
 | Deferred replies and pipe-to-self (rank 11) | Every accepted request gets exactly one reply, including on owner exit or panic; a late result never reaches a restarted instance. |
+| Managed compute pool (rank 11b) | Every admitted job yields exactly one completion or cancellation outcome, including on panic and owner exit; no completion reaches a restarted instance or a superseded generation; in-flight jobs never exceed the pool budget. |
+| Cancel scopes (rank 15a, with ranks 13, 15 and 19) | No child is admitted after its scope closes; every child ends or is reported unfinished by the scope's deadline; a child deadline is never later than its parent's; shielded cleanup cannot pass the parent's hard deadline. One model serves ranks 13, 15 and 19. |
 | Keyed registry (rank 12) | An old entry's cleanup never removes its replacement (ethrex #7435). |
 | Draining shutdown (rank 13) | Queued work is handled or reported; shutdown finishes within its deadline. |
 | Bounded mailboxes and credits (ranks 17-18) | No credit leaks; waiting senders cannot deadlock. |
@@ -151,8 +160,9 @@ property and passes every accepted trace. Design and limits:
 
 No model needed (tests, examples and review suffice): the per-method timeout
 (5a), examples (5b), the migration guide, metrics, snapshots (10), the test kit
-(6) and macro work. Deadlock detection (7) and the stall watchdog (8) are
-optional; their risk is false alarms, which tests catch better.
+(6) and macro work. Deadlock detection (7), the stall watchdog (8) and
+cooperative budgets (8a, which changes scheduling between turns, not lifecycle)
+are optional; their risk is false alarms or unfairness, which tests catch better.
 
 **Every fixed bug keeps a reproducing test.** A bug fix lands with a test that
 fails on the code before the fix (as the PR #166/#168/#182/#185 regressions and
@@ -185,7 +195,7 @@ cargo-mutants and TLA+ with trace replay. Release gates and remaining gaps:
 | After v0.7 | Cross-backend (metamorphic) testing | Run one workload on async, blocking, thread, native-pool and pinned backends; observable results (replies, exit reasons, ordering per sender) must match. Catches backend-specific bugs without a hand-written oracle. |
 | After v0.7 | Failpoints (`BUGGIFY`-style) | Named fault points in Spawned's own lifecycle code (fail or delay during restart, shutdown, registration), compiled out by default and switchable from tests and `spawned-test`. FoundationDB and etcd use them to reach rare paths on purpose. |
 | After v0.7 | Clock-jump tests | Paused time, large forward/backward wall-clock jumps and slot-aligned ticks; needed before timer policies (rank 38) and for clients that align to wall-clock slots. |
-| With ranks 8, 14 | Fairness and starvation tests | Under load no actor waits beyond a bound, and lifecycle/control messages keep moving behind a data backlog. |
+| With ranks 8, 8a, 14 | Fairness and starvation tests | Under load no actor waits beyond a bound, and lifecycle/control messages keep moving behind a data backlog. On one CPU, a busy actor cannot delay another actor's message beyond a stated bound (rank 8a). |
 | After v0.7 | Allocation budgets (dhat) | Fail when handling one message allocates more than a set count; keeps per-message cost from regressing silently. |
 | v0.7 | Supply-chain checks | `cargo-deny`, `cargo-audit` (and later `cargo-vet`) in CI. |
 | After v0.7 | Deterministic performance tests | Benchmarks whose results do not depend on hardware noise (simulated time or instruction counts), as TigerBeetle does, so performance changes are comparable across runs and machines. |
@@ -297,8 +307,9 @@ frozen. No item below changes released behavior by appearing here.
 Maintained [research notes](docs/research/README.md) cover
 [virtual actors](docs/research/virtual-actors.md),
 [systematic testing](docs/research/systematic-testing.md),
-[Ethereum client testing](docs/research/ethereum-testing.md) and
-[request semantics references](docs/research/request-semantics-references.md).
+[Ethereum client testing](docs/research/ethereum-testing.md),
+[request semantics references](docs/research/request-semantics-references.md) and
+[other concurrency models](docs/research/concurrency-models.md).
 Older background notes (sources, design notes and experiments, without rankings of
 their own) are archived in [legacy](legacy/README.md):
 [framework ideas](legacy/docs/research/framework-ideas.md),
@@ -361,6 +372,7 @@ A broader read of the same revisions for workarounds, incidents and comments
 | Hand-built observability | Ethlambda threads `Instant` stamps through messages to measure mailbox wait; ethrex polls the peer table every second for counts and checks actor health with an ordinary request (inferred: it times out while a blocking actor works); ethlambda's metadata is a hand-built `Arc<RwLock>` snapshot. | v0.6 metrics already measure queue wait (adoption, rank 5); out-of-band health/inspection (rank 30); published snapshots (rank 10). |
 | Stream lag dropped silently | `BroadcastStream` `Lagged` errors are discarded before `spawn_listener`; another site hand-writes a `select!` loop to log lag. | Lag-aware listeners in typed streams (rank 33). |
 | Exit reasons outside actors | A swarm adapter cannot tell an actor panic from a stop; nothing restarts the swarm when it ends. 29 ignored sends in ethrex. | Monitors/supervision for non-actor tasks; documented guidance on ignored sends. |
+| CPU work offloaded by hand | Ethrex builds four rayon pools (global, a 17-thread merkle pool that deadlocks if smaller, prewarm, BAL warming), about 30 parallel call sites and 50 `spawn_blocking` calls, mostly outside actors; per-connection L2 imports blocked Tokio workers waiting on the shared merkle pool and deadlocked at 0% CPU ([535647e45](https://github.com/lambdaclass/ethrex/commit/535647e45)). Ethlambda hand-owns aggregation on `spawn_blocking` (token, session id, join timeout) and gossip checks behind five semaphores with `catch_unwind`. Counts and file links: [concurrency models](docs/research/concurrency-models.md#who-uses-it). | **New, rank 11b:** managed compute pool with results as messages, bounded admission, owner-tied cancellation and panic-as-message. |
 | Singleton worker built outside spawned | ethrex's L2 block importer uses `Arc<Mutex<BTreeMap>>`, `Notify` and a raw task because `submit` must return a dedup result synchronously; it has no shutdown path. | **New, small:** a synchronous `try_admit`/keyed coalescing mailbox, or document the pattern with an owned helper. |
 
 ### Step 1: verify what just landed
@@ -394,6 +406,7 @@ Small, independent of the scheduler and lifecycle design, and visible to users.
 | 6 | Test kit with `ActorRef::mock()` | **Phase A in review (#198)** in [`spawned-test`](#testing-crate-spawned-test): closure-backed `Mock` actors that implement `Handler<M>` for every message, so `ActorRef<Mock>` satisfies any `#[protocol]` and replaces hand-stubbed protocol refs with no production change; recording `Probe<M>` recipients (`expect`, `expect_no_message`); bounded harness waits; fault injection (`faults::exit`, `restart_child`, mock delay/discard/crash). Unmocked messages fail loudly. **Remaining:** mocking a field typed as a concrete `ActorRef<B>` needs an `Envelope` hook that downcasts to the concrete message and yields message and reply sender (a core change, deferred); controllable time for timers; a generic idle check; core `ChildHandle::exit(reason)` would make injected exits exact (today `Panic` and `Kill` go through a linked helper, so a panic surfaces as `Panic("panic in handler: ...")`). **Client evidence:** hand-stubbed protocols in ethlambda tests (`RecordingChain` in `column_checks.rs`, also `envelope_checks.rs`, `verdict.rs`). |
 | 7 | Request deadlock detection | **Client evidence:** requests awaited inside handlers exist (ethrex peer table), no cycle found; keep as a cheap safety net.  `ActorError::WouldDeadlock` naming the cycle instead of a timeout. `ActorRef::request` takes only `&self`, so set a thread-local `CURRENT_ACTOR` only while the actor's own handler future is polled (and around the synchronous handler in thread mode); detached helpers create no edges. Keep a small wait set per actor for `join!`. Measure cost before enabling outside debug builds. |
 | 8 | Stall watchdog | **Client evidence:** wedged and runtime-starving handlers in both clients (see sweep). Upgrade the debug-only `WarnOnBlocking` (whole-loop type name, 10 ms per poll, Async backend only): name the actor and message type, separate "one poll blocked a worker" from "handler stuck across awaits", optional in release builds. Long handler time alone does not establish deadlock. |
+| 8a | Cooperative budgets and per-turn work measurement | **Client evidence:** the same incidents as rank 8 (ethrex d958dcba4 filled every runtime worker; ethlambda moved its chain actor to `Backend::Thread`). Spawned cannot preempt Rust code; do what the BEAM does for native code instead. (A) Fairness between messages: an opt-in dispatch policy that yields after N messages or T µs per poll (today's private `MessageTurn` experiment), framework operations that consume Tokio's coop budget, and per-actor work metrics (poll time per message, polls per turn, long polls) feeding ranks 8, 29 and 39. (B) Opt-in `ctx.checkpoint().await` and a budgeted iterator that yield only when the turn is over budget. (C) Synchronous code is detected (rank 8) and isolated (placement, rank 11b), never preempted. Rejected: auto-instrumentation by macro, signal-based preemption. Acceptance: single-CPU starvation bound; watchdog fires on a blocking handler. See [preemption and budgets](docs/research/concurrency-models.md#3-preemption-reduction-counting-and-cooperative-budgets). |
 | 9 | Per-actor flight recorder | Last N handled message types and timestamps per actor, dumped on panic, stall or timeout. Bounded and opt-in; a building block for rank 22. |
 | 10 | Published state snapshots (`Projected<S>`) | **Client evidence:** ethrex actors await read requests to `PeerTableServer` (see results above); its read-only queries are the first use.  Single-writer, many-reader snapshot slot so readers do not wait behind a long handler; replaces the `Arc<RwLock<_>>` escape hatch. Document that a snapshot can lag messages already sent (no read-your-writes). |
 
@@ -402,12 +415,14 @@ Small, independent of the scheduler and lifecycle design, and visible to users.
 | Rank | Idea | Assessment |
 |---|---|---|
 | 11 | Deferred typed replies, forwarding and pipe-to-self | Highest-value capability after the foundation; confirmed by the client search: ethrex hand-builds deferred replies with timeouts (`outgoing_request`/`current_requests`) and ethlambda hand-builds bounded pipe-to-self with exactly-one completion. Include reply timeouts and exactly-one completion on panic. Distinguish delegation, deferred reply ownership and completion messages; bound outstanding promises, propagate deadlines and define late-result/owner-exit behavior without general reentrancy. `ctx.spawn_ordered` (parallel stateless compute, then commit in arrival order, revalidating state at commit) is a follow-on specialization. |
-| 11a | Design inputs to rank 11: promise pipelining and transactional turns | Decide within the rank 11 design, not as a separate API: (1) whether a pipelined send ("on reply to R, send M to the target R names") is expressible without an extra handler turn, with M failing like R rather than being dropped (E/Cap'n Proto/Goblins pipelining; the main latency tool if rank 44 ever ships); (2) whether deferred replies and completions are sent at the end of a turn or immediately, and an opt-in Goblins-style transactional turn that holds a handler's sends until it returns and discards them on panic (state rollback only for snapshot-able state; external effects are never rolled back); (3) whether per-turn snapshots can serve ranks 21 and 30 too. The rank 11 TLA+ model must cover a reply sent by a turn that then panics. See [request semantics references](docs/research/request-semantics-references.md). |
+| 11a | Design inputs to rank 11: promise pipelining and transactional turns | Decide within the rank 11 design, not as a separate API: (1) whether a pipelined send ("on reply to R, send M to the target R names") is expressible without an extra handler turn, with M failing like R rather than being dropped (E/Cap'n Proto/Goblins pipelining; the main latency tool if rank 44 ever ships); (2) whether deferred replies and completions are sent at the end of a turn or immediately, and an opt-in Goblins-style transactional turn that holds a handler's sends until it returns and discards them on panic (state rollback only for snapshot-able state; external effects are never rolled back); (3) whether per-turn snapshots can serve ranks 21 and 30 too. The rank 11 TLA+ model must cover a reply sent by a turn that then panics. See [request semantics references](docs/research/request-semantics-references.md); STM's "effects only on commit" is the same idea restricted to one actor, while its `retry` is selective receive and stays out ([STM note](docs/research/concurrency-models.md#5-software-transactional-memory)). |
+| 11b | Managed compute pool (CPU offload with pipe-to-self) | **Client evidence:** ethrex's four hand-built rayon pools, 50 `spawn_blocking` calls and the L2 import deadlock at 0% CPU (535647e45); synchronous cell serving that occupied every runtime worker (d958dcba4); ethlambda's hand-owned aggregation worker and semaphore-bounded, `catch_unwind`-guarded gossip checks ([evidence](docs/research/concurrency-models.md#who-uses-it)). One bounded CPU pool per `ActorSystem` or group, never on Tokio workers; `ctx.compute(job, map)` (name illustrative) delivers the result to the submitting actor as a message; per-actor and per-pool admission caps that reject at once or follow rank 17; cancellation tied to owner stop, restart and scope close (rank 15a) with generation fencing; a panic becomes an error message, exactly once; metrics for queue depth, wait, run time and rejections. Document that jobs must not wait on their own pool and gang jobs need a dedicated pool. Rayon behind a feature first; a fixed native pool as the alternative. Built on rank 11's completion contract; shares admission design with rank 34. Prior art: Akka dispatchers, Orleans `Task.Run`, Ray tasks, BEAM dirty schedulers ([concurrency models](docs/research/concurrency-models.md#1-cpu-parallel-compute-pools-integrated-with-actors)). |
 | 12 | Scoped, lifecycle-owned registries | **Client evidence:** ethrex's per-peer connection map and its `ConnectionId` guard (#7435). Keyed registration that owns the actor's lifetime, with generations so an old cleanup cannot remove its replacement. Also scope the registry to an `ActorSystem` instead of the process-global static, so parallel tests and multi-node simulations do not share names. Prerequisite for groups/pub-sub. Orleans keeps the same one-live-instance-per-key invariant ([virtual actors](docs/research/virtual-actors.md#what-it-means-for-spawned)). |
 | 12a | Dynamic supervisor (`DynamicSupervisor` / `simple_one_for_one`) | **Client evidence:** ethrex starts one connection actor per peer at runtime and cleans it up by hand (see [per-key actor maps](#client-search-results)); today's `Supervisor` only owns the fixed child list declared at build time. Proposed contract: children are started at runtime from one `ChildSpec` template with per-call arguments, sharing its restart mode (Elixir-style heterogeneous specs only if a user needs them). The restart budget is supervisor-wide, as in OTP: exhausting it fails the supervisor and escalates to its parent, so a flapping child cannot restart forever. `max_children` counts restarting children, so a new start cannot take a slot mid-restart, and rejects with a typed error rather than queueing. `start_child` after shutdown begins is rejected, never dropped or leaked. Explicitly stopping a child does not restart it. Shutdown stops all live children concurrently under one supervisor deadline (OTP does not order dynamic children; sequential stops would multiply per-child timeouts). Usable inside a nested tree. Independent of rank 12 (`start_child` returns a handle); when combined, a restarted child re-registers under a new generation so an old cleanup cannot remove it. Planned after v0.7, not part of it; extend the TLA+ model (start/stop racing restart and shutdown, cap including restarting children) before release, as for OneForAll/RestForOne. The other OTP variants stay out: `Task.Supervisor` folds into ranks 11/15, `PartitionSupervisor` is sharding, and significant children/`auto_shutdown` wait for a user. |
-| 13 | Coordinated shutdown and bounded draining | Ordered stop exists; add explicit draining as a policy: close admission, handle queued work by policy, join helpers and report unfinished work. Keep current stop/discard as the default. |
+| 13 | Coordinated shutdown and bounded draining | Ordered stop exists; add explicit draining as a policy: close admission, handle queued work by policy, join helpers and report unfinished work. Keep current stop/discard as the default. Design with rank 15a: draining is closing the actor's scope under its deadline. |
 | 14 | Separate fair control path | Part of supervision/shutdown design; defer a generic public priority API. Non-trapping actors already receive abnormal exits through cancellation; queued `ExitEnvelope` only matters for trapping actors. Specify boundedness and per-sender ordering for startup, monitor and trapped-exit events. Priority cannot preempt a running handler or starve user work. |
 | 15 | Actor-owned helper completion scopes | **Client evidence:** ethlambda hand-owns its aggregation worker; add cancel-previous, generation fencing and join-with-deadline. Ownership design gate for shutdown, partly addressed by group-owned helpers. Gate new helper registration, cancel, then explicitly join; helpers depending on their stopped owner can deadlock. |
+| 15a | Design input to ranks 13, 15 and 19: cancel scopes with deadlines | Decide within those designs, not as a separate nursery API: one ownership tree (system, group, supervisor, actor, turn or request), each node a scope with close (stop admission), cooperative cancel with shielded cleanup, join with deadline that reports unfinished children, and deadline inheritance into outbound requests and compute jobs. Draining (13) closes the actor scope; helpers (15) are its children and cancel-previous closes a sub-scope; propagated budgets (19) are scope deadlines. Scopes own `'static` tasks and close explicitly, since `Drop` cannot await. One TLA+ model for all three. Prior art: Trio nurseries and cancel scopes, Swift task groups, Kotlin scopes, Java `StructuredTaskScope` (still preview in JDK 27), Tokio `TaskTracker` with child tokens ([structured concurrency](docs/research/concurrency-models.md#2-structured-concurrency-and-cancel-scopes)). |
 | 16 | Bounded stashing / postponement | Demoted by the client search: the clients' parking structures are keyed by dependency and evicted by domain rules, which a generic in-order stash would not replace. After rank 11, as a reply-ownership variant. Stash operates on the envelope, not the message, so the reply sender is kept. Requires a size limit and drop policy (a peer flooding future-slot blocks must not grow memory) and `ActorStopped` for stashed requests on stop. Unrestricted selective receive is not planned. |
 
 ### Step 5: admission, credits and deadlines (one design package)
@@ -416,7 +431,7 @@ Small, independent of the scheduler and lifecycle design, and visible to users.
 |---|---|---|
 | 17 | Bounded mailboxes and admission | **Production evidence:** ethrex's 1.5 GB/day leak from unbounded per-connection mailboxes. Opt-in alongside unbounded transport. Define reject/wait semantics, cancellation/deadlines and cyclic-send deadlocks. |
 | 18 | Pre-allocation byte credits | Independently of optional metrics, bound allocated/in-flight bytes, not just queue slots. Credits can cover a whole pipeline; oversize requests must not wait forever. |
-| 19 | Propagated budgets / stale-work skipping | Cheap stale-work rejection need not wait for a complete credit system. Opt-in expiry before dispatch, inherited monotonic deadlines and distinct outcomes. Timeout is not rollback; current requests still run after caller timeout/drop. |
+| 19 | Propagated budgets / stale-work skipping | Cheap stale-work rejection need not wait for a complete credit system. Opt-in expiry before dispatch, inherited monotonic deadlines and distinct outcomes. Timeout is not rollback; current requests still run after caller timeout/drop. Inherited deadlines are scope deadlines (rank 15a). |
 
 ### Step 6: the testing flagship
 
@@ -441,13 +456,13 @@ Small, independent of the scheduler and lifecycle design, and visible to users.
 | 30 | Read-only runtime inspection | Safe status/last-known snapshots: id, type, parent/links, mailbox depth, idle/polling/suspended status, current message type, turn age, wait-for edges. Actor state `Debug` only between turns, because the handler future holds `&mut A` across awaits. A concrete first tool: `spawned-top`, an Erlang-observer-style live view that attaches to a running node and lists actors with mailbox depth, state, links and current message. |
 | 31 | Handler middleware (Tower-style) | Tracing, rate limits, timeouts, retries and dedup without handler edits; deadlines and tracing could be middleware rather than core special cases. |
 | 32 | State-machine behavior | `gen_statem`-style per-state handlers and timeouts, built on bounded stashing (rank 16). |
-| 33 | Typed streams and demand-driven pipelines | **Client evidence:** unbounded and lag-dropping `spawn_listener` inputs in both clients; promote with credits. After credits. Specify subscription ownership, slow consumers, failure, credit release and bounded completion-watermark windows. Ownership release differs from explicit acknowledgement. Start with one concrete producer/consumer. |
-| 34 | Per-handler blocking-worker leasing | Prototype for mostly idle blocking actors. Preserve serial turns and runtime/I/O ownership; measure worker capacity and long-handler progress. |
+| 33 | Typed streams and demand-driven pipelines | **Client evidence:** unbounded and lag-dropping `spawn_listener` inputs in both clients; promote with credits. After credits. Specify subscription ownership, slow consumers, failure, credit release and bounded completion-watermark windows. Ownership release differs from explicit acknowledgement. Start with one concrete producer/consumer. Reactive Streams' `request(n)` demand is rank 18's credits; build on them rather than a second mechanism ([streams note](docs/research/concurrency-models.md#4-streams-with-backpressure)). |
+| 34 | Per-handler blocking-worker leasing | Prototype for mostly idle blocking actors. Preserve serial turns and runtime/I/O ownership; measure worker capacity and long-handler progress. The I/O-blocking counterpart of the compute pool (rank 11b); share its admission design. |
 | 35 | Batch handlers / generated batch dispatch | Promising for actual I/O/crypto batching; no guaranteed win. Preserve per-message replies, failure/drop semantics and ordering across heterogeneous message types. |
 | 36 | Explicit coalescing / overload policies | For obsolete progress/state notifications, with bounded keys. Requests cannot silently disappear; superseded requests get an explicit error. Single-flight sharing of identical in-flight reads is a related opt-in, only for pure reads. |
 | 37 | Generated closed-protocol dispatch | After profiling framework cost. Today a request allocates a reply channel, a boxed envelope and a boxed handler future. Enum dispatch needs codegen/transport bridging while retaining `Handler`/`Recipient` support; payload and reply allocations remain separate costs. Reusable reply slots only if profiles show they matter. |
 | 38 | Timer drift / missed-tick policies | **Promoted by client evidence:** both clients hand-roll fixed-delay, aligned, skip and pause behavior; build after step 4. Fixed-delay/rate, Skip/Delay/Burst and cancellation. Preserve current timer behavior unless users opt in. |
-| 39 | CPU service classes / weighted resource groups | Requires a workload and a clear fairness contract. Elapsed handler time includes awaits and is not CPU accounting. |
+| 39 | CPU service classes / weighted resource groups | Requires a workload and a clear fairness contract. Elapsed handler time includes awaits and is not CPU accounting. Would aggregate rank 8a's per-turn work metrics and could weight several compute pools (rank 11b). |
 | 40 | Ready-made integrations | `Recipient<M>` as a stream sink, actors behind Axum/Tonic as Tower services, a connection-owning actor with reconnect/backoff. Build on demand. |
 | 41 | AI-agent example | One example showing supervision, timeouts, cancellation and tracing for long-running agents. Positioning, not a library change. |
 
@@ -462,10 +477,13 @@ Small, independent of the scheduler and lifecycle design, and visible to users.
 | 46 | Sparse-work root-driver yield hypothesis | Private experiment when profiles show deferred-wake delay; not a default or backend. |
 | 47 | Session-typed protocols | Opt-in experiment for a fixed two-party protocol. Does not prove deadlock freedom for arbitrary dynamic actors, blocking handlers or failing external systems. |
 | 47a | Choreographic protocols | Next to rank 47: one global description of a fixed multi-party exchange, projected into each actor's typed messages and handlers (ChoRus in Rust, HasChor in Haskell), instead of session-typed channels. Same limits as rank 47. See [request semantics references](docs/research/request-semantics-references.md#choreographic-programming-chorus-haschor). |
-| 48 | Fair join patterns | Until real coordination code needs them. Bound unmatched messages and define fairness, cancellation and interactions with ordinary handlers. |
+| 48 | Fair join patterns | Until real coordination code needs them. Bound unmatched messages and define fairness, cancellation and interactions with ordinary handlers. Join calculus background and CSP `select` are in [concurrency models](docs/research/concurrency-models.md#9-briefly-csp-select-algebraic-effects-join-calculus). |
 | 49 | Durable outbox/idempotency recipe | Application-layer example when recovery needs it. Commit intent/dedup with effects; do not persist arbitrary boxed Rust envelopes. |
 | 50 | Durable timers/reminders | Separate persistence contract: identity, clock changes, missed executions and duplication across restart. |
 | 51 | Temporal-style durable execution | A separate product-scale subsystem: persisted decisions, deterministic replay, external effects and upgrades. Supervision alone does not provide it. |
+| 52 | Thread-per-core I/O backend (io_uring) | **Research pointer, frozen.** Seastar, Glommio, monoio and tokio-uring. Parked pinned shards already give per-core placement; the earlier Monoio io_uring/epoll experiments ([design findings](legacy/benchmarks/DESIGN-FINDINGS.md#what-we-learned-in-the-linux-vm)) did not justify replacing Tokio, and both clients use Tokio I/O throughout. Reopen only with a client I/O profile ([note](docs/research/concurrency-models.md#6-thread-per-core-and-io_uring)). |
+| 53 | Incremental dataflow | **Research pointer.** Timely/differential dataflow (Materialize). A different programming model; read its progress tracking (frontiers) before designing rank 33's completion watermarks ([note](docs/research/concurrency-models.md#7-incremental-dataflow)). |
+| 54 | CRDT-replicated state, sagas and process managers | **Research pointer**, distribution/durability tier. CRDTs only with multi-node replicas (rank 44); a crash-surviving process manager is durable execution (ranks 49-51). A saga example with compensation, supervision and timeouts could come first ([note](docs/research/concurrency-models.md#8-crdts-sagas-and-process-managers)). |
 
 Reference design for ranks 49-51: Restate (a Rust server) journals each handler
 step with its result and replays the journal after a failure, with keyed
@@ -569,14 +587,17 @@ that already run today.
 | 6 | Test kit (phase A in #198) | Mock a protocol dependency, probe sends, inject a slow reply, a crash and a supervised kill (`test_kit` example in #198). Still to deliver: an actor holding a concrete `ActorRef<B>` with `B` mocked. |
 | 7 | Deadlock detection | Two actors requesting each other fail fast with the named cycle. |
 | 8 | Stall watchdog | A handler blocking a worker versus one stuck across an `.await`, each reported with actor and message type. |
+| 8a | Cooperative budgets | On one CPU, an actor flooding itself with messages and one running a long async loop with `ctx.checkpoint()` both leave a second actor's latency under a bound; per-actor work metrics show the busy actor. |
 | 10 | Published snapshots | Readers keep answering from a snapshot while the owner runs a long handler. |
 | 11 | Deferred replies / delegation / pipe-to-self | Route a slow request while accepting another message; bound pending replies and demonstrate owner exit and late completion. |
 | 11a | Pipelining / transactional turns | A pipelined send that fails with its source request; a handler that panics after sending, with sends held until the turn ends. |
+| 11b | Managed compute pool | Offload a CPU-heavy job while the actor keeps answering requests; the result arrives as a message; a full pool rejects at once; a panicking job becomes an error message; stopping the owner cancels queued jobs and drops a late result. |
 | 12 | Lifecycle-owned registries (managed generation guards implemented) | Register a service, crash it and verify its entry is removed without deleting a replacement's registration. |
 | 12a | Dynamic supervisor | Start one supervised actor per incoming connection; crash a restartable child and see only it restart; stop one explicitly and see it stay stopped; hit `max_children` and get a rejection; then shut down with every live child stopped within the deadline. |
 | 13 | Coordinated shutdown | Close admission, drain dependencies within a deadline and report unfinished work. [Finite-batch recipe works today](examples/capabilities/src/bin/graceful_drain.rs). |
 | 14 | Fair control path | Observe lifecycle control behind a data backlog while checking ordinary work still progresses; no handler preemption. |
 | 15 | Actor-owned helpers (managed scope implemented) | Stop an actor with active helpers, reject new helper admission and await owned cleanup to a deadline. |
+| 15a | Cancel scopes | A request scope with a deadline: its outbound request and compute job inherit the deadline, closing the scope rejects new children, and a shielded cleanup completes while unfinished children are reported. |
 | 16, 32 | State machines / bounded stashing | Queue a bounded number of messages while connecting; un-stash on readiness and reject overflow. |
 | 17 | Bounded mailboxes | A slow consumer reaches capacity; demonstrate explicit rejection and cancellable waiting without blocking actor progress. |
 | 18 | Byte/work credits | Reserve before decoding a large payload; pass credit across stages and reclaim it after rejection/panic. [Payload-budget adapter works today](examples/capabilities/src/bin/byte_budget_pipeline.rs). |
