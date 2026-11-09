@@ -50,8 +50,8 @@ handlers and the existing default behavior. New policies are explicit and opt-in
    path. After the tag: migrate Ethlambda (shutdown
    deadline via `ActorSystem`, supervision, per-method timeouts) with fault
    injection, then Ethrex (racy Ctrl-C shutdown, `ActorStopped` exits).
-   In parallel, the developer-experience track (ranks 6-10: test kit, which
-   starts the `spawned-test` crate, deadlock
+   In parallel, the developer-experience track (ranks 6-10: test kit, whose
+   phase A starts the `spawned-test` crate, in review in #198, deadlock
    detection, stall watchdog, flight recorder, published snapshots), motivated
    by the [client sweep](#client-sweep-production-pain).
 4. **Request semantics:** deferred replies and pipe-to-self (ranks 11-16), with
@@ -148,7 +148,8 @@ covers the expanded API profiles and protocol/supervision regressions.
 
 ### Testing crate (`spawned-test`)
 
-User-facing testing tools live in one crate in this workspace, used as a
+User-facing testing tools live in one crate in this workspace (`testing/`,
+package `spawned-test`; phase A in review in #198), used as a
 dev-dependency (as `tokio-test` is to Tokio), not in a separate repository and
 not as a framework for any actor library. It needs hooks at Spawned's mailboxes,
 dispatch, timers, exits and restarts, which must change together with the core;
@@ -159,8 +160,8 @@ stays stable.
 
 | In the core (small, behind a feature or cfg) | In `spawned-test` |
 |---|---|
-| Hook points at delivery, timers, exits and restarts that a controlled scheduler can take over | Test kit and actor mocks (rank 6) |
-| Lifecycle trace recording (`lifecycle-trace`, exists) | Fault injection: kill or restart an actor, delay a message, fire a timeout |
+| Hook points at delivery, timers, exits and restarts that a controlled scheduler can take over | Test kit and actor mocks (rank 6; phase A in #198) |
+| Lifecycle trace recording (`lifecycle-trace`, exists) | Fault injection: kill or restart an actor, delay a message, fire a timeout (phase A in #198) |
 | Deadlock detection and the stall watchdog (ranks 7-8): they protect production | Ordering exploration, `explore` (rank 20) |
 | | Crash tapes and production record/replay (ranks 21-22) |
 | | Helpers to check recorded traces against the TLA+ models |
@@ -168,9 +169,11 @@ stays stable.
 The TLA+ models and checkers stay in `verification/`; they verify Spawned's own
 design, not user code.
 
-Order: create the crate with the test kit (rank 6) in the developer-experience
-track alongside v0.7; add fault injection for the Ethlambda canary; grow it into
-`explore` and replay in phase 5. Do not build the controlled scheduler before
+Order: build it now, not after v0.7. Phase A of the test kit (rank 6), in
+review in #198: mocks, probes, bounded harness waits and fault injection through
+public APIs only, ready for the Ethlambda canary. Next, the concrete-`ActorRef<B>`
+mock hook and controllable timer time if a client needs them. `explore` and
+replay (ranks 20-22) come later, in phase 5. Do not build the controlled scheduler before
 phase 4 settles reply and mailbox semantics.
 
 How the tools compare:
@@ -255,7 +258,7 @@ A broader read of the same revisions for workarounds, incidents and comments
 | Polling for a free peer | Sync code calls `get_best_peer` then sleeps 10 ms in a loop at five sites; a permit's `Drop` returns capacity with a fire-and-forget send whose failure is ignored. | A request answered when capacity frees up is a deferred reply (rank 11); a lease pool with waiters fits admission (rank 17). |
 | Hand-rolled timer policies | ~14 ethrex actors reschedule with `send_after` so the next tick waits for the current one; a committer uses its timer's cancellation token as a pause flag; ethlambda aligns ticks to wall-clock slots and measures lateness by hand; the swarm loop uses `MissedTickBehavior::Skip`. | Timer drift policies (rank 38) promoted: fixed-delay, wall-clock aligned (`send_at`), skip/catch-up, pause/resume, tick coalescing. Low cost. |
 | Helper tasks owned by hand or not at all | Ethlambda's aggregation session holds a token, `JoinHandle` and session id to drop stale results, joined with a 2 s timeout before a new session and on stop. Ethrex `tokio::spawn`s unowned work per transaction batch, header chunk and subscription. | Owned helpers (`ctx.spawn_helper`, on main) plus cancel-previous, generation fencing for stale results and join-with-deadline on stop (rank 15). |
-| Test doubles | Ethlambda stubs an entire protocol by hand three times in tests; ethrex tests spawn real actors with dummy contexts. | Test kit with `ActorRef::mock()` (rank 6). |
+| Test doubles | Ethlambda stubs an entire protocol by hand three times in tests; ethrex tests spawn real actors with dummy contexts. | Test kit with `ActorRef::mock()` (rank 6); phase A in `spawned-test` (#198). |
 | Cyclic wiring after spawn | Actors that reference each other are wired with `InitP2P`/`InitBlockChain` messages, forcing `Option<Ref>` fields. | **New:** late binding or two-phase start for actor cycles (with rank 12's keyed registry). |
 | Self-only messages in macros | Ten `#[allow(dead_code)] // invoked via send_after` on one protocol, plus ~18 manual `impl Handler` blocks. | **New, small:** private/self-only messages in `#[actor]`/`#[protocol]`. |
 | Hand-built observability | Ethlambda threads `Instant` stamps through messages to measure mailbox wait; ethrex polls the peer table every second for counts and checks actor health with an ordinary request (inferred: it times out while a blocking actor works); ethlambda's metadata is a hand-built `Arc<RwLock>` snapshot. | v0.6 metrics already measure queue wait (adoption, rank 5); out-of-band health/inspection (rank 30); published snapshots (rank 10). |
@@ -290,7 +293,7 @@ Small, independent of the scheduler and lifecycle design, and visible to users.
 
 | Rank | Idea | Assessment |
 |---|---|---|
-| 6 | Test kit with `ActorRef::mock()` | **Client evidence:** hand-stubbed protocols in ethlambda tests. Probe recipients ("sent X within 100 ms"), closure-backed mock actors so code keeps concrete `ActorRef<B>` fields, controllable time for timers. Needs an `Envelope` hook that downcasts to the concrete message and yields message and reply sender. Unmocked messages fail loudly. |
+| 6 | Test kit with `ActorRef::mock()` | **Phase A in review (#198)** in [`spawned-test`](#testing-crate-spawned-test): closure-backed `Mock` actors that implement `Handler<M>` for every message, so `ActorRef<Mock>` satisfies any `#[protocol]` and replaces hand-stubbed protocol refs with no production change; recording `Probe<M>` recipients (`expect`, `expect_no_message`); bounded harness waits; fault injection (`faults::exit`, `restart_child`, mock delay/discard/crash). Unmocked messages fail loudly. **Remaining:** mocking a field typed as a concrete `ActorRef<B>` needs an `Envelope` hook that downcasts to the concrete message and yields message and reply sender (a core change, deferred); controllable time for timers; a generic idle check; core `ChildHandle::exit(reason)` would make injected exits exact (today `Panic` and `Kill` go through a linked helper, so a panic surfaces as `Panic("panic in handler: ...")`). **Client evidence:** hand-stubbed protocols in ethlambda tests (`RecordingChain` in `column_checks.rs`, also `envelope_checks.rs`, `verdict.rs`). |
 | 7 | Request deadlock detection | **Client evidence:** requests awaited inside handlers exist (ethrex peer table), no cycle found; keep as a cheap safety net.  `ActorError::WouldDeadlock` naming the cycle instead of a timeout. `ActorRef::request` takes only `&self`, so set a thread-local `CURRENT_ACTOR` only while the actor's own handler future is polled (and around the synchronous handler in thread mode); detached helpers create no edges. Keep a small wait set per actor for `join!`. Measure cost before enabling outside debug builds. |
 | 8 | Stall watchdog | **Client evidence:** wedged and runtime-starving handlers in both clients (see sweep). Upgrade the debug-only `WarnOnBlocking` (whole-loop type name, 10 ms per poll, Async backend only): name the actor and message type, separate "one poll blocked a worker" from "handler stuck across awaits", optional in release builds. Long handler time alone does not establish deadlock. |
 | 9 | Per-actor flight recorder | Last N handled message types and timestamps per actor, dumped on panic, stall or timeout. Bounded and opt-in; a building block for rank 22. |
@@ -456,7 +459,7 @@ that already run today.
 
 | Rank | Capability | Example to deliver with it |
 |---|---|---|
-| 6 | Test kit | Unit-test an actor that holds a concrete `ActorRef<B>` by mocking `B`. |
+| 6 | Test kit (phase A in #198) | Mock a protocol dependency, probe sends, inject a slow reply, a crash and a supervised kill (`test_kit` example in #198). Still to deliver: an actor holding a concrete `ActorRef<B>` with `B` mocked. |
 | 7 | Deadlock detection | Two actors requesting each other fail fast with the named cycle. |
 | 8 | Stall watchdog | A handler blocking a worker versus one stuck across an `.await`, each reported with actor and message type. |
 | 10 | Published snapshots | Readers keep answering from a snapshot while the owner runs a long handler. |
