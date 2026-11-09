@@ -258,6 +258,12 @@ async fn each_strategy_recovers_on_a_full_native_pool_without_overlapping_slots(
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn pinned_shards_preserve_explicit_cpu_placement_and_cross_shard_requests() {
     let cpus = spawned_rt::tasks::affinity::available_cpus().unwrap();
+    // Cross-shard placement needs two allowed CPUs; the single-CPU CI job
+    // (`taskset -c 0`) has one. Skip rather than test one shard against itself.
+    if cpus.len() < 2 {
+        eprintln!("skipped: two allowed CPUs required for cross-shard placement");
+        return;
+    }
     let cpus: Vec<_> = cpus.into_iter().take(2).collect();
     let system = ActorSystem::new().unwrap();
     assert!(system
