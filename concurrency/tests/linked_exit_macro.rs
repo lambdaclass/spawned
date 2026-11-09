@@ -1,7 +1,7 @@
-#![cfg(feature = "async")]
 //! Public #[actor] lifecycle wiring for trapped exits in both modes.
 use spawned_concurrency::{actor, Exit, ExitReason};
 
+#[cfg(feature = "async")]
 mod asynchronous {
     use super::*;
     use spawned_concurrency::tasks::{Actor, ActorStart, Context};

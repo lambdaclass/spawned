@@ -10,7 +10,10 @@ this fits with Loom, Shuttle, Miri, ThreadSanitizer and mutation testing.
 | `MCSupervision.tla/.cfg` | Fast instance (CI, every PR): two children (Permanent, Transient), safety, action properties and liveness. |
 | `MCSupervisionDeep.tla/.cfg` | Deep instance (weekly, `--deep`): three children, one per restart mode, safety and action properties. |
 | `TraceSupervision.tla` | Trace validation: replays a lifecycle trace recorded from real Rust runs as a behavior of `Supervision.tla`. |
-| `trace_check.py` | Turns recorded JSON traces into `TraceSupervision` instances and runs TLC on each. |
+| `Cohorts.tla`, `MCCohorts*.tla/.cfg` | OneForAll/RestForOne range selection, reverse cleanup, whole-cohort join barrier, ordered resume, stale notifications, superseding rounds and retired slots. Three-child mixed-mode and two-round configurations. |
+| `NestedSupervision.tla`, `MCNested.tla/.cfg` | Dynamic subtree ownership and shutdown delivery; parent scope completion waits for descendant completion. Bounded three-node/two-generation model with fair cleanup. |
+| `TraceCohorts.tla`, `TraceNested.tla` | Policy and ownership projections of real cohort/nested Rust executions. |
+| `trace_check.py`, `negative_checks.py` | Replay recorded traces; deliberately wrong selections, premature resume/join and broken propagation must be rejected or produce counterexamples. |
 
 ## Running
 
@@ -24,8 +27,7 @@ nix develop -c tlc MCSupervision -workers auto   # ad hoc, from verification/tla
 
 ## Trace validation
 
-Model checking shows the design is safe; trace validation checks that the
-implementation behaves like the model. With the `lifecycle-trace` feature
+Model checking explores the configured bounded abstraction; trace validation checks that recorded implementation executions conform to it. Neither proves all Rust executions correct. With the `lifecycle-trace` feature
 (off by default, compiled out otherwise) `run_supervisor` and `run_child`
 record one event per model action, with its parameters, per supervisor
 (`concurrency/src/lifecycle_trace.rs`). `concurrency/tests/supervision_trace.rs`
@@ -33,8 +35,8 @@ runs real actors through the scenarios below and writes each trace as JSON;
 TLC then checks that each trace is a behavior of `Supervision.tla`.
 
 ```bash
-cargo test -p spawned-concurrency --features lifecycle-trace --test supervision_trace
-nix run .#check-tla -- --traces-only target/lifecycle-traces   # or --traces DIR to also model-check
+cargo test -p spawned-concurrency --features lifecycle-trace --test supervision_trace --test cohort_trace --test tree_trace --test nested_supervision
+nix run .#check-tla -- --traces-only target/lifecycle-traces --negative-controls   # or --traces DIR to also model-check
 nix develop -c python3 verification/tla/trace_check.py target/lifecycle-traces
 ```
 
@@ -110,14 +112,50 @@ model (see Trace validation above).
 
 ## Scope of the capability extension
 
-The public OneForAll/RestForOne coordinator and nested subtree adapters have
-separate integration/failure tests. The model and recorded traces above remain
-**OneForOne only**; their acceptance does not establish correctness of cohort
-selection, nested ownership or CPU-placement/resource teardown. Those extensions
-must be added to the formal model before claiming formal verification of them.
-The existing trace instrumentation is retained on the combined implementation.
+The original `Supervision` / `TraceSupervision` pair checks OneForOne only.
+Separate cohort and nested ownership projections now cover the strategy and
+subtree extension below. These checks do not cover CPU placement or native
+resource teardown, and do not establish correctness of every Rust schedule.
 All library crates continue to forbid unsafe Rust; native synchronization and
 Linux affinity use safe interfaces. No unsafe exemption was introduced.
+
+## Cohort and nested coverage
+
+`Cohorts` records selection, per-slot assignment, stop, actual scope join,
+cleanup acknowledgement, ordered resume and readiness acknowledgement as separate
+steps. A Temporary child is stopped but not reconstructed. Already terminal
+Transient/Temporary slots are skipped; assignment and terminal publication race
+under the slot lock. A round that wins assignment before retirement can still
+include that controller. Delayed notifications carry their previous round and
+must not trigger duplicate reconstruction after newer coverage was published.
+
+The real trace scenarios include both strategies with a retired Temporary tail,
+an upstream failure superseding a round while a later factory is pending,
+three-level mixed-strategy subtree failure/replacement and root shutdown, and a
+native leaf retaining a blocking helper beyond the shutdown report deadline.
+Every cohort controller must record exactly one `Finish`, including early
+retirement. `tree-v1` uses a separate globally ordered ownership tape, follows
+actual parent/generation attachments and checks descendant `TDone` before parent
+`TJoined`. Independent tests' trees are not merged. A child already failing may
+close itself before observing parent cancellation; a propagation event is only
+required when that path actually runs.
+
+These are complementary projections. Cohorts abstracts handler bodies, time,
+retry-window accounting and local exit classification; the original OneForOne
+model checks those local rules. The tree model abstracts local restart selection
+and stop-turn scheduling; cohort/OneForOne models and Rust tests cover those.
+`ClosedLeadsToDone` assumes eventual cancellation delivery and resource cleanup;
+a blocking helper that never returns cannot be preempted. Node, generation and
+round bounds are explicit in each configuration. Links, monitors, trapped-exit
+ordering and arbitrary Tokio/OS schedules remain outside these models.
+
+`--negative-controls` requires all three trace suites above. Four edited real
+traces must reject (wrong selection, early resume, early parent join, false
+cancellation). Six model mutations must yield counterexamples (selection,
+cleanup, retirement, closed admission, parent join and shutdown propagation).
+A separate unsafe-final-event control checks `Safety` before the full-log completion
+sentinel. The ordinary `--traces-only` interface still accepts older OneForOne
+trace collections without requiring the new negative controls.
 
 ## Next model
 

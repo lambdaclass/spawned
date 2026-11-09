@@ -14,8 +14,8 @@ class of bug. Status as of the unreleased main branch:
 
 | Layer | Tool | Catches | Status |
 |---|---|---|---|
-| Design | TLA+ | Holes in lifecycle and restart rules | OneForOne supervisor modelled (`verification/tla`); base lifecycle (links, monitors, trapped exits, stop) remains |
-| Spec and code | Trace validation | The implementation doing something the model forbids | Supervision traces checked by TLC; extend with the base lifecycle model |
+| Design | TLA+ | Holes in lifecycle and restart rules | Bounded OneForOne, cohort strategy and nested ownership models (`verification/tla`); wider base lifecycle remains |
+| Spec and code | Trace validation | The implementation doing something the model forbids | Real OneForOne/cohort/nested trace projections plus invalid-trace and model-mutation controls; not all runtime schedules |
 | Primitives | Loom | Atomic and memory-ordering bugs in cancellation, ready gate and wakeups | Exists; expand to mailbox publication versus shutdown |
 | Whole runtime | Shuttle | Scheduling races in multi-actor tests too large for Loom | Not started |
 | User level | Actor-level ordering exploration | Bugs in users' actor systems, reproducible from a seed | Planned ([roadmap](../ROADMAP.md) rank 20) |
@@ -256,3 +256,18 @@ runs the lifecycle tests in CI. `cargo mutants` over `supervision.rs` and
 (`can_start`, `register`, `lease` checks only reachable in narrow windows),
 redundant system-level safety nets (group teardown also stops supervised
 children), jitter seed mixing and simple accessors.
+
+## Native integration matrix
+
+The shared actor scenarios, controlled failure windows, history checker,
+delivery simulation, payload stress, synchronous trapped-exit macro and native
+timer/resource-cleanup cases compile with `--no-default-features`. Async
+variants are gated inside those suites. CI checks required test names in the
+native test inventory so a file-wide async gate cannot silently remove them.
+Tokio is still a dev dependency of the test harness; the isolated thread-only
+example/dependency-graph check verifies the library's Tokio-free build.
+
+```sh
+cargo test --locked -p spawned-concurrency --no-default-features --features threads,metrics
+cargo test --locked -p spawned-concurrency --no-default-features --test payload_stress -- --ignored
+```

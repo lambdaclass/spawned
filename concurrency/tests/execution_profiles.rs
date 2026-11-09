@@ -28,6 +28,49 @@ impl Handler<Audit> for Probe {
         )
     }
 }
+struct StartPeer;
+impl Message for StartPeer {
+    type Result = Result<spawned_concurrency::tasks::ActorRef<Probe>, SystemError>;
+}
+impl Handler<StartPeer> for Probe {
+    async fn handle(
+        &mut self,
+        _: StartPeer,
+        ctx: &Context<Self>,
+    ) -> <StartPeer as Message>::Result {
+        ctx.execution_group().unwrap().start(Probe)
+    }
+}
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn native_context_placement_uses_a_free_slot_and_validates_helper_budgets() {
+    let system = ActorSystem::new().unwrap();
+    for (roots, helpers) in [(0, 1), (1025, 1), (1, 0), (1, 1025)] {
+        assert!(matches!(
+            system.thread_group_with_helpers("invalid", roots, helpers),
+            Err(SystemError::InvalidWorkerBudget)
+        ));
+    }
+    let group = system
+        .thread_group_with_helpers("context-native", 2, 2)
+        .unwrap();
+    assert_eq!(
+        group.profile(),
+        Some(ExecutionProfile::ThreadPool {
+            workers: 2,
+            helper_workers: 2
+        })
+    );
+    let actor = Probe.start_on(&group.shard(0).unwrap()).unwrap();
+    actor.ready().await.unwrap();
+    let peer = actor.request(StartPeer).await.unwrap().unwrap();
+    peer.ready().await.unwrap();
+    assert!(peer.request(Audit).await.unwrap().0.ends_with("actor-1"));
+    assert!(matches!(
+        actor.request(StartPeer).await.unwrap(),
+        Err(SystemError::Capacity)
+    ));
+    assert!(system.shutdown(LIMIT).await.complete);
+}
 struct Block {
     entered: tokio::sync::oneshot::Sender<()>,
     release: std::sync::mpsc::Receiver<()>,
@@ -228,6 +271,12 @@ async fn pinned_shards_preserve_explicit_cpu_placement_and_cross_shard_requests(
         .collect();
     for (i, actor) in actors.iter().enumerate() {
         actor.ready().await.unwrap();
+        let peer_on_same_shard = actor.request(StartPeer).await.unwrap().unwrap();
+        peer_on_same_shard.ready().await.unwrap();
+        assert_eq!(
+            peer_on_same_shard.request(Audit).await.unwrap().1,
+            Some(cpus[i])
+        );
         for _ in 0..8 {
             assert_eq!(actor.request(Audit).await.unwrap().1, Some(cpus[i]));
         }

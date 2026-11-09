@@ -27,12 +27,14 @@ handlers and the existing default behavior. New policies are explicit and opt-in
    pools, parked Linux pinned shards, nested supervisor specs, OneForAll and
    RestForOne. Tokio-free synchronous builds are also implemented. All are
    unreleased; examples and resource limits are in the guide.
-2. **Verify what landed:** #192's OneForOne model/trace validation is retained,
-   with expanded tests, ThreadSanitizer and mutation targets. The new cohort and
-   nested strategies have failure/stress tests and review; extend the model before
-   claiming formal verification of those strategies or the wider base lifecycle.
+2. **Verify what landed before v0.7:** retain #192's OneForOne checks and add
+   cohort selection/barrier/supersession and nested shutdown ownership models,
+   replay real Rust traces and require negative controls to fail. These bounded
+   projections complement failure/stress tests, review and ThreadSanitizer;
+   they do not prove the wider base lifecycle or every Rust schedule.
    All crates retain `forbid(unsafe_code)`; Miri precedes any future unsafe proposal.
-   See the [implementation evidence](legacy/docs/reviews/capabilities-extension.md).
+   See the [implementation evidence](legacy/docs/reviews/capabilities-extension.md)
+   and [v0.7 review fixes and formal coverage](docs/reviews/v07-supervision.md).
    The client search is done; see [results](#client-search-results).
 3. **Release v0.7 and run it in Ethlambda** (rank 5), including the per-method
    request timeout (rank 5a), a migration guide for the clients' hand-wired
@@ -56,7 +58,9 @@ research stays frozen until a client profile supplies a concrete reason (see the
 thread-only applications avoid compiling Tokio; it does not help Ethrex or
 Ethlambda, which depend on Tokio throughout. The client-relevant item is a
 fixed native actor pool, which shares one helper runtime rather than creating
-one per actor. Additional placement changes still need application measurements.
+one per actor. Additional placement changes still need application measurements. ActorSystem,
+execution groups and supervision remain async-only for v0.7. Extending those
+capabilities to the Tokio-free build is a later roadmap item, outside this release.
 
 ### Non-goals
 

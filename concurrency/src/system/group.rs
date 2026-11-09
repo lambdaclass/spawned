@@ -104,8 +104,7 @@ impl GroupInner {
         let owners = Arc::new(Mutex::new(Some(owners)));
         let stopping = stop.clone();
         let joining = owners.clone();
-        let natives: Vec<_> = targets.iter().filter_map(|t| t.native.clone()).collect();
-        let native_stop = natives.clone();
+        let native_stop: Vec<_> = targets.iter().filter_map(|t| t.native.clone()).collect();
         let (finish, finished) = mpsc::channel();
         let (done_tx, done) = watch::channel(false);
         let failures = Arc::new(Mutex::new(Vec::new()));
@@ -130,13 +129,7 @@ impl GroupInner {
                 done_tx.send_replace(true);
             });
         if let Err(error) = coordinator {
-            stop.cancel();
-            for native in natives {
-                let _ = native.send(Work::Stop);
-            }
-            for owner in lock(&owners).take().unwrap_or_default() {
-                let _ = owner.join();
-            }
+            rollback(&stop, &targets, lock(&owners).take().unwrap_or_default());
             return Err(SystemError::Runtime(error.to_string()));
         }
         let free = if matches!(profile, ExecutionProfile::ThreadPool { .. }) {

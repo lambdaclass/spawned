@@ -1,0 +1,10 @@
+    Checking futures-channel v0.3.31
+    Checking futures-util v0.3.31
+    Checking tokio-util v0.7.17
+    Checking tokio-stream v0.1.17
+    Checking futures-executor v0.3.31
+    Checking futures v0.3.31
+    Checking spawned-rt v0.6.0 (/tmp/spawned-v07/rt)
+   Compiling spawned-macros v0.6.0 (/tmp/spawned-v07/macros)
+    Checking spawned-concurrency v0.6.0 (/tmp/spawned-v07/concurrency)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 6.44s

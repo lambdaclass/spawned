@@ -1,0 +1,42 @@
+ACCEPTED  retired-transient-OneForAll: 35 events
+ACCEPTED  retired-transient-RestForOne: 27 events
+ACCEPTED  selection-OneForAll: 38 events
+ACCEPTED  selection-RestForOne: 31 events
+ACCEPTED  superseded-OneForAll: 58 events
+ACCEPTED  superseded-RestForOne: 50 events
+ACCEPTED  disabled_retries: 15 events
+ACCEPTED  external_shutdown: 31 events
+ACCEPTED  factory_error_then_success: 20 events
+ACCEPTED  non_restartable_startup_failure: 22 events
+ACCEPTED  normal_start_stop: 34 events
+ACCEPTED  permanent_panic_restart: 38 events
+ACCEPTED  random_1: 34 events
+ACCEPTED  random_2: 42 events
+ACCEPTED  random_3: 34 events
+ACCEPTED  random_4: 41 events
+ACCEPTED  random_5: 34 events
+ACCEPTED  random_6: 48 events
+ACCEPTED  random_7: 34 events
+ACCEPTED  random_8: 34 events
+ACCEPTED  restart_budget_exhaustion: 39 events
+ACCEPTED  shutdown_deadline_slow_stop: 24 events
+ACCEPTED  shutdown_during_backoff: 16 events
+ACCEPTED  startup_timeout: 20 events
+ACCEPTED  temporary_exit: 24 events
+ACCEPTED  transient_normal_exit: 24 events
+ACCEPTED  nested-recovery-OneForAll: 38 events
+ACCEPTED  nested-recovery-RestForOne: 38 events
+ACCEPTED  nested-stuck-native-helper: 13 events
+29/29 traces accepted
+REJECTED mutation: resume before cohort cleanup
+REJECTED mutation: wrong strategy selection
+REJECTED mutation: parent join before descendant completion
+REJECTED mutation: propagation without cancellation
+SAFETY before completion: invalid final event
+COUNTEREXAMPLE model: MCCohortsAll/Selection
+COUNTEREXAMPLE model: MCCohortsAll/Cleanup
+COUNTEREXAMPLE model: MCCohortsAll/Retirement
+COUNTEREXAMPLE model: MCCohortsAll/Closed
+COUNTEREXAMPLE model: MCNested/Join
+COUNTEREXAMPLE model: MCNested/Propagation
+RESOURCE GUARD peak_rss_kib= 450504 exit= 0

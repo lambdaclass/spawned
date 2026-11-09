@@ -182,10 +182,6 @@ where
     }
 }
 
-/// System envelope that dispatches an `Exit` notification to the actor's
-/// `exit_received` callback. Unlike `MessageEnvelope<M>`, this does not require
-/// `Handler<Exit>` on the actor — every actor can receive `Exit` via the
-/// trait's default-no-op `exit_received` callback.
 // Private lifecycle signal, excluded from application message/handler metrics.
 // Nested supervisor adapters have no public mailbox traffic to bury this signal.
 struct FailureEnvelope(String);
@@ -201,6 +197,10 @@ impl<A: Actor> Envelope<A> for FailureEnvelope {
     }
 }
 
+/// System envelope that dispatches an `Exit` notification to the actor's
+/// `exit_received` callback. Unlike `MessageEnvelope<M>`, this does not require
+/// `Handler<Exit>` on the actor — every actor can receive `Exit` via the
+/// trait's default-no-op `exit_received` callback.
 struct ExitEnvelope {
     exit: Exit,
 }

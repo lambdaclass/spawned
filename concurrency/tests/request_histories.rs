@@ -1,4 +1,3 @@
-#![cfg(feature = "async")]
 //! Short concurrent histories; timed-out work is indeterminate, never assumed absent.
 #[path = "support/failure_actor.rs"]
 mod actor;
@@ -102,7 +101,7 @@ fn concurrent_histories_have_a_legal_sequential_explanation() {
         .unwrap();
     let rt = Arc::new(runtime());
     let _entered = rt.enter();
-    for backend in BACKENDS {
+    for &backend in BACKENDS {
         for case in 0..cases {
             let mut cleanup = Cleanup::default();
             let actor = Handle::start(backend, Worker::default());

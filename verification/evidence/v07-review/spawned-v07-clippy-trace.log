@@ -1,0 +1,3 @@
+    Checking spawned-concurrency v0.6.0 (/tmp/spawned-v07/concurrency)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.69s
+RESOURCE GUARD peak_rss_kib= 456580 exit= 0

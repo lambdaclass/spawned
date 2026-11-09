@@ -36,21 +36,31 @@ def tla_string(value):
     return '"' + str(value).replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
-def tla_event(event):
-    return "[a |-> {}, c |-> {}, x |-> {}, n |-> {}]".format(
+def tla_event(event, cohort=False):
+    result = "[a |-> {}, c |-> {}, x |-> {}, n |-> {}".format(
         tla_string(event["a"]), int(event["c"]), tla_string(event["x"]), int(event["n"])
     )
+    if cohort:
+        result += ", r |-> {}".format(int(event.get("r", 0)))
+    return result + "]"
 
 
 def generate(trace, workdir):
-    for model in MODELS:
+    schema = trace.get("schema", "one-for-one-v1")
+    if schema not in {"one-for-one-v1", "cohort-v1", "tree-v1"}:
+        raise ValueError(f"unsupported trace schema: {schema}")
+    if schema == "tree-v1":
+        return generate_tree(trace, workdir)
+    cohort = schema == "cohort-v1"
+    modules = ("Cohorts.tla", "TraceCohorts.tla") if cohort else MODELS
+    for model in modules:
         shutil.copy(os.path.join(HERE, model), workdir)
-    events = ",\n    ".join(tla_event(e) for e in trace["events"])
+    events = ",\n    ".join(tla_event(e, cohort) for e in trace["events"])
     modes = ", ".join(tla_string(m) for m in trace["modes"])
     with open(os.path.join(workdir, "TraceRun.tla"), "w") as out:
         out.write(
-            "---- MODULE TraceRun ----\n"
-            "EXTENDS TraceSupervision\n"
+            "---- MODULE TraceRun ----\n" +
+            ("EXTENDS TraceCohorts\n" if cohort else "EXTENDS TraceSupervision\n") +
             f"TraceMode == <<{modes}>>\n"
             f"TraceLog == <<\n    {events}\n>>\n"
             "====\n"
@@ -60,14 +70,40 @@ def generate(trace, workdir):
             "INIT TraceInit\n"
             "NEXT TraceNext\n"
             "CONSTANTS\n"
-            f"    N = {int(trace['n'])}\n"
-            f"    MaxRestarts = {int(trace['max_restarts'])}\n"
+            f"    N = {int(trace['n'])}\n" +
+            (f"    Strategy = {tla_string(trace['strategy'])}\n    MaxRounds = 1000\n    Fault = \"None\"\n" if cohort
+             else f"    MaxRestarts = {int(trace['max_restarts'])}\n") +
             "    MaxGen = 1000\n"
             "    Mode <- TraceMode\n"
             "    Trace <- TraceLog\n"
-            "INVARIANT TraceIncomplete\n"
             "INVARIANT Safety\n"
+            "INVARIANT TraceIncomplete\n"
         )
+
+
+def generate_tree(trace, workdir):
+    for model in ("NestedSupervision.tla", "TraceNested.tla"):
+        shutil.copy(os.path.join(HERE, model), workdir)
+    # Normalize IDs without changing ordering, slot ownership or generations.
+    nodes = {int(trace["root"]): 1}
+    for event in trace["events"]:
+        for key in ("node", "peer"):
+            node = int(event[key])
+            if node:
+                nodes.setdefault(node, len(nodes) + 1)
+    records = []
+    for e in trace["events"]:
+        records.append("[a |-> {}, node |-> {}, slot |-> {}, gen |-> {}, peer |-> {}, arity |-> {}, cancelled |-> {}]".format(
+            tla_string(e["a"]), nodes[int(e["node"])], int(e["slot"]), int(e["gen"]),
+            nodes.get(int(e["peer"]), 0), int(e["arity"]), "TRUE" if e["cancelled"] else "FALSE"))
+    with open(os.path.join(workdir, "TraceRun.tla"), "w") as out:
+        out.write("---- MODULE TraceRun ----\nEXTENDS TraceNested\nTraceLog == <<\n"
+                  + ",\n".join(records) + "\n>>\n====\n")
+    with open(os.path.join(workdir, "TraceRun.cfg"), "w") as out:
+        out.write("INIT TraceInit\nNEXT TraceNext\nCONSTANTS\n"
+                  f" NodeCount = {len(nodes)}\n Slots = {max(1,max(int(e['arity']) for e in trace['events']))}\n"
+                  " MaxGen = 1000\n Fault = \"None\"\n Trace <- TraceLog\n"
+                  "INVARIANT Safety\nINVARIANT TraceIncomplete\n")
 
 
 def longest_prefix(dump_path):
@@ -107,10 +143,10 @@ def check(path, tlc, keep):
         log = run.stdout + run.stderr
         with open(os.path.join(workdir, "tlc.log"), "w") as f:
             f.write(log)
-        if "Invariant TraceIncomplete is violated" in log:
-            verdict, detail = "ACCEPTED", f"{len(events)} events"
-        elif "Invariant Safety is violated" in log:
+        if "Invariant Safety is violated" in log:
             verdict, detail = "SAFETY", "model invariant violated along the trace\n" + log
+        elif "Invariant TraceIncomplete is violated" in log:
+            verdict, detail = "ACCEPTED", f"{len(events)} events"
         elif "No error has been found" in log:
             matched = longest_prefix(os.path.join(workdir, "reached.dump"))
             nxt = events[matched] if matched < len(events) else None

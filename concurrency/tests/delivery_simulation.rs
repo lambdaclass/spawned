@@ -1,4 +1,3 @@
-#![cfg(feature = "async")]
 //! Controlled handler-progress simulation, not a replacement Tokio/OS scheduler.
 #[path = "support/failure_actor.rs"]
 mod actor;
@@ -207,7 +206,7 @@ fn finite_model_witnesses_replay_against_all_execution_modes() {
     );
     let rt = runtime();
     let _entered = rt.enter();
-    for backend in BACKENDS {
+    for &backend in BACKENDS {
         for (expected, path) in &witnesses {
             let mut world = World::new(&rt, backend);
             for (tick, action) in path.iter().enumerate() {
@@ -247,7 +246,7 @@ fn seeded_handler_interleavings_have_identical_audit_fingerprints() {
             state = state.apply(action);
         }
         let mut fingerprints = Vec::new();
-        for backend in BACKENDS {
+        for &backend in BACKENDS {
             let mut world = World::new(&rt, backend);
             for &(tick, action) in &script {
                 world.step(action, tick);

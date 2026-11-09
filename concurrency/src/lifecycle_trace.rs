@@ -23,6 +23,7 @@ pub struct Event {
     pub child: usize,
     pub arg: &'static str,
     pub count: usize,
+    pub round: u64,
 }
 
 impl Event {
@@ -35,17 +36,73 @@ impl Event {
             child,
             arg,
             count: 0,
+            round: 0,
         }
     }
     pub(crate) fn count(mut self, count: usize) -> Self {
         self.count = count;
         self
     }
+    pub(crate) fn round(mut self, round: u64) -> Self {
+        self.round = round;
+        self
+    }
     /// JSON object understood by `verification/tla/trace_check.py`.
     pub fn to_json(&self) -> String {
         format!(
-            r#"{{"a":"{}","c":{},"x":"{}","n":{}}}"#,
-            self.action, self.child, self.arg, self.count
+            r#"{{"a":"{}","c":{},"x":"{}","n":{},"r":{}}}"#,
+            self.action, self.child, self.arg, self.count, self.round
+        )
+    }
+}
+
+/// Cross-supervisor ownership event, recorded separately from policy tapes.
+#[derive(Debug, Clone)]
+pub struct TreeEvent {
+    pub action: &'static str,
+    pub node: u64,
+    pub slot: usize,
+    pub generation: u64,
+    pub peer: u64,
+    pub arity: usize,
+    pub cancelled: bool,
+}
+impl TreeEvent {
+    pub(crate) fn new(action: &'static str, node: u64) -> Self {
+        Self {
+            action,
+            node,
+            slot: 0,
+            generation: 0,
+            peer: 0,
+            arity: 0,
+            cancelled: false,
+        }
+    }
+    pub(crate) fn child(mut self, slot: usize, generation: u64) -> Self {
+        self.slot = slot;
+        self.generation = generation;
+        self
+    }
+    pub(crate) fn peer(mut self, peer: u64, arity: usize) -> Self {
+        self.peer = peer;
+        self.arity = arity;
+        self
+    }
+    pub(crate) fn cancelled(mut self, cancelled: bool) -> Self {
+        self.cancelled = cancelled;
+        self
+    }
+    pub fn to_json(&self) -> String {
+        format!(
+            r#"{{"a":"{}","node":{},"slot":{},"gen":{},"peer":{},"arity":{},"cancelled":{}}}"#,
+            self.action,
+            self.node,
+            self.slot,
+            self.generation,
+            self.peer,
+            self.arity,
+            self.cancelled
         )
     }
 }
@@ -74,7 +131,7 @@ pub(crate) use imp::*;
 
 #[cfg(feature = "lifecycle-trace")]
 mod imp {
-    use super::Event;
+    use super::{Event, TreeEvent};
     use crate::system::lock;
     use std::{
         cell::Cell,
@@ -95,6 +152,7 @@ mod imp {
         }
     }
 
+    static TREES: Mutex<Vec<TreeEvent>> = Mutex::new(Vec::new());
     static SECTION: Mutex<()> = Mutex::new(());
     static TRACES: Mutex<BTreeMap<u64, Vec<Event>>> = Mutex::new(BTreeMap::new());
     thread_local! {
@@ -151,6 +209,39 @@ mod imp {
         SUPPRESS_CLOSE.with(Cell::get)
     }
 
+    pub(crate) fn tree(id: TraceId, make: impl FnOnce(u64) -> TreeEvent) {
+        atomic(|| lock(&TREES).push(make(id.0)));
+    }
+    /// Extract one connected ownership tree in observed order. Other tests'
+    /// nodes remain buffered; nested IDs are followed through TAttach events.
+    pub fn take_tree(root: u64) -> Vec<TreeEvent> {
+        atomic(|| {
+            let mut events = lock(&TREES);
+            let mut nodes = std::collections::BTreeSet::from([root]);
+            loop {
+                let before = nodes.len();
+                for event in events.iter() {
+                    if event.action == "TAttach" && nodes.contains(&event.node) {
+                        nodes.insert(event.peer);
+                    }
+                }
+                if nodes.len() == before {
+                    break;
+                }
+            }
+            let mut result = Vec::new();
+            events.retain(|event| {
+                if nodes.contains(&event.node) {
+                    result.push(event.clone());
+                    false
+                } else {
+                    true
+                }
+            });
+            result
+        })
+    }
+
     /// Remove and return the events recorded for a supervisor.
     pub fn take(id: u64) -> Vec<Event> {
         lock(&TRACES).remove(&id).unwrap_or_default()
@@ -159,7 +250,7 @@ mod imp {
 
 #[cfg(not(feature = "lifecycle-trace"))]
 mod imp {
-    use super::Event;
+    use super::{Event, TreeEvent};
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub(crate) struct TraceId;
@@ -170,6 +261,8 @@ mod imp {
         }
     }
 
+    #[inline(always)]
+    pub(crate) fn tree(_: TraceId, _: impl FnOnce(u64) -> TreeEvent) {}
     #[inline(always)]
     pub(crate) fn atomic<R>(f: impl FnOnce() -> R) -> R {
         f()
@@ -185,4 +278,4 @@ mod imp {
 }
 
 #[cfg(feature = "lifecycle-trace")]
-pub use imp::take;
+pub use imp::{take, take_tree};

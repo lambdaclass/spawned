@@ -42,11 +42,9 @@ pub enum ExecutionProfile {
 }
 impl ExecutionProfile {
     fn validate(&self) -> Result<(), SystemError> {
-        let workers = match self {
-            Self::AsyncPool { workers } | Self::ThreadPool { workers, .. } => *workers,
-            Self::PinnedShards { cpus } => cpus.len(),
-        };
-        if !(1..=1024).contains(&workers) {
+        if !(1..=1024).contains(&self.workers())
+            || matches!(self, Self::ThreadPool { helper_workers, .. } if !(1..=1024).contains(helper_workers))
+        {
             return Err(SystemError::InvalidWorkerBudget);
         }
         if let Self::PinnedShards { cpus } = self {
@@ -153,6 +151,17 @@ impl Admission {
     }
     pub(crate) fn is_open(&self) -> bool {
         *lock(&self.0)
+    }
+    /// Commit a terminal decision and close admission under the same lock.
+    /// The callback must not reenter admission or perform shutdown cleanup.
+    pub(crate) fn close_if_open(&self, f: impl FnOnce()) -> bool {
+        let mut open = lock(&self.0);
+        if !*open {
+            return false;
+        }
+        f();
+        *open = false;
+        true
     }
     pub(crate) fn if_open<R>(&self, f: impl FnOnce() -> R) -> Option<R> {
         let open = lock(&self.0);
@@ -282,11 +291,21 @@ impl ActorSystem {
         name: impl Into<String>,
         workers: usize,
     ) -> Result<ExecutionGroup, SystemError> {
+        self.thread_group_with_helpers(name, workers, 1)
+    }
+    /// Fixed native actor roots with an explicit async helper-worker budget.
+    /// Both worker budgets must be between 1 and 1024.
+    pub fn thread_group_with_helpers(
+        &self,
+        name: impl Into<String>,
+        workers: usize,
+        helper_workers: usize,
+    ) -> Result<ExecutionGroup, SystemError> {
         self.add_group(
             name.into(),
             ExecutionProfile::ThreadPool {
                 workers,
-                helper_workers: 1,
+                helper_workers,
             },
         )
     }
@@ -679,7 +698,13 @@ impl Scope {
     pub(crate) fn group(&self) -> ExecutionGroup {
         ExecutionGroup {
             inner: self.group.clone(),
-            selection: self.selection,
+            // Native slots are exclusively leased by the current scope. New
+            // actors may use another free slot; pinned shards retain affinity.
+            selection: self.group.upgrade().and_then(|group| {
+                matches!(group.profile, ExecutionProfile::PinnedShards { .. })
+                    .then_some(self.selection)
+                    .flatten()
+            }),
         }
     }
     pub(crate) fn ready_rx(&self) -> watch::Receiver<StartupState> {
@@ -819,8 +844,7 @@ impl Scope {
     pub(crate) fn actor_lease(self: &Arc<Self>) -> Result<Lease, SystemError> {
         self.lease(true)
     }
-    /// Internal lifecycle cleanup is deliberately not cancelled with ordinary
-    /// helpers: its lease must survive until the owned subtree actually joins.
+    /// Dispatch the actor root to its reserved worker or runtime shard.
     pub(crate) fn dispatch_actor<F>(&self, future: F) -> Result<(), SystemError>
     where
         F: Future<Output = ()> + Send + 'static,
@@ -830,6 +854,8 @@ impl Scope {
             .ok_or(SystemError::Closed)?
             .dispatch(self.target, future)
     }
+    /// Internal lifecycle cleanup is deliberately not cancelled with ordinary
+    /// helpers: its lease must survive until the owned subtree actually joins.
     pub(crate) fn track_lifecycle<F>(self: &Arc<Self>, future: F) -> Result<(), SystemError>
     where
         F: Future<Output = ()> + Send + 'static,

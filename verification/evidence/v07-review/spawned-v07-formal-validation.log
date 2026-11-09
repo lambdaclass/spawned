@@ -1,0 +1,84 @@
+ACCEPTED  selection-OneForAll: 38 events
+ACCEPTED  selection-RestForOne: 31 events
+ACCEPTED  superseded-OneForAll: 58 events
+ACCEPTED  superseded-RestForOne: 50 events
+ACCEPTED  disabled_retries: 15 events
+ACCEPTED  external_shutdown: 31 events
+ACCEPTED  factory_error_then_success: 20 events
+ACCEPTED  non_restartable_startup_failure: 22 events
+ACCEPTED  normal_start_stop: 34 events
+ACCEPTED  permanent_panic_restart: 38 events
+ACCEPTED  random_1: 34 events
+ACCEPTED  random_2: 42 events
+ACCEPTED  random_3: 34 events
+ACCEPTED  random_4: 41 events
+ACCEPTED  random_5: 34 events
+ACCEPTED  random_6: 48 events
+ACCEPTED  random_7: 34 events
+ACCEPTED  random_8: 34 events
+ACCEPTED  restart_budget_exhaustion: 39 events
+ACCEPTED  shutdown_deadline_slow_stop: 24 events
+ACCEPTED  shutdown_during_backoff: 16 events
+ACCEPTED  startup_timeout: 20 events
+ACCEPTED  temporary_exit: 24 events
+ACCEPTED  transient_normal_exit: 24 events
+ACCEPTED  nested-recovery-OneForAll: 38 events
+ACCEPTED  nested-recovery-RestForOne: 38 events
+ACCEPTED  nested-stuck-native-helper: 13 events
+27/27 traces accepted
+REJECTED mutation: resume before cohort cleanup
+REJECTED mutation: wrong strategy selection
+REJECTED mutation: parent join before descendant completion
+REJECTED mutation: propagation without cancellation
+COUNTEREXAMPLE model: MCCohortsAll/Selection
+COUNTEREXAMPLE model: MCCohortsAll/Cleanup
+COUNTEREXAMPLE model: MCCohortsAll/Retirement
+COUNTEREXAMPLE model: MCCohortsAll/Closed
+COUNTEREXAMPLE model: MCNested/Join
+COUNTEREXAMPLE model: MCNested/Propagation
+Model checking completed. No error has been found.
+  Estimates of the probability that TLC did not check all reachable states
+  because two distinct states had the same fingerprint:
+  calculated (optimistic):  val = 6.4E-10
+  based on the actual fingerprints:  val = 1.8E-10
+374997 states generated, 34424 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 39.
+The average outdegree of the complete state graph is 1 (minimum is 0, the maximum 7 and the 95th percentile is 3).
+Finished in 00s at (2026-11-09 04:47:00)
+Model checking completed. No error has been found.
+  Estimates of the probability that TLC did not check all reachable states
+  because two distinct states had the same fingerprint:
+  calculated (optimistic):  val = 4.1E-10
+  based on the actual fingerprints:  val = 3.6E-11
+297173 states generated, 28256 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 39.
+The average outdegree of the complete state graph is 1 (minimum is 0, the maximum 7 and the 95th percentile is 3).
+Finished in 00s at (2026-11-09 04:47:01)
+Model checking completed. No error has been found.
+  Estimates of the probability that TLC did not check all reachable states
+  because two distinct states had the same fingerprint:
+  calculated (optimistic):  val = 1.1E-9
+  based on the actual fingerprints:  val = 2.0E-10
+518521 states generated, 43089 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 39.
+The average outdegree of the complete state graph is 1 (minimum is 0, the maximum 6 and the 95th percentile is 3).
+Finished in 01s at (2026-11-09 04:47:02)
+Model checking completed. No error has been found.
+  Estimates of the probability that TLC did not check all reachable states
+  because two distinct states had the same fingerprint:
+  calculated (optimistic):  val = 9.4E-10
+  based on the actual fingerprints:  val = 1.7E-10
+474292 states generated, 40092 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 38.
+The average outdegree of the complete state graph is 1 (minimum is 0, the maximum 6 and the 95th percentile is 3).
+Finished in 00s at (2026-11-09 04:47:04)
+Model checking completed. No error has been found.
+  Estimates of the probability that TLC did not check all reachable states
+  because two distinct states had the same fingerprint:
+  calculated (optimistic):  val = 4.0E-10
+  based on the actual fingerprints:  val = 3.2E-10
+203273 states generated, 46783 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 29.
+The average outdegree of the complete state graph is 1 (minimum is 0, the maximum 7 and the 95th percentile is 3).
+Finished in 01s at (2026-11-09 04:47:05)
+RESOURCE GUARD peak_rss_kib= 384456 exit= 0

@@ -71,8 +71,19 @@ impl SupervisedSupervisor {
         self.wait_for_generation(0).await
     }
     pub async fn wait_for_generation(&self, after: u64) -> Result<Supervisor, ChildUnavailable> {
-        let actor = self.child.wait_for_generation(after).await?;
-        resolve(&self.ready, actor.id())
+        let mut changed = self.child.view.changed.subscribe();
+        loop {
+            changed.borrow_and_update();
+            let actor = self.child.wait_for_generation(after).await?;
+            if let Ok(supervisor) = resolve(&self.ready, actor.id()) {
+                return Ok(supervisor);
+            }
+            // The inner gate can close before the adapter's state changes.
+            // Await that transition instead of exposing a transient lookup error.
+            if changed.changed().await.is_err() {
+                return Err(ChildUnavailable(ChildState::Stopped));
+            }
+        }
     }
 }
 fn resolve(ready: &Ready, id: ActorId) -> Result<Supervisor, ChildUnavailable> {
@@ -94,8 +105,10 @@ pub(super) fn add(
     let config = spec.config;
     let configure = spec.configure;
     let shutdown_grace = spec.shutdown_timeout;
+    let parent_trace = parent.core.trace;
+    let parent_slot = parent.runners.len() + 1;
     let child = parent.add(
-        ChildSpec::new(spec.name, &spec.group, move |_| {
+        ChildSpec::new(spec.name, &spec.group, move |ctx| {
             let owner = owner.clone();
             let parent_core = parent_core.clone();
             let config = config.clone();
@@ -105,6 +118,23 @@ pub(super) fn add(
                 let mut builder =
                     SupervisorBuilder::from_owner(owner, config).map_err(|e| e.to_string())?;
                 configure(&mut builder)?;
+                trace::tree(parent_trace, |id| {
+                    TreeEvent::new("TAttach", id)
+                        .child(parent_slot, ctx.generation())
+                        .peer(
+                            {
+                                #[cfg(feature = "lifecycle-trace")]
+                                {
+                                    builder.core.trace.0
+                                }
+                                #[cfg(not(feature = "lifecycle-trace"))]
+                                {
+                                    0
+                                }
+                            },
+                            builder.runners.len(),
+                        )
+                });
                 Ok::<_, String>(SupervisorActor {
                     builder: Some(builder),
                     running: None,
@@ -151,7 +181,13 @@ impl Actor for SupervisorActor {
                 .await
                 {
                     Either::Left(_) => {
-                        observe.close();
+                        trace::atomic(|| {
+                            observe.close();
+                            trace::tree(observe.trace, |id| {
+                                TreeEvent::new("TPropagate", id)
+                                    .cancelled(observe.cancel.is_cancelled())
+                            });
+                        });
                     }
                     Either::Right(_) => {
                         let failure = system::lock(&observe.failure).clone();
@@ -198,7 +234,15 @@ impl Actor for SupervisorActor {
                 let old = { system::lock(&self.ready).replace((ctx.id(), supervisor)) };
                 drop(old);
             }
-            Either::Right((Err(error), _)) => panic!("nested supervisor startup failed: {error}"),
+            Either::Right((Err(error), _)) => {
+                if parent.is_cancelled() {
+                    core.close();
+                } else {
+                    // Fail this hook before the adapter can publish ready. An
+                    // enqueued FailureEnvelope could run only after readiness.
+                    panic!("nested supervisor startup failed: {error}");
+                }
+            }
         }
     }
     async fn stopped(&mut self, _: &Context<Self>) {

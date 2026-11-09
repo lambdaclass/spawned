@@ -37,6 +37,19 @@ below was drafted as a separate 0.6.1 patch (draft notes archived under
 `legacy/docs/releases/`); if it ships separately, prepare a patch-only lineage
 rather than tagging current main.
 
+### Review fixes
+
+- Context-derived native placement selects a free slot; explicit pinned placement
+  remains inherited. Helper-worker budgets are configurable and validated through
+  `thread_group_with_helpers`.
+- Retirement records its terminal trace event; OneForOne backoff avoids an unused
+  cohort watcher. Failure/readiness decisions use the production admission lock,
+  and interrupted cohort backoff does not inflate the failure streak.
+- Native integration suites run without the async feature; CI checks their test
+  inventory. Rollback and internal envelope/lifecycle documentation are corrected.
+- Cohort/nested TLA+ projections, real trace scenarios and negative controls extend
+  pre-release verification beyond OneForOne.
+
 ### Documentation
 
 - Documentation restructured into a small live set: `README.md`,

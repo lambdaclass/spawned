@@ -9,3 +9,5 @@ legacy/research/reliability/**/figures/** linguist-generated=true
 legacy/research/client-observations/**/data/** linguist-generated=true
 legacy/research/client-observations/**/figures/** linguist-generated=true
 legacy/docs/reviews/dedicated-runtime-evidence/** linguist-generated=true
+verification/evidence/** linguist-generated=true
+verification/evidence/**/*.log whitespace=-blank-at-eof

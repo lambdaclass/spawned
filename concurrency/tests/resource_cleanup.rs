@@ -1,5 +1,6 @@
-#![cfg(feature = "async")]
-use spawned_concurrency::{message::Message, tasks, threads};
+#[cfg(feature = "async")]
+use spawned_concurrency::tasks;
+use spawned_concurrency::{message::Message, threads};
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 #[derive(Clone)]
@@ -8,7 +9,9 @@ impl Message for Probe {
     type Result = ();
 }
 struct Sink;
+#[cfg(feature = "async")]
 impl tasks::Actor for Sink {}
+#[cfg(feature = "async")]
 impl tasks::Handler<Probe> for Sink {
     async fn handle(&mut self, msg: Probe, _: &tasks::Context<Self>) {
         drop(msg.0);
@@ -33,6 +36,7 @@ fn released(weak: &Weak<()>) {
 }
 #[test]
 fn timers_release_payloads_on_actor_exit() {
+    #[cfg(feature = "async")]
     for backend in [
         tasks::Backend::Async,
         tasks::Backend::Blocking,
@@ -69,8 +73,10 @@ fn timers_release_payloads_on_actor_exit() {
     released(&weak);
     drop((once, interval));
 }
+#[cfg(feature = "async")]
 #[test]
 fn pending_async_listener_is_dropped_on_actor_exit() {
+    #[cfg(feature = "async")]
     for backend in [
         tasks::Backend::Async,
         tasks::Backend::Blocking,
@@ -97,6 +103,7 @@ fn pending_async_listener_is_dropped_on_actor_exit() {
     }
 }
 
+#[cfg(feature = "async")]
 #[test]
 fn cancelled_thread_exit_wait_does_not_occupy_blocking_pool() {
     let rt = tokio::runtime::Builder::new_multi_thread()

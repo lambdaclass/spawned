@@ -637,7 +637,7 @@ fallible, and no actor is admitted to a failed group.
 | Constructor | Actor execution | Admission and thread cost |
 |---|---|---|
 | `async_group(name, workers)` | Cooperative actors on a multithread Tokio pool | Any actor count; `workers` async workers plus one runtime owner and one join coordinator. |
-| `thread_group(name, workers)` | Fixed native workers, one actor root per slot | At most `workers` live scopes; one shared helper runtime with one async worker, one owner and one join coordinator. Idle actors retain slots. Full admission returns `SystemError::Capacity`. |
+| `thread_group(name, workers)` / `thread_group_with_helpers(name, workers, helper_workers)` | Fixed native workers, one actor root per slot | At most `workers` live scopes; one shared helper runtime with one async worker by default (or the explicit helper budget), one owner and one join coordinator. Both worker budgets must be between 1 and 1024. Idle actors retain slots. Full admission returns `SystemError::Capacity`. |
 | `pinned_group(name, cpus)` | One parked current-thread Tokio runtime per specified Linux CPU | Any actor count; one native runtime owner per CPU plus one join coordinator. Actors sharing a shard cooperate. |
 
 Each system also has one control thread. Blocking helpers can create additional
@@ -660,6 +660,8 @@ let cpus = spawned_rt::tasks::affinity::available_cpus()?; // Linux
 let pipeline = system.pinned_group("pipeline", cpus.into_iter().take(2).collect())?;
 let stage = MyActor::new().start_on(&pipeline.shard(0)?)?;
 ```
+
+Actors started through `ctx.execution_group()` retain explicit pinned-shard placement. Native thread slots are exclusive, so a native actor’s context-derived group admits a new actor on any free slot instead of inheriting its occupied slot. Use `group.shard(i)` when reserving a particular native slot explicitly.
 
 Native actor roots share a single async helper runtime, rather than creating a
 runtime per actor. Handlers/hooks execute on their reserved native worker;

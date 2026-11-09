@@ -15,6 +15,9 @@ use std::{
     },
     time::Duration,
 };
+#[cfg(feature = "lifecycle-trace")]
+#[path = "support/tree_record.rs"]
+mod tree_record;
 const LIMIT: Duration = Duration::from_secs(5);
 fn policy(retries: usize) -> SupervisorConfig {
     SupervisorConfig {
@@ -323,6 +326,8 @@ async fn native_leaf_helper_blocks_subtree_replacement_and_remains_owned_after_a
     release.send(()).unwrap();
     drop(helper);
     assert!(report.wait(LIMIT).await.complete);
+    #[cfg(feature = "lifecycle-trace")]
+    tree_record::record("nested-stuck-native-helper", &supervisor);
 }
 
 struct HeldStop(Arc<tokio::sync::Notify>);

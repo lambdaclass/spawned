@@ -1,0 +1,27 @@
+Picked up JAVA_TOOL_OPTIONS: -Xmx768m -XX:ActiveProcessorCount=4
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Running breadth-first search Model-Checking with fp 110 and seed 9064811686553876461 with 2 workers on 4 cores with 736MB heap and 64MB offheap memory (Linux 6.8.0-147-generic amd64, Oracle Corporation 1.8.0_504 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file /tmp/spawned-v07-models/MCCohortsAllSupersession.tla
+Parsing file /tmp/spawned-v07-models/Cohorts.tla
+Parsing file /tmp/Naturals.tla
+Parsing file /tmp/FiniteSets.tla
+Parsing file /tmp/Sequences.tla
+Parsing file /tmp/TLC.tla
+Semantic processing of module Naturals
+Semantic processing of module Sequences
+Semantic processing of module FiniteSets
+Semantic processing of module TLC
+Semantic processing of module Cohorts
+Semantic processing of module MCCohortsAllSupersession
+Starting... (2026-11-09 04:47:01)
+Computing initial states...
+Finished computing initial states: 1 distinct state generated at 2026-11-09 04:47:01.
+Model checking completed. No error has been found.
+  Estimates of the probability that TLC did not check all reachable states
+  because two distinct states had the same fingerprint:
+  calculated (optimistic):  val = 1.1E-9
+  based on the actual fingerprints:  val = 2.0E-10
+518521 states generated, 43089 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 39.
+The average outdegree of the complete state graph is 1 (minimum is 0, the maximum 6 and the 95th percentile is 3).
+Finished in 01s at (2026-11-09 04:47:02)

@@ -11,14 +11,20 @@ use std::{
 pub const LIMIT: Duration = Duration::from_secs(5);
 #[derive(Debug, Clone, Copy)]
 pub enum Backend {
+    #[cfg(feature = "async")]
     Async,
+    #[cfg(feature = "async")]
     Blocking,
+    #[cfg(feature = "async")]
     Thread,
     Native,
 }
-pub const BACKENDS: [Backend; 4] = [
+pub const BACKENDS: &[Backend] = &[
+    #[cfg(feature = "async")]
     Backend::Async,
+    #[cfg(feature = "async")]
     Backend::Blocking,
+    #[cfg(feature = "async")]
     Backend::Thread,
     Backend::Native,
 ];
@@ -132,7 +138,9 @@ impl Worker {
         }
     }
 }
+#[cfg(feature = "async")]
 pub struct AsyncWorker(pub Worker);
+#[cfg(feature = "async")]
 impl spawned_concurrency::tasks::Actor for AsyncWorker {
     async fn started(&mut self, _: &spawned_concurrency::tasks::Context<Self>) {
         if let Some(gate) = self.0.started.take() {
@@ -146,6 +154,7 @@ impl spawned_concurrency::tasks::Actor for AsyncWorker {
         assert!(!self.0.panic_stopped, "controlled cleanup panic");
     }
 }
+#[cfg(feature = "async")]
 impl spawned_concurrency::tasks::Handler<Command> for AsyncWorker {
     async fn handle(
         &mut self,
@@ -178,6 +187,7 @@ impl spawned_concurrency::tasks::Handler<Command> for AsyncWorker {
         }
     }
 }
+#[cfg(feature = "async")]
 impl spawned_concurrency::tasks::Handler<Down> for AsyncWorker {
     async fn handle(&mut self, down: Down, _: &spawned_concurrency::tasks::Context<Self>) {
         if let Some(sender) = &self.0.down {
@@ -240,24 +250,26 @@ impl spawned_concurrency::threads::Handler<Down> for NativeWorker {
 }
 #[derive(Clone)]
 pub enum Handle {
+    #[cfg(feature = "async")]
     Async(spawned_concurrency::tasks::ActorRef<AsyncWorker>),
     Native(spawned_concurrency::threads::ActorRef<NativeWorker>),
 }
 pub enum Response {
+    #[cfg(feature = "async")]
     Async(tokio::sync::oneshot::Receiver<Reply>),
     Native(mpsc::Receiver<Reply>),
 }
 impl Response {
     pub fn wait(
         self,
-        rt: &tokio::runtime::Runtime,
+        _rt: &tokio::runtime::Runtime,
         duration: Duration,
     ) -> Result<Reply, ActorError> {
         match self {
-            Self::Async(receiver) => rt.block_on(spawned_concurrency::Response::from_with_timeout(
-                Ok(receiver),
-                duration,
-            )),
+            #[cfg(feature = "async")]
+            Self::Async(receiver) => _rt.block_on(
+                spawned_concurrency::Response::from_with_timeout(Ok(receiver), duration),
+            ),
             Self::Native(receiver) => receiver.recv_timeout(duration).map_err(|e| match e {
                 mpsc::RecvTimeoutError::Timeout => ActorError::RequestTimeout,
                 mpsc::RecvTimeoutError::Disconnected => ActorError::ActorStopped,
@@ -267,9 +279,12 @@ impl Response {
 }
 impl Handle {
     pub fn start(backend: Backend, worker: Worker) -> Self {
-        use spawned_concurrency::{tasks::ActorStart as _, threads::ActorStart as _};
+        #[cfg(feature = "async")]
+        use spawned_concurrency::tasks::ActorStart as _;
+        use spawned_concurrency::threads::ActorStart as _;
         match backend {
             Backend::Native => Self::Native(NativeWorker(worker).start()),
+            #[cfg(feature = "async")]
             other => Self::Async(AsyncWorker(worker).start_with_backend(match other {
                 Backend::Async => spawned_concurrency::tasks::Backend::Async,
                 Backend::Blocking => spawned_concurrency::tasks::Backend::Blocking,
@@ -280,25 +295,28 @@ impl Handle {
     }
     pub fn child(&self) -> ChildHandle {
         match self {
+            #[cfg(feature = "async")]
             Self::Async(actor) => actor.child_handle(),
             Self::Native(actor) => actor.child_handle(),
         }
     }
     pub fn raw(&self, command: Command) -> Result<Response, ActorError> {
         match self {
+            #[cfg(feature = "async")]
             Self::Async(actor) => actor.request_raw(command).map(Response::Async),
             Self::Native(actor) => actor.request_raw(command).map(Response::Native),
         }
     }
     pub fn request(
         &self,
-        rt: &tokio::runtime::Runtime,
+        _rt: &tokio::runtime::Runtime,
         command: Command,
     ) -> Result<Reply, ActorError> {
-        self.raw(command)?.wait(rt, LIMIT)
+        self.raw(command)?.wait(_rt, LIMIT)
     }
     pub fn send(&self, command: Command) -> Result<(), ActorError> {
         match self {
+            #[cfg(feature = "async")]
             Self::Async(actor) => actor.send(command),
             Self::Native(actor) => actor.send(command),
         }
@@ -306,8 +324,11 @@ impl Handle {
     pub fn stop(&self) {
         self.child().stop();
     }
-    pub fn wait(&self, rt: &tokio::runtime::Runtime) -> ExitReason {
-        rt.block_on(async {
+    pub fn wait(&self, _rt: &tokio::runtime::Runtime) -> ExitReason {
+        #[cfg(not(feature = "async"))]
+        return wait_native(&self.child());
+        #[cfg(feature = "async")]
+        _rt.block_on(async {
             tokio::time::timeout(LIMIT, self.child().wait_exit_async())
                 .await
                 .expect("actor did not finish")
@@ -315,18 +336,21 @@ impl Handle {
     }
     pub fn link(&self, target: &ChildHandle) {
         match self {
+            #[cfg(feature = "async")]
             Self::Async(actor) => actor.context().link(target),
             Self::Native(actor) => actor.context().link(target),
         }
     }
     pub fn monitor(&self, target: &ChildHandle) -> MonitorRef {
         match self {
+            #[cfg(feature = "async")]
             Self::Async(actor) => actor.context().monitor(target),
             Self::Native(actor) => actor.context().monitor(target),
         }
     }
     pub fn demonitor(&self, id: MonitorRef) {
         match self {
+            #[cfg(feature = "async")]
             Self::Async(actor) => actor.context().demonitor(id),
             Self::Native(actor) => actor.context().demonitor(id),
         }
@@ -344,5 +368,20 @@ impl Drop for Cleanup {
         for child in &self.0 {
             child.stop();
         }
+    }
+}
+
+#[cfg(not(feature = "async"))]
+pub fn wait_native(child: &ChildHandle) -> ExitReason {
+    let until = std::time::Instant::now() + LIMIT;
+    loop {
+        if let Some(reason) = child.exit_reason() {
+            return reason;
+        }
+        assert!(
+            std::time::Instant::now() < until,
+            "native actor did not finish"
+        );
+        std::thread::sleep(Duration::from_millis(1));
     }
 }

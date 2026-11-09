@@ -30,9 +30,9 @@ jobs:
       - name: Record supervisor lifecycle traces
         env:
           LIFECYCLE_TRACE_DIR: ${{ github.workspace }}/lifecycle-traces
-        run: cargo test --locked -p spawned-concurrency --features lifecycle-trace --test supervision_trace
+        run: cargo test --locked -p spawned-concurrency --features lifecycle-trace --test supervision_trace --test cohort_trace --test tree_trace --test nested_supervision
       - name: Model-check (fast configuration) and validate traces
-        run: nix run .#check-tla -- --traces lifecycle-traces
+        run: nix run .#check-tla -- --traces lifecycle-traces --negative-controls
       - name: Model-check (deep configuration)
         if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         run: nix run .#check-tla -- --deep

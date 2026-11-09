@@ -1,4 +1,3 @@
-#![cfg(feature = "async")]
 //! Generated lifecycle scenarios. See docs/TESTING.md for replay and guarantees.
 use proptest::prelude::*;
 use spawned_concurrency::{
@@ -29,6 +28,7 @@ struct Worker {
     events: mpsc::Sender<Down>,
 }
 
+#[cfg(feature = "async")]
 mod tasks {
     use super::*;
     use spawned_concurrency::tasks::{Actor, Context, Handler};
@@ -95,40 +95,51 @@ mod threads {
 
 #[derive(Clone)]
 enum Handle {
+    #[cfg(feature = "async")]
     Tasks(spawned_concurrency::tasks::ActorRef<tasks::TestActor>),
     Threads(spawned_concurrency::threads::ActorRef<threads::TestActor>),
 }
 impl Handle {
-    fn start(worker: Worker, backend: u8) -> Self {
+    fn start(worker: Worker, _backend: u8) -> Self {
+        #[cfg(feature = "async")]
+        use spawned_concurrency::tasks::ActorStart as _;
+        #[cfg(feature = "async")]
         use spawned_concurrency::tasks::Backend;
-        use spawned_concurrency::{tasks::ActorStart as _, threads::ActorStart as _};
-        match backend {
+        use spawned_concurrency::threads::ActorStart as _;
+        match _backend {
+            #[cfg(feature = "async")]
             0 => Self::Tasks(tasks::TestActor(worker).start_with_backend(Backend::Async)),
+            #[cfg(feature = "async")]
             1 => Self::Tasks(tasks::TestActor(worker).start_with_backend(Backend::Blocking)),
+            #[cfg(feature = "async")]
             2 => Self::Tasks(tasks::TestActor(worker).start_with_backend(Backend::Thread)),
             _ => Self::Threads(threads::TestActor(worker).start()),
         }
     }
     fn child(&self) -> ChildHandle {
         match self {
+            #[cfg(feature = "async")]
             Self::Tasks(a) => a.child_handle(),
             Self::Threads(a) => a.child_handle(),
         }
     }
     fn send(&self, cmd: Command) -> Result<(), ActorError> {
         match self {
+            #[cfg(feature = "async")]
             Self::Tasks(a) => a.send(cmd),
             Self::Threads(a) => a.send(cmd),
         }
     }
-    fn request(&self, rt: &tokio::runtime::Runtime, cmd: Command) -> Result<Reply, ActorError> {
+    fn request(&self, _rt: &tokio::runtime::Runtime, cmd: Command) -> Result<Reply, ActorError> {
         match self {
-            Self::Tasks(a) => rt.block_on(a.request_with_timeout(cmd, LIMIT)),
+            #[cfg(feature = "async")]
+            Self::Tasks(a) => _rt.block_on(a.request_with_timeout(cmd, LIMIT)),
             Self::Threads(a) => a.request_with_timeout(cmd, LIMIT),
         }
     }
     fn abandon(&self, cmd: Command) {
         match self {
+            #[cfg(feature = "async")]
             Self::Tasks(a) => drop(a.request_raw(cmd).expect("live actor")),
             Self::Threads(a) => drop(a.request_raw(cmd).expect("live actor")),
         }
@@ -143,8 +154,23 @@ impl Drop for Cleanup {
         }
     }
 }
-fn wait(rt: &tokio::runtime::Runtime, actor: &ChildHandle) -> ExitReason {
-    rt.block_on(async {
+fn wait(_rt: &tokio::runtime::Runtime, actor: &ChildHandle) -> ExitReason {
+    #[cfg(not(feature = "async"))]
+    {
+        let until = std::time::Instant::now() + LIMIT;
+        loop {
+            if let Some(reason) = actor.exit_reason() {
+                return reason;
+            }
+            assert!(
+                std::time::Instant::now() < until,
+                "native actor did not terminate"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+    #[cfg(feature = "async")]
+    _rt.block_on(async {
         tokio::time::timeout(LIMIT, actor.wait_exit_async())
             .await
             .expect("actor did not terminate")
@@ -302,20 +328,20 @@ proptest! {
         operations in prop::collection::vec((any::<u8>(), any::<u8>()), 0..48),
         endings in prop::collection::vec(0u8..3, 1..8),
     ) {
-        for backend in 0..4 { scenario(backend, count, &operations, &endings); }
+        for backend in backends() { scenario(backend, count, &operations, &endings); }
     }
 }
 
 #[test]
 fn lifecycle_race_regression() {
-    for backend in 0..4 {
+    for backend in backends() {
         scenario(backend, 3, &[(0, 0), (1, 1), (2, 2), (0, 2)], &[0, 1, 2]);
     }
 }
 
 #[test]
 fn concurrent_producers_preserve_order_and_reply_identity() {
-    for backend in 0..4 {
+    for backend in backends() {
         let rt = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .enable_all()
@@ -381,7 +407,7 @@ fn concurrent_producers_preserve_order_and_reply_identity() {
 
 #[test]
 fn demonitor_before_exit_suppresses_notification_and_races_do_not_duplicate() {
-    for backend in 0..4 {
+    for backend in backends() {
         for race in [false, true] {
             let rt = tokio::runtime::Builder::new_multi_thread()
                 .worker_threads(2)
@@ -460,7 +486,7 @@ fn sustained_actor_churn() {
             .unwrap_or(100);
         assert!(rounds > 0);
         let operations: Vec<_> = (0..=255u8).map(|id| (id % 8, id % 3)).collect();
-        for backend in 0..4 {
+        for backend in backends() {
             let started = std::time::Instant::now();
             for round in 0..rounds {
                 scenario(backend, 8, &operations, &[0, 1, 0, 1]);
@@ -476,4 +502,15 @@ fn sustained_actor_churn() {
             );
         }
     });
+}
+
+fn backends() -> std::ops::Range<u8> {
+    #[cfg(feature = "async")]
+    {
+        0..4
+    }
+    #[cfg(not(feature = "async"))]
+    {
+        3..4
+    }
 }

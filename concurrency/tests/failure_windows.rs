@@ -1,4 +1,3 @@
-#![cfg(feature = "async")]
 //! Handshake-controlled failures with semantic coverage, not random hit counts.
 #[path = "support/failure_actor.rs"]
 mod actor;
@@ -27,7 +26,7 @@ fn controlled_failures_reach_every_required_window_on_every_backend() {
     let rt = runtime();
     let _entered = rt.enter();
     let mut summaries = Vec::new();
-    for backend in BACKENDS {
+    for &backend in BACKENDS {
         let mut cleanup = Cleanup::default();
         let mut reached = BTreeSet::new();
         {

@@ -14,12 +14,14 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 deep=0
 mc=1
 traces=""
+negative=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --deep) deep=1 ;;
+    --negative-controls) negative=1 ;;
     --traces) traces="$(cd "$2" && pwd)"; shift ;;
     --traces-only) traces="$(cd "$2" && pwd)"; mc=0; shift ;;
-    *) echo "usage: $0 [--deep] [--traces DIR | --traces-only DIR]" >&2; exit 2 ;;
+    *) echo "usage: $0 [--deep] [--traces DIR | --traces-only DIR] [--negative-controls]" >&2; exit 2 ;;
   esac
   shift
 done
@@ -46,6 +48,12 @@ fi
 
 if [[ -n "$traces" ]]; then
   echo "== Trace validation $traces"
-  python3 "$here/trace_check.py" "$traces" || status=1
+  python3 "$here/trace_check.py" --jobs "${TLA_TRACE_JOBS:-2}" "$traces" || status=1
+  if [[ "$negative" == 1 ]]; then
+    python3 "$here/negative_checks.py" "$traces" || status=1
+  fi
+elif [[ "$negative" == 1 ]]; then
+  echo "--negative-controls requires --traces or --traces-only" >&2
+  exit 2
 fi
 exit "$status"

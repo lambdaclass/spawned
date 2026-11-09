@@ -1,0 +1,19 @@
+#!/usr/bin/env python3
+"""Fail CI when native integration coverage is accidentally feature-gated away."""
+from pathlib import Path
+import sys
+
+required = {
+    "generated_actor_scenarios",
+    "lifecycle_race_regression",
+    "controlled_failures_reach_every_required_window_on_every_backend",
+    "finite_model_witnesses_replay_against_all_execution_modes",
+    "concurrent_histories_have_a_legal_sequential_explanation",
+    "synchronous::macro_receives_linked_exit",
+    "timers_release_payloads_on_actor_exit",
+}
+listed = {line.removesuffix(": test") for line in Path(sys.argv[1]).read_text().splitlines() if line.endswith(": test")}
+missing = required - listed
+if missing:
+    raise SystemExit("native integration tests missing: " + ", ".join(sorted(missing)))
+print(f"Native integration coverage present: {len(required)} required tests")

@@ -62,6 +62,10 @@ jobs:
           cargo run --locked --manifest-path examples/thread_only/Cargo.toml --features metrics,async
           python3 scripts/check-thread-only.py
           cargo clippy --locked --manifest-path examples/thread_only/Cargo.toml --features metrics,async -- -D warnings
+      - name: Check native integration tests remain enabled
+        run: |
+          cargo test --locked -p spawned-concurrency --no-default-features --tests -- --list > native-test-list.txt
+          python3 scripts/check-native-test-list.py native-test-list.txt
       - name: Native documentation
         run: RUSTDOCFLAGS="-D warnings" cargo doc --locked -p spawned-concurrency --no-default-features --features threads,metrics --no-deps
 

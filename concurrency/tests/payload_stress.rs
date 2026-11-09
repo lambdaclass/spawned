@@ -1,4 +1,3 @@
-#![cfg(feature = "async")]
 //! Bounded unique-payload pressure, including shutdown with an admitted backlog.
 #[path = "support/failure_actor.rs"]
 mod actor;
@@ -32,7 +31,7 @@ fn many_producers_preserve_fifo_or_discard_every_owned_payload_before_completion
     assert!(count <= 262_144 && count.checked_mul(bytes).unwrap() <= 128 * 1024 * 1024);
     let rt = runtime();
     let _entered = rt.enter();
-    for backend in BACKENDS {
+    for &backend in BACKENDS {
         for discard in [false, true] {
             let mut cleanup = Cleanup::default();
             let (started, mut control) = gate();
