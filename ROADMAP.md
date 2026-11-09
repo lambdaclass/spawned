@@ -39,15 +39,39 @@ handlers and the existing default behavior. New policies are explicit and opt-in
 3. **Release v0.7 and run it in Ethlambda** (rank 5), including the per-method
    request timeout (rank 5a), a migration guide for the clients' hand-wired
    shutdown and startup, and an example for every way of using the library
-   (rank 5b, [examples to add](#examples-to-add)). In parallel, the
-   developer-experience track (ranks 6-10: test kit, deadlock detection, stall
-   watchdog, flight recorder, published snapshots), motivated by the
-   [client sweep](#client-sweep-production-pain).
-4. **Then, guided by application needs:** request semantics, starting with
-   deferred replies and pipe-to-self (ranks 11-16), with the dynamic
-   supervisor (rank 12a) alongside the keyed registry; admission, credits and
-   deadlines as one design package (ranks 17-19); the testing flagship (ranks
-   20-22); then ranks 23-41 when a client or user justifies them.
+   (rank 5b, [examples to add](#examples-to-add)). Release blockers from the
+   review of the timeout and release-gate commits: `#[protocol]` traits with
+   supertraits such as `Debug` must keep compiling; the API gate must also
+   compare `--no-default-features` and `metrics` against v0.6.0 (the new default
+   `async` feature moves `tasks` behind it), with a migration note;
+   `cfg_attr(request_timeout)` must work or be rejected; the API script must run
+   on stock Python; no flaky examples. Before tagging, move dated review reports
+   and run evidence into `legacy/`. After the tag: migrate Ethlambda (shutdown
+   deadline via `ActorSystem`, supervision, per-method timeouts) with fault
+   injection, then Ethrex (racy Ctrl-C shutdown, `ActorStopped` exits).
+   In parallel, the developer-experience track (ranks 6-10: test kit, which
+   starts the `spawned-test` crate, deadlock
+   detection, stall watchdog, flight recorder, published snapshots), motivated
+   by the [client sweep](#client-sweep-production-pain).
+4. **Request semantics:** deferred replies and pipe-to-self (ranks 11-16), with
+   the dynamic supervisor (rank 12a) alongside the keyed registry; then
+   admission, credits and deadlines as one design package (ranks 17-19). Each
+   ships under the [verification rule](#verification-rule). Before starting,
+   re-rank phases 4-6 with what the Ethlambda and Ethrex migrations taught,
+   as rank 0 did with the client search.
+5. **The testing flagship (ranks 20-22), in the [`spawned-test`](#testing-crate-spawned-test) crate:**
+   ordering exploration at the actor level (Coyote-style controlled delivery), per-actor crash tapes, then record
+   in production and replay in simulation. After phase 4, because exploration
+   and replay need well-defined reply, registry and mailbox semantics. The
+   go/no-go: a reintroduced known race reproduces every time.
+6. **Needs-driven (ranks 23-41):** scaling patterns (virtual actors, groups,
+   streams), observability, ergonomics (middleware, `gen_statem`-style
+   behavior, batch handlers), load policies and integrations. Nothing here is
+   scheduled; each item needs a client or user first.
+7. **Research or separate products (ranks 42-51):** distribution, durability
+   (outbox, durable timers, Temporal-style execution) and language-level ideas.
+   Likely separate crates, only if someone builds a multi-node or durable system
+   on Spawned.
 
 A full Ethrex/Ethlambda replay or same-node canary remains the validation gate.
 Local EngineClient probes and synthetic isolation/pipeline studies are different
@@ -116,6 +140,48 @@ cargo-mutants and TLA+ with trace replay. Release gates and remaining gaps:
 
 Deterministic simulation and record/replay remain the testing flagship (ranks
 20-22).
+
+### Testing crate (`spawned-test`)
+
+User-facing testing tools live in one crate in this workspace, used as a
+dev-dependency (as `tokio-test` is to Tokio), not in a separate repository and
+not as a framework for any actor library. It needs hooks at Spawned's mailboxes,
+dispatch, timers, exits and restarts, which must change together with the core;
+a library-agnostic tool would have to rebuild those internals or drop to thread
+scheduling, which Loom and Shuttle already cover. A separate crate keeps test
+code out of production builds and can make breaking releases while the core API
+stays stable.
+
+| In the core (small, behind a feature or cfg) | In `spawned-test` |
+|---|---|
+| Hook points at delivery, timers, exits and restarts that a controlled scheduler can take over | Test kit and actor mocks (rank 6) |
+| Lifecycle trace recording (`lifecycle-trace`, exists) | Fault injection: kill or restart an actor, delay a message, fire a timeout |
+| Deadlock detection and the stall watchdog (ranks 7-8): they protect production | Ordering exploration, `explore` (rank 20) |
+| | Crash tapes and production record/replay (ranks 21-22) |
+| | Helpers to check recorded traces against the TLA+ models |
+
+The TLA+ models and checkers stay in `verification/`; they verify Spawned's own
+design, not user code.
+
+Order: create the crate with the test kit (rank 6) in the developer-experience
+track alongside v0.7; add fault injection for the Ethlambda canary; grow it into
+`explore` and replay in phase 5. Do not build the controlled scheduler before
+phase 4 settles reply and mailbox semantics.
+
+How the tools compare:
+
+| Tool | Explores | Use in Spawned |
+|---|---|---|
+| Loom | Every thread interleaving, exhaustively | Small primitives (cancellation, ready gate) |
+| Shuttle | Random thread schedules | Framework-internal races (after v0.7) |
+| Coyote (Microsoft, formerly P#) / rank 20 | Orderings of message deliveries, with seeded failures and timers and replayable traces | User-level actor bugs in whole applications |
+| TLA+ | A model of the design, not the code | Lifecycle protocols, under the [verification rule](#verification-rule) |
+
+Coyote takes over scheduling at the points that matter, searches orderings with
+strategies such as PCT, injects timeouts and failures, and records every
+failing run for replay. Spawned already owns those points, so `explore` needs no
+handler changes. Ranks 21-22 add what Coyote does not centre on: capturing
+delivery order from a real client and replaying it under the same scheduler.
 
 The [v0.7 gate review](docs/reviews/v07-release-gates.md) records the completed
 API/feature scans, generated-policy campaign and compatibility correction.
