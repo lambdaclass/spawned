@@ -59,28 +59,33 @@ handlers and the existing default behavior. New policies are explicit and opt-in
    phase A starts the `spawned-test` crate, in review in #198, deadlock
    detection, stall watchdog, flight recorder, published snapshots), motivated
    by the [client sweep](#client-sweep-production-pain).
-4. **Request semantics:** deferred replies and pipe-to-self (ranks 11-16), with
+4. **Database-grade testing, before new capabilities.** Test Spawned the way
+   FoundationDB, TigerBeetle, Dropbox, etcd and AWS test their systems, starting
+   now and running alongside the Ethlambda canary. It blocks phase 5 (request
+   semantics), not the release or the canary. Schedule, batches and exit
+   criterion: [database-grade testing program](#database-grade-testing-program).
+5. **Request semantics:** deferred replies and pipe-to-self (ranks 11-16), with
    the dynamic supervisor (rank 12a) alongside the keyed registry, with
    promise pipelining and transactional turns as design inputs (rank 11a,
    [references](docs/research/request-semantics-references.md)); then
    admission, credits and deadlines as one design package (ranks 17-19). Each
    ships under the [verification rule](#verification-rule). Before starting,
-   re-rank phases 4-6 with what the Ethlambda and Ethrex migrations taught,
+   re-rank phases 5-7 with what the Ethlambda and Ethrex migrations taught,
    as rank 0 did with the client search.
-5. **The testing flagship (ranks 20-22), in the [`spawned-test`](#testing-crate-spawned-test) crate:**
+6. **The testing flagship (ranks 20-22), in the [`spawned-test`](#testing-crate-spawned-test) crate:**
    ordering exploration at the actor level (Coyote-style controlled delivery), per-actor crash tapes, then record
-   in production and replay in simulation. After phase 4, because exploration
+   in production and replay in simulation. After phase 5, because exploration
    and replay need well-defined reply, registry and mailbox semantics. The
    go/no-go: a reintroduced known race reproduces every time. Then
    environment simulation (rank 22a): turmoil/madsim-style network, disk and
    clock faults from the same seed; multi-client runs belong on ethshadow or
    Attacknet ([Ethereum testing](docs/research/ethereum-testing.md)). Prior art:
    [systematic testing](docs/research/systematic-testing.md).
-6. **Needs-driven (ranks 23-41):** scaling patterns (virtual actors, groups,
+7. **Needs-driven (ranks 23-41):** scaling patterns (virtual actors, groups,
    streams), observability, ergonomics (middleware, `gen_statem`-style
    behavior, batch handlers), load policies and integrations. Nothing here is
    scheduled; each item needs a client or user first.
-7. **Research or separate products (ranks 42-51):** distribution, durability
+8. **Research or separate products (ranks 42-51):** distribution, durability
    (outbox, durable timers, Temporal-style execution, with Restate as the
    reference design; see [virtual actors](docs/research/virtual-actors.md#what-it-means-for-spawned))
    and language-level ideas (session types and choreographies, ranks 47-47a).
@@ -196,6 +201,36 @@ The [archived v0.7 gate review](legacy/docs/reviews/v07-release-gates.md) record
 the original scans and their limits. The corrected [testing guide](docs/TESTING.md)
 covers the expanded API profiles and protocol/supervision regressions.
 
+### Database-grade testing program
+
+Every technique the databases in [systematic testing](docs/research/systematic-testing.md#how-databases-and-storage-systems-test)
+use has a Spawned equivalent. Most need no new features, so they run before
+request semantics: the v0.7 review rounds kept finding real races, and phase 5
+builds on this lifecycle code. Two techniques need groundwork first, so phase 5
+adds the hooks for them.
+
+| Batch | When | Techniques | Database precedent |
+|---|---|---|---|
+| 1 | Now (days) | Single-CPU CI runs; `cargo-deny`/`cargo-audit`; LeakSanitizer job plus leak tests (actors, tasks, threads, registry entries and `ActorRef` counts back to zero after shutdown); reproducing-test rule in the PR template; flaky-test tracking | Sanitizers, etcd's bug-per-test practice |
+| 1 | Now | Kani proofs for backoff and jitter, the restart-budget window and generation counters (closes the surviving `Backoff::delay` and jitter mutants) | AWS (Kani on Firecracker) |
+| 1 | Now | Failpoints (`BUGGIFY`-style) in lifecycle code: restart, shutdown, registration, startup; compiled out by default, switchable from tests and `spawned-test` | FoundationDB, etcd (gofail) |
+| 1 | Now | Cross-backend metamorphic tests; cancellation-safety tests (drop each public future at each await point); panic-safety tests (panic in each user callback) | CockroachDB/Pebble, ShardStore |
+| 2 | Next (1-2 weeks) | Shuttle on supervisor and system tests; tests generated from the TLA+ models; Porcupine-style history checker; reference models for registry, links and monitors | ShardStore, MongoDB (test-case generation), etcd (Porcupine) |
+| 2 | Next | Nightly volume: a dedicated machine runs proptests, Shuttle, failpoint and cross-backend suites over fresh seeds every night; every failure prints its seed and becomes a reproducing test | Dropbox (tens of millions of runs nightly), TigerBeetle (simulators 24/7) |
+| 3 | With the Ethlambda canary | Fault injection on fede256 with `spawned-test`; soak runs with resource budgets; offline lifecycle monitors over the canary's traces (rank 5c); Antithesis pilot if budgeted | AWS PObserve, TigerBeetle soak, etcd on Antithesis |
+| 4 | During phase 5 | Simulation hooks designed in: time, randomness and delivery behind one controllable interface, for deferred replies, registries and mailboxes from the start | FoundationDB, Dropbox Nucleus (designed for simulation) |
+| 5 | Phase 6 | `explore` (rank 20), crash tapes and replay (21-22), environment simulation (22a), protocol-aware invariants checked inside the simulator | FoundationDB, TigerBeetle VOPR, Dropbox Trinity |
+| — | Later | Deterministic performance tests; allocation budgets; platform matrix; open-loop load | TigerBeetle |
+
+**Exit criterion for phase 4:** batches 1 and 2 run in CI and nightly; the
+Ethlambda canary has run on fede256 for an agreed period with faults injected;
+every bug found keeps a reproducing test; no open finding from the nightly runs.
+Phase 5 starts after that, with batch 4 as part of its design.
+
+The same program applies to the clients: ethrex's plan is
+[lambdaclass/ethrex#7517](https://github.com/lambdaclass/ethrex/pull/7517);
+Ethlambda's follows its upgrade branch.
+
 ### Testing crate (`spawned-test`)
 
 User-facing testing tools live in one crate in this workspace (`testing/`,
@@ -225,8 +260,8 @@ Order: build it now, not after v0.7. Phase A of the test kit (rank 6), in
 review in #198: mocks, probes, bounded harness waits and fault injection through
 public APIs only, ready for the Ethlambda canary. Next, the concrete-`ActorRef<B>`
 mock hook and controllable timer time if a client needs them. `explore` and
-replay (ranks 20-22) come later, in phase 5. Do not build the controlled scheduler before
-phase 4 settles reply and mailbox semantics.
+replay (ranks 20-22) come later, in phase 6. Do not build the controlled scheduler before
+phase 5 settles reply and mailbox semantics.
 
 How the tools compare:
 
@@ -390,7 +425,7 @@ Small, independent of the scheduler and lifecycle design, and visible to users.
 | 20 | Actor-level ordering exploration (`spawned::sim::explore`) | Treat one handler turn as an atomic step and control delivery at the mailbox boundary; only deliveries racing at the same actor, timer or exit branch the schedule (actor-level partial-order reduction, as in P#/Coyote). Failures shrink to readable delivery lists and can print as sequence diagrams. Start here rather than full environment simulation. Shuttle stays an internal tool for framework races (see verification strategy). Handlers that use Tokio I/O, `spawn_blocking` or wall-clock time directly remain outside control. Prior art: Coyote/P# for the design; Stateright (Rust actors that are model-checked and also run on a real network) and Dropbox's Trinity (a Rust engine under a custom test executor) for the Rust side ([systematic testing](docs/research/systematic-testing.md)). |
 | 21 | Per-actor crash tape | Record one actor's inputs and replay its crash in a unit test. Inputs include replies to its own requests, clock reads and I/O, and replay needs a state snapshot at the tape start (or a tape since `started()`); the last N messages into a fresh instance do not reproduce state. Does not reproduce cross-actor races. |
 | 22 | Record in production, replay in simulation | Record ingress plus mailbox delivery order (`(actor_id, seq)` per dequeue) in a bounded black box, replay with enforced order, detect divergence with per-handler hashes. Needs ranks 20 and 21, `ctx.now()`/`ctx.rng()` discipline in client code and DB snapshots. Go/no-go: replay a reintroduced known race every time. Highest ceiling; not started before 20 and 21. |
-| 22a | Environment simulation in `spawned-test` | Extends phase 5 after ranks 20-22: turmoil/madsim-style simulated network (partition, delay, hold), disk (failed or slow writes) and clock (jumps, skew) driven by the same seed as `explore`, so a test can fail a peer's connection or a write at a chosen delivery. Prefer adapting turmoil (tokio-rs, `tokio::net`-shaped) to owning a simulator; only I/O routed through the simulated layer is controlled. Multi-client network runs stay outside the crate, on ethshadow (deterministic, real binaries) or Attacknet (Chaos Mesh on Kurtosis devnets), see [Ethereum testing](docs/research/ethereum-testing.md). Same-seed reruns should produce identical traces (S2's check). |
+| 22a | Environment simulation in `spawned-test` | Extends phase 6 after ranks 20-22: turmoil/madsim-style simulated network (partition, delay, hold), disk (failed or slow writes) and clock (jumps, skew) driven by the same seed as `explore`, so a test can fail a peer's connection or a write at a chosen delivery. Prefer adapting turmoil (tokio-rs, `tokio::net`-shaped) to owning a simulator; only I/O routed through the simulated layer is controlled. Multi-client network runs stay outside the crate, on ethshadow (deterministic, real binaries) or Attacknet (Chaos Mesh on Kurtosis devnets), see [Ethereum testing](docs/research/ethereum-testing.md). Same-seed reruns should produce identical traces (S2's check). |
 
 ### When step 0 or a user justifies them
 

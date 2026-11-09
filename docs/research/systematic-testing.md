@@ -194,7 +194,7 @@ column is our inference for Spawned.
   failure prints a replayable delivery list. Stateright shows the payoff of the
   same actors running both under a checker and for real; Spawned gets that
   without a separate runtime because the hooks sit in its own mailboxes.
-- **Rank 22a (environment simulation)** extends phase 5: once delivery is
+- **Rank 22a (environment simulation)** extends phase 6: once delivery is
   controlled, add turmoil/madsim-style simulated network, disk and clock so a
   test can partition peers, fail a write or jump time from the same seed.
   Prefer adapting to turmoil (tokio-rs, `tokio::net`-shaped) over owning a
