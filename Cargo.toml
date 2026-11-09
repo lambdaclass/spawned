@@ -5,6 +5,7 @@ members = [
     "rt",
     "concurrency",
     "macros",
+    "testing",
     "examples/bank",
     "examples/bank_threads",
     "examples/name_server",
@@ -28,6 +29,7 @@ members = [
 spawned-rt = { path = "rt", version = "0.7.0", default-features = false }
 spawned-concurrency = { path = "concurrency", version = "0.7.0" }
 spawned-macros = { path = "macros", version = "0.7.0" }
+spawned-test = { path = "testing", version = "0.7.0" }
 tracing = { version = "0.1.41", features = ["log"] }
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 

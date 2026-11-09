@@ -12,6 +12,7 @@ diagnostics = ["spawned-concurrency/diagnostics"]
 futures = "0.3.1"
 spawned-concurrency = { workspace = true }
 spawned-rt = { workspace = true, features = ["async"] }
+spawned-test = { workspace = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 
 [dev-dependencies]
