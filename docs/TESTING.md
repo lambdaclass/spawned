@@ -310,6 +310,57 @@ Thread actor completion now uses a watch notification, so async exit waits can
 be cancelled without leaving a blocking-pool worker waiting for target exit.
 A regression with a one-worker blocking pool checks that property.
 
+## Cross-backend, cancellation and panic safety
+
+Batch 1 of the [database-grade testing program](../ROADMAP.md). All three
+suites use handshakes and bounded waits (10 s per wait), never sleeps as
+synchronization.
+
+| Suite | Evidence provided | Limit |
+|---|---|---|
+| `cross_backend` | Request/reply chains, fan-out/fan-in, links with trapped exits, monitors, timers, supervisor restarts (all three strategies) and ordered system shutdown are defined once and run on tasks `Async`/`Blocking`/`Thread`, threads mode, and `async_group`, `thread_group` and (Linux only) `pinned_group`. Outcomes must be identical across placements and match an independent oracle. | Supervisor and system-shutdown workloads run only on execution groups. Six proptest cases per workload by default; not a schedule exploration |
+| `cancellation_safety` | Every public async operation (`request`, `request_with_timeout`, `tasks::request`, protocol calls, monitor/link setup requests, `join`/`wait_exit`/`wait_exit_async`, `ready`, `SupervisorBuilder::start` with instant and in-flight factories, `Supervisor::shutdown`/`join`, `SupervisedChild::wait_ready`/`wait_for_generation`, `ActorSystem::shutdown`, `ShutdownReport::wait`, `ScopedTask::join`) is dropped after N polls for N = 0 until it completes or parks. Afterwards the actor stays usable or stops cleanly, effects occur at most once, monitors/links fire exactly once, registrations are released, actor state is freed and shutdown completes | Drop points are poll boundaries reached by the operation's own wakeups; an operation waiting on an external event is dropped once while parked |
+| `panic_safety` | A panic in `started`, a send handler, a request handler, `stopped`, trapped `exit_received`, the `Down` handler, a message `Drop`, an abandoned reply's `Drop`, a queued message's `Drop` and `ChildSpec` factories (sync and async). Both modes, every tasks backend and both group kinds, plus OneForOne supervision. Checks the exact exit reason, exactly one `Down` and one `Exit`, registry release, a working bystander and complete shutdown | A queued-drop panic is a single destructor; multi-destructor and per-placement counts live in `mailbox_drop_panic` |
+
+```sh
+cargo test --locked -p spawned-concurrency --test cross_backend --test cancellation_safety --test panic_safety
+cargo test --locked -p spawned-concurrency --no-default-features --features threads --test panic_safety
+PROPTEST_CASES=256 cargo test --locked -p spawned-concurrency --test cross_backend
+SPAWNED_CANCEL_REPORT=1 cargo test --locked -p spawned-concurrency --test cancellation_safety -- --nocapture
+```
+
+Proptest prints the shrunk failing workload parameters and persists the seed
+under `concurrency/tests/*.proptest-regressions`; replay with
+`PROPTEST_RNG_SEED`. The `robustness` workflow runs these suites with more
+cases and repeated runs.
+
+**Compared across placements:** reply values, per-sender message order, exit
+reasons including panic text, Down/Exit counts and reasons, timer delivery sets,
+restart generations and factory calls, supervisor and system shutdown order.
+**Allowed to differ:** timing, thread identity, `ActorId`/`MonitorRef` values
+(mapped to logical indices), cross-sender interleaving at one actor, and
+arrival order between distinct timer deadlines. One lifecycle difference is
+the intended contract, asserted by
+`stop_before_first_poll_follows_managed_and_legacy_contract`: a managed actor
+canceled before startup skips both hooks and drops its state; legacy unmanaged
+tasks and threads actors retain their existing behavior of running both hooks.
+
+**Cancellation contract observed:** `request`-family futures are `async fn`
+and enqueue nothing until first polled; after that, dropping the caller never
+cancels the effect. Protocol methods send when called, so dropping the returned
+`Response` (even unpolled) never prevents the effect. `Supervisor::shutdown`
+and `ActorSystem::shutdown` request stop on their first poll; an unpolled future
+requests nothing. A dropped `SupervisorBuilder::start` closes the tree and
+cancels in-flight factories.
+
+**Queued-message destructor panics:** a queued message whose `Drop` panics
+while a stopping actor discards its mailbox publishes the trappable
+`Panic("unexpected framework panic")` in both modes, on every tasks placement
+and under supervision; a trapping linked observer receives one `Exit` and one
+`Down` and survives. These were tasks-mode bugs (untrappable `Kill`, and an
+abort with two such messages) until the shutdown drain fix; `panic_safety` now
+runs this fault in its regular matrix.
+
 ## Toolchain
 
 The repository's `.tool-versions` selects Rust 1.93.0. The workspace tests,

@@ -1,0 +1,44 @@
+name: Robustness suites
+
+# Extended runs of the cross-backend, cancellation-safety and panic-safety
+# suites. Their default (short) configuration already runs in `cargo test`.
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '41 4 * * *'
+
+permissions:
+  contents: read
+
+jobs:
+  robustness:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.93.0
+      - uses: Swatinem/rust-cache@v2
+      - name: Cross-backend workloads with more generated cases
+        run: cargo test --locked -p spawned-concurrency --test cross_backend
+        env:
+          PROPTEST_CASES: '256'
+      - name: Repeated cancellation and panic safety sweeps
+        run: |
+          set -o pipefail
+          for run in 1 2 3 4 5; do
+            echo "run $run"
+            cargo test --locked -p spawned-concurrency --test cancellation_safety --test panic_safety -- --nocapture 2>&1 | tee -a robustness.log
+          done
+        env:
+          SPAWNED_CANCEL_REPORT: '1'
+      - name: Threads-only build
+        run: cargo test --locked -p spawned-concurrency --no-default-features --features threads --test panic_safety
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: robustness-evidence
+          path: |
+            robustness.log
+            concurrency/tests/*.proptest-regressions
+          if-no-files-found: ignore
