@@ -76,6 +76,47 @@ default (from the [Silver/flux study](legacy/docs/research/silver-flux.md#what-m
   infrastructure to make a backend faster;
 - mandatory dedicated cores or spinning for ordinary actors.
 
+### Verification rule
+
+Any feature that touches lifecycle, replies or ownership ships with a TLA+
+model, trace replay of real Rust runs and negative checks that must fail, as
+OneForOne, OneForAll/RestForOne and nested supervision did. Release is blocked
+until they pass. Everything also keeps ordinary tests, an example, clippy and
+ThreadSanitizer.
+
+| Needs a model | What the model must show |
+|---|---|
+| Dynamic supervisor (rank 12a) | Children starting and stopping while others restart or the supervisor shuts down; `max_children` is never exceeded. |
+| Deferred replies and pipe-to-self (rank 11) | Every accepted request gets exactly one reply, including on owner exit or panic; a late result never reaches a restarted instance. |
+| Keyed registry (rank 12) | An old entry's cleanup never removes its replacement (ethrex #7435). |
+| Draining shutdown (rank 13) | Queued work is handled or reported; shutdown finishes within its deadline. |
+| Bounded mailboxes and credits (ranks 17-18) | No credit leaks; waiting senders cannot deadlock. |
+| Base actor lifecycle | Links, monitors, `Down` exactly once, every request answered or `ActorStopped`; reintroducing the PR #182/#185 bugs must fail ([next model](verification/tla/README.md#next-model)). |
+
+No model needed (tests, examples and review suffice): the per-method timeout
+(5a), examples (5b), the migration guide, metrics, snapshots (10), the test kit
+(6) and macro work. Deadlock detection (7) and the stall watchdog (8) are
+optional; their risk is false alarms, which tests catch better.
+
+### Testing to add
+
+Existing layers are listed in [TESTING.md](docs/TESTING.md): unit and
+integration tests, proptest scenarios, trybuild, Loom, ThreadSanitizer,
+cargo-mutants and TLA+ with trace replay. Gaps, in order:
+
+| When | Test | Why |
+|---|---|---|
+| v0.7 | `cargo-semver-checks` and a `cargo-hack --each-feature` build matrix | First release with Tokio-free builds and many new features; catches accidental API breaks and feature combinations that do not compile. |
+| v0.7 | Supervisor policies under proptest | Generated crash/exit/shutdown sequences checked against the same restart table the TLA+ model uses. `actor_scenarios` does not cover supervision today. |
+| v0.7 | Fault injection in the Ethlambda canary | Kill and restart supervised actors in a running client and check it recovers; the release gate (rank 5) should exercise failures, not just the happy path. |
+| After v0.7 | Shuttle for multi-actor framework races | Randomised schedules over whole supervisor/registry tests too large for Loom. Listed in TESTING.md, not started. Internal tool, separate from rank 20. |
+| After v0.7 | Long-running soak tests | Memory, file descriptors, threads and tasks stay flat over hours of actor churn and restarts. The ethrex 1.5 GB/day mailbox leak is the motivating bug. Nightly, not per PR. |
+| With ranks 11-13 | Loom on the new primitives | Reply slots, registry compare-and-remove and mailbox publication versus stop. |
+| Ongoing | Coverage report (`cargo-llvm-cov`) | Find untested branches in supervision and system code; pairs with the surviving mutants. Report only, no threshold. |
+
+Deterministic simulation and record/replay remain the testing flagship (ranks
+20-22).
+
 ## Ranked backlog
 
 Rankings are engineering judgment, not measured speedup predictions or release
