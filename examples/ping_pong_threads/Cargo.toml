@@ -2,6 +2,7 @@
 name = "ping_pong_threads"
 version = "0.1.0"
 edition = "2021"
+publish = false
 
 [dependencies]
 spawned-rt = { workspace = true, features = ["async"] }
