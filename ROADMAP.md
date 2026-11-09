@@ -18,7 +18,7 @@ handlers and the existing default behavior. New policies are explicit and opt-in
   identities, monitors, links and trapped exits, linked startup, shutdown fixes,
   optional framework metrics. No automatic supervision. Thread actors need no
   active Tokio executor but still compile Tokio.
-- **Main (unreleased):** `ActorSystem` with async/native/pinned execution groups, Tokio-free
+- **v0.7.0:** `ActorSystem` with async/native/pinned execution groups, Tokio-free
   synchronous builds, and nested OneForOne/OneForAll/RestForOne supervision (see [Implemented](#implemented-no-longer-ranked)), a
   bounded dedicated-thread runtime, and the supervision verification of phase 2.
   See the [guide](docs/GUIDE.md#execution-groups-and-supervision) and the
@@ -29,8 +29,8 @@ handlers and the existing default behavior. New policies are explicit and opt-in
 1. **Execution groups plus supervision: implemented.** Includes fixed native actor
    pools, parked Linux pinned shards, nested supervisor specs, OneForAll and
    RestForOne. Tokio-free synchronous builds are also implemented. All are
-   unreleased; examples and resource limits are in the guide.
-2. **Verify what landed before v0.7:** retain #192's OneForOne checks and add
+   available in v0.7.0; examples and resource limits are in the guide.
+2. **v0.7 verification: completed.** Retain the OneForOne checks alongside
    cohort selection/barrier/supersession and nested shutdown ownership models,
    replay real Rust traces and require negative controls to fail. These bounded
    projections complement failure/stress tests, review and ThreadSanitizer;
@@ -39,8 +39,8 @@ handlers and the existing default behavior. New policies are explicit and opt-in
    See the [implementation evidence](legacy/docs/reviews/capabilities-extension.md)
    and [v0.7 review fixes and formal coverage](legacy/docs/reviews/v07-supervision.md).
    The client search is done; see [results](#client-search-results).
-3. **Release v0.7 and run it in Ethlambda** (rank 5), including the per-method
-   request timeout (rank 5a), a migration guide for the clients' hand-wired
+3. **Adopt v0.7 in Ethlambda** (rank 5), including the per-method
+   request timeout (rank 5a), the migration guide for the clients' hand-wired
    shutdown and startup, and an example for every way of using the library
    (rank 5b, [examples to add](#examples-to-add)). Review fixes are implemented: `Debug` and
    custom-supertrait protocols keep compiling; the API gate covers defaults,
@@ -49,8 +49,8 @@ handlers and the existing default behavior. New policies are explicit and opt-in
    rejected, the API script supports Python 3.9, stream examples use handshakes,
    and dated reports/evidence are archived in `legacy/` without host-specific
    driver scripts. Both clients pin spawned 0.5.0, so their
-   upgrade crosses 0.6 as well; the migration guide must cover 0.5 to 0.7 in one
-   path. After the tag: migrate Ethlambda (shutdown
+   upgrade crosses 0.6 as well; the migration guide covers 0.5 to 0.7 in one
+   path. v0.7.0 is released; migrate Ethlambda (shutdown
    deadline via `ActorSystem`, supervision, per-method timeouts) with fault
    injection, then Ethrex (racy Ctrl-C shutdown, `ActorStopped` exits).
    Once the canary runs, check its lifecycle traces with production monitors
@@ -87,7 +87,8 @@ handlers and the existing default behavior. New policies are explicit and opt-in
    Likely separate crates, only if someone builds a multi-node or durable system
    on Spawned.
 
-A full Ethrex/Ethlambda replay or same-node canary remains the validation gate.
+A full Ethrex/Ethlambda replay or same-node canary remains the application
+rollout validation gate.
 Local EngineClient probes and synthetic isolation/pipeline studies are different
 evidence levels; do not transfer their ratios to a production client. Backend
 research stays frozen until a client profile supplies a concrete reason (see the
@@ -163,7 +164,7 @@ cargo-mutants and TLA+ with trace replay. Release gates and remaining gaps:
 |---|---|---|
 | v0.7: implemented | `cargo-semver-checks` and a `cargo-hack --each-feature` build matrix | Defaults/metrics and explicit-async migration checks, exact declared no-default breaks, plus each feature without dev-dependency unification. See [testing](docs/TESTING.md#api-and-feature-checks). |
 | v0.7: implemented | Supervisor policies under proptest | Generated crash/exit/shutdown scripts for all strategies and modes, using zero backoff and an unexhausted budget; budget/backoff races have separate controlled tests. [Scope and replay](docs/TESTING.md#generated-supervisor-policy-scripts). |
-| v0.7 | Fault injection in the Ethlambda canary | Kill and restart supervised actors in a running client and check it recovers; the release gate (rank 5) should exercise failures, not just the happy path. |
+| Client rollout: pending | Fault injection in the Ethlambda canary | Kill and restart supervised actors in a running client and check it recovers; the application rollout gate (rank 5) should exercise failures, not just the happy path. |
 | After v0.7 | Shuttle for multi-actor framework races | Randomised schedules over whole supervisor/registry tests too large for Loom. Listed in TESTING.md, not started. Internal tool, separate from rank 20. |
 | After v0.7 | Long-running soak tests | Memory, file descriptors, threads and tasks stay flat over hours of actor churn and restarts. The ethrex 1.5 GB/day mailbox leak is the motivating bug. Nightly, not per PR. |
 | With ranks 11-13 | Loom on the new primitives | Reply slots, registry compare-and-remove and mailbox publication versus stop. |
@@ -274,7 +275,7 @@ earlier [detailed acceptance criteria](legacy/docs/design/roadmap-acceptance-202
 
 ### Implemented (no longer ranked)
 
-| Idea | Status on main |
+| Idea | Released capability |
 |---|---|
 | ActorSystem and execution groups | Named parked async pools with explicit worker budgets, `start_on(&group)`, owned helpers, readiness and reverse teardown. Fixed native actor pools and parked Linux pinned shards are implemented; budgets exclude helper/owner/control/coordinator threads. |
 | Automatic supervision trees | ChildSpec factories, Permanent/Transient/Temporary, rolling restart limits, capped backoff/jitter, ordered startup and reverse shutdown. Nested specs and OneForAll/RestForOne are implemented, with actual cleanup barriers and bounded formal models/real trace checks for all three strategies and nested ownership. |
@@ -344,8 +345,8 @@ PRs #180, #182 and #185. Plan and acceptance criteria: [verification strategy](l
 
 | Rank | Idea | Assessment |
 |---|---|---|
-| 5 | Release v0.7 and run it in Ethlambda | **Include the per-method request timeout (rank 5a below) and a migration guide for the clients' hand-wired shutdown and startup (see [client sweep](#client-sweep-production-pain)).** The roadmap's validation gate. A full-client replay or same-node canary outranks further synthetic research. Local EngineClient probes are a different evidence level. |
-| 5a | Per-method request timeout in `#[protocol]` | **Implemented, unreleased:** protocol/method Duration defaults and a configured concrete-handle override, retaining five seconds by default. Existing fakes remain compatible. See the [migration guide](docs/MIGRATION.md#protocol-request-timeouts). |
+| 5 | Adopt v0.7 in Ethlambda | **v0.7.0 includes per-method request timeouts (rank 5a below) and the migration guide for the clients' hand-wired shutdown and startup (see [client sweep](#client-sweep-production-pain)).** Client rollout validation is still pending. A full-client replay or same-node canary outranks further synthetic research. Local EngineClient probes are a different evidence level. |
+| 5a | Per-method request timeout in `#[protocol]` | **Available in v0.7.0:** protocol/method Duration defaults and a configured concrete-handle override, retaining five seconds by default. Existing fakes remain compatible. See the [migration guide](docs/MIGRATION.md#protocol-request-timeouts). |
 | 5b | An example for every way of using the library | Runnable examples with assertions for every user-facing feature, in both execution modes where it exists in both. The previous stream/recipient/timeout/native-lifecycle/registration/testing gaps are now covered below. Tracked in [examples to add](#examples-to-add); each new capability ships with its example. |
 | 5c | PObserve-style production lifecycle monitors | **After the Ethlambda canary runs.** Extends TLA+ trace validation (rank 2) from test runs to live nodes. Rust state machines derived from the TLA+ invariants consume the lifecycle trace stream online with bounded memory (state per live supervisor or actor, a fixed cap with a counted overflow) and report violations via `tracing` and metrics without stopping the node; the same monitors run offline over recorded traces in CI and on fede256 canary runs. Needs a production trace sink (bounded, per-entity ordering, counted gaps) instead of the test recorder's global section and unbounded buffer, and request events defined by the base lifecycle model. TLA+ stays the source of truth; each monitor must agree with TLC on the negative controls. See [A PObserve for Spawned](docs/research/systematic-testing.md#a-pobserve-for-spawned). |
 
@@ -395,7 +396,7 @@ Small, independent of the scheduler and lifecycle design, and visible to users.
 
 | Rank | Idea | Assessment |
 |---|---|---|
-| — | OneForAll/RestForOne and nested supervisor specs | Implemented for v0.7; expand the formal model before claiming these strategies formally verified. |
+| — | OneForAll/RestForOne and nested supervisor specs | Available in v0.7.0 with bounded cohort/nested models, real trace replay and negative controls; wider runtime guarantees remain outside those projections. |
 | — | Dedicated/pinned execution groups | Implemented: fixed native actor slots sharing one helper runtime, and parked Linux pinned shards. Client placement changes still need measurements. |
 | — | Genuinely Tokio-free thread builds | Implemented with an isolated dependency graph and CI. Both clients still require Tokio; this is a separate native build capability. |
 | 26 | Virtual (per-key) actors, in-process | **Client search:** ethrex keeps a per-peer actor map, but peers are created by dial/accept rather than a first message, so the keyed registry (rank 12) is the better fit first.  Address by key; created on first message, stopped when idle, recreated on demand, with activation/deactivation hooks, one live instance per key, ordered handoff and reload after crash. No storage or distribution layer. Promote if step 0 finds hand-written per-key actor maps; Orleans-style distributed placement stays at rank 44. Orleans, Akka sharding, Dapr and Restate compared in [virtual actors](docs/research/virtual-actors.md). |
@@ -512,7 +513,7 @@ exists today. Experimental backend drivers and their evidence stay under
 
 ### Release example coverage
 
-The former rank 5b gaps now have asserted examples on unreleased main:
+The former rank 5b gaps now have asserted examples in v0.7.0:
 
 | Feature | Runnable example |
 |---|---|
@@ -545,7 +546,7 @@ that already run today.
 | 17 | Bounded mailboxes | A slow consumer reaches capacity; demonstrate explicit rejection and cancellable waiting without blocking actor progress. |
 | 18 | Byte/work credits | Reserve before decoding a large payload; pass credit across stages and reclaim it after rejection/panic. [Payload-budget adapter works today](examples/capabilities/src/bin/byte_budget_pipeline.rs). |
 | 5a, 19 | Inherited deadlines | Exhaust an ingress budget and skip stale queued work without granting downstream calls fresh time. [Current timeout behavior](examples/capabilities/src/bin/timeout_outcomes.rs). |
-| — | OneForAll/RestForOne and nested supervisor specs | Implemented for v0.7; expand the formal model before claiming these strategies formally verified. |
+| — | OneForAll/RestForOne and nested supervisor specs | Available in v0.7.0 with bounded cohort/nested models, real trace replay and negative controls; wider runtime guarantees remain outside those projections. |
 | — | Dedicated/pinned execution groups | Implemented: fixed native actor slots sharing one helper runtime, and parked Linux pinned shards. Client placement changes still need measurements. |
 | — | Genuinely Tokio-free thread builds | Implemented with an isolated dependency graph and CI. Both clients still require Tokio; this is a separate native build capability. |
 | 26 | Virtual actors | Activate/deactivate a logical identity and demonstrate replacement, persistence and concurrent-activation policy. |

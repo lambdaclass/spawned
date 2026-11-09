@@ -187,8 +187,8 @@ populations. Use `Backend::Blocking` for persistent blocking work, or
 occupies a worker until it stops; each dedicated actor has its own root thread
 and an isolated runtime with one async helper worker. See
 [execution modes and backends](docs/GUIDE.md#execution-modes-and-backends) for
-resource sizing. Owned parked pinned groups and fixed native actor pools are available on main,
-unreleased. Spinning remains private research; Tokio stays the async default.
+resource sizing. Owned parked pinned groups and fixed native actor pools are
+available in v0.7.0. Spinning remains private research; Tokio stays the async default.
 A [thread-only example](examples/thread_only/README.md) also builds without Tokio.
 
 ## Project Structure
@@ -220,15 +220,15 @@ Protocols make this separation explicit: the trait defines *what* an actor does,
 
 Links, trapped exits and atomic linked startup are available in v0.6.0
 ([links](docs/GUIDE.md#links-and-trapped-exits)). Nested supervision with OneForOne/OneForAll/RestForOne and
-owned async/native/pinned execution groups are implemented on main, unreleased
+owned async/native/pinned execution groups are available in v0.7.0
 ([execution groups and supervision](docs/GUIDE.md#execution-groups-and-supervision)).
 
 ## Roadmap
 
 Preserve typed protocols, dynamic actors, and both async and synchronous thread
 execution while improving production visibility and recovery. Next: verify the
-base lifecycle, release v0.7 with execution groups and supervision, then deferred
-replies, bounded admission and deadlines as client workloads require. See the
+base lifecycle and validate v0.7 in client workloads, then add deferred replies,
+bounded admission and deadlines as client workloads require. See the
 [roadmap](ROADMAP.md) for the phases and the full ranked backlog.
 
 ## Optional framework metrics

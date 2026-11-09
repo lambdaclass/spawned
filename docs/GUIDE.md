@@ -22,7 +22,7 @@ upgrades, see [MIGRATION.md](MIGRATION.md); for runnable programs, see the
 - [Error Handling](#error-handling)
 - [spawned-rt](#spawned-rt)
 - [Links and trapped exits](#links-and-trapped-exits)
-- [Execution groups and supervision](#execution-groups-and-supervision) (unreleased)
+- [Execution groups and supervision](#execution-groups-and-supervision) (v0.7)
 - [Metrics](#metrics)
 - [Further reading](#further-reading)
 
@@ -93,9 +93,9 @@ From outside, there is no direct stop method on `ActorRef`. Design your protocol
 | `ctx.demonitor(monitor_ref)` | Cancel a monitor |
 | `ctx.link(&child_handle)` / `ctx.unlink(&child_handle)` | Bidirectional exit propagation (see [Links and trapped exits](#links-and-trapped-exits)) |
 | `ctx.trap_exit(bool)` | Receive linked exits as messages instead of being cancelled |
-| `ctx.spawn_helper(future)` / `ctx.spawn_blocking_helper(f)` | Actor-owned helper tasks, cancelled and joined before cleanup completes (unreleased) |
-| `ctx.register_name(name)` | Register this actor under a name, released with its generation (unreleased) |
-| `ctx.execution_group()` | The `ExecutionGroup` a managed actor runs on (unreleased) |
+| `ctx.spawn_helper(future)` / `ctx.spawn_blocking_helper(f)` | Actor-owned helper tasks, cancelled and joined before cleanup completes (v0.7) |
+| `ctx.register_name(name)` | Register this actor under a name, released with its generation (v0.7) |
+| `ctx.execution_group()` | The `ExecutionGroup` a managed actor runs on (v0.7) |
 | `ctx.mailbox_depth()` | Queued messages (with the `metrics` feature) |
 
 `Context::from_ref(&actor_ref)` creates a context from an `ActorRef`, useful for setting up timers or stream listeners from outside the actor.
@@ -122,7 +122,7 @@ async fn handle_tick(&mut self, _msg: Tick, ctx: &Context<Self>) {
 | `actor_ref.send(msg)` | Fire-and-forget. Returns `Result<(), ActorError>` |
 | `actor_ref.request(msg)` | Request with default 5s timeout. Tasks: `.await`, Threads: blocking |
 | `actor_ref.request_with_timeout(msg, duration)` | Request with custom timeout |
-| `actor_ref.with_request_timeout(duration)` | Clone a configured handle for generated protocol methods (unreleased) |
+| `actor_ref.with_request_timeout(duration)` | Clone a configured handle for generated protocol methods (v0.7) |
 | `actor_ref.request_raw(msg)` | Returns a raw oneshot receiver |
 | `actor_ref.recipient::<M>()` | Get a type-erased `Recipient<M>` |
 | `actor_ref.context()` | Get a `Context<A>` (for timer setup, etc.) |
@@ -130,7 +130,7 @@ async fn handle_tick(&mut self, _msg: Tick, ctx: &Context<Self>) {
 | `actor_ref.id()` | The actor's `ActorId` |
 | `actor_ref.child_handle()` | Type-erased `ChildHandle` for monitors, links and exit observation |
 | `actor_ref.exit_reason()` / `actor_ref.wait_exit()` | The `ExitReason` once stopped |
-| `actor_ref.ready()` | Wait until a managed actor's `started()` completed (unreleased) |
+| `actor_ref.ready()` | Wait until a managed actor's `started()` completed (v0.7) |
 | `actor_ref.mailbox_depth()` | Queued messages (with the `metrics` feature) |
 
 ### Starting an actor
@@ -240,7 +240,9 @@ archived in [the backend notes](../legacy/docs/BACKENDS.md) and the
 
 ---
 
-### Tokio-free synchronous builds (unreleased)
+<a id="tokio-free-synchronous-builds-unreleased"></a>
+
+### Tokio-free synchronous builds (v0.7)
 
 Disable the default `async` feature on both Spawned crates to use only the
 synchronous `threads::Actor` API without compiling Tokio. Native actors still
@@ -469,7 +471,9 @@ let result = ns.find("Joe".into()).unwrap();
 
 ---
 
-### Protocol timeout configuration (unreleased)
+<a id="protocol-timeout-configuration-unreleased"></a>
+
+### Protocol timeout configuration (v0.7)
 
 Generated requests retain the five-second default. Set a default for one
 protocol and override selected request methods:
@@ -638,15 +642,15 @@ not relabelled by a later peer failure; callback failures are still reported.
 A link to a closed peer creates no retained relationship and applies that peer's
 exit-signal rules for the attempt. Repeated live links are no-ops. Unlink prevents
 future propagation through the relationship but does not retract an exit already
-in flight. Links are a supervision primitive. Managed OneForOne recovery is described in
-[execution groups and supervision](#execution-groups-and-supervision); additional restart strategies and
-transparent reference rebinding remain separate work. The [review and regression evidence](../legacy/docs/reviews/pr-166-links.md) is archived.
+in flight. Links are a supervision primitive. Managed OneForOne/OneForAll/RestForOne recovery is described in
+[execution groups and supervision](#execution-groups-and-supervision).
+Transparent reference rebinding remains separate work. The [review and regression evidence](../legacy/docs/reviews/pr-166-links.md) is archived.
 
 ---
 
 ## Execution groups and supervision
 
-Available on main, unreleased. These are opt-in capabilities for async actors;
+Available in v0.7.0. These are opt-in capabilities for async actors;
 ordinary `.start()`, message types, handlers and protocols retain their behavior.
 Parked async pools, persistent native actor-thread pools and parked Linux pinned
 shards share the same ownership API. Supervisors support nested child specs,
@@ -1045,7 +1049,7 @@ are archived.
 
 ## Further reading
 
-- [Execution groups and supervision design contract](design/execution-groups-supervision.md): the fuller boundaries of the unreleased APIs.
+- [Execution groups and supervision design contract](design/execution-groups-supervision.md): the fuller boundaries of the v0.7 APIs.
 - [Testing](TESTING.md): scenario tests, failure windows, the TLA+ model and trace validation.
 - [Roadmap](../ROADMAP.md): what is planned and why.
 - [Legacy](../legacy/README.md): archived backend research, benchmark reports, reviews and earlier designs.

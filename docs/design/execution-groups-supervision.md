@@ -1,10 +1,9 @@
 # Execution groups plus supervision: MVP contract
 
-Status: **owned async/native/pinned groups and nested supervision strategies implemented on main, unreleased**. Updated 2026-11-08.
+Status: **owned async/native/pinned groups and nested supervision strategies available in v0.7.0**. Updated 2026-11-09.
 See the [usage guide](../GUIDE.md#execution-groups-and-supervision) for actual signatures and supported limits.
 This document records the design contract; illustrative API shapes below are not copyable code.
-This is the next capability milestone, separate from the proposed 0.6.1 runtime
-worker-budget patch. Ordinary handlers, protocols and `.start()` remain usable.
+v0.7.0 also includes the dedicated-runtime worker-budget correction. Ordinary handlers, protocols and `.start()` remain usable.
 
 The combined goal is straightforward: an application chooses where its actors
 run, and the framework can reconstruct a failed child in that same execution

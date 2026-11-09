@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0 — 2026-11-09
+
 ### Breaking changes for v0.7
 
 - Both libraries now default to the `async` feature. In v0.6, disabling defaults
@@ -54,12 +56,6 @@
 - Asserted execution-profile, nested recovery and thread-only examples, feature
   matrix CI and lifecycle/resource-failure tests.
 
-These capabilities are unreleased and require the next minor release; do not
-publish these new public APIs as a patch release. The dedicated-runtime fix
-below was drafted as a separate 0.6.1 patch (draft notes archived under
-`legacy/docs/releases/`); if it ships separately, prepare a patch-only lineage
-rather than tagging current main.
-
 - Protocol/method request timeout configuration and per-call configured handles,
   preserving the five-second default and handwritten protocol implementations.
   Configured handles support type-erased protocol refs in both runtime modes.
@@ -96,8 +92,8 @@ rather than tagging current main.
   deferred replies and pipe-to-self, a per-peer actor registry with a generation
   guard, a hardwired request timeout that exited a node, an unbounded-mailbox
   memory leak, hand-wired shutdown and hand-rolled timer policies. The roadmap
-  now plans v0.7 with a per-method request timeout, a migration guide and an
-  example for every way of using the library, followed by deferred replies.
+  records client adoption of v0.7, followed by deferred replies and further
+  workload-driven capabilities.
 - API guide, `CLAUDE.md` and README updated for monitors, links, owned helpers,
   name registration, execution groups and supervision.
 - Durable findings promoted out of `legacy/`: backend sizing warnings and why

@@ -10,8 +10,8 @@ spawned/
 │   └── src/
 │       ├── tasks/   # Async version (requires tokio runtime)
 │       ├── threads/ # Sync version (native OS threads)
-│       ├── system.rs       # ActorSystem, ExecutionGroup (unreleased)
-│       ├── supervision.rs  # ChildSpec, all three strategies, nested trees (unreleased)
+│       ├── system.rs       # ActorSystem, ExecutionGroup (v0.7)
+│       ├── supervision.rs  # ChildSpec, all three strategies, nested trees (v0.7)
 │       ├── child_handle.rs # ChildHandle, ActorId, ExitReason
 │       ├── monitor.rs      # MonitorRef, Down
 │       ├── link.rs         # links, Exit, trap_exit
@@ -69,8 +69,8 @@ Both provide identical Actor API. The `tasks` module has `Backend` enum: `Async`
 | `ExitReason` | `Normal`, `Shutdown`, `Panic(String)`, `Kill` |
 | `MonitorRef` / `Down` | Unidirectional death observation (`ctx.monitor`) |
 | `Exit` / `#[exit_received]` | Bidirectional links and trapped exits (`ctx.link`, `ctx.trap_exit`) |
-| `ActorSystem` / `ExecutionGroup` | Owned placement with worker budgets and ordered shutdown (unreleased) |
-| `Supervisor` / `ChildSpec` / `SupervisedChild` | OneForOne, OneForAll, RestForOne and nested supervision (unreleased) |
+| `ActorSystem` / `ExecutionGroup` | Owned placement with worker budgets and ordered shutdown (v0.7) |
+| `Supervisor` / `ChildSpec` / `SupervisedChild` | OneForOne, OneForAll, RestForOne and nested supervision (v0.7) |
 
 ## Actor Lifecycle
 

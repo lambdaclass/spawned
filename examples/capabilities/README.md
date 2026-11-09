@@ -63,7 +63,7 @@ When a proposed feature lands, add a runnable, asserted example here (or a
 dedicated example package), its run command and its operational limits in the
 same change. Do not present speculative API names as working code.
 
-Execution groups and automatic supervision are available on main, unreleased.
+Execution groups and automatic supervision are available in v0.7.0.
 Groups support parked async pools, fixed native actor-thread pools and parked
 Linux pinned shards. Supervisors support nested trees, OneForAll and RestForOne.
 Budgets describe actor workers/slots/shards, not all OS threads. See the
@@ -75,7 +75,7 @@ synchronous API builds without Tokio. It is an independent Cargo workspace;
 ActorSystem/supervision still require the async feature.
 
 
-The new timeout API is unreleased. A configured concrete handle can be converted
+The timeout API is available in v0.7.0. A configured concrete handle can be converted
 to its protocol ref; an already erased ref cannot use the concrete builder.
 Listener forwarding still uses unbounded mailboxes. A blocking native iterator
 must return from an in-progress `next()` before it can join. The coordinated

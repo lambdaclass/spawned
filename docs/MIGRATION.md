@@ -3,21 +3,22 @@
 Upgrade notes per release, newest first. The [CHANGELOG](../CHANGELOG.md) lists
 every change; this guide covers what you need to edit when upgrading.
 
-- **0.7 (unreleased):** [timeout configuration and client shutdown migration](#preparing-for-07).
+- **0.7:** [timeout configuration and client shutdown migration](#preparing-for-07).
 - **0.6:** no breaking API changes; existing handler/protocol signatures are
   unchanged. See the [CHANGELOG 0.6.0 section](../CHANGELOG.md#060--2026-11-06).
 
-## Preparing for 0.7
+<a id="preparing-for-07"></a>
 
-These APIs are implemented on main and are unreleased. Keep ordinary `.start()`
+## Upgrading to 0.7
+
+These APIs are available in v0.7.0. Keep ordinary `.start()`
 and the default Tokio backend unless adopting explicit ownership/placement.
 A dependency upgrade alone does not place existing actors in an `ActorSystem`.
 
 ### Direct 0.5 to 0.7 upgrade for Ethrex and Ethlambda
 
 Both audited clients pin Spawned 0.5.0. Upgrade `spawned-concurrency` and
-`spawned-rt` together; use the v0.7 candidate revision until that version is
-published. This path includes v0.6's lifecycle corrections as well as the new
+`spawned-rt` together to v0.7.0. This path includes v0.6's lifecycle corrections as well as the new
 v0.7 capabilities. Ordinary 0.5 protocol/handler signatures stay in place; the
 older enum-to-protocol rewrite under [Upgrading to 0.5](#upgrading-to-05) is not
 needed again.
@@ -55,7 +56,7 @@ spawned-concurrency = { version = "0.7", default-features = false, features = ["
 spawned-rt = { version = "0.7", default-features = false, features = ["async"] }
 ```
 
-These are upgrade examples for the unreleased v0.7, not published versions.
+These settings select the published v0.7 line.
 Thread-only applications intentionally leave `async` disabled. Optional `metrics`
 does not enable it. The audited Ethrex `1dfaa09ec` and Ethlambda `c3f5f566` manifests
 both use default features with Spawned 0.5.0; they do not need this Cargo edit.
@@ -164,6 +165,10 @@ dependencies or retry safety.
 
 ### Validation before rollout
 
+v0.7.0 passed the library checks and an isolated Ethlambda compile check.
+A running-node canary with fault injection has not yet been completed; keep it
+as the application rollout gate rather than inferring runtime results from compilation.
+
 Pin the same client source/configuration and compare the same replay or canary
 workload with only the Spawned dependency changed. Record startup, ready/stop
 outcomes, unexpected restarts, queue wait, handler time, request timeouts, CPU,
@@ -174,10 +179,10 @@ Ethlambda's current [import replay implementation](https://github.com/lambdaclas
 calls the import function directly, bypassing actor mailboxes, the tick loop and
 P2P. `replay-era` similarly targets the state transition. They are useful
 component checks; neither alone validates the actor runtime. Use a real node
-canary or an actor-backed replay path for this release gate.
+canary or an actor-backed replay path for application rollout validation.
 
 The library's tests, bounded models and examples are necessary checks. Full-client
-replay or a same-node Ethlambda canary remains the release gate. Do not promote
+replay or a same-node Ethlambda canary remains the application rollout gate. Do not promote
 synthetic backend speedup ratios to client claims. Pinned/native groups remain
 opt-in; profile the client before changing its placement.
 
@@ -188,7 +193,7 @@ dependents resolve its replacement, and check pending requests fail cleanly.
 Then exercise restart-budget exhaustion and shutdown during backoff, confirming
 the client reports failure and releases owned resources. Keep these hooks out of
 ordinary production ingress. Preserve client revisions, configuration, inputs,
-logs and matched baseline measurements with the results before tagging v0.7.
+logs and matched baseline measurements with the results before promoting the client migration.
 
 ## Upgrading to 0.5
 

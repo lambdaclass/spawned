@@ -10,7 +10,7 @@ programs and assertions; examples for future APIs are listed in the
 ## Verification layers
 
 No single tool covers lifecycle correctness; each layer catches a different
-class of bug. Status as of the unreleased main branch:
+class of bug. Coverage for v0.7.0:
 
 | Layer | Tool | Catches | Status |
 |---|---|---|---|
@@ -101,7 +101,7 @@ The default is 32 generated scripts; the extended workflow runs 1,000 and TSAN
 runs eight. Inputs shrink and failure seeds persist through proptest. Each
 action waits for a settled boundary; this suite does not control Tokio/OS
 scheduling or replace the concurrent recovery/shutdown tests and trace models.
-Real client recovery under fault injection remains a separate release gate.
+Real client recovery under fault injection remains a separate application rollout gate.
 
 ## Controlled failures, histories and simulations
 
@@ -284,7 +284,9 @@ execution supported. No restart or queue-capacity policies are added by these
 tests. See CHANGELOG.md for the observable lifecycle corrections.
 
 
-## Managed execution and recovery (main, unreleased)
+<a id="managed-execution-and-recovery-main-unreleased"></a>
+
+## Managed execution and recovery (v0.7)
 
 `execution_groups` exercises foreign-thread helper routing, placement closure,
 readiness, shutdown report retention, scoped registrations, helper panic/abort,
