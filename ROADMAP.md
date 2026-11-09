@@ -266,7 +266,7 @@ stays stable.
 The TLA+ models and checkers stay in `verification/`; they verify Spawned's own
 design, not user code.
 
-Order: the crate now exists with phase A of the test kit (rank 6): mocks,
+Order: built now, not after v0.7. The crate exists with phase A of the test kit (rank 6): mocks,
 probes, bounded harness waits and fault injection through public APIs only,
 ready for the Ethlambda canary. Next, the concrete-`ActorRef<B>` mock hook and
 controllable timer time if a client needs them. `explore` and replay (ranks
