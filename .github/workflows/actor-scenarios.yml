@@ -21,6 +21,8 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --locked -p spawned-concurrency --test actor_scenarios
+      - name: Generated supervision policy scripts
+        run: cargo test --locked -p spawned-concurrency --test supervisor_policies
       - run: cargo test --locked -p spawned-concurrency --test actor_scenarios sustained_actor_churn -- --ignored
         env:
           SPAWNED_STRESS_ROUNDS: '100'

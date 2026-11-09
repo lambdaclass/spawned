@@ -82,6 +82,37 @@ jobs:
           cargo fmt --all -- --check
           cargo fmt --manifest-path examples/thread_only/Cargo.toml -- --check
 
+  feature-matrix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.93.0
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-hack@0.6.46
+      - name: Check each library feature without dev-dependency unification
+        run: python3 scripts/check-api.py features
+
+  api-compatibility:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: DeterminateSystems/nix-installer-action@v16
+      - uses: DeterminateSystems/magic-nix-cache-action@v8
+      - name: Compare default public APIs against v0.6.0
+        # Pin the rustdoc JSON producer together with semver-checks.
+        run: >
+          nix shell
+          github:NixOS/nixpkgs/f4a03c008967841f2a0b3cb7c436fc6fc31671f6#cargo-semver-checks
+          github:NixOS/nixpkgs/f4a03c008967841f2a0b3cb7c436fc6fc31671f6#rustc
+          github:NixOS/nixpkgs/f4a03c008967841f2a0b3cb7c436fc6fc31671f6#cargo
+          --command python3 scripts/check-api.py semver
+
   clippy:
     runs-on: ubuntu-latest
     needs: build

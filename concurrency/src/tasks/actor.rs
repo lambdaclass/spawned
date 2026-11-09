@@ -581,10 +581,13 @@ impl<A: Actor> Context<A> {
 
     /// Register this managed actor until its owned cleanup completes. Removal
     /// compares identity and registration generation, preserving replacements.
-    pub fn register_name(&self, name: &str) -> Result<(), crate::registry::RegistryError> {
+    pub fn register_name(
+        &self,
+        name: &str,
+    ) -> Result<(), crate::registry::ManagedRegistrationError> {
         self.managed
             .as_ref()
-            .ok_or(crate::registry::RegistryError::OwnerClosed)?
+            .ok_or(crate::registry::ManagedRegistrationError::OwnerClosed)?
             .register(name, self.id, self.actor_ref())
     }
 

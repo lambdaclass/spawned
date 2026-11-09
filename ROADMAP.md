@@ -102,12 +102,12 @@ optional; their risk is false alarms, which tests catch better.
 
 Existing layers are listed in [TESTING.md](docs/TESTING.md): unit and
 integration tests, proptest scenarios, trybuild, Loom, ThreadSanitizer,
-cargo-mutants and TLA+ with trace replay. Gaps, in order:
+cargo-mutants and TLA+ with trace replay. Release gates and remaining gaps:
 
 | When | Test | Why |
 |---|---|---|
-| v0.7 | `cargo-semver-checks` and a `cargo-hack --each-feature` build matrix | First release with Tokio-free builds and many new features; catches accidental API breaks and feature combinations that do not compile. |
-| v0.7 | Supervisor policies under proptest | Generated crash/exit/shutdown sequences checked against the same restart table the TLA+ model uses. `actor_scenarios` does not cover supervision today. |
+| v0.7: implemented | `cargo-semver-checks` and a `cargo-hack --each-feature` build matrix | Default-API compatibility against v0.6.0 plus each feature without dev-dependency unification. See [testing](docs/TESTING.md#api-and-feature-checks). |
+| v0.7: implemented | Supervisor policies under proptest | Generated crash/exit/shutdown scripts checked against an independent generation/retirement oracle for all strategies and modes; [scope and replay](docs/TESTING.md#generated-supervisor-policy-scripts). |
 | v0.7 | Fault injection in the Ethlambda canary | Kill and restart supervised actors in a running client and check it recovers; the release gate (rank 5) should exercise failures, not just the happy path. |
 | After v0.7 | Shuttle for multi-actor framework races | Randomised schedules over whole supervisor/registry tests too large for Loom. Listed in TESTING.md, not started. Internal tool, separate from rank 20. |
 | After v0.7 | Long-running soak tests | Memory, file descriptors, threads and tasks stay flat over hours of actor churn and restarts. The ethrex 1.5 GB/day mailbox leak is the motivating bug. Nightly, not per PR. |
@@ -116,6 +116,9 @@ cargo-mutants and TLA+ with trace replay. Gaps, in order:
 
 Deterministic simulation and record/replay remain the testing flagship (ranks
 20-22).
+
+The [v0.7 gate review](docs/reviews/v07-release-gates.md) records the completed
+API/feature scans, generated-policy campaign and compatibility correction.
 
 ## Ranked backlog
 
@@ -139,7 +142,7 @@ earlier [detailed acceptance criteria](legacy/docs/design/roadmap-acceptance-202
 | Idea | Status on main |
 |---|---|
 | ActorSystem and execution groups | Named parked async pools with explicit worker budgets, `start_on(&group)`, owned helpers, readiness and reverse teardown. Fixed native actor pools and parked Linux pinned shards are implemented; budgets exclude helper/owner/control/coordinator threads. |
-| Automatic supervision trees | ChildSpec factories, Permanent/Transient/Temporary, rolling restart limits, capped backoff/jitter, ordered startup and reverse shutdown. Nested specs and OneForAll/RestForOne are implemented, with actual cleanup barriers; formal trace coverage remains OneForOne. |
+| Automatic supervision trees | ChildSpec factories, Permanent/Transient/Temporary, rolling restart limits, capped backoff/jitter, ordered startup and reverse shutdown. Nested specs and OneForAll/RestForOne are implemented, with actual cleanup barriers and bounded formal models/real trace checks for all three strategies and nested ownership. |
 | Tokio-free synchronous builds | Disable async defaults on both crates; isolated fixture and graph CI cover protocols, lifecycle and metrics. ActorSystem/supervision remain async-only. |
 | Fallible startup / readiness | Fallible startup and readiness for supervised children. The `result_on_start` branch is not the implementation; unsupervised `started()` still cannot fail. |
 | Instance-bound references | Decided: references are instance-bound; replacements are found by explicit lookup. Stable logical proxies remain an optional later design. |

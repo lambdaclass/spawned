@@ -21,6 +21,18 @@ pub enum RegistryError {
     /// A value with this name is already registered.
     #[error("name '{0}' is already registered")]
     AlreadyRegistered(String),
+}
+
+/// Errors when registering a name through a managed actor's lifecycle scope.
+///
+/// Kept separate from [`RegistryError`] so existing exhaustive matches on the
+/// global registry's error remain source-compatible.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum ManagedRegistrationError {
+    #[error(transparent)]
+    Registry(#[from] RegistryError),
+    /// The actor is unmanaged or its owner is closing or already closed.
     #[error("registration requires a live managed actor scope")]
     OwnerClosed,
 }
@@ -144,8 +156,11 @@ mod tests {
     #[test]
     fn duplicate_register_fails() {
         register("test_dup_1", 1u32).unwrap();
-        let result = register("test_dup_1", 2u32);
-        assert!(result.is_err());
+        // Deliberately exhaustive: the v0.6 global-registry error must retain
+        // its original shape when managed registration gains new failures.
+        match register("test_dup_1", 2u32).unwrap_err() {
+            RegistryError::AlreadyRegistered(name) => assert_eq!(name, "test_dup_1"),
+        }
     }
 
     #[test]

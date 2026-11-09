@@ -372,10 +372,22 @@ async fn old_scope_cleanup_cannot_remove_a_replacement_registration() {
     actor.ready().await.unwrap();
     let name = "execution-groups-stale-registration";
     actor.context().register_name(name).unwrap();
+    assert!(matches!(
+        actor.context().register_name(name),
+        Err(
+            spawned_concurrency::registry::ManagedRegistrationError::Registry(
+                spawned_concurrency::registry::RegistryError::AlreadyRegistered(_)
+            )
+        )
+    ));
     spawned_concurrency::registry::unregister(name);
     let replacement =
         spawned_concurrency::registry::register_owned(name, actor.id(), 42u64).unwrap();
     assert!(system.shutdown(LIMIT).await.complete);
+    assert!(matches!(
+        actor.context().register_name(name),
+        Err(spawned_concurrency::registry::ManagedRegistrationError::OwnerClosed)
+    ));
     assert_eq!(
         spawned_concurrency::registry::whereis::<u64>(name),
         Some(42)

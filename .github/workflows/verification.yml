@@ -55,10 +55,12 @@ jobs:
           RUSTFLAGS: -Zsanitizer=thread
           RUSTDOCFLAGS: -Zsanitizer=thread
           TSAN_OPTIONS: halt_on_error=1 second_deadlock_stack=1
+          PROPTEST_CASES: '8'
         run: >
           cargo +nightly test -Zbuild-std --target x86_64-unknown-linux-gnu
           -p spawned-concurrency --lib
           --test supervision --test supervision_strategies --test nested_supervision
+          --test supervisor_policies
           --test execution_groups --test execution_profiles --test shutdown_publication
           --test resource_cleanup --test linked_exit_macro
 

@@ -13,6 +13,13 @@ These APIs are implemented on main and are unreleased. Keep ordinary `.start()`
 and the default Tokio backend unless adopting explicit ownership/placement.
 A dependency upgrade alone does not place existing actors in an `ActorSystem`.
 
+The global registry retains `RegistryError::AlreadyRegistered`, including
+exhaustive matches written against v0.6. The new managed
+`Context::register_name` returns `ManagedRegistrationError`: `Registry(error)`
+for a name collision, or `OwnerClosed` for an unmanaged or closing owner.
+Manual `registry::register_owned` still returns `RegistryError`; its guard
+needs to be retained by its caller.
+
 ### Protocol request timeouts
 
 The default remains five seconds. Choose a protocol default, override individual
@@ -115,6 +122,15 @@ The library's tests, bounded models and examples are necessary checks. Full-clie
 replay or a same-node Ethlambda canary remains the release gate. Do not promote
 synthetic backend speedup ratios to client claims. Pinned/native groups remain
 opt-in; profile the client before changing its placement.
+
+Exercise failure recovery in a canary subsystem that actually adopts supervision;
+upgrading the dependency alone cannot validate automatic restarts. Inject a
+controlled actor failure, verify a fresh identity/generation becomes ready and
+dependents resolve its replacement, and check pending requests fail cleanly.
+Then exercise restart-budget exhaustion and shutdown during backoff, confirming
+the client reports failure and releases owned resources. Keep these hooks out of
+ordinary production ingress. Preserve client revisions, configuration, inputs,
+logs and matched baseline measurements with the results before tagging v0.7.
 
 ## Upgrading to 0.5
 

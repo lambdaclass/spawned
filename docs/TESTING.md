@@ -21,9 +21,49 @@ class of bug. Status as of the unreleased main branch:
 | User level | Actor-level ordering exploration | Bugs in users' actor systems, reproducible from a seed | Planned ([roadmap](../ROADMAP.md) rank 20) |
 | Memory safety | ThreadSanitizer, Miri | Data races and undefined behavior | TSAN in CI; Miri waits until unsafe code is proposed (all crates `#![forbid(unsafe_code)]`) |
 | Test quality | cargo-mutants | Tests that still pass when the code is broken | Weekly over supervision and system code |
+| Compatibility | cargo-semver-checks | Breaking changes to the released default Rust API | CI compares both libraries to v0.6.0 with the stricter patch-compatibility policy; protocol macros also need trybuild |
+| Feature separation | cargo-hack | Missing dependencies hidden by dev-dependency feature unification | CI builds each library feature, default, no-default and all features without dev dependencies; not the full feature powerset |
 
 The fuller rationale is archived in the
 [verification strategy note](../legacy/docs/research/verification-strategy.md).
+
+### API and feature checks
+
+```sh
+python3 scripts/check-api.py features
+python3 scripts/check-api.py semver --baseline v0.6.0
+```
+
+Install cargo-hack 0.6.46 for the first command. CI pins cargo-semver-checks
+0.51.0 and its Rust 1.99.1 rustdoc producer together through Nix for the second;
+see `.github/workflows/ci.yml`. The feature matrix uses Rust 1.93.0. Both checks
+run in disposable source copies: cargo-hack's `--no-dev-deps` rewrites manifests
+and the lockfile, so it must not run in a checkout being edited or compiled.
+The compatibility check requires the baseline Git tag locally and rejects API
+breaks even though v0.7 would permit a pre-1.0 minor break. It does not prove
+behavioral compatibility, macro expansion compatibility or every generic API
+interaction. Native-only builds have no released Tokio-free baseline; their
+feature, integration and dependency-graph checks remain separate gates.
+
+### Generated supervisor policy scripts
+
+`supervisor_policies` runs up to four children through generated crash, normal
+stop, explicit shutdown and tree-close scripts. An independent generation and
+retirement oracle checks all restart strategies and modes, collateral Temporary
+retirement, fresh factory generations and no resurrection after retirement or
+closure. Successful request fences verify the generation actually serving work.
+A fixed case keeps retired Transient/Temporary slots across later recoveries.
+
+```sh
+cargo test --locked -p spawned-concurrency --test supervisor_policies
+PROPTEST_CASES=512 PROPTEST_RNG_SEED=20261109 cargo test --locked -p spawned-concurrency --test supervisor_policies
+```
+
+The default is 32 generated scripts; the extended workflow runs 1,000 and TSAN
+runs eight. Inputs shrink and failure seeds persist through proptest. Each
+action waits for a settled boundary; this suite does not control Tokio/OS
+scheduling or replace the concurrent recovery/shutdown tests and trace models.
+Real client recovery under fault injection remains a separate release gate.
 
 ## Controlled failures, histories and simulations
 

@@ -745,10 +745,10 @@ impl Scope {
         name: &str,
         id: crate::ActorId,
         actor: impl Clone + Send + Sync + 'static,
-    ) -> Result<(), crate::registry::RegistryError> {
+    ) -> Result<(), crate::registry::ManagedRegistrationError> {
         let parent = self.parent.as_ref().map(|p| lock(&p.0));
         let Some(group) = self.group.upgrade() else {
-            return Err(crate::registry::RegistryError::OwnerClosed);
+            return Err(crate::registry::ManagedRegistrationError::OwnerClosed);
         };
         let group = lock(&group.state);
         let mut state = lock(&self.state);
@@ -757,7 +757,7 @@ impl Scope {
             || !state.open
             || self.token.is_cancelled()
         {
-            return Err(crate::registry::RegistryError::OwnerClosed);
+            return Err(crate::registry::ManagedRegistrationError::OwnerClosed);
         }
         state
             .registrations

@@ -4,6 +4,10 @@
 
 ### Added
 
+- Generated supervision-policy scripts with an independent generation/retirement
+  oracle, each-feature library builds without dev-dependency unification, and
+  default public API compatibility checks against v0.6.0. Managed registration
+  errors use a separate type, preserving exhaustive global-registry matches.
 - Optional ActorSystem with named parked async execution groups and explicit
   worker budgets. `start_on(&group)` selects placement without changing message
   handlers or ambient `.start()`. Scoped async/blocking helpers, framework

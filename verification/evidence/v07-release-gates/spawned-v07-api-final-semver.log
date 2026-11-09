@@ -1,0 +1,24 @@
+    Building spawned-concurrency v0.6.0 (current)
+       Built [   0.841s] (current)
+     Parsing spawned-concurrency v0.6.0 (current)
+      Parsed [   0.006s] (current)
+    Building spawned-concurrency v0.6.0 (baseline)
+       Built [   0.639s] (baseline)
+     Parsing spawned-concurrency v0.6.0 (baseline)
+      Parsed [   0.003s] (baseline)
+    Checking spawned-concurrency v0.6.0 -> v0.6.0 (assume patch change)
+     Checked [   0.008s] 229 checks: 229 pass, 31 skip
+     Summary no semver update required
+    Finished [   1.967s] spawned-concurrency
+    Building spawned-rt v0.6.0 (current)
+       Built [   0.125s] (current)
+     Parsing spawned-rt v0.6.0 (current)
+      Parsed [   0.001s] (current)
+    Building spawned-rt v0.6.0 (baseline)
+       Built [   0.122s] (baseline)
+     Parsing spawned-rt v0.6.0 (baseline)
+      Parsed [   0.001s] (baseline)
+    Checking spawned-rt v0.6.0 -> v0.6.0 (assume patch change)
+     Checked [   0.004s] 229 checks: 229 pass, 31 skip
+     Summary no semver update required
+    Finished [   0.510s] spawned-rt
