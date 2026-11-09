@@ -29,7 +29,7 @@ pub trait OwnedProtocol: Send + Sync {
 }
 
 #[protocol]
-pub trait NamingProtocol: Send + Sync {
+pub trait NamingProtocol: Send + Sync + std::fmt::Debug {
     fn timeout(&self) -> Response<u64>;
     fn actor_ref(&self) -> Response<u64>;
 }

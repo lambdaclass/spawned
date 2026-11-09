@@ -11,7 +11,7 @@ spawned/
 │       ├── tasks/   # Async version (requires tokio runtime)
 │       ├── threads/ # Sync version (native OS threads)
 │       ├── system.rs       # ActorSystem, ExecutionGroup (unreleased)
-│       ├── supervision.rs  # Supervisor, ChildSpec, OneForOne (unreleased)
+│       ├── supervision.rs  # ChildSpec, all three strategies, nested trees (unreleased)
 │       ├── child_handle.rs # ChildHandle, ActorId, ExitReason
 │       ├── monitor.rs      # MonitorRef, Down
 │       ├── link.rs         # links, Exit, trap_exit
@@ -24,7 +24,7 @@ spawned/
 ├── examples/        # Usage examples (name_server, bank, ping_pong, capabilities, etc.)
 ├── docs/            # GUIDE.md, MIGRATION.md, TESTING.md, design/ (active contract)
 ├── benchmarks/      # Benchmark harness and render scripts
-├── verification/    # TLA+ model of OneForOne supervision
+├── verification/    # TLA+ models/trace checks and explicit API compatibility policy
 └── legacy/          # Archived research, reviews, reports, raw data (not maintained)
 ```
 
@@ -69,7 +69,7 @@ Both provide identical Actor API. The `tasks` module has `Backend` enum: `Async`
 | `MonitorRef` / `Down` | Unidirectional death observation (`ctx.monitor`) |
 | `Exit` / `#[exit_received]` | Bidirectional links and trapped exits (`ctx.link`, `ctx.trap_exit`) |
 | `ActorSystem` / `ExecutionGroup` | Owned placement with worker budgets and ordered shutdown (unreleased) |
-| `Supervisor` / `ChildSpec` / `SupervisedChild` | OneForOne supervision (unreleased) |
+| `Supervisor` / `ChildSpec` / `SupervisedChild` | OneForOne, OneForAll, RestForOne and nested supervision (unreleased) |
 
 ## Actor Lifecycle
 

@@ -14,6 +14,7 @@ required = {
     "synchronous::protocol_timeout_is_used_by_native_requests",
     "synchronous::timeout_expression_precedes_argument_moves_without_capturing_user_names",
     "synchronous::configured_handles_do_not_shadow_protocol_method_names",
+    "synchronous::method_override_and_configured_type_erasure_work_without_async",
 }
 listed = {line.removesuffix(": test") for line in Path(sys.argv[1]).read_text().splitlines() if line.endswith(": test")}
 missing = required - listed

@@ -1,0 +1,3 @@
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.02s
+     Running `/tmp/spawned-pr-security-review/system-target/debug/streams_and_recipients`
+Recipients hide actor types; listeners stop cooperatively. Mailboxes remain unbounded.

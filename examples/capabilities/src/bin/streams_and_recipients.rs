@@ -1,6 +1,5 @@
 //! Type erasure, listener cancellation, and a blocking iterator's limit.
 use spawned_concurrency::{message::Message, ActorError};
-use std::time::Duration;
 #[derive(Clone)]
 struct Item(u64);
 impl Message for Item {
@@ -35,24 +34,18 @@ mod asynchronous {
             member.send(Item(1)).unwrap();
         }
         assert_eq!(second.request(Total).await.unwrap(), 2);
-        let source = stream::iter((0..5).map(|_| Item(1))).chain(stream::pending());
-        let mut listener = tasks::spawn_listener(first.context(), source);
-        tokio::time::timeout(Duration::from_secs(2), async {
-            while first.request(Total).await.unwrap() != 6 {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .unwrap();
-        assert!(tokio::time::timeout(Duration::ZERO, &mut listener)
-            .await
-            .is_err());
+        let (queued, progress) = tokio::sync::oneshot::channel();
+        let source = stream::iter((0..5).map(|_| Item(1))).chain(stream::once(async move {
+            queued.send(()).unwrap();
+            std::future::pending::<Item>().await
+        }));
+        let listener = tasks::spawn_listener(first.context(), source);
+        progress.await.unwrap();
+        assert_eq!(first.request(Total).await.unwrap(), 6);
+        assert!(!listener.is_finished());
         first.context().stop();
         first.join().await;
-        tokio::time::timeout(Duration::from_secs(2), listener)
-            .await
-            .unwrap()
-            .unwrap();
+        listener.await.unwrap();
         assert!(matches!(
             recipients[0].send(Item(1)),
             Err(ActorError::ActorStopped)
@@ -90,7 +83,9 @@ mod synchronous {
                 return Some(Item(1));
             }
             self.entered.send(()).unwrap();
-            self.release.recv_timeout(Duration::from_secs(2)).unwrap();
+            // An explicit gate, not a scheduling deadline: the example's outer
+            // CI watchdog detects a hang without racing actor cleanup here.
+            self.release.recv().unwrap();
             None
         }
     }
@@ -111,7 +106,7 @@ mod synchronous {
                 release: gate,
             },
         );
-        waiting.recv_timeout(Duration::from_secs(2)).unwrap();
+        waiting.recv().unwrap();
         assert_eq!(first.request(Total).unwrap(), 6);
         first.context().stop();
         first.join();

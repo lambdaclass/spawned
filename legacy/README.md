@@ -21,6 +21,14 @@ The layout mirrors where each file used to live:
 | [`docs/BACKENDS.md`](docs/BACKENDS.md) | Backend guide with pinned-profile measurements (usage now in the [guide](../docs/GUIDE.md#execution-modes-and-backends)) | `docs/BACKENDS.md` |
 | [`benchmarks/`](benchmarks) | Benchmark protocols, findings, validation notes, reviews, rendered Markdown reports, raw results of the 2026-11-05 campaigns and the baseline methodology | `benchmarks/*.md`, `benchmarks/{reports,reviews,results,validation}/` |
 | [`research/`](research) | Experiment scripts, reports, findings and the smaller raw datasets: backend experiments, client observations, framework-metrics overhead and reliability campaigns | `research/` |
+| [`verification/evidence/`](verification/evidence) | Historical v0.7 model, test and review logs; not live CI inputs | `verification/evidence/` |
+
+The v0.7 reviews are archived in `docs/reviews/`. Host-specific one-off driver
+scripts were removed rather than presented as portable verification commands;
+their original versions remain in Git history at `8dc2e81e`. Use the current
+[testing guide](../docs/TESTING.md) and CI workflows to reproduce checks. Raw logs
+retain historical host paths as provenance. Archive checksum lists omit the
+removed drivers; the remaining raw log bytes are unchanged.
 
 Some scripts in `benchmarks/` read findings files from `legacy/benchmarks/` and
 `legacy/research/` when re-rendering archived reports.

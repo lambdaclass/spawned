@@ -48,6 +48,25 @@ fn strip_protocol_suffix(name: &str) -> String {
     name.strip_suffix("Protocol").unwrap_or(name).to_string()
 }
 
+// A method-level cfg_attr has not been expanded when the enclosing protocol
+// macro runs. Reject conditional timeout attributes even for false predicates;
+// otherwise Rust sees an unknown attribute, or silently omits the timeout.
+fn conditional_timeout(meta: &syn::Meta) -> bool {
+    if let syn::Meta::List(list) = meta {
+        if list.path.is_ident("cfg_attr") {
+            use syn::parse::Parser;
+            let arguments =
+                syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated;
+            if let Ok(arguments) = arguments.parse2(list.tokens.clone()) {
+                return arguments.iter().skip(1).any(|meta| {
+                    meta.path().is_ident("request_timeout") || conditional_timeout(meta)
+                });
+            }
+        }
+    }
+    false
+}
+
 enum MethodKind {
     Send,
     Request(Box<Type>),
@@ -297,27 +316,22 @@ struct ProtocolInfo<'a> {
     ref_name: &'a Ident,
     converter_trait: &'a Ident,
     converter_method: &'a Ident,
+    target_trait: &'a Ident,
 }
 
-/// Generates a blanket `impl Protocol for ActorRef<A>` and `impl ToXRef for ActorRef<A>`
-/// for a given runtime path (tasks or threads).
-///
-/// For cfg-gated methods, we generate marker traits that conditionally require
-/// the Handler bounds. This avoids putting extra where-clause bounds on individual
-/// methods (which Rust rejects as "impl has stricter requirements than trait").
-fn generate_blanket_impl(
+/// Runtime-specific transport primitives, shared by plain and configured handles.
+/// Cfg-gated Handler bounds are represented by one marker set per runtime.
+fn generate_target_impl(
     info: &ProtocolInfo,
     methods: &[ProtocolMethodInfo],
     runtime_path: &proc_macro2::TokenStream,
     mode: RuntimeMode,
-    override_timeout: bool,
 ) -> proc_macro2::TokenStream {
     let ProtocolInfo {
         trait_name,
         mod_name,
-        ref_name,
-        converter_trait,
-        converter_method,
+        target_trait,
+        ..
     } = info;
 
     // Unconditional methods: Handler bounds go directly on the impl block.
@@ -401,105 +415,178 @@ fn generate_blanket_impl(
         marker_trait_bounds.push(quote! { + #marker_name });
     }
 
-    if override_timeout {
-        marker_trait_defs.clear();
-    }
-    let target = if override_timeout {
-        quote! { spawned_concurrency::response::RequestOptions<#runtime_path::ActorRef<__A>> }
-    } else {
-        quote! { #runtime_path::ActorRef<__A> }
-    };
-    let receiver = if override_timeout {
-        quote! { spawned_concurrency::response::RequestOptions::actor_ref(self) }
-    } else {
-        quote! { self }
-    };
-
-    // Generate method implementations (no where clauses needed — bounds come from
-    // marker traits or the impl block).
-    let method_impls: Vec<_> = methods
-        .iter()
-        .map(|m| {
-            let method_name = &m.method_name;
-            let field_names = &m.field_names;
-            let params: Vec<_> = m.params.iter().collect();
-            let ret_ty = &m.ret_type;
-            let method_attrs = &m.method_attrs;
-            let timeout = if override_timeout {
-                quote! { spawned_concurrency::response::RequestOptions::timeout(self) }
-            } else {
-                let timeout = &m.timeout;
-                quote! { #timeout }
-            };
-
-            let struct_name = &m.struct_name;
-            let msg_construct = if field_names.is_empty() {
-                quote! { #mod_name::#struct_name }
-            } else {
-                quote! { #mod_name::#struct_name { #(#field_names),* } }
-            };
-
-            match &m.kind {
-                MethodKind::Send => {
-                    let is_unit_return = match ret_ty {
-                        ReturnType::Default => true,
-                        ReturnType::Type(_, ty) => is_unit_type(ty),
-                    };
-                    let body = if is_unit_return {
-                        quote! { let _ = #receiver.send(#msg_construct); }
-                    } else {
-                        quote! { #receiver.send(#msg_construct) }
-                    };
-                    quote! {
-                        #(#method_attrs)*
-                        fn #method_name(&self, #(#params),*) #ret_ty {
-                            #body
-                        }
-                    }
+    let method_impls = methods.iter().enumerate().map(|(index, m)| {
+        let name = format_ident!("__dispatch_{}", index);
+        let message = &m.struct_name;
+        let cfg = &m.cfg_attrs;
+        match &m.kind {
+            MethodKind::Send => quote! {
+                #(#cfg)*
+                fn #name(&self, message: #mod_name::#message)
+                    -> ::std::result::Result<(), spawned_concurrency::ActorError>
+                {
+                    self.send(message)
                 }
-                MethodKind::Request(_) => {
-                    let timeout_binding = syn::Ident::new(
-                        "__spawned_request_timeout",
-                        proc_macro2::Span::mixed_site(),
-                    );
-                    let body = match mode {
-                        RuntimeMode::Tasks => quote! {
-                            spawned_concurrency::Response::from_with_timeout(
-                                #receiver.request_raw(#msg_construct),
-                                #timeout_binding,
-                            )
-                        },
-                        RuntimeMode::Threads => quote! {
-                            spawned_concurrency::Response::ready(
-                                #receiver.request_with_timeout(#msg_construct, #timeout_binding),
-                            )
-                        },
-                    };
-                    quote! {
-                        #(#method_attrs)*
-                        fn #method_name(&self, #(#params),*) #ret_ty {
-                            // Evaluate before message construction can move arguments.
-                            let #timeout_binding: ::std::time::Duration = #timeout;
-                            #body
-                        }
+            },
+            MethodKind::Request(result) => {
+                let body = match mode {
+                    RuntimeMode::Tasks => quote! {
+                        spawned_concurrency::Response::from_with_timeout(self.request_raw(message), timeout)
+                    },
+                    RuntimeMode::Threads => quote! {
+                        spawned_concurrency::Response::ready(self.request_with_timeout(message, timeout))
+                    },
+                };
+                quote! {
+                    #(#cfg)*
+                    fn #name(&self, message: #mod_name::#message, timeout: ::std::time::Duration)
+                        -> spawned_concurrency::Response<#result>
+                    {
+                        #body
                     }
                 }
             }
-        })
-        .collect();
-
+        }
+    });
     quote! {
         #(#marker_trait_defs)*
-
-        impl<__A: #runtime_path::Actor #(+ #handler_bounds)* #(#marker_trait_bounds)*> #trait_name
-            for #target
+        impl<__A: #runtime_path::Actor #(+ #handler_bounds)* #(#marker_trait_bounds)*>
+            #target_trait for #runtime_path::ActorRef<__A>
         {
             #(#method_impls)*
         }
+    }
+}
 
-        impl<__A: #runtime_path::Actor #(+ #handler_bounds)* #(#marker_trait_bounds)*> #converter_trait
-            for #target
-        {
+/// Generate business-facing methods once. Supertraits constrain this impl rather
+/// than imposing new requirements on every configured handle at macro expansion.
+fn generate_protocol_adapters(
+    info: &ProtocolInfo,
+    methods: &[ProtocolMethodInfo],
+    definition: &ItemTrait,
+) -> proc_macro2::TokenStream {
+    let ProtocolInfo {
+        trait_name,
+        mod_name,
+        ref_name,
+        converter_trait,
+        converter_method,
+        target_trait,
+    } = info;
+    let signatures = methods.iter().enumerate().map(|(index, m)| {
+        let name = format_ident!("__dispatch_{}", index);
+        let message = &m.struct_name;
+        let cfg = &m.cfg_attrs;
+        match &m.kind {
+            MethodKind::Send => quote! {
+                #(#cfg)*
+                fn #name(&self, message: #mod_name::#message)
+                    -> ::std::result::Result<(), spawned_concurrency::ActorError>;
+            },
+            MethodKind::Request(result) => quote! {
+                #(#cfg)*
+                fn #name(&self, message: #mod_name::#message, timeout: ::std::time::Duration)
+                    -> spawned_concurrency::Response<#result>;
+            },
+        }
+    });
+    let delegates = methods.iter().enumerate().map(|(index, m)| {
+        let name = format_ident!("__dispatch_{}", index);
+        let message = &m.struct_name;
+        let cfg = &m.cfg_attrs;
+        let actor = quote! { spawned_concurrency::response::RequestOptions::actor_ref(self) };
+        match &m.kind {
+            MethodKind::Send => quote! {
+                #(#cfg)*
+                fn #name(&self, message: #mod_name::#message)
+                    -> ::std::result::Result<(), spawned_concurrency::ActorError>
+                {
+                    <__T as #target_trait>::#name(#actor, message)
+                }
+            },
+            MethodKind::Request(result) => quote! {
+                #(#cfg)*
+                fn #name(&self, message: #mod_name::#message, timeout: ::std::time::Duration)
+                    -> spawned_concurrency::Response<#result>
+                {
+                    <__T as #target_trait>::#name(#actor, message, timeout)
+                }
+            },
+        }
+    });
+    let method_impls = methods.iter().enumerate().map(|(index, m)| {
+        let method = &m.method_name;
+        let dispatch = format_ident!("__dispatch_{}", index);
+        let params = &m.params;
+        let attrs = &m.method_attrs;
+        let result = &m.ret_type;
+        let message = &m.struct_name;
+        let fields = &m.field_names;
+        let construct = if fields.is_empty() {
+            quote! { #mod_name::#message }
+        } else {
+            quote! { #mod_name::#message { #(#fields),* } }
+        };
+        let body = match &m.kind {
+            MethodKind::Send => {
+                let call = quote! { <Self as #target_trait>::#dispatch(self, #construct) };
+                let unit = match result {
+                    ReturnType::Default => true,
+                    ReturnType::Type(_, ty) => is_unit_type(ty),
+                };
+                if unit { quote! { let _ = #call; } } else { call }
+            }
+            MethodKind::Request(_) => {
+                let timeout = &m.timeout;
+                let binding = syn::Ident::new("__spawned_request_timeout", proc_macro2::Span::mixed_site());
+                quote! {
+                    // Evaluate before message construction can move arguments;
+                    // an explicit override does not evaluate the default expression.
+                    let #binding: ::std::time::Duration = match <Self as #target_trait>::__timeout_override(self) {
+                        Some(timeout) => timeout,
+                        None => #timeout,
+                    };
+                    <Self as #target_trait>::#dispatch(self, #construct, #binding)
+                }
+            }
+        };
+        quote! {
+            #(#attrs)*
+            fn #method(&self, #(#params),*) #result { #body }
+        }
+    });
+    let mut predicates: Vec<_> = definition
+        .generics
+        .where_clause
+        .iter()
+        .flat_map(|clause| clause.predicates.iter())
+        .map(|predicate| quote! { #predicate })
+        .collect();
+    let supertraits = &definition.supertraits;
+    if !supertraits.is_empty() {
+        predicates.push(quote! { __T: #supertraits });
+    }
+    let where_clause = if predicates.is_empty() {
+        quote! {}
+    } else {
+        quote! { where #(#predicates,)* }
+    };
+    quote! {
+        #[doc(hidden)]
+        trait #target_trait: Clone + Send + Sync + 'static {
+            fn __timeout_override(&self) -> Option<::std::time::Duration> { None }
+            #(#signatures)*
+        }
+        impl<__T: #target_trait> #target_trait for spawned_concurrency::response::RequestOptions<__T> {
+            fn __timeout_override(&self) -> Option<::std::time::Duration> {
+                Some(spawned_concurrency::response::RequestOptions::timeout(self))
+            }
+            #(#delegates)*
+        }
+        impl<__T: #target_trait> #trait_name for __T #where_clause {
+            #(#method_impls)*
+        }
+        impl<__T: #target_trait + #trait_name> #converter_trait for __T {
             fn #converter_method(&self) -> #ref_name {
                 ::std::sync::Arc::new(self.clone())
             }
@@ -647,6 +734,12 @@ pub fn protocol(attr: TokenStream, item: TokenStream) -> TokenStream {
             .into();
         }
         if let TraitItem::Fn(method) = item {
+            if let Some(attribute) = method.attrs.iter().find(|a| conditional_timeout(&a.meta)) {
+                return syn::Error::new_spanned(
+                    attribute,
+                    "conditional request_timeout is not supported; use #[request_timeout(...)] directly",
+                ).to_compile_error().into();
+            }
             if method.sig.asyncness.is_some() {
                 return syn::Error::new_spanned(
                     &method.sig,
@@ -818,6 +911,7 @@ pub fn protocol(attr: TokenStream, item: TokenStream) -> TokenStream {
         .collect();
 
     // Gate async impls using the dependency feature namespace, not the consumer.
+    let target_trait = format_ident!("__{}Target", trait_name);
     let tasks = quote! { spawned_concurrency::tasks };
     let threads = quote! { spawned_concurrency::threads };
     let proto_info = ProtocolInfo {
@@ -826,18 +920,15 @@ pub fn protocol(attr: TokenStream, item: TokenStream) -> TokenStream {
         ref_name: &ref_name,
         converter_trait: &converter_trait,
         converter_method: &converter_method,
+        target_trait: &target_trait,
     };
-    let tasks_impl =
-        generate_blanket_impl(&proto_info, &methods, &tasks, RuntimeMode::Tasks, false);
-    let threads_impl =
-        generate_blanket_impl(&proto_info, &methods, &threads, RuntimeMode::Threads, false);
-    let tasks_options =
-        generate_blanket_impl(&proto_info, &methods, &tasks, RuntimeMode::Tasks, true);
-    let threads_options =
-        generate_blanket_impl(&proto_info, &methods, &threads, RuntimeMode::Threads, true);
+    let tasks_impl = generate_target_impl(&proto_info, &methods, &tasks, RuntimeMode::Tasks);
+    let threads_impl = generate_target_impl(&proto_info, &methods, &threads, RuntimeMode::Threads);
+    let adapters = generate_protocol_adapters(&proto_info, &methods, &trait_def);
     let blanket_impls = quote! {
-        spawned_concurrency::__spawned_async_items! { #tasks_impl #tasks_options }
-        #threads_impl #threads_options
+        #adapters
+        spawned_concurrency::__spawned_async_items! { #tasks_impl }
+        #threads_impl
     };
 
     let ref_doc = format!(

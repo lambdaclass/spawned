@@ -1,9 +1,14 @@
 # v0.7 API and generated-policy gates
 
+Archived snapshot, corrected after review: the original scan covered only
+default features. Raw no-default consumers lose async APIs in v0.7 and require
+the [explicit-async migration](../../../docs/MIGRATION.md#cargo-features-and-protocol-attributes).
+This record does not establish patch compatibility for all configurations.
+
 Candidate based on `f407d7ba9cd515c55f033e19c19ba740c0f095f5`.
 Baseline: released v0.6.0, `4a648d4da7da520ce3aa8cbd4fdc068246486b21`.
 The [evidence](../../verification/evidence/v07-release-gates/) retains logs,
-commands, source hashes and AGY's review. These checks do not publish a release.
+command logs, source hashes and AGY's review. These checks do not publish a release.
 
 ## Compatibility finding and correction
 
@@ -15,9 +20,12 @@ The global registry now retains that original enum. Only the unreleased managed
 No admission, cleanup or registration-lifetime behavior changed. A deliberately
 exhaustive match and managed collision/closed-owner assertions retain regressions.
 
-Both libraries now pass the stricter patch-compatibility policy against v0.6.0:
-229 checks pass and 31 skip per library. This default-feature scan does not prove
-behavioral or macro compatibility. Existing trybuild and runtime tests remain.
+Both libraries passed the default-feature patch comparison against v0.6.0:
+229 checks passed and 31 skipped per library. This omitted the breaking
+no-default feature split and did not prove macro compatibility; subsequent
+review found the missing Debug supertrait regression. The corrected live
+[testing guide](../../../docs/TESTING.md#api-and-feature-checks) describes the
+expanded profiles and declared removals. v0.7 requires a pre-1.0 minor bump.
 
 ## Generated policy scripts and build gates
 
@@ -60,4 +68,4 @@ made by this review.
 A running Ethlambda canary or actor-backed replay with fault injection is still
 required. The prior isolated client compile check is not that gate. The target
 and deployment configuration are pending; no production service, release tag or
-published version changed. See the [migration guide](../MIGRATION.md#validation-before-rollout).
+published version changed. See the [migration guide](../../../docs/MIGRATION.md#validation-before-rollout).

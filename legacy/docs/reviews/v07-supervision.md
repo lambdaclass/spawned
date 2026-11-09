@@ -37,7 +37,7 @@ instance-bound, handlers remain serial, and shutdown cannot preempt blocking cod
 
 ## Formal and implementation checks
 
-The [model documentation](../../verification/tla/README.md) defines the bounds
+The [model documentation](../../../verification/tla/README.md) defines the bounds
 and abstractions. The existing OneForOne model is retained. New cohort models
 cover both strategy ranges, cleanup before reconstruction, retired slots, stale
 notifications and superseding rounds. The ownership model covers dynamic nested

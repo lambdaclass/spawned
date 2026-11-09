@@ -1688,6 +1688,7 @@ version = "0.1.0"
 dependencies = [
  "futures",
  "spawned-concurrency",
+ "spawned-protocol-contract",
  "spawned-rt",
  "tokio",
 ]
@@ -1719,6 +1720,13 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "spawned-protocol-contract"
+version = "0.0.0"
+dependencies = [
+ "spawned-concurrency",
 ]
 
 [[package]]

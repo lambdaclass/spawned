@@ -14,6 +14,8 @@ Usage of each feature is documented in the [guide](../docs/GUIDE.md).
 |---|---|---|
 | Protocols, `#[actor]`, request/reply and sends | [name_server](name_server), [bank](bank), [ping_pong](ping_pong) | [bank_threads](bank_threads), [ping_pong_threads](ping_pong_threads) |
 | Type-erased protocol refs (`XRef`) between actors | [chat_room](chat_room) | [chat_room_threads](chat_room_threads) |
+| Stream listeners and per-message recipients | [streams_and_recipients](capabilities/src/bin/streams_and_recipients.rs) | Same example |
+| Shared protocol contracts and downstream handwritten fakes | [contract library](protocol_contract/src/lib.rs), [consumer test](capabilities/tests/cross_crate_protocol.rs) | Same test covers native actors |
 | Lifecycle hooks (`started`/`stopped`) and `ctx.stop()` | [bank](bank), [updater](updater), [signal_test](signal_test) | [bank_threads](bank_threads), [updater_threads](updater_threads), [signal_test_threads](signal_test_threads) |
 | Timers (`send_after`, `send_interval`) | [updater](updater), [signal_test](signal_test), [blocking_genserver](blocking_genserver) | [updater_threads](updater_threads), [signal_test_threads](signal_test_threads) |
 | `send_message_on` and Ctrl-C handling | [signal_test](signal_test) | [signal_test_threads](signal_test_threads) |
@@ -38,14 +40,10 @@ threads mode but has no example yet.
 
 ## Gaps
 
-These features ship today without a dedicated example: stream listeners
-(`spawn_listener`), `Recipient<M>` type erasure, `request_with_timeout`,
-`ctx.register_name`, and testing actors. The isolated thread-only example now
-covers native monitors and links. The
-[roadmap's examples to add](../ROADMAP.md#examples-to-add) describes the example
-each should get, plus the examples planned with future capabilities. When a
-feature lands, add its runnable, asserted example and a row here in the same
-change.
+Remaining gaps are marked in the feature index. The
+[roadmap's examples to add](../ROADMAP.md#examples-to-add) describes examples for
+planned capabilities. When a feature lands, add its runnable, asserted example
+and a row here in the same change.
 
 
 The [streams and recipients example](capabilities/src/bin/streams_and_recipients.rs)

@@ -2,12 +2,31 @@
 
 ## Unreleased
 
+### Breaking changes for v0.7
+
+- Both libraries now default to the `async` feature. In v0.6, disabling defaults
+  did not remove Tokio APIs; in v0.7, `default-features = false` removes `tasks`
+  and its async-only exports. Existing consumers using that setting must add
+  `features = ["async"]` or restore defaults. This is a pre-1.0 minor breaking
+  change and must not ship as a v0.6 patch. Default-feature API checks alone do
+  not establish compatibility for these consumers.
+- `#[protocol(...)]` now validates its options; arguments silently ignored by
+  v0.6 must be removed or replaced with supported `timeout = ...` syntax.
+  Conditional `request_timeout` through `cfg_attr` is rejected explicitly.
+
 ### Added
 
 - Generated supervision-policy scripts with an independent generation/retirement
   oracle, each-feature library builds without dev-dependency unification, and
   default public API compatibility checks against v0.6.0. Managed registration
   errors use a separate type, preserving exhaustive global-registry matches.
+- Protocol regressions for Debug/custom supertraits and downstream concrete and
+  generic fakes, plus explicit diagnostics for conditional timeout attributes.
+  Business-facing protocol methods share one generated transport abstraction.
+  Supervisor policy checks inspect every child and use generation notifications;
+  stream examples use handshakes instead of scheduling deadlines. Compatibility
+  CI covers metrics and the explicit-async migration, audits the declared
+  no-default removals, and runs feature tooling with Python 3.9 and a stable cache.
 - Optional ActorSystem with named parked async execution groups and explicit
   worker budgets. `start_on(&group)` selects placement without changing message
   handlers or ambient `.start()`. Scoped async/blocking helpers, framework

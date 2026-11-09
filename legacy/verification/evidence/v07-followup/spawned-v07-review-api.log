@@ -1,0 +1,317 @@
+Checking API profile: default
+     Cloning v0.6.0
+    Building spawned-concurrency v0.6.0 (current)
+       Built [   0.802s] (current)
+     Parsing spawned-concurrency v0.6.0 (current)
+      Parsed [   0.005s] (current)
+    Building spawned-concurrency v0.6.0 (baseline)
+       Built [   0.205s] (baseline)
+     Parsing spawned-concurrency v0.6.0 (baseline)
+      Parsed [   0.002s] (baseline)
+    Checking spawned-concurrency v0.6.0 -> v0.6.0 (assume patch change)
+     Checked [   0.008s] 229 checks: 229 pass, 31 skip
+     Summary no semver update required
+    Finished [   1.210s] spawned-concurrency
+    Building spawned-rt v0.6.0 (current)
+       Built [   0.124s] (current)
+     Parsing spawned-rt v0.6.0 (current)
+      Parsed [   0.001s] (current)
+    Building spawned-rt v0.6.0 (baseline)
+       Built [   0.125s] (baseline)
+     Parsing spawned-rt v0.6.0 (baseline)
+      Parsed [   0.001s] (baseline)
+    Checking spawned-rt v0.6.0 -> v0.6.0 (assume patch change)
+     Checked [   0.004s] 229 checks: 229 pass, 31 skip
+     Summary no semver update required
+    Finished [   0.417s] spawned-rt
+Checking API profile: metrics
+     Cloning v0.6.0
+    Building spawned-concurrency v0.6.0 (current)
+       Built [   0.385s] (current)
+     Parsing spawned-concurrency v0.6.0 (current)
+      Parsed [   0.005s] (current)
+    Building spawned-concurrency v0.6.0 (baseline)
+       Built [   0.214s] (baseline)
+     Parsing spawned-concurrency v0.6.0 (baseline)
+      Parsed [   0.003s] (baseline)
+    Checking spawned-concurrency v0.6.0 -> v0.6.0 (assume patch change)
+     Checked [   0.009s] 229 checks: 229 pass, 31 skip
+     Summary no semver update required
+    Finished [   0.794s] spawned-concurrency
+Checking API profile: no-default + explicit async migration
+     Cloning v0.6.0
+    Building spawned-concurrency v0.6.0 (current)
+       Built [   0.382s] (current)
+     Parsing spawned-concurrency v0.6.0 (current)
+      Parsed [   0.005s] (current)
+    Building spawned-concurrency v0.6.0 (baseline)
+       Built [   0.207s] (baseline)
+     Parsing spawned-concurrency v0.6.0 (baseline)
+      Parsed [   0.003s] (baseline)
+    Checking spawned-concurrency v0.6.0 -> v0.6.0 (assume patch change)
+     Checked [   0.008s] 229 checks: 229 pass, 31 skip
+     Summary no semver update required
+    Finished [   0.787s] spawned-concurrency
+    Building spawned-rt v0.6.0 (current)
+       Built [   0.129s] (current)
+     Parsing spawned-rt v0.6.0 (current)
+      Parsed [   0.001s] (current)
+    Building spawned-rt v0.6.0 (baseline)
+       Built [   0.126s] (baseline)
+     Parsing spawned-rt v0.6.0 (baseline)
+      Parsed [   0.001s] (baseline)
+    Checking spawned-rt v0.6.0 -> v0.6.0 (assume patch change)
+     Checked [   0.004s] 229 checks: 229 pass, 31 skip
+     Summary no semver update required
+    Finished [   0.426s] spawned-rt
+Checking API profile: no-default + metrics + async migration
+     Cloning v0.6.0
+    Building spawned-concurrency v0.6.0 (current)
+       Built [   0.388s] (current)
+     Parsing spawned-concurrency v0.6.0 (current)
+      Parsed [   0.005s] (current)
+    Building spawned-concurrency v0.6.0 (baseline)
+       Built [   0.215s] (baseline)
+     Parsing spawned-concurrency v0.6.0 (baseline)
+      Parsed [   0.003s] (baseline)
+    Checking spawned-concurrency v0.6.0 -> v0.6.0 (assume patch change)
+     Checked [   0.008s] 229 checks: 229 pass, 31 skip
+     Summary no semver update required
+    Finished [   0.802s] spawned-concurrency
+Auditing raw no-default API: spawned-concurrency
+     Cloning v0.6.0
+    Building spawned-concurrency v0.6.0 (current)
+       Built [   0.166s] (current)
+     Parsing spawned-concurrency v0.6.0 (current)
+      Parsed [   0.002s] (current)
+    Building spawned-concurrency v0.6.0 (baseline)
+       Built [   0.205s] (baseline)
+     Parsing spawned-concurrency v0.6.0 (baseline)
+      Parsed [   0.003s] (baseline)
+    Checking spawned-concurrency v0.6.0 -> v0.6.0 (assume patch change)
+     Checked [   0.007s] 229 checks: 222 pass, 7 fail, 0 warn, 31 skip
+
+--- failure enum_missing: pub enum removed or renamed ---
+
+Description:
+A publicly-visible enum cannot be imported by its prior path. A `pub use` may have been removed, or the enum itself may have been renamed or removed entirely.
+        ref: https://doc.rust-lang.org/cargo/reference/semver.html#item-remove
+       impl: https://github.com/obi1kenobi/cargo-semver-checks/tree/v0.51.0/src/lints/enum_missing.ron
+
+Failed in:
+  enum spawned_concurrency::tasks::Backend, previously in file /tmp/spawned-v07-api-target/semver-checks/git-v0_6_0/f5126f464dd1faf1d9eb2e35cec4d33d2a715280/concurrency/src/tasks/actor.rs:42
+
+--- failure function_missing: pub fn removed or renamed ---
+
+Description:
+A publicly-visible function cannot be imported by its prior path. A `pub use` may have been removed, or the function itself may have been renamed or removed entirely.
+        ref: https://doc.rust-lang.org/cargo/reference/semver.html#item-remove
+       impl: https://github.com/obi1kenobi/cargo-semver-checks/tree/v0.51.0/src/lints/function_missing.ron
+
+Failed in:
+  function spawned_concurrency::tasks::send_interval, previously in file /tmp/spawned-v07-api-target/semver-checks/git-v0_6_0/f5126f464dd1faf1d9eb2e35cec4d33d2a715280/concurrency/src/tasks/time.rs:52
+  function spawned_concurrency::tasks::spawn_listener, previously in file /tmp/spawned-v07-api-target/semver-checks/git-v0_6_0/f5126f464dd1faf1d9eb2e35cec4d33d2a715280/concurrency/src/tasks/stream.rs:10
+  function spawned_concurrency::tasks::request, previously in file /tmp/spawned-v07-api-target/semver-checks/git-v0_6_0/f5126f464dd1faf1d9eb2e35cec4d33d2a715280/concurrency/src/tasks/actor.rs:558
+  function spawned_concurrency::tasks::send_after, previously in file /tmp/spawned-v07-api-target/semver-checks/git-v0_6_0/f5126f464dd1faf1d9eb2e35cec4d33d2a715280/concurrency/src/tasks/time.rs:21
+  function spawned_concurrency::tasks::send_message_on, previously in file /tmp/spawned-v07-api-target/semver-checks/git-v0_6_0/f5126f464dd1faf1d9eb2e35cec4d33d2a715280/concurrency/src/tasks/actor.rs:1151
+
+--- failure inherent_method_missing: pub method removed or renamed ---
+
+Description:
+A publicly-visible method or associated fn is no longer available under its prior name. It may have been renamed or removed entirely.
+        ref: https://doc.rust-lang.org/cargo/reference/semver.html#item-remove
+       impl: https://github.com/obi1kenobi/cargo-semver-checks/tree/v0.51.0/src/lints/inherent_method_missing.ron
+
+Failed in:
+  Response::from_with_timeout, previously in file /tmp/spawned-v07-api-target/semver-checks/git-v0_6_0/f5126f464dd1faf1d9eb2e35cec4d33d2a715280/concurrency/src/response.rs:125
+  Response::from_with_timeout, previously in file /tmp/spawned-v07-api-target/semver-checks/git-v0_6_0/f5126f464dd1faf1d9eb2e35cec4d33d2a715280/concurrency/src/response.rs:125
+  Response::from_with_timeout, previously in file /tmp/spawned-v07-api-target/semver-checks/git-v0_6_0/f5126f464dd1faf1d9eb2e35cec4d33d2a715280/concurrency/src/response.rs:125
+
+--- failure module_missing: pub module removed or renamed ---
+
+Description:
+A publicly-visible module cannot be imported by its prior path. A `pub use` may have been removed, or the module may have been renamed, removed, or made non-public.
+        ref: https://doc.rust-lang.org/cargo/reference/semver.html#item-remove
+       impl: https://github.com/obi1kenobi/cargo-semver-checks/tree/v0.51.0/src/lints/module_missing.ron
+
+Failed in:
+  mod spawned_concurrency::tasks, previously in file /tmp/spawned-v07-api-target/semver-checks/git-v0_6_0/f5126f464dd1faf1d9eb2e35cec4d33d2a715280/concurrency/src/tasks/mod.rs:1
+
+--- failure pub_module_level_const_missing: pub module-level const is missing ---
+
+Description:
+A public const is missing or renamed
+        ref: https://doc.rust-lang.org/cargo/reference/semver.html#item-remove
+       impl: https://github.com/obi1kenobi/cargo-semver-checks/tree/v0.51.0/src/lints/pub_module_level_const_missing.ron
+
+Failed in:
+  DEFAULT_REQUEST_TIMEOUT in file /tmp/spawned-v07-api-target/semver-checks/git-v0_6_0/f5126f464dd1faf1d9eb2e35cec4d33d2a715280/concurrency/src/response.rs:7
+
+--- failure struct_missing: pub struct removed or renamed ---
+
+Description:
+A publicly-visible struct cannot be imported by its prior path. A `pub use` may have been removed, or the struct itself may have been renamed or removed entirely.
+        ref: https://doc.rust-lang.org/cargo/reference/semver.html#item-remove
+       impl: https://github.com/obi1kenobi/cargo-semver-checks/tree/v0.51.0/src/lints/struct_missing.ron
+
+Failed in:
+  struct spawned_concurrency::tasks::ActorRef, previously in file /tmp/spawned-v07-api-target/semver-checks/git-v0_6_0/f5126f464dd1faf1d9eb2e35cec4d33d2a715280/concurrency/src/tasks/actor.rs:585
+  struct spawned_concurrency::tasks::Response, previously in file /tmp/spawned-v07-api-target/semver-checks/git-v0_6_0/f5126f464dd1faf1d9eb2e35cec4d33d2a715280/concurrency/src/response.rs:40
+  struct spawned_concurrency::tasks::TimerHandle, previously in file /tmp/spawned-v07-api-target/semver-checks/git-v0_6_0/f5126f464dd1faf1d9eb2e35cec4d33d2a715280/concurrency/src/tasks/time.rs:14
+  struct spawned_concurrency::tasks::Context, previously in file /tmp/spawned-v07-api-target/semver-checks/git-v0_6_0/f5126f464dd1faf1d9eb2e35cec4d33d2a715280/concurrency/src/tasks/actor.rs:210
+
+--- failure trait_missing: pub trait removed or renamed ---
+
+Description:
+A publicly-visible trait cannot be imported by its prior path. A `pub use` may have been removed, or the trait itself may have been renamed or removed entirely.
+        ref: https://doc.rust-lang.org/cargo/reference/semver.html#item-remove
+       impl: https://github.com/obi1kenobi/cargo-semver-checks/tree/v0.51.0/src/lints/trait_missing.ron
+
+Failed in:
+  trait spawned_concurrency::tasks::Handler, previously in file /tmp/spawned-v07-api-target/semver-checks/git-v0_6_0/f5126f464dd1faf1d9eb2e35cec4d33d2a715280/concurrency/src/tasks/actor.rs:87
+  trait spawned_concurrency::tasks::ActorStart, previously in file /tmp/spawned-v07-api-target/semver-checks/git-v0_6_0/f5126f464dd1faf1d9eb2e35cec4d33d2a715280/concurrency/src/tasks/actor.rs:1118
+  trait spawned_concurrency::tasks::Actor, previously in file /tmp/spawned-v07-api-target/semver-checks/git-v0_6_0/f5126f464dd1faf1d9eb2e35cec4d33d2a715280/concurrency/src/tasks/actor.rs:59
+  trait spawned_concurrency::tasks::Receiver, previously in file /tmp/spawned-v07-api-target/semver-checks/git-v0_6_0/f5126f464dd1faf1d9eb2e35cec4d33d2a715280/concurrency/src/tasks/actor.rs:547
+
+     Summary semver requires new major version: 7 major and 0 minor checks failed
+    Finished [   0.546s] spawned-concurrency
+Confirmed declared v0.7 no-default feature-split breaks; this configuration is NOT patch-compatible.
+Auditing raw no-default + metrics API
+     Cloning v0.6.0
+    Building spawned-concurrency v0.6.0 (current)
+       Built [   0.172s] (current)
+     Parsing spawned-concurrency v0.6.0 (current)
+      Parsed [   0.003s] (current)
+    Building spawned-concurrency v0.6.0 (baseline)
+       Built [   0.214s] (baseline)
+     Parsing spawned-concurrency v0.6.0 (baseline)
+      Parsed [   0.003s] (baseline)
+    Checking spawned-concurrency v0.6.0 -> v0.6.0 (assume patch change)
+     Checked [   0.008s] 229 checks: 222 pass, 7 fail, 0 warn, 31 skip
+
+--- failure enum_missing: pub enum removed or renamed ---
+
+Description:
+A publicly-visible enum cannot be imported by its prior path. A `pub use` may have been removed, or the enum itself may have been renamed or removed entirely.
+        ref: https://doc.rust-lang.org/cargo/reference/semver.html#item-remove
+       impl: https://github.com/obi1kenobi/cargo-semver-checks/tree/v0.51.0/src/lints/enum_missing.ron
+
+Failed in:
+  enum spawned_concurrency::tasks::Backend, previously in file /tmp/spawned-v07-api-target/semver-checks/git-v0_6_0/f5126f464dd1faf1d9eb2e35cec4d33d2a715280/concurrency/src/tasks/actor.rs:42
+
+--- failure function_missing: pub fn removed or renamed ---
+
+Description:
+A publicly-visible function cannot be imported by its prior path. A `pub use` may have been removed, or the function itself may have been renamed or removed entirely.
+        ref: https://doc.rust-lang.org/cargo/reference/semver.html#item-remove
+       impl: https://github.com/obi1kenobi/cargo-semver-checks/tree/v0.51.0/src/lints/function_missing.ron
+
+Failed in:
+  function spawned_concurrency::tasks::send_message_on, previously in file /tmp/spawned-v07-api-target/semver-checks/git-v0_6_0/f5126f464dd1faf1d9eb2e35cec4d33d2a715280/concurrency/src/tasks/actor.rs:1151
+  function spawned_concurrency::tasks::send_interval, previously in file /tmp/spawned-v07-api-target/semver-checks/git-v0_6_0/f5126f464dd1faf1d9eb2e35cec4d33d2a715280/concurrency/src/tasks/time.rs:52
+  function spawned_concurrency::tasks::spawn_listener, previously in file /tmp/spawned-v07-api-target/semver-checks/git-v0_6_0/f5126f464dd1faf1d9eb2e35cec4d33d2a715280/concurrency/src/tasks/stream.rs:10
+  function spawned_concurrency::tasks::send_after, previously in file /tmp/spawned-v07-api-target/semver-checks/git-v0_6_0/f5126f464dd1faf1d9eb2e35cec4d33d2a715280/concurrency/src/tasks/time.rs:21
+  function spawned_concurrency::tasks::request, previously in file /tmp/spawned-v07-api-target/semver-checks/git-v0_6_0/f5126f464dd1faf1d9eb2e35cec4d33d2a715280/concurrency/src/tasks/actor.rs:558
+
+--- failure inherent_method_missing: pub method removed or renamed ---
+
+Description:
+A publicly-visible method or associated fn is no longer available under its prior name. It may have been renamed or removed entirely.
+        ref: https://doc.rust-lang.org/cargo/reference/semver.html#item-remove
+       impl: https://github.com/obi1kenobi/cargo-semver-checks/tree/v0.51.0/src/lints/inherent_method_missing.ron
+
+Failed in:
+  Response::from_with_timeout, previously in file /tmp/spawned-v07-api-target/semver-checks/git-v0_6_0/f5126f464dd1faf1d9eb2e35cec4d33d2a715280/concurrency/src/response.rs:125
+  Response::from_with_timeout, previously in file /tmp/spawned-v07-api-target/semver-checks/git-v0_6_0/f5126f464dd1faf1d9eb2e35cec4d33d2a715280/concurrency/src/response.rs:125
+  Response::from_with_timeout, previously in file /tmp/spawned-v07-api-target/semver-checks/git-v0_6_0/f5126f464dd1faf1d9eb2e35cec4d33d2a715280/concurrency/src/response.rs:125
+
+--- failure module_missing: pub module removed or renamed ---
+
+Description:
+A publicly-visible module cannot be imported by its prior path. A `pub use` may have been removed, or the module may have been renamed, removed, or made non-public.
+        ref: https://doc.rust-lang.org/cargo/reference/semver.html#item-remove
+       impl: https://github.com/obi1kenobi/cargo-semver-checks/tree/v0.51.0/src/lints/module_missing.ron
+
+Failed in:
+  mod spawned_concurrency::tasks, previously in file /tmp/spawned-v07-api-target/semver-checks/git-v0_6_0/f5126f464dd1faf1d9eb2e35cec4d33d2a715280/concurrency/src/tasks/mod.rs:1
+
+--- failure pub_module_level_const_missing: pub module-level const is missing ---
+
+Description:
+A public const is missing or renamed
+        ref: https://doc.rust-lang.org/cargo/reference/semver.html#item-remove
+       impl: https://github.com/obi1kenobi/cargo-semver-checks/tree/v0.51.0/src/lints/pub_module_level_const_missing.ron
+
+Failed in:
+  DEFAULT_REQUEST_TIMEOUT in file /tmp/spawned-v07-api-target/semver-checks/git-v0_6_0/f5126f464dd1faf1d9eb2e35cec4d33d2a715280/concurrency/src/response.rs:7
+
+--- failure struct_missing: pub struct removed or renamed ---
+
+Description:
+A publicly-visible struct cannot be imported by its prior path. A `pub use` may have been removed, or the struct itself may have been renamed or removed entirely.
+        ref: https://doc.rust-lang.org/cargo/reference/semver.html#item-remove
+       impl: https://github.com/obi1kenobi/cargo-semver-checks/tree/v0.51.0/src/lints/struct_missing.ron
+
+Failed in:
+  struct spawned_concurrency::tasks::ActorRef, previously in file /tmp/spawned-v07-api-target/semver-checks/git-v0_6_0/f5126f464dd1faf1d9eb2e35cec4d33d2a715280/concurrency/src/tasks/actor.rs:585
+  struct spawned_concurrency::tasks::Response, previously in file /tmp/spawned-v07-api-target/semver-checks/git-v0_6_0/f5126f464dd1faf1d9eb2e35cec4d33d2a715280/concurrency/src/response.rs:40
+  struct spawned_concurrency::tasks::TimerHandle, previously in file /tmp/spawned-v07-api-target/semver-checks/git-v0_6_0/f5126f464dd1faf1d9eb2e35cec4d33d2a715280/concurrency/src/tasks/time.rs:14
+  struct spawned_concurrency::tasks::Context, previously in file /tmp/spawned-v07-api-target/semver-checks/git-v0_6_0/f5126f464dd1faf1d9eb2e35cec4d33d2a715280/concurrency/src/tasks/actor.rs:210
+
+--- failure trait_missing: pub trait removed or renamed ---
+
+Description:
+A publicly-visible trait cannot be imported by its prior path. A `pub use` may have been removed, or the trait itself may have been renamed or removed entirely.
+        ref: https://doc.rust-lang.org/cargo/reference/semver.html#item-remove
+       impl: https://github.com/obi1kenobi/cargo-semver-checks/tree/v0.51.0/src/lints/trait_missing.ron
+
+Failed in:
+  trait spawned_concurrency::tasks::Receiver, previously in file /tmp/spawned-v07-api-target/semver-checks/git-v0_6_0/f5126f464dd1faf1d9eb2e35cec4d33d2a715280/concurrency/src/tasks/actor.rs:547
+  trait spawned_concurrency::tasks::Actor, previously in file /tmp/spawned-v07-api-target/semver-checks/git-v0_6_0/f5126f464dd1faf1d9eb2e35cec4d33d2a715280/concurrency/src/tasks/actor.rs:59
+  trait spawned_concurrency::tasks::Handler, previously in file /tmp/spawned-v07-api-target/semver-checks/git-v0_6_0/f5126f464dd1faf1d9eb2e35cec4d33d2a715280/concurrency/src/tasks/actor.rs:87
+  trait spawned_concurrency::tasks::ActorStart, previously in file /tmp/spawned-v07-api-target/semver-checks/git-v0_6_0/f5126f464dd1faf1d9eb2e35cec4d33d2a715280/concurrency/src/tasks/actor.rs:1118
+
+     Summary semver requires new major version: 7 major and 0 minor checks failed
+    Finished [   0.565s] spawned-concurrency
+Confirmed declared v0.7 no-default feature-split breaks; this configuration is NOT patch-compatible.
+Auditing raw no-default API: spawned-rt
+     Cloning v0.6.0
+    Building spawned-rt v0.6.0 (current)
+       Built [   0.121s] (current)
+     Parsing spawned-rt v0.6.0 (current)
+      Parsed [   0.001s] (current)
+    Building spawned-rt v0.6.0 (baseline)
+       Built [   0.123s] (baseline)
+     Parsing spawned-rt v0.6.0 (baseline)
+      Parsed [   0.001s] (baseline)
+    Checking spawned-rt v0.6.0 -> v0.6.0 (assume patch change)
+     Checked [   0.004s] 229 checks: 227 pass, 2 fail, 0 warn, 31 skip
+
+--- failure function_missing: pub fn removed or renamed ---
+
+Description:
+A publicly-visible function cannot be imported by its prior path. A `pub use` may have been removed, or the function itself may have been renamed or removed entirely.
+        ref: https://doc.rust-lang.org/cargo/reference/semver.html#item-remove
+       impl: https://github.com/obi1kenobi/cargo-semver-checks/tree/v0.51.0/src/lints/function_missing.ron
+
+Failed in:
+  function spawned_rt::tasks::ctrl_c, previously in file /tmp/spawned-v07-api-target/semver-checks/git-v0_6_0/f5126f464dd1faf1d9eb2e35cec4d33d2a715280/rt/src/tasks/tokio/mod.rs:23
+  function spawned_rt::tasks::block_on, previously in file /tmp/spawned-v07-api-target/semver-checks/git-v0_6_0/f5126f464dd1faf1d9eb2e35cec4d33d2a715280/rt/src/tasks/mod.rs:43
+  function spawned_rt::tasks::run, previously in file /tmp/spawned-v07-api-target/semver-checks/git-v0_6_0/f5126f464dd1faf1d9eb2e35cec4d33d2a715280/rt/src/tasks/mod.rs:34
+
+--- failure module_missing: pub module removed or renamed ---
+
+Description:
+A publicly-visible module cannot be imported by its prior path. A `pub use` may have been removed, or the module may have been renamed, removed, or made non-public.
+        ref: https://doc.rust-lang.org/cargo/reference/semver.html#item-remove
+       impl: https://github.com/obi1kenobi/cargo-semver-checks/tree/v0.51.0/src/lints/module_missing.ron
+
+Failed in:
+  mod spawned_rt::tasks, previously in file /tmp/spawned-v07-api-target/semver-checks/git-v0_6_0/f5126f464dd1faf1d9eb2e35cec4d33d2a715280/rt/src/tasks/mod.rs:1
+  mod spawned_rt::tasks::mpsc, previously in file /tmp/spawned-v07-api-target/semver-checks/git-v0_6_0/f5126f464dd1faf1d9eb2e35cec4d33d2a715280/rt/src/tasks/tokio/mpsc.rs:1
+  mod spawned_rt::tasks::oneshot, previously in file /tmp/spawned-v07-api-target/semver-checks/git-v0_6_0/f5126f464dd1faf1d9eb2e35cec4d33d2a715280/rt/src/tasks/tokio/oneshot.rs:1
+
+     Summary semver requires new major version: 2 major and 0 minor checks failed
+    Finished [   0.401s] spawned-rt
+Confirmed declared v0.7 no-default feature-split breaks; this configuration is NOT patch-compatible.
+RESOURCE GUARD peak_rss_kib= 385576 exit= 0

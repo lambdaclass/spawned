@@ -10,7 +10,7 @@ pub const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 /// A cloned actor handle with an explicit timeout for generated protocol calls.
 /// Create with `ActorRef::with_request_timeout`. Configure before converting to
 /// a type-erased protocol reference; the underlying actor and mailbox are shared.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct RequestOptions<R> {
     actor: R,
     timeout: Duration,

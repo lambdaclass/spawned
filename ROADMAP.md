@@ -34,19 +34,18 @@ handlers and the existing default behavior. New policies are explicit and opt-in
    they do not prove the wider base lifecycle or every Rust schedule.
    All crates retain `forbid(unsafe_code)`; Miri precedes any future unsafe proposal.
    See the [implementation evidence](legacy/docs/reviews/capabilities-extension.md)
-   and [v0.7 review fixes and formal coverage](docs/reviews/v07-supervision.md).
+   and [v0.7 review fixes and formal coverage](legacy/docs/reviews/v07-supervision.md).
    The client search is done; see [results](#client-search-results).
 3. **Release v0.7 and run it in Ethlambda** (rank 5), including the per-method
    request timeout (rank 5a), a migration guide for the clients' hand-wired
    shutdown and startup, and an example for every way of using the library
-   (rank 5b, [examples to add](#examples-to-add)). Release blockers from the
-   review of the timeout and release-gate commits: `#[protocol]` traits with
-   supertraits such as `Debug` must keep compiling; the API gate must also
-   compare `--no-default-features` and `metrics` against v0.6.0 (the new default
-   `async` feature moves `tasks` behind it), with a migration note;
-   `cfg_attr(request_timeout)` must work or be rejected; the API script must run
-   on stock Python; no flaky examples. Before tagging, move dated review reports
-   and run evidence into `legacy/`. Both clients pin spawned 0.5.0, so their
+   (rank 5b, [examples to add](#examples-to-add)). Review fixes are implemented: `Debug` and
+   custom-supertrait protocols keep compiling; the API gate covers defaults,
+   metrics and the explicit-async migration, and audits the exact documented
+   no-default removals. Conditional `request_timeout` attributes are explicitly
+   rejected, the API script supports Python 3.9, stream examples use handshakes,
+   and dated reports/evidence are archived in `legacy/` without host-specific
+   driver scripts. Both clients pin spawned 0.5.0, so their
    upgrade crosses 0.6 as well; the migration guide must cover 0.5 to 0.7 in one
    path. After the tag: migrate Ethlambda (shutdown
    deadline via `ActorSystem`, supervision, per-method timeouts) with fault
@@ -132,8 +131,8 @@ cargo-mutants and TLA+ with trace replay. Release gates and remaining gaps:
 
 | When | Test | Why |
 |---|---|---|
-| v0.7: implemented | `cargo-semver-checks` and a `cargo-hack --each-feature` build matrix | Default-API compatibility against v0.6.0 plus each feature without dev-dependency unification. See [testing](docs/TESTING.md#api-and-feature-checks). |
-| v0.7: implemented | Supervisor policies under proptest | Generated crash/exit/shutdown scripts checked against an independent generation/retirement oracle for all strategies and modes; [scope and replay](docs/TESTING.md#generated-supervisor-policy-scripts). |
+| v0.7: implemented | `cargo-semver-checks` and a `cargo-hack --each-feature` build matrix | Defaults/metrics and explicit-async migration checks, exact declared no-default breaks, plus each feature without dev-dependency unification. See [testing](docs/TESTING.md#api-and-feature-checks). |
+| v0.7: implemented | Supervisor policies under proptest | Generated crash/exit/shutdown scripts for all strategies and modes, using zero backoff and an unexhausted budget; budget/backoff races have separate controlled tests. [Scope and replay](docs/TESTING.md#generated-supervisor-policy-scripts). |
 | v0.7 | Fault injection in the Ethlambda canary | Kill and restart supervised actors in a running client and check it recovers; the release gate (rank 5) should exercise failures, not just the happy path. |
 | After v0.7 | Shuttle for multi-actor framework races | Randomised schedules over whole supervisor/registry tests too large for Loom. Listed in TESTING.md, not started. Internal tool, separate from rank 20. |
 | After v0.7 | Long-running soak tests | Memory, file descriptors, threads and tasks stay flat over hours of actor churn and restarts. The ethrex 1.5 GB/day mailbox leak is the motivating bug. Nightly, not per PR. |
@@ -142,6 +141,10 @@ cargo-mutants and TLA+ with trace replay. Release gates and remaining gaps:
 
 Deterministic simulation and record/replay remain the testing flagship (ranks
 20-22).
+
+The [archived v0.7 gate review](legacy/docs/reviews/v07-release-gates.md) records
+the original scans and their limits. The corrected [testing guide](docs/TESTING.md)
+covers the expanded API profiles and protocol/supervision regressions.
 
 ### Testing crate (`spawned-test`)
 
@@ -185,7 +188,7 @@ failing run for replay. Spawned already owns those points, so `explore` needs no
 handler changes. Ranks 21-22 add what Coyote does not centre on: capturing
 delivery order from a real client and replaying it under the same scheduler.
 
-The [v0.7 gate review](docs/reviews/v07-release-gates.md) records the completed
+The [v0.7 gate review](legacy/docs/reviews/v07-release-gates.md) records the completed
 API/feature scans, generated-policy campaign and compatibility correction.
 
 ## Ranked backlog

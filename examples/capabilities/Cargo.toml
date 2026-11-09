@@ -13,6 +13,9 @@ spawned-concurrency = { workspace = true }
 spawned-rt = { workspace = true, features = ["async"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 
+[dev-dependencies]
+spawned-protocol-contract = { path = "../protocol_contract" }
+
 [[bin]]
 name = "framework_metrics"
 required-features = ["metrics"]

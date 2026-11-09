@@ -1,0 +1,102 @@
+{
+  "baseline": "v0.6.0",
+  "reason": "v0.7 intentionally gates Tokio APIs behind the default async feature. Existing no-default users must explicitly enable async. Raw no-default plus metrics has the same declared removals. This is a pre-1.0 minor breaking change, not patch compatibility.",
+  "packages": {
+    "spawned-concurrency": [
+      [
+        "enum_missing",
+        "enum spawned_concurrency::tasks::Backend"
+      ],
+      [
+        "function_missing",
+        "function spawned_concurrency::tasks::request"
+      ],
+      [
+        "function_missing",
+        "function spawned_concurrency::tasks::send_after"
+      ],
+      [
+        "function_missing",
+        "function spawned_concurrency::tasks::send_interval"
+      ],
+      [
+        "function_missing",
+        "function spawned_concurrency::tasks::send_message_on"
+      ],
+      [
+        "function_missing",
+        "function spawned_concurrency::tasks::spawn_listener"
+      ],
+      [
+        "inherent_method_missing",
+        "Response::from_with_timeout"
+      ],
+      [
+        "module_missing",
+        "mod spawned_concurrency::tasks"
+      ],
+      [
+        "pub_module_level_const_missing",
+        "DEFAULT_REQUEST_TIMEOUT"
+      ],
+      [
+        "struct_missing",
+        "struct spawned_concurrency::tasks::ActorRef"
+      ],
+      [
+        "struct_missing",
+        "struct spawned_concurrency::tasks::Context"
+      ],
+      [
+        "struct_missing",
+        "struct spawned_concurrency::tasks::Response"
+      ],
+      [
+        "struct_missing",
+        "struct spawned_concurrency::tasks::TimerHandle"
+      ],
+      [
+        "trait_missing",
+        "trait spawned_concurrency::tasks::Actor"
+      ],
+      [
+        "trait_missing",
+        "trait spawned_concurrency::tasks::ActorStart"
+      ],
+      [
+        "trait_missing",
+        "trait spawned_concurrency::tasks::Handler"
+      ],
+      [
+        "trait_missing",
+        "trait spawned_concurrency::tasks::Receiver"
+      ]
+    ],
+    "spawned-rt": [
+      [
+        "function_missing",
+        "function spawned_rt::tasks::block_on"
+      ],
+      [
+        "function_missing",
+        "function spawned_rt::tasks::ctrl_c"
+      ],
+      [
+        "function_missing",
+        "function spawned_rt::tasks::run"
+      ],
+      [
+        "module_missing",
+        "mod spawned_rt::tasks"
+      ],
+      [
+        "module_missing",
+        "mod spawned_rt::tasks::mpsc"
+      ],
+      [
+        "module_missing",
+        "mod spawned_rt::tasks::oneshot"
+      ]
+    ]
+  }
+}

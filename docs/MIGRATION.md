@@ -13,6 +13,64 @@ These APIs are implemented on main and are unreleased. Keep ordinary `.start()`
 and the default Tokio backend unless adopting explicit ownership/placement.
 A dependency upgrade alone does not place existing actors in an `ActorSystem`.
 
+### Direct 0.5 to 0.7 upgrade for Ethrex and Ethlambda
+
+Both audited clients pin Spawned 0.5.0. Upgrade `spawned-concurrency` and
+`spawned-rt` together; use the v0.7 candidate revision until that version is
+published. This path includes v0.6's lifecycle corrections as well as the new
+v0.7 capabilities. Ordinary 0.5 protocol/handler signatures stay in place; the
+older enum-to-protocol rewrite under [Upgrading to 0.5](#upgrading-to-05) is not
+needed again.
+
+1. Keep their existing default features and backend initially. Other consumers
+   that disabled defaults must apply the explicit-`async` change below.
+2. Recheck shutdown assumptions: after stop is observed, queued work can be
+   discarded and pending requests can return `ActorStopped`. Do not rely on a
+   previously racing handler completing, retrying safely, or an arbitrary sleep
+   proving cleanup. Timeouts still do not roll back effects.
+3. v0.6 adds identities, monitors, links and trapped exits; they are optional.
+   They do not automatically restart actors or recover persisted state.
+   Abrupt future/process destruction still cannot guarantee async `stopped()`.
+4. Adopt system-owned startup/shutdown and supervision subsystem by subsystem
+   using the client recipe below. Replace hand-wired signals only after their
+   snapshot, persistence and dependency ordering are explicit.
+5. Set per-method timeouts from application requirements, then run matched
+   baseline/candidate node or actor-backed workloads and fault-injected recovery.
+   An isolated compile check alone does not validate client behavior.
+
+The [0.6 changelog](../CHANGELOG.md#060--2026-11-06) records the intervening fixes.
+The rest of this section provides the Cargo, timeout and shutdown details for
+this complete 0.5 to 0.7 path.
+
+### Cargo features and protocol attributes
+
+**The no-default configuration is breaking in v0.7.** v0.6 had no default feature
+set and always exported Tokio APIs. Both libraries now enable `async` by default;
+disabling defaults removes `tasks` and async-only exports, including the async
+`Response` constructors. Existing no-default users needing those APIs must
+explicitly enable `async` on the dependency, or restore default features:
+
+```toml
+spawned-concurrency = { version = "0.7", default-features = false, features = ["async"] }
+spawned-rt = { version = "0.7", default-features = false, features = ["async"] }
+```
+
+These are upgrade examples for the unreleased v0.7, not published versions.
+Thread-only applications intentionally leave `async` disabled. Optional `metrics`
+does not enable it. The audited Ethrex `1dfaa09ec` and Ethlambda `c3f5f566` manifests
+both use default features with Spawned 0.5.0; they do not need this Cargo edit.
+
+v0.6 silently ignored `#[protocol(...)]` arguments. Remove obsolete arguments;
+v0.7 accepts `timeout = DurationExpression` and rejects unknown or duplicate
+options. Put `#[request_timeout(...)]` directly on a request method. Conditional
+`#[cfg_attr(..., request_timeout(...))]`, including nested forms and false
+predicates, is rejected with a specific diagnostic.
+
+Protocols requiring `Debug` work with ordinary and timeout-configured handles.
+Other custom supertraits do not become automatic implementations on
+`RequestOptions`: their existing ordinary ActorRef implementations remain valid,
+while configured calls require the wrapper to satisfy the protocol's supertraits.
+
 The global registry retains `RegistryError::AlreadyRegistered`, including
 exhaustive matches written against v0.6. The new managed
 `Context::register_name` returns `ManagedRegistrationError`: `Registry(error)`

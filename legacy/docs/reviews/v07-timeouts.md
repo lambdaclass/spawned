@@ -32,12 +32,12 @@ Five new asserted examples run in CI: timeout configuration/outcomes,
 streams/recipients, native lifecycle signals, registrations/fakes and coordinated
 shutdown. The isolated synchronous fixture exercises the new configuration and
 still has no Tokio package in its normal/build dependency graph. The
-[client migration guide](../MIGRATION.md#preparing-for-07) covers dependency order,
+[client migration guide](../../../docs/MIGRATION.md#preparing-for-07) covers dependency order,
 stale references, snapshot/persistence before closure and report deadlines.
 
 AGY returned PASS for the API review and for the associated-function follow-up.
 [Evidence](../../verification/evidence/v07-timeouts/) retains the review packets,
-results, test logs, scripts and source hashes compared with the server.
+results, test logs and source hashes compared with the server.
 
 ## Client compatibility and remaining release gate
 

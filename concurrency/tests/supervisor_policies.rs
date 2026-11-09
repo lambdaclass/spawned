@@ -5,8 +5,8 @@ use proptest::prelude::*;
 use spawned_concurrency::{
     message::Message,
     supervision::{
-        Backoff, ChildSpec, ChildState, RestartMode, SupervisedChild, SupervisorConfig,
-        SupervisorStrategy,
+        Backoff, ChildSnapshot, ChildSpec, ChildState, RestartMode, SupervisedChild,
+        SupervisorConfig, SupervisorStrategy,
     },
     system::ActorSystem,
     tasks::{Actor, Context, Handler},
@@ -39,32 +39,58 @@ struct Expected {
     generation: u64,
     live: bool,
 }
-fn mode(value: u8) -> RestartMode {
-    match value % 3 {
-        0 => RestartMode::Permanent,
-        1 => RestartMode::Transient,
-        _ => RestartMode::Temporary,
-    }
+#[derive(Clone, Copy, Debug)]
+enum Action {
+    Panic,
+    Normal,
+    Shutdown,
+}
+fn restart_mode() -> impl Strategy<Value = RestartMode> {
+    prop_oneof![
+        Just(RestartMode::Permanent),
+        Just(RestartMode::Transient),
+        Just(RestartMode::Temporary)
+    ]
+}
+fn strategy() -> impl Strategy<Value = SupervisorStrategy> {
+    prop_oneof![
+        Just(SupervisorStrategy::OneForOne),
+        Just(SupervisorStrategy::OneForAll),
+        Just(SupervisorStrategy::RestForOne)
+    ]
+}
+fn action() -> impl Strategy<Value = Action> {
+    prop_oneof![
+        Just(Action::Panic),
+        Just(Action::Normal),
+        Just(Action::Shutdown)
+    ]
 }
 // Contract oracle: no calls into the implementation's policy/selection helpers.
-fn apply(expected: &mut [Expected], modes: &[u8], origin: usize, abnormal: bool, strategy: u8) {
-    let restart = match modes[origin] % 3 {
-        0 => true,
-        1 => abnormal,
-        _ => false,
+fn apply(
+    expected: &mut [Expected],
+    modes: &[RestartMode],
+    origin: usize,
+    abnormal: bool,
+    strategy: SupervisorStrategy,
+) {
+    let restart = match modes[origin] {
+        RestartMode::Permanent => true,
+        RestartMode::Transient => abnormal,
+        RestartMode::Temporary => false,
     };
     if !restart {
         expected[origin].live = false;
         return;
     }
     for (index, child) in expected.iter_mut().enumerate() {
-        let affected = match strategy % 3 {
-            0 => index == origin,
-            1 => true,
-            _ => index >= origin,
+        let affected = match strategy {
+            SupervisorStrategy::OneForOne => index == origin,
+            SupervisorStrategy::OneForAll => true,
+            SupervisorStrategy::RestForOne => index >= origin,
         };
         if affected && child.live {
-            if modes[index] % 3 == 2 {
+            if modes[index] == RestartMode::Temporary {
                 child.live = false;
             } else {
                 child.generation += 1;
@@ -72,31 +98,73 @@ fn apply(expected: &mut [Expected], modes: &[u8], origin: usize, abnormal: bool,
         }
     }
 }
+fn unsettled(actual: &[ChildSnapshot], expected: &[Expected]) -> Vec<usize> {
+    assert_eq!(actual.len(), expected.len());
+    let mut pending = Vec::new();
+    // Do not short-circuit: a later child may have been over-reconstructed even
+    // while an earlier child is still starting or retiring.
+    for (index, (actual, expected)) in actual.iter().zip(expected).enumerate() {
+        assert_ne!(
+            actual.state,
+            ChildState::Failed,
+            "unexpected child failure: {actual:?}"
+        );
+        assert!(
+            actual.generation <= expected.generation,
+            "unexpected extra reconstruction: {}; actual {actual:?}; expected {expected:?}",
+            actual.name
+        );
+        let state = if expected.live {
+            ChildState::Running
+        } else {
+            ChildState::Stopped
+        };
+        if actual.generation != expected.generation || actual.state != state {
+            pending.push(index);
+        }
+    }
+    pending
+}
 async fn observe(children: &[SupervisedChild<Probe>], expected: &[Expected]) {
-    tokio::time::timeout(LIMIT, async {
+    let outcome = tokio::time::timeout(LIMIT, async {
         loop {
-            let settled = children.iter().zip(expected).all(|(child, expected)| {
-                let actual = child.snapshot();
-                assert!(
-                    actual.generation <= expected.generation,
-                    "unexpected extra reconstruction: {actual:?}; expected {expected:?}"
-                );
-                actual.generation == expected.generation
-                    && actual.state
-                        == if expected.live {
-                            ChildState::Running
-                        } else {
-                            ChildState::Stopped
-                        }
-            });
-            if settled {
+            let actual: Vec<_> = children.iter().map(SupervisedChild::snapshot).collect();
+            let pending = unsettled(&actual, expected);
+            if pending.is_empty() {
                 break;
             }
-            tokio::task::yield_now().await;
+            let waits: Vec<_> = pending
+                .iter()
+                .map(|&index| {
+                    let after = if expected[index].live {
+                        expected[index].generation.saturating_sub(1)
+                    } else {
+                        expected[index].generation
+                    };
+                    Box::pin(children[index].wait_for_generation(after))
+                })
+                .collect();
+            // Existing watch-backed notification: no test-owned busy polling.
+            let (result, index, _) = futures::future::select_all(waits).await;
+            if let Err(error) = result {
+                assert!(
+                    !expected[pending[index]].live && error.0 == ChildState::Stopped,
+                    "unexpected generation wait failure: child {}; {error:?}",
+                    pending[index]
+                );
+            }
         }
     })
-    .await
-    .expect("policy did not settle");
+    .await;
+    if outcome.is_err() {
+        let actual: Vec<_> = children.iter().map(SupervisedChild::snapshot).collect();
+        // Preserve the concrete over-reconstruction diagnosis at the watchdog
+        // boundary too, rather than hiding it behind a generic timeout.
+        let pending = unsettled(&actual, expected);
+        panic!(
+            "policy did not settle: children {pending:?}; actual {actual:?}; expected {expected:?}"
+        );
+    }
     for (child, expected) in children.iter().zip(expected) {
         if expected.live {
             let actor = child.current().expect("ready generation");
@@ -113,16 +181,17 @@ async fn observe(children: &[SupervisedChild<Probe>], expected: &[Expected]) {
         }
     }
 }
-async fn scenario(strategy: u8, modes: &[u8], actions: &[(u8, u8)], close_at: usize) {
+async fn scenario(
+    strategy: SupervisorStrategy,
+    modes: &[RestartMode],
+    actions: &[(u8, Action)],
+    close_at: usize,
+) {
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("policy-oracle", 1).unwrap();
     let mut tree = system
         .supervisor(SupervisorConfig {
-            strategy: match strategy % 3 {
-                0 => SupervisorStrategy::OneForOne,
-                1 => SupervisorStrategy::OneForAll,
-                _ => SupervisorStrategy::RestForOne,
-            },
+            strategy,
             max_restarts: 128,
             restart_window: Duration::from_secs(3600),
             backoff: Backoff {
@@ -142,7 +211,7 @@ async fn scenario(strategy: u8, modes: &[u8], actions: &[(u8, u8)], close_at: us
                 ChildSpec::new(format!("child-{index}"), &group, |ctx| async move {
                     Ok::<_, String>(Probe(ctx.generation()))
                 })
-                .restart(mode(*restart)),
+                .restart(*restart),
             )
             .unwrap(),
         );
@@ -174,8 +243,8 @@ async fn scenario(strategy: u8, modes: &[u8], actions: &[(u8, u8)], close_at: us
             continue;
         }
         let actor = children[index].current().unwrap();
-        let reason = match kind % 3 {
-            0 => {
+        let reason = match kind {
+            Action::Panic => {
                 assert!(matches!(
                     actor.request_with_timeout(Crash, LIMIT).await,
                     Err(ActorError::ActorStopped)
@@ -184,12 +253,12 @@ async fn scenario(strategy: u8, modes: &[u8], actions: &[(u8, u8)], close_at: us
                 assert!(matches!(reason, ExitReason::Panic(_)));
                 true
             }
-            1 => {
+            Action::Normal => {
                 actor.context().stop();
                 assert_eq!(actor.wait_exit().await, ExitReason::Normal);
                 false
             }
-            _ => {
+            Action::Shutdown => {
                 actor.child_handle().shutdown();
                 assert_eq!(actor.wait_exit().await, ExitReason::Shutdown);
                 false
@@ -217,9 +286,9 @@ proptest! {
     #![proptest_config(configuration())]
     #[test]
     fn generated_restart_modes_strategies_and_shutdown_follow_the_contract(
-        strategy in 0u8..3,
-        modes in prop::collection::vec(0u8..3, 1..5),
-        actions in prop::collection::vec((any::<u8>(),0u8..3), 1..13),
+        strategy in strategy(),
+        modes in prop::collection::vec(restart_mode(), 1..5),
+        actions in prop::collection::vec((any::<u8>(), action()), 1..13),
         close_selector in any::<u8>(),
     ) {
         let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
@@ -233,12 +302,51 @@ fn retired_temporary_and_transient_slots_stay_retired_across_later_recoveries() 
         .enable_all()
         .build()
         .unwrap();
-    for strategy in 0..3 {
+    for strategy in [
+        SupervisorStrategy::OneForOne,
+        SupervisorStrategy::OneForAll,
+        SupervisorStrategy::RestForOne,
+    ] {
         runtime.block_on(scenario(
             strategy,
-            &[0, 1, 2],
-            &[(2, 1), (1, 1), (0, 0), (0, 2), (0, 1)],
+            &[
+                RestartMode::Permanent,
+                RestartMode::Transient,
+                RestartMode::Temporary,
+            ],
+            &[
+                (2, Action::Normal),
+                (1, Action::Normal),
+                (0, Action::Panic),
+                (0, Action::Shutdown),
+                (0, Action::Normal),
+            ],
             5,
         ));
     }
+}
+
+#[test]
+#[should_panic(expected = "unexpected extra reconstruction: child-1")]
+fn a_waiting_earlier_child_cannot_hide_a_later_extra_reconstruction() {
+    let snapshot = |name: &str, state, generation| ChildSnapshot {
+        name: name.into(),
+        state,
+        generation,
+        actor_id: None,
+        last_exit: None,
+        last_error: None,
+    };
+    let actual = [
+        snapshot("child-0", ChildState::Backoff, 1),
+        snapshot("child-1", ChildState::Running, 3),
+    ];
+    let expected = vec![
+        Expected {
+            generation: 2,
+            live: true
+        };
+        2
+    ];
+    unsettled(&actual, &expected);
 }

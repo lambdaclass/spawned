@@ -1,0 +1,5 @@
+error: conditional request_timeout is not supported; use #[request_timeout(...)] directly
+ --> tests/ui/conditional_timeout_disabled.rs:4:5
+  |
+4 |     #[cfg_attr(any(), request_timeout(std::time::Duration::ZERO))]
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
