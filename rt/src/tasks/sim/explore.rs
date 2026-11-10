@@ -288,29 +288,56 @@ pub struct Found {
     pub outcome: Outcome,
 }
 
-/// Result of [`explore`].
+/// Result of [`explore`] or [`sweep`].
 #[derive(Debug, Clone)]
 pub struct Report {
     pub strategy: Strategy,
-    /// Runs made, including the failing one.
+    /// Runs made, including failing ones.
     pub runs: usize,
+    /// Failing runs ([`explore`] stops at the first).
+    pub failures: usize,
     /// Distinct schedules (by schedule hash) among those runs.
     pub schedules: usize,
     /// Longest run, in polls.
     pub max_polls: u64,
-    /// DFS only: every schedule within the bound was run without a failure.
+    /// DFS only: every schedule within the bound was run.
     pub exhausted: bool,
     /// DFS only: runs whose replayed prefix did not apply (the program made a
     /// different choice available than the recorded run); nonzero means the
     /// body is not deterministic under the simulator.
     pub divergences: usize,
+    /// The first failing run.
     pub found: Option<Found>,
 }
 
 /// Run `body` up to `runs` times under `strategy`, stopping at the first
-/// failure (panic output is suppressed; the failure is in the report). Random and PCT use seeds `first_seed..`; DFS passes `first_seed`
-/// to every run.
+/// failure. Random and PCT use seeds `first_seed..`; DFS passes `first_seed`
+/// to every run. Panic output is suppressed; the failure is in the report.
 pub fn explore<F, Fut>(strategy: &Strategy, first_seed: u64, runs: usize, body: &F) -> Report
+where
+    F: Fn(u64) -> Fut,
+    Fut: Future<Output = ()>,
+{
+    run_strategy(strategy, first_seed, runs, true, body)
+}
+
+/// [`explore`] without stopping at the first failure, to measure how often a
+/// strategy hits a bug ([`Report::failures`] out of [`Report::runs`]).
+pub fn sweep<F, Fut>(strategy: &Strategy, first_seed: u64, runs: usize, body: &F) -> Report
+where
+    F: Fn(u64) -> Fut,
+    Fut: Future<Output = ()>,
+{
+    run_strategy(strategy, first_seed, runs, false, body)
+}
+
+fn run_strategy<F, Fut>(
+    strategy: &Strategy,
+    first_seed: u64,
+    runs: usize,
+    stop: bool,
+    body: &F,
+) -> Report
 where
     F: Fn(u64) -> Fut,
     Fut: Future<Output = ()>,
@@ -318,6 +345,7 @@ where
     let mut report = Report {
         strategy: strategy.clone(),
         runs: 0,
+        failures: 0,
         schedules: 0,
         max_polls: 0,
         exhausted: false,
@@ -325,84 +353,74 @@ where
         found: None,
     };
     let mut hashes = BTreeSet::new();
-    let mut note = |report: &mut Report, outcome: &Outcome| {
+    let mut estimate = match strategy {
+        Strategy::Pct { steps, .. } => steps.unwrap_or(DEFAULT_PCT_STEPS),
+        _ => 0,
+    };
+    let mut prefix: Vec<u32> = Vec::new();
+    while report.runs < runs {
+        let seed = match strategy {
+            Strategy::Dfs { .. } => first_seed,
+            _ => first_seed.wrapping_add(report.runs as u64),
+        };
+        let (plan, replayed) = match strategy {
+            Strategy::Random => (None, Strategy::Random),
+            Strategy::Pct { depth, .. } => (
+                Some(Plan::pct(seed, *depth, estimate)),
+                Strategy::Pct {
+                    depth: *depth,
+                    steps: Some(estimate),
+                },
+            ),
+            Strategy::Dfs { depth, .. } => (
+                Some(Plan::delays(prefix.clone(), depth.unwrap_or(u64::MAX))),
+                strategy.clone(),
+            ),
+        };
+        let (outcome, plan) = quietly(|| run_planned(seed, None, plan, body));
         report.runs += 1;
         hashes.insert(outcome.stats.schedule_hash);
         report.schedules = hashes.len();
         report.max_polls = report.max_polls.max(outcome.stats.steps);
-    };
-    match strategy {
-        Strategy::Random => {
-            for seed in (first_seed..).take(runs) {
-                let (outcome, _) = quietly(|| run_planned(seed, None, None, body));
-                note(&mut report, &outcome);
-                if outcome.failure.is_some() {
-                    report.found = Some(Found {
-                        run: report.runs,
-                        seed,
-                        strategy: Strategy::Random,
-                        delays: None,
-                        outcome,
-                    });
-                    break;
-                }
+        let choices = plan.map(|p| p.choices).unwrap_or_default();
+        if !choices
+            .iter()
+            .map(|c| c.delays)
+            .take(prefix.len())
+            .eq(prefix.iter().copied())
+        {
+            report.divergences += 1;
+        }
+        if outcome.failure.is_some() {
+            report.failures += 1;
+            if report.found.is_none() {
+                report.found = Some(Found {
+                    run: report.runs,
+                    seed,
+                    strategy: replayed,
+                    delays: matches!(strategy, Strategy::Dfs { .. })
+                        .then(|| choices.iter().map(|c| c.delays).collect()),
+                    outcome,
+                });
+            }
+            if stop {
+                break;
             }
         }
-        Strategy::Pct { depth, steps } => {
-            let mut estimate = steps.unwrap_or(DEFAULT_PCT_STEPS);
-            for seed in (first_seed..).take(runs) {
-                let k = estimate;
-                let plan = Plan::pct(seed, *depth, k);
-                let (outcome, _) = quietly(|| run_planned(seed, None, Some(plan), body));
-                note(&mut report, &outcome);
-                if outcome.failure.is_some() {
-                    report.found = Some(Found {
-                        run: report.runs,
-                        seed,
-                        strategy: Strategy::Pct {
-                            depth: *depth,
-                            steps: Some(k),
-                        },
-                        delays: None,
-                        outcome,
-                    });
-                    break;
-                }
+        match strategy {
+            Strategy::Random => {}
+            Strategy::Pct { steps, .. } => {
                 if steps.is_none() {
                     estimate = report.max_polls.max(1);
                 }
             }
-        }
-        Strategy::Dfs { bound, depth } => {
-            let depth = depth.unwrap_or(u64::MAX);
-            let mut prefix: Vec<u32> = Vec::new();
-            while report.runs < runs {
-                let plan = Plan::delays(prefix.clone(), depth);
-                let (outcome, plan) = quietly(|| run_planned(first_seed, None, Some(plan), body));
-                note(&mut report, &outcome);
-                let choices = plan.map(|p| p.choices).unwrap_or_default();
-                let applied = choices.iter().map(|c| c.delays);
-                if !applied.take(prefix.len()).eq(prefix.iter().copied()) {
-                    report.divergences += 1;
-                }
-                if outcome.failure.is_some() {
-                    report.found = Some(Found {
-                        run: report.runs,
-                        seed: first_seed,
-                        strategy: strategy.clone(),
-                        delays: Some(choices.iter().map(|c| c.delays).collect()),
-                        outcome,
-                    });
+            Strategy::Dfs { bound, .. } => match next_prefix(&choices, *bound) {
+                Some(next) => prefix = next,
+                None => {
+                    report.exhausted = true;
                     break;
                 }
-                match next_prefix(&choices, *bound) {
-                    Some(next) => prefix = next,
-                    None => {
-                        report.exhausted = true;
-                        break;
-                    }
-                }
-            }
+            },
         }
     }
     report

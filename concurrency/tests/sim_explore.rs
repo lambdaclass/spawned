@@ -19,7 +19,7 @@ use spawned_concurrency::{
 };
 use spawned_rt::tasks::sim::{
     self,
-    explore::{explore, Report, Strategy},
+    explore::{explore, sweep, Report, Strategy},
 };
 use std::time::Duration;
 
@@ -305,7 +305,9 @@ fn pr204_race_found_by_each_strategy() {
     }
 }
 
-/// Runs-to-first-failure table with larger budgets (prints only).
+/// Runs-to-first-failure and hit-rate table with larger budgets (prints
+/// only). `SPAWNED_SIM_BUDGET` (default 100,000) caps first-failure searches;
+/// hit rates use at most 10,000 runs.
 #[test]
 #[ignore = "prints the strategy comparison table"]
 fn explore_budget_table() {
@@ -313,26 +315,69 @@ fn explore_budget_table() {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(100_000);
-    let strategies = [
+    table("lost update, depth 2", budget, |_| lost_update_depth2());
+    table("two lost updates, depth 3", budget, |_| {
+        lost_update_depth3()
+    });
+    for wanted in ["Failed", "Stopped"] {
+        table(
+            &format!("PR #204: never-started child ends {wanted}"),
+            budget,
+            move |_| unstarted_child_never_ends(wanted),
+        );
+    }
+}
+
+fn table<F, Fut>(title: &str, budget: usize, body: F)
+where
+    F: Fn(u64) -> Fut,
+    Fut: std::future::Future<Output = ()>,
+{
+    println!("{title}:");
+    for s in [
         "random",
         "pct:d=2",
         "pct:d=3",
         "dfs:bound=1",
         "dfs:bound=2",
         "dfs:bound=3",
-    ];
-    println!("lost update, depth 2:");
-    for s in strategies {
-        run(s, budget, &|_| lost_update_depth2());
+    ] {
+        let report = run(s, budget, &body);
+        let strategy = match Strategy::parse(s).unwrap() {
+            Strategy::Dfs { .. } => continue,
+            // PCT's k fixed at the longest run seen, so runs are independent.
+            Strategy::Pct { depth, .. } => Strategy::Pct {
+                depth,
+                steps: Some(report.max_polls.max(1)),
+            },
+            other => other,
+        };
+        let all = sweep(&strategy, 0, budget.min(10_000), &body);
+        println!(
+            "  {:<14} hit rate {}/{} = {:.3}%",
+            strategy.to_string(),
+            all.failures,
+            all.runs,
+            100.0 * all.failures as f64 / all.runs as f64
+        );
     }
-    println!("two lost updates, depth 3:");
-    for s in strategies {
-        run(s, budget, &|_| lost_update_depth3());
-    }
-    for wanted in ["Failed", "Stopped"] {
-        println!("PR #204: never-started child ends {wanted}:");
-        for s in strategies {
-            run(s, budget, &move |_| unstarted_child_never_ends(wanted));
-        }
-    }
+}
+
+// ---------------------------------------------------------------------------
+// Through #[sim_test]
+// ---------------------------------------------------------------------------
+
+/// The harness with `explore`: PCT finds the planted lost update, prints the
+/// report (strategy, seed, tape, shrunk tape) and fails the test.
+#[spawned_macros::sim_test(explore = "pct:d=2", iterations = 200)]
+#[should_panic(expected = "lost update")]
+async fn sim_test_pct_finds_lost_update() {
+    lost_update_depth2().await;
+}
+
+/// The harness with a bounded DFS on a bug-free body passes, reporting the
+/// bounded space exhausted.
+#[spawned_macros::sim_test(explore = "dfs:bound=1", iterations = 10_000)]
+async fn sim_test_dfs_passes_bug_free_body() {
+    assert_eq!(bump_all(&[0]).await, 1);
 }

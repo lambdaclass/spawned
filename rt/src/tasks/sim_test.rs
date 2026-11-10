@@ -17,6 +17,9 @@
 //! | `SPAWNED_SIM_TAPE=path` | replay a recorded decision tape instead of seeds |
 //! | `SPAWNED_SIM_TAPE_DIR=dir` | where failing tapes are written (default `$TMPDIR/spawned-sim`) |
 //! | `SPAWNED_SIM_SHRINK=n` | runs the tape shrinker may spend on a failure (default 200, 0 = off) |
+//! | `SPAWNED_SIM_STRATEGY=s` | `random` (default), `pct[:d=3][,k=N]` or `dfs[:bound=2][,depth=N]` (see `sim::explore`); overrides the test's `explore` |
+//! | `SPAWNED_SIM_ITERATIONS=n` | runs for that strategy (default 8 for random, 100 otherwise); overrides the test's `iterations` |
+//! | `SPAWNED_SIM_FAIR_AFTER=n` | polls after which a PCT/DFS run switches to a fair scheduler (default 20,000) |
 
 use std::future::Future;
 use std::ops::Range;
@@ -29,6 +32,8 @@ pub struct SimTest {
     function: Option<String>,
     seeds: Option<Range<u64>>,
     workers: Option<usize>,
+    explore: Option<String>,
+    iterations: Option<usize>,
 }
 
 /// Run `body` as a seeded test with the default settings.
@@ -59,6 +64,20 @@ impl SimTest {
     /// Seeds to run under simulation (default `0..SPAWNED_SIM_SEEDS`, or 0..8).
     pub fn seeds(mut self, seeds: Range<u64>) -> Self {
         self.seeds = Some(seeds);
+        self
+    }
+    /// Under simulation, choose tasks with this strategy (`random`,
+    /// `pct[:d=3][,k=N]`, `dfs[:bound=2][,depth=N]`); `SPAWNED_SIM_STRATEGY`
+    /// overrides it. Ignored on Tokio.
+    pub fn explore(mut self, strategy: &str) -> Self {
+        self.explore = Some(strategy.into());
+        self
+    }
+    /// Under simulation, how many runs the strategy may spend (for `random`,
+    /// seeds `0..n` unless [`SimTest::seeds`] is set); `SPAWNED_SIM_ITERATIONS`
+    /// overrides it. Ignored on Tokio.
+    pub fn iterations(mut self, runs: usize) -> Self {
+        self.iterations = Some(runs);
         self
     }
     /// On Tokio, use a multi-thread runtime with `workers` workers (the
@@ -121,6 +140,7 @@ impl SimTest {
         F: Fn(u64) -> Fut,
         Fut: Future<Output = ()>,
     {
+        use super::sim::explore::{explore, Strategy};
         use super::sim::{run_once, shrink, Tape};
         let (name, command) = self.locate();
         // Scheduling settings that change what a seed does travel with the
@@ -150,63 +170,106 @@ impl SimTest {
             return;
         }
 
-        let seeds = match env_u64("SPAWNED_SIM_SEED") {
-            Some(seed) => seed..seed + 1,
-            None => self
-                .seeds
-                .clone()
-                .unwrap_or(0..env_u64("SPAWNED_SIM_SEEDS").unwrap_or(8)),
+        let spec = std::env::var("SPAWNED_SIM_STRATEGY")
+            .ok()
+            .or(self.explore.clone())
+            .unwrap_or_else(|| "random".into());
+        let strategy = Strategy::parse(&spec)
+            .unwrap_or_else(|e| panic!("spawned_sim: `{name}`: bad strategy: {e}"));
+        let iterations = env_u64("SPAWNED_SIM_ITERATIONS")
+            .map(|n| n as usize)
+            .or(self.iterations);
+        let (first, runs) = match (&strategy, env_u64("SPAWNED_SIM_SEED")) {
+            (Strategy::Dfs { .. }, _) => (0, iterations.unwrap_or(100)),
+            (_, Some(seed)) => (seed, 1),
+            (Strategy::Random, None) => match (&self.seeds, iterations) {
+                (Some(seeds), _) => (seeds.start, seeds.end.saturating_sub(seeds.start) as usize),
+                (None, Some(n)) => (0, n),
+                (None, None) => (0, env_u64("SPAWNED_SIM_SEEDS").unwrap_or(8) as usize),
+            },
+            (Strategy::Pct { .. }, None) => (0, iterations.unwrap_or(100)),
         };
-        for seed in seeds {
-            let outcome = run_once(seed, None, &body);
-            let Some(failure) = outcome.failure else {
-                continue;
-            };
-            let dir = std::env::var_os("SPAWNED_SIM_TAPE_DIR")
-                .map(std::path::PathBuf::from)
-                .unwrap_or_else(|| std::env::temp_dir().join("spawned-sim"));
-            let stem: String = name
-                .chars()
-                .map(|c| if c.is_alphanumeric() { c } else { '_' })
-                .collect();
-            let full = dir.join(format!("{stem}-seed{seed}.tape"));
-            let mut report = format!(
-                "spawned_sim: `{name}` failed with seed {seed} after {} polls at virtual time {:?}: {failure}\n  \
-                 replay seed: {}\n",
-                outcome.stats.steps,
-                outcome.stats.now,
-                replay(&format!("SPAWNED_SIM_SEED={seed}")),
-            );
-            match outcome.tape.save(&full) {
-                Ok(()) => report.push_str(&format!(
-                    "  tape:        {} ({} polls, {} non-canonical)\n  replay tape: {}\n",
-                    full.display(),
-                    outcome.tape.polls(),
-                    outcome.tape.deviations(),
-                    replay(&format!("SPAWNED_SIM_TAPE={}", full.display())),
-                )),
-                Err(e) => report.push_str(&format!(
-                    "  (could not write tape {}: {e})\n",
-                    full.display()
-                )),
+        let report = explore(&strategy, first, runs, &body);
+        let Some(found) = report.found else {
+            if strategy != Strategy::Random {
+                eprintln!(
+                    "spawned_sim: `{name}` passed {} runs of {strategy} ({} distinct schedules{})",
+                    report.runs,
+                    report.schedules,
+                    if report.exhausted {
+                        ", bounded space exhausted"
+                    } else {
+                        ""
+                    }
+                );
             }
-            let budget = env_u64("SPAWNED_SIM_SHRINK").unwrap_or(200) as usize;
-            if budget > 0 {
-                let (small, runs) = shrink(&outcome.tape, &failure, &body, budget);
-                let min = dir.join(format!("{stem}-seed{seed}.min.tape"));
-                if shrunk(&small, &outcome.tape) && small.save(&min).is_ok() {
-                    report.push_str(&format!(
-                        "  shrunk tape: {} ({} polls, {} non-canonical after {runs} runs)\n  replay:      {}\n",
-                        min.display(),
-                        small.polls(),
-                        small.deviations(),
-                        replay(&format!("SPAWNED_SIM_TAPE={}", min.display())),
-                    ));
-                }
-            }
-            eprintln!("{report}");
-            panic!("spawned_sim: `{name}` failed with seed {seed}: {failure}");
+            return;
+        };
+        let (seed, outcome) = (found.seed, found.outcome);
+        let failure = outcome.failure.clone().unwrap_or_default();
+        let dir = std::env::var_os("SPAWNED_SIM_TAPE_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::env::temp_dir().join("spawned-sim"));
+        let stem: String = name
+            .chars()
+            .map(|c| if c.is_alphanumeric() { c } else { '_' })
+            .collect();
+        let stem = match &found.strategy {
+            Strategy::Random => format!("{stem}-seed{seed}"),
+            Strategy::Pct { .. } => format!("{stem}-pct-seed{seed}"),
+            Strategy::Dfs { .. } => format!("{stem}-dfs-run{}", found.run),
+        };
+        let full = dir.join(format!("{stem}.tape"));
+        let mut report = format!(
+            "spawned_sim: `{name}` failed under {} at run {} (seed {seed}) after {} polls at virtual time {:?}: {failure}\n",
+            found.strategy, found.run, outcome.stats.steps, outcome.stats.now,
+        );
+        match &found.strategy {
+            Strategy::Random => report.push_str(&format!(
+                "  replay seed: {}\n",
+                replay(&format!("SPAWNED_SIM_SEED={seed}"))
+            )),
+            Strategy::Pct { .. } => report.push_str(&format!(
+                "  replay seed: {}\n",
+                replay(&format!(
+                    "SPAWNED_SIM_STRATEGY={} SPAWNED_SIM_SEED={seed}",
+                    found.strategy
+                ))
+            )),
+            Strategy::Dfs { .. } => {}
         }
+        match outcome.tape.save(&full) {
+            Ok(()) => report.push_str(&format!(
+                "  tape:        {} ({} polls, {} non-canonical)\n  replay tape: {}\n",
+                full.display(),
+                outcome.tape.polls(),
+                outcome.tape.deviations(),
+                replay(&format!("SPAWNED_SIM_TAPE={}", full.display())),
+            )),
+            Err(e) => report.push_str(&format!(
+                "  (could not write tape {}: {e})\n",
+                full.display()
+            )),
+        }
+        let budget = env_u64("SPAWNED_SIM_SHRINK").unwrap_or(200) as usize;
+        if budget > 0 {
+            let (small, runs) = shrink(&outcome.tape, &failure, &body, budget);
+            let min = dir.join(format!("{stem}.min.tape"));
+            if shrunk(&small, &outcome.tape) && small.save(&min).is_ok() {
+                report.push_str(&format!(
+                    "  shrunk tape: {} ({} polls, {} non-canonical after {runs} runs)\n  replay:      {}\n",
+                    min.display(),
+                    small.polls(),
+                    small.deviations(),
+                    replay(&format!("SPAWNED_SIM_TAPE={}", min.display())),
+                ));
+            }
+        }
+        eprintln!("{report}");
+        panic!(
+            "spawned_sim: `{name}` failed under {} with seed {seed}: {failure}",
+            found.strategy
+        );
     }
 }
 
