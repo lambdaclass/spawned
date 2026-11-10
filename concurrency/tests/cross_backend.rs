@@ -156,7 +156,8 @@ mod tasks_node {
         }
     }
     impl Handler<Cmd> for Node {
-        async fn handle(&mut self, cmd: Cmd, ctx: &Context<Self>) -> Reply {
+        async fn handle(&mut self, cmd: Cmd, reply: spawned_concurrency::reply::PendingReply<'_, Reply>, ctx: &Context<Self>) {
+            let __reply_value: Reply = async {
             match cmd {
                 Cmd::Echo(v) => self.state.echo(v),
                 Cmd::Chain(v) => match self.peers.first() {
@@ -215,18 +216,25 @@ mod tasks_node {
                 }
             }
         }
+            .await;
+            let _ = reply.reply(__reply_value);
+        }
     }
     impl Handler<Down> for Node {
-        async fn handle(&mut self, down: Down, _: &Context<Self>) {
+        async fn handle(&mut self, down: Down, reply: spawned_concurrency::reply::PendingReply<'_, ()>, _: &Context<Self>) {
+            {
             self.state.log.push(Obs::Down {
                 observer: self.state.index,
                 monitor: down.monitor_ref,
                 reason: down.reason,
             });
         }
+            let _ = reply.reply(());
+        }
     }
     impl Handler<Tick> for Node {
-        async fn handle(&mut self, Tick(n): Tick, ctx: &Context<Self>) {
+        async fn handle(&mut self, Tick(n): Tick, reply: spawned_concurrency::reply::PendingReply<'_, ()>, ctx: &Context<Self>) {
+            {
             self.state.ticks_seen += 1;
             self.state.log.push(Obs::Tick {
                 node: self.state.index,
@@ -236,9 +244,12 @@ mod tasks_node {
                 ctx.stop();
             }
         }
+            let _ = reply.reply(());
+        }
     }
     impl Handler<Pulse> for Node {
-        async fn handle(&mut self, _: Pulse, ctx: &Context<Self>) {
+        async fn handle(&mut self, _: Pulse, reply: spawned_concurrency::reply::PendingReply<'_, ()>, ctx: &Context<Self>) {
+            let __reply_value: () = async {
             if self.state.pulses_seen == self.state.pulses_wanted {
                 return; // A tick already in flight when the interval was cancelled.
             }
@@ -254,6 +265,9 @@ mod tasks_node {
             if self.state.timers_done() {
                 ctx.stop();
             }
+        }
+            .await;
+            let _ = reply.reply(__reply_value);
         }
     }
 }
@@ -281,7 +295,8 @@ mod threads_node {
         }
     }
     impl Handler<Cmd> for Node {
-        fn handle(&mut self, cmd: Cmd, ctx: &Context<Self>) -> Reply {
+        fn handle(&mut self, cmd: Cmd, reply: spawned_concurrency::reply::PendingReply<'_, Reply>, ctx: &Context<Self>) {
+            let __reply_value: Reply = (|| {
             match cmd {
                 Cmd::Echo(v) => self.state.echo(v),
                 Cmd::Chain(v) => match self.peers.first() {
@@ -341,19 +356,25 @@ mod threads_node {
                     Reply::Unit
                 }
             }
+        })();
+            let _ = reply.reply(__reply_value);
         }
     }
     impl Handler<Down> for Node {
-        fn handle(&mut self, down: Down, _: &Context<Self>) {
+        fn handle(&mut self, down: Down, reply: spawned_concurrency::reply::PendingReply<'_, ()>, _: &Context<Self>) {
+            {
             self.state.log.push(Obs::Down {
                 observer: self.state.index,
                 monitor: down.monitor_ref,
                 reason: down.reason,
             });
         }
+            let _ = reply.reply(());
+        }
     }
     impl Handler<Tick> for Node {
-        fn handle(&mut self, Tick(n): Tick, ctx: &Context<Self>) {
+        fn handle(&mut self, Tick(n): Tick, reply: spawned_concurrency::reply::PendingReply<'_, ()>, ctx: &Context<Self>) {
+            {
             self.state.ticks_seen += 1;
             self.state.log.push(Obs::Tick {
                 node: self.state.index,
@@ -363,9 +384,12 @@ mod threads_node {
                 ctx.stop();
             }
         }
+            let _ = reply.reply(());
+        }
     }
     impl Handler<Pulse> for Node {
-        fn handle(&mut self, _: Pulse, ctx: &Context<Self>) {
+        fn handle(&mut self, _: Pulse, reply: spawned_concurrency::reply::PendingReply<'_, ()>, ctx: &Context<Self>) {
+            let __reply_value: () = (|| {
             if self.state.pulses_seen == self.state.pulses_wanted {
                 return;
             }
@@ -381,6 +405,8 @@ mod threads_node {
             if self.state.timers_done() {
                 ctx.stop();
             }
+        })();
+            let _ = reply.reply(__reply_value);
         }
     }
 }
@@ -1281,10 +1307,13 @@ mod early_stop {
         }
     }
     impl spawned_concurrency::tasks::Handler<Block> for Hooks {
-        async fn handle(&mut self, block: Block, _: &spawned_concurrency::tasks::Context<Self>) {
+        async fn handle(&mut self, block: Block, reply: spawned_concurrency::reply::PendingReply<'_, ()>, _: &spawned_concurrency::tasks::Context<Self>) {
+            {
             // Deliberately blocks the only async worker of the group.
             let _ = block.1.send(());
             let _ = block.0.lock().unwrap().recv_timeout(LIMIT);
+        }
+            let _ = reply.reply(());
         }
     }
     impl spawned_concurrency::threads::Actor for Hooks {

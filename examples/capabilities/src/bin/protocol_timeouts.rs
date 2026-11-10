@@ -23,15 +23,21 @@ mod asynchronous {
         }
     }
     impl Handler<lookup_protocol::Value> for Worker {
-        async fn handle(&mut self, _: lookup_protocol::Value, _: &Context<Self>) -> u64 {
+        async fn handle(&mut self, _: lookup_protocol::Value, reply: spawned_concurrency::reply::PendingReply<'_, u64>, _: &Context<Self>) {
+            let __reply_value: u64 = {
             self.1.fetch_add(1, Ordering::SeqCst);
             42
+        };
+            let _ = reply.reply(__reply_value);
         }
     }
     impl Handler<lookup_protocol::Quick> for Worker {
-        async fn handle(&mut self, _: lookup_protocol::Quick, _: &Context<Self>) -> u64 {
+        async fn handle(&mut self, _: lookup_protocol::Quick, reply: spawned_concurrency::reply::PendingReply<'_, u64>, _: &Context<Self>) {
+            let __reply_value: u64 = {
             self.1.fetch_add(1, Ordering::SeqCst);
             42
+        };
+            let _ = reply.reply(__reply_value);
         }
     }
     pub async fn run() {
@@ -63,15 +69,21 @@ mod synchronous {
         }
     }
     impl Handler<lookup_protocol::Value> for Worker {
-        fn handle(&mut self, _: lookup_protocol::Value, _: &Context<Self>) -> u64 {
+        fn handle(&mut self, _: lookup_protocol::Value, reply: spawned_concurrency::reply::PendingReply<'_, u64>, _: &Context<Self>) {
+            let __reply_value: u64 = {
             self.1.fetch_add(1, Ordering::SeqCst);
             42
+        };
+            let _ = reply.reply(__reply_value);
         }
     }
     impl Handler<lookup_protocol::Quick> for Worker {
-        fn handle(&mut self, _: lookup_protocol::Quick, _: &Context<Self>) -> u64 {
+        fn handle(&mut self, _: lookup_protocol::Quick, reply: spawned_concurrency::reply::PendingReply<'_, u64>, _: &Context<Self>) {
+            let __reply_value: u64 = {
             self.1.fetch_add(1, Ordering::SeqCst);
             42
+        };
+            let _ = reply.reply(__reply_value);
         }
     }
     pub fn run() {

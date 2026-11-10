@@ -30,7 +30,8 @@ impl Drop for Fixture {
     }
 }
 impl Handler<Crash> for Fixture {
-    async fn handle(&mut self, _: Crash, _: &Context<Self>) {
+    async fn handle(&mut self, _: Crash, reply: spawned_concurrency::reply::PendingReply<'_, ()>, _: &Context<Self>) {
+        {
         std::fs::write(
             self.path.join("effect"),
             b"effect happened before process failure",
@@ -42,6 +43,8 @@ impl Handler<Crash> for Fixture {
         loop {
             std::thread::park();
         }
+    }
+        let _ = reply.reply(());
     }
 }
 #[test]

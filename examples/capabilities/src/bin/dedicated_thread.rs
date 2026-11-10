@@ -12,7 +12,8 @@ impl Message for Check {
     type Result = (usize, u64);
 }
 impl Handler<Check> for Worker {
-    async fn handle(&mut self, _: Check, _: &Context<Self>) -> (usize, u64) {
+    async fn handle(&mut self, _: Check, reply: spawned_concurrency::reply::PendingReply<'_, (usize, u64)>, _: &Context<Self>) {
+        let __reply_value: (usize, u64) = {
         let root = thread::current().id();
         let workers = tokio::runtime::Handle::current().metrics().num_workers();
         let (tx, rx) = mpsc::channel();
@@ -27,6 +28,8 @@ impl Handler<Check> for Worker {
         helper.await.unwrap();
         assert_eq!(root, thread::current().id());
         (workers, answer)
+    };
+        let _ = reply.reply(__reply_value);
     }
 }
 

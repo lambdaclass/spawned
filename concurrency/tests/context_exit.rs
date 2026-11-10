@@ -20,9 +20,12 @@ fn native_explicit_exit_is_cooperative_and_first_reason_wins() {
         }
     }
     impl Handler<Exit> for Worker {
-        fn handle(&mut self, exit: Exit, ctx: &Context<Self>) {
+        fn handle(&mut self, exit: Exit, reply: spawned_concurrency::reply::PendingReply<'_, ()>, ctx: &Context<Self>) {
+            {
             ctx.stop_with_reason(exit.0);
             ctx.stop();
+        }
+            let _ = reply.reply(());
         }
     }
     for reason in [ExitReason::Shutdown, ExitReason::Kill] {
@@ -50,9 +53,12 @@ async fn async_explicit_exit_is_cooperative_and_first_reason_wins() {
         }
     }
     impl Handler<Exit> for Worker {
-        async fn handle(&mut self, exit: Exit, ctx: &Context<Self>) {
+        async fn handle(&mut self, exit: Exit, reply: spawned_concurrency::reply::PendingReply<'_, ()>, ctx: &Context<Self>) {
+            {
             ctx.stop_with_reason(exit.0);
             ctx.stop();
+        }
+            let _ = reply.reply(());
         }
     }
     for reason in [ExitReason::Shutdown, ExitReason::Kill] {

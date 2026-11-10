@@ -58,21 +58,30 @@ mod asynchronous {
     struct Worker;
     impl Actor for Worker {}
     impl Handler<timed_protocol::Work> for Worker {
-        async fn handle(&mut self, msg: timed_protocol::Work, _: &Context<Self>) -> u64 {
+        async fn handle(&mut self, msg: timed_protocol::Work, reply: spawned_concurrency::reply::PendingReply<'_, u64>, _: &Context<Self>) {
+            let __reply_value: u64 = {
             spawned_rt::tasks::sleep(Duration::from_millis(msg.millis)).await;
             msg.millis
+        };
+            let _ = reply.reply(__reply_value);
         }
     }
     impl Handler<timed_protocol::Brief> for Worker {
-        async fn handle(&mut self, msg: timed_protocol::Brief, _: &Context<Self>) -> u64 {
+        async fn handle(&mut self, msg: timed_protocol::Brief, reply: spawned_concurrency::reply::PendingReply<'_, u64>, _: &Context<Self>) {
+            let __reply_value: u64 = {
             spawned_rt::tasks::sleep(Duration::from_millis(msg.millis)).await;
             msg.millis
+        };
+            let _ = reply.reply(__reply_value);
         }
     }
     impl Handler<legacy_protocol::Legacy> for Worker {
-        async fn handle(&mut self, msg: legacy_protocol::Legacy, _: &Context<Self>) -> u64 {
+        async fn handle(&mut self, msg: legacy_protocol::Legacy, reply: spawned_concurrency::reply::PendingReply<'_, u64>, _: &Context<Self>) {
+            let __reply_value: u64 = {
             spawned_rt::tasks::sleep(Duration::from_millis(msg.millis)).await;
             msg.millis
+        };
+            let _ = reply.reply(__reply_value);
         }
     }
     // Tokio's paused clock normally; the simulator's clock is always virtual.
@@ -130,15 +139,21 @@ mod synchronous {
     struct Worker;
     impl Actor for Worker {}
     impl Handler<timed_protocol::Work> for Worker {
-        fn handle(&mut self, msg: timed_protocol::Work, _: &Context<Self>) -> u64 {
+        fn handle(&mut self, msg: timed_protocol::Work, reply: spawned_concurrency::reply::PendingReply<'_, u64>, _: &Context<Self>) {
+            let __reply_value: u64 = {
             std::thread::sleep(Duration::from_millis(msg.millis));
             msg.millis
+        };
+            let _ = reply.reply(__reply_value);
         }
     }
     impl Handler<timed_protocol::Brief> for Worker {
-        fn handle(&mut self, msg: timed_protocol::Brief, _: &Context<Self>) -> u64 {
+        fn handle(&mut self, msg: timed_protocol::Brief, reply: spawned_concurrency::reply::PendingReply<'_, u64>, _: &Context<Self>) {
+            let __reply_value: u64 = {
             std::thread::sleep(Duration::from_millis(msg.millis));
             msg.millis
+        };
+            let _ = reply.reply(__reply_value);
         }
     }
     #[test]
@@ -167,26 +182,40 @@ mod synchronous {
         }
     }
     impl Handler<zero_protocol::Zero> for Held {
-        fn handle(&mut self, _: zero_protocol::Zero, _: &Context<Self>) {}
+        fn handle(&mut self, _: zero_protocol::Zero, reply: spawned_concurrency::reply::PendingReply<'_, ()>, _: &Context<Self>) {
+            let _ = reply.reply(());
+        }
     }
     impl Handler<naming_protocol::Timeout> for Worker {
-        fn handle(&mut self, _: naming_protocol::Timeout, _: &Context<Self>) -> u64 {
+        fn handle(&mut self, _: naming_protocol::Timeout, reply: spawned_concurrency::reply::PendingReply<'_, u64>, _: &Context<Self>) {
+            let __reply_value: u64 = {
             31
+        };
+            let _ = reply.reply(__reply_value);
         }
     }
     impl Handler<naming_protocol::ActorRef> for Worker {
-        fn handle(&mut self, _: naming_protocol::ActorRef, _: &Context<Self>) -> u64 {
+        fn handle(&mut self, _: naming_protocol::ActorRef, reply: spawned_concurrency::reply::PendingReply<'_, u64>, _: &Context<Self>) {
+            let __reply_value: u64 = {
             32
+        };
+            let _ = reply.reply(__reply_value);
         }
     }
     impl Handler<naming_protocol::TimeoutOverride> for Worker {
-        fn handle(&mut self, _: naming_protocol::TimeoutOverride, _: &Context<Self>) -> u64 {
+        fn handle(&mut self, _: naming_protocol::TimeoutOverride, reply: spawned_concurrency::reply::PendingReply<'_, u64>, _: &Context<Self>) {
+            let __reply_value: u64 = {
             33
+        };
+            let _ = reply.reply(__reply_value);
         }
     }
     impl Handler<naming_protocol::Dispatch0> for Worker {
-        fn handle(&mut self, _: naming_protocol::Dispatch0, _: &Context<Self>) -> u64 {
+        fn handle(&mut self, _: naming_protocol::Dispatch0, reply: spawned_concurrency::reply::PendingReply<'_, u64>, _: &Context<Self>) {
+            let __reply_value: u64 = {
             34
+        };
+            let _ = reply.reply(__reply_value);
         }
     }
     #[test]
@@ -205,8 +234,11 @@ mod synchronous {
         actor.join();
     }
     impl Handler<owned_protocol::Owned> for Worker {
-        fn handle(&mut self, msg: owned_protocol::Owned, _: &Context<Self>) -> u64 {
+        fn handle(&mut self, msg: owned_protocol::Owned, reply: spawned_concurrency::reply::PendingReply<'_, u64>, _: &Context<Self>) {
+            let __reply_value: u64 = {
             msg.__spawned_request_timeout.value
+        };
+            let _ = reply.reply(__reply_value);
         }
     }
     #[test]

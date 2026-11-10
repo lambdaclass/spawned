@@ -93,12 +93,17 @@ impl Actor for Worker {
     }
 }
 impl Handler<Crash> for Worker {
-    async fn handle(&mut self, _: Crash, _: &Context<Self>) {
+    async fn handle(&mut self, _: Crash, reply: spawned_concurrency::reply::PendingReply<'_, ()>, _: &Context<Self>) {
+        {
         panic!("injected child failure");
+    }
+        let _ = reply.reply(());
     }
 }
 impl Handler<Ping> for Worker {
-    async fn handle(&mut self, _: Ping, _: &Context<Self>) {}
+    async fn handle(&mut self, _: Ping, reply: spawned_concurrency::reply::PendingReply<'_, ()>, _: &Context<Self>) {
+        let _ = reply.reply(());
+    }
 }
 
 // ---------------------------------------------------------------- child.factory
@@ -648,21 +653,32 @@ struct Linker {
 }
 impl Actor for Linker {}
 impl Handler<LinkTo> for Linker {
-    async fn handle(&mut self, msg: LinkTo, ctx: &Context<Self>) {
+    async fn handle(&mut self, msg: LinkTo, reply: spawned_concurrency::reply::PendingReply<'_, ()>, ctx: &Context<Self>) {
+        {
         ctx.link(&msg.0);
+    }
+        let _ = reply.reply(());
     }
 }
 impl Handler<Watch> for Linker {
-    async fn handle(&mut self, msg: Watch, ctx: &Context<Self>) {
+    async fn handle(&mut self, msg: Watch, reply: spawned_concurrency::reply::PendingReply<'_, ()>, ctx: &Context<Self>) {
+        {
         ctx.monitor(&msg.0);
+    }
+        let _ = reply.reply(());
     }
 }
 impl Handler<Ping> for Linker {
-    async fn handle(&mut self, _: Ping, _: &Context<Self>) {}
+    async fn handle(&mut self, _: Ping, reply: spawned_concurrency::reply::PendingReply<'_, ()>, _: &Context<Self>) {
+        let _ = reply.reply(());
+    }
 }
 impl Handler<Down> for Linker {
-    async fn handle(&mut self, msg: Down, _: &Context<Self>) {
+    async fn handle(&mut self, msg: Down, reply: spawned_concurrency::reply::PendingReply<'_, ()>, _: &Context<Self>) {
+        {
         let _ = self.downs.send(msg.reason);
+    }
+        let _ = reply.reply(());
     }
 }
 

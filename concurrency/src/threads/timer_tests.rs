@@ -46,22 +46,31 @@ impl Actor for Repeater {
 }
 
 impl Handler<Inc> for Repeater {
-    fn handle(&mut self, _msg: Inc, _ctx: &Context<Self>) {
+    fn handle(&mut self, _msg: Inc, reply: crate::reply::PendingReply<'_, ()>, _ctx: &Context<Self>) {
+        {
         self.count += 1;
+    }
+        let _ = reply.reply(());
     }
 }
 
 impl Handler<StopTimer> for Repeater {
-    fn handle(&mut self, _msg: StopTimer, _ctx: &Context<Self>) {
+    fn handle(&mut self, _msg: StopTimer, reply: crate::reply::PendingReply<'_, ()>, _ctx: &Context<Self>) {
+        {
         if let Some(ct) = self.cancellation_token.clone() {
             ct.cancel();
         }
     }
+        let _ = reply.reply(());
+    }
 }
 
 impl Handler<GetRepCount> for Repeater {
-    fn handle(&mut self, _msg: GetRepCount, _ctx: &Context<Self>) -> i32 {
+    fn handle(&mut self, _msg: GetRepCount, reply: crate::reply::PendingReply<'_, i32>, _ctx: &Context<Self>) {
+        let __reply_value: i32 = {
         self.count
+    };
+        let _ = reply.reply(__reply_value);
     }
 }
 
@@ -119,21 +128,30 @@ impl Delayed {
 impl Actor for Delayed {}
 
 impl Handler<Inc> for Delayed {
-    fn handle(&mut self, _msg: Inc, _ctx: &Context<Self>) {
+    fn handle(&mut self, _msg: Inc, reply: crate::reply::PendingReply<'_, ()>, _ctx: &Context<Self>) {
+        {
         self.count += 1;
+    }
+        let _ = reply.reply(());
     }
 }
 
 impl Handler<GetDelCount> for Delayed {
-    fn handle(&mut self, _msg: GetDelCount, _ctx: &Context<Self>) -> i32 {
+    fn handle(&mut self, _msg: GetDelCount, reply: crate::reply::PendingReply<'_, i32>, _ctx: &Context<Self>) {
+        let __reply_value: i32 = {
         self.count
+    };
+        let _ = reply.reply(__reply_value);
     }
 }
 
 impl Handler<StopDelayed> for Delayed {
-    fn handle(&mut self, _msg: StopDelayed, ctx: &Context<Self>) -> i32 {
+    fn handle(&mut self, _msg: StopDelayed, reply: crate::reply::PendingReply<'_, i32>, ctx: &Context<Self>) {
+        let __reply_value: i32 = {
         ctx.stop();
         self.count
+    };
+        let _ = reply.reply(__reply_value);
     }
 }
 

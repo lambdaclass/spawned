@@ -17,14 +17,20 @@ impl Message for Crash {
 struct Counter(u64);
 impl Actor for Counter {}
 impl Handler<Next> for Counter {
-    async fn handle(&mut self, _: Next, _: &Context<Self>) -> u64 {
+    async fn handle(&mut self, _: Next, reply: spawned_concurrency::reply::PendingReply<'_, u64>, _: &Context<Self>) {
+        let __reply_value: u64 = {
         self.0 += 1;
         self.0
+    };
+        let _ = reply.reply(__reply_value);
     }
 }
 impl Handler<Crash> for Counter {
-    async fn handle(&mut self, _: Crash, _: &Context<Self>) {
+    async fn handle(&mut self, _: Crash, reply: spawned_concurrency::reply::PendingReply<'_, ()>, _: &Context<Self>) {
+        {
         panic!("intentional recovery example failure");
+    }
+        let _ = reply.reply(());
     }
 }
 #[tokio::main(flavor = "current_thread")]

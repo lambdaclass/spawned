@@ -122,7 +122,8 @@ impl Sink {
 }
 impl tasks::Actor for Sink {}
 impl tasks::Handler<Work> for Sink {
-    async fn handle(&mut self, work: Work, _: &tasks::Context<Self>) -> Ack {
+    async fn handle(&mut self, work: Work, reply: spawned_concurrency::reply::PendingReply<'_, Ack>, _: &tasks::Context<Self>) {
+        let __reply_value: Ack = {
         let start = if work.timing {
             Instant::now()
         } else {
@@ -151,12 +152,17 @@ impl tasks::Handler<Work> for Sink {
             _ => {}
         }
         process_at(work, start)
+    };
+        let _ = reply.reply(__reply_value);
     }
 }
 impl threads::Actor for Sink {}
 impl threads::Handler<Work> for Sink {
-    fn handle(&mut self, work: Work, _: &threads::Context<Self>) -> Ack {
+    fn handle(&mut self, work: Work, reply: spawned_concurrency::reply::PendingReply<'_, Ack>, _: &threads::Context<Self>) {
+        let __reply_value: Ack = {
         process(work)
+    };
+        let _ = reply.reply(__reply_value);
     }
 }
 enum ReplySender {
@@ -187,13 +193,19 @@ impl Message for Probe {
     type Result = ();
 }
 impl tasks::Handler<Probe> for Sink {
-    async fn handle(&mut self, probe: Probe, _: &tasks::Context<Self>) {
+    async fn handle(&mut self, probe: Probe, reply: spawned_concurrency::reply::PendingReply<'_, ()>, _: &tasks::Context<Self>) {
+        {
         probe.reply.send(process(probe.work));
+    }
+        let _ = reply.reply(());
     }
 }
 impl threads::Handler<Probe> for Sink {
-    fn handle(&mut self, probe: Probe, _: &threads::Context<Self>) {
+    fn handle(&mut self, probe: Probe, reply: spawned_concurrency::reply::PendingReply<'_, ()>, _: &threads::Context<Self>) {
+        {
         probe.reply.send(process(probe.work));
+    }
+        let _ = reply.reply(());
     }
 }
 enum TokioMessage {

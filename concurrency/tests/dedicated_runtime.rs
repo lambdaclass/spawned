@@ -92,7 +92,8 @@ impl Message for Inspect {
     type Result = Observation;
 }
 impl Handler<Inspect> for Probe {
-    async fn handle(&mut self, operation: Inspect, _: &Context<Self>) -> Observation {
+    async fn handle(&mut self, operation: Inspect, reply: spawned_concurrency::reply::PendingReply<'_, Observation>, _: &Context<Self>) {
+        let __reply_value: Observation = {
         let root = self.assert_root();
         let handle = tokio::runtime::Handle::current();
         let workers = handle.metrics().num_workers();
@@ -137,6 +138,8 @@ impl Handler<Inspect> for Probe {
             workers,
             flavor,
         }
+    };
+        let _ = reply.reply(__reply_value);
     }
 }
 
@@ -147,9 +150,12 @@ impl Message for Ping {
 struct Child;
 impl Actor for Child {}
 impl Handler<Ping> for Child {
-    async fn handle(&mut self, _: Ping, _: &Context<Self>) -> u64 {
+    async fn handle(&mut self, _: Ping, reply: spawned_concurrency::reply::PendingReply<'_, u64>, _: &Context<Self>) {
+        let __reply_value: u64 = {
         tokio::time::sleep(Duration::from_millis(1)).await;
         42
+    };
+        let _ = reply.reply(__reply_value);
     }
 }
 struct Nested;
@@ -157,7 +163,8 @@ impl Message for Nested {
     type Result = u64;
 }
 impl Handler<Nested> for Probe {
-    async fn handle(&mut self, _: Nested, _: &Context<Self>) -> u64 {
+    async fn handle(&mut self, _: Nested, reply: spawned_concurrency::reply::PendingReply<'_, u64>, _: &Context<Self>) {
+        let __reply_value: u64 = {
         self.assert_root();
         // Default Async startup uses this actor's isolated runtime.
         let child = Child.start();
@@ -167,6 +174,8 @@ impl Handler<Nested> for Probe {
         tokio::time::timeout(LIMIT, child.join()).await.unwrap();
         self.assert_root();
         answer
+    };
+        let _ = reply.reply(__reply_value);
     }
 }
 
@@ -175,7 +184,8 @@ impl Message for Exchange {
     type Result = u64;
 }
 impl Handler<Exchange> for Probe {
-    async fn handle(&mut self, message: Exchange, _: &Context<Self>) -> u64 {
+    async fn handle(&mut self, message: Exchange, reply: spawned_concurrency::reply::PendingReply<'_, u64>, _: &Context<Self>) {
+        let __reply_value: u64 = {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         self.assert_root();
         let answer = tokio::time::timeout(LIMIT, async {
@@ -189,6 +199,8 @@ impl Handler<Exchange> for Probe {
         .expect("dedicated runtime I/O stalled");
         self.assert_root();
         answer
+    };
+        let _ = reply.reply(__reply_value);
     }
 }
 

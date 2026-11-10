@@ -18,14 +18,20 @@ fn compute(work: Work) -> u64 {
 }
 impl tasks::Actor for Sink {}
 impl tasks::Handler<Work> for Sink {
-    async fn handle(&mut self, work: Work, _: &tasks::Context<Self>) -> u64 {
+    async fn handle(&mut self, work: Work, reply: spawned_concurrency::reply::PendingReply<'_, u64>, _: &tasks::Context<Self>) {
+        let __reply_value: u64 = {
         compute(work)
+    };
+        let _ = reply.reply(__reply_value);
     }
 }
 impl threads::Actor for Sink {}
 impl threads::Handler<Work> for Sink {
-    fn handle(&mut self, work: Work, _: &threads::Context<Self>) -> u64 {
+    fn handle(&mut self, work: Work, reply: spawned_concurrency::reply::PendingReply<'_, u64>, _: &threads::Context<Self>) {
+        let __reply_value: u64 = {
         compute(work)
+    };
+        let _ = reply.reply(__reply_value);
     }
 }
 fn main() {

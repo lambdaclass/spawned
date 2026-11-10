@@ -85,8 +85,11 @@ impl Actor for Node {
     }
 }
 impl Handler<Crash> for Node {
-    async fn handle(&mut self, _: Crash, _: &Context<Self>) {
+    async fn handle(&mut self, _: Crash, reply: spawned_concurrency::reply::PendingReply<'_, ()>, _: &Context<Self>) {
+        {
         panic!("injected crash after readiness");
+    }
+        let _ = reply.reply(());
     }
 }
 
