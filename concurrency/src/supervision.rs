@@ -2287,6 +2287,15 @@ mod policy_tests {
         assert!(jitter(Duration::MAX, &mut rng) <= Duration::from_nanos(u64::MAX));
         assert_ne!(rng, 1, "each draw advances the stream");
     }
+    #[test]
+    fn jitter_seed_separates_supervisors_and_siblings() {
+        // Kani proves injectivity in `seed`; this keeps the property under
+        // `cargo test` (and cargo-mutants), which do not run Kani.
+        assert_ne!(jitter_seed(1, b"a"), jitter_seed(2, b"a"));
+        assert_ne!(jitter_seed(7, b"left"), jitter_seed(7, b"right"));
+        assert_eq!(jitter_seed(7, b""), 7);
+        assert_eq!(jitter_seed(0, b"ab"), 97 * 31 + 98);
+    }
     #[tokio::test]
     async fn failure_classification_is_typed_and_terminal_failure_is_sticky() {
         let system = ActorSystem::new().unwrap();
