@@ -122,15 +122,39 @@ pub fn register_owned<T: Clone + Send + Sync + 'static>(
     }
 }
 
-/// List all registered names.
+/// List all registered names, sorted. (The store is a `HashMap`, whose
+/// iteration order depends on per-process random state; sorting keeps
+/// callers deterministic, which the simulation backend relies on.)
 pub fn registered() -> Vec<String> {
     let store = global_store().read().unwrap_or_else(|p| p.into_inner());
-    store.keys().cloned().collect()
+    let mut names: Vec<String> = store.keys().cloned().collect();
+    names.sort_unstable();
+    names
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn registered_names_are_sorted() {
+        let names: Vec<String> = (0..16)
+            .map(|i| format!("sorted-probe-{:02}", 15 - i))
+            .collect();
+        for name in &names {
+            register(name, 0u8).unwrap();
+        }
+        let listed: Vec<String> = registered()
+            .into_iter()
+            .filter(|n| n.starts_with("sorted-probe-"))
+            .collect();
+        let mut sorted = names.clone();
+        sorted.sort();
+        for name in &names {
+            unregister(name);
+        }
+        assert_eq!(listed, sorted);
+    }
 
     // Use unique names per test to avoid cross-test interference with global state.
 

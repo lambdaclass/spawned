@@ -82,7 +82,7 @@ pprof = { version = "0.15", optional = true, features = ["flamegraph"] }
 loom = "0.7"
 
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(spawned_scheduler_loom)', 'cfg(kani)', 'cfg(kani_slow)'] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(spawned_scheduler_loom)', 'cfg(spawned_sim)', 'cfg(kani)', 'cfg(kani_slow)'] }
 
 [[bench]]
 name = "lifecycle_soak"

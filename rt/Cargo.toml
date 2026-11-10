@@ -24,7 +24,7 @@ path = "./src/lib.rs"
 loom = "0.7"
 
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(spawned_loom)'] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(spawned_loom)', 'cfg(spawned_sim)', 'cfg(tokio_unstable)'] }
 
 [features]
 default = ["async"]

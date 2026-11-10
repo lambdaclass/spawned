@@ -304,6 +304,7 @@ Phase 5 starts after that, with batch 4 as part of its design.
 #### Simulation backend spike
 
 A time-boxed spike in batch 2, and the first step toward `explore` (rank 20).
+Status: spike in draft PR #212 (`--cfg spawned_sim`; the PR #204 race replays from a seed).
 Goal: run unmodified async actors, supervisors and execution groups under a
 deterministic `spawned-rt::tasks` backend selected by a cfg flag (as madsim's
 `--cfg madsim` does), with one executor thread, virtual time that advances
