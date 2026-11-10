@@ -50,6 +50,7 @@
   Apalache, TLAPS, Veil), observability, actor testing, the Rust actor
   landscape, supervision models, deadlock and stall detection, test techniques
   and event sourcing (#199-#202, #205, #208, #210).
+- Roadmap: add future-size/stack-depth budgets, panics in framework-called code, client compatibility CI, behaviour snapshots, trace coverage against the TLA+ models and differential testing against Erlang/OTP to the testing plan.
 
 ## 0.7.0 — 2026-11-09
 
