@@ -3,13 +3,18 @@
 #
 #   client-compat-patch.sh <spawned-dir> <client-dir>
 #
-# The client's committed manifests are left alone. The script reads where the
-# client's Cargo.lock takes spawned-concurrency from (crates.io or a git URL),
-# appends a matching [patch.<source>] section for every spawned crate to the
-# client's .cargo/config.toml, re-locks those packages, and then checks with `cargo metadata` that every
-# spawned package in the resolved graph is the local path. It fails loudly
-# otherwise; an unused patch is only a cargo warning and would silently test
-# the published crate instead.
+# The client's committed manifests are left alone. The script asks cargo where
+# the client's own workspace members take spawned-concurrency from (crates.io or
+# a git URL), appends a matching [patch.<source>] section for every spawned
+# crate to the client's .cargo/config.toml, re-locks those packages, and checks
+# that every workspace member now uses the local path. It fails loudly
+# otherwise: an unused patch is only a cargo warning and would silently test the
+# published crate instead.
+#
+# A client may also pull an unrelated older spawned through a dependency
+# (ethlambda gets spawned 0.5 via ethrex-p2p 25). That copy is a different
+# 0.MINOR, is not patched, and is reported; a non-local copy with the same
+# 0.MINOR as the local checkout is an error.
 #
 # Version handling (crates.io source only; a git dependency has no version
 # requirement): the patch is used only when the local version satisfies the
@@ -26,20 +31,23 @@ dirs=(rt macros concurrency testing)
 
 die() { echo "::error title=client-compat::$*" >&2; exit 1; }
 
+tmp=${RUNNER_TEMP:-/tmp}
 [ -f "$client/Cargo.lock" ] || die "$client has no Cargo.lock"
+cd "$client"
 
-# The [package] block for spawned-concurrency in the lock file.
-source=$(awk '
-  /^\[\[package\]\]/ { name = ""; next }
-  /^name = / { gsub(/"/, "", $3); name = $3; next }
-  name == "spawned-concurrency" && /^source = / { gsub(/"/, "", $3); print $3; exit }
-' "$client/Cargo.lock")
-locked=$(awk '
-  /^\[\[package\]\]/ { name = ""; next }
-  /^name = / { gsub(/"/, "", $3); name = $3; next }
-  name == "spawned-concurrency" && /^version = / { gsub(/"/, "", $3); print $3; exit }
-' "$client/Cargo.lock")
-[ -n "$source" ] || die "spawned-concurrency not found in $client/Cargo.lock (or it is already a path dependency)"
+# Which spawned-concurrency do the client's workspace members depend on?
+cargo metadata --format-version 1 >"$tmp/client-metadata-before.json"
+mapfile -t used < <(jq -r '
+  (.packages | map({key: .id, value: .}) | from_entries) as $pkg
+  | .workspace_members as $members
+  | .resolve.nodes[] | select(.id as $id | $members | index($id))
+  | .deps[] | $pkg[.pkg] | select(.name == "spawned-concurrency")
+  | "\(.source // "path") \(.version)"
+' "$tmp/client-metadata-before.json" | sort -u)
+[ "${#used[@]}" -gt 0 ] || die "no workspace member of $client depends on spawned-concurrency"
+[ "${#used[@]}" -eq 1 ] || die "workspace members use several spawned-concurrency copies: ${used[*]}"
+read -r source locked <<<"${used[0]}"
+[ "$source" != path ] || die "$client already uses a path spawned-concurrency"
 
 local_version=$(awk '
   /^\[workspace.package\]/ { ws = 1; next }
@@ -48,7 +56,7 @@ local_version=$(awk '
 ' "$spawned/Cargo.toml")
 [ -n "$local_version" ] || die "cannot read [workspace.package] version from $spawned/Cargo.toml"
 
-echo "client locks spawned-concurrency $locked from $source"
+echo "client workspace uses spawned-concurrency $locked from $source"
 echo "local spawned is $local_version"
 
 case "$source" in
@@ -77,8 +85,9 @@ case "$source" in
     ;;
   *) die "unsupported spawned source: $source" ;;
 esac
+local_minor=$(echo "$local_version" | cut -d. -f1,2)
 
-mkdir -p "$client/.cargo"
+mkdir -p .cargo
 {
   echo
   echo "# Added by spawned client-compat CI: test against the local checkout."
@@ -86,26 +95,41 @@ mkdir -p "$client/.cargo"
   for i in "${!crates[@]}"; do
     echo "${crates[$i]} = { path = \"$spawned/${dirs[$i]}\" }"
   done
-} >>"$client/.cargo/config.toml"
-echo "--- $client/.cargo/config.toml patch section"
-sed -n '/client-compat CI/,$p' "$client/.cargo/config.toml"
+} >>.cargo/config.toml
+echo "--- .cargo/config.toml patch section"
+sed -n '/client-compat CI/,$p' .cargo/config.toml
 
-# Re-lock the spawned entries: a patch whose version differs from the locked
-# one (0.7.0 locked, 0.7.1 local) is otherwise reported unused and ignored.
-cd "$client"
-locked_names=$(grep -oE '^name = "spawned-(rt|macros|concurrency|test)"$' Cargo.lock | cut -d'"' -f2 | sort -u)
-# shellcheck disable=SC2086 # one argument per package name
-cargo update $locked_names
+# Re-lock the patched source's spawned entries: a patch whose version differs
+# from the locked one (0.7.0 locked, 0.7.1 local) is otherwise reported unused.
+# Full package-id specs, because an unrelated older copy may share the name.
+mapfile -t relock < <(jq -r --arg src "$source" '
+  .packages[] | select((.name | startswith("spawned-")) and .source == $src) | .id
+' "$tmp/client-metadata-before.json")
+cargo update "${relock[@]}"
 
-# Resolve and check: every spawned-* package must come from the local path.
-cargo metadata --format-version 1 >"${RUNNER_TEMP:-/tmp}/client-metadata.json"
+# Check the resolved graph.
+cargo metadata --format-version 1 >"$tmp/client-metadata.json"
 jq -r --arg root "$spawned/" '
   .packages[] | select(.name | startswith("spawned-"))
   | "\(.name) \(.version) \(if .source == null and (.manifest_path | startswith($root)) then "LOCAL" else (.source // .manifest_path) end)"
-' "${RUNNER_TEMP:-/tmp}/client-metadata.json" | sort | tee "${RUNNER_TEMP:-/tmp}/spawned-packages.txt"
-grep -q '^spawned-concurrency .* LOCAL$' "${RUNNER_TEMP:-/tmp}/spawned-packages.txt" \
-  || die "spawned-concurrency does not resolve to $spawned"
-if grep -v ' LOCAL$' "${RUNNER_TEMP:-/tmp}/spawned-packages.txt"; then
-  die "some spawned packages above still resolve to a non-local source"
+' "$tmp/client-metadata.json" | sort | tee "$tmp/spawned-packages.txt"
+member_uses=$(jq -r --arg root "$spawned/" '
+  (.packages | map({key: .id, value: .}) | from_entries) as $pkg
+  | .workspace_members as $members
+  | .resolve.nodes[] | select(.id as $id | $members | index($id))
+  | .deps[] | $pkg[.pkg] | select(.name | startswith("spawned-"))
+  | if .source == null and (.manifest_path | startswith($root)) then "LOCAL" else "\(.name) \(.version) \(.source)" end
+' "$tmp/client-metadata.json" | sort -u)
+echo "$member_uses" | grep -qx LOCAL || die "no workspace member resolves spawned to $spawned"
+if echo "$member_uses" | grep -vx LOCAL; then
+  die "workspace members still use the non-local spawned packages above"
 fi
-cargo tree -i spawned-concurrency --workspace --depth 1 -e normal,dev
+while read -r name version src; do
+  [ "$src" = LOCAL ] && continue
+  if [ "$(echo "$version" | cut -d. -f1,2)" = "$local_minor" ]; then
+    die "$name $version from $src has the same 0.MINOR as the local checkout but was not patched"
+  fi
+  echo "::notice title=client-compat::unrelated $name $version from $src stays unpatched (a dependency's own spawned)"
+done <"$tmp/spawned-packages.txt"
+cargo tree -i "spawned-concurrency@$local_version" --workspace --depth 1 -e normal,dev 2>/dev/null \
+  || cargo tree -i "spawned-concurrency@${local_version%%-*}" --workspace --depth 1 -e normal,dev
