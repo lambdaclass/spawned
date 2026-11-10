@@ -504,6 +504,7 @@ impl<R> Slot<R> {
     /// `Pending` while the slot is open. The caller's timer expires the slot
     /// at its deadline (`ReplyReceiver` sleeps until it), so the poll itself
     /// reads no clock.
+    #[cfg_attr(not(feature = "async"), allow(dead_code))]
     pub(crate) fn poll(&self, waker: &Waker) -> Poll<Result<R, Terminal>> {
         loop {
             if let Some(result) = self.take(state(self.word())) {
@@ -529,6 +530,7 @@ impl<R> Slot<R> {
 
     /// Token side: ready once the slot is terminal (or its deadline passed,
     /// which expires it). Registers `waker` as the watcher otherwise.
+    #[cfg_attr(not(feature = "async"), allow(dead_code))]
     pub(crate) fn poll_closed(&self, waker: &Waker, now: &impl Fn() -> u64) -> Poll<()> {
         if !live(state(self.word())) || self.check_deadline(now) {
             return Poll::Ready(());
