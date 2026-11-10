@@ -1164,3 +1164,24 @@ async fn owned_registration_is_released_before_the_replacement_registers() {
         .is_none()
     );
 }
+
+/// `FactoryContext::cancelled` stays pending while construction is live: a
+/// factory that waits on it never produces an actor, so its startup limit
+/// fails the tree instead of the factory finishing early.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn factory_cancelled_waits_for_construction_cancellation() {
+    let system = ActorSystem::new().unwrap();
+    let group = system.async_group("factory-cancelled", 1).unwrap();
+    let mut tree = system.supervisor(config(0)).unwrap();
+    tree.add(
+        ChildSpec::new("waits", &group, |ctx| async move {
+            ctx.cancelled().await;
+            Ok::<_, String>(Counter(0))
+        })
+        .startup_timeout(Duration::from_millis(50)),
+    )
+    .unwrap();
+    let started = tokio::time::timeout(LIMIT, tree.start()).await.unwrap();
+    assert!(started.is_err(), "factory finished before cancellation");
+    assert!(system.shutdown(LIMIT).await.complete);
+}
