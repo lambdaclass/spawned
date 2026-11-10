@@ -15,6 +15,10 @@
   verified (design, model-to-code, interleavings, faults, behaviour, code and
   tests, real workloads) and an up-to-date status table for every layer; the
   README summarizes it.
+- Roadmap: add coverage-guided scenario fuzzing on the simulator, harsher
+  canary faults (cgroup limits, network faults, clock skew), a benchmark
+  regression gate, trybuild compile-fail tests for the macros, and later Verus
+  or Creusot proofs and turmoil/Jepsen-style tests to the testing plan.
 
 ## 0.7.1 — 2026-11-10
 

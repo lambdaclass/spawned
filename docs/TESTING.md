@@ -112,6 +112,7 @@ Status of each layer. "Planned" items are tracked in the
 | Spec and code coverage | Trace coverage | Model states no test ever reaches | In progress |
 | Primitives | Loom | Atomic and memory-ordering bugs in cancellation, ready gate and wakeups | In CI; expand to reply slots and mailbox publication versus shutdown |
 | Whole runtime, deterministic | Simulation backend for `spawned-rt::tasks` (random, PCT, bounded DFS) | Async races, replayed from a seed with virtual time | In review (PRs #212, #214, #218) |
+| Generated scenarios | Coverage-guided fuzzing on the simulator (`cargo-fuzz`, `arbitrary`) | Bugs in operation sequences nobody wrote a test for, each replayable from a seed | Planned, after the simulation stack |
 | Whole runtime, randomized | Shuttle | Scheduling races in multi-actor tests too large for Loom | Not started |
 | Memory safety | ThreadSanitizer | Data races | In CI; Miri waits until unsafe code is proposed (all crates `#![forbid(unsafe_code)]`) |
 | Scheduling pressure | `taskset -c 0`, one Tokio worker | Code that assumes parallel progress; races that need preemption on one core | `single-cpu` CI job |
@@ -122,17 +123,21 @@ Status of each layer. "Planned" items are tracked in the
 | Behaviour | Proptest supervisor scripts | Wrong outcomes for generated crash, exit and shutdown sequences | In CI ([generated supervisor policy scripts](#generated-supervisor-policy-scripts)) |
 | Cross-backend | Metamorphic tests | Backend-specific differences in replies, exits and per-sender order | In CI |
 | Request semantics | Linearizability checker (`spawned_test::linearizability`) | Lost writes, stale reads and reordering in concurrent request histories | In CI |
+| Full functional proofs | Verus or Creusot | Restart budget, backoff window and generation logic wrong for inputs beyond Kani's bound | Later, once the APIs settle |
 | Pure arithmetic | Kani | Overflow, panics and off-by-one in backoff, jitter, the restart window and recovery ids, for all inputs in a bound | `concurrency/src/kani_proofs.rs`, weekly and on `concurrency/src` PRs |
 | Test quality | cargo-mutants | Tests that still pass when the code is broken | Weekly over supervision and system code |
 | Resource budgets | `future_layout`, `stack_budget` | Growth of handles, futures and lifecycle stack depth (a real client stack overflow before v0.7.1) | Sizes in CI; stack budgets in review (PR #220) |
-| Compatibility | cargo-semver-checks | Unexpected public API removals | In CI; protocol macros also need trybuild |
+| Compatibility | cargo-semver-checks | Unexpected public API removals | In CI |
+| Macro misuse | trybuild compile-fail tests | `#[protocol]` and `#[actor]` misuse that compiles or gives an unclear error | Planned |
 | Feature separation | cargo-hack | Missing dependencies hidden by dev-dependency feature unification | CI builds each library feature, default, no-default and all features without dev dependencies |
 | Supply chain | cargo-deny, cargo-audit | Vulnerable, unmaintained or unsound dependencies; license and source drift | `supply-chain` CI job; accepted advisories listed in `deny.toml` |
 | Flakiness | cargo-nextest with retries | Tests that pass only on retry | Nightly `flaky-tracking` job; a retry is reported, never silently passed |
 | Client compatibility | Ethrex and Ethlambda builds and tests against spawned | Changes that break real users (API, behaviour, stack depth) | In progress |
 | Production | Hoodi canaries; lifecycle monitors derived from the TLA+ invariants | Regressions in real nodes; a live run breaking a modelled invariant | Canaries run manually; monitors planned ([roadmap](../ROADMAP.md) rank 5c) |
-| Performance regressions | dhat allocation budgets; open-loop load (HdrHistogram) | Per-message allocation growth; tail latency hidden by coordinated omission | Planned ([test techniques](research/test-techniques.md)) |
+| Production, under pressure | Canary faults: cgroup memory and CPU limits, `tc netem` or toxiproxy network faults, clock skew | Restart and shutdown bugs that appear only under resource pressure | Planned |
+| Performance regressions | Benchmark regression gate; dhat allocation budgets; open-loop load (HdrHistogram) | Per-message allocation growth; tail latency hidden by coordinated omission | Planned ([test techniques](research/test-techniques.md)) |
 | Platforms | Linux and macOS, x86 and arm64 CI jobs | Ordering, affinity and atomics assumptions tied to one platform | Planned ([test techniques](research/test-techniques.md)) |
+| Distribution | turmoil, Jepsen-style histories | Loss, delay, partitions and reordering between nodes | Only with a remote transport ([roadmap](../ROADMAP.md) rank 22a) |
 
 The fuller rationale is archived in the
 [verification strategy note](../legacy/docs/research/verification-strategy.md).
