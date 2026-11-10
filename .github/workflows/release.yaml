@@ -1,6 +1,15 @@
 on:
   release:
     types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to publish or resume
+        required: true
+        type: string
+
+permissions:
+  contents: read
 
 jobs:
   crates-publish:
@@ -9,19 +18,43 @@ jobs:
     steps:
       - name: Checkout Code
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # 4.2.2
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+
+      - name: Validate release version and tag
+        env:
+          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+        run: |
+          python3 - <<'PY'
+          import os, re, subprocess, tomllib
+          tag = os.environ["RELEASE_TAG"]
+          if not re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", tag):
+              raise SystemExit("expected an existing stable release tag")
+          with open("Cargo.toml", "rb") as manifest:
+              version = tomllib.load(manifest)["workspace"]["package"]["version"]
+          if tag != f"v{version}":
+              raise SystemExit("release tag does not match the workspace version")
+          tagged = subprocess.check_output(["git", "rev-parse", f"refs/tags/{tag}^{{commit}}"], text=True).strip()
+          head = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+          if tagged != head:
+              raise SystemExit("checkout does not match the release tag")
+          print(f"Publishing {tag} from {head}")
+          PY
 
       - name: Set Up Rust Toolchain
         uses: actions-rust-lang/setup-rust-toolchain@11df97af8e8102fd60b60a77dfbf58d40cd843b8 #1.10.1
         with:
-          toolchain: stable
+          # Match the compiler used by CI and the publication dry-runs. A newer
+          # floating stable can introduce deprecation warnings under -D warnings.
+          toolchain: '1.93.0'
           override: true
 
       - name: Publish spawned-macros
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
         run: |
-          OUTPUT=$(cargo publish --package spawned-macros 2>&1) || {
-            if echo "$OUTPUT" | grep -q "already exists"; then
+          OUTPUT=$(cargo publish --locked --package spawned-macros 2>&1) || {
+            if echo "$OUTPUT" | grep -Eq "already (exists|uploaded)"; then
               echo "spawned-macros already published, continuing"
             else
               echo "$OUTPUT"
@@ -36,8 +69,8 @@ jobs:
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
         run: |
-          OUTPUT=$(cargo publish --package spawned-rt 2>&1) || {
-            if echo "$OUTPUT" | grep -q "already exists"; then
+          OUTPUT=$(cargo publish --locked --package spawned-rt 2>&1) || {
+            if echo "$OUTPUT" | grep -Eq "already (exists|uploaded)"; then
               echo "spawned-rt already published, continuing"
             else
               echo "$OUTPUT"
@@ -52,8 +85,8 @@ jobs:
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
         run: |
-          OUTPUT=$(cargo publish --package spawned-concurrency 2>&1) || {
-            if echo "$OUTPUT" | grep -q "already exists"; then
+          OUTPUT=$(cargo publish --locked --package spawned-concurrency 2>&1) || {
+            if echo "$OUTPUT" | grep -Eq "already (exists|uploaded)"; then
               echo "spawned-concurrency already published, continuing"
             else
               echo "$OUTPUT"
@@ -65,8 +98,8 @@ jobs:
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
         run: |
-          OUTPUT=$(cargo publish --package spawned-test 2>&1) || {
-            if echo "$OUTPUT" | grep -q "already exists"; then
+          OUTPUT=$(cargo publish --locked --package spawned-test 2>&1) || {
+            if echo "$OUTPUT" | grep -Eq "already (exists|uploaded)"; then
               echo "spawned-test already published, continuing"
             else
               echo "$OUTPUT"
