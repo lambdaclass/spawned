@@ -63,6 +63,7 @@
   handler instead of `#[actor]`. `#[actor(protocol = ...)]` on a generic actor
   no longer fails with "cannot find type `T`". See
   [testing](docs/TESTING.md#macro-diagnostics).
+- Tests for semantics guarantees that were not yet checked (WIP).
 
 - Roadmap: per-actor memory limits (rank 18a), one semantics contract
   (rank 5d), an integrated request and lifecycle model for ranks 11, 13, 15,
