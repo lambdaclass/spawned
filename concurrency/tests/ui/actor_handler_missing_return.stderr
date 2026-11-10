@@ -1,14 +1,12 @@
 error[E0053]: method `handle` has an incompatible type for trait
-  --> tests/ui/actor_handler_missing_return.rs:11:1
+  --> tests/ui/actor_handler_missing_return.rs:14:57
    |
-11 | #[actor]
-   | ^^^^^^^^ expected `u64`, found `()`
+14 |     fn read(&mut self, _msg: Read, _ctx: &Context<Self>) {}
+   |                                                         ^ expected `u64`, found `()`
    |
    = note: expected signature `fn(&mut Counter, counter_protocol::Read, &spawned_concurrency::threads::Context<Counter>) -> u64`
               found signature `fn(&mut Counter, counter_protocol::Read, &spawned_concurrency::threads::Context<Counter>) -> ()`
-   = note: this error originates in the attribute macro `actor` (in Nightly builds, run with -Z macro-backtrace for more info)
 help: change the output type to match the trait
    |
-11 - #[actor]
-11 + u64
-   |
+14 |     fn read(&mut self, _msg: Read, _ctx: &Context<Self>) -> u64 {}
+   |                                                          ++++++

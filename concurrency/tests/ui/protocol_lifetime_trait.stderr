@@ -1,4 +1,4 @@
-error: generic type parameters on protocol traits are not supported
+error: generic parameters (types, lifetimes, consts) on protocol traits are not supported
  --> tests/ui/protocol_lifetime_trait.rs:4:14
   |
 4 | trait Invalid<'a> {

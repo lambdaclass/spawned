@@ -1,7 +1,5 @@
-error: unexpected end of input, expected parentheses
- --> tests/ui/actor_protocol_missing_value.rs:5:1
+error: expected `protocol = Trait` or `protocol(TraitA, TraitB)`
+ --> tests/ui/actor_protocol_missing_value.rs:5:9
   |
 5 | #[actor(protocol)]
-  | ^^^^^^^^^^^^^^^^^^
-  |
-  = note: this error originates in the attribute macro `actor` (in Nightly builds, run with -Z macro-backtrace for more info)
+  |         ^^^^^^^^

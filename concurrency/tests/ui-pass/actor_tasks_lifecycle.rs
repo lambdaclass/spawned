@@ -1,10 +1,15 @@
-// Async actor without a protocol: hand-written message, async lifecycle hooks,
-// and an empty `#[actor]` block (no handlers, inferred native runtime).
+// Async actor without a protocol: hand-written messages, async lifecycle hooks,
+// a sync handler returning `impl Future` next to async ones, and an empty
+// `#[actor]` block (no handlers, inferred native runtime).
 use spawned_concurrency::message::Message;
 use spawned_concurrency::{actor, Exit};
 
 pub struct Ping(u32);
 impl Message for Ping {
+    type Result = u32;
+}
+pub struct Pong(u32);
+impl Message for Pong {
     type Result = u32;
 }
 
@@ -24,6 +29,14 @@ mod asynchronous {
         async fn ping(&mut self, msg: Ping, _ctx: &Context<Self>) -> u32 {
             msg.0 + 1
         }
+        #[handler]
+        fn pong(
+            &mut self,
+            msg: Pong,
+            _ctx: &Context<Self>,
+        ) -> impl std::future::Future<Output = u32> + Send {
+            async move { msg.0 * 2 }
+        }
     }
 }
 
@@ -41,6 +54,7 @@ fn main() {
     spawned_rt::tasks::run(async {
         let echo = asynchronous::Echo.start();
         assert_eq!(echo.request(Ping(1)).await.unwrap(), 2);
+        assert_eq!(echo.request(Pong(4)).await.unwrap(), 8);
         echo.child_handle().stop();
         echo.join().await;
     });

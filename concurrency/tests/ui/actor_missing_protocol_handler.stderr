@@ -6,10 +6,10 @@ error[E0277]: the trait bound `Counter: spawned_concurrency::threads::Handler<Bu
    |
 help: the trait `Handler<Bump>` is not implemented for `Counter`
       but trait `Handler<counter_protocol::Read>` is implemented for it
-  --> tests/ui/actor_missing_protocol_handler.rs:11:1
+  --> tests/ui/actor_missing_protocol_handler.rs:14:5
    |
-11 | #[actor(protocol = CounterProtocol)]
-   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+14 |     fn read(&mut self, _msg: Read, _ctx: &Context<Self>) -> u64 { self.0 }
+   |     ^^
    = help: for that trait implementation, expected `counter_protocol::Read`, found `Bump`
 note: required for `spawned_concurrency::threads::ActorRef<Counter>` to implement `__CounterProtocolTarget`
   --> tests/ui/actor_missing_protocol_handler.rs:3:1

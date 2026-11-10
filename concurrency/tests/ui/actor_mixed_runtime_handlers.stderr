@@ -1,13 +1,5 @@
-error[E0277]: `()` is not a future
-  --> tests/ui/actor_mixed_runtime_handlers.rs:11:1
+error: cannot mix async and sync handlers or lifecycle hooks in one #[actor] block; tasks actors use `async fn` throughout, threads actors use plain `fn`
+  --> tests/ui/actor_mixed_runtime_handlers.rs:16:5
    |
-11 | #[actor(protocol = CounterProtocol)]
-   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `()` is not a future
-   |
-   = help: the trait `Future` is not implemented for `()`
-note: required by a bound in `spawned_concurrency::tasks::Handler::handle::{anon_assoc#0}`
-  --> src/tasks/actor.rs
-   |
-   |     fn handle(&mut self, msg: M, ctx: &Context<Self>) -> impl Future<Output = M::Result> + Send;
-   |                                                               ^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `Handler::handle::{anon_assoc#0}`
-   = note: this error originates in the attribute macro `actor` (in Nightly builds, run with -Z macro-backtrace for more info)
+16 |     fn bump(&mut self, msg: Bump, _ctx: &Context<Self>) { self.0 += msg.by; }
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

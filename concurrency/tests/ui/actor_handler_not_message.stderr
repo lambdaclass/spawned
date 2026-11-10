@@ -1,8 +1,8 @@
 error[E0277]: the trait bound `u64: Message` is not satisfied
-  --> tests/ui/actor_handler_not_message.rs:11:1
+  --> tests/ui/actor_handler_not_message.rs:14:5
    |
-11 | #[actor]
-   | ^^^^^^^^ the trait `Message` is not implemented for `u64`
+14 |     fn bump(&mut self, by: u64, _ctx: &Context<Self>) { self.0 += by; }
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the trait `Message` is not implemented for `u64`
    |
 help: the following other types implement trait `Message`
   --> tests/ui/actor_handler_not_message.rs:3:1
@@ -17,13 +17,13 @@ help: the following other types implement trait `Message`
    |
    | impl Message for Down {
    | ^^^^^^^^^^^^^^^^^^^^^ `Down`
-   = note: this error originates in the attribute macro `actor` which comes from the expansion of the attribute macro `protocol` (in Nightly builds, run with -Z macro-backtrace for more info)
+   = note: this error originates in the attribute macro `protocol` (in Nightly builds, run with -Z macro-backtrace for more info)
 
 error[E0277]: the trait bound `u64: Message` is not satisfied
-  --> tests/ui/actor_handler_not_message.rs:11:1
+  --> tests/ui/actor_handler_not_message.rs:14:5
    |
-11 | #[actor]
-   | ^^^^^^^^ the trait `Message` is not implemented for `u64`
+14 |     fn bump(&mut self, by: u64, _ctx: &Context<Self>) { self.0 += by; }
+   |     ^^ the trait `Message` is not implemented for `u64`
    |
 help: the following other types implement trait `Message`
   --> tests/ui/actor_handler_not_message.rs:3:1
@@ -43,4 +43,4 @@ note: required by a bound in `spawned_concurrency::threads::Handler`
    |
    | pub trait Handler<M: Message>: Actor {
    |                      ^^^^^^^ required by this bound in `Handler`
-   = note: this error originates in the attribute macro `actor` which comes from the expansion of the attribute macro `protocol` (in Nightly builds, run with -Z macro-backtrace for more info)
+   = note: this error originates in the attribute macro `protocol` (in Nightly builds, run with -Z macro-backtrace for more info)

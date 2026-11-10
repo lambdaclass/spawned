@@ -1,0 +1,5 @@
+error: #[actor] must be applied to an inherent impl block (`impl MyActor { ... }`), not a trait impl
+  --> tests/ui/actor_trait_impl.rs:12:6
+   |
+12 | impl Default for Counter {
+   |      ^^^^^^^

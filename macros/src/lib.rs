@@ -2,7 +2,7 @@
 use proc_macro::TokenStream;
 use quote::{format_ident, quote};
 use syn::{
-    parse::Parse, parse_macro_input, Attribute, FnArg, GenericArgument, Ident, ImplItem,
+    parse_macro_input, spanned::Spanned, Attribute, FnArg, GenericArgument, Ident, ImplItem,
     ImplItemFn, ItemImpl, ItemTrait, Pat, PathArguments, ReturnType, TraitItem, Type, TypePath,
 };
 
@@ -127,6 +127,50 @@ fn extract_result_inner(ty: &Type) -> Option<Box<Type>> {
         }
     }
     None
+}
+
+/// Protocol parameters become fields of a `'static` message struct. Report
+/// borrows and `impl Trait` here; rustc's own errors point into the expansion.
+fn unsupported_param_type(ty: &Type) -> Option<syn::Error> {
+    const OWNED: &str = "protocol parameters become message fields and must be owned ('static); \
+                         use an owned type such as String or Arc<T> instead of a borrow";
+    match ty {
+        Type::Reference(r) => match &r.lifetime {
+            Some(lifetime) if lifetime.ident == "static" => unsupported_param_type(&r.elem),
+            _ => Some(syn::Error::new_spanned(r, OWNED)),
+        },
+        Type::ImplTrait(t) => Some(syn::Error::new_spanned(
+            t,
+            "`impl Trait` parameters are not supported in protocol methods; \
+             use a concrete type or Box<dyn Trait>",
+        )),
+        Type::Path(TypePath { qself, path }) => {
+            if let Some(error) = qself.as_ref().and_then(|q| unsupported_param_type(&q.ty)) {
+                return Some(error);
+            }
+            path.segments
+                .iter()
+                .find_map(|segment| match &segment.arguments {
+                    PathArguments::AngleBracketed(args) => {
+                        args.args.iter().find_map(|arg| match arg {
+                            GenericArgument::Type(inner) => unsupported_param_type(inner),
+                            GenericArgument::Lifetime(lifetime) if lifetime.ident != "static" => {
+                                Some(syn::Error::new_spanned(lifetime, OWNED))
+                            }
+                            _ => None,
+                        })
+                    }
+                    _ => None,
+                })
+        }
+        Type::Tuple(t) => t.elems.iter().find_map(unsupported_param_type),
+        Type::Array(a) => unsupported_param_type(&a.elem),
+        Type::Slice(s) => unsupported_param_type(&s.elem),
+        Type::Paren(p) => unsupported_param_type(&p.elem),
+        Type::Group(g) => unsupported_param_type(&g.elem),
+        // fn pointers and trait objects may use higher-ranked borrows.
+        _ => None,
+    }
 }
 
 fn is_unit_type(ty: &Type) -> bool {
@@ -681,17 +725,22 @@ struct ProtocolMethodInfo {
 /// Native protocol calls block immediately; async response timers start on poll.
 #[proc_macro_attribute]
 pub fn protocol(attr: TokenStream, item: TokenStream) -> TokenStream {
-    let options = parse_macro_input!(attr with syn::punctuated::Punctuated::<syn::MetaNameValue, syn::Token![,]>::parse_terminated);
+    let options = parse_macro_input!(attr with syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated);
     let mut protocol_timeout = None;
     for option in options {
-        if !option.path.is_ident("timeout") {
+        if !option.path().is_ident("timeout") {
             return syn::Error::new_spanned(
-                option.path,
+                option.path(),
                 "unsupported protocol option; expected timeout = Duration expression",
             )
             .to_compile_error()
             .into();
         }
+        let syn::Meta::NameValue(option) = option else {
+            return syn::Error::new_spanned(option, "expected `timeout = <Duration expression>`")
+                .to_compile_error()
+                .into();
+        };
         if protocol_timeout.replace(option.value).is_some() {
             return syn::Error::new_spanned(option.path, "duplicate protocol timeout")
                 .to_compile_error()
@@ -705,7 +754,7 @@ pub fn protocol(attr: TokenStream, item: TokenStream) -> TokenStream {
     if !trait_def.generics.params.is_empty() {
         return syn::Error::new_spanned(
             &trait_def.generics,
-            "generic type parameters on protocol traits are not supported",
+            "generic parameters (types, lifetimes, consts) on protocol traits are not supported",
         )
         .to_compile_error()
         .into();
@@ -759,8 +808,67 @@ pub fn protocol(attr: TokenStream, item: TokenStream) -> TokenStream {
                 }
             }
 
+            let sig = &method.sig;
+            let qualifier = [
+                (sig.unsafety.as_ref().map(|t| quote!(#t)), "unsafe"),
+                (sig.abi.as_ref().map(|t| quote!(#t)), "extern"),
+                (sig.constness.as_ref().map(|t| quote!(#t)), "const"),
+            ]
+            .into_iter()
+            .find_map(|(token, name)| Some((token?, name)));
+            if let Some((token, name)) = qualifier {
+                return syn::Error::new_spanned(
+                    token,
+                    format!("`{name}` protocol methods are not supported; use a plain `fn`"),
+                )
+                .to_compile_error()
+                .into();
+            }
+            if !method.sig.generics.params.is_empty() {
+                return syn::Error::new_spanned(
+                    &method.sig.generics,
+                    "protocol methods cannot have generic parameters; \
+                     each method becomes one concrete message struct",
+                )
+                .to_compile_error()
+                .into();
+            }
+            for arg in method.sig.inputs.iter().skip(1) {
+                if let FnArg::Typed(pat_type) = arg {
+                    if let Some(error) = unsupported_param_type(&pat_type.ty) {
+                        return error.to_compile_error().into();
+                    }
+                }
+            }
+
             let method_name = method.sig.ident.clone();
             let struct_name = format_ident!("{}", to_pascal_case(&method_name.to_string()));
+            // cfg-gated methods may legitimately share a name across exclusive
+            // predicates; only unconditional collisions are reported here.
+            let conditional = |attrs: &[Attribute]| {
+                attrs
+                    .iter()
+                    .any(|a| a.path().is_ident("cfg") || a.path().is_ident("cfg_attr"))
+            };
+            if !conditional(&method.attrs) {
+                if let Some(previous) = methods
+                    .iter()
+                    .find(|m| m.cfg_attrs.is_empty() && m.struct_name == struct_name)
+                {
+                    let message = if previous.method_name == method_name {
+                        format!("duplicate protocol method `{method_name}`")
+                    } else {
+                        format!(
+                            "protocol method `{method_name}` generates message struct \
+                             `{struct_name}`, which `{}` already uses; rename one of them",
+                            previous.method_name
+                        )
+                    };
+                    return syn::Error::new_spanned(&method.sig.ident, message)
+                        .to_compile_error()
+                        .into();
+                }
+            }
 
             let mut field_names: Vec<Ident> = Vec::new();
             let mut field_types: Vec<Type> = Vec::new();
@@ -963,6 +1071,19 @@ pub fn protocol(attr: TokenStream, item: TokenStream) -> TokenStream {
     output.into()
 }
 
+fn is_handler_attribute(attr: &Attribute) -> bool {
+    let path = attr.path();
+    path.is_ident("handler") || path.is_ident("send_handler") || path.is_ident("request_handler")
+}
+
+fn is_actor_method_attribute(attr: &Attribute) -> bool {
+    let path = attr.path();
+    is_handler_attribute(attr)
+        || path.is_ident("started")
+        || path.is_ident("stopped")
+        || path.is_ident("exit_received")
+}
+
 /// Generates `impl Actor` and `Handler<M>` implementations from an annotated impl block.
 ///
 /// Place `#[actor]` on an `impl MyStruct` block. The macro extracts annotated methods
@@ -1043,6 +1164,42 @@ pub fn protocol(attr: TokenStream, item: TokenStream) -> TokenStream {
 pub fn actor(attr: TokenStream, item: TokenStream) -> TokenStream {
     let mut impl_block = parse_macro_input!(item as ItemImpl);
 
+    if let Some((_, path, _)) = &impl_block.trait_ {
+        return syn::Error::new_spanned(
+            path,
+            "#[actor] must be applied to an inherent impl block (`impl MyActor { ... }`), \
+             not a trait impl",
+        )
+        .to_compile_error()
+        .into();
+    }
+
+    // Tasks actors use `async fn` for every handler and hook, threads actors
+    // plain `fn`; the runtime is inferred from them. A sync method returning
+    // `impl Future` is valid in tasks mode, and cfg-gated methods may differ.
+    let mut runtime_methods = impl_block.items.iter().filter_map(|item| match item {
+        ImplItem::Fn(method)
+            if method.attrs.iter().any(is_actor_method_attribute)
+                && !method.attrs.iter().any(|a| a.path().is_ident("cfg"))
+                && !matches!(&method.sig.output, ReturnType::Type(_, ty) if matches!(**ty, Type::ImplTrait(_))) =>
+        {
+            Some(&method.sig)
+        }
+        _ => None,
+    });
+    if let Some(first) = runtime_methods.next() {
+        let asynchronous = first.asyncness.is_some();
+        if let Some(other) = runtime_methods.find(|sig| sig.asyncness.is_some() != asynchronous) {
+            return syn::Error::new_spanned(
+                other,
+                "cannot mix async and sync handlers or lifecycle hooks in one #[actor] block; \
+                 tasks actors use `async fn` throughout, threads actors use plain `fn`",
+            )
+            .to_compile_error()
+            .into();
+        }
+    }
+
     let self_ty = &impl_block.self_ty;
     let (impl_generics, _, where_clause) = impl_block.generics.split_for_impl();
 
@@ -1050,6 +1207,18 @@ pub fn actor(attr: TokenStream, item: TokenStream) -> TokenStream {
     let bridge_traits: Vec<Ident> = if attr.is_empty() {
         Vec::new()
     } else {
+        // A protocol is named by a single identifier; report paths explicitly
+        // instead of failing on the `::` token.
+        fn protocol_name(input: syn::parse::ParseStream) -> syn::Result<Ident> {
+            let path: syn::Path = input.parse()?;
+            path.get_ident().cloned().ok_or_else(|| {
+                syn::Error::new_spanned(
+                    &path,
+                    "protocol must be named by a single identifier; \
+                     import the trait first (`use path::to::Protocol;`)",
+                )
+            })
+        }
         let parser = |input: syn::parse::ParseStream| -> syn::Result<Vec<Ident>> {
             let mut protocols = Vec::new();
             while !input.is_empty() {
@@ -1063,16 +1232,23 @@ pub fn actor(attr: TokenStream, item: TokenStream) -> TokenStream {
                 if input.peek(syn::Token![=]) {
                     // protocol = TraitName
                     let _: syn::Token![=] = input.parse()?;
-                    protocols.push(input.parse()?);
-                } else {
+                    protocols.push(protocol_name(input)?);
+                } else if input.peek(syn::token::Paren) {
                     // protocol(Trait1, Trait2)
                     let content;
                     syn::parenthesized!(content in input);
-                    let punctuated = content.parse_terminated(Ident::parse, syn::Token![,])?;
+                    let punctuated = content.parse_terminated(protocol_name, syn::Token![,])?;
                     protocols.extend(punctuated);
+                } else {
+                    return Err(syn::Error::new(
+                        key.span(),
+                        "expected `protocol = Trait` or `protocol(TraitA, TraitB)`",
+                    ));
                 }
-                if input.peek(syn::Token![,]) {
-                    let _: syn::Token![,] = input.parse()?;
+                if !input.is_empty() {
+                    let _: syn::Token![,] = input.parse().map_err(|e| {
+                        syn::Error::new(e.span(), "expected `,` between #[actor] parameters")
+                    })?;
                 }
             }
             Ok(protocols)
@@ -1139,6 +1315,15 @@ pub fn actor(attr: TokenStream, item: TokenStream) -> TokenStream {
                 continue;
             }
 
+            if is_started && is_stopped {
+                return syn::Error::new_spanned(
+                    &method.sig,
+                    "#[started] and #[stopped] cannot be combined on one method",
+                )
+                .to_compile_error()
+                .into();
+            }
+
             if is_started {
                 if started_method.is_some() {
                     return syn::Error::new_spanned(
@@ -1169,7 +1354,7 @@ pub fn actor(attr: TokenStream, item: TokenStream) -> TokenStream {
                     .to_compile_error()
                     .into();
                 }
-                if !matches!(method.sig.inputs.first(), Some(FnArg::Receiver(r)) if r.mutability.is_some())
+                if !matches!(method.sig.inputs.first(), Some(FnArg::Receiver(r)) if r.reference.is_some() && r.mutability.is_some())
                 {
                     return syn::Error::new_spanned(
                         &method.sig,
@@ -1219,7 +1404,7 @@ pub fn actor(attr: TokenStream, item: TokenStream) -> TokenStream {
                     .to_compile_error()
                     .into();
                 }
-                if !matches!(method.sig.inputs.first(), Some(FnArg::Receiver(r)) if r.mutability.is_some())
+                if !matches!(method.sig.inputs.first(), Some(FnArg::Receiver(r)) if r.reference.is_some() && r.mutability.is_some())
                 {
                     return syn::Error::new_spanned(
                         &method.sig,
@@ -1256,6 +1441,22 @@ pub fn actor(attr: TokenStream, item: TokenStream) -> TokenStream {
 
             if let Some(idx) = handler_idx {
                 method.attrs.remove(idx);
+                if let Some(extra) = method.attrs.iter().find(|a| is_handler_attribute(a)) {
+                    return syn::Error::new_spanned(
+                        extra,
+                        "a method can carry only one of #[handler], #[send_handler] and #[request_handler]",
+                    )
+                    .to_compile_error()
+                    .into();
+                }
+                if !method.sig.generics.params.is_empty() {
+                    return syn::Error::new_spanned(
+                        &method.sig.generics,
+                        "handler methods cannot be generic; write one handler per message type",
+                    )
+                    .to_compile_error()
+                    .into();
+                }
 
                 // Collect remaining attributes (e.g. #[cfg(...)]) to propagate
                 // to the generated Handler impl block.
@@ -1290,6 +1491,31 @@ pub fn actor(attr: TokenStream, item: TokenStream) -> TokenStream {
                     .into();
                 }
 
+                // `&self` is accepted too; a missing or by-value receiver is not.
+                match method.sig.inputs.first() {
+                    Some(FnArg::Receiver(r))
+                        if r.reference.is_some() || r.colon_token.is_some() => {}
+                    Some(first) => {
+                        return syn::Error::new_spanned(
+                            first,
+                            "handler method's first parameter must be `&mut self`",
+                        )
+                        .to_compile_error()
+                        .into();
+                    }
+                    None => unreachable!("three parameters were checked above"),
+                }
+                if let Some(FnArg::Typed(ctx)) = method.sig.inputs.iter().nth(2) {
+                    if !matches!(&*ctx.ty, Type::Reference(r) if r.mutability.is_none()) {
+                        return syn::Error::new_spanned(
+                            &ctx.ty,
+                            "handler context parameter must be `&Context<Self>`",
+                        )
+                        .to_compile_error()
+                        .into();
+                    }
+                }
+
                 // Extract message type from 2nd parameter (index 1, after &mut self)
                 let msg_ty = match method.sig.inputs.iter().nth(1) {
                     Some(FnArg::Typed(pat_type)) => &*pat_type.ty,
@@ -1303,26 +1529,37 @@ pub fn actor(attr: TokenStream, item: TokenStream) -> TokenStream {
                     }
                 };
 
-                // Extract return type (default to () if omitted)
-                let ret_ty: Box<Type> = match &method.sig.output {
-                    ReturnType::Default => syn::parse_quote! { () },
-                    ReturnType::Type(_, ty) => ty.clone(),
+                // Keep an omitted return type omitted: rustc then suggests
+                // adding `-> R` after the user's signature for a request reply.
+                let output = match &method.sig.output {
+                    ReturnType::Default => quote! {},
+                    ReturnType::Type(_, ty) => quote! { -> #ty },
                 };
+                // The parameter list carries the user's parentheses span, so
+                // that suggestion lands after the user's `)`.
+                let mut params = proc_macro2::Group::new(
+                    proc_macro2::Delimiter::Parenthesis,
+                    quote! { &mut self, msg: #msg_ty, ctx: &Context<Self> },
+                );
+                params.set_span(method.sig.paren_token.span.join());
+                // Span the generated impl at the method so trait errors
+                // (conflicting impls, signature mismatches) point at it.
+                let span = method.sig.span();
 
                 let handler_impl = if method.sig.asyncness.is_some() {
-                    quote! {
+                    quote::quote_spanned! { span =>
                         #(#extra_attrs)*
                         impl #impl_generics Handler<#msg_ty> for #self_ty #where_clause {
-                            async fn handle(&mut self, msg: #msg_ty, ctx: &Context<Self>) -> #ret_ty {
+                            async fn handle #params #output {
                                 self.#method_name(msg, ctx).await
                             }
                         }
                     }
                 } else {
-                    quote! {
+                    quote::quote_spanned! { span =>
                         #(#extra_attrs)*
                         impl #impl_generics Handler<#msg_ty> for #self_ty #where_clause {
-                            fn handle(&mut self, msg: #msg_ty, ctx: &Context<Self>) -> #ret_ty {
+                            fn handle #params #output {
                                 self.#method_name(msg, ctx)
                             }
                         }

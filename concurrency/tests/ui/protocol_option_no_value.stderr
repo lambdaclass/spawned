@@ -1,7 +1,5 @@
-error: expected `=`
- --> tests/ui/protocol_option_no_value.rs:3:1
+error: expected `timeout = <Duration expression>`
+ --> tests/ui/protocol_option_no_value.rs:3:12
   |
 3 | #[protocol(timeout)]
-  | ^^^^^^^^^^^^^^^^^^^^
-  |
-  = note: this error originates in the attribute macro `protocol` (in Nightly builds, run with -Z macro-backtrace for more info)
+  |            ^^^^^^^

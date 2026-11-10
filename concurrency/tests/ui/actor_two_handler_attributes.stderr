@@ -1,5 +1,5 @@
-error: cannot find attribute `request_handler` in this scope
-  --> tests/ui/actor_two_handler_attributes.rs:14:7
+error: a method can carry only one of #[handler], #[send_handler] and #[request_handler]
+  --> tests/ui/actor_two_handler_attributes.rs:14:5
    |
 14 |     #[request_handler]
-   |       ^^^^^^^^^^^^^^^
+   |     ^^^^^^^^^^^^^^^^^^

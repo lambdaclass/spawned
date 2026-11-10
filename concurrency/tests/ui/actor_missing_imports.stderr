@@ -13,12 +13,11 @@ help: consider importing one of these traits
    |
 
 error[E0405]: cannot find trait `Handler` in this scope
-  --> tests/ui/actor_missing_imports.rs:10:1
+  --> tests/ui/actor_missing_imports.rs:13:5
    |
-10 | #[actor]
-   | ^^^^^^^^ not found in this scope
+13 |     fn bump(&mut self, msg: Bump, _ctx: &spawned_concurrency::threads::Context<Self>) { self.0 += msg.by; }
+   |     ^^ not found in this scope
    |
-   = note: this error originates in the attribute macro `actor` (in Nightly builds, run with -Z macro-backtrace for more info)
 help: consider importing one of these traits
    |
  2 + use spawned_concurrency::tasks::Handler;

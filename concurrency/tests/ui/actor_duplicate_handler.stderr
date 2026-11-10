@@ -1,10 +1,8 @@
 error[E0119]: conflicting implementations of trait `spawned_concurrency::threads::Handler<Bump>` for type `Counter`
-  --> tests/ui/actor_duplicate_handler.rs:11:1
+  --> tests/ui/actor_duplicate_handler.rs:16:5
    |
-11 | #[actor]
-   | ^^^^^^^^
-   | |
-   | first implementation here
-   | conflicting implementation for `Counter`
-   |
-   = note: this error originates in the attribute macro `actor` (in Nightly builds, run with -Z macro-backtrace for more info)
+14 |     fn bump(&mut self, msg: Bump, _ctx: &Context<Self>) { self.0 += msg.by; }
+   |     -- first implementation here
+15 |     #[send_handler]
+16 |     fn bump_again(&mut self, msg: Bump, _ctx: &Context<Self>) { self.0 += msg.by; }
+   |     ^^ conflicting implementation for `Counter`
