@@ -14,6 +14,7 @@ How to read it:
   `concurrency/tests/`, or `src/...` for unit tests) or example that checks it.
 - **Not yet checked** means the code provides the behaviour by construction but
   no test, model or proof asserts it. Treat these as weaker than the rest.
+  Checks marked "added in #230" land with that PR.
 - **tasks** is `spawned_concurrency::tasks` (async, every `Backend` and execution
   group); **threads** is `spawned_concurrency::threads` (one OS thread per
   actor). Unmarked guarantees hold in both.
@@ -119,8 +120,9 @@ Checked by: [`cancellation_safety::request_family_is_cancel_safe`][cancellation_
 
 **R5. Handler panic.** A panic while handling a request drops its reply sender:
 the caller gets an error, not a reply, and the actor exits with `Panic`.
-Checked by: [`panic_safety`][panic_safety] (asserts no reply; it does not
-distinguish `ActorStopped` from a timeout).
+Checked by: [`semantics_gaps`][semantics_gaps]`::{native,tasks}::panicking_request_handler_gives_the_caller_actor_stopped`
+(exactly `ActorStopped`, every backend, a managed group, `Recipient` and raw
+receivers; added in #230), [`panic_safety`][panic_safety].
 
 ## 4. Lifecycle
 
@@ -254,8 +256,9 @@ handler. A non-trapping actor's linked stop takes effect after its current
 handler and discards its queue (D4). `Exit`/`Down` are enqueued only after the
 source has exited, so they follow every message the source sent earlier to the
 same observer.
-Checked by: [`exit_signal_matrix`][exit_signal_matrix] (delivery). **Not yet
-checked:** the ordering after the source's earlier messages (by construction).
+Checked by: [`semantics_gaps`][semantics_gaps]`::{native,tasks}::exit_and_down_follow_earlier_messages_from_the_source`
+(every reason including a real panic, all three tasks backends; added in #230),
+[`exit_signal_matrix`][exit_signal_matrix] (delivery).
 
 ## 6. Supervision
 
@@ -422,20 +425,24 @@ fires prevents the send; a message already enqueued is not retracted. Payloads
 are dropped when the actor exits.
 Checked by: `src/{tasks,threads}/timer_tests.rs::test_send_after_and_cancellation`,
 `test_send_after_actor_shutdown`, [`resource_cleanup::timers_release_payloads_on_actor_exit`][resource_cleanup],
-[`cross_backend::timers_match`][cross_backend].
+[`cross_backend::timers_match`][cross_backend],
+[`semantics_gaps`][semantics_gaps]`::tasks::send_after_fires_once_no_earlier_than_its_delay` (paused time; added in #230).
 
 **T2. `send_interval`.** Repeats until cancelled or the actor stops. Fixed
 delay: each tick waits `period` after the previous send, so ticks drift and
 missed time is never caught up in a burst.
-Checked by: `src/{tasks,threads}/timer_tests.rs::test_send_interval_and_cancellation`.
-**Not yet checked:** fixed-delay drift (by construction).
+Checked by: `src/{tasks,threads}/timer_tests.rs::test_send_interval_and_cancellation`,
+[`semantics_gaps`][semantics_gaps]`::tasks::send_interval_is_fixed_delay_and_never_catches_up` (paused time,
+one jump of 3.5 periods; added in #230). threads timers use real time and are
+checked by construction only.
 
 **T3. Timers belong to one instance.** A timer targets the instance whose
 `Context` created it and never retargets a supervised replacement. Managed
 timers run on the actor's group. `send_message_on` does not send if the actor
 stopped first.
-Checked by: `src/tasks/actor.rs::send_message_on_cancelled`. **Not yet
-checked:** no retargeting after restart (by construction).
+Checked by: `src/tasks/actor.rs::send_message_on_cancelled`,
+[`semantics_gaps`][semantics_gaps]`::tasks::timers_are_not_carried_to_a_supervised_replacement` (added in #230;
+supervision is tasks-only).
 
 **T4. Clocks.** Delays use monotonic time (Tokio timers in tasks, so they follow
 paused Tokio time in tests; `recv_timeout` in threads). threads: each timer is
@@ -461,8 +468,11 @@ group kinds), [`foreign_panics`][foreign_panics], [`mailbox_drop_panic`][mailbox
 `Down`/`Exit`, no restart. Supervision of `Normal`, `Shutdown` and `Kill` exits
 still works. A panicking process panic hook, or a second panic while a value is
 already unwinding, aborts under either profile.
-Checked by: [`foreign_panics::panicking_panic_hook_aborts_like_plain_rust`][foreign_panics].
-**Not yet checked:** no test builds with `panic = "abort"`.
+Checked by: the `panic-abort` CI job running [`panic_abort`][ex_panic_abort]
+under the `panic-abort` profile (both modes abort on a handler panic with no
+`stopped()` and no reply; a Transient child restarts after `Kill` and stays
+stopped after `Shutdown`; added in #230),
+[`foreign_panics::panicking_panic_hook_aborts_like_plain_rust`][foreign_panics].
 
 ## 10. Not guaranteed
 
@@ -559,6 +569,7 @@ See the [ranked backlog](../../ROADMAP.md#ranked-backlog).
 [ready_gate_loom]: ../../concurrency/tests/ready_gate_loom.rs
 [request_histories]: ../../concurrency/tests/request_histories.rs
 [resource_cleanup]: ../../concurrency/tests/resource_cleanup.rs
+[semantics_gaps]: ../../concurrency/tests/semantics_gaps.rs
 [shutdown_publication]: ../../concurrency/tests/shutdown_publication.rs
 [startup_admission]: ../../concurrency/tests/startup_admission.rs
 [supervision]: ../../concurrency/tests/supervision.rs
@@ -568,6 +579,7 @@ See the [ranked backlog](../../ROADMAP.md#ranked-backlog).
 [tree_trace]: ../../concurrency/tests/tree_trace.rs
 [ex_exit_reason]: ../../examples/exit_reason
 [ex_native_lifecycle]: ../../examples/capabilities/src/bin/native_lifecycle.rs
+[ex_panic_abort]: ../../concurrency/examples/panic_abort.rs
 [ex_protocol_timeouts]: ../../examples/capabilities/src/bin/protocol_timeouts.rs
 [ex_supervision_recovery]: ../../examples/capabilities/src/bin/supervision_recovery.rs
 [ex_supervision_tree]: ../../examples/capabilities/src/bin/supervision_tree.rs
