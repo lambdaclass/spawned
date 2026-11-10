@@ -688,6 +688,35 @@ at a 2 MiB debug stack; rerun them (`RUST_MIN_STACK` bisection of
 futures change. Earlier probes comparing fc35abaf, 35bea650 and the compact
 sender are in the [round-2 evidence](../legacy/verification/evidence/v071-review-round2/README.md).
 
+## Stack-depth budgets
+
+`stack_budget.rs` complements `future_layout.rs`: instead of `size_of`, it
+bounds the stack a real workload uses. A nested request chain mirrors a client
+RPC path (A awaits a protocol request to B, B to C, C to D; 1 KiB inline
+payload plus a 64 KiB body; `SPAWNED_STACK_DEPTH` changes the depth) on an
+`async_group`, a `thread_group`, the ambient runtime and in threads mode, plus
+supervisor start, restart and shutdown and `ActorSystem::shutdown`. Each
+scenario runs in a child process with `RUST_MIN_STACK` set to its budget, so
+framework, tokio and libtest threads all get that stack, and the client is
+driven from a `std::thread` with the same `stack_size`. An overflow aborts the
+child and fails the parent.
+
+Budgets are about 1.5x the measured debug minimum. aarch64-apple-darwin: 104
+KiB for the request chains (minimum 68), 80 KiB for supervision (52) and 32
+KiB for threads mode (20); release minimums are 8 to 20 KiB. x86_64 Linux
+(Rust 1.93, v0.7.1): 132 KiB for the chains (80 to 84), 120 KiB for
+supervision (80) and 68 KiB for threads mode (40); release chains need 28 KiB.
+The async chain does not grow with depth, since each hop is its own task; the
+deepest single poll on a group worker sets the minimum. Linux aarch64 cannot go
+below glibc's 128 KiB thread minimum, so there the test only guards against
+gross regressions. The table with all numbers is at the top of
+`stack_budget.rs`. Re-measure with:
+
+```sh
+cargo test -p spawned-concurrency --test stack_budget -- --ignored probe --nocapture
+cargo test --release -p spawned-concurrency --test stack_budget -- --ignored probe --nocapture
+```
+
 ## Execution guarantees
 
 The full list of guarantees, each mapped to the invariant, test or example in

@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Add the `stack_budget` test suite: nested request chains (async group,
+  thread group, ambient runtime, threads mode), supervisor start/restart/
+  shutdown and `ActorSystem::shutdown` run in child processes under a
+  `RUST_MIN_STACK` budget of about 1.5x the measured minimum, so a stack-depth
+  regression aborts the child and fails the test. Brought over from #217. See
+  [testing](docs/TESTING.md#stack-depth-budgets).
+
 - Test reliability: tests wait on the condition they need instead of fixed
   sleeps or tight latency budgets (`test_wait::wait_for`, `join`, explicit
   release channels). Fixes flakes seen under load in
