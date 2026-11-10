@@ -1185,3 +1185,44 @@ async fn factory_cancelled_waits_for_construction_cancellation() {
     assert!(started.is_err(), "factory finished before cancellation");
     assert!(system.shutdown(LIMIT).await.complete);
 }
+
+/// In a cohort strategy the failed child's backoff races only a superseding
+/// recovery round; with none pending it must sleep the full delay.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn one_for_all_restart_waits_for_its_backoff() {
+    use spawned_concurrency::supervision::SupervisorStrategy;
+    let system = ActorSystem::new().unwrap();
+    let group = system.async_group("ofa-backoff", 1).unwrap();
+    let mut tree = system
+        .supervisor(SupervisorConfig {
+            strategy: SupervisorStrategy::OneForAll,
+            max_restarts: 5,
+            backoff: Backoff {
+                initial: Duration::from_millis(300),
+                maximum: Duration::from_secs(2),
+                jitter: false,
+                seed: Some(1),
+                ..Backoff::default()
+            },
+            ..SupervisorConfig::default()
+        })
+        .unwrap();
+    let child = tree
+        .add(ChildSpec::new("a", &group, |_| async {
+            Ok::<_, String>(Counter(0))
+        }))
+        .unwrap();
+    tree.add(ChildSpec::new("b", &group, |_| async {
+        Ok::<_, String>(Counter(0))
+    }))
+    .unwrap();
+    let supervisor = tree.start().await.unwrap();
+    // A lower bound only: a slow machine makes the restart later, not earlier.
+    let latency = restart_latency(&child).await;
+    assert!(
+        latency >= Duration::from_millis(250),
+        "restart skipped its backoff: {latency:?}"
+    );
+    assert!(supervisor.shutdown(LIMIT).await.complete);
+    assert!(system.shutdown(LIMIT).await.complete);
+}
