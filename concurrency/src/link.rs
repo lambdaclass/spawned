@@ -284,11 +284,34 @@ mod tests {
     use std::sync::atomic::AtomicUsize;
     #[test]
     fn delivery_contains_callback_payload_and_subscriber_panics() {
+        crate::drop_subprocess::run(
+            "link::tests::delivery_panic_child",
+            "validated linked delivery panic containment",
+        );
+    }
+
+    #[test]
+    #[ignore = "subprocess helper exercised by the enabled parent"]
+    fn delivery_panic_child() {
+        if std::env::var_os("SPAWNED_MAILBOX_DROP_CHILD").is_none() {
+            return;
+        }
+        static SECONDARY_DROPS: AtomicUsize = AtomicUsize::new(0);
+        struct Secondary;
+        impl Drop for Secondary {
+            fn drop(&mut self) {
+                SECONDARY_DROPS.fetch_add(1, Ordering::SeqCst);
+            }
+        }
         struct Payload(Arc<AtomicUsize>);
         impl Drop for Payload {
             fn drop(&mut self) {
                 self.0.fetch_add(1, Ordering::SeqCst);
-                panic!("panic payload destructor");
+                // dispose_panic intentionally forgets this secondary payload
+                // to bound recursive destructor panics. A zero-sized payload
+                // exercises that path without an intentional heap leak, so
+                // LSan remains enabled in this subprocess as well as its parent.
+                std::panic::panic_any(Secondary);
             }
         }
         struct PanicSubscriber(Arc<AtomicUsize>);
@@ -318,6 +341,12 @@ mod tests {
         }));
         assert!(result.is_ok(), "delivery unwound through its caller");
         assert_eq!(drops.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            SECONDARY_DROPS.load(Ordering::SeqCst),
+            0,
+            "secondary payloads must be forgotten to bound destructor recursion"
+        );
+        println!("validated linked delivery panic containment");
     }
 
     #[test]

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Isolate the linked-delivery panic regression in a subprocess and use zero-sized
+  secondary panic payloads. This avoids two intentional defensive leaks in the
+  test without disabling LeakSanitizer or suppressing other allocations.
 - Correct the release history: `spawned-test` merged after the v0.7.0 tag and
   is prepared for its first registry release with 0.7.1.
 - `spawned-test`, a new dev-dependency crate (`testing/`) for testing actors in

@@ -78,3 +78,7 @@ preserving even an uncommitted Shutdown through state Drop, and a diagnostic-tex
 migration note. A new direct cleanup unit checks all primary outcomes without
 relying on a committed-cause slot. No client pass is inferred from these checks,
 and none of these results authorizes release.
+
+The subsequent [LSan follow-up](lsan.md) confirms the two intentional secondary
+panic-payload allocations with symbolized stacks and records the subprocess/ZST
+test correction, without workflow changes or sanitizer suppression.

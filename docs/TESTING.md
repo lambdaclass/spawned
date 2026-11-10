@@ -606,9 +606,18 @@ with `-Zsanitizer=leak` on nightly (same `-Zbuild-std` setup as `tsan`), and
 LeakSanitizer reports any allocation unreachable at process exit, such as an
 `Arc` cycle between handles.
 
+The linked-delivery callback/subscriber panic regression runs in a bounded
+subprocess, so a containment regression cannot abort the test harness. Its
+panicking payload destructors raise zero-sized secondary payloads: `dispose_panic`
+intentionally forgets those to bound recursive destructor panics, and the test
+asserts their Drop is never called. Non-zero-sized secondary payloads deliberately
+retain their box allocation (the original boxed `&str` payloads leaked 16 bytes
+each). LSan stays enabled in both processes; this test adds no sanitizer
+suppression or environment override.
+
 ```sh
 RUSTFLAGS=-Zsanitizer=leak cargo +nightly test -Zbuild-std \
-  --target x86_64-unknown-linux-gnu -p spawned-concurrency --test leaks
+  --target x86_64-unknown-linux-gnu -p spawned-concurrency --lib --test leaks
 ```
 
 ### Flaky tests

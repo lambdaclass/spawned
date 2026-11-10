@@ -27,6 +27,8 @@ impl DropFailures {
 
 // Panic payloads may themselves have user-defined destructors. A second panic
 // payload cannot safely be destroyed recursively without an unbounded cascade.
+// Any non-zero-sized final payload intentionally retains its box allocation and
+// owned storage; leak-sanitized tests use a zero-sized secondary payload instead.
 pub(crate) fn dispose_panic(payload: Box<dyn std::any::Any + Send>) {
     if let Err(secondary) = catch_unwind(AssertUnwindSafe(|| drop(payload))) {
         std::mem::forget(secondary);

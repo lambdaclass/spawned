@@ -75,6 +75,10 @@
 //! - `tasks::Backend` enum for choosing async runtime, blocking pool, or OS thread
 #![forbid(unsafe_code)]
 
+#[cfg(test)]
+#[path = "../tests/support/drop_subprocess.rs"]
+mod drop_subprocess;
+
 pub mod child_handle;
 pub mod error;
 #[cfg(feature = "async")]
