@@ -37,6 +37,8 @@
   out-of-order rollback of a ready supervisor startup fixed in v0.7.1,
   which `negative_checks.py` also runs under TLC. Liveness stays TLC-only;
   TLC state counts are unchanged.
+- trybuild compile-fail and pass cases for `#[protocol]` and `#[actor]`
+  (WIP).
 
 - Documentation: `docs/TESTING.md` gains an overview of how spawned is
   verified (design, model-to-code, interleavings, faults, behaviour, code and
