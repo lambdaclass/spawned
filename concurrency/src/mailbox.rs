@@ -128,24 +128,75 @@ macro_rules! channel {
     };
 }
 #[cfg(feature = "async")]
-channel!(
-    tasks,
-    spawned_rt::tasks::mpsc,
-    false,
-    |rx: &mut raw::Receiver<_>, failures: &DropFailures| {
-        rx.close();
-        // This transport must remain synchronous and unbounded: a reserved send
-        // cannot depend on this parked receiver/runtime thread to publish.
-        // Closed recv reaches EOF only after reserved sends publish. Suppress
-        // cooperative-budget deferral while the owning task is being destroyed
-        // and cannot return to the scheduler to service deferred wakes.
-        block_on_drop(spawned_rt::tasks::unconstrained(async {
-            while let Some(value) = rx.recv().await {
-                failures.discard(value);
-            }
-        }));
+pub(crate) mod tasks {
+    use super::*;
+    pub(crate) use raw::SendError;
+    use spawned_rt::tasks::mpsc as raw;
+
+    // Keep the public actor/context handle as small as the original raw sender.
+    // Only sender clones own this state; the receiver must not retain a sender
+    // (otherwise dropping every sender could never close the channel).
+    struct SendState<T> {
+        inner: raw::Sender<T>,
+        failures: Arc<DropFailures>,
     }
-);
+    pub(crate) struct Sender<T>(Arc<SendState<T>>);
+    impl<T> Clone for Sender<T> {
+        fn clone(&self) -> Self {
+            Self(self.0.clone())
+        }
+    }
+    impl<T> Sender<T> {
+        pub(crate) fn send(&self, value: T) -> Result<(), SendError<T>> {
+            self.0.inner.send(value)
+        }
+        pub(crate) fn failures(&self) -> Arc<DropFailures> {
+            self.0.failures.clone()
+        }
+    }
+    pub(crate) struct Receiver<T> {
+        inner: raw::Receiver<T>,
+        failures: Arc<DropFailures>,
+    }
+    impl<T> std::ops::Deref for Receiver<T> {
+        type Target = raw::Receiver<T>;
+        fn deref(&self) -> &Self::Target {
+            &self.inner
+        }
+    }
+    impl<T> std::ops::DerefMut for Receiver<T> {
+        fn deref_mut(&mut self) -> &mut Self::Target {
+            &mut self.inner
+        }
+    }
+    impl<T> Drop for Receiver<T> {
+        fn drop(&mut self) {
+            self.inner.close();
+            // Sends remain synchronous and unbounded. EOF waits only for raw
+            // reservations to publish, never for this runtime thread to run work.
+            // Suppress Tokio's coop deferral while the owning task is destroyed.
+            block_on_drop(spawned_rt::tasks::unconstrained(async {
+                while let Some(value) = self.inner.recv().await {
+                    self.failures.discard(value);
+                }
+            }));
+        }
+    }
+    pub(crate) fn channel<T>() -> (Sender<T>, Receiver<T>) {
+        let (inner, receiver) = raw::channel();
+        let failures = Arc::new(DropFailures::default());
+        (
+            Sender(Arc::new(SendState {
+                inner,
+                failures: failures.clone(),
+            })),
+            Receiver {
+                inner: receiver,
+                failures,
+            },
+        )
+    }
+}
 channel!(
     threads,
     spawned_rt::threads::mpsc,
@@ -274,6 +325,29 @@ mod tests {
         drop(held);
         completion.recv_timeout(Duration::from_secs(5)).unwrap();
         owner.join().unwrap();
+    }
+
+    #[cfg(feature = "async")]
+    #[tokio::test]
+    async fn compact_async_senders_close_after_their_last_owner() {
+        assert_eq!(
+            std::mem::size_of::<tasks::Sender<()>>(),
+            std::mem::size_of::<spawned_rt::tasks::mpsc::Sender<()>>()
+        );
+        let (send, mut receive) = tasks::channel();
+        let other = send.clone();
+        send.send(1).unwrap();
+        drop(send);
+        assert_eq!(receive.recv().await, Some(1));
+        other.send(2).unwrap();
+        drop(other);
+        assert_eq!(receive.recv().await, Some(2));
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(5), receive.recv())
+                .await
+                .unwrap(),
+            None
+        );
     }
 
     #[cfg(feature = "async")]

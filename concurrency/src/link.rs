@@ -199,8 +199,13 @@ pub(crate) fn unregister_link(
 fn deliver(signal: &ExitSignalFn, id: ActorId, reason: ExitReason) {
     // One failing internal cancellation callback must not prevent other peers
     // from being notified, or panic again during actor-future destruction.
-    if catch_unwind(AssertUnwindSafe(|| signal(id, reason))).is_err() {
-        tracing::error!("Panic while delivering a linked exit");
+    if let Err(payload) = catch_unwind(AssertUnwindSafe(|| signal(id, reason))) {
+        crate::mailbox::dispose_panic(payload);
+        if let Err(payload) = catch_unwind(AssertUnwindSafe(|| {
+            tracing::error!("Panic while delivering a linked exit");
+        })) {
+            crate::mailbox::dispose_panic(payload);
+        }
     }
 }
 
@@ -277,6 +282,44 @@ pub(crate) fn has_link(table: &LinkTable, peer: ActorId) -> bool {
 mod tests {
     use super::*;
     use std::sync::atomic::AtomicUsize;
+    #[test]
+    fn delivery_contains_callback_payload_and_subscriber_panics() {
+        struct Payload(Arc<AtomicUsize>);
+        impl Drop for Payload {
+            fn drop(&mut self) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                panic!("panic payload destructor");
+            }
+        }
+        struct PanicSubscriber(Arc<AtomicUsize>);
+        impl tracing::Subscriber for PanicSubscriber {
+            fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+                true
+            }
+            fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+                tracing::span::Id::from_u64(1)
+            }
+            fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+            fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+            fn event(&self, _: &tracing::Event<'_>) {
+                std::panic::panic_any(Payload(self.0.clone()));
+            }
+            fn enter(&self, _: &tracing::span::Id) {}
+            fn exit(&self, _: &tracing::span::Id) {}
+        }
+        let drops = Arc::new(AtomicUsize::new(0));
+        let callback_drops = drops.clone();
+        let signal: ExitSignalFn =
+            Arc::new(move |_, _| std::panic::panic_any(Payload(callback_drops.clone())));
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            tracing::subscriber::with_default(PanicSubscriber(drops.clone()), || {
+                deliver(&signal, ActorId::next(), ExitReason::Kill);
+            });
+        }));
+        assert!(result.is_ok(), "delivery unwound through its caller");
+        assert_eq!(drops.load(Ordering::SeqCst), 2);
+    }
+
     #[test]
     fn exit_is_clone_and_eq() {
         let e = Exit {

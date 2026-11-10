@@ -118,6 +118,38 @@ impl<C: Fn()> Drop for ActorCleanup<C> {
     }
 }
 
+/// Destroy state after capturing the lifecycle outcome. A state destructor is
+/// secondary to an already observed handler/start/stop panic, even before that
+/// outcome has been committed to the shared exit slot.
+pub(crate) fn finish_actor_state<A>(
+    actor: A,
+    primary: Result<ExitReason, ExitReason>,
+) -> Result<ExitReason, ExitReason> {
+    let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(actor)))
+    else {
+        return primary;
+    };
+    let message = crate::error::panic_message(&*payload);
+    crate::mailbox::dispose_panic(payload);
+    let keep_primary = match &primary {
+        Ok(reason) => *reason != ExitReason::Normal,
+        Err(_) => true,
+    };
+    if keep_primary {
+        if let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            tracing::warn!(event = "actor_state_cleanup_failed", actor_type = std::any::type_name::<A>(),
+                ?primary, secondary = %message, "actor state destructor panicked after a terminal outcome");
+        })) {
+            crate::mailbox::dispose_panic(payload);
+        }
+        primary
+    } else {
+        Err(ExitReason::Panic(format!(
+            "actor state destructor: {message}"
+        )))
+    }
+}
+
 /// Captured as one value by the dispatch closure. Declaration order makes
 /// never-polled payload destruction precede completion publication, without
 /// relying on the compiler's order for disjoint closure captures.
@@ -150,6 +182,36 @@ impl<P, C: Fn()> Drop for ActorStartup<P, C> {
                     )));
                 }
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod state_drop_tests {
+    use super::*;
+    struct Explodes;
+    impl Drop for Explodes {
+        fn drop(&mut self) {
+            panic!("secondary state failure");
+        }
+    }
+    #[test]
+    fn destructor_failure_only_escalates_normal_even_without_a_committed_cause() {
+        for primary in [
+            Ok(ExitReason::Normal),
+            Ok(ExitReason::Shutdown),
+            Ok(ExitReason::Kill),
+            Ok(ExitReason::Panic("handler failure".into())),
+            Err(ExitReason::Panic("lifecycle unwind".into())),
+        ] {
+            let expected = if primary == Ok(ExitReason::Normal) {
+                Err(ExitReason::Panic(
+                    "actor state destructor: secondary state failure".into(),
+                ))
+            } else {
+                primary.clone()
+            };
+            assert_eq!(finish_actor_state(Explodes, primary), expected);
         }
     }
 }

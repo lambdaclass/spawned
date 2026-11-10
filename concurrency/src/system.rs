@@ -163,6 +163,23 @@ impl Admission {
         *open = false;
         true
     }
+    /// Atomically preserve a historical commitment or close the gate. Callbacks
+    /// cannot reenter admission; `before_close` runs only for an open gate.
+    pub(crate) fn close_unless(
+        &self,
+        preserve: impl FnOnce() -> bool,
+        before_close: impl FnOnce(),
+    ) -> bool {
+        let mut open = lock(&self.0);
+        if preserve() {
+            return false;
+        }
+        if *open {
+            before_close();
+            *open = false;
+        }
+        true
+    }
     pub(crate) fn if_open<R>(&self, f: impl FnOnce() -> R) -> Option<R> {
         let open = lock(&self.0);
         (*open).then(f)

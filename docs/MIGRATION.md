@@ -17,6 +17,9 @@ A Kill received over a link is now trappable. Only a direct Kill (for example,
 direct kill from killing an entire graph of trapping observers. No exit-reason
 variant was added. Committed abnormal/Shutdown causes survive queued-message
 and actor-state destructor failures during cleanup.
+Destructor diagnostics now distinguish `actor state destructor: ...` from
+`actor lifecycle unwound: ...` (previously `actor lifecycle destructor: ...`).
+Match the `ExitReason::Panic` variant rather than relying on its message text.
 
 Restart capacity is reserved before backoff. Exhaustion fails immediately;
 interrupted reservations are refunded, and only actual grants enter the rolling
@@ -25,6 +28,28 @@ supersession that prevents admission refunds its reservation. A constructor or
 `started()` failure after admission still consumes that retry grant. Cohort
 recovery retains v0.7's per-child accounting: collateral OneForAll/RestForOne
 replacements also consume grants (six replacements need six grants).
+Pending backoffs now reserve capacity as well: with `max_restarts=1`, a one-second
+window and a three-second backoff, a second child failing while the first waits
+can exhaust the supervisor. Pending reservations do not expire with the rolling
+window, so concurrency is capped even when `backoff.maximum > restart_window`.
+
+Once admission closes, `SupervisedChild::current()` and `wait_for_generation()`
+can now return `ChildUnavailable(Failed)` or `ChildUnavailable(Stopped)` for a
+terminal owner/child, rather than always `ChildUnavailable(Stopping)` as in
+0.7.0. Handle these terminal states as well as in-progress stopping.
+
+Readiness is a historical commitment: if system admission closes after startup
+commits readiness but before `start()` returns, startup still succeeds and the
+tree waits for its ordered shutdown turn. Dropping that already-ready startup
+future does not roll back the tree; ActorSystem still owns it.
+Likewise, failure after readiness but before the caller resumes does not undo
+startup success. Inspect `Supervisor::failure()`/the shutdown report for later
+failure; `Ok(Supervisor)` does not guarantee continued liveness.
+
+With jitter enabled, `Backoff::initial` is the first delay cap, not a minimum:
+`initial=1s` allows any first delay from zero through one second. Disable jitter
+to use the capped exponential delay exactly.
+
 Give-up logs identify the originating child once. `restart_scheduled`
 now reports a granted replacement after backoff/placement checks.
 

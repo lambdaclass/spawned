@@ -386,13 +386,18 @@ default features are disabled. Cargo generates the lockfile.
 
 ## Debug future layouts
 
-The [v0.7.1 layout probe](../legacy/verification/evidence/v071-review-fixes/README.md)
-compares v0.5.0, v0.7.0 and the fix candidate with matched metrics settings.
-Request-future size is unchanged between v0.7.0 and the candidate. The reported
-Ethrex HTTP-future warning has not been reproduced with a pinned application
-revision/feature graph; it is not evidence of a request hot-path regression in
-these fixes. Large inline actor state and feature-dependent instrumentation
-remain separate profiling questions.
+`future_layout.rs` compares owned handle, send and protocol-call shapes with the
+pre-guard layout and checks concrete request-future budgets on Linux x86_64.
+Run it with default features and `--features metrics`. The receiver-guard change
+enlarged ActorRef/Context by one word; enclosing owned RPC futures repeated that
+growth even though borrowed request futures stayed unchanged. Shared sender
+metadata restores the measured layouts without per-message boxing.
+
+The [expanded probe and results](../legacy/verification/evidence/v071-review-round2/README.md)
+compare fc35abaf, 35bea650 and the compact sender, including an RPC-shaped nested
+future. This supersedes the earlier borrowed-request-only conclusion. Matching
+layout is a regression check, not proof that Ethrex's RPC tests pass at a 2 MiB
+debug stack; that client rerun remains a review gate.
 
 ## Execution guarantees
 

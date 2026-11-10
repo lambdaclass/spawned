@@ -47,13 +47,15 @@ impl RestartMode {
 
 #[derive(Debug, Clone)]
 pub struct Backoff {
-    /// First retry's upper bound. Each consecutive unstable failure doubles
-    /// this bound, capped by `maximum`; it resets after `stable_after` ready time.
+    /// First retry's delay cap, not its minimum. With jitter enabled the delay
+    /// can be anywhere from zero through this value (1s permits a 150ms retry).
+    /// Each unstable failure doubles the cap, up to `maximum`; it resets after
+    /// `stable_after` ready time. Without jitter the delay equals the cap.
     pub initial: Duration,
     /// Cap on the exponential delay before jitter.
     pub maximum: Duration,
     pub stable_after: Duration,
-    /// Full jitter: uniformly choose from zero through the capped bound.
+    /// Full jitter: draw from zero through the capped bound.
     /// For initial=1s/max=5s, bounds are 1s, 2s, 4s, then 5s. Disable for a
     /// deterministic configured delay. Actual restart latency also includes
     /// cleanup, placement, construction and readiness.
@@ -684,6 +686,24 @@ impl Core {
             }
         });
     }
+    fn cancel_unready_startup(&self) {
+        trace::atomic(|| {
+            let cancel = self.gate.close_unless(
+                || *self.ready.borrow(),
+                || {
+                    self.cohort(|| Event::sup("CClose"));
+                    trace::tree(self.trace, |id| TreeEvent::new("TClose", id));
+                    #[cfg(feature = "lifecycle-trace")]
+                    if !trace::close_suppressed() {
+                        trace::emit(self.trace, || Event::sup("Close"));
+                    }
+                },
+            );
+            if cancel {
+                self.close();
+            }
+        });
+    }
     fn stop_remaining(&self) {
         trace::atomic(|| {
             self.close();
@@ -1126,8 +1146,9 @@ impl SupervisorBuilder {
         Ok(SupervisedChild { view })
     }
 
-    /// Start children in declaration order. Cancellation of this startup future
-    /// requests cleanup; it does not leave an orphaned background tree.
+    /// Start children in declaration order. Dropping this future before readiness
+    /// commits requests cleanup. After readiness, ActorSystem owns the tree even
+    /// if this future is dropped before returning its Supervisor handle.
     pub async fn start(self) -> Result<Supervisor, SupervisorError> {
         self.start_owned(true).await
     }
@@ -1153,15 +1174,18 @@ impl SupervisorBuilder {
         };
         let ready = core.ready.subscribe();
         let cancelled = core.cancel.cancelled();
-        let result = match select(Box::pin(cancelled), Box::pin(system::wait_true(ready))).await {
-            Either::Right((true, _)) if core.gate.is_open() => {
-                guard.armed = false;
-                Ok(Supervisor { core: core.clone() })
-            }
-            _ => Err(system::lock(&core.failure)
+        let _ = select(Box::pin(cancelled), Box::pin(system::wait_true(ready))).await;
+        // Readiness is historical, just like ActorRef::ready(). A later system
+        // admission close must not turn successful startup into rollback.
+        let initialized = *core.ready.borrow();
+        let result = if initialized {
+            guard.armed = false;
+            Ok(Supervisor { core: core.clone() })
+        } else {
+            Err(system::lock(&core.failure)
                 .clone()
                 .map(|failure| SupervisorError::Failed(failure.message))
-                .unwrap_or(SupervisorError::Stopped)),
+                .unwrap_or(SupervisorError::Stopped))
         };
         result
     }
@@ -1187,7 +1211,7 @@ struct StartupGuard {
 impl Drop for StartupGuard {
     fn drop(&mut self) {
         if self.armed {
-            self.core.close();
+            self.core.cancel_unready_startup();
         }
     }
 }
@@ -2507,6 +2531,151 @@ mod policy_tests {
     }
 
     #[tokio::test]
+    async fn startup_completion_or_drop_after_readiness_preserves_system_order() {
+        use crate::tasks::ActorStart;
+        struct Ordered {
+            id: u32,
+            log: Arc<Mutex<Vec<u32>>>,
+            entered: Option<rt::oneshot::Sender<()>>,
+            release: Option<rt::oneshot::Receiver<()>>,
+        }
+        impl Actor for Ordered {
+            async fn stopped(&mut self, _: &crate::tasks::Context<Self>) {
+                system::lock(&self.log).push(self.id);
+                if let Some(entered) = self.entered.take() {
+                    let _ = entered.send(());
+                }
+                if let Some(release) = self.release.take() {
+                    let _ = release.await;
+                }
+            }
+        }
+        for complete_start in [true, false] {
+            let limit = Duration::from_secs(30);
+            let system = ActorSystem::new().unwrap();
+            let group = system.thread_group("fixed-order-2-1-2", 5).unwrap();
+            let log = Arc::new(Mutex::new(Vec::new()));
+            for id in 0..2 {
+                Ordered {
+                    id,
+                    log: log.clone(),
+                    entered: None,
+                    release: None,
+                }
+                .start_on(&group)
+                .unwrap()
+                .ready()
+                .await
+                .unwrap();
+            }
+            let mut builder = system.supervisor(SupervisorConfig::default()).unwrap();
+            let child_log = log.clone();
+            builder
+                .add(ChildSpec::new("middle", &group, move |_| {
+                    let log = child_log.clone();
+                    async move {
+                        Ok::<_, String>(Ordered {
+                            id: 100,
+                            log,
+                            entered: None,
+                            release: None,
+                        })
+                    }
+                }))
+                .unwrap();
+            let core = builder.core.clone();
+            let mut startup = Box::pin(builder.start());
+            assert!(futures::poll!(startup.as_mut()).is_pending());
+            assert!(
+                rt::timeout(limit, system::wait_true(core.ready.subscribe()))
+                    .await
+                    .unwrap()
+            );
+            Ordered {
+                id: 200,
+                log: log.clone(),
+                entered: None,
+                release: None,
+            }
+            .start_on(&group)
+            .unwrap()
+            .ready()
+            .await
+            .unwrap();
+            let (entered, arrival) = rt::oneshot::channel();
+            let (release, gate) = rt::oneshot::channel();
+            Ordered {
+                id: 201,
+                log: log.clone(),
+                entered: Some(entered),
+                release: Some(gate),
+            }
+            .start_on(&group)
+            .unwrap()
+            .ready()
+            .await
+            .unwrap();
+            let shutdown = system.shutdown(limit);
+            tokio::pin!(shutdown);
+            assert!(futures::poll!(&mut shutdown).is_pending());
+            rt::timeout(limit, arrival).await.unwrap().unwrap();
+            // Readiness committed, but the caller has not observed start's result.
+            // Admission now closes while the later actor still owns the stop turn.
+            if complete_start {
+                assert!(rt::timeout(limit, startup.as_mut()).await.unwrap().is_ok());
+            } else {
+                drop(startup);
+            }
+            assert!(
+                !core.cancel.is_cancelled(),
+                "completed readiness was rolled back"
+            );
+            release.send(()).unwrap();
+            assert!(rt::timeout(limit, shutdown).await.unwrap().complete);
+            assert_eq!(*system::lock(&log), vec![201, 200, 100, 1, 0]);
+        }
+    }
+
+    #[tokio::test]
+    async fn startup_success_remains_historical_after_unobserved_ready_then_failure() {
+        struct Idle;
+        impl Actor for Idle {}
+        let limit = Duration::from_secs(30);
+        let system = ActorSystem::new().unwrap();
+        let group = system.async_group("historical-ready-failure", 1).unwrap();
+        let mut builder = system
+            .supervisor(SupervisorConfig {
+                max_restarts: 0,
+                ..SupervisorConfig::default()
+            })
+            .unwrap();
+        let child = builder
+            .add(ChildSpec::new("ready-then-failed", &group, |_| async {
+                Ok::<_, String>(Idle)
+            }))
+            .unwrap();
+        let core = builder.core.clone();
+        let mut startup = Box::pin(builder.start());
+        assert!(futures::poll!(startup.as_mut()).is_pending());
+        assert!(
+            rt::timeout(limit, system::wait_true(core.ready.subscribe()))
+                .await
+                .unwrap()
+        );
+        child
+            .current()
+            .unwrap()
+            .context()
+            .stop_with_reason(ExitReason::Kill);
+        assert!(rt::timeout(limit, system::wait_true(core.done.subscribe()))
+            .await
+            .unwrap());
+        let tree = rt::timeout(limit, startup).await.unwrap().unwrap();
+        assert!(tree.failure().unwrap().contains("budget exhausted"));
+        assert!(system.shutdown(limit).await.complete);
+    }
+
+    #[tokio::test]
     async fn started_failures_allow_n_restarts_and_escalate_the_next_failure() {
         use std::sync::atomic::{AtomicUsize, Ordering};
         struct FailsStarted(Arc<AtomicUsize>);
@@ -2704,10 +2873,11 @@ mod policy_tests {
             assert_eq!(child.snapshot().generation, 2);
         }
         assert!(tree.failure().is_none());
-        let budget = system::lock(&core.budget);
-        assert_eq!(budget.attempts.len(), 3);
-        assert_eq!(budget.reserved, 0);
-        drop(budget);
+        {
+            let budget = system::lock(&core.budget);
+            assert_eq!(budget.attempts.len(), 3);
+            assert_eq!(budget.reserved, 0);
+        }
         assert!(system.shutdown(limit).await.complete);
     }
 
@@ -2776,10 +2946,11 @@ mod policy_tests {
         tree.core.close();
         assert!(!trace::atomic(|| tree.core.retry(&mut replacement)));
         drop(replacement);
-        let budget = system::lock(&tree.core.budget);
-        assert!(budget.attempts.is_empty());
-        assert_eq!(budget.reserved, 0);
-        drop(budget);
+        {
+            let budget = system::lock(&tree.core.budget);
+            assert!(budget.attempts.is_empty());
+            assert_eq!(budget.reserved, 0);
+        }
         drop(tree);
         assert!(system.shutdown(Duration::from_secs(10)).await.complete);
     }

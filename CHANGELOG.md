@@ -28,6 +28,15 @@
   per-child cohort accounting. Preserve failed terminal states;
   emit typed give-up diagnostics once for the originating child.
 - Preserve ordered system shutdown when admission closes just after readiness.
+- Preserve that order when an already-ready supervisor's startup future completes
+  or is dropped after admission closes; readiness remains a historical commitment.
+- Restore pre-mailbox-guard async handle and owned RPC-future layouts by sharing
+  sender metadata outside the handle. Add owned send/request/protocol and nested
+  dispatch size regressions, with and without metrics.
+- Preserve a handler/start/stop panic when the actor state's destructor also
+  panics. Contain link callback panic-payload destructors and tracing subscribers.
+- Clarify terminal child states, pending restart reservations and full-jitter
+  backoff caps in the migration guide.
 - Add `ActorSystem::async_group_on` for managed work on a caller-owned Tokio
   runtime; shutdown leaves ambient work and the borrowed runtime running.
 - Add composable process-wide timing requirements for independently initialized

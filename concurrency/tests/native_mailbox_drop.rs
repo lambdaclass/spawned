@@ -45,6 +45,16 @@ impl Handler<Bomb> for Victim {
     }
 }
 
+struct Crash;
+impl Message for Crash {
+    type Result = ();
+}
+impl Handler<Crash> for Victim {
+    fn handle(&mut self, _: Crash, _: &Context<Self>) {
+        panic!("native handler failure");
+    }
+}
+
 #[test]
 fn native_mailbox_drop_panics_are_contained_before_completion() {
     subprocess::run("native_drop_child", "validated native receiver cleanup");
@@ -85,8 +95,9 @@ fn native_drop_child() {
             if reason != ExitReason::Normal {
                 assert_eq!(exit, reason);
             } else if state_panics {
-                assert!(
-                    matches!(exit, ExitReason::Panic(ref s) if s.contains("native state destructor"))
+                assert_eq!(
+                    exit,
+                    ExitReason::Panic("actor state destructor: native state destructor".into())
                 );
             } else {
                 assert_eq!(
@@ -107,5 +118,29 @@ fn native_drop_child() {
             drop(actor);
         }
     }
+    // Preserve the handler panic when both state and queued destructors fail.
+    let (entered, arrival) = mpsc::channel();
+    let (release, gate) = mpsc::channel();
+    let actor = Victim {
+        entered,
+        release: gate,
+        state_panics: true,
+    }
+    .start();
+    arrival.recv_timeout(LIMIT).unwrap();
+    actor.send(Crash).unwrap();
+    let dropped = Arc::new(AtomicUsize::new(0));
+    for _ in 0..2 {
+        actor.send(Bomb(dropped.clone())).unwrap();
+    }
+    release.send(()).unwrap();
+    let child = actor.child_handle();
+    let (done, exit) = mpsc::channel();
+    std::thread::spawn(move || done.send(child.wait_exit_blocking()).unwrap());
+    assert_eq!(
+        exit.recv_timeout(LIMIT).unwrap(),
+        ExitReason::Panic("panic in handler: native handler failure".into())
+    );
+    assert_eq!(dropped.load(Ordering::SeqCst), 2);
     println!("validated native receiver cleanup");
 }

@@ -292,3 +292,60 @@ fn abandoned_receiver_child() {
     runtime.shutdown_timeout(LIMIT);
     println!("validated abandoned receivers and causes");
 }
+
+#[test]
+fn handler_panic_survives_state_and_queued_destructor_panics() {
+    subprocess::run("primary_panic_child", "validated primary handler panic");
+}
+#[test]
+#[ignore = "subprocess helper exercised by enabled parent"]
+fn primary_panic_child() {
+    if std::env::var_os("SPAWNED_MAILBOX_DROP_CHILD").is_none() {
+        return;
+    }
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let actor = Victim(Arc::default(), true).start();
+        let (send, mut events) = mpsc::unbounded_channel();
+        let observer = Observer(send).start();
+        observer.context().trap_exit(true);
+        observer.context().link(&actor.child_handle());
+        let _monitor = observer.context().monitor(&actor.child_handle());
+        let (entered, arrival) = oneshot::channel();
+        let (release, gate) = oneshot::channel();
+        actor.send(Hold(entered, gate, true)).unwrap();
+        tokio::time::timeout(LIMIT, arrival).await.unwrap().unwrap();
+        let dropped = Arc::new(AtomicUsize::new(0));
+        for _ in 0..2 {
+            actor.send(Bomb(dropped.clone())).unwrap();
+        }
+        release.send(()).unwrap();
+        let primary = ExitReason::Panic("panic in handler: original handler failure".into());
+        assert_eq!(
+            tokio::time::timeout(LIMIT, actor.wait_exit())
+                .await
+                .unwrap(),
+            primary
+        );
+        let first = tokio::time::timeout(LIMIT, events.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let second = tokio::time::timeout(LIMIT, events.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_ne!(first.0, second.0);
+        assert_eq!(first.1, primary);
+        assert_eq!(second.1, primary);
+        assert_eq!(dropped.load(Ordering::SeqCst), 2);
+        observer.request(Ping).await.unwrap();
+        observer.context().stop();
+        tokio::time::timeout(LIMIT, observer.join()).await.unwrap();
+    });
+    println!("validated primary handler panic");
+}

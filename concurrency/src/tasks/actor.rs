@@ -1193,14 +1193,14 @@ impl MessageTurn {
 }
 
 async fn run_actor<A: Actor>(
-    actor: A,
+    mut actor: A,
     ctx: Context<A>,
     mut rx: mpsc::Receiver<Box<dyn Envelope<A> + Send>>,
     cancellation_token: CancellationToken,
     #[cfg(feature = "backend-experiments")] turn: Option<MessageTurn>,
 ) -> Result<ExitReason, ExitReason> {
-    match AssertUnwindSafe(run_actor_lifecycle(
-        actor,
+    let primary = match AssertUnwindSafe(run_actor_lifecycle(
+        &mut actor,
         ctx,
         &mut rx,
         cancellation_token,
@@ -1215,14 +1215,15 @@ async fn run_actor<A: Actor>(
             let message = panic_message(&*payload);
             crate::mailbox::dispose_panic(payload);
             Err(ExitReason::Panic(format!(
-                "actor lifecycle destructor: {message}"
+                "actor lifecycle unwound: {message}"
             )))
         }
-    }
+    };
+    crate::actor_cleanup::finish_actor_state(actor, primary)
 }
 
 async fn run_actor_lifecycle<A: Actor>(
-    mut actor: A,
+    actor: &mut A,
     ctx: Context<A>,
     rx: &mut mpsc::Receiver<Box<dyn Envelope<A> + Send>>,
     cancellation_token: CancellationToken,
@@ -1308,7 +1309,7 @@ async fn run_actor_lifecycle<A: Actor>(
                 let observation = envelope
                     .observation()
                     .map(|observation| observation.begin());
-                let result = AssertUnwindSafe(envelope.handle(&mut actor, &ctx))
+                let result = AssertUnwindSafe(envelope.handle(actor, &ctx))
                     .catch_unwind()
                     .await;
                 #[cfg(feature = "diagnostics")]

@@ -837,8 +837,12 @@ a ready service; a Permanent spec can retry within its budget.
 A supervisor accepts only groups owned by its ActorSystem. ActorRefs can still
 communicate between independent systems. Children start in declaration order
 and shut down in reverse order. Startup
-future cancellation requests rollback of the partially started tree. Each spec
-has a startup and cleanup timeout (default five seconds). A stuck actor, startup
+future cancellation requests rollback until readiness commits. After that
+historical commitment, the tree remains ActorSystem-owned even if admission
+closes before `start()` is polled to completion or the startup future is dropped.
+Startup success does not promise continued liveness: inspect `failure()` or the
+shutdown report for failures occurring after readiness, including before return.
+Each spec has a startup and cleanup timeout (default five seconds). A stuck actor, startup
 hook or registered helper fails the supervisor and suppresses replacements until
 actual cleanup completes. There is at most one live generation per child slot.
 Stop observation uses internal tokens/completion state, independently of ordinary
@@ -900,9 +904,15 @@ window. Initial construction does not consume a retry; every subsequent attempt
 does, including failed factories and normal replacements of Permanent children.
 A zero retry budget fails immediately without waiting for backoff. Otherwise
 retry accounting is stamped immediately before factory admission, after the
-cancellable delay; retries spaced beyond the rolling window are permitted by
-design. This is a rate limit, not a lifetime retry cap. Exhaustion fails the whole supervisor and stops its remaining children. Backoff
-is capped exponential with optional jitter, independently per child; a stable
+cancellable delay. Pending backoffs reserve capacity until admission or refund;
+their reservations do not expire with the window. This also caps concurrent
+pending retries when backoff exceeds the window. Completed grants expire with
+the rolling window, so this is not a lifetime retry cap. Exhaustion fails the
+whole supervisor and stops its remaining children. Backoff
+is capped exponential with optional jitter, independently per child. With jitter,
+`initial` is a cap rather than a minimum: `initial=1s` allows a first delay from
+zero through one second, including 0.15–0.8s. Subsequent caps double up to
+`maximum`; disable jitter for a delay equal to the cap. A stable
 ready lifetime resets that child's exponent. Cleanup time is not healthy uptime.
 Use `Backoff::seed` for reproducible policy tests, not security randomness.
 
@@ -943,6 +953,9 @@ each subtree generation; async setup belongs in the child factories. Its placeme
 group hosts an internal lifecycle adapter and declaration callback. An async group
 is usually the right adapter placement so it does not occupy a scarce native slot.
 Leaf specs can use other groups within the same ActorSystem.
+Use this API for parent-owned recovery. Calling a separate builder's public
+`start()` inside a factory registers an independent ActorSystem root; it does
+not attach that tree to the factory's parent supervisor.
 
 A failed subtree escalates through the adapter to its parent's restart policy.
 The adapter's ownership lease persists until all descendants actually finish,

@@ -803,18 +803,26 @@ impl<A: Actor> ActorRef<A> {
         let startup =
             crate::actor_cleanup::ActorStartup::new((actor, ctx, rx, cancellation_token), cleanup);
         let _thread_handle = rt::spawn(move || {
-            let ((actor, ctx, rx, cancellation_token), mut cleanup) = startup.into_parts();
-            match catch_unwind(AssertUnwindSafe(|| {
-                run_actor(actor, ctx, rx, cancellation_token)
+            let ((mut actor, ctx, mut rx, cancellation_token), mut cleanup) = startup.into_parts();
+            let primary = match catch_unwind(AssertUnwindSafe(|| {
+                run_actor(&mut actor, ctx, &mut rx, cancellation_token)
             })) {
-                Ok(reason) => cleanup.complete(reason),
+                Ok(reason) => Ok(reason),
                 Err(payload) => {
                     let message = panic_message(&*payload);
                     crate::mailbox::dispose_panic(payload);
-                    cleanup.complete_secondary(ExitReason::Panic(format!(
-                        "actor lifecycle destructor: {message}"
-                    )));
+                    Err(ExitReason::Panic(format!(
+                        "actor lifecycle unwound: {message}"
+                    )))
                 }
+            };
+            let outcome = crate::actor_cleanup::finish_actor_state(actor, primary);
+            // State destructors may still send through a retained context. Keep
+            // the receiver alive until state is gone, then drain before publish.
+            drop(rx);
+            match outcome {
+                Ok(reason) => cleanup.complete(reason),
+                Err(reason) => cleanup.complete_secondary(reason),
             }
         });
 
@@ -823,9 +831,9 @@ impl<A: Actor> ActorRef<A> {
 }
 
 fn run_actor<A: Actor>(
-    actor: A,
+    actor: &mut A,
     ctx: Context<A>,
-    rx: mpsc::Receiver<MailboxItem<A>>,
+    rx: &mut mpsc::Receiver<MailboxItem<A>>,
     cancellation_token: CancellationToken,
 ) -> ExitReason {
     run_actor_receiving(
@@ -840,7 +848,7 @@ fn run_actor<A: Actor>(
 }
 
 fn run_actor_receiving<A: Actor>(
-    mut actor: A,
+    actor: &mut A,
     ctx: Context<A>,
     mut receive: impl FnMut() -> Result<MailboxItem<A>, std::sync::mpsc::RecvTimeoutError>,
     cancellation_token: CancellationToken,
@@ -896,7 +904,7 @@ fn run_actor_receiving<A: Actor>(
                     .observation()
                     .map(|observation| observation.begin());
                 let result = catch_unwind(AssertUnwindSafe(|| {
-                    envelope.handle(&mut actor, &ctx);
+                    envelope.handle(actor, &ctx);
                 }));
                 #[cfg(feature = "metrics")]
                 if let Some(observation) = observation {
@@ -1686,7 +1694,7 @@ mod idle_stop_regression {
         let actor = std::thread::spawn(move || {
             let mut first = true;
             run_actor_receiving(
-                Counter(seen, trace),
+                &mut Counter(seen, trace),
                 ctx,
                 move || {
                     // Pause the real receive boundary after the started/cancel
@@ -1795,7 +1803,7 @@ mod stop_wakeup_regression {
         let cancel = token.clone();
         let actor = std::thread::spawn(move || {
             run_actor_receiving(
-                Idle(stopped_tx),
+                &mut Idle(stopped_tx),
                 ctx,
                 move || {
                     let _ = entered_tx.send(());

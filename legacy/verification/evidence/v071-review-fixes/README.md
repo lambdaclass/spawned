@@ -4,6 +4,11 @@ Work in progress; this record does not claim release approval.
 
 ## Debug future-layout investigation
 
+**Superseded in part:** this probe did not measure owned protocol calls or nested
+RPC dispatch. The [round-two investigation](../v071-review-round2/README.md) found
+that the added handle word does enlarge those futures, despite unchanged borrowed
+requests. It records the compact sender correction and the remaining client gate.
+
 `future-layout.csv` records Linux x86_64 Rust 1.93.0 unoptimized sizes with dev
 debuginfo level 1. Each version used an isolated source copy; sources/manifests
 were refreshed before building, avoiding shared-target stale-artifact reuse.
