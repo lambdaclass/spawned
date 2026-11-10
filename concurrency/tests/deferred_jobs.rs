@@ -3,7 +3,6 @@
 //! deadlines, emits, delegation with `pipe_reply`, bounds and owner exit.
 use spawned_concurrency::message::Message;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 /// What the owner's handlers observed, in dispatch order.
 #[derive(Default)]
@@ -26,6 +25,7 @@ mod tasks_mode {
     };
     use spawned_concurrency::ActorError;
     use spawned_rt::tasks::{oneshot, sleep};
+    use std::time::Duration;
 
     struct Owner {
         log: Arc<Log>,
@@ -78,6 +78,7 @@ mod tasks_mode {
     }
 
     /// Start jobs from inside a turn, as handlers do.
+    #[cfg_attr(spawned_sim, allow(dead_code))] // native jobs are not simulated
     enum Start {
         Pipe(&'static str, u64),
         Panics,
