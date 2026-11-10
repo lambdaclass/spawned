@@ -8,12 +8,38 @@ use arbitrary::Arbitrary;
 pub const MAX_OPS: usize = 64;
 
 /// One fuzz input: operations plus everything that fixes the schedule.
-#[derive(Arbitrary, Debug, Clone)]
+/// Decoding reads the seed and strategy, then operations until the input
+/// (or [`MAX_OPS`]) runs out, so every byte of an input is an operation.
+#[derive(Debug, Clone)]
 pub struct Scenario {
     /// Simulator seed (random walk and PCT draws; supervisor jitter seed).
     pub seed: u64,
     pub sched: Sched,
     pub ops: Vec<Op>,
+}
+
+impl<'a> Arbitrary<'a> for Scenario {
+    fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
+        Ok(Self {
+            seed: u.arbitrary()?,
+            sched: u.arbitrary()?,
+            ops: u.arbitrary()?,
+        })
+    }
+    fn arbitrary_take_rest(mut u: arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
+        let seed = u.arbitrary()?;
+        let sched = u.arbitrary()?;
+        let mut ops = Vec::new();
+        while !u.is_empty() && ops.len() < MAX_OPS {
+            ops.push(u.arbitrary()?);
+        }
+        Ok(Self { seed, sched, ops })
+    }
+    fn size_hint(depth: usize) -> (usize, Option<usize>) {
+        let (seed, _) = <u64 as Arbitrary>::size_hint(depth);
+        let (sched, _) = <Sched as Arbitrary>::size_hint(depth);
+        (seed + sched, None)
+    }
 }
 
 /// Scheduling strategy of the one simulated run.
