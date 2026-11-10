@@ -8,7 +8,7 @@ use crate::mailbox::tasks as mpsc;
 use crate::message::Message;
 use crate::monitor::{Down, MonitorCleanup, MonitorRef, MonitorTable};
 use crate::reply::{registry::Registry, reply_slot, SlotHandle};
-use crate::reply::{PendingReply, ReplyReceiver, DEFAULT_MAX_OUTSTANDING};
+use crate::reply::{Deadline, PendingReply, ReplyReceiver, DEFAULT_MAX_OUTSTANDING};
 use core::pin::pin;
 use futures::future::{self, FutureExt as _};
 use spawned_rt::{
