@@ -581,9 +581,185 @@ fn pr204_race_replays_from_a_recorded_tape() {
 
 /// Manual demo of the harness report: fails on the race's first seed and
 /// prints the replay commands and tape paths. Run with
-/// `RUSTFLAGS="--cfg spawned_sim" cargo test -p spawned-concurrency --test sim -- --ignored harness_reports`.
+/// `RUSTFLAGS="--cfg spawned_sim --cfg tokio_unstable" cargo test -p spawned-concurrency --test sim -- --ignored harness_reports`.
 #[spawned_macros::sim_test(seeds = 64)]
 #[ignore = "demonstrates a failing report"]
 async fn harness_reports_pr204_race_with_replay_commands() {
     unstarted_children_end_stopped().await;
+}
+
+// ---------------------------------------------------------------------------
+// Strict replay, tape format and virtual-time policy (review fixes).
+// ---------------------------------------------------------------------------
+
+/// A busy task races a 1 ms timeout: with a small spin limit the clock creeps
+/// past the deadline before the task finishes, with the default it does not.
+async fn spin_vs_timeout() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let done = Arc::new(AtomicBool::new(false));
+    let flag = done.clone();
+    drop(spawned_rt::tasks::spawn(async move {
+        for _ in 0..3_000 {
+            sim::yield_now().await;
+        }
+        flag.store(true, Ordering::Relaxed);
+    }));
+    let waited = spawned_rt::tasks::timeout(Duration::from_millis(1), async {
+        while !done.load(Ordering::Relaxed) {
+            sim::yield_now().await;
+        }
+    })
+    .await;
+    assert!(waited.is_ok(), "spin-wait timed out");
+}
+
+/// Codex P2 (#214): a strict replay takes clock jumps from the tape, so a
+/// failure recorded under one `SPAWNED_SIM_SPIN` replays under another, and
+/// the tape carries the recorded spin limit.
+#[test]
+fn strict_replay_follows_recorded_clock_jumps() {
+    let record = |spin: u64| {
+        let rt = Runtime::with_seed(4);
+        rt.set_spin_limit(spin);
+        rt.record_tape();
+        let failed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            rt.block_on(spin_vs_timeout())
+        }))
+        .is_err();
+        (failed, rt.tape())
+    };
+    let (failed, tape) = record(100);
+    assert!(
+        failed,
+        "a 100-poll spin limit should time the spin-wait out"
+    );
+    assert!(!record(1_000_000).0, "a large spin limit should not");
+    assert_eq!(tape.spin, Some(100));
+    assert_eq!(sim::Tape::parse(&tape.to_text()).unwrap(), tape);
+
+    // Strict replay with a different spin limit in force still times out.
+    let rt = Runtime::with_seed(4);
+    rt.replay(&tape);
+    rt.set_spin_limit(1_000_000);
+    let replayed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rt.block_on(spin_vs_timeout())
+    }));
+    assert!(
+        replayed.is_err(),
+        "strict replay did not reproduce the timeout"
+    );
+    assert_eq!(rt.stats().tape_left, 0);
+}
+
+/// Body for the divergence tests: two tasks and some yields.
+async fn small_schedule() {
+    let a = spawned_rt::tasks::spawn(async {
+        for _ in 0..3 {
+            sim::yield_now().await;
+        }
+    });
+    let b = spawned_rt::tasks::spawn(sim::yield_now());
+    a.await.unwrap();
+    b.await.unwrap();
+}
+
+/// Codex P2 (#214): a tape pick whose task is not ready is a divergence, not
+/// a silent canonical choice.
+#[test]
+fn strict_replay_fails_on_a_pick_that_is_not_ready() {
+    let body = |_| small_schedule();
+    let recorded = sim::run_once(1, None, &body);
+    assert_eq!(recorded.failure, None);
+    let mut tape = recorded.tape.clone();
+    let first_poll = tape
+        .decisions
+        .iter()
+        .position(|d| !matches!(d, sim::Decision::Fire(_)))
+        .unwrap();
+    tape.decisions[first_poll] = sim::Decision::Poll(999);
+    let replay = sim::run_once(1, Some(&tape), &body);
+    let failure = replay.failure.expect("diverging tape replayed silently");
+    assert!(failure.contains("replay diverged"), "{failure}");
+    assert!(failure.contains("task 999"), "{failure}");
+}
+
+/// Codex P2 (#214): a tape that runs out before the run ends, or has
+/// decisions left over when it ends, is a divergence.
+#[test]
+fn strict_replay_fails_on_a_short_or_long_tape() {
+    let body = |_| small_schedule();
+    let recorded = sim::run_once(2, None, &body);
+    let mut short = recorded.tape.clone();
+    short.decisions.truncate(short.decisions.len() / 2);
+    let failure = sim::run_once(2, Some(&short), &body)
+        .failure
+        .unwrap_or_default();
+    assert!(
+        failure.contains("replay diverged: the tape ended"),
+        "{failure:?}"
+    );
+
+    let mut long = recorded.tape.clone();
+    long.decisions.push(sim::Decision::Canonical);
+    let failure = sim::run_once(2, Some(&long), &body)
+        .failure
+        .unwrap_or_default();
+    assert!(failure.contains("unused"), "{failure:?}");
+
+    // The recorded tape itself replays cleanly, and permissive replay still
+    // accepts the edited tapes (for the shrinker).
+    assert_eq!(sim::run_once(2, Some(&recorded.tape), &body).failure, None);
+    let permissive = sim::run_with(2, Some((&short, sim::ReplayMode::Permissive)), &body);
+    assert_eq!(permissive.failure, None);
+}
+
+/// agy L1: clock jumps are written as u128 nanoseconds and must parse back.
+#[test]
+fn tape_parses_clock_jumps_beyond_u64_nanos() {
+    let far = (u64::MAX as u128) * 1_000;
+    let tape = sim::Tape::parse(&format!("seed 1\nt {far}\nc\n")).unwrap();
+    match tape.decisions[0] {
+        sim::Decision::Fire(at) => assert_eq!(at.as_nanos(), far),
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(sim::Tape::parse(&tape.to_text()).unwrap(), tape);
+}
+
+/// agy H3: a spin-wait bounded by a 5 s timeout reaches the timeout instead
+/// of tripping the livelock guard (1 ms per 10,000 polls needs 50 million
+/// polls for 5 s; the guard stops at 10 million).
+#[test]
+fn spin_wait_reaches_a_multi_second_timeout() {
+    let rt = Runtime::with_seed(6);
+    let waited = rt.block_on(spawned_rt::tasks::timeout(Duration::from_secs(5), async {
+        loop {
+            sim::yield_now().await;
+        }
+    }));
+    assert!(waited.is_err());
+    let stats = rt.stats();
+    assert!(stats.now >= Duration::from_secs(5), "{stats:?}");
+    println!("5 s spin-wait timed out after {} polls", stats.steps);
+}
+
+/// agy L2: a task that keeps its own `Runtime` handle must not keep the
+/// world, and the tasks parked in it, alive after `run_once`.
+#[test]
+fn run_once_drains_a_world_kept_alive_by_a_task() {
+    let probe = Arc::new(());
+    let weak = Arc::downgrade(&probe);
+    let body = move |_| {
+        let probe = probe.clone();
+        async move {
+            let handle = Runtime::new().unwrap();
+            drop(spawned_rt::tasks::spawn(async move {
+                let _keep = (handle, probe);
+                std::future::pending::<()>().await;
+            }));
+            sim::yield_now().await;
+        }
+    };
+    assert_eq!(sim::run_once(3, None, &body).failure, None);
+    drop(body);
+    assert_eq!(weak.strong_count(), 0, "parked task leaked with its world");
 }

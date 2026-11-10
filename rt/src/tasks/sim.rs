@@ -27,7 +27,10 @@
 //!   A sleep whose deadline has already passed still yields once, as Tokio's
 //!   timer does.
 //!   A busy run (tasks that keep yielding) creeps it forward by 1 ms every
-//!   `SPAWNED_SIM_SPIN` polls (default 10,000), so spin-waits still time out.
+//!   `SPAWNED_SIM_SPIN` polls (default 10,000), so spin-waits still time out;
+//!   after 100 creeps in a row that fire no timer it jumps to the earliest
+//!   timer, so a spin-wait reaches a multi-second timeout well before the
+//!   livelock guard (`SPAWNED_SIM_MAX_STEPS`, default 10 million polls).
 //!   `spawned_rt::time::Instant` reads this clock.
 //! - **Detected limits.** `spawn_blocking`, `block_in_place` and a nested
 //!   `block_on` panic with a message naming the call; a run with no ready task
@@ -45,8 +48,13 @@
 //! - **Decision tape.** Every pick is recorded as `c` (canonical: smallest
 //!   ready id) or `p <id>`, and every clock jump as `t <nanos>`. Replaying a
 //!   [`Tape`] picks by task id rather than by generator draw, so a schedule
-//!   survives code changes that shift random-number consumption; [`shrink`]
-//!   moves a failing tape toward the canonical schedule.
+//!   survives code changes that shift random-number consumption. Replay is
+//!   strict ([`ReplayMode::Strict`]): clock jumps come from the tape too, and
+//!   any decision that does not apply, or a tape that runs out or is left
+//!   over, fails the run as `replay diverged` instead of silently running a
+//!   different schedule. [`shrink`] moves a failing tape toward the canonical
+//!   schedule, guiding candidates permissively and keeping only those whose
+//!   recorded tape reproduces strictly.
 //!
 //! Library code reads time and jitter entropy through `spawned_rt::time`,
 //! which this module backs under the cfg. The one scheduling-relevant
@@ -82,6 +90,11 @@ const DEFAULT_MAX_STEPS: u64 = 10_000_000;
 const DEFAULT_SPIN_LIMIT: u64 = 10_000;
 /// How far the clock creeps after [`DEFAULT_SPIN_LIMIT`] busy polls.
 const SPIN_QUANTUM: Duration = Duration::from_millis(1);
+/// Creeps in a row that fire no timer after which the clock jumps straight to
+/// the earliest timer, so a spin-wait reaches a multi-second timeout in about
+/// `FAST_FORWARD_CREEPS * spin limit` polls instead of hitting the livelock
+/// guard (1 ms per 10,000 polls would need 50 million polls for 5 s).
+const FAST_FORWARD_CREEPS: u64 = 100;
 /// Wall-clock seconds one poll may run before the watchdog aborts the process.
 const DEFAULT_POLL_TIMEOUT_SECS: u64 = 60;
 
@@ -219,6 +232,10 @@ struct State {
     next_timer: u64,
     steps: u64,
     spin: u64,
+    /// Busy polls after which the clock creeps (`SPAWNED_SIM_SPIN`).
+    spin_limit: u64,
+    /// Polls since a clock jump last fired a timer.
+    unfired: u64,
     hash: u64,
     trace: Option<Vec<(u64, Duration)>>,
     tape: Option<Vec<Decision>>,
@@ -242,11 +259,79 @@ pub enum Decision {
     Fire(Duration),
 }
 
-/// Replay script: one entry per poll; `None` is the canonical choice.
+/// How [`Runtime::replay`] follows a tape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReplayMode {
+    /// Reproduce the recorded run exactly: every pick must name a ready task,
+    /// clock jumps come from the tape (so the spin limit of the replaying
+    /// process does not matter), and a run that needs a decision the tape
+    /// does not have, or finishes with decisions left over, fails with a
+    /// `replay diverged` panic.
+    Strict,
+    /// Guide a run with a partial or edited tape (the shrinker's candidates):
+    /// a scripted task that is not ready, and every poll past the tape's end,
+    /// takes the canonical choice; clock jumps follow the executor's own
+    /// policy with the tape's spin limit. Never use it to claim a
+    /// reproduction: re-check the recorded tape in [`ReplayMode::Strict`].
+    Permissive,
+}
+
+/// Replay script: the tape being followed and how far it has been read.
 struct Script {
-    picks: Vec<Option<u64>>,
+    decisions: Vec<Decision>,
     pos: usize,
+    mode: ReplayMode,
     misses: u64,
+}
+
+/// What the executor does next.
+enum Action {
+    /// Poll the ready task at this index.
+    Poll(usize),
+    /// Advance the clock to this deadline and fire the timers due by then.
+    Fire(Duration),
+}
+
+/// Strict replay: the next action is the tape's next decision, which must
+/// apply to the current ready set. `Ok(None)` is a deadlock that the recorded
+/// run reached too (the tape ended with nothing ready and no timer).
+fn scripted(state: &mut State) -> Result<Option<Action>, String> {
+    let State {
+        script,
+        ready,
+        timers,
+        ..
+    } = state;
+    let script = script.as_mut().expect("strict replay without a script");
+    let at = script.pos;
+    let mut ids = ready.clone();
+    ids.sort_unstable();
+    let action = match script.decisions.get(at).copied() {
+        None if ready.is_empty() && timers.is_empty() => return Ok(None),
+        None => {
+            return Err(format!(
+                "the tape ended after {at} decisions but the run continues (ready: {ids:?})"
+            ))
+        }
+        Some(Decision::Fire(deadline)) => Action::Fire(deadline),
+        Some(_) if ready.is_empty() => {
+            return Err(format!(
+                "decision {at} polls a task but none is ready (the recorded run had one ready)"
+            ))
+        }
+        Some(Decision::Canonical) => Action::Poll(canonical(ready)),
+        Some(Decision::Poll(id)) => match ready.iter().position(|r| *r == id) {
+            Some(index) if index != canonical(ready) => Action::Poll(index),
+            _ => {
+                return Err(format!(
+                    "decision {at} polls task {id} as a non-canonical choice, but the ready \
+                     tasks are {ids:?}"
+                ))
+            }
+        },
+    };
+    script.pos += 1;
+    Ok(Some(action))
 }
 
 /// Index of the ready task with the smallest id.
@@ -258,23 +343,28 @@ fn canonical(ready: &[u64]) -> usize {
         .map_or(0, |(index, _)| index)
 }
 
-/// Pick the index of the next ready task: from the replay script while it
-/// lasts (canonical when a scripted task is not ready, or past its end),
-/// otherwise from the seeded generator.
+/// Pick the index of the next ready task: from a permissive replay script
+/// while it lasts (canonical when a scripted task is not ready, or past its
+/// end; its clock jumps are skipped), otherwise from the seeded generator.
 fn choose(state: &mut State) -> usize {
     let State {
         script, ready, rng, ..
     } = state;
     match script {
         Some(script) => {
-            let pick = script.picks.get(script.pos).copied().flatten();
+            while let Some(Decision::Fire(_)) = script.decisions.get(script.pos) {
+                script.pos += 1;
+            }
+            let pick = script.decisions.get(script.pos).copied();
             script.pos += 1;
             match pick {
-                Some(id) => ready.iter().position(|r| *r == id).unwrap_or_else(|| {
-                    script.misses += 1;
-                    canonical(ready)
-                }),
-                None => canonical(ready),
+                Some(Decision::Poll(id)) => {
+                    ready.iter().position(|r| *r == id).unwrap_or_else(|| {
+                        script.misses += 1;
+                        canonical(ready)
+                    })
+                }
+                _ => canonical(ready),
             }
         }
         None => by_rank(ready, (splitmix(rng) % ready.len() as u64) as usize),
@@ -284,7 +374,6 @@ fn choose(state: &mut State) -> usize {
 struct Shared {
     owner: ThreadId,
     max_steps: u64,
-    spin_limit: u64,
     state: Mutex<State>,
     /// Driverless Tokio runtime every poll runs inside (see the module docs),
     /// built on the first poll so a replay can still choose its seed.
@@ -309,11 +398,12 @@ impl Shared {
             max_steps,
             tokio: Mutex::new(None),
             watch: watchdog::Watch::register(seed),
-            spin_limit: std::env::var("SPAWNED_SIM_SPIN")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(DEFAULT_SPIN_LIMIT),
             state: Mutex::new(State {
+                spin_limit: std::env::var("SPAWNED_SIM_SPIN")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(DEFAULT_SPIN_LIMIT),
+                unfired: 0,
                 seed,
                 rng: seed,
                 now: Duration::ZERO,
@@ -473,60 +563,91 @@ impl Shared {
         loop {
             self.check_leaks();
             let mut state = lock(&self.state);
-            let starving = state.spin >= self.spin_limit && !state.timers.is_empty();
-            if !state.ready.is_empty() && !starving {
-                state.spin += 1;
-                let index = choose(&mut state);
-                let canonical = index == canonical(&state.ready);
-                let id = state.ready.swap_remove(index);
-                if let Some(tape) = &mut state.tape {
-                    tape.push(if canonical {
-                        Decision::Canonical
-                    } else {
-                        Decision::Poll(id)
-                    });
+            let strict = matches!(&state.script, Some(s) if s.mode == ReplayMode::Strict);
+            let action = if strict {
+                match scripted(&mut state) {
+                    Ok(action) => action,
+                    Err(reason) => {
+                        let (seed, now) = (state.seed, state.now);
+                        drop(state);
+                        panic!(
+                            "spawned_sim: replay diverged: {reason} (seed {seed}, virtual time {now:?})"
+                        );
+                    }
                 }
-                state.queued.remove(&id);
-                state.steps += 1;
-                let now = state.now;
-                state.hash = (state.hash ^ id).wrapping_mul(0x0100_0000_01b3);
-                state.hash = (state.hash ^ now.as_nanos() as u64).wrapping_mul(0x0100_0000_01b3);
-                if let Some(trace) = &mut state.trace {
-                    trace.push((id, now));
-                }
-                if state.steps > self.max_steps {
-                    let (seed, steps) = (state.seed, state.steps);
-                    drop(state);
-                    panic!(
-                        "spawned_sim: livelock: {steps} polls without finishing (seed {seed}); \
-                         raise SPAWNED_SIM_MAX_STEPS if this is expected"
-                    );
-                }
-                return Some(id);
-            }
-            let (earliest, _) = *state.timers.keys().next()?;
-            // Idle: jump to the earliest timer. Starving (tasks still ready):
-            // creep forward by one quantum, as wall time would under a spin.
-            let deadline = if starving {
-                earliest.min(state.now + SPIN_QUANTUM)
             } else {
-                earliest
-            };
-            state.spin = 0;
-            state.now = state.now.max(deadline);
-            if let Some(tape) = &mut state.tape {
-                tape.push(Decision::Fire(deadline));
-            }
-            let mut due = Vec::new();
-            while let Some(entry) = state.timers.first_entry() {
-                if entry.key().0 > deadline {
-                    break;
+                let starving = state.spin >= state.spin_limit && !state.timers.is_empty();
+                if !state.ready.is_empty() && !starving {
+                    Some(Action::Poll(choose(&mut state)))
+                } else if let Some(&(earliest, _)) = state.timers.keys().next() {
+                    // Idle: jump to the earliest timer. Starving (tasks still
+                    // ready): creep forward by one quantum, as wall time would
+                    // under a spin, until creeping has fired nothing for
+                    // FAST_FORWARD_CREEPS quanta; then jump.
+                    let creeping =
+                        state.unfired < state.spin_limit.saturating_mul(FAST_FORWARD_CREEPS);
+                    Some(Action::Fire(if starving && creeping {
+                        earliest.min(state.now + SPIN_QUANTUM)
+                    } else {
+                        earliest
+                    }))
+                } else {
+                    None
                 }
-                due.push(entry.remove());
-            }
-            drop(state);
-            for waker in due {
-                waker.wake();
+            };
+            match action? {
+                Action::Poll(index) => {
+                    state.spin += 1;
+                    state.unfired += 1;
+                    let canonical = index == canonical(&state.ready);
+                    let id = state.ready.swap_remove(index);
+                    if let Some(tape) = &mut state.tape {
+                        tape.push(if canonical {
+                            Decision::Canonical
+                        } else {
+                            Decision::Poll(id)
+                        });
+                    }
+                    state.queued.remove(&id);
+                    state.steps += 1;
+                    let now = state.now;
+                    state.hash = (state.hash ^ id).wrapping_mul(0x0100_0000_01b3);
+                    state.hash =
+                        (state.hash ^ now.as_nanos() as u64).wrapping_mul(0x0100_0000_01b3);
+                    if let Some(trace) = &mut state.trace {
+                        trace.push((id, now));
+                    }
+                    if state.steps > self.max_steps {
+                        let (seed, steps) = (state.seed, state.steps);
+                        drop(state);
+                        panic!(
+                            "spawned_sim: livelock: {steps} polls without finishing (seed {seed}); \
+                             raise SPAWNED_SIM_MAX_STEPS if this is expected"
+                        );
+                    }
+                    return Some(id);
+                }
+                Action::Fire(deadline) => {
+                    state.spin = 0;
+                    state.now = state.now.max(deadline);
+                    if let Some(tape) = &mut state.tape {
+                        tape.push(Decision::Fire(deadline));
+                    }
+                    let mut due = Vec::new();
+                    while let Some(entry) = state.timers.first_entry() {
+                        if entry.key().0 > deadline {
+                            break;
+                        }
+                        due.push(entry.remove());
+                    }
+                    if !due.is_empty() {
+                        state.unfired = 0;
+                    }
+                    drop(state);
+                    for waker in due {
+                        waker.wake();
+                    }
+                }
             }
         }
     }
@@ -852,19 +973,35 @@ impl Runtime {
         let state = lock(&self.handle.shared.state);
         Tape {
             seed: state.seed,
+            spin: Some(state.spin_limit),
             decisions: state.tape.clone().unwrap_or_default(),
         }
     }
-    /// Choose tasks from `tape` instead of the seeded generator. A scripted
-    /// task that is not ready, and every poll past the tape's end, takes the
-    /// canonical choice (smallest ready id); [`Stats::tape_misses`] counts the
-    /// former.
+    /// Reproduce the run recorded in `tape` exactly ([`ReplayMode::Strict`]):
+    /// call before the first `block_on`. Tokio's RNG is seeded from the tape's
+    /// seed, and any departure from the tape fails the run with a
+    /// `spawned_sim: replay diverged` panic.
     pub fn replay(&self, tape: &Tape) {
-        lock(&self.handle.shared.state).script = Some(Script {
-            picks: tape.picks(),
+        self.replay_with(tape, ReplayMode::Strict);
+    }
+    /// Follow `tape` in the given mode; see [`ReplayMode`].
+    pub fn replay_with(&self, tape: &Tape, mode: ReplayMode) {
+        let mut state = lock(&self.handle.shared.state);
+        state.tokio_seed = tape.seed;
+        if let Some(spin) = tape.spin {
+            state.spin_limit = spin;
+        }
+        state.script = Some(Script {
+            decisions: tape.decisions.clone(),
             pos: 0,
+            mode,
             misses: 0,
         });
+    }
+    /// Busy polls after which virtual time creeps (`SPAWNED_SIM_SPIN`); a
+    /// replayed tape sets the recorded value.
+    pub fn set_spin_limit(&self, polls: u64) {
+        lock(&self.handle.shared.state).spin_limit = polls.max(1);
     }
     pub fn stats(&self) -> Stats {
         let state = lock(&self.handle.shared.state);
@@ -876,6 +1013,10 @@ impl Runtime {
             tasks: state.tasks.len(),
             ready: state.ready.len(),
             tape_misses: state.script.as_ref().map_or(0, |s| s.misses),
+            tape_left: state
+                .script
+                .as_ref()
+                .map_or(0, |s| s.decisions.len().saturating_sub(s.pos)),
         }
     }
 }
@@ -907,8 +1048,10 @@ pub struct Stats {
     /// Tasks waiting to be polled (0 between `block_on` calls unless a
     /// spawned task is runnable).
     pub ready: usize,
-    /// Replay only: scripted picks whose task was not ready.
+    /// Permissive replay only: scripted picks whose task was not ready.
     pub tape_misses: u64,
+    /// Replay only: tape decisions not (yet) used.
+    pub tape_left: usize,
 }
 
 /// The handle used by execution groups and the system control runtime: the
@@ -1383,11 +1526,18 @@ pub async fn ctrl_c() {
 /// not by generator draws, so a schedule survives code changes that shift how
 /// many random numbers a run consumes.
 ///
-/// Text form, one decision per line: `c` (canonical: smallest ready id),
-/// `p <task id>`, `t <virtual nanos>` (timers fired; informational on replay).
+/// Text form (`# spawned-sim tape v2`): a header with `seed <n>` and
+/// `spin <polls>` (the spin limit the run used), then one decision per line:
+/// `c` (canonical: smallest ready id), `p <task id>`, `t <virtual nanos>`
+/// (the clock jumped there and fired the timers due). A strict replay
+/// follows every line, clock jumps included. Version 1 tapes (no `spin`)
+/// still load.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Tape {
     pub seed: u64,
+    /// Spin limit of the recorded run (`SPAWNED_SIM_SPIN`); `None` for a v1
+    /// tape, which replays with the replaying process's limit.
+    pub spin: Option<u64>,
     pub decisions: Vec<Decision>,
 }
 
@@ -1406,7 +1556,7 @@ impl Tape {
             .filter(|d| !matches!(d, Decision::Fire(_)))
             .count()
     }
-    pub(crate) fn picks(&self) -> Vec<Option<u64>> {
+    fn picks(&self) -> Vec<Option<u64>> {
         self.decisions
             .iter()
             .filter_map(|d| match d {
@@ -1417,7 +1567,10 @@ impl Tape {
             .collect()
     }
     pub fn to_text(&self) -> String {
-        let mut out = format!("# spawned-sim tape v1\nseed {}\n", self.seed);
+        let mut out = format!("# spawned-sim tape v2\nseed {}\n", self.seed);
+        if let Some(spin) = self.spin {
+            out.push_str(&format!("spin {spin}\n"));
+        }
         for d in &self.decisions {
             match d {
                 Decision::Canonical => out.push_str("c\n"),
@@ -1442,11 +1595,20 @@ impl Tape {
             };
             match op {
                 "seed" => tape.seed = number()?,
+                "spin" => tape.spin = Some(number()?),
                 "c" => tape.decisions.push(Decision::Canonical),
                 "p" => tape.decisions.push(Decision::Poll(number()?)),
-                "t" => tape
-                    .decisions
-                    .push(Decision::Fire(Duration::from_nanos(number()?))),
+                "t" => {
+                    // Written from `Duration::as_nanos`, a u128.
+                    let nanos = arg
+                        .trim()
+                        .parse::<u128>()
+                        .map_err(|e| format!("tape line {}: {e}: {line:?}", n + 1))?;
+                    let secs = u64::try_from(nanos / 1_000_000_000)
+                        .map_err(|e| format!("tape line {}: {e}: {line:?}", n + 1))?;
+                    let at = Duration::new(secs, (nanos % 1_000_000_000) as u32);
+                    tape.decisions.push(Decision::Fire(at));
+                }
                 _ => return Err(format!("tape line {}: unknown entry {line:?}", n + 1)),
             }
         }
@@ -1486,23 +1648,45 @@ fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
 }
 
 /// Run `body(seed)` in a fresh simulation, recording its tape; with
-/// `script`, schedule from that tape instead of the seed's generator.
+/// `script`, reproduce that tape exactly ([`ReplayMode::Strict`]) instead of
+/// scheduling from the seed's generator.
 pub fn run_once<F, Fut>(seed: u64, script: Option<&Tape>, body: &F) -> Outcome
+where
+    F: Fn(u64) -> Fut,
+    Fut: Future<Output = ()>,
+{
+    run_with(seed, script.map(|tape| (tape, ReplayMode::Strict)), body)
+}
+
+/// [`run_once`] with the replay mode chosen.
+pub fn run_with<F, Fut>(seed: u64, script: Option<(&Tape, ReplayMode)>, body: &F) -> Outcome
 where
     F: Fn(u64) -> Fut,
     Fut: Future<Output = ()>,
 {
     let rt = Runtime::with_seed(seed);
     rt.record_tape();
-    if let Some(script) = script {
-        rt.replay(script);
+    let strict = matches!(script, Some((_, ReplayMode::Strict)));
+    if let Some((tape, mode)) = script {
+        rt.replay_with(tape, mode);
     }
     let result = catch_unwind(AssertUnwindSafe(|| rt.block_on(body(seed))));
     let tape = rt.tape();
     let stats = rt.stats();
-    let dropped = catch_unwind(AssertUnwindSafe(move || drop(rt)));
+    // Drain explicitly: a task that kept its own `Runtime` handle would
+    // otherwise keep the world (and every parked task) alive.
+    let shared = rt.handle.shared.clone();
+    let dropped = catch_unwind(AssertUnwindSafe(move || {
+        shared.drain();
+        drop(rt)
+    }));
     let failure = match (result, dropped) {
         (Err(payload), _) | (Ok(()), Err(payload)) => Some(panic_message(&*payload)),
+        (Ok(()), Ok(())) if strict && stats.tape_left > 0 => Some(format!(
+            "spawned_sim: replay diverged: the run finished with {} of {} tape decisions unused",
+            stats.tape_left,
+            tape.decisions.len() + stats.tape_left
+        )),
         (Ok(()), Ok(())) => None,
     };
     Outcome {
@@ -1537,9 +1721,10 @@ fn quietly<R>(f: impl FnOnce() -> R) -> R {
     f()
 }
 
-fn script_tape(seed: u64, picks: &[Option<u64>]) -> Tape {
+fn script_tape(seed: u64, spin: Option<u64>, picks: &[Option<u64>]) -> Tape {
     Tape {
         seed,
+        spin,
         decisions: picks
             .iter()
             .map(|p| p.map_or(Decision::Canonical, Decision::Poll))
@@ -1551,8 +1736,11 @@ fn script_tape(seed: u64, picks: &[Option<u64>]) -> Tape {
 /// smallest ready id) while `body` keeps failing with exactly the same panic
 /// message (a looser match can drift to a different bug):
 /// first the shortest scripted prefix (the rest canonical), then removing
-/// non-canonical picks in halving chunks. Spends at most `budget` runs and
-/// returns the smallest failing tape found and the runs spent.
+/// non-canonical picks in halving chunks. Candidates run in
+/// [`ReplayMode::Permissive`]; a candidate is kept only if its recorded tape
+/// then fails the same way in a strict replay, so the result always
+/// reproduces. Spends at most `budget` runs (both kinds) and returns the
+/// smallest failing tape found and the runs spent.
 pub fn shrink<F, Fut>(failing: &Tape, failure: &str, body: &F, budget: usize) -> (Tape, usize)
 where
     F: Fn(u64) -> Fut,
@@ -1565,11 +1753,14 @@ where
             return None;
         }
         runs.set(runs.get() + 1);
-        let outcome = quietly(|| run_once(seed, Some(&script_tape(seed, picks)), body));
-        outcome
-            .failure
-            .filter(|f| f == failure)
-            .map(|_| outcome.tape)
+        let candidate = script_tape(seed, failing.spin, picks);
+        let outcome = quietly(|| run_with(seed, Some((&candidate, ReplayMode::Permissive)), body));
+        if outcome.failure.as_deref() != Some(failure) {
+            return None;
+        }
+        runs.set(runs.get() + 1);
+        let check = quietly(|| run_once(seed, Some(&outcome.tape), body));
+        (check.failure.as_deref() == Some(failure)).then_some(outcome.tape)
     };
     let mut best = failing.clone();
 

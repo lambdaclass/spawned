@@ -123,15 +123,26 @@ impl SimTest {
     {
         use super::sim::{run_once, shrink, Tape};
         let (name, command) = self.locate();
-        let replay = |prefix: &str| format!("{prefix} RUSTFLAGS=\"--cfg spawned_sim\" {command}");
+        // Scheduling settings that change what a seed does travel with the
+        // replay command (a tape records its own).
+        let settings: String = ["SPAWNED_SIM_SPIN", "SPAWNED_SIM_MAX_STEPS"]
+            .iter()
+            .filter_map(|key| std::env::var(key).ok().map(|v| format!("{key}={v} ")))
+            .collect();
+        let replay = |prefix: &str| {
+            format!(
+                "{settings}{prefix} RUSTFLAGS=\"--cfg spawned_sim --cfg tokio_unstable\" {command}"
+            )
+        };
 
         if let Ok(path) = std::env::var("SPAWNED_SIM_TAPE") {
             let tape = Tape::load(path.as_ref())
                 .unwrap_or_else(|e| panic!("spawned_sim: cannot load tape {path}: {e}"));
             let outcome = run_once(tape.seed, Some(&tape), &body);
+            // Strict: a tape that no longer applies fails as `replay diverged`.
             eprintln!(
-                "spawned_sim: `{name}` replayed tape {path} (seed {}, {} polls, {} scripted picks not ready)",
-                tape.seed, outcome.stats.steps, outcome.stats.tape_misses
+                "spawned_sim: `{name}` replayed tape {path} (seed {}, {} polls)",
+                tape.seed, outcome.stats.steps
             );
             if let Some(failure) = outcome.failure {
                 panic!("spawned_sim: `{name}` failed replaying tape {path}: {failure}");
@@ -183,10 +194,11 @@ impl SimTest {
             if budget > 0 {
                 let (small, runs) = shrink(&outcome.tape, &failure, &body, budget);
                 let min = dir.join(format!("{stem}-seed{seed}.min.tape"));
-                if small.deviations() < outcome.tape.deviations() && small.save(&min).is_ok() {
+                if shrunk(&small, &outcome.tape) && small.save(&min).is_ok() {
                     report.push_str(&format!(
-                        "  shrunk tape: {} ({} non-canonical after {runs} runs)\n  replay:      {}\n",
+                        "  shrunk tape: {} ({} polls, {} non-canonical after {runs} runs)\n  replay:      {}\n",
                         min.display(),
+                        small.polls(),
                         small.deviations(),
                         replay(&format!("SPAWNED_SIM_TAPE={}", min.display())),
                     ));
@@ -195,5 +207,33 @@ impl SimTest {
             eprintln!("{report}");
             panic!("spawned_sim: `{name}` failed with seed {seed}: {failure}");
         }
+    }
+}
+
+/// A shrunk tape is worth writing if it has fewer non-canonical picks or is
+/// shorter (prefix bisection can shorten a tape without removing a pick).
+#[cfg(spawned_sim)]
+fn shrunk(small: &super::sim::Tape, original: &super::sim::Tape) -> bool {
+    small.deviations() < original.deviations() || small.decisions.len() < original.decisions.len()
+}
+
+#[cfg(all(test, spawned_sim))]
+mod tests {
+    use super::super::sim::{Decision, Tape};
+    use super::shrunk;
+
+    /// agy L1: a shorter tape with as many non-canonical picks is still a
+    /// smaller reproduction.
+    #[test]
+    fn shorter_tape_with_equal_deviations_counts_as_shrunk() {
+        let tape = |n: usize| Tape {
+            seed: 1,
+            spin: None,
+            decisions: std::iter::once(Decision::Poll(3))
+                .chain(std::iter::repeat_n(Decision::Canonical, n))
+                .collect(),
+        };
+        assert!(shrunk(&tape(2), &tape(9)));
+        assert!(!shrunk(&tape(9), &tape(9)));
     }
 }
