@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.1 — 2026-11-10
+
 - Contain tracing subscriber panics in caught lifecycle-panic diagnostics and
   supervision restart events. Preserve the original actor failure, run shutdown
   hooks, and allow replacement generations to start. Enable the #217 strict
@@ -11,8 +13,7 @@
 - Isolate the linked-delivery panic regression in a subprocess and use zero-sized
   secondary panic payloads. This avoids two intentional defensive leaks in the
   test without disabling LeakSanitizer or suppressing other allocations.
-- Correct the release history: `spawned-test` merged after the v0.7.0 tag and
-  is prepared for its first registry release with 0.7.1.
+- `spawned-test` is first published with v0.7.1; it merged after the v0.7.0 tag.
 - `spawned-test`, a new dev-dependency crate (`testing/`) for testing actors in
   both modes. `Mock` implements `Handler<M>` for every message, so
   `ActorRef<Mock>` satisfies any `#[protocol]` and converts to its `XRef`;

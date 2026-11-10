@@ -3,14 +3,14 @@
 Upgrade notes per release, newest first. The [CHANGELOG](../CHANGELOG.md) lists
 every change; this guide covers what you need to edit when upgrading.
 
-## 0.7.1 (candidate)
+## 0.7.1
 
 `ActorId` Display now prints a bare decimal number, for example `3` instead of
 `ActorId(3)`. Debug (`{:?}`) retains the tagged `ActorId(3)` representation.
 
-Upgrade all Spawned dependencies together when adopting 0.7.1. This candidate
-also prepares `spawned-test` for publication as a dev-dependency. Existing default-feature and Tokio-free builds retain
-their feature selection.
+Upgrade all Spawned dependencies together when adopting 0.7.1. This release
+also introduces `spawned-test` as a published dev-dependency. Existing
+default-feature and Tokio-free builds retain their feature selection.
 
 A Kill received over a link is now trappable. Only a direct Kill (for example,
 `child.stop_with_reason(ExitReason::Kill)`) bypasses `trap_exit`; this prevents a

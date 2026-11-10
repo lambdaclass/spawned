@@ -1,6 +1,6 @@
 # Spawned roadmap
 
-Updated 2026-11-09. This is the single planning document: the phases below give
+Updated 2026-11-10. This is the single planning document: the phases below give
 the implementation order in brief, and the [ranked backlog](#ranked-backlog)
 holds the detail, tradeoffs and client evidence behind it. It is an order, not
 a release schedule, and no speculative feature is promised by a date.
@@ -26,8 +26,10 @@ handlers and the existing default behavior. New policies are explicit and opt-in
   See the [guide](docs/GUIDE.md#execution-groups-and-supervision) and the
   [design contract](docs/design/execution-groups-supervision.md).
 
-The v0.7.1 fix branch is validating canary shutdown, destructor-panic and restart
-budget fixes. Already-erased protocol timeout configuration remains a separate
+- **v0.7.1:** canary shutdown, destructor/subscriber-panic containment and restart
+  budget fixes, compact async handles, and the first published `spawned-test` kit.
+
+Already-erased protocol timeout configuration remains a separate
 API follow-up: configure the concrete handle before `to_x_ref()` today. Native
 calls block before returning a Response, so a generic wrapper around an already
 returned response cannot correctly apply that timeout. Preserve handwritten
