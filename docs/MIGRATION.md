@@ -5,6 +5,13 @@ every change; this guide covers what you need to edit when upgrading.
 
 ## Unreleased
 
+### Deferred replies (rank 11, targets 0.8, in progress)
+
+This is a breaking release. The notes below grow with the implementation:
+
+- `ActorError` is `#[non_exhaustive]` and gains `ReplyDropped` and
+  `Overloaded`; add a wildcard arm to exhaustive matches.
+
 A Transient child's replacement (any generation after the child was first
 ready) that stops `Normal` or `Shutdown` from `started()`, or is shut down
 before readiness, no longer fails its supervisor. It is a failed restart,

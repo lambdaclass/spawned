@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Breaking (0.8), in progress:** deferred replies and pipe-to-self
+  (ROADMAP rank 11), implementing
+  [the design](docs/design/deferred-replies.md). Every request now has a reply
+  slot: one packed atomic word (state, token, registry and running-job count)
+  whose transitions are checked with Loom (`reply_slot_loom`). See
+  [migration](docs/MIGRATION.md#unreleased).
+
 - Add the `stack_budget` test suite: nested request chains (async group,
   thread group, ambient runtime, threads mode), supervisor start/restart/
   shutdown and `ActorSystem::shutdown` run in child processes under a
