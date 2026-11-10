@@ -1336,7 +1336,7 @@ mod tests {
         target.join();
         let downs = crate::test_wait::wait_for(
             || watcher.request(GetDowns),
-            |downs| downs.as_ref().map_or(true, |d| d.len() >= 1),
+            |downs| downs.as_ref().map_or(true, |d| !d.is_empty()),
         )
         .unwrap();
         assert_eq!(downs.len(), 1);
@@ -1355,7 +1355,7 @@ mod tests {
         let _ = watcher.request(StartMonitor(target_handle)).unwrap();
         let downs = crate::test_wait::wait_for(
             || watcher.request(GetDowns),
-            |downs| downs.as_ref().map_or(true, |d| d.len() >= 1),
+            |downs| downs.as_ref().map_or(true, |d| !d.is_empty()),
         )
         .unwrap();
         assert_eq!(downs.len(), 1);
@@ -1426,7 +1426,7 @@ mod tests {
 
         let downs = crate::test_wait::wait_for(
             || watcher.request(GetDowns),
-            |downs| downs.as_ref().map_or(true, |d| d.len() >= 1),
+            |downs| downs.as_ref().map_or(true, |d| !d.is_empty()),
         )
         .unwrap();
         assert_eq!(downs.len(), 1);

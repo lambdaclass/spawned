@@ -2229,7 +2229,7 @@ mod tests {
 
             let downs = crate::test_wait::wait_for_async(
                 || watcher.request(GetDowns),
-                |downs| downs.as_ref().map_or(true, |d| d.len() >= 1),
+                |downs| downs.as_ref().map_or(true, |d| !d.is_empty()),
             )
             .await
             .unwrap();
@@ -2257,7 +2257,7 @@ mod tests {
 
             let downs = crate::test_wait::wait_for_async(
                 || watcher.request(GetDowns),
-                |downs| downs.as_ref().map_or(true, |d| d.len() >= 1),
+                |downs| downs.as_ref().map_or(true, |d| !d.is_empty()),
             )
             .await
             .unwrap();
@@ -2400,7 +2400,7 @@ mod tests {
 
             let downs = crate::test_wait::wait_for_async(
                 || watcher.request(GetDowns),
-                |downs| downs.as_ref().map_or(true, |d| d.len() >= 1),
+                |downs| downs.as_ref().map_or(true, |d| !d.is_empty()),
             )
             .await
             .unwrap();
@@ -2607,7 +2607,7 @@ mod tests {
 
             let exits = crate::test_wait::wait_for_async(
                 || observer.request(GetExits),
-                |exits| exits.as_ref().map_or(true, |e| e.len() >= 1),
+                |exits| exits.as_ref().map_or(true, |e| !e.is_empty()),
             )
             .await
             .unwrap();
@@ -2731,7 +2731,7 @@ mod tests {
             b.wait_exit().await;
             let exits = crate::test_wait::wait_for_async(
                 || c.request(GetExits),
-                |exits| exits.as_ref().map_or(true, |e| e.len() >= 1),
+                |exits| exits.as_ref().map_or(true, |e| !e.is_empty()),
             )
             .await
             .unwrap();
