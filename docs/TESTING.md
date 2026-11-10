@@ -369,7 +369,11 @@ and monitor workloads), `dedicated_runtime`, `delivery_simulation`,
 `mailbox_drop_panic`, `nested_supervision`, `panic_safety`,
 `process_failures`, `protocol_compile`, `request_histories`,
 `resource_cleanup`, `shutdown_publication`, `startup_admission`,
-`supervision_strategies` and `supervision`. The `testing` crate's kits and the
+`supervision_strategies` and `supervision`. `leaks` replaces its excluded
+async checks with a `sim_leaks` module (actor, cycle, timer, monitor-waiter,
+system-actor and helper releases, counted from the simulator's task table over
+8 seeds), and `cross_backend` runs each async placement over 4 simulated seeds
+and compares all of them. The `testing` crate's kits and the
 threads-mode tests run their native threads unsimulated even in a simulator
 build.
 

@@ -531,3 +531,184 @@ mod async_leaks {
         released("parked helper payload", &helper_weak);
     }
 }
+
+/// The async leak checks that do not need OS threads or Tokio's task
+/// metrics, on the simulator over seeds `0..SPAWNED_SIM_SEEDS` (default 8):
+/// live tasks are counted from the simulator's own task table and every
+/// release is awaited inside the run (nothing runs once `block_on` returns).
+#[cfg(all(spawned_sim, feature = "async"))]
+mod sim_leaks {
+    use super::*;
+    use spawned_concurrency::{
+        system::ActorSystem,
+        tasks::{self, Actor, ActorStart, Context, Handler},
+        Down,
+    };
+    use spawned_rt::tasks::{sim, Runtime};
+
+    fn seeds() -> std::ops::Range<u64> {
+        0..std::env::var("SPAWNED_SIM_SEEDS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(8)
+    }
+
+    /// Yield until `done`, failing after 100,000 scheduling points.
+    async fn settle(what: &str, mut done: impl FnMut() -> bool) {
+        for _ in 0..100_000 {
+            if done() {
+                return;
+            }
+            sim::yield_now().await;
+        }
+        panic!("leak: {what}");
+    }
+
+    struct Probe {
+        _state: Arc<()>,
+    }
+    impl Actor for Probe {}
+    impl Handler<Ping> for Probe {
+        async fn handle(&mut self, _: Ping, _: &Context<Self>) {}
+    }
+    impl Handler<Down> for Probe {
+        async fn handle(&mut self, _: Down, _: &Context<Self>) {}
+    }
+
+    struct A {
+        _state: Arc<()>,
+        peer: Option<tasks::ActorRef<B>>,
+    }
+    struct B {
+        _state: Arc<()>,
+        peer: Option<tasks::ActorRef<A>>,
+    }
+    impl Actor for A {}
+    impl Actor for B {}
+    impl Handler<SetPeer<tasks::ActorRef<B>>> for A {
+        async fn handle(&mut self, msg: SetPeer<tasks::ActorRef<B>>, _: &Context<Self>) {
+            self.peer = Some(msg.0);
+        }
+    }
+    impl Handler<SetPeer<tasks::ActorRef<A>>> for B {
+        async fn handle(&mut self, msg: SetPeer<tasks::ActorRef<A>>, _: &Context<Self>) {
+            self.peer = Some(msg.0);
+        }
+    }
+
+    #[test]
+    fn stopped_actors_cycles_and_timers_release_tasks_and_state() {
+        for seed in seeds() {
+            let rt = Runtime::with_seed(seed);
+            let (state, sa, sb) = (Arc::new(()), Arc::new(()), Arc::new(()));
+            let weak = [&state, &sa, &sb].map(Arc::downgrade);
+            rt.block_on(async {
+                let baseline = rt.stats().tasks;
+                let probe = Probe { _state: state }.start();
+                probe.request(Ping).await.unwrap();
+                let timer = tasks::send_interval(Duration::from_secs(3600), probe.context(), Ping);
+                let a = A {
+                    _state: sa,
+                    peer: None,
+                }
+                .start();
+                let b = B {
+                    _state: sb,
+                    peer: None,
+                }
+                .start();
+                a.request(SetPeer(b.clone())).await.unwrap();
+                b.request(SetPeer(a.clone())).await.unwrap();
+                a.context().link(&b.child_handle());
+                probe.context().stop();
+                a.context().stop();
+                b.context().stop();
+                probe.join().await;
+                a.join().await;
+                b.join().await;
+                drop((probe, timer, a, b));
+                settle(&format!("seed {seed}: actor state"), || {
+                    weak.iter().all(|w| w.strong_count() == 0)
+                })
+                .await;
+                settle(&format!("seed {seed}: simulated tasks"), || {
+                    rt.stats().tasks == baseline
+                })
+                .await;
+            });
+        }
+    }
+
+    #[test]
+    fn monitor_waiters_released_on_demonitor_and_exit() {
+        for seed in seeds() {
+            let rt = Runtime::with_seed(seed);
+            rt.block_on(async {
+                let owner = Probe {
+                    _state: Arc::new(()),
+                }
+                .start();
+                let target = Probe {
+                    _state: Arc::new(()),
+                }
+                .start();
+                owner.request(Ping).await.unwrap();
+                target.request(Ping).await.unwrap();
+                let baseline = rt.stats().tasks;
+                let monitor = owner.context().monitor(&target.child_handle());
+                owner.context().demonitor(monitor);
+                settle(&format!("seed {seed}: waiter after demonitor"), || {
+                    rt.stats().tasks == baseline
+                })
+                .await;
+                owner.context().monitor(&target.child_handle());
+                owner.context().monitor(&target.child_handle());
+                owner.context().stop();
+                owner.join().await;
+                // The owner's own task is gone too.
+                settle(&format!("seed {seed}: waiters after owner exit"), || {
+                    rt.stats().tasks < baseline
+                })
+                .await;
+                target.context().stop();
+                target.join().await;
+            });
+        }
+    }
+
+    #[test]
+    fn system_actor_and_parked_helper_released_after_shutdown() {
+        for seed in seeds() {
+            let rt = Runtime::with_seed(seed);
+            let (state, helper) = (Arc::new(()), Arc::new(()));
+            let weak = [&state, &helper].map(Arc::downgrade);
+            let name = "leaks-sim-system-actor";
+            rt.block_on(async {
+                let system = ActorSystem::new().unwrap();
+                let group = system.async_group("leaks-sim", 1).unwrap();
+                let actor = Probe { _state: state }.start_on(&group).unwrap();
+                actor.request(Ping).await.unwrap();
+                actor.context().register_name(name).unwrap();
+                let _parked = actor
+                    .context()
+                    .spawn_helper(async move {
+                        let _payload = helper;
+                        futures::future::pending::<()>().await;
+                    })
+                    .unwrap();
+                assert!(system.shutdown(Duration::from_secs(5)).await.complete);
+                assert!(!actor.child_handle().is_alive());
+                drop(actor);
+                settle(
+                    &format!("seed {seed}: system actor state and helper"),
+                    || weak.iter().all(|w| w.strong_count() == 0),
+                )
+                .await;
+            });
+            assert!(
+                !registry::registered().iter().any(|n| n == name),
+                "seed {seed}: registry entry after shutdown"
+            );
+        }
+    }
+}

@@ -476,7 +476,9 @@ struct Env {
     started: Vec<ChildHandle>,
 }
 impl Env {
-    fn new(placement: Placement) -> Self {
+    /// `seed` picks the simulated schedule under `--cfg spawned_sim`; Tokio
+    /// ignores it.
+    fn new(placement: Placement, #[allow(unused_variables)] seed: u64) -> Self {
         #[cfg(not(spawned_sim))]
         let rt = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
@@ -484,7 +486,7 @@ impl Env {
             .build()
             .unwrap();
         #[cfg(spawned_sim)]
-        let rt = spawned_rt::tasks::Runtime::new().unwrap();
+        let rt = spawned_rt::tasks::Runtime::with_seed(seed);
         let (system, group) = if placement.managed() {
             let system = ActorSystem::new().unwrap();
             let group = match placement {
@@ -606,19 +608,37 @@ fn metamorphic<T: PartialEq + std::fmt::Debug>(
     placements: Vec<Placement>,
     mut workload: impl FnMut(&mut Env) -> T,
 ) -> T {
-    let mut baseline: Option<(Placement, T)> = None;
+    let mut baseline: Option<(Placement, u64, T)> = None;
     for placement in placements {
-        let mut env = Env::new(placement);
-        let outcome = workload(&mut env);
-        env.finish();
-        match &baseline {
-            None => baseline = Some((placement, outcome)),
-            Some((first, expected)) => {
-                assert_eq!(&outcome, expected, "{placement:?} diverged from {first:?}")
+        for seed in seeds() {
+            let mut env = Env::new(placement, seed);
+            let outcome = workload(&mut env);
+            env.finish();
+            match &baseline {
+                None => baseline = Some((placement, seed, outcome)),
+                Some((first, first_seed, expected)) => assert_eq!(
+                    &outcome, expected,
+                    "{placement:?} (seed {seed}) diverged from {first:?} (seed {first_seed})"
+                ),
             }
         }
     }
-    baseline.unwrap().1
+    baseline.unwrap().2
+}
+
+/// One run per placement on Tokio. Under `--cfg spawned_sim`, where only two
+/// async placements exist, each also runs over simulated schedules
+/// `0..SPAWNED_SIM_SEEDS` (default 4), so the comparison covers schedules
+/// as well as placements.
+fn seeds() -> std::ops::Range<u64> {
+    if cfg!(spawned_sim) {
+        0..std::env::var("SPAWNED_SIM_SEEDS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(4)
+    } else {
+        0..1
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1363,7 +1383,7 @@ fn ordered_system_shutdown_matches_thread_placement() {
         .run(
             &(0u32..4, 1u32..4, 0u32..4),
             |(before, sup_children, after)| {
-                let mut env = Env::new(Placement::GroupThread);
+                let mut env = Env::new(Placement::GroupThread, 0);
                 let outcome = shutdown_workload(&mut env, before, sup_children, after);
                 env.finish();
                 let mut order: Vec<u32> = (200..200 + after).rev().collect();
