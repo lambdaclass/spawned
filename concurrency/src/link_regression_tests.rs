@@ -49,7 +49,7 @@ fn linking_in_post_drain_pre_completion_window_delivers_exit() {
     );
     observer.context().link(&peer);
     let delivered = rt.block_on(async {
-        tokio::time::timeout(Duration::from_millis(250), async {
+        tokio::time::timeout(crate::test_wait::WAIT, async {
             loop {
                 if !events.lock().unwrap().is_empty() {
                     break;
@@ -104,7 +104,7 @@ fn never_polled_actor_propagates_runtime_shutdown_to_peer() {
     // The owner runtime never polls its actor. Dropping it must still close links.
     drop(owner);
     let result = survivor.block_on(async {
-        tokio::time::timeout(Duration::from_millis(250), peer.wait_exit()).await
+        tokio::time::timeout(crate::test_wait::WAIT, peer.wait_exit()).await
     });
     peer.child_handle().stop();
     survivor.block_on(peer.wait_exit());

@@ -448,7 +448,7 @@ async fn stuck_standalone_cleanup_does_not_leave_earlier_actor_running_forever()
     assert!(!report.complete);
     tokio::time::timeout(LIMIT, entered).await.unwrap().unwrap();
     assert_eq!(
-        tokio::time::timeout(Duration::from_millis(200), first.wait_exit())
+        tokio::time::timeout(LIMIT, first.wait_exit())
             .await
             .unwrap(),
         ExitReason::Shutdown

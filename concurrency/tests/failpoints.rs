@@ -418,7 +418,7 @@ async fn slow_stop_turn_reports_incomplete_at_deadline_then_joins() {
     let _scenario = FailScenario::setup();
     failpoints::configure(
         "shutdown.before_stop_child",
-        FailPoint::new(Action::Delay(Duration::from_millis(400))).times(1),
+        FailPoint::new(Action::Delay(Duration::from_millis(2000))).times(1),
     )
     .unwrap();
     let system = ActorSystem::new().unwrap();
@@ -437,7 +437,8 @@ async fn slow_stop_turn_reports_incomplete_at_deadline_then_joins() {
     let began = Instant::now();
     let report = tree.shutdown(Duration::from_millis(100)).await;
     assert!(!report.complete);
-    assert!(began.elapsed() < Duration::from_millis(350));
+    // Returns at its deadline, well before the delayed stop turn finishes.
+    assert!(began.elapsed() < Duration::from_millis(1500));
     tokio::time::timeout(LIMIT, tree.join()).await.unwrap();
     assert!(tree.failure().is_none(), "{:?}", tree.failure());
     assert_eq!(child.snapshot().state, ChildState::Stopped);

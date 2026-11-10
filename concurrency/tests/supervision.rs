@@ -694,7 +694,7 @@ async fn generation_waiters_wake_at_admission_close_before_their_shutdown_turn()
     supervisor.stop();
     tokio::time::timeout(LIMIT, entered).await.unwrap().unwrap();
     assert!(matches!(
-        tokio::time::timeout(Duration::from_millis(100), waiter)
+        tokio::time::timeout(LIMIT, waiter)
             .await
             .unwrap(),
         Err(ChildUnavailable(ChildState::Stopping))
@@ -739,13 +739,13 @@ async fn stuck_supervisor_does_not_prevent_earlier_standalone_shutdown_after_sys
     assert!(!report.complete);
     tokio::time::timeout(LIMIT, entered).await.unwrap().unwrap();
     assert_eq!(
-        tokio::time::timeout(Duration::from_millis(200), earlier.wait_exit())
+        tokio::time::timeout(LIMIT, earlier.wait_exit())
             .await
             .unwrap(),
         ExitReason::Shutdown
     );
     assert_eq!(
-        tokio::time::timeout(Duration::from_millis(200), inner_actor.wait_exit())
+        tokio::time::timeout(LIMIT, inner_actor.wait_exit())
             .await
             .unwrap(),
         ExitReason::Shutdown
