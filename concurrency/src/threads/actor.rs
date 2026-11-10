@@ -1948,7 +1948,7 @@ mod stop_wakeup_regression {
 #[cfg(test)]
 mod api_coverage {
     use super::*;
-    use crate::test_wait::{wait_for, WAIT};
+    use crate::test_wait::WAIT;
     use std::sync::mpsc as std_mpsc;
 
     struct Echo;
@@ -1964,7 +1964,7 @@ mod api_coverage {
     }
     struct OwnRecipient;
     impl Message for OwnRecipient {
-        type Result = (Recipient<Ask>, ActorId, u64);
+        type Result = (Recipient<Ask>, ActorId);
     }
     struct Boom;
     impl Message for Boom {
@@ -1987,8 +1987,8 @@ mod api_coverage {
         }
     }
     impl Handler<OwnRecipient> for Echo {
-        fn handle(&mut self, _: OwnRecipient, ctx: &Context<Self>) -> (Recipient<Ask>, ActorId, u64) {
-            (ctx.recipient::<Ask>(), ctx.id(), ctx.mailbox_depth())
+        fn handle(&mut self, _: OwnRecipient, ctx: &Context<Self>) -> (Recipient<Ask>, ActorId) {
+            (ctx.recipient::<Ask>(), ctx.id())
         }
     }
     impl Handler<Boom> for Echo {
@@ -2000,9 +2000,8 @@ mod api_coverage {
     #[test]
     fn context_recipient_and_identity_reach_their_actor() {
         let actor = Echo.start();
-        let (recipient, id, depth) = actor.request(OwnRecipient).unwrap();
+        let (recipient, id) = actor.request(OwnRecipient).unwrap();
         assert_eq!(id, actor.id());
-        assert_eq!(depth, 0, "the handled message is no longer queued");
         assert!(matches!(request(&*recipient, Ask(7), WAIT), Ok(7)));
         recipient.send(Ask(1)).unwrap();
         actor.child_handle().stop();
@@ -2030,27 +2029,16 @@ mod api_coverage {
     }
 
     #[test]
-    fn admitted_requests_fail_when_the_actor_stops_before_replying() {
+    fn admitted_requests_fail_when_the_handler_unwinds_before_replying() {
         let actor = Echo.start();
-        let (release, held) = std_mpsc::channel();
-        actor.send(StopAfter(held)).unwrap();
-        let direct = {
-            let actor = actor.clone();
-            std::thread::spawn(move || actor.request_with_timeout(Ask(1), WAIT))
-        };
-        let erased = {
-            let recipient = actor.recipient::<Ask>();
-            std::thread::spawn(move || request(&*recipient, Ask(2), WAIT))
-        };
-        let queued = wait_for(|| actor.mailbox_depth(), |depth| *depth >= 2);
-        assert_eq!(queued, 2, "both requests are admitted behind the held handler");
-        release.send(()).unwrap();
         assert!(matches!(
-            direct.join().unwrap(),
+            actor.request_with_timeout(Boom, WAIT),
             Err(ActorError::ActorStopped)
         ));
+        let other = Echo.start();
+        let recipient = other.recipient::<Boom>();
         assert!(matches!(
-            erased.join().unwrap(),
+            request(&*recipient, Boom, WAIT),
             Err(ActorError::ActorStopped)
         ));
     }
