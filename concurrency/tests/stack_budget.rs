@@ -326,18 +326,24 @@ mod threads_chain {
 // ---------------------------------------------------------------------------
 
 type Scenario = (&'static str, fn());
-fn scenarios() -> Vec<Scenario> {
-    let mut all: Vec<Scenario> = Vec::new();
-    #[cfg(feature = "async")]
-    {
-        all.push(("chain_async_group", || tasks_chain::chain_in_group(false)));
-        all.push(("chain_thread_group", || tasks_chain::chain_in_group(true)));
-        all.push(("chain_ambient", tasks_chain::chain_ambient));
-        all.push((
+#[cfg(feature = "async")]
+fn task_scenarios() -> Vec<Scenario> {
+    vec![
+        ("chain_async_group", || tasks_chain::chain_in_group(false)),
+        ("chain_thread_group", || tasks_chain::chain_in_group(true)),
+        ("chain_ambient", tasks_chain::chain_ambient),
+        (
             "supervisor_restart_shutdown",
             tasks_chain::supervisor_restart_shutdown,
-        ));
-    }
+        ),
+    ]
+}
+#[cfg(not(feature = "async"))]
+fn task_scenarios() -> Vec<Scenario> {
+    Vec::new()
+}
+fn scenarios() -> Vec<Scenario> {
+    let mut all = task_scenarios();
     all.push(("chain_threads", threads_chain::chain_threads));
     all
 }
