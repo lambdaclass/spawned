@@ -31,6 +31,7 @@ Usage of each feature is documented in the [guide](../docs/GUIDE.md).
 | Nested supervisors, OneForAll / RestForOne, v0.7 | [supervision_tree](capabilities/src/bin/supervision_tree.rs) | n/a |
 | Tokio-free dependency graph, protocols, lifecycle, monitors and links, v0.7 | n/a | [thread_only](thread_only/README.md) (isolated workspace) |
 | Actors on separate runtimes | [runtime_isolation](capabilities/src/bin/runtime_isolation.rs) | n/a |
+| Deferred replies and pipe-to-self (rank 11) | [deferred_replies](capabilities/src/bin/deferred_replies.rs): delegation with `pipe_reply`, CPU offload with a job deadline, requests by id in `PendingReplies`, waiters instead of polling, owner stop | tasks mode |
 | Request timeout outcomes | [timeout_outcomes](capabilities/src/bin/timeout_outcomes.rs), [protocol_timeouts](capabilities/src/bin/protocol_timeouts.rs) | [protocol_timeouts](capabilities/src/bin/protocol_timeouts.rs) |
 | Draining a finite batch before stop | [graceful_drain](capabilities/src/bin/graceful_drain.rs) | gap |
 | Byte-budgeted pipeline (application adapter) | [byte_budget_pipeline](capabilities/src/bin/byte_budget_pipeline.rs) | gap |

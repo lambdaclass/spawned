@@ -89,12 +89,19 @@ planned (rank 17).
 
 ## 3. Requests
 
-**R1. Three outcomes.** `request`, `request_with_timeout`, protocol calls and
+**R1. One terminal outcome.** Every request has a reply slot
+([deferred replies](deferred-replies.md) §1) that is discharged exactly once.
+`request`, `request_with_timeout`, protocol calls and
 `spawned::tasks::request` end in exactly one of `Ok(reply)`,
-`Err(ActorStopped)` (not accepted, or the reply sender was dropped: the actor
-stopped before replying, the handler panicked, or the request was still queued
-at stop) or `Err(RequestTimeout)`. A request racing shutdown gets its reply or
-`ActorStopped`; a slow teardown can still produce a timeout first.
+`Err(ActorStopped)` (not accepted, the handler panicked, the request was still
+queued at the owner's death, or a deferred token was open at death),
+`Err(RequestTimeout)` (the deadline fixed at send passed),
+`Err(ReplyDropped)` (the handler dropped the reply obligation unanswered) or
+`Err(Overloaded)` (`defer()` at `MAX_OUTSTANDING`, or the handler answered
+`overloaded()`). A request racing shutdown gets its reply or `ActorStopped`;
+a slow teardown can still produce a timeout first. `ActorStopped` from a
+deferred token is reported only at the owner's actual death, never while
+`stopped()` still runs.
 Checked by: [`actor_scenarios`][actor_scenarios], `src/tasks/actor.rs::request_timeout`,
 [`timeout_outcomes`][ex_timeout_outcomes] example.
 
@@ -102,11 +109,16 @@ Checked by: [`actor_scenarios`][actor_scenarios], `src/tasks/actor.rs::request_t
 only the caller that sent that request.
 Checked by: [`actor_scenarios::concurrent_producers_preserve_order_and_reply_identity`][actor_scenarios].
 
-**R3. Timeouts.** Default 5 s. Precedence: `with_request_timeout` handle,
-`#[request_timeout]` method attribute, `#[protocol(timeout)]`, 5 s. Send-only
-methods have no timeout. tasks: `request`-family futures enqueue on first poll
-and protocol methods enqueue when called; the timer starts at first poll.
-threads: the call blocks and the timer starts immediately.
+**R3. Timeouts.** Default 5 s, as `gen_server:call/2`; `request_raw` has the
+same default and `request_raw_until(msg, Deadline::Never)` waits without one.
+Precedence: `with_request_timeout` handle, `#[request_timeout]` method
+attribute, `#[protocol(timeout)]`, 5 s. Send-only methods have no timeout.
+The deadline is fixed when the request is sent (send time plus the timeout)
+and travels in the reply slot: there is one deadline, not a caller timer plus
+a server one. tasks: `request`-family futures enqueue on first poll and
+protocol methods enqueue when called; either way the deadline starts at the
+enqueue. threads: the call blocks. Expired requests are still dispatched (OTP);
+a late reply is dropped (`Delivery::Expired`).
 Checked by: [`protocol_timeouts`][protocol_timeouts],
 [`cancellation_safety::protocol_calls_are_cancel_safe_and_send_eagerly`][cancellation_safety],
 [`protocol_timeouts`][ex_protocol_timeouts] example (both modes).
@@ -117,11 +129,36 @@ or roll back effects. The caller cannot tell whether it ran.
 Checked by: [`cancellation_safety::request_family_is_cancel_safe`][cancellation_safety],
 [`request_histories`][request_histories] (timed-out operations are "pending").
 
-**R5. Handler panic.** A panic while handling a request drops its reply sender:
-the caller gets an error, not a reply, and the actor exits with `Panic`.
-Checked by: [`semantics_gaps`][semantics_gaps]`::{native,tasks}::panicking_request_handler_gives_the_caller_actor_stopped`
+**R5. Handler panic.** A panic while handling a request drops its reply
+obligation in the panicking turn: the drop is committed at the turn's end as
+`ActorStopped` (a turn that returns without answering gives `ReplyDropped`),
+and the actor exits with `Panic`.
+Checked by: [`deferred_replies`][deferred_replies]
+`::{tasks_mode::panicking_turn_answers_actor_stopped, threads_mode::panic_and_death_answer_actor_stopped}`,
+[`semantics_gaps`][semantics_gaps]`::{native,tasks}::panicking_request_handler_gives_the_caller_actor_stopped`
 (exactly `ActorStopped`, every backend, a managed group, `Recipient` and raw
 receivers), [`panic_safety`][panic_safety].
+
+**R6. Deferred replies.** A handler may answer later: `PendingReply::defer()`
+takes one of the instance's `MAX_OUTSTANDING` credits (or answers
+`Overloaded` at once) and returns a storable `ReplyTo`. The token is answered
+from a later turn, a job or `stopped()`; dropping it answers `ReplyDropped`
+between turns, is committed at the turn's end inside a turn, and answers
+`ActorStopped` while the owner exits. At the owner's death every open token
+becomes `ActorStopped`, wherever it is held. The owner's deadline heap expires
+deferred tokens (returning their credits) even when no caller polls. Callers
+and protocols cannot tell a deferred reply from an immediate one.
+Checked by: `reply_slot_loom` (every concurrent pair of the slot word),
+[`deferred_replies`][deferred_replies], `reply::registry::tests`.
+
+**R7. Pipe-to-self jobs.** `ctx.pipe*` runs work owned by the instance and
+delivers `done(outcome)` as one message in a later turn; a panic arrives as
+`JobError::Panicked`, a job deadline as `JobError::DeadlineExceeded` while the
+work keeps its credit. Messages of cancelled or replaced (keyed) jobs are
+fenced at dispatch; a job's emits stay FIFO with the terminal message last.
+Owner exit cancels every job; they are joined after death, bounded by the
+cleanup deadline, and reported as `unfinished_at_stop`.
+Checked by: [`deferred_jobs`][deferred_jobs].
 
 ## 4. Lifecycle
 
@@ -556,6 +593,8 @@ ignored by non-trapping peers (X3), and the Permanent/Transient/Temporary table 
 
 See the [ranked backlog](../../ROADMAP.md#ranked-backlog).
 
+[deferred_replies]: ../../concurrency/tests/deferred_replies.rs
+[deferred_jobs]: ../../concurrency/tests/deferred_jobs.rs
 [actor_scenarios]: ../../concurrency/tests/actor_scenarios.rs
 [cancellation_safety]: ../../concurrency/tests/cancellation_safety.rs
 [cohort_trace]: ../../concurrency/tests/cohort_trace.rs
