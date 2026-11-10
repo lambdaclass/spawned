@@ -20,6 +20,11 @@ fn check(name: &str, bytes: &[u8]) -> bool {
     }
     if let Some(failure) = run.failure {
         eprintln!("{name}: {failure}");
+        if let Some(dir) = std::env::var_os("SPAWNED_FUZZ_DUMP") {
+            let file = name.replace(|c: char| !c.is_ascii_alphanumeric(), "_");
+            let _ = std::fs::create_dir_all(&dir);
+            let _ = std::fs::write(std::path::Path::new(&dir).join(file), bytes);
+        }
         for d in last_details() {
             eprintln!("  {d}");
         }
