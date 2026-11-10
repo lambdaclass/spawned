@@ -64,6 +64,16 @@
   no longer fails with "cannot find type `T`". See
   [testing](docs/TESTING.md#macro-diagnostics).
 - Tests for semantics guarantees that were not yet checked (WIP).
+- Tests for the semantics guarantees that were not yet checked
+  (`concurrency/tests/semantics_gaps.rs`, both modes where they apply): a
+  trapped `Exit` and a `Down` follow every message the source sent earlier;
+  `send_after` and fixed-delay `send_interval` (no catch-up burst after a clock
+  jump) under paused Tokio time; a timer never delivers to a supervised
+  replacement; a panicking request handler gives its caller exactly
+  `ActorStopped` on every backend. A `panic-abort` CI job runs the
+  `panic_abort` example under a new `panic-abort` profile: a panicking handler
+  aborts the process without `stopped()` or a reply, and supervision of `Kill`
+  and `Shutdown` exits still works.
 
 - Roadmap: per-actor memory limits (rank 18a), one semantics contract
   (rank 5d), an integrated request and lifecycle model for ranks 11, 13, 15,
