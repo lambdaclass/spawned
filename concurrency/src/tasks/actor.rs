@@ -32,6 +32,19 @@ use std::{
 
 pub use crate::response::DEFAULT_REQUEST_TIMEOUT;
 
+/// Cleanup deadline for actors without a supervisor or system grace: the
+/// bound on joining an exiting actor's cancelled jobs.
+pub const DEFAULT_STOP_DEADLINE: Duration = Duration::from_secs(5);
+
+#[path = "jobs.rs"]
+mod jobs;
+pub use jobs::JobCtx;
+#[doc(no_inline)]
+pub use crate::reply::jobs::{
+    JobError, JobGone, JobHandle, JobKey, JobOptions, JobOutcome, PipeError, PipeErrorKind,
+    PipeReplyError,
+};
+
 // ---------------------------------------------------------------------------
 // Backend
 // ---------------------------------------------------------------------------
@@ -71,6 +84,10 @@ pub trait Actor: Send + Sized + 'static {
     /// linked jobs). At the bound `defer()` answers the caller `Overloaded`.
     /// Capped at 65535.
     const MAX_OUTSTANDING: usize = DEFAULT_MAX_OUTSTANDING;
+
+    /// Native threads this instance's blocking jobs may run at once
+    /// (`pipe_blocking*`). `None`: `min(4, available_parallelism)`.
+    const MAX_NATIVE_JOBS: Option<usize> = None;
 
     fn started(&mut self, _ctx: &Context<Self>) -> impl Future<Output = ()> + Send {
         async {}
@@ -294,6 +311,8 @@ struct ActorShared<A: Actor> {
     managed: Option<Arc<crate::system::Scope>>,
     /// This instance's reply registry: deferred tokens, credits, turn phase.
     replies: Arc<Registry>,
+    /// This instance's pipe-to-self jobs.
+    jobs: crate::reply::jobs::JobSet,
 }
 
 impl<A: Actor> Clone for Context<A> {
@@ -1058,6 +1077,10 @@ impl<A: Actor> ActorRef<A> {
             shared: Arc::new(ActorShared {
                 id,
                 replies: Registry::new(id, A::MAX_OUTSTANDING),
+                jobs: crate::reply::jobs::JobSet::new(
+                    id,
+                    A::MAX_NATIVE_JOBS.unwrap_or_else(crate::reply::jobs::default_max_native_jobs),
+                ),
                 sender: tx,
                 cancellation_token: cancellation_token.clone(),
                 completion_rx,
@@ -1124,6 +1147,7 @@ impl<A: Actor> ActorRef<A> {
         .with_mailbox_failures(actor_ref.shared.sender.failures());
         let startup =
             crate::actor_cleanup::ActorStartup::new((actor, ctx, rx, cancellation_token), cleanup);
+        let job_owner = actor_ref.shared.clone();
         let inner_future = async move {
             let ((actor, ctx, rx, cancellation_token), mut cleanup) = startup.into_parts();
             #[cfg(feature = "backend-experiments")]
@@ -1152,6 +1176,13 @@ impl<A: Actor> ActorRef<A> {
             if let Some(scope) = &managed {
                 let actual = crate::system::lock(&scope.cause).clone().unwrap_or(reason);
                 scope.exited(actual);
+            }
+            // Job cleanup (deferred-replies §5 step 4), after death: join the
+            // cancelled jobs, bounded by the cleanup deadline; a job still
+            // running then does not undo death and is reported unfinished.
+            if job_owner.jobs.running() > 0 {
+                let unfinished = job_owner.jobs.join(DEFAULT_STOP_DEADLINE).await;
+                crate::reply::jobs::report_unfinished(job_owner.id, unfinished);
             }
         };
 
@@ -1363,6 +1394,7 @@ async fn run_actor_lifecycle<A: Actor>(
             scope.end_running();
         }
         ctx.shared.replies.exiting();
+        ctx.shared.jobs.cancel_all();
         if let Err(panic) = AssertUnwindSafe(async {
             fail_point!("actor.before_stopped", async);
             actor.stopped(&ctx).await
@@ -1460,6 +1492,7 @@ async fn run_actor_lifecycle<A: Actor>(
     }
     cancellation_token.cancel();
     ctx.shared.replies.exiting();
+    ctx.shared.jobs.cancel_all();
     let stop_result = AssertUnwindSafe(async {
         fail_point!("actor.before_stopped", async);
         actor.stopped(&ctx).await
@@ -3355,6 +3388,7 @@ mod turn_regressions {
                     mailbox: crate::instrumentation::Mailbox::default(),
                     managed: None,
                     replies: Registry::new(ActorId::next(), DEFAULT_MAX_OUTSTANDING),
+                    jobs: crate::reply::jobs::JobSet::new(ActorId::next(), 1),
                 }),
             };
             let count = Arc::new(AtomicUsize::new(0));
@@ -3432,6 +3466,7 @@ mod idle_stop_regression {
                     mailbox: crate::instrumentation::Mailbox::default(),
                     managed: None,
                     replies: Registry::new(ActorId::next(), DEFAULT_MAX_OUTSTANDING),
+                    jobs: crate::reply::jobs::JobSet::new(ActorId::next(), 1),
                 }),
             };
             let count = Arc::new(AtomicUsize::new(0));

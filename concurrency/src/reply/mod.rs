@@ -7,6 +7,7 @@
 //! gets exactly one terminal discharge.
 
 pub(crate) mod deadline;
+pub mod jobs;
 pub(crate) mod registry;
 pub(crate) mod slot;
 
