@@ -10,6 +10,9 @@
   the coordinator-panic and never-started-child scenarios that were known gaps
   before v0.7.1 now run as regular tests. See
   [testing](docs/TESTING.md#failpoints).
+- Test reliability and quality (WIP): replace fixed sleeps used as
+  synchronization with waits on the actual condition, and close coverage and
+  mutation-testing gaps in the lifecycle code.
 
 ## 0.7.1 — 2026-11-10
 
