@@ -16,9 +16,10 @@ use crate::link::{
 };
 use crate::message::Message;
 use crate::monitor::{Down, MonitorCleanup, MonitorRef, MonitorTable};
-use crate::reply::{registry::Registry, reply_slot, Deadline, SlotHandle};
+use crate::reply::{registry::Registry, reply_slot, SlotHandle};
+#[doc(no_inline)]
 pub use crate::reply::{
-    DeferError, Delivery, PendingReply, ReplyReceiver, ReplyTo, DEFAULT_MAX_OUTSTANDING,
+    Deadline, DeferError, Delivery, PendingReply, ReplyReceiver, ReplyTo, DEFAULT_MAX_OUTSTANDING,
 };
 use std::sync::atomic::Ordering;
 
@@ -101,13 +102,10 @@ where
             observation.reject();
         }
     }
-    fn handle(self: Box<Self>, actor: &mut A, reply: crate::reply::PendingReply<'_, ()>, ctx: &Context<A>) {
-        {
+    fn handle(self: Box<Self>, actor: &mut A, ctx: &Context<A>) {
         let mut this = *self;
         let reply = PendingReply::new(this.slot.take(), &ctx.replies);
         actor.handle(this.msg, reply, ctx);
-    }
-        let _ = reply.reply(());
     }
 }
 
