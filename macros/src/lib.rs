@@ -1616,7 +1616,7 @@ pub fn actor(attr: TokenStream, item: TokenStream) -> TokenStream {
             quote! {
                 const _: () = {
                     fn _assert_bridge<__T: #trait_name>() {}
-                    fn _check() {
+                    fn _check #impl_generics () #where_clause {
                         _assert_bridge::<#runtime_path::ActorRef<#self_ty>>();
                     }
                 };

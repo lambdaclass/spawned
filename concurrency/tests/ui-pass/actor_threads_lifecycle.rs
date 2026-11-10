@@ -17,7 +17,7 @@ pub struct Holder<T> {
     hooks: Arc<AtomicUsize>,
 }
 
-#[actor]
+#[actor(protocol(HolderProtocol))]
 impl<T: ToString + Send + 'static> Holder<T> {
     pub fn new(value: T, hooks: Arc<AtomicUsize>) -> Self {
         Holder { value, hooks }
