@@ -3,6 +3,15 @@
 Upgrade notes per release, newest first. The [CHANGELOG](../CHANGELOG.md) lists
 every change; this guide covers what you need to edit when upgrading.
 
+## Unreleased
+
+### Deferred replies (rank 11, targets 0.8, in progress)
+
+This is a breaking release. The notes below grow with the implementation:
+
+- `ActorError` is `#[non_exhaustive]` and gains `ReplyDropped` and
+  `Overloaded`; add a wildcard arm to exhaustive matches.
+
 ## 0.7.3
 
 **Behaviour change (supervision).** A Transient child's replacement (any generation after the child was first
