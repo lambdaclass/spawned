@@ -87,6 +87,12 @@
 - Add cross-backend metamorphic, cancellation-safety and panic-safety test
   suites (`cross_backend`, `cancellation_safety`, `panic_safety`) plus a
   nightly robustness workflow.
+- Add `stack_budget` (nested request chains, supervision and system shutdown
+  run under a small `RUST_MIN_STACK` budget, 1.5x the measured minimum) and
+  `foreign_panics` (panicking tracing subscriber, panic hook and reply
+  destructors) test suites. Two known gaps are recorded as ignored tests: a
+  panicking subscriber replaces a handler panic's exit reason and skips
+  `stopped()`, and stops supervisor restarts.
 
 ## 0.7.0 — 2026-11-09
 

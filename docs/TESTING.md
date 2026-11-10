@@ -399,6 +399,50 @@ future. This supersedes the earlier borrowed-request-only conclusion. Matching
 layout is a regression check, not proof that Ethrex's RPC tests pass at a 2 MiB
 debug stack; that client rerun remains a review gate.
 
+## Stack-depth budgets
+
+`stack_budget.rs` complements `future_layout.rs`: instead of `size_of`, it
+bounds the stack a real workload uses. A nested request chain mirrors a client
+RPC path (A awaits a protocol request to B, B to C, C to D; 1 KiB inline
+payload plus a 64 KiB body; `SPAWNED_STACK_DEPTH` changes the depth) on an
+`async_group`, a `thread_group`, the ambient runtime and in threads mode, plus
+supervisor start, restart and shutdown and `ActorSystem::shutdown`. Each
+scenario runs in a child process with `RUST_MIN_STACK` set to its budget, so
+framework, tokio and libtest threads all get that stack, and the client is
+driven from a `std::thread` with the same `stack_size`. An overflow aborts the
+child and fails the parent.
+
+Budgets are about 1.5x the measured minimum (aarch64-apple-darwin, debug):
+104 KiB for the request chains (minimum 68), 80 KiB for supervision (minimum
+52) and 32 KiB for threads mode (minimum 20). Release minimums are at the
+platform floor (8 to 20 KiB). The async chain does not grow with depth, since
+each hop is its own task; the deepest single poll on a group worker sets the
+minimum. Linux aarch64 cannot go below glibc's 128 KiB thread minimum, so
+there the test only guards against gross regressions. Re-measure with:
+
+```sh
+cargo test -p spawned-concurrency --test stack_budget -- --ignored probe --nocapture
+cargo test --release -p spawned-concurrency --test stack_budget -- --ignored probe --nocapture
+```
+
+## Panics in code the framework calls but does not own
+
+`foreign_panics.rs` extends `panic_safety` to foreign code that runs inside
+framework paths. Each case installs process-global state and runs in its own
+child process, so an abort fails the parent instead of the test binary.
+
+| Foreign code | Result |
+|---|---|
+| Global tracing subscriber that panics on every event | No abort or hang; system and supervisor shutdown complete; a handler panic still exits with `Panic`. Known gaps (ignored tests): the reason becomes `actor lifecycle unwound: <subscriber panic>` and `stopped()` is skipped, because the caught-panic `tracing::error!` in both actor loops is unguarded; and the unguarded `restart_scheduled`/`restart_started` `tracing::info!` stops a Permanent child from restarting |
+| Panic hook that panics | Normal lifecycles never invoke the hook. Any panic then aborts the process, with or without spawned on the stack: that is Rust's "panic while processing panic" rule, and the test documents it |
+| Reply payload whose `Drop` panics | Requester timed out or its task was aborted: the replier exits with `panic in handler: ...`, `stopped()` runs. Reply held in state: a normal stop exits with `actor state destructor: ...`; an actor already unwinding from a handler panic keeps that reason |
+| Metrics recorder | Not applicable: the `metrics` feature is pull-only and has no recorder or callback hook |
+
+```sh
+cargo test -p spawned-concurrency --test foreign_panics
+cargo test -p spawned-concurrency --test foreign_panics -- --ignored panicking_subscriber  # known gaps
+```
+
 ## Execution guarantees
 
 Protocols continue to separate application logic from message dispatch. Each
