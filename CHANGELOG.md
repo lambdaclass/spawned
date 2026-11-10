@@ -41,6 +41,15 @@
 - Add cross-backend metamorphic, cancellation-safety and panic-safety test
   suites (`cross_backend`, `cancellation_safety`, `panic_safety`) plus a
   nightly robustness workflow.
+- Documentation: a database-grade testing phase (phase 4) with batches, an
+  exit criterion and the reproducing-test rule in `ROADMAP.md`; maintained
+  research notes in `docs/research/` on virtual actors (Orleans), systematic
+  testing (Coyote, P/PObserve, FoundationDB, TigerBeetle), Ethereum client
+  testing, request semantics, concurrency models (reductions versus Tokio's
+  coop budget, compute pools, cancel scopes), verification tools (Kani,
+  Apalache, TLAPS, Veil), observability, actor testing, the Rust actor
+  landscape, supervision models, deadlock and stall detection, test techniques
+  and event sourcing (#199-#202, #205, #208, #210).
 
 ## 0.7.0 — 2026-11-09
 
