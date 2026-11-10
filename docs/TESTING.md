@@ -86,7 +86,7 @@ each one catches bugs the others cannot:
    undefined behaviour and Miri is not needed yet. `cargo-semver-checks`,
    `cargo-hack`, `cargo-deny` and `cargo-audit` guard the public API, feature
    combinations and dependencies.
-7. **Real workloads.** Client compatibility CI (in progress) builds and tests
+7. **Real workloads.** Client compatibility CI ([details](#client-compatibility)) builds and tests
    Ethrex and Ethlambda against spawned changes, and canary nodes run both clients on the
    Hoodi testnet, comparing shutdown time, restarts, saved state and resource
    use with the clients' main branches, including runs that kill supervised
@@ -138,7 +138,7 @@ Status of each layer. "Planned" items are tracked in the
 | Feature separation | cargo-hack | Missing dependencies hidden by dev-dependency feature unification | CI builds each library feature, default, no-default and all features without dev dependencies |
 | Supply chain | cargo-deny, cargo-audit | Vulnerable, unmaintained or unsound dependencies; license and source drift | `supply-chain` CI job; accepted advisories listed in `deny.toml` |
 | Flakiness | cargo-nextest with retries | Tests that pass only on retry | Nightly `flaky-tracking` job; a retry is reported, never silently passed |
-| Client compatibility | Ethrex and Ethlambda builds and tests against spawned | Changes that break real users (API, behaviour, stack depth) | In progress |
+| Client compatibility | Ethrex and Ethlambda builds and tests against spawned | Changes that break real users (API, behaviour, stack depth) | `client-compat` workflow: nightly, push to main, `client-compat` PR label ([details](#client-compatibility)) |
 | Production | Hoodi canaries; lifecycle monitors derived from the TLA+ invariants | Regressions in real nodes; a live run breaking a modelled invariant | Canaries run manually; monitors planned ([roadmap](../ROADMAP.md) rank 5c) |
 | Production, under pressure | Canary faults: cgroup memory and CPU limits, `tc netem` or toxiproxy network faults, clock skew | Restart and shutdown bugs that appear only under resource pressure | Planned |
 | Performance regressions | Benchmark regression gate; dhat allocation budgets; open-loop load (HdrHistogram) | Per-message allocation growth; tail latency hidden by coordinated omission | Planned ([test techniques](research/test-techniques.md)) |
@@ -835,6 +835,60 @@ example/dependency-graph check verifies the library's Tokio-free build.
 cargo test --locked -p spawned-concurrency --no-default-features --features threads,metrics
 cargo test --locked -p spawned-concurrency --no-default-features --test payload_stress -- --ignored
 ```
+
+## Client compatibility
+
+`.github/workflows/client-compat.yml` builds and tests the two production
+clients, [ethrex](https://github.com/lambdaclass/ethrex) and
+[ethlambda](https://github.com/lambdaclass/ethlambda), against the spawned
+commit under test. Each client keeps a `spawned-v0.7` branch that tracks
+spawned; one GitHub-hosted job per client checks it out next to spawned.
+
+`.github/scripts/client-compat-patch.sh` points the client at the local
+checkout without editing its manifests. It reads where the client's
+`Cargo.lock` takes `spawned-concurrency` from (crates.io or a git URL), appends
+a `[patch.<that source>]` section for `spawned-rt`, `spawned-macros`,
+`spawned-concurrency` and `spawned-test` to the client's `.cargo/config.toml`,
+re-locks those four packages and fails unless `cargo metadata` resolves every
+`spawned-*` package to the local path (an unused patch is only a warning in
+cargo). With a crates.io source the local version must satisfy the client's
+requirement: a pre-release suffix on main (`0.7.2-dev`) is stripped in the CI
+checkout so `^0.7.1` matches, and a different `0.MINOR` fails with a message
+saying the client must move first. A git source carries no version requirement.
+
+The gates (`.github/scripts/client-compat-gates.sh`) use the client's own
+`rust-toolchain.toml` and never set `RUST_MIN_STACK`. ethrex runs in debug
+(line-tables-only debuginfo, which leaves stack frames unchanged); ethlambda's
+tests run under its `release-fast` profile, the only one its suite supports (in
+plain debug its rpc fixtures overflow `u8` arithmetic, unrelated to spawned).
+In debug, test
+threads keep the default 2 MiB stack, which is how the pre-0.7.1 ethrex stack
+overflow was found. Every gate runs even after a failure; the job summary has a
+table of gate, result and duration, and failed jobs upload the gate logs, the
+patched `Cargo.lock` and `.cargo/config.toml`.
+
+| Client | Gates |
+|--------|-------|
+| ethrex | `cargo check --workspace --all-targets`; clippy `-D warnings` with `--all-targets` on the workspace members that depend on spawned (found with `cargo metadata`); `cargo test -p ethrex-p2p`; the `p2p::` and `rpc::` groups of `ethrex-test`'s `ethrex_tests`; `ethrex-rpc` and `ethrex` lib tests |
+| ethlambda | `cargo clippy --workspace --all-targets -- -D warnings`; `cargo test --workspace --profile release-fast --no-fail-fast` |
+
+It runs nightly, on every push to main, and on a pull request only while it
+carries the `client-compat` label (adding the label starts a run; later pushes
+rerun it). To run it by hand, or against another client branch:
+
+```sh
+gh workflow run client-compat.yml --ref <branch> \
+  -f ethrex_ref=spawned-v0.7 -f ethlambda_ref=spawned-v0.7
+# Same gates against the spawned the client pins, without the patch:
+gh workflow run client-compat.yml --ref <branch> -f baseline=true
+```
+
+When a gate fails, first run it with `baseline=true`: if it fails there too,
+the failure is the client's (or already in the released spawned), not the
+change under test. When a spawned change needs a client change, push the client
+change to a branch made from `spawned-v0.7`, dispatch the workflow with that
+ref, and land the spawned PR once both are green; then move the client branch. The `spawned-v0.7` client
+branches back long-lived draft PRs and are never merged from here.
 
 ## CI hardening
 
