@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Design (not implementation) for rank 11, deferred typed replies and
+  pipe-to-self, revised over four passes after independent reviews:
+  `docs/design/deferred-replies.md`, client mapping for ethrex and ethlambda,
+  and the `DeferredReplies` (reply slots) and `DeferredJobs` (pipe jobs) TLA+
+  models with 22 negative controls, each checked against its named
+  invariant.
+
 ## 0.7.3 — 2026-11-10
 
 Patch release with one supervision behaviour change: a failed restart (a
