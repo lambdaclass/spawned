@@ -413,13 +413,10 @@ async fn panicked_turn_is_cleared_before_stopped_hook() {
         async fn handle(
             &mut self,
             _: Quit,
-            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            _reply: spawned_concurrency::reply::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
-            {
-                panic!("diagnostic turn cleanup regression");
-            }
-            let _ = reply.reply(());
+            panic!("diagnostic turn cleanup regression");
         }
     }
     let system = ActorSystem::new().unwrap();
