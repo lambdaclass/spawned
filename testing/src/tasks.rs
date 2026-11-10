@@ -15,13 +15,13 @@ use crate::rules::{Fence, Plan, Rules};
 use crate::shared::SETTLE_TIMEOUT;
 use spawned_concurrency::error::ActorError;
 use spawned_concurrency::message::Message;
+use spawned_concurrency::reply::{Deadline, PendingReply, ReplyReceiver};
 use spawned_concurrency::supervision::{ChildState, SupervisedChild, Supervisor, SupervisorReport};
 use spawned_concurrency::system::{ActorSystem, ExecutionGroup, ShutdownReport, SystemError};
 use spawned_concurrency::tasks::{
     Actor, ActorRef, ActorStart, Context, Handler, Receiver, Recipient,
 };
 use spawned_concurrency::{ChildHandle, ExitReason};
-use spawned_concurrency::reply::{Deadline, PendingReply, ReplyReceiver};
 use spawned_rt::tasks::{sleep, timeout};
 use std::future::Future;
 use std::ops::Deref;

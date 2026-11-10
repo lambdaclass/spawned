@@ -98,19 +98,25 @@ fn process(work: Work) -> Ack {
 struct Sink;
 impl tasks::Actor for Sink {}
 impl tasks::Handler<Work> for Sink {
-    async fn handle(&mut self, work: Work, reply: spawned_concurrency::reply::PendingReply<'_, Ack>, _: &tasks::Context<Self>) {
-        let __reply_value: Ack = {
-        process(work)
-    };
+    async fn handle(
+        &mut self,
+        work: Work,
+        reply: spawned_concurrency::reply::PendingReply<'_, Ack>,
+        _: &tasks::Context<Self>,
+    ) {
+        let __reply_value: Ack = { process(work) };
         let _ = reply.reply(__reply_value);
     }
 }
 impl threads::Actor for Sink {}
 impl threads::Handler<Work> for Sink {
-    fn handle(&mut self, work: Work, reply: spawned_concurrency::reply::PendingReply<'_, Ack>, _: &threads::Context<Self>) {
-        let __reply_value: Ack = {
-        process(work)
-    };
+    fn handle(
+        &mut self,
+        work: Work,
+        reply: spawned_concurrency::reply::PendingReply<'_, Ack>,
+        _: &threads::Context<Self>,
+    ) {
+        let __reply_value: Ack = { process(work) };
         let _ = reply.reply(__reply_value);
     }
 }

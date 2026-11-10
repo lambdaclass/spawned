@@ -70,28 +70,43 @@ impl Drop for Probe {
     }
 }
 impl Handler<Next> for Probe {
-    async fn handle(&mut self, _: Next, reply: spawned_concurrency::reply::PendingReply<'_, usize>, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        _: Next,
+        reply: spawned_concurrency::reply::PendingReply<'_, usize>,
+        _: &Context<Self>,
+    ) {
         let __reply_value: usize = {
-        self.value += 1;
-        self.value
-    };
+            self.value += 1;
+            self.value
+        };
         let _ = reply.reply(__reply_value);
     }
 }
 impl Handler<Crash> for Probe {
-    async fn handle(&mut self, _: Crash, reply: spawned_concurrency::reply::PendingReply<'_, ()>, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        _: Crash,
+        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
         {
-        panic!("injected cohort failure");
-    }
+            panic!("injected cohort failure");
+        }
         let _ = reply.reply(());
     }
 }
 impl Handler<CrashTogether> for Probe {
-    async fn handle(&mut self, msg: CrashTogether, reply: spawned_concurrency::reply::PendingReply<'_, ()>, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        msg: CrashTogether,
+        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
         {
-        msg.0.wait().await;
-        panic!("simultaneous cohort failure");
-    }
+            msg.0.wait().await;
+            panic!("simultaneous cohort failure");
+        }
         let _ = reply.reply(());
     }
 }
@@ -714,10 +729,15 @@ impl Actor for MaybeStop {
     }
 }
 impl Handler<CrashPlain> for MaybeStop {
-    async fn handle(&mut self, _: CrashPlain, reply: spawned_concurrency::reply::PendingReply<'_, ()>, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        _: CrashPlain,
+        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
         {
-        panic!("injected cohort failure");
-    }
+            panic!("injected cohort failure");
+        }
         let _ = reply.reply(());
     }
 }

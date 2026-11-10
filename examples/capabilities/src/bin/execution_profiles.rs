@@ -12,13 +12,18 @@ impl Message for Location {
     type Result = (String, Option<usize>);
 }
 impl Handler<Location> for Worker {
-    async fn handle(&mut self, _: Location, reply: spawned_concurrency::reply::PendingReply<'_, <Location as Message>::Result>, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        _: Location,
+        reply: spawned_concurrency::reply::PendingReply<'_, <Location as Message>::Result>,
+        _: &Context<Self>,
+    ) {
         let __reply_value: <Location as Message>::Result = {
-        (
-            std::thread::current().name().unwrap_or_default().to_owned(),
-            spawned_rt::tasks::affinity::current_cpu().ok(),
-        )
-    };
+            (
+                std::thread::current().name().unwrap_or_default().to_owned(),
+                spawned_rt::tasks::affinity::current_cpu().ok(),
+            )
+        };
         let _ = reply.reply(__reply_value);
     }
 }

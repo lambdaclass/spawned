@@ -6,11 +6,11 @@ use crate::rules::{Fence, Plan, Rules};
 use crate::shared::SETTLE_TIMEOUT;
 use spawned_concurrency::error::ActorError;
 use spawned_concurrency::message::Message;
+use spawned_concurrency::reply::{Deadline, PendingReply, ReplyReceiver};
 use spawned_concurrency::threads::{
     Actor, ActorRef, ActorStart, Context, Handler, Receiver, Recipient,
 };
 use spawned_concurrency::{ChildHandle, ExitReason};
-use spawned_concurrency::reply::{Deadline, PendingReply, ReplyReceiver};
 use std::ops::Deref;
 use std::panic::Location;
 use std::sync::Arc;

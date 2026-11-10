@@ -61,25 +61,30 @@ impl Message for Step {
     type Result = u64;
 }
 impl Handler<Step> for Worker {
-    async fn handle(&mut self, msg: Step, reply: spawned_concurrency::reply::PendingReply<'_, u64>, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        msg: Step,
+        reply: spawned_concurrency::reply::PendingReply<'_, u64>,
+        _: &Context<Self>,
+    ) {
         let __reply_value: u64 = {
-        assert_eq!(self.state, msg.expected);
-        assert_eq!(self.bytes[0], 13);
-        if msg.helper {
-            assert_eq!(
-                tokio::spawn(async {
-                    tokio::time::sleep(Duration::from_millis(1)).await;
+            assert_eq!(self.state, msg.expected);
+            assert_eq!(self.bytes[0], 13);
+            if msg.helper {
+                assert_eq!(
+                    tokio::spawn(async {
+                        tokio::time::sleep(Duration::from_millis(1)).await;
+                        42
+                    })
+                    .await
+                    .unwrap(),
                     42
-                })
-                .await
-                .unwrap(),
-                42
-            );
-        }
-        self.state += 1;
-        self.counts.requests.fetch_add(1, Ordering::Relaxed);
-        self.state
-    };
+                );
+            }
+            self.state += 1;
+            self.counts.requests.fetch_add(1, Ordering::Relaxed);
+            self.state
+        };
         let _ = reply.reply(__reply_value);
     }
 }
@@ -88,10 +93,15 @@ impl Message for Crash {
     type Result = ();
 }
 impl Handler<Crash> for Worker {
-    async fn handle(&mut self, _: Crash, reply: spawned_concurrency::reply::PendingReply<'_, ()>, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        _: Crash,
+        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
         {
-        panic!("soak injected handler failure");
-    }
+            panic!("soak injected handler failure");
+        }
         let _ = reply.reply(());
     }
 }
@@ -105,28 +115,38 @@ impl Message for Watch {
     type Result = ();
 }
 impl Handler<Watch> for Watcher {
-    async fn handle(&mut self, msg: Watch, reply: spawned_concurrency::reply::PendingReply<'_, ()>, ctx: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        msg: Watch,
+        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        ctx: &Context<Self>,
+    ) {
         {
-        for (child, panic) in msg.0 {
-            assert!(self.pending.insert(ctx.monitor(&child), panic).is_none());
+            for (child, panic) in msg.0 {
+                assert!(self.pending.insert(ctx.monitor(&child), panic).is_none());
+            }
         }
-    }
         let _ = reply.reply(());
     }
 }
 impl Handler<Down> for Watcher {
-    async fn handle(&mut self, msg: Down, reply: spawned_concurrency::reply::PendingReply<'_, ()>, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        msg: Down,
+        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
         {
-        let panic = self
-            .pending
-            .remove(&msg.monitor_ref)
-            .expect("duplicate/unknown monitor notification");
-        assert_eq!(matches!(msg.reason, ExitReason::Panic(_)), panic);
-        if !panic {
-            assert_eq!(msg.reason, ExitReason::Normal);
+            let panic = self
+                .pending
+                .remove(&msg.monitor_ref)
+                .expect("duplicate/unknown monitor notification");
+            assert_eq!(matches!(msg.reason, ExitReason::Panic(_)), panic);
+            if !panic {
+                assert_eq!(msg.reason, ExitReason::Normal);
+            }
+            self.counts.down.fetch_add(1, Ordering::Release);
         }
-        self.counts.down.fetch_add(1, Ordering::Release);
-    }
         let _ = reply.reply(());
     }
 }
@@ -135,10 +155,13 @@ impl Message for Remaining {
     type Result = usize;
 }
 impl Handler<Remaining> for Watcher {
-    async fn handle(&mut self, _: Remaining, reply: spawned_concurrency::reply::PendingReply<'_, usize>, _: &Context<Self>) {
-        let __reply_value: usize = {
-        self.pending.len()
-    };
+    async fn handle(
+        &mut self,
+        _: Remaining,
+        reply: spawned_concurrency::reply::PendingReply<'_, usize>,
+        _: &Context<Self>,
+    ) {
+        let __reply_value: usize = { self.pending.len() };
         let _ = reply.reply(__reply_value);
     }
 }

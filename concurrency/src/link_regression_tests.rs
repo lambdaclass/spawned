@@ -119,7 +119,12 @@ impl crate::message::Message for Ping {
     type Result = ();
 }
 impl crate::tasks::Handler<Ping> for Idler {
-    async fn handle(&mut self, _: Ping, reply: crate::reply::PendingReply<'_, ()>, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        _: Ping,
+        reply: crate::reply::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
         let _ = reply.reply(());
     }
 }
@@ -159,10 +164,15 @@ fn polled_actor_propagates_runtime_shutdown_to_peer() {
 struct MonitorObserver(Option<spawned_rt::tasks::oneshot::Sender<crate::Down>>);
 impl Actor for MonitorObserver {}
 impl crate::tasks::Handler<crate::Down> for MonitorObserver {
-    async fn handle(&mut self, down: crate::Down, reply: crate::reply::PendingReply<'_, ()>, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        down: crate::Down,
+        reply: crate::reply::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
         {
-        self.0.take().unwrap().send(down).unwrap();
-    }
+            self.0.take().unwrap().send(down).unwrap();
+        }
         let _ = reply.reply(());
     }
 }
@@ -210,10 +220,15 @@ impl crate::message::Message for Crash {
     type Result = ();
 }
 impl crate::tasks::Handler<Crash> for Idler {
-    async fn handle(&mut self, _: Crash, reply: crate::reply::PendingReply<'_, ()>, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        _: Crash,
+        reply: crate::reply::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
         {
-        panic!("linked failure during another actor's stopped hook");
-    }
+            panic!("linked failure during another actor's stopped hook");
+        }
         let _ = reply.reply(());
     }
 }
@@ -228,10 +243,15 @@ impl Actor for Stopping {
     }
 }
 impl crate::tasks::Handler<Stop> for Stopping {
-    async fn handle(&mut self, _: Stop, reply: crate::reply::PendingReply<'_, ()>, ctx: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        _: Stop,
+        reply: crate::reply::PendingReply<'_, ()>,
+        ctx: &Context<Self>,
+    ) {
         {
-        ctx.stop();
-    }
+            ctx.stop();
+        }
         let _ = reply.reply(());
     }
 }
@@ -477,7 +497,12 @@ fn linked_runtime_abort_cancels_an_idle_threads_actor() {
     struct ThreadPeer;
     impl ThreadActor for ThreadPeer {}
     impl crate::threads::Handler<Ping> for ThreadPeer {
-        fn handle(&mut self, _: Ping, reply: crate::reply::PendingReply<'_, ()>, _: &crate::threads::Context<Self>) {
+        fn handle(
+            &mut self,
+            _: Ping,
+            reply: crate::reply::PendingReply<'_, ()>,
+            _: &crate::threads::Context<Self>,
+        ) {
             let _ = reply.reply(());
         }
     }
@@ -521,7 +546,12 @@ fn dropping_runtime_with_large_polled_link_cycle_reclaims_every_actor() {
     struct Node(Arc<AtomicUsize>);
     impl Actor for Node {}
     impl crate::tasks::Handler<Ping> for Node {
-        async fn handle(&mut self, _: Ping, reply: crate::reply::PendingReply<'_, ()>, _: &Context<Self>) {
+        async fn handle(
+            &mut self,
+            _: Ping,
+            reply: crate::reply::PendingReply<'_, ()>,
+            _: &Context<Self>,
+        ) {
             let _ = reply.reply(());
         }
     }

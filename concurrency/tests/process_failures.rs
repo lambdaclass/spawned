@@ -30,20 +30,25 @@ impl Drop for Fixture {
     }
 }
 impl Handler<Crash> for Fixture {
-    async fn handle(&mut self, _: Crash, reply: spawned_concurrency::reply::PendingReply<'_, ()>, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        _: Crash,
+        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
         {
-        std::fs::write(
-            self.path.join("effect"),
-            b"effect happened before process failure",
-        )
-        .unwrap();
-        if self.abort {
-            std::process::abort();
+            std::fs::write(
+                self.path.join("effect"),
+                b"effect happened before process failure",
+            )
+            .unwrap();
+            if self.abort {
+                std::process::abort();
+            }
+            loop {
+                std::thread::park();
+            }
         }
-        loop {
-            std::thread::park();
-        }
-    }
         let _ = reply.reply(());
     }
 }

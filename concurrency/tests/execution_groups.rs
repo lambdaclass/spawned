@@ -23,18 +23,28 @@ impl Message for Ping {
 struct Worker;
 impl Actor for Worker {}
 impl Handler<Ping> for Worker {
-    async fn handle(&mut self, _: Ping, reply: spawned_concurrency::reply::PendingReply<'_, String>, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        _: Ping,
+        reply: spawned_concurrency::reply::PendingReply<'_, String>,
+        _: &Context<Self>,
+    ) {
         let __reply_value: String = {
-        std::thread::current()
-            .name()
-            .unwrap_or_default()
-            .to_string()
-    };
+            std::thread::current()
+                .name()
+                .unwrap_or_default()
+                .to_string()
+        };
         let _ = reply.reply(__reply_value);
     }
 }
 impl Handler<Down> for Worker {
-    async fn handle(&mut self, _: Down, reply: spawned_concurrency::reply::PendingReply<'_, ()>, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        _: Down,
+        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
         let _ = reply.reply(());
     }
 }
@@ -343,11 +353,16 @@ impl Actor for FailedStartup {
     }
 }
 impl Handler<Queued> for FailedStartup {
-    async fn handle(&mut self, msg: Queued, reply: spawned_concurrency::reply::PendingReply<'_, ()>, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        msg: Queued,
+        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
         {
-        self.handled.fetch_add(1, Ordering::SeqCst);
-        drop(msg.0);
-    }
+            self.handled.fetch_add(1, Ordering::SeqCst);
+            drop(msg.0);
+        }
         let _ = reply.reply(());
     }
 }
@@ -570,10 +585,13 @@ impl Message for CheckAdmission {
 struct HelperAware;
 impl Actor for HelperAware {}
 impl Handler<CheckAdmission> for HelperAware {
-    async fn handle(&mut self, _: CheckAdmission, reply: spawned_concurrency::reply::PendingReply<'_, bool>, ctx: &Context<Self>) {
-        let __reply_value: bool = {
-        ctx.spawn_helper(async {}).is_err()
-    };
+    async fn handle(
+        &mut self,
+        _: CheckAdmission,
+        reply: spawned_concurrency::reply::PendingReply<'_, bool>,
+        ctx: &Context<Self>,
+    ) {
+        let __reply_value: bool = { ctx.spawn_helper(async {}).is_err() };
         let _ = reply.reply(__reply_value);
     }
 }

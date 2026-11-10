@@ -1296,10 +1296,7 @@ pub fn actor(attr: TokenStream, item: TokenStream) -> TokenStream {
                     .to_compile_error()
                     .into();
                 }
-                if is_started
-                    || is_stopped
-                    || method.attrs.iter().any(is_handler_attribute)
-                {
+                if is_started || is_stopped || method.attrs.iter().any(is_handler_attribute) {
                     return syn::Error::new_spanned(&method.sig, "#[exit_received] cannot be combined with other lifecycle or handler attributes").to_compile_error().into();
                 }
                 if method.sig.inputs.len() != 3
@@ -1574,11 +1571,13 @@ pub fn actor(attr: TokenStream, item: TokenStream) -> TokenStream {
                     (true, true) => quote! { self.#method_name(msg, reply, ctx).await },
                     (true, false) => quote! { self.#method_name(msg, reply, ctx) },
                     (false, true) => {
-                        let value = quote::quote_spanned! { ret_span => self.#method_name(msg, ctx).await };
+                        let value =
+                            quote::quote_spanned! { ret_span => self.#method_name(msg, ctx).await };
                         quote! { let _ = reply.reply(#value); }
                     }
                     (false, false) => {
-                        let value = quote::quote_spanned! { ret_span => self.#method_name(msg, ctx) };
+                        let value =
+                            quote::quote_spanned! { ret_span => self.#method_name(msg, ctx) };
                         quote! { let _ = reply.reply(#value); }
                     }
                 };

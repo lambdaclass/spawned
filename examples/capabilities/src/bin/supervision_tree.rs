@@ -19,10 +19,15 @@ impl Message for Fail {
     type Result = ();
 }
 impl Handler<Fail> for Worker {
-    async fn handle(&mut self, _: Fail, reply: spawned_concurrency::reply::PendingReply<'_, ()>, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        _: Fail,
+        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
         {
-        panic!("example failure");
-    }
+            panic!("example failure");
+        }
         let _ = reply.reply(());
     }
 }

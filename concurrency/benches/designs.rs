@@ -122,46 +122,54 @@ impl Sink {
 }
 impl tasks::Actor for Sink {}
 impl tasks::Handler<Work> for Sink {
-    async fn handle(&mut self, work: Work, reply: spawned_concurrency::reply::PendingReply<'_, Ack>, _: &tasks::Context<Self>) {
+    async fn handle(
+        &mut self,
+        work: Work,
+        reply: spawned_concurrency::reply::PendingReply<'_, Ack>,
+        _: &tasks::Context<Self>,
+    ) {
         let __reply_value: Ack = {
-        let start = if work.timing {
-            Instant::now()
-        } else {
-            work.enqueued
-        };
-        match self.work.as_str() {
-            "timer" => tokio::time::sleep(self.wait).await,
-            "blocking" => std::thread::sleep(self.wait),
-            "tcp" => {
-                use tokio::io::{AsyncReadExt, AsyncWriteExt};
-                if self.socket.is_none() {
-                    let socket = tokio::net::TcpStream::connect(self.address.unwrap())
-                        .await
-                        .unwrap();
-                    socket.set_nodelay(true).unwrap();
-                    self.socket = Some(socket);
+            let start = if work.timing {
+                Instant::now()
+            } else {
+                work.enqueued
+            };
+            match self.work.as_str() {
+                "timer" => tokio::time::sleep(self.wait).await,
+                "blocking" => std::thread::sleep(self.wait),
+                "tcp" => {
+                    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                    if self.socket.is_none() {
+                        let socket = tokio::net::TcpStream::connect(self.address.unwrap())
+                            .await
+                            .unwrap();
+                        socket.set_nodelay(true).unwrap();
+                        self.socket = Some(socket);
+                    }
+                    let socket = self.socket.as_mut().unwrap();
+                    let mut frame = [0u8; 64];
+                    frame[..8].copy_from_slice(&work.id.to_le_bytes());
+                    let expected = frame;
+                    socket.write_all(&frame).await.unwrap();
+                    socket.read_exact(&mut frame).await.unwrap();
+                    assert_eq!(frame, expected);
                 }
-                let socket = self.socket.as_mut().unwrap();
-                let mut frame = [0u8; 64];
-                frame[..8].copy_from_slice(&work.id.to_le_bytes());
-                let expected = frame;
-                socket.write_all(&frame).await.unwrap();
-                socket.read_exact(&mut frame).await.unwrap();
-                assert_eq!(frame, expected);
+                _ => {}
             }
-            _ => {}
-        }
-        process_at(work, start)
-    };
+            process_at(work, start)
+        };
         let _ = reply.reply(__reply_value);
     }
 }
 impl threads::Actor for Sink {}
 impl threads::Handler<Work> for Sink {
-    fn handle(&mut self, work: Work, reply: spawned_concurrency::reply::PendingReply<'_, Ack>, _: &threads::Context<Self>) {
-        let __reply_value: Ack = {
-        process(work)
-    };
+    fn handle(
+        &mut self,
+        work: Work,
+        reply: spawned_concurrency::reply::PendingReply<'_, Ack>,
+        _: &threads::Context<Self>,
+    ) {
+        let __reply_value: Ack = { process(work) };
         let _ = reply.reply(__reply_value);
     }
 }
@@ -193,18 +201,28 @@ impl Message for Probe {
     type Result = ();
 }
 impl tasks::Handler<Probe> for Sink {
-    async fn handle(&mut self, probe: Probe, reply: spawned_concurrency::reply::PendingReply<'_, ()>, _: &tasks::Context<Self>) {
+    async fn handle(
+        &mut self,
+        probe: Probe,
+        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _: &tasks::Context<Self>,
+    ) {
         {
-        probe.reply.send(process(probe.work));
-    }
+            probe.reply.send(process(probe.work));
+        }
         let _ = reply.reply(());
     }
 }
 impl threads::Handler<Probe> for Sink {
-    fn handle(&mut self, probe: Probe, reply: spawned_concurrency::reply::PendingReply<'_, ()>, _: &threads::Context<Self>) {
+    fn handle(
+        &mut self,
+        probe: Probe,
+        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _: &threads::Context<Self>,
+    ) {
         {
-        probe.reply.send(process(probe.work));
-    }
+            probe.reply.send(process(probe.work));
+        }
         let _ = reply.reply(());
     }
 }

@@ -23,21 +23,29 @@ struct MixedActor {
 impl Actor for MixedActor {}
 
 impl Handler<mixed_protocol::GetValue> for MixedActor {
-    async fn handle(&mut self, _msg: mixed_protocol::GetValue, reply: spawned_concurrency::reply::PendingReply<'_, u64>, _ctx: &Context<Self>) {
-        let __reply_value: u64 = {
-        self.value
-    };
+    async fn handle(
+        &mut self,
+        _msg: mixed_protocol::GetValue,
+        reply: spawned_concurrency::reply::PendingReply<'_, u64>,
+        _ctx: &Context<Self>,
+    ) {
+        let __reply_value: u64 = { self.value };
         let _ = reply.reply(__reply_value);
     }
 }
 
 #[cfg(test)]
 impl Handler<mixed_protocol::TestOnlyIncrement> for MixedActor {
-    async fn handle(&mut self, _msg: mixed_protocol::TestOnlyIncrement, reply: spawned_concurrency::reply::PendingReply<'_, u64>, _ctx: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        _msg: mixed_protocol::TestOnlyIncrement,
+        reply: spawned_concurrency::reply::PendingReply<'_, u64>,
+        _ctx: &Context<Self>,
+    ) {
         let __reply_value: u64 = {
-        self.value += 1;
-        self.value
-    };
+            self.value += 1;
+            self.value
+        };
         let _ = reply.reply(__reply_value);
     }
 }

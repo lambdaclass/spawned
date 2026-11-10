@@ -292,7 +292,11 @@ impl<R> Slot<R> {
         }
         let mut inner = lock(&self.inner);
         Wake {
-            pool: if release > 0 { inner.pool.clone() } else { None },
+            pool: if release > 0 {
+                inner.pool.clone()
+            } else {
+                None
+            },
             release,
             waker: if terminal { inner.waker.take() } else { None },
             watcher: if terminal { inner.watcher.take() } else { None },
@@ -356,14 +360,20 @@ impl<R> Slot<R> {
     pub(crate) fn shorten(&self, at: u64, now: &impl Fn() -> u64) {
         let _ = self
             .deadline
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |d| (at < d).then_some(at));
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |d| {
+                (at < d).then_some(at)
+            });
         self.check_deadline(now);
     }
 
     /// `defer()`: `OPEN, TOKEN=0 -> OPEN, TOKEN=1, REG=1`, reserving the
     /// token's credit when no linked job holds one. At the bound the caller
     /// is answered `Overloaded` in the same step.
-    pub(crate) fn defer(&self, pool: &Arc<CreditPool>, now: &impl Fn() -> u64) -> Result<(), Refused> {
+    pub(crate) fn defer(
+        &self,
+        pool: &Arc<CreditPool>,
+        now: &impl Fn() -> u64,
+    ) -> Result<(), Refused> {
         if self.check_deadline(now) {
             return Err(Refused::Closed);
         }
@@ -461,7 +471,11 @@ impl<R> Slot<R> {
             let (old, new) = self.resolve_writing(REPLIED);
             let release = credits(old).saturating_sub(credits(new));
             Wake {
-                pool: if release > 0 { inner.pool.clone() } else { None },
+                pool: if release > 0 {
+                    inner.pool.clone()
+                } else {
+                    None
+                },
                 release,
                 waker: inner.waker.take(),
                 watcher: inner.watcher.take(),

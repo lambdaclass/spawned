@@ -44,19 +44,29 @@ impl Message for Crash {
 struct Counter(usize);
 impl Actor for Counter {}
 impl Handler<Next> for Counter {
-    async fn handle(&mut self, _: Next, reply: spawned_concurrency::reply::PendingReply<'_, usize>, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        _: Next,
+        reply: spawned_concurrency::reply::PendingReply<'_, usize>,
+        _: &Context<Self>,
+    ) {
         let __reply_value: usize = {
-        self.0 += 1;
-        self.0
-    };
+            self.0 += 1;
+            self.0
+        };
         let _ = reply.reply(__reply_value);
     }
 }
 impl Handler<Crash> for Counter {
-    async fn handle(&mut self, _: Crash, reply: spawned_concurrency::reply::PendingReply<'_, ()>, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        _: Crash,
+        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
         {
-        panic!("nested leaf failed");
-    }
+            panic!("nested leaf failed");
+        }
         let _ = reply.reply(());
     }
 }
@@ -523,10 +533,15 @@ impl Actor for MaybeStop {
     }
 }
 impl Handler<Crash> for MaybeStop {
-    async fn handle(&mut self, _: Crash, reply: spawned_concurrency::reply::PendingReply<'_, ()>, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        _: Crash,
+        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
         {
-        panic!("nested leaf failed");
-    }
+            panic!("nested leaf failed");
+        }
         let _ = reply.reply(());
     }
 }
