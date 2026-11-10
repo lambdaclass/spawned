@@ -897,7 +897,10 @@ async fn failed_replacements_exhaust_the_restart_budget_exactly() {
             .await
             .unwrap();
         let failure = supervisor.failure().unwrap();
-        assert!(failure.contains("budget exhausted"), "{reason:?}: {failure}");
+        assert!(
+            failure.contains("budget exhausted"),
+            "{reason:?}: {failure}"
+        );
         assert_eq!(calls.load(Ordering::SeqCst), 4, "{reason:?}");
         assert_eq!(child.snapshot().generation, 4, "{reason:?}");
         assert!(system.shutdown(LIMIT).await.complete);

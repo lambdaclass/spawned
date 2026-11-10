@@ -515,8 +515,7 @@ async fn nested_failed_replacement_retries_then_escalates_on_exhaustion() {
         let system = ActorSystem::new().unwrap();
         let controls = system.async_group("tree-controls", 1).unwrap();
         let workers = system.async_group("tree-workers", 1).unwrap();
-        let published: Arc<Mutex<Option<SupervisedChild<MaybeStop>>>> =
-            Arc::new(Mutex::new(None));
+        let published: Arc<Mutex<Option<SupervisedChild<MaybeStop>>>> = Arc::new(Mutex::new(None));
         let expose = published.clone();
         let placement = workers.clone();
         let mut root = system.supervisor(policy(5)).unwrap();
