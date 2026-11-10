@@ -118,9 +118,10 @@
   cleanup and opposite-direction link lock ordering; they kill 20 surviving
   cargo-mutants. The native mailbox no longer goes through a single-use
   macro (cargo-mutants does not mutate macro bodies, so 21 mutants were
-  hidden), `SupervisorActor::stopped` is gone (its `Drop` already stops the
-  subtree on every path), and shard selection asserts its invariant instead
-  of re-checking it.
+  hidden), and shard selection asserts its invariant instead of re-checking
+  it. A new test pins that the nested-supervisor adapter stops its subtree in
+  `stopped()`, so a panic there (e.g. from an inner waiter's waker) stays a
+  `stopped()` panic with `Drop` as the backstop.
 
 ## 0.7.1 — 2026-11-10
 
