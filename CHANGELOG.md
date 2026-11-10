@@ -18,7 +18,9 @@
 - Roadmap: add coverage-guided scenario fuzzing on the simulator, harsher
   canary faults (cgroup limits, network faults, clock skew), a benchmark
   regression gate, trybuild compile-fail tests for the macros, and later Verus
-  or Creusot proofs and turmoil/Jepsen-style tests to the testing plan.
+  or Creusot proofs, turmoil/Jepsen-style tests and continuous nightly runs to
+  the testing plan; record Apalache's status and the Veil spike as the next
+  step toward invariants for any configuration size.
 
 ## 0.7.1 — 2026-11-10
 

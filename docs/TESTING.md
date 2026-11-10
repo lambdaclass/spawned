@@ -112,6 +112,11 @@ Status of each layer. "Planned" items are tracked in the
 | Spec and code coverage | Trace coverage | Model states no test ever reaches | In progress |
 | Primitives | Loom | Atomic and memory-ordering bugs in cancellation, ready gate and wakeups | In CI; expand to reply slots and mailbox publication versus shutdown |
 | Whole runtime, deterministic | Simulation backend for `spawned-rt::tasks` (random, PCT, bounded DFS) | Async races, replayed from a seed with virtual time | In review (PRs #212, #214, #218) |
+| Resource stability | Soak tests | Memory, file descriptors, threads, tasks and registry entries growing over hours of actor churn and restarts | Planned |
+| Behaviour drift | Behaviour snapshots | Silent changes to lifecycle traces, shutdown reports and exit reasons in about 30 standard scenarios | Planned |
+| Model-derived tests | Tests generated from the TLA+ models | Interesting model states (a crash during backoff while shutdown starts, a restart racing a deadline) that no hand-written test reaches | Planned, after trace coverage |
+| Time | Clock-jump tests | Timers and backoff misbehaving on paused time or large forward and backward clock jumps | Planned |
+| Continuous runs | Nightly runs on a dedicated server | Bugs that need hours of simulator seeds, fuzzing, failpoint schedules and soak to appear | Planned (on hold) |
 | Generated scenarios | Coverage-guided fuzzing on the simulator (`cargo-fuzz`, `arbitrary`) | Bugs in operation sequences nobody wrote a test for, each replayable from a seed | Planned, after the simulation stack |
 | Whole runtime, randomized | Shuttle | Scheduling races in multi-actor tests too large for Loom | Not started |
 | Memory safety | ThreadSanitizer | Data races | In CI; Miri waits until unsafe code is proposed (all crates `#![forbid(unsafe_code)]`) |
