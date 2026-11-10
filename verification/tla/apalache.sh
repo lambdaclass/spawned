@@ -82,11 +82,13 @@ prove() {  # prove DIR MODULE PREFIX ACTIONS(yes|no) PROBES...
   done
 }
 
-# mutate MODULE NAME FILE PERL_SUBST INV: copy the specs, apply one guard
-# removal with perl, require the substitution to change FILE, and require
-# a counterexample to induction (INV is IndInv or ActionProps).
+# mutate MODULE NAME FILE PERL_SUBST INV [REACH]: copy the specs, apply one
+# guard removal with perl, require the substitution to change FILE, and
+# require a counterexample to induction (INV is IndInv or ActionProps). With
+# REACH, also require a counterexample from Init within REACH steps, so the
+# mutation breaks a reachable behaviour, not only an unreachable IndInv state.
 mutate() {
-  local module="$1" name="$2" file="$3" subst="$4" inv="$5"
+  local module="$1" name="$2" file="$3" subst="$4" inv="$5" reach="${6:-}"
   local dir="$work/mut-$name"
   mkdir -p "$dir"
   cp "$work"/*.tla "$dir"/
@@ -97,6 +99,9 @@ mutate() {
     return
   fi
   check "negative $module/$name" violated "$dir" "$module" IndInv "$inv" 1
+  if [[ -n "$reach" ]]; then
+    check "negative $module/$name reachable" violated "$dir" "$module" Init "$inv" "$reach"
+  fi
 }
 
 for model in $models; do
@@ -183,22 +188,22 @@ for model in $models; do
         # rollback outside the coordinator's order (OrderedShutdown).
         for fault in ReleaseEarly ForgetFailure ForgetSignal RollbackReady; do
           mutate "$module" "$fault" "$module.tla" \
-            "s/OVERRIDE_Fault == \"None\"/OVERRIDE_Fault == \"$fault\"/" IndInv
+            "s/OVERRIDE_Fault == \"None\"/OVERRIDE_Fault == \"$fault\"/" IndInv 4
         done
         # OrderedShutdown: advance to the next target before the current
         # one finished.
         mutate "$module" advance-early Coordinator.tla \
-          's/(Advance == \/\\ phase = "Waiting") \/\\ index \\in finished/$1/' IndInv
+          's/(Advance == \/\\ phase = "Waiting") \/\\ index \\in finished/$1/' IndInv 4
         # OrderedSignalStep: stop targets in the reverse of the stop order
         # (earliest-admitted root first).
         mutate "$module" reverse-order Coordinator.tla \
-          's/signalled\x27 = signalled \\cup \{index\}/signalled\x27 = signalled \\cup {TargetCount + 1 - index}/' ActionProps
+          's/signalled\x27 = signalled \\cup \{index\}/signalled\x27 = signalled \\cup {TargetCount + 1 - index}/' ActionProps 4
         # Admission closed outside Running (Safety): begin shutdown, or
         # crash, without closing admission.
         mutate "$module" begin-keeps-open Coordinator.tla \
-          's/(Begin ==.*?)open\x27 = FALSE/$1open\x27 = open/s' IndInv
+          's/(Begin ==.*?)open\x27 = FALSE/$1open\x27 = open/s' IndInv 4
         mutate "$module" crash-keeps-open Coordinator.tla \
-          's/(Crash ==.*?)open\x27 = FALSE/$1open\x27 = open/s' IndInv
+          's/(Crash ==.*?)open\x27 = FALSE/$1open\x27 = open/s' IndInv 4
       fi
       ;;
     *) echo "unknown model $model" >&2; exit 2 ;;
