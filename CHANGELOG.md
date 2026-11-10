@@ -64,6 +64,11 @@
   no longer fails with "cannot find type `T`". See
   [testing](docs/TESTING.md#macro-diagnostics).
 
+- Roadmap: per-actor memory limits (rank 18a), one semantics contract
+  (rank 5d), an integrated request and lifecycle model for ranks 11, 13, 15,
+  15a and 17-19, and a design-review rule: a design doc, TLA+ model, client
+  mapping and two independent reviews before any feature code.
+
 ## 0.7.1 — 2026-11-10
 
 - Contain tracing subscriber panics in caught lifecycle-panic diagnostics and
