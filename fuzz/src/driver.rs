@@ -115,9 +115,12 @@ pub async fn run_body(scenario: Scenario, seed: u64) {
     let mut driver = Driver::new(world.clone(), seed);
     for op in scenario.ops.iter().take(MAX_OPS) {
         driver.op += 1;
+        trace(|| format!("op {}: {op:?}", driver.op));
         driver.apply(op).await;
     }
+    trace(|| "teardown".into());
     driver.teardown().await;
+    trace(|| "leak checks".into());
     drop(driver);
     leaks(&world, baseline).await;
     budget_checks(&world);
@@ -130,6 +133,15 @@ pub async fn run_body(scenario: Scenario, seed: u64) {
                 .collect()
         });
         panic!("spawned-fuzz oracle: {}", first.kind);
+    }
+}
+
+/// `SPAWNED_FUZZ_TRACE=1`: print driver progress with virtual time and polls.
+fn trace(what: impl FnOnce() -> String) {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if *ON.get_or_init(|| std::env::var_os("SPAWNED_FUZZ_TRACE").is_some()) {
+        let stats = sim::stats();
+        eprintln!("[{:?} poll {}] {}", stats.now, stats.steps, what());
     }
 }
 
@@ -746,7 +758,9 @@ impl Driver {
             }
         }
         self.units.push((sys, Unit::Root(root)));
+        trace(|| format!("supervisor r{root}: start"));
         let sup = builder.start().await.ok();
+        trace(|| format!("supervisor r{root}: started {}", sup.is_some()));
         self.roots.push(Root {
             sup,
             sys,
@@ -1150,6 +1164,7 @@ impl Driver {
     /// Cancel timers, collect detached requests, and fence every actor
     /// until nothing is in flight. False if supervisors did not settle.
     async fn quiesce(&mut self) -> bool {
+        trace(|| "quiesce".into());
         for t in self.timers.drain(..) {
             t.cancellation_token.cancel();
         }
@@ -1352,6 +1367,7 @@ impl Driver {
             let Some(sup) = self.roots[root].sup.clone() else {
                 continue;
             };
+            trace(|| format!("teardown: shutdown r{root}"));
             let report = sup.shutdown(LONG).await;
             if report.complete {
                 self.root_done(root, &report.children);
@@ -1364,6 +1380,7 @@ impl Driver {
                 continue;
             };
             self.system_stopping(i);
+            trace(|| format!("teardown: shutdown system {i}"));
             let report = system.shutdown(LONG).await;
             self.systems[i].shut = true;
             if report.complete {
