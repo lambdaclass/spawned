@@ -400,6 +400,53 @@ RUSTFLAGS="--cfg spawned_sim --cfg tokio_unstable" CARGO_TARGET_DIR=target/sim \
   cargo test -p spawned-concurrency --test supervision --test sim
 ```
 
+### Exploration strategies (`sim::explore`)
+
+The random walk can be swapped for a systematic strategy with
+`SPAWNED_SIM_STRATEGY` or `#[sim_test(explore = "...", iterations = N)]`
+(`SPAWNED_SIM_ITERATIONS` overrides the budget; default 8 runs for random, 100
+otherwise):
+
+| Strategy | What it does |
+|---|---|
+| `random` | Seeded uniform choice among ready tasks (unchanged; seed 42 still hashes `0x1c5e2dcccbaaafa6`). |
+| `pct:d=3[,k=N]` | PCT (Burckhardt et al. 2010): random task priorities, `d - 1` change points over an estimated run length `k` (default: the longest run so far) that demote the task about to run. One seed per run. |
+| `dfs:bound=2[,depth=N]` | Stateless depth-first enumeration of every schedule with at most `bound` delays, where a delay permanently demotes the task about to run and zero delays is the canonical schedule. Reports when the bounded space is exhausted. |
+
+Every strategy records into the same decision tape, so a failure replays with
+`SPAWNED_SIM_TAPE` and shrinks like a random-walk failure; PCT also prints a
+`SPAWNED_SIM_STRATEGY=pct:d=..,k=.. SPAWNED_SIM_SEED=n` command. After
+`SPAWNED_SIM_FAIR_AFTER` polls (default 20,000) PCT and DFS runs switch to a
+fair rule (least recently polled ready task) so spin-waits cannot starve.
+
+There is no partial-order or sleep-set reduction: the executor sees wakers,
+not which shared state a poll touches, so DFS counts schedules that differ only
+in independent steps. Mailbox delivery has no separate choice point: `send`
+enqueues inside the sender's poll, so the order of messages from different
+senders at one mailbox is the order of the senders' polls, which the strategies
+already choose; per-sender FIFO is never broken.
+
+`concurrency/tests/sim_explore.rs` holds planted ordering bugs between real
+actors (lost updates through a store actor's get-then-set) and the PR #204
+never-started-child race; each test asserts the bug *is* found. Runs to the
+first failure (release build; hit rate over 10,000 runs in parentheses):
+
+| Bug | random | `pct:d=2` | `pct:d=3` | `dfs:bound=1` | `dfs:bound=2` | `dfs:bound=3` |
+|---|---|---|---|---|---|---|
+| Lost update, one worker 12 polls behind | 244 (0.39%) | 2 (22%) | 8 (18%) | 5 | 51 | 95 |
+| Three workers all read before any write (noise 0/12/24) | not found in 100,000 (0%) | 6 (12%) | 5 (7.7%) | 23 | 661 | 6,476 |
+| PR #204: never-started child ends `Failed` | 13 (9.9%) | 12 (12%) | 8 (9.3%) | 1 | 1 | 1 |
+| PR #204: never-started child ends `Stopped` | 1 (93%) | 1 (73%) | 1 (73%) | 1 | 1 | 1 |
+
+The PR #204 race is not a hard target: both outcomes are common, and the
+canonical schedule (DFS's first run) already ends `Failed`. Deeper DFS bounds
+find a bug later because depth-first order tries late delays first.
+
+```sh
+RUSTFLAGS="--cfg spawned_sim" cargo test --release -p spawned-concurrency \
+  --test sim_explore -- --include-ignored --nocapture
+```
+
 ## Scope
 
 This is generated, model-checked scenario testing on real runtimes, not an
