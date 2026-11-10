@@ -11,9 +11,17 @@
 mod tokio;
 
 /// Deterministic single-thread executor with virtual time, selected with
-/// `RUSTFLAGS="--cfg spawned_sim"`. See the module docs for its limits.
+/// `RUSTFLAGS="--cfg spawned_sim --cfg tokio_unstable"`. See the module docs for its limits.
 #[cfg(spawned_sim)]
 pub mod sim;
+
+// The simulator seeds Tokio's thread-local RNG (`select!` branch order,
+// `watch` waiter shards) per run, which Tokio only allows under its own cfg.
+#[cfg(all(spawned_sim, not(tokio_unstable)))]
+compile_error!(
+    "--cfg spawned_sim needs --cfg tokio_unstable too: \
+     RUSTFLAGS=\"--cfg spawned_sim --cfg tokio_unstable\""
+);
 
 #[cfg(feature = "backend-experiments")]
 mod dispatch_gate;

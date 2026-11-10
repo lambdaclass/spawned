@@ -1,4 +1,5 @@
-//! Deterministic simulation backend, compiled only under `--cfg spawned_sim`.
+//! Deterministic simulation backend, compiled only under `--cfg spawned_sim`
+//! (with `--cfg tokio_unstable`, see below).
 //!
 //! One executor per OS thread drives every task spawned through
 //! `spawned_rt::tasks` on that thread:
@@ -7,19 +8,36 @@
 //!   A wakeup from any other thread is a determinism leak: the executor
 //!   records it and the run panics naming the thread.
 //! - **Seeded scheduling.** When several tasks are ready, a SplitMix64
-//!   generator seeded per world picks which one to poll next. The same seed
-//!   and the same program give the same schedule.
+//!   generator seeded per world picks which one to poll next, by rank among
+//!   the ready task ids (so the order in which wakers fired does not matter).
+//!   The same seed and the same program give the same schedule.
+//! - **Tokio's per-poll context.** Each poll runs inside a private,
+//!   driverless current-thread Tokio runtime built per world, so Tokio's
+//!   cooperative budget applies (a task that keeps receiving from a ready
+//!   channel is forced to yield after 128 operations, as on Tokio) and Tokio's
+//!   thread-local RNG (`select!` branch order, `watch` waiter shards) is
+//!   seeded from the world's seed. Seeding that RNG needs Tokio's
+//!   `rng_seed`, so the cfg must be paired with `--cfg tokio_unstable`.
+//!   A task spawned directly on Tokio (`tokio::spawn`) is a determinism leak
+//!   and fails the run.
 //! - **Virtual time.** `sleep` and `timeout` use a virtual clock that only
 //!   advances when no task is ready, jumping to the earliest pending timer.
+//!   A sleep whose deadline has already passed still yields once, as Tokio's
+//!   timer does.
 //! - **Detected limits.** `spawn_blocking`, `block_in_place` and a nested
 //!   `block_on` panic with a message naming the call; a run with no ready task
-//!   and no pending timer panics as a deadlock instead of hanging.
+//!   and no pending timer panics as a deadlock instead of hanging. A single
+//!   poll that runs longer than `SPAWNED_SIM_POLL_TIMEOUT` wall-clock seconds
+//!   (default 60, 0 = off; a loop with no await point that the budget can
+//!   interrupt) aborts the process with a message naming the task and seed.
 //!
 //! Channels, `watch`, `CancellationToken` and the stream wrappers stay Tokio's:
 //! they only use wakers, so they are deterministic under this executor.
 //!
-//! The wall clock (`Instant::now`, `SystemTime`), `std::thread`, Tokio I/O and
-//! `HashMap` iteration order stay outside its control.
+//! Fidelity limits: everything a task does inside one poll is atomic (no OS
+//! preemption, no weak-memory reorderings), and the wall clock
+//! (`Instant::now`, `SystemTime`), `std::thread`, Tokio I/O and `HashMap`
+//! iteration order stay outside its control.
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
@@ -27,7 +45,8 @@ use std::fmt;
 use std::future::Future;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::pin::Pin;
-use std::sync::{Arc, Mutex, MutexGuard, Weak};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak};
 use std::task::{Context, Poll, Wake, Waker};
 use std::thread::ThreadId;
 use std::time::Duration;
@@ -36,6 +55,8 @@ type BoxTask = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
 
 const ROOT: u64 = 0;
 const DEFAULT_MAX_STEPS: u64 = 50_000_000;
+/// Wall-clock seconds one poll may run before the watchdog aborts the process.
+const DEFAULT_POLL_TIMEOUT_SECS: u64 = 60;
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|p| p.into_inner())
@@ -47,6 +68,105 @@ fn splitmix(state: &mut u64) -> u64 {
     z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
     z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
     z ^ (z >> 31)
+}
+
+/// Index in `ready` of the task whose id has rank `rank` (0 = smallest), so
+/// a seeded pick depends on which tasks are ready, not on the order their
+/// wakers fired.
+fn by_rank(ready: &[u64], rank: usize) -> usize {
+    let mut ids = ready.to_vec();
+    let (_, id, _) = ids.select_nth_unstable(rank);
+    let id = *id;
+    ready.iter().position(|r| *r == id).unwrap_or(0)
+}
+
+/// Wall-clock guard against a poll that never returns (a loop with no await
+/// point, which neither the scheduler nor the cooperative budget can
+/// interrupt on one thread). One process-wide thread checks every live world.
+mod watchdog {
+    use super::{lock, AtomicU64, Ordering};
+    use std::sync::{Arc, Mutex, OnceLock, Weak};
+    use std::time::{Duration, Instant};
+
+    pub(super) struct Watch {
+        seed: u64,
+        /// Milliseconds since `base()` when the current poll began, 0 if idle.
+        since: AtomicU64,
+        task: AtomicU64,
+    }
+
+    fn base() -> Instant {
+        static BASE: OnceLock<Instant> = OnceLock::new();
+        *BASE.get_or_init(Instant::now)
+    }
+
+    fn limit() -> u64 {
+        std::env::var("SPAWNED_SIM_POLL_TIMEOUT")
+            .ok()
+            .and_then(|v| v.trim().parse().ok())
+            .unwrap_or(super::DEFAULT_POLL_TIMEOUT_SECS)
+    }
+
+    static WATCHED: Mutex<Vec<Weak<Watch>>> = Mutex::new(Vec::new());
+
+    impl Watch {
+        pub(super) fn register(seed: u64) -> Arc<Self> {
+            let watch = Arc::new(Self {
+                seed,
+                since: AtomicU64::new(0),
+                task: AtomicU64::new(0),
+            });
+            let limit = limit();
+            if limit > 0 {
+                static STARTED: OnceLock<()> = OnceLock::new();
+                STARTED.get_or_init(|| {
+                    base();
+                    std::thread::Builder::new()
+                        .name("spawned-sim-watchdog".into())
+                        .spawn(move || run(limit))
+                        .expect("spawned_sim: cannot start the poll watchdog");
+                });
+                let mut watched = lock(&WATCHED);
+                watched.retain(|w| w.strong_count() > 0);
+                watched.push(Arc::downgrade(&watch));
+            }
+            watch
+        }
+
+        pub(super) fn busy(&self, task: u64) -> Busy<'_> {
+            self.task.store(task, Ordering::Relaxed);
+            let now = base().elapsed().as_millis() as u64;
+            self.since.store(now.max(1), Ordering::Release);
+            Busy(self)
+        }
+    }
+
+    pub(super) struct Busy<'a>(&'a Watch);
+    impl Drop for Busy<'_> {
+        fn drop(&mut self) {
+            self.0.since.store(0, Ordering::Release);
+        }
+    }
+
+    fn run(limit: u64) {
+        loop {
+            std::thread::sleep(Duration::from_millis(200));
+            let now = base().elapsed().as_millis() as u64;
+            for watch in lock(&WATCHED).iter().filter_map(Weak::upgrade) {
+                let since = watch.since.load(Ordering::Acquire);
+                if since != 0 && now.saturating_sub(since) > limit * 1000 {
+                    eprintln!(
+                        "spawned_sim: task {} has been inside one poll for over {limit} s \
+                         (seed {}): a loop with no await point never returns to the \
+                         scheduler; aborting (SPAWNED_SIM_POLL_TIMEOUT sets the limit)",
+                        watch.task.load(Ordering::Relaxed),
+                        watch.seed
+                    );
+                    std::process::abort();
+                }
+            }
+        }
+    }
 }
 
 struct State {
@@ -65,12 +185,27 @@ struct State {
     foreign: Option<String>,
     running: bool,
     runtimes: usize,
+    /// Seed of the per-world Tokio runtime's RNG (`select!`, `watch`).
+    tokio_seed: u64,
 }
 
 struct Shared {
     owner: ThreadId,
     max_steps: u64,
     state: Mutex<State>,
+    /// Driverless Tokio runtime every poll runs inside (see the module docs),
+    /// built on the first poll so a replay can still choose its seed.
+    tokio: OnceLock<::tokio::runtime::Runtime>,
+    watch: Arc<watchdog::Watch>,
+}
+
+impl Drop for Shared {
+    fn drop(&mut self) {
+        // May run inside another world's poll, where a blocking shutdown panics.
+        if let Some(runtime) = self.tokio.take() {
+            runtime.shutdown_background();
+        }
+    }
 }
 
 impl Shared {
@@ -82,6 +217,8 @@ impl Shared {
         Arc::new(Self {
             owner: std::thread::current().id(),
             max_steps,
+            tokio: OnceLock::new(),
+            watch: watchdog::Watch::register(seed),
             state: Mutex::new(State {
                 seed,
                 rng: seed,
@@ -98,8 +235,48 @@ impl Shared {
                 foreign: None,
                 running: false,
                 runtimes: 0,
+                tokio_seed: seed,
             }),
         })
+    }
+
+    /// Run one poll (`f`) inside this world's Tokio runtime: with a fresh
+    /// cooperative budget and a seeded Tokio RNG, under the poll watchdog.
+    ///
+    /// Tokio defers some wakeups (a forced budget yield, `tokio::task::yield_now`)
+    /// to the end of its scheduler tick, so the wrapper returns `Pending` once
+    /// after `f` to let Tokio deliver them to our wakers before `block_on`
+    /// returns.
+    fn run_poll<R>(&self, id: u64, f: impl FnOnce() -> R) -> R {
+        let runtime = self.tokio.get_or_init(|| {
+            let seed = lock(&self.state).tokio_seed;
+            ::tokio::runtime::Builder::new_current_thread()
+                .rng_seed(::tokio::runtime::RngSeed::from_bytes(&seed.to_le_bytes()))
+                .build()
+                .expect("spawned_sim: cannot build the per-world Tokio runtime")
+        });
+        let spawned = runtime.metrics().spawned_tasks_count();
+        let mut f = Some(f);
+        let mut out = None;
+        let _busy = self.watch.busy(id);
+        runtime.block_on(std::future::poll_fn(|cx| match f.take() {
+            Some(f) => {
+                out = Some(f());
+                cx.waker().wake_by_ref();
+                Poll::Pending
+            }
+            None => Poll::Ready(()),
+        }));
+        if runtime.metrics().spawned_tasks_count() != spawned {
+            let mut state = lock(&self.state);
+            if state.foreign.is_none() {
+                state.foreign = Some(format!(
+                    "task {id} spawned a task on Tokio directly (tokio::spawn); \
+                     use spawned_rt::tasks::spawn"
+                ));
+            }
+        }
+        out.expect("spawned_sim: poll did not run")
     }
 
     fn schedule(&self, id: u64) {
@@ -142,7 +319,8 @@ impl Shared {
             }
             if !state.ready.is_empty() {
                 let len = state.ready.len() as u64;
-                let index = (splitmix(&mut state.rng) % len) as usize;
+                let rank = (splitmix(&mut state.rng) % len) as usize;
+                let index = by_rank(&state.ready, rank);
                 let id = state.ready.swap_remove(index);
                 state.queued.remove(&id);
                 state.steps += 1;
@@ -189,15 +367,26 @@ impl Shared {
             id,
             shared: Arc::downgrade(self),
         }));
-        let done = task
-            .as_mut()
-            .poll(&mut Context::from_waker(&waker))
-            .is_ready();
+        let done = self.run_poll(id, || {
+            task.as_mut()
+                .poll(&mut Context::from_waker(&waker))
+                .is_ready()
+        });
         if done {
-            lock(&self.state).tasks.remove(&id);
+            self.retire(id);
             drop(task);
         } else {
             *lock(&slot) = Some(task);
+        }
+    }
+
+    /// Forget a finished task, including a wakeup it gave itself during its
+    /// final poll (otherwise a dead id stays in the ready list).
+    fn retire(&self, id: u64) {
+        let mut state = lock(&self.state);
+        state.tasks.remove(&id);
+        if state.queued.remove(&id) {
+            state.ready.retain(|ready| *ready != id);
         }
     }
 
@@ -241,8 +430,11 @@ impl Shared {
                 );
             };
             if id == ROOT {
-                if let Poll::Ready(output) = future.as_mut().poll(&mut Context::from_waker(&waker))
-                {
+                let polled = self.run_poll(ROOT, || {
+                    future.as_mut().poll(&mut Context::from_waker(&waker))
+                });
+                if let Poll::Ready(output) = polled {
+                    self.retire(ROOT);
                     return output;
                 }
             } else {
@@ -407,10 +599,8 @@ impl RuntimeMetrics {
     }
 }
 
-/// Simulated tasks have no cooperative budget, so this is the identity.
-pub fn unconstrained<F: Future>(future: F) -> F {
-    future
-}
+/// Tokio's: every simulated poll runs with Tokio's cooperative budget.
+pub use ::tokio::task::unconstrained;
 
 /// A view of this thread's simulated executor. Every `Runtime` on one thread
 /// shares one executor; the last one dropped drops the remaining tasks.
@@ -578,6 +768,7 @@ where
             waker: None,
             aborted: false,
             finished: false,
+            taken: false,
         }),
     });
     let task = TaskFuture {
@@ -653,6 +844,8 @@ struct JoinInner<T> {
     waker: Option<Waker>,
     aborted: bool,
     finished: bool,
+    /// The result was returned by a poll of the `JoinHandle`.
+    taken: bool,
 }
 struct JoinState<T> {
     inner: Mutex<JoinInner<T>>,
@@ -711,7 +904,14 @@ impl<T> Future for JoinHandle<T> {
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut inner = lock(&self.join.inner);
         match inner.result.take() {
-            Some(result) => Poll::Ready(result),
+            Some(result) => {
+                inner.taken = true;
+                Poll::Ready(result)
+            }
+            None if inner.taken => {
+                drop(inner);
+                panic!("JoinHandle polled after completion")
+            }
             None => {
                 inner.waker = Some(cx.waker().clone());
                 Poll::Pending
@@ -725,16 +925,52 @@ struct TaskFuture<F: Future> {
     future: Option<Pin<Box<F>>>,
     join: Arc<JoinState<F::Output>>,
 }
+fn panic_error(id: u64, payload: Box<dyn std::any::Any + Send>) -> JoinError {
+    let message = payload
+        .downcast_ref::<&str>()
+        .map(|s| s.to_string())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "Box<dyn Any>".into());
+    JoinError {
+        id,
+        kind: JoinErrorKind::Panic(message, Mutex::new(payload)),
+    }
+}
+
+impl<F: Future> TaskFuture<F> {
+    /// Drop the task's future inside a panic guard, as Tokio does: a panicking
+    /// destructor becomes the task's `JoinError` instead of unwinding through
+    /// the executor.
+    fn drop_future(&mut self) -> Result<(), JoinError> {
+        let Some(future) = self.future.take() else {
+            return Ok(());
+        };
+        let previous = TASK.with(|t| t.replace(self.id));
+        let dropped = catch_unwind(AssertUnwindSafe(move || drop(future)));
+        TASK.with(|t| t.set(previous));
+        dropped.map_err(|payload| panic_error(self.id, payload))
+    }
+
+    /// Cancel: drop the future; the joiner sees `Cancelled`, or the
+    /// destructor's panic.
+    fn cancel(&mut self) {
+        let result = match self.drop_future() {
+            Ok(()) => Err(JoinError {
+                id: self.id,
+                kind: JoinErrorKind::Cancelled,
+            }),
+            Err(panic) => Err(panic),
+        };
+        self.join.complete(result);
+    }
+}
+
 impl<F: Future> Future for TaskFuture<F> {
     type Output = ();
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
         let id = self.id;
         if lock(&self.join.inner).aborted {
-            self.future = None;
-            self.join.complete(Err(JoinError {
-                id,
-                kind: JoinErrorKind::Cancelled,
-            }));
+            self.cancel();
             return Poll::Ready(());
         }
         let Some(future) = self.future.as_mut() else {
@@ -745,20 +981,15 @@ impl<F: Future> Future for TaskFuture<F> {
         TASK.with(|t| t.set(previous));
         let result = match polled {
             Ok(Poll::Pending) => return Poll::Pending,
-            Ok(Poll::Ready(value)) => Ok(value),
+            // A destructor panic while dropping the finished future replaces
+            // the value, as on Tokio.
+            Ok(Poll::Ready(value)) => self.drop_future().map(|()| value),
             Err(payload) => {
-                let message = payload
-                    .downcast_ref::<&str>()
-                    .map(|s| s.to_string())
-                    .or_else(|| payload.downcast_ref::<String>().cloned())
-                    .unwrap_or_else(|| "Box<dyn Any>".into());
-                Err(JoinError {
-                    id,
-                    kind: JoinErrorKind::Panic(message, Mutex::new(payload)),
-                })
+                // The poll's panic wins over a second one from the destructor.
+                let _ = self.drop_future();
+                Err(panic_error(id, payload))
             }
         };
-        self.future = None;
         self.join.complete(result);
         Poll::Ready(())
     }
@@ -766,12 +997,7 @@ impl<F: Future> Future for TaskFuture<F> {
 impl<F: Future> Drop for TaskFuture<F> {
     fn drop(&mut self) {
         // Dropped unfinished (runtime teardown): wake the joiner as cancelled.
-        let future = self.future.take();
-        drop(future);
-        self.join.complete(Err(JoinError {
-            id: self.id,
-            kind: JoinErrorKind::Cancelled,
-        }));
+        self.cancel();
     }
 }
 
@@ -784,6 +1010,7 @@ pub struct Sleep {
     shared: Arc<Shared>,
     deadline: Duration,
     key: Option<(Duration, u64)>,
+    yielded: bool,
 }
 impl fmt::Debug for Sleep {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -800,6 +1027,13 @@ impl Future for Sleep {
         if state.now >= this.deadline {
             if let Some(key) = this.key.take() {
                 state.timers.remove(&key);
+            } else if !this.yielded {
+                // Already due at the first poll (`sleep(Duration::ZERO)`):
+                // still a scheduling point, as Tokio's timer is.
+                this.yielded = true;
+                drop(state);
+                cx.waker().wake_by_ref();
+                return Poll::Pending;
             }
             return Poll::Ready(());
         }
@@ -831,6 +1065,7 @@ pub fn sleep(duration: Duration) -> Sleep {
         shared,
         deadline,
         key: None,
+        yielded: false,
     }
 }
 

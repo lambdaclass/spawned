@@ -2,7 +2,7 @@
 //! simulation backend. Run with:
 //!
 //! ```sh
-//! RUSTFLAGS="--cfg spawned_sim" cargo test -p spawned-concurrency --test sim -- --nocapture
+//! RUSTFLAGS="--cfg spawned_sim --cfg tokio_unstable" cargo test -p spawned-concurrency --test sim -- --nocapture
 //! ```
 //!
 //! `SPAWNED_SIM_SEEDS` sets the sweep size (default 200).

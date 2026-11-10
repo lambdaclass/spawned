@@ -130,6 +130,7 @@ API changes.
   `stop_with_reason`); the `ExitReason::Normal` doc comment and the supervision
   design table are corrected.
 - Simulation backend spike: `RUSTFLAGS="--cfg spawned_sim"` swaps
+- Simulation backend spike: `RUSTFLAGS="--cfg spawned_sim --cfg tokio_unstable"` swaps
   `spawned_rt::tasks` spawning and time for a deterministic single-thread
   executor (`spawned_rt::tasks::sim`: seeded choice of the next ready task,
   virtual time that advances only when every task is idle). Unmodified async
@@ -137,8 +138,16 @@ API changes.
   sweeps the PR #204 never-started-child race (closed by the v0.7.1 lifecycle
   fixes) and asserts no seed reproduces it. Thread and pinned
   groups are rejected, `spawn_blocking`/`block_in_place` panic, and foreign-thread
-  wakeups, deadlocks and livelocks fail the run. Native actors, the wall clock
-  and direct Tokio use stay outside its control. Default builds are unchanged.
+  wakeups, deadlocks and livelocks fail the run. Each poll runs inside a
+  per-run, driverless Tokio runtime, so Tokio's cooperative budget forces a
+  task that keeps receiving from a ready channel to yield (as on Tokio), and
+  Tokio's `select!`/`watch` RNG is seeded from the run's seed; that seeding
+  needs `--cfg tokio_unstable` alongside `--cfg spawned_sim`. A direct
+  `tokio::spawn` fails the run, a poll that never returns trips a wall-clock
+  watchdog (`SPAWNED_SIM_POLL_TIMEOUT`), a panicking task destructor becomes
+  that task's `JoinError`, and `sleep(Duration::ZERO)` yields once.
+  Native actors, the wall clock and direct Tokio timers/I/O stay outside its
+  control. Default builds are unchanged.
 
 ## 0.7.1 — 2026-11-10
 
