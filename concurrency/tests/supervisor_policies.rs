@@ -299,38 +299,35 @@ proptest! {
         actions in prop::collection::vec((any::<u8>(), action()), 1..13),
         close_selector in any::<u8>(),
     ) {
-        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         let close_at = usize::from(close_selector) % (actions.len() + 1);
-        runtime.block_on(scenario(strategy, &modes, &actions, close_at));
+        spawned_rt::tasks::sim_test(|_| scenario(strategy, &modes, &actions, close_at));
     }
 }
 #[test]
 fn retired_temporary_and_transient_slots_stay_retired_across_later_recoveries() {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
     for strategy in [
         SupervisorStrategy::OneForOne,
         SupervisorStrategy::OneForAll,
         SupervisorStrategy::RestForOne,
     ] {
-        runtime.block_on(scenario(
-            strategy,
-            &[
-                RestartMode::Permanent,
-                RestartMode::Transient,
-                RestartMode::Temporary,
-            ],
-            &[
-                (2, Action::Normal),
-                (1, Action::Normal),
-                (0, Action::Panic),
-                (0, Action::Shutdown),
-                (0, Action::Normal),
-            ],
-            5,
-        ));
+        spawned_rt::tasks::sim_test(|_| {
+            scenario(
+                strategy,
+                &[
+                    RestartMode::Permanent,
+                    RestartMode::Transient,
+                    RestartMode::Temporary,
+                ],
+                &[
+                    (2, Action::Normal),
+                    (1, Action::Normal),
+                    (0, Action::Panic),
+                    (0, Action::Shutdown),
+                    (0, Action::Normal),
+                ],
+                5,
+            )
+        });
     }
 }
 

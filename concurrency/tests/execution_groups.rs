@@ -1,4 +1,6 @@
 #![cfg(feature = "async")]
+// Tests that need OS threads are compiled out under spawned_sim.
+#![cfg_attr(spawned_sim, allow(unused_imports, dead_code))]
 use spawned_concurrency::{
     message::Message,
     system::{ActorSystem, SystemError},
@@ -32,6 +34,8 @@ impl Handler<Down> for Worker {
     async fn handle(&mut self, _: Down, _: &Context<Self>) {}
 }
 
+// Not simulated: asserts OS worker thread names.
+#[cfg(not(spawned_sim))]
 #[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn owned_groups_communicate_and_close_with_stale_handles() {
     let system = ActorSystem::new().unwrap();
@@ -188,6 +192,8 @@ async fn shutdown_joins_helper_drops_and_generation_owned_registration() {
     .is_none());
 }
 
+// Not simulated: drops the system from a foreign OS thread.
+#[cfg(not(spawned_sim))]
 #[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn dropping_system_requests_shutdown_without_an_ambient_runtime() {
     let system = ActorSystem::new().unwrap();
@@ -205,6 +211,8 @@ async fn dropping_system_requests_shutdown_without_an_ambient_runtime() {
     );
 }
 
+// Not simulated: uses spawn_blocking.
+#[cfg(not(spawned_sim))]
 #[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn registered_blocking_work_keeps_runtime_owned_until_native_completion() {
     let system = ActorSystem::new().unwrap();
@@ -237,6 +245,8 @@ async fn registered_blocking_work_keeps_runtime_owned_until_native_completion() 
     assert_eq!(dropped.load(Ordering::SeqCst), 1);
 }
 
+// Not simulated: uses spawn_blocking.
+#[cfg(not(spawned_sim))]
 #[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn scoped_helpers_report_panics_and_framework_abort_drops_payload() {
     let system = ActorSystem::new().unwrap();
@@ -276,6 +286,8 @@ async fn scoped_helpers_report_panics_and_framework_abort_drops_payload() {
     assert!(system.shutdown(LIMIT).await.complete);
 }
 
+// Not simulated: asserts OS worker thread names.
+#[cfg(not(spawned_sim))]
 #[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn ambient_actor_started_inside_group_is_unmanaged_and_aborted_at_teardown() {
     let system = ActorSystem::new().unwrap();

@@ -239,6 +239,7 @@ impl Handler<bumper::Bump> for Probe {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(spawned_sim, allow(dead_code))]
 enum Place {
     Async,
     Blocking,
@@ -246,6 +247,7 @@ enum Place {
     GroupAsync,
     GroupThread,
 }
+#[cfg(not(spawned_sim))]
 const PLACES: [Place; 5] = [
     Place::Async,
     Place::Blocking,
@@ -253,6 +255,14 @@ const PLACES: [Place; 5] = [
     Place::GroupAsync,
     Place::GroupThread,
 ];
+#[cfg(not(spawned_sim))]
+const GROUPS: [Place; 2] = [Place::GroupAsync, Place::GroupThread];
+// The simulator runs only async placements (Blocking, Thread and native
+// groups need OS threads).
+#[cfg(spawned_sim)]
+const PLACES: [Place; 2] = [Place::Async, Place::GroupAsync];
+#[cfg(spawned_sim)]
+const GROUPS: [Place; 1] = [Place::GroupAsync];
 
 struct Fx {
     place: Place,
@@ -503,7 +513,7 @@ impl<T> Attempt<T> {
 /// ActorRef::ready (execution group start barrier) parks on a gated started().
 #[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn group_ready_wait_is_cancel_safe() {
-    for place in [Place::GroupAsync, Place::GroupThread] {
+    for place in GROUPS {
         let op = format!("{place:?} ready");
         sweep(&op, |n| {
             let op = op.clone();
@@ -561,7 +571,7 @@ fn config() -> SupervisorConfig {
 /// constructed child; nothing stays running or registered afterwards.
 #[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn supervisor_start_is_cancel_safe() {
-    for place in [Place::GroupAsync, Place::GroupThread] {
+    for place in GROUPS {
         for gated in [false, true] {
             let op = format!("{place:?} supervisor start (gated factory: {gated})");
             sweep(&op, |n| {
@@ -644,7 +654,7 @@ async fn supervisor_start_is_cancel_safe() {
 /// leaves the tree half-stopped.
 #[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn supervisor_shutdown_and_child_waits_are_cancel_safe() {
-    for place in [Place::GroupAsync, Place::GroupThread] {
+    for place in GROUPS {
         for variant in 0..4 {
             let op = format!("{place:?} supervisor wait {variant}");
             sweep(&op, |n| {
@@ -725,7 +735,7 @@ async fn supervisor_shutdown_and_child_waits_are_cancel_safe() {
 /// ActorSystem::shutdown and ShutdownReport::wait.
 #[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn system_shutdown_is_cancel_safe() {
-    for place in [Place::GroupAsync, Place::GroupThread] {
+    for place in GROUPS {
         let op = format!("{place:?} system shutdown");
         sweep(&op, |n| {
             let op = op.clone();
@@ -761,7 +771,7 @@ async fn system_shutdown_is_cancel_safe() {
         .await;
     }
     // A report that expired with a stuck stopped() can be awaited again.
-    for place in [Place::GroupAsync, Place::GroupThread] {
+    for place in GROUPS {
         let op = format!("{place:?} report wait");
         sweep(&op, |n| {
             let op = op.clone();
@@ -797,7 +807,7 @@ async fn system_shutdown_is_cancel_safe() {
 /// ScopedTask::join for owned helpers.
 #[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn helper_join_is_cancel_safe() {
-    for place in [Place::GroupAsync, Place::GroupThread] {
+    for place in GROUPS {
         let op = format!("{place:?} helper join");
         sweep(&op, |n| {
             let op = op.clone();

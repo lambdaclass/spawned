@@ -22,10 +22,13 @@
 //!   is a determinism leak: it fails the run, including when the root
 //!   returns right after it, and the escaped work is shut down with the
 //!   world's Tokio runtime.
-//! - **Virtual time.** `sleep` and `timeout` use a virtual clock that only
+//! - **Virtual time.** `sleep` and `timeout` use a virtual clock that
 //!   advances when no task is ready, jumping to the earliest pending timer.
 //!   A sleep whose deadline has already passed still yields once, as Tokio's
 //!   timer does.
+//!   A busy run (tasks that keep yielding) creeps it forward by 1 ms every
+//!   `SPAWNED_SIM_SPIN` polls (default 10,000), so spin-waits still time out.
+//!   `spawned_rt::time::Instant` reads this clock.
 //! - **Detected limits.** `spawn_blocking`, `block_in_place` and a nested
 //!   `block_on` panic with a message naming the call; a run with no ready task
 //!   and no pending timer panics as a deadlock instead of hanging. A single
@@ -59,7 +62,13 @@ use std::time::Duration;
 type BoxTask = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
 
 const ROOT: u64 = 0;
-const DEFAULT_MAX_STEPS: u64 = 50_000_000;
+const DEFAULT_MAX_STEPS: u64 = 10_000_000;
+/// Polls without the clock moving after which virtual time creeps forward by
+/// [`SPIN_QUANTUM`] even though tasks are still ready, so a task that keeps
+/// yielding cannot starve timers forever.
+const DEFAULT_SPIN_LIMIT: u64 = 10_000;
+/// How far the clock creeps after [`DEFAULT_SPIN_LIMIT`] busy polls.
+const SPIN_QUANTUM: Duration = Duration::from_millis(1);
 /// Wall-clock seconds one poll may run before the watchdog aborts the process.
 const DEFAULT_POLL_TIMEOUT_SECS: u64 = 60;
 
@@ -196,6 +205,7 @@ struct State {
     timers: BTreeMap<(Duration, u64), Waker>,
     next_timer: u64,
     steps: u64,
+    spin: u64,
     hash: u64,
     trace: Option<Vec<(u64, Duration)>>,
     tape: Option<Vec<Decision>>,
@@ -261,6 +271,7 @@ fn choose(state: &mut State) -> usize {
 struct Shared {
     owner: ThreadId,
     max_steps: u64,
+    spin_limit: u64,
     state: Mutex<State>,
     /// Driverless Tokio runtime every poll runs inside (see the module docs),
     /// built on the first poll so a replay can still choose its seed.
@@ -285,6 +296,10 @@ impl Shared {
             max_steps,
             tokio: Mutex::new(None),
             watch: watchdog::Watch::register(seed),
+            spin_limit: std::env::var("SPAWNED_SIM_SPIN")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(DEFAULT_SPIN_LIMIT),
             state: Mutex::new(State {
                 seed,
                 rng: seed,
@@ -296,6 +311,7 @@ impl Shared {
                 timers: BTreeMap::new(),
                 next_timer: 0,
                 steps: 0,
+                spin: 0,
                 hash: 0xcbf2_9ce4_8422_2325,
                 trace: None,
                 tape: None,
@@ -444,7 +460,9 @@ impl Shared {
         loop {
             self.check_leaks();
             let mut state = lock(&self.state);
-            if !state.ready.is_empty() {
+            let starving = state.spin >= self.spin_limit && !state.timers.is_empty();
+            if !state.ready.is_empty() && !starving {
+                state.spin += 1;
                 let index = choose(&mut state);
                 let canonical = index == canonical(&state.ready);
                 let id = state.ready.swap_remove(index);
@@ -473,8 +491,16 @@ impl Shared {
                 }
                 return Some(id);
             }
-            let (deadline, _) = *state.timers.keys().next()?;
-            state.now = deadline;
+            let (earliest, _) = *state.timers.keys().next()?;
+            // Idle: jump to the earliest timer. Starving (tasks still ready):
+            // creep forward by one quantum, as wall time would under a spin.
+            let deadline = if starving {
+                earliest.min(state.now + SPIN_QUANTUM)
+            } else {
+                earliest
+            };
+            state.spin = 0;
+            state.now = state.now.max(deadline);
             if let Some(tape) = &mut state.tape {
                 tape.push(Decision::Fire(deadline));
             }

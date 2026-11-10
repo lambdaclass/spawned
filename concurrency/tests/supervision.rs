@@ -1,4 +1,6 @@
 #![cfg(feature = "async")]
+// Tests that need OS threads are compiled out under spawned_sim.
+#![cfg_attr(spawned_sim, allow(unused_imports, dead_code))]
 use spawned_concurrency::{
     message::Message,
     supervision::{Backoff, ChildSpec, RestartMode, SupervisorConfig},
@@ -66,10 +68,14 @@ async fn one_for_one_uses_fresh_state_same_group_and_instance_bound_refs() {
                         ctx.execution_group().name().as_deref(),
                         Some("recovery-critical")
                     );
-                    assert!(std::thread::current()
-                        .name()
-                        .unwrap()
-                        .starts_with("spawned-recovery-critical"));
+                    // One simulated thread under spawned_sim: no group workers.
+                    assert!(
+                        cfg!(spawned_sim)
+                            || std::thread::current()
+                                .name()
+                                .unwrap()
+                                .starts_with("spawned-recovery-critical")
+                    );
                     observed.fetch_add(1, Ordering::SeqCst);
                     Ok::<_, String>(Counter(0))
                 }
@@ -275,6 +281,8 @@ impl Handler<Crash> for SlowHelper {
         panic!("injected failure with active helper");
     }
 }
+// Not simulated: a helper blocks an OS worker on purpose.
+#[cfg(not(spawned_sim))]
 #[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn cleanup_deadline_escalates_without_overlapping_a_live_generation() {
     let system = ActorSystem::new().unwrap();
@@ -340,6 +348,8 @@ impl Handler<Crash> for SlowStop {
         panic!("failure before stuck stopped hook");
     }
 }
+// Not simulated: a helper blocks an OS worker on purpose.
+#[cfg(not(spawned_sim))]
 #[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn stuck_stopped_hook_triggers_cleanup_deadline_before_terminal_publication() {
     let system = ActorSystem::new().unwrap();

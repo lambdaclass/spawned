@@ -1,4 +1,6 @@
 #![cfg(feature = "async")]
+// Tests that need OS threads are compiled out under spawned_sim.
+#![cfg_attr(spawned_sim, allow(unused_imports, dead_code))]
 use spawned_concurrency::{
     message::Message,
     supervision::{Backoff, ChildSpec, RestartMode, SupervisorConfig, SupervisorStrategy},
@@ -355,6 +357,8 @@ async fn cohort_reconstruction_consumes_shared_factory_attempt_budget() {
     assert!(live.iter().all(|n| n.load(Ordering::SeqCst) == 0));
 }
 
+// Not simulated: children meet at a std::sync::Barrier, which needs OS threads.
+#[cfg(not(spawned_sim))]
 #[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn simultaneous_failures_and_shutdown_do_not_overlap_cohorts_or_generations() {
     for strategy in [
@@ -419,6 +423,8 @@ async fn simultaneous_failures_and_shutdown_do_not_overlap_cohorts_or_generation
     }
 }
 
+// Not simulated: uses spawn_blocking.
+#[cfg(not(spawned_sim))]
 #[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn blocked_collateral_helper_prevents_entire_cohort_reconstruction() {
     for strategy in [

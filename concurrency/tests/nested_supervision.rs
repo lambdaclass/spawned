@@ -1,4 +1,6 @@
 #![cfg(feature = "async")]
+// Tests that need OS threads are compiled out under spawned_sim.
+#![cfg_attr(spawned_sim, allow(unused_imports, dead_code))]
 use spawned_concurrency::{
     message::Message,
     supervision::{
@@ -278,6 +280,8 @@ async fn nested_supervisors_can_form_multiple_levels_and_stop_from_the_root() {
     assert!(system.shutdown(LIMIT).await.complete);
 }
 
+// Not simulated: native groups need OS threads.
+#[cfg(not(spawned_sim))]
 #[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn native_leaf_helper_blocks_subtree_replacement_and_remains_owned_after_adapter_exit() {
     let system = ActorSystem::new().unwrap();

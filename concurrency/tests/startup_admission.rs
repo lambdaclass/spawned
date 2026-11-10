@@ -1,5 +1,7 @@
 //! Managed admission cancellation intentionally differs from legacy start().
 #![cfg(feature = "async")]
+// Tests that need OS threads are compiled out under spawned_sim.
+#![cfg_attr(spawned_sim, allow(unused_imports, dead_code))]
 use spawned_concurrency::{
     system::ActorSystem,
     tasks::{Actor, ActorStart, Context},
@@ -49,6 +51,8 @@ impl Drop for Probe {
     }
 }
 
+// Not simulated: blocks the group's OS worker on purpose.
+#[cfg(not(spawned_sim))]
 #[spawned_macros::sim_test(flavor = "current_thread")]
 async fn managed_actor_stopped_before_first_poll_runs_no_hooks_but_drops_state() {
     let system = ActorSystem::new().unwrap();

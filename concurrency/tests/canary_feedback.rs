@@ -1,4 +1,6 @@
 #![cfg(feature = "async")]
+// Tests that need OS threads are compiled out under spawned_sim.
+#![cfg_attr(spawned_sim, allow(unused_imports, dead_code))]
 use spawned_concurrency::{
     message::Message,
     supervision::{
@@ -96,6 +98,8 @@ async fn unfinished_report_identifies_child_and_active_turn() {
     );
 }
 
+// Not simulated: uses spawn_blocking.
+#[cfg(not(spawned_sim))]
 #[spawned_macros::sim_test]
 async fn completed_turn_is_not_reported_while_helper_cleanup_remains() {
     let system = ActorSystem::new().unwrap();
@@ -177,6 +181,10 @@ impl tracing::Subscriber for Capture {
 #[spawned_macros::sim_test]
 async fn supervision_logs_restart_budget_exhaustion_and_give_up() {
     let capture = Capture::default();
+    // One thread (and one run per seed) under spawned_sim: a scoped default.
+    #[cfg(spawned_sim)]
+    let _subscriber = tracing::subscriber::set_default(capture.clone());
+    #[cfg(not(spawned_sim))]
     tracing::subscriber::set_global_default(capture.clone()).unwrap();
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("canary-tracing", 1).unwrap();

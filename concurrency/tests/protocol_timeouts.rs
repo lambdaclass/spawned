@@ -75,7 +75,9 @@ mod asynchronous {
             msg.millis
         }
     }
-    #[tokio::test(start_paused = true)]
+    // Tokio's paused clock normally; the simulator's clock is always virtual.
+    #[cfg_attr(not(spawned_sim), tokio::test(start_paused = true))]
+    #[cfg_attr(spawned_sim, spawned_macros::sim_test)]
     async fn protocol_method_and_handle_overrides_have_explicit_precedence() {
         let actor = Worker.start();
         // Virtual time: larger than the old five-second default.
