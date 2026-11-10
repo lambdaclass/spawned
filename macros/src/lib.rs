@@ -1639,12 +1639,17 @@ pub fn actor(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// Seeded async test: on Tokio in normal builds, over a seed range on the
 /// deterministic simulator under `--cfg spawned_sim` (see
 /// `spawned_rt::tasks::SimTest`). Accepts `#[tokio::test]`'s `flavor` and
-/// `worker_threads` (used only on Tokio) and `seeds = N` (simulation seeds
-/// `0..N`). The function may take one `u64` argument, the seed.
+/// `worker_threads` (used only on Tokio), `seeds = N` (simulation seeds
+/// `0..N`), `explore = "pct:d=3"` (simulation scheduling strategy: `random`,
+/// `pct[:d=D][,k=K]` or `dfs[:bound=B][,depth=N]`) and `iterations = N` (runs
+/// for that strategy). The function may take one `u64` argument, the seed.
 ///
 /// ```ignore
 /// #[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 /// async fn restarts_child(seed: u64) { /* ... */ }
+///
+/// #[spawned_macros::sim_test(explore = "pct:d=3", iterations = 1000)]
+/// async fn no_lost_update() { /* ... */ }
 /// ```
 #[proc_macro_attribute]
 pub fn sim_test(attr: TokenStream, item: TokenStream) -> TokenStream {
@@ -1653,6 +1658,8 @@ pub fn sim_test(attr: TokenStream, item: TokenStream) -> TokenStream {
     let mut multi_thread = false;
     let mut workers: Option<syn::Expr> = None;
     let mut seeds: Option<syn::Expr> = None;
+    let mut explore: Option<syn::Expr> = None;
+    let mut iterations: Option<syn::Expr> = None;
     for option in options {
         let key = option
             .path
@@ -1682,10 +1689,12 @@ pub fn sim_test(attr: TokenStream, item: TokenStream) -> TokenStream {
             }
             "worker_threads" => workers = Some(option.value),
             "seeds" => seeds = Some(option.value),
+            "explore" => explore = Some(option.value),
+            "iterations" => iterations = Some(option.value),
             _ => {
                 return syn::Error::new_spanned(
                     &option.path,
-                    "sim_test accepts flavor, worker_threads and seeds",
+                    "sim_test accepts flavor, worker_threads, seeds, explore and iterations",
                 )
                 .to_compile_error()
                 .into()
@@ -1735,6 +1744,8 @@ pub fn sim_test(attr: TokenStream, item: TokenStream) -> TokenStream {
         quote! {}
     };
     let seeds = seeds.map(|n| quote! { .seeds(0..(#n)) });
+    let explore = explore.map(|s| quote! { .explore(#s) });
+    let iterations = iterations.map(|n| quote! { .iterations(#n) });
     quote! {
         #(#attrs)*
         #[test]
@@ -1743,6 +1754,8 @@ pub fn sim_test(attr: TokenStream, item: TokenStream) -> TokenStream {
                 .named(env!("CARGO_PKG_NAME"), module_path!(), stringify!(#name))
                 #flavor
                 #seeds
+                #explore
+                #iterations
                 .run(|#seed: u64| async move #body)
         }
     }
