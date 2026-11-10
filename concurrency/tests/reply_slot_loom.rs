@@ -166,6 +166,7 @@ fn reply_vs_owner_close() {
             loom::thread::spawn(move || slot.reply(1, &|| 0).0)
         };
         let closed = slot.close();
+        assert!(slot.is_terminal(), "close returned while a reply was WRITING");
         let delivery = replier.join().unwrap();
         if closed {
             assert_eq!(state(slot.word()), slot::STOPPED);
