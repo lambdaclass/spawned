@@ -63,7 +63,6 @@
   handler instead of `#[actor]`. `#[actor(protocol = ...)]` on a generic actor
   no longer fails with "cannot find type `T`". See
   [testing](docs/TESTING.md#macro-diagnostics).
-- Tests for semantics guarantees that were not yet checked (WIP).
 - Tests for the semantics guarantees that were not yet checked
   (`concurrency/tests/semantics_gaps.rs`, both modes where they apply): a
   trapped `Exit` and a `Down` follow every message the source sent earlier;
