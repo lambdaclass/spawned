@@ -519,7 +519,7 @@ impl<A: Actor> Context<A> {
         W: Future<Output = T> + Send + 'static,
         D: FnOnce(JobOutcome<T>, ReplyTo<R>) -> M + Send + 'static,
     {
-        let (state, slot, token) = self.link(&opts, token)?;
+        let (state, slot, token) = self.link_reply(&opts, token)?;
         let watch = opts.cancel_on_caller_gone.then(|| slot.clone());
         let hold = Hold::Linked(LinkedJob(slot));
         Ok(self.launch_async(opts, state, hold, work, linked_done(token, done), watch))
@@ -541,7 +541,7 @@ impl<A: Actor> Context<A> {
         W: FnOnce(&JobCtx<A>) -> T + Send + 'static,
         D: FnOnce(JobOutcome<T>, ReplyTo<R>) -> M + Send + 'static,
     {
-        let (state, slot, token) = self.link(&opts, token)?;
+        let (state, slot, token) = self.link_reply(&opts, token)?;
         let hold = Hold::Linked(LinkedJob(slot));
         let cell = Arc::new(Mutex::new(Some(token)));
         let shared = cell.clone();
@@ -568,7 +568,7 @@ impl<A: Actor> Context<A> {
     /// attach CAS on the token's slot (which reserves a credit only when a
     /// linked job already runs).
     #[allow(clippy::type_complexity)]
-    fn link<R: Send + 'static>(
+    fn link_reply<R: Send + 'static>(
         &self,
         opts: &JobOptions,
         token: ReplyTo<R>,
