@@ -3,9 +3,9 @@
 Upgrade notes per release, newest first. The [CHANGELOG](../CHANGELOG.md) lists
 every change; this guide covers what you need to edit when upgrading.
 
-## Unreleased
+## 0.7.3
 
-A Transient child's replacement (any generation after the child was first
+**Behaviour change (supervision).** A Transient child's replacement (any generation after the child was first
 ready) that stops `Normal` or `Shutdown` from `started()`, or is shut down
 before readiness, no longer fails its supervisor. It is a failed restart,
 retried within `max_restarts` like a failed factory (factory errors are
@@ -15,6 +15,9 @@ only the failed child was retried. If you relied on a failing child to stop a
 tree, stop it explicitly with `Supervisor::stop` or `Supervisor::shutdown`:
 budget exhaustion is not a reliable stop, since an expiring
 `restart_window` can keep granting retries. The first startup is unchanged.
+
+Users of the simulation backend need `RUSTFLAGS="--cfg spawned_sim --cfg tokio_unstable"`;
+normal builds are unaffected.
 
 ## 0.7.2
 

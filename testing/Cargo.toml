@@ -12,7 +12,7 @@ repository.workspace = true
 [dependencies]
 # Path dependency (not `workspace = true`) so `--no-default-features` really
 # drops the async runtime: the workspace entry keeps spawned-concurrency's defaults.
-spawned-concurrency = { path = "../concurrency", version = "0.7.2", default-features = false }
+spawned-concurrency = { path = "../concurrency", version = "0.7.3", default-features = false }
 spawned-rt = { workspace = true }
 tracing = { workspace = true }
 
