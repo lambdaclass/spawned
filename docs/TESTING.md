@@ -30,7 +30,14 @@ cargo run --locked -p spawned-capability-examples --bin test_kit
 ```
 
 Its own suites cover both modes (`tasks_kit`, `threads_kit`) and the Ethlambda
-protocol-stub pattern it replaces (`ethlambda_pattern`). It has no controlled
+protocol-stub pattern it replaces (`ethlambda_pattern`). `linearizability`
+validates the history checker (`spawned_test::linearizability`) against known
+register, key-value and FIFO-queue histories (stale read, lost write,
+read-your-write, new-old inversion, pending operations that must or may have
+taken effect), a brute-force reference on 512 generated histories, generated
+sequential histories that must always pass, and a 5,000-operation history; run
+`cargo test --release -p spawned-test --test linearizability -- --ignored --nocapture`
+for the scale table. It has no controlled
 scheduler: ordering exploration and replay (roadmap ranks 20-22) are later work
 in the same crate.
 
@@ -156,7 +163,7 @@ Real client recovery under fault injection remains a separate application rollou
 | Suite | Evidence provided | Limit |
 |---|---|---|
 | `failure_windows` | Nine deliberately reached lifecycle/request windows across async, blocking, dedicated-thread and synchronous-thread actors; optional `SPAWNED_FAILURE_REPORT` records coverage | A bounded demonitor observation is not exhaustive proof over schedules |
-| `request_histories` | Independent bounded search for a legal sequential history, with wrong-reply/duplicate/lost-effect negative controls | At most 16 operations and 100,000 search states; exhausted search is inconclusive and fails, not a pass |
+| `request_histories` | Porcupine-style linearizability checking (`spawned_test::linearizability`) of real-actor histories: the append-log worker across four backends (about 50 operations each), and PropEr-style `parallel_commands` programs (sequential prefix, then 2-4 concurrent branches, up to about 1,000 operations with zero-timeout pending requests) against a key-value/queue store actor in tasks (`Async`, `Thread`) and threads modes. Negative controls: corrupted observed histories, and store actors with injected lost-write, stale-read and reorder bugs, caught with and without a tripwire prefix. The old bounded oracle survives only to show the new checker agrees with it on 4,000 generated histories it can decide | One OS/Tokio interleaving per run, not replayed; per-partition search is exponential in the worst case, and an exhausted budget is `Unknown` and fails, not a pass |
 | `delivery_simulation` | Enumerate 125 states of a finite cooperative-stop model and replay 500 witnesses across four backends, plus seeded scripts and an audit digest | Controls handler-progress gates, not arbitrary OS/Tokio scheduling, network, clocks or all lifecycle signals |
 | `payload_stress` | Unique owned payloads from 128 concurrent producers; verify FIFO delivery or complete destruction on stop | Explicitly bounded payload volume; not a whole-process memory proof |
 | `process_failures` (Unix) | Abort or kill an owned subprocess after an actor effect; check process failure does not promise cleanup callbacks or rollback | Temporary marker is not a storage durability acknowledgement |
@@ -164,7 +171,7 @@ Real client recovery under fault injection remains a separate application rollou
 
 ```sh
 cargo test --locked -p spawned-concurrency --test failure_windows --test request_histories --test delivery_simulation --test process_failures --test benchmark_startup
-SPAWNED_HISTORY_CASES=128 SPAWNED_HISTORY_SEED=20261106 cargo test --locked -p spawned-concurrency --test request_histories -- --nocapture
+SPAWNED_HISTORY_CASES=128 SPAWNED_HISTORY_SEED=20261106 SPAWNED_LINEARIZABLE_CASES=256 cargo test --locked -p spawned-concurrency --test request_histories -- --nocapture
 SPAWNED_SIM_CASES=256 SPAWNED_SIM_SEED=20261106 cargo test --locked -p spawned-concurrency --test delivery_simulation -- --nocapture
 SPAWNED_STRESS_PRODUCERS=128 SPAWNED_STRESS_MESSAGES=256 SPAWNED_STRESS_PAYLOAD=1024 cargo test --locked -p spawned-concurrency --test payload_stress -- --ignored --nocapture
 ```

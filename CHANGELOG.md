@@ -51,6 +51,13 @@
   landscape, supervision models, deadlock and stall detection, test techniques
   and event sourcing (#199-#202, #205, #208, #210).
 - Roadmap: add future-size/stack-depth budgets, panics in framework-called code, client compatibility CI, behaviour snapshots, trace coverage against the TLA+ models and differential testing against Erlang/OTP to the testing plan.
+- `spawned_test::linearizability`: a Porcupine-style linearizability checker
+  (memoised Wing-Gong/Lowe search, per-key partitions, pending requests, an
+  `Unknown` budget verdict, failure explanations and an HTML timeline) with a
+  `Recorder` for concurrent clients. `request_histories` uses it instead of the
+  bounded 16-operation oracle and adds PropEr-style parallel histories of up to
+  about 1,000 operations against a real store actor in both modes, with
+  injected lost-write, stale-read and reorder negative controls.
 
 ## 0.7.0 — 2026-11-09
 
