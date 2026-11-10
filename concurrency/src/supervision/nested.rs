@@ -245,12 +245,10 @@ impl Actor for SupervisorActor {
             }
         }
     }
-    async fn stopped(&mut self, _: &Context<Self>) {
-        if let Some(supervisor) = &self.running {
-            supervisor.stop();
-        }
-    }
 }
+// No `stopped` hook: the actor state is dropped right after its lifecycle
+// returns (no await in between), on every exit path including unwinds, so
+// stopping the running subtree here covers what `stopped` would.
 impl Drop for SupervisorActor {
     fn drop(&mut self) {
         if let Some(supervisor) = &self.running {

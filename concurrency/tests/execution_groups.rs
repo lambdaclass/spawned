@@ -644,3 +644,15 @@ async fn closed_system_rejects_new_groups_and_completed_reports_stay_complete() 
     assert!(group.is_closed());
     assert!(matches!(Worker.start_on(&group), Err(SystemError::Closed)));
 }
+
+#[test]
+fn shard_selection_accepts_every_slot_and_rejects_the_next() {
+    let system = ActorSystem::new().unwrap();
+    let group = system.thread_group("two-slots", 2).unwrap();
+    for index in 0..2 {
+        assert!(group.shard(index).is_ok(), "slot {index} rejected");
+    }
+    assert!(matches!(group.shard(2), Err(SystemError::InvalidShard)));
+    let pool = system.async_group("pool", 2).unwrap();
+    assert!(matches!(pool.shard(0), Err(SystemError::InvalidShard)));
+}
