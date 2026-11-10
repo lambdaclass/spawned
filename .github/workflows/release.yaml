@@ -61,9 +61,6 @@ jobs:
             fi
           }
 
-      - name: Wait for spawned-concurrency indexing
-        run: sleep 30
-
       - name: Publish spawned-test
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}

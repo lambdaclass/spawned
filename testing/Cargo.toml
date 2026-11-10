@@ -1,6 +1,9 @@
 [package]
 name = "spawned-test"
 description = "Test kit for Spawned actors: mocks, probes, harness helpers and fault injection"
+readme = "README.md"
+keywords = ["actors", "testing", "concurrency", "async"]
+categories = ["development-tools::testing", "concurrency"]
 version.workspace = true
 edition.workspace = true
 license.workspace = true
