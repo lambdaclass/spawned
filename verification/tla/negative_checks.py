@@ -205,6 +205,18 @@ def main():
     model_fault("MCNested", "Propagation", args.tlc, temporal=True)
     for module, fault, invariant in DEFERRED_CONTROLS:
         named_fault(module, fault, invariant, args.tlc)
+    # Base actor lifecycle (docs/design/otp-exit-signals.md): v0.7 exit-signal
+    # behaviours and the PR #182/#185 bugs must each produce a counterexample.
+    model_fault("MCLifecycle", "DirectStop", args.tlc, invariant="TrapRespected")
+    model_fault("MCLifecycle", "KillAsKill", args.tlc, invariant="KilledFromKill")
+    model_fault("MCLifecycle", "LateRealReason", args.tlc, invariant="NoProcIffLate")
+    model_fault("MCLifecycle", "Retain182", args.tlc, invariant="NoOrphanRequest")
+    model_fault("MCLifecycle", "Dispatch185", args.tlc, invariant="NoDispatchAfterStop")
+    model_fault("MCLifecycle", "DropQueued", args.tlc, invariant="NoOrphanRequest")
+    model_fault("MCLifecycle", "EarlyNotify", args.tlc, invariant="ExitAfterMessages")
+    model_fault("MCLifecycle", "SplitDeathPoint", args.tlc, invariant="NoEdgeToDead")
+    model_fault("MCLifecycle", "ParentAsExit", args.tlc, temporal=True)
+
 
 if __name__ == "__main__":
     main()

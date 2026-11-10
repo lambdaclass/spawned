@@ -15,6 +15,7 @@ this fits with Loom, Shuttle, Miri, ThreadSanitizer and mutation testing.
 | `NestedSupervision.tla`, `MCNested.tla/.cfg` | Dynamic subtree ownership and shutdown delivery; parent scope completion waits for descendant completion. Bounded three-node/two-generation model with fair cleanup. |
 | `DeferredReplies.tla`, `MCDeferredReplies*.tla/.cfg` | Rank 11 design model (not implemented), part 1: reply slots, send-time deadlines with shortening, deferral credits shared by a token and its first linked job, the exiting phase with unwind-local drops, a stuck phase (cleanup deadline passed while `stopped()` runs: nothing closed early, death later or never), death, and downstream request cleanup. Thirteen named negative controls. |
 | `DeferredJobs.tla`, `MCDeferredJobs*.tla/.cfg` | Rank 11 design model, part 2: pipe jobs with separate execution, cancellation and notification states; keyed replacement including notified jobs; optional job deadlines; a FIFO mailbox with emit credits and the terminal message last; `ActorId` fencing. `MCDeferredJobsEmits` is the fast configuration with emits. Nine named negative controls. |
+| `Lifecycle.tla`, `MCLifecycle.tla/.cfg` | Base actor lifecycle as proposed for v0.8 ([design](../../docs/design/otp-exit-signals.md)): links, monitors, `trap_exit`, exit signals (`Killed`, ignored `Normal`, `NoProc`, parent exits), administrative stops, requests around death, `Exit`/`Down` ordering. Nine negative controls: the v0.7 exit-signal behaviours, the PR #182/#185 bugs, early notification and a split death point. |
 | `TraceCohorts.tla`, `TraceNested.tla` | Policy and ownership projections of real cohort/nested Rust executions. |
 | `trace_check.py`, `negative_checks.py` | Replay recorded traces; deliberately wrong selections, premature resume/join and broken propagation must be rejected or produce counterexamples. |
 | `SupervisionInd.tla`, `CohortsInd.tla`, `NestedSupervisionInd.tla`, `CoordinatorInd.tla`, `MC*Ind.tla`, `apalache.sh` | Inductive invariants (`IndInv`) checked with Apalache; see [Inductive invariants](#inductive-invariants-apalache). |
@@ -446,22 +447,16 @@ trace collections without requiring the new negative controls.
 
 ## Next model
 
-The base actor lifecycle is not modelled yet: exit reasons, monitors and
-demonitor, links with `trap_exit` and `start_linked`, stop and cancellation while
-a handler runs, request acceptance or rejection around shutdown, and exit
-signals relative to queued messages. Keep it small (three or four actors,
-bounded mailboxes and message counts). It should check at least:
-
-- an actor linked to an abnormally exiting, non-trapping peer eventually stops;
-- every accepted request eventually gets a reply or `ActorStopped`, never neither;
-- no message is dispatched after the run loop has observed stop;
-- each monitor's `Down` is delivered exactly once.
-
-Acceptance: reintroducing the PR #182 bug (a request whose mailbox publication
-races shutdown is retained without a reply) and the PR #185 bug (newly
-received idle work dispatched after stop) into the model must each produce a
-counterexample, as the five injected supervision bugs do today. Trace validation
-should then cover the lifecycle scenarios the same way it covers supervision.
+The base actor lifecycle model is `Lifecycle.tla` (proposed v0.8 contract,
+[design](../../docs/design/otp-exit-signals.md#what-the-model-establishes)).
+It checks that every sent request ends `Ok`, `ActorStopped` or `NoProc`; no
+message is dispatched after stop; each monitor's `Down` is delivered at most
+once and, unless its observer died, exactly once; linked non-trapping peers of
+an abnormal exit stop; and the exit-signal rules of rank 5e. Reintroducing the
+PR #182 bug (`Fault = "Retain182"`) and the PR #185 bug (`"Dispatch185"`) each
+produce a counterexample (`negative_checks.py`). Still to do with the
+implementation: lifecycle-trace events for exit signals, links, monitors and
+requests so real runs replay against it, as supervision traces do.
 Source: [verification strategy](../../legacy/docs/research/verification-strategy.md#acceptance).
 
 `Coordinator.tla` checks coordinator failure ownership independently of the actor
