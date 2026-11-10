@@ -340,7 +340,7 @@ fn virtual_time_advances_only_when_idle() {
 fn spawn_blocking_is_rejected() {
     let rt = Runtime::with_seed(1);
     rt.block_on(async {
-        let _ = spawned_rt::tasks::spawn_blocking(|| ());
+        drop(spawned_rt::tasks::spawn_blocking(|| ()));
     });
 }
 
@@ -349,7 +349,29 @@ fn thread_groups_are_rejected() {
     let rt = Runtime::with_seed(1);
     rt.block_on(async {
         let system = ActorSystem::new().unwrap();
-        let error = system.thread_group("native", 1).err().expect("rejected");
+        let Err(error) = system.thread_group("native", 1) else {
+            panic!("thread group accepted under simulation");
+        };
         assert!(error.to_string().contains("spawned_sim"), "{error}");
     });
+}
+
+/// PR #204 finding 2, pinned: on this tree, seed 12 leaves the launched but
+/// never-started child `c1` Failed and seed 2 leaves it Stopped. A schedule
+/// change in the supervisor can move these seeds; the sweep above then finds
+/// new ones.
+#[test]
+fn pr204_never_started_child_state_pinned_seeds() {
+    for (seed, expected) in [(12, "Failed"), (2, "Stopped")] {
+        let runs: Vec<_> = (0..3)
+            .map(|_| simulate(seed, true, |log| initial_failure(log, 0)))
+            .collect();
+        assert!(
+            runs.windows(2).all(|w| w[0] == w[1]),
+            "seed {seed} diverged"
+        );
+        let c1 = &runs[0].outcome.states[1];
+        println!("seed {seed}: c1 = {c1:?}, outcome {:?}", runs[0].outcome);
+        assert_eq!(c1, &(expected.to_string(), 0), "seed {seed}");
+    }
 }
