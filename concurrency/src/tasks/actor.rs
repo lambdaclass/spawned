@@ -560,11 +560,12 @@ impl<A: Actor> Context<A> {
     /// Build a type-erased `SendExitFn` that enqueues an `ExitEnvelope`
     /// onto this actor's mailbox.
     fn own_send_exit_fn(&self) -> SendExitFn {
-        let sender = self.shared.sender.clone();
-        Arc::new(move |exit: Exit| {
-            let envelope: Box<dyn Envelope<A> + Send> = Box::new(ExitEnvelope { exit });
-            sender.send(envelope).map_err(|_| ActorError::ActorStopped)
-        })
+        self.shared.send_exit_fn()
+    }
+
+    /// Type-erased handle to this actor, without an intermediate `ActorRef`.
+    pub(crate) fn child_handle(&self) -> ChildHandle {
+        self.shared.child_handle()
     }
 
     /// Spawn a lifecycle-owned helper on this actor's assigned execution group.
@@ -849,30 +850,44 @@ impl<A: Actor> ActorRef<A> {
 
     /// Get a type-erased `ChildHandle` for this actor.
     pub fn child_handle(&self) -> ChildHandle {
-        ChildHandle::from(self.clone())
+        self.shared.child_handle()
+    }
+
+    /// The shared state, for tests proving it is freed once every handle is gone.
+    #[cfg(test)]
+    fn shared_weak(&self) -> std::sync::Weak<ActorShared<A>> {
+        Arc::downgrade(&self.shared)
+    }
+}
+
+impl<A: Actor> ActorShared<A> {
+    /// Build a type-erased `SendExitFn` that enqueues an `ExitEnvelope`
+    /// onto this actor's mailbox.
+    fn send_exit_fn(&self) -> SendExitFn {
+        let sender = self.sender.clone();
+        Arc::new(move |exit: Exit| {
+            let envelope: Box<dyn Envelope<A> + Send> = Box::new(ExitEnvelope { exit });
+            sender.send(envelope).map_err(|_| ActorError::ActorStopped)
+        })
+    }
+
+    fn child_handle(&self) -> ChildHandle {
+        ChildHandle::from_tasks(
+            self.id,
+            self.cancellation_token.clone(),
+            self.completion_rx.clone(),
+            self.trap_exit.clone(),
+            self.links.clone(),
+            self.linked_reason.clone(),
+            self.send_exit_fn(),
+        )
+        .with_mailbox_failures(self.sender.failures())
     }
 }
 
 impl<A: Actor> From<ActorRef<A>> for ChildHandle {
     fn from(actor_ref: ActorRef<A>) -> Self {
-        let failures = actor_ref.shared.sender.failures();
-        // Build a type-erased SendExitFn that enqueues an ExitEnvelope onto
-        // this actor's mailbox.
-        let sender = actor_ref.shared.sender.clone();
-        let send_exit: SendExitFn = Arc::new(move |exit: Exit| {
-            let envelope: Box<dyn Envelope<A> + Send> = Box::new(ExitEnvelope { exit });
-            sender.send(envelope).map_err(|_| ActorError::ActorStopped)
-        });
-        ChildHandle::from_tasks(
-            actor_ref.shared.id,
-            actor_ref.shared.cancellation_token.clone(),
-            actor_ref.shared.completion_rx.clone(),
-            actor_ref.shared.trap_exit.clone(),
-            actor_ref.shared.links.clone(),
-            actor_ref.shared.linked_reason.clone(),
-            send_exit,
-        )
-        .with_mailbox_failures(failures)
+        actor_ref.shared.child_handle()
     }
 }
 
@@ -954,7 +969,7 @@ impl<A: Actor> ActorRef<A> {
         }
 
         if let Some(parent) = parent {
-            actor_ref.context().link(&parent);
+            ctx.link(&parent);
         }
 
         #[cfg(feature = "backend-experiments")]
@@ -1375,11 +1390,7 @@ pub trait ActorStart: Actor {
     /// A closed parent is observed under its link-state mutex; an abnormal
     /// parent exit cancels the child cooperatively before message dispatch.
     fn start_linked<P: Actor>(self, parent_ctx: &Context<P>) -> ActorRef<Self> {
-        ActorRef::spawn(
-            self,
-            Backend::Async,
-            Some(parent_ctx.actor_ref().child_handle()),
-        )
+        ActorRef::spawn(self, Backend::Async, Some(parent_ctx.child_handle()))
     }
 }
 
@@ -2974,6 +2985,95 @@ mod idle_stop_regression {
                 "idle actor dispatched queued work after stop"
             );
             assert!(response.await.is_err(), "queued request unexpectedly ran");
+        });
+    }
+}
+
+#[cfg(test)]
+mod shared_state_release {
+    //! `ActorRef` and `Context` share one `Arc<ActorShared>`. Once the actor has
+    //! stopped and every handle is dropped, that block must be freed: nothing
+    //! the runtime keeps (links, monitors, child handles, the run task) may hold it.
+    use super::*;
+    use std::sync::Weak;
+
+    async fn freed<A: Actor>(weak: &Weak<ActorShared<A>>) -> bool {
+        for _ in 0..500 {
+            if weak.upgrade().is_none() {
+                return true;
+            }
+            rt::sleep(Duration::from_millis(10)).await;
+        }
+        false
+    }
+
+    struct Plain;
+    impl Actor for Plain {}
+    impl Handler<Down> for Plain {
+        async fn handle(&mut self, _: Down, _: &Context<Self>) {}
+    }
+
+    /// Keeps a clone of its own `Context` in its state.
+    struct Holder(Option<Context<Holder>>);
+    impl Actor for Holder {
+        async fn started(&mut self, ctx: &Context<Self>) {
+            self.0 = Some(ctx.clone());
+        }
+    }
+
+    #[test]
+    fn freed_after_stop_and_last_handle_dropped() {
+        rt::Runtime::new().unwrap().block_on(async {
+            let actor = Plain.start();
+            let weak = actor.shared_weak();
+            let extra = (actor.clone(), actor.context(), actor.child_handle());
+            actor.context().stop();
+            actor.join().await;
+            drop(extra);
+            drop(actor);
+            assert!(freed(&weak).await, "ActorShared outlived every handle");
+        });
+    }
+
+    #[test]
+    fn freed_when_context_was_stored_in_actor_state() {
+        rt::Runtime::new().unwrap().block_on(async {
+            let actor = Holder(None).start();
+            let weak = actor.shared_weak();
+            actor.context().stop();
+            actor.join().await;
+            drop(actor);
+            assert!(freed(&weak).await, "Context kept in actor state leaked");
+        });
+    }
+
+    #[test]
+    fn freed_with_links_and_monitors() {
+        rt::Runtime::new().unwrap().block_on(async {
+            let a = Plain.start();
+            let b = Plain.start();
+            let watcher = Plain.start();
+            a.context().trap_exit(true);
+            a.context().link(&b.child_handle());
+            let _monitor = watcher.context().monitor(&a.child_handle());
+            watcher.context().monitor(&b.child_handle());
+            let child = Plain.start_linked(&a.context());
+            let weaks = [
+                a.shared_weak(),
+                b.shared_weak(),
+                watcher.shared_weak(),
+                child.shared_weak(),
+            ];
+            for actor in [&b, &a, &watcher] {
+                actor.context().stop();
+                actor.join().await;
+            }
+            child.context().stop();
+            child.join().await;
+            drop((a, b, watcher, child));
+            for weak in &weaks {
+                assert!(freed(weak).await, "linked or monitored actor leaked");
+            }
         });
     }
 }

@@ -494,18 +494,29 @@ same change.
 
 ## Debug future layouts
 
-`future_layout.rs` compares owned handle, send and protocol-call shapes with the
-pre-guard layout and checks concrete request-future budgets on Linux x86_64.
-Run it with default features and `--features metrics`. The receiver-guard change
-enlarged ActorRef/Context by one word; enclosing owned RPC futures repeated that
-growth even though borrowed request futures stayed unchanged. Shared sender
-metadata restores the measured layouts without per-message boxing.
+`future_layout.rs` pins the shapes that application futures inherit. Run it
+with default features and `--features metrics`.
 
-The [expanded probe and results](../legacy/verification/evidence/v071-review-round2/README.md)
-compare fc35abaf, 35bea650 and the compact sender, including an RPC-shaped nested
-future. This supersedes the earlier borrowed-request-only conclusion. Matching
-layout is a regression check, not proof that Ethrex's RPC tests pass at a 2 MiB
-debug stack; that client rerun remains a review gate.
+- `tasks::ActorRef` and `Context` must be exactly one pointer (also inside
+  `Option`): both share one `Arc`'d state. Owned handles are moved through
+  application futures, and debug builds give every move its own stack slot, so
+  each handle word is repeated across callers' frames. The 10-11 word handles of
+  0.7.1 (0.5.0: 4 words) cost Ethrex's debug `rpc::` tests ~136 KiB of thread
+  stack through an RPC context holding three handles; one-pointer handles took
+  its minimum from 2052 KiB to about 1850 KiB (0.5.0: 1919 KiB).
+- Send, protocol-call and an RPC-shaped nested dispatch future are compared
+  with the same shapes over a one-word stand-in handle, which catches handle
+  growth.
+- On Linux x86_64 (Rust 1.93) absolute budgets also cover `Response<T>`, the
+  protocol call and RPC dispatch futures, and owned/configured request futures,
+  so growth of `Response<T>` or the request path fails even when the handles
+  stay one pointer.
+
+Matching layout is a regression check, not proof that Ethrex's RPC tests pass
+at a 2 MiB debug stack; rerun them (`RUST_MIN_STACK` bisection of
+`cargo test -p ethrex-test --test ethrex_tests rpc::`) when handles or request
+futures change. Earlier probes comparing fc35abaf, 35bea650 and the compact
+sender are in the [round-2 evidence](../legacy/verification/evidence/v071-review-round2/README.md).
 
 ## Execution guarantees
 

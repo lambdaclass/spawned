@@ -105,6 +105,15 @@ async fn owned_send_request_and_protocol_futures_fit_the_pre_guard_layout() {
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     {
         let metrics = cfg!(feature = "metrics");
+        // `Response<T>` is what every generated protocol method returns, so its
+        // growth reaches callers even when the handles stay one pointer.
+        assert!(size_of::<Response<u64>>() <= if metrics { 48 } else { 24 });
+        assert!(size_of_val(&protocol_call(actor.clone())) <= if metrics { 72 } else { 48 });
+        let dispatch = rpc_dispatch(RpcContext {
+            actors: std::array::from_fn(|_| actor.clone()),
+        });
+        assert!(size_of_val(&dispatch) <= if metrics { 464 } else { 440 });
+        drop(dispatch);
         assert!(
             size_of_val(&actor.request(probe_protocol::Query { value: 1 }))
                 <= if metrics { 224 } else { 200 }
