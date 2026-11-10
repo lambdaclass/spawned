@@ -305,6 +305,9 @@ Phase 5 starts after that, with batch 4 as part of its design.
 
 A time-boxed spike in batch 2, and the first step toward `explore` (rank 20).
 Status: spike in draft PR #212 (`--cfg spawned_sim`; the PR #204 race replays from a seed).
+Follow-up in draft PR #214: `#[sim_test]` harness (seed sweep, replay command), virtual
+`spawned_rt::time`, decision tapes with replay by task id and a shrinker; the
+supervision, group, cancellation and async cross-backend suites run under the cfg.
 Goal: run unmodified async actors, supervisors and execution groups under a
 deterministic `spawned-rt::tasks` backend selected by a cfg flag (as madsim's
 `--cfg madsim` does), with one executor thread, virtual time that advances
