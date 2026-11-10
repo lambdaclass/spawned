@@ -156,6 +156,7 @@ impl CreditPool {
     pub(crate) fn used(&self) -> usize {
         self.used.load(Ordering::Acquire)
     }
+    #[cfg_attr(not(test), allow(dead_code))] // used by the Loom model
     pub(crate) fn max(&self) -> usize {
         self.max
     }

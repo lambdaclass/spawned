@@ -308,3 +308,74 @@ impl Drop for Registry {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::reply::slot::Slot;
+
+    fn deferred(registry: &Arc<Registry>, deadline: u64) -> Arc<Slot<u32>> {
+        let slot = Arc::new(Slot::new(deadline));
+        slot.defer(registry.pool(), &|| 0).unwrap();
+        registry.register(&slot);
+        registry.track_deadline(&slot);
+        slot
+    }
+
+    #[test]
+    fn turn_drops_commit_dropped_or_stopped() {
+        let registry = Registry::new(ActorId::next(), 8);
+        for (panicked, expected) in [(false, Terminal::Dropped), (true, Terminal::Stopped)] {
+            let slot = deferred(&registry, NEVER);
+            registry.begin_turn();
+            registry.dropped(slot.clone());
+            assert!(!slot.is_terminal(), "an in-turn drop waits for the turn end");
+            registry.end_turn(panicked);
+            assert_eq!(Terminal::of(crate::reply::slot::state(slot.word())), Some(expected));
+        }
+        // Between turns a drop answers at once; while exiting, Stopped.
+        let slot = deferred(&registry, NEVER);
+        registry.dropped(slot.clone());
+        assert_eq!(Terminal::of(crate::reply::slot::state(slot.word())), Some(Terminal::Dropped));
+        registry.exiting();
+        let slot = deferred(&registry, NEVER);
+        registry.dropped(slot.clone());
+        assert_eq!(Terminal::of(crate::reply::slot::state(slot.word())), Some(Terminal::Stopped));
+        assert_eq!(registry.outstanding(), 0);
+    }
+
+    #[test]
+    fn close_stops_every_listed_open_token_once() {
+        let registry = Registry::new(ActorId::next(), 8);
+        let open = deferred(&registry, NEVER);
+        let answered = deferred(&registry, NEVER);
+        answered.reply(1, &|| 0);
+        assert_eq!(registry.close(), 1);
+        assert_eq!(Terminal::of(crate::reply::slot::state(open.word())), Some(Terminal::Stopped));
+        assert_eq!(registry.outstanding(), 0);
+        assert_eq!(registry.heap_entries(), 0, "the heap is dropped at death");
+    }
+
+    #[test]
+    fn heap_stays_bounded_under_shortening_churn() {
+        let registry = Registry::new(ActorId::next(), 64);
+        let far = u64::MAX / 2;
+        let slots: Vec<_> = (0..32).map(|i| deferred(&registry, far + i)).collect();
+        for round in 0..200u64 {
+            for slot in &slots {
+                // Each shortening supersedes the previous entry (stale).
+                slot.shorten(far - round - 1, &|| 0);
+                registry.track_deadline(slot);
+            }
+            assert!(
+                registry.heap_entries() <= 2 * slots.len() + 16 + slots.len(),
+                "heap grew to {} entries for {} live tokens",
+                registry.heap_entries(),
+                slots.len()
+            );
+        }
+        // Expire them all: the service visit empties the heap of due entries.
+        assert_eq!(registry.service_deadlines(u64::MAX - 2), None);
+        assert_eq!(registry.outstanding(), 0);
+    }
+}
