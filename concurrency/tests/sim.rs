@@ -59,18 +59,25 @@ impl Message for Crash {
     type Result = ();
 }
 
-/// Records started/stopped; `crash` sends itself a panicking message from
-/// `started()`, so it dies right after it publishes readiness.
+/// Records started/stopped. With `crash_after: Some(k)`, `started()` spawns a
+/// task that yields `k` times and then sends the actor a panicking message,
+/// so it dies a few scheduling steps after it publishes readiness.
 struct Node {
     id: u32,
-    crash: bool,
+    crash_after: Option<u32>,
     log: Log,
 }
 impl Actor for Node {
     async fn started(&mut self, ctx: &Context<Self>) {
         push(&self.log, format!("started:{}", self.id));
-        if self.crash {
-            let _ = ctx.send(Crash);
+        if let Some(yields) = self.crash_after {
+            let actor = ctx.actor_ref();
+            drop(spawned_rt::tasks::spawn(async move {
+                for _ in 0..yields {
+                    sim::yield_now().await;
+                }
+                let _ = actor.send(Crash);
+            }));
         }
     }
     async fn stopped(&mut self, _: &Context<Self>) {
@@ -120,7 +127,7 @@ async fn shutdown_order(log: Log) -> Vec<u32> {
     let group = system.async_group("sim-order", 2).unwrap();
     let start = |id| Node {
         id,
-        crash: false,
+        crash_after: None,
         log: log.clone(),
     };
     for id in 0..2 {
@@ -135,7 +142,7 @@ async fn shutdown_order(log: Log) -> Vec<u32> {
         async move {
             Ok::<_, String>(Node {
                 id: 100,
-                crash: false,
+                crash_after: None,
                 log,
             })
         }
@@ -196,7 +203,7 @@ struct Placement {
     states: Vec<(String, u64)>,
 }
 
-async fn initial_failure(log: Log) -> Placement {
+async fn initial_failure(log: Log, yields: u32) -> Placement {
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("sim-initial", 2).unwrap();
     let mut tree = system
@@ -212,7 +219,7 @@ async fn initial_failure(log: Log) -> Placement {
                     async move {
                         Ok::<_, String>(Node {
                             id: index,
-                            crash: index == 0,
+                            crash_after: (index == 0).then_some(yields),
                             log,
                         })
                     }
@@ -240,50 +247,54 @@ async fn initial_failure(log: Log) -> Placement {
 #[test]
 fn never_started_child_state_replays_from_seed() {
     let n = seeds();
-    let mut outcomes: BTreeMap<Placement, Vec<u64>> = BTreeMap::new();
+    // (crash delay in yields, outcome) -> seeds producing it.
+    let mut outcomes: BTreeMap<(u32, Placement), Vec<u64>> = BTreeMap::new();
     let began = Instant::now();
-    for seed in 0..n {
-        let run = simulate(seed, false, initial_failure);
-        outcomes.entry(run.outcome).or_default().push(seed);
+    for yields in 0..4 {
+        for seed in 0..n {
+            let run = simulate(seed, false, |log| initial_failure(log, yields));
+            outcomes.entry((yields, run.outcome)).or_default().push(seed);
+        }
     }
     let elapsed = began.elapsed();
     println!(
-        "initial-failure sweep: {n} seeds in {elapsed:?} ({:.0} seeds/s)",
-        n as f64 / elapsed.as_secs_f64()
+        "initial-failure sweep: {} runs in {elapsed:?} ({:.0} seeds/s)",
+        4 * n,
+        (4 * n) as f64 / elapsed.as_secs_f64()
     );
-    for (outcome, seeds) in &outcomes {
+    for ((yields, outcome), seeds) in &outcomes {
         println!(
-            "  {outcome:?}: {} seeds, first {:?}",
+            "  yields={yields} {outcome:?}: {} seeds, first {:?}",
             seeds.len(),
             &seeds[..seeds.len().min(5)]
         );
     }
     // Each outcome's first seed replays it, with an identical lifecycle log
     // and schedule, on two further runs.
-    for (outcome, seeds) in &outcomes {
-        let seed = seeds[0];
-        let a = simulate(seed, true, initial_failure);
-        let b = simulate(seed, true, initial_failure);
+    for ((yields, outcome), seeds) in &outcomes {
+        let (yields, seed) = (*yields, seeds[0]);
+        let a = simulate(seed, true, |log| initial_failure(log, yields));
+        let b = simulate(seed, true, |log| initial_failure(log, yields));
         assert_eq!(&a.outcome, outcome, "seed {seed} did not replay");
         assert_eq!(a, b, "seed {seed} gave two different runs");
         println!(
-            "  seed {seed} replayed: {} scheduling decisions, log {:?}",
+            "  replayed yields={yields} seed={seed}: {} decisions, hash {:#x}, log {:?}",
             a.trace.len(),
+            a.stats.schedule_hash,
             a.log
         );
     }
-    let unstarted_failed = outcomes.keys().any(|o| {
-        o.states
-            .iter()
-            .any(|(state, generation)| *generation == 0 && state == "Failed")
-    });
-    let unstarted_stopped = outcomes.keys().any(|o| {
-        o.states
-            .iter()
-            .any(|(state, generation)| *generation == 0 && state == "Stopped")
-    });
+    let unstarted = |wanted: &str| {
+        outcomes.keys().any(|(_, o)| {
+            o.states
+                .iter()
+                .any(|(state, generation)| *generation == 0 && state == wanted)
+        })
+    };
     println!(
-        "never-started child: Failed seen = {unstarted_failed}, Stopped seen = {unstarted_stopped}"
+        "never-started child: Failed seen = {}, Stopped seen = {}",
+        unstarted("Failed"),
+        unstarted("Stopped")
     );
 }
 
