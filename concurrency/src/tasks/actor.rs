@@ -1241,7 +1241,9 @@ async fn run_actor_lifecycle<A: Actor>(
         .await;
     if let Err(panic) = start_result {
         let msg = panic_message(&*panic);
-        tracing::error!("Panic in started() callback: {msg}");
+        crate::actor_cleanup::log_safely(|| {
+            tracing::error!("Panic in started() callback: {msg}");
+        });
         cancellation_token.cancel();
         return ExitReason::Panic(format!("panic in started(): {msg}"));
     }
@@ -1261,7 +1263,9 @@ async fn run_actor_lifecycle<A: Actor>(
             .await
         {
             let msg = panic_message(&*panic);
-            tracing::error!("Panic in stopped() callback: {msg}");
+            crate::actor_cleanup::log_safely(|| {
+                tracing::error!("Panic in stopped() callback: {msg}");
+            });
             return ExitReason::Panic(format!("panic in stopped(): {msg}"));
         }
         return ExitReason::Normal;
@@ -1320,7 +1324,9 @@ async fn run_actor_lifecycle<A: Actor>(
                 }
                 if let Err(panic) = result {
                     let msg = panic_message(&*panic);
-                    tracing::error!("Panic in message handler: {msg}");
+                    crate::actor_cleanup::log_safely(|| {
+                        tracing::error!("Panic in message handler: {msg}");
+                    });
                     exit_reason = ExitReason::Panic(format!("panic in handler: {msg}"));
                     break;
                 }
@@ -1347,7 +1353,9 @@ async fn run_actor_lifecycle<A: Actor>(
         .await;
     if let Err(panic) = stop_result {
         let msg = panic_message(&*panic);
-        tracing::error!("Panic in stopped() callback: {msg}");
+        crate::actor_cleanup::log_safely(|| {
+            tracing::error!("Panic in stopped() callback: {msg}");
+        });
         if !exit_reason.is_abnormal() {
             exit_reason = ExitReason::Panic(format!("panic in stopped(): {msg}"));
         }

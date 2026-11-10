@@ -1289,8 +1289,26 @@ mod coordinator_tests {
             done,
         });
         system.inner.register_unit(fault.clone()).unwrap();
-        let report = system.shutdown(Duration::from_millis(30)).await;
+        let mut report = system.shutdown(Duration::from_millis(30)).await;
         assert!(!report.complete);
+        // The report is a snapshot, not an acknowledgement that the coordinator
+        // ran. Under full-suite load its 30ms deadline can precede the fault.
+        // Refresh with bounded, yielding waits until that diagnostic is visible.
+        report = rt::timeout(LIMIT, async move {
+            while !report
+                .coordinator_failures
+                .iter()
+                .any(|e| e.contains("injected system coordinator fault"))
+            {
+                // Yield even if a regressed coordinator closes its done watch:
+                // wait() can then return immediately, and LIMIT must still fire.
+                rt::sleep(Duration::from_millis(1)).await;
+                report = report.wait(Duration::ZERO).await;
+            }
+            report
+        })
+        .await
+        .expect("coordinator did not report its injected failure");
         assert!(report
             .coordinator_failures
             .iter()

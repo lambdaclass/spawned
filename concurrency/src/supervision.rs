@@ -1862,17 +1862,21 @@ async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, core: Arc<C
         scope.set_name(&spec.name);
         if generation > 1 {
             let previous = view.snapshot();
-            tracing::info!(event = "restart_scheduled", child = %spec.name,
+            crate::actor_cleanup::log_safely(|| {
+                tracing::info!(event = "restart_scheduled", child = %spec.name,
                 generation = generation - 1, reason = ?previous.last_exit,
                 error = ?previous.last_error, ?backoff, "child retry granted after backoff");
-            tracing::info!(
-                event = "restart_started",
-                child = %spec.name,
-                generation,
-                reason = ?previous.last_exit,
-                error = ?previous.last_error,
-                "starting replacement child"
-            );
+            });
+            crate::actor_cleanup::log_safely(|| {
+                tracing::info!(
+                    event = "restart_started",
+                    child = %spec.name,
+                    generation,
+                    reason = ?previous.last_exit,
+                    error = ?previous.last_error,
+                    "starting replacement child"
+                );
+            });
         }
         view.changed.send_modify(|n| *n = n.wrapping_add(1));
         let ctx = FactoryContext {

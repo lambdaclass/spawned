@@ -7,6 +7,13 @@ use crate::{
 };
 use spawned_rt::sync::watch;
 
+/// Subscriber code must not replace a lifecycle failure or interrupt recovery.
+pub(crate) fn log_safely(log: impl FnOnce()) {
+    if let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(log)) {
+        crate::mailbox::dispose_panic(payload);
+    }
+}
+
 /// Constructed before dispatch, so even a never-polled actor has cleanup.
 /// Completion owns its sender until links and outgoing monitors are closed.
 pub(crate) struct ActorCleanup<C: Fn()> {

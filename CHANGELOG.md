@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Contain tracing subscriber panics in caught lifecycle-panic diagnostics and
+  supervision restart events. Preserve the original actor failure, run shutdown
+  hooks, and allow replacement generations to start. Enable the #217 strict
+  subscriber regressions and cover started/stopped-only failures too.
+- Remove a macOS full-suite race in the coordinator-fault test: a short shutdown
+  report deadline is not an acknowledgement that the fault has been recorded.
 - Isolate the linked-delivery panic regression in a subprocess and use zero-sized
   secondary panic payloads. This avoids two intentional defensive leaks in the
   test without disabling LeakSanitizer or suppressing other allocations.
