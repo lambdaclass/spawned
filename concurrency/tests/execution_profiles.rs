@@ -22,14 +22,19 @@ impl Message for Audit {
     type Result = (String, Option<usize>);
 }
 impl Handler<Audit> for Probe {
-    async fn handle(&mut self, _: Audit, reply: spawned_concurrency::reply::PendingReply<'_, <Audit as Message>::Result>, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        _: Audit,
+        reply: spawned_concurrency::reply::PendingReply<'_, <Audit as Message>::Result>,
+        _: &Context<Self>,
+    ) {
         let __reply_value: <Audit as Message>::Result = {
-        spawned_rt::tasks::sleep(Duration::from_millis(1)).await;
-        (
-            std::thread::current().name().unwrap_or_default().into(),
-            spawned_rt::tasks::affinity::current_cpu().ok(),
-        )
-    };
+            spawned_rt::tasks::sleep(Duration::from_millis(1)).await;
+            (
+                std::thread::current().name().unwrap_or_default().into(),
+                spawned_rt::tasks::affinity::current_cpu().ok(),
+            )
+        };
         let _ = reply.reply(__reply_value);
     }
 }
@@ -38,10 +43,14 @@ impl Message for StartPeer {
     type Result = Result<spawned_concurrency::tasks::ActorRef<Probe>, SystemError>;
 }
 impl Handler<StartPeer> for Probe {
-    async fn handle(&mut self, _: StartPeer, reply: spawned_concurrency::reply::PendingReply<'_, <StartPeer as Message>::Result>, ctx: &Context<Self>) {
-        let __reply_value: <StartPeer as Message>::Result = {
-        ctx.execution_group().unwrap().start(Probe)
-    };
+    async fn handle(
+        &mut self,
+        _: StartPeer,
+        reply: spawned_concurrency::reply::PendingReply<'_, <StartPeer as Message>::Result>,
+        ctx: &Context<Self>,
+    ) {
+        let __reply_value: <StartPeer as Message>::Result =
+            { ctx.execution_group().unwrap().start(Probe) };
         let _ = reply.reply(__reply_value);
     }
 }
@@ -85,13 +94,18 @@ impl Message for Block {
     type Result = ();
 }
 impl Handler<Block> for Probe {
-    async fn handle(&mut self, msg: Block, reply: spawned_concurrency::reply::PendingReply<'_, ()>, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        msg: Block,
+        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
         {
-        tokio::task::block_in_place(|| {
-            let _ = msg.entered.send(());
-            msg.release.recv_timeout(LIMIT).unwrap();
-        });
-    }
+            tokio::task::block_in_place(|| {
+                let _ = msg.entered.send(());
+                msg.release.recv_timeout(LIMIT).unwrap();
+            });
+        }
         let _ = reply.reply(());
     }
 }
@@ -100,10 +114,15 @@ impl Message for Crash {
     type Result = ();
 }
 impl Handler<Crash> for Probe {
-    async fn handle(&mut self, _: Crash, reply: spawned_concurrency::reply::PendingReply<'_, ()>, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        _: Crash,
+        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
         {
-        panic!("profile recovery injection");
-    }
+            panic!("profile recovery injection");
+        }
         let _ = reply.reply(());
     }
 }
@@ -352,10 +371,15 @@ mod tls_join {
         type Result = ();
     }
     impl Handler<Install> for Probe {
-        async fn handle(&mut self, msg: Install, reply: spawned_concurrency::reply::PendingReply<'_, ()>, _: &Context<Self>) {
+        async fn handle(
+            &mut self,
+            msg: Install,
+            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            _: &Context<Self>,
+        ) {
             {
-            PROBE.with(|p| *p.borrow_mut() = Some(msg.0));
-        }
+                PROBE.with(|p| *p.borrow_mut() = Some(msg.0));
+            }
             let _ = reply.reply(());
         }
     }

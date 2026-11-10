@@ -156,44 +156,54 @@ impl spawned_concurrency::tasks::Actor for AsyncWorker {
 }
 #[cfg(feature = "async")]
 impl spawned_concurrency::tasks::Handler<Command> for AsyncWorker {
-    async fn handle(&mut self, command: Command, reply: spawned_concurrency::reply::PendingReply<'_, Reply>, _: &spawned_concurrency::tasks::Context<Self>) {
+    async fn handle(
+        &mut self,
+        command: Command,
+        reply: spawned_concurrency::reply::PendingReply<'_, Reply>,
+        _: &spawned_concurrency::tasks::Context<Self>,
+    ) {
         let __reply_value: Reply = {
-        match command {
-            Command::Payload { id, payload } => {
-                assert_eq!(payload.bytes[0], (id % 251) as u8);
-                self.0.execute(id)
-            }
-            Command::Read => Reply::Values(self.0.values.clone()),
-            Command::Panic => panic!("controlled handler panic"),
-            Command::Append {
-                id,
-                before,
-                after,
-                panic_after,
-            } => {
-                if let Some(gate) = before {
-                    gate.wait().await;
+            match command {
+                Command::Payload { id, payload } => {
+                    assert_eq!(payload.bytes[0], (id % 251) as u8);
+                    self.0.execute(id)
                 }
-                let result = self.0.execute(id);
-                if let Some(gate) = after {
-                    gate.wait().await;
+                Command::Read => Reply::Values(self.0.values.clone()),
+                Command::Panic => panic!("controlled handler panic"),
+                Command::Append {
+                    id,
+                    before,
+                    after,
+                    panic_after,
+                } => {
+                    if let Some(gate) = before {
+                        gate.wait().await;
+                    }
+                    let result = self.0.execute(id);
+                    if let Some(gate) = after {
+                        gate.wait().await;
+                    }
+                    assert!(!panic_after, "controlled panic after effect");
+                    result
                 }
-                assert!(!panic_after, "controlled panic after effect");
-                result
             }
-        }
-    };
+        };
         let _ = reply.reply(__reply_value);
     }
 }
 #[cfg(feature = "async")]
 impl spawned_concurrency::tasks::Handler<Down> for AsyncWorker {
-    async fn handle(&mut self, down: Down, reply: spawned_concurrency::reply::PendingReply<'_, ()>, _: &spawned_concurrency::tasks::Context<Self>) {
+    async fn handle(
+        &mut self,
+        down: Down,
+        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _: &spawned_concurrency::tasks::Context<Self>,
+    ) {
         {
-        if let Some(sender) = &self.0.down {
-            let _ = sender.send(down);
+            if let Some(sender) = &self.0.down {
+                let _ = sender.send(down);
+            }
         }
-    }
         let _ = reply.reply(());
     }
 }
@@ -212,43 +222,53 @@ impl spawned_concurrency::threads::Actor for NativeWorker {
     }
 }
 impl spawned_concurrency::threads::Handler<Command> for NativeWorker {
-    fn handle(&mut self, command: Command, reply: spawned_concurrency::reply::PendingReply<'_, Reply>, _: &spawned_concurrency::threads::Context<Self>) {
+    fn handle(
+        &mut self,
+        command: Command,
+        reply: spawned_concurrency::reply::PendingReply<'_, Reply>,
+        _: &spawned_concurrency::threads::Context<Self>,
+    ) {
         let __reply_value: Reply = {
-        match command {
-            Command::Payload { id, payload } => {
-                assert_eq!(payload.bytes[0], (id % 251) as u8);
-                self.0.execute(id)
-            }
-            Command::Read => Reply::Values(self.0.values.clone()),
-            Command::Panic => panic!("controlled handler panic"),
-            Command::Append {
-                id,
-                before,
-                after,
-                panic_after,
-            } => {
-                if let Some(gate) = before {
-                    futures::executor::block_on(gate.wait());
+            match command {
+                Command::Payload { id, payload } => {
+                    assert_eq!(payload.bytes[0], (id % 251) as u8);
+                    self.0.execute(id)
                 }
-                let result = self.0.execute(id);
-                if let Some(gate) = after {
-                    futures::executor::block_on(gate.wait());
+                Command::Read => Reply::Values(self.0.values.clone()),
+                Command::Panic => panic!("controlled handler panic"),
+                Command::Append {
+                    id,
+                    before,
+                    after,
+                    panic_after,
+                } => {
+                    if let Some(gate) = before {
+                        futures::executor::block_on(gate.wait());
+                    }
+                    let result = self.0.execute(id);
+                    if let Some(gate) = after {
+                        futures::executor::block_on(gate.wait());
+                    }
+                    assert!(!panic_after, "controlled panic after effect");
+                    result
                 }
-                assert!(!panic_after, "controlled panic after effect");
-                result
             }
-        }
-    };
+        };
         let _ = reply.reply(__reply_value);
     }
 }
 impl spawned_concurrency::threads::Handler<Down> for NativeWorker {
-    fn handle(&mut self, down: Down, reply: spawned_concurrency::reply::PendingReply<'_, ()>, _: &spawned_concurrency::threads::Context<Self>) {
+    fn handle(
+        &mut self,
+        down: Down,
+        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _: &spawned_concurrency::threads::Context<Self>,
+    ) {
         {
-        if let Some(sender) = &self.0.down {
-            let _ = sender.send(down);
+            if let Some(sender) = &self.0.down {
+                let _ = sender.send(down);
+            }
         }
-    }
         let _ = reply.reply(());
     }
 }

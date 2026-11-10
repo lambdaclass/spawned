@@ -33,13 +33,18 @@ impl Message for Thread {
     type Result = String;
 }
 impl Handler<Thread> for Worker {
-    async fn handle(&mut self, _: Thread, reply: spawned_concurrency::reply::PendingReply<'_, String>, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        _: Thread,
+        reply: spawned_concurrency::reply::PendingReply<'_, String>,
+        _: &Context<Self>,
+    ) {
         let __reply_value: String = {
-        std::thread::current()
-            .name()
-            .unwrap_or("unnamed")
-            .to_owned()
-    };
+            std::thread::current()
+                .name()
+                .unwrap_or("unnamed")
+                .to_owned()
+        };
         let _ = reply.reply(__reply_value);
     }
 }
@@ -51,12 +56,17 @@ impl Message for Hold {
     type Result = u64;
 }
 impl Handler<Hold> for Worker {
-    async fn handle(&mut self, msg: Hold, reply: spawned_concurrency::reply::PendingReply<'_, u64>, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        msg: Hold,
+        reply: spawned_concurrency::reply::PendingReply<'_, u64>,
+        _: &Context<Self>,
+    ) {
         let __reply_value: u64 = {
-        let _ = msg.started.send(());
-        msg.release.await.unwrap();
-        42
-    };
+            let _ = msg.started.send(());
+            msg.release.await.unwrap();
+            42
+        };
         let _ = reply.reply(__reply_value);
     }
 }
@@ -65,26 +75,31 @@ impl Message for Nested {
     type Result = u64;
 }
 impl Handler<Nested> for Worker {
-    async fn handle(&mut self, msg: Nested, reply: spawned_concurrency::reply::PendingReply<'_, u64>, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        msg: Nested,
+        reply: spawned_concurrency::reply::PendingReply<'_, u64>,
+        _: &Context<Self>,
+    ) {
         let __reply_value: u64 = {
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        let child = Worker(Default::default()).start();
-        let _ = child.request(Thread).await.unwrap();
-        child.child_handle().stop();
-        child.join().await;
-        let helper = tokio::spawn(async {
-            tokio::time::sleep(Duration::from_millis(1)).await;
-            42u64
-        });
-        let mut socket = tokio::net::TcpStream::connect(msg.0).await.unwrap();
-        socket
-            .write_all(&helper.await.unwrap().to_le_bytes())
-            .await
-            .unwrap();
-        let mut reply = [0; 8];
-        socket.read_exact(&mut reply).await.unwrap();
-        u64::from_le_bytes(reply)
-    };
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let child = Worker(Default::default()).start();
+            let _ = child.request(Thread).await.unwrap();
+            child.child_handle().stop();
+            child.join().await;
+            let helper = tokio::spawn(async {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+                42u64
+            });
+            let mut socket = tokio::net::TcpStream::connect(msg.0).await.unwrap();
+            socket
+                .write_all(&helper.await.unwrap().to_le_bytes())
+                .await
+                .unwrap();
+            let mut reply = [0; 8];
+            socket.read_exact(&mut reply).await.unwrap();
+            u64::from_le_bytes(reply)
+        };
         let _ = reply.reply(__reply_value);
     }
 }
@@ -248,11 +263,16 @@ impl Message for Freeze {
     type Result = ();
 }
 impl Handler<Freeze> for Worker {
-    async fn handle(&mut self, msg: Freeze, reply: spawned_concurrency::reply::PendingReply<'_, ()>, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        msg: Freeze,
+        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
         {
-        let _ = msg.started.send(());
-        msg.release.recv_timeout(LIMIT).unwrap();
-    }
+            let _ = msg.started.send(());
+            msg.release.recv_timeout(LIMIT).unwrap();
+        }
         let _ = reply.reply(());
     }
 }
@@ -327,11 +347,16 @@ impl Message for Tick {
     type Result = u64;
 }
 impl Handler<Tick> for Worker {
-    async fn handle(&mut self, _: Tick, reply: spawned_concurrency::reply::PendingReply<'_, u64>, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        _: Tick,
+        reply: spawned_concurrency::reply::PendingReply<'_, u64>,
+        _: &Context<Self>,
+    ) {
         let __reply_value: u64 = {
-        tokio::time::sleep(Duration::from_millis(1)).await;
-        42
-    };
+            tokio::time::sleep(Duration::from_millis(1)).await;
+            42
+        };
         let _ = reply.reply(__reply_value);
     }
 }
@@ -340,10 +365,19 @@ impl Message for SpawnBlockingChild {
     type Result = spawned_concurrency::tasks::ActorRef<Worker>;
 }
 impl Handler<SpawnBlockingChild> for Worker {
-    async fn handle(&mut self, _: SpawnBlockingChild, reply: spawned_concurrency::reply::PendingReply<'_, spawned_concurrency::tasks::ActorRef<Worker>>, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        _: SpawnBlockingChild,
+        reply: spawned_concurrency::reply::PendingReply<
+            '_,
+            spawned_concurrency::tasks::ActorRef<Worker>,
+        >,
+        _: &Context<Self>,
+    ) {
         let __reply_value: spawned_concurrency::tasks::ActorRef<Worker> = {
-        Worker(Default::default()).start_with_backend(spawned_concurrency::tasks::Backend::Blocking)
-    };
+            Worker(Default::default())
+                .start_with_backend(spawned_concurrency::tasks::Backend::Blocking)
+        };
         let _ = reply.reply(__reply_value);
     }
 }
@@ -352,14 +386,19 @@ impl Message for Helper {
     type Result = tokio::task::JoinHandle<u64>;
 }
 impl Handler<Helper> for Worker {
-    async fn handle(&mut self, msg: Helper, reply: spawned_concurrency::reply::PendingReply<'_, tokio::task::JoinHandle<u64>>, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        msg: Helper,
+        reply: spawned_concurrency::reply::PendingReply<'_, tokio::task::JoinHandle<u64>>,
+        _: &Context<Self>,
+    ) {
         let __reply_value: tokio::task::JoinHandle<u64> = {
-        tokio::spawn(async move {
-            msg.0.await.unwrap();
-            tokio::time::sleep(Duration::from_millis(1)).await;
-            42
-        })
-    };
+            tokio::spawn(async move {
+                msg.0.await.unwrap();
+                tokio::time::sleep(Duration::from_millis(1)).await;
+                42
+            })
+        };
         let _ = reply.reply(__reply_value);
     }
 }
@@ -399,18 +438,28 @@ impl Message for InstallMonitor {
     type Result = ();
 }
 impl Handler<InstallMonitor> for Worker {
-    async fn handle(&mut self, msg: InstallMonitor, reply: spawned_concurrency::reply::PendingReply<'_, ()>, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        msg: InstallMonitor,
+        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
         {
-        msg.observer.monitor(&msg.target);
-    }
+            msg.observer.monitor(&msg.target);
+        }
         let _ = reply.reply(());
     }
 }
 impl Handler<spawned_concurrency::Down> for Worker {
-    async fn handle(&mut self, _: spawned_concurrency::Down, reply: spawned_concurrency::reply::PendingReply<'_, ()>, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        _: spawned_concurrency::Down,
+        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
         {
-        self.0.lock().unwrap().push("down");
-    }
+            self.0.lock().unwrap().push("down");
+        }
         let _ = reply.reply(());
     }
 }
@@ -419,10 +468,13 @@ impl Message for Events {
     type Result = Vec<&'static str>;
 }
 impl Handler<Events> for Worker {
-    async fn handle(&mut self, _: Events, reply: spawned_concurrency::reply::PendingReply<'_, Vec<&'static str>>, _: &Context<Self>) {
-        let __reply_value: Vec<&'static str> = {
-        self.0.lock().unwrap().clone()
-    };
+    async fn handle(
+        &mut self,
+        _: Events,
+        reply: spawned_concurrency::reply::PendingReply<'_, Vec<&'static str>>,
+        _: &Context<Self>,
+    ) {
+        let __reply_value: Vec<&'static str> = { self.0.lock().unwrap().clone() };
         let _ = reply.reply(__reply_value);
     }
 }

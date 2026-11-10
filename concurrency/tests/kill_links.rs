@@ -22,10 +22,13 @@ fn native_propagated_kill_is_trappable_but_direct_kill_is_not() {
         }
     }
     impl Handler<Ping> for Node {
-        fn handle(&mut self, _: Ping, reply: spawned_concurrency::reply::PendingReply<'_, u8>, _: &Context<Self>) {
-            let __reply_value: u8 = {
-            7
-        };
+        fn handle(
+            &mut self,
+            _: Ping,
+            reply: spawned_concurrency::reply::PendingReply<'_, u8>,
+            _: &Context<Self>,
+        ) {
+            let __reply_value: u8 = { 7 };
             let _ = reply.reply(__reply_value);
         }
     }
@@ -81,10 +84,13 @@ async fn async_propagated_kill_is_trappable_but_direct_kill_is_not() {
         }
     }
     impl Handler<Ping> for Node {
-        async fn handle(&mut self, _: Ping, reply: spawned_concurrency::reply::PendingReply<'_, u8>, _: &Context<Self>) {
-            let __reply_value: u8 = {
-            7
-        };
+        async fn handle(
+            &mut self,
+            _: Ping,
+            reply: spawned_concurrency::reply::PendingReply<'_, u8>,
+            _: &Context<Self>,
+        ) {
+            let __reply_value: u8 = { 7 };
             let _ = reply.reply(__reply_value);
         }
     }

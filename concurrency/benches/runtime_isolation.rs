@@ -46,18 +46,23 @@ mod linux {
         type Result = (u64, u64, Instant);
     }
     impl Handler<Work> for Stage {
-        async fn handle(&mut self, m: Work, reply: spawned_concurrency::reply::PendingReply<'_, (u64, u64, Instant)>, _: &Context<Self>) {
+        async fn handle(
+            &mut self,
+            m: Work,
+            reply: spawned_concurrency::reply::PendingReply<'_, (u64, u64, Instant)>,
+            _: &Context<Self>,
+        ) {
             let __reply_value: (u64, u64, Instant) = async {
-            self.handled += 1;
-            if let Some(next) = &self.next {
-                return next.request_raw(m).unwrap().await.unwrap();
+                self.handled += 1;
+                if let Some(next) = &self.next {
+                    return next.request_raw(m).unwrap().await.unwrap();
+                }
+                let mut value = m.0;
+                for _ in 0..self.iterations {
+                    value = black_box(value.wrapping_mul(MUL).wrapping_add(1));
+                }
+                (m.0, value, Instant::now())
             }
-            let mut value = m.0;
-            for _ in 0..self.iterations {
-                value = black_box(value.wrapping_mul(MUL).wrapping_add(1));
-            }
-            (m.0, value, Instant::now())
-        }
             .await;
             let _ = reply.reply(__reply_value);
         }
@@ -67,19 +72,24 @@ mod linux {
         type Result = (String, u64);
     }
     impl Handler<Audit> for Stage {
-        async fn handle(&mut self, _: Audit, reply: spawned_concurrency::reply::PendingReply<'_, (String, u64)>, _: &Context<Self>) {
+        async fn handle(
+            &mut self,
+            _: Audit,
+            reply: spawned_concurrency::reply::PendingReply<'_, (String, u64)>,
+            _: &Context<Self>,
+        ) {
             let __reply_value: (String, u64) = {
-            let status = fs::read_to_string("/proc/thread-self/status").unwrap();
-            (
-                status
-                    .lines()
-                    .find_map(|s| s.strip_prefix("Cpus_allowed_list:"))
-                    .unwrap()
-                    .trim()
-                    .into(),
-                self.handled,
-            )
-        };
+                let status = fs::read_to_string("/proc/thread-self/status").unwrap();
+                (
+                    status
+                        .lines()
+                        .find_map(|s| s.strip_prefix("Cpus_allowed_list:"))
+                        .unwrap()
+                        .trim()
+                        .into(),
+                    self.handled,
+                )
+            };
             let _ = reply.reply(__reply_value);
         }
     }

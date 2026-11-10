@@ -30,7 +30,12 @@ impl Actor for Worker {
     }
 }
 impl Handler<Ping> for Worker {
-    async fn handle(&mut self, _: Ping, reply: spawned_concurrency::reply::PendingReply<'_, ()>, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        _: Ping,
+        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
         let _ = reply.reply(());
     }
 }

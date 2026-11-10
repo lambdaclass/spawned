@@ -39,32 +39,50 @@ impl Actor for Probe {
     }
 }
 impl Handler<metrics_protocol::Query> for Probe {
-    async fn handle(&mut self, _: metrics_protocol::Query, reply: spawned_concurrency::reply::PendingReply<'_, u64>, _: &Context<Self>) {
-        let __reply_value: u64 = {
-        9
-    };
+    async fn handle(
+        &mut self,
+        _: metrics_protocol::Query,
+        reply: spawned_concurrency::reply::PendingReply<'_, u64>,
+        _: &Context<Self>,
+    ) {
+        let __reply_value: u64 = { 9 };
         let _ = reply.reply(__reply_value);
     }
 }
 impl Handler<Ping> for Probe {
-    async fn handle(&mut self, _: Ping, reply: spawned_concurrency::reply::PendingReply<'_, ()>, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        _: Ping,
+        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
         let _ = reply.reply(());
     }
 }
 impl Handler<Crash> for Probe {
-    async fn handle(&mut self, _: Crash, reply: spawned_concurrency::reply::PendingReply<'_, ()>, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        _: Crash,
+        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
         {
-        panic!("metric panic regression");
-    }
+            panic!("metric panic regression");
+        }
         let _ = reply.reply(());
     }
 }
 impl Handler<Hold> for Probe {
-    async fn handle(&mut self, hold: Hold, reply: spawned_concurrency::reply::PendingReply<'_, ()>, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        hold: Hold,
+        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
         {
-        let _ = hold.entered.send(());
-        let _ = hold.release.await;
-    }
+            let _ = hold.entered.send(());
+            let _ = hold.release.await;
+        }
         let _ = reply.reply(());
     }
 }

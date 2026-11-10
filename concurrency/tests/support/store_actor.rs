@@ -112,14 +112,19 @@ impl spawned_concurrency::tasks::Actor for AsyncStore {}
 
 #[cfg(feature = "async")]
 impl spawned_concurrency::tasks::Handler<StoreOp> for AsyncStore {
-    async fn handle(&mut self, op: StoreOp, reply: spawned_concurrency::reply::PendingReply<'_, Option<u64>>, _: &spawned_concurrency::tasks::Context<Self>) {
+    async fn handle(
+        &mut self,
+        op: StoreOp,
+        reply: spawned_concurrency::reply::PendingReply<'_, Option<u64>>,
+        _: &spawned_concurrency::tasks::Context<Self>,
+    ) {
         let __reply_value: Option<u64> = {
-        // Yield inside the turn so concurrent requests really queue up.
-        if op.key().1.is_multiple_of(2) {
-            tokio::task::yield_now().await;
-        }
-        self.0.apply(op)
-    };
+            // Yield inside the turn so concurrent requests really queue up.
+            if op.key().1.is_multiple_of(2) {
+                tokio::task::yield_now().await;
+            }
+            self.0.apply(op)
+        };
         let _ = reply.reply(__reply_value);
     }
 }
@@ -129,10 +134,13 @@ pub struct NativeStore(pub Store);
 impl spawned_concurrency::threads::Actor for NativeStore {}
 
 impl spawned_concurrency::threads::Handler<StoreOp> for NativeStore {
-    fn handle(&mut self, op: StoreOp, reply: spawned_concurrency::reply::PendingReply<'_, Option<u64>>, _: &spawned_concurrency::threads::Context<Self>) {
-        let __reply_value: Option<u64> = {
-        self.0.apply(op)
-    };
+    fn handle(
+        &mut self,
+        op: StoreOp,
+        reply: spawned_concurrency::reply::PendingReply<'_, Option<u64>>,
+        _: &spawned_concurrency::threads::Context<Self>,
+    ) {
+        let __reply_value: Option<u64> = { self.0.apply(op) };
         let _ = reply.reply(__reply_value);
     }
 }

@@ -11,21 +11,29 @@ impl Message for Ping {
 }
 impl Actor for Critical {}
 impl Handler<Ping> for Critical {
-    async fn handle(&mut self, _: Ping, reply: spawned_concurrency::reply::PendingReply<'_, String>, _: &Context<Self>) {
-        let __reply_value: String = {
-        std::thread::current().name().unwrap().to_owned()
-    };
+    async fn handle(
+        &mut self,
+        _: Ping,
+        reply: spawned_concurrency::reply::PendingReply<'_, String>,
+        _: &Context<Self>,
+    ) {
+        let __reply_value: String = { std::thread::current().name().unwrap().to_owned() };
         let _ = reply.reply(__reply_value);
     }
 }
 struct Router(ActorRef<Critical>);
 impl Actor for Router {}
 impl Handler<Ping> for Router {
-    async fn handle(&mut self, _: Ping, reply: spawned_concurrency::reply::PendingReply<'_, String>, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        _: Ping,
+        reply: spawned_concurrency::reply::PendingReply<'_, String>,
+        _: &Context<Self>,
+    ) {
         let __reply_value: String = {
-        assert_eq!(std::thread::current().name(), Some("background-worker"));
-        self.0.request(Ping).await.unwrap()
-    };
+            assert_eq!(std::thread::current().name(), Some("background-worker"));
+            self.0.request(Ping).await.unwrap()
+        };
         let _ = reply.reply(__reply_value);
     }
 }

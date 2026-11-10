@@ -117,15 +117,20 @@ mod tasks_chain {
     }
     impl Actor for Hop {}
     impl Handler<relay::Forward> for Hop {
-        async fn handle(&mut self, msg: relay::Forward, reply: spawned_concurrency::reply::PendingReply<'_, Block>, _: &Context<Self>) {
+        async fn handle(
+            &mut self,
+            msg: relay::Forward,
+            reply: spawned_concurrency::reply::PendingReply<'_, Block>,
+            _: &Context<Self>,
+        ) {
             let __reply_value: Block = {
-            let mut block = msg.block;
-            stamp(&mut block, self.index);
-            match &self.next {
-                Some(next) => next.forward(block).await.expect("downstream hop"),
-                None => block,
-            }
-        };
+                let mut block = msg.block;
+                stamp(&mut block, self.index);
+                match &self.next {
+                    Some(next) => next.forward(block).await.expect("downstream hop"),
+                    None => block,
+                }
+            };
             let _ = reply.reply(__reply_value);
         }
     }
@@ -218,20 +223,28 @@ mod tasks_chain {
     }
     impl Actor for Flaky {}
     impl Handler<Crash> for Flaky {
-        async fn handle(&mut self, _: Crash, reply: spawned_concurrency::reply::PendingReply<'_, ()>, _: &Context<Self>) {
+        async fn handle(
+            &mut self,
+            _: Crash,
+            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            _: &Context<Self>,
+        ) {
             {
-            if self.generation == 1 {
-                panic!("injected stack-budget crash");
+                if self.generation == 1 {
+                    panic!("injected stack-budget crash");
+                }
             }
-        }
             let _ = reply.reply(());
         }
     }
     impl Handler<relay::Forward> for Flaky {
-        async fn handle(&mut self, msg: relay::Forward, reply: spawned_concurrency::reply::PendingReply<'_, Block>, _: &Context<Self>) {
-            let __reply_value: Block = {
-            msg.block
-        };
+        async fn handle(
+            &mut self,
+            msg: relay::Forward,
+            reply: spawned_concurrency::reply::PendingReply<'_, Block>,
+            _: &Context<Self>,
+        ) {
+            let __reply_value: Block = { msg.block };
             let _ = reply.reply(__reply_value);
         }
     }
@@ -304,15 +317,20 @@ mod threads_chain {
     }
     impl Actor for Hop {}
     impl Handler<relay::Forward> for Hop {
-        fn handle(&mut self, msg: relay::Forward, reply: spawned_concurrency::reply::PendingReply<'_, Block>, _: &Context<Self>) {
+        fn handle(
+            &mut self,
+            msg: relay::Forward,
+            reply: spawned_concurrency::reply::PendingReply<'_, Block>,
+            _: &Context<Self>,
+        ) {
             let __reply_value: Block = {
-            let mut block = msg.block;
-            stamp(&mut block, self.index);
-            match &self.next {
-                Some(next) => next.forward(block).unwrap(),
-                None => block,
-            }
-        };
+                let mut block = msg.block;
+                stamp(&mut block, self.index);
+                match &self.next {
+                    Some(next) => next.forward(block).unwrap(),
+                    None => block,
+                }
+            };
             let _ = reply.reply(__reply_value);
         }
     }

@@ -44,8 +44,6 @@ pub use crate::tasks::sim::{
 pub use crate::tasks::tokio::mpsc;
 pub use crate::tasks::tokio::oneshot;
 #[cfg(not(spawned_sim))]
-pub use crate::tasks::tokio::{sleep, Sleep};
-#[cfg(not(spawned_sim))]
 pub use crate::tasks::tokio::timeout;
 pub use crate::tasks::tokio::watch;
 pub use crate::tasks::tokio::CancellationToken;
@@ -54,6 +52,8 @@ pub use crate::tasks::tokio::{
     block_in_place, spawn, spawn_blocking, task_id, unconstrained, yield_now, Handle, JoinHandle,
     Runtime, RuntimeFlavor,
 };
+#[cfg(not(spawned_sim))]
+pub use crate::tasks::tokio::{sleep, Sleep};
 pub use crate::tasks::tokio::{BroadcastStream, ReceiverStream};
 use std::future::Future;
 

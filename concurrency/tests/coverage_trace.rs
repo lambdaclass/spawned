@@ -91,10 +91,15 @@ impl Message for Crash {
 struct Worker;
 impl Actor for Worker {}
 impl Handler<Crash> for Worker {
-    async fn handle(&mut self, _: Crash, reply: spawned_concurrency::reply::PendingReply<'_, ()>, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        _: Crash,
+        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
         {
-        panic!("injected child failure");
-    }
+            panic!("injected child failure");
+        }
         let _ = reply.reply(());
     }
 }
@@ -293,10 +298,15 @@ impl Actor for QuitInStarted {
     }
 }
 impl Handler<Crash> for QuitInStarted {
-    async fn handle(&mut self, _: Crash, reply: spawned_concurrency::reply::PendingReply<'_, ()>, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        _: Crash,
+        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
         {
-        panic!("injected child failure");
-    }
+            panic!("injected child failure");
+        }
         let _ = reply.reply(());
     }
 }

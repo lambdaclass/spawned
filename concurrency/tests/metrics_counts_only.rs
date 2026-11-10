@@ -11,7 +11,12 @@ impl Message for Ping {
 }
 impl Actor for Probe {}
 impl Handler<Ping> for Probe {
-    fn handle(&mut self, _: Ping, reply: spawned_concurrency::reply::PendingReply<'_, ()>, _: &Context<Self>) {
+    fn handle(
+        &mut self,
+        _: Ping,
+        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
         let _ = reply.reply(());
     }
 }

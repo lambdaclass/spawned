@@ -225,18 +225,26 @@ impl Message for Get {
 }
 impl Actor for Counter {}
 impl Handler<Bump> for Counter {
-    async fn handle(&mut self, _: Bump, reply: spawned_concurrency::reply::PendingReply<'_, ()>, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        _: Bump,
+        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
         {
-        self.0.fetch_add(1, Ordering::SeqCst);
-    }
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
         let _ = reply.reply(());
     }
 }
 impl Handler<Get> for Counter {
-    async fn handle(&mut self, _: Get, reply: spawned_concurrency::reply::PendingReply<'_, usize>, _: &Context<Self>) {
-        let __reply_value: usize = {
-        self.0.load(Ordering::SeqCst)
-    };
+    async fn handle(
+        &mut self,
+        _: Get,
+        reply: spawned_concurrency::reply::PendingReply<'_, usize>,
+        _: &Context<Self>,
+    ) {
+        let __reply_value: usize = { self.0.load(Ordering::SeqCst) };
         let _ = reply.reply(__reply_value);
     }
 }
@@ -336,12 +344,17 @@ impl Message for Hang {
 }
 impl Actor for Stuck {}
 impl Handler<Hang> for Stuck {
-    async fn handle(&mut self, _: Hang, reply: spawned_concurrency::reply::PendingReply<'_, ()>, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        _: Hang,
+        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
         {
-        self.0.store(true, Ordering::SeqCst);
-        // Blocking code is never preempted, so shutdown cannot finish in time.
-        std::thread::sleep(Duration::from_millis(500));
-    }
+            self.0.store(true, Ordering::SeqCst);
+            // Blocking code is never preempted, so shutdown cannot finish in time.
+            std::thread::sleep(Duration::from_millis(500));
+        }
         let _ = reply.reply(());
     }
 }

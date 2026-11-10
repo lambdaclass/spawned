@@ -242,7 +242,9 @@ impl<'t, R: Send + 'static> PendingReply<'t, R> {
 
     /// The request's deadline, or `None` for [`Deadline::Never`] and sends.
     pub fn deadline(&self) -> Option<Instant> {
-        self.slot.as_ref().and_then(|s| Deadline::from_ticks(s.deadline()))
+        self.slot
+            .as_ref()
+            .and_then(|s| Deadline::from_ticks(s.deadline()))
     }
 
     /// Whether the caller can no longer be answered (the deadline passed or
@@ -305,7 +307,10 @@ impl<R: Send + 'static> std::fmt::Debug for ReplyTo<R> {
 impl<R: Send + 'static> ReplyTo<R> {
     /// Answer the caller. Returns how the reply was delivered.
     pub fn reply(mut self, value: R) -> Delivery {
-        let slot = self.slot.take().expect("ReplyTo holds its slot until consumed");
+        let slot = self
+            .slot
+            .take()
+            .expect("ReplyTo holds its slot until consumed");
         let (delivery, unsent) = slot.reply(value, &now_ticks);
         drop(unsent);
         record(delivery);
@@ -326,7 +331,8 @@ impl<R: Send + 'static> ReplyTo<R> {
 
     /// Shorten the deadline to `at` (never extends it).
     pub fn with_deadline(&self, at: Instant) {
-        self.slot().shorten(spawned_rt::time::to_ticks(at), &now_ticks);
+        self.slot()
+            .shorten(spawned_rt::time::to_ticks(at), &now_ticks);
         self.registry.track_deadline(self.slot());
     }
 
@@ -358,7 +364,9 @@ impl<R: Send + 'static> ReplyTo<R> {
     }
 
     fn slot(&self) -> &Arc<Slot<R>> {
-        self.slot.as_ref().expect("ReplyTo holds its slot until consumed")
+        self.slot
+            .as_ref()
+            .expect("ReplyTo holds its slot until consumed")
     }
 
     pub(crate) fn slot_arc(&self) -> &Arc<Slot<R>> {
@@ -498,7 +506,9 @@ impl<R> std::future::Future for ReplyReceiver<R> {
 /// a manual `Handler::handle` directly in tests (`spawned_test::reply_pair`).
 /// Await the receiver only after driving the turns the reply depends on.
 #[doc(hidden)]
-pub fn reply_pair<R: Send + 'static>(deadline: Deadline) -> (PendingReply<'static, R>, ReplyReceiver<R>) {
+pub fn reply_pair<R: Send + 'static>(
+    deadline: Deadline,
+) -> (PendingReply<'static, R>, ReplyReceiver<R>) {
     let (mut handle, receiver) = reply_slot(deadline);
     let reply = PendingReply::new(handle.take(), Registry::detached());
     (reply, receiver)

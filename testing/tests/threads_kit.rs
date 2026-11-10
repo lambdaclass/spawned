@@ -150,7 +150,12 @@ impl Message for Ping {
     type Result = ();
 }
 impl Handler<Ping> for Idle {
-    fn handle(&mut self, _: Ping, reply: spawned_concurrency::reply::PendingReply<'_, ()>, _: &Context<Self>) {
+    fn handle(
+        &mut self,
+        _: Ping,
+        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
         let _ = reply.reply(());
     }
 }

@@ -40,19 +40,29 @@ impl Message for Crash {
 struct Counter(usize);
 impl Actor for Counter {}
 impl Handler<Next> for Counter {
-    async fn handle(&mut self, _: Next, reply: spawned_concurrency::reply::PendingReply<'_, usize>, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        _: Next,
+        reply: spawned_concurrency::reply::PendingReply<'_, usize>,
+        _: &Context<Self>,
+    ) {
         let __reply_value: usize = {
-        self.0 += 1;
-        self.0
-    };
+            self.0 += 1;
+            self.0
+        };
         let _ = reply.reply(__reply_value);
     }
 }
 impl Handler<Crash> for Counter {
-    async fn handle(&mut self, _: Crash, reply: spawned_concurrency::reply::PendingReply<'_, ()>, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        _: Crash,
+        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
         {
-        panic!("injected child failure");
-    }
+            panic!("injected child failure");
+        }
         let _ = reply.reply(());
     }
 }
@@ -281,10 +291,15 @@ impl Actor for SlowHelper {
     }
 }
 impl Handler<Crash> for SlowHelper {
-    async fn handle(&mut self, _: Crash, reply: spawned_concurrency::reply::PendingReply<'_, ()>, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        _: Crash,
+        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
         {
-        panic!("injected failure with active helper");
-    }
+            panic!("injected failure with active helper");
+        }
         let _ = reply.reply(());
     }
 }
@@ -351,10 +366,15 @@ impl Actor for SlowStop {
     }
 }
 impl Handler<Crash> for SlowStop {
-    async fn handle(&mut self, _: Crash, reply: spawned_concurrency::reply::PendingReply<'_, ()>, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        _: Crash,
+        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
         {
-        panic!("failure before stuck stopped hook");
-    }
+            panic!("failure before stuck stopped hook");
+        }
         let _ = reply.reply(());
     }
 }
@@ -539,19 +559,29 @@ impl Drop for RaceActor {
 }
 impl Actor for RaceActor {}
 impl Handler<Crash> for RaceActor {
-    async fn handle(&mut self, _: Crash, reply: spawned_concurrency::reply::PendingReply<'_, ()>, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        _: Crash,
+        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
         {
-        panic!("racing child failure");
-    }
+            panic!("racing child failure");
+        }
         let _ = reply.reply(());
     }
 }
 impl Handler<Next> for RaceActor {
-    async fn handle(&mut self, _: Next, reply: spawned_concurrency::reply::PendingReply<'_, usize>, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        _: Next,
+        reply: spawned_concurrency::reply::PendingReply<'_, usize>,
+        _: &Context<Self>,
+    ) {
         let __reply_value: usize = {
-        self.count += 1;
-        self.count
-    };
+            self.count += 1;
+            self.count
+        };
         let _ = reply.reply(__reply_value);
     }
 }
@@ -835,10 +865,15 @@ impl Actor for ExitOnceDuringRestart {
     }
 }
 impl Handler<Crash> for ExitOnceDuringRestart {
-    async fn handle(&mut self, _: Crash, reply: spawned_concurrency::reply::PendingReply<'_, ()>, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        _: Crash,
+        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
         {
-        panic!("injected child failure");
-    }
+            panic!("injected child failure");
+        }
         let _ = reply.reply(());
     }
 }
@@ -1307,10 +1342,15 @@ impl Actor for Named {
     }
 }
 impl Handler<Crash> for Named {
-    async fn handle(&mut self, _: Crash, reply: spawned_concurrency::reply::PendingReply<'_, ()>, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        _: Crash,
+        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
         {
-        panic!("crash a registered child");
-    }
+            panic!("crash a registered child");
+        }
         let _ = reply.reply(());
     }
 }

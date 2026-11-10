@@ -12,7 +12,12 @@ impl Message for Ping {
 }
 impl Actor for Probe {}
 impl Handler<Ping> for Probe {
-    async fn handle(&mut self, _: Ping, reply: spawned_concurrency::reply::PendingReply<'_, ()>, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        _: Ping,
+        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
         let _ = reply.reply(());
     }
 }

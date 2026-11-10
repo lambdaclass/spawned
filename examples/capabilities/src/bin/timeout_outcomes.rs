@@ -17,12 +17,17 @@ impl Message for Apply {
     type Result = ();
 }
 impl Handler<Apply> for Counter {
-    async fn handle(&mut self, msg: Apply, reply: spawned_concurrency::reply::PendingReply<'_, ()>, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        msg: Apply,
+        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
         {
-        self.0 += 1; // Effect happens before the reply.
-        msg.entered.send(()).unwrap();
-        let _ = msg.release.await;
-    }
+            self.0 += 1; // Effect happens before the reply.
+            msg.entered.send(()).unwrap();
+            let _ = msg.release.await;
+        }
         let _ = reply.reply(());
     }
 }
@@ -31,10 +36,13 @@ impl Message for Read {
     type Result = usize;
 }
 impl Handler<Read> for Counter {
-    async fn handle(&mut self, _: Read, reply: spawned_concurrency::reply::PendingReply<'_, usize>, _: &Context<Self>) {
-        let __reply_value: usize = {
-        self.0
-    };
+    async fn handle(
+        &mut self,
+        _: Read,
+        reply: spawned_concurrency::reply::PendingReply<'_, usize>,
+        _: &Context<Self>,
+    ) {
+        let __reply_value: usize = { self.0 };
         let _ = reply.reply(__reply_value);
     }
 }

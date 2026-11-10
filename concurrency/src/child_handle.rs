@@ -472,10 +472,15 @@ mod tests {
         }
         impl Actor for Worker {}
         impl Handler<Stop> for Worker {
-            fn handle(&mut self, _msg: Stop, reply: crate::reply::PendingReply<'_, ()>, ctx: &Context<Self>) {
+            fn handle(
+                &mut self,
+                _msg: Stop,
+                reply: crate::reply::PendingReply<'_, ()>,
+                ctx: &Context<Self>,
+            ) {
                 {
-                ctx.stop();
-            }
+                    ctx.stop();
+                }
                 let _ = reply.reply(());
             }
         }
@@ -506,10 +511,15 @@ mod tests {
         }
         impl Actor for Worker {}
         impl Handler<Stop> for Worker {
-            async fn handle(&mut self, _msg: Stop, reply: crate::reply::PendingReply<'_, ()>, ctx: &Context<Self>) {
+            async fn handle(
+                &mut self,
+                _msg: Stop,
+                reply: crate::reply::PendingReply<'_, ()>,
+                ctx: &Context<Self>,
+            ) {
                 {
-                ctx.stop();
-            }
+                    ctx.stop();
+                }
                 let _ = reply.reply(());
             }
         }
@@ -626,10 +636,15 @@ mod tests {
         }
         impl Actor for Boomer {}
         impl Handler<Boom> for Boomer {
-            fn handle(&mut self, _msg: Boom, reply: crate::reply::PendingReply<'_, ()>, _ctx: &Context<Self>) {
+            fn handle(
+                &mut self,
+                _msg: Boom,
+                reply: crate::reply::PendingReply<'_, ()>,
+                _ctx: &Context<Self>,
+            ) {
                 {
-                panic!("intentional panic in handler");
-            }
+                    panic!("intentional panic in handler");
+                }
                 let _ = reply.reply(());
             }
         }
@@ -661,10 +676,15 @@ mod tests {
         }
         impl Actor for Boomer {}
         impl Handler<Boom> for Boomer {
-            async fn handle(&mut self, _msg: Boom, reply: crate::reply::PendingReply<'_, ()>, _ctx: &Context<Self>) {
+            async fn handle(
+                &mut self,
+                _msg: Boom,
+                reply: crate::reply::PendingReply<'_, ()>,
+                _ctx: &Context<Self>,
+            ) {
                 {
-                panic!("intentional panic in handler");
-            }
+                    panic!("intentional panic in handler");
+                }
                 let _ = reply.reply(());
             }
         }

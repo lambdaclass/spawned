@@ -37,10 +37,15 @@ impl spawned_concurrency::message::Message for Crash {
     type Result = ();
 }
 impl Handler<Crash> for Service {
-    async fn handle(&mut self, _: Crash, reply: spawned_concurrency::reply::PendingReply<'_, ()>, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        _: Crash,
+        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
         {
-        panic!("intentional named-service replacement");
-    }
+            panic!("intentional named-service replacement");
+        }
         let _ = reply.reply(());
     }
 }

@@ -57,7 +57,11 @@ impl Clock {
 /// once every thread has joined.
 fn assert_balanced(pool: &CreditPool, slots: &[&Slot<u32>]) {
     let held: u64 = slots.iter().map(|s| credits(s.word())).sum();
-    assert_eq!(pool.used() as u64, held, "credit counter diverged from slot words");
+    assert_eq!(
+        pool.used() as u64,
+        held,
+        "credit counter diverged from slot words"
+    );
     assert!(pool.used() <= pool.max(), "credit bound exceeded");
 }
 
@@ -94,7 +98,10 @@ fn reply_vs_expiry() {
         match delivery {
             Delivery::Delivered => {
                 assert_eq!(state(slot.word()), slot::REPLIED);
-                assert!(replied_at.load(Ordering::SeqCst) < 10, "success at the deadline");
+                assert!(
+                    replied_at.load(Ordering::SeqCst) < 10,
+                    "success at the deadline"
+                );
                 assert!(back.is_none());
             }
             Delivery::Expired => {
@@ -166,7 +173,10 @@ fn reply_vs_owner_close() {
             loom::thread::spawn(move || slot.reply(1, &|| 0).0)
         };
         let closed = slot.close();
-        assert!(slot.is_terminal(), "close returned while a reply was WRITING");
+        assert!(
+            slot.is_terminal(),
+            "close returned while a reply was WRITING"
+        );
         let delivery = replier.join().unwrap();
         if closed {
             assert_eq!(state(slot.word()), slot::STOPPED);
@@ -258,7 +268,8 @@ fn attach_vs_job_end_vs_close() {
     model(|| {
         let pool = Arc::new(CreditPool::new(2));
         let slot = deferred(&pool, NEVER);
-        slot.attach(&|| 0).expect("first attach shares the token's credit");
+        slot.attach(&|| 0)
+            .expect("first attach shares the token's credit");
         assert_eq!(pool.used(), 1);
         let second = {
             let slot = slot.clone();

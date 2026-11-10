@@ -10,10 +10,15 @@ impl Message for Add {
     type Result = ();
 }
 impl Handler<Add> for Worker {
-    async fn handle(&mut self, _: Add, reply: spawned_concurrency::reply::PendingReply<'_, ()>, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        _: Add,
+        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
         {
-        self.0 += 1;
-    }
+            self.0 += 1;
+        }
         let _ = reply.reply(());
     }
 }
@@ -22,10 +27,13 @@ impl Message for Fence {
     type Result = usize;
 }
 impl Handler<Fence> for Worker {
-    async fn handle(&mut self, _: Fence, reply: spawned_concurrency::reply::PendingReply<'_, usize>, _: &Context<Self>) {
-        let __reply_value: usize = {
-        self.0
-    };
+    async fn handle(
+        &mut self,
+        _: Fence,
+        reply: spawned_concurrency::reply::PendingReply<'_, usize>,
+        _: &Context<Self>,
+    ) {
+        let __reply_value: usize = { self.0 };
         let _ = reply.reply(__reply_value);
     }
 }

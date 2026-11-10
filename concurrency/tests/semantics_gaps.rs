@@ -101,28 +101,43 @@ mod native {
         }
     }
     impl Handler<Watch> for Observer {
-        fn handle(&mut self, watch: Watch, reply: spawned_concurrency::reply::PendingReply<'_, ()>, ctx: &Context<Self>) {
+        fn handle(
+            &mut self,
+            watch: Watch,
+            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            ctx: &Context<Self>,
+        ) {
             {
-            ctx.trap_exit(true);
-            ctx.link(&watch.0);
-            ctx.monitor(&watch.0);
-        }
+                ctx.trap_exit(true);
+                ctx.link(&watch.0);
+                ctx.monitor(&watch.0);
+            }
             let _ = reply.reply(());
         }
     }
     impl Handler<Ping> for Observer {
-        fn handle(&mut self, ping: Ping, reply: spawned_concurrency::reply::PendingReply<'_, ()>, _: &Context<Self>) {
+        fn handle(
+            &mut self,
+            ping: Ping,
+            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            _: &Context<Self>,
+        ) {
             {
-            let _ = self.0.send(Event::Ping(ping.0));
-        }
+                let _ = self.0.send(Event::Ping(ping.0));
+            }
             let _ = reply.reply(());
         }
     }
     impl Handler<Down> for Observer {
-        fn handle(&mut self, down: Down, reply: spawned_concurrency::reply::PendingReply<'_, ()>, _: &Context<Self>) {
+        fn handle(
+            &mut self,
+            down: Down,
+            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            _: &Context<Self>,
+        ) {
             {
-            let _ = self.0.send(Event::Down(down.reason));
-        }
+                let _ = self.0.send(Event::Down(down.reason));
+            }
             let _ = reply.reply(());
         }
     }
@@ -130,16 +145,21 @@ mod native {
     struct Source;
     impl Actor for Source {}
     impl Handler<Burst<Recipient<Ping>>> for Source {
-        fn handle(&mut self, burst: Burst<Recipient<Ping>>, reply: spawned_concurrency::reply::PendingReply<'_, ()>, ctx: &Context<Self>) {
+        fn handle(
+            &mut self,
+            burst: Burst<Recipient<Ping>>,
+            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            ctx: &Context<Self>,
+        ) {
             {
-            for i in 0..burst.count {
-                burst.to.send(Ping(i)).unwrap();
+                for i in 0..burst.count {
+                    burst.to.send(Ping(i)).unwrap();
+                }
+                match burst.reason {
+                    Some(reason) => ctx.stop_with_reason(reason),
+                    None => panic!("source panicked"),
+                }
             }
-            match burst.reason {
-                Some(reason) => ctx.stop_with_reason(reason),
-                None => panic!("source panicked"),
-            }
-        }
             let _ = reply.reply(());
         }
     }
@@ -175,10 +195,13 @@ mod native {
     struct Panicker;
     impl Actor for Panicker {}
     impl Handler<Boom> for Panicker {
-        fn handle(&mut self, _: Boom, reply: spawned_concurrency::reply::PendingReply<'_, u64>, _: &Context<Self>) {
-            let __reply_value: u64 = {
-            panic!("request handler panic")
-        };
+        fn handle(
+            &mut self,
+            _: Boom,
+            reply: spawned_concurrency::reply::PendingReply<'_, u64>,
+            _: &Context<Self>,
+        ) {
+            let __reply_value: u64 = { panic!("request handler panic") };
             let _ = reply.reply(__reply_value);
         }
     }
@@ -243,28 +266,43 @@ mod tasks {
         }
     }
     impl Handler<Watch> for Observer {
-        async fn handle(&mut self, watch: Watch, reply: spawned_concurrency::reply::PendingReply<'_, ()>, ctx: &Context<Self>) {
+        async fn handle(
+            &mut self,
+            watch: Watch,
+            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            ctx: &Context<Self>,
+        ) {
             {
-            ctx.trap_exit(true);
-            ctx.link(&watch.0);
-            ctx.monitor(&watch.0);
-        }
+                ctx.trap_exit(true);
+                ctx.link(&watch.0);
+                ctx.monitor(&watch.0);
+            }
             let _ = reply.reply(());
         }
     }
     impl Handler<Ping> for Observer {
-        async fn handle(&mut self, ping: Ping, reply: spawned_concurrency::reply::PendingReply<'_, ()>, _: &Context<Self>) {
+        async fn handle(
+            &mut self,
+            ping: Ping,
+            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            _: &Context<Self>,
+        ) {
             {
-            let _ = self.0.send(Event::Ping(ping.0));
-        }
+                let _ = self.0.send(Event::Ping(ping.0));
+            }
             let _ = reply.reply(());
         }
     }
     impl Handler<Down> for Observer {
-        async fn handle(&mut self, down: Down, reply: spawned_concurrency::reply::PendingReply<'_, ()>, _: &Context<Self>) {
+        async fn handle(
+            &mut self,
+            down: Down,
+            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            _: &Context<Self>,
+        ) {
             {
-            let _ = self.0.send(Event::Down(down.reason));
-        }
+                let _ = self.0.send(Event::Down(down.reason));
+            }
             let _ = reply.reply(());
         }
     }
@@ -272,16 +310,21 @@ mod tasks {
     struct Source;
     impl Actor for Source {}
     impl Handler<Burst<Recipient<Ping>>> for Source {
-        async fn handle(&mut self, burst: Burst<Recipient<Ping>>, reply: spawned_concurrency::reply::PendingReply<'_, ()>, ctx: &Context<Self>) {
+        async fn handle(
+            &mut self,
+            burst: Burst<Recipient<Ping>>,
+            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            ctx: &Context<Self>,
+        ) {
             {
-            for i in 0..burst.count {
-                burst.to.send(Ping(i)).unwrap();
+                for i in 0..burst.count {
+                    burst.to.send(Ping(i)).unwrap();
+                }
+                match burst.reason {
+                    Some(reason) => ctx.stop_with_reason(reason),
+                    None => panic!("source panicked"),
+                }
             }
-            match burst.reason {
-                Some(reason) => ctx.stop_with_reason(reason),
-                None => panic!("source panicked"),
-            }
-        }
             let _ = reply.reply(());
         }
     }
@@ -327,10 +370,15 @@ mod tasks {
     struct Ticker(UnboundedSender<Instant>);
     impl Actor for Ticker {}
     impl Handler<Tick> for Ticker {
-        async fn handle(&mut self, _: Tick, reply: spawned_concurrency::reply::PendingReply<'_, ()>, _: &Context<Self>) {
+        async fn handle(
+            &mut self,
+            _: Tick,
+            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            _: &Context<Self>,
+        ) {
             {
-            let _ = self.0.send(Instant::now());
-        }
+                let _ = self.0.send(Instant::now());
+            }
             let _ = reply.reply(());
         }
     }
@@ -414,18 +462,28 @@ mod tasks {
         }
     }
     impl Handler<Stamp> for Clocked {
-        async fn handle(&mut self, stamp: Stamp, reply: spawned_concurrency::reply::PendingReply<'_, ()>, _: &Context<Self>) {
+        async fn handle(
+            &mut self,
+            stamp: Stamp,
+            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            _: &Context<Self>,
+        ) {
             {
-            let _ = self.log.send((self.generation, stamp.0));
-        }
+                let _ = self.log.send((self.generation, stamp.0));
+            }
             let _ = reply.reply(());
         }
     }
     impl Handler<Crash> for Clocked {
-        async fn handle(&mut self, _: Crash, reply: spawned_concurrency::reply::PendingReply<'_, ()>, _: &Context<Self>) {
+        async fn handle(
+            &mut self,
+            _: Crash,
+            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            _: &Context<Self>,
+        ) {
             {
-            panic!("injected crash");
-        }
+                panic!("injected crash");
+            }
             let _ = reply.reply(());
         }
     }
@@ -501,10 +559,13 @@ mod tasks {
     struct Panicker;
     impl Actor for Panicker {}
     impl Handler<Boom> for Panicker {
-        async fn handle(&mut self, _: Boom, reply: spawned_concurrency::reply::PendingReply<'_, u64>, _: &Context<Self>) {
-            let __reply_value: u64 = {
-            panic!("request handler panic")
-        };
+        async fn handle(
+            &mut self,
+            _: Boom,
+            reply: spawned_concurrency::reply::PendingReply<'_, u64>,
+            _: &Context<Self>,
+        ) {
+            let __reply_value: u64 = { panic!("request handler panic") };
             let _ = reply.reply(__reply_value);
         }
     }
