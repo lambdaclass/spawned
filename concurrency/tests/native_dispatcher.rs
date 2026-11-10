@@ -17,7 +17,7 @@ struct Healthy;
 impl Actor for Healthy {}
 impl Handler<Ping> for Healthy {
     async fn handle(&mut self, _: Ping, _: &Context<Self>) -> u64 {
-        tokio::task::yield_now().await;
+        spawned_rt::tasks::yield_now().await;
         42
     }
 }
@@ -44,13 +44,15 @@ fn drop_panic_isolated_and_terminal_shutdown_rejects_new_actors() {
         assert_eq!(healthy.request_with_timeout(Ping, LIMIT).await.unwrap(), 42);
         bad.child_handle().stop();
         assert_eq!(
-            tokio::time::timeout(LIMIT, bad.wait_exit()).await.unwrap(),
+            spawned_rt::tasks::timeout(LIMIT, bad.wait_exit())
+                .await
+                .unwrap(),
             ExitReason::Kill
         );
         assert_eq!(healthy.request_with_timeout(Ping, LIMIT).await.unwrap(), 42);
         healthy.child_handle().stop();
         assert_eq!(
-            tokio::time::timeout(LIMIT, healthy.wait_exit())
+            spawned_rt::tasks::timeout(LIMIT, healthy.wait_exit())
                 .await
                 .unwrap(),
             ExitReason::Normal
@@ -62,7 +64,7 @@ fn drop_panic_isolated_and_terminal_shutdown_rejects_new_actors() {
     runtime.block_on(async {
         let refused = Healthy.start();
         assert_eq!(
-            tokio::time::timeout(LIMIT, refused.wait_exit())
+            spawned_rt::tasks::timeout(LIMIT, refused.wait_exit())
                 .await
                 .unwrap(),
             ExitReason::Kill

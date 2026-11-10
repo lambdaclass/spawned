@@ -59,19 +59,19 @@ mod asynchronous {
     impl Actor for Worker {}
     impl Handler<timed_protocol::Work> for Worker {
         async fn handle(&mut self, msg: timed_protocol::Work, _: &Context<Self>) -> u64 {
-            tokio::time::sleep(Duration::from_millis(msg.millis)).await;
+            spawned_rt::tasks::sleep(Duration::from_millis(msg.millis)).await;
             msg.millis
         }
     }
     impl Handler<timed_protocol::Brief> for Worker {
         async fn handle(&mut self, msg: timed_protocol::Brief, _: &Context<Self>) -> u64 {
-            tokio::time::sleep(Duration::from_millis(msg.millis)).await;
+            spawned_rt::tasks::sleep(Duration::from_millis(msg.millis)).await;
             msg.millis
         }
     }
     impl Handler<legacy_protocol::Legacy> for Worker {
         async fn handle(&mut self, msg: legacy_protocol::Legacy, _: &Context<Self>) -> u64 {
-            tokio::time::sleep(Duration::from_millis(msg.millis)).await;
+            spawned_rt::tasks::sleep(Duration::from_millis(msg.millis)).await;
             msg.millis
         }
     }

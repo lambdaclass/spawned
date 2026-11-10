@@ -21,7 +21,7 @@ impl Message for Audit {
 }
 impl Handler<Audit> for Probe {
     async fn handle(&mut self, _: Audit, _: &Context<Self>) -> <Audit as Message>::Result {
-        tokio::time::sleep(Duration::from_millis(1)).await;
+        spawned_rt::tasks::sleep(Duration::from_millis(1)).await;
         (
             std::thread::current().name().unwrap_or_default().into(),
             spawned_rt::tasks::affinity::current_cpu().ok(),
@@ -41,7 +41,7 @@ impl Handler<StartPeer> for Probe {
         ctx.execution_group().unwrap().start(Probe)
     }
 }
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn native_context_placement_uses_a_free_slot_and_validates_helper_budgets() {
     let system = ActorSystem::new().unwrap();
     for (roots, helpers) in [(0, 1), (1025, 1), (1, 0), (1, 1025)] {
@@ -95,7 +95,7 @@ impl Handler<Crash> for Probe {
         panic!("profile recovery injection");
     }
 }
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn persistent_native_slots_bound_admission_and_helpers_progress_during_blocking_turns() {
     let system = ActorSystem::new().unwrap();
     let group = system.thread_group("native-roots", 2).unwrap();
@@ -119,7 +119,10 @@ async fn persistent_native_slots_bound_admission_and_helpers_progress_during_blo
         release: release_rx,
     })
     .unwrap();
-    tokio::time::timeout(LIMIT, entered).await.unwrap().unwrap();
+    spawned_rt::tasks::timeout(LIMIT, entered)
+        .await
+        .unwrap()
+        .unwrap();
     // A blocked root does not occupy the group's single async helper worker.
     let ctx = a.context();
     let helper = std::thread::spawn(move || {
@@ -130,19 +133,19 @@ async fn persistent_native_slots_bound_admission_and_helpers_progress_during_blo
             let (accepted, connected) = tokio::join!(listener.accept(), connect);
             accepted.unwrap();
             connected.unwrap();
-            tokio::time::sleep(Duration::from_millis(1)).await;
+            spawned_rt::tasks::sleep(Duration::from_millis(1)).await;
             std::thread::current().name().unwrap().to_string()
         })
         .unwrap()
     })
     .join()
     .unwrap();
-    let helper_thread = tokio::time::timeout(LIMIT, helper.join())
+    let helper_thread = spawned_rt::tasks::timeout(LIMIT, helper.join())
         .await
         .unwrap()
         .unwrap();
     assert!(helper_thread.contains("helper"));
-    assert!(tokio::time::timeout(LIMIT, b.request(Audit))
+    assert!(spawned_rt::tasks::timeout(LIMIT, b.request(Audit))
         .await
         .unwrap()
         .is_ok());
@@ -150,7 +153,7 @@ async fn persistent_native_slots_bound_admission_and_helpers_progress_during_blo
     assert!(system.shutdown(LIMIT).await.complete);
     assert!(matches!(Probe.start_on(&group), Err(SystemError::Closed)));
 }
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn native_capacity_is_released_only_after_registered_helper_cleanup() {
     let system = ActorSystem::new().unwrap();
     let group = system.thread_group("slot-cleanup", 1).unwrap();
@@ -165,17 +168,20 @@ async fn native_capacity_is_released_only_after_registered_helper_cleanup() {
             release_rx.recv_timeout(LIMIT).unwrap();
         })
         .unwrap();
-    tokio::time::timeout(LIMIT, entered).await.unwrap().unwrap();
+    spawned_rt::tasks::timeout(LIMIT, entered)
+        .await
+        .unwrap()
+        .unwrap();
     actor.context().stop();
     actor.child_handle().wait_exit_async().await;
     assert!(matches!(Probe.start_on(&group), Err(SystemError::Capacity)));
     release.send(()).unwrap();
     drop(helper);
-    let replacement = tokio::time::timeout(LIMIT, async {
+    let replacement = spawned_rt::tasks::timeout(LIMIT, async {
         loop {
             match Probe.start_on(&group) {
                 Ok(actor) => break actor,
-                Err(SystemError::Capacity) => tokio::task::yield_now().await,
+                Err(SystemError::Capacity) => spawned_rt::tasks::yield_now().await,
                 Err(e) => panic!("{e}"),
             }
         }
@@ -185,7 +191,7 @@ async fn native_capacity_is_released_only_after_registered_helper_cleanup() {
     replacement.ready().await.unwrap();
     assert!(system.shutdown(LIMIT).await.complete);
 }
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn each_strategy_recovers_on_a_full_native_pool_without_overlapping_slots() {
     for strategy in [
         SupervisorStrategy::OneForOne,
@@ -230,7 +236,7 @@ async fn each_strategy_recovers_on_a_full_native_pool_without_overlapping_slots(
                 || i == 1
                 || (strategy == SupervisorStrategy::RestForOne && i == 2)
             {
-                let next = tokio::time::timeout(LIMIT, child.wait_for_generation(1))
+                let next = spawned_rt::tasks::timeout(LIMIT, child.wait_for_generation(1))
                     .await
                     .unwrap()
                     .unwrap();
@@ -255,7 +261,7 @@ async fn each_strategy_recovers_on_a_full_native_pool_without_overlapping_slots(
     }
 }
 #[cfg(target_os = "linux")]
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn pinned_shards_preserve_explicit_cpu_placement_and_cross_shard_requests() {
     let cpus = spawned_rt::tasks::affinity::available_cpus().unwrap();
     // Cross-shard placement needs two allowed CPUs; the single-CPU CI job
@@ -330,7 +336,7 @@ mod tls_join {
             PROBE.with(|p| *p.borrow_mut() = Some(msg.0));
         }
     }
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
     async fn shutdown_reports_wait_for_actual_pinned_worker_tls_destruction() {
         let system = ActorSystem::new().unwrap();
         let cpu = spawned_rt::tasks::affinity::available_cpus().unwrap()[0];
@@ -347,7 +353,10 @@ mod tls_join {
             .await
             .unwrap();
         let report = system.shutdown(Duration::from_millis(20)).await;
-        tokio::time::timeout(LIMIT, entered).await.unwrap().unwrap();
+        spawned_rt::tasks::timeout(LIMIT, entered)
+            .await
+            .unwrap()
+            .unwrap();
         assert!(!report.complete);
         assert_eq!(report.unfinished_groups, ["tls-owner"]);
         assert!(actor.child_handle().exit_reason().is_some());

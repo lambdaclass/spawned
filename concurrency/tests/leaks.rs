@@ -447,7 +447,7 @@ mod async_leaks {
                     .await
                     .unwrap();
                 current.request(Crash).await.unwrap_err();
-                tokio::time::timeout(LIMIT, children[0].wait_for_generation(generation))
+                spawned_rt::tasks::timeout(LIMIT, children[0].wait_for_generation(generation))
                     .await
                     .unwrap()
                     .unwrap();

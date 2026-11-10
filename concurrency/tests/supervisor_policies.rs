@@ -126,7 +126,7 @@ fn unsettled(actual: &[ChildSnapshot], expected: &[Expected]) -> Vec<usize> {
     pending
 }
 async fn observe(children: &[SupervisedChild<Probe>], expected: &[Expected]) {
-    let outcome = tokio::time::timeout(LIMIT, async {
+    let outcome = spawned_rt::tasks::timeout(LIMIT, async {
         loop {
             let actual: Vec<_> = children.iter().map(SupervisedChild::snapshot).collect();
             let pending = unsettled(&actual, expected);
@@ -160,7 +160,7 @@ async fn observe(children: &[SupervisedChild<Probe>], expected: &[Expected]) {
             }
             // A terminal notification can be immediately ready. Always give
             // the watchdog timer a polling opportunity, even for broken state.
-            tokio::task::yield_now().await;
+            spawned_rt::tasks::yield_now().await;
         }
     })
     .await;
@@ -359,7 +359,7 @@ fn a_waiting_earlier_child_cannot_hide_a_later_extra_reconstruction() {
     unsettled(&actual, &expected);
 }
 
-#[tokio::test]
+#[spawned_macros::sim_test]
 async fn an_already_retired_child_reports_a_generation_error_without_spinning() {
     use futures::FutureExt;
     use std::panic::AssertUnwindSafe;
@@ -376,10 +376,12 @@ async fn an_already_retired_child_reports_a_generation_error_without_spinning() 
         .unwrap();
     let supervisor = tree.start().await.unwrap();
     child.current().unwrap().context().stop();
-    assert!(tokio::time::timeout(LIMIT, child.wait_for_generation(1))
-        .await
-        .unwrap()
-        .is_err());
+    assert!(
+        spawned_rt::tasks::timeout(LIMIT, child.wait_for_generation(1))
+            .await
+            .unwrap()
+            .is_err()
+    );
     // Deliberately wrong oracle: this child retired at generation one. Its
     // generation notification returns immediately, so the observer must diagnose
     // the mismatch rather than repeatedly polling a ready future forever.
@@ -387,7 +389,7 @@ async fn an_already_retired_child_reports_a_generation_error_without_spinning() 
         generation: 2,
         live: false,
     }];
-    let result = tokio::time::timeout(
+    let result = spawned_rt::tasks::timeout(
         Duration::from_millis(200),
         AssertUnwindSafe(observe(&[child], &invalid)).catch_unwind(),
     )

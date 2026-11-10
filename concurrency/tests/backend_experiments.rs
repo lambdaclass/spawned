@@ -18,8 +18,8 @@ struct Worker;
 impl Actor for Worker {}
 impl Handler<Probe> for Worker {
     async fn handle(&mut self, _: Probe, _: &Context<Self>) -> u64 {
-        let child = tokio::spawn(async {
-            tokio::time::sleep(Duration::from_millis(1)).await;
+        let child = spawned_rt::tasks::spawn(async {
+            spawned_rt::tasks::sleep(Duration::from_millis(1)).await;
             42
         });
         child.await.unwrap()
@@ -28,7 +28,7 @@ impl Handler<Probe> for Worker {
 impl Handler<Nested> for Worker {
     async fn handle(&mut self, _: Nested, _: &Context<Self>) -> bool {
         let (tx, rx) = mpsc::channel();
-        tokio::spawn(async move {
+        spawned_rt::tasks::spawn(async move {
             let _ = tx.send(());
         });
         // Characterizes progress of a detached helper while its actor blocks.
@@ -52,7 +52,7 @@ fn experiment_contracts() {
             "runtime flavor has an observable blocking-helper tradeoff"
         );
         actor.child_handle().stop();
-        tokio::time::timeout(Duration::from_secs(5), actor.join())
+        spawned_rt::tasks::timeout(Duration::from_secs(5), actor.join())
             .await
             .unwrap();
     });
@@ -126,7 +126,7 @@ fn characterize_caller_runtime_lifetime() {
             assert_eq!(outcome.unwrap(), 42);
         }
         actor.child_handle().stop();
-        tokio::time::timeout(Duration::from_secs(5), actor.join())
+        spawned_rt::tasks::timeout(Duration::from_secs(5), actor.join())
             .await
             .unwrap();
     });

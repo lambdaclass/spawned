@@ -94,7 +94,7 @@ fn pending_async_listener_is_dropped_on_actor_exit() {
             let listener = tasks::spawn_listener(actor.context(), stream);
             actor.child_handle().stop();
             actor.join().await;
-            tokio::time::timeout(Duration::from_secs(2), listener)
+            spawned_rt::tasks::timeout(Duration::from_secs(2), listener)
                 .await
                 .unwrap()
                 .unwrap();
@@ -116,12 +116,12 @@ fn cancelled_thread_exit_wait_does_not_occupy_blocking_pool() {
     let child = actor.child_handle();
     let available = rt.block_on(async {
         assert!(
-            tokio::time::timeout(Duration::from_millis(10), child.wait_exit_async())
+            spawned_rt::tasks::timeout(Duration::from_millis(10), child.wait_exit_async())
                 .await
                 .is_err()
         );
         let probe = tokio::task::spawn_blocking(|| 42);
-        tokio::time::timeout(Duration::from_secs(1), probe)
+        spawned_rt::tasks::timeout(Duration::from_secs(1), probe)
             .await
             .is_ok()
     });

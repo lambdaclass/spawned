@@ -171,7 +171,7 @@ fn wait(_rt: &tokio::runtime::Runtime, actor: &ChildHandle) -> ExitReason {
     }
     #[cfg(feature = "async")]
     _rt.block_on(async {
-        tokio::time::timeout(LIMIT, actor.wait_exit_async())
+        spawned_rt::tasks::timeout(LIMIT, actor.wait_exit_async())
             .await
             .expect("actor did not terminate")
     })

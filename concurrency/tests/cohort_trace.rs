@@ -67,7 +67,7 @@ fn write_trace(name: &str, id: u64, strategy: SupervisorStrategy, modes: &[&str]
         modes.len(), modes.iter().map(|mode|format!("\"{mode}\"")).collect::<Vec<_>>().join(","),events
     )).unwrap();
 }
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn trace_cohort_selection_and_temporary_retirement() {
     for strategy in [
         SupervisorStrategy::OneForAll,
@@ -107,12 +107,12 @@ async fn trace_cohort_selection_and_temporary_retirement() {
         }
         let supervisor = tree.start().await.unwrap();
         assert!(children[1].current().unwrap().request(Crash).await.is_err());
-        tokio::time::timeout(LIMIT, children[1].wait_for_generation(1))
+        spawned_rt::tasks::timeout(LIMIT, children[1].wait_for_generation(1))
             .await
             .unwrap()
             .unwrap();
         assert!(
-            tokio::time::timeout(LIMIT, children[2].wait_for_generation(1))
+            spawned_rt::tasks::timeout(LIMIT, children[2].wait_for_generation(1))
                 .await
                 .unwrap()
                 .is_err()
@@ -127,7 +127,7 @@ async fn trace_cohort_selection_and_temporary_retirement() {
         assert!(system.shutdown(LIMIT).await.complete);
     }
 }
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn trace_superseded_round_with_parked_temporary_tail() {
     for strategy in [
         SupervisorStrategy::OneForAll,
@@ -171,21 +171,21 @@ async fn trace_superseded_round_with_parked_temporary_tail() {
         }
         let supervisor = tree.start().await.unwrap();
         assert!(children[1].current().unwrap().request(Crash).await.is_err());
-        tokio::time::timeout(LIMIT, entered.notified())
+        spawned_rt::tasks::timeout(LIMIT, entered.notified())
             .await
             .unwrap();
         let generation = children[0].snapshot().generation;
         assert!(children[0].current().unwrap().request(Crash).await.is_err());
-        tokio::time::timeout(LIMIT, children[0].wait_for_generation(generation))
+        spawned_rt::tasks::timeout(LIMIT, children[0].wait_for_generation(generation))
             .await
             .unwrap()
             .unwrap();
-        tokio::time::timeout(LIMIT, children[1].wait_for_generation(2))
+        spawned_rt::tasks::timeout(LIMIT, children[1].wait_for_generation(2))
             .await
             .unwrap()
             .unwrap();
         assert!(
-            tokio::time::timeout(LIMIT, children[2].wait_for_generation(1))
+            spawned_rt::tasks::timeout(LIMIT, children[2].wait_for_generation(1))
                 .await
                 .unwrap()
                 .is_err()
@@ -201,7 +201,7 @@ async fn trace_superseded_round_with_parked_temporary_tail() {
     }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn trace_normally_retired_transient_is_skipped_by_later_cohorts() {
     for strategy in [
         SupervisorStrategy::OneForAll,
@@ -233,17 +233,17 @@ async fn trace_normally_retired_transient_is_skipped_by_later_cohorts() {
         }
         let supervisor = tree.start().await.unwrap();
         children[2].current().unwrap().context().stop();
-        tokio::time::timeout(LIMIT, async {
+        spawned_rt::tasks::timeout(LIMIT, async {
             while children[2].snapshot().state
                 != spawned_concurrency::supervision::ChildState::Stopped
             {
-                tokio::task::yield_now().await;
+                spawned_rt::tasks::yield_now().await;
             }
         })
         .await
         .unwrap();
         assert!(children[1].current().unwrap().request(Crash).await.is_err());
-        tokio::time::timeout(LIMIT, children[1].wait_for_generation(1))
+        spawned_rt::tasks::timeout(LIMIT, children[1].wait_for_generation(1))
             .await
             .unwrap()
             .unwrap();

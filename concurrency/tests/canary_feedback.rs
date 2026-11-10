@@ -42,7 +42,7 @@ impl Handler<Quit> for Worker {
     }
 }
 
-#[tokio::test]
+#[spawned_macros::sim_test]
 async fn unfinished_report_identifies_child_and_active_turn() {
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("canary-diagnostics", 1).unwrap();
@@ -62,7 +62,10 @@ async fn unfinished_report_identifies_child_and_active_turn() {
             release: gate,
         })
         .unwrap();
-    tokio::time::timeout(LIMIT, arrival).await.unwrap().unwrap();
+    spawned_rt::tasks::timeout(LIMIT, arrival)
+        .await
+        .unwrap()
+        .unwrap();
     let report = system.shutdown(Duration::from_millis(10)).await;
     assert!(!report.complete);
     let detail = report
@@ -93,7 +96,7 @@ async fn unfinished_report_identifies_child_and_active_turn() {
     );
 }
 
-#[tokio::test]
+#[spawned_macros::sim_test]
 async fn completed_turn_is_not_reported_while_helper_cleanup_remains() {
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("canary-helper", 1).unwrap();
@@ -110,10 +113,15 @@ async fn completed_turn_is_not_reported_while_helper_cleanup_remains() {
                 .expect("test did not release blocking helper");
         })
         .unwrap();
-    tokio::time::timeout(LIMIT, arrival).await.unwrap().unwrap();
+    spawned_rt::tasks::timeout(LIMIT, arrival)
+        .await
+        .unwrap()
+        .unwrap();
     // The actor completes a turn and exits, but the helper retains its scope.
     actor.request(Quit(ExitReason::Shutdown)).await.unwrap();
-    tokio::time::timeout(LIMIT, actor.join()).await.unwrap();
+    spawned_rt::tasks::timeout(LIMIT, actor.join())
+        .await
+        .unwrap();
     let report = system.shutdown(Duration::from_millis(10)).await;
     assert!(!report.complete);
     let detail = report
@@ -166,7 +174,7 @@ impl tracing::Subscriber for Capture {
     }
 }
 
-#[tokio::test]
+#[spawned_macros::sim_test]
 async fn supervision_logs_restart_budget_exhaustion_and_give_up() {
     let capture = Capture::default();
     tracing::subscriber::set_global_default(capture.clone()).unwrap();
@@ -199,12 +207,12 @@ async fn supervision_logs_restart_budget_exhaustion_and_give_up() {
         .request(Quit(ExitReason::Kill))
         .await
         .unwrap();
-    let replacement = tokio::time::timeout(LIMIT, child.wait_for_generation(1))
+    let replacement = spawned_rt::tasks::timeout(LIMIT, child.wait_for_generation(1))
         .await
         .unwrap()
         .unwrap();
     replacement.request(Quit(ExitReason::Kill)).await.unwrap();
-    tokio::time::timeout(LIMIT, supervisor.join())
+    spawned_rt::tasks::timeout(LIMIT, supervisor.join())
         .await
         .unwrap();
     assert!(supervisor
@@ -338,7 +346,7 @@ async fn supervision_logs_restart_budget_exhaustion_and_give_up() {
         ));
 }
 
-#[tokio::test]
+#[spawned_macros::sim_test]
 async fn unmanaged_helpers_return_a_specific_error_without_executing_work() {
     let actor = Worker.start();
     assert!(matches!(
@@ -352,10 +360,12 @@ async fn unmanaged_helpers_return_a_specific_error_without_executing_work() {
         Err(spawned_concurrency::system::SystemError::UnmanagedActor)
     ));
     actor.context().stop();
-    tokio::time::timeout(LIMIT, actor.join()).await.unwrap();
+    spawned_rt::tasks::timeout(LIMIT, actor.join())
+        .await
+        .unwrap();
 }
 
-#[tokio::test]
+#[spawned_macros::sim_test]
 async fn panicked_turn_is_cleared_before_stopped_hook() {
     struct Panicking {
         entered: Option<oneshot::Sender<()>>,
@@ -384,7 +394,10 @@ async fn panicked_turn_is_cleared_before_stopped_hook() {
     .unwrap();
     actor.ready().await.unwrap();
     assert!(actor.request(Quit(ExitReason::Kill)).await.is_err());
-    tokio::time::timeout(LIMIT, arrival).await.unwrap().unwrap();
+    spawned_rt::tasks::timeout(LIMIT, arrival)
+        .await
+        .unwrap()
+        .unwrap();
     let report = system.shutdown(Duration::from_millis(10)).await;
     let detail = report
         .unfinished_actor_details

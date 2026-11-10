@@ -49,12 +49,12 @@ impl Drop for Probe {
     }
 }
 
-#[tokio::test(flavor = "current_thread")]
+#[spawned_macros::sim_test(flavor = "current_thread")]
 async fn managed_actor_stopped_before_first_poll_runs_no_hooks_but_drops_state() {
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("startup-gate", 1).unwrap();
     let owner = Probe(Arc::default()).start_on(&group).unwrap();
-    tokio::time::timeout(LIMIT, owner.ready())
+    spawned_rt::tasks::timeout(LIMIT, owner.ready())
         .await
         .unwrap()
         .unwrap();
@@ -70,7 +70,10 @@ async fn managed_actor_stopped_before_first_poll_runs_no_hooks_but_drops_state()
                 .expect("test failed to release worker");
         })
         .unwrap();
-    tokio::time::timeout(LIMIT, arrival).await.unwrap().unwrap();
+    spawned_rt::tasks::timeout(LIMIT, arrival)
+        .await
+        .unwrap()
+        .unwrap();
     let counts = Arc::new(Counts::default());
     let actor = Probe(counts.clone()).start_on(&group).unwrap();
     let dropped = Arc::new(AtomicUsize::new(0));
@@ -79,17 +82,17 @@ async fn managed_actor_stopped_before_first_poll_runs_no_hooks_but_drops_state()
         .collect();
     actor.child_handle().shutdown();
     release.send(()).unwrap();
-    tokio::time::timeout(LIMIT, blocker.join())
+    spawned_rt::tasks::timeout(LIMIT, blocker.join())
         .await
         .unwrap()
         .unwrap();
     assert_eq!(
-        tokio::time::timeout(LIMIT, actor.wait_exit())
+        spawned_rt::tasks::timeout(LIMIT, actor.wait_exit())
             .await
             .unwrap(),
         ExitReason::Shutdown
     );
-    assert!(tokio::time::timeout(LIMIT, actor.ready())
+    assert!(spawned_rt::tasks::timeout(LIMIT, actor.ready())
         .await
         .unwrap()
         .is_err());
@@ -107,13 +110,13 @@ async fn managed_actor_stopped_before_first_poll_runs_no_hooks_but_drops_state()
     assert!(system.shutdown(LIMIT).await.complete);
 }
 
-#[tokio::test(flavor = "current_thread")]
+#[spawned_macros::sim_test(flavor = "current_thread")]
 async fn legacy_actor_stopped_before_first_poll_keeps_both_hooks() {
     let counts = Arc::new(Counts::default());
     let actor = Probe(counts.clone()).start(); // this runtime has not yielded
     actor.child_handle().shutdown();
     assert_eq!(
-        tokio::time::timeout(LIMIT, actor.wait_exit())
+        spawned_rt::tasks::timeout(LIMIT, actor.wait_exit())
             .await
             .unwrap(),
         ExitReason::Shutdown

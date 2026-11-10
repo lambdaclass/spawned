@@ -55,7 +55,7 @@ impl<T> Attempt<T> {
 async fn attempt<F: Future>(future: F, budget: usize, park: Duration) -> Attempt<F::Output> {
     let mut future = Box::pin(future);
     let mut polls = 0usize;
-    let result = tokio::time::timeout(
+    let result = spawned_rt::tasks::timeout(
         park,
         std::future::poll_fn(|cx| {
             if polls == budget {
@@ -85,7 +85,7 @@ where
     Fut: Future<Output = bool>,
 {
     for n in 0..=MAX_POLLS {
-        let finished = tokio::time::timeout(LIMIT * 3, run(n))
+        let finished = spawned_rt::tasks::timeout(LIMIT * 3, run(n))
             .await
             .unwrap_or_else(|_| panic!("{op}: cancellation at poll {n} wedged the fixture"));
         if finished {
@@ -102,8 +102,8 @@ async fn eventually(what: &str, check: impl Fn() -> bool) {
     let deadline = Instant::now() + LIMIT;
     while !check() {
         assert!(Instant::now() < deadline, "timed out waiting for {what}");
-        tokio::task::yield_now().await;
-        tokio::time::sleep(Duration::from_millis(1)).await;
+        spawned_rt::tasks::yield_now().await;
+        spawned_rt::tasks::sleep(Duration::from_millis(1)).await;
     }
 }
 
@@ -295,7 +295,7 @@ impl Fx {
     async fn finish(self, actors: &[&ActorRef<Probe>]) {
         for actor in actors {
             actor.child_handle().stop();
-            tokio::time::timeout(LIMIT, actor.wait_exit())
+            spawned_rt::tasks::timeout(LIMIT, actor.wait_exit())
                 .await
                 .unwrap_or_else(|_| panic!("{:?}: actor did not stop", self.place));
         }
@@ -323,7 +323,7 @@ async fn usable(actor: &ActorRef<Probe>) {
 
 /// `request` is an `async fn`: an unpolled request enqueues nothing. Once the
 /// first poll enqueues it, dropping the caller does not cancel the effect.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn request_family_is_cancel_safe() {
     for place in PLACES {
         for variant in 0..3 {
@@ -362,7 +362,7 @@ async fn request_family_is_cancel_safe() {
 
 /// Protocol calls send eagerly when the method is called, before any poll:
 /// dropping the returned `Response` (even unpolled) never cancels the effect.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn protocol_calls_are_cancel_safe_and_send_eagerly() {
     for place in PLACES {
         let op = format!("{place:?} protocol call");
@@ -389,7 +389,7 @@ async fn protocol_calls_are_cancel_safe_and_send_eagerly() {
 
 /// Monitor and link setup run inside handlers. A dropped request that was
 /// enqueued still registers exactly one monitor/link, and it fires exactly once.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn monitor_and_link_setup_requests_are_cancel_safe() {
     for place in PLACES {
         for link in [false, true] {
@@ -418,7 +418,7 @@ async fn monitor_and_link_setup_requests_are_cancel_safe() {
                     assert_eq!(registered, usize::from(n > 0), "{op}: N={n}");
                     target.child_handle().shutdown();
                     assert_eq!(
-                        tokio::time::timeout(LIMIT, target.wait_exit())
+                        spawned_rt::tasks::timeout(LIMIT, target.wait_exit())
                             .await
                             .unwrap(),
                         ExitReason::Shutdown
@@ -454,7 +454,7 @@ async fn monitor_and_link_setup_requests_are_cancel_safe() {
 /// join, wait_exit and ChildHandle::wait_exit_async park until the actor
 /// stops. Dropping them at any point leaves the actor running and later
 /// waiters still observe the single exit reason.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn exit_waits_are_cancel_safe() {
     for place in PLACES {
         for variant in 0..3 {
@@ -498,7 +498,7 @@ impl<T> Attempt<T> {
 }
 
 /// ActorRef::ready (execution group start barrier) parks on a gated started().
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn group_ready_wait_is_cancel_safe() {
     for place in [Place::GroupAsync, Place::GroupThread] {
         let op = format!("{place:?} ready");
@@ -518,7 +518,7 @@ async fn group_ready_wait_is_cancel_safe() {
                     "{op}: ready before started()"
                 );
                 gate.notify_one();
-                tokio::time::timeout(LIMIT, actor.ready())
+                spawned_rt::tasks::timeout(LIMIT, actor.ready())
                     .await
                     .unwrap()
                     .unwrap();
@@ -556,7 +556,7 @@ fn config() -> SupervisorConfig {
 
 /// SupervisorBuilder::start: a dropped startup requests cleanup of every
 /// constructed child; nothing stays running or registered afterwards.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn supervisor_start_is_cancel_safe() {
     for place in [Place::GroupAsync, Place::GroupThread] {
         for gated in [false, true] {
@@ -607,7 +607,7 @@ async fn supervisor_start_is_cancel_safe() {
                         Attempt::Parked | Attempt::Dropped => {
                             // Cancellation closes the tree: waits resolve, nothing restarts.
                             for child in &children {
-                                let ready = tokio::time::timeout(LIMIT, child.wait_ready())
+                                let ready = spawned_rt::tasks::timeout(LIMIT, child.wait_ready())
                                     .await
                                     .unwrap_or_else(|_| panic!("{op}: N={n} child wait wedged"));
                                 assert!(ready.is_err(), "{op}: N={n} child ready after cancel");
@@ -639,7 +639,7 @@ async fn supervisor_start_is_cancel_safe() {
 
 /// Supervisor::shutdown requests stop synchronously; dropping the wait never
 /// leaves the tree half-stopped.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn supervisor_shutdown_and_child_waits_are_cancel_safe() {
     for place in [Place::GroupAsync, Place::GroupThread] {
         for variant in 0..4 {
@@ -672,7 +672,7 @@ async fn supervisor_shutdown_and_child_waits_are_cancel_safe() {
                                 supervisor.stop();
                             }
                             // The first poll requests stop; the tree must finish regardless.
-                            tokio::time::timeout(LIMIT, supervisor.join())
+                            spawned_rt::tasks::timeout(LIMIT, supervisor.join())
                                 .await
                                 .unwrap_or_else(|_| panic!("{op}: N={n} tree wedged"));
                             assert_eq!(first.wait_exit().await, ExitReason::Shutdown);
@@ -700,10 +700,11 @@ async fn supervisor_shutdown_and_child_waits_are_cancel_safe() {
                             let outcome = attempt(child.wait_for_generation(1), n, PARK).await;
                             assert!(!matches!(outcome, Attempt::Done(_)));
                             assert!(first.request(Cmd::Boom).await.is_err());
-                            let next = tokio::time::timeout(LIMIT, child.wait_for_generation(1))
-                                .await
-                                .unwrap()
-                                .unwrap();
+                            let next =
+                                spawned_rt::tasks::timeout(LIMIT, child.wait_for_generation(1))
+                                    .await
+                                    .unwrap()
+                                    .unwrap();
                             assert_ne!(next.id(), first.id());
                             usable(&next).await;
                             assert!(supervisor.shutdown(LIMIT).await.complete, "{op}");
@@ -719,7 +720,7 @@ async fn supervisor_shutdown_and_child_waits_are_cancel_safe() {
     }
 }
 /// ActorSystem::shutdown and ShutdownReport::wait.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn system_shutdown_is_cancel_safe() {
     for place in [Place::GroupAsync, Place::GroupThread] {
         let op = format!("{place:?} system shutdown");
@@ -740,7 +741,7 @@ async fn system_shutdown_is_cancel_safe() {
                     assert!(report.complete, "{op}");
                 }
                 // Admission closed on the first poll; a second shutdown completes.
-                let report = tokio::time::timeout(LIMIT * 2, system.shutdown(LIMIT))
+                let report = spawned_rt::tasks::timeout(LIMIT * 2, system.shutdown(LIMIT))
                     .await
                     .unwrap_or_else(|_| panic!("{op}: N={n} repeated shutdown wedged"));
                 if n > 0 {
@@ -777,7 +778,7 @@ async fn system_shutdown_is_cancel_safe() {
                 );
                 gate.notify_one();
                 assert_eq!(
-                    tokio::time::timeout(LIMIT, actor.wait_exit())
+                    spawned_rt::tasks::timeout(LIMIT, actor.wait_exit())
                         .await
                         .unwrap(),
                     ExitReason::Shutdown
@@ -791,7 +792,7 @@ async fn system_shutdown_is_cancel_safe() {
 }
 
 /// ScopedTask::join for owned helpers.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn helper_join_is_cancel_safe() {
     for place in [Place::GroupAsync, Place::GroupThread] {
         let op = format!("{place:?} helper join");

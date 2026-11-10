@@ -610,7 +610,7 @@ mod tasks_mode {
         }
         fn bounded<F: std::future::Future>(&self, f: F) -> F::Output {
             self.rt
-                .block_on(async move { tokio::time::timeout(LIMIT, f).await })
+                .block_on(async move { spawned_rt::tasks::timeout(LIMIT, f).await })
                 .unwrap_or_else(|_| panic!("{:?}: wait timed out", self.place))
         }
         fn finish(self) {

@@ -39,7 +39,7 @@ mod asynchronous {
             let observer = Observer { seen: Some(tx) }.start();
             observer.context().trap_exit(true);
             let child = Failing.start_linked(&observer.context());
-            let event = tokio::time::timeout(std::time::Duration::from_secs(2), rx)
+            let event = spawned_rt::tasks::timeout(std::time::Duration::from_secs(2), rx)
                 .await
                 .unwrap()
                 .unwrap();

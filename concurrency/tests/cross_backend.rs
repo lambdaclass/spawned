@@ -502,7 +502,7 @@ impl Env {
         &self,
         future: F,
     ) -> Result<F::Output, tokio::time::error::Elapsed> {
-        self.block_on(async move { tokio::time::timeout(LIMIT, future).await })
+        self.block_on(async move { spawned_rt::tasks::timeout(LIMIT, future).await })
     }
     fn start(&mut self, index: u32, peers: Vec<Ref>, log: &Log) -> Ref {
         use spawned_concurrency::tasks::{ActorStart as _, Backend};
@@ -1272,7 +1272,7 @@ fn stop_before_first_poll_follows_managed_and_legacy_contract() {
         spawned_concurrency::tasks::ActorStart::start(Hooks(hooks.clone()))
     };
     actor.child_handle().stop();
-    let reason = rt.block_on(async { tokio::time::timeout(LIMIT, actor.wait_exit()).await });
+    let reason = rt.block_on(async { spawned_rt::tasks::timeout(LIMIT, actor.wait_exit()).await });
     assert_eq!(reason.unwrap(), ExitReason::Normal);
     let done = |e: &[&str]| e.contains(&"dropped");
     let legacy = ["started", "stopped", "dropped"];
@@ -1296,7 +1296,7 @@ fn stop_before_first_poll_follows_managed_and_legacy_contract() {
     let group = system.async_group("early-stop", 1).unwrap();
     let blocker_hooks = Recorder::new();
     let blocker = group.start(Hooks(blocker_hooks.clone())).unwrap();
-    rt.block_on(async { tokio::time::timeout(LIMIT, blocker.ready()).await })
+    rt.block_on(async { spawned_rt::tasks::timeout(LIMIT, blocker.ready()).await })
         .unwrap()
         .unwrap();
     let (release, wait) = std::sync::mpsc::channel();
@@ -1309,7 +1309,7 @@ fn stop_before_first_poll_follows_managed_and_legacy_contract() {
     let actor = group.start(Hooks(hooks.clone())).unwrap();
     actor.child_handle().stop();
     release.send(()).unwrap();
-    let reason = rt.block_on(async { tokio::time::timeout(LIMIT, actor.wait_exit()).await });
+    let reason = rt.block_on(async { spawned_rt::tasks::timeout(LIMIT, actor.wait_exit()).await });
     assert_eq!(reason.unwrap(), ExitReason::Normal);
     assert_eq!(hooks.wait_until(LIMIT, "managed drop", done), ["dropped"]);
     let report = rt.block_on(system.shutdown(LIMIT));

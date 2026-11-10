@@ -85,7 +85,7 @@ impl Handler<CrashTogether> for Probe {
     }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn strategies_select_affected_children_and_reconstruct_in_dependency_order() {
     for strategy in [
         SupervisorStrategy::OneForOne,
@@ -146,10 +146,11 @@ async fn strategies_select_affected_children_and_reconstruct_in_dependency_order
                 SupervisorStrategy::RestForOne => index >= 1,
             };
             if affected {
-                let next = tokio::time::timeout(LIMIT, children[index].wait_for_generation(1))
-                    .await
-                    .unwrap()
-                    .unwrap();
+                let next =
+                    spawned_rt::tasks::timeout(LIMIT, children[index].wait_for_generation(1))
+                        .await
+                        .unwrap()
+                        .unwrap();
                 assert_ne!(next.id(), old[index].id());
                 assert_eq!(next.request(Next).await.unwrap(), 1);
             } else {
@@ -189,7 +190,7 @@ async fn strategies_select_affected_children_and_reconstruct_in_dependency_order
     }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn temporary_collateral_child_stops_without_reconstruction() {
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("temporary-collateral", 1).unwrap();
@@ -232,12 +233,12 @@ async fn temporary_collateral_child_stops_without_reconstruction() {
     }
     let supervisor = tree.start().await.unwrap();
     assert!(children[0].current().unwrap().request(Crash).await.is_err());
-    tokio::time::timeout(LIMIT, children[0].wait_for_generation(1))
+    spawned_rt::tasks::timeout(LIMIT, children[0].wait_for_generation(1))
         .await
         .unwrap()
         .unwrap();
     assert!(
-        tokio::time::timeout(LIMIT, children[1].wait_for_generation(1))
+        spawned_rt::tasks::timeout(LIMIT, children[1].wait_for_generation(1))
             .await
             .unwrap()
             .is_err()
@@ -290,7 +291,7 @@ async fn failed_cohort_construction_rebuilds_the_whole_cohort_like_otp() {
     }
     let supervisor = tree.start().await.unwrap();
     assert!(children[0].current().unwrap().request(Crash).await.is_err());
-    tokio::time::timeout(LIMIT, children[2].wait_for_generation(1))
+    spawned_rt::tasks::timeout(LIMIT, children[2].wait_for_generation(1))
         .await
         .unwrap()
         .unwrap();
@@ -309,7 +310,7 @@ async fn failed_cohort_construction_rebuilds_the_whole_cohort_like_otp() {
     assert!(system.shutdown(LIMIT).await.complete);
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn cohort_reconstruction_consumes_shared_factory_attempt_budget() {
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("cohort-budget", 1).unwrap();
@@ -346,7 +347,7 @@ async fn cohort_reconstruction_consumes_shared_factory_attempt_budget() {
     }
     let supervisor = tree.start().await.unwrap();
     assert!(children[0].current().unwrap().request(Crash).await.is_err());
-    tokio::time::timeout(LIMIT, supervisor.join())
+    spawned_rt::tasks::timeout(LIMIT, supervisor.join())
         .await
         .unwrap();
     assert!(supervisor.failure().unwrap().contains("budget exhausted"));
@@ -354,7 +355,7 @@ async fn cohort_reconstruction_consumes_shared_factory_attempt_budget() {
     assert!(live.iter().all(|n| n.load(Ordering::SeqCst) == 0));
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn simultaneous_failures_and_shutdown_do_not_overlap_cohorts_or_generations() {
     for strategy in [
         SupervisorStrategy::OneForAll,
@@ -406,7 +407,7 @@ async fn simultaneous_failures_and_shutdown_do_not_overlap_cohorts_or_generation
                     .unwrap();
             }
             for child in &children {
-                tokio::time::timeout(LIMIT, child.wait_for_generation(1))
+                spawned_rt::tasks::timeout(LIMIT, child.wait_for_generation(1))
                     .await
                     .unwrap()
                     .unwrap();
@@ -418,7 +419,7 @@ async fn simultaneous_failures_and_shutdown_do_not_overlap_cohorts_or_generation
     }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn blocked_collateral_helper_prevents_entire_cohort_reconstruction() {
     for strategy in [
         SupervisorStrategy::OneForAll,
@@ -468,14 +469,17 @@ async fn blocked_collateral_helper_prevents_entire_cohort_reconstruction() {
                 release_rx.recv_timeout(LIMIT).unwrap();
             })
             .unwrap();
-        tokio::time::timeout(LIMIT, entered).await.unwrap().unwrap();
+        spawned_rt::tasks::timeout(LIMIT, entered)
+            .await
+            .unwrap()
+            .unwrap();
         assert!(children[0].current().unwrap().request(Crash).await.is_err());
-        let failure = tokio::time::timeout(LIMIT, async {
+        let failure = spawned_rt::tasks::timeout(LIMIT, async {
             loop {
                 if let Some(failure) = supervisor.failure() {
                     break failure;
                 }
-                tokio::task::yield_now().await;
+                spawned_rt::tasks::yield_now().await;
             }
         })
         .await
@@ -494,7 +498,7 @@ async fn blocked_collateral_helper_prevents_entire_cohort_reconstruction() {
     }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn upstream_failure_supersedes_a_round_while_a_dependent_factory_is_pending() {
     for strategy in [
         SupervisorStrategy::OneForAll,
@@ -545,21 +549,21 @@ async fn upstream_failure_supersedes_a_round_while_a_dependent_factory_is_pendin
             }
             let supervisor = tree.start().await.unwrap();
             assert!(children[1].current().unwrap().request(Crash).await.is_err());
-            tokio::time::timeout(LIMIT, pending.notified())
+            spawned_rt::tasks::timeout(LIMIT, pending.notified())
                 .await
                 .unwrap();
             let generation = children[0].snapshot().generation;
             assert!(children[0].current().unwrap().request(Crash).await.is_err());
-            tokio::time::timeout(LIMIT, children[0].wait_for_generation(generation))
+            spawned_rt::tasks::timeout(LIMIT, children[0].wait_for_generation(generation))
                 .await
                 .unwrap()
                 .unwrap();
-            tokio::time::timeout(LIMIT, children[1].wait_for_generation(2))
+            spawned_rt::tasks::timeout(LIMIT, children[1].wait_for_generation(2))
                 .await
                 .unwrap()
                 .unwrap();
             // This slot was still parked on the superseded round's resume token.
-            let tail = tokio::time::timeout(LIMIT, children[2].wait_for_generation(1))
+            let tail = spawned_rt::tasks::timeout(LIMIT, children[2].wait_for_generation(1))
                 .await
                 .unwrap();
             assert_eq!(tail.is_err(), temporary);
@@ -569,7 +573,7 @@ async fn upstream_failure_supersedes_a_round_while_a_dependent_factory_is_pendin
     }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn ready_dependency_failure_rolls_back_slow_initial_tree_startup() {
     for strategy in [
         SupervisorStrategy::OneForAll,
@@ -612,12 +616,12 @@ async fn ready_dependency_failure_rolls_back_slow_initial_tree_startup() {
                 .unwrap(),
             );
         }
-        let startup = tokio::spawn(tree.start());
-        tokio::time::timeout(LIMIT, entered.notified())
+        let startup = spawned_rt::tasks::spawn(tree.start());
+        spawned_rt::tasks::timeout(LIMIT, entered.notified())
             .await
             .unwrap();
         assert!(children[0].current().unwrap().request(Crash).await.is_err());
-        assert!(tokio::time::timeout(LIMIT, startup)
+        assert!(spawned_rt::tasks::timeout(LIMIT, startup)
             .await
             .unwrap()
             .unwrap()

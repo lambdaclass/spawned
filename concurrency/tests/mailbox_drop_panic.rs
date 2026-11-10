@@ -120,13 +120,16 @@ fn mailbox_drop_child() {
                     let (entered, arrival) = oneshot::channel();
                     let (release, gate) = oneshot::channel();
                     victim.send(Hold(entered, gate, handler_panics)).unwrap();
-                    tokio::time::timeout(LIMIT, arrival).await.unwrap().unwrap();
+                    spawned_rt::tasks::timeout(LIMIT, arrival)
+                        .await
+                        .unwrap()
+                        .unwrap();
                     let replies: Vec<_> = (0..bombs)
                         .map(|_| victim.request_raw(Bomb(dropped.clone())).unwrap())
                         .collect();
                     victim.context().stop();
                     release.send(()).unwrap();
-                    let reason = tokio::time::timeout(LIMIT, victim.wait_exit())
+                    let reason = spawned_rt::tasks::timeout(LIMIT, victim.wait_exit())
                         .await
                         .unwrap();
                     if handler_panics {
@@ -142,11 +145,11 @@ fn mailbox_drop_child() {
                             )
                         );
                     }
-                    let first = tokio::time::timeout(LIMIT, events.recv())
+                    let first = spawned_rt::tasks::timeout(LIMIT, events.recv())
                         .await
                         .unwrap()
                         .unwrap();
-                    let second = tokio::time::timeout(LIMIT, events.recv())
+                    let second = spawned_rt::tasks::timeout(LIMIT, events.recv())
                         .await
                         .unwrap()
                         .unwrap();
@@ -157,10 +160,15 @@ fn mailbox_drop_child() {
                     assert_eq!(dropped.load(Ordering::SeqCst), bombs);
                     assert_eq!(handled.load(Ordering::SeqCst), 0);
                     for reply in replies {
-                        assert!(tokio::time::timeout(LIMIT, reply).await.unwrap().is_err());
+                        assert!(spawned_rt::tasks::timeout(LIMIT, reply)
+                            .await
+                            .unwrap()
+                            .is_err());
                     }
                     observer.context().stop();
-                    tokio::time::timeout(LIMIT, observer.join()).await.unwrap();
+                    spawned_rt::tasks::timeout(LIMIT, observer.join())
+                        .await
+                        .unwrap();
                     assert!(
                         matches!(
                             events.try_recv(),

@@ -101,7 +101,7 @@ fn admitted_request_racing_shutdown_drops_its_reply_before_join_completes() {
                 release: gate,
             })
             .unwrap();
-        tokio::time::timeout(LIMIT, entered_rx)
+        spawned_rt::tasks::timeout(LIMIT, entered_rx)
             .await
             .unwrap()
             .unwrap();
@@ -119,9 +119,9 @@ fn admitted_request_racing_shutdown_drops_its_reply_before_join_completes() {
             }
             panic!("channel allocation gate was not reached");
         });
-        tokio::time::timeout(LIMIT, async {
+        spawned_rt::tasks::timeout(LIMIT, async {
             while !PAUSED.load(Ordering::SeqCst) {
-                tokio::task::yield_now().await;
+                spawned_rt::tasks::yield_now().await;
             }
         })
         .await
@@ -132,20 +132,23 @@ fn admitted_request_racing_shutdown_drops_its_reply_before_join_completes() {
         );
         actor.child_handle().stop();
         release.send(()).unwrap();
-        tokio::time::timeout(LIMIT, stop_rx).await.unwrap().unwrap();
+        spawned_rt::tasks::timeout(LIMIT, stop_rx)
+            .await
+            .unwrap()
+            .unwrap();
         // Let the actor reach its receiver cleanup while publication is suspended.
         // Both completion timings are legal; the reply must resolve after send/join.
-        let _ = tokio::time::timeout(Duration::from_millis(50), actor.wait_exit()).await;
+        let _ = spawned_rt::tasks::timeout(Duration::from_millis(50), actor.wait_exit()).await;
         RELEASE.store(true, Ordering::SeqCst);
         let result = producer.join().unwrap();
         assert_eq!(
-            tokio::time::timeout(LIMIT, actor.wait_exit())
+            spawned_rt::tasks::timeout(LIMIT, actor.wait_exit())
                 .await
                 .unwrap(),
             ExitReason::Normal
         );
         let reply = result.expect("gate fired before mailbox admission; allocation hook is stale");
-        assert!(tokio::time::timeout(LIMIT, reply)
+        assert!(spawned_rt::tasks::timeout(LIMIT, reply)
             .await
             .expect("reply sender retained after actor termination")
             .is_err());

@@ -24,7 +24,7 @@ impl Drop for StopOnDrop {
 }
 
 async fn timed_helper() -> ThreadId {
-    tokio::time::sleep(Duration::from_millis(1)).await;
+    spawned_rt::tasks::sleep(Duration::from_millis(1)).await;
     thread::current().id()
 }
 
@@ -61,7 +61,7 @@ impl Actor for Probe {
     async fn started(&mut self, _: &Context<Self>) {
         let root = thread::current().id();
         self.root = Some(root);
-        let worker = tokio::time::timeout(LIMIT, tokio::spawn(timed_helper()))
+        let worker = spawned_rt::tasks::timeout(LIMIT, spawned_rt::tasks::spawn(timed_helper()))
             .await
             .expect("startup helper stalled")
             .unwrap();
@@ -70,7 +70,7 @@ impl Actor for Probe {
     }
     async fn stopped(&mut self, _: &Context<Self>) {
         let root = self.assert_root();
-        let worker = tokio::time::timeout(LIMIT, tokio::spawn(timed_helper()))
+        let worker = spawned_rt::tasks::timeout(LIMIT, spawned_rt::tasks::spawn(timed_helper()))
             .await
             .expect("shutdown helper stalled")
             .unwrap();
@@ -96,7 +96,7 @@ impl Handler<Inspect> for Probe {
         let workers = handle.metrics().num_workers();
         let flavor = handle.runtime_flavor();
         let worker = match operation {
-            Inspect::SpawnBlocking => tokio::time::timeout(
+            Inspect::SpawnBlocking => spawned_rt::tasks::timeout(
                 LIMIT,
                 tokio::task::spawn_blocking(|| thread::current().id()),
             )
@@ -104,15 +104,15 @@ impl Handler<Inspect> for Probe {
             .unwrap()
             .unwrap(),
             Inspect::Yield => {
-                tokio::task::yield_now().await;
-                tokio::time::timeout(LIMIT, tokio::spawn(timed_helper()))
+                spawned_rt::tasks::yield_now().await;
+                spawned_rt::tasks::timeout(LIMIT, spawned_rt::tasks::spawn(timed_helper()))
                     .await
                     .unwrap()
                     .unwrap()
             }
             Inspect::BlockingReceive | Inspect::BlockInPlace => {
                 let (tx, rx) = mpsc::channel();
-                let helper = tokio::spawn(async move {
+                let helper = spawned_rt::tasks::spawn(async move {
                     let worker = timed_helper().await;
                     tx.send(worker).unwrap();
                 });
@@ -124,7 +124,10 @@ impl Handler<Inspect> for Probe {
                 } else {
                     rx.recv_timeout(LIMIT).unwrap()
                 };
-                tokio::time::timeout(LIMIT, helper).await.unwrap().unwrap();
+                spawned_rt::tasks::timeout(LIMIT, helper)
+                    .await
+                    .unwrap()
+                    .unwrap();
                 worker
             }
         };
@@ -146,7 +149,7 @@ struct Child;
 impl Actor for Child {}
 impl Handler<Ping> for Child {
     async fn handle(&mut self, _: Ping, _: &Context<Self>) -> u64 {
-        tokio::time::sleep(Duration::from_millis(1)).await;
+        spawned_rt::tasks::sleep(Duration::from_millis(1)).await;
         42
     }
 }
@@ -162,7 +165,9 @@ impl Handler<Nested> for Probe {
         let _cleanup = StopOnDrop(child.child_handle());
         let answer = child.request_with_timeout(Ping, LIMIT).await.unwrap();
         child.child_handle().stop();
-        tokio::time::timeout(LIMIT, child.join()).await.unwrap();
+        spawned_rt::tasks::timeout(LIMIT, child.join())
+            .await
+            .unwrap();
         self.assert_root();
         answer
     }
@@ -176,7 +181,7 @@ impl Handler<Exchange> for Probe {
     async fn handle(&mut self, message: Exchange, _: &Context<Self>) -> u64 {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         self.assert_root();
-        let answer = tokio::time::timeout(LIMIT, async {
+        let answer = spawned_rt::tasks::timeout(LIMIT, async {
             let mut stream = tokio::net::TcpStream::connect(message.0).await.unwrap();
             stream.write_all(&42u64.to_le_bytes()).await.unwrap();
             let mut bytes = [0; 8];
@@ -208,10 +213,10 @@ async fn finish(
     stopped: oneshot::Receiver<(ThreadId, ThreadId)>,
 ) {
     actor.child_handle().stop();
-    tokio::time::timeout(LIMIT, actor.join())
+    spawned_rt::tasks::timeout(LIMIT, actor.join())
         .await
         .expect("dedicated actor did not stop");
-    let (root, worker) = tokio::time::timeout(LIMIT, stopped)
+    let (root, worker) = spawned_rt::tasks::timeout(LIMIT, stopped)
         .await
         .expect("stopped helper did not complete")
         .expect("stopped callback failed");
@@ -254,8 +259,8 @@ fn dedicated_actor_drives_async_tcp() {
     observer().block_on(async {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
-        let server = tokio::spawn(async move {
-            tokio::time::timeout(LIMIT, async {
+        let server = spawned_rt::tasks::spawn(async move {
+            spawned_rt::tasks::timeout(LIMIT, async {
                 let (mut stream, _) = listener.accept().await.unwrap();
                 let mut bytes = [0; 8];
                 stream.read_exact(&mut bytes).await.unwrap();
@@ -271,7 +276,10 @@ fn dedicated_actor_drives_async_tcp() {
                 .unwrap(),
             42
         );
-        tokio::time::timeout(LIMIT, server).await.unwrap().unwrap();
+        spawned_rt::tasks::timeout(LIMIT, server)
+            .await
+            .unwrap()
+            .unwrap();
         finish(&actor, stop_rx).await;
     });
 }
@@ -311,7 +319,7 @@ fn thread_block_on_owns_one_worker_without_an_ambient_runtime() {
         assert_eq!(handle.runtime_flavor(), RuntimeFlavor::MultiThread);
         assert_eq!(handle.metrics().num_workers(), 1);
         assert_eq!(thread::current().id(), root);
-        let worker = tokio::time::timeout(LIMIT, tokio::spawn(timed_helper()))
+        let worker = spawned_rt::tasks::timeout(LIMIT, spawned_rt::tasks::spawn(timed_helper()))
             .await
             .unwrap()
             .unwrap();
