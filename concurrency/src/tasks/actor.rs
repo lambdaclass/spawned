@@ -1898,7 +1898,13 @@ mod tests {
 
     #[test]
     pub fn badly_behaved_thread_non_blocking() {
-        let runtime = rt::Runtime::new().unwrap();
+        // An async actor that blocks its thread starves everything else on
+        // it. With one runtime thread this is deterministic; on a multi-thread
+        // runtime the well-behaved actor may run on another worker.
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
         runtime.block_on(async move {
             let badboy = BadlyBehavedTask.start();
             badboy.send(DoBlock).unwrap();
@@ -1906,7 +1912,9 @@ mod tests {
             goodboy.send(IncrementWell).unwrap();
             rt::sleep(Duration::from_secs(1)).await;
             let count = goodboy.request(GetCount).await.unwrap();
-            assert_ne!(count, 10);
+            // The blocking handler held the only thread for 2 s of the 1 s
+            // window, so the 100 ms chain could not get far.
+            assert!(count < 10, "blocked runtime still made progress: {count}");
             goodboy.request(StopCounter).await.unwrap();
         });
     }
