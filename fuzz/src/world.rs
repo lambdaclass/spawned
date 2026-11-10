@@ -41,6 +41,9 @@ pub struct Inst {
     /// Some hook or handler of this instance panicked (injected).
     pub panicked: bool,
     pub started_panicked: bool,
+    /// Handed to the framework: only then may its destructor panic (a value
+    /// the harness drops itself is not the framework's to contain).
+    pub armed: bool,
     pub last_lane0: u64,
     pub downs: Vec<(MonitorRef, ExitReason)>,
     pub exits: Vec<(ActorId, ExitReason)>,
@@ -207,11 +210,15 @@ impl Worker {
     pub fn instance(&self) -> usize {
         self.instance
     }
+    /// Mark the instance as owned by the framework (see [`Inst::armed`]).
+    pub fn arm(world: &World, instance: usize) {
+        world.lock().insts[instance].armed = true;
+    }
 }
 
 impl Drop for Worker {
     fn drop(&mut self) {
-        {
+        let armed = {
             let mut s = self.world.lock();
             let seq = s.tick();
             s.insts[self.instance].dropped = Some(seq);
@@ -219,8 +226,9 @@ impl Drop for Worker {
             if let Some(slot) = &self.slot {
                 *s.live.entry(slot.clone()).or_default() -= 1;
             }
-        }
-        if self.hooks.drop_panic() && !std::thread::panicking() {
+            s.insts[self.instance].armed
+        };
+        if armed && self.hooks.drop_panic() && !std::thread::panicking() {
             panic!("fuzz: injected state destructor panic");
         }
     }

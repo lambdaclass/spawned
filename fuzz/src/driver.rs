@@ -247,7 +247,9 @@ fn worker_spec(
             } else {
                 Hooks::default()
             };
-            Ok(Worker::new(&world, Some(path), hooks))
+            let worker = Worker::new(&world, Some(path), hooks);
+            Worker::arm(&world, worker.instance());
+            Ok(worker)
         }
     })
     .restart(restart_mode(def.restart))
@@ -654,6 +656,7 @@ impl Driver {
                 }
             }
         };
+        Worker::arm(&self.world, instance);
         if hooks.started_panic() {
             self.may_stop(aref.id());
         }
