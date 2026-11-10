@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Test: coverage-guided scenario fuzzing on the deterministic simulator
+  (`fuzz/`, cargo-fuzz + `arbitrary`): generated operation sequences over
+  actors, links, monitors, timers, supervisors and systems, checked against
+  the semantics contract, with seed/strategy-fixed inputs, decision tapes and
+  generated `sim_test` regressions. Work in progress.
+
 ## 0.7.3 — 2026-11-10
 
 Patch release with one supervision behaviour change: a failed restart (a
