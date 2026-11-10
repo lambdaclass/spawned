@@ -17,4 +17,5 @@ pub mod sync;
 #[cfg(feature = "async")]
 pub mod tasks;
 pub mod threads;
+pub mod time;
 mod tracing;

@@ -198,11 +198,64 @@ struct State {
     steps: u64,
     hash: u64,
     trace: Option<Vec<(u64, Duration)>>,
+    tape: Option<Vec<Decision>>,
+    script: Option<Script>,
+    entropy: u64,
     foreign: Option<String>,
     running: bool,
     runtimes: usize,
     /// Seed of the per-world Tokio runtime's RNG (`select!`, `watch`).
     tokio_seed: u64,
+}
+
+/// One scheduling decision of a simulation run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Decision {
+    /// Polled the ready task with the smallest id (the canonical choice).
+    Canonical,
+    /// Polled this task, which was not the canonical choice.
+    Poll(u64),
+    /// Nothing was ready: virtual time jumped to this deadline and its timers fired.
+    Fire(Duration),
+}
+
+/// Replay script: one entry per poll; `None` is the canonical choice.
+struct Script {
+    picks: Vec<Option<u64>>,
+    pos: usize,
+    misses: u64,
+}
+
+/// Index of the ready task with the smallest id.
+fn canonical(ready: &[u64]) -> usize {
+    ready
+        .iter()
+        .enumerate()
+        .min_by_key(|(_, id)| **id)
+        .map_or(0, |(index, _)| index)
+}
+
+/// Pick the index of the next ready task: from the replay script while it
+/// lasts (canonical when a scripted task is not ready, or past its end),
+/// otherwise from the seeded generator.
+fn choose(state: &mut State) -> usize {
+    let State {
+        script, ready, rng, ..
+    } = state;
+    match script {
+        Some(script) => {
+            let pick = script.picks.get(script.pos).copied().flatten();
+            script.pos += 1;
+            match pick {
+                Some(id) => ready.iter().position(|r| *r == id).unwrap_or_else(|| {
+                    script.misses += 1;
+                    canonical(ready)
+                }),
+                None => canonical(ready),
+            }
+        }
+        None => by_rank(ready, (splitmix(rng) % ready.len() as u64) as usize),
+    }
 }
 
 struct Shared {
@@ -245,6 +298,9 @@ impl Shared {
                 steps: 0,
                 hash: 0xcbf2_9ce4_8422_2325,
                 trace: None,
+                tape: None,
+                script: None,
+                entropy: 0,
                 foreign: None,
                 running: false,
                 runtimes: 0,
@@ -389,10 +445,16 @@ impl Shared {
             self.check_leaks();
             let mut state = lock(&self.state);
             if !state.ready.is_empty() {
-                let len = state.ready.len() as u64;
-                let rank = (splitmix(&mut state.rng) % len) as usize;
-                let index = by_rank(&state.ready, rank);
+                let index = choose(&mut state);
+                let canonical = index == canonical(&state.ready);
                 let id = state.ready.swap_remove(index);
+                if let Some(tape) = &mut state.tape {
+                    tape.push(if canonical {
+                        Decision::Canonical
+                    } else {
+                        Decision::Poll(id)
+                    });
+                }
                 state.queued.remove(&id);
                 state.steps += 1;
                 let now = state.now;
@@ -413,6 +475,9 @@ impl Shared {
             }
             let (deadline, _) = *state.timers.keys().next()?;
             state.now = deadline;
+            if let Some(tape) = &mut state.tape {
+                tape.push(Decision::Fire(deadline));
+            }
             let mut due = Vec::new();
             while let Some(entry) = state.timers.first_entry() {
                 if entry.key().0 > deadline {
@@ -739,6 +804,29 @@ impl Runtime {
             .clone()
             .unwrap_or_default()
     }
+    /// Record every scheduling decision as a [`Tape`] from now on.
+    pub fn record_tape(&self) {
+        lock(&self.handle.shared.state).tape = Some(Vec::new());
+    }
+    /// The decisions recorded since [`Runtime::record_tape`].
+    pub fn tape(&self) -> Tape {
+        let state = lock(&self.handle.shared.state);
+        Tape {
+            seed: state.seed,
+            decisions: state.tape.clone().unwrap_or_default(),
+        }
+    }
+    /// Choose tasks from `tape` instead of the seeded generator. A scripted
+    /// task that is not ready, and every poll past the tape's end, takes the
+    /// canonical choice (smallest ready id); [`Stats::tape_misses`] counts the
+    /// former.
+    pub fn replay(&self, tape: &Tape) {
+        lock(&self.handle.shared.state).script = Some(Script {
+            picks: tape.picks(),
+            pos: 0,
+            misses: 0,
+        });
+    }
     pub fn stats(&self) -> Stats {
         let state = lock(&self.handle.shared.state);
         Stats {
@@ -748,6 +836,7 @@ impl Runtime {
             now: state.now,
             tasks: state.tasks.len(),
             ready: state.ready.len(),
+            tape_misses: state.script.as_ref().map_or(0, |s| s.misses),
         }
     }
 }
@@ -779,6 +868,8 @@ pub struct Stats {
     /// Tasks waiting to be polled (0 between `block_on` calls unless a
     /// spawned task is runnable).
     pub ready: usize,
+    /// Replay only: scripted picks whose task was not ready.
+    pub tape_misses: u64,
 }
 
 /// The handle used by execution groups and the system control runtime: the
@@ -1243,4 +1334,360 @@ pub async fn yield_now() {
 /// Never completes: there are no signals in a simulation.
 pub async fn ctrl_c() {
     std::future::pending::<()>().await
+}
+
+// ---------------------------------------------------------------------------
+// Decision tape
+// ---------------------------------------------------------------------------
+
+/// Every scheduling decision of one run. Replaying a tape picks tasks by id,
+/// not by generator draws, so a schedule survives code changes that shift how
+/// many random numbers a run consumes.
+///
+/// Text form, one decision per line: `c` (canonical: smallest ready id),
+/// `p <task id>`, `t <virtual nanos>` (timers fired; informational on replay).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Tape {
+    pub seed: u64,
+    pub decisions: Vec<Decision>,
+}
+
+impl Tape {
+    /// Polls that were not the canonical choice.
+    pub fn deviations(&self) -> usize {
+        self.decisions
+            .iter()
+            .filter(|d| matches!(d, Decision::Poll(_)))
+            .count()
+    }
+    /// Number of polls.
+    pub fn polls(&self) -> usize {
+        self.decisions
+            .iter()
+            .filter(|d| !matches!(d, Decision::Fire(_)))
+            .count()
+    }
+    pub(crate) fn picks(&self) -> Vec<Option<u64>> {
+        self.decisions
+            .iter()
+            .filter_map(|d| match d {
+                Decision::Canonical => Some(None),
+                Decision::Poll(id) => Some(Some(*id)),
+                Decision::Fire(_) => None,
+            })
+            .collect()
+    }
+    pub fn to_text(&self) -> String {
+        let mut out = format!("# spawned-sim tape v1\nseed {}\n", self.seed);
+        for d in &self.decisions {
+            match d {
+                Decision::Canonical => out.push_str("c\n"),
+                Decision::Poll(id) => out.push_str(&format!("p {id}\n")),
+                Decision::Fire(at) => out.push_str(&format!("t {}\n", at.as_nanos())),
+            }
+        }
+        out
+    }
+    pub fn parse(text: &str) -> Result<Self, String> {
+        let mut tape = Tape::default();
+        for (n, line) in text.lines().enumerate() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let (op, arg) = line.split_once(' ').unwrap_or((line, ""));
+            let number = || {
+                arg.trim()
+                    .parse::<u64>()
+                    .map_err(|e| format!("tape line {}: {e}: {line:?}", n + 1))
+            };
+            match op {
+                "seed" => tape.seed = number()?,
+                "c" => tape.decisions.push(Decision::Canonical),
+                "p" => tape.decisions.push(Decision::Poll(number()?)),
+                "t" => tape
+                    .decisions
+                    .push(Decision::Fire(Duration::from_nanos(number()?))),
+                _ => return Err(format!("tape line {}: unknown entry {line:?}", n + 1)),
+            }
+        }
+        Ok(tape)
+    }
+    pub fn save(&self, path: &std::path::Path) -> std::io::Result<()> {
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        std::fs::write(path, self.to_text())
+    }
+    pub fn load(path: &std::path::Path) -> std::io::Result<Self> {
+        let text = std::fs::read_to_string(path)?;
+        Self::parse(&text).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Running and shrinking one test body
+// ---------------------------------------------------------------------------
+
+/// Result of [`run_once`].
+#[derive(Debug, Clone)]
+pub struct Outcome {
+    /// The panic message, if the body (or teardown) panicked.
+    pub failure: Option<String>,
+    pub tape: Tape,
+    pub stats: Stats,
+}
+
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+    payload
+        .downcast_ref::<&str>()
+        .map(|s| s.to_string())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "Box<dyn Any>".into())
+}
+
+/// Run `body(seed)` in a fresh simulation, recording its tape; with
+/// `script`, schedule from that tape instead of the seed's generator.
+pub fn run_once<F, Fut>(seed: u64, script: Option<&Tape>, body: &F) -> Outcome
+where
+    F: Fn(u64) -> Fut,
+    Fut: Future<Output = ()>,
+{
+    let rt = Runtime::with_seed(seed);
+    rt.record_tape();
+    if let Some(script) = script {
+        rt.replay(script);
+    }
+    let result = catch_unwind(AssertUnwindSafe(|| rt.block_on(body(seed))));
+    let tape = rt.tape();
+    let stats = rt.stats();
+    let dropped = catch_unwind(AssertUnwindSafe(move || drop(rt)));
+    let failure = match (result, dropped) {
+        (Err(payload), _) | (Ok(()), Err(payload)) => Some(panic_message(&*payload)),
+        (Ok(()), Ok(())) => None,
+    };
+    Outcome {
+        failure,
+        tape,
+        stats,
+    }
+}
+
+thread_local! {
+    static QUIET: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Run `f` with panic messages from this thread suppressed.
+fn quietly<R>(f: impl FnOnce() -> R) -> R {
+    static HOOK: std::sync::Once = std::sync::Once::new();
+    HOOK.call_once(|| {
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            if !QUIET.with(|q| q.get()) {
+                previous(info);
+            }
+        }));
+    });
+    struct Reset(bool);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            QUIET.with(|q| q.set(self.0));
+        }
+    }
+    let _reset = Reset(QUIET.with(|q| q.replace(true)));
+    f()
+}
+
+/// A failure's identity for shrinking: its first line without digits, so a
+/// shrunk schedule must fail the same way, not merely fail.
+fn signature(failure: &str) -> String {
+    failure
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .chars()
+        .filter(|c| !c.is_ascii_digit())
+        .collect()
+}
+
+fn script_tape(seed: u64, picks: &[Option<u64>]) -> Tape {
+    Tape {
+        seed,
+        decisions: picks
+            .iter()
+            .map(|p| p.map_or(Decision::Canonical, Decision::Poll))
+            .collect(),
+    }
+}
+
+/// Shrink a failing tape toward the canonical schedule (always poll the
+/// smallest ready id) while `body` keeps failing with the same signature:
+/// first the shortest scripted prefix (the rest canonical), then removing
+/// non-canonical picks in halving chunks. Spends at most `budget` runs and
+/// returns the smallest failing tape found and the runs spent.
+pub fn shrink<F, Fut>(failing: &Tape, failure: &str, body: &F, budget: usize) -> (Tape, usize)
+where
+    F: Fn(u64) -> Fut,
+    Fut: Future<Output = ()>,
+{
+    let wanted = signature(failure);
+    let seed = failing.seed;
+    let runs = std::cell::Cell::new(0);
+    let attempt = |picks: &[Option<u64>]| -> Option<Tape> {
+        if runs.get() >= budget {
+            return None;
+        }
+        runs.set(runs.get() + 1);
+        let outcome = quietly(|| run_once(seed, Some(&script_tape(seed, picks)), body));
+        outcome
+            .failure
+            .filter(|f| signature(f) == wanted)
+            .map(|_| outcome.tape)
+    };
+    let mut best = failing.clone();
+
+    // 1. Shortest failing prefix, by bisection.
+    let picks = best.picks();
+    let (mut lo, mut hi) = (0, picks.len());
+    while lo < hi {
+        let mid = (lo + hi) / 2;
+        match attempt(&picks[..mid]) {
+            Some(tape) => {
+                hi = mid;
+                best = tape;
+            }
+            None => lo = mid + 1,
+        }
+    }
+
+    // 2. Replace non-canonical picks by canonical ones, in halving chunks.
+    let mut chunk = best.deviations().div_ceil(2).max(1);
+    loop {
+        let mut progressed = false;
+        let mut start = 0;
+        loop {
+            let picks = best.picks();
+            let deviations: Vec<usize> = picks
+                .iter()
+                .enumerate()
+                .filter_map(|(i, p)| p.map(|_| i))
+                .collect();
+            if start >= deviations.len() {
+                break;
+            }
+            let mut candidate = picks.clone();
+            for &i in &deviations[start..(start + chunk).min(deviations.len())] {
+                candidate[i] = None;
+            }
+            match attempt(&candidate) {
+                Some(tape) if tape.deviations() < best.deviations() => {
+                    best = tape;
+                    progressed = true;
+                }
+                _ => start += chunk,
+            }
+            if runs.get() >= budget {
+                return (best, runs.get());
+            }
+        }
+        if chunk == 1 && !progressed {
+            break;
+        }
+        chunk = (chunk / 2).max(1);
+    }
+    (best, runs.get())
+}
+
+// ---------------------------------------------------------------------------
+// Clock and entropy seams (`spawned_rt::time` under the cfg)
+// ---------------------------------------------------------------------------
+
+fn running_world() -> Option<Arc<Shared>> {
+    current().or_else(|| AMBIENT.with(|a| a.borrow().upgrade()))
+}
+
+/// Virtual-time instant: the simulation's elapsed virtual time.
+///
+/// Read on a thread with no live simulation (a native actor's OS thread, or
+/// before any runtime exists) it falls back to real time elapsed since the
+/// process's first such read, so instants from different worlds must not be
+/// compared.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Instant(Duration);
+
+impl Instant {
+    pub fn now() -> Self {
+        match running_world() {
+            Some(shared) => Self(lock(&shared.state).now),
+            None => {
+                static BASE: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+                Self(BASE.get_or_init(std::time::Instant::now).elapsed())
+            }
+        }
+    }
+    pub fn elapsed(&self) -> Duration {
+        Self::now().saturating_duration_since(*self)
+    }
+    pub fn duration_since(&self, earlier: Self) -> Duration {
+        self.saturating_duration_since(earlier)
+    }
+    pub fn saturating_duration_since(&self, earlier: Self) -> Duration {
+        self.0.saturating_sub(earlier.0)
+    }
+    pub fn checked_duration_since(&self, earlier: Self) -> Option<Duration> {
+        self.0.checked_sub(earlier.0)
+    }
+    pub fn checked_add(&self, duration: Duration) -> Option<Self> {
+        self.0.checked_add(duration).map(Self)
+    }
+    pub fn checked_sub(&self, duration: Duration) -> Option<Self> {
+        self.0.checked_sub(duration).map(Self)
+    }
+}
+impl std::ops::Add<Duration> for Instant {
+    type Output = Self;
+    fn add(self, rhs: Duration) -> Self {
+        Self(self.0 + rhs)
+    }
+}
+impl std::ops::AddAssign<Duration> for Instant {
+    fn add_assign(&mut self, rhs: Duration) {
+        self.0 += rhs;
+    }
+}
+impl std::ops::Sub<Duration> for Instant {
+    type Output = Self;
+    fn sub(self, rhs: Duration) -> Self {
+        Self(self.0.saturating_sub(rhs))
+    }
+}
+impl std::ops::SubAssign<Duration> for Instant {
+    fn sub_assign(&mut self, rhs: Duration) {
+        self.0 = self.0.saturating_sub(rhs);
+    }
+}
+impl std::ops::Sub<Instant> for Instant {
+    type Output = Duration;
+    fn sub(self, rhs: Instant) -> Duration {
+        self.saturating_duration_since(rhs)
+    }
+}
+
+/// Deterministic stand-in for wall-clock entropy: a stream derived from the
+/// running simulation's seed, separate from its scheduling generator, so
+/// drawing from it does not shift the schedule.
+pub fn entropy() -> u64 {
+    match running_world() {
+        Some(shared) => {
+            let mut state = lock(&shared.state);
+            state.entropy += 1;
+            let mut x = state.seed ^ state.entropy.wrapping_mul(0xD1B5_4A32_D192_ED03);
+            splitmix(&mut x)
+        }
+        None => {
+            static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+            let mut x = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            splitmix(&mut x)
+        }
+    }
 }

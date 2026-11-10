@@ -5,7 +5,9 @@ pub use tokio::sync::watch;
 
 pub use tokio::{
     runtime::{Handle, Runtime, RuntimeFlavor},
-    task::{block_in_place, id as task_id, spawn, spawn_blocking, unconstrained, JoinHandle},
+    task::{
+        block_in_place, id as task_id, spawn, spawn_blocking, unconstrained, yield_now, JoinHandle,
+    },
     time::{sleep, timeout},
 };
 pub use tokio_stream::wrappers::{BroadcastStream, UnboundedReceiverStream as ReceiverStream};
