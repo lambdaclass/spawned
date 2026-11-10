@@ -11,7 +11,7 @@
   before v0.7.1 now run as regular tests. See
   [testing](docs/TESTING.md#failpoints).
 
-- Documentation: `docs/TESTING.md` opens with an overview of how spawned is
+- Documentation: `docs/TESTING.md` gains an overview of how spawned is
   verified (design, model-to-code, interleavings, faults, behaviour, code and
   tests, real workloads) and an up-to-date status table for every layer; the
   README summarizes it.
