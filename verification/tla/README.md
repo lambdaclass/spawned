@@ -16,6 +16,7 @@ this fits with Loom, Shuttle, Miri, ThreadSanitizer and mutation testing.
 | `TraceCohorts.tla`, `TraceNested.tla` | Policy and ownership projections of real cohort/nested Rust executions. |
 | `trace_check.py`, `negative_checks.py` | Replay recorded traces; deliberately wrong selections, premature resume/join and broken propagation must be rejected or produce counterexamples. |
 | `SupervisionInd.tla`, `CohortsInd.tla`, `NestedSupervisionInd.tla`, `CoordinatorInd.tla`, `MC*Ind.tla`, `apalache.sh` | Inductive invariants (`IndInv`) checked with Apalache; see [Inductive invariants](#inductive-invariants-apalache). |
+| `*Coverage.tla`, `Cov*.tla`, `CovTrace*.tla`, `trace_coverage.py`, `coverage-model.json.gz`, `coverage-baseline.json` | Trace coverage: which model actions, projected states and transitions the recorded traces reach; see [Trace coverage](#trace-coverage). |
 
 ## Running
 
@@ -37,7 +38,7 @@ runs real actors through the scenarios below and writes each trace as JSON;
 TLC then checks that each trace is a behavior of `Supervision.tla`.
 
 ```bash
-cargo test -p spawned-concurrency --features lifecycle-trace --test supervision_trace --test cohort_trace --test tree_trace --test nested_supervision
+cargo test -p spawned-concurrency --features lifecycle-trace,failpoints --test supervision_trace --test cohort_trace --test tree_trace --test nested_supervision --test coverage_trace
 nix run .#check-tla -- --traces-only target/lifecycle-traces --negative-controls   # or --traces DIR to also model-check
 nix develop -c python3 verification/tla/trace_check.py target/lifecycle-traces
 ```
@@ -92,6 +93,147 @@ failed the tree; it is now retried (`Retries` in `Decide`, and
 child), and a trace edited back to failing the tree is a negative control. Hand-edited traces (a `Close` moved
 before an `Attempt`, a restart after a Transient normal exit, forward shutdown
 order, budget exhaustion with a free retry) are rejected at the edited event.
+
+## Trace coverage
+
+Trace validation says every recorded run is a behavior of the model. Trace
+coverage asks the converse: which parts of the model's reachable behavior do
+the recorded runs never exercise? `trace_coverage.py` reports it per model with
+trace validation (`Supervision`, `Cohorts`, `NestedSupervision`).
+
+```bash
+cargo test -p spawned-concurrency --features lifecycle-trace,failpoints --test supervision_trace --test cohort_trace --test tree_trace --test nested_supervision --test coverage_trace
+nix develop -c python3 verification/tla/trace_coverage.py --traces dedicated=target/lifecycle-traces \
+    --model-keys verification/tla/coverage-model.json.gz --baseline verification/tla/coverage-baseline.json
+# every test binary: each finished supervisor dumps its traces
+LIFECYCLE_TRACE_ALL=/tmp/all cargo test -p spawned-concurrency --features lifecycle-trace,failpoints --no-fail-fast
+nix develop -c python3 verification/tla/trace_coverage.py --traces dedicated=target/lifecycle-traces \
+    --traces whole-suite=/tmp/all --model-keys verification/tla/coverage-model.json.gz --json coverage.json
+```
+
+**Projection.** Recorded traces run with their own constants (3 children,
+`max_restarts` 5, unbounded generations) and the model-checking
+configurations with others, so concrete states cannot be compared. Both sides
+are mapped onto keys defined in TLA+ (`SupervisionCoverage.tla`,
+`CohortsCoverage.tla`, `NestedCoverage.tla`):
+
+| Kind | Key | Example |
+|---|---|---|
+| A | action and outcome | `A\|Decide/restart` |
+| S | one per child (node): mode, controller pc, supervisor phase, gate, deadline, failure, budget bucket (0, mid, max), reservation | `S\|Permanent\|backoff\|await\|open\|mid\|reserved` |
+| T | action key in its pre-state's context: the acting child's mode, or for supervisor and environment actions each child's mode and pc | `T\|Close\|Permanent\|backoff\|starting\|open\|mid` (close while a child backs off during startup) |
+| C | T without mode, budget bucket, failure flag (and cohort position) | `C\|Close\|backoff\|starting\|open` |
+
+Cohort keys use the round phase, the child's position relative to the failing
+child and how far it got in the round; nested keys use root/child, subtree,
+the node's stage (created, started, closed, cancelled, done) and its parent's.
+
+**Model side.** `Cov<Model>.tla` explores each configuration exactly as the
+model does (an extra action label is excluded from the fingerprint with
+`VIEW`; the script checks the distinct-state count equals the plain model's)
+and an always-true action constraint prints every key of every reachable step
+(`TLCGet`/`TLCSet` deduplicate per worker). Configurations: `MCSupervision`
+plus a Permanent/Temporary instance at the same bounds (5.4 million states),
+the four `MCCohorts*` (146,000) and `MCNested` (47,000). This takes about 5
+minutes, so the keys are cached in `coverage-model.json.gz` with a hash of the
+specs; a stale cache is recomputed and rewritten (commit the new one).
+`Deliver` in `NestedSupervision` is a fairness device with no trace event, so
+its keys are left out.
+
+**Trace side.** `CovTrace<Model>.tla` replays each trace like `trace_check.py`
+with a history variable collecting the keys of each step; the accepted
+behavior's final value is the trace's coverage. Where an event admits several
+model steps (an `unknown` exit reason, an unlogged window expiry) the first
+accepted behavior TLC finds is used. Rejected traces are listed and not
+counted.
+
+**Report.** Coverage per kind and source (cumulative), the number of trace
+keys outside the configured bounds (for example 3-child interleavings or
+`max_restarts` 0), and the unreached actions and coarse transitions ranked by
+interest: shutdown, deadline or failure in the context, a child mid-restart
+(backoff, attempt, construction, cleanup), exhausted budget, stale cohort
+notifications, nested restart under a closing parent. `WindowExpire` keys rank
+low (timing only). `--json` writes every key set.
+
+**CI.** The `tla` job prints the report for the dedicated trace suites on
+every PR. Coverage percentages never fail the job: S and T keys depend on
+scheduling (the dedicated suites' state count varies by about 2% between
+runs). The job fails only if an action key in `coverage-baseline.json` is no
+longer covered. These are the A keys covered in each of three runs of the
+dedicated suites; a refactor that silently stops a scenario from reaching its
+action (say, a budget-exhaustion test that no longer exhausts the budget)
+still passes trace validation but loses its key. Regenerate the baseline with
+`--write-baseline` when a test deliberately changes. Weekly, the job runs every
+test binary with `LIFECYCLE_TRACE_ALL` and uploads the full report.
+
+### Results
+
+Before and after the tests in `concurrency/tests/coverage_trace.rs`
+(cumulative; whole suite = dedicated plus every other test binary, about 250
+OneForOne, 100 to 115 cohort and 340 tree traces per run; 13 OneForOne traces
+are rejected, see below). "After" ranges are over three runs of the dedicated
+suites and two of the whole suite: S and T keys depend on scheduling.
+
+| Model, source | Actions | States | Transitions | Coarse transitions |
+|---|---|---|---|---|
+| Supervision, dedicated | 33 → 35 / 40 | 195 → 231-234 / 1,878 | 211 → 255-259 / 7,130 | 63 → 86-89 / 544 |
+| Supervision, whole suite | 39 → 39-40 / 40 | 263 → 279-294 | 310 → 326-347 | 105 → 106-116 |
+| Cohorts, dedicated | 40 / 46 | 166-177 / 1,790 | 133-146 / 2,290 | 71-79 / 619 |
+| Cohorts, whole suite | 40 / 46 | 329-334 | 273-280 | 120-124 |
+| Nested, dedicated | 11 / 11 | 46 / 82 | 35 → 36 / 207 | |
+| Nested, whole suite | 11 / 11 | 53 / 82 | 45 → 46 / 207 | |
+
+The one whole-suite action that comes and goes is `LoopTop/finish` (a
+controller seeing the closed gate at the top of its loop): only a race in some
+non-trace test reaches it, so it is a candidate for a deterministic test.
+
+The low state and transition percentages are expected: the model is
+nondeterministic about timing (`WindowExpire` anywhere, any child in any
+phase when shutdown starts), and many projected combinations are reachable
+only through interleavings tests do not force. The ranked list is the useful
+output. The new tests reach, each with a real supervisor:
+
+- `A|Attempt/closed`: admission closes between a controller's first loop
+  iteration and its admission check (failpoint `system.reserve` delays the
+  second child's reservation while the start future is dropped). No other
+  test reached it.
+- Close while a child backs off during initial startup, then `BackoffDone`
+  closed and `SupStartDone` not ready with a child in backoff.
+- Shutdown while a restart is under construction (`Close` and the stop turn
+  with the restarting child in `constructing`), then the caller's deadline.
+- A Transient child stopping `Normal` in its first `started()` after a
+  sibling is ready: `StartupFailed/Normal` then `Decide/fail` during startup.
+- A ready child crashing while a later sibling is still being constructed.
+- A leaf restarting inside a nested supervisor (`TBegin/restart` on a child
+  node); the existing nested trace escalates every leaf failure.
+
+Top unreached after these tests:
+
+- Supervision: a child's stop turn timing out (`SupChildTimeout`) or the
+  caller's deadline expiring while that child is still restarting (backoff,
+  attempt, construction); `CleanupStuck` and startup timeouts after the
+  deadline. Each needs a restart held mid-flight while a later child's
+  cleanup hangs.
+- Cohorts: no stale notification was ever recorded: `CRequest` not accepted
+  (a failure reported for an already covered round), `CClean` and `CAck` for
+  an older round. The model's supersession handling for these is checked by
+  TLC only.
+- Nested: a child supervisor restarting a child while its parent is closing
+  or cancelled (`TBegin/restart` under `parent:closed`), and an owner join
+  (`TJoined/owner`) of a non-root subtree under a closing parent: nested
+  escalation during shutdown.
+
+Rejected whole-suite traces (13 OneForOne): eight from
+`initial_placement_failure_has_deterministic_failed_slots` and one each from
+the coordinator-fault, controller-panic and placement-failure failpoint tests
+record `Unmodelled` events (placement failure, controller and coordinator
+panics are outside the model). `ready_generation_discarded_before_publication_is_never_current`
+is rejected at `StartupFailed` with reason `Shutdown` while the gate is open.
+Followed up in #233: the same step happens without failpoints (an actor
+stopping itself with `Shutdown`, or shut down, in `started()`), so it is a
+model gap, and it exposed a code bug: a Transient replacement stopping
+`Normal` or `Shutdown` before readiness failed the whole tree instead of
+being retried, unlike OTP. With #233 the trace is accepted.
 
 ## What is checked
 

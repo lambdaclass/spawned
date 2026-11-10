@@ -110,7 +110,7 @@ Status of each layer. "Planned" items are tracked in the
 | Design, unbounded depth | Apalache inductive invariants | An invariant that a state TLC never reached would break | Safety invariants of all four models proven inductive at fixed sizes, with negative controls; `tla-apalache` CI job |
 | Design, any size | TLAPS or Veil | An invariant that fails only for larger configurations | Planned ([verification tools](research/verification-tools.md)) |
 | Spec and code | Trace validation | The implementation doing something the model forbids | Real OneForOne, cohort and nested traces plus invalid-trace and model-mutation controls |
-| Spec and code coverage | Trace coverage | Model states no test ever reaches | In progress |
+| Spec and code coverage | Trace coverage (`verification/tla/trace_coverage.py`) | Model actions, states and transitions no test ever reaches | Report on every PR (actions covered by the dedicated trace tests may not regress); whole test suite weekly. See [trace coverage](#trace-coverage) |
 | Primitives | Loom | Atomic and memory-ordering bugs in cancellation, ready gate and wakeups | In CI; expand to reply slots and mailbox publication versus shutdown |
 | Whole runtime, deterministic | Simulation backend for `spawned-rt::tasks` (random, PCT, bounded DFS) | Async races, replayed from a seed with virtual time | In review (PRs #212, #214, #218) |
 | Resource stability | Soak tests | Memory, file descriptors, threads, tasks and registry entries growing over hours of actor churn and restarts | Planned |
@@ -673,6 +673,28 @@ nix run .#check-tla                                   # model check (TLC via the
 nix run .#check-apalache -- --negative-controls       # inductive invariants (Apalache)
 cargo test -p spawned-concurrency --features lifecycle-trace --test supervision_trace
 nix run .#check-tla -- --traces target/lifecycle-traces
+```
+
+### Trace coverage
+
+`verification/tla/trace_coverage.py` measures which model actions, projected
+states and transitions the recorded traces reach, so unreached model behavior
+becomes a list of missing tests. Keys are defined in TLA+ and computed by TLC
+on both sides: over every reachable state of the CI configurations, and along
+each accepted trace. With `LIFECYCLE_TRACE_ALL=DIR` every finished supervisor
+in any test binary built with `lifecycle-trace` writes its traces there, so the
+whole suite (integration, proptest policies, cross-backend, failpoints)
+contributes, not only the dedicated trace tests. `coverage_trace` adds six
+tests for the top-ranked gaps (an attempt abandoned when startup is dropped,
+startup cancelled during backoff, shutdown while a restart is under
+construction, a Transient replacement exiting in `started()`, a crash while a
+sibling is starting, a nested leaf restart). Every PR prints the report and
+fails only if an action covered in `coverage-baseline.json` is lost. Numbers,
+method and the remaining gaps: [trace coverage](../verification/tla/README.md#trace-coverage).
+
+```bash
+cargo test -p spawned-concurrency --features lifecycle-trace,failpoints --test supervision_trace --test cohort_trace --test tree_trace --test nested_supervision --test coverage_trace
+nix develop -c python3 verification/tla/trace_coverage.py --traces dedicated=target/lifecycle-traces --model-keys verification/tla/coverage-model.json.gz
 ```
 
 All crates are `#![forbid(unsafe_code)]`, so Miri is not run; ThreadSanitizer

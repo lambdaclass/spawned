@@ -78,6 +78,22 @@
   without an idle moment, so multi-second timeouts fire before the livelock
   guard even while other timers keep firing. `docs/TESTING.md` lists what the simulator
   does not model and which suites are compiled out under the cfg.
+- Trace coverage against the TLA+ models: `verification/tla/trace_coverage.py`
+  maps every recorded lifecycle trace onto keys defined in TLA+ (actions with
+  outcome, per-child states, transitions in context, and a coarse transition
+  level) of `Supervision`, `Cohorts` and `NestedSupervision`, compares them
+  with the keys TLC reaches in the CI configurations, and ranks the unreached
+  ones. With the `lifecycle-trace` feature, `LIFECYCLE_TRACE_ALL=DIR` makes
+  every finished supervisor in any test binary write its traces (no behaviour
+  change; the feature stays off by default), so the whole test suite
+  contributes. The `tla` CI job prints the report on every PR and fails only
+  if an action key in `coverage-baseline.json` is lost; weekly it covers every
+  test binary. Six new trace tests (`coverage_trace`) reach the top gaps:
+  Supervision actions in the dedicated suites go from 33 to 35 of 40 (40 of 40
+  with the whole suite) and coarse transitions from 63 to about 87 of 544. One
+  rejected whole-suite trace led to a model gap and a supervision bug, fixed
+  separately (#233). See
+  [trace coverage](verification/tla/README.md#trace-coverage).
 
 ## 0.7.2 — 2026-11-10
 
