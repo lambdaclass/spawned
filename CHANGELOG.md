@@ -134,7 +134,8 @@ API changes.
   executor (`spawned_rt::tasks::sim`: seeded choice of the next ready task,
   virtual time that advances only when every task is idle). Unmodified async
   actors, supervisors and async execution groups run on it; `concurrency/tests/sim.rs`
-  replays the PR #204 never-started-child race from a seed. Thread and pinned
+  sweeps the PR #204 never-started-child race (closed by the v0.7.1 lifecycle
+  fixes) and asserts no seed reproduces it. Thread and pinned
   groups are rejected, `spawn_blocking`/`block_in_place` panic, and foreign-thread
   wakeups, deadlocks and livelocks fail the run. Native actors, the wall clock
   and direct Tokio use stay outside its control. Default builds are unchanged.

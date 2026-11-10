@@ -299,6 +299,8 @@ fn never_started_child_state_replays_from_seed() {
         unstarted("Failed"),
         unstarted("Stopped")
     );
+    // PR #209 closed the race: no schedule leaves a never-started child Stopped.
+    assert!(!unstarted("Stopped"), "never-started child ended Stopped");
 }
 
 #[test]
@@ -356,13 +358,13 @@ fn thread_groups_are_rejected() {
     });
 }
 
-/// PR #204 finding 2, pinned: on this tree, seed 12 leaves the launched but
-/// never-started child `c1` Failed and seed 2 leaves it Stopped. A schedule
-/// change in the supervisor can move these seeds; the sweep above then finds
-/// new ones.
+/// PR #204 finding 2, pinned: before the v0.7.1 lifecycle fixes (PR #209),
+/// seed 12 left the launched but never-started child `c1` Failed and seed 2
+/// left it Stopped. With PR #209 a failed initial placement finishes every
+/// never-started child as Failed, so both seeds must now agree.
 #[test]
 fn pr204_never_started_child_state_pinned_seeds() {
-    for (seed, expected) in [(12, "Failed"), (2, "Stopped")] {
+    for (seed, expected) in [(12, "Failed"), (2, "Failed")] {
         let runs: Vec<_> = (0..3)
             .map(|_| simulate(seed, true, |log| initial_failure(log, 0)))
             .collect();
