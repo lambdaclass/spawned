@@ -142,8 +142,8 @@ nix run .#check-apalache -- --model Coordinator --targets 32
 
 Each helper is commented in the `*Ind.tla` module with the reason it holds;
 dropping any one of them gives a counterexample to induction (an unreachable
-state). All checks with negative controls take about 2 minutes on a Linux
-server (4 JVM cores); `--size 10 10` for `Supervision` about 45 seconds and
+state). All checks with negative controls take about 3 minutes on a Linux
+server (4 JVM cores); `--size 10 10` for `Supervision` about 40 seconds and
 `--targets 32` for `Coordinator` about 10 seconds.
 No counterexample exposed a real bug.
 
