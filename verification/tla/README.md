@@ -142,8 +142,9 @@ nix run .#check-apalache -- --model Coordinator --targets 32
 
 Each helper is commented in the `*Ind.tla` module with the reason it holds;
 dropping any one of them gives a counterexample to induction (an unreachable
-state). All checks together take about 3-4 minutes; `--size 10 10` for
-`Supervision` and `--targets 32` for `Coordinator` well under a minute each.
+state). All checks with negative controls take about 2 minutes on a Linux
+server (4 JVM cores); `--size 10 10` for `Supervision` about 45 seconds and
+`--targets 32` for `Coordinator` about 10 seconds.
 No counterexample exposed a real bug.
 
 ### Coordinator
@@ -171,7 +172,9 @@ the Rust loop walks `targets.iter().rev()`. Proven inductive at TargetCount 8
 
 The liveness property `CleanupCompletes` remains TLC-only (TargetCount 3).
 
-Negative controls (all must break induction, and do): the four `Fault`
+Negative controls (each must break induction, and must also give a
+counterexample reachable from `Init` within 4 steps, so none is an
+artifact of an unreachable `IndInv` state; all do): the four `Fault`
 values `ReleaseEarly`, `ForgetFailure`, `ForgetSignal` and `RollbackReady`,
 plus four guard mutations: advance past a target before it finished, stop
 targets in reverse of the stop order (checked against `OrderedSignalStep`),

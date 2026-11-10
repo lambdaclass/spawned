@@ -24,6 +24,19 @@
   generation bound. Guard-removal negative controls must break induction.
   Specs gain Apalache type annotations (comments) and constant-bounded range
   rewrites; TLC state counts are unchanged.
+- Apalache inductive-invariant checks for the system shutdown coordinator
+  model (`Coordinator.tla`, `CoordinatorInd.tla`, CI step `--model
+  Coordinator --targets 32`). `Safety` (admission closed after shutdown
+  begins, finished within signalled, runtime ownership released only once
+  every target finished, coordinator failures recorded) and two new
+  invariants, `OrderedShutdown` (a root is signalled only after every
+  later-admitted root finished) and `JoinAfterAllSignalled`, plus four
+  action properties, are inductive at 8 and 32 shutdown targets with one
+  helper lemma. Eight negative controls must break induction and also give
+  a counterexample reachable from `Init`, including `RollbackReady`, the
+  out-of-order rollback of a ready supervisor startup fixed in v0.7.1,
+  which `negative_checks.py` also runs under TLC. Liveness stays TLC-only;
+  TLC state counts are unchanged.
 
 ## 0.7.1 — 2026-11-10
 
