@@ -383,7 +383,7 @@ fn polled_receiver_vs_reply() {
             let slot = slot.clone();
             loom::thread::spawn(move || slot.reply(4, &|| 0).0)
         };
-        let got = loom::future::block_on(std::future::poll_fn(|cx| slot.poll(cx.waker(), &|| 0)));
+        let got = loom::future::block_on(std::future::poll_fn(|cx| slot.poll(cx.waker())));
         assert_eq!(got, Ok(4));
         assert_eq!(replier.join().unwrap(), Delivery::Delivered);
     });
@@ -399,7 +399,7 @@ fn polled_receiver_vs_token_drop() {
             let slot = slot.clone();
             loom::thread::spawn(move || slot.terminate(Terminal::Dropped))
         };
-        let got = loom::future::block_on(std::future::poll_fn(|cx| slot.poll(cx.waker(), &|| 0)));
+        let got = loom::future::block_on(std::future::poll_fn(|cx| slot.poll(cx.waker())));
         assert_eq!(got, Err(Terminal::Dropped));
         assert!(dropper.join().unwrap());
         assert_balanced(&pool, &[&slot]);

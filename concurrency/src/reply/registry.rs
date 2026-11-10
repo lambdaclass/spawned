@@ -245,26 +245,17 @@ impl Registry {
     }
 
     /// The run loop is about to dispatch a handler.
+    ///
+    /// Only the run loop moves the phase out of `RUNNING`/`IN_TURN` (droppers
+    /// only mark `IN_TURN_PENDING`), so a plain store suffices here.
     pub(crate) fn begin_turn(&self) {
-        let _ = self
-            .phase
-            .compare_exchange(RUNNING, IN_TURN, Ordering::AcqRel, Ordering::Acquire);
+        debug_assert_eq!(self.phase.load(Ordering::Relaxed), RUNNING);
+        self.phase.store(IN_TURN, Ordering::Release);
     }
 
     /// The handler returned (`panicked == false`) or unwound.
     pub(crate) fn end_turn(&self, panicked: bool) {
-        let previous = self
-            .phase
-            .compare_exchange(IN_TURN, RUNNING, Ordering::AcqRel, Ordering::Acquire)
-            .or_else(|_| {
-                self.phase.compare_exchange(
-                    IN_TURN_PENDING,
-                    RUNNING,
-                    Ordering::AcqRel,
-                    Ordering::Acquire,
-                )
-            });
-        if previous == Ok(IN_TURN_PENDING) {
+        if self.phase.swap(RUNNING, Ordering::AcqRel) == IN_TURN_PENDING {
             self.commit(if panicked {
                 Terminal::Stopped
             } else {

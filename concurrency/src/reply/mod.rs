@@ -471,7 +471,7 @@ impl<R> std::future::Future for ReplyReceiver<R> {
         let mut this = self.project();
         assert!(!*this.done, "ReplyReceiver polled after completion");
         loop {
-            if let Poll::Ready(result) = this.slot.poll(cx.waker(), &now_ticks) {
+            if let Poll::Ready(result) = this.slot.poll(cx.waker()) {
                 *this.done = true;
                 return Poll::Ready(result.map_err(terminal_error));
             }

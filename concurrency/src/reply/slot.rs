@@ -499,15 +499,14 @@ impl<R> Slot<R> {
         })
     }
 
-    /// Poll from the caller's receiver. Expires the slot when its deadline has
-    /// passed; otherwise registers `waker` and returns `Pending`.
-    pub(crate) fn poll(&self, waker: &Waker, now: &impl Fn() -> u64) -> Poll<Result<R, Terminal>> {
+    /// Poll from the caller's receiver: registers `waker` and returns
+    /// `Pending` while the slot is open. The caller's timer expires the slot
+    /// at its deadline (`ReplyReceiver` sleeps until it), so the poll itself
+    /// reads no clock.
+    pub(crate) fn poll(&self, waker: &Waker) -> Poll<Result<R, Terminal>> {
         loop {
             if let Some(result) = self.take(state(self.word())) {
                 return Poll::Ready(result);
-            }
-            if self.check_deadline(now) {
-                continue;
             }
             let mut inner = lock(&self.inner);
             let w = self.word();
