@@ -50,7 +50,7 @@ impl Handler<Next> for Counter {
             self.0 += 1;
             self.0
         };
-        let _ = reply.reply(__reply_value);
+        reply.reply(__reply_value);
     }
 }
 impl Handler<Crash> for Counter {
@@ -578,7 +578,7 @@ impl Handler<Next> for RaceActor {
             self.count += 1;
             self.count
         };
-        let _ = reply.reply(__reply_value);
+        reply.reply(__reply_value);
     }
 }
 #[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]

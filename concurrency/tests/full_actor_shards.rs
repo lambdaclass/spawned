@@ -39,13 +39,10 @@ impl Handler<Thread> for Worker {
         reply: spawned_concurrency::reply::PendingReply<'_, String>,
         _: &Context<Self>,
     ) {
-        let __reply_value: String = {
-            std::thread::current()
+        reply.reply(std::thread::current()
                 .name()
                 .unwrap_or("unnamed")
-                .to_owned()
-        };
-        let _ = reply.reply(__reply_value);
+                .to_owned());
     }
 }
 struct Hold {
@@ -67,7 +64,7 @@ impl Handler<Hold> for Worker {
             msg.release.await.unwrap();
             42
         };
-        let _ = reply.reply(__reply_value);
+        reply.reply(__reply_value);
     }
 }
 struct Nested(std::net::SocketAddr);
@@ -100,7 +97,7 @@ impl Handler<Nested> for Worker {
             socket.read_exact(&mut reply).await.unwrap();
             u64::from_le_bytes(reply)
         };
-        let _ = reply.reply(__reply_value);
+        reply.reply(__reply_value);
     }
 }
 fn runtime() -> tokio::runtime::Runtime {
@@ -269,11 +266,10 @@ impl Handler<Freeze> for Worker {
         reply: spawned_concurrency::reply::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
-        {
+        
             let _ = msg.started.send(());
             msg.release.recv_timeout(LIMIT).unwrap();
-        }
-        let _ = reply.reply(());
+reply.reply(());
     }
 }
 #[test]
@@ -357,7 +353,7 @@ impl Handler<Tick> for Worker {
             tokio::time::sleep(Duration::from_millis(1)).await;
             42
         };
-        let _ = reply.reply(__reply_value);
+        reply.reply(__reply_value);
     }
 }
 struct SpawnBlockingChild;
@@ -374,11 +370,8 @@ impl Handler<SpawnBlockingChild> for Worker {
         >,
         _: &Context<Self>,
     ) {
-        let __reply_value: spawned_concurrency::tasks::ActorRef<Worker> = {
-            Worker(Default::default())
-                .start_with_backend(spawned_concurrency::tasks::Backend::Blocking)
-        };
-        let _ = reply.reply(__reply_value);
+        reply.reply(Worker(Default::default())
+                .start_with_backend(spawned_concurrency::tasks::Backend::Blocking));
     }
 }
 struct Helper(tokio::sync::oneshot::Receiver<()>);
@@ -392,14 +385,11 @@ impl Handler<Helper> for Worker {
         reply: spawned_concurrency::reply::PendingReply<'_, tokio::task::JoinHandle<u64>>,
         _: &Context<Self>,
     ) {
-        let __reply_value: tokio::task::JoinHandle<u64> = {
-            tokio::spawn(async move {
+        reply.reply(tokio::spawn(async move {
                 msg.0.await.unwrap();
                 tokio::time::sleep(Duration::from_millis(1)).await;
                 42
-            })
-        };
-        let _ = reply.reply(__reply_value);
+            }));
     }
 }
 #[test]
@@ -444,10 +434,9 @@ impl Handler<InstallMonitor> for Worker {
         reply: spawned_concurrency::reply::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
-        {
+        
             msg.observer.monitor(&msg.target);
-        }
-        let _ = reply.reply(());
+reply.reply(());
     }
 }
 impl Handler<spawned_concurrency::Down> for Worker {
@@ -457,10 +446,9 @@ impl Handler<spawned_concurrency::Down> for Worker {
         reply: spawned_concurrency::reply::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
-        {
+        
             self.0.lock().unwrap().push("down");
-        }
-        let _ = reply.reply(());
+reply.reply(());
     }
 }
 struct Events;
@@ -474,8 +462,7 @@ impl Handler<Events> for Worker {
         reply: spawned_concurrency::reply::PendingReply<'_, Vec<&'static str>>,
         _: &Context<Self>,
     ) {
-        let __reply_value: Vec<&'static str> = { self.0.lock().unwrap().clone() };
-        let _ = reply.reply(__reply_value);
+        reply.reply(self.0.lock().unwrap().clone());
     }
 }
 #[test]

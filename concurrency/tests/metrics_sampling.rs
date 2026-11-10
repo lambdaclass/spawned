@@ -18,7 +18,7 @@ impl Handler<Ping> for Probe {
         reply: spawned_concurrency::reply::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
-        let _ = reply.reply(());
+        reply.reply(());
     }
 }
 #[test]

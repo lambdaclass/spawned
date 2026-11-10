@@ -66,7 +66,7 @@ impl Handler<Get> for Store {
             self.log.push(Access::Read(self.value));
             self.value
         };
-        let _ = reply.reply(__reply_value);
+        reply.reply(__reply_value);
     }
 }
 impl Handler<Set> for Store {
@@ -76,11 +76,10 @@ impl Handler<Set> for Store {
         reply: spawned_concurrency::reply::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
-        {
+        
             self.log.push(Access::Write(value));
             self.value = value;
-        }
-        let _ = reply.reply(());
+reply.reply(());
     }
 }
 impl Handler<Log> for Store {
@@ -90,8 +89,7 @@ impl Handler<Log> for Store {
         reply: spawned_concurrency::reply::PendingReply<'_, Vec<Access>>,
         _: &Context<Self>,
     ) {
-        let __reply_value: Vec<Access> = { self.log.clone() };
-        let _ = reply.reply(__reply_value);
+        reply.reply(self.log.clone());
     }
 }
 
@@ -115,14 +113,13 @@ impl Handler<Bump> for Worker {
         reply: spawned_concurrency::reply::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
-        {
+        
             for _ in 0..self.noise {
                 spawned_rt::tasks::yield_now().await;
             }
             let value = self.store.request(Get).await.unwrap();
             self.store.request(Set(value + 1)).await.unwrap();
-        }
-        let _ = reply.reply(());
+reply.reply(());
     }
 }
 
@@ -233,13 +230,12 @@ impl Handler<Crash> for Node {
     async fn handle(
         &mut self,
         _: Crash,
-        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _reply: spawned_concurrency::reply::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
-        {
+        
             panic!("injected crash after readiness");
-        }
-        let _ = reply.reply(());
+
     }
 }
 

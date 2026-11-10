@@ -88,13 +88,12 @@ impl Handler<Crash> for Node {
     async fn handle(
         &mut self,
         _: Crash,
-        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _reply: spawned_concurrency::reply::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
-        {
+        
             panic!("injected crash after readiness");
-        }
-        let _ = reply.reply(());
+
     }
 }
 

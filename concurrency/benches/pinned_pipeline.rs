@@ -55,10 +55,9 @@ mod linux {
             reply: spawned_concurrency::reply::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
-            {
+            
                 self.next = m.0;
-            }
-            let _ = reply.reply(());
+reply.reply(());
         }
     }
     struct Work {
@@ -91,7 +90,7 @@ mod linux {
                         .unwrap();
                 }
             }
-            let _ = reply.reply(());
+            reply.reply(());
         }
     }
     struct Audit;
@@ -119,7 +118,7 @@ mod linux {
                     self.handled,
                 )
             };
-            let _ = reply.reply(__reply_value);
+            reply.reply(__reply_value);
         }
     }
     fn pin(mask: &str) {

@@ -18,13 +18,10 @@ impl Handler<Location> for Worker {
         reply: spawned_concurrency::reply::PendingReply<'_, <Location as Message>::Result>,
         _: &Context<Self>,
     ) {
-        let __reply_value: <Location as Message>::Result = {
-            (
+        reply.reply((
                 std::thread::current().name().unwrap_or_default().to_owned(),
                 spawned_rt::tasks::affinity::current_cpu().ok(),
-            )
-        };
-        let _ = reply.reply(__reply_value);
+            ));
     }
 }
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]

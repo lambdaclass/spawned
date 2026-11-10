@@ -42,10 +42,9 @@ impl Handler<Peer> for Peers {
         reply: spawned_concurrency::reply::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
-        {
+        
             self.peers.push(msg.0);
-        }
-        let _ = reply.reply(());
+reply.reply(());
     }
 }
 impl Handler<Snapshot> for Peers {
@@ -55,8 +54,7 @@ impl Handler<Snapshot> for Peers {
         reply: spawned_concurrency::reply::PendingReply<'_, Vec<u64>>,
         _: &Context<Self>,
     ) {
-        let __reply_value: Vec<u64> = { self.peers.clone() };
-        let _ = reply.reply(__reply_value);
+        reply.reply(self.peers.clone());
     }
 }
 struct Importer {
@@ -75,10 +73,9 @@ impl Handler<Import> for Importer {
         reply: spawned_concurrency::reply::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
-        {
+        
             self.peers.send(Peer(msg.0)).unwrap();
-        }
-        let _ = reply.reply(());
+reply.reply(());
     }
 }
 impl Handler<Fence> for Importer {
@@ -88,7 +85,7 @@ impl Handler<Fence> for Importer {
         reply: spawned_concurrency::reply::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
-        let _ = reply.reply(());
+        reply.reply(());
     }
 }
 #[tokio::main(flavor = "current_thread")]

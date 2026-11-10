@@ -80,7 +80,7 @@ impl Handler<Next> for Probe {
             self.value += 1;
             self.value
         };
-        let _ = reply.reply(__reply_value);
+        reply.reply(__reply_value);
     }
 }
 impl Handler<Crash> for Probe {

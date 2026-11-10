@@ -43,8 +43,7 @@ mod tasks {
             reply: spawned_concurrency::reply::PendingReply<'_, Reply>,
             ctx: &Context<Self>,
         ) {
-            let __reply_value: Reply = {
-                match command {
+            reply.reply(match command {
                     Command::Work(id) => {
                         self.0
                             .processed
@@ -59,9 +58,7 @@ mod tasks {
                         Reply::Unwatched
                     }
                     Command::Boom => panic!("scenario injected panic"),
-                }
-            };
-            let _ = reply.reply(__reply_value);
+                });
         }
     }
     impl Handler<Down> for TestActor {
@@ -71,10 +68,9 @@ mod tasks {
             reply: spawned_concurrency::reply::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
-            {
+            
                 let _ = self.0.events.send(event);
-            }
-            let _ = reply.reply(());
+reply.reply(());
         }
     }
 }
@@ -91,8 +87,7 @@ mod threads {
             reply: spawned_concurrency::reply::PendingReply<'_, Reply>,
             ctx: &Context<Self>,
         ) {
-            let __reply_value: Reply = {
-                match command {
+            reply.reply(match command {
                     Command::Work(id) => {
                         self.0
                             .processed
@@ -107,9 +102,7 @@ mod threads {
                         Reply::Unwatched
                     }
                     Command::Boom => panic!("scenario injected panic"),
-                }
-            };
-            let _ = reply.reply(__reply_value);
+                });
         }
     }
     impl Handler<Down> for TestActor {
@@ -119,10 +112,9 @@ mod threads {
             reply: spawned_concurrency::reply::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
-            {
+            
                 let _ = self.0.events.send(event);
-            }
-            let _ = reply.reply(());
+reply.reply(());
         }
     }
 }

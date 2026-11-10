@@ -144,7 +144,7 @@ impl Handler<Inspect> for Probe {
                 flavor,
             }
         };
-        let _ = reply.reply(__reply_value);
+        reply.reply(__reply_value);
     }
 }
 
@@ -165,7 +165,7 @@ impl Handler<Ping> for Child {
             tokio::time::sleep(Duration::from_millis(1)).await;
             42
         };
-        let _ = reply.reply(__reply_value);
+        reply.reply(__reply_value);
     }
 }
 struct Nested;
@@ -190,7 +190,7 @@ impl Handler<Nested> for Probe {
             self.assert_root();
             answer
         };
-        let _ = reply.reply(__reply_value);
+        reply.reply(__reply_value);
     }
 }
 
@@ -220,7 +220,7 @@ impl Handler<Exchange> for Probe {
             self.assert_root();
             answer
         };
-        let _ = reply.reply(__reply_value);
+        reply.reply(__reply_value);
     }
 }
 

@@ -26,7 +26,7 @@ impl Handler<Ping> for Healthy {
             tokio::task::yield_now().await;
             42
         };
-        let _ = reply.reply(__reply_value);
+        reply.reply(__reply_value);
     }
 }
 struct DropPanic;

@@ -25,11 +25,10 @@ impl Handler<Down> for Observer {
         reply: spawned_concurrency::reply::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
-        {
+        
             self.counts.1 += 1;
             self.downs.send(event).unwrap();
-        }
-        let _ = reply.reply(());
+reply.reply(());
     }
 }
 struct Counts;
@@ -43,8 +42,7 @@ impl Handler<Counts> for Observer {
         reply: spawned_concurrency::reply::PendingReply<'_, (usize, usize)>,
         _: &Context<Self>,
     ) {
-        let __reply_value: (usize, usize) = { self.counts };
-        let _ = reply.reply(__reply_value);
+        reply.reply(self.counts);
     }
 }
 struct Failing;

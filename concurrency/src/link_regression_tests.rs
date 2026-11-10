@@ -125,7 +125,7 @@ impl crate::tasks::Handler<Ping> for Idler {
         reply: crate::reply::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
-        let _ = reply.reply(());
+        reply.reply(());
     }
 }
 
@@ -170,10 +170,9 @@ impl crate::tasks::Handler<crate::Down> for MonitorObserver {
         reply: crate::reply::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
-        {
+        
             self.0.take().unwrap().send(down).unwrap();
-        }
-        let _ = reply.reply(());
+reply.reply(());
     }
 }
 #[test]
@@ -248,10 +247,9 @@ impl crate::tasks::Handler<Stop> for Stopping {
         reply: crate::reply::PendingReply<'_, ()>,
         ctx: &Context<Self>,
     ) {
-        {
+        
             ctx.stop();
-        }
-        let _ = reply.reply(());
+reply.reply(());
     }
 }
 #[test]
@@ -502,7 +500,7 @@ fn linked_runtime_abort_cancels_an_idle_threads_actor() {
             reply: crate::reply::PendingReply<'_, ()>,
             _: &crate::threads::Context<Self>,
         ) {
-            let _ = reply.reply(());
+            reply.reply(());
         }
     }
     let owner = runtime();
@@ -551,7 +549,7 @@ fn dropping_runtime_with_large_polled_link_cycle_reclaims_every_actor() {
             reply: crate::reply::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
-            let _ = reply.reply(());
+            reply.reply(());
         }
     }
     impl Drop for Node {

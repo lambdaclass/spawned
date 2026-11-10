@@ -28,8 +28,7 @@ fn native_propagated_kill_is_trappable_but_direct_kill_is_not() {
             reply: spawned_concurrency::reply::PendingReply<'_, u8>,
             _: &Context<Self>,
         ) {
-            let __reply_value: u8 = { 7 };
-            let _ = reply.reply(__reply_value);
+            reply.reply(7);
         }
     }
     fn wait(actor: &ActorRef<Node>) -> ExitReason {
@@ -90,8 +89,7 @@ async fn async_propagated_kill_is_trappable_but_direct_kill_is_not() {
             reply: spawned_concurrency::reply::PendingReply<'_, u8>,
             _: &Context<Self>,
         ) {
-            let __reply_value: u8 = { 7 };
-            let _ = reply.reply(__reply_value);
+            reply.reply(7);
         }
     }
     let (send, events) = mpsc::channel();

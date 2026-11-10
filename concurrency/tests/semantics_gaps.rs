@@ -107,12 +107,11 @@ mod native {
             reply: spawned_concurrency::reply::PendingReply<'_, ()>,
             ctx: &Context<Self>,
         ) {
-            {
+            
                 ctx.trap_exit(true);
                 ctx.link(&watch.0);
                 ctx.monitor(&watch.0);
-            }
-            let _ = reply.reply(());
+reply.reply(());
         }
     }
     impl Handler<Ping> for Observer {
@@ -122,10 +121,9 @@ mod native {
             reply: spawned_concurrency::reply::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
-            {
+            
                 let _ = self.0.send(Event::Ping(ping.0));
-            }
-            let _ = reply.reply(());
+reply.reply(());
         }
     }
     impl Handler<Down> for Observer {
@@ -135,10 +133,9 @@ mod native {
             reply: spawned_concurrency::reply::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
-            {
+            
                 let _ = self.0.send(Event::Down(down.reason));
-            }
-            let _ = reply.reply(());
+reply.reply(());
         }
     }
 
@@ -151,7 +148,7 @@ mod native {
             reply: spawned_concurrency::reply::PendingReply<'_, ()>,
             ctx: &Context<Self>,
         ) {
-            {
+            
                 for i in 0..burst.count {
                     burst.to.send(Ping(i)).unwrap();
                 }
@@ -159,8 +156,7 @@ mod native {
                     Some(reason) => ctx.stop_with_reason(reason),
                     None => panic!("source panicked"),
                 }
-            }
-            let _ = reply.reply(());
+reply.reply(());
         }
     }
 
@@ -201,7 +197,7 @@ mod native {
             _reply: spawned_concurrency::reply::PendingReply<'_, u64>,
             _: &Context<Self>,
         ) {
-            let _reply_value: u64 = { panic!("request handler panic") };
+            panic!("request handler panic");
         }
     }
 
@@ -271,12 +267,11 @@ mod tasks {
             reply: spawned_concurrency::reply::PendingReply<'_, ()>,
             ctx: &Context<Self>,
         ) {
-            {
+            
                 ctx.trap_exit(true);
                 ctx.link(&watch.0);
                 ctx.monitor(&watch.0);
-            }
-            let _ = reply.reply(());
+reply.reply(());
         }
     }
     impl Handler<Ping> for Observer {
@@ -286,10 +281,9 @@ mod tasks {
             reply: spawned_concurrency::reply::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
-            {
+            
                 let _ = self.0.send(Event::Ping(ping.0));
-            }
-            let _ = reply.reply(());
+reply.reply(());
         }
     }
     impl Handler<Down> for Observer {
@@ -299,10 +293,9 @@ mod tasks {
             reply: spawned_concurrency::reply::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
-            {
+            
                 let _ = self.0.send(Event::Down(down.reason));
-            }
-            let _ = reply.reply(());
+reply.reply(());
         }
     }
 
@@ -315,7 +308,7 @@ mod tasks {
             reply: spawned_concurrency::reply::PendingReply<'_, ()>,
             ctx: &Context<Self>,
         ) {
-            {
+            
                 for i in 0..burst.count {
                     burst.to.send(Ping(i)).unwrap();
                 }
@@ -323,8 +316,7 @@ mod tasks {
                     Some(reason) => ctx.stop_with_reason(reason),
                     None => panic!("source panicked"),
                 }
-            }
-            let _ = reply.reply(());
+reply.reply(());
         }
     }
 
@@ -375,10 +367,9 @@ mod tasks {
             reply: spawned_concurrency::reply::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
-            {
+            
                 let _ = self.0.send(Instant::now());
-            }
-            let _ = reply.reply(());
+reply.reply(());
         }
     }
 
@@ -467,10 +458,9 @@ mod tasks {
             reply: spawned_concurrency::reply::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
-            {
+            
                 let _ = self.log.send((self.generation, stamp.0));
-            }
-            let _ = reply.reply(());
+reply.reply(());
         }
     }
     impl Handler<Crash> for Clocked {
@@ -563,7 +553,7 @@ mod tasks {
             _reply: spawned_concurrency::reply::PendingReply<'_, u64>,
             _: &Context<Self>,
         ) {
-            let _reply_value: u64 = { panic!("request handler panic") };
+            panic!("request handler panic");
         }
     }
 

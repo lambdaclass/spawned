@@ -231,10 +231,9 @@ impl Handler<Bump> for Counter {
         reply: spawned_concurrency::reply::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
-        {
+        
             self.0.fetch_add(1, Ordering::SeqCst);
-        }
-        let _ = reply.reply(());
+reply.reply(());
     }
 }
 impl Handler<Get> for Counter {
@@ -244,8 +243,7 @@ impl Handler<Get> for Counter {
         reply: spawned_concurrency::reply::PendingReply<'_, usize>,
         _: &Context<Self>,
     ) {
-        let __reply_value: usize = { self.0.load(Ordering::SeqCst) };
-        let _ = reply.reply(__reply_value);
+        reply.reply(self.0.load(Ordering::SeqCst));
     }
 }
 
@@ -350,12 +348,11 @@ impl Handler<Hang> for Stuck {
         reply: spawned_concurrency::reply::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
-        {
+        
             self.0.store(true, Ordering::SeqCst);
             // Blocking code is never preempted, so shutdown cannot finish in time.
             std::thread::sleep(Duration::from_millis(500));
-        }
-        let _ = reply.reply(());
+reply.reply(());
     }
 }
 

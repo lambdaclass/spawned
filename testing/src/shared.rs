@@ -160,7 +160,7 @@ macro_rules! probe_common {
                 let (reply, rx) = spawned_concurrency::reply::reply_pair(deadline);
                 match self.request(msg)? {
                     Some((value, record)) => {
-                        let _ = reply.reply(value);
+                        reply.reply(value);
                         // Logged `Handled` only once the reply is in the slot.
                         record.finish();
                     }

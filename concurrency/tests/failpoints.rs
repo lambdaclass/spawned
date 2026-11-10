@@ -96,13 +96,12 @@ impl Handler<Crash> for Worker {
     async fn handle(
         &mut self,
         _: Crash,
-        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _reply: spawned_concurrency::reply::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
-        {
+        
             panic!("injected child failure");
-        }
-        let _ = reply.reply(());
+
     }
 }
 impl Handler<Ping> for Worker {
@@ -112,7 +111,7 @@ impl Handler<Ping> for Worker {
         reply: spawned_concurrency::reply::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
-        let _ = reply.reply(());
+        reply.reply(());
     }
 }
 
@@ -669,10 +668,9 @@ impl Handler<LinkTo> for Linker {
         reply: spawned_concurrency::reply::PendingReply<'_, ()>,
         ctx: &Context<Self>,
     ) {
-        {
+        
             ctx.link(&msg.0);
-        }
-        let _ = reply.reply(());
+reply.reply(());
     }
 }
 impl Handler<Watch> for Linker {
@@ -682,10 +680,9 @@ impl Handler<Watch> for Linker {
         reply: spawned_concurrency::reply::PendingReply<'_, ()>,
         ctx: &Context<Self>,
     ) {
-        {
+        
             ctx.monitor(&msg.0);
-        }
-        let _ = reply.reply(());
+reply.reply(());
     }
 }
 impl Handler<Ping> for Linker {
@@ -695,7 +692,7 @@ impl Handler<Ping> for Linker {
         reply: spawned_concurrency::reply::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
-        let _ = reply.reply(());
+        reply.reply(());
     }
 }
 impl Handler<Down> for Linker {
@@ -705,10 +702,9 @@ impl Handler<Down> for Linker {
         reply: spawned_concurrency::reply::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
-        {
+        
             let _ = self.downs.send(msg.reason);
-        }
-        let _ = reply.reply(());
+reply.reply(());
     }
 }
 
@@ -926,15 +922,19 @@ mod native {
     struct Target;
     impl NativeActor for Target {}
     impl NativeHandler<Crash> for Target {
-        fn handle(&mut self, _: Crash, _: &NativeContext<Self>) {
+        fn handle(&mut self, _: Crash, _reply: spawned_concurrency::reply::PendingReply<'_, ()>, _: &NativeContext<Self>) {
+            
             panic!("injected native failure");
+
         }
     }
     struct Peer;
     impl NativeActor for Peer {}
     impl NativeHandler<LinkTo> for Peer {
-        fn handle(&mut self, msg: LinkTo, ctx: &NativeContext<Self>) {
+        fn handle(&mut self, msg: LinkTo, reply: spawned_concurrency::reply::PendingReply<'_, ()>, ctx: &NativeContext<Self>) {
+            
             ctx.link(&msg.0);
+reply.reply(());
         }
     }
 

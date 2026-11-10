@@ -72,7 +72,7 @@ impl Handler<Command> for Worker {
         reply: spawned_concurrency::reply::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
-        {
+        
             match msg {
                 Command::Hold { entered, release } => {
                     let _ = entered.send(());
@@ -80,8 +80,7 @@ impl Handler<Command> for Worker {
                 }
                 Command::Work => panic!("queued work must be discarded after stop"),
             }
-        }
-        let _ = reply.reply(());
+reply.reply(());
     }
 }
 struct Cleanup(ChildHandle);

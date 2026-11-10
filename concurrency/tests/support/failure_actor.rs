@@ -188,7 +188,7 @@ impl spawned_concurrency::tasks::Handler<Command> for AsyncWorker {
                 }
             }
         };
-        let _ = reply.reply(__reply_value);
+        reply.reply(__reply_value);
     }
 }
 #[cfg(feature = "async")]
@@ -199,12 +199,11 @@ impl spawned_concurrency::tasks::Handler<Down> for AsyncWorker {
         reply: spawned_concurrency::reply::PendingReply<'_, ()>,
         _: &spawned_concurrency::tasks::Context<Self>,
     ) {
-        {
+        
             if let Some(sender) = &self.0.down {
                 let _ = sender.send(down);
             }
-        }
-        let _ = reply.reply(());
+reply.reply(());
     }
 }
 pub struct NativeWorker(pub Worker);
@@ -254,7 +253,7 @@ impl spawned_concurrency::threads::Handler<Command> for NativeWorker {
                 }
             }
         };
-        let _ = reply.reply(__reply_value);
+        reply.reply(__reply_value);
     }
 }
 impl spawned_concurrency::threads::Handler<Down> for NativeWorker {
@@ -264,12 +263,11 @@ impl spawned_concurrency::threads::Handler<Down> for NativeWorker {
         reply: spawned_concurrency::reply::PendingReply<'_, ()>,
         _: &spawned_concurrency::threads::Context<Self>,
     ) {
-        {
+        
             if let Some(sender) = &self.0.down {
                 let _ = sender.send(down);
             }
-        }
-        let _ = reply.reply(());
+reply.reply(());
     }
 }
 #[derive(Clone)]

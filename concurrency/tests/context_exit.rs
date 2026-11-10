@@ -26,11 +26,10 @@ fn native_explicit_exit_is_cooperative_and_first_reason_wins() {
             reply: spawned_concurrency::reply::PendingReply<'_, ()>,
             ctx: &Context<Self>,
         ) {
-            {
+            
                 ctx.stop_with_reason(exit.0);
                 ctx.stop();
-            }
-            let _ = reply.reply(());
+reply.reply(());
         }
     }
     for reason in [ExitReason::Shutdown, ExitReason::Kill] {
@@ -64,11 +63,10 @@ async fn async_explicit_exit_is_cooperative_and_first_reason_wins() {
             reply: spawned_concurrency::reply::PendingReply<'_, ()>,
             ctx: &Context<Self>,
         ) {
-            {
+            
                 ctx.stop_with_reason(exit.0);
                 ctx.stop();
-            }
-            let _ = reply.reply(());
+reply.reply(());
         }
     }
     for reason in [ExitReason::Shutdown, ExitReason::Kill] {

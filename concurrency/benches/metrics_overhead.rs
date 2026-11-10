@@ -24,8 +24,7 @@ impl tasks::Handler<Work> for Sink {
         reply: spawned_concurrency::reply::PendingReply<'_, u64>,
         _: &tasks::Context<Self>,
     ) {
-        let __reply_value: u64 = { compute(work) };
-        let _ = reply.reply(__reply_value);
+        reply.reply(compute(work));
     }
 }
 impl threads::Actor for Sink {}
@@ -36,8 +35,7 @@ impl threads::Handler<Work> for Sink {
         reply: spawned_concurrency::reply::PendingReply<'_, u64>,
         _: &threads::Context<Self>,
     ) {
-        let __reply_value: u64 = { compute(work) };
-        let _ = reply.reply(__reply_value);
+        reply.reply(compute(work));
     }
 }
 fn main() {

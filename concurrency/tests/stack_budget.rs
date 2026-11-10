@@ -131,7 +131,7 @@ mod tasks_chain {
                     None => block,
                 }
             };
-            let _ = reply.reply(__reply_value);
+            reply.reply(__reply_value);
         }
     }
 
@@ -229,12 +229,11 @@ mod tasks_chain {
             reply: spawned_concurrency::reply::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
-            {
+            
                 if self.generation == 1 {
                     panic!("injected stack-budget crash");
                 }
-            }
-            let _ = reply.reply(());
+reply.reply(());
         }
     }
     impl Handler<relay::Forward> for Flaky {
@@ -244,8 +243,7 @@ mod tasks_chain {
             reply: spawned_concurrency::reply::PendingReply<'_, Block>,
             _: &Context<Self>,
         ) {
-            let __reply_value: Block = { msg.block };
-            let _ = reply.reply(__reply_value);
+            reply.reply(msg.block);
         }
     }
 
@@ -331,7 +329,7 @@ mod threads_chain {
                     None => block,
                 }
             };
-            let _ = reply.reply(__reply_value);
+            reply.reply(__reply_value);
         }
     }
 

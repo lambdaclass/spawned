@@ -236,7 +236,7 @@ impl Handler<Wire> for Node {
         reply: spawned_concurrency::reply::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
-        {
+        
             if std::env::var("SPAWNED_EXPERIMENT_SCHEDULER").as_deref() == Ok("sharded") {
                 assert_eq!(
                     std::thread::current().name().unwrap(),
@@ -244,8 +244,7 @@ impl Handler<Wire> for Node {
                 );
             }
             self.children = msg.children;
-        }
-        let _ = reply.reply(());
+reply.reply(());
     }
 }
 #[inline(never)]
@@ -298,7 +297,7 @@ impl Handler<Route> for Node {
                 service_ns: completed.duration_since(started).as_nanos() as u64,
             }
         };
-        let _ = reply.reply(__reply_value);
+        reply.reply(__reply_value);
     }
 }
 fn layout(c: &Config) -> (Vec<usize>, Vec<usize>) {

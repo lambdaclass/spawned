@@ -33,7 +33,7 @@ mod asynchronous {
                 self.1.fetch_add(1, Ordering::SeqCst);
                 42
             };
-            let _ = reply.reply(__reply_value);
+            reply.reply(__reply_value);
         }
     }
     impl Handler<lookup_protocol::Quick> for Worker {
@@ -47,7 +47,7 @@ mod asynchronous {
                 self.1.fetch_add(1, Ordering::SeqCst);
                 42
             };
-            let _ = reply.reply(__reply_value);
+            reply.reply(__reply_value);
         }
     }
     pub async fn run() {
@@ -89,7 +89,7 @@ mod synchronous {
                 self.1.fetch_add(1, Ordering::SeqCst);
                 42
             };
-            let _ = reply.reply(__reply_value);
+            reply.reply(__reply_value);
         }
     }
     impl Handler<lookup_protocol::Quick> for Worker {
@@ -103,7 +103,7 @@ mod synchronous {
                 self.1.fetch_add(1, Ordering::SeqCst);
                 42
             };
-            let _ = reply.reply(__reply_value);
+            reply.reply(__reply_value);
         }
     }
     pub fn run() {

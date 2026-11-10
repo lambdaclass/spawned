@@ -478,10 +478,9 @@ mod tests {
                 reply: crate::reply::PendingReply<'_, ()>,
                 ctx: &Context<Self>,
             ) {
-                {
+                
                     ctx.stop();
-                }
-                let _ = reply.reply(());
+reply.reply(());
             }
         }
 
@@ -517,10 +516,9 @@ mod tests {
                 reply: crate::reply::PendingReply<'_, ()>,
                 ctx: &Context<Self>,
             ) {
-                {
+                
                     ctx.stop();
-                }
-                let _ = reply.reply(());
+reply.reply(());
             }
         }
 

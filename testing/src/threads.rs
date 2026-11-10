@@ -65,7 +65,7 @@ impl<M: Message> Handler<M> for Mock {
                 if let Some(record) = record {
                     record.finish();
                 }
-                let _ = reply.reply(value);
+                reply.reply(value);
             }
             Plan::Crash(reason) => panic!("{reason}"),
         }

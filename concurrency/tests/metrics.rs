@@ -45,8 +45,7 @@ impl Handler<metrics_protocol::Query> for Probe {
         reply: spawned_concurrency::reply::PendingReply<'_, u64>,
         _: &Context<Self>,
     ) {
-        let __reply_value: u64 = { 9 };
-        let _ = reply.reply(__reply_value);
+        reply.reply(9);
     }
 }
 impl Handler<Ping> for Probe {
@@ -56,20 +55,19 @@ impl Handler<Ping> for Probe {
         reply: spawned_concurrency::reply::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
-        let _ = reply.reply(());
+        reply.reply(());
     }
 }
 impl Handler<Crash> for Probe {
     async fn handle(
         &mut self,
         _: Crash,
-        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _reply: spawned_concurrency::reply::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
-        {
+        
             panic!("metric panic regression");
-        }
-        let _ = reply.reply(());
+
     }
 }
 impl Handler<Hold> for Probe {
@@ -79,11 +77,10 @@ impl Handler<Hold> for Probe {
         reply: spawned_concurrency::reply::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
-        {
+        
             let _ = hold.entered.send(());
             let _ = hold.release.await;
-        }
-        let _ = reply.reply(());
+reply.reply(());
     }
 }
 fn runtime() -> tokio::runtime::Runtime {
@@ -238,16 +235,20 @@ fn metrics_conserve_work_across_all_lifecycle_paths() {
     struct Native;
     impl ThreadActor for Native {}
     impl ThreadHandler<metrics_protocol::Query> for Native {
-        fn handle(&mut self, _: metrics_protocol::Query, _: &ThreadContext<Self>) -> u64 {
-            9
+        fn handle(&mut self, _: metrics_protocol::Query, reply: spawned_concurrency::reply::PendingReply<'_, u64>, _: &ThreadContext<Self>) {
+            reply.reply(9);
         }
     }
     impl ThreadHandler<Ping> for Native {
-        fn handle(&mut self, _: Ping, _: &ThreadContext<Self>) {}
+        fn handle(&mut self, _: Ping, reply: spawned_concurrency::reply::PendingReply<'_, ()>, _: &ThreadContext<Self>) {
+            reply.reply(());
+        }
     }
     impl ThreadHandler<Crash> for Native {
-        fn handle(&mut self, _: Crash, _: &ThreadContext<Self>) {
+        fn handle(&mut self, _: Crash, _reply: spawned_concurrency::reply::PendingReply<'_, ()>, _: &ThreadContext<Self>) {
+            
             panic!("native metric panic");
+
         }
     }
     let actor = Native.start();
