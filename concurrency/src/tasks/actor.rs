@@ -7,9 +7,10 @@ use crate::link::{
 use crate::mailbox::tasks as mpsc;
 use crate::message::Message;
 use crate::monitor::{Down, MonitorCleanup, MonitorRef, MonitorTable};
-use crate::reply::{registry::Registry, reply_slot, Deadline, SlotHandle};
+use crate::reply::{registry::Registry, reply_slot, SlotHandle};
+#[doc(no_inline)]
 pub use crate::reply::{
-    DeferError, Delivery, PendingReply, ReplyReceiver, ReplyTo, DEFAULT_MAX_OUTSTANDING,
+    Deadline, DeferError, Delivery, PendingReply, ReplyReceiver, ReplyTo, DEFAULT_MAX_OUTSTANDING,
 };
 use core::pin::pin;
 use futures::future::{self, FutureExt as _};
@@ -172,13 +173,14 @@ where
             observation.reject();
         }
     }
-    fn handle<'a>(self: Box<Self>, actor: &'a mut A, reply: crate::reply::PendingReply<'_, Pin<Box<dyn Future<Output = ()> + Send + 'a>>>, ctx: &'a Context<A>) {
-        let __reply_value: Pin<Box<dyn Future<Output = ()> + Send + 'a>> = {
+    fn handle<'a>(
+        self: Box<Self>,
+        actor: &'a mut A,
+        ctx: &'a Context<A>,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
         let mut this = *self;
         let reply = PendingReply::new(this.slot.take(), &ctx.shared.replies);
         Box::pin(actor.handle(this.msg, reply, ctx))
-    };
-        let _ = reply.reply(__reply_value);
     }
 }
 
