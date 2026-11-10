@@ -78,6 +78,10 @@
   without an idle moment, so multi-second timeouts fire before the livelock
   guard even while other timers keep firing. `docs/TESTING.md` lists what the simulator
   does not model and which suites are compiled out under the cfg.
+- Simulator exploration strategies (`spawned_rt::tasks::sim::explore`, under
+  `--cfg spawned_sim`): PCT and a delay-bounded DFS that reports exhaustion,
+  recorded into the decision tape and selected with `SPAWNED_SIM_STRATEGY` or
+  `#[sim_test(explore = "pct:d=3", iterations = N)]`, plus planted-bug tests.
 
 ## 0.7.2 — 2026-11-10
 
