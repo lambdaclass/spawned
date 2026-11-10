@@ -339,23 +339,21 @@ mod stop_panic_tests {
         }
     }
 
-    /// Stopping the subtree runs foreign code (wakers of inner waiters). A
-    /// panic there belongs to the adapter's `stopped()` hook, so the adapter
-    /// exits with that reason; Drop then retries the stop as a backstop.
+    /// Stopping the subtree runs foreign code (wakers of inner waiters). The
+    /// adapter does that in its `stopped()` hook, so such a panic is a
+    /// `stopped()` panic of the adapter (with Drop as a backstop), rather than
+    /// a destructor failure. The hook is called directly: through the actor,
+    /// the adapter's lifecycle helper races it to close the subtree first.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn panic_while_stopping_the_subtree_is_a_stopped_hook_panic() {
+    async fn stopped_hook_stops_the_running_subtree() {
+        use futures::FutureExt;
         let limit = Duration::from_secs(10);
         let system = ActorSystem::new().unwrap();
         let group = system.async_group("nested-stop-panic", 1).unwrap();
         let published: Arc<Mutex<Option<SupervisedChild<Leaf>>>> = Arc::default();
         let expose = published.clone();
         let placement = group.clone();
-        let mut root = system
-            .supervisor(SupervisorConfig {
-                max_restarts: 0,
-                ..SupervisorConfig::default()
-            })
-            .unwrap();
+        let mut root = system.supervisor(SupervisorConfig::default()).unwrap();
         let subtree = root
             .add_supervisor(SupervisorSpec::new(
                 "subtree",
@@ -372,21 +370,30 @@ mod stop_panic_tests {
             .unwrap();
         let root = root.start().await.unwrap();
         let leaf = system::lock(&published).clone().unwrap();
-        let generation = leaf.snapshot().generation;
-        let mut waiter = Box::pin(leaf.wait_for_generation(generation));
+        let mut waiter = Box::pin(leaf.wait_for_generation(leaf.snapshot().generation));
         let waker = std::task::Waker::from(Arc::new(PanicOnWake(AtomicBool::new(false))));
         let mut cx = std::task::Context::from_waker(&waker);
         assert!(waiter.as_mut().poll(&mut cx).is_pending());
 
-        // Stop only the adapter: its own token, not the parent's, so nothing
-        // but the adapter's lifecycle closes the subtree.
-        let adapter = subtree.child.current().unwrap();
-        adapter.child_handle().stop();
-        let reason = rt::timeout(limit, adapter.wait_exit()).await.unwrap();
-        assert!(
-            matches!(&reason, ExitReason::Panic(m) if m.starts_with("panic in stopped()") && m.contains("waiter waker panicked")),
-            "{reason:?}"
+        let inner = subtree.current().unwrap();
+        let ctx = subtree.child.current().unwrap().context();
+        let mut hook = SupervisorActor {
+            builder: None,
+            running: Some(inner.clone()),
+            ready: Arc::default(),
+            id: None,
+            shutdown_grace: limit,
+            parent_core: std::sync::Weak::new(),
+        };
+        let unwound = AssertUnwindSafe(hook.stopped(&ctx)).catch_unwind().await;
+        let payload = unwound.expect_err("stopped() did not stop the running subtree");
+        assert_eq!(
+            crate::error::panic_message(&*payload),
+            "waiter waker panicked"
         );
+        // The backstop stop in Drop is idempotent once the waiter has fired.
+        drop(hook);
+        assert!(!inner.core.gate.is_open());
         drop(waiter);
         drop(root);
         assert!(system.shutdown(limit).await.complete);
