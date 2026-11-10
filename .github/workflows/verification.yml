@@ -52,6 +52,8 @@ jobs:
         run: nix run .#check-apalache -- --negative-controls
       - name: Supervision with 10 children and max_restarts 10
         run: nix run .#check-apalache -- --model Supervision --size 10 10
+      - name: Shutdown coordinator with 32 targets
+        run: nix run .#check-apalache -- --model Coordinator --targets 32
 
   mailbox-loom:
     runs-on: ubuntu-latest
