@@ -133,8 +133,8 @@ model does (an extra action label is excluded from the fingerprint with
 `VIEW`; the script checks the distinct-state count equals the plain model's)
 and an always-true action constraint prints every key of every reachable step
 (`TLCGet`/`TLCSet` deduplicate per worker). Configurations: `MCSupervision`
-plus a Permanent/Temporary instance at the same bounds (5.4 million states),
-the four `MCCohorts*` (146,000) and `MCNested` (47,000). This takes about 5
+plus a Permanent/Temporary instance at the same bounds (6.1 million states),
+the four `MCCohorts*` (174,000) and `MCNested` (47,000). This takes about 5
 minutes, so the keys are cached in `coverage-model.json.gz` with a hash of the
 specs; a stale cache is recomputed and rewritten (commit the new one).
 `Deliver` in `NestedSupervision` is a fairness device with no trace event, so
@@ -182,6 +182,17 @@ suites and two of the whole suite: S and T keys depend on scheduling.
 | Cohorts, whole suite | 40 / 46 | 329-334 | 273-280 | 120-124 |
 | Nested, dedicated | 11 / 11 | 46 / 82 | 35 → 36 / 207 | |
 | Nested, whole suite | 11 / 11 | 53 / 82 | 45 → 46 / 207 | |
+
+After #233 (failed restarts retried like OTP; a `Shutdown` startup failure
+allowed while open; one start per cohort child and round) the model side was
+regenerated: Supervision has 7,142 transition keys (was 7,130) and 545 coarse
+ones (was 544), Cohorts the same key counts over more states. The dedicated
+suites, now including #233's traces (30 OneForOne, 8 cohort), cover 36 of 40
+Supervision actions: `StartupFailed/Shutdown` (a replacement stopping with
+`Shutdown` while the supervisor is open) joined the baseline. Still unreached
+there: `Attempt`/`BecomeReady` with the gate closed are timing races reached
+only by the whole suite or `coverage_trace` in some runs, plus `CleanupStuck`
+and `LoopTop/finish`.
 
 The one whole-suite action that comes and goes is `LoopTop/finish` (a
 controller seeing the closed gate at the top of its loop): only a race in some
