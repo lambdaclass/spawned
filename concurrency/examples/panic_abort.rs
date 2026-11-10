@@ -49,7 +49,7 @@ mod native {
             _reply: spawned_concurrency::reply::PendingReply<'_, u64>,
             _: &Context<Self>,
         ) {
-            let _reply_value: u64 = { panic!("{PANIC_TEXT}") };
+            panic!("{PANIC_TEXT}");
         }
     }
     pub fn handler_panic() {
@@ -77,7 +77,7 @@ mod tasks {
             _reply: spawned_concurrency::reply::PendingReply<'_, u64>,
             _: &Context<Self>,
         ) {
-            let _reply_value: u64 = { panic!("{PANIC_TEXT}") };
+            panic!("{PANIC_TEXT}");
         }
     }
     pub fn handler_panic() {
