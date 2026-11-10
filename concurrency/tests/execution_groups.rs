@@ -646,7 +646,7 @@ async fn groups_validate_names_and_report_their_budget() {
     assert!(system.shutdown(LIMIT).await.complete);
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn closed_system_rejects_new_groups_and_completed_reports_stay_complete() {
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("closing", 1).unwrap();
@@ -657,7 +657,7 @@ async fn closed_system_rejects_new_groups_and_completed_reports_stay_complete() 
     let report = system.shutdown(LIMIT).await;
     assert!(report.complete);
     // A completed report has nothing left to wait for.
-    let again = tokio::time::timeout(LIMIT, report.wait(Duration::ZERO))
+    let again = spawned_rt::tasks::timeout(LIMIT, report.wait(Duration::ZERO))
         .await
         .unwrap();
     assert!(again.complete);
@@ -665,6 +665,8 @@ async fn closed_system_rejects_new_groups_and_completed_reports_stay_complete() 
         system.async_group("late", 1),
         Err(SystemError::Closed)
     ));
+    // Native groups need OS threads, which the simulator rejects first.
+    #[cfg(not(spawned_sim))]
     assert!(matches!(
         system.thread_group("late-native", 1),
         Err(SystemError::Closed)
@@ -673,6 +675,8 @@ async fn closed_system_rejects_new_groups_and_completed_reports_stay_complete() 
     assert!(matches!(Worker.start_on(&group), Err(SystemError::Closed)));
 }
 
+// Not simulated: shards belong to native thread groups.
+#[cfg(not(spawned_sim))]
 #[test]
 fn shard_selection_accepts_every_slot_and_rejects_the_next() {
     let system = ActorSystem::new().unwrap();

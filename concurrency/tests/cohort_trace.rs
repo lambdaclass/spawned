@@ -275,7 +275,7 @@ impl Handler<Crash> for MaybeStop {
 /// A replacement stopping before readiness inside a round requests a new
 /// round: OneForAll rebuilds the whole cohort again. `Cohorts.tla` allows one
 /// start per child and round (`OneStartPerRound`).
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn trace_failed_replacement_starts_a_new_round() {
     for strategy in [
         SupervisorStrategy::OneForAll,
@@ -312,7 +312,7 @@ async fn trace_failed_replacement_starts_a_new_round() {
             .unwrap();
         let supervisor = tree.start().await.unwrap();
         assert!(b.current().unwrap().request(Crash).await.is_err());
-        tokio::time::timeout(LIMIT, b.wait_for_generation(2))
+        spawned_rt::tasks::timeout(LIMIT, b.wait_for_generation(2))
             .await
             .unwrap()
             .unwrap();

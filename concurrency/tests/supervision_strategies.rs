@@ -250,7 +250,7 @@ async fn temporary_collateral_child_stops_without_reconstruction() {
     assert!(system.shutdown(LIMIT).await.complete);
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn failed_cohort_construction_rebuilds_the_whole_cohort_like_otp() {
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("cohort-factory", 1).unwrap();
@@ -647,7 +647,7 @@ async fn ready_dependency_failure_rolls_back_slow_initial_tree_startup() {
 /// ready in the round, is stopped and replaced), RestForOne only the failed
 /// child and its later siblings, as OTP re-runs the strategy on
 /// `try_again_restart`.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn replacement_stopping_before_readiness_restarts_the_strategy_scope() {
     for (strategy, a_generation) in [
         (SupervisorStrategy::OneForAll, 3),
@@ -677,7 +677,7 @@ async fn replacement_stopping_before_readiness_restarts_the_strategy_scope() {
         // B crashes: OneForAll rebuilds A and B (A2 ready, B2 stops Normal
         // before readiness); RestForOne rebuilds only B.
         assert!(b.current().unwrap().request(CrashPlain).await.is_err());
-        tokio::time::timeout(LIMIT, b.wait_for_generation(2))
+        spawned_rt::tasks::timeout(LIMIT, b.wait_for_generation(2))
             .await
             .unwrap()
             .unwrap();

@@ -827,7 +827,7 @@ impl Handler<Crash> for ExitOnceDuringRestart {
 /// budget, as OTP retries a failed restart (`try_again_restart`) whatever the
 /// child's restart type. Only the initial start fails the tree
 /// (`normal_pre_ready_exit_records_real_cause_and_fails_transient_startup`).
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn transient_replacement_exiting_before_readiness_is_retried() {
     for reason in [ExitReason::Normal, ExitReason::Shutdown] {
         let system = ActorSystem::new().unwrap();
@@ -864,7 +864,7 @@ async fn transient_replacement_exiting_before_readiness_is_retried() {
 /// `normal_pre_ready_exit_records_real_cause_and_fails_transient_startup`:
 /// before its initial readiness a Transient child stopping with `Shutdown`
 /// fails the start too.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn shutdown_pre_ready_exit_fails_transient_startup() {
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("shutdown-start-exit", 1).unwrap();
@@ -893,7 +893,7 @@ async fn shutdown_pre_ready_exit_fails_transient_startup() {
 /// with `max_restarts` 3 a Transient child whose replacements always stop
 /// before readiness gets exactly three replacements, then the supervisor
 /// fails with an exhausted budget.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn failed_replacements_exhaust_the_restart_budget_exactly() {
     for reason in [ExitReason::Normal, ExitReason::Shutdown] {
         let system = ActorSystem::new().unwrap();
@@ -930,7 +930,7 @@ async fn failed_replacements_exhaust_the_restart_budget_exactly() {
     }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn disabled_retries_fail_without_waiting_for_a_long_backoff() {
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("no-retries", 1).unwrap();
@@ -1026,7 +1026,10 @@ async fn supervisor_report_deadline_signals_remaining_siblings() {
     let actor = first.current().unwrap();
     let report = supervisor.shutdown(Duration::from_millis(20)).await;
     assert!(!report.complete);
-    spawned_rt::tasks::timeout(LIMIT, entered).await.unwrap().unwrap();
+    spawned_rt::tasks::timeout(LIMIT, entered)
+        .await
+        .unwrap()
+        .unwrap();
     // The first child must stop while the last one is still held, so the
     // bound is a hang detector, not a latency budget.
     assert_eq!(
@@ -1324,7 +1327,7 @@ async fn owned_registration_is_released_before_the_replacement_registers() {
 /// `FactoryContext::cancelled` stays pending while construction is live: a
 /// factory that waits on it never produces an actor, so its startup limit
 /// fails the tree instead of the factory finishing early.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn factory_cancelled_waits_for_construction_cancellation() {
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("factory-cancelled", 1).unwrap();
@@ -1337,14 +1340,16 @@ async fn factory_cancelled_waits_for_construction_cancellation() {
         .startup_timeout(Duration::from_millis(50)),
     )
     .unwrap();
-    let started = tokio::time::timeout(LIMIT, tree.start()).await.unwrap();
+    let started = spawned_rt::tasks::timeout(LIMIT, tree.start())
+        .await
+        .unwrap();
     assert!(started.is_err(), "factory finished before cancellation");
     assert!(system.shutdown(LIMIT).await.complete);
 }
 
 /// In a cohort strategy the failed child's backoff races only a superseding
 /// recovery round; with none pending it must sleep the full delay.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn one_for_all_restart_waits_for_its_backoff() {
     use spawned_concurrency::supervision::SupervisorStrategy;
     let system = ActorSystem::new().unwrap();
