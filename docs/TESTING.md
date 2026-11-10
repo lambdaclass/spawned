@@ -412,13 +412,15 @@ framework, tokio and libtest threads all get that stack, and the client is
 driven from a `std::thread` with the same `stack_size`. An overflow aborts the
 child and fails the parent.
 
-Budgets are about 1.5x the measured minimum (aarch64-apple-darwin, debug):
-104 KiB for the request chains (minimum 68), 80 KiB for supervision (minimum
-52) and 32 KiB for threads mode (minimum 20). Release minimums are at the
-platform floor (8 to 20 KiB). The async chain does not grow with depth, since
-each hop is its own task; the deepest single poll on a group worker sets the
-minimum. Linux aarch64 cannot go below glibc's 128 KiB thread minimum, so
-there the test only guards against gross regressions. Re-measure with:
+Budgets are about 1.5x the measured debug minimum. aarch64-apple-darwin: 104
+KiB for the request chains (minimum 68), 80 KiB for supervision (52) and 32
+KiB for threads mode (20); release minimums are 8 to 20 KiB. x86_64 Linux: 132
+KiB for the chains (84 to 88), 120 KiB for supervision (80) and 68 KiB for
+threads mode (44); release chains need 28 KiB. The async chain does not grow
+with depth, since each hop is its own task; the deepest single poll on a group
+worker sets the minimum. Linux aarch64 cannot go below glibc's 128 KiB thread
+minimum, so there the test only guards against gross regressions. The table
+with all numbers is at the top of `stack_budget.rs`. Re-measure with:
 
 ```sh
 cargo test -p spawned-concurrency --test stack_budget -- --ignored probe --nocapture

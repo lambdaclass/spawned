@@ -16,17 +16,24 @@
 //! Minimum passing stack in KiB, depth 4, 1 KiB inline payload. The async
 //! chain does not grow with depth (each hop is its own task; measured equal at
 //! depths 1, 16 and 64), so the budget bounds the deepest single poll: a group
-//! worker (`spawned-stack`) or the client thread overflows first. Release
-//! minimums sit at the platform floor (aarch64-apple-darwin, Rust 1.98):
+//! worker (`spawned-stack`) or the client thread overflows first.
 //!
-//! scenario,debug_min_kib,release_min_kib,debug_budget_kib,release_budget_kib
-//! chain_async_group,68,8,104,16
-//! chain_thread_group,68,8,104,16
-//! chain_ambient,68,8,104,16
-//! supervisor_restart_shutdown,52,20,80,32
-//! chain_threads,20,8,32,16
+//! target,scenario,debug_min_kib,release_min_kib,debug_budget_kib,release_budget_kib
+//! aarch64-apple-darwin (Rust 1.98),chain_async_group,68,8,104,16
+//! aarch64-apple-darwin (Rust 1.98),chain_thread_group,68,8,104,16
+//! aarch64-apple-darwin (Rust 1.98),chain_ambient,68,8,104,16
+//! aarch64-apple-darwin (Rust 1.98),supervisor_restart_shutdown,52,20,80,32
+//! aarch64-apple-darwin (Rust 1.98),chain_threads,20,8,32,16
+//! x86_64-linux-gnu (Rust 1.94),chain_async_group,88,28,132,44
+//! x86_64-linux-gnu (Rust 1.94),chain_thread_group,84,28,132,44
+//! x86_64-linux-gnu (Rust 1.94),chain_ambient,88,28,132,44
+//! x86_64-linux-gnu (Rust 1.94),supervisor_restart_shutdown,80,8,120,16
+//! x86_64-linux-gnu (Rust 1.94),chain_threads,44,8,68,16
 //!
-//! `--features metrics` measures the same debug minimums.
+//! An 8 KiB minimum is the probe's floor (the platform rounds up). On
+//! aarch64-linux glibc's 128 KiB thread minimum hides every scenario, so the
+//! larger x86_64 budgets apply there and to other targets. `--features
+//! metrics` measures the same debug minimums on macOS.
 #[path = "support/drop_subprocess.rs"]
 mod subprocess;
 
@@ -350,11 +357,15 @@ fn scenarios() -> Vec<Scenario> {
 
 /// Budget in KiB, ~1.5x the measured minimum (see the table above).
 fn budget_kib(scenario: &str) -> usize {
-    let (debug, release) = match scenario {
-        "chain_async_group" | "chain_thread_group" | "chain_ambient" => (104, 16),
-        "supervisor_restart_shutdown" => (80, 32),
-        "chain_threads" => (32, 16),
-        other => panic!("no budget for {other}"),
+    let mac = cfg!(all(target_os = "macos", target_arch = "aarch64"));
+    let (debug, release) = match (scenario, mac) {
+        ("chain_async_group" | "chain_thread_group" | "chain_ambient", true) => (104, 16),
+        ("chain_async_group" | "chain_thread_group" | "chain_ambient", false) => (132, 44),
+        ("supervisor_restart_shutdown", true) => (80, 32),
+        ("supervisor_restart_shutdown", false) => (120, 32),
+        ("chain_threads", true) => (32, 16),
+        ("chain_threads", false) => (68, 16),
+        (other, _) => panic!("no budget for {other}"),
     };
     if cfg!(debug_assertions) {
         debug
