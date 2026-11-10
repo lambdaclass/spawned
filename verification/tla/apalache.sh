@@ -61,11 +61,13 @@ check() {
   fi
 }
 
-prove() {  # prove DIR MODULE PREFIX PROBES...
-  local dir="$1" module="$2" prefix="$3"; shift 3
+prove() {  # prove DIR MODULE PREFIX ACTIONS(yes|no) PROBES...
+  local dir="$1" module="$2" prefix="$3" actions="$4"; shift 4
   check "$prefix init"    holds "$dir" "$module" Init   IndInv      0
   check "$prefix step"    holds "$dir" "$module" IndInv IndInv      1
-  check "$prefix actions" holds "$dir" "$module" IndInv ActionProps 1
+  if [[ "$actions" == yes ]]; then
+    check "$prefix actions" holds "$dir" "$module" IndInv ActionProps 1
+  fi
   local probe
   for probe in "$@"; do
     check "$prefix probe $probe" violated "$dir" "$module" IndInv "$probe" 1
@@ -102,7 +104,7 @@ for model in $models; do
             MCSupervisionInd.tla >"$module.tla"
       fi
       echo "== Apalache $module ($(grep -E '^OVERRIDE_(N|MaxRestarts) ' "$module.tla" | tr '\n' ' '))"
-      prove "$work" "$module" Supervision NoDeepRunningState NoMidShutdownState NoRestartStep
+      prove "$work" "$module" Supervision yes NoDeepRunningState NoMidShutdownState NoRestartStep
       if [[ "$negative" == 1 ]]; then
         # Each removes one guard of Supervision.tla; the comment names the
         # property whose induction must break.
@@ -135,9 +137,23 @@ for model in $models; do
       fi
       ;;
     Cohorts|Nested)
-      if [[ -f "MC${model}Ind.tla" ]]; then
-        echo "== Apalache MC${model}Ind"
-        prove "$work" "MC${model}Ind" "$model"
+      module="MC${model}Ind"
+      if [[ "$model" == Cohorts ]]; then
+        probes=NoMidRoundState faults="Selection Cleanup Retirement Closed"
+      else
+        probes=NoFinishedSubtree faults="Join Closed"
+      fi
+      echo "== Apalache $module ($(grep -E '^OVERRIDE_' "$module.tla" | grep -v Fault | tr '\n' ' '))"
+      # Their safety properties are state invariants over history flags
+      # (badBarrier, badJoin, ...), so there is no separate action check.
+      prove "$work" "$module" "$model" no $probes
+      if [[ "$negative" == 1 ]]; then
+        # The model's own Fault mutations (as in negative_checks.py), each
+        # removing one guard: induction must fail for every one.
+        for fault in $faults; do
+          mutate "$module" "$fault" "$module.tla" \
+            "s/OVERRIDE_Fault == \"None\"/OVERRIDE_Fault == \"$fault\"/" IndInv
+        done
       fi
       ;;
     *) echo "unknown model $model" >&2; exit 2 ;;

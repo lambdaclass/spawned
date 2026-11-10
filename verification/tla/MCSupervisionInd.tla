@@ -8,8 +8,8 @@ EXTENDS SupervisionInd
 
 \* Apalache replaces constant C by OVERRIDE_C (ranges like 1..N must be
 \* constant); ConstInit then picks Mode nondeterministically.
-OVERRIDE_N == 3
-OVERRIDE_MaxRestarts == 3
+OVERRIDE_N == 5
+OVERRIDE_MaxRestarts == 4
 OVERRIDE_MaxGen == 1
 
 ConstInit == Mode \in [Children -> Modes]

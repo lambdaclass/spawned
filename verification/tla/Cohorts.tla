@@ -2,7 +2,23 @@
 (* Coordinator policy and actual generation ownership. Backoff durations, *)
 (* handlers and retry budgets are abstracted; Supervision covers policy.   *)
 EXTENDS Naturals, FiniteSets, Sequences, TLC
-CONSTANTS N, Mode, Strategy, MaxGen, MaxRounds, Fault
+(* `@type:` comments are Apalache annotations (CohortsInd.tla); TLC       *)
+(* ignores them. Integer ranges with a state-dependent bound are written   *)
+(* as comparisons (`1 <= r /\ r <= s.epoch` for `r \in 1..s.epoch`), which *)
+(* is the same predicate for integers and lets Apalache handle them.       *)
+CONSTANTS
+ \* @type: Int;
+ N,
+ \* @type: Int -> Str;
+ Mode,
+ \* @type: Str;
+ Strategy,
+ \* @type: Int;
+ MaxGen,
+ \* @type: Int;
+ MaxRounds,
+ \* @type: Str;
+ Fault
 Children == 1..N
 Epochs == 0..MaxRounds
 ExpectedStart(c) == IF Strategy = "OneForAll" THEN 1 ELSE c
@@ -10,7 +26,18 @@ Minimum(xs) == CHOOSE x \in xs : \A y \in xs : x <= y
 Maximum(xs) == CHOOSE x \in xs : \A y \in xs : x >= y
 ASSUME Strategy \in {"OneForAll", "RestForOne"}
 ASSUME Mode \in [Children -> {"Permanent", "Transient", "Temporary"}]
-VARIABLE s
+\* @typeAlias: cohortState = { open: Bool, initial: Set(Int),
+\*   committed: Bool, phase: Str, epoch: Int, origin: Int, start: Int,
+\*   pending: Set(Int), covered: Int -> Int, assigned: Int -> Int,
+\*   scanned: Set(Int), affected: Set(Int), stopped: Set(Int),
+\*   clean: Set(Int), resumed: Set(Int), ack: Set(Int), terminal: Set(Int),
+\*   gen: Int -> Int, live: Int -> Set(Int), published: Int -> Int,
+\*   badBarrier: Bool, badClosed: Bool, badTerminal: Bool };
+CohortTypeAliases == TRUE
+VARIABLE
+ \* @type: $cohortState;
+ s
+\* @type: <<$cohortState>>;
 vars == <<s>>
 Init ==
  s = [open |-> TRUE, initial |-> {}, committed |-> FALSE,
@@ -21,10 +48,10 @@ Init ==
       ack |-> {}, terminal |-> {}, gen |-> [c \in Children |-> 0],
       live |-> [c \in Children |-> {}], published |-> [c \in Children |-> 0],
       badBarrier |-> FALSE, badClosed |-> FALSE, badTerminal |-> FALSE]
-Range == s.start..N
+Range == {j \in 0..N : s.start <= j}   \* = s.start..N, since start \in 0..N
 Active == Children \ s.terminal
 CRequest(c,r,x) ==
- /\ s.open /\ s.committed /\ c \in Children /\ r \in 0..s.assigned[c]
+ /\ s.open /\ s.committed /\ c \in Children /\ 0 <= r /\ r <= s.assigned[c]
  /\ s.gen[c] > 0 /\ s.live[c] = {} /\ Mode[c] # "Temporary"
  /\ x = IF r >= s.covered[c] THEN "true" ELSE "false"
  /\ s' = [s EXCEPT !.pending = IF x = "true" THEN @ \cup {c} ELSE @]
@@ -53,7 +80,7 @@ CStop(c,r) ==
  /\ c \notin s.stopped
  /\ s' = [s EXCEPT !.stopped = @ \cup {c}]
 CClean(c,r) ==
- /\ c \in Children /\ r \in 1..s.epoch
+ /\ c \in Children /\ 1 <= r /\ r <= s.epoch
  /\ IF r < s.epoch THEN s' = s
     ELSE /\ c \in s.stopped /\ s.live[c] = {}
          /\ s' = [s EXCEPT !.clean = @ \cup {c}]
@@ -88,7 +115,7 @@ CRetire(c,r) ==
  /\ ~s.open \/ r = s.assigned[c]
  /\ s' = [s EXCEPT !.terminal = @ \cup {c}]
 CAck(c,r) ==
- /\ c \in Children /\ r \in 1..s.epoch
+ /\ c \in Children /\ 1 <= r /\ r <= s.epoch
  /\ IF r < s.epoch THEN s' = s
     ELSE /\ c \in s.resumed
          /\ (s.published[c] = s.gen[c] /\ s.gen[c] > 0) \/ c \in s.terminal
