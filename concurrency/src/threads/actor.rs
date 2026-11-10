@@ -1200,9 +1200,8 @@ mod tests {
                 reply: crate::reply::PendingReply<'_, ()>,
                 ctx: &Context<Self>,
             ) {
-                
-                    ctx.stop();
-reply.reply(());
+                ctx.stop();
+                reply.reply(());
             }
         }
 
@@ -1231,9 +1230,8 @@ reply.reply(());
                 reply: crate::reply::PendingReply<'_, ()>,
                 ctx: &Context<Self>,
             ) {
-                
-                    ctx.stop();
-reply.reply(());
+                ctx.stop();
+                reply.reply(());
             }
         }
 
@@ -1343,9 +1341,8 @@ reply.reply(());
                 reply: crate::reply::PendingReply<'_, ()>,
                 ctx: &Context<Self>,
             ) {
-                
-                    ctx.stop();
-reply.reply(());
+                ctx.stop();
+                reply.reply(());
             }
         }
 
@@ -1486,9 +1483,8 @@ reply.reply(());
             reply: crate::reply::PendingReply<'_, ()>,
             ctx: &Context<Self>,
         ) {
-            
-                ctx.demonitor(msg.0);
-reply.reply(());
+            ctx.demonitor(msg.0);
+            reply.reply(());
         }
     }
 
@@ -1499,9 +1495,8 @@ reply.reply(());
             reply: crate::reply::PendingReply<'_, ()>,
             _ctx: &Context<Self>,
         ) {
-            
-                self.downs.lock().unwrap().push(msg);
-reply.reply(());
+            self.downs.lock().unwrap().push(msg);
+            reply.reply(());
         }
     }
 
@@ -1671,9 +1666,8 @@ reply.reply(());
             reply: crate::reply::PendingReply<'_, ()>,
             ctx: &Context<Self>,
         ) {
-            
-                ctx.link(&msg.0);
-reply.reply(());
+            ctx.link(&msg.0);
+            reply.reply(());
         }
     }
 
@@ -1929,9 +1923,8 @@ mod idle_stop_regression {
             reply: crate::reply::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
-            
-                self.0.fetch_add(1, Ordering::SeqCst);
-reply.reply(());
+            self.0.fetch_add(1, Ordering::SeqCst);
+            reply.reply(());
         }
     }
     #[test]
@@ -2176,11 +2169,10 @@ mod stop_wakeup_regression {
             reply: crate::reply::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
-            
-                self.handled.fetch_add(1, Ordering::SeqCst);
-                let _ = self.entered.send(());
-                self.release.recv_timeout(Duration::from_secs(5)).unwrap();
-reply.reply(());
+            self.handled.fetch_add(1, Ordering::SeqCst);
+            let _ = self.entered.send(());
+            self.release.recv_timeout(Duration::from_secs(5)).unwrap();
+            reply.reply(());
         }
     }
 
@@ -2266,10 +2258,9 @@ mod api_coverage {
             reply: crate::reply::PendingReply<'_, ()>,
             ctx: &Context<Self>,
         ) {
-            
-                let _ = msg.0.recv_timeout(WAIT);
-                ctx.stop();
-reply.reply(());
+            let _ = msg.0.recv_timeout(WAIT);
+            ctx.stop();
+            reply.reply(());
         }
     }
     impl Handler<OwnRecipient> for Echo {
@@ -2385,9 +2376,8 @@ reply.reply(());
             reply: crate::reply::PendingReply<'_, ()>,
             ctx: &Context<Self>,
         ) {
-            
-                ctx.unlink(&msg.0);
-reply.reply(());
+            ctx.unlink(&msg.0);
+            reply.reply(());
         }
     }
 

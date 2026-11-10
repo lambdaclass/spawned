@@ -231,13 +231,12 @@ mod tasks_node {
             reply: spawned_concurrency::reply::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
-            
-                self.state.log.push(Obs::Down {
-                    observer: self.state.index,
-                    monitor: down.monitor_ref,
-                    reason: down.reason,
-                });
-reply.reply(());
+            self.state.log.push(Obs::Down {
+                observer: self.state.index,
+                monitor: down.monitor_ref,
+                reason: down.reason,
+            });
+            reply.reply(());
         }
     }
     impl Handler<Tick> for Node {
@@ -247,16 +246,15 @@ reply.reply(());
             reply: spawned_concurrency::reply::PendingReply<'_, ()>,
             ctx: &Context<Self>,
         ) {
-            
-                self.state.ticks_seen += 1;
-                self.state.log.push(Obs::Tick {
-                    node: self.state.index,
-                    n,
-                });
-                if self.state.timers_done() {
-                    ctx.stop();
-                }
-reply.reply(());
+            self.state.ticks_seen += 1;
+            self.state.log.push(Obs::Tick {
+                node: self.state.index,
+                n,
+            });
+            if self.state.timers_done() {
+                ctx.stop();
+            }
+            reply.reply(());
         }
     }
     impl Handler<Pulse> for Node {
@@ -394,13 +392,12 @@ mod threads_node {
             reply: spawned_concurrency::reply::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
-            
-                self.state.log.push(Obs::Down {
-                    observer: self.state.index,
-                    monitor: down.monitor_ref,
-                    reason: down.reason,
-                });
-reply.reply(());
+            self.state.log.push(Obs::Down {
+                observer: self.state.index,
+                monitor: down.monitor_ref,
+                reason: down.reason,
+            });
+            reply.reply(());
         }
     }
     impl Handler<Tick> for Node {
@@ -410,16 +407,15 @@ reply.reply(());
             reply: spawned_concurrency::reply::PendingReply<'_, ()>,
             ctx: &Context<Self>,
         ) {
-            
-                self.state.ticks_seen += 1;
-                self.state.log.push(Obs::Tick {
-                    node: self.state.index,
-                    n,
-                });
-                if self.state.timers_done() {
-                    ctx.stop();
-                }
-reply.reply(());
+            self.state.ticks_seen += 1;
+            self.state.log.push(Obs::Tick {
+                node: self.state.index,
+                n,
+            });
+            if self.state.timers_done() {
+                ctx.stop();
+            }
+            reply.reply(());
         }
     }
     impl Handler<Pulse> for Node {
@@ -1353,11 +1349,10 @@ mod early_stop {
             reply: spawned_concurrency::reply::PendingReply<'_, ()>,
             _: &spawned_concurrency::tasks::Context<Self>,
         ) {
-            
-                // Deliberately blocks the only async worker of the group.
-                let _ = block.1.send(());
-                let _ = block.0.lock().unwrap().recv_timeout(LIMIT);
-reply.reply(());
+            // Deliberately blocks the only async worker of the group.
+            let _ = block.1.send(());
+            let _ = block.0.lock().unwrap().recv_timeout(LIMIT);
+            reply.reply(());
         }
     }
     impl spawned_concurrency::threads::Actor for Hooks {

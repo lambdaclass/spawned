@@ -236,15 +236,14 @@ impl Handler<Wire> for Node {
         reply: spawned_concurrency::reply::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
-        
-            if std::env::var("SPAWNED_EXPERIMENT_SCHEDULER").as_deref() == Ok("sharded") {
-                assert_eq!(
-                    std::thread::current().name().unwrap(),
-                    format!("spawned-shard-{}", msg.expected_shard)
-                );
-            }
-            self.children = msg.children;
-reply.reply(());
+        if std::env::var("SPAWNED_EXPERIMENT_SCHEDULER").as_deref() == Ok("sharded") {
+            assert_eq!(
+                std::thread::current().name().unwrap(),
+                format!("spawned-shard-{}", msg.expected_shard)
+            );
+        }
+        self.children = msg.children;
+        reply.reply(());
     }
 }
 #[inline(never)]

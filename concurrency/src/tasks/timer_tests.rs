@@ -52,9 +52,8 @@ impl Handler<Inc> for Repeater {
         reply: crate::reply::PendingReply<'_, ()>,
         _ctx: &Context<Self>,
     ) {
-        
-            self.count += 1;
-reply.reply(());
+        self.count += 1;
+        reply.reply(());
     }
 }
 
@@ -65,11 +64,10 @@ impl Handler<StopTimer> for Repeater {
         reply: crate::reply::PendingReply<'_, ()>,
         _ctx: &Context<Self>,
     ) {
-        
-            if let Some(ct) = self.cancellation_token.clone() {
-                ct.cancel();
-            }
-reply.reply(());
+        if let Some(ct) = self.cancellation_token.clone() {
+            ct.cancel();
+        }
+        reply.reply(());
     }
 }
 
@@ -147,9 +145,8 @@ impl Handler<Inc> for Delayed {
         reply: crate::reply::PendingReply<'_, ()>,
         _ctx: &Context<Self>,
     ) {
-        
-            self.count += 1;
-reply.reply(());
+        self.count += 1;
+        reply.reply(());
     }
 }
 

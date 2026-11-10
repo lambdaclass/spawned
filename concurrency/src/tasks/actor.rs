@@ -1837,11 +1837,10 @@ mod tests {
                     reply: crate::reply::PendingReply<'_, ()>,
                     _ctx: &Context<Self>,
                 ) {
-                    
-                        // Never replies, so the timeout is the only possible outcome
-                        // however late the runtime polls it.
-                        std::future::pending::<()>().await;
-reply.reply(());
+                    // Never replies, so the timeout is the only possible outcome
+                    // however late the runtime polls it.
+                    std::future::pending::<()>().await;
+                    reply.reply(());
                 }
             }
 
@@ -1894,9 +1893,8 @@ reply.reply(());
             reply: crate::reply::PendingReply<'_, ()>,
             ctx: &Context<Self>,
         ) {
-            
-                ctx.stop();
-reply.reply(());
+            ctx.stop();
+            reply.reply(());
         }
     }
 
@@ -1941,9 +1939,8 @@ reply.reply(());
             reply: crate::reply::PendingReply<'_, ()>,
             ctx: &Context<Self>,
         ) {
-            
-                ctx.stop();
-reply.reply(());
+            ctx.stop();
+            reply.reply(());
         }
     }
 
@@ -1954,10 +1951,9 @@ reply.reply(());
             reply: crate::reply::PendingReply<'_, ()>,
             ctx: &Context<Self>,
         ) {
-            
-                self.hold();
-                ctx.stop();
-reply.reply(());
+            self.hold();
+            ctx.stop();
+            reply.reply(());
         }
     }
 
@@ -2036,11 +2032,10 @@ reply.reply(());
             reply: crate::reply::PendingReply<'_, ()>,
             ctx: &Context<Self>,
         ) {
-            
-                rt::sleep(Duration::from_millis(20)).await;
-                thread::sleep(Duration::from_secs(2));
-                ctx.stop();
-reply.reply(());
+            rt::sleep(Duration::from_millis(20)).await;
+            thread::sleep(Duration::from_secs(2));
+            ctx.stop();
+            reply.reply(());
         }
     }
 
@@ -2088,11 +2083,10 @@ reply.reply(());
             reply: crate::reply::PendingReply<'_, ()>,
             ctx: &Context<Self>,
         ) {
-            
-                self.count += 1;
-                use crate::tasks::send_after;
-                send_after(Duration::from_millis(100), ctx.clone(), IncrementWell);
-reply.reply(());
+            self.count += 1;
+            use crate::tasks::send_after;
+            send_after(Duration::from_millis(100), ctx.clone(), IncrementWell);
+            reply.reply(());
         }
     }
 
@@ -2265,9 +2259,8 @@ reply.reply(());
                     reply: crate::reply::PendingReply<'_, ()>,
                     ctx: &Context<Self>,
                 ) {
-                    
-                        ctx.stop();
-reply.reply(());
+                    ctx.stop();
+                    reply.reply(());
                 }
             }
 
@@ -2440,9 +2433,8 @@ reply.reply(());
             reply: crate::reply::PendingReply<'_, ()>,
             ctx: &Context<Self>,
         ) {
-            
-                ctx.demonitor(msg.0);
-reply.reply(());
+            ctx.demonitor(msg.0);
+            reply.reply(());
         }
     }
 
@@ -2453,9 +2445,8 @@ reply.reply(());
             reply: crate::reply::PendingReply<'_, ()>,
             _ctx: &Context<Self>,
         ) {
-            
-                self.downs.lock().unwrap().push(msg);
-reply.reply(());
+            self.downs.lock().unwrap().push(msg);
+            reply.reply(());
         }
     }
 
@@ -2600,12 +2591,14 @@ reply.reply(());
                 reply: crate::reply::PendingReply<'_, usize>,
                 ctx: &Context<Self>,
             ) {
-                reply.reply(ctx.shared
+                reply.reply(
+                    ctx.shared
                         .monitors
                         .lock()
                         .unwrap()
                         .as_ref()
-                        .map_or(0, HashMap::len));
+                        .map_or(0, HashMap::len),
+                );
             }
         }
 
@@ -2748,9 +2741,8 @@ reply.reply(());
             reply: crate::reply::PendingReply<'_, ()>,
             ctx: &Context<Self>,
         ) {
-            
-                ctx.link(&msg.0);
-reply.reply(());
+            ctx.link(&msg.0);
+            reply.reply(());
         }
     }
 
@@ -2947,9 +2939,8 @@ reply.reply(());
                     reply: crate::reply::PendingReply<'_, ()>,
                     ctx: &Context<Self>,
                 ) {
-                    
-                        ctx.unlink(&msg.0);
-reply.reply(());
+                    ctx.unlink(&msg.0);
+                    reply.reply(());
                 }
             }
             b.request(UnlinkFrom(a.child_handle())).await.unwrap();
@@ -3332,9 +3323,8 @@ mod turn_regressions {
                 reply: crate::reply::PendingReply<'_, ()>,
                 _: &Context<Self>,
             ) {
-                
-                    self.0.fetch_add(1, Ordering::SeqCst);
-reply.reply(());
+                self.0.fetch_add(1, Ordering::SeqCst);
+                reply.reply(());
             }
         }
         rt::Runtime::new().unwrap().block_on(async {
@@ -3407,9 +3397,8 @@ mod idle_stop_regression {
             reply: crate::reply::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
-            
-                self.0.fetch_add(1, Ordering::SeqCst);
-reply.reply(());
+            self.0.fetch_add(1, Ordering::SeqCst);
+            reply.reply(());
         }
     }
     #[test]
@@ -3509,10 +3498,9 @@ mod api_coverage {
             reply: crate::reply::PendingReply<'_, ()>,
             ctx: &Context<Self>,
         ) {
-            
-                let _ = msg.0.await;
-                ctx.stop();
-reply.reply(());
+            let _ = msg.0.await;
+            ctx.stop();
+            reply.reply(());
         }
     }
     impl Handler<OwnRecipient> for Echo {

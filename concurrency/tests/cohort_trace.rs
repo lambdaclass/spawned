@@ -21,9 +21,7 @@ impl Handler<Crash> for Worker {
         _reply: spawned_concurrency::reply::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
-        
-            panic!("trace cohort failure");
-
+        panic!("trace cohort failure");
     }
 }
 fn write_trace(name: &str, id: u64, strategy: SupervisorStrategy, modes: &[&str]) {
@@ -281,9 +279,7 @@ impl Handler<Crash> for MaybeStop {
         _reply: spawned_concurrency::reply::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
-        
-            panic!("trace cohort failure");
-
+        panic!("trace cohort failure");
     }
 }
 /// A replacement stopping before readiness inside a round requests a new

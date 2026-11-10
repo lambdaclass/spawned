@@ -44,21 +44,21 @@ mod tasks {
             ctx: &Context<Self>,
         ) {
             reply.reply(match command {
-                    Command::Work(id) => {
-                        self.0
-                            .processed
-                            .lock()
-                            .unwrap_or_else(|p| p.into_inner())
-                            .push(id);
-                        Reply::Work(id)
-                    }
-                    Command::Watch(target) => Reply::Watch(ctx.monitor(&target)),
-                    Command::Unwatch(id) => {
-                        ctx.demonitor(id);
-                        Reply::Unwatched
-                    }
-                    Command::Boom => panic!("scenario injected panic"),
-                });
+                Command::Work(id) => {
+                    self.0
+                        .processed
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .push(id);
+                    Reply::Work(id)
+                }
+                Command::Watch(target) => Reply::Watch(ctx.monitor(&target)),
+                Command::Unwatch(id) => {
+                    ctx.demonitor(id);
+                    Reply::Unwatched
+                }
+                Command::Boom => panic!("scenario injected panic"),
+            });
         }
     }
     impl Handler<Down> for TestActor {
@@ -68,9 +68,8 @@ mod tasks {
             reply: spawned_concurrency::reply::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
-            
-                let _ = self.0.events.send(event);
-reply.reply(());
+            let _ = self.0.events.send(event);
+            reply.reply(());
         }
     }
 }
@@ -88,21 +87,21 @@ mod threads {
             ctx: &Context<Self>,
         ) {
             reply.reply(match command {
-                    Command::Work(id) => {
-                        self.0
-                            .processed
-                            .lock()
-                            .unwrap_or_else(|p| p.into_inner())
-                            .push(id);
-                        Reply::Work(id)
-                    }
-                    Command::Watch(target) => Reply::Watch(ctx.monitor(&target)),
-                    Command::Unwatch(id) => {
-                        ctx.demonitor(id);
-                        Reply::Unwatched
-                    }
-                    Command::Boom => panic!("scenario injected panic"),
-                });
+                Command::Work(id) => {
+                    self.0
+                        .processed
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .push(id);
+                    Reply::Work(id)
+                }
+                Command::Watch(target) => Reply::Watch(ctx.monitor(&target)),
+                Command::Unwatch(id) => {
+                    ctx.demonitor(id);
+                    Reply::Unwatched
+                }
+                Command::Boom => panic!("scenario injected panic"),
+            });
         }
     }
     impl Handler<Down> for TestActor {
@@ -112,9 +111,8 @@ mod threads {
             reply: spawned_concurrency::reply::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
-            
-                let _ = self.0.events.send(event);
-reply.reply(());
+            let _ = self.0.events.send(event);
+            reply.reply(());
         }
     }
 }

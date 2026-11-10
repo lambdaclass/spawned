@@ -64,7 +64,12 @@ mod tasks_mode {
         type Result = usize;
     }
     impl Handler<Outstanding> for Owner {
-        async fn handle(&mut self, _: Outstanding, reply: PendingReply<'_, usize>, ctx: &Context<Self>) {
+        async fn handle(
+            &mut self,
+            _: Outstanding,
+            reply: PendingReply<'_, usize>,
+            ctx: &Context<Self>,
+        ) {
             reply.reply(ctx.deferred_outstanding());
         }
     }
@@ -135,14 +140,18 @@ mod tasks_mode {
                 Start::CancelAfterSpawn => {
                     let (open, gate) = oneshot::channel::<()>();
                     self.gates.push(open);
-                    ctx.pipe(async move { gate.await.is_ok() }, |o| describe("cancelled", o))
-                        .map(|job| job.cancel())
-                        .map_err(|e| e.to_string())
+                    ctx.pipe(async move { gate.await.is_ok() }, |o| {
+                        describe("cancelled", o)
+                    })
+                    .map(|job| job.cancel())
+                    .map_err(|e| e.to_string())
                 }
                 Start::Blocking(v) => ctx
-                    .pipe_blocking_with(JobOptions::default(), move |_| v + 1, |o| {
-                        describe("blocking", o)
-                    })
+                    .pipe_blocking_with(
+                        JobOptions::default(),
+                        move |_| v + 1,
+                        |o| describe("blocking", o),
+                    )
                     .map(drop)
                     .map_err(|e| e.to_string()),
                 Start::NativeBudget => {
@@ -154,9 +163,11 @@ mod tasks_mode {
                         },
                         |o| describe("first", o),
                     );
-                    let second = ctx.pipe_blocking_with(JobOptions::default(), |_| (), |o| {
-                        describe("second", o)
-                    });
+                    let second = ctx.pipe_blocking_with(
+                        JobOptions::default(),
+                        |_| (),
+                        |o| describe("second", o),
+                    );
                     drop(hold);
                     match (&first, &second) {
                         (Ok(_), Err(e)) if matches!(e.kind, PipeErrorKind::NativeBudget) => Ok(()),
@@ -228,7 +239,11 @@ mod tasks_mode {
         let (actor, log) = start();
         actor.request(Start::Keyed("old")).await.unwrap().unwrap();
         actor.request(Start::Keyed("new")).await.unwrap().unwrap();
-        actor.request(Start::CancelAfterSpawn).await.unwrap().unwrap();
+        actor
+            .request(Start::CancelAfterSpawn)
+            .await
+            .unwrap()
+            .unwrap();
         actor.request(Open).await.unwrap();
         // Only the replacing job reports; the replaced and cancelled ones are
         // fenced even though their work finished.
@@ -269,7 +284,11 @@ mod tasks_mode {
     async fn pipe_rejects_at_the_credit_bound() {
         let (actor, _) = start();
         for _ in 0..4 {
-            actor.request(Start::Gated("g", None)).await.unwrap().unwrap();
+            actor
+                .request(Start::Gated("g", None))
+                .await
+                .unwrap()
+                .unwrap();
         }
         let refused = actor.request(Start::Gated("g", None)).await.unwrap();
         assert!(refused.unwrap_err().contains("deferred credits"));
@@ -289,7 +308,14 @@ mod tasks_mode {
         // Emits are FIFO and the terminal message is last.
         assert_eq!(
             entries(&actor, &log, 6).await,
-            ["e:emit:0", "e:emit:1", "e:emit:2", "e:emit:3", "e:emit:4", "e:ok:Ok(5)"]
+            [
+                "e:emit:0",
+                "e:emit:1",
+                "e:emit:2",
+                "e:emit:3",
+                "e:emit:4",
+                "e:ok:Ok(5)"
+            ]
         );
         stop(actor).await;
     }
@@ -335,9 +361,10 @@ mod tasks_mode {
     impl Handler<Route> for Router {
         async fn handle(&mut self, msg: Route, reply: PendingReply<'_, u64>, ctx: &Context<Self>) {
             let Ok(token) = reply.defer() else { return };
-            let downstream = self
-                .backend
-                .request_raw_until(Lookup(msg.0), token.deadline().map_or(Deadline::Never, Deadline::At));
+            let downstream = self.backend.request_raw_until(
+                Lookup(msg.0),
+                token.deadline().map_or(Deadline::Never, Deadline::At),
+            );
             let work = async move {
                 match downstream {
                     Ok(rx) => rx.await,
@@ -360,12 +387,22 @@ mod tasks_mode {
         }
     }
     impl Handler<Ping> for Router {
-        async fn handle(&mut self, _: Ping, reply: PendingReply<'_, &'static str>, _: &Context<Self>) {
+        async fn handle(
+            &mut self,
+            _: Ping,
+            reply: PendingReply<'_, &'static str>,
+            _: &Context<Self>,
+        ) {
             reply.reply("pong");
         }
     }
     impl Handler<Foreign> for Router {
-        async fn handle(&mut self, msg: Foreign, reply: PendingReply<'_, bool>, ctx: &Context<Self>) {
+        async fn handle(
+            &mut self,
+            msg: Foreign,
+            reply: PendingReply<'_, bool>,
+            ctx: &Context<Self>,
+        ) {
             let refused = ctx.pipe_reply(msg.0, async { 1u64 }, |_, token| Delegated {
                 res: JobOutcome::Ok(Ok(0)),
                 token,
@@ -395,7 +432,12 @@ mod tasks_mode {
         }
     }
     impl Handler<Give> for Holder {
-        async fn handle(&mut self, _: Give, reply: PendingReply<'_, Option<ReplyTo<u64>>>, _: &Context<Self>) {
+        async fn handle(
+            &mut self,
+            _: Give,
+            reply: PendingReply<'_, Option<ReplyTo<u64>>>,
+            _: &Context<Self>,
+        ) {
             let token = self.0.take();
             reply.reply(token);
         }
@@ -430,8 +472,16 @@ mod tasks_mode {
         let rx = holder.request_raw_until(Hold, Deadline::Never).unwrap();
         let token = holder.request(Give).await.unwrap().unwrap();
         assert!(router.request(Foreign(token)).await.unwrap());
-        assert_eq!(rx.await.unwrap(), 7, "the refused token came back and was answered");
-        for actor in [router.child_handle(), backend.child_handle(), holder.child_handle()] {
+        assert_eq!(
+            rx.await.unwrap(),
+            7,
+            "the refused token came back and was answered"
+        );
+        for actor in [
+            router.child_handle(),
+            backend.child_handle(),
+            holder.child_handle(),
+        ] {
             actor.stop();
         }
         router.join().await;
@@ -508,7 +558,9 @@ mod threads_mode {
     fn native_jobs_answer_deferred_requests() {
         let log = Arc::new(Log::default());
         let actor: ActorRef<Owner> = Owner { log: log.clone() }.start();
-        let rx = actor.request_raw_until(Compute(7), Deadline::Never).unwrap();
+        let rx = actor
+            .request_raw_until(Compute(7), Deadline::Never)
+            .unwrap();
         assert_eq!(rx.recv().unwrap(), 49);
         assert!(matches!(
             actor.request(Compute(0)),
@@ -516,7 +568,10 @@ mod threads_mode {
         ));
         let entries = log.take();
         assert_eq!(entries[0], "computing 7");
-        assert!(entries.contains(&"panicked zero".to_string()), "{entries:?}");
+        assert!(
+            entries.contains(&"panicked zero".to_string()),
+            "{entries:?}"
+        );
         actor.context().stop();
         actor.join();
     }

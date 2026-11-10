@@ -547,7 +547,10 @@ mod threads_mode {
             .unwrap();
         let began = std::time::Instant::now();
         while actor.request(Outstanding).unwrap() != 0 {
-            assert!(began.elapsed() < Duration::from_secs(5), "token never expired");
+            assert!(
+                began.elapsed() < Duration::from_secs(5),
+                "token never expired"
+            );
             std::thread::sleep(Duration::from_millis(5));
         }
         actor.request(Release(0)).unwrap();

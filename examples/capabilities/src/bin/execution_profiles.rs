@@ -19,9 +19,9 @@ impl Handler<Location> for Worker {
         _: &Context<Self>,
     ) {
         reply.reply((
-                std::thread::current().name().unwrap_or_default().to_owned(),
-                spawned_rt::tasks::affinity::current_cpu().ok(),
-            ));
+            std::thread::current().name().unwrap_or_default().to_owned(),
+            spawned_rt::tasks::affinity::current_cpu().ok(),
+        ));
     }
 }
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]

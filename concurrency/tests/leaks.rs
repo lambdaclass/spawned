@@ -115,9 +115,8 @@ impl threads::Handler<SetPeer<threads::ActorRef<NativeB>>> for NativeA {
         reply: spawned_concurrency::reply::PendingReply<'_, ()>,
         _: &threads::Context<Self>,
     ) {
-        
-            self.peer = Some(msg.0);
-reply.reply(());
+        self.peer = Some(msg.0);
+        reply.reply(());
     }
 }
 impl threads::Handler<SetPeer<threads::ActorRef<NativeA>>> for NativeB {
@@ -127,9 +126,8 @@ impl threads::Handler<SetPeer<threads::ActorRef<NativeA>>> for NativeB {
         reply: spawned_concurrency::reply::PendingReply<'_, ()>,
         _: &threads::Context<Self>,
     ) {
-        
-            self.peer = Some(msg.0);
-reply.reply(());
+        self.peer = Some(msg.0);
+        reply.reply(());
     }
 }
 
@@ -367,10 +365,9 @@ mod async_leaks {
             reply: spawned_concurrency::reply::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
-            
-                self.peer = Some(msg.0 .0);
-                self.recipient = Some(msg.0 .1);
-reply.reply(());
+            self.peer = Some(msg.0 .0);
+            self.recipient = Some(msg.0 .1);
+            reply.reply(());
         }
     }
     impl Handler<SetPeer<(ActorRef<AsyncA>, tasks::Recipient<Ping>)>> for AsyncB {
@@ -380,10 +377,9 @@ reply.reply(());
             reply: spawned_concurrency::reply::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
-            
-                self.peer = Some(msg.0 .0);
-                self.recipient = Some(msg.0 .1);
-reply.reply(());
+            self.peer = Some(msg.0 .0);
+            self.recipient = Some(msg.0 .1);
+            reply.reply(());
         }
     }
 
@@ -690,9 +686,8 @@ mod sim_leaks {
             reply: spawned_concurrency::reply::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
-            
-                self.peer = Some(msg.0);
-reply.reply(());
+            self.peer = Some(msg.0);
+            reply.reply(());
         }
     }
     impl Handler<SetPeer<(tasks::ActorRef<A>, tasks::Recipient<Ping>)>> for B {
@@ -702,9 +697,8 @@ reply.reply(());
             reply: spawned_concurrency::reply::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
-            
-                self.peer = Some(msg.0);
-reply.reply(());
+            self.peer = Some(msg.0);
+            reply.reply(());
         }
     }
 
@@ -841,9 +835,7 @@ reply.reply(());
             _reply: spawned_concurrency::reply::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
-            
-                panic!("injected failure for leak test");
-
+            panic!("injected failure for leak test");
         }
     }
 
@@ -956,9 +948,7 @@ reply.reply(());
             _reply: spawned_concurrency::reply::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
-            
-                panic!("injected failure for leak test");
-
+            panic!("injected failure for leak test");
         }
     }
 }

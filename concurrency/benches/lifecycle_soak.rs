@@ -99,9 +99,7 @@ impl Handler<Crash> for Worker {
         _reply: spawned_concurrency::reply::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
-        
-            panic!("soak injected handler failure");
-
+        panic!("soak injected handler failure");
     }
 }
 struct Watcher {
@@ -120,11 +118,10 @@ impl Handler<Watch> for Watcher {
         reply: spawned_concurrency::reply::PendingReply<'_, ()>,
         ctx: &Context<Self>,
     ) {
-        
-            for (child, panic) in msg.0 {
-                assert!(self.pending.insert(ctx.monitor(&child), panic).is_none());
-            }
-reply.reply(());
+        for (child, panic) in msg.0 {
+            assert!(self.pending.insert(ctx.monitor(&child), panic).is_none());
+        }
+        reply.reply(());
     }
 }
 impl Handler<Down> for Watcher {
@@ -134,17 +131,16 @@ impl Handler<Down> for Watcher {
         reply: spawned_concurrency::reply::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
-        
-            let panic = self
-                .pending
-                .remove(&msg.monitor_ref)
-                .expect("duplicate/unknown monitor notification");
-            assert_eq!(matches!(msg.reason, ExitReason::Panic(_)), panic);
-            if !panic {
-                assert_eq!(msg.reason, ExitReason::Normal);
-            }
-            self.counts.down.fetch_add(1, Ordering::Release);
-reply.reply(());
+        let panic = self
+            .pending
+            .remove(&msg.monitor_ref)
+            .expect("duplicate/unknown monitor notification");
+        assert_eq!(matches!(msg.reason, ExitReason::Panic(_)), panic);
+        if !panic {
+            assert_eq!(msg.reason, ExitReason::Normal);
+        }
+        self.counts.down.fetch_add(1, Ordering::Release);
+        reply.reply(());
     }
 }
 struct Remaining;

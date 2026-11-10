@@ -26,9 +26,7 @@ impl Handler<Crash> for Worker {
         _reply: spawned_concurrency::reply::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
-        
-            panic!("nested trace failure");
-
+        panic!("nested trace failure");
     }
 }
 fn config(strategy: SupervisorStrategy) -> SupervisorConfig {

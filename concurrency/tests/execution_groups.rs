@@ -29,10 +29,12 @@ impl Handler<Ping> for Worker {
         reply: spawned_concurrency::reply::PendingReply<'_, String>,
         _: &Context<Self>,
     ) {
-        reply.reply(std::thread::current()
+        reply.reply(
+            std::thread::current()
                 .name()
                 .unwrap_or_default()
-                .to_string());
+                .to_string(),
+        );
     }
 }
 impl Handler<Down> for Worker {
@@ -356,10 +358,9 @@ impl Handler<Queued> for FailedStartup {
         reply: spawned_concurrency::reply::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
-        
-            self.handled.fetch_add(1, Ordering::SeqCst);
-            drop(msg.0);
-reply.reply(());
+        self.handled.fetch_add(1, Ordering::SeqCst);
+        drop(msg.0);
+        reply.reply(());
     }
 }
 #[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]

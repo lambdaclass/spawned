@@ -32,17 +32,25 @@ impl spawned_concurrency::message::Message for Tick {
 struct Observer(Arc<AtomicUsize>);
 impl Actor for Observer {}
 impl Handler<Down> for Observer {
-    fn handle(&mut self, _: Down, reply: spawned_concurrency::reply::PendingReply<'_, ()>, _: &Context<Self>) {
-        
+    fn handle(
+        &mut self,
+        _: Down,
+        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
         self.0.fetch_add(1, Ordering::SeqCst);
-reply.reply(());
+        reply.reply(());
     }
 }
 impl Handler<Tick> for Observer {
-    fn handle(&mut self, _: Tick, reply: spawned_concurrency::reply::PendingReply<'_, ()>, _: &Context<Self>) {
-        
+    fn handle(
+        &mut self,
+        _: Tick,
+        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
         self.0.fetch_add(1, Ordering::SeqCst);
-reply.reply(());
+        reply.reply(());
     }
 }
 fn main() {

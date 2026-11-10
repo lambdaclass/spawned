@@ -292,16 +292,16 @@ impl JobState {
                 inner.emit_credits -= 1;
                 return Ok(());
             }
-            inner = self
-                .emitters
-                .wait(inner)
-                .unwrap_or_else(|p| p.into_inner());
+            inner = self.emitters.wait(inner).unwrap_or_else(|p| p.into_inner());
         }
     }
 
     /// Emit step 1 (async).
     #[cfg(feature = "async")]
-    pub(crate) fn poll_acquire(&self, cx: &mut std::task::Context<'_>) -> std::task::Poll<Result<(), JobGone>> {
+    pub(crate) fn poll_acquire(
+        &self,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), JobGone>> {
         let mut inner = lock(&self.inner);
         if inner.cancelled || inner.notification != Notification::Pending {
             return std::task::Poll::Ready(Err(JobGone));

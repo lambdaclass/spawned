@@ -42,9 +42,8 @@ impl Handler<Peer> for Peers {
         reply: spawned_concurrency::reply::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
-        
-            self.peers.push(msg.0);
-reply.reply(());
+        self.peers.push(msg.0);
+        reply.reply(());
     }
 }
 impl Handler<Snapshot> for Peers {
@@ -73,9 +72,8 @@ impl Handler<Import> for Importer {
         reply: spawned_concurrency::reply::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
-        
-            self.peers.send(Peer(msg.0)).unwrap();
-reply.reply(());
+        self.peers.send(Peer(msg.0)).unwrap();
+        reply.reply(());
     }
 }
 impl Handler<Fence> for Importer {

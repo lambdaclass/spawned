@@ -201,9 +201,8 @@ mod tasks_actors {
             reply: spawned_concurrency::reply::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
-            
-                self.0.fault(Fault::SendHandler, "injected handler panic");
-reply.reply(());
+            self.0.fault(Fault::SendHandler, "injected handler panic");
+            reply.reply(());
         }
     }
     impl Handler<Ask> for TaskVictim {
@@ -243,9 +242,8 @@ reply.reply(());
             reply: spawned_concurrency::reply::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
-            
-                self.0.gate.wait();
-reply.reply(());
+            self.0.gate.wait();
+            reply.reply(());
         }
     }
     impl Handler<Setup> for TaskVictim {
@@ -274,9 +272,8 @@ reply.reply(());
             reply: spawned_concurrency::reply::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
-            
-                self.0.fault(Fault::DownHandler, "injected Down panic");
-reply.reply(());
+            self.0.fault(Fault::DownHandler, "injected Down panic");
+            reply.reply(());
         }
     }
 
@@ -296,11 +293,10 @@ reply.reply(());
             reply: spawned_concurrency::reply::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
-            
-                self.0
-                    .events
-                    .push(Event::Down(down.monitor_ref, down.reason));
-reply.reply(());
+            self.0
+                .events
+                .push(Event::Down(down.monitor_ref, down.reason));
+            reply.reply(());
         }
     }
     impl Handler<Setup> for TaskObserver {
@@ -360,9 +356,8 @@ mod thread_actors {
             reply: spawned_concurrency::reply::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
-            
-                self.0.fault(Fault::SendHandler, "injected handler panic");
-reply.reply(());
+            self.0.fault(Fault::SendHandler, "injected handler panic");
+            reply.reply(());
         }
     }
     impl Handler<Ask> for ThreadVictim {
@@ -402,9 +397,8 @@ reply.reply(());
             reply: spawned_concurrency::reply::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
-            
-                self.0.gate.wait();
-reply.reply(());
+            self.0.gate.wait();
+            reply.reply(());
         }
     }
     impl Handler<Setup> for ThreadVictim {
@@ -432,9 +426,8 @@ reply.reply(());
             reply: spawned_concurrency::reply::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
-            
-                self.0.fault(Fault::DownHandler, "injected Down panic");
-reply.reply(());
+            self.0.fault(Fault::DownHandler, "injected Down panic");
+            reply.reply(());
         }
     }
 
@@ -454,11 +447,10 @@ reply.reply(());
             reply: spawned_concurrency::reply::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
-            
-                self.0
-                    .events
-                    .push(Event::Down(down.monitor_ref, down.reason));
-reply.reply(());
+            self.0
+                .events
+                .push(Event::Down(down.monitor_ref, down.reason));
+            reply.reply(());
         }
     }
     impl Handler<Setup> for ThreadObserver {
