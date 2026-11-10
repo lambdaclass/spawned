@@ -1,0 +1,5 @@
+error[E0404]: expected trait, found struct `Counter`
+  --> tests/ui/actor_not_a_protocol.rs:11:20
+   |
+11 | #[actor(protocol = Counter)]
+   |                    ^^^^^^^ not a trait

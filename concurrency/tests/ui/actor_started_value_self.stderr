@@ -1,0 +1,5 @@
+error: #[started] method's first parameter must be `&mut self`
+  --> tests/ui/actor_started_value_self.rs:14:5
+   |
+14 |     fn on_start(mut self, _ctx: &Context<Self>) { self.0 = 1; }
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

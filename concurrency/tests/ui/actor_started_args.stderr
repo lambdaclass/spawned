@@ -1,0 +1,5 @@
+error: #[started] method must take exactly (&mut self, &Context<Self>)
+  --> tests/ui/actor_started_args.rs:14:5
+   |
+14 |     fn on_start(&mut self) {}
+   |     ^^^^^^^^^^^^^^^^^^^^^^

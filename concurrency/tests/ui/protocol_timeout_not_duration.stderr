@@ -1,0 +1,11 @@
+error[E0308]: `match` arms have incompatible types
+ --> tests/ui/protocol_timeout_not_duration.rs:5:23
+  |
+3 | #[protocol]
+  | -----------
+  | |
+  | this is found to be of type `Duration`
+  | `match` arms have incompatible types
+4 | trait Invalid: Send + Sync {
+5 |     #[request_timeout(5)]
+  |                       ^ expected `Duration`, found integer

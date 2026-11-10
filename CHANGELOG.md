@@ -10,9 +10,117 @@
   the coordinator-panic and never-started-child scenarios that were known gaps
   before v0.7.1 now run as regular tests. See
   [testing](docs/TESTING.md#failpoints).
-- Test reliability and quality (WIP): replace fixed sleeps used as
-  synchronization with waits on the actual condition, and close coverage and
-  mutation-testing gaps in the lifecycle code.
+- Apalache 0.62.4 inductive-invariant checks for the supervision models
+  (`verification/tla/apalache.sh`, `nix run .#check-apalache`, CI job
+  `tla-apalache`). `Init => IndInv` and `IndInv /\ Next => IndInv'` hold for
+  every safety invariant of `Supervision` (AtMostOneGeneration,
+  PublishedIsLive, BudgetBounded, TemporaryStartsOnce, ReadyMeansAllStarted,
+  DoneMeansQuiescent, plus the action properties NoStartAfterClose,
+  RestartFollowsPolicy, ReverseShutdown, NeverReopens) with 5 children and
+  `max_restarts` 4 (also run at 10/10), of `Cohorts` (both strategies, 5
+  children, 4 generations, 4 rounds) and of `NestedSupervision` (6 nodes, 3
+  slots, 3 generations), for every restart-mode table. The step check covers
+  all states of that size, not only reachable ones, with no depth or
+  generation bound. Guard-removal negative controls must break induction.
+  Specs gain Apalache type annotations (comments) and constant-bounded range
+  rewrites; TLC state counts are unchanged.
+- Apalache inductive-invariant checks for the system shutdown coordinator
+  model (`Coordinator.tla`, `CoordinatorInd.tla`, CI step `--model
+  Coordinator --targets 32`). `Safety` (admission closed after shutdown
+  begins, finished within signalled, runtime ownership released only once
+  every target finished, coordinator failures recorded) and two new
+  invariants, `OrderedShutdown` (a root is signalled only after every
+  later-admitted root finished) and `JoinAfterAllSignalled`, plus four
+  action properties, are inductive at 8 and 32 shutdown targets with one
+  helper lemma. Eight negative controls must break induction and also give
+  a counterexample reachable from `Init`, including `RollbackReady`, the
+  out-of-order rollback of a ready supervisor startup fixed in v0.7.1,
+  which `negative_checks.py` also runs under TLC. Liveness stays TLC-only;
+  TLC state counts are unchanged.
+- Documentation: `docs/TESTING.md` gains an overview of how spawned is
+  verified (design, model-to-code, interleavings, faults, behaviour, code and
+  tests, real workloads) and an up-to-date status table for every layer; the
+  README summarizes it.
+- Roadmap: add coverage-guided scenario fuzzing on the simulator, harsher
+  canary faults (cgroup limits, network faults, clock skew), a benchmark
+  regression gate, trybuild compile-fail tests for the macros, and later Verus
+  or Creusot proofs, turmoil/Jepsen-style tests and continuous nightly runs to
+  the testing plan; record Apalache's status and the Veil spike as the next
+  step toward invariants for any configuration size.
+- trybuild coverage for `#[protocol]` and `#[actor]`: 64 new compile-fail
+  cases (73 in total) and 4 new pass cases, run only on the toolchain pinned in
+  `.tool-versions` (`SPAWNED_UI_TESTS=1` forces them elsewhere). The macros now
+  reject, with an error on the offending tokens, inputs that previously failed
+  inside the expansion or were silently accepted: generic, `unsafe`/`extern`/`const`,
+  duplicate and message-name-colliding protocol methods; borrowed and
+  `impl Trait` protocol parameters; generic handlers, handlers without a
+  `&self`/`&mut self` receiver or with a by-value context; two handler
+  attributes, or `#[started]` with `#[stopped]`, on one method; `mut self`
+  lifecycle hooks; mixed async and sync methods in one `#[actor]` block;
+  `#[actor]` on a trait impl; module paths and missing commas in
+  `#[actor(protocol ...)]`. Handler errors (wrong return or context type,
+  duplicate handlers, async handlers in a threads actor) now point at the
+  handler instead of `#[actor]`. `#[actor(protocol = ...)]` on a generic actor
+  no longer fails with "cannot find type `T`". See
+  [testing](docs/TESTING.md#macro-diagnostics).
+- Tests for the semantics guarantees that were not yet checked
+  (`concurrency/tests/semantics_gaps.rs`, both modes where they apply): a
+  trapped `Exit` and a `Down` follow every message the source sent earlier;
+  `send_after` and fixed-delay `send_interval` (no catch-up burst after a clock
+  jump) under paused Tokio time; a timer never delivers to a supervised
+  replacement; a panicking request handler gives its caller exactly
+  `ActorStopped` on every backend. A `panic-abort` CI job runs the
+  `panic_abort` example under a new `panic-abort` profile: a panicking handler
+  aborts the process without `stopped()` or a reply, and supervision of `Kill`
+  and `Shutdown` exits still works.
+
+- Roadmap: per-actor memory limits (rank 18a), one semantics contract
+  (rank 5d), an integrated request and lifecycle model for ranks 11, 13, 15,
+  15a and 17-19, and a design-review rule: a design doc, TLA+ model, client
+  mapping and two independent reviews before any feature code. The principle
+  is to match Erlang/OTP as closely as possible; for v0.8: exit signals as in
+  OTP (`Killed`, ignored `normal` exits, trappable `shutdown`, `NoProc`; rank
+  5e), the restart budget counts recovery rounds (5f), and one exit reason when
+  the runtime drops an actor (5g).
+- Documentation: `docs/design/semantics.md`, one semantics contract (roadmap
+  rank 5d). It states each guarantee (messages, requests, lifecycle and exit
+  reasons, links/monitors/trapped exits, supervision, systems, timers, panics)
+  with the TLA+ invariant, Kani harness, test or example that checks it, marks
+  the ones not yet checked, lists what is not guaranteed and the planned
+  changes that will alter it. Linked from the README, guide, testing docs and
+  design index.
+  The guide now says that a `stopped()` panic makes the exit reason `Panic`,
+  that `send` returns `Ok` and drops the message while an actor is stopping,
+  and how to stop an actor from outside (`ChildHandle::stop`/`shutdown`/
+  `stop_with_reason`); the `ExitReason::Normal` doc comment and the supervision
+  design table are corrected.
+- `tasks::ActorRef` and `tasks::Context` are one pointer wide again (8 bytes,
+  was 80, 88 with `metrics`; spawned 0.5 was 32): both share one `Arc`'d
+  state. Applications move handles by value through their futures, and debug
+  builds give every move its own stack slot, so the 0.7 handles cost ethrex's
+  debug RPC dispatch ~136 KiB of extra thread stack. Clone is one refcount
+  increment; one extra allocation per actor start, none per message.
+  `future_layout` now pins the one-pointer size and tighter future budgets.
+- Test reliability: tests wait on the condition they need instead of fixed
+  sleeps or tight latency budgets (`test_wait::wait_for`, `join`, explicit
+  release channels). Fixes flakes seen under load in
+  `threads::timer_tests::test_send_interval_and_cancellation` (asserted an
+  exact tick count), `tasks::actor::tests::panic_in_started_stops_actor`,
+  `monitor_observes_panic_reason`, the badly-behaved/backend isolation tests,
+  `placement_failure_is_reported_and_fails_the_supervisor` (asserted the
+  child's terminal state before its controller published it), two supervisor
+  startup tests whose first `poll` raced the controller, a std `Barrier`
+  inside async handlers that could deadlock a worker, and a proptest case
+  count that broke once a regression file existed. New tests cover the
+  context/request-error/unlink/Debug APIs in both modes, closed-system
+  admission, nested `wait_ready`/`startup_timeout`, supervisor config limits,
+  shard bounds, factory cancellation, cohort backoff, monitor registration
+  cleanup and opposite-direction link lock ordering; they kill 20 surviving
+  cargo-mutants. The native mailbox no longer goes through a single-use
+  macro (cargo-mutants does not mutate macro bodies, so 21 mutants were
+  hidden), `SupervisorActor::stopped` is gone (its `Drop` already stops the
+  subtree on every path), and shard selection asserts its invariant instead
+  of re-checking it.
 
 ## 0.7.1 — 2026-11-10
 

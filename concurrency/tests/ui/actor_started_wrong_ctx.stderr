@@ -1,0 +1,13 @@
+error[E0053]: method `started` has an incompatible type for trait
+  --> tests/ui/actor_started_wrong_ctx.rs:14:34
+   |
+14 |     fn on_start(&mut self, _ctx: u64) {}
+   |                                  ^^^ expected `&Context<Counter>`, found `u64`
+   |
+   = note: expected signature `fn(&mut Counter, &spawned_concurrency::threads::Context<Counter>)`
+              found signature `fn(&mut Counter, u64)`
+help: change the parameter type to match the trait
+   |
+14 -     fn on_start(&mut self, _ctx: u64) {}
+14 +     fn on_start(&mut self, _ctx: &spawned_concurrency::threads::Context<Counter>) {}
+   |

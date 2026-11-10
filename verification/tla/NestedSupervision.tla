@@ -2,10 +2,31 @@
 (* Ownership projection. Actor handlers, stop-turn scheduling and local    *)
 (* restart policy are checked by the other models, not duplicated here.   *)
 EXTENDS Naturals, FiniteSets, TLC
-CONSTANTS NodeCount, Slots, MaxGen, Fault
+(* `@type:` comments are Apalache annotations (NestedSupervisionInd.tla);  *)
+(* TLC ignores them. `c \in 1..s.arity[n]` is written `1 <= c /\ c <=     *)
+(* s.arity[n]` (same predicate for integers; Apalache needs constant      *)
+(* range bounds).                                                          *)
+CONSTANTS
+ \* @type: Int;
+ NodeCount,
+ \* @type: Int;
+ Slots,
+ \* @type: Int;
+ MaxGen,
+ \* @type: Str;
+ Fault
 Nodes == 1..NodeCount
 Children == 1..Slots
-VARIABLE s
+\* @typeAlias: nestedState = { nodes: Set(Int), started: Set(Int),
+\*   closed: Set(Int), cancelled: Set(Int), done: Set(Int),
+\*   propagated: Set(Int), arity: Int -> Int, parent: Int -> Int,
+\*   slot: Int -> Int, owner: Int -> Int, gen: Int -> (Int -> Int),
+\*   live: Int -> (Int -> Set(Int)), badJoin: Bool, badStart: Bool };
+NestedTypeAliases == TRUE
+VARIABLE
+ \* @type: $nestedState;
+ s
+\* @type: <<$nestedState>>;
 vars == <<s>>
 Init ==
  s = [nodes |-> {1}, started |-> {}, closed |-> {}, cancelled |-> {},
@@ -24,14 +45,14 @@ TCreate(n,a) ==
  /\ n = 1 \/ a = s.arity[n]
  /\ s' = [s EXCEPT !.started = @ \cup {n}, !.arity[n] = a]
 TBegin(n,c,g) ==
- /\ n \in s.started /\ c \in 1..s.arity[n] /\ n \notin s.done
+ /\ n \in s.started /\ 1 <= c /\ c <= s.arity[n] /\ n \notin s.done
  /\ n \notin s.closed \/ Fault = "Closed"
  /\ g = s.gen[n][c] + 1 /\ g <= MaxGen /\ s.live[n][c] = {}
  /\ s' = [s EXCEPT !.gen[n][c] = g, !.live[n][c] = {g},
           !.badStart = @ \/ n \in s.closed]
 TAttach(n,c,g,q,a) ==
  /\ n \in s.nodes /\ q \in Nodes \ s.nodes /\ a \in 0..Slots
- /\ c \in 1..s.arity[n] /\ g \in s.live[n][c]
+ /\ 1 <= c /\ c <= s.arity[n] /\ g \in s.live[n][c]
  /\ s' = [s EXCEPT !.nodes = @ \cup {q}, !.arity[q] = a,
           !.parent[q] = n, !.slot[q] = c, !.owner[q] = g]
 TJoined(n,c,g) ==

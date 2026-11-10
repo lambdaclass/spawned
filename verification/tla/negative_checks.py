@@ -74,20 +74,26 @@ def unsafe_final_event(trace, tlc):
     print("SAFETY before completion: invalid final event")
 
 
-def model_fault(module, fault, tlc, temporal=False):
+def model_fault(module, fault, tlc, temporal=False, invariant="Safety", drop=()):
+    """Run MODULE with Fault = FAULT and require a counterexample: a violated
+    INVARIANT, or (temporal) a liveness violation. DROP lists invariants removed
+    from the cfg first, so a fault that also breaks one of them still reaches
+    the temporal check."""
     with tempfile.TemporaryDirectory(prefix="bad-model-") as directory:
         work = Path(directory)
         for source in HERE.glob("*.tla"):
             shutil.copy(source, work)
         cfg = (HERE / f"{module}.cfg").read_text().replace('Fault = "None"', f'Fault = "{fault}"')
+        for name in drop:
+            cfg = cfg.replace(f"INVARIANT {name}\n", "")
         (work / f"{module}.cfg").write_text(cfg)
         result = subprocess.run(shlex.split(tlc) + ["-workers", "1", "-deadlock", "-cleanup", module],
                                 cwd=work, capture_output=True, text=True)
         log = result.stdout + result.stderr
-        expected = "Temporal properties were violated" if temporal else "Invariant Safety is violated"
+        expected = "Temporal properties were violated" if temporal else f"Invariant {invariant} is violated"
         if expected not in log:
             raise AssertionError(f"{module}/{fault}: no expected counterexample\n{log}")
-    print(f"COUNTEREXAMPLE model: {module}/{fault}")
+    print(f"COUNTEREXAMPLE model: {module}/{fault}" + ("" if temporal else f" ({invariant})"))
 
 
 def main():
@@ -128,7 +134,10 @@ def main():
         model_fault("MCCohortsAll", fault, args.tlc)
     model_fault("MCCoordinator", "ReleaseEarly", args.tlc)
     model_fault("MCCoordinator", "ForgetFailure", args.tlc)
-    model_fault("MCCoordinator", "ForgetSignal", args.tlc, temporal=True)
+    model_fault("MCCoordinator", "ForgetSignal", args.tlc, invariant="JoinAfterAllSignalled")
+    model_fault("MCCoordinator", "ForgetSignal", args.tlc, temporal=True,
+                drop=("JoinAfterAllSignalled",))
+    model_fault("MCCoordinator", "RollbackReady", args.tlc, invariant="OrderedShutdown")
     model_fault("MCNested", "Join", args.tlc)
     model_fault("MCNested", "Propagation", args.tlc, temporal=True)
 

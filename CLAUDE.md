@@ -38,6 +38,7 @@ spawned/
 | `docs/GUIDE.md` | User guide (lifecycle, backends, links, execution groups, supervision, metrics) |
 | `docs/MIGRATION.md` | Per-version upgrade notes |
 | `docs/TESTING.md` | Test suites, verification layers, TLA+ model |
+| `docs/design/semantics.md` | The semantics contract: every guarantee, what checks it, non-guarantees; review new designs against it |
 | `docs/design/execution-groups-supervision.md` | Active design contract |
 | `docs/research/` | Maintained research notes behind roadmap items (virtual actors, systematic testing, Ethereum testing, request semantics) |
 | `examples/README.md` | Feature → example index, with gaps |

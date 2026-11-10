@@ -1,0 +1,5 @@
+error: duplicate protocol method `ping`
+ --> tests/ui/protocol_duplicate_method.rs:6:8
+  |
+6 |     fn ping(&self, value: u8);
+  |        ^^^^

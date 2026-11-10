@@ -1,0 +1,5 @@
+error: `unsafe` protocol methods are not supported; use a plain `fn`
+ --> tests/ui/protocol_unsafe_method.rs:5:5
+  |
+5 |     unsafe fn ping(&self);
+  |     ^^^^^^

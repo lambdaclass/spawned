@@ -1,0 +1,8 @@
+error[E0053]: method `handle` has an incompatible type for trait
+  --> tests/ui/actor_async_handler_threads.rs:14:5
+   |
+14 |     async fn read(&mut self, _msg: Read, _ctx: &Context<Self>) -> u64 { self.0 }
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `u64`, found future
+   |
+   = note: expected signature `fn(&mut Counter, counter_protocol::Read, &spawned_concurrency::threads::Context<Counter>) -> u64`
+              found signature `fn(&mut Counter, counter_protocol::Read, &spawned_concurrency::threads::Context<Counter>) -> impl Future<Output = u64>`

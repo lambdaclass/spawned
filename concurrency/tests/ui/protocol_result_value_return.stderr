@@ -1,0 +1,5 @@
+error: unsupported return type in protocol method; use Response<T> for requests (works in both async and sync modes), Result<(), ActorError> for sends, or no return type for fire-and-forget
+ --> tests/ui/protocol_result_value_return.rs:5:23
+  |
+5 |     fn read(&self) -> Result<u64, ActorError>;
+  |                       ^^^^^^^^^^^^^^^^^^^^^^^

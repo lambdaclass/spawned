@@ -1,0 +1,5 @@
+error: protocol methods must take `&self` as the first parameter
+ --> tests/ui/protocol_boxed_receiver.rs:5:5
+  |
+5 |     fn consume(self: Box<Self>);
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^

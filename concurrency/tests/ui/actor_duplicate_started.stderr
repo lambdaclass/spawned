@@ -1,0 +1,5 @@
+error: only one #[started] method is allowed per actor
+  --> tests/ui/actor_duplicate_started.rs:16:5
+   |
+16 |     fn second(&mut self, _ctx: &Context<Self>) {}
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

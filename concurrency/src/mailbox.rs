@@ -58,25 +58,29 @@ pub(crate) mod tasks {
     pub(crate) use raw::SendError;
     use spawned_rt::tasks::mpsc as raw;
 
-    // Keep the public actor/context handle as small as the original raw sender.
-    // Only sender clones own this state; the receiver must not retain a sender
+    // Sender clones live in the actor's shared handle state (one per actor,
+    // not one per handle), so they carry the raw sender and failure sink
+    // inline: no extra allocation per actor and no extra hop per send. Only
+    // sender clones own this state; the receiver must not retain a sender
     // (otherwise dropping every sender could never close the channel).
-    struct SendState<T> {
+    pub(crate) struct Sender<T> {
         inner: raw::Sender<T>,
         failures: Arc<DropFailures>,
     }
-    pub(crate) struct Sender<T>(Arc<SendState<T>>);
     impl<T> Clone for Sender<T> {
         fn clone(&self) -> Self {
-            Self(self.0.clone())
+            Self {
+                inner: self.inner.clone(),
+                failures: self.failures.clone(),
+            }
         }
     }
     impl<T> Sender<T> {
         pub(crate) fn send(&self, value: T) -> Result<(), SendError<T>> {
-            self.0.inner.send(value)
+            self.inner.send(value)
         }
         pub(crate) fn failures(&self) -> Arc<DropFailures> {
-            self.0.failures.clone()
+            self.failures.clone()
         }
     }
     pub(crate) struct Receiver<T> {
@@ -111,10 +115,10 @@ pub(crate) mod tasks {
         let (inner, receiver) = raw::channel();
         let failures = Arc::new(DropFailures::default());
         (
-            Sender(Arc::new(SendState {
+            Sender {
                 inner,
                 failures: failures.clone(),
-            })),
+            },
             Receiver {
                 inner: receiver,
                 failures,
@@ -312,10 +316,6 @@ mod tests {
     #[cfg(feature = "async")]
     #[tokio::test]
     async fn compact_async_senders_close_after_their_last_owner() {
-        assert_eq!(
-            std::mem::size_of::<tasks::Sender<()>>(),
-            std::mem::size_of::<spawned_rt::tasks::mpsc::Sender<()>>()
-        );
         let (send, mut receive) = tasks::channel();
         let other = send.clone();
         send.send(1).unwrap();

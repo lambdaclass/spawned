@@ -243,8 +243,19 @@ impl<A: Actor> Envelope<A> for ExitEnvelope {
 /// Handle passed to every handler and lifecycle hook, providing access to the
 /// actor's mailbox and lifecycle controls.
 ///
-/// Clone is cheap — it clones the inner channel sender and cancellation token.
+/// Clone is cheap: one reference-count increment on the actor's shared state.
 pub struct Context<A: Actor> {
+    shared: Arc<ActorShared<A>>,
+}
+
+/// State shared by every `Context` and `ActorRef` of one actor.
+///
+/// The handles hold it behind one `Arc` so they stay a single pointer wide:
+/// they are cloned into and moved through application futures (RPC contexts,
+/// dispatch state machines), and debug builds give every such move its own
+/// stack slot, so each extra handle word is paid many times over in callers'
+/// stack frames. Cloning a handle is one reference-count increment.
+struct ActorShared<A: Actor> {
     id: ActorId,
     sender: mpsc::Sender<Box<dyn Envelope<A> + Send>>,
     cancellation_token: CancellationToken,
@@ -260,16 +271,7 @@ pub struct Context<A: Actor> {
 impl<A: Actor> Clone for Context<A> {
     fn clone(&self) -> Self {
         Self {
-            id: self.id,
-            sender: self.sender.clone(),
-            cancellation_token: self.cancellation_token.clone(),
-            completion_rx: self.completion_rx.clone(),
-            monitors: self.monitors.clone(),
-            trap_exit: self.trap_exit.clone(),
-            links: self.links.clone(),
-            linked_reason: self.linked_reason.clone(),
-            mailbox: self.mailbox.clone(),
-            managed: self.managed.clone(),
+            shared: self.shared.clone(),
         }
     }
 }
@@ -285,16 +287,7 @@ impl<A: Actor> Context<A> {
     /// or stream listeners from outside the actor.
     pub fn from_ref(actor_ref: &ActorRef<A>) -> Self {
         Self {
-            id: actor_ref.id,
-            sender: actor_ref.sender.clone(),
-            cancellation_token: actor_ref.cancellation_token.clone(),
-            completion_rx: actor_ref.completion_rx.clone(),
-            monitors: actor_ref.monitors.clone(),
-            trap_exit: actor_ref.trap_exit.clone(),
-            links: actor_ref.links.clone(),
-            linked_reason: actor_ref.linked_reason.clone(),
-            mailbox: actor_ref.mailbox.clone(),
-            managed: actor_ref.managed.clone(),
+            shared: actor_ref.shared.clone(),
         }
     }
 
@@ -303,12 +296,12 @@ impl<A: Actor> Context<A> {
     /// Concurrent observations are approximate; no registry or actor labels.
     #[cfg(feature = "metrics")]
     pub fn mailbox_depth(&self) -> u64 {
-        self.mailbox.depth()
+        self.shared.mailbox.depth()
     }
 
     /// The actor's unique identity.
     pub fn id(&self) -> ActorId {
-        self.id
+        self.shared.id
     }
 
     /// Signal the actor to stop. The current handler will finish, then
@@ -324,8 +317,8 @@ impl<A: Actor> Context<A> {
     /// trigger transient supervision or propagate through links. It does not
     /// forcibly interrupt running Rust code.
     pub fn stop_with_reason(&self, reason: ExitReason) {
-        link::stop_with_reason(&self.linked_reason, reason, || {
-            self.cancellation_token.cancel()
+        link::stop_with_reason(&self.shared.linked_reason, reason, || {
+            self.shared.cancellation_token.cancel()
         });
     }
 
@@ -335,7 +328,7 @@ impl<A: Actor> Context<A> {
         A: Handler<M>,
         M: Message,
     {
-        enqueue(&self.sender, &self.mailbox, msg, None)
+        enqueue(&self.shared.sender, &self.shared.mailbox, msg, None)
     }
 
     /// Send a request and get a raw oneshot receiver for the reply.
@@ -345,7 +338,7 @@ impl<A: Actor> Context<A> {
         M: Message,
     {
         let (tx, rx) = oneshot::channel();
-        enqueue(&self.sender, &self.mailbox, msg, Some(tx))?;
+        enqueue(&self.shared.sender, &self.shared.mailbox, msg, Some(tx))?;
         Ok(rx)
     }
 
@@ -395,16 +388,7 @@ impl<A: Actor> Context<A> {
     /// Get an `ActorRef<A>` from this context.
     pub fn actor_ref(&self) -> ActorRef<A> {
         ActorRef {
-            id: self.id,
-            sender: self.sender.clone(),
-            cancellation_token: self.cancellation_token.clone(),
-            completion_rx: self.completion_rx.clone(),
-            monitors: self.monitors.clone(),
-            trap_exit: self.trap_exit.clone(),
-            links: self.links.clone(),
-            linked_reason: self.linked_reason.clone(),
-            mailbox: self.mailbox.clone(),
-            managed: self.managed.clone(),
+            shared: self.shared.clone(),
         }
     }
 
@@ -432,11 +416,15 @@ impl<A: Actor> Context<A> {
         let active = spawned_rt::tasks::CancellationToken::new();
 
         {
-            let mut monitors = self.monitors.lock().unwrap_or_else(|p| p.into_inner());
+            let mut monitors = self
+                .shared
+                .monitors
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
             // The token check makes registration inert once shutdown starts.
             // The closed table below serializes registration with exit cleanup,
             // even on paths that unwind before cancelling the owner token.
-            if self.cancellation_token.is_cancelled() {
+            if self.shared.cancellation_token.is_cancelled() {
                 return monitor_ref;
             }
             let Some(monitors) = monitors.as_mut() else {
@@ -447,7 +435,7 @@ impl<A: Actor> Context<A> {
 
         let target = target.clone();
         let actor_ref = self.actor_ref();
-        let monitors = self.monitors.clone();
+        let monitors = self.shared.monitors.clone();
         let registration = crate::monitor::MonitorRegistration(monitors.clone(), monitor_ref);
 
         self.spawn_framework(async move {
@@ -489,6 +477,7 @@ impl<A: Actor> Context<A> {
     /// a best-effort cancellation — the message may still arrive.
     pub fn demonitor(&self, monitor_ref: MonitorRef) {
         let active = self
+            .shared
             .monitors
             .lock()
             .unwrap_or_else(|p| p.into_inner())
@@ -516,10 +505,10 @@ impl<A: Actor> Context<A> {
     /// [`Actor::exit_received`]: Actor::exit_received
     pub fn link(&self, target: &ChildHandle) {
         let own_signal = link::make_signal(
-            self.trap_exit.clone(),
+            self.shared.trap_exit.clone(),
             self.own_cancel_fn(),
             self.own_send_exit_fn(),
-            self.linked_reason.clone(),
+            self.shared.linked_reason.clone(),
         );
         let peer_signal = link::make_signal(
             target.trap_exit_flag().clone(),
@@ -528,8 +517,8 @@ impl<A: Actor> Context<A> {
             target.linked_reason().clone(),
         );
         link::register_link(
-            self.id,
-            &self.links,
+            self.shared.id,
+            &self.shared.links,
             own_signal,
             target.id(),
             target.links(),
@@ -539,7 +528,12 @@ impl<A: Actor> Context<A> {
 
     /// Remove a previously-set bidirectional link.
     pub fn unlink(&self, target: &ChildHandle) {
-        link::unregister_link(self.id, &self.links, target.id(), target.links());
+        link::unregister_link(
+            self.shared.id,
+            &self.shared.links,
+            target.id(),
+            target.links(),
+        );
     }
 
     /// Control how exit signals from linked actors are handled.
@@ -553,24 +547,25 @@ impl<A: Actor> Context<A> {
     /// notices, including Kill, are delivered as Exit when trapping is enabled.
     /// Cancellation remains cooperative: an in-flight handler is not preempted.
     pub fn trap_exit(&self, enabled: bool) {
-        self.trap_exit.store(enabled, Ordering::Release);
+        self.shared.trap_exit.store(enabled, Ordering::Release);
     }
 
     /// Build a type-erased cancel closure for this actor.
     fn own_cancel_fn(&self) -> Arc<dyn Fn() + Send + Sync> {
-        let token = self.cancellation_token.clone();
-        let reason = self.linked_reason.clone();
+        let token = self.shared.cancellation_token.clone();
+        let reason = self.shared.linked_reason.clone();
         Arc::new(move || link::normal_stop(&reason, || token.cancel()))
     }
 
     /// Build a type-erased `SendExitFn` that enqueues an `ExitEnvelope`
     /// onto this actor's mailbox.
     fn own_send_exit_fn(&self) -> SendExitFn {
-        let sender = self.sender.clone();
-        Arc::new(move |exit: Exit| {
-            let envelope: Box<dyn Envelope<A> + Send> = Box::new(ExitEnvelope { exit });
-            sender.send(envelope).map_err(|_| ActorError::ActorStopped)
-        })
+        self.shared.send_exit_fn()
+    }
+
+    /// Type-erased handle to this actor, without an intermediate `ActorRef`.
+    pub(crate) fn child_handle(&self) -> ChildHandle {
+        self.shared.child_handle()
     }
 
     /// Spawn a lifecycle-owned helper on this actor's assigned execution group.
@@ -586,7 +581,8 @@ impl<A: Actor> Context<A> {
         F: Future + Send + 'static,
         F::Output: Send + 'static,
     {
-        self.managed
+        self.shared
+            .managed
             .as_ref()
             .ok_or(crate::system::SystemError::UnmanagedActor)?
             .spawn_helper(future)
@@ -605,14 +601,15 @@ impl<A: Actor> Context<A> {
         F: FnOnce() -> T + Send + 'static,
         T: Send + 'static,
     {
-        self.managed
+        self.shared
+            .managed
             .as_ref()
             .ok_or(crate::system::SystemError::UnmanagedActor)?
             .spawn_blocking_helper(work)
     }
 
     pub fn execution_group(&self) -> Option<crate::system::ExecutionGroup> {
-        self.managed.as_ref().map(|s| s.group())
+        self.shared.managed.as_ref().map(|s| s.group())
     }
 
     /// Register this managed actor until its owned cleanup completes. Removal
@@ -621,27 +618,28 @@ impl<A: Actor> Context<A> {
         &self,
         name: &str,
     ) -> Result<(), crate::registry::ManagedRegistrationError> {
-        self.managed
+        self.shared
+            .managed
             .as_ref()
             .ok_or(crate::registry::ManagedRegistrationError::OwnerClosed)?
-            .register(name, self.id, self.actor_ref())
+            .register(name, self.shared.id, self.actor_ref())
     }
 
     pub(crate) fn managed_scope(&self) -> Option<&Arc<crate::system::Scope>> {
-        self.managed.as_ref()
+        self.shared.managed.as_ref()
     }
     pub(crate) fn spawn_framework<F>(&self, future: F) -> JoinHandle<()>
     where
         F: Future<Output = ()> + Send + 'static,
     {
-        match &self.managed {
+        match &self.shared.managed {
             Some(scope) => scope.spawn_framework(future),
             None => rt::spawn(future),
         }
     }
 
     pub(crate) fn cancellation_token(&self) -> CancellationToken {
-        self.cancellation_token.clone()
+        self.shared.cancellation_token.clone()
     }
 }
 
@@ -707,16 +705,7 @@ pub async fn request<M: Message>(
 /// To stop the actor, send an explicit shutdown message through your protocol,
 /// or call [`Context::stop`] from within a handler.
 pub struct ActorRef<A: Actor> {
-    id: ActorId,
-    sender: mpsc::Sender<Box<dyn Envelope<A> + Send>>,
-    cancellation_token: CancellationToken,
-    completion_rx: watch::Receiver<Option<ExitReason>>,
-    monitors: MonitorTable,
-    trap_exit: TrapExitFlag,
-    links: LinkTable,
-    linked_reason: LinkedExitReason,
-    mailbox: crate::instrumentation::Mailbox,
-    managed: Option<Arc<crate::system::Scope>>,
+    shared: Arc<ActorShared<A>>,
 }
 
 impl<A: Actor> Debug for ActorRef<A> {
@@ -728,16 +717,7 @@ impl<A: Actor> Debug for ActorRef<A> {
 impl<A: Actor> Clone for ActorRef<A> {
     fn clone(&self) -> Self {
         Self {
-            id: self.id,
-            sender: self.sender.clone(),
-            cancellation_token: self.cancellation_token.clone(),
-            completion_rx: self.completion_rx.clone(),
-            monitors: self.monitors.clone(),
-            trap_exit: self.trap_exit.clone(),
-            links: self.links.clone(),
-            linked_reason: self.linked_reason.clone(),
-            mailbox: self.mailbox.clone(),
-            managed: self.managed.clone(),
+            shared: self.shared.clone(),
         }
     }
 }
@@ -753,14 +733,15 @@ impl<A: Actor> ActorRef<A> {
     /// Await this managed instance's initial readiness barrier. Success does not
     /// guarantee it remains alive afterward; ordinary request errors still apply.
     pub async fn ready(&self) -> Result<(), crate::system::SystemError> {
-        self.managed
+        self.shared
+            .managed
             .as_ref()
             .ok_or(crate::system::SystemError::UnmanagedActor)?
             .wait_ready()
             .await
     }
     pub(crate) fn signal_failure(&self, error: String) {
-        let _ = self.sender.send(Box::new(FailureEnvelope(error)));
+        let _ = self.shared.sender.send(Box::new(FailureEnvelope(error)));
     }
     /// Send a fire-and-forget message to the actor.
     pub fn send<M>(&self, msg: M) -> Result<(), ActorError>
@@ -768,7 +749,7 @@ impl<A: Actor> ActorRef<A> {
         A: Handler<M>,
         M: Message,
     {
-        enqueue(&self.sender, &self.mailbox, msg, None)
+        enqueue(&self.shared.sender, &self.shared.mailbox, msg, None)
     }
 
     /// Send a request and get a raw oneshot receiver for the reply.
@@ -778,7 +759,7 @@ impl<A: Actor> ActorRef<A> {
         M: Message,
     {
         let (tx, rx) = oneshot::channel();
-        enqueue(&self.sender, &self.mailbox, msg, Some(tx))?;
+        enqueue(&self.shared.sender, &self.shared.mailbox, msg, Some(tx))?;
         Ok(rx)
     }
 
@@ -838,12 +819,12 @@ impl<A: Actor> ActorRef<A> {
     /// A completion channel closed without a reason reports [`ExitReason::Kill`],
     /// matching the wait methods (for example, after runtime shutdown).
     pub fn exit_reason(&self) -> Option<ExitReason> {
-        crate::child_handle::poll_exit_reason(&self.completion_rx)
+        crate::child_handle::poll_exit_reason(&self.shared.completion_rx)
     }
 
     /// Wait until the actor stops and return the exit reason.
     pub async fn wait_exit(&self) -> ExitReason {
-        let mut rx = self.completion_rx.clone();
+        let mut rx = self.shared.completion_rx.clone();
         loop {
             if let Some(reason) = rx.borrow_and_update().clone() {
                 return reason;
@@ -859,40 +840,54 @@ impl<A: Actor> ActorRef<A> {
     /// Concurrent observations are approximate; no registry or actor labels.
     #[cfg(feature = "metrics")]
     pub fn mailbox_depth(&self) -> u64 {
-        self.mailbox.depth()
+        self.shared.mailbox.depth()
     }
 
     /// The actor's unique identity.
     pub fn id(&self) -> ActorId {
-        self.id
+        self.shared.id
     }
 
     /// Get a type-erased `ChildHandle` for this actor.
     pub fn child_handle(&self) -> ChildHandle {
-        ChildHandle::from(self.clone())
+        self.shared.child_handle()
+    }
+
+    /// The shared state, for tests proving it is freed once every handle is gone.
+    #[cfg(test)]
+    fn shared_weak(&self) -> std::sync::Weak<ActorShared<A>> {
+        Arc::downgrade(&self.shared)
+    }
+}
+
+impl<A: Actor> ActorShared<A> {
+    /// Build a type-erased `SendExitFn` that enqueues an `ExitEnvelope`
+    /// onto this actor's mailbox.
+    fn send_exit_fn(&self) -> SendExitFn {
+        let sender = self.sender.clone();
+        Arc::new(move |exit: Exit| {
+            let envelope: Box<dyn Envelope<A> + Send> = Box::new(ExitEnvelope { exit });
+            sender.send(envelope).map_err(|_| ActorError::ActorStopped)
+        })
+    }
+
+    fn child_handle(&self) -> ChildHandle {
+        ChildHandle::from_tasks(
+            self.id,
+            self.cancellation_token.clone(),
+            self.completion_rx.clone(),
+            self.trap_exit.clone(),
+            self.links.clone(),
+            self.linked_reason.clone(),
+            self.send_exit_fn(),
+        )
+        .with_mailbox_failures(self.sender.failures())
     }
 }
 
 impl<A: Actor> From<ActorRef<A>> for ChildHandle {
     fn from(actor_ref: ActorRef<A>) -> Self {
-        let failures = actor_ref.sender.failures();
-        // Build a type-erased SendExitFn that enqueues an ExitEnvelope onto
-        // this actor's mailbox.
-        let sender = actor_ref.sender.clone();
-        let send_exit: SendExitFn = Arc::new(move |exit: Exit| {
-            let envelope: Box<dyn Envelope<A> + Send> = Box::new(ExitEnvelope { exit });
-            sender.send(envelope).map_err(|_| ActorError::ActorStopped)
-        });
-        ChildHandle::from_tasks(
-            actor_ref.id,
-            actor_ref.cancellation_token,
-            actor_ref.completion_rx,
-            actor_ref.trap_exit,
-            actor_ref.links,
-            actor_ref.linked_reason,
-            send_exit,
-        )
-        .with_mailbox_failures(failures)
+        actor_ref.shared.child_handle()
     }
 }
 
@@ -954,37 +949,27 @@ impl<A: Actor> ActorRef<A> {
             .unwrap_or_else(new_linked_exit_reason);
 
         let actor_ref = ActorRef {
-            id: ActorId::next(),
-            sender: tx.clone(),
-            cancellation_token: cancellation_token.clone(),
-            completion_rx,
-            monitors: monitors.clone(),
-            trap_exit: trap_exit.clone(),
-            links: links.clone(),
-            linked_reason: linked_reason.clone(),
-            mailbox: crate::instrumentation::Mailbox::default(),
-            managed: managed.clone(),
+            shared: Arc::new(ActorShared {
+                id: ActorId::next(),
+                sender: tx,
+                cancellation_token: cancellation_token.clone(),
+                completion_rx,
+                monitors,
+                trap_exit,
+                links: links.clone(),
+                linked_reason: linked_reason.clone(),
+                mailbox: crate::instrumentation::Mailbox::default(),
+                managed: managed.clone(),
+            }),
         };
-
-        let ctx = Context {
-            id: actor_ref.id,
-            sender: tx,
-            cancellation_token: cancellation_token.clone(),
-            completion_rx: actor_ref.completion_rx.clone(),
-            monitors,
-            trap_exit,
-            links: links.clone(),
-            linked_reason: linked_reason.clone(),
-            mailbox: actor_ref.mailbox.clone(),
-            managed: actor_ref.managed.clone(),
-        };
+        let ctx = actor_ref.context();
 
         if let Some(scope) = &managed {
             scope.attach::<A>(actor_ref.child_handle());
         }
 
         if let Some(parent) = parent {
-            actor_ref.context().link(&parent);
+            ctx.link(&parent);
         }
 
         #[cfg(feature = "backend-experiments")]
@@ -1021,15 +1006,15 @@ impl<A: Actor> ActorRef<A> {
         };
         let cleanup_token = cancellation_token.clone();
         let cleanup = crate::actor_cleanup::ActorCleanup::new(
-            actor_ref.id,
+            actor_ref.shared.id,
             links,
             linked_reason,
-            actor_ref.monitors.clone(),
+            actor_ref.shared.monitors.clone(),
             completion_tx,
             ExitReason::Kill,
             move || cleanup_token.cancel(),
         )
-        .with_mailbox_failures(actor_ref.sender.failures());
+        .with_mailbox_failures(actor_ref.shared.sender.failures());
         let startup =
             crate::actor_cleanup::ActorStartup::new((actor, ctx, rx, cancellation_token), cleanup);
         let inner_future = async move {
@@ -1065,6 +1050,7 @@ impl<A: Actor> ActorRef<A> {
 
         if let Some(lease) = lease {
             let scope = actor_ref
+                .shared
                 .managed
                 .as_ref()
                 .expect("managed lease without scope");
@@ -1084,8 +1070,8 @@ impl<A: Actor> ActorRef<A> {
                 {
                     use rt::experimental::dispatcher;
                     if let Err(error) = dispatcher::spawn(policy, inner_future) {
-                        actor_ref.cancellation_token.cancel();
-                        drop(MonitorCleanup(actor_ref.monitors.clone()));
+                        actor_ref.shared.cancellation_token.cancel();
+                        drop(MonitorCleanup(actor_ref.shared.monitors.clone()));
                         tracing::error!("Experimental executor startup failed: {error}");
                     }
                     return Ok(actor_ref);
@@ -1093,8 +1079,8 @@ impl<A: Actor> ActorRef<A> {
                 #[cfg(feature = "backend-experiments")]
                 if scheduler == "sharded" {
                     if let Err(error) = rt::experimental::spawn_sharded(inner_future) {
-                        actor_ref.cancellation_token.cancel();
-                        drop(MonitorCleanup(actor_ref.monitors.clone()));
+                        actor_ref.shared.cancellation_token.cancel();
+                        drop(MonitorCleanup(actor_ref.shared.monitors.clone()));
                         tracing::error!("Experimental shard startup failed: {error}");
                     }
                     return Ok(actor_ref);
@@ -1230,8 +1216,8 @@ async fn run_actor_lifecycle<A: Actor>(
     cancellation_token: CancellationToken,
     #[cfg(feature = "backend-experiments")] mut turn: Option<MessageTurn>,
 ) -> ExitReason {
-    let _monitor_cleanup = MonitorCleanup(ctx.monitors.clone());
-    if let Some(scope) = &ctx.managed {
+    let _monitor_cleanup = MonitorCleanup(ctx.shared.monitors.clone());
+    if let Some(scope) = &ctx.shared.managed {
         if !scope.can_start() {
             scope.stop(ExitReason::Shutdown);
             return ExitReason::Normal;
@@ -1253,14 +1239,14 @@ async fn run_actor_lifecycle<A: Actor>(
     }
 
     fail_point!("actor.after_started_before_ready", async);
-    if let Some(scope) = &ctx.managed {
+    if let Some(scope) = &ctx.shared.managed {
         if !scope.mark_ready() {
             scope.stop(ExitReason::Shutdown);
         }
     }
 
     if cancellation_token.is_cancelled() {
-        if let Some(scope) = &ctx.managed {
+        if let Some(scope) = &ctx.shared.managed {
             scope.end_running();
         }
         if let Err(panic) = AssertUnwindSafe(async {
@@ -1311,6 +1297,7 @@ async fn run_actor_lifecycle<A: Actor>(
             Some(envelope) => {
                 #[cfg(feature = "diagnostics")]
                 let _turn = ctx
+                    .shared
                     .managed
                     .as_ref()
                     .map(|scope| scope.begin_turn(envelope.message_type()));
@@ -1352,7 +1339,7 @@ async fn run_actor_lifecycle<A: Actor>(
         }
     }
 
-    if let Some(scope) = &ctx.managed {
+    if let Some(scope) = &ctx.shared.managed {
         scope.end_running();
     }
     cancellation_token.cancel();
@@ -1403,11 +1390,7 @@ pub trait ActorStart: Actor {
     /// A closed parent is observed under its link-state mutex; an abnormal
     /// parent exit cancels the child cooperatively before message dispatch.
     fn start_linked<P: Actor>(self, parent_ctx: &Context<P>) -> ActorRef<Self> {
-        ActorRef::spawn(
-            self,
-            Backend::Async,
-            Some(parent_ctx.actor_ref().child_handle()),
-        )
+        ActorRef::spawn(self, Backend::Async, Some(parent_ctx.child_handle()))
     }
 }
 
@@ -2339,7 +2322,8 @@ mod tests {
         }
         impl Handler<Inspect> for Watcher {
             async fn handle(&mut self, _msg: Inspect, ctx: &Context<Self>) -> usize {
-                ctx.monitors
+                ctx.shared
+                    .monitors
                     .lock()
                     .unwrap()
                     .as_ref()
@@ -2847,13 +2831,13 @@ mod monitor_cleanup_regressions {
         let observer = Idle.start();
         let target = Idle.start();
         // Model cleanup during an unexpected unwind before token cancellation.
-        drop(MonitorCleanup(observer.monitors.clone()));
+        drop(MonitorCleanup(observer.shared.monitors.clone()));
         let child = target.child_handle();
         let waiter = child.lifetime_probe();
         observer.context().monitor(&child);
         drop(child);
         assert_eq!(waiter.strong_count(), 0);
-        assert!(observer.monitors.lock().unwrap().is_none());
+        assert!(observer.shared.monitors.lock().unwrap().is_none());
         observer.child_handle().stop();
         target.child_handle().stop();
         rt.block_on(observer.join());
@@ -2988,16 +2972,18 @@ mod turn_regressions {
             let token = CancellationToken::new();
             let (_, completion_rx) = watch::channel(None);
             let ctx = Context {
-                id: ActorId::next(),
-                sender: tx.clone(),
-                cancellation_token: token.clone(),
-                completion_rx,
-                monitors: Arc::new(Mutex::new(Some(HashMap::new()))),
-                trap_exit: new_trap_exit_flag(),
-                links: new_link_table(),
-                linked_reason: new_linked_exit_reason(),
-                mailbox: crate::instrumentation::Mailbox::default(),
-                managed: None,
+                shared: Arc::new(ActorShared {
+                    id: ActorId::next(),
+                    sender: tx.clone(),
+                    cancellation_token: token.clone(),
+                    completion_rx,
+                    monitors: Arc::new(Mutex::new(Some(HashMap::new()))),
+                    trap_exit: new_trap_exit_flag(),
+                    links: new_link_table(),
+                    linked_reason: new_linked_exit_reason(),
+                    mailbox: crate::instrumentation::Mailbox::default(),
+                    managed: None,
+                }),
             };
             let count = Arc::new(AtomicUsize::new(0));
             for _ in 0..2 {
@@ -3054,16 +3040,18 @@ mod idle_stop_regression {
             let token = CancellationToken::new();
             let (_, completion_rx) = watch::channel(None);
             let ctx = Context {
-                id: ActorId::next(),
-                sender: tx.clone(),
-                cancellation_token: token.clone(),
-                completion_rx,
-                monitors: Arc::new(Mutex::new(Some(HashMap::new()))),
-                trap_exit: new_trap_exit_flag(),
-                links: new_link_table(),
-                linked_reason: new_linked_exit_reason(),
-                mailbox: crate::instrumentation::Mailbox::default(),
-                managed: None,
+                shared: Arc::new(ActorShared {
+                    id: ActorId::next(),
+                    sender: tx.clone(),
+                    cancellation_token: token.clone(),
+                    completion_rx,
+                    monitors: Arc::new(Mutex::new(Some(HashMap::new()))),
+                    trap_exit: new_trap_exit_flag(),
+                    links: new_link_table(),
+                    linked_reason: new_linked_exit_reason(),
+                    mailbox: crate::instrumentation::Mailbox::default(),
+                    managed: None,
+                }),
             };
             let count = Arc::new(AtomicUsize::new(0));
             let mut actor = Box::pin(run_actor(
@@ -3253,6 +3241,93 @@ mod api_coverage {
             assert!(format!("{:?}", actor.context()).starts_with("Context"));
             actor.child_handle().stop();
             actor.join().await;
+||||||| 3a0df6fc
+
+#[cfg(test)]
+mod shared_state_release {
+    //! `ActorRef` and `Context` share one `Arc<ActorShared>`. Once the actor has
+    //! stopped and every handle is dropped, that block must be freed: nothing
+    //! the runtime keeps (links, monitors, child handles, the run task) may hold it.
+    use super::*;
+    use std::sync::Weak;
+
+    async fn freed<A: Actor>(weak: &Weak<ActorShared<A>>) -> bool {
+        for _ in 0..500 {
+            if weak.upgrade().is_none() {
+                return true;
+            }
+            rt::sleep(Duration::from_millis(10)).await;
+        }
+        false
+    }
+
+    struct Plain;
+    impl Actor for Plain {}
+    impl Handler<Down> for Plain {
+        async fn handle(&mut self, _: Down, _: &Context<Self>) {}
+    }
+
+    /// Keeps a clone of its own `Context` in its state.
+    struct Holder(Option<Context<Holder>>);
+    impl Actor for Holder {
+        async fn started(&mut self, ctx: &Context<Self>) {
+            self.0 = Some(ctx.clone());
+        }
+    }
+
+    #[test]
+    fn freed_after_stop_and_last_handle_dropped() {
+        rt::Runtime::new().unwrap().block_on(async {
+            let actor = Plain.start();
+            let weak = actor.shared_weak();
+            let extra = (actor.clone(), actor.context(), actor.child_handle());
+            actor.context().stop();
+            actor.join().await;
+            drop(extra);
+            drop(actor);
+            assert!(freed(&weak).await, "ActorShared outlived every handle");
+        });
+    }
+
+    #[test]
+    fn freed_when_context_was_stored_in_actor_state() {
+        rt::Runtime::new().unwrap().block_on(async {
+            let actor = Holder(None).start();
+            let weak = actor.shared_weak();
+            actor.context().stop();
+            actor.join().await;
+            drop(actor);
+            assert!(freed(&weak).await, "Context kept in actor state leaked");
+        });
+    }
+
+    #[test]
+    fn freed_with_links_and_monitors() {
+        rt::Runtime::new().unwrap().block_on(async {
+            let a = Plain.start();
+            let b = Plain.start();
+            let watcher = Plain.start();
+            a.context().trap_exit(true);
+            a.context().link(&b.child_handle());
+            let _monitor = watcher.context().monitor(&a.child_handle());
+            watcher.context().monitor(&b.child_handle());
+            let child = Plain.start_linked(&a.context());
+            let weaks = [
+                a.shared_weak(),
+                b.shared_weak(),
+                watcher.shared_weak(),
+                child.shared_weak(),
+            ];
+            for actor in [&b, &a, &watcher] {
+                actor.context().stop();
+                actor.join().await;
+            }
+            child.context().stop();
+            child.join().await;
+            drop((a, b, watcher, child));
+            for weak in &weaks {
+                assert!(freed(weak).await, "linked or monitored actor leaked");
+            }
         });
     }
 }

@@ -1,0 +1,5 @@
+error: protocol method `read__value` generates message struct `ReadValue`, which `read_value` already uses; rename one of them
+ --> tests/ui/protocol_colliding_messages.rs:6:8
+  |
+6 |     fn read__value(&self, value: u8);
+  |        ^^^^^^^^^^^

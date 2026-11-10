@@ -1,6 +1,10 @@
-//! Stack-shape budgets from fc35abaf. The sender must not enlarge owned handles
-//! that get repeated in application dispatch futures (a borrowed request alone
-//! does not detect that regression).
+//! Stack-shape budgets for handles and request futures. Owned handles are
+//! repeated in application dispatch futures (a borrowed request alone does not
+//! detect that regression), and debug builds give every move of such a future
+//! its own stack slot, so each handle word is paid many times over in callers'
+//! frames. `ActorRef` and `Context` are one pointer: spawned 0.5 handles were
+//! 4 words and the 0.7.1 ones 10-11, which cost ethrex's debug RPC dispatch
+//! ~136 KiB of extra thread stack (`RpcApiContext` holds three handles).
 #![cfg(all(feature = "async", target_pointer_width = "64"))]
 use spawned_concurrency::{
     protocol,
@@ -26,10 +30,7 @@ impl Handler<probe_protocol::Query> for Worker {
         query.value
     }
 }
-#[cfg(feature = "metrics")]
-const BASELINE_WORDS: usize = 11;
-#[cfg(not(feature = "metrics"))]
-const BASELINE_WORDS: usize = 10;
+const BASELINE_WORDS: usize = 1;
 #[derive(Clone)]
 struct Baseline([usize; BASELINE_WORDS]);
 // Match the nontrivial drop semantics of ActorRef in the generic future shapes.
@@ -76,11 +77,13 @@ async fn configured_protocol(actor: ActorRef<Worker>) -> Result<u64, ActorError>
 async fn owned_send_request_and_protocol_futures_fit_the_pre_guard_layout() {
     let actor = Worker.start();
     let baseline = Baseline([0; BASELINE_WORDS]);
-    assert!(
-        size_of_val(&actor) <= size_of::<Baseline>(),
-        "ActorRef grew beyond fc35abaf"
+    assert_eq!(
+        size_of_val(&actor),
+        size_of::<usize>(),
+        "ActorRef must stay one pointer"
     );
-    assert!(size_of::<Context<Worker>>() <= size_of::<Baseline>());
+    assert_eq!(size_of::<Context<Worker>>(), size_of::<usize>());
+    assert_eq!(size_of::<Option<ActorRef<Worker>>>(), size_of::<usize>());
     assert!(size_of_val(&send(actor.clone())) <= size_of_val(&send(baseline.clone())));
     assert!(
         size_of_val(&protocol_call(actor.clone())) <= size_of_val(&protocol_call(baseline.clone()))
@@ -102,14 +105,22 @@ async fn owned_send_request_and_protocol_futures_fit_the_pre_guard_layout() {
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     {
         let metrics = cfg!(feature = "metrics");
+        // `Response<T>` is what every generated protocol method returns, so its
+        // growth reaches callers even when the handles stay one pointer.
+        assert!(size_of::<Response<u64>>() <= if metrics { 48 } else { 24 });
+        assert!(size_of_val(&protocol_call(actor.clone())) <= if metrics { 72 } else { 48 });
+        let dispatch = rpc_dispatch(RpcContext {
+            actors: std::array::from_fn(|_| actor.clone()),
+        });
+        assert!(size_of_val(&dispatch) <= if metrics { 464 } else { 440 });
+        drop(dispatch);
         assert!(
             size_of_val(&actor.request(probe_protocol::Query { value: 1 }))
                 <= if metrics { 224 } else { 200 }
         );
-        assert!(size_of_val(&owned_request(actor.clone())) <= if metrics { 408 } else { 368 });
-        assert!(
-            size_of_val(&configured_protocol(actor.clone())) <= if metrics { 336 } else { 288 }
-        );
+        // 0.7.1 (10-11 word handles): 368/408 and 288/336.
+        assert!(size_of_val(&owned_request(actor.clone())) <= if metrics { 248 } else { 224 });
+        assert!(size_of_val(&configured_protocol(actor.clone())) <= if metrics { 96 } else { 72 });
     }
     actor.context().stop();
     actor.join().await;

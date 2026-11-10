@@ -1,0 +1,5 @@
+error: protocol parameters become message fields and must be owned ('static); use an owned type such as String or Arc<T> instead of a borrow
+ --> tests/ui/protocol_borrowed_param.rs:5:28
+  |
+5 |     fn rename(&self, name: &str);
+  |                            ^^^^

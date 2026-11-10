@@ -1,0 +1,5 @@
+error: handler methods cannot be generic; write one handler per message type
+  --> tests/ui/actor_handler_generic.rs:14:11
+   |
+14 |     fn any<M: spawned_concurrency::message::Message<Result = ()>>(&mut self, _msg: M, _ctx: &Context<Self>) {}
+   |           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

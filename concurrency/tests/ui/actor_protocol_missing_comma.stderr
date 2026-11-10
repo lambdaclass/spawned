@@ -1,0 +1,5 @@
+error: expected `,` between #[actor] parameters
+  --> tests/ui/actor_protocol_missing_comma.rs:15:36
+   |
+15 | #[actor(protocol = CounterProtocol protocol = ResetProtocol)]
+   |                                    ^^^^^^^^

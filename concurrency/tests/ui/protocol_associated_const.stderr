@@ -1,0 +1,5 @@
+error: protocol traits may only contain methods; associated types, constants, and other items are not supported
+ --> tests/ui/protocol_associated_const.rs:5:5
+  |
+5 |     const LIMIT: usize;
+  |     ^^^^^^^^^^^^^^^^^^^

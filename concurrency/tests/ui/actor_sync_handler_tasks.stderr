@@ -1,0 +1,12 @@
+error[E0277]: `u64` is not a future
+  --> tests/ui/actor_sync_handler_tasks.rs:14:61
+   |
+14 |     fn read(&mut self, _msg: Read, _ctx: &Context<Self>) -> u64 { self.0 }
+   |                                                             ^^^ `u64` is not a future
+   |
+   = help: the trait `Future` is not implemented for `u64`
+note: required by a bound in `spawned_concurrency::tasks::Handler::handle::{anon_assoc#0}`
+  --> src/tasks/actor.rs
+   |
+   |     fn handle(&mut self, msg: M, ctx: &Context<Self>) -> impl Future<Output = M::Result> + Send;
+   |                                                               ^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `Handler::handle::{anon_assoc#0}`

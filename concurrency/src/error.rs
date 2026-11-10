@@ -1,7 +1,8 @@
 /// Reason an actor stopped. Used by supervision to decide whether to restart.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ExitReason {
-    /// Clean stop via `ctx.stop()` or channel closure.
+    /// Clean stop via `ctx.stop()` or `ChildHandle::stop()`. The run loop holds
+    /// a sender to its own mailbox, so the mailbox never closes while it runs.
     Normal,
     /// Ordered shutdown from a supervisor or linked actor.
     Shutdown,

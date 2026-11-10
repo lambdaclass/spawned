@@ -1,0 +1,5 @@
+error: protocol must be named by a single identifier; import the trait first (`use path::to::Protocol;`)
+  --> tests/ui/actor_protocol_path.rs:12:20
+   |
+12 | #[actor(protocol = api::CounterProtocol)]
+   |                    ^^^^^^^^^^^^^^^^^^^^

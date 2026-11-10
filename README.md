@@ -95,6 +95,7 @@ For every feature (timers, type erasure, registry, backends, links, supervision,
 | [Migration](docs/MIGRATION.md) | Upgrade notes per version |
 | [Changelog](CHANGELOG.md) | Release history |
 | [Roadmap](ROADMAP.md) | Planned work and the ranked backlog |
+| [Semantics](docs/design/semantics.md) | Every guarantee Spawned gives (messages, requests, lifecycle, links, supervision, shutdown, timers, panics), what checks it, and what is not guaranteed |
 | [Testing](docs/TESTING.md) | Test suites, verification layers and the formal model |
 | [Design](docs/design/README.md) | Active design contracts |
 | [Research](docs/research/README.md) | Research notes behind roadmap items: virtual actors, systematic testing, Ethereum client testing, request semantics |
@@ -260,5 +261,15 @@ results. Earlier reports and backend studies are archived in [legacy](legacy/REA
 
 ## Testing
 
-Run `cargo test --workspace`. See [testing](docs/TESTING.md) for generated
-lifecycle races, failure replay, the TLA+ model and longer campaigns.
+Run `cargo test --workspace`.
+
+Spawned is verified in layers. TLA+ models of supervision, restart cohorts,
+supervisor trees and system shutdown are model-checked with TLC and their
+safety invariants proven inductive with Apalache; recorded traces from the
+Rust code are checked against those models. A deterministic simulation
+backend, Loom and ThreadSanitizer cover interleavings; failpoints and
+panic-, cancellation- and leak-safety suites cover faults; Kani, mutation
+testing and size budgets harden individual functions and tests; and Ethrex
+and Ethlambda canaries check real nodes. See
+[how spawned is verified](docs/TESTING.md#how-spawned-is-verified) for what
+each layer catches and its status.

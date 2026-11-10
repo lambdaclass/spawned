@@ -1,0 +1,5 @@
+error: #[started] and #[stopped] cannot be combined on one method
+  --> tests/ui/actor_started_and_stopped.rs:15:5
+   |
+15 |     fn lifecycle(&mut self, _ctx: &Context<Self>) {}
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
