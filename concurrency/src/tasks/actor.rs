@@ -327,6 +327,12 @@ impl<A: Actor> Context<A> {
         self.shared.mailbox.depth()
     }
 
+    /// Deferred-reply credits in use by this instance: live deferred
+    /// tokens plus running linked jobs (bounded by `Actor::MAX_OUTSTANDING`).
+    pub fn deferred_outstanding(&self) -> usize {
+        self.shared.replies.outstanding()
+    }
+
     /// The actor's unique identity.
     pub fn id(&self) -> ActorId {
         self.shared.id
