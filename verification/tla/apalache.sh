@@ -45,6 +45,7 @@ done
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 cp "$here"/*.tla "$work"/
+chmod u+w "$work"/*.tla  # sources may be read-only (nix store)
 cd "$work"
 
 status=0
@@ -89,7 +90,7 @@ prove() {  # prove DIR MODULE PREFIX ACTIONS(yes|no) PROBES...
 # mutation breaks a reachable behaviour, not only an unreachable IndInv state.
 mutate() {
   local module="$1" name="$2" file="$3" subst="$4" inv="$5" reach="${6:-}"
-  local dir="$work/mut-$name"
+  local dir="$work/mut-$module-$name"  # Cohorts and Nested share fault names
   mkdir -p "$dir"
   cp "$work"/*.tla "$dir"/
   perl -0pi -e "$subst" "$dir/$file"
