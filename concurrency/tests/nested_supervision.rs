@@ -490,6 +490,8 @@ async fn subtree_startup_timeout_bounds_a_hung_child_factory() {
         .expect("subtree startup_timeout did not bound the hung child");
     assert!(started.is_err());
     assert!(system.shutdown(LIMIT).await.complete);
+}
+
 /// Stops itself `Normal` before readiness when `stop` is set.
 struct MaybeStop(bool);
 impl Actor for MaybeStop {
