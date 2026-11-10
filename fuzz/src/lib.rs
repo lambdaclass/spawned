@@ -22,6 +22,11 @@ pub mod scenario;
 mod world;
 
 pub use driver::run_body;
+
+/// Violation details (kind: detail) of the last failing run on this thread.
+pub fn last_details() -> Vec<String> {
+    driver::LAST_DETAILS.with(|d| d.borrow().clone())
+}
 pub use scenario::*;
 
 use spawned_rt::tasks::sim::{
@@ -105,6 +110,9 @@ pub fn fuzz_one(scenario: &Scenario) {
         return;
     };
     eprintln!("spawned-fuzz: FAILED: {failure}");
+    for detail in last_details() {
+        eprintln!("spawned-fuzz:   {detail}");
+    }
     eprintln!("spawned-fuzz: strategy {}, seed {}", strategy(scenario.sched), scenario.seed);
     if let Some(tape) = &run.tape {
         let dir = std::env::var_os("SPAWNED_FUZZ_TAPE_DIR")
@@ -145,8 +153,15 @@ pub fn assert_passes(input: &[u8], tape: Option<&str>) {
     assert_eq!(run.failure, None, "scenario fails under its own schedule");
     if let Some(text) = tape {
         let tape = Tape::parse(text).expect("regression tape does not parse");
-        let run = execute(&scenario, Some(&tape));
-        assert_eq!(run.failure, None, "scenario fails under its recorded tape");
+        let mut failure = execute(&scenario, Some(&tape)).failure;
+        // After a fix the recorded schedule may no longer apply exactly
+        // (other tasks, other picks): follow it as far as it goes instead.
+        if failure.as_deref().is_some_and(|f| f.contains("replay diverged")) {
+            let body = |seed: u64| run_body(scenario.clone(), seed);
+            failure = sim::run_with(tape.seed, Some((&tape, sim::ReplayMode::Permissive)), &body)
+                .failure;
+        }
+        assert_eq!(failure, None, "scenario fails under its recorded tape");
     }
 }
 

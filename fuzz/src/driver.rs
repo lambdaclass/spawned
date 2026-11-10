@@ -4,7 +4,7 @@
 //! so a run is a function of the input, the seed and the strategy.
 
 use crate::scenario::*;
-use crate::world::{factory_call, now, Act, Do, Note, SupInst, Worker, World};
+use crate::world::{factory_call, now, Act, Do, SupInst, Worker, World};
 use spawned_concurrency::{
     registry,
     supervision::{
