@@ -516,6 +516,64 @@ start from the real initial values and do not explore exhaustion. The
 values are never compared. Times are from Kani 0.68 on an Apple M-series
 laptop; CI pins the same Kani version (`.github/workflows/kani.yml`).
 
+## Failpoints
+
+With the `failpoints` feature (off by default; the sites compile to nothing
+otherwise, and CI checks a default release binary contains no failpoint strings
+or symbols) Spawned's own lifecycle code has named fault-injection sites, in the
+style of FoundationDB `BUGGIFY` and etcd `gofail`. Tests configure a site at
+runtime through `spawned_concurrency::failpoints`:
+
+```rust
+let _scenario = FailScenario::setup(); // serializes tests, clears sites on drop
+failpoints::configure("child.factory", FailPoint::new(Action::Error).times(3))?;
+failpoints::configure("supervisor.before_restart", Action::Delay(Duration::from_millis(300)))?;
+failpoints::configure("registry.before_register", FailPoint::new(Action::Error).probability(0.2))?;
+```
+
+Actions are `Off`, `Panic`, `Error` (only at sites with an error path),
+`Delay(d)` (async sleep at async sites, thread sleep otherwise) and `Yield`;
+`probability(p)`, `skip(n)` and `times(n)` refine when a site fires, and
+`stats(site)` reports hits and fires. Probabilities draw from a per-site
+generator derived from one seed; `FailScenario` reads `SPAWNED_FAILPOINTS_SEED`
+and prints the seed when a test fails. Configuration is process-global.
+
+| Site | Error path | Models |
+|---|---|---|
+| `actor.before_started` | no | Failing or slow `started()` (tasks and threads) |
+| `actor.after_started_before_ready` | no | Owner shutdown racing a managed actor's readiness |
+| `actor.before_stopped` | no | Failing or slow `stopped()` (tasks and threads) |
+| `child.factory` | yes | Failed, panicking or slow child construction |
+| `child.after_ready_before_publish` | yes | Stop or recovery racing publication of a ready generation |
+| `child.before_cleanup_join` | no | Slowly scheduled controller before its cleanup deadline |
+| `supervisor.before_restart` | no | Stop racing a restart decision; controller panic |
+| `supervisor.during_backoff` | no | Stop racing the retry after backoff |
+| `shutdown.before_stop_child` | no | Supervisor stop turn consuming its deadline |
+| `system.shutdown_before_target` | no | System shutdown coordinator consuming its grace |
+| `system.group_start` | yes | Group construction failure after runtimes were built (rollback) |
+| `system.reserve` | yes | Placement failure (`SystemError::Capacity`) |
+| `registry.before_register` | yes | Shutdown racing managed name registration |
+| `registry.before_unregister` | no | Slow removal of an owned name before a replacement starts |
+| `link.before_install` | no | Peer exiting while a link is installed (tasks and threads) |
+| `monitor.before_install` | no | Target exiting while a monitor is installed (tasks and threads) |
+
+`tests/failpoints.rs` drives every site and checks invariants through public
+APIs: restarts follow the budget (generation count equals injected failures
+plus started actors), a stop during a restart or publication window starts or
+publishes nothing, shutdown reports at its deadline and later completes,
+discarded generations are stopped, and registry entries never outlive their
+owner.
+
+```bash
+cargo test -p spawned-concurrency --features failpoints --test failpoints
+```
+
+Panics injected into the supervisor coordinator (`shutdown.before_stop_child`)
+and the system shutdown coordinator (`system.shutdown_before_target`) are
+reported (`ShutdownReport::failure`, `coordinator_failures`) and followed by an
+emergency stop-and-join, and a child whose supervisor fails during initial
+placement ends `Failed` deterministically. Before v0.7.1 these were ignored
+known-gap tests.
 
 ## Native integration matrix
 

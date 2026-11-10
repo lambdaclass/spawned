@@ -351,6 +351,7 @@ impl<A: Actor> Context<A> {
     where
         A: Handler<Down>,
     {
+        fail_point!("monitor.before_install");
         let monitor_ref = MonitorRef::next();
         let active = spawned_rt::sync::CancellationToken::new();
 
@@ -856,6 +857,7 @@ fn run_actor_receiving<A: Actor>(
     let mut discarded = None;
     let _monitor_cleanup = MonitorCleanup(ctx.monitors.clone());
     let start_result = catch_unwind(AssertUnwindSafe(|| {
+        fail_point!("actor.before_started");
         actor.started(&ctx);
     }));
     if let Err(panic) = start_result {
@@ -868,7 +870,10 @@ fn run_actor_receiving<A: Actor>(
     }
 
     if cancellation_token.is_cancelled() {
-        if let Err(panic) = catch_unwind(AssertUnwindSafe(|| actor.stopped(&ctx))) {
+        if let Err(panic) = catch_unwind(AssertUnwindSafe(|| {
+            fail_point!("actor.before_stopped");
+            actor.stopped(&ctx)
+        })) {
             let msg = panic_message(&*panic);
             crate::actor_cleanup::log_safely(|| {
                 tracing::error!("Panic in stopped() callback: {msg}");
@@ -932,6 +937,7 @@ fn run_actor_receiving<A: Actor>(
 
     cancellation_token.cancel();
     let stop_result = catch_unwind(AssertUnwindSafe(|| {
+        fail_point!("actor.before_stopped");
         actor.stopped(&ctx);
     }));
     if let Err(panic) = stop_result {

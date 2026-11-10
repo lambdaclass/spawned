@@ -102,7 +102,9 @@ impl GroupInner {
                     }
                 }
             }
-
+            fail_point!("system.group_start" => {
+                return Err(SystemError::Runtime("failpoint system.group_start".into()))
+            });
             Ok(())
         })();
         if let Err(error) = result {

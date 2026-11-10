@@ -1040,6 +1040,12 @@ exercise readiness, cancellation, rollback, restart limits and incomplete cleanu
 These APIs do not establish a full-client performance improvement; measure actual
 application workloads with equal resource budgets.
 
+To test how your application survives framework-level faults (a failing child
+factory, a slow `stopped()`, a stop racing a restart, a placement failure),
+enable the test-only `failpoints` feature in dev-dependencies and arm named
+sites from tests; see [failpoints](TESTING.md#failpoints). Never enable it in
+production builds.
+
 
 
 

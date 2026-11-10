@@ -79,6 +79,12 @@
 #[path = "../tests/support/drop_subprocess.rs"]
 mod drop_subprocess;
 
+// Must precede the modules that place `fail_point!` sites.
+#[macro_use]
+mod failpoint_macro;
+#[cfg(feature = "failpoints")]
+pub mod failpoints;
+
 pub mod child_handle;
 pub mod error;
 #[cfg(feature = "async")]

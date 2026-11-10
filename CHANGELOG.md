@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Optional `failpoints` feature (off by default, compiled out otherwise): 16
+  named fault-injection sites in actor startup/stop, supervision, shutdown,
+  placement, registration, links and monitors, configurable from tests with
+  panic, error, delay, yield, seeded probability and count limits
+  (`spawned_concurrency::failpoints`). Ported onto the v0.7.1 lifecycle code;
+  the coordinator-panic and never-started-child scenarios that were known gaps
+  before v0.7.1 now run as regular tests. See
+  [testing](docs/TESTING.md#failpoints).
+
 ## 0.7.1 — 2026-11-10
 
 - Contain tracing subscriber panics in caught lifecycle-panic diagnostics and

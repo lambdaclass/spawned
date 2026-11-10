@@ -26,6 +26,10 @@ trybuild = "1"
 # `--no-default-features` test builds Tokio-free.
 spawned-test = { path = "../testing", default-features = false }
 
+[[test]]
+name = "failpoints"
+required-features = ["failpoints", "async"]
+
 [[bench]]
 name = "baseline"
 harness = false
@@ -44,6 +48,9 @@ diagnostics = ["async"]
 # Record supervisor lifecycle events for TLA+ trace validation
 # (verification/tla/README.md). Test-only; disabled by default.
 lifecycle-trace = ["async"]
+# Named fault-injection sites in lifecycle code (`failpoints` module). Test-only;
+# disabled by default, and the sites compile to nothing without it.
+failpoints = []
 io-experiments = ["async", "dep:monoio"]
 # Private benchmark prototypes; no stable runtime-selection API.
 backend-experiments = ["async", "spawned-rt/backend-experiments"]

@@ -148,7 +148,7 @@ pub(crate) fn register_link(
     if own_id == peer_id || Arc::ptr_eq(own, peer) {
         return;
     }
-
+    fail_point!("link.before_install");
     let closed = with_pair(own, peer, |a, b| {
         if a.exited.is_some() || a.entries.iter().any(|e| e.peer_id == peer_id) {
             return None;
