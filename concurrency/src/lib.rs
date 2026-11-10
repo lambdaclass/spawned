@@ -121,6 +121,8 @@ mod native_link_regression_tests;
 
 mod actor_cleanup;
 mod mailbox;
+#[allow(dead_code)] // wired into the request path in the next steps
+mod reply;
 
 mod instrumentation;
 #[cfg(feature = "metrics")]

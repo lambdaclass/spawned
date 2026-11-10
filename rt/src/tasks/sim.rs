@@ -1956,6 +1956,13 @@ fn running_world() -> Option<Arc<Shared>> {
 pub struct Instant(Duration);
 
 impl Instant {
+    /// Virtual time since the simulation started (the clock-tick seam).
+    pub(crate) fn since_start(&self) -> Duration {
+        self.0
+    }
+    pub(crate) fn from_start(elapsed: Duration) -> Self {
+        Self(elapsed)
+    }
     pub fn now() -> Self {
         match running_world() {
             Some(shared) => Self(lock(&shared.state).now),
