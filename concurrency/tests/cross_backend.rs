@@ -335,11 +335,16 @@ mod threads_node {
                             .peers
                             .iter()
                             .enumerate()
-                            .map(|(i, peer)| peer.request_raw(Cmd::Echo(v + i as u64)))
+                            .map(|(i, peer)| {
+                                peer.request_raw_until(
+                                    Cmd::Echo(v + i as u64),
+                                    spawned_concurrency::Deadline::after(LIMIT),
+                                )
+                            })
                             .collect();
                         let mut values = Vec::new();
                         for rx in pending {
-                            match rx.map(|rx| rx.recv_timeout(LIMIT)) {
+                            match rx.map(|rx| rx.recv()) {
                                 Ok(Ok(Reply::Value(v))) => values.push(v),
                                 _ => return Reply::Failed,
                             }

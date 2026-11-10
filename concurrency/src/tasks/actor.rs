@@ -9,6 +9,7 @@ use crate::message::Message;
 use crate::monitor::{Down, MonitorCleanup, MonitorRef, MonitorTable};
 use crate::reply::{registry::Registry, reply_slot, SlotHandle};
 #[doc(no_inline)]
+#[allow(unused_imports)] // re-exported for `use spawned_concurrency::tasks::*` users
 pub use crate::reply::{
     Deadline, DeferError, Delivery, PendingReply, ReplyReceiver, ReplyTo, DEFAULT_MAX_OUTSTANDING,
 };
@@ -2172,13 +2173,12 @@ mod tests {
                 async fn handle(
                     &mut self,
                     _msg: Explode,
-                    reply: crate::reply::PendingReply<'_, ()>,
+                    _reply: crate::reply::PendingReply<'_, ()>,
                     _ctx: &Context<Self>,
                 ) {
                     {
                         panic!("boom in handler");
                     }
-                    let _ = reply.reply(());
                 }
             }
             impl Handler<Check> for PanicOnMsg {
@@ -2324,13 +2324,12 @@ mod tests {
             async fn handle(
                 &mut self,
                 _msg: Explode,
-                reply: crate::reply::PendingReply<'_, ()>,
+                _reply: crate::reply::PendingReply<'_, ()>,
                 _ctx: &Context<Self>,
             ) {
                 {
                     panic!("boom in handler");
                 }
-                let _ = reply.reply(());
             }
         }
 
@@ -2616,13 +2615,12 @@ mod tests {
             async fn handle(
                 &mut self,
                 _msg: PanicMsg,
-                reply: crate::reply::PendingReply<'_, ()>,
+                _reply: crate::reply::PendingReply<'_, ()>,
                 _ctx: &Context<Self>,
             ) {
                 {
                     panic!("intentional panic");
                 }
-                let _ = reply.reply(());
             }
         }
 
@@ -2761,13 +2759,12 @@ mod tests {
                 async fn handle(
                     &mut self,
                     _msg: Boom,
-                    reply: crate::reply::PendingReply<'_, ()>,
+                    _reply: crate::reply::PendingReply<'_, ()>,
                     _ctx: &Context<Self>,
                 ) {
                     {
                         panic!("boom");
                     }
-                    let _ = reply.reply(());
                 }
             }
 
@@ -2797,13 +2794,12 @@ mod tests {
                 async fn handle(
                     &mut self,
                     _msg: Boom2,
-                    reply: crate::reply::PendingReply<'_, ()>,
+                    _reply: crate::reply::PendingReply<'_, ()>,
                     _ctx: &Context<Self>,
                 ) {
                     {
                         panic!("boom2");
                     }
-                    let _ = reply.reply(());
                 }
             }
 
@@ -2864,13 +2860,12 @@ mod tests {
                 async fn handle(
                     &mut self,
                     _msg: Boom3,
-                    reply: crate::reply::PendingReply<'_, ()>,
+                    _reply: crate::reply::PendingReply<'_, ()>,
                     _ctx: &Context<Self>,
                 ) {
                     {
                         panic!("boom3");
                     }
-                    let _ = reply.reply(());
                 }
             }
             let target = make_trapper(false);
@@ -2936,13 +2931,12 @@ mod tests {
                 async fn handle(
                     &mut self,
                     _msg: Boom4,
-                    reply: crate::reply::PendingReply<'_, u64>,
+                    _reply: crate::reply::PendingReply<'_, u64>,
                     _ctx: &Context<Self>,
                 ) {
-                    let __reply_value: u64 = {
+                    let _reply_value: u64 = {
                         panic!("boom4");
                     };
-                    let _ = reply.reply(__reply_value);
                 }
             }
             // Counter's Boom4 returns u64; just use send with no expectation of reply
@@ -2977,13 +2971,12 @@ mod tests {
                 async fn handle(
                     &mut self,
                     _msg: Boom5,
-                    reply: crate::reply::PendingReply<'_, u64>,
+                    _reply: crate::reply::PendingReply<'_, u64>,
                     _ctx: &Context<Self>,
                 ) {
-                    let __reply_value: u64 = {
+                    let _reply_value: u64 = {
                         panic!("boom5");
                     };
-                    let _ = reply.reply(__reply_value);
                 }
             }
             let _ = a.send(Boom5);
@@ -3028,13 +3021,12 @@ mod tests {
                 async fn handle(
                     &mut self,
                     _msg: Boom6,
-                    reply: crate::reply::PendingReply<'_, ()>,
+                    _reply: crate::reply::PendingReply<'_, ()>,
                     _ctx: &Context<Self>,
                 ) {
                     {
                         panic!("boom6");
                     }
-                    let _ = reply.reply(());
                 }
             }
             let _ = a.send(Boom6);
@@ -3069,13 +3061,12 @@ mod tests {
             async fn handle(
                 &mut self,
                 _msg: Boom7,
-                reply: crate::reply::PendingReply<'_, ()>,
+                _reply: crate::reply::PendingReply<'_, ()>,
                 _ctx: &Context<Self>,
             ) {
                 {
                     panic!("boom7");
                 }
-                let _ = reply.reply(());
             }
         }
 
@@ -3125,13 +3116,12 @@ mod tests {
             async fn handle(
                 &mut self,
                 _msg: PanicParent,
-                reply: crate::reply::PendingReply<'_, ()>,
+                _reply: crate::reply::PendingReply<'_, ()>,
                 _ctx: &Context<Self>,
             ) {
                 {
                     panic!("parent boom");
                 }
-                let _ = reply.reply(());
             }
         }
 
@@ -3336,6 +3326,7 @@ mod turn_regressions {
                     linked_reason: new_linked_exit_reason(),
                     mailbox: crate::instrumentation::Mailbox::default(),
                     managed: None,
+                    replies: Registry::new(ActorId::next(), DEFAULT_MAX_OUTSTANDING),
                 }),
             };
             let count = Arc::new(AtomicUsize::new(0));
@@ -3412,6 +3403,7 @@ mod idle_stop_regression {
                     linked_reason: new_linked_exit_reason(),
                     mailbox: crate::instrumentation::Mailbox::default(),
                     managed: None,
+                    replies: Registry::new(ActorId::next(), DEFAULT_MAX_OUTSTANDING),
                 }),
             };
             let count = Arc::new(AtomicUsize::new(0));
@@ -3426,10 +3418,10 @@ mod idle_stop_regression {
             // Start and park the actual actor loop, without allowing another
             // executor task to run it between admission and stop below.
             assert!(futures::poll!(actor.as_mut()).is_pending());
-            let (reply, response) = oneshot::channel();
+            let (slot, response) = reply_slot(crate::reply::Deadline::Never);
             tx.send(Box::new(MessageEnvelope {
                 msg: Increment,
-                tx: Some(reply),
+                slot,
                 #[cfg(feature = "metrics")]
                 observation: None,
             }) as Box<dyn Envelope<Counter> + Send>)
@@ -3512,13 +3504,12 @@ mod api_coverage {
         async fn handle(
             &mut self,
             _: Boom,
-            reply: crate::reply::PendingReply<'_, ()>,
+            _reply: crate::reply::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
             {
                 panic!("boom");
             }
-            let _ = reply.reply(());
         }
     }
 

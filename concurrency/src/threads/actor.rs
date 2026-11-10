@@ -18,6 +18,7 @@ use crate::message::Message;
 use crate::monitor::{Down, MonitorCleanup, MonitorRef, MonitorTable};
 use crate::reply::{registry::Registry, reply_slot, SlotHandle};
 #[doc(no_inline)]
+#[allow(unused_imports)] // re-exported for `use spawned_concurrency::threads::*` users
 pub use crate::reply::{
     Deadline, DeferError, Delivery, PendingReply, ReplyReceiver, ReplyTo, DEFAULT_MAX_OUTSTANDING,
 };
@@ -1265,13 +1266,12 @@ mod tests {
             fn handle(
                 &mut self,
                 _msg: ExplodeThread,
-                reply: crate::reply::PendingReply<'_, ()>,
+                _reply: crate::reply::PendingReply<'_, ()>,
                 _ctx: &Context<Self>,
             ) {
                 {
                     panic!("boom in handler");
                 }
-                let _ = reply.reply(());
             }
         }
         impl Handler<CheckThread> for PanicOnMsg {
@@ -1392,13 +1392,12 @@ mod tests {
             fn handle(
                 &mut self,
                 _msg: ExplodeThread2,
-                reply: crate::reply::PendingReply<'_, ()>,
+                _reply: crate::reply::PendingReply<'_, ()>,
                 _ctx: &Context<Self>,
             ) {
                 {
                     panic!("boom in handler");
                 }
-                let _ = reply.reply(());
             }
         }
 
@@ -1589,13 +1588,12 @@ mod tests {
             fn handle(
                 &mut self,
                 _msg: PanicMsg,
-                reply: crate::reply::PendingReply<'_, ()>,
+                _reply: crate::reply::PendingReply<'_, ()>,
                 _ctx: &Context<Self>,
             ) {
                 {
                     panic!("intentional panic");
                 }
-                let _ = reply.reply(());
             }
         }
 
@@ -1684,13 +1682,12 @@ mod tests {
             fn handle(
                 &mut self,
                 _msg: Boom,
-                reply: crate::reply::PendingReply<'_, ()>,
+                _reply: crate::reply::PendingReply<'_, ()>,
                 _ctx: &Context<Self>,
             ) {
                 {
                     panic!("boom");
                 }
-                let _ = reply.reply(());
             }
         }
 
@@ -1715,13 +1712,12 @@ mod tests {
             fn handle(
                 &mut self,
                 _msg: Boom,
-                reply: crate::reply::PendingReply<'_, ()>,
+                _reply: crate::reply::PendingReply<'_, ()>,
                 _ctx: &Context<Self>,
             ) {
                 {
                     panic!("boom");
                 }
-                let _ = reply.reply(());
             }
         }
 
@@ -1758,13 +1754,12 @@ mod tests {
             fn handle(
                 &mut self,
                 _msg: PanicParent,
-                reply: crate::reply::PendingReply<'_, ()>,
+                _reply: crate::reply::PendingReply<'_, ()>,
                 _ctx: &Context<Self>,
             ) {
                 {
                     panic!("parent boom");
                 }
-                let _ = reply.reply(());
             }
         }
 
@@ -1933,6 +1928,7 @@ mod idle_stop_regression {
             links: new_link_table(),
             linked_reason: new_linked_exit_reason(),
             mailbox: crate::instrumentation::Mailbox::default(),
+            replies: Registry::new(ActorId::next(), DEFAULT_MAX_OUTSTANDING),
         };
         let count = Arc::new(AtomicUsize::new(0));
         let seen = count.clone();
@@ -1960,10 +1956,10 @@ mod idle_stop_regression {
             )
         });
         entered.wait();
-        let (reply, response) = oneshot::channel();
+        let (slot, response) = reply_slot(crate::reply::Deadline::Never);
         tx.send(MailboxItem::Message(Box::new(MessageEnvelope {
             msg: Increment(events.clone(), monitors),
-            tx: Some(reply),
+            slot,
             #[cfg(feature = "metrics")]
             observation: None,
         })))
@@ -2054,6 +2050,7 @@ mod stop_wakeup_regression {
             links: new_link_table(),
             linked_reason: new_linked_exit_reason(),
             mailbox: crate::instrumentation::Mailbox::default(),
+            replies: Registry::new(ActorId::next(), DEFAULT_MAX_OUTSTANDING),
         };
         let (entered_tx, entered) = mpsc::channel();
         let (stopped_tx, stopped) = mpsc::channel();
@@ -2088,13 +2085,12 @@ mod stop_wakeup_regression {
         fn handle(
             &mut self,
             _: Crash,
-            reply: crate::reply::PendingReply<'_, ()>,
+            _reply: crate::reply::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
             {
                 panic!("linked wakeup regression");
             }
-            let _ = reply.reply(());
         }
     }
 
@@ -2189,12 +2185,9 @@ mod stop_wakeup_regression {
             }
         });
         release.send(()).unwrap();
-        first.recv_timeout(Duration::from_secs(2)).unwrap();
+        first.recv().unwrap();
         for reply in replies {
-            assert!(matches!(
-                reply.recv_timeout(Duration::from_secs(2)),
-                Err(RecvTimeoutError::Disconnected)
-            ));
+            assert!(matches!(reply.recv(), Err(ActorError::ActorStopped)));
         }
         assert_eq!(actor.wait_exit(), ExitReason::Normal);
         assert_eq!(handled.load(Ordering::SeqCst), 1);
@@ -2272,13 +2265,12 @@ mod api_coverage {
         fn handle(
             &mut self,
             _: Boom,
-            reply: crate::reply::PendingReply<'_, ()>,
+            _reply: crate::reply::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
             {
                 panic!("boom");
             }
-            let _ = reply.reply(());
         }
     }
 

@@ -33,7 +33,7 @@ impl Handler<Crash> for Fixture {
     async fn handle(
         &mut self,
         _: Crash,
-        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _reply: spawned_concurrency::reply::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
         {
@@ -49,7 +49,6 @@ impl Handler<Crash> for Fixture {
                 std::thread::park();
             }
         }
-        let _ = reply.reply(());
     }
 }
 #[test]

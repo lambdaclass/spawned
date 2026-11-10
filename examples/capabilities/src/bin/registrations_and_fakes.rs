@@ -40,13 +40,12 @@ impl Handler<Crash> for Service {
     async fn handle(
         &mut self,
         _: Crash,
-        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _reply: spawned_concurrency::reply::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
         {
             panic!("intentional named-service replacement");
         }
-        let _ = reply.reply(());
     }
 }
 #[tokio::main(flavor = "current_thread")]

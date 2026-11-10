@@ -34,13 +34,12 @@ impl Handler<Crash> for Counter {
     async fn handle(
         &mut self,
         _: Crash,
-        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _reply: spawned_concurrency::reply::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
         {
             panic!("intentional recovery example failure");
         }
-        let _ = reply.reply(());
     }
 }
 #[tokio::main(flavor = "current_thread")]

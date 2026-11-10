@@ -239,13 +239,12 @@ mod async_leaks {
         async fn handle(
             &mut self,
             _: Crash,
-            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            _reply: spawned_concurrency::reply::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
             {
                 panic!("injected failure for leak test");
             }
-            let _ = reply.reply(());
         }
     }
     impl Handler<Down> for Probe {

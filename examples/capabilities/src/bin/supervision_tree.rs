@@ -22,13 +22,12 @@ impl Handler<Fail> for Worker {
     async fn handle(
         &mut self,
         _: Fail,
-        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _reply: spawned_concurrency::reply::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
         {
             panic!("example failure");
         }
-        let _ = reply.reply(());
     }
 }
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
