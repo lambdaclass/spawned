@@ -15,7 +15,10 @@
 #   actions  IndInv /\ Next => action props  --init=IndInv --inv=ActionProps --length=1
 #   probe-*  IndInv admits states far outside TLC's bounds (must be violated)
 # The step check starts from every state satisfying IndInv, so it is not
-# bounded by depth or by MaxGen/MaxRounds, only by the fixed constants.
+# bounded by depth (and, for Supervision, not by MaxGen: generations are
+# unbounded integers). It is still one instance size: the fixed constants.
+# In Cohorts and NestedSupervision MaxGen/MaxRounds are action guards, i.e.
+# part of the checked system.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
