@@ -91,9 +91,7 @@ fn check_order(events: &[Event], reason: &Option<ExitReason>) {
 
 mod native {
     use super::*;
-    use spawned_concurrency::threads::{
-        request, Actor, ActorStart, Context, Handler, Recipient,
-    };
+    use spawned_concurrency::threads::{request, Actor, ActorStart, Context, Handler, Recipient};
     use std::sync::mpsc;
 
     struct Observer(mpsc::Sender<Event>);
@@ -174,19 +172,25 @@ mod native {
     fn panicking_request_handler_gives_the_caller_actor_stopped() {
         let actor = Panicker.start();
         let result = actor.request_with_timeout(Boom, LIMIT);
-        assert!(matches!(result, Err(ActorError::ActorStopped)), "{result:?}");
+        assert!(
+            matches!(result, Err(ActorError::ActorStopped)),
+            "{result:?}"
+        );
         assert!(matches!(actor.wait_exit(), ExitReason::Panic(_)));
 
         let erased = Panicker.start();
         let recipient: Recipient<Boom> = erased.recipient();
         let result = request(&*recipient, Boom, LIMIT);
-        assert!(matches!(result, Err(ActorError::ActorStopped)), "{result:?}");
+        assert!(
+            matches!(result, Err(ActorError::ActorStopped)),
+            "{result:?}"
+        );
 
         let raw = Panicker.start();
         let receiver = raw.request_raw(Boom).unwrap();
-        assert!(receiver.recv_timeout(LIMIT).is_err_and(|e| {
-            e == std::sync::mpsc::RecvTimeoutError::Disconnected
-        }));
+        assert!(receiver
+            .recv_timeout(LIMIT)
+            .is_err_and(|e| { e == std::sync::mpsc::RecvTimeoutError::Disconnected }));
     }
 }
 
@@ -312,7 +316,10 @@ mod tasks {
         assert_eq!(fired - start, PERIOD);
         // Paused time auto-advances while idle, so this waits ten periods of
         // virtual time without a wall-clock sleep.
-        assert!(timeout(PERIOD * 10, rx.recv()).await.is_err(), "fired twice");
+        assert!(
+            timeout(PERIOD * 10, rx.recv()).await.is_err(),
+            "fired twice"
+        );
     }
 
     /// T2: after a clock jump of 3.5 periods the interval fires once (no
@@ -473,7 +480,10 @@ mod tasks {
         actors.push(Panicker.start_on(&group).unwrap());
         for actor in actors {
             let result = actor.request_with_timeout(Boom, LIMIT).await;
-            assert!(matches!(result, Err(ActorError::ActorStopped)), "{result:?}");
+            assert!(
+                matches!(result, Err(ActorError::ActorStopped)),
+                "{result:?}"
+            );
             let reason = timeout(LIMIT, actor.wait_exit()).await.unwrap();
             assert!(matches!(reason, ExitReason::Panic(_)), "{reason:?}");
         }
@@ -481,7 +491,10 @@ mod tasks {
         let erased = Panicker.start();
         let recipient: Recipient<Boom> = erased.recipient();
         let result = request(&*recipient, Boom, LIMIT).await;
-        assert!(matches!(result, Err(ActorError::ActorStopped)), "{result:?}");
+        assert!(
+            matches!(result, Err(ActorError::ActorStopped)),
+            "{result:?}"
+        );
 
         let raw = Panicker.start();
         let receiver = raw.request_raw(Boom).unwrap();

@@ -10,6 +10,9 @@
 //! Without arguments it is the parent: it runs itself once per scenario in a
 //! child process and checks how each child ended. Test harnesses always unwind,
 //! so this is an example binary rather than a `#[test]`.
+// Without the abort profile only the guard in `main` is used.
+#![cfg_attr(not(panic = "abort"), allow(dead_code))]
+
 use spawned_concurrency::{
     message::Message,
     supervision::{Backoff, ChildSpec, RestartMode, SupervisorConfig},
@@ -197,7 +200,11 @@ fn parent() {
                 outcome.stdout
             );
         }
-        assert!(outcome.stderr.contains(PANIC_TEXT), "{scenario}: {}", outcome.stderr);
+        assert!(
+            outcome.stderr.contains(PANIC_TEXT),
+            "{scenario}: {}",
+            outcome.stderr
+        );
         println!("{scenario}: process aborted, no stopped(), no reply");
     }
     let outcome = run_child("supervised-exits");
@@ -213,11 +220,14 @@ fn parent() {
     println!("supervised-exits: Kill restarted, Shutdown stayed stopped");
 }
 
+#[cfg(not(panic = "abort"))]
 fn main() {
-    assert!(
-        cfg!(panic = "abort"),
-        "build with --profile panic-abort (panic = \"abort\")"
-    );
+    eprintln!("build with --profile panic-abort (panic = \"abort\")");
+    std::process::exit(2);
+}
+
+#[cfg(panic = "abort")]
+fn main() {
     match std::env::args().nth(1).as_deref() {
         None => parent(),
         Some("threads-handler-panic") => native::handler_panic(),
