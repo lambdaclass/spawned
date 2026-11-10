@@ -101,6 +101,13 @@
   `--cfg spawned_sim`): PCT and a delay-bounded DFS that reports exhaustion,
   recorded into the decision tape and selected with `SPAWNED_SIM_STRATEGY` or
   `#[sim_test(explore = "pct:d=3", iterations = N)]`, plus planted-bug tests.
+  PCT associates each change point with its own priority independently of
+  time order (as in the paper) and counts steps at contested polls; DFS
+  reports when the depth or fairness cutoff truncated the space, keeps
+  `SPAWNED_SIM_SEED` as every schedule's input, and fails a test whose body
+  does not replay; strategies accept `fair=N`. Each planted bug is checked by
+  its own failure message, and the three-worker control fails only when all
+  reads precede every write.
 
 ## 0.7.2 — 2026-11-10
 

@@ -88,6 +88,30 @@ impl SimTest {
         self
     }
 
+    /// First seed and number of runs for `strategy`. `SPAWNED_SIM_SEED`
+    /// (`seed`) fixes the body's input: a single run for random and PCT, and
+    /// the input of every schedule for DFS (which varies the schedule, not
+    /// the seed).
+    #[cfg(spawned_sim)]
+    fn runs(
+        &self,
+        strategy: &super::sim::explore::Strategy,
+        seed: Option<u64>,
+        iterations: Option<usize>,
+    ) -> (u64, usize) {
+        use super::sim::explore::Strategy;
+        match (strategy, seed) {
+            (Strategy::Dfs { .. }, seed) => (seed.unwrap_or(0), iterations.unwrap_or(100)),
+            (_, Some(seed)) => (seed, 1),
+            (Strategy::Random, None) => match (&self.seeds, iterations) {
+                (Some(seeds), _) => (seeds.start, seeds.end.saturating_sub(seeds.start) as usize),
+                (None, Some(n)) => (0, n),
+                (None, None) => (0, env_u64("SPAWNED_SIM_SEEDS").unwrap_or(8) as usize),
+            },
+            (Strategy::Pct { .. }, None) => (0, iterations.unwrap_or(100)),
+        }
+    }
+
     /// The libtest name (`path::to::test`) and a `cargo test` selector.
     #[cfg_attr(not(spawned_sim), allow(dead_code))]
     fn locate(&self) -> (String, String) {
@@ -145,10 +169,14 @@ impl SimTest {
         let (name, command) = self.locate();
         // Scheduling settings that change what a seed does travel with the
         // replay command (a tape records its own).
-        let settings: String = ["SPAWNED_SIM_SPIN", "SPAWNED_SIM_MAX_STEPS"]
-            .iter()
-            .filter_map(|key| std::env::var(key).ok().map(|v| format!("{key}={v} ")))
-            .collect();
+        let settings: String = [
+            "SPAWNED_SIM_SPIN",
+            "SPAWNED_SIM_MAX_STEPS",
+            "SPAWNED_SIM_FAIR_AFTER",
+        ]
+        .iter()
+        .filter_map(|key| std::env::var(key).ok().map(|v| format!("{key}={v} ")))
+        .collect();
         let replay = |prefix: &str| {
             format!(
                 "{settings}{prefix} RUSTFLAGS=\"--cfg spawned_sim --cfg tokio_unstable\" {command}"
@@ -179,28 +207,29 @@ impl SimTest {
         let iterations = env_u64("SPAWNED_SIM_ITERATIONS")
             .map(|n| n as usize)
             .or(self.iterations);
-        let (first, runs) = match (&strategy, env_u64("SPAWNED_SIM_SEED")) {
-            (Strategy::Dfs { .. }, _) => (0, iterations.unwrap_or(100)),
-            (_, Some(seed)) => (seed, 1),
-            (Strategy::Random, None) => match (&self.seeds, iterations) {
-                (Some(seeds), _) => (seeds.start, seeds.end.saturating_sub(seeds.start) as usize),
-                (None, Some(n)) => (0, n),
-                (None, None) => (0, env_u64("SPAWNED_SIM_SEEDS").unwrap_or(8) as usize),
-            },
-            (Strategy::Pct { .. }, None) => (0, iterations.unwrap_or(100)),
-        };
+        let (first, runs) = self.runs(&strategy, env_u64("SPAWNED_SIM_SEED"), iterations);
         let report = explore(&strategy, first, runs, &body);
+        if report.divergences > 0 {
+            panic!(
+                "spawned_sim: `{name}`: {} of {} {strategy} runs did not replay their \
+                 recorded prefix: the body is not deterministic under the simulator",
+                report.divergences, report.runs
+            );
+        }
         let Some(found) = report.found else {
             if strategy != Strategy::Random {
+                let space = match (report.exhausted, report.truncated) {
+                    (true, false) => ", bounded space exhausted".to_string(),
+                    (true, true) => format!(
+                        ", bounded space exhausted up to the depth/fairness cutoff \
+                         (fair after {} polls); later alternatives not explored",
+                        strategy.fair_after()
+                    ),
+                    (false, _) => String::new(),
+                };
                 eprintln!(
-                    "spawned_sim: `{name}` passed {} runs of {strategy} ({} distinct schedules{})",
-                    report.runs,
-                    report.schedules,
-                    if report.exhausted {
-                        ", bounded space exhausted"
-                    } else {
-                        ""
-                    }
+                    "spawned_sim: `{name}` passed {} runs of {strategy} ({} distinct schedules{space})",
+                    report.runs, report.schedules,
                 );
             }
             return;
@@ -238,7 +267,7 @@ impl SimTest {
             )),
             Strategy::Dfs { .. } => {}
         }
-        match outcome.tape.save(&full) {
+        match save(&outcome.tape, &found.strategy, &full) {
             Ok(()) => report.push_str(&format!(
                 "  tape:        {} ({} polls, {} non-canonical)\n  replay tape: {}\n",
                 full.display(),
@@ -255,7 +284,7 @@ impl SimTest {
         if budget > 0 {
             let (small, runs) = shrink(&outcome.tape, &failure, &body, budget);
             let min = dir.join(format!("{stem}.min.tape"));
-            if shrunk(&small, &outcome.tape) && small.save(&min).is_ok() {
+            if shrunk(&small, &outcome.tape) && save(&small, &found.strategy, &min).is_ok() {
                 report.push_str(&format!(
                     "  shrunk tape: {} ({} polls, {} non-canonical after {runs} runs)\n  replay:      {}\n",
                     min.display(),
@@ -273,6 +302,20 @@ impl SimTest {
     }
 }
 
+/// Write `tape` with the strategy that produced it as a header comment
+/// (informational: a strict replay needs only the tape).
+#[cfg(spawned_sim)]
+fn save(
+    tape: &super::sim::Tape,
+    strategy: &super::sim::explore::Strategy,
+    path: &std::path::Path,
+) -> std::io::Result<()> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(path, format!("# strategy {strategy}\n{}", tape.to_text()))
+}
+
 /// A shrunk tape is worth writing if it has fewer non-canonical picks or is
 /// shorter (prefix bisection can shorten a tape without removing a pick).
 #[cfg(spawned_sim)]
@@ -282,8 +325,21 @@ fn shrunk(small: &super::sim::Tape, original: &super::sim::Tape) -> bool {
 
 #[cfg(all(test, spawned_sim))]
 mod tests {
+    use super::super::sim::explore::Strategy;
     use super::super::sim::{Decision, Tape};
-    use super::shrunk;
+    use super::{shrunk, SimTest};
+
+    /// Codex P2 (#218): DFS keeps the requested `SPAWNED_SIM_SEED` as the
+    /// body's input for every schedule instead of always using 0.
+    #[test]
+    fn dfs_keeps_the_requested_seed() {
+        let dfs = Strategy::parse("dfs:bound=1").unwrap();
+        let test = SimTest::new();
+        assert_eq!(test.runs(&dfs, Some(42), Some(7)), (42, 7));
+        assert_eq!(test.runs(&dfs, None, None), (0, 100));
+        let pct = Strategy::parse("pct").unwrap();
+        assert_eq!(test.runs(&pct, Some(42), None), (42, 1));
+    }
 
     /// agy L1: a shorter tape with as many non-canonical picks is still a
     /// smaller reproduction.

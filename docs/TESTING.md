@@ -409,15 +409,29 @@ otherwise):
 
 | Strategy | What it does |
 |---|---|
-| `random` | Seeded uniform choice among ready tasks (unchanged; seed 42 still hashes `0x1c5e2dcccbaaafa6`). |
-| `pct:d=3[,k=N]` | PCT (Burckhardt et al. 2010): random task priorities, `d - 1` change points over an estimated run length `k` (default: the longest run so far) that demote the task about to run. One seed per run. |
-| `dfs:bound=2[,depth=N]` | Stateless depth-first enumeration of every schedule with at most `bound` delays, where a delay permanently demotes the task about to run and zero delays is the canonical schedule. Reports when the bounded space is exhausted. |
+| `random` | Seeded uniform choice among ready tasks, by rank of task id. |
+| `pct:d=3[,k=N][,fair=N]` | PCT (Burckhardt et al. 2010): random task priorities and `d - 1` change points `k_1..k_{d-1}` over an estimated run length `k` (counted in contested polls, where more than one task is ready; default: the most seen in a run so far). At `k_i` the task about to run drops to priority `i`, independently of where `k_i` falls in time, as in the paper. One seed per run. |
+| `dfs:bound=2[,depth=N][,fair=N]` | Stateless depth-first enumeration of every schedule with at most `bound` delays, where a delay permanently demotes the task about to run and zero delays is the canonical schedule. Under `SPAWNED_SIM_SEED=n` every schedule gets input seed `n`. Reports whether the bounded space was exhausted and whether it was truncated. |
 
 Every strategy records into the same decision tape, so a failure replays with
 `SPAWNED_SIM_TAPE` and shrinks like a random-walk failure; PCT also prints a
-`SPAWNED_SIM_STRATEGY=pct:d=..,k=.. SPAWNED_SIM_SEED=n` command. After
-`SPAWNED_SIM_FAIR_AFTER` polls (default 20,000) PCT and DFS runs switch to a
-fair rule (least recently polled ready task) so spin-waits cannot starve.
+`SPAWNED_SIM_STRATEGY=pct:d=..,k=..,fair=.. SPAWNED_SIM_SEED=n` command with
+`k` and the fairness cutoff filled in (rerunning a PCT seed without `k` uses a
+different estimate and is a different run). After `SPAWNED_SIM_FAIR_AFTER`
+polls (default 20,000, or `fair=N` in the strategy) PCT and DFS runs switch to
+a fair rule (least recently polled ready task) so spin-waits cannot starve.
+Polls after that cutoff, and DFS polls past `depth`, are not choice points: a
+DFS run that had alternatives there reports the space as *truncated*, and the
+harness then says "exhausted up to the depth/fairness cutoff" instead of
+"exhausted". A DFS run whose recorded prefix does not replay (a body that is
+not deterministic under the simulator) fails the test.
+
+PCT's probability bound (a depth-`d` bug is found by one run with probability
+at least `1/(n·k^(d-1))`) assumes `k` is at least the run's contested polls
+and that the bug needs no ordering after the fairness cutoff. With `k` left to
+the strategy it is the largest count seen so far, so early runs can
+underestimate it. The counts below are measurements on these workloads, not
+evidence of the bound.
 
 There is no partial-order or sleep-set reduction: the executor sees wakers,
 not which shared state a poll touches, so DFS counts schedules that differ only
@@ -427,25 +441,42 @@ senders at one mailbox is the order of the senders' polls, which the strategies
 already choose; per-sender FIFO is never broken.
 
 `concurrency/tests/sim_explore.rs` holds planted ordering bugs between real
-actors (lost updates through a store actor's get-then-set) and the PR #204
-never-started-child race. Planted bugs must be found; the PR #204 `Stopped`
-outcome, closed by PR #209, must not be. Runs to the first failure (release
-build; hit rate over 10,000 runs in parentheses):
+actors (lost updates through a store actor's get-then-set, logged by the
+store) and the PR #204 never-started-child race. Each planted bug fails with
+its own message, and the tests check that message, so a deadlock or unrelated
+panic does not count as finding it. Every write is `read + 1` from 0, so all
+writes being 1 means every read came before every write: the two-worker bug
+needs both reads before either write, and the three-worker bug needs all three
+reads before any write (a final value of 1 alone does not:
+`A:Get(0) B:Get(0) A:Set(1) C:Get(1) C:Set(2) B:Set(1)`).
+`depth3_bug_requires_all_reads_before_any_write` checks that equivalence over
+every schedule with at most 3 delays of a smaller instance (1,038 schedules)
+and 2,000 PCT runs of the real one. The PR #204 `Stopped` outcome, closed by PR #209, must not be found;
+reaching `Failed` is checked only as a sanity check that each strategy drives
+the failed placement (the canonical schedule already does), not as evidence
+about rare races. Runs to the first failure (release build; hit rate over
+10,000 runs in parentheses):
 
 | Bug | random | `pct:d=2` | `pct:d=3` | `dfs:bound=1` | `dfs:bound=2` | `dfs:bound=3` |
 |---|---|---|---|---|---|---|
-| Lost update, one worker 12 polls behind | 244 (0.39%) | 2 (22%) | 8 (18%) | 5 | 51 | 95 |
-| Three workers all read before any write (noise 0/12/24) | not found in 100,000 (0%) | 6 (12%) | 5 (7.7%) | 23 | 661 | 6,476 |
-| PR #204: never-started child ends `Failed` | 1 (95%) | 1 (75%) | 1 (74%) | 1 | 1 | 1 |
+| Both of two workers read before either writes (one worker 12 polls behind) | 384 (0.33%) | 7 (16%) | 4 (14%) | 5 | 51 | 95 |
+| All three workers read before any writes (noise 0/12/24) | not found in 100,000 (0%) | 7 (6.2%) | 29 (3.9%) | 24 | 693 | 6,656 |
 | PR #204: never-started child ends `Stopped` | not found in 100,000 (0%) | not found in 100,000 (0%) | not found in 100,000 (0%) | exhausted (14) | exhausted (151) | exhausted (1,148) |
 
-Since PR #209 a failed initial placement finishes every never-started child
-as `Failed`, so `Stopped` is unreachable: DFS exhausts each bounded space
-without finding it. Deeper DFS bounds find a bug later because depth-first
-order tries late delays first.
+Hit rates use `k` fixed at the most contested polls seen by the first-failure
+search. The three-worker bug has three ordering constraints, but its PCT depth
+is lower: one demotion of the quick worker after its read is enough
+(`dfs:bound=1` finds it), because the round trips through the store actor
+serialize the rest. Since PR #209 a failed initial placement finishes every
+never-started child as `Failed`, so `Stopped` is unreachable: DFS exhausts
+each bounded space without finding it. Deeper DFS bounds find a bug later
+because depth-first order tries late delays first. These are measurements on
+these workloads (re-measured after the PCT change-point fix, the cooperative
+budget and seeded Tokio RNG, and rank-based random picks), not evidence of
+PCT's bound.
 
 ```sh
-RUSTFLAGS="--cfg spawned_sim" cargo test --release -p spawned-concurrency \
+RUSTFLAGS="--cfg spawned_sim --cfg tokio_unstable" cargo test --release -p spawned-concurrency \
   --test sim_explore -- --include-ignored --nocapture
 ```
 
