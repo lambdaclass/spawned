@@ -42,10 +42,23 @@
 //! Channels, `watch`, `CancellationToken` and the stream wrappers stay Tokio's:
 //! they only use wakers, so they are deterministic under this executor.
 //!
+//! - **Decision tape.** Every pick is recorded as `c` (canonical: smallest
+//!   ready id) or `p <id>`, and every clock jump as `t <nanos>`. Replaying a
+//!   [`Tape`] picks by task id rather than by generator draw, so a schedule
+//!   survives code changes that shift random-number consumption; [`shrink`]
+//!   moves a failing tape toward the canonical schedule.
+//!
+//! Library code reads time and jitter entropy through `spawned_rt::time`,
+//! which this module backs under the cfg. The one scheduling-relevant
+//! `HashMap` walk in the library (waking monitor waiters on exit) is done in
+//! monitor-creation order under the cfg. Still outside its control: direct
+//! `std::time` / `SystemTime` reads, `std::thread`, Tokio I/O, and
+//! process-global id counters (ids differ between runs in one process, but
+//! their relative order within a run is fixed).
+//!
 //! Fidelity limits: everything a task does inside one poll is atomic (no OS
-//! preemption, no weak-memory reorderings), and the wall clock
-//! (`Instant::now`, `SystemTime`), `std::thread`, Tokio I/O and `HashMap`
-//! iteration order stay outside its control.
+//! preemption, no weak-memory reorderings); timers fire only when no task is
+//! ready (or after the spin limit), not at wall-clock moments.
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
@@ -1524,18 +1537,6 @@ fn quietly<R>(f: impl FnOnce() -> R) -> R {
     f()
 }
 
-/// A failure's identity for shrinking: its first line without digits, so a
-/// shrunk schedule must fail the same way, not merely fail.
-fn signature(failure: &str) -> String {
-    failure
-        .lines()
-        .next()
-        .unwrap_or_default()
-        .chars()
-        .filter(|c| !c.is_ascii_digit())
-        .collect()
-}
-
 fn script_tape(seed: u64, picks: &[Option<u64>]) -> Tape {
     Tape {
         seed,
@@ -1547,7 +1548,8 @@ fn script_tape(seed: u64, picks: &[Option<u64>]) -> Tape {
 }
 
 /// Shrink a failing tape toward the canonical schedule (always poll the
-/// smallest ready id) while `body` keeps failing with the same signature:
+/// smallest ready id) while `body` keeps failing with exactly the same panic
+/// message (a looser match can drift to a different bug):
 /// first the shortest scripted prefix (the rest canonical), then removing
 /// non-canonical picks in halving chunks. Spends at most `budget` runs and
 /// returns the smallest failing tape found and the runs spent.
@@ -1556,7 +1558,6 @@ where
     F: Fn(u64) -> Fut,
     Fut: Future<Output = ()>,
 {
-    let wanted = signature(failure);
     let seed = failing.seed;
     let runs = std::cell::Cell::new(0);
     let attempt = |picks: &[Option<u64>]| -> Option<Tape> {
@@ -1567,7 +1568,7 @@ where
         let outcome = quietly(|| run_once(seed, Some(&script_tape(seed, picks)), body));
         outcome
             .failure
-            .filter(|f| signature(f) == wanted)
+            .filter(|f| f == failure)
             .map(|_| outcome.tape)
     };
     let mut best = failing.clone();

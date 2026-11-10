@@ -377,3 +377,213 @@ fn pr204_never_started_child_state_pinned_seeds() {
         assert_eq!(c1, &(expected.to_string(), 0), "seed {seed}");
     }
 }
+
+// ---------------------------------------------------------------------------
+// Virtual time: restart window and jittered backoff (spawned_rt::time).
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WindowRun {
+    /// Virtual time at which each replacement generation became current.
+    restarts: Vec<Duration>,
+    failure: Option<String>,
+    elapsed: Duration,
+}
+
+/// Budget 3 restarts per 60 s, jittered exponential backoff (1 s .. 8 s) with
+/// the jitter seed left to the runtime. Three quick crashes use the budget;
+/// after 61 s idle the window has slid past them and three more restarts are
+/// admitted; a fourth crash inside the new window exhausts the budget.
+async fn restart_window(out: Arc<Mutex<Option<WindowRun>>>) {
+    use spawned_rt::time::Instant;
+    let began = Instant::now();
+    let system = ActorSystem::new().unwrap();
+    let group = system.async_group("sim-window", 1).unwrap();
+    let mut tree = system
+        .supervisor(SupervisorConfig {
+            strategy: SupervisorStrategy::OneForOne,
+            max_restarts: 3,
+            restart_window: Duration::from_secs(60),
+            backoff: Backoff {
+                initial: Duration::from_secs(1),
+                maximum: Duration::from_secs(8),
+                stable_after: Duration::from_secs(3600),
+                jitter: true,
+                // Left to spawned_rt::time::entropy: seeded by the simulation.
+                seed: None,
+            },
+            ..SupervisorConfig::default()
+        })
+        .unwrap();
+    let child: SupervisedChild<Node> = tree
+        .add(ChildSpec::new("flappy", &group, |_| async {
+            Ok::<_, String>(Node {
+                id: 0,
+                crash_after: None,
+                log: Log::default(),
+            })
+        }))
+        .unwrap();
+    let supervisor = tree.start().await.unwrap();
+    let mut restarts = Vec::new();
+    for round in 0..2 {
+        for _ in 0..3 {
+            let generation = child.snapshot().generation;
+            assert!(child.current().unwrap().request(Crash).await.is_err());
+            spawned_rt::tasks::timeout(
+                Duration::from_secs(60),
+                child.wait_for_generation(generation),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            restarts.push(began.elapsed());
+        }
+        if round == 0 {
+            spawned_rt::tasks::sleep(Duration::from_secs(61)).await;
+        }
+    }
+    assert!(child.current().unwrap().request(Crash).await.is_err());
+    // The budget is charged when the retry fires, after up to 8 s of backoff.
+    spawned_rt::tasks::timeout(Duration::from_secs(60), supervisor.join())
+        .await
+        .unwrap();
+    let failure = supervisor.failure();
+    assert!(system.shutdown(LIMIT).await.complete);
+    *out.lock().unwrap() = Some(WindowRun {
+        restarts,
+        failure,
+        elapsed: began.elapsed(),
+    });
+}
+
+#[test]
+fn restart_window_and_backoff_run_in_virtual_time() {
+    let run = |seed: u64| {
+        let out = Arc::new(Mutex::new(None));
+        let outcome = sim::run_once(seed, None, &|_| restart_window(out.clone()));
+        assert_eq!(outcome.failure, None, "seed {seed}");
+        let result = out.lock().unwrap().take().unwrap();
+        (outcome, result)
+    };
+    let wall = Instant::now();
+    let mut schedules = std::collections::BTreeSet::new();
+    for seed in 0..8 {
+        let (a, first) = run(seed);
+        let (b, second) = run(seed);
+        // Deterministic per seed: identical restart times, tape and hash.
+        assert_eq!(first, second, "seed {seed}");
+        assert_eq!(a.tape, b.tape, "seed {seed}");
+        assert_eq!(a.stats.schedule_hash, b.stats.schedule_hash);
+        assert_eq!(first.restarts.len(), 6, "seed {seed}: {first:?}");
+        assert!(
+            first.restarts[3] >= Duration::from_secs(61),
+            "seed {seed}: the slid window admitted restarts before the sleep ended: {first:?}"
+        );
+        assert!(
+            first
+                .failure
+                .as_deref()
+                .is_some_and(|f| f.contains("restart budget exhausted")),
+            "seed {seed}: {first:?}"
+        );
+        if seed == 0 {
+            println!(
+                "seed 0: restarts at {:?}, gave up at {:?} virtual, {} polls",
+                first.restarts, first.elapsed, a.stats.steps
+            );
+        }
+        schedules.insert(first.restarts);
+    }
+    let real = wall.elapsed();
+    println!(
+        "16 runs of ~{}s virtual each in {real:?} real; {} distinct jittered schedules over 8 seeds",
+        schedules.iter().next().unwrap().last().unwrap().as_secs(),
+        schedules.len()
+    );
+    assert!(real < Duration::from_secs(10), "took {real:?}");
+    // Jitter is seeded by the simulation seed, so seeds differ.
+    assert!(schedules.len() > 1);
+}
+
+// ---------------------------------------------------------------------------
+// Decision tape: PR #204's never-started-child race through the harness.
+// ---------------------------------------------------------------------------
+
+/// Fails when a launched-but-never-started child (generation 0) ends
+/// `Failed` instead of `Stopped` (the PR #204 finding 2 race).
+async fn unstarted_children_end_stopped() {
+    let placement = initial_failure(Log::default(), 0).await;
+    for (index, (state, generation)) in placement.states.iter().enumerate() {
+        assert!(
+            *generation != 0 || state == "Stopped",
+            "never-started child c{index} ended {state}"
+        );
+    }
+}
+
+#[test]
+fn pr204_race_replays_from_a_recorded_tape() {
+    let body = |_| unstarted_children_end_stopped();
+    let (seed, failing) = (0..200)
+        .map(|seed| (seed, sim::run_once(seed, None, &body)))
+        .find(|(_, outcome)| outcome.failure.is_some())
+        .expect("no seed in 0..200 reproduced the race");
+    let failure = failing.failure.clone().unwrap();
+    println!(
+        "seed {seed} fails after {} polls ({} non-canonical): {failure}",
+        failing.stats.steps,
+        failing.tape.deviations()
+    );
+    assert!(failure.contains("Failed"), "{failure}");
+
+    // The tape round-trips through its text form.
+    let path = std::env::temp_dir()
+        .join("spawned-sim")
+        .join(format!("pr204-seed{seed}-{}.tape", std::process::id()));
+    failing.tape.save(&path).unwrap();
+    let tape = sim::Tape::load(&path).unwrap();
+    assert_eq!(tape, failing.tape);
+
+    // Replaying the tape reproduces the failure and the exact schedule.
+    let replay = sim::run_once(seed, Some(&tape), &body);
+    assert_eq!(replay.failure.as_deref(), Some(failure.as_str()));
+    assert_eq!(replay.tape, tape);
+    assert_eq!(replay.stats.tape_misses, 0);
+
+    // The tape, not the generator, drives the schedule: under other seeds
+    // (every generator draw different) it still replays the same run.
+    for other in [seed + 1, seed + 1_000, u64::MAX] {
+        let replay = sim::run_once(other, Some(&tape), &body);
+        assert_eq!(
+            replay.failure.as_deref(),
+            Some(failure.as_str()),
+            "seed {other}"
+        );
+        assert_eq!(replay.tape.decisions, tape.decisions, "seed {other}");
+    }
+
+    // Shrinking keeps the failure with fewer non-canonical decisions.
+    let (small, runs) = sim::shrink(&tape, &failure, &body, 300);
+    let again = sim::run_once(seed, Some(&small), &body);
+    assert_eq!(again.failure.as_deref(), Some(failure.as_str()));
+    assert!(small.deviations() <= tape.deviations());
+    println!(
+        "shrunk {} -> {} non-canonical decisions ({} -> {} polls) in {runs} runs; {}",
+        tape.deviations(),
+        small.deviations(),
+        tape.polls(),
+        small.polls(),
+        path.display()
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+/// Manual demo of the harness report: fails on the race's first seed and
+/// prints the replay commands and tape paths. Run with
+/// `RUSTFLAGS="--cfg spawned_sim" cargo test -p spawned-concurrency --test sim -- --ignored harness_reports`.
+#[spawned_macros::sim_test(seeds = 64)]
+#[ignore = "demonstrates a failing report"]
+async fn harness_reports_pr204_race_with_replay_commands() {
+    unstarted_children_end_stopped().await;
+}
