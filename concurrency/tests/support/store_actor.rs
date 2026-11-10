@@ -118,14 +118,11 @@ impl spawned_concurrency::tasks::Handler<StoreOp> for AsyncStore {
         reply: spawned_concurrency::reply::PendingReply<'_, Option<u64>>,
         _: &spawned_concurrency::tasks::Context<Self>,
     ) {
-        let __reply_value: Option<u64> = {
-            // Yield inside the turn so concurrent requests really queue up.
+        reply.reply(// Yield inside the turn so concurrent requests really queue up.
             if op.key().1.is_multiple_of(2) {
                 tokio::task::yield_now().await;
             }
-            self.0.apply(op)
-        };
-        let _ = reply.reply(__reply_value);
+            self.0.apply(op));
     }
 }
 
@@ -140,8 +137,7 @@ impl spawned_concurrency::threads::Handler<StoreOp> for NativeStore {
         reply: spawned_concurrency::reply::PendingReply<'_, Option<u64>>,
         _: &spawned_concurrency::threads::Context<Self>,
     ) {
-        let __reply_value: Option<u64> = { self.0.apply(op) };
-        let _ = reply.reply(__reply_value);
+        reply.reply(self.0.apply(op));
     }
 }
 

@@ -29,8 +29,7 @@ impl Handler<mixed_protocol::GetValue> for MixedActor {
         reply: spawned_concurrency::reply::PendingReply<'_, u64>,
         _ctx: &Context<Self>,
     ) {
-        let __reply_value: u64 = { self.value };
-        let _ = reply.reply(__reply_value);
+        reply.reply(self.value);
     }
 }
 
@@ -46,7 +45,7 @@ impl Handler<mixed_protocol::TestOnlyIncrement> for MixedActor {
             self.value += 1;
             self.value
         };
-        let _ = reply.reply(__reply_value);
+        reply.reply(__reply_value);
     }
 }
 

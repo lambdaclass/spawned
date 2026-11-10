@@ -188,10 +188,9 @@ mod task_actors {
             reply: spawned_concurrency::reply::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
-            {
+            
                 self.0.on_crash();
-            }
-            let _ = reply.reply(());
+reply.reply(());
         }
     }
     impl Handler<Ping> for TaskVictim {
@@ -201,8 +200,7 @@ mod task_actors {
             reply: spawned_concurrency::reply::PendingReply<'_, u64>,
             _: &Context<Self>,
         ) {
-            let __reply_value: u64 = { 7 };
-            let _ = reply.reply(__reply_value);
+            reply.reply(7);
         }
     }
     impl Handler<Gift> for TaskVictim {
@@ -216,7 +214,7 @@ mod task_actors {
                 self.0.gate.wait();
                 Bomb(Some(REPLY_PANIC))
             };
-            let _ = reply.reply(__reply_value);
+            reply.reply(__reply_value);
         }
     }
     impl Handler<Stash> for TaskVictim {
@@ -226,10 +224,9 @@ mod task_actors {
             reply: spawned_concurrency::reply::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
-            {
+            
                 self.0.stash.push(Bomb(Some(REPLY_PANIC)));
-            }
-            let _ = reply.reply(());
+reply.reply(());
         }
     }
 }
@@ -253,10 +250,9 @@ mod thread_actors {
             reply: spawned_concurrency::reply::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
-            {
+            
                 self.0.on_crash();
-            }
-            let _ = reply.reply(());
+reply.reply(());
         }
     }
     impl Handler<Ping> for ThreadVictim {
@@ -266,8 +262,7 @@ mod thread_actors {
             reply: spawned_concurrency::reply::PendingReply<'_, u64>,
             _: &Context<Self>,
         ) {
-            let __reply_value: u64 = { 7 };
-            let _ = reply.reply(__reply_value);
+            reply.reply(7);
         }
     }
     impl Handler<Gift> for ThreadVictim {
@@ -281,7 +276,7 @@ mod thread_actors {
                 self.0.gate.wait();
                 Bomb(Some(REPLY_PANIC))
             };
-            let _ = reply.reply(__reply_value);
+            reply.reply(__reply_value);
         }
     }
     impl Handler<Stash> for ThreadVictim {
@@ -291,10 +286,9 @@ mod thread_actors {
             reply: spawned_concurrency::reply::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
-            {
+            
                 self.0.stash.push(Bomb(Some(REPLY_PANIC)));
-            }
-            let _ = reply.reply(());
+reply.reply(());
         }
     }
 }

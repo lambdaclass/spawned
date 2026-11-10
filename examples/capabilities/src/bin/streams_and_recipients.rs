@@ -25,10 +25,9 @@ mod asynchronous {
             reply: spawned_concurrency::reply::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
-            {
+            
                 self.0 += N * msg.0;
-            }
-            let _ = reply.reply(());
+reply.reply(());
         }
     }
     impl<const N: u64> Handler<Total> for Counter<N> {
@@ -38,8 +37,7 @@ mod asynchronous {
             reply: spawned_concurrency::reply::PendingReply<'_, u64>,
             _: &Context<Self>,
         ) {
-            let __reply_value: u64 = { self.0 };
-            let _ = reply.reply(__reply_value);
+            reply.reply(self.0);
         }
     }
     pub async fn run() {
@@ -93,10 +91,9 @@ mod synchronous {
             reply: spawned_concurrency::reply::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
-            {
+            
                 self.0 += N * msg.0;
-            }
-            let _ = reply.reply(());
+reply.reply(());
         }
     }
     impl<const N: u64> Handler<Total> for Counter<N> {
@@ -106,8 +103,7 @@ mod synchronous {
             reply: spawned_concurrency::reply::PendingReply<'_, u64>,
             _: &Context<Self>,
         ) {
-            let __reply_value: u64 = { self.0 };
-            let _ = reply.reply(__reply_value);
+            reply.reply(self.0);
         }
     }
     struct Source {

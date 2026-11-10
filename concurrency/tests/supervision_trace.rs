@@ -104,11 +104,10 @@ impl Handler<HoldForDrain> for Worker {
         reply: spawned_concurrency::reply::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
-        {
+        
             msg.0.send(()).unwrap();
             let _ = msg.1.await;
-        }
-        let _ = reply.reply(());
+reply.reply(());
     }
 }
 struct DropBomb;
@@ -124,13 +123,12 @@ impl Handler<DropBomb> for Worker {
     async fn handle(
         &mut self,
         _: DropBomb,
-        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _reply: spawned_concurrency::reply::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
-        {
+        
             panic!("discarded message must not be handled");
-        }
-        let _ = reply.reply(());
+
     }
 }
 
@@ -216,13 +214,12 @@ impl Handler<Crash> for Worker {
     async fn handle(
         &mut self,
         _: Crash,
-        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _reply: spawned_concurrency::reply::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
-        {
+        
             panic!("injected child failure");
-        }
-        let _ = reply.reply(());
+
     }
 }
 impl Handler<Quit> for Worker {
@@ -232,10 +229,9 @@ impl Handler<Quit> for Worker {
         reply: spawned_concurrency::reply::PendingReply<'_, ()>,
         ctx: &Context<Self>,
     ) {
-        {
+        
             ctx.stop();
-        }
-        let _ = reply.reply(());
+reply.reply(());
     }
 }
 impl Handler<ExitWith> for Worker {
@@ -245,10 +241,9 @@ impl Handler<ExitWith> for Worker {
         reply: spawned_concurrency::reply::PendingReply<'_, ()>,
         ctx: &Context<Self>,
     ) {
-        {
+        
             ctx.stop_with_reason(msg.0);
-        }
-        let _ = reply.reply(());
+reply.reply(());
     }
 }
 
@@ -541,13 +536,12 @@ impl Handler<Crash> for ExitOnceDuringRestart {
     async fn handle(
         &mut self,
         _: Crash,
-        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _reply: spawned_concurrency::reply::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
-        {
+        
             panic!("injected child failure");
-        }
-        let _ = reply.reply(());
+
     }
 }
 

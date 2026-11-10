@@ -32,7 +32,7 @@ impl Handler<Packet> for Sink {
             drop(credit); // Capacity returns after the payload is released.
             size
         };
-        let _ = reply.reply(__reply_value);
+        reply.reply(__reply_value);
     }
 }
 struct Total;
@@ -46,8 +46,7 @@ impl Handler<Total> for Sink {
         reply: spawned_concurrency::reply::PendingReply<'_, usize>,
         _: &Context<Self>,
     ) {
-        let __reply_value: usize = { self.0 };
-        let _ = reply.reply(__reply_value);
+        reply.reply(self.0);
     }
 }
 struct Forwarder(ActorRef<Sink>);
@@ -59,8 +58,7 @@ impl Handler<Packet> for Forwarder {
         reply: spawned_concurrency::reply::PendingReply<'_, usize>,
         _: &Context<Self>,
     ) {
-        let __reply_value: usize = { self.0.request(packet).await.unwrap() };
-        let _ = reply.reply(__reply_value);
+        reply.reply(self.0.request(packet).await.unwrap());
     }
 }
 

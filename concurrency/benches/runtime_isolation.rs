@@ -64,7 +64,7 @@ mod linux {
                 (m.0, value, Instant::now())
             }
             .await;
-            let _ = reply.reply(__reply_value);
+            reply.reply(__reply_value);
         }
     }
     struct Audit;
@@ -90,7 +90,7 @@ mod linux {
                     self.handled,
                 )
             };
-            let _ = reply.reply(__reply_value);
+            reply.reply(__reply_value);
         }
     }
     fn pin(mask: &str) {

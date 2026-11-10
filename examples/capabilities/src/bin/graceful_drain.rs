@@ -16,10 +16,9 @@ impl Handler<Add> for Worker {
         reply: spawned_concurrency::reply::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
-        {
+        
             self.0 += 1;
-        }
-        let _ = reply.reply(());
+reply.reply(());
     }
 }
 struct Fence;
@@ -33,8 +32,7 @@ impl Handler<Fence> for Worker {
         reply: spawned_concurrency::reply::PendingReply<'_, usize>,
         _: &Context<Self>,
     ) {
-        let __reply_value: usize = { self.0 };
-        let _ = reply.reply(__reply_value);
+        reply.reply(self.0);
     }
 }
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]

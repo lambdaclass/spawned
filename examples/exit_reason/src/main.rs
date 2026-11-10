@@ -100,7 +100,7 @@ fn main() {
                 reply: spawned_concurrency::reply::PendingReply<'_, ()>,
                 _ctx: &Context<Self>,
             ) {
-                let _ = reply.reply(());
+                reply.reply(());
             }
         }
         let worker3 = PanicOnStart.start();
@@ -183,8 +183,7 @@ fn main() {
                 reply: spawned_concurrency::reply::PendingReply<'_, MonitorRef>,
                 ctx: &Context<Self>,
             ) {
-                let __reply_value: MonitorRef = { ctx.monitor(&msg.0) };
-                let _ = reply.reply(__reply_value);
+                reply.reply(ctx.monitor(&msg.0));
             }
         }
         impl Handler<StopMonitor> for Observer {
@@ -194,10 +193,9 @@ fn main() {
                 reply: spawned_concurrency::reply::PendingReply<'_, ()>,
                 ctx: &Context<Self>,
             ) {
-                {
+                
                     ctx.demonitor(msg.0);
-                }
-                let _ = reply.reply(());
+reply.reply(());
             }
         }
         impl Handler<Down> for Observer {
@@ -207,15 +205,14 @@ fn main() {
                 reply: spawned_concurrency::reply::PendingReply<'_, ()>,
                 _ctx: &Context<Self>,
             ) {
-                {
+                
                     tracing::info!(
                         "[observer] received Down for {} ({})",
                         msg.monitor_ref,
                         msg.reason
                     );
                     self.log.lock().unwrap().push(msg);
-                }
-                let _ = reply.reply(());
+reply.reply(());
             }
         }
 
@@ -294,10 +291,9 @@ fn main() {
                 reply: spawned_concurrency::reply::PendingReply<'_, ()>,
                 ctx: &Context<Self>,
             ) {
-                {
+                
                     ctx.link(&msg.0);
-                }
-                let _ = reply.reply(());
+reply.reply(());
             }
         }
 

@@ -29,13 +29,10 @@ impl Handler<Ping> for Worker {
         reply: spawned_concurrency::reply::PendingReply<'_, String>,
         _: &Context<Self>,
     ) {
-        let __reply_value: String = {
-            std::thread::current()
+        reply.reply(std::thread::current()
                 .name()
                 .unwrap_or_default()
-                .to_string()
-        };
-        let _ = reply.reply(__reply_value);
+                .to_string());
     }
 }
 impl Handler<Down> for Worker {
@@ -45,7 +42,7 @@ impl Handler<Down> for Worker {
         reply: spawned_concurrency::reply::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
-        let _ = reply.reply(());
+        reply.reply(());
     }
 }
 
@@ -359,11 +356,10 @@ impl Handler<Queued> for FailedStartup {
         reply: spawned_concurrency::reply::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
-        {
+        
             self.handled.fetch_add(1, Ordering::SeqCst);
             drop(msg.0);
-        }
-        let _ = reply.reply(());
+reply.reply(());
     }
 }
 #[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
@@ -591,8 +587,7 @@ impl Handler<CheckAdmission> for HelperAware {
         reply: spawned_concurrency::reply::PendingReply<'_, bool>,
         ctx: &Context<Self>,
     ) {
-        let __reply_value: bool = { ctx.spawn_helper(async {}).is_err() };
-        let _ = reply.reply(__reply_value);
+        reply.reply(ctx.spawn_helper(async {}).is_err());
     }
 }
 struct Dependent {

@@ -29,7 +29,7 @@ impl Handler<probe_protocol::Notify> for Worker {
         reply: spawned_concurrency::reply::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
-        let _ = reply.reply(());
+        reply.reply(());
     }
 }
 impl Handler<probe_protocol::Query> for Worker {
@@ -39,8 +39,7 @@ impl Handler<probe_protocol::Query> for Worker {
         reply: spawned_concurrency::reply::PendingReply<'_, u64>,
         _: &Context<Self>,
     ) {
-        let __reply_value: u64 = { query.value };
-        let _ = reply.reply(__reply_value);
+        reply.reply(query.value);
     }
 }
 const BASELINE_WORDS: usize = 1;

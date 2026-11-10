@@ -34,7 +34,7 @@ impl Handler<Check> for Worker {
             assert_eq!(root, thread::current().id());
             (workers, answer)
         };
-        let _ = reply.reply(__reply_value);
+        reply.reply(__reply_value);
     }
 }
 

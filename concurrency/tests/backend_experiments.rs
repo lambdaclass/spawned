@@ -30,7 +30,7 @@ impl Handler<Probe> for Worker {
             });
             child.await.unwrap()
         };
-        let _ = reply.reply(__reply_value);
+        reply.reply(__reply_value);
     }
 }
 impl Handler<Nested> for Worker {
@@ -48,7 +48,7 @@ impl Handler<Nested> for Worker {
             // Characterizes progress of a detached helper while its actor blocks.
             rx.recv_timeout(Duration::from_millis(100)).is_ok()
         };
-        let _ = reply.reply(__reply_value);
+        reply.reply(__reply_value);
     }
 }
 #[test]
@@ -106,7 +106,7 @@ impl Handler<Network> for Worker {
             server.join().unwrap();
             u64::from_le_bytes(data)
         };
-        let _ = reply.reply(__reply_value);
+        reply.reply(__reply_value);
     }
 }
 #[test]

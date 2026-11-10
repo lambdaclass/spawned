@@ -52,10 +52,9 @@ impl Handler<Inc> for Repeater {
         reply: crate::reply::PendingReply<'_, ()>,
         _ctx: &Context<Self>,
     ) {
-        {
+        
             self.count += 1;
-        }
-        let _ = reply.reply(());
+reply.reply(());
     }
 }
 
@@ -66,12 +65,11 @@ impl Handler<StopTimer> for Repeater {
         reply: crate::reply::PendingReply<'_, ()>,
         _ctx: &Context<Self>,
     ) {
-        {
+        
             if let Some(ct) = self.cancellation_token.clone() {
                 ct.cancel();
             }
-        }
-        let _ = reply.reply(());
+reply.reply(());
     }
 }
 
@@ -82,8 +80,7 @@ impl Handler<GetRepCount> for Repeater {
         reply: crate::reply::PendingReply<'_, i32>,
         _ctx: &Context<Self>,
     ) {
-        let __reply_value: i32 = { self.count };
-        let _ = reply.reply(__reply_value);
+        reply.reply(self.count);
     }
 }
 
@@ -150,10 +147,9 @@ impl Handler<Inc> for Delayed {
         reply: crate::reply::PendingReply<'_, ()>,
         _ctx: &Context<Self>,
     ) {
-        {
+        
             self.count += 1;
-        }
-        let _ = reply.reply(());
+reply.reply(());
     }
 }
 
@@ -164,8 +160,7 @@ impl Handler<GetDelCount> for Delayed {
         reply: crate::reply::PendingReply<'_, i32>,
         _ctx: &Context<Self>,
     ) {
-        let __reply_value: i32 = { self.count };
-        let _ = reply.reply(__reply_value);
+        reply.reply(self.count);
     }
 }
 
@@ -180,7 +175,7 @@ impl Handler<StopDelayed> for Delayed {
             ctx.stop();
             self.count
         };
-        let _ = reply.reply(__reply_value);
+        reply.reply(__reply_value);
     }
 }
 

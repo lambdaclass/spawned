@@ -68,7 +68,7 @@ mod asynchronous {
                 spawned_rt::tasks::sleep(Duration::from_millis(msg.millis)).await;
                 msg.millis
             };
-            let _ = reply.reply(__reply_value);
+            reply.reply(__reply_value);
         }
     }
     impl Handler<timed_protocol::Brief> for Worker {
@@ -82,7 +82,7 @@ mod asynchronous {
                 spawned_rt::tasks::sleep(Duration::from_millis(msg.millis)).await;
                 msg.millis
             };
-            let _ = reply.reply(__reply_value);
+            reply.reply(__reply_value);
         }
     }
     impl Handler<legacy_protocol::Legacy> for Worker {
@@ -96,7 +96,7 @@ mod asynchronous {
                 spawned_rt::tasks::sleep(Duration::from_millis(msg.millis)).await;
                 msg.millis
             };
-            let _ = reply.reply(__reply_value);
+            reply.reply(__reply_value);
         }
     }
     // Tokio's paused clock normally; the simulator's clock is always virtual.
@@ -164,7 +164,7 @@ mod synchronous {
                 std::thread::sleep(Duration::from_millis(msg.millis));
                 msg.millis
             };
-            let _ = reply.reply(__reply_value);
+            reply.reply(__reply_value);
         }
     }
     impl Handler<timed_protocol::Brief> for Worker {
@@ -178,7 +178,7 @@ mod synchronous {
                 std::thread::sleep(Duration::from_millis(msg.millis));
                 msg.millis
             };
-            let _ = reply.reply(__reply_value);
+            reply.reply(__reply_value);
         }
     }
     #[test]
@@ -213,7 +213,7 @@ mod synchronous {
             reply: spawned_concurrency::reply::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
-            let _ = reply.reply(());
+            reply.reply(());
         }
     }
     impl Handler<naming_protocol::Timeout> for Worker {
@@ -223,8 +223,7 @@ mod synchronous {
             reply: spawned_concurrency::reply::PendingReply<'_, u64>,
             _: &Context<Self>,
         ) {
-            let __reply_value: u64 = { 31 };
-            let _ = reply.reply(__reply_value);
+            reply.reply(31);
         }
     }
     impl Handler<naming_protocol::ActorRef> for Worker {
@@ -234,8 +233,7 @@ mod synchronous {
             reply: spawned_concurrency::reply::PendingReply<'_, u64>,
             _: &Context<Self>,
         ) {
-            let __reply_value: u64 = { 32 };
-            let _ = reply.reply(__reply_value);
+            reply.reply(32);
         }
     }
     impl Handler<naming_protocol::TimeoutOverride> for Worker {
@@ -245,8 +243,7 @@ mod synchronous {
             reply: spawned_concurrency::reply::PendingReply<'_, u64>,
             _: &Context<Self>,
         ) {
-            let __reply_value: u64 = { 33 };
-            let _ = reply.reply(__reply_value);
+            reply.reply(33);
         }
     }
     impl Handler<naming_protocol::Dispatch0> for Worker {
@@ -256,8 +253,7 @@ mod synchronous {
             reply: spawned_concurrency::reply::PendingReply<'_, u64>,
             _: &Context<Self>,
         ) {
-            let __reply_value: u64 = { 34 };
-            let _ = reply.reply(__reply_value);
+            reply.reply(34);
         }
     }
     #[test]
@@ -282,8 +278,7 @@ mod synchronous {
             reply: spawned_concurrency::reply::PendingReply<'_, u64>,
             _: &Context<Self>,
         ) {
-            let __reply_value: u64 = { msg.__spawned_request_timeout.value };
-            let _ = reply.reply(__reply_value);
+            reply.reply(msg.__spawned_request_timeout.value);
         }
     }
     #[test]

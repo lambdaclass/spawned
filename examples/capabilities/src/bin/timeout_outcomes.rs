@@ -28,7 +28,7 @@ impl Handler<Apply> for Counter {
             msg.entered.send(()).unwrap();
             let _ = msg.release.await;
         }
-        let _ = reply.reply(());
+        reply.reply(());
     }
 }
 struct Read;
@@ -42,8 +42,7 @@ impl Handler<Read> for Counter {
         reply: spawned_concurrency::reply::PendingReply<'_, usize>,
         _: &Context<Self>,
     ) {
-        let __reply_value: usize = { self.0 };
-        let _ = reply.reply(__reply_value);
+        reply.reply(self.0);
     }
 }
 

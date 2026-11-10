@@ -36,7 +36,7 @@ impl Handler<Ping> for Worker {
         reply: spawned_concurrency::reply::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
-        let _ = reply.reply(());
+        reply.reply(());
     }
 }
 // Not simulated: Blocking backend workers are OS threads.

@@ -1660,8 +1660,7 @@ mod tests {
             reply: crate::reply::PendingReply<'_, u64>,
             _ctx: &Context<Self>,
         ) {
-            let __reply_value: u64 = { self.count };
-            let _ = reply.reply(__reply_value);
+            reply.reply(self.count);
         }
     }
 
@@ -1676,7 +1675,7 @@ mod tests {
                 self.count += 1;
                 self.count
             };
-            let _ = reply.reply(__reply_value);
+            reply.reply(__reply_value);
         }
     }
 
@@ -1691,7 +1690,7 @@ mod tests {
                 ctx.stop();
                 self.count
             };
-            let _ = reply.reply(__reply_value);
+            reply.reply(__reply_value);
         }
     }
 
@@ -1838,12 +1837,11 @@ mod tests {
                     reply: crate::reply::PendingReply<'_, ()>,
                     _ctx: &Context<Self>,
                 ) {
-                    {
+                    
                         // Never replies, so the timeout is the only possible outcome
                         // however late the runtime polls it.
                         std::future::pending::<()>().await;
-                    }
-                    let _ = reply.reply(());
+reply.reply(());
                 }
             }
 
@@ -1896,10 +1894,9 @@ mod tests {
             reply: crate::reply::PendingReply<'_, ()>,
             ctx: &Context<Self>,
         ) {
-            {
+            
                 ctx.stop();
-            }
-            let _ = reply.reply(());
+reply.reply(());
         }
     }
 
@@ -1944,10 +1941,9 @@ mod tests {
             reply: crate::reply::PendingReply<'_, ()>,
             ctx: &Context<Self>,
         ) {
-            {
+            
                 ctx.stop();
-            }
-            let _ = reply.reply(());
+reply.reply(());
         }
     }
 
@@ -1958,11 +1954,10 @@ mod tests {
             reply: crate::reply::PendingReply<'_, ()>,
             ctx: &Context<Self>,
         ) {
-            {
+            
                 self.hold();
                 ctx.stop();
-            }
-            let _ = reply.reply(());
+reply.reply(());
         }
     }
 
@@ -2041,12 +2036,11 @@ mod tests {
             reply: crate::reply::PendingReply<'_, ()>,
             ctx: &Context<Self>,
         ) {
-            {
+            
                 rt::sleep(Duration::from_millis(20)).await;
                 thread::sleep(Duration::from_secs(2));
                 ctx.stop();
-            }
-            let _ = reply.reply(());
+reply.reply(());
         }
     }
 
@@ -2068,8 +2062,7 @@ mod tests {
             reply: crate::reply::PendingReply<'_, u64>,
             _ctx: &Context<Self>,
         ) {
-            let __reply_value: u64 = { self.count };
-            let _ = reply.reply(__reply_value);
+            reply.reply(self.count);
         }
     }
 
@@ -2084,7 +2077,7 @@ mod tests {
                 ctx.stop();
                 self.count
             };
-            let _ = reply.reply(__reply_value);
+            reply.reply(__reply_value);
         }
     }
 
@@ -2095,12 +2088,11 @@ mod tests {
             reply: crate::reply::PendingReply<'_, ()>,
             ctx: &Context<Self>,
         ) {
-            {
+            
                 self.count += 1;
                 use crate::tasks::send_after;
                 send_after(Duration::from_millis(100), ctx.clone(), IncrementWell);
-            }
-            let _ = reply.reply(());
+reply.reply(());
         }
     }
 
@@ -2196,7 +2188,7 @@ mod tests {
                     reply: crate::reply::PendingReply<'_, ()>,
                     _ctx: &Context<Self>,
                 ) {
-                    let _ = reply.reply(());
+                    reply.reply(());
                 }
             }
 
@@ -2240,8 +2232,7 @@ mod tests {
                     reply: crate::reply::PendingReply<'_, u32>,
                     _ctx: &Context<Self>,
                 ) {
-                    let __reply_value: u32 = { 42 };
-                    let _ = reply.reply(__reply_value);
+                    reply.reply(42);
                 }
             }
 
@@ -2274,10 +2265,9 @@ mod tests {
                     reply: crate::reply::PendingReply<'_, ()>,
                     ctx: &Context<Self>,
                 ) {
-                    {
+                    
                         ctx.stop();
-                    }
-                    let _ = reply.reply(());
+reply.reply(());
                 }
             }
 
@@ -2350,7 +2340,7 @@ mod tests {
                 reply: crate::reply::PendingReply<'_, ()>,
                 _ctx: &Context<Self>,
             ) {
-                let _ = reply.reply(());
+                reply.reply(());
             }
         }
 
@@ -2439,8 +2429,7 @@ mod tests {
             reply: crate::reply::PendingReply<'_, crate::monitor::MonitorRef>,
             ctx: &Context<Self>,
         ) {
-            let __reply_value: crate::monitor::MonitorRef = { ctx.monitor(&msg.0) };
-            let _ = reply.reply(__reply_value);
+            reply.reply(ctx.monitor(&msg.0));
         }
     }
 
@@ -2451,10 +2440,9 @@ mod tests {
             reply: crate::reply::PendingReply<'_, ()>,
             ctx: &Context<Self>,
         ) {
-            {
+            
                 ctx.demonitor(msg.0);
-            }
-            let _ = reply.reply(());
+reply.reply(());
         }
     }
 
@@ -2465,10 +2453,9 @@ mod tests {
             reply: crate::reply::PendingReply<'_, ()>,
             _ctx: &Context<Self>,
         ) {
-            {
+            
                 self.downs.lock().unwrap().push(msg);
-            }
-            let _ = reply.reply(());
+reply.reply(());
         }
     }
 
@@ -2479,8 +2466,7 @@ mod tests {
             reply: crate::reply::PendingReply<'_, Vec<crate::monitor::Down>>,
             _ctx: &Context<Self>,
         ) {
-            let __reply_value: Vec<crate::monitor::Down> = { self.downs.lock().unwrap().clone() };
-            let _ = reply.reply(__reply_value);
+            reply.reply(self.downs.lock().unwrap().clone());
         }
     }
 
@@ -2614,15 +2600,12 @@ mod tests {
                 reply: crate::reply::PendingReply<'_, usize>,
                 ctx: &Context<Self>,
             ) {
-                let __reply_value: usize = {
-                    ctx.shared
+                reply.reply(ctx.shared
                         .monitors
                         .lock()
                         .unwrap()
                         .as_ref()
-                        .map_or(0, HashMap::len)
-                };
-                let _ = reply.reply(__reply_value);
+                        .map_or(0, HashMap::len));
             }
         }
 
@@ -2765,10 +2748,9 @@ mod tests {
             reply: crate::reply::PendingReply<'_, ()>,
             ctx: &Context<Self>,
         ) {
-            {
+            
                 ctx.link(&msg.0);
-            }
-            let _ = reply.reply(());
+reply.reply(());
         }
     }
 
@@ -2779,8 +2761,7 @@ mod tests {
             reply: crate::reply::PendingReply<'_, Vec<Exit>>,
             _ctx: &Context<Self>,
         ) {
-            let __reply_value: Vec<Exit> = { self.exits.lock().unwrap().clone() };
-            let _ = reply.reply(__reply_value);
+            reply.reply(self.exits.lock().unwrap().clone());
         }
     }
 
@@ -2966,10 +2947,9 @@ mod tests {
                     reply: crate::reply::PendingReply<'_, ()>,
                     ctx: &Context<Self>,
                 ) {
-                    {
+                    
                         ctx.unlink(&msg.0);
-                    }
-                    let _ = reply.reply(());
+reply.reply(());
                 }
             }
             b.request(UnlinkFrom(a.child_handle())).await.unwrap();
@@ -2986,9 +2966,7 @@ mod tests {
                     _reply: crate::reply::PendingReply<'_, u64>,
                     _ctx: &Context<Self>,
                 ) {
-                    let _reply_value: u64 = {
-                        panic!("boom4");
-                    };
+                    panic!("boom4");
                 }
             }
             // Counter's Boom4 returns u64; just use send with no expectation of reply
@@ -3026,9 +3004,7 @@ mod tests {
                     _reply: crate::reply::PendingReply<'_, u64>,
                     _ctx: &Context<Self>,
                 ) {
-                    let _reply_value: u64 = {
-                        panic!("boom5");
-                    };
+                    panic!("boom5");
                 }
             }
             let _ = a.send(Boom5);
@@ -3208,7 +3184,7 @@ mod monitor_cleanup_regressions {
             reply: crate::reply::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
-            let _ = reply.reply(());
+            reply.reply(());
         }
     }
     #[test]
@@ -3356,10 +3332,9 @@ mod turn_regressions {
                 reply: crate::reply::PendingReply<'_, ()>,
                 _: &Context<Self>,
             ) {
-                {
+                
                     self.0.fetch_add(1, Ordering::SeqCst);
-                }
-                let _ = reply.reply(());
+reply.reply(());
             }
         }
         rt::Runtime::new().unwrap().block_on(async {
@@ -3432,10 +3407,9 @@ mod idle_stop_regression {
             reply: crate::reply::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
-            {
+            
                 self.0.fetch_add(1, Ordering::SeqCst);
-            }
-            let _ = reply.reply(());
+reply.reply(());
         }
     }
     #[test]
@@ -3525,8 +3499,7 @@ mod api_coverage {
             reply: crate::reply::PendingReply<'_, u32>,
             _: &Context<Self>,
         ) {
-            let __reply_value: u32 = { msg.0 };
-            let _ = reply.reply(__reply_value);
+            reply.reply(msg.0);
         }
     }
     impl Handler<StopAfter> for Echo {
@@ -3536,11 +3509,10 @@ mod api_coverage {
             reply: crate::reply::PendingReply<'_, ()>,
             ctx: &Context<Self>,
         ) {
-            {
+            
                 let _ = msg.0.await;
                 ctx.stop();
-            }
-            let _ = reply.reply(());
+reply.reply(());
         }
     }
     impl Handler<OwnRecipient> for Echo {
@@ -3550,8 +3522,7 @@ mod api_coverage {
             reply: crate::reply::PendingReply<'_, (Recipient<Ask>, ActorId)>,
             ctx: &Context<Self>,
         ) {
-            let __reply_value: (Recipient<Ask>, ActorId) = { (ctx.recipient::<Ask>(), ctx.id()) };
-            let _ = reply.reply(__reply_value);
+            reply.reply((ctx.recipient::<Ask>(), ctx.id()));
         }
     }
     impl Handler<Boom> for Echo {
@@ -3650,8 +3621,7 @@ mod api_coverage {
                 reply: crate::reply::PendingReply<'_, u32>,
                 _: &Context<Self>,
             ) {
-                let __reply_value: u32 = { msg.0 };
-                let _ = reply.reply(__reply_value);
+                reply.reply(msg.0);
             }
         }
         rt::Runtime::new().unwrap().block_on(async {
@@ -3708,7 +3678,7 @@ mod shared_state_release {
             reply: crate::reply::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
-            let _ = reply.reply(());
+            reply.reply(());
         }
     }
 

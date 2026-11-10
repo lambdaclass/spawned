@@ -26,8 +26,7 @@ impl Handler<Identity> for Worker {
         reply: spawned_concurrency::reply::PendingReply<'_, ThreadId>,
         _: &Context<Self>,
     ) {
-        let __reply_value: ThreadId = { std::thread::current().id() };
-        let _ = reply.reply(__reply_value);
+        reply.reply(std::thread::current().id());
     }
 }
 impl Handler<Ambient> for Worker {
@@ -37,8 +36,7 @@ impl Handler<Ambient> for Worker {
         reply: spawned_concurrency::reply::PendingReply<'_, ActorRef<Worker>>,
         _: &Context<Self>,
     ) {
-        let __reply_value: ActorRef<Worker> = { Worker.start() };
-        let _ = reply.reply(__reply_value);
+        reply.reply(Worker.start());
     }
 }
 

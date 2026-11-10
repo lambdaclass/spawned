@@ -223,7 +223,7 @@ impl Handler<Cmd> for Probe {
                 }
             }
         };
-        let _ = reply.reply(__reply_value);
+        reply.reply(__reply_value);
     }
 }
 impl Handler<Down> for Probe {
@@ -233,10 +233,9 @@ impl Handler<Down> for Probe {
         reply: spawned_concurrency::reply::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
-        {
+        
             self.counters.downs.fetch_add(1, Ordering::SeqCst);
-        }
-        let _ = reply.reply(());
+reply.reply(());
     }
 }
 
@@ -253,7 +252,7 @@ impl Handler<bumper::Bump> for Probe {
     ) {
         let __reply_value: u64 =
             { self.counters.effects.fetch_add(1, Ordering::SeqCst) as u64 + 1 };
-        let _ = reply.reply(__reply_value);
+        reply.reply(__reply_value);
     }
 }
 

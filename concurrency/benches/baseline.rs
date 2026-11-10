@@ -104,8 +104,7 @@ impl tasks::Handler<Work> for Sink {
         reply: spawned_concurrency::reply::PendingReply<'_, Ack>,
         _: &tasks::Context<Self>,
     ) {
-        let __reply_value: Ack = { process(work) };
-        let _ = reply.reply(__reply_value);
+        reply.reply(process(work));
     }
 }
 impl threads::Actor for Sink {}
@@ -116,8 +115,7 @@ impl threads::Handler<Work> for Sink {
         reply: spawned_concurrency::reply::PendingReply<'_, Ack>,
         _: &threads::Context<Self>,
     ) {
-        let __reply_value: Ack = { process(work) };
-        let _ = reply.reply(__reply_value);
+        reply.reply(process(work));
     }
 }
 #[derive(Clone)]

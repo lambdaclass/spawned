@@ -17,8 +17,7 @@ impl Handler<Ping> for Critical {
         reply: spawned_concurrency::reply::PendingReply<'_, String>,
         _: &Context<Self>,
     ) {
-        let __reply_value: String = { std::thread::current().name().unwrap().to_owned() };
-        let _ = reply.reply(__reply_value);
+        reply.reply(std::thread::current().name().unwrap().to_owned());
     }
 }
 struct Router(ActorRef<Critical>);
@@ -34,7 +33,7 @@ impl Handler<Ping> for Router {
             assert_eq!(std::thread::current().name(), Some("background-worker"));
             self.0.request(Ping).await.unwrap()
         };
-        let _ = reply.reply(__reply_value);
+        reply.reply(__reply_value);
     }
 }
 

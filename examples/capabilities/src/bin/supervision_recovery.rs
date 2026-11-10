@@ -27,7 +27,7 @@ impl Handler<Next> for Counter {
             self.0 += 1;
             self.0
         };
-        let _ = reply.reply(__reply_value);
+        reply.reply(__reply_value);
     }
 }
 impl Handler<Crash> for Counter {

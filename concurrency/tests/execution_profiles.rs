@@ -35,7 +35,7 @@ impl Handler<Audit> for Probe {
                 spawned_rt::tasks::affinity::current_cpu().ok(),
             )
         };
-        let _ = reply.reply(__reply_value);
+        reply.reply(__reply_value);
     }
 }
 struct StartPeer;
@@ -51,7 +51,7 @@ impl Handler<StartPeer> for Probe {
     ) {
         let __reply_value: <StartPeer as Message>::Result =
             { ctx.execution_group().unwrap().start(Probe) };
-        let _ = reply.reply(__reply_value);
+        reply.reply(__reply_value);
     }
 }
 // Not simulated: native execution groups need OS threads.
@@ -100,13 +100,12 @@ impl Handler<Block> for Probe {
         reply: spawned_concurrency::reply::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
-        {
+        
             tokio::task::block_in_place(|| {
                 let _ = msg.entered.send(());
                 msg.release.recv_timeout(LIMIT).unwrap();
             });
-        }
-        let _ = reply.reply(());
+reply.reply(());
     }
 }
 struct Crash;
@@ -376,10 +375,9 @@ mod tls_join {
             reply: spawned_concurrency::reply::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
-            {
+            
                 PROBE.with(|p| *p.borrow_mut() = Some(msg.0));
-            }
-            let _ = reply.reply(());
+reply.reply(());
         }
     }
     #[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]

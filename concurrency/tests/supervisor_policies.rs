@@ -31,8 +31,7 @@ impl Handler<Generation> for Probe {
         reply: spawned_concurrency::reply::PendingReply<'_, u64>,
         _: &Context<Self>,
     ) {
-        let __reply_value: u64 = { self.0 };
-        let _ = reply.reply(__reply_value);
+        reply.reply(self.0);
     }
 }
 impl Handler<Crash> for Probe {

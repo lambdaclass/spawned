@@ -201,10 +201,9 @@ mod tasks_actors {
             reply: spawned_concurrency::reply::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
-            {
+            
                 self.0.fault(Fault::SendHandler, "injected handler panic");
-            }
-            let _ = reply.reply(());
+reply.reply(());
         }
     }
     impl Handler<Ask> for TaskVictim {
@@ -214,8 +213,7 @@ mod tasks_actors {
             reply: spawned_concurrency::reply::PendingReply<'_, u64>,
             _: &Context<Self>,
         ) {
-            let __reply_value: u64 = { self.0.ask() };
-            let _ = reply.reply(__reply_value);
+            reply.reply(self.0.ask());
         }
     }
     impl Handler<Payload> for TaskVictim {
@@ -225,7 +223,7 @@ mod tasks_actors {
             reply: spawned_concurrency::reply::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
-            let _ = reply.reply(());
+            reply.reply(());
         }
     }
     impl Handler<Gift> for TaskVictim {
@@ -235,8 +233,7 @@ mod tasks_actors {
             reply: spawned_concurrency::reply::PendingReply<'_, Bomb>,
             _: &Context<Self>,
         ) {
-            let __reply_value: Bomb = { self.0.gift() };
-            let _ = reply.reply(__reply_value);
+            reply.reply(self.0.gift());
         }
     }
     impl Handler<Hold> for TaskVictim {
@@ -246,10 +243,9 @@ mod tasks_actors {
             reply: spawned_concurrency::reply::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
-            {
+            
                 self.0.gate.wait();
-            }
-            let _ = reply.reply(());
+reply.reply(());
         }
     }
     impl Handler<Setup> for TaskVictim {
@@ -268,7 +264,7 @@ mod tasks_actors {
                 None
             }
             .await;
-            let _ = reply.reply(__reply_value);
+            reply.reply(__reply_value);
         }
     }
     impl Handler<Down> for TaskVictim {
@@ -278,10 +274,9 @@ mod tasks_actors {
             reply: spawned_concurrency::reply::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
-            {
+            
                 self.0.fault(Fault::DownHandler, "injected Down panic");
-            }
-            let _ = reply.reply(());
+reply.reply(());
         }
     }
 
@@ -301,12 +296,11 @@ mod tasks_actors {
             reply: spawned_concurrency::reply::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
-            {
+            
                 self.0
                     .events
                     .push(Event::Down(down.monitor_ref, down.reason));
-            }
-            let _ = reply.reply(());
+reply.reply(());
         }
     }
     impl Handler<Setup> for TaskObserver {
@@ -325,7 +319,7 @@ mod tasks_actors {
                 None
             }
             .await;
-            let _ = reply.reply(__reply_value);
+            reply.reply(__reply_value);
         }
     }
     impl Handler<Ask> for TaskObserver {
@@ -335,8 +329,7 @@ mod tasks_actors {
             reply: spawned_concurrency::reply::PendingReply<'_, u64>,
             _: &Context<Self>,
         ) {
-            let __reply_value: u64 = { 7 };
-            let _ = reply.reply(__reply_value);
+            reply.reply(7);
         }
     }
 }
@@ -367,10 +360,9 @@ mod thread_actors {
             reply: spawned_concurrency::reply::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
-            {
+            
                 self.0.fault(Fault::SendHandler, "injected handler panic");
-            }
-            let _ = reply.reply(());
+reply.reply(());
         }
     }
     impl Handler<Ask> for ThreadVictim {
@@ -380,8 +372,7 @@ mod thread_actors {
             reply: spawned_concurrency::reply::PendingReply<'_, u64>,
             _: &Context<Self>,
         ) {
-            let __reply_value: u64 = { self.0.ask() };
-            let _ = reply.reply(__reply_value);
+            reply.reply(self.0.ask());
         }
     }
     impl Handler<Payload> for ThreadVictim {
@@ -391,7 +382,7 @@ mod thread_actors {
             reply: spawned_concurrency::reply::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
-            let _ = reply.reply(());
+            reply.reply(());
         }
     }
     impl Handler<Gift> for ThreadVictim {
@@ -401,8 +392,7 @@ mod thread_actors {
             reply: spawned_concurrency::reply::PendingReply<'_, Bomb>,
             _: &Context<Self>,
         ) {
-            let __reply_value: Bomb = { self.0.gift() };
-            let _ = reply.reply(__reply_value);
+            reply.reply(self.0.gift());
         }
     }
     impl Handler<Hold> for ThreadVictim {
@@ -412,10 +402,9 @@ mod thread_actors {
             reply: spawned_concurrency::reply::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
-            {
+            
                 self.0.gate.wait();
-            }
-            let _ = reply.reply(());
+reply.reply(());
         }
     }
     impl Handler<Setup> for ThreadVictim {
@@ -433,7 +422,7 @@ mod thread_actors {
                 }
                 None
             })();
-            let _ = reply.reply(__reply_value);
+            reply.reply(__reply_value);
         }
     }
     impl Handler<Down> for ThreadVictim {
@@ -443,10 +432,9 @@ mod thread_actors {
             reply: spawned_concurrency::reply::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
-            {
+            
                 self.0.fault(Fault::DownHandler, "injected Down panic");
-            }
-            let _ = reply.reply(());
+reply.reply(());
         }
     }
 
@@ -466,12 +454,11 @@ mod thread_actors {
             reply: spawned_concurrency::reply::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
-            {
+            
                 self.0
                     .events
                     .push(Event::Down(down.monitor_ref, down.reason));
-            }
-            let _ = reply.reply(());
+reply.reply(());
         }
     }
     impl Handler<Setup> for ThreadObserver {
@@ -489,7 +476,7 @@ mod thread_actors {
                 }
                 None
             })();
-            let _ = reply.reply(__reply_value);
+            reply.reply(__reply_value);
         }
     }
     impl Handler<Ask> for ThreadObserver {
@@ -499,8 +486,7 @@ mod thread_actors {
             reply: spawned_concurrency::reply::PendingReply<'_, u64>,
             _: &Context<Self>,
         ) {
-            let __reply_value: u64 = { 7 };
-            let _ = reply.reply(__reply_value);
+            reply.reply(7);
         }
     }
 }

@@ -34,11 +34,10 @@ impl Handler<Push> for Collector {
         reply: crate::reply::PendingReply<'_, ()>,
         _ctx: &Context<Self>,
     ) {
-        {
+        
             self.items.push(msg.value);
             self.done.fetch_add(1, Ordering::SeqCst);
-        }
-        let _ = reply.reply(());
+reply.reply(());
     }
 }
 
@@ -49,8 +48,7 @@ impl Handler<GetItems> for Collector {
         reply: crate::reply::PendingReply<'_, Vec<i32>>,
         _ctx: &Context<Self>,
     ) {
-        let __reply_value: Vec<i32> = { self.items.clone() };
-        let _ = reply.reply(__reply_value);
+        reply.reply(self.items.clone());
     }
 }
 

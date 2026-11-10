@@ -17,7 +17,7 @@ impl Handler<Ping> for Worker {
         reply: spawned_concurrency::reply::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
-        let _ = reply.reply(());
+        reply.reply(());
     }
 }
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
