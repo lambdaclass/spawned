@@ -106,7 +106,10 @@ fn metrics_conserve_work_across_all_lifecycle_paths() {
             Err(ActorError::RequestTimeout)
         ));
         assert!(matches!(
-            Response::from(actor.request_raw_until(Ping, spawned_concurrency::Deadline::after(Duration::ZERO))).await,
+            Response::from(
+                actor.request_raw_until(Ping, spawned_concurrency::Deadline::after(Duration::ZERO))
+            )
+            .await,
             Err(ActorError::RequestTimeout)
         ));
         // Dropping either kind of caller wrapper does not cancel actor work.
@@ -128,15 +131,22 @@ fn metrics_conserve_work_across_all_lifecycle_paths() {
             .await
             .unwrap();
         Response::from(actor.request_raw(Ping)).await.unwrap();
-        Response::from(actor.request_raw_until(Ping, spawned_concurrency::Deadline::after(Duration::from_secs(2))))
-            .await
-            .unwrap();
+        Response::from(actor.request_raw_until(
+            Ping,
+            spawned_concurrency::Deadline::after(Duration::from_secs(2)),
+        ))
+        .await
+        .unwrap();
         actor.context().stop();
         assert_eq!(actor.wait_exit().await, ExitReason::Normal);
         assert_eq!(actor.mailbox_depth(), 0);
         assert!(actor.send(Ping).is_err());
         assert!(matches!(
-            Response::from(actor.request_raw_until(Ping, spawned_concurrency::Deadline::after(Duration::from_secs(2)))).await,
+            Response::from(actor.request_raw_until(
+                Ping,
+                spawned_concurrency::Deadline::after(Duration::from_secs(2))
+            ))
+            .await,
             Err(ActorError::ActorStopped)
         ));
 
