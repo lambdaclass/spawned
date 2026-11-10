@@ -163,6 +163,23 @@ impl Admission {
         *open = false;
         true
     }
+    /// Atomically preserve a historical commitment or close the gate. Callbacks
+    /// cannot reenter admission; `before_close` runs only for an open gate.
+    pub(crate) fn close_unless(
+        &self,
+        preserve: impl FnOnce() -> bool,
+        before_close: impl FnOnce(),
+    ) -> bool {
+        let mut open = lock(&self.0);
+        if preserve() {
+            return false;
+        }
+        if *open {
+            before_close();
+            *open = false;
+        }
+        true
+    }
     pub(crate) fn if_open<R>(&self, f: impl FnOnce() -> R) -> Option<R> {
         let open = lock(&self.0);
         (*open).then(f)
@@ -249,6 +266,7 @@ struct SystemState {
     groups: Vec<Arc<GroupInner>>,
     units: Vec<ShutdownUnitEntry>,
     shutdown_scopes: Vec<Arc<Scope>>,
+    coordinator_failures: Vec<String>,
 }
 pub(crate) struct SystemInner {
     state: Mutex<SystemState>,
@@ -269,6 +287,7 @@ impl ActorSystem {
                     groups: Vec::new(),
                     units: Vec::new(),
                     shutdown_scopes: Vec::new(),
+                    coordinator_failures: Vec::new(),
                 }),
                 control: Control::new()?,
             }),
@@ -284,6 +303,25 @@ impl ActorSystem {
     ) -> Result<ExecutionGroup, SystemError> {
         self.add_group(name.into(), ExecutionProfile::AsyncPool { workers })
     }
+    /// Admit managed actors on an existing runtime, without creating or owning
+    /// its worker pool. The caller must keep that runtime alive and driven until
+    /// system shutdown completes. Shutdown joins managed roots/helpers, but does
+    /// not stop the shared runtime or ambient tasks started outside the group.
+    /// The reported worker count describes the shared pool, not reserved capacity.
+    pub fn async_group_on(
+        &self,
+        name: impl Into<String>,
+        runtime: &Handle,
+    ) -> Result<ExecutionGroup, SystemError> {
+        self.add_group_with_runtime(
+            name.into(),
+            ExecutionProfile::AsyncPool {
+                workers: runtime.metrics().num_workers(),
+            },
+            Some(runtime.clone()),
+        )
+    }
+
     /// Fixed native actor roots sharing a sized async helper runtime. Each live
     /// scope reserves a worker even while idle; full admission returns Capacity.
     pub fn thread_group(
@@ -323,6 +361,14 @@ impl ActorSystem {
         name: String,
         profile: ExecutionProfile,
     ) -> Result<ExecutionGroup, SystemError> {
+        self.add_group_with_runtime(name, profile, None)
+    }
+    fn add_group_with_runtime(
+        &self,
+        name: String,
+        profile: ExecutionProfile,
+        runtime: Option<Handle>,
+    ) -> Result<ExecutionGroup, SystemError> {
         if name.is_empty() || name.contains('\0') {
             return Err(SystemError::InvalidName);
         }
@@ -334,7 +380,7 @@ impl ActorSystem {
         if system.groups.iter().any(|g| g.name == name) {
             return Err(SystemError::DuplicateName(name));
         }
-        let group = GroupInner::new(name, profile)?;
+        let group = GroupInner::new(name, profile, runtime)?;
         let result = ExecutionGroup {
             inner: Arc::downgrade(&group),
             selection: None,
@@ -357,6 +403,7 @@ impl ActorSystem {
             exits: Vec::new(),
             supervisor_failures: Vec::new(),
             group_failures: Vec::new(),
+            coordinator_failures: Vec::new(),
         }
         .wait(deadline)
         .await
@@ -440,43 +487,141 @@ impl SystemInner {
         );
         targets.sort_by_key(ShutdownTarget::id);
         self.control.handle.spawn(async move {
-            // Keep reverse admission order across standalone actors and trees.
-            // At the initial shutdown deadline, signal remaining targets rather
-            // than leaving earlier dependencies running behind stuck cleanup.
-            for target in targets.iter().rev() {
-                let remaining = grace.saturating_sub(began.elapsed());
-                match target {
-                    ShutdownTarget::Unit(entry) => {
-                        entry.unit.stop();
-                        if rt::timeout(remaining, entry.unit.joined()).await.is_err() {
-                            entry.unit.stop_remaining();
+            let ordered = std::panic::AssertUnwindSafe(async {
+                // Keep reverse admission order across standalone actors and trees.
+                // At the initial shutdown deadline, signal remaining targets rather
+                // than leaving earlier dependencies running behind stuck cleanup.
+                for target in targets.iter().rev() {
+                    let remaining = grace.saturating_sub(began.elapsed());
+                    match target {
+                        ShutdownTarget::Unit(entry) => {
+                            entry.unit.stop();
+                            if rt::timeout(remaining, entry.unit.joined()).await.is_err() {
+                                entry.unit.stop_remaining();
+                            }
+                        }
+                        ShutdownTarget::Scope(scope) => {
+                            scope.stop(ExitReason::Shutdown);
+                            let _ = rt::timeout(remaining, scope.joined()).await;
                         }
                     }
-                    ShutdownTarget::Scope(scope) => {
-                        scope.stop(ExitReason::Shutdown);
-                        let _ = rt::timeout(remaining, scope.joined()).await;
-                    }
                 }
-            }
-            // At grace expiry, no nested child may remain unsignalled behind
-            // a stuck sibling's longer per-child cleanup timeout.
-            for scope in scopes.iter().rev() {
-                scope.stop(ExitReason::Shutdown);
-            }
-            // Runtime teardown still requires actual completion, independently
-            // of the ordering grace and the caller's report timeout.
-            for entry in &units {
-                entry.unit.joined().await;
-            }
-            for scope in &scopes {
-                scope.joined().await;
-            }
-            for group in groups.iter().rev() {
-                wait_true(group.done.clone()).await;
+                // At grace expiry, no nested child may remain unsignalled behind
+                // a stuck sibling's longer per-child cleanup timeout.
+                for scope in scopes.iter().rev() {
+                    scope.stop(ExitReason::Shutdown);
+                }
+                // Runtime teardown still requires actual completion, independently
+                // of the ordering grace and the caller's report timeout.
+                for entry in &units {
+                    entry.unit.joined().await;
+                }
+                for scope in &scopes {
+                    scope.joined().await;
+                }
+                for group in groups.iter().rev() {
+                    wait_true(group.done.clone()).await;
+                }
+            })
+            .catch_unwind()
+            .await;
+            if let Err(payload) = ordered {
+                let message = crate::error::panic_message(&*payload);
+                crate::mailbox::dispose_panic(payload);
+                owner.record_coordinator_failure(format!(
+                    "system shutdown coordinator panicked: {message}"
+                ));
+                owner.emergency_shutdown(&groups, &units, &scopes).await;
             }
             drop(owner);
             control_close.cancel();
         });
+    }
+    fn record_coordinator_failure(&self, message: String) {
+        let mut state = lock(&self.state);
+        if state.coordinator_failures.len() < 16 && !state.coordinator_failures.contains(&message) {
+            state.coordinator_failures.push(message);
+        }
+    }
+    async fn emergency_shutdown(
+        &self,
+        groups: &[Arc<GroupInner>],
+        units: &[ShutdownUnitEntry],
+        scopes: &[Arc<Scope>],
+    ) {
+        loop {
+            let result = std::panic::AssertUnwindSafe(async {
+                let mut signalled = true;
+                for entry in units.iter().rev() {
+                    if entry.unit.is_done() {
+                        continue;
+                    }
+                    if let Err(payload) =
+                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            entry.unit.stop_remaining()
+                        }))
+                    {
+                        let message = crate::error::panic_message(&*payload);
+                        crate::mailbox::dispose_panic(payload);
+                        self.record_coordinator_failure(format!(
+                            "emergency supervisor stop panicked: {message}"
+                        ));
+                        signalled = false;
+                    }
+                }
+                for scope in scopes.iter().rev() {
+                    if let Err(payload) =
+                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            scope.stop(ExitReason::Shutdown)
+                        }))
+                    {
+                        let message = crate::error::panic_message(&*payload);
+                        crate::mailbox::dispose_panic(payload);
+                        self.record_coordinator_failure(format!(
+                            "emergency actor stop panicked: {message}"
+                        ));
+                        signalled = false;
+                    }
+                }
+                for entry in units {
+                    if rt::timeout(Duration::from_millis(10), entry.unit.joined())
+                        .await
+                        .is_err()
+                    {
+                        signalled = false;
+                    }
+                }
+                for scope in scopes {
+                    if rt::timeout(Duration::from_millis(10), scope.joined())
+                        .await
+                        .is_err()
+                    {
+                        signalled = false;
+                    }
+                }
+                if !signalled {
+                    return false;
+                }
+                for group in groups.iter().rev() {
+                    wait_true(group.done.clone()).await;
+                }
+                true
+            })
+            .catch_unwind()
+            .await;
+            match result {
+                Ok(true) => return,
+                Ok(false) => (),
+                Err(payload) => {
+                    let message = crate::error::panic_message(&*payload);
+                    crate::mailbox::dispose_panic(payload);
+                    self.record_coordinator_failure(format!("emergency join panicked: {message}"));
+                }
+            }
+            // Keep ownership and a visible failure if an internal stop keeps
+            // failing. Reports remain incomplete; retry without a busy loop.
+            rt::sleep(Duration::from_millis(10)).await;
+        }
     }
 }
 
@@ -494,6 +639,8 @@ pub struct ShutdownReport {
     pub exits: Vec<ActorExit>,
     pub supervisor_failures: Vec<String>,
     pub group_failures: Vec<String>,
+    /// Coordinator panics recovered through emergency stop-and-join.
+    pub coordinator_failures: Vec<String>,
 }
 #[derive(Debug, Clone)]
 pub struct ActorExit {
@@ -522,6 +669,7 @@ impl ShutdownReport {
             .await
             .unwrap_or(false);
         let state = lock(&owner.state);
+        self.coordinator_failures = state.coordinator_failures.clone();
         self.unfinished_groups = state
             .groups
             .iter()
@@ -674,12 +822,12 @@ impl ExecutionGroup {
                 actor: None,
                 name: None,
                 actor_type: "",
-                #[cfg(feature = "diagnostics")]
-                active_turn: None,
                 registrations: Vec::new(),
                 ready_at: None,
                 ended_at: None,
             }),
+            #[cfg(feature = "diagnostics")]
+            active_turn: Mutex::new(None),
             ready,
             done,
         });
@@ -701,8 +849,6 @@ struct ScopeState {
     actor: Option<ChildHandle>,
     name: Option<String>,
     actor_type: &'static str,
-    #[cfg(feature = "diagnostics")]
-    active_turn: Option<(&'static str, Instant)>,
     registrations: Vec<crate::registry::RegistrationGuard>,
     ready_at: Option<Instant>,
     ended_at: Option<Instant>,
@@ -717,6 +863,8 @@ pub(crate) struct Scope {
     pub(crate) token: CancellationToken,
     pub(crate) cause: crate::link::LinkedExitReason,
     state: Mutex<ScopeState>,
+    #[cfg(feature = "diagnostics")]
+    active_turn: Mutex<Option<(&'static str, Instant)>>,
     ready: watch::Sender<StartupState>,
     done: watch::Sender<bool>,
 }
@@ -804,7 +952,7 @@ impl Scope {
     fn diagnostic(&self) -> Option<ActorDiagnostic> {
         let state = lock(&self.state);
         #[cfg(feature = "diagnostics")]
-        let (message_type, turn_age) = match state.active_turn {
+        let (message_type, turn_age) = match *lock(&self.active_turn) {
             Some((message, start)) => (Some(message), Some(start.elapsed())),
             None => (None, None),
         };
@@ -819,9 +967,9 @@ impl Scope {
         })
     }
     #[cfg(feature = "diagnostics")]
-    pub(crate) fn begin_turn(self: &Arc<Self>, message: &'static str) -> TurnGuard {
-        lock(&self.state).active_turn = Some((message, Instant::now()));
-        TurnGuard(self.clone())
+    pub(crate) fn begin_turn(&self, message: &'static str) -> TurnGuard<'_> {
+        *lock(&self.active_turn) = Some((message, Instant::now()));
+        TurnGuard(self)
     }
     pub(crate) fn child(&self) -> Option<ChildHandle> {
         lock(&self.state).actor.clone()
@@ -990,11 +1138,11 @@ impl Scope {
 }
 
 #[cfg(feature = "diagnostics")]
-pub(crate) struct TurnGuard(Arc<Scope>);
+pub(crate) struct TurnGuard<'a>(&'a Scope);
 #[cfg(feature = "diagnostics")]
-impl Drop for TurnGuard {
+impl Drop for TurnGuard<'_> {
     fn drop(&mut self) {
-        lock(&self.0.state).active_turn = None;
+        *lock(&self.0.active_turn) = None;
     }
 }
 
@@ -1083,5 +1231,114 @@ impl<F: Future> Future for Tracked<F> {
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Self::Output> {
         self.project().future.poll(cx)
+    }
+}
+
+#[cfg(test)]
+mod coordinator_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, AtomicUsize};
+    const LIMIT: Duration = Duration::from_secs(10);
+    struct Worker(Arc<AtomicUsize>);
+    impl Actor for Worker {
+        async fn stopped(&mut self, _: &crate::tasks::Context<Self>) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+    struct FaultUnit {
+        allow_emergency: AtomicBool,
+        done: watch::Sender<bool>,
+    }
+    impl ShutdownUnit for FaultUnit {
+        fn close_admission(&self) {}
+        fn stop(&self) {
+            panic!("injected system coordinator fault");
+        }
+        fn stop_remaining(&self) {
+            assert!(
+                self.allow_emergency.load(Ordering::SeqCst),
+                "injected emergency stop fault"
+            );
+            self.done.send_replace(true);
+        }
+        fn joined(&self) -> BoxFuture<'_, ()> {
+            Box::pin(async move {
+                wait_true(self.done.subscribe()).await;
+            })
+        }
+        fn is_done(&self) -> bool {
+            *self.done.borrow()
+        }
+        fn failure(&self) -> Option<String> {
+            None
+        }
+    }
+    #[tokio::test]
+    async fn coordinator_fault_stops_all_targets_and_retains_owned_cleanup() {
+        use crate::tasks::ActorStart;
+        let system = ActorSystem::new().unwrap();
+        let group = system.async_group("coordinator-fault", 1).unwrap();
+        let stopped = Arc::new(AtomicUsize::new(0));
+        let first = Worker(stopped.clone()).start_on(&group).unwrap();
+        let second = Worker(stopped.clone()).start_on(&group).unwrap();
+        first.ready().await.unwrap();
+        second.ready().await.unwrap();
+        let (done, _) = watch::channel(false);
+        let fault = Arc::new(FaultUnit {
+            allow_emergency: AtomicBool::new(false),
+            done,
+        });
+        system.inner.register_unit(fault.clone()).unwrap();
+        let mut report = system.shutdown(Duration::from_millis(30)).await;
+        assert!(!report.complete);
+        // The report is a snapshot, not an acknowledgement that the coordinator
+        // ran. Under full-suite load its 30ms deadline can precede the fault.
+        // Refresh with bounded, yielding waits until that diagnostic is visible.
+        report = rt::timeout(LIMIT, async move {
+            while !report
+                .coordinator_failures
+                .iter()
+                .any(|e| e.contains("injected system coordinator fault"))
+            {
+                // Yield even if a regressed coordinator closes its done watch:
+                // wait() can then return immediately, and LIMIT must still fire.
+                rt::sleep(Duration::from_millis(1)).await;
+                report = report.wait(Duration::ZERO).await;
+            }
+            report
+        })
+        .await
+        .expect("coordinator did not report its injected failure");
+        assert!(report
+            .coordinator_failures
+            .iter()
+            .any(|e| e.contains("injected system coordinator fault")));
+        tokio::time::timeout(LIMIT, first.join()).await.unwrap();
+        tokio::time::timeout(LIMIT, second.join()).await.unwrap();
+        assert_eq!(stopped.load(Ordering::SeqCst), 2);
+        assert!(!*system.inner.control.done.borrow());
+        drop(system); // pending report + coordinator retain runtime ownership
+        fault.allow_emergency.store(true, Ordering::SeqCst);
+        let report = report.wait(LIMIT).await;
+        assert!(report.complete);
+        assert!(!report.coordinator_failures.is_empty());
+        assert!(report.coordinator_failures.len() <= 16);
+    }
+    #[tokio::test]
+    async fn emergency_cleanup_does_not_resignal_an_already_finished_faulting_unit() {
+        let system = ActorSystem::new().unwrap();
+        let (done, _) = watch::channel(false);
+        let fault = Arc::new(FaultUnit {
+            allow_emergency: AtomicBool::new(false),
+            done,
+        });
+        system.inner.register_unit(fault.clone()).unwrap();
+        let report = system.shutdown(Duration::from_millis(30)).await;
+        assert!(!report.complete);
+        // Another owner finishes it; its stop method remains permanently broken.
+        fault.done.send_replace(true);
+        let report = report.wait(LIMIT).await;
+        assert!(report.complete);
+        assert!(!report.coordinator_failures.is_empty());
     }
 }

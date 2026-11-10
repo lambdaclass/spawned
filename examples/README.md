@@ -10,12 +10,9 @@ Usage of each feature is documented in the [guide](../docs/GUIDE.md).
 
 ## Feature index
 
-[Shutdown diagnostics](capabilities/src/bin/shutdown_diagnostics.rs) shows an
-explicit abnormal exit, transient recovery, a named in-flight turn, and waiting
-again on an incomplete report. Run with `--features diagnostics`.
-
 | Feature | tasks mode | threads mode |
 |---|---|---|
+| Named shutdown reports and active turns (`diagnostics` feature) | [shutdown_diagnostics](capabilities/src/bin/shutdown_diagnostics.rs): recovery, in-flight message/age, waiting again on incomplete cleanup | n/a (ActorSystem is async-only) |
 | Protocols, `#[actor]`, request/reply and sends | [name_server](name_server), [bank](bank), [ping_pong](ping_pong) | [bank_threads](bank_threads), [ping_pong_threads](ping_pong_threads) |
 | Type-erased protocol refs (`XRef`) between actors | [chat_room](chat_room) | [chat_room_threads](chat_room_threads) |
 | Stream listeners and per-message recipients | [streams_and_recipients](capabilities/src/bin/streams_and_recipients.rs) | Same example |

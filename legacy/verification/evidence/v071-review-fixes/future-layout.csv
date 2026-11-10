@@ -1,0 +1,6 @@
+revision,metrics,actor_ref_bytes,context_bytes,response_bytes,request_future_bytes,empty_actor_root_bytes,16k_actor_root_bytes
+v0.5.0,false,32,32,24,168,312,49464
+v0.7.0,false,80,80,24,184,808,66344
+v0.7.0,true,88,88,48,208,856,66392
+v071_candidate,false,88,88,24,184,872,66408
+v071_candidate,true,96,96,48,208,920,66456

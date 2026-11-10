@@ -56,12 +56,13 @@ VARIABLES
     sidx,       \* run_supervisor loop index
     sready,     \* core.ready published
     sdone,      \* core.done published
-    budget,     \* retry entries currently held in the rolling window
+    reserved,   \* pending backoffs holding retry capacity
+    budget,     \* committed entries plus pending reservations
     deadline,   \* Supervisor::shutdown deadline hit (stop_remaining used)
     timedOut,   \* children whose cleanup deadline run_supervisor gave up on
     pc, st, gen, alive, pub, initial, exitR, readyGen, first, stopTurn, cdone
 
-sup   == <<open, failed, sphase, sidx, sready, sdone, budget, deadline, timedOut>>
+sup   == <<open, failed, sphase, sidx, sready, sdone, budget, reserved, deadline, timedOut>>
 child == <<pc, st, gen, alive, pub, initial, exitR, readyGen, first, stopTurn, cdone>>
 vars  == <<sup, child>>
 
@@ -71,6 +72,7 @@ TypeOK ==
     /\ sidx \in 0..N+1
     /\ sready \in BOOLEAN /\ sdone \in BOOLEAN /\ deadline \in BOOLEAN
     /\ budget \in 0..MaxRestarts
+    /\ reserved \subseteq Children /\ Cardinality(reserved) <= budget
     /\ timedOut \subseteq Children
     /\ pc \in [Children -> Pcs]
     /\ st \in [Children -> {"Waiting", "Starting", "Running", "Backoff",
@@ -86,7 +88,7 @@ TypeOK ==
 Init ==
     /\ open = TRUE /\ failed = FALSE
     /\ sphase = "starting" /\ sidx = 1
-    /\ sready = FALSE /\ sdone = FALSE /\ budget = 0
+    /\ sready = FALSE /\ sdone = FALSE /\ budget = 0 /\ reserved = {}
     /\ deadline = FALSE /\ timedOut = {}
     /\ pc = [c \in Children |-> "idle"]
     /\ st = [c \in Children |-> "Waiting"]
@@ -112,13 +114,13 @@ Goto(c, p) == pc' = [pc EXCEPT ![c] = p]
 Close ==
     /\ open
     /\ open' = FALSE
-    /\ UNCHANGED <<failed, sphase, sidx, sready, sdone, budget, deadline, timedOut, child>>
+    /\ UNCHANGED <<failed, sphase, sidx, sready, sdone, budget, reserved, deadline, timedOut, child>>
 
 \* Rolling window releases its oldest retry entry.
 WindowExpire ==
-    /\ budget > 0
+    /\ budget > Cardinality(reserved)
     /\ budget' = budget - 1
-    /\ UNCHANGED <<open, failed, sphase, sidx, sready, sdone, deadline, timedOut, child>>
+    /\ UNCHANGED <<open, failed, sphase, sidx, sready, sdone, reserved, deadline, timedOut, child>>
 
 \* Supervisor::shutdown deadline elapsed: stop_remaining stops every child
 \* at once (documented incomplete-shutdown behaviour).
@@ -126,7 +128,7 @@ ShutdownDeadline ==
     /\ ~open /\ ~deadline /\ ~sdone
     /\ deadline' = TRUE
     /\ stopTurn' = [c \in Children |-> TRUE]
-    /\ UNCHANGED <<open, failed, sphase, sidx, sready, sdone, budget, timedOut,
+    /\ UNCHANGED <<open, failed, sphase, sidx, sready, sdone, budget, reserved, timedOut,
                    pc, st, gen, alive, pub, initial, exitR, readyGen, first, cdone>>
 
 -----------------------------------------------------------------------------
@@ -140,14 +142,24 @@ LoopTop(c) ==
        ELSE Goto(c, "backoff") /\ st' = [st EXCEPT ![c] = "Backoff"] /\ UNCHANGED first
     /\ UNCHANGED <<sup, gen, alive, pub, initial, exitR, readyGen, stopTurn, cdone>>
 
-\* Backoff sleep ends (or admission closes); then Core::retry takes a
-\* budget entry, or the supervisor fails with "restart budget exhausted".
+\* Reserve capacity before waiting. Cancellation/supersession refunds it;
+\* only a committed grant enters the rolling time window.
+RetryReserve(c) ==
+    /\ pc[c] = "backoff" /\ open /\ c \notin reserved /\ budget < MaxRestarts
+    /\ reserved' = reserved \cup {c} /\ budget' = budget + 1
+    /\ UNCHANGED <<open, failed, sphase, sidx, sready, sdone, deadline, timedOut, child>>
+RetryRelease(c) ==
+    /\ c \in reserved /\ reserved' = reserved \ {c} /\ budget' = budget - 1
+    /\ UNCHANGED <<open, failed, sphase, sidx, sready, sdone, deadline, timedOut, child>>
 BackoffDone(c) ==
     /\ pc[c] = "backoff"
-    /\ IF ~open THEN Goto(c, "finish") /\ UNCHANGED <<open, failed, budget>>
-       ELSE IF budget < MaxRestarts
-            THEN budget' = budget + 1 /\ Goto(c, "attempt") /\ UNCHANGED <<open, failed>>
-            ELSE Fail /\ Goto(c, "finish") /\ UNCHANGED budget
+    /\ IF ~open THEN /\ c \notin reserved /\ Goto(c, "finish")
+                       /\ UNCHANGED <<open, failed, budget, reserved>>
+       ELSE IF c \in reserved
+            THEN /\ reserved' = reserved \ {c} /\ Goto(c, "attempt")
+                 /\ UNCHANGED <<open, failed, budget>>
+            ELSE /\ budget = MaxRestarts /\ Fail /\ Goto(c, "finish")
+                 /\ UNCHANGED <<budget, reserved>>
     /\ UNCHANGED <<sphase, sidx, sready, sdone, deadline, timedOut,
                    st, gen, alive, pub, initial, exitR, readyGen, first, stopTurn, cdone>>
 
@@ -230,7 +242,7 @@ CleanupStuck(c) ==
     /\ pub' = [pub EXCEPT ![c] = 0]
     /\ st' = [st EXCEPT ![c] = "Stopping"]
     /\ Goto(c, "finish")
-    /\ UNCHANGED <<sphase, sidx, sready, sdone, budget, deadline, timedOut,
+    /\ UNCHANGED <<sphase, sidx, sready, sdone, budget, reserved, deadline, timedOut,
                    gen, initial, exitR, readyGen, first, stopTurn, cdone>>
 
 Decide(c) ==
@@ -239,7 +251,7 @@ Decide(c) ==
        ELSE IF Restarts(Mode[c], exitR[c]) THEN Goto(c, "top") /\ UNCHANGED <<open, failed>>
        ELSE IF ~readyGen[c] THEN Fail /\ Goto(c, "finish")   \* non-restartable startup failure
        ELSE Goto(c, "finish") /\ UNCHANGED <<open, failed>>
-    /\ UNCHANGED <<sphase, sidx, sready, sdone, budget, deadline, timedOut,
+    /\ UNCHANGED <<sphase, sidx, sready, sdone, budget, reserved, deadline, timedOut,
                    st, gen, alive, pub, initial, exitR, readyGen, first, stopTurn, cdone>>
 
 \* view.finish(core.failure.is_some())
@@ -261,7 +273,7 @@ SupLaunch ==
     /\ IF sidx = 1 THEN TRUE ELSE initial[sidx - 1]
     /\ pc' = [pc EXCEPT ![sidx] = "top"]
     /\ sidx' = sidx + 1
-    /\ UNCHANGED <<open, failed, sphase, sready, sdone, budget, deadline, timedOut,
+    /\ UNCHANGED <<open, failed, sphase, sready, sdone, budget, reserved, deadline, timedOut,
                    st, gen, alive, pub, initial, exitR, readyGen, first, stopTurn, cdone>>
 
 \* Initial loop ends: all children reached initial readiness, or admission
@@ -271,31 +283,31 @@ SupStartDone ==
     /\ sphase = "starting"
     /\ \/ ~open
        \/ sidx = N + 1 /\ initial[N]
-    /\ st' = [c \in Children |-> IF gen[c] = 0 THEN "Stopped" ELSE st[c]]
+    /\ st' = [c \in Children |-> IF gen[c] = 0 THEN (IF failed THEN "Failed" ELSE "Stopped") ELSE st[c]]
     /\ cdone' = [c \in Children |-> IF gen[c] = 0 THEN TRUE ELSE cdone[c]]
     /\ sready' = open
     /\ sphase' = "await"
-    /\ UNCHANGED <<open, failed, sidx, sdone, budget, deadline, timedOut,
+    /\ UNCHANGED <<open, failed, sidx, sdone, budget, reserved, deadline, timedOut,
                    pc, gen, alive, pub, initial, exitR, readyGen, first, stopTurn>>
 
 SupCancelSeen ==
     /\ sphase = "await" /\ ~open
     /\ sphase' = "shutdown" /\ sidx' = N
-    /\ UNCHANGED <<open, failed, sready, sdone, budget, deadline, timedOut, child>>
+    /\ UNCHANGED <<open, failed, sready, sdone, budget, reserved, deadline, timedOut, child>>
 
 \* Reverse-order stop: child.stop() for sidx.
 SupStopTurn ==
     /\ sphase = "shutdown" /\ sidx \in Children
     /\ stopTurn' = [stopTurn EXCEPT ![sidx] = TRUE]
     /\ sphase' = "waitchild"
-    /\ UNCHANGED <<open, failed, sidx, sready, sdone, budget, deadline, timedOut,
+    /\ UNCHANGED <<open, failed, sidx, sready, sdone, budget, reserved, deadline, timedOut,
                    pc, st, gen, alive, pub, initial, exitR, readyGen, first, cdone>>
 
 SupChildDone ==
     /\ sphase = "waitchild" /\ cdone[sidx]
     /\ sidx' = sidx - 1
     /\ sphase' = IF sidx = 1 THEN "join" ELSE "shutdown"
-    /\ UNCHANGED <<open, failed, sready, sdone, budget, deadline, timedOut, child>>
+    /\ UNCHANGED <<open, failed, sready, sdone, budget, reserved, deadline, timedOut, child>>
 
 \* Child cleanup deadline exceeded: fail and move on to the next child.
 SupChildTimeout ==
@@ -304,19 +316,21 @@ SupChildTimeout ==
     /\ timedOut' = timedOut \cup {sidx}
     /\ sidx' = sidx - 1
     /\ sphase' = IF sidx = 1 THEN "join" ELSE "shutdown"
-    /\ UNCHANGED <<open, sready, sdone, budget, deadline, child>>
+    /\ UNCHANGED <<open, sready, sdone, budget, reserved, deadline, child>>
 
 \* Join every controller task, then publish done.
 SupJoin ==
     /\ sphase = "join"
     /\ \A c \in Children : pc[c] \in {"idle", "finished"}
     /\ sdone' = TRUE /\ sphase' = "done"
-    /\ UNCHANGED <<open, failed, sidx, sready, budget, deadline, timedOut, child>>
+    /\ st' = [c \in Children |-> IF gen[c] = 0 /\ failed THEN "Failed" ELSE st[c]]
+    /\ UNCHANGED <<open, failed, sidx, sready, budget, reserved, deadline, timedOut,
+                   pc, gen, alive, pub, initial, exitR, readyGen, first, stopTurn, cdone>>
 
 -----------------------------------------------------------------------------
 
 ChildStep(c) ==
-    \/ LoopTop(c) \/ BackoffDone(c) \/ Attempt(c) \/ BecomeReady(c)
+    \/ LoopTop(c) \/ RetryReserve(c) \/ RetryRelease(c) \/ BackoffDone(c) \/ Attempt(c) \/ BecomeReady(c)
     \/ \E r \in StartupResults \cup {"Shutdown"} : StartupFailed(c, r)
     \/ \E r \in SelfExits : SelfExit(c, r)
     \/ StopObserved(c) \/ CleanupDone(c) \/ CleanupStuck(c)
@@ -335,6 +349,7 @@ Next ==
 \* completes (CleanupDone is fair, CleanupStuck and timeouts are not).
 Fairness ==
     /\ \A c \in Children :
+         /\ WF_vars(RetryReserve(c)) /\ WF_vars(RetryRelease(c))
          /\ WF_vars(LoopTop(c)) /\ WF_vars(BackoffDone(c)) /\ WF_vars(Attempt(c))
          /\ WF_vars(StopObserved(c)) /\ WF_vars(CleanupDone(c))
          /\ WF_vars(Decide(c)) /\ WF_vars(Finish(c))

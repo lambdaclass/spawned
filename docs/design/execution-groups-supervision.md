@@ -122,8 +122,8 @@ overwrite. Actual handler/cleanup panics remain reported as failures.
 
 Shutdown is clean for Transient restart classification, but is not the same as
 Normal link propagation: non-trapping linked peers are cancelled by Shutdown;
-trapping peers observe it as an exit signal. Kill remains untrappable and
-cooperative. Do not derive link behavior from `is_abnormal()` alone.
+trapping peers observe it as an exit signal. Direct Kill remains untrappable and cooperative; a Kill delivered over a link
+is trappable, so it cannot take down an entire graph of trapping observers. Do not derive link behavior from `is_abnormal()` alone.
 
 Fallible async construction belongs in the factory's Result in the MVP; it
 does not add a fallible `try_started` hook or change existing Actor methods.

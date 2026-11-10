@@ -19,8 +19,8 @@
 //!   [`tasks::wait_for_generation`], [`tasks::shutdown_system`] and
 //!   [`tasks::TestSystem`] turn hangs into test failures with a report.
 //! - **Fault injection**: [`faults::exit`] stops any actor with a chosen
-//!   [`ExitReason`](spawned_concurrency::ExitReason) (`Panic` and `Kill`
-//!   travel through a link, so an injected panic surfaces as
+//!   [`ExitReason`](spawned_concurrency::ExitReason) (`Panic` travels
+//!   through a link, while `Kill` is direct; an injected panic surfaces as
 //!   `Panic("panic in handler: ..")` and the default panic hook prints it);
 //!   [`tasks::restart_child`] crashes a supervised child and returns its
 //!   replacement; mocks delay, discard or crash on chosen messages.
@@ -34,7 +34,7 @@
 //! for a dependency reached through a protocol reference or a `Recipient<M>`;
 //! a field typed as a concrete `ActorRef<B>` cannot hold a mock (see the guide).
 //!
-//! The `tasks` module and `ExitReason::Kill` injection need the default
+//! The `tasks` module needs the default
 //! `async` feature; with `default-features = false` the crate is Tokio-free and
 //! provides the `threads` helpers.
 #![forbid(unsafe_code)]

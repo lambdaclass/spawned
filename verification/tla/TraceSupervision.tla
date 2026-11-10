@@ -31,7 +31,7 @@ TraceInit == Init /\ i = 0
 
 Bool(x) == x = "true"
 
-ChildEvents == {"LoopTop", "BackoffDone", "Attempt", "BecomeReady",
+ChildEvents == {"RetryReserve", "RetryRelease", "LoopTop", "BackoffDone", "Attempt", "BecomeReady",
                 "StartupFailed", "SelfExit", "StopObserved", "CleanupDone",
                 "CleanupStuck", "Decide", "Finish"}
 
@@ -49,6 +49,8 @@ Step(e) ==
       [] e.a = "SupJoin"          -> SupJoin
       [] e.a \in ChildEvents /\ c \in Children ->
            CASE e.a = "LoopTop"      -> LoopTop(c) /\ pc'[c] = e.x
+             [] e.a = "RetryReserve" -> RetryReserve(c) /\ budget' = e.n
+             [] e.a = "RetryRelease" -> RetryRelease(c) /\ budget' = e.n
              [] e.a = "BackoffDone"  ->
                   /\ BackoffDone(c)
                   /\ CASE e.x = "closed"    -> ~open
@@ -82,7 +84,7 @@ Step(e) ==
 TraceNext ==
     /\ i < Len(Trace)
     /\ \/ Step(Trace[i + 1]) /\ i' = i + 1
-       \/ Trace[i + 1].a = "BackoffDone" /\ WindowExpire /\ UNCHANGED i
+       \/ Trace[i + 1].a \in {"BackoffDone", "RetryReserve"} /\ WindowExpire /\ UNCHANGED i
 
 TraceSpec == TraceInit /\ [][TraceNext]_traceVars
 

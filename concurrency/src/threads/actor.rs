@@ -1,6 +1,5 @@
-use spawned_rt::threads::{
-    self as rt, mpsc, oneshot, oneshot::RecvTimeoutError, CancellationToken,
-};
+use crate::mailbox::threads as mpsc;
+use spawned_rt::threads::{self as rt, oneshot, oneshot::RecvTimeoutError, CancellationToken};
 use std::{
     collections::HashMap,
     fmt::Debug,
@@ -476,7 +475,7 @@ impl<A: Actor> Context<A> {
     /// - `true`: the signal is converted to an `Exit` message and delivered to
     ///   [`Actor::exit_received`].
     ///
-    /// `Kill` is untrappable.
+    /// Direct Kill requests cannot be trapped; propagated Kill notices can.
     pub fn trap_exit(&self, enabled: bool) {
         self.trap_exit.store(enabled, Ordering::Release);
     }
@@ -710,6 +709,7 @@ impl<A: Actor> ActorRef<A> {
 
 impl<A: Actor> From<ActorRef<A>> for ChildHandle {
     fn from(actor_ref: ActorRef<A>) -> Self {
+        let failures = actor_ref.sender.failures();
         let sender = actor_ref.sender.clone();
         let send_exit: SendExitFn = Arc::new(move |exit: Exit| {
             let envelope: Box<dyn Envelope<A> + Send> = Box::new(ExitEnvelope { exit });
@@ -726,6 +726,7 @@ impl<A: Actor> From<ActorRef<A>> for ChildHandle {
             actor_ref.linked_reason,
             send_exit,
         )
+        .with_mailbox_failures(failures)
     }
 }
 
@@ -797,13 +798,32 @@ impl<A: Actor> ActorRef<A> {
             completion_tx,
             ExitReason::Panic("unexpected framework panic".into()),
             move || cleanup_token.cancel(),
-        );
+        )
+        .with_mailbox_failures(actor_ref.sender.failures());
         let startup =
             crate::actor_cleanup::ActorStartup::new((actor, ctx, rx, cancellation_token), cleanup);
         let _thread_handle = rt::spawn(move || {
-            let ((actor, ctx, rx, cancellation_token), mut cleanup) = startup.into_parts();
-            let reason = run_actor(actor, ctx, rx, cancellation_token);
-            cleanup.complete(reason);
+            let ((mut actor, ctx, mut rx, cancellation_token), mut cleanup) = startup.into_parts();
+            let primary = match catch_unwind(AssertUnwindSafe(|| {
+                run_actor(&mut actor, ctx, &mut rx, cancellation_token)
+            })) {
+                Ok(reason) => Ok(reason),
+                Err(payload) => {
+                    let message = panic_message(&*payload);
+                    crate::mailbox::dispose_panic(payload);
+                    Err(ExitReason::Panic(format!(
+                        "actor lifecycle unwound: {message}"
+                    )))
+                }
+            };
+            let outcome = crate::actor_cleanup::finish_actor_state(actor, primary);
+            // State destructors may still send through a retained context. Keep
+            // the receiver alive until state is gone, then drain before publish.
+            drop(rx);
+            match outcome {
+                Ok(reason) => cleanup.complete(reason),
+                Err(reason) => cleanup.complete_secondary(reason),
+            }
         });
 
         actor_ref
@@ -811,9 +831,9 @@ impl<A: Actor> ActorRef<A> {
 }
 
 fn run_actor<A: Actor>(
-    actor: A,
+    actor: &mut A,
     ctx: Context<A>,
-    rx: mpsc::Receiver<MailboxItem<A>>,
+    rx: &mut mpsc::Receiver<MailboxItem<A>>,
     cancellation_token: CancellationToken,
 ) -> ExitReason {
     run_actor_receiving(
@@ -828,7 +848,7 @@ fn run_actor<A: Actor>(
 }
 
 fn run_actor_receiving<A: Actor>(
-    mut actor: A,
+    actor: &mut A,
     ctx: Context<A>,
     mut receive: impl FnMut() -> Result<MailboxItem<A>, std::sync::mpsc::RecvTimeoutError>,
     cancellation_token: CancellationToken,
@@ -840,7 +860,9 @@ fn run_actor_receiving<A: Actor>(
     }));
     if let Err(panic) = start_result {
         let msg = panic_message(&*panic);
-        tracing::error!("Panic in started() callback: {msg}");
+        crate::actor_cleanup::log_safely(|| {
+            tracing::error!("Panic in started() callback: {msg}");
+        });
         cancellation_token.cancel();
         return ExitReason::Panic(format!("panic in started(): {msg}"));
     }
@@ -848,7 +870,9 @@ fn run_actor_receiving<A: Actor>(
     if cancellation_token.is_cancelled() {
         if let Err(panic) = catch_unwind(AssertUnwindSafe(|| actor.stopped(&ctx))) {
             let msg = panic_message(&*panic);
-            tracing::error!("Panic in stopped() callback: {msg}");
+            crate::actor_cleanup::log_safely(|| {
+                tracing::error!("Panic in stopped() callback: {msg}");
+            });
             return ExitReason::Panic(format!("panic in stopped(): {msg}"));
         }
         return ExitReason::Normal;
@@ -884,7 +908,7 @@ fn run_actor_receiving<A: Actor>(
                     .observation()
                     .map(|observation| observation.begin());
                 let result = catch_unwind(AssertUnwindSafe(|| {
-                    envelope.handle(&mut actor, &ctx);
+                    envelope.handle(actor, &ctx);
                 }));
                 #[cfg(feature = "metrics")]
                 if let Some(observation) = observation {
@@ -892,7 +916,9 @@ fn run_actor_receiving<A: Actor>(
                 }
                 if let Err(panic) = result {
                     let msg = panic_message(&*panic);
-                    tracing::error!("Panic in message handler: {msg}");
+                    crate::actor_cleanup::log_safely(|| {
+                        tracing::error!("Panic in message handler: {msg}");
+                    });
                     exit_reason = ExitReason::Panic(format!("panic in handler: {msg}"));
                     break;
                 }
@@ -910,7 +936,9 @@ fn run_actor_receiving<A: Actor>(
     }));
     if let Err(panic) = stop_result {
         let msg = panic_message(&*panic);
-        tracing::error!("Panic in stopped() callback: {msg}");
+        crate::actor_cleanup::log_safely(|| {
+            tracing::error!("Panic in stopped() callback: {msg}");
+        });
         if !exit_reason.is_abnormal() {
             exit_reason = ExitReason::Panic(format!("panic in stopped(): {msg}"));
         }
@@ -919,7 +947,7 @@ fn run_actor_receiving<A: Actor>(
     // Message destructors and reply cancellation may re-enter monitor state.
     // Preserve stopped() -> monitor cleanup -> undelivered-message drop.
     drop(_monitor_cleanup);
-    drop(discarded);
+    ctx.sender.failures().discard(discarded);
     exit_reason
 }
 
@@ -1674,7 +1702,7 @@ mod idle_stop_regression {
         let actor = std::thread::spawn(move || {
             let mut first = true;
             run_actor_receiving(
-                Counter(seen, trace),
+                &mut Counter(seen, trace),
                 ctx,
                 move || {
                     // Pause the real receive boundary after the started/cancel
@@ -1783,7 +1811,7 @@ mod stop_wakeup_regression {
         let cancel = token.clone();
         let actor = std::thread::spawn(move || {
             run_actor_receiving(
-                Idle(stopped_tx),
+                &mut Idle(stopped_tx),
                 ctx,
                 move || {
                     let _ = entered_tx.send(());

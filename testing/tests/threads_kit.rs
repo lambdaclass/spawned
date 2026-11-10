@@ -176,7 +176,6 @@ fn native_exit_injection() {
     }
 }
 
-#[cfg(feature = "async")]
 #[test]
 fn native_kill_injection() {
     let actor = Idle.start();
@@ -295,7 +294,6 @@ fn native_panic_injection_into_an_exited_target_is_a_no_op() {
 }
 
 // Regression: every Kill injection reaches its target.
-#[cfg(feature = "async")]
 #[test]
 fn native_kill_injection_is_reliable() {
     for _ in 0..200 {
@@ -405,4 +403,21 @@ fn native_helpers_name_their_caller() {
         text.contains("(expect called at testing/tests/threads_kit.rs:"),
         "{text}"
     );
+}
+
+#[test]
+fn direct_kill_and_shutdown_stop_trapping_targets_without_killing_trapping_peers() {
+    for reason in [ExitReason::Kill, ExitReason::Shutdown] {
+        let target = Idle.start();
+        let observer = Idle.start();
+        target.context().trap_exit(true);
+        observer.context().trap_exit(true);
+        observer.context().link(&target.child_handle());
+        faults::exit(&target.child_handle(), reason.clone());
+        assert_eq!(join_within(&target, WAIT), reason);
+        settle(&observer, Ping, WAIT);
+        assert_eq!(observer.child_handle().exit_reason(), None);
+        observer.context().stop();
+        assert_eq!(join_within(&observer, WAIT), ExitReason::Normal);
+    }
 }

@@ -110,6 +110,13 @@ def main():
                 event["x"] = "Normal"
     require_rejected(drain, erase_drain_failure,
                      "transient restart after erased queued destructor panic", args.tlc)
+    shutdown = next(t for t in traces if t["name"] == "queued_drop_preserves_shutdown")
+    def escalate_shutdown(events):
+        for event in events:
+            if event.get("x") == "Shutdown":
+                event["x"] = "Panic"
+    require_rejected(shutdown, escalate_shutdown,
+                     "transient retirement after incorrectly escalated shutdown", args.tlc)
     cohort = next(t for t in traces if t.get("schema") == "cohort-v1" and t["strategy"] == "OneForAll")
     tree = next(t for t in traces if t.get("schema") == "tree-v1" and any(e["a"] == "TPropagate" for e in t["events"]))
     require_rejected(cohort, move_resume_early, "resume before cohort cleanup", args.tlc)
@@ -119,6 +126,9 @@ def main():
     unsafe_final_event(cohort, args.tlc)
     for fault in ("Selection", "Cleanup", "Retirement", "Closed"):
         model_fault("MCCohortsAll", fault, args.tlc)
+    model_fault("MCCoordinator", "ReleaseEarly", args.tlc)
+    model_fault("MCCoordinator", "ForgetFailure", args.tlc)
+    model_fault("MCCoordinator", "ForgetSignal", args.tlc, temporal=True)
     model_fault("MCNested", "Join", args.tlc)
     model_fault("MCNested", "Propagation", args.tlc, temporal=True)
 

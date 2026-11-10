@@ -91,16 +91,8 @@ pub(crate) fn make_signal(
     peer_linked_reason: LinkedExitReason,
 ) -> ExitSignalFn {
     Arc::new(move |sender_id, reason| {
-        // Kill is untrappable — always cancel (with Kill as the linked reason)
-        if matches!(reason, ExitReason::Kill) {
-            let mut slot = peer_linked_reason.lock().unwrap_or_else(|p| p.into_inner());
-            if slot.is_none() {
-                *slot = Some(ExitReason::Kill);
-            }
-            drop(slot);
-            peer_cancel();
-            return;
-        }
+        // A propagated notice is trappable, including Kill. Only a direct
+        // stop_with_reason(Kill) bypasses the target's trap_exit flag.
         // Normal exit signals are silently dropped unless the peer is trapping
         let trapping = peer_trap_exit.load(Ordering::Acquire);
         if matches!(reason, ExitReason::Normal) && !trapping {
@@ -156,6 +148,7 @@ pub(crate) fn register_link(
     if own_id == peer_id || Arc::ptr_eq(own, peer) {
         return;
     }
+
     let closed = with_pair(own, peer, |a, b| {
         if a.exited.is_some() || a.entries.iter().any(|e| e.peer_id == peer_id) {
             return None;
@@ -206,8 +199,13 @@ pub(crate) fn unregister_link(
 fn deliver(signal: &ExitSignalFn, id: ActorId, reason: ExitReason) {
     // One failing internal cancellation callback must not prevent other peers
     // from being notified, or panic again during actor-future destruction.
-    if catch_unwind(AssertUnwindSafe(|| signal(id, reason))).is_err() {
-        tracing::error!("Panic while delivering a linked exit");
+    if let Err(payload) = catch_unwind(AssertUnwindSafe(|| signal(id, reason))) {
+        crate::mailbox::dispose_panic(payload);
+        if let Err(payload) = catch_unwind(AssertUnwindSafe(|| {
+            tracing::error!("Panic while delivering a linked exit");
+        })) {
+            crate::mailbox::dispose_panic(payload);
+        }
     }
 }
 
@@ -284,6 +282,73 @@ pub(crate) fn has_link(table: &LinkTable, peer: ActorId) -> bool {
 mod tests {
     use super::*;
     use std::sync::atomic::AtomicUsize;
+    #[test]
+    fn delivery_contains_callback_payload_and_subscriber_panics() {
+        crate::drop_subprocess::run(
+            "link::tests::delivery_panic_child",
+            "validated linked delivery panic containment",
+        );
+    }
+
+    #[test]
+    #[ignore = "subprocess helper exercised by the enabled parent"]
+    fn delivery_panic_child() {
+        if std::env::var_os("SPAWNED_MAILBOX_DROP_CHILD").is_none() {
+            return;
+        }
+        static SECONDARY_DROPS: AtomicUsize = AtomicUsize::new(0);
+        struct Secondary;
+        impl Drop for Secondary {
+            fn drop(&mut self) {
+                SECONDARY_DROPS.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+        struct Payload(Arc<AtomicUsize>);
+        impl Drop for Payload {
+            fn drop(&mut self) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                // dispose_panic intentionally forgets this secondary payload
+                // to bound recursive destructor panics. A zero-sized payload
+                // exercises that path without an intentional heap leak, so
+                // LSan remains enabled in this subprocess as well as its parent.
+                std::panic::panic_any(Secondary);
+            }
+        }
+        struct PanicSubscriber(Arc<AtomicUsize>);
+        impl tracing::Subscriber for PanicSubscriber {
+            fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+                true
+            }
+            fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+                tracing::span::Id::from_u64(1)
+            }
+            fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+            fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+            fn event(&self, _: &tracing::Event<'_>) {
+                std::panic::panic_any(Payload(self.0.clone()));
+            }
+            fn enter(&self, _: &tracing::span::Id) {}
+            fn exit(&self, _: &tracing::span::Id) {}
+        }
+        let drops = Arc::new(AtomicUsize::new(0));
+        let callback_drops = drops.clone();
+        let signal: ExitSignalFn =
+            Arc::new(move |_, _| std::panic::panic_any(Payload(callback_drops.clone())));
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            tracing::subscriber::with_default(PanicSubscriber(drops.clone()), || {
+                deliver(&signal, ActorId::next(), ExitReason::Kill);
+            });
+        }));
+        assert!(result.is_ok(), "delivery unwound through its caller");
+        assert_eq!(drops.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            SECONDARY_DROPS.load(Ordering::SeqCst),
+            0,
+            "secondary payloads must be forgotten to bound destructor recursion"
+        );
+        println!("validated linked delivery panic containment");
+    }
+
     #[test]
     fn exit_is_clone_and_eq() {
         let e = Exit {

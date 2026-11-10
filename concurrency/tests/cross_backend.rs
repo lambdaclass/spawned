@@ -1315,3 +1315,41 @@ fn stop_before_first_poll_follows_managed_and_legacy_contract() {
     let report = rt.block_on(system.shutdown(LIMIT));
     assert!(report.complete);
 }
+
+#[test]
+fn fixed_shutdown_order_before_two_supervised_one_after_two() {
+    let outcome = metamorphic(group_placements(), |env| shutdown_workload(env, 2, 1, 2));
+    assert_eq!(outcome.order, vec![201, 200, 100, 1, 0]);
+    assert!(outcome.complete);
+}
+
+#[test]
+fn ordered_system_shutdown_matches_thread_placement() {
+    let mut settings = config();
+    settings.source_file = Some(file!());
+    let expected_cases = settings.cases;
+    let completed = std::cell::Cell::new(0u32);
+    let mut runner = proptest::test_runner::TestRunner::new(settings);
+    runner
+        .run(
+            &(0u32..4, 1u32..4, 0u32..4),
+            |(before, sup_children, after)| {
+                let mut env = Env::new(Placement::GroupThread);
+                let outcome = shutdown_workload(&mut env, before, sup_children, after);
+                env.finish();
+                let mut order: Vec<u32> = (200..200 + after).rev().collect();
+                order.extend((100..100 + sup_children).rev());
+                order.extend((0..before).rev());
+                prop_assert_eq!(outcome.order, order);
+                prop_assert!(outcome.complete);
+                completed.set(completed.get() + 1);
+                Ok(())
+            },
+        )
+        .unwrap();
+    assert_eq!(completed.get(), expected_cases);
+    println!(
+        "validated {} thread-placement shutdown-order cases",
+        completed.get()
+    );
+}

@@ -64,7 +64,7 @@ async fn nested_budget_failure_reconstructs_fresh_subtree_and_preserves_parent_s
     let placement = workers.clone();
     let calls = Arc::new(AtomicUsize::new(0));
     let factories = calls.clone();
-    let mut root = system.supervisor(policy(10)).unwrap();
+    let mut root = system.supervisor(policy(1)).unwrap();
     let subtree = root
         .add_supervisor(
             SupervisorSpec::new("subtree", &controls, policy(0), move |tree| {
@@ -116,6 +116,15 @@ async fn nested_budget_failure_reconstructs_fresh_subtree_and_preserves_parent_s
     assert_eq!(new_leaf.request(Next).await.unwrap(), 1);
     assert_eq!(sibling.current().unwrap().id(), sibling_id);
     assert_eq!(replacement.snapshots().len(), 1);
+    // The parent allowed exactly one subtree replacement. A second exhausted
+    // leaf escalates through that parent budget, rather than constructing again.
+    assert!(new_leaf.request(Crash).await.is_err());
+    tokio::time::timeout(LIMIT, supervisor.join())
+        .await
+        .unwrap();
+    assert!(supervisor.failure().unwrap().contains("budget exhausted"));
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    assert_eq!(subtree.snapshot().generation, 2);
     assert!(supervisor.shutdown(LIMIT).await.complete);
     assert!(system.shutdown(LIMIT).await.complete);
 }

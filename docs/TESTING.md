@@ -43,11 +43,18 @@ in the same crate.
 
 ## Verification layers
 
-`mailbox_drop_panic` runs a subprocess matrix of five task placements, 1/2/16
+`mailbox_drop_panic` runs a subprocess matrix of five task placements, 1/2/256
 queued panicking destructors and both ordinary/handler-panic shutdown. Its enabled
 parent test checks that the child actually ran all 30 cases, observes one Exit
 and one Down, verifies pending reply release and preserves the earlier failure.
-Only the subprocess helper is ignored; the regression runs in normal CI.
+Both stdout and stderr are drained concurrently, with a 128 KiB stdout control.
+Only subprocess helpers are ignored; enabled parent regressions run in normal CI.
+Additional cases cover never-polled runtime teardown, cancellation mid-handler,
+state-destructor unwind, preserved Shutdown/Kill/linked-panic causes, and native
+queued-reply release while ActorRefs remain alive. Native coverage runs without
+async features. A never-polled Tracked future test checks cleanup before its lease
+is released. The production native send-gate algorithm is also used directly by
+`mailbox_admission_loom`; CI explores close/publication races and lost notifications.
 `startup_admission` forces a managed root to stay unpolled and contrasts its
 no-hook cleanup with legacy ambient startup. The `queued_drop_panic` lifecycle
 trace checks transient restart, with a negative control that erases the panic.
@@ -335,9 +342,10 @@ synchronization.
 | `cross_backend` | Request/reply chains, fan-out/fan-in, links with trapped exits, monitors, timers, supervisor restarts (all three strategies) and ordered system shutdown are defined once and run on tasks `Async`/`Blocking`/`Thread`, threads mode, and `async_group`, `thread_group` and (Linux only) `pinned_group`. Outcomes must be identical across placements and match an independent oracle. | Supervisor and system-shutdown workloads run only on execution groups. Six proptest cases per workload by default; not a schedule exploration |
 | `cancellation_safety` | Every public async operation (`request`, `request_with_timeout`, `tasks::request`, protocol calls, monitor/link setup requests, `join`/`wait_exit`/`wait_exit_async`, `ready`, `SupervisorBuilder::start` with instant and in-flight factories, `Supervisor::shutdown`/`join`, `SupervisedChild::wait_ready`/`wait_for_generation`, `ActorSystem::shutdown`, `ShutdownReport::wait`, `ScopedTask::join`) is dropped after N polls for N = 0 until it completes or parks. Afterwards the actor stays usable or stops cleanly, effects occur at most once, monitors/links fire exactly once, registrations are released, actor state is freed and shutdown completes | Drop points are poll boundaries reached by the operation's own wakeups; an operation waiting on an external event is dropped once while parked |
 | `panic_safety` | A panic in `started`, a send handler, a request handler, `stopped`, trapped `exit_received`, the `Down` handler, a message `Drop`, an abandoned reply's `Drop`, a queued message's `Drop` and `ChildSpec` factories (sync and async). Both modes, every tasks backend and both group kinds, plus OneForOne supervision. Checks the exact exit reason, exactly one `Down` and one `Exit`, registry release, a working bystander and complete shutdown | A queued-drop panic is a single destructor; multi-destructor and per-placement counts live in `mailbox_drop_panic` |
+| `foreign_panics` | Panicking global tracing subscribers, process panic hooks and abandoned reply destructors. Bounded subprocesses isolate global state and abort-sensitive cases. Strict enabled tests preserve lifecycle panic reasons and stopped hooks and require supervised replacement to succeed | A panicking process panic hook aborts in plain Rust too; the test documents that limit |
 
 ```sh
-cargo test --locked -p spawned-concurrency --test cross_backend --test cancellation_safety --test panic_safety
+cargo test --locked -p spawned-concurrency --test cross_backend --test cancellation_safety --test panic_safety --test foreign_panics
 cargo test --locked -p spawned-concurrency --no-default-features --features threads --test panic_safety
 PROPTEST_CASES=256 cargo test --locked -p spawned-concurrency --test cross_backend
 SPAWNED_CANCEL_REPORT=1 cargo test --locked -p spawned-concurrency --test cancellation_safety -- --nocapture
@@ -369,11 +377,13 @@ cancels in-flight factories.
 
 **Queued-message destructor panics:** a queued message whose `Drop` panics
 while a stopping actor discards its mailbox publishes the trappable
-`Panic("unexpected framework panic")` in both modes, on every tasks placement
+`Panic("queued message destructor: <panic payload>")` in both modes, on every tasks placement
 and under supervision; a trapping linked observer receives one `Exit` and one
-`Down` and survives. These were tasks-mode bugs (untrappable `Kill`, and an
-abort with two such messages) until the shutdown drain fix; `panic_safety` now
-runs this fault in its regular matrix.
+`Down` and survives. The receiver-owned boundary also runs when an actor future is canceled or never
+polled. A previously committed Shutdown/Kill/linked-panic cause takes precedence;
+`ChildHandle::mailbox_cleanup_failure()` retains the secondary queued failure.
+The enabled subprocess matrix covers multiple panicking destructors and actor
+state destruction without depending on the last ActorRef being dropped.
 
 ## Toolchain
 
@@ -381,6 +391,21 @@ The repository's `.tool-versions` selects Rust 1.93.0. The workspace tests,
 including generated cases and compile diagnostics, have been validated with
 that compiler. Proptest and trybuild are dev-dependencies; proptest's unused
 default features are disabled. Cargo generates the lockfile.
+
+## Debug future layouts
+
+`future_layout.rs` compares owned handle, send and protocol-call shapes with the
+pre-guard layout and checks concrete request-future budgets on Linux x86_64.
+Run it with default features and `--features metrics`. The receiver-guard change
+enlarged ActorRef/Context by one word; enclosing owned RPC futures repeated that
+growth even though borrowed request futures stayed unchanged. Shared sender
+metadata restores the measured layouts without per-message boxing.
+
+The [expanded probe and results](../legacy/verification/evidence/v071-review-round2/README.md)
+compare fc35abaf, 35bea650 and the compact sender, including an RPC-shaped nested
+future. This supersedes the earlier borrowed-request-only conclusion. Matching
+layout is a regression check, not proof that Ethrex's RPC tests pass at a 2 MiB
+debug stack; that client rerun remains a review gate.
 
 ## Execution guarantees
 
@@ -491,6 +516,7 @@ start from the real initial values and do not explore exhaustion. The
 values are never compared. Times are from Kani 0.68 on an Apple M-series
 laptop; CI pins the same Kani version (`.github/workflows/kani.yml`).
 
+
 ## Native integration matrix
 
 The shared actor scenarios, controlled failure windows, history checker,
@@ -588,9 +614,18 @@ with `-Zsanitizer=leak` on nightly (same `-Zbuild-std` setup as `tsan`), and
 LeakSanitizer reports any allocation unreachable at process exit, such as an
 `Arc` cycle between handles.
 
+The linked-delivery callback/subscriber panic regression runs in a bounded
+subprocess, so a containment regression cannot abort the test harness. Its
+panicking payload destructors raise zero-sized secondary payloads: `dispose_panic`
+intentionally forgets those to bound recursive destructor panics, and the test
+asserts their Drop is never called. Non-zero-sized secondary payloads deliberately
+retain their box allocation (the original boxed `&str` payloads leaked 16 bytes
+each). LSan stays enabled in both processes; this test adds no sanitizer
+suppression or environment override.
+
 ```sh
 RUSTFLAGS=-Zsanitizer=leak cargo +nightly test -Zbuild-std \
-  --target x86_64-unknown-linux-gnu -p spawned-concurrency --test leaks
+  --target x86_64-unknown-linux-gnu -p spawned-concurrency --lib --test leaks
 ```
 
 ### Flaky tests

@@ -2,12 +2,67 @@
 
 ## Unreleased
 
-- Contain queued-message destructor panics individually during task shutdown.
-  They now produce trappable Panic rather than fallback Kill, and separately
-  queued panicking destructors no longer unwind through each other and abort.
-  Preserve an earlier handler/hook panic and drain reply senders before completion.
-- Add an enabled subprocess regression across all five task placements, a real
-  transient-supervisor trace, and deterministic tests documenting managed versus
+- Contain tracing subscriber panics in caught lifecycle-panic diagnostics and
+  supervision restart events. Preserve the original actor failure, run shutdown
+  hooks, and allow replacement generations to start. Enable the #217 strict
+  subscriber regressions and cover started/stopped-only failures too.
+- Remove a macOS full-suite race in the coordinator-fault test: a short shutdown
+  report deadline is not an acknowledgement that the fault has been recorded.
+- Isolate the linked-delivery panic regression in a subprocess and use zero-sized
+  secondary panic payloads. This avoids two intentional defensive leaks in the
+  test without disabling LeakSanitizer or suppressing other allocations.
+- Correct the release history: `spawned-test` merged after the v0.7.0 tag and
+  is prepared for its first registry release with 0.7.1.
+- `spawned-test`, a new dev-dependency crate (`testing/`) for testing actors in
+  both modes. `Mock` implements `Handler<M>` for every message, so
+  `ActorRef<Mock>` satisfies any `#[protocol]` and converts to its `XRef`;
+  replies are closures per message type, every message is logged (in flight
+  until its handler has returned the reply, so `expect` never runs ahead of
+  the handler) and unconfigured messages fail loudly. `Probe<M>` is a recording `Recipient<M>`
+  with `expect`/`expect_no_message`. Harness helpers bound waits for exits,
+  supervised generations and `ActorSystem`/supervisor shutdown, failing with a
+  report instead of hanging, and name the calling test line. Fault injection:
+  `faults::exit` with any `ExitReason` (never blocks the caller),
+  `restart_child` (one deadline for the whole call), and mock
+  delay/discard/crash rules. Public
+  APIs only; no controlled scheduler yet. Tokio-free with
+  `default-features = false` (threads helpers).
+- Contain supervisor and system coordinator panics, retain owned cleanup until
+  actual joins, and expose system coordinator failures in shutdown reports.
+- Make link-delivered Kill trappable while direct Kill remains untrappable.
+  Add `ChildHandle::stop_with_reason` for direct cooperative termination.
+- Reserve restart capacity before backoff, refund interrupted reservations,
+  and fail an exhausted budget immediately. Charge atomically with generation
+  admission; refund superseded/unplaced attempts. Retain and document v0.7's
+  per-child cohort accounting. Preserve failed terminal states;
+  emit typed give-up diagnostics once for the originating child.
+- Preserve ordered system shutdown when admission closes just after readiness.
+- Preserve that order when an already-ready supervisor's startup future completes
+  or is dropped after admission closes; readiness remains a historical commitment.
+- Restore pre-mailbox-guard async handle and owned RPC-future layouts by sharing
+  sender metadata outside the handle. Add owned send/request/protocol and nested
+  dispatch size regressions, with and without metrics.
+- Preserve a handler/start/stop panic when the actor state's destructor also
+  panics. Contain link callback panic-payload destructors and tracing subscribers.
+- Clarify terminal child states, pending restart reservations and full-jitter
+  backoff caps in the migration guide.
+- Add `ActorSystem::async_group_on` for managed work on a caller-owned Tokio
+  runtime; shutdown leaves ambient work and the borrowed runtime running.
+- Add composable process-wide timing requirements for independently initialized
+  libraries. Diagnostic turns use a separate slot and borrowed guard; internal
+  exit messages report `Exit` rather than private implementation paths.
+- Enable coordinator fault regressions, extend the supervisor model with retry
+  reservation/refund, and check an abstract emergency-cleanup ownership model.
+- Move queued-message panic containment into receiver-owned cleanup in both modes,
+  covering normal stop, unwinding, canceled futures and never-polled startup.
+  Release queued replies before completion while ActorRefs remain alive. Preserve
+  committed Shutdown/Kill/linked-panic reasons; retain secondary failures through
+  `ChildHandle::mailbox_cleanup_failure()`. Otherwise-completed Normal exits use
+  a descriptive user-destructor Panic reason. Native sends coordinate publication
+  with teardown; async sends retain their channel fast path.
+- Add an enabled subprocess regression across all five task placements, real
+  transient-restart/Shutdown-preservation traces, Loom checks of the native send
+  gate, and deterministic tests documenting managed versus
   legacy hook behavior when stopped before first poll.
 
 - Declare Prometheus histogram maxima as separate gauge families, preserving
@@ -75,20 +130,6 @@
 
 ### Added
 
-- `spawned-test`, a new dev-dependency crate (`testing/`) for testing actors in
-  both modes. `Mock` implements `Handler<M>` for every message, so
-  `ActorRef<Mock>` satisfies any `#[protocol]` and converts to its `XRef`;
-  replies are closures per message type, every message is logged (in flight
-  until its handler has returned the reply, so `expect` never runs ahead of
-  the handler) and unconfigured messages fail loudly. `Probe<M>` is a recording `Recipient<M>`
-  with `expect`/`expect_no_message`. Harness helpers bound waits for exits,
-  supervised generations and `ActorSystem`/supervisor shutdown, failing with a
-  report instead of hanging, and name the calling test line. Fault injection:
-  `faults::exit` with any `ExitReason` (never blocks the caller),
-  `restart_child` (one deadline for the whole call), and mock
-  delay/discard/crash rules. Public
-  APIs only; no controlled scheduler yet. Tokio-free with
-  `default-features = false` (threads helpers).
 - Generated supervision-policy scripts with an independent generation/retirement
   oracle, each-feature library builds without dev-dependency unification, and
   default public API compatibility checks against v0.6.0. Managed registration
@@ -215,7 +256,6 @@
   runtime's helper count: applications that relied on a larger private helper
   pool, or run CPU-heavy async helpers there, should validate their workload.
   Actor/protocol signatures and the shared async backend are unchanged.
-
 
 ## 0.6.0 — 2026-11-06
 

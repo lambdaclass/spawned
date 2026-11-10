@@ -1,7 +1,10 @@
 #![cfg(feature = "async")]
 use spawned_concurrency::{
     message::Message,
-    supervision::{Backoff, ChildSpec, RestartMode, SupervisorConfig},
+    supervision::{
+        Backoff, ChildSpec, ChildState, ChildUnavailable, RestartMode, SupervisorConfig,
+        SupervisorStrategy,
+    },
     system::ActorSystem,
     tasks::{Actor, ActorStart, Context, Handler},
     ExitReason,
@@ -218,6 +221,74 @@ async fn supervision_logs_restart_budget_exhaustion_and_give_up() {
         )
         .unwrap();
     assert!(failing.start().await.is_err());
+    // The healthy collateral child takes the last retry grant. Its failing
+    // sibling must give up before a 60-second backoff, and lookups must report
+    // owner failure even while the healthy sibling's owned cleanup is pending.
+    let mut cohort = system
+        .supervisor(SupervisorConfig {
+            strategy: SupervisorStrategy::OneForAll,
+            max_restarts: 1,
+            backoff: Backoff {
+                initial: Duration::from_secs(60),
+                maximum: Duration::from_secs(60),
+                jitter: false,
+                ..Backoff::default()
+            },
+            ..SupervisorConfig::default()
+        })
+        .unwrap();
+    let (release, gate) = std::sync::mpsc::channel();
+    let gate = Arc::new(Mutex::new(Some(gate)));
+    let healthy = cohort
+        .add(
+            ChildSpec::new("canary-healthy", &group, move |ctx| {
+                let gate = gate.clone();
+                async move {
+                    if ctx.generation() == 2 {
+                        let gate = gate.lock().unwrap().take().unwrap();
+                        let (entered, arrival) = oneshot::channel();
+                        ctx.spawn_blocking_helper(move || {
+                            entered.send(()).unwrap();
+                            gate.recv_timeout(LIMIT).unwrap();
+                        })
+                        .unwrap();
+                        arrival.await.unwrap();
+                    }
+                    Ok::<_, String>(Worker)
+                }
+            })
+            .shutdown_timeout(LIMIT),
+        )
+        .unwrap();
+    let origin = cohort
+        .add(ChildSpec::new("canary-origin", &group, |_| async {
+            Ok::<_, String>(Worker)
+        }))
+        .unwrap();
+    let cohort = cohort.start().await.unwrap();
+    origin
+        .current()
+        .unwrap()
+        .request(Quit(ExitReason::Panic("canary failure".into())))
+        .await
+        .unwrap();
+    assert!(matches!(
+        tokio::time::timeout(LIMIT, origin.wait_for_generation(1))
+            .await
+            .unwrap(),
+        Err(ChildUnavailable(ChildState::Failed))
+    ));
+    assert!(matches!(
+        origin.current(),
+        Err(ChildUnavailable(ChildState::Failed))
+    ));
+    assert!(matches!(
+        healthy.current(),
+        Err(ChildUnavailable(ChildState::Failed))
+    ));
+    assert_eq!(healthy.snapshot().generation, 2);
+    release.send(()).unwrap();
+    tokio::time::timeout(LIMIT, cohort.join()).await.unwrap();
     assert!(system.shutdown(LIMIT).await.complete);
     let events = capture.0.lock().unwrap();
     for (event, level, generation) in [
@@ -242,6 +313,29 @@ async fn supervision_logs_restart_budget_exhaustion_and_give_up() {
             && fields
                 .get("error")
                 .is_some_and(|e| e.contains("non-restartable child"))));
+    let exhausted: Vec<_> = events
+        .iter()
+        .filter(|(_, fields)| {
+            fields.get("event").map(String::as_str) == Some("restart_budget_exhausted")
+        })
+        .collect();
+    assert_eq!(
+        exhausted.len(),
+        2,
+        "duplicate or missing exhaustion events: {events:?}"
+    );
+    assert!(exhausted
+        .iter()
+        .any(|(_, fields)| fields.get("child").map(String::as_str) == Some("canary-origin")));
+    assert!(!exhausted
+        .iter()
+        .any(|(_, fields)| fields.get("child").map(String::as_str) == Some("canary-healthy")));
+    assert!(!events
+        .iter()
+        .any(
+            |(_, fields)| fields.get("child").map(String::as_str) == Some("canary-origin")
+                && fields.get("event").map(String::as_str) == Some("restart_scheduled")
+        ));
 }
 
 #[tokio::test]
@@ -305,4 +399,49 @@ async fn panicked_turn_is_cleared_before_stopped_hook() {
         actor.child_handle().exit_reason(),
         Some(ExitReason::Panic(_))
     ));
+}
+
+#[cfg(feature = "diagnostics")]
+#[tokio::test]
+async fn trapped_exit_diagnostics_use_the_public_signal_name() {
+    struct Observer {
+        entered: Option<oneshot::Sender<()>>,
+        release: Option<oneshot::Receiver<()>>,
+    }
+    impl Actor for Observer {
+        async fn started(&mut self, ctx: &Context<Self>) {
+            ctx.trap_exit(true);
+        }
+        async fn exit_received(&mut self, _: spawned_concurrency::Exit, _: &Context<Self>) {
+            self.entered.take().unwrap().send(()).unwrap();
+            self.release.take().unwrap().await.unwrap();
+        }
+    }
+    let system = ActorSystem::new().unwrap();
+    let group = system.async_group("exit-diagnostic", 1).unwrap();
+    let (entered, arrival) = oneshot::channel();
+    let (release, gate) = oneshot::channel();
+    let observer = Observer {
+        entered: Some(entered),
+        release: Some(gate),
+    }
+    .start_on(&group)
+    .unwrap();
+    observer.ready().await.unwrap();
+    let source = Worker.start_on(&group).unwrap();
+    source.ready().await.unwrap();
+    observer.context().link(&source.child_handle());
+    source
+        .child_handle()
+        .stop_with_reason(ExitReason::Panic("reported failure".into()));
+    tokio::time::timeout(LIMIT, arrival).await.unwrap().unwrap();
+    let report = system.shutdown(Duration::from_millis(10)).await;
+    let detail = report
+        .unfinished_actor_details
+        .iter()
+        .find(|d| d.id == observer.id())
+        .unwrap();
+    assert_eq!(detail.message_type, Some("Exit"));
+    release.send(()).unwrap();
+    assert!(report.wait(LIMIT).await.complete);
 }

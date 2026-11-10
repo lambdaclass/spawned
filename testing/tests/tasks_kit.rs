@@ -575,3 +575,20 @@ async fn restart_child_has_one_deadline_for_the_whole_call() {
 async fn async_expect_names_its_caller() {
     Probe::<Sold>::new().expect(Duration::from_millis(1)).await;
 }
+
+#[tokio::test]
+async fn direct_kill_and_shutdown_stop_trapping_targets_without_killing_trapping_peers() {
+    for reason in [ExitReason::Kill, ExitReason::Shutdown] {
+        let target = Counter(Arc::default()).start();
+        let observer = Counter(Arc::default()).start();
+        target.context().trap_exit(true);
+        observer.context().trap_exit(true);
+        observer.context().link(&target.child_handle());
+        faults::exit(&target.child_handle(), reason.clone());
+        assert_eq!(join_within(&target, WAIT).await, reason);
+        assert_eq!(settle(&observer, Get, WAIT).await, 0);
+        assert_eq!(observer.child_handle().exit_reason(), None);
+        observer.context().stop();
+        assert_eq!(join_within(&observer, WAIT).await, ExitReason::Normal);
+    }
+}

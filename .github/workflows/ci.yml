@@ -44,10 +44,11 @@ jobs:
         run: cargo test --locked -p spawned-concurrency --features metrics
       - name: Parse Prometheus exposition and check canary diagnostics
         run: |
+          set -o pipefail
           python3 -m venv /tmp/spawned-prometheus-parser
           /tmp/spawned-prometheus-parser/bin/pip install prometheus-client==0.21.1
-          cargo run --locked -q -p spawned-capability-examples --features metrics --bin framework_metrics | /tmp/spawned-prometheus-parser/bin/python scripts/check-metrics-exposition.py
-          cargo test --locked -p spawned-concurrency --features diagnostics --test canary_feedback
+          timeout 60s cargo run --locked -q -p spawned-capability-examples --features metrics --bin framework_metrics | timeout 60s /tmp/spawned-prometheus-parser/bin/python scripts/check-metrics-exposition.py
+          cargo test --locked -p spawned-concurrency --features diagnostics,metrics --test canary_feedback --test context_exit
           timeout 60s cargo run --locked -p spawned-capability-examples --features diagnostics --bin shutdown_diagnostics
 
   # Single-CPU scheduling: races that need preemption on one core, and code
@@ -201,3 +202,11 @@ jobs:
           # order by release.yaml; its package is also validated before release.
           cargo package --package spawned-macros --no-verify
           cargo package --package spawned-rt --no-verify
+
+      - name: Verify spawned-test publication against unreleased siblings
+        run: |
+          # Match the release dependency order without publishing from a PR.
+          cargo publish --package spawned-test --dry-run \
+            --config "patch.crates-io.spawned-concurrency.path=\"$PWD/concurrency\"" \
+            --config "patch.crates-io.spawned-rt.path=\"$PWD/rt\"" \
+            --config "patch.crates-io.spawned-macros.path=\"$PWD/macros\""

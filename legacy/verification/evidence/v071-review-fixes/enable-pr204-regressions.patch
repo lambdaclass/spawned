@@ -1,0 +1,45 @@
+--- a/concurrency/tests/failpoints.rs
++++ b/concurrency/tests/failpoints.rs
+@@ -806,17 +806,10 @@
+     assert!(system.shutdown(LIMIT).await.complete);
+ }
+ 
+-// ------------------------------------------------------- known gaps (ignored)
+-
+-// `run_supervisor` and the ActorSystem shutdown coordinator are spawned without
+-// a panic guard, unlike child controllers and the recovery coordinator. A panic
+-// there (only reachable through a framework bug today) leaves the supervisor
+-// never done, its children running and system shutdown incomplete forever,
+-// with no failure reported. Run with `--ignored` to reproduce.
+-
+-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+-#[ignore = "known gap: supervisor coordinator panic is not contained"]
+-async fn known_gap_supervisor_coordinator_panic_hangs_shutdown() {
++// Coordinator panic regressions: enabled after the lifecycle fix.
++
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn supervisor_coordinator_panic_reports_failure_and_joins() {
+     let _scenario = FailScenario::setup();
+     failpoints::configure(
+         "shutdown.before_stop_child",
+@@ -843,8 +836,7 @@
+ }
+ 
+ #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+-#[ignore = "known gap: system shutdown coordinator panic is not contained"]
+-async fn known_gap_system_shutdown_coordinator_panic_hangs_shutdown() {
++async fn system_shutdown_coordinator_panic_reports_failure_and_joins() {
+     let _scenario = FailScenario::setup();
+     failpoints::configure(
+         "system.shutdown_before_target",
+@@ -855,7 +847,9 @@
+     let group = system.async_group("fp-gap-system", 1).unwrap();
+     let actor = group.start(Worker::new(&Started::default())).unwrap();
+     actor.ready().await.unwrap();
+-    assert!(system.shutdown(LIMIT).await.complete);
++    let report = system.shutdown(LIMIT).await;
++    assert!(report.complete);
++    assert!(!report.coordinator_failures.is_empty());
+ }
+ 
+ // ------------------------------------------------------------ actor.* (threads)

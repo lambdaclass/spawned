@@ -60,3 +60,16 @@ jobs:
               exit 1
             fi
           }
+
+      - name: Publish spawned-test
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
+        run: |
+          OUTPUT=$(cargo publish --package spawned-test 2>&1) || {
+            if echo "$OUTPUT" | grep -q "already exists"; then
+              echo "spawned-test already published, continuing"
+            else
+              echo "$OUTPUT"
+              exit 1
+            fi
+          }

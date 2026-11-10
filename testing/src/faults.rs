@@ -1,8 +1,8 @@
 //! Fault injection through public lifecycle APIs.
 //!
 //! [`exit`] makes an actor exit with a chosen [`ExitReason`]. It resembles
-//! Erlang's `exit(Pid, Reason)` for `Panic` and `Kill`, which arrive the way a
-//! dying linked peer delivers them, but **not** for `Normal` and `Shutdown`,
+//! Erlang's `exit(Pid, Reason)` for `Panic`, delivered through a dying linked
+//! peer. `Normal`, `Shutdown` and `Kill` are direct requests,
 //! which always stop the target (see [`exit`]). Stopping is cooperative: a
 //! running handler finishes first, then `stopped()` runs.
 //!
@@ -10,9 +10,8 @@
 //! than the caller's timeout) are configured on [`Mock`](crate::tasks::Mock)
 //! and [`Probe`](crate::tasks::Probe).
 //!
-//! The core has no `ChildHandle::exit(reason)` yet, so `Panic` and `Kill` go
-//! through a short-lived linked actor, and the reason the target reports is
-//! shaped by that link (see [`exit`]).
+//! Panic injection uses a short-lived linked actor. Kill uses the core's
+//! direct `ChildHandle::stop_with_reason`, including in Tokio-free builds.
 use spawned_concurrency::{message::Message, threads, ChildHandle, ExitReason};
 
 /// Make `target` exit with `reason`.
@@ -31,11 +30,9 @@ use spawned_concurrency::{message::Message, threads, ChildHandle, ExitReason};
 ///   its link stops the fuse first; that is logged and `exit` returns (the
 ///   target is gone, with its own reason). Any other failure to deliver the
 ///   panic panics here rather than dropping the fault silently.
-/// - `Kill`: a short-lived linked actor on a private runtime is dropped
-///   unfinished, which publishes `Kill` over the link before `exit` returns;
-///   the target exits with `Kill`, which cannot be trapped. Failing to set
-///   this up panics here. Needs the `async` feature (Tokio-free builds panic
-///   here).
+/// - `Kill`: direct `ChildHandle::stop_with_reason(Kill)`. The target stops
+///   even when trapping exits; linked trapping peers receive an Exit notice.
+///   Available in both runtime modes without constructing a private runtime.
 ///
 /// A target that has already exited is left alone (logged at debug level). A
 /// target that exits `Normal` or `Shutdown` concurrently with a `Panic`
@@ -53,7 +50,7 @@ pub fn exit(target: &ChildHandle, reason: ExitReason) {
         ExitReason::Normal => target.stop(),
         ExitReason::Shutdown => target.shutdown(),
         ExitReason::Panic(msg) => panic_linked(target, msg),
-        ExitReason::Kill => kill_linked(target),
+        ExitReason::Kill => target.stop_with_reason(ExitReason::Kill),
     }
 }
 
@@ -111,35 +108,4 @@ fn already_exited(target: &ChildHandle) -> bool {
         }
         None => false,
     }
-}
-
-#[cfg(feature = "async")]
-fn kill_linked(target: &ChildHandle) {
-    use spawned_concurrency::tasks;
-    struct Aborted;
-    impl tasks::Actor for Aborted {}
-    if already_exited(target) {
-        return;
-    }
-    // A private current-thread runtime owns the fuse's task and is never
-    // driven, so the fuse never runs. Shutting the runtime down drops the
-    // actor future unfinished, and its cleanup publishes `Kill` to its links
-    // on this thread. `shutdown_background` neither blocks nor panics inside
-    // another runtime, unlike dropping it, so this works from async code.
-    // Setup failures panic here instead of losing the fault.
-    let runtime = spawned_rt::tasks::control_runtime()
-        .unwrap_or_else(|error| panic!("spawned-test: no runtime for the kill fuse: {error}"));
-    let fuse = {
-        let _context = runtime.enter();
-        tasks::ActorStart::start(Aborted)
-    };
-    // `link` inserts both edges under their mutexes before returning (or
-    // signals the fuse at once if the target exited meanwhile).
-    fuse.context().link(target);
-    runtime.shutdown_background();
-}
-
-#[cfg(not(feature = "async"))]
-fn kill_linked(_: &ChildHandle) {
-    panic!("spawned-test: injecting ExitReason::Kill needs the `async` feature");
 }

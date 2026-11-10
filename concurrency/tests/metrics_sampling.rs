@@ -42,5 +42,13 @@ fn sampling_retains_every_counter_and_scales_only_timing_observations() {
         s.actors_active + s.handlers_active + s.requests_active + s.mailbox_depth,
         0
     );
+    metrics::configure_composable(metrics::Config {
+        timing_sample_every: 8,
+    });
+    assert_eq!(metrics::configuration().timing_sample_every, 4);
+    metrics::configure_composable(metrics::Config {
+        timing_sample_every: 2,
+    });
+    assert_eq!(metrics::configuration().timing_sample_every, 2);
     assert!(metrics::configure(metrics::Config::default()).is_err());
 }

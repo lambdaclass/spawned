@@ -17,7 +17,7 @@ use std::{
     fmt::Write,
     sync::{
         atomic::{AtomicU64, Ordering::Relaxed},
-        Arc, OnceLock,
+        Arc, Mutex, OnceLock,
     },
     time::Instant,
 };
@@ -35,14 +35,65 @@ impl Default for Config {
         }
     }
 }
-static CONFIG: OnceLock<Config> = OnceLock::new();
+struct SamplingPolicy {
+    // Only explicit requirements compose. Implicit default instrumentation must
+    // not prevent an embedded component from configuring sampling later.
+    requested: Mutex<Option<u64>>,
+    interval: AtomicU64,
+}
+impl SamplingPolicy {
+    fn new(requested: Option<u64>) -> Self {
+        Self {
+            interval: AtomicU64::new(requested.unwrap_or(1)),
+            requested: Mutex::new(requested),
+        }
+    }
+}
+static CONFIG: OnceLock<SamplingPolicy> = OnceLock::new();
 /// Set timing policy before creating actors, messages or observed requests.
 /// Returns the supplied configuration if instrumentation has already initialized.
 pub fn configure(config: Config) -> Result<(), Config> {
-    CONFIG.set(config)
+    CONFIG
+        .set(SamplingPolicy::new(Some(config.timing_sample_every)))
+        .map_err(|_| config)
 }
+/// Merge a component's process-lifetime timing requirement, even after actors start.
+///
+/// The most frequent requested sampling wins: the smallest nonzero interval.
+/// Zero requests counters only and never disables another component's timings.
+/// Requirements cannot be withdrawn; counters and histograms remain process-wide.
+/// This opt-in alternative to [`configure`] lets embedded libraries compose
+/// without racing to initialize a single immutable policy.
+pub fn configure_composable(config: Config) {
+    let policy = CONFIG.get_or_init(|| SamplingPolicy::new(None));
+    let mut requested = policy.requested.lock().unwrap_or_else(|p| p.into_inner());
+    let interval = requested.map_or(config.timing_sample_every, |current| {
+        merge_sampling(current, config.timing_sample_every)
+    });
+    *requested = Some(interval);
+    policy.interval.store(interval, Relaxed);
+}
+
+/// The current effective policy. Reading this initializes the default policy
+/// (sample every observation) if no component has configured instrumentation.
+pub fn configuration() -> Config {
+    Config {
+        timing_sample_every: CONFIG
+            .get_or_init(|| SamplingPolicy::new(None))
+            .interval
+            .load(Relaxed),
+    }
+}
+
+fn merge_sampling(current: u64, requested: u64) -> u64 {
+    match (current, requested) {
+        (0, value) | (value, 0) => value,
+        _ => current.min(requested),
+    }
+}
+
 fn sample(sequence: &AtomicU64) -> Option<Instant> {
-    let every = CONFIG.get_or_init(Config::default).timing_sample_every;
+    let every = configuration().timing_sample_every;
     (every != 0 && sequence.fetch_add(1, Relaxed).is_multiple_of(every)).then(Instant::now)
 }
 
@@ -293,7 +344,7 @@ pub(crate) struct ActorObservation {
 }
 impl ActorObservation {
     pub(crate) fn new() -> Self {
-        CONFIG.get_or_init(Config::default);
+        let _ = configuration();
         COUNTERS.actors_spawned_total.fetch_add(1, Relaxed);
         COUNTERS.actors_active.fetch_add(1, Relaxed);
         Self { finished: false }

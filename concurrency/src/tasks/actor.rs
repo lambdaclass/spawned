@@ -4,12 +4,13 @@ use crate::link::{
     self, new_link_table, new_linked_exit_reason, new_trap_exit_flag, Exit, LinkTable,
     LinkedExitReason, SendExitFn, TrapExitFlag,
 };
+use crate::mailbox::tasks as mpsc;
 use crate::message::Message;
 use crate::monitor::{Down, MonitorCleanup, MonitorRef, MonitorTable};
 use core::pin::pin;
 use futures::future::{self, FutureExt as _};
 use spawned_rt::{
-    tasks::{self as rt, mpsc, oneshot, timeout, watch, CancellationToken, JoinHandle},
+    tasks::{self as rt, oneshot, timeout, watch, CancellationToken, JoinHandle},
     threads,
 };
 use std::sync::atomic::Ordering;
@@ -194,6 +195,11 @@ where
 // Nested supervisor adapters have no public mailbox traffic to bury this signal.
 struct FailureEnvelope(String);
 impl<A: Actor> Envelope<A> for FailureEnvelope {
+    #[cfg(feature = "diagnostics")]
+    fn message_type(&self) -> &'static str {
+        "Exit"
+    }
+
     fn handle<'a>(
         self: Box<Self>,
         _: &'a mut A,
@@ -214,6 +220,11 @@ struct ExitEnvelope {
 }
 
 impl<A: Actor> Envelope<A> for ExitEnvelope {
+    #[cfg(feature = "diagnostics")]
+    fn message_type(&self) -> &'static str {
+        "Exit"
+    }
+
     fn handle<'a>(
         self: Box<Self>,
         actor: &'a mut A,
@@ -537,7 +548,8 @@ impl<A: Actor> Context<A> {
     /// - `true`: the signal is converted to an `Exit` message and delivered to
     ///   [`Actor::exit_received`].
     ///
-    /// `Kill` is untrappable — it cancels the actor regardless of this flag.
+    /// A direct `stop_with_reason(Kill)` cannot be trapped. Propagated link
+    /// notices, including Kill, are delivered as Exit when trapping is enabled.
     /// Cancellation remains cooperative: an in-flight handler is not preempted.
     pub fn trap_exit(&self, enabled: bool) {
         self.trap_exit.store(enabled, Ordering::Release);
@@ -862,6 +874,7 @@ impl<A: Actor> ActorRef<A> {
 
 impl<A: Actor> From<ActorRef<A>> for ChildHandle {
     fn from(actor_ref: ActorRef<A>) -> Self {
+        let failures = actor_ref.sender.failures();
         // Build a type-erased SendExitFn that enqueues an ExitEnvelope onto
         // this actor's mailbox.
         let sender = actor_ref.sender.clone();
@@ -878,6 +891,7 @@ impl<A: Actor> From<ActorRef<A>> for ChildHandle {
             actor_ref.linked_reason,
             send_exit,
         )
+        .with_mailbox_failures(failures)
     }
 }
 
@@ -1013,7 +1027,8 @@ impl<A: Actor> ActorRef<A> {
             completion_tx,
             ExitReason::Kill,
             move || cleanup_token.cancel(),
-        );
+        )
+        .with_mailbox_failures(actor_ref.sender.failures());
         let startup =
             crate::actor_cleanup::ActorStartup::new((actor, ctx, rx, cancellation_token), cleanup);
         let inner_future = async move {
@@ -1031,7 +1046,16 @@ impl<A: Actor> ActorRef<A> {
                 turn,
             )
             .await;
-            cleanup.complete(reason.clone());
+            let reason = match reason {
+                Ok(reason) => {
+                    cleanup.complete(reason.clone());
+                    reason
+                }
+                Err(reason) => {
+                    cleanup.complete_secondary(reason.clone());
+                    reason
+                }
+            };
             if let Some(scope) = &managed {
                 let actual = crate::system::lock(&scope.cause).clone().unwrap_or(reason);
                 scope.exited(actual);
@@ -1169,46 +1193,37 @@ impl MessageTurn {
 }
 
 async fn run_actor<A: Actor>(
-    actor: A,
+    mut actor: A,
     ctx: Context<A>,
     mut rx: mpsc::Receiver<Box<dyn Envelope<A> + Send>>,
     cancellation_token: CancellationToken,
     #[cfg(feature = "backend-experiments")] turn: Option<MessageTurn>,
-) -> ExitReason {
-    let mut reason = run_actor_lifecycle(
-        actor,
+) -> Result<ExitReason, ExitReason> {
+    let primary = match AssertUnwindSafe(run_actor_lifecycle(
+        &mut actor,
         ctx,
         &mut rx,
         cancellation_token,
         #[cfg(feature = "backend-experiments")]
         turn,
-    )
-    .await;
-    // A concurrent send may have reserved a channel slot without publishing its
-    // envelope yet. Dropping the receiver alone can leave that envelope (and its
-    // reply sender) retained until every ActorRef is dropped. Closing admission
-    // and receiving through EOF waits for those sends and discards queued work
-    // before actor completion is published. No queued handlers run here.
-    rx.close();
-    while let Some(envelope) = rx.recv().await {
-        // Catch each destructor separately. Unwinding through the receiver
-        // would drop the rest of the queue, allowing a second destructor panic
-        // to abort the process before terminal publication.
-        if let Err(panic) = std::panic::catch_unwind(AssertUnwindSafe(|| drop(envelope))) {
-            let msg = panic_message(&*panic);
-            tracing::error!("Panic dropping a queued message during stop: {msg}");
-            if !reason.is_abnormal() {
-                // Match the native backend's trappable destructor-failure
-                // outcome; keep an earlier handler/hook panic as the cause.
-                reason = ExitReason::Panic("unexpected framework panic".into());
-            }
+    ))
+    .catch_unwind()
+    .await
+    {
+        Ok(reason) => Ok(reason),
+        Err(payload) => {
+            let message = panic_message(&*payload);
+            crate::mailbox::dispose_panic(payload);
+            Err(ExitReason::Panic(format!(
+                "actor lifecycle unwound: {message}"
+            )))
         }
-    }
-    reason
+    };
+    crate::actor_cleanup::finish_actor_state(actor, primary)
 }
 
 async fn run_actor_lifecycle<A: Actor>(
-    mut actor: A,
+    actor: &mut A,
     ctx: Context<A>,
     rx: &mut mpsc::Receiver<Box<dyn Envelope<A> + Send>>,
     cancellation_token: CancellationToken,
@@ -1221,10 +1236,14 @@ async fn run_actor_lifecycle<A: Actor>(
             return ExitReason::Normal;
         }
     }
-    let start_result = AssertUnwindSafe(actor.started(&ctx)).catch_unwind().await;
+    let start_result = AssertUnwindSafe(async { actor.started(&ctx).await })
+        .catch_unwind()
+        .await;
     if let Err(panic) = start_result {
         let msg = panic_message(&*panic);
-        tracing::error!("Panic in started() callback: {msg}");
+        crate::actor_cleanup::log_safely(|| {
+            tracing::error!("Panic in started() callback: {msg}");
+        });
         cancellation_token.cancel();
         return ExitReason::Panic(format!("panic in started(): {msg}"));
     }
@@ -1239,9 +1258,14 @@ async fn run_actor_lifecycle<A: Actor>(
         if let Some(scope) = &ctx.managed {
             scope.end_running();
         }
-        if let Err(panic) = AssertUnwindSafe(actor.stopped(&ctx)).catch_unwind().await {
+        if let Err(panic) = AssertUnwindSafe(async { actor.stopped(&ctx).await })
+            .catch_unwind()
+            .await
+        {
             let msg = panic_message(&*panic);
-            tracing::error!("Panic in stopped() callback: {msg}");
+            crate::actor_cleanup::log_safely(|| {
+                tracing::error!("Panic in stopped() callback: {msg}");
+            });
             return ExitReason::Panic(format!("panic in stopped(): {msg}"));
         }
         return ExitReason::Normal;
@@ -1289,7 +1313,7 @@ async fn run_actor_lifecycle<A: Actor>(
                 let observation = envelope
                     .observation()
                     .map(|observation| observation.begin());
-                let result = AssertUnwindSafe(envelope.handle(&mut actor, &ctx))
+                let result = AssertUnwindSafe(envelope.handle(actor, &ctx))
                     .catch_unwind()
                     .await;
                 #[cfg(feature = "diagnostics")]
@@ -1300,7 +1324,9 @@ async fn run_actor_lifecycle<A: Actor>(
                 }
                 if let Err(panic) = result {
                     let msg = panic_message(&*panic);
-                    tracing::error!("Panic in message handler: {msg}");
+                    crate::actor_cleanup::log_safely(|| {
+                        tracing::error!("Panic in message handler: {msg}");
+                    });
                     exit_reason = ExitReason::Panic(format!("panic in handler: {msg}"));
                     break;
                 }
@@ -1322,10 +1348,14 @@ async fn run_actor_lifecycle<A: Actor>(
         scope.end_running();
     }
     cancellation_token.cancel();
-    let stop_result = AssertUnwindSafe(actor.stopped(&ctx)).catch_unwind().await;
+    let stop_result = AssertUnwindSafe(async { actor.stopped(&ctx).await })
+        .catch_unwind()
+        .await;
     if let Err(panic) = stop_result {
         let msg = panic_message(&*panic);
-        tracing::error!("Panic in stopped() callback: {msg}");
+        crate::actor_cleanup::log_safely(|| {
+            tracing::error!("Panic in stopped() callback: {msg}");
+        });
         if !exit_reason.is_abnormal() {
             exit_reason = ExitReason::Panic(format!("panic in stopped(): {msg}"));
         }
@@ -2889,7 +2919,7 @@ mod turn_regressions {
             assert!(futures::poll!(job.as_mut()).is_pending());
             assert_eq!(count.load(Ordering::SeqCst), 1);
             token.cancel();
-            assert_eq!(job.await, ExitReason::Normal);
+            assert_eq!(job.await, Ok(ExitReason::Normal));
             assert_eq!(count.load(Ordering::SeqCst), 1);
         });
     }
@@ -2949,7 +2979,7 @@ mod idle_stop_regression {
             }) as Box<dyn Envelope<Counter> + Send>)
                 .unwrap();
             token.cancel();
-            assert_eq!(actor.await, ExitReason::Normal);
+            assert_eq!(actor.await, Ok(ExitReason::Normal));
             assert_eq!(
                 count.load(Ordering::SeqCst),
                 0,

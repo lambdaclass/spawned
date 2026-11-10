@@ -192,7 +192,7 @@ impl Actor for SupervisorActor {
                     Either::Right(_) => {
                         let failure = system::lock(&observe.failure).clone();
                         if let Some(error) = failure {
-                            actor.signal_failure(error);
+                            actor.signal_failure(error.message);
                         } else {
                             actor.context().stop();
                         }

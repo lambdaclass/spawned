@@ -21,20 +21,27 @@ pub(crate) struct GroupInner {
     pub(super) failures: Arc<Mutex<Vec<String>>>,
 }
 impl GroupInner {
-    pub(super) fn new(name: String, profile: ExecutionProfile) -> Result<Arc<Self>, SystemError> {
+    pub(super) fn new(
+        name: String,
+        profile: ExecutionProfile,
+        borrowed: Option<Handle>,
+    ) -> Result<Arc<Self>, SystemError> {
         let stop = CancellationToken::new();
         let mut owners = Vec::new();
         let mut targets = Vec::new();
         let result = (|| -> Result<(), SystemError> {
             match &profile {
                 ExecutionProfile::AsyncPool { workers } => {
-                    let handle = build_runtime(
-                        format!("spawned-{name}"),
-                        *workers,
-                        None,
-                        stop.clone(),
-                        &mut owners,
-                    )?;
+                    let handle = match borrowed {
+                        Some(handle) => handle,
+                        None => build_runtime(
+                            format!("spawned-{name}"),
+                            *workers,
+                            None,
+                            stop.clone(),
+                            &mut owners,
+                        )?,
+                    };
                     targets.push(Target {
                         handle,
                         native: None,
@@ -95,6 +102,7 @@ impl GroupInner {
                     }
                 }
             }
+
             Ok(())
         })();
         if let Err(error) = result {
