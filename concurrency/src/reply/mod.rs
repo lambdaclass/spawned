@@ -6,6 +6,7 @@
 //! a storable [`ReplyTo`]), and by the caller's [`ReplyReceiver`]. Each slot
 //! gets exactly one terminal discharge.
 
+pub(crate) mod deadline;
 pub(crate) mod registry;
 pub(crate) mod slot;
 
@@ -230,6 +231,7 @@ impl<'t, R: Send + 'static> PendingReply<'t, R> {
         match slot.defer(registry.pool(), &now_ticks) {
             Ok(()) => {
                 registry.register(&slot);
+                registry.track_deadline(&slot);
                 Ok(ReplyTo {
                     slot: Some(slot),
                     registry: registry.clone(),

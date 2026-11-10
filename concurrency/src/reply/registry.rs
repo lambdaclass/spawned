@@ -14,9 +14,10 @@
 //! two uncontended atomic stores; the turn list is locked only when a drop
 //! lands on it (`IN_TURN_PENDING`).
 
-use super::slot::{CreditPool, Slot, Terminal};
+use super::deadline::{self, DeadlineHeap, Expirable};
+use super::slot::{CreditPool, Slot, Terminal, NEVER};
 use crate::ActorId;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 /// Default `Actor::MAX_OUTSTANDING`: deferred credits per actor instance.
@@ -33,6 +34,16 @@ pub(crate) trait Closeable: Send + Sync {
     fn close(&self) -> bool;
     fn terminate(&self, to: Terminal) -> bool;
     fn is_terminal(&self) -> bool;
+}
+
+impl<R: Send> Expirable for Slot<R> {
+    fn pending_deadline(&self) -> Option<u64> {
+        let deadline = self.deadline();
+        (!self.is_terminal() && deadline != NEVER).then_some(deadline)
+    }
+    fn expire(&self, now: u64) {
+        self.check_deadline(&|| now);
+    }
 }
 
 impl<R: Send> Closeable for Slot<R> {
@@ -52,13 +63,18 @@ struct Lists {
     tokens: Vec<Weak<dyn Closeable>>,
     prune_at: usize,
     turn_drops: Vec<Arc<dyn Closeable>>,
+    deadlines: DeadlineHeap,
 }
 
 pub(crate) struct Registry {
     owner: ActorId,
+    /// Service key, unique per registry.
+    key: u64,
     pool: Arc<CreditPool>,
     phase: AtomicU8,
     lists: Mutex<Lists>,
+    #[cfg(all(spawned_sim, feature = "async"))]
+    sim: deadline::SimService,
 }
 
 fn lock(lists: &Mutex<Lists>) -> std::sync::MutexGuard<'_, Lists> {
@@ -68,14 +84,18 @@ fn lock(lists: &Mutex<Lists>) -> std::sync::MutexGuard<'_, Lists> {
 impl Registry {
     pub(crate) fn new(owner: ActorId, max_outstanding: usize) -> Arc<Self> {
         let max = max_outstanding.min(super::slot::MAX_JOBS as usize);
+        static NEXT_KEY: AtomicU64 = AtomicU64::new(1);
         Arc::new(Self {
             owner,
+            key: NEXT_KEY.fetch_add(1, Ordering::Relaxed),
             pool: Arc::new(CreditPool::new(max)),
             phase: AtomicU8::new(RUNNING),
             lists: Mutex::new(Lists {
                 prune_at: 16,
                 ..Lists::default()
             }),
+            #[cfg(all(spawned_sim, feature = "async"))]
+            sim: deadline::SimService::default(),
         })
     }
 
@@ -113,9 +133,61 @@ impl Registry {
         lists.tokens.push(weak);
     }
 
-    /// Placeholder for the deadline heap (step 5); deferred tokens are
-    /// otherwise expired by their polling receiver or a reply.
-    pub(crate) fn track_deadline<R: Send + 'static>(&self, _slot: &Arc<Slot<R>>) {}
+    pub(crate) fn key(&self) -> u64 {
+        self.key
+    }
+
+    #[cfg(all(spawned_sim, feature = "async"))]
+    pub(crate) fn sim_service(&self) -> &deadline::SimService {
+        &self.sim
+    }
+
+    pub(crate) fn is_dead(&self) -> bool {
+        self.phase.load(Ordering::Acquire) == DEAD
+    }
+
+    /// Put a deferred token's deadline in the owner's heap, so it expires
+    /// (and returns its credit) even when no caller polls.
+    pub(crate) fn track_deadline<R: Send + 'static>(self: &Arc<Self>, slot: &Arc<Slot<R>>) {
+        let at = slot.deadline();
+        if at == NEVER || slot.is_terminal() {
+            return;
+        }
+        let weak: Weak<dyn Expirable> = Arc::downgrade(slot) as Weak<dyn Expirable>;
+        self.track(at, weak);
+    }
+
+    /// Add a heap entry; reschedule the service on a new earliest deadline.
+    pub(crate) fn track(self: &Arc<Self>, at: u64, item: Weak<dyn Expirable>) {
+        let earliest = {
+            let mut lists = lock(&self.lists);
+            if self.is_dead() {
+                return;
+            }
+            lists.deadlines.push(at, item)
+        };
+        if earliest {
+            deadline::schedule(self, at);
+        }
+    }
+
+    /// Entries in the deadline heap, live and stale (bounded by compaction).
+    #[cfg(test)]
+    pub(crate) fn heap_entries(&self) -> usize {
+        lock(&self.lists).deadlines.len()
+    }
+
+    /// The service visits: expire every due entry outside the lock, and
+    /// return the next earliest deadline.
+    pub(crate) fn service_deadlines(&self, now: u64) -> Option<u64> {
+        let due = lock(&self.lists).deadlines.due(now);
+        for item in due {
+            if item.pending_deadline().is_some_and(|d| d <= now) {
+                item.expire(now);
+            }
+        }
+        lock(&self.lists).deadlines.earliest()
+    }
 
     /// A reply obligation (`PendingReply` or `ReplyTo`) was dropped unanswered.
     pub(crate) fn dropped<R: Send + 'static>(&self, slot: Arc<Slot<R>>) {
@@ -224,11 +296,16 @@ impl Registry {
             self.commit(Terminal::Stopped);
         }
         let tokens = std::mem::take(&mut lock(&self.lists).tokens);
-        tokens
+        let closed = tokens
             .into_iter()
             .filter_map(|t| t.upgrade())
             .filter(|s| s.close())
-            .count()
+            .count();
+        // The heap is dropped after the close (§5 step 3.4).
+        lock(&self.lists).deadlines.clear();
+        #[cfg(all(spawned_sim, feature = "async"))]
+        self.sim.wake();
+        closed
     }
 }
 

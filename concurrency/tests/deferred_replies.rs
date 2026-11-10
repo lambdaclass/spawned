@@ -281,6 +281,28 @@ mod tasks_mode {
     }
 
     #[spawned_macros::sim_test]
+    async fn unpolled_deferred_token_expires_by_the_owner_heap() {
+        let (actor, seen) = start();
+        // Nobody polls this receiver: only the owner's deadline heap can
+        // expire the token and return its credit.
+        let rx = actor
+            .request_raw_until(Park(1), Deadline::after(Duration::from_millis(20)))
+            .unwrap();
+        assert_eq!(settle(&actor).await, 1);
+        let mut waited = Duration::ZERO;
+        while settle(&actor).await != 0 {
+            assert!(waited < Duration::from_secs(5), "token never expired");
+            spawned_rt::tasks::sleep(Duration::from_millis(10)).await;
+            waited += Duration::from_millis(10);
+        }
+        actor.request(Release(0)).await.unwrap();
+        assert_eq!(*seen.late.lock().unwrap(), [Delivery::Expired]);
+        assert!(matches!(rx.await, Err(ActorError::RequestTimeout)));
+        actor.context().stop();
+        actor.join().await;
+    }
+
+    #[spawned_macros::sim_test]
     async fn stopped_may_answer_stored_tokens() {
         let (actor, _) = start();
         let rx = actor.request_raw_until(Park(7), Deadline::Never).unwrap();
@@ -515,6 +537,24 @@ mod threads_mode {
             actor.request(Outstanding),
             Err(ActorError::ActorStopped)
         ));
+    }
+
+    #[test]
+    fn unpolled_deferred_token_expires_by_the_owner_heap() {
+        let (actor, seen) = start();
+        let rx = actor
+            .request_raw_until(Park(1), Deadline::after(Duration::from_millis(20)))
+            .unwrap();
+        let began = std::time::Instant::now();
+        while actor.request(Outstanding).unwrap() != 0 {
+            assert!(began.elapsed() < Duration::from_secs(5), "token never expired");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        actor.request(Release(0)).unwrap();
+        assert_eq!(*seen.late.lock().unwrap(), [Delivery::Expired]);
+        assert!(matches!(rx.recv(), Err(ActorError::RequestTimeout)));
+        actor.context().stop();
+        actor.join();
     }
 
     #[test]
