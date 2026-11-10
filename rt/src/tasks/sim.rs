@@ -57,6 +57,8 @@
 //!   different schedule. [`shrink`] moves a failing tape toward the canonical
 //!   schedule, guiding candidates permissively and keeping only those whose
 //!   recorded tape reproduces strictly.
+//! - **Exploration.** [`explore`] swaps the random walk for systematic
+//!   strategies (PCT, bounded DFS over delays) that record into the same tape.
 //!
 //! Library code reads time and jitter entropy through `spawned_rt::time`,
 //! which this module backs under the cfg. The one scheduling-relevant
@@ -100,6 +102,8 @@ const SPIN_QUANTUM: Duration = Duration::from_millis(1);
 const CREEPS_PER_HALVING: u64 = 100;
 /// Wall-clock seconds one poll may run before the watchdog aborts the process.
 const DEFAULT_POLL_TIMEOUT_SECS: u64 = 60;
+
+pub mod explore;
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|p| p.into_inner())
@@ -243,6 +247,7 @@ struct State {
     trace: Option<Vec<(u64, Duration)>>,
     tape: Option<Vec<Decision>>,
     script: Option<Script>,
+    plan: Option<explore::Plan>,
     entropy: u64,
     foreign: Option<String>,
     running: bool,
@@ -391,10 +396,15 @@ fn canonical(ready: &[u64]) -> usize {
 
 /// Pick the index of the next ready task: from a permissive replay script
 /// while it lasts (canonical when a scripted task is not ready, or past its
-/// end; its clock jumps are skipped), otherwise from the seeded generator.
+/// end; its clock jumps are skipped), otherwise from the exploration plan if
+/// one is set, otherwise from the seeded generator.
 fn choose(state: &mut State) -> usize {
     let State {
-        script, ready, rng, ..
+        script,
+        plan,
+        ready,
+        rng,
+        ..
     } = state;
     match script {
         Some(script) => {
@@ -413,7 +423,10 @@ fn choose(state: &mut State) -> usize {
                 _ => canonical(ready),
             }
         }
-        None => by_rank(ready, (splitmix(rng) % ready.len() as u64) as usize),
+        None => match plan {
+            Some(plan) => plan.pick(ready),
+            None => by_rank(ready, (splitmix(rng) % ready.len() as u64) as usize),
+        },
     }
 }
 
@@ -465,6 +478,7 @@ impl Shared {
                 trace: None,
                 tape: None,
                 script: None,
+                plan: None,
                 entropy: 0,
                 foreign: None,
                 running: false,
@@ -1738,17 +1752,34 @@ where
     F: Fn(u64) -> Fut,
     Fut: Future<Output = ()>,
 {
+    run_planned(seed, script, None, body).0
+}
+
+/// [`run_with`] with an exploration plan choosing the tasks (a script, if
+/// given, still wins). Returns the plan back so its record can be read.
+fn run_planned<F, Fut>(
+    seed: u64,
+    script: Option<(&Tape, ReplayMode)>,
+    plan: Option<explore::Plan>,
+    body: &F,
+) -> (Outcome, Option<explore::Plan>)
+where
+    F: Fn(u64) -> Fut,
+    Fut: Future<Output = ()>,
+{
     let rt = Runtime::with_seed(seed);
     rt.record_tape();
     let strict = matches!(script, Some((_, ReplayMode::Strict)));
     if let Some((tape, mode)) = script {
         rt.replay_with(tape, mode);
     }
+    lock(&rt.handle.shared.state).plan = plan;
     let result = catch_unwind(AssertUnwindSafe(|| rt.block_on(body(seed))));
     let tape = rt.tape();
     let stats = rt.stats();
     // Drain explicitly: a task that kept its own `Runtime` handle would
     // otherwise keep the world (and every parked task) alive.
+    let plan = lock(&rt.handle.shared.state).plan.take();
     let shared = rt.handle.shared.clone();
     let dropped = catch_unwind(AssertUnwindSafe(move || {
         shared.drain();
@@ -1770,11 +1801,14 @@ where
         }
         failure => failure,
     };
-    Outcome {
-        failure,
-        tape,
-        stats,
-    }
+    (
+        Outcome {
+            failure,
+            tape,
+            stats,
+        },
+        plan,
+    )
 }
 
 thread_local! {
