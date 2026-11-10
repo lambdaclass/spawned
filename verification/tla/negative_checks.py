@@ -96,6 +96,59 @@ def model_fault(module, fault, tlc, temporal=False, invariant="Safety", drop=())
     print(f"COUNTEREXAMPLE model: {module}/{fault}" + ("" if temporal else f" ({invariant})"))
 
 
+def named_fault(module, fault, invariant, tlc):
+    """Run MODULE (safety only) with Fault = FAULT, checking TypeOK and the
+    single named INVARIANT, and require that invariant to be violated. This
+    shows the mutation breaks the property it targets, not just Safety."""
+    with tempfile.TemporaryDirectory(prefix="bad-model-") as directory:
+        work = Path(directory)
+        for source in HERE.glob("*.tla"):
+            shutil.copy(source, work)
+        lines = []
+        for line in (HERE / f"{module}.cfg").read_text().splitlines():
+            if line.startswith("PROPERTY"):
+                continue
+            if line.startswith("SPECIFICATION"):
+                line = "SPECIFICATION Spec"
+            if line.startswith("INVARIANT"):
+                line = f"INVARIANT TypeOK\nINVARIANT {invariant}"
+            lines.append(line.replace('Fault = "None"', f'Fault = "{fault}"'))
+        (work / f"{module}.cfg").write_text("\n".join(lines) + "\n")
+        result = subprocess.run(shlex.split(tlc) + ["-workers", "1", "-deadlock", "-cleanup", module],
+                                cwd=work, capture_output=True, text=True)
+        log = result.stdout + result.stderr
+        if f"Invariant {invariant} is violated" not in log:
+            raise AssertionError(f"{module}/{fault}: {invariant} not violated\n{log}")
+    print(f"COUNTEREXAMPLE model: {module}/{fault} ({invariant})")
+
+
+# Rank 11 design models: (module, fault, invariant it must violate).
+DEFERRED_CONTROLS = [
+    ("MCDeferredReplies", "NoAutoReply", "NoOrphan"),
+    ("MCDeferredReplies", "NoAtomicExpiry", "AtMostOneDischarge"),
+    ("MCDeferredReplies", "LateSuccess", "NoSuccessAfterDeadline"),
+    ("MCDeferredReplies", "LoopDeadline", "TimelyExpiry"),
+    ("MCDeferredReplies", "Lengthen", "DeadlineWithinCaller"),
+    ("MCDeferredReplies", "Unbounded", "BoundedA"),
+    ("MCDeferredReplies", "NoDestAdmission", "BoundedB"),
+    ("MCDeferredReplies", "ExitStateOnly", "NoOrphan"),
+    ("MCDeferredReplies", "UnwindDropped", "PanicStopped"),
+    ("MCDeferredReplies", "ShareRunning", "BoundedA"),
+    ("MCDeferredReplies", "AttachClosed", "BoundedA"),
+    ("MCDeferredReplies", "LeakDownstream", "DownstreamOwned"),
+    ("MCDeferredReplies", "EarlyClose", "NoEarlyClose"),
+    ("MCDeferredJobs", "NoInstanceCheck", "NoLateResult"),
+    ("MCDeferredJobs", "NoCancelFence", "NoStaleAfterCancel"),
+    ("MCDeferredJobs", "DoubleTerminal", "AtMostOneTerminal"),
+    ("MCDeferredJobs", "ReleaseOnTimeout", "PermitsBounded"),
+    ("MCDeferredJobs", "KeyNoCancel", "OneLivePerKey"),
+    ("MCDeferredJobs", "ReplacePendingOnly", "NoStaleKeyed"),
+    ("MCDeferredJobsEmits", "NoCancelFence", "NoStaleAfterCancel"),
+    ("MCDeferredJobsEmits", "EmitAfterTerminal", "TerminalLast"),
+    ("MCDeferredJobsEmits", "NoEmitCredit", "EmitCreditsBounded"),
+]
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("traces", type=Path)
@@ -150,7 +203,8 @@ def main():
     model_fault("MCCoordinator", "RollbackReady", args.tlc, invariant="OrderedShutdown")
     model_fault("MCNested", "Join", args.tlc)
     model_fault("MCNested", "Propagation", args.tlc, temporal=True)
-
+    for module, fault, invariant in DEFERRED_CONTROLS:
+        named_fault(module, fault, invariant, args.tlc)
 
 if __name__ == "__main__":
     main()

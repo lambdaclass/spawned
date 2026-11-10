@@ -12,7 +12,7 @@ rather than repeat it.
 | [Virtual actors](virtual-actors.md) | Ranks 12, 26, 44, 49-51 |
 | [Systematic testing, simulation and runtime monitoring](systematic-testing.md) | Verification rule, testing to add, ranks 5c, 20-22a |
 | [How the Ethereum ecosystem tests clients](ethereum-testing.md) | Ranks 5, 5c, 20-22 |
-| [Request semantics references](request-semantics-references.md) | Ranks 11, 11a, 47, 47a |
+| [Request semantics references](request-semantics-references.md) | Ranks 11, 11a, 47, 47a; rank 11 and 11a decisions in the [deferred replies design](../design/deferred-replies.md) |
 | [Other concurrency models](concurrency-models.md) | Ranks 8a, 11b, 15a (new); notes on 11a, 13, 15, 19, 33, 34, 39, 48; research pointers 52-54 |
 | [Rust verification tools](verification-tools.md) | Phase 4 batch 1 (Kani), batch 2 (Apalache, Veil), testing to add (Kani and unbounded-invariant rows), rank 3 |
 | [Observability](observability.md) | Ranks 9, 28, 29, 30 |
