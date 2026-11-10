@@ -41,6 +41,23 @@
   that task's `JoinError`, and `sleep(Duration::ZERO)` yields once.
   Native actors, the wall clock and direct Tokio timers/I/O stay outside its
   control. Default builds are unchanged.
+- Fix: a Transient child's replacement that stopped `Normal` or `Shutdown`
+  before readiness failed the whole supervisor ("non-restartable child failed
+  startup"). It is now a failed restart attempt, retried within the restart
+  budget, as OTP retries a failed restart whatever the child's restart type.
+  A child's first startup is unchanged: a Transient child stopping `Normal` or
+  `Shutdown` before its initial readiness still fails the start (semantics V7,
+  as OTP fails `init` when a child's start fails). Found by trace coverage:
+  trace validation rejected a replacement stopping with `Shutdown` while the
+  supervisor was open, which `Supervision.tla` allowed only after closure; the
+  model now allows it, `Decide` retries failed restart attempts, and
+  `negative_checks.py` rejects a trace edited back to failing the tree.
+  Under OneForAll a replacement failing before readiness (including a factory
+  error, which already took this path) now starts a new recovery round, so the
+  whole cohort is rebuilt again as OTP does; before, only that child was
+  retried within the round. RestForOne already matched. `Cohorts.tla` allows
+  one start per child and round (`OneStartPerRound`), with the old in-round
+  retry as a negative control (`Fault = "InPlaceRetry"`, TLC and Apalache).
 
 ## 0.7.2 — 2026-11-10
 

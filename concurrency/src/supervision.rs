@@ -2132,7 +2132,14 @@ async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, core: Arc<C
         if core.gate.is_open() && view.recovery(last_recovery).is_some() {
             continue;
         }
-        let restart = if startup_timed_out {
+        // A generation that never became ready after the child's initial
+        // readiness is a failed restart attempt: retried within the budget
+        // whatever its exit reason, as OTP retries a failed restart
+        // (`try_again_restart`), unless Temporary. Before initial readiness
+        // the restart table applies (semantics V7), so a Transient child
+        // stopping Normal or Shutdown in its first startup fails the start.
+        let failed_restart = ready_at.is_none() && *view.initial.borrow();
+        let restart = if startup_timed_out || failed_restart {
             spec.restart != RestartMode::Temporary
         } else {
             spec.restart.restarts(exit.as_ref())
@@ -2216,15 +2223,11 @@ async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, core: Arc<C
             }
             continue;
         }
-        let in_initial_cohort = system::lock(&view.data).recovery.as_ref().is_some_and(|r| {
-            r.meta.id == last_recovery
-                && !*r.ready.borrow()
-                && !r.meta.finished.load(std::sync::atomic::Ordering::Acquire)
-        });
-        if core.config.strategy != SupervisorStrategy::OneForOne
-            && *core.ready.borrow()
-            && !in_initial_cohort
-        {
+        // A failed replacement inside a recovery round requests a new round
+        // like any other failure, so OneForAll stops and rebuilds the whole
+        // cohort again (and RestForOne the failed child and its later
+        // siblings), as OTP's `try_again_restart` re-runs the strategy.
+        if core.config.strategy != SupervisorStrategy::OneForOne && *core.ready.borrow() {
             core.request_recovery(view.index, last_recovery);
             if matches!(
                 select(

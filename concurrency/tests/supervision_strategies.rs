@@ -248,7 +248,7 @@ async fn temporary_collateral_child_stops_without_reconstruction() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn failed_cohort_construction_retries_that_child_before_starting_later_dependents() {
+async fn failed_cohort_construction_rebuilds_the_whole_cohort_like_otp() {
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("cohort-factory", 1).unwrap();
     let counts = Arc::new((0..3).map(|_| AtomicUsize::new(0)).collect::<Vec<_>>());
@@ -299,7 +299,11 @@ async fn failed_cohort_construction_retries_that_child_before_starting_later_dep
             .iter()
             .map(|n| n.load(Ordering::SeqCst))
             .collect::<Vec<_>>(),
-        vec![2, 3, 2]
+        // child-1's failed replacement starts a new OneForAll round, so
+        // child-0 is rebuilt again (OTP try_again_restart re-runs the
+        // strategy): 0 and 1 three times, 2 twice (its first round never
+        // reached it).
+        vec![3, 3, 2]
     );
     assert!(supervisor.shutdown(LIMIT).await.complete);
     assert!(system.shutdown(LIMIT).await.complete);
@@ -625,5 +629,73 @@ async fn ready_dependency_failure_rolls_back_slow_initial_tree_startup() {
         );
         assert!(system.shutdown(LIMIT).await.complete);
         assert!(live.iter().all(|n| n.load(Ordering::SeqCst) == 0));
+    }
+}
+
+/// A replacement that stops `Normal` before readiness inside a recovery round
+/// is a failed restart: OneForAll rebuilds the whole cohort again (A, already
+/// ready in the round, is stopped and replaced), RestForOne only the failed
+/// child and its later siblings, as OTP re-runs the strategy on
+/// `try_again_restart`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn replacement_stopping_before_readiness_restarts_the_strategy_scope() {
+    for (strategy, a_generation) in [
+        (SupervisorStrategy::OneForAll, 3),
+        (SupervisorStrategy::RestForOne, 1),
+    ] {
+        let system = ActorSystem::new().unwrap();
+        let group = system.async_group("cohort-pre-ready", 1).unwrap();
+        let mut tree = system.supervisor(policy(strategy)).unwrap();
+        let a = tree
+            .add(ChildSpec::new("a", &group, |_| async {
+                Ok::<_, String>(Plain)
+            }))
+            .unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let count = calls.clone();
+        let b = tree
+            .add(
+                ChildSpec::new("b", &group, move |ctx| {
+                    count.fetch_add(1, Ordering::SeqCst);
+                    let stop = ctx.generation() == 2;
+                    async move { Ok::<_, String>(MaybeStop(stop)) }
+                })
+                .restart(RestartMode::Transient),
+            )
+            .unwrap();
+        let supervisor = tree.start().await.unwrap();
+        // B crashes: OneForAll rebuilds A and B (A2 ready, B2 stops Normal
+        // before readiness); RestForOne rebuilds only B.
+        assert!(b.current().unwrap().request(CrashPlain).await.is_err());
+        tokio::time::timeout(LIMIT, b.wait_for_generation(2))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(supervisor.failure().is_none(), "{strategy:?}");
+        assert_eq!(b.snapshot().generation, 3, "{strategy:?}");
+        assert_eq!(calls.load(Ordering::SeqCst), 3, "{strategy:?}");
+        assert_eq!(a.snapshot().generation, a_generation, "{strategy:?}");
+        assert!(supervisor.shutdown(LIMIT).await.complete);
+        assert!(system.shutdown(LIMIT).await.complete);
+    }
+}
+
+struct Plain;
+impl Actor for Plain {}
+struct CrashPlain;
+impl Message for CrashPlain {
+    type Result = ();
+}
+struct MaybeStop(bool);
+impl Actor for MaybeStop {
+    async fn started(&mut self, ctx: &Context<Self>) {
+        if self.0 {
+            ctx.stop();
+        }
+    }
+}
+impl Handler<CrashPlain> for MaybeStop {
+    async fn handle(&mut self, _: CrashPlain, _: &Context<Self>) {
+        panic!("injected cohort failure");
     }
 }

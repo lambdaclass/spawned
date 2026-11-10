@@ -61,7 +61,7 @@ Step(e) ==
              [] e.a = "BecomeReady"  -> BecomeReady(c) /\ open = Bool(e.x)
              [] e.a = "StartupFailed" ->
                   IF e.x = "unknown"
-                  THEN \E r \in StartupResults \cup {"Shutdown"} : StartupFailed(c, r)
+                  THEN \E r \in StartupResults : StartupFailed(c, r)
                   ELSE StartupFailed(c, e.x)
              [] e.a = "SelfExit"     ->
                   IF e.x = "unknown"

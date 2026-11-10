@@ -20,7 +20,9 @@ TypeInd ==
         ack: SUBSET Children, terminal: SUBSET Children,
         gen: [Children -> 0..MaxGen], live: [Children -> SUBSET (1..MaxGen)],
         published: [Children -> 0..MaxGen],
-        badBarrier: BOOLEAN, badClosed: BOOLEAN, badTerminal: BOOLEAN]
+        begun: SUBSET Children,
+        badBarrier: BOOLEAN, badClosed: BOOLEAN, badTerminal: BOOLEAN,
+        badRetry: BOOLEAN]
 
 -----------------------------------------------------------------------------
 (* Helper lemmas, each with the reason it holds in every reachable state. *)

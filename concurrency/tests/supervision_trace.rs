@@ -480,6 +480,68 @@ async fn trace_shutdown_during_backoff() {
     assert!(system.shutdown(LIMIT).await.complete);
 }
 
+/// Stops itself with `exit` before readiness on its second generation.
+struct ExitOnceDuringRestart {
+    exit: Option<spawned_concurrency::ExitReason>,
+}
+impl Actor for ExitOnceDuringRestart {
+    async fn started(&mut self, ctx: &Context<Self>) {
+        if let Some(reason) = self.exit.take() {
+            ctx.stop_with_reason(reason);
+        }
+    }
+}
+impl Handler<Crash> for ExitOnceDuringRestart {
+    async fn handle(&mut self, _: Crash, _: &Context<Self>) {
+        panic!("injected child failure");
+    }
+}
+
+/// A replacement that stops before readiness while the supervisor is open:
+/// `StartupFailed` with `Shutdown` (Permanent) or `Normal` (Transient), then a
+/// retry. Trace validation first rejected the `Shutdown` case (the model
+/// allowed a `Shutdown` startup failure only after closure) and the code
+/// failed the supervisor on the Transient one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn trace_replacement_exiting_before_readiness_is_retried() {
+    use spawned_concurrency::ExitReason;
+    for (name, mode, reason) in [
+        (
+            "replacement_shutdown_before_ready",
+            RestartMode::Permanent,
+            ExitReason::Shutdown,
+        ),
+        (
+            "transient_replacement_normal_before_ready",
+            RestartMode::Transient,
+            ExitReason::Normal,
+        ),
+    ] {
+        let system = ActorSystem::new().unwrap();
+        let group = system.async_group("trace-replacement-exit", 1).unwrap();
+        let mut tree = system.supervisor(config(5)).unwrap();
+        let exit = reason.clone();
+        let child = tree
+            .add(
+                ChildSpec::new("replacement", &group, move |ctx| {
+                    let exit = (ctx.generation() == 2).then(|| exit.clone());
+                    async move { Ok::<_, String>(ExitOnceDuringRestart { exit }) }
+                })
+                .restart(mode),
+            )
+            .unwrap();
+        let supervisor = tree.start().await.unwrap();
+        assert!(child.current().unwrap().request(Crash).await.is_err());
+        tokio::time::timeout(LIMIT, child.wait_for_generation(2))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(supervisor.shutdown(LIMIT).await.complete);
+        write_trace(name, supervisor.trace_id(), &[mode], 5);
+        assert!(system.shutdown(LIMIT).await.complete);
+    }
+}
+
 struct SlowInit {
     first: bool,
 }

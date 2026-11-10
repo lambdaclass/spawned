@@ -32,7 +32,8 @@ ASSUME Mode \in [Children -> {"Permanent", "Transient", "Temporary"}]
 \*   scanned: Set(Int), affected: Set(Int), stopped: Set(Int),
 \*   clean: Set(Int), resumed: Set(Int), ack: Set(Int), terminal: Set(Int),
 \*   gen: Int -> Int, live: Int -> Set(Int), published: Int -> Int,
-\*   badBarrier: Bool, badClosed: Bool, badTerminal: Bool };
+\*   begun: Set(Int),
+\*   badBarrier: Bool, badClosed: Bool, badTerminal: Bool, badRetry: Bool };
 CohortTypeAliases == TRUE
 VARIABLE
  \* @type: $cohortState;
@@ -47,7 +48,9 @@ Init ==
       affected |-> {}, stopped |-> {}, clean |-> {}, resumed |-> {},
       ack |-> {}, terminal |-> {}, gen |-> [c \in Children |-> 0],
       live |-> [c \in Children |-> {}], published |-> [c \in Children |-> 0],
-      badBarrier |-> FALSE, badClosed |-> FALSE, badTerminal |-> FALSE]
+      begun |-> {},
+      badBarrier |-> FALSE, badClosed |-> FALSE, badTerminal |-> FALSE,
+      badRetry |-> FALSE]
 Range == {j \in 0..N : s.start <= j}   \* = s.start..N, since start \in 0..N
 Active == Children \ s.terminal
 CRequest(c,r,x) ==
@@ -64,7 +67,7 @@ CSelect(c,r,n) ==
           !.covered = [j \in Children |-> IF j >= n THEN r ELSE s.covered[j]],
           !.pending = {j \in s.pending : j < n},
           !.scanned = {}, !.affected = {}, !.stopped = {}, !.clean = {},
-          !.resumed = {}, !.ack = {}, !.phase = "Assign"]
+          !.resumed = {}, !.ack = {}, !.begun = {}, !.phase = "Assign"]
 CAssign(c,r,x) ==
  /\ s.phase = "Assign" /\ r = s.epoch
  /\ Range \ s.scanned # {} /\ c = Minimum(Range \ s.scanned)
@@ -90,17 +93,24 @@ CResume(c,r) ==
  /\ s.affected \ s.resumed # {} /\ c = Minimum(s.affected \ s.resumed)
  /\ \A j \in s.affected : j < c => j \in s.ack
  /\ s' = [s EXCEPT !.resumed = @ \cup {c}, !.phase = "Starting"]
+\* A child starts once per round: a replacement that fails before readiness
+\* requests a new round (CRequest), which OneForAll applies to the whole
+\* cohort, as OTP's try_again_restart re-runs the strategy. Fault
+\* "InPlaceRetry" restores the old in-round retry of that child alone.
 CBegin(c,r,n) ==
  /\ c \in Active /\ n = s.gen[c] + 1 /\ n <= MaxGen
  /\ s.open \/ Fault = "Closed"
  /\ \/ /\ r = 0 /\ ~s.committed /\ c \notin s.initial
        /\ \A j \in Children : j < c => j \in s.initial
     \/ /\ r = s.assigned[c] /\ r > 0 /\ c \in s.resumed /\ c \notin s.ack
+       /\ c \notin s.begun \/ Fault = "InPlaceRetry"
  /\ s.live[c] = {} \/ Fault = "Cleanup"
  /\ Mode[c] # "Temporary" \/ s.gen[c] = 0
  /\ s' = [s EXCEPT !.gen[c] = n, !.live[c] = @ \cup {n},
+          !.begun = IF r > 0 THEN @ \cup {c} ELSE @,
           !.badBarrier = @ \/ (r > 0 /\ s.clean # s.affected),
-          !.badClosed = @ \/ ~s.open]
+          !.badClosed = @ \/ ~s.open,
+          !.badRetry = @ \/ (r > 0 /\ c \in s.begun)]
 CReady(c,r,n) ==
  /\ c \in Children /\ n = s.gen[c] /\ n \in s.live[c]
  /\ r = s.assigned[c] /\ s.open
@@ -139,6 +149,7 @@ TypeOK ==
  /\ s.initial \subseteq Children /\ s.affected \subseteq Children
  /\ s.stopped \subseteq Children /\ s.clean \subseteq Children
  /\ s.resumed \subseteq Children /\ s.ack \subseteq Children
+ /\ s.begun \subseteq Children
  /\ s.epoch \in Epochs /\ s.covered \in [Children -> Epochs]
  /\ s.assigned \in [Children -> Epochs]
  /\ s.gen \in [Children -> 0..MaxGen]
@@ -148,13 +159,14 @@ AtMostOneGeneration == \A c \in Children : Cardinality(s.live[c]) <= 1
 PublishedIsLive == \A c \in Children : s.published[c] # 0 => s.published[c] \in s.live[c]
 StrategySelection == s.epoch = 0 \/ s.start = ExpectedStart(s.origin)
 WholeCohortBarrier == ~s.badBarrier
+OneStartPerRound == ~s.badRetry
 NoStartAfterClose == ~s.badClosed
 NoRetiredParticipant == ~s.badTerminal
 TemporaryStartsOnce == \A c \in Children : Mode[c] = "Temporary" => s.gen[c] <= 1
 DoneMeansQuiescent == s.phase = "Done" => \A c \in Children : s.live[c] = {}
 Safety == TypeOK /\ AtMostOneGeneration /\ PublishedIsLive /\ StrategySelection
           /\ WholeCohortBarrier /\ NoStartAfterClose /\ NoRetiredParticipant
-          /\ TemporaryStartsOnce /\ DoneMeansQuiescent
+          /\ TemporaryStartsOnce /\ DoneMeansQuiescent /\ OneStartPerRound
 Next ==
  \/ \E c \in Children, r \in Epochs, x \in {"true","false"} : CRequest(c,r,x)
  \/ \E c \in Children, r \in Epochs, n \in Children : CSelect(c,r,n)
