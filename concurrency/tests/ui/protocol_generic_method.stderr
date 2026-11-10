@@ -1,0 +1,5 @@
+error: protocol methods cannot have generic parameters; each method becomes one concrete message struct
+ --> tests/ui/protocol_generic_method.rs:5:11
+  |
+5 |     fn put<T: Send + 'static>(&self, value: T);
+  |           ^^^^^^^^^^^^^^^^^^^

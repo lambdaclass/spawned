@@ -1,0 +1,5 @@
+error: expected attribute arguments in parentheses: #[request_timeout(...)]
+ --> tests/ui/protocol_timeout_no_args.rs:5:7
+  |
+5 |     #[request_timeout]
+  |       ^^^^^^^^^^^^^^^

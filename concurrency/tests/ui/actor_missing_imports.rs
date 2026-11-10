@@ -1,0 +1,15 @@
+#![allow(unused_imports)]
+use spawned_concurrency::{actor, protocol, Response};
+#[protocol]
+pub trait CounterProtocol: Send + Sync {
+    fn read(&self) -> Response<u64>;
+    fn bump(&self, by: u64);
+}
+use counter_protocol::{Bump, Read};
+pub struct Counter(u64);
+#[actor]
+impl Counter {
+    #[send_handler]
+    fn bump(&mut self, msg: Bump, _ctx: &spawned_concurrency::threads::Context<Self>) { self.0 += msg.by; }
+}
+fn main() {}

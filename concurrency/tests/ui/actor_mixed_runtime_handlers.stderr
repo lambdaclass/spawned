@@ -1,0 +1,5 @@
+error: cannot mix async and sync handlers or lifecycle hooks in one #[actor] block; tasks actors use `async fn` throughout, threads actors use plain `fn`
+  --> tests/ui/actor_mixed_runtime_handlers.rs:16:5
+   |
+16 |     fn bump(&mut self, msg: Bump, _ctx: &Context<Self>) { self.0 += msg.by; }
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

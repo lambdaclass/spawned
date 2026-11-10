@@ -1,0 +1,5 @@
+error: unexpected token
+ --> tests/ui/protocol_timeout_two_args.rs:6:37
+  |
+6 |     #[request_timeout(Duration::ZERO, Duration::MAX)]
+  |                                     ^

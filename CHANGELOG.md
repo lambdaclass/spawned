@@ -37,7 +37,6 @@
   out-of-order rollback of a ready supervisor startup fixed in v0.7.1,
   which `negative_checks.py` also runs under TLC. Liveness stays TLC-only;
   TLC state counts are unchanged.
-
 - Documentation: `docs/TESTING.md` gains an overview of how spawned is
   verified (design, model-to-code, interleavings, faults, behaviour, code and
   tests, real workloads) and an up-to-date status table for every layer; the
@@ -48,6 +47,22 @@
   or Creusot proofs, turmoil/Jepsen-style tests and continuous nightly runs to
   the testing plan; record Apalache's status and the Veil spike as the next
   step toward invariants for any configuration size.
+- trybuild coverage for `#[protocol]` and `#[actor]`: 64 new compile-fail
+  cases (73 in total) and 4 new pass cases, run only on the toolchain pinned in
+  `.tool-versions` (`SPAWNED_UI_TESTS=1` forces them elsewhere). The macros now
+  reject, with an error on the offending tokens, inputs that previously failed
+  inside the expansion or were silently accepted: generic, `unsafe`/`extern`/`const`,
+  duplicate and message-name-colliding protocol methods; borrowed and
+  `impl Trait` protocol parameters; generic handlers, handlers without a
+  `&self`/`&mut self` receiver or with a by-value context; two handler
+  attributes, or `#[started]` with `#[stopped]`, on one method; `mut self`
+  lifecycle hooks; mixed async and sync methods in one `#[actor]` block;
+  `#[actor]` on a trait impl; module paths and missing commas in
+  `#[actor(protocol ...)]`. Handler errors (wrong return or context type,
+  duplicate handlers, async handlers in a threads actor) now point at the
+  handler instead of `#[actor]`. `#[actor(protocol = ...)]` on a generic actor
+  no longer fails with "cannot find type `T`". See
+  [testing](docs/TESTING.md#macro-diagnostics).
 
 ## 0.7.1 — 2026-11-10
 

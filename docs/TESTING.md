@@ -133,7 +133,7 @@ Status of each layer. "Planned" items are tracked in the
 | Test quality | cargo-mutants | Tests that still pass when the code is broken | Weekly over supervision and system code |
 | Resource budgets | `future_layout`, `stack_budget` | Growth of handles, futures and lifecycle stack depth (a real client stack overflow before v0.7.1) | Sizes in CI; stack budgets in review (PR #220) |
 | Compatibility | cargo-semver-checks | Unexpected public API removals | In CI |
-| Macro misuse | trybuild compile-fail tests | `#[protocol]` and `#[actor]` misuse that compiles or gives an unclear error | Planned |
+| Macro misuse | trybuild compile-fail tests | `#[protocol]` and `#[actor]` misuse that compiles or gives an unclear error | In CI on the pinned toolchain ([macro diagnostics](#macro-diagnostics)) |
 | Feature separation | cargo-hack | Missing dependencies hidden by dev-dependency feature unification | CI builds each library feature, default, no-default and all features without dev dependencies |
 | Supply chain | cargo-deny, cargo-audit | Vulnerable, unmaintained or unsound dependencies; license and source drift | `supply-chain` CI job; accepted advisories listed in `deny.toml` |
 | Flakiness | cargo-nextest with retries | Tests that pass only on retry | Nightly `flaky-tracking` job; a retry is reported, never silently passed |
@@ -325,8 +325,9 @@ Do not interpret a passing campaign as proof of race freedom.
 - Resource cleanup tests verify timer payloads and pending async streams are
   dropped after shutdown. Blocking iterator `next()` calls are not preemptible;
   the listener checks cancellation before invoking the next call.
-- Compile tests accept a working actor/protocol and snapshot diagnostics for
-  unsupported async methods, associated types, and missing receivers.
+- Compile tests (trybuild) accept valid `#[protocol]`/`#[actor]` edge cases and
+  snapshot the diagnostics for invalid ones; see
+  [Macro diagnostics](#macro-diagnostics).
 - Early-stop regressions ensure a cleanup panic remains an abnormal exit.
 
 The Loom tests instrument the actual thread CancellationToken implementation:
@@ -464,6 +465,31 @@ The repository's `.tool-versions` selects Rust 1.93.0. The workspace tests,
 including generated cases and compile diagnostics, have been validated with
 that compiler. Proptest and trybuild are dev-dependencies; proptest's unused
 default features are disabled. Cargo generates the lockfile.
+
+### Macro diagnostics
+
+`concurrency/tests/protocol_compile.rs` runs trybuild over
+`concurrency/tests/ui-pass/*.rs` (must compile and run) and
+`concurrency/tests/ui/*.rs` (must fail with the exact `.stderr` snapshot).
+Fail cases are named `protocol_*` or `actor_*` after the macro under test and
+cover receivers, generic and borrowed parameters, return types, timeout
+attributes and options, duplicate and colliding methods, non-trait/non-impl
+items, handler and lifecycle-hook signatures, async/sync mismatches, missing
+protocol handlers and attribute parameters.
+
+Snapshots depend on the exact compiler, so the test compares `rustc --version`
+with the version in `.tool-versions` (the one every CI job pins) and, on any
+other compiler, prints a notice and passes without running the cases.
+
+```sh
+cargo test --locked -p spawned-concurrency --test protocol_compile              # pinned toolchain
+SPAWNED_UI_TESTS=1 cargo test -p spawned-concurrency --test protocol_compile    # force on another toolchain
+TRYBUILD=overwrite cargo test -p spawned-concurrency --test protocol_compile    # regenerate snapshots (pinned toolchain only)
+```
+
+When bumping the pinned toolchain, update `.tool-versions` and the CI
+`dtolnay/rust-toolchain@` pins together and regenerate the snapshots in the
+same change.
 
 ## Debug future layouts
 

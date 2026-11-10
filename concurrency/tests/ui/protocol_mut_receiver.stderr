@@ -1,0 +1,5 @@
+error: protocol methods must take `&self` as the first parameter
+ --> tests/ui/protocol_mut_receiver.rs:5:5
+  |
+5 |     fn set(&mut self, value: u8);
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^

@@ -1,0 +1,5 @@
+error: handler method must have 3 parameters (&mut self, msg: M, ctx: &Context<Self>), found 4
+  --> tests/ui/actor_handler_too_many_params.rs:14:5
+   |
+14 |     fn bump(&mut self, msg: Bump, _ctx: &Context<Self>, extra: u64) { self.0 += msg.by + extra; }
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

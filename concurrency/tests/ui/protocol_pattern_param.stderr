@@ -1,0 +1,5 @@
+error: protocol methods only support simple identifier patterns (e.g., `name: Type`)
+ --> tests/ui/protocol_pattern_param.rs:5:20
+  |
+5 |     fn pair(&self, (left, right): (u8, u8));
+  |                    ^^^^^^^^^^^^^

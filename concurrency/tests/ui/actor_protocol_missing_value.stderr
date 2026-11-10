@@ -1,0 +1,5 @@
+error: expected `protocol = Trait` or `protocol(TraitA, TraitB)`
+ --> tests/ui/actor_protocol_missing_value.rs:5:9
+  |
+5 | #[actor(protocol)]
+  |         ^^^^^^^^

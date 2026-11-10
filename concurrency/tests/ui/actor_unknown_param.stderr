@@ -1,0 +1,5 @@
+error: unknown parameter, expected `protocol`
+  --> tests/ui/actor_unknown_param.rs:11:9
+   |
+11 | #[actor(protocols = CounterProtocol)]
+   |         ^^^^^^^^^

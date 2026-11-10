@@ -1,0 +1,5 @@
+error: expected `timeout = <Duration expression>`
+ --> tests/ui/protocol_option_no_value.rs:3:12
+  |
+3 | #[protocol(timeout)]
+  |            ^^^^^^^

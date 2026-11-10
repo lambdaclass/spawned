@@ -1,0 +1,13 @@
+error[E0053]: method `exit_received` has an incompatible type for trait
+  --> tests/ui/actor_exit_wrong_type.rs:14:34
+   |
+14 |     fn on_exit(&mut self, _exit: u64, _ctx: &Context<Self>) {}
+   |                                  ^^^ expected `Exit`, found `u64`
+   |
+   = note: expected signature `fn(&mut Counter, Exit, &spawned_concurrency::threads::Context<Counter>)`
+              found signature `fn(&mut Counter, u64, &spawned_concurrency::threads::Context<Counter>)`
+help: change the parameter type to match the trait
+   |
+14 -     fn on_exit(&mut self, _exit: u64, _ctx: &Context<Self>) {}
+14 +     fn on_exit(&mut self, _exit: Exit, _ctx: &Context<Self>) {}
+   |

@@ -1,0 +1,9 @@
+error[E0308]: `match` arms have incompatible types
+ --> tests/ui/protocol_option_not_duration.rs:3:22
+  |
+3 | #[protocol(timeout = 30)]
+  | ---------------------^^--
+  | |                    |
+  | |                    expected `Duration`, found integer
+  | this is found to be of type `Duration`
+  | `match` arms have incompatible types

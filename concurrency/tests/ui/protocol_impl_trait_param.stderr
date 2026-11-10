@@ -1,0 +1,5 @@
+error: `impl Trait` parameters are not supported in protocol methods; use a concrete type or Box<dyn Trait>
+ --> tests/ui/protocol_impl_trait_param.rs:5:27
+  |
+5 |     fn show(&self, value: impl std::fmt::Display);
+  |                           ^^^^^^^^^^^^^^^^^^^^^^

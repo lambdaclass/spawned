@@ -1,0 +1,5 @@
+error: handler method's first parameter must be `&mut self`
+  --> tests/ui/actor_handler_value_receiver.rs:14:13
+   |
+14 |     fn bump(mut self, msg: Bump, _ctx: &Context<Self>) { self.0 += msg.by; }
+   |             ^^^^^^^^
