@@ -29,7 +29,7 @@ variants; the usage guide distinguishes implemented profiles from later incremen
 | ExecutionGroup | Opaque placement handle with a name, worker budget, ownership state and fallible startup; no mandatory public Tokio type. |
 | ChildSpec<A, F> | Reusable factory for a fresh actor, group placement, restart mode, readiness/startup limit and shutdown policy. |
 | FactoryContext | Target-group spawn capability, attempt-generation token, cancellation and registered construction-helper scope before an ActorId exists. |
-| Supervisor | Own child generations, restart accounting, timers and ordered lifecycle transitions. OneForOne initially. |
+| Supervisor | Own child generations, restart accounting, timers and ordered lifecycle transitions. OneForOne, OneForAll and RestForOne, plus nested subtrees. |
 | SupervisedChild<A> | Explicitly resolve the current ready ActorRef or report starting, restarting, failed or stopped. It is not a transparently rebound ActorRef. |
 | ShutdownReport | Record actual exits, incomplete work and resources still running when a deadline expires. |
 
