@@ -309,6 +309,28 @@ Repeat a minimized case to investigate scheduling-dependent failures. Nightly
 CI retains regression files on failure and has an outer job timeout to catch
 hangs that prevent an in-process watchdog from making progress.
 
+### Seeds and decision tapes under `--cfg spawned_sim`
+
+`RUSTFLAGS="--cfg spawned_sim"` runs async tests on the deterministic
+simulator in `spawned_rt::tasks::sim` (one thread, seeded choice of the next
+ready task, virtual time). Tests written with `#[spawned_macros::sim_test]`
+(or `spawned_rt::tasks::sim_test`) run once on Tokio in normal builds and over
+seeds `0..SPAWNED_SIM_SEEDS` (default 8) under the cfg. A failure prints the
+seed, a `SPAWNED_SIM_SEED=n` replay command, and the path of a decision tape
+(every pick and clock jump) with a `SPAWNED_SIM_TAPE=path` replay command.
+Tapes replay by task id, so they survive changes in random-number consumption;
+the harness also writes a `.min.tape` shrunk toward the canonical schedule
+(`SPAWNED_SIM_SHRINK=0` disables shrinking). Library time (restart windows,
+backoff jitter seeding, shutdown deadlines, metrics) reads `spawned_rt::time`,
+which is virtual under the cfg. Tests that need OS threads (Thread, Blocking,
+native and pinned placements, dedicated runtimes, `spawn_blocking`) are compiled
+out with `#[cfg(not(spawned_sim))]`.
+
+```sh
+RUSTFLAGS="--cfg spawned_sim" CARGO_TARGET_DIR=target/sim \
+  cargo test -p spawned-concurrency --test supervision --test sim
+```
+
 ## Scope
 
 This is generated, model-checked scenario testing on real runtimes, not an
