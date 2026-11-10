@@ -245,10 +245,15 @@ impl Actor for SupervisorActor {
             }
         }
     }
+    // Stop the subtree inside the lifecycle, so a panic while stopping it
+    // (e.g. a panicking waker woken by the core's admission close) is the
+    // actor's `stopped()` panic, and Drop below still retries the stop.
+    async fn stopped(&mut self, _: &Context<Self>) {
+        if let Some(supervisor) = &self.running {
+            supervisor.stop();
+        }
+    }
 }
-// No `stopped` hook: the actor state is dropped right after its lifecycle
-// returns (no await in between), on every exit path including unwinds, so
-// stopping the running subtree here covers what `stopped` would.
 impl Drop for SupervisorActor {
     fn drop(&mut self) {
         if let Some(supervisor) = &self.running {
@@ -310,5 +315,80 @@ mod cancellation_tests {
         blocker.await.unwrap();
         context_owner.child_handle().wait_exit_async().await;
         assert!(system.shutdown(Duration::from_secs(5)).await.complete);
+    }
+}
+
+#[cfg(test)]
+mod stop_panic_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    struct Leaf;
+    impl Actor for Leaf {}
+
+    /// Panics the first time it is woken.
+    struct PanicOnWake(AtomicBool);
+    impl std::task::Wake for PanicOnWake {
+        fn wake(self: Arc<Self>) {
+            self.wake_by_ref();
+        }
+        fn wake_by_ref(self: &Arc<Self>) {
+            if !self.0.swap(true, Ordering::SeqCst) {
+                panic!("waiter waker panicked");
+            }
+        }
+    }
+
+    /// Stopping the subtree runs foreign code (wakers of inner waiters). A
+    /// panic there belongs to the adapter's `stopped()` hook, so the adapter
+    /// exits with that reason; Drop then retries the stop as a backstop.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn panic_while_stopping_the_subtree_is_a_stopped_hook_panic() {
+        let limit = Duration::from_secs(10);
+        let system = ActorSystem::new().unwrap();
+        let group = system.async_group("nested-stop-panic", 1).unwrap();
+        let published: Arc<Mutex<Option<SupervisedChild<Leaf>>>> = Arc::default();
+        let expose = published.clone();
+        let placement = group.clone();
+        let mut root = system
+            .supervisor(SupervisorConfig {
+                max_restarts: 0,
+                ..SupervisorConfig::default()
+            })
+            .unwrap();
+        let subtree = root
+            .add_supervisor(SupervisorSpec::new(
+                "subtree",
+                &group,
+                SupervisorConfig::default(),
+                move |tree| {
+                    let leaf = tree.add(ChildSpec::new("leaf", &placement, |_| async {
+                        Ok::<_, String>(Leaf)
+                    }))?;
+                    *system::lock(&expose) = Some(leaf);
+                    Ok::<_, SupervisorError>(())
+                },
+            ))
+            .unwrap();
+        let root = root.start().await.unwrap();
+        let leaf = system::lock(&published).clone().unwrap();
+        let generation = leaf.snapshot().generation;
+        let mut waiter = Box::pin(leaf.wait_for_generation(generation));
+        let waker = std::task::Waker::from(Arc::new(PanicOnWake(AtomicBool::new(false))));
+        let mut cx = std::task::Context::from_waker(&waker);
+        assert!(waiter.as_mut().poll(&mut cx).is_pending());
+
+        // Stop only the adapter: its own token, not the parent's, so nothing
+        // but the adapter's lifecycle closes the subtree.
+        let adapter = subtree.child.current().unwrap();
+        adapter.child_handle().stop();
+        let reason = rt::timeout(limit, adapter.wait_exit()).await.unwrap();
+        assert!(
+            matches!(&reason, ExitReason::Panic(m) if m.starts_with("panic in stopped()") && m.contains("waiter waker panicked")),
+            "{reason:?}"
+        );
+        drop(waiter);
+        drop(root);
+        assert!(system.shutdown(limit).await.complete);
     }
 }
