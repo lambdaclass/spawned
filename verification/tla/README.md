@@ -11,11 +11,11 @@ this fits with Loom, Shuttle, Miri, ThreadSanitizer and mutation testing.
 | `MCSupervisionDeep.tla/.cfg` | Deep instance (weekly, `--deep`): three children, one per restart mode, safety and action properties. |
 | `TraceSupervision.tla` | Trace validation: replays a lifecycle trace recorded from real Rust runs as a behavior of `Supervision.tla`. |
 | `Cohorts.tla`, `MCCohorts*.tla/.cfg` | OneForAll/RestForOne range selection, reverse cleanup, whole-cohort join barrier, ordered resume, stale notifications, superseding rounds and retired slots. Three-child mixed-mode and two-round configurations. |
-| `Coordinator.tla`, `MCCoordinator.tla/.cfg` | Abstract panic fallback: signal all remaining roots, record failure, retain runtime ownership until joins; cooperative cleanup liveness and three negative mutations. |
+| `Coordinator.tla`, `MCCoordinator.tla/.cfg` | System shutdown coordinator: ordered stop of admitted roots, panic fallback that signals all remaining roots, records failure and retains runtime ownership until joins; ordered-shutdown invariants, cooperative cleanup liveness and four negative mutations. |
 | `NestedSupervision.tla`, `MCNested.tla/.cfg` | Dynamic subtree ownership and shutdown delivery; parent scope completion waits for descendant completion. Bounded three-node/two-generation model with fair cleanup. |
 | `TraceCohorts.tla`, `TraceNested.tla` | Policy and ownership projections of real cohort/nested Rust executions. |
 | `trace_check.py`, `negative_checks.py` | Replay recorded traces; deliberately wrong selections, premature resume/join and broken propagation must be rejected or produce counterexamples. |
-| `SupervisionInd.tla`, `CohortsInd.tla`, `NestedSupervisionInd.tla`, `MC*Ind.tla`, `apalache.sh` | Inductive invariants (`IndInv`) checked with Apalache; see [Inductive invariants](#inductive-invariants-apalache). |
+| `SupervisionInd.tla`, `CohortsInd.tla`, `NestedSupervisionInd.tla`, `CoordinatorInd.tla`, `MC*Ind.tla`, `apalache.sh` | Inductive invariants (`IndInv`) checked with Apalache; see [Inductive invariants](#inductive-invariants-apalache). |
 
 ## Running
 
@@ -130,6 +130,7 @@ the declared constants, not for all N.
 nix run .#check-apalache                          # default sizes
 nix run .#check-apalache -- --negative-controls   # plus guard-removal mutations
 nix run .#check-apalache -- --model Supervision --size 10 10
+nix run .#check-apalache -- --model Coordinator --targets 32
 ```
 
 | Model | Constants | Restart modes / strategy | Helper lemmas |
@@ -137,11 +138,63 @@ nix run .#check-apalache -- --model Supervision --size 10 10
 | `Supervision` | N = 5, MaxRestarts = 4 (CI also 10/10) | every `Mode` table | live generation = latest one while constructing/running/cleanup; `pub` = gen exactly while running; idle until launched; ordered-start prefix is `initial`; a retrying controller holds a restartable exit reason; children after the stop cursor are done or timed out; done only after every controller finished; reservations within budget |
 | `Cohorts` | N = 5, MaxGen = 4, MaxRounds = 4 | both strategies, every `Mode` table | stopped ⊆ affected, clean ⊆ stopped, resumed ≠ {} ⇒ clean = affected, no resumes while assigning/stopping; Done ⇒ closed |
 | `NestedSupervision` | 6 nodes, 3 slots, MaxGen = 3 | n/a | none: `Safety` is inductive as written |
+| `Coordinator` | TargetCount = 8 (CI also 32) | n/a | one: the stop cursor is at target 1 before shutdown begins |
 
 Each helper is commented in the `*Ind.tla` module with the reason it holds;
 dropping any one of them gives a counterexample to induction (an unreachable
-state). All checks together take about 2-3 minutes; `--size 10 10` for
-`Supervision` well under a minute. No counterexample exposed a real bug.
+state). All checks together take about 3-4 minutes; `--size 10 10` for
+`Supervision` and `--targets 32` for `Coordinator` well under a minute each.
+No counterexample exposed a real bug.
+
+### Coordinator
+
+`Coordinator.tla` abstracts `begin_shutdown` in `concurrency/src/system.rs`.
+Targets are numbered in stop order: target 1 is the last-admitted root, since
+the Rust loop walks `targets.iter().rev()`. Proven inductive at TargetCount 8
+(and 32), from every state satisfying `CoordinatorInd!IndInv`:
+
+- `Safety` (the existing TLC invariant): admission is closed in every phase
+  after `Running`; `finished ⊆ signalled ⊆ Targets`; runtime ownership is
+  released only in `Done` with every target finished; a coordinator crash is
+  always reported.
+- `OrderedShutdown` (new, also checked by TLC): in the ordered loop exactly
+  the targets before the cursor (plus the cursor once signalled) are
+  signalled, and all targets before the cursor have finished.
+- `JoinAfterAllSignalled` (new, also checked by TLC): the coordinator joins
+  only after every target was signalled, by the ordered loop or by the
+  emergency fallback.
+- Action properties over one step: `OrderedSignalStep` (outside the
+  emergency fallback a target is newly signalled only when every earlier
+  target in stop order finished), `NeverReopensStep`, `ReportKeptStep`
+  (a recorded failure is never dropped) and `TerminalStep` (finished targets
+  stay finished; release is permanent).
+
+The liveness property `CleanupCompletes` remains TLC-only (TargetCount 3).
+
+Negative controls (all must break induction, and do): the four `Fault`
+values `ReleaseEarly`, `ForgetFailure`, `ForgetSignal` and `RollbackReady`,
+plus four guard mutations: advance past a target before it finished, stop
+targets in reverse of the stop order (checked against `OrderedSignalStep`),
+and begin shutdown or crash without closing admission. `RollbackReady` is
+the #209 bug: once admission closed, a supervisor startup guard dropped after
+readiness rolled the ready tree back, stopping it outside the coordinator's
+order. The fixed code rolls back only unready startups, which are not targets
+in this model, so the fault is an extra action that is disabled unless
+`Fault = "RollbackReady"`; TLC state counts are unchanged (81 distinct
+states). `negative_checks.py` runs the same fault under TLC, and now catches
+`ForgetSignal` both as a safety violation (`JoinAfterAllSignalled`) and,
+with that invariant removed, as the original liveness violation.
+
+What the model does not cover: per-unit admission (`register_unit` checks
+`closing` under the same lock `begin_shutdown` sets it, but no admission
+step is modelled, so "nothing admitted after close" is only `open` staying
+false); readiness itself (all targets are ready roots); execution groups
+(`group.done`); and the exact grace-expiry path. At the deadline Rust keeps
+walking the remaining targets in order with a zero timeout, calling
+`stop_remaining`, then re-signals every scope; the model collapses this into
+`GraceExpired` followed by `Emergency`, which signals all targets at once. A
+crash before `Begin` is also allowed by the model but cannot happen in Rust,
+where the coordinator task exists only after `begin_shutdown`.
 
 Non-vacuity: `apalache.sh` requires probe predicates to be violated (IndInv
 admits, for example, five running children at generation > 1000 mid-shutdown),
@@ -149,7 +202,8 @@ and `--negative-controls` removes one guard at a time and requires induction
 to fail: for `Supervision` the retry limit, ordered start, join wait, restart
 table, cleanup, unpublish-on-stop, admission gate on `Attempt` and the
 reverse-shutdown wait; for `Cohorts` and `NestedSupervision` the existing
-`Fault` mutations (`Selection`, `Cleanup`, `Retirement`, `Closed`, `Join`).
+`Fault` mutations (`Selection`, `Cleanup`, `Retirement`, `Closed`, `Join`);
+for `Coordinator` see below.
 
 The type annotations are `\* @type:` comments, ignored by TLC. Apalache also
 needs constant range bounds, so `r \in 1..s.epoch`-style guards in `Cohorts`
@@ -244,6 +298,8 @@ policy models: a panic closes admission, records failure, signals remaining
 roots, and retains runtime ownership until all roots finish. Liveness assumes
 signalled work eventually completes; uncooperative native code remains a host
 escalation decision. Negative controls remove failure reporting, omit emergency
-signals, or release runtime ownership early. This is an abstract fault model,
+signals, release runtime ownership early, or stop a ready root out of order
+through its startup rollback (#209). The same safety invariants are proven
+inductive with Apalache ([Coordinator](#coordinator)). This is an abstract fault model,
 not a replay of Rust failpoint traces. Private Rust tests separately inject
 supervisor-launch and system-shutdown panics with real actor/helper cleanup.
