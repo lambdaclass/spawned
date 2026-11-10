@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Design (not implementation) for rank 11, deferred typed replies and
+  pipe-to-self, revised over four passes after independent reviews:
+  `docs/design/deferred-replies.md`, client mapping for ethrex and ethlambda,
+  and the `DeferredReplies` (reply slots) and `DeferredJobs` (pipe jobs) TLA+
+  models with 22 negative controls, each checked against its named
+  invariant.
+
 ## 0.7.3 — 2026-11-10
 
 Patch release with one supervision behaviour change: a failed restart (a
@@ -130,12 +137,6 @@ Tokio test unless the simulation cfg is set).
 - CI: client compatibility workflow (`client-compat.yml`) builds and tests
   ethrex and ethlambda `spawned-v0.7` against the commit under test, nightly,
   on push to main and on PRs labeled `client-compat`.
-- Design (not implementation) for rank 11, deferred typed replies and
-  pipe-to-self, revised over four passes after independent reviews:
-  `docs/design/deferred-replies.md`, client mapping for ethrex and ethlambda,
-  and the `DeferredReplies` (reply slots) and `DeferredJobs` (pipe jobs) TLA+
-  models with 22 negative controls, each checked against its named
-  invariant.
 
 ## 0.7.2 — 2026-11-10
 
