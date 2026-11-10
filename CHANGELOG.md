@@ -82,6 +82,13 @@
   OTP (`Killed`, ignored `normal` exits, trappable `shutdown`, `NoProc`; rank
   5e), the restart budget counts recovery rounds (5f), and one exit reason when
   the runtime drops an actor (5g).
+- Documentation: `docs/design/semantics.md`, one semantics contract (roadmap
+  rank 5d). It states each guarantee (messages, requests, lifecycle and exit
+  reasons, links/monitors/trapped exits, supervision, systems, timers, panics)
+  with the TLA+ invariant, Kani harness, test or example that checks it, marks
+  the ones not yet checked, lists what is not guaranteed and the planned
+  changes that will alter it. Linked from the README, guide, testing docs and
+  design index.
 
 ## 0.7.1 — 2026-11-10
 

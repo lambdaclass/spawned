@@ -4,7 +4,9 @@ The user guide for the spawned actor framework: lifecycle, messaging, execution
 modes, timers, type erasure, the registry, links, execution groups, supervision,
 metrics and testing. For a quick introduction, see the [README](../README.md); for
 upgrades, see [MIGRATION.md](MIGRATION.md); for runnable programs, see the
-[examples index](../examples/README.md).
+[examples index](../examples/README.md). The guarantees themselves, with the test
+or model that checks each one, are collected in the
+[semantics contract](design/semantics.md).
 
 ## Table of Contents
 
@@ -1364,6 +1366,7 @@ assert_linearizable(&Kv, &recorder.take());
 
 ## Further reading
 
+- [Semantics contract](design/semantics.md): every guarantee in one place (ordering, delivery, request outcomes, exit propagation, restarts, shutdown, timers, panics), each linked to what checks it, and what is not guaranteed.
 - [Execution groups and supervision design contract](design/execution-groups-supervision.md): the fuller boundaries of the v0.7 APIs.
 - [Testing](TESTING.md): scenario tests, failure windows, the TLA+ model and trace validation.
 - [Roadmap](../ROADMAP.md): what is planned and why.
