@@ -1042,7 +1042,7 @@ async fn restart_latency(
 ) -> Duration {
     let old = child.current().unwrap();
     let generation = child.snapshot().generation;
-    let began = std::time::Instant::now();
+    let began = spawned_rt::time::Instant::now();
     assert!(old.request(Crash).await.is_err());
     spawned_rt::tasks::timeout(LIMIT, child.wait_for_generation(generation))
         .await

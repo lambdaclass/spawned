@@ -19,8 +19,9 @@ use std::{
         atomic::{AtomicU64, Ordering::Relaxed},
         Arc, Mutex, OnceLock,
     },
-    time::Instant,
 };
+// Virtual time under `--cfg spawned_sim`; `std::time::Instant` otherwise.
+use spawned_rt::time::Instant;
 
 /// Timing samples are deterministic, one in every N observations per category.
 /// Zero disables clocks/histograms while retaining counters and gauges.

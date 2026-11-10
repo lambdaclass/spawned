@@ -502,7 +502,7 @@ impl Env {
         &self,
         future: F,
     ) -> Result<F::Output, tokio::time::error::Elapsed> {
-        self.block_on(async move { spawned_rt::tasks::timeout(LIMIT, future).await })
+        self.block_on(async move { tokio::time::timeout(LIMIT, future).await })
     }
     fn start(&mut self, index: u32, peers: Vec<Ref>, log: &Log) -> Ref {
         use spawned_concurrency::tasks::{ActorStart as _, Backend};

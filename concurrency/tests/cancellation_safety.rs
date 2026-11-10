@@ -21,7 +21,7 @@ use std::{
         Arc,
     },
     task::Poll,
-    time::{Duration, Instant},
+    time::Duration,
 };
 use tokio::sync::Notify;
 
@@ -97,6 +97,9 @@ where
     }
     panic!("{op}: did not complete within {MAX_POLLS} polls");
 }
+
+// Virtual time under spawned_sim.
+use spawned_rt::time::Instant;
 
 async fn eventually(what: &str, check: impl Fn() -> bool) {
     let deadline = Instant::now() + LIMIT;

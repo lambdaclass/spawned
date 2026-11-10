@@ -23,8 +23,10 @@ use std::{
     future::Future,
     panic::AssertUnwindSafe,
     sync::{Arc, Mutex, Weak},
-    time::{Duration, Instant},
+    time::Duration,
 };
+// Virtual time under `--cfg spawned_sim`; `std::time::Instant` otherwise.
+use spawned_rt::time::Instant;
 
 mod nested;
 pub use nested::{SupervisedSupervisor, SupervisorSpec};
@@ -1618,14 +1620,12 @@ async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, core: Arc<C
     let mut last_recovery = 0;
     let mut collateral = false;
     let mut failures = 0u32;
-    let seed = core.config.backoff.seed.unwrap_or_else(|| {
-        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos() as u64
-            ^ NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-    });
+    // Wall-clock entropy; the simulation seed's entropy stream under spawned_sim.
+    let seed = core
+        .config
+        .backoff
+        .seed
+        .unwrap_or_else(spawned_rt::time::entropy);
     let mut rng = jitter_seed(seed, system::lock(&view.data).snapshot.name.as_bytes());
     let c = view.trace_index;
     loop {

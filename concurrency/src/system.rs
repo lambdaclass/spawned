@@ -20,8 +20,10 @@ use std::{
         atomic::{AtomicU64, Ordering},
         Arc, Mutex, Weak,
     },
-    time::{Duration, Instant},
+    time::Duration,
 };
+// Virtual time under `--cfg spawned_sim`; `std::time::Instant` otherwise.
+use spawned_rt::time::Instant;
 mod group;
 use group::GroupInner;
 
