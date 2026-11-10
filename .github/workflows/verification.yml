@@ -40,8 +40,8 @@ jobs:
   # Inductive invariants of the same models with Apalache (verification/tla/
   # apalache.sh): Init => IndInv, IndInv /\ Next => IndInv' over every state
   # of the configured size, plus guard-removal negative controls. About
-  # 2-3 minutes; the larger Supervision and Coordinator instances add
-  # about one minute.
+  # 5 minutes on a GitHub runner; the larger Supervision and Coordinator
+  # instances add about 1.5 minutes (job about 7 minutes in all).
   tla-apalache:
     runs-on: ubuntu-latest
     timeout-minutes: 20
