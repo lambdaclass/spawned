@@ -140,13 +140,17 @@ impl Future for ReadyThenPanic {
 fn task_destructor_panics_stay_in_the_join_handle() {
     let rt = Runtime::with_seed(5);
     rt.block_on(async {
-        // Aborted while parked.
+        // Aborted while parked: the child signals that it reached its await
+        // before the abort, so the panicking destructor runs on a parked
+        // future, not one that was never polled.
+        let (parked_tx, parked_rx) = tokio::sync::oneshot::channel::<()>();
         let guard = PanicOnDrop;
         let parked = rt::spawn(async move {
             let _guard = guard;
+            let _ = parked_tx.send(());
             std::future::pending::<()>().await;
         });
-        sim::yield_now().await;
+        parked_rx.await.unwrap();
         parked.abort();
         let error = parked.await.unwrap_err();
         assert!(error.is_panic(), "{error}");
@@ -159,14 +163,72 @@ fn task_destructor_panics_stay_in_the_join_handle() {
         let done = rt::spawn(ReadyThenPanic(PanicOnDrop));
         assert!(done.await.unwrap_err().is_panic());
     });
-    // Torn down with the runtime while parked.
+    // Torn down with the runtime while parked (polled to its await first).
+    let (parked_tx, parked_rx) = tokio::sync::oneshot::channel::<()>();
     let guard = PanicOnDrop;
     let left = rt.spawn(async move {
         let _guard = guard;
+        let _ = parked_tx.send(());
         std::future::pending::<()>().await;
     });
+    rt.block_on(async { parked_rx.await.unwrap() });
     drop(rt);
     assert!(left.is_finished());
+}
+
+/// agy (round 2): a task's *output* whose destructor panics, unread because
+/// the `JoinHandle` was dropped (before or after completion), is dropped
+/// inside a panic guard as on Tokio, not unwound through the executor.
+#[test]
+fn unread_output_destructor_panics_are_contained() {
+    let rt = Runtime::with_seed(5);
+    rt.block_on(async {
+        drop(rt::spawn(async { PanicOnDrop }));
+        let later = rt::spawn(async { PanicOnDrop });
+        for _ in 0..4 {
+            sim::yield_now().await;
+        }
+        assert!(later.is_finished());
+        drop(later);
+    });
+}
+
+/// Codex (round 2): a task that aborts itself and returns `Pending` is
+/// cancelled right after that poll, as on Tokio, before any other task runs.
+#[test]
+fn self_abort_cancels_right_after_the_poll() {
+    use std::sync::Mutex;
+    for seed in 0..32 {
+        let rt = Runtime::with_seed(seed);
+        rt.block_on(async {
+            let slot: Arc<Mutex<Option<rt::JoinHandle<()>>>> = Arc::default();
+            let polled = Arc::new(AtomicBool::new(false));
+            let (slot2, polled2) = (slot.clone(), polled.clone());
+            let task = rt::spawn(async move {
+                let own = slot2.lock().unwrap().take().unwrap();
+                own.abort();
+                polled2.store(true, Ordering::SeqCst);
+                std::future::pending::<()>().await;
+            });
+            let observer = rt::spawn({
+                let polled = polled.clone();
+                async move {
+                    while !polled.load(Ordering::SeqCst) {
+                        sim::yield_now().await;
+                    }
+                }
+            });
+            *slot.lock().unwrap() = Some(task);
+            observer.await.unwrap();
+            // The first thing that runs after the aborting poll sees it done.
+            assert!(polled.load(Ordering::SeqCst));
+        });
+        assert_eq!(
+            rt.stats().tasks,
+            0,
+            "seed {seed}: self-aborted task still parked"
+        );
+    }
 }
 
 /// agy H1: a task that wakes itself during its final poll must not stay in
@@ -225,7 +287,7 @@ fn join_handle_polled_after_completion_panics() {
 /// A direct `tokio::spawn` would run outside the simulated scheduler; it
 /// fails the run as a determinism leak.
 #[test]
-#[should_panic(expected = "spawned a task on Tokio directly")]
+#[should_panic(expected = "handed work to Tokio directly")]
 fn direct_tokio_spawn_is_a_determinism_leak() {
     let rt = Runtime::with_seed(2);
     rt.block_on(async {
@@ -252,11 +314,25 @@ fn watchdog_child_busy_loop() {
 /// watchdog turns the hang into an abort that names the task and seed.
 #[test]
 fn poll_watchdog_aborts_a_poll_that_never_returns() {
-    let output = std::process::Command::new(std::env::current_exe().unwrap())
+    let mut child = std::process::Command::new(std::env::current_exe().unwrap())
         .args([WATCHDOG_CHILD, "--exact", "--ignored", "--nocapture"])
         .env("SPAWNED_SIM_POLL_TIMEOUT", "1")
-        .output()
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
         .unwrap();
+    // The parent's own deadline: without the watchdog the child spins
+    // forever, and this test must fail rather than hang.
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while child.try_wait().unwrap().is_none() {
+        if std::time::Instant::now() > deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("the watchdog did not abort a poll that never returns within 30 s");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let output = child.wait_with_output().unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(!output.status.success());
     assert!(
@@ -264,4 +340,83 @@ fn poll_watchdog_aborts_a_poll_that_never_returns() {
             && stderr.contains("seed 11"),
         "{stderr}"
     );
+}
+
+/// Codex (round 2): a root that hands work to Tokio and returns at once is a
+/// failure too (it was only reported at the next scheduling decision), and
+/// the escaped task never runs.
+#[test]
+fn root_that_spawns_on_tokio_and_returns_fails() {
+    let ran = Arc::new(AtomicBool::new(false));
+    let flag = ran.clone();
+    let rt = Runtime::with_seed(2);
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rt.block_on(async move {
+            drop(tokio::spawn(
+                async move { flag.store(true, Ordering::SeqCst) },
+            ));
+        })
+    }));
+    let message = *result.unwrap_err().downcast::<String>().unwrap();
+    assert!(
+        message.contains("handed work to Tokio directly"),
+        "{message}"
+    );
+    assert!(!ran.load(Ordering::SeqCst), "the escaped task ran");
+}
+
+/// Codex (round 2): `tokio::task::spawn_blocking` runs on a real OS thread
+/// from Tokio's blocking pool; it is a determinism leak like `tokio::spawn`.
+#[test]
+#[should_panic(expected = "handed work to Tokio directly")]
+fn direct_tokio_spawn_blocking_is_a_determinism_leak() {
+    Runtime::with_seed(2).block_on(async {
+        drop(tokio::task::spawn_blocking(|| ()));
+    });
+}
+
+/// Codex (round 2): an escaped Tokio task that holds the simulation (a
+/// cycle the simulated task table does not see) is dropped when the world
+/// is torn down.
+#[test]
+fn escaped_tokio_task_does_not_keep_the_world_alive() {
+    let probe = Arc::new(());
+    let weak = Arc::downgrade(&probe);
+    let rt = Runtime::with_seed(2);
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rt.block_on(async move {
+            let handle = rt::Handle::current();
+            drop(tokio::spawn(async move {
+                let _keep = (handle, probe);
+                std::future::pending::<()>().await;
+            }));
+        })
+    }));
+    drop(rt);
+    assert_eq!(weak.strong_count(), 0, "escaped task kept its captures");
+}
+
+/// agy (round 2): a root future whose destructor wakes it must not leave
+/// ROOT in the ready list after `block_on` returns.
+#[test]
+fn root_waking_itself_in_its_destructor_leaves_nothing_ready() {
+    struct WakeOnDrop(Option<std::task::Waker>);
+    impl Drop for WakeOnDrop {
+        fn drop(&mut self) {
+            if let Some(waker) = self.0.take() {
+                waker.wake();
+            }
+        }
+    }
+    let rt = Runtime::with_seed(2);
+    rt.block_on(async {
+        let mut guard = WakeOnDrop(None);
+        std::future::poll_fn(|cx| {
+            guard.0 = Some(cx.waker().clone());
+            Poll::Ready(())
+        })
+        .await;
+        let _guard = guard;
+    });
+    assert_eq!(rt.stats().ready, 0);
 }
