@@ -110,7 +110,9 @@ pub use child_handle::{ActorId, ChildHandle};
 pub use error::{ActorError, ExitReason};
 pub use link::Exit;
 pub use monitor::{Down, MonitorRef};
-pub use reply::{Deadline, DeferError, Delivery, PendingReply, ReplyReceiver, ReplyTo};
+pub use reply::{
+    Deadline, DeferError, Delivery, InsertError, PendingReplies, PendingReply, ReplyReceiver, ReplyTo,
+};
 pub use response::Response;
 pub use spawned_macros::{actor, protocol};
 

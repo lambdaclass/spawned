@@ -19,7 +19,8 @@ pub use crate::reply::jobs::{
     PipeReplyError,
 };
 pub use crate::reply::{
-    Deadline, DeferError, Delivery, PendingReply, ReplyReceiver, ReplyTo, DEFAULT_MAX_OUTSTANDING,
+    Deadline, DeferError, Delivery, InsertError, PendingReplies, PendingReply, ReplyReceiver,
+    ReplyTo, DEFAULT_MAX_OUTSTANDING,
 };
 pub use stream::spawn_listener;
 pub use time::{send_after, send_interval, TimerHandle};

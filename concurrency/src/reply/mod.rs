@@ -8,10 +8,12 @@
 
 pub(crate) mod deadline;
 pub mod jobs;
+mod pending;
 pub(crate) mod registry;
 pub(crate) mod slot;
 
 pub use registry::DEFAULT_MAX_OUTSTANDING;
+pub use pending::{InsertError, PendingReplies};
 pub use slot::Delivery;
 
 use crate::error::ActorError;
