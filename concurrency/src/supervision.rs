@@ -2611,10 +2611,18 @@ mod policy_tests {
             }
             let mut builder = system.supervisor(SupervisorConfig::default()).unwrap();
             let child_log = log.clone();
+            // Hold construction until start() has been polled once, so the
+            // first poll is pending however fast the controller runs.
+            let (construct, gate) = rt::oneshot::channel::<()>();
+            let gate = Arc::new(Mutex::new(Some(gate)));
             builder
                 .add(ChildSpec::new("middle", &group, move |_| {
                     let log = child_log.clone();
+                    let gate = system::lock(&gate).take();
                     async move {
+                        if let Some(gate) = gate {
+                            let _ = gate.await;
+                        }
                         Ok::<_, String>(Ordered {
                             id: 100,
                             log,
@@ -2627,6 +2635,7 @@ mod policy_tests {
             let core = builder.core.clone();
             let mut startup = Box::pin(builder.start());
             assert!(futures::poll!(startup.as_mut()).is_pending());
+            construct.send(()).unwrap();
             assert!(
                 rt::timeout(limit, system::wait_true(core.ready.subscribe()))
                     .await
