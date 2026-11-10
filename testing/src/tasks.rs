@@ -21,7 +21,8 @@ use spawned_concurrency::tasks::{
     Actor, ActorRef, ActorStart, Context, Handler, Receiver, Recipient,
 };
 use spawned_concurrency::{ChildHandle, ExitReason};
-use spawned_rt::tasks::{oneshot, sleep, timeout};
+use spawned_concurrency::reply::{Deadline, PendingReply, ReplyReceiver};
+use spawned_rt::tasks::{sleep, timeout};
 use std::future::Future;
 use std::ops::Deref;
 use std::panic::Location;
@@ -93,7 +94,12 @@ impl Mock {
 impl Actor for Mock {}
 
 impl<M: Message> Handler<M> for Mock {
-    fn handle(&mut self, msg: M, _: &Context<Self>) -> impl Future<Output = M::Result> + Send {
+    fn handle(
+        &mut self,
+        msg: M,
+        reply: PendingReply<'_, M::Result>,
+        _: &Context<Self>,
+    ) -> impl Future<Output = ()> + Send {
         let plan = self.rules.plan(&self.inbox, msg);
         async move {
             match plan {
@@ -108,7 +114,7 @@ impl<M: Message> Handler<M> for Mock {
                     if let Some(record) = record {
                         record.finish();
                     }
-                    value
+                    let _ = reply.reply(value);
                 }
                 Plan::Crash(reason) => panic!("{reason}"),
             }

@@ -1,6 +1,6 @@
 use crate::error::ActorError;
 #[cfg(feature = "async")]
-use spawned_rt::tasks::oneshot;
+use crate::reply::ReplyReceiver;
 use std::future::Future;
 use std::pin::Pin;
 use std::time::Duration;
@@ -38,10 +38,9 @@ impl<R> RequestOptions<R> {
 // ---------------------------------------------------------------------------
 
 enum ResponseState<T> {
+    /// The deadline is already in the receiver's slot, fixed at send.
     #[cfg(feature = "async")]
-    Receiver(oneshot::Receiver<T>),
-    #[cfg(feature = "async")]
-    TimedReceiver(Pin<Box<dyn Future<Output = Result<T, ActorError>> + Send>>),
+    Receiver(Pin<Box<ReplyReceiver<T>>>),
     Ready(Result<T, ActorError>),
     Done,
 }
@@ -49,7 +48,9 @@ enum ResponseState<T> {
 /// Concrete wrapper for protocol request-response methods that works in both
 /// `tasks` (async) and `threads` (blocking) modes.
 ///
-/// - **Tasks mode**: wraps a oneshot receiver; `.await` returns `Result<T, ActorError>`
+/// - **Tasks mode**: wraps a [`ReplyReceiver`](crate::reply::ReplyReceiver);
+///   `.await` returns `Result<T, ActorError>`. The request's deadline was fixed
+///   when it was sent.
 /// - **Threads mode**: wraps a pre-computed result; use `.unwrap()` / `.expect()` directly
 ///
 /// Protocol methods return `Response<T>`:
@@ -67,9 +68,8 @@ pub struct Response<T>(
     #[cfg(feature = "metrics")] Option<crate::instrumentation::RequestObservation>,
 );
 
-// Safety: tokio::sync::oneshot::Receiver<T> implements Unpin, so pinning
-// Response<T> is safe. This is required for the Future::poll implementation
-// which uses self.get_mut().
+// The receiver is boxed and pinned, so `Response<T>` is `Unpin` whatever `T`
+// is; `Future::poll` uses `self.get_mut()`.
 impl<T> Unpin for Response<T> {}
 
 impl<T> Response<T> {
@@ -93,7 +93,7 @@ impl<T> Response<T> {
         match self.0 {
             ResponseState::Ready(result) => result.unwrap(),
             #[cfg(feature = "async")]
-            ResponseState::Receiver(_) | ResponseState::TimedReceiver(_) => {
+            ResponseState::Receiver(_) => {
                 panic!("called unwrap() on a pending Response; use .await in async contexts")
             }
             ResponseState::Done => panic!("Response already consumed"),
@@ -105,7 +105,7 @@ impl<T> Response<T> {
         match self.0 {
             ResponseState::Ready(result) => result.expect(msg),
             #[cfg(feature = "async")]
-            ResponseState::Receiver(_) | ResponseState::TimedReceiver(_) => {
+            ResponseState::Receiver(_) => {
                 panic!("{msg}: called expect() on a pending Response; use .await in async contexts")
             }
             ResponseState::Done => panic!("{msg}: Response already consumed"),
@@ -137,7 +137,7 @@ impl<T> Response<T> {
                 None,
             ),
             #[cfg(feature = "async")]
-            ResponseState::Receiver(_) | ResponseState::TimedReceiver(_) => {
+            ResponseState::Receiver(_) => {
                 panic!("called map() on a pending Response; use .await in async contexts")
             }
             ResponseState::Done => panic!("Response already consumed"),
@@ -146,54 +146,13 @@ impl<T> Response<T> {
 }
 
 #[cfg(feature = "async")]
-impl<T: Send + 'static> Response<T> {
-    /// Create a `Response` from a oneshot receiver with a timeout.
-    ///
-    /// Used by tasks-mode protocol blanket impls. Returns
-    /// `Err(ActorError::RequestTimeout)` if the timeout expires.
-    pub fn from_with_timeout(
-        result: Result<oneshot::Receiver<T>, ActorError>,
-        duration: Duration,
-    ) -> Self {
-        #[cfg(feature = "metrics")]
-        let observation = crate::instrumentation::RequestObservation::new();
-        match result {
-            Ok(rx) => {
-                let fut = Box::pin(async move {
-                    match spawned_rt::tasks::timeout(duration, rx).await {
-                        Ok(Ok(val)) => Ok(val),
-                        Ok(Err(_)) => Err(ActorError::ActorStopped),
-                        Err(_) => Err(ActorError::RequestTimeout),
-                    }
-                });
-                Self(
-                    ResponseState::TimedReceiver(fut),
-                    #[cfg(feature = "metrics")]
-                    Some(observation),
-                )
-            }
-            Err(e) => {
-                let result = Err(e);
-                #[cfg(feature = "metrics")]
-                observation.finish(&result);
-                Self(
-                    ResponseState::Ready(result),
-                    #[cfg(feature = "metrics")]
-                    None,
-                )
-            }
-        }
-    }
-}
-
-#[cfg(feature = "async")]
-impl<T> From<Result<oneshot::Receiver<T>, ActorError>> for Response<T> {
-    fn from(result: Result<oneshot::Receiver<T>, ActorError>) -> Self {
+impl<T> From<Result<ReplyReceiver<T>, ActorError>> for Response<T> {
+    fn from(result: Result<ReplyReceiver<T>, ActorError>) -> Self {
         #[cfg(feature = "metrics")]
         let observation = crate::instrumentation::RequestObservation::new();
         match result {
             Ok(rx) => Self(
-                ResponseState::Receiver(rx),
+                ResponseState::Receiver(Box::pin(rx)),
                 #[cfg(feature = "metrics")]
                 Some(observation),
             ),
@@ -221,19 +180,7 @@ impl<T: Send + 'static> Future for Response<T> {
         let this = self.get_mut();
         let result = match &mut this.0 {
             #[cfg(feature = "async")]
-            ResponseState::Receiver(rx) => match Pin::new(rx).poll(_cx) {
-                std::task::Poll::Ready(Ok(val)) => {
-                    this.0 = ResponseState::Done;
-                    std::task::Poll::Ready(Ok(val))
-                }
-                std::task::Poll::Ready(Err(_)) => {
-                    this.0 = ResponseState::Done;
-                    std::task::Poll::Ready(Err(ActorError::ActorStopped))
-                }
-                std::task::Poll::Pending => std::task::Poll::Pending,
-            },
-            #[cfg(feature = "async")]
-            ResponseState::TimedReceiver(fut) => match fut.as_mut().poll(_cx) {
+            ResponseState::Receiver(rx) => match rx.as_mut().poll(_cx) {
                 std::task::Poll::Ready(result) => {
                     this.0 = ResponseState::Done;
                     std::task::Poll::Ready(result)
@@ -260,7 +207,7 @@ impl<T: Send + 'static> Future for Response<T> {
 mod tests {
     use super::*;
     #[cfg(feature = "async")]
-    use spawned_rt::tasks::oneshot;
+    use crate::reply::Deadline;
 
     #[test]
     fn ready_ok_unwrap() {
@@ -286,24 +233,22 @@ mod tests {
     fn future_resolves_from_receiver() {
         let rt = spawned_rt::tasks::Runtime::new().unwrap();
         rt.block_on(async {
-            let (tx, rx) = oneshot::channel::<i32>();
+            let (reply, rx) = crate::reply::reply_pair::<i32>(Deadline::Never);
             let resp: Response<i32> = Response::from(Ok(rx));
-            tx.send(99).unwrap();
-            let val = resp.await.unwrap();
-            assert_eq!(val, 99);
+            reply.reply(99);
+            assert_eq!(resp.await.unwrap(), 99);
         });
     }
 
     #[test]
     #[cfg(feature = "async")]
-    fn future_err_on_dropped_sender() {
+    fn future_err_on_dropped_reply() {
         let rt = spawned_rt::tasks::Runtime::new().unwrap();
         rt.block_on(async {
-            let (tx, rx) = oneshot::channel::<i32>();
+            let (reply, rx) = crate::reply::reply_pair::<i32>(Deadline::Never);
             let resp: Response<i32> = Response::from(Ok(rx));
-            drop(tx);
-            let result = resp.await;
-            assert!(matches!(result, Err(ActorError::ActorStopped)));
+            drop(reply);
+            assert!(matches!(resp.await, Err(ActorError::ReplyDropped)));
         });
     }
 
@@ -316,25 +261,14 @@ mod tests {
 
     #[test]
     #[cfg(feature = "async")]
-    fn timed_receiver_resolves() {
+    fn receiver_times_out_at_its_send_deadline() {
         let rt = spawned_rt::tasks::Runtime::new().unwrap();
         rt.block_on(async {
-            let (tx, rx) = oneshot::channel::<i32>();
-            let resp = Response::from_with_timeout(Ok(rx), Duration::from_secs(5));
-            tx.send(42).unwrap();
-            assert_eq!(resp.await.unwrap(), 42);
-        });
-    }
-
-    #[test]
-    #[cfg(feature = "async")]
-    fn timed_receiver_times_out() {
-        let rt = spawned_rt::tasks::Runtime::new().unwrap();
-        rt.block_on(async {
-            let (_tx, rx) = oneshot::channel::<i32>();
-            let resp = Response::from_with_timeout(Ok(rx), Duration::from_millis(50));
-            let result = resp.await;
-            assert!(matches!(result, Err(ActorError::RequestTimeout)));
+            let (reply, rx) =
+                crate::reply::reply_pair::<i32>(Deadline::after(Duration::from_millis(50)));
+            let resp: Response<i32> = Response::from(Ok(rx));
+            assert!(matches!(resp.await, Err(ActorError::RequestTimeout)));
+            assert_eq!(reply.reply(1), crate::reply::Delivery::Expired);
         });
     }
 }

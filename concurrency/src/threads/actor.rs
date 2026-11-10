@@ -1,5 +1,5 @@
 use crate::mailbox::threads as mpsc;
-use spawned_rt::threads::{self as rt, oneshot, oneshot::RecvTimeoutError, CancellationToken};
+use spawned_rt::threads::{self as rt, CancellationToken};
 use std::{
     collections::HashMap,
     fmt::Debug,
@@ -16,6 +16,10 @@ use crate::link::{
 };
 use crate::message::Message;
 use crate::monitor::{Down, MonitorCleanup, MonitorRef, MonitorTable};
+use crate::reply::{registry::Registry, reply_slot, Deadline, SlotHandle};
+pub use crate::reply::{
+    DeferError, Delivery, PendingReply, ReplyReceiver, ReplyTo, DEFAULT_MAX_OUTSTANDING,
+};
 use std::sync::atomic::Ordering;
 
 pub use crate::response::DEFAULT_REQUEST_TIMEOUT;
@@ -31,6 +35,11 @@ pub use crate::response::DEFAULT_REQUEST_TIMEOUT;
 ///
 /// Actors must be `Send + Sized + 'static` so they can be moved to a spawned thread.
 pub trait Actor: Send + Sized + 'static {
+    /// Deferred-reply credits per instance (live `ReplyTo` tokens plus running
+    /// linked jobs). At the bound `defer()` answers the caller `Overloaded`.
+    /// Capped at 65535.
+    const MAX_OUTSTANDING: usize = DEFAULT_MAX_OUTSTANDING;
+
     fn started(&mut self, _ctx: &Context<Self>) {}
     fn stopped(&mut self, _ctx: &Context<Self>) {}
 
@@ -46,8 +55,13 @@ pub trait Actor: Send + Sized + 'static {
 /// Per-message handler trait. Implement once for each message type the actor handles.
 ///
 /// Unlike the `tasks` version, handlers are synchronous — no `async`/`.await`.
+///
+/// `handle` is the envelope dispatch for both `send` and `request`: answer
+/// through `reply` ([`PendingReply::reply`], or [`PendingReply::defer`] to
+/// answer later). A request whose `PendingReply` is dropped unanswered gets
+/// `ReplyDropped`; a sent message has a detached `PendingReply`.
 pub trait Handler<M: Message>: Actor {
-    fn handle(&mut self, msg: M, ctx: &Context<Self>) -> M::Result;
+    fn handle(&mut self, msg: M, reply: PendingReply<'_, M::Result>, ctx: &Context<Self>);
 }
 
 // ---------------------------------------------------------------------------
@@ -67,7 +81,7 @@ trait Envelope<A: Actor>: Send {
 
 struct MessageEnvelope<M: Message> {
     msg: M,
-    tx: Option<oneshot::Sender<M::Result>>,
+    slot: SlotHandle<M::Result>,
     #[cfg(feature = "metrics")]
     observation: Option<crate::instrumentation::MessageObservation>,
 }
@@ -88,14 +102,9 @@ where
         }
     }
     fn handle(self: Box<Self>, actor: &mut A, ctx: &Context<A>) {
-        let result = actor.handle(self.msg, ctx);
-        if let Some(tx) = self.tx {
-            let delivered = tx.send(result).is_ok();
-            #[cfg(feature = "metrics")]
-            crate::instrumentation::reply(delivered);
-            #[cfg(not(feature = "metrics"))]
-            let _ = delivered;
-        }
+        let mut this = *self;
+        let reply = PendingReply::new(this.slot.take(), &ctx.replies);
+        actor.handle(this.msg, reply, ctx);
     }
 }
 
@@ -103,7 +112,7 @@ fn enqueue<A, M>(
     sender: &mpsc::Sender<MailboxItem<A>>,
     _mailbox: &crate::instrumentation::Mailbox,
     msg: M,
-    tx: Option<oneshot::Sender<M::Result>>,
+    slot: SlotHandle<M::Result>,
 ) -> Result<(), ActorError>
 where
     A: Actor + Handler<M>,
@@ -111,7 +120,7 @@ where
 {
     let envelope: Box<dyn Envelope<A> + Send> = Box::new(MessageEnvelope {
         msg,
-        tx,
+        slot,
         #[cfg(feature = "metrics")]
         observation: Some(_mailbox.enqueued()),
     });
@@ -178,6 +187,7 @@ pub struct Context<A: Actor> {
     links: LinkTable,
     linked_reason: LinkedExitReason,
     mailbox: crate::instrumentation::Mailbox,
+    replies: Arc<Registry>,
 }
 
 impl<A: Actor> Clone for Context<A> {
@@ -192,6 +202,7 @@ impl<A: Actor> Clone for Context<A> {
             links: self.links.clone(),
             linked_reason: self.linked_reason.clone(),
             mailbox: self.mailbox.clone(),
+            replies: self.replies.clone(),
         }
     }
 }
@@ -216,6 +227,7 @@ impl<A: Actor> Context<A> {
             links: actor_ref.links.clone(),
             linked_reason: actor_ref.linked_reason.clone(),
             mailbox: actor_ref.mailbox.clone(),
+            replies: actor_ref.replies.clone(),
         }
     }
 
@@ -256,17 +268,32 @@ impl<A: Actor> Context<A> {
         A: Handler<M>,
         M: Message,
     {
-        enqueue(&self.sender, &self.mailbox, msg, None)
+        enqueue(&self.sender, &self.mailbox, msg, SlotHandle::detached())
     }
 
-    /// Send a request and get a raw oneshot receiver for the reply.
-    pub fn request_raw<M>(&self, msg: M) -> Result<oneshot::Receiver<M::Result>, ActorError>
+    /// Send a request and get its [`ReplyReceiver`], with the default
+    /// deadline ([`DEFAULT_REQUEST_TIMEOUT`] after the send).
+    pub fn request_raw<M>(&self, msg: M) -> Result<ReplyReceiver<M::Result>, ActorError>
     where
         A: Handler<M>,
         M: Message,
     {
-        let (tx, rx) = oneshot::channel();
-        enqueue(&self.sender, &self.mailbox, msg, Some(tx))?;
+        self.request_raw_until(msg, Deadline::after(DEFAULT_REQUEST_TIMEOUT))
+    }
+
+    /// Send a request whose deadline is `deadline` ([`Deadline::Never`] for
+    /// an unbounded wait).
+    pub fn request_raw_until<M>(
+        &self,
+        msg: M,
+        deadline: Deadline,
+    ) -> Result<ReplyReceiver<M::Result>, ActorError>
+    where
+        A: Handler<M>,
+        M: Message,
+    {
+        let (slot, rx) = reply_slot(deadline);
+        enqueue(&self.sender, &self.mailbox, msg, slot)?;
         Ok(rx)
     }
 
@@ -290,13 +317,9 @@ impl<A: Actor> Context<A> {
         M: Message,
     {
         let observation = crate::instrumentation::RequestObservation::new();
-        let result = match self.request_raw(msg) {
+        let result = match self.request_raw_until(msg, Deadline::after(duration)) {
             Err(error) => Err(error),
-            Ok(rx) => match rx.recv_timeout(duration) {
-                Ok(result) => Ok(result),
-                Err(RecvTimeoutError::Timeout) => Err(ActorError::RequestTimeout),
-                Err(RecvTimeoutError::Disconnected) => Err(ActorError::ActorStopped),
-            },
+            Ok(rx) => rx.recv(),
         };
         observation.finish(&result);
         result
@@ -324,6 +347,7 @@ impl<A: Actor> Context<A> {
             links: self.links.clone(),
             linked_reason: self.linked_reason.clone(),
             mailbox: self.mailbox.clone(),
+            replies: self.replies.clone(),
         }
     }
 
@@ -515,8 +539,12 @@ where
         Context::send(self, msg)
     }
 
-    fn request_raw(&self, msg: M) -> Result<oneshot::Receiver<M::Result>, ActorError> {
-        Context::request_raw(self, msg)
+    fn request_raw_until(
+        &self,
+        msg: M,
+        deadline: Deadline,
+    ) -> Result<ReplyReceiver<M::Result>, ActorError> {
+        Context::request_raw_until(self, msg, deadline)
     }
 }
 
@@ -530,7 +558,17 @@ where
 /// message type that `A` handles.
 pub trait Receiver<M: Message>: Send + Sync {
     fn send(&self, msg: M) -> Result<(), ActorError>;
-    fn request_raw(&self, msg: M) -> Result<oneshot::Receiver<M::Result>, ActorError>;
+    /// Send a request whose deadline is fixed now (the slot carries it).
+    fn request_raw_until(
+        &self,
+        msg: M,
+        deadline: Deadline,
+    ) -> Result<ReplyReceiver<M::Result>, ActorError>;
+    /// Send a request with the default deadline
+    /// ([`DEFAULT_REQUEST_TIMEOUT`] after the send).
+    fn request_raw(&self, msg: M) -> Result<ReplyReceiver<M::Result>, ActorError> {
+        self.request_raw_until(msg, Deadline::after(DEFAULT_REQUEST_TIMEOUT))
+    }
 }
 
 /// Type-erased reference for sending a single message type.
@@ -543,13 +581,9 @@ pub fn request<M: Message>(
     timeout: Duration,
 ) -> Result<M::Result, ActorError> {
     let observation = crate::instrumentation::RequestObservation::new();
-    let result = match recipient.request_raw(msg) {
+    let result = match recipient.request_raw_until(msg, Deadline::after(timeout)) {
         Err(error) => Err(error),
-        Ok(rx) => match rx.recv_timeout(timeout) {
-            Ok(result) => Ok(result),
-            Err(RecvTimeoutError::Timeout) => Err(ActorError::RequestTimeout),
-            Err(RecvTimeoutError::Disconnected) => Err(ActorError::ActorStopped),
-        },
+        Ok(rx) => rx.recv(),
     };
     observation.finish(&result);
     result
@@ -574,6 +608,7 @@ pub struct ActorRef<A: Actor> {
     links: LinkTable,
     linked_reason: LinkedExitReason,
     mailbox: crate::instrumentation::Mailbox,
+    replies: Arc<Registry>,
 }
 
 impl<A: Actor> Debug for ActorRef<A> {
@@ -594,6 +629,7 @@ impl<A: Actor> Clone for ActorRef<A> {
             links: self.links.clone(),
             linked_reason: self.linked_reason.clone(),
             mailbox: self.mailbox.clone(),
+            replies: self.replies.clone(),
         }
     }
 }
@@ -612,17 +648,32 @@ impl<A: Actor> ActorRef<A> {
         A: Handler<M>,
         M: Message,
     {
-        enqueue(&self.sender, &self.mailbox, msg, None)
+        enqueue(&self.sender, &self.mailbox, msg, SlotHandle::detached())
     }
 
-    /// Send a request and get a raw oneshot receiver for the reply.
-    pub fn request_raw<M>(&self, msg: M) -> Result<oneshot::Receiver<M::Result>, ActorError>
+    /// Send a request and get its [`ReplyReceiver`], with the default
+    /// deadline ([`DEFAULT_REQUEST_TIMEOUT`] after the send).
+    pub fn request_raw<M>(&self, msg: M) -> Result<ReplyReceiver<M::Result>, ActorError>
     where
         A: Handler<M>,
         M: Message,
     {
-        let (tx, rx) = oneshot::channel();
-        enqueue(&self.sender, &self.mailbox, msg, Some(tx))?;
+        self.request_raw_until(msg, Deadline::after(DEFAULT_REQUEST_TIMEOUT))
+    }
+
+    /// Send a request whose deadline is `deadline` ([`Deadline::Never`] for
+    /// an unbounded wait).
+    pub fn request_raw_until<M>(
+        &self,
+        msg: M,
+        deadline: Deadline,
+    ) -> Result<ReplyReceiver<M::Result>, ActorError>
+    where
+        A: Handler<M>,
+        M: Message,
+    {
+        let (slot, rx) = reply_slot(deadline);
+        enqueue(&self.sender, &self.mailbox, msg, slot)?;
         Ok(rx)
     }
 
@@ -646,13 +697,9 @@ impl<A: Actor> ActorRef<A> {
         M: Message,
     {
         let observation = crate::instrumentation::RequestObservation::new();
-        let result = match self.request_raw(msg) {
+        let result = match self.request_raw_until(msg, Deadline::after(duration)) {
             Err(error) => Err(error),
-            Ok(rx) => match rx.recv_timeout(duration) {
-                Ok(result) => Ok(result),
-                Err(RecvTimeoutError::Timeout) => Err(ActorError::RequestTimeout),
-                Err(RecvTimeoutError::Disconnected) => Err(ActorError::ActorStopped),
-            },
+            Ok(rx) => rx.recv(),
         };
         observation.finish(&result);
         result
@@ -741,8 +788,12 @@ where
         ActorRef::send(self, msg)
     }
 
-    fn request_raw(&self, msg: M) -> Result<oneshot::Receiver<M::Result>, ActorError> {
-        ActorRef::request_raw(self, msg)
+    fn request_raw_until(
+        &self,
+        msg: M,
+        deadline: Deadline,
+    ) -> Result<ReplyReceiver<M::Result>, ActorError> {
+        ActorRef::request_raw_until(self, msg, deadline)
     }
 }
 
@@ -772,6 +823,7 @@ impl<A: Actor> ActorRef<A> {
             links: links.clone(),
             linked_reason: linked_reason.clone(),
             mailbox: crate::instrumentation::Mailbox::default(),
+            replies: Registry::new(id, A::MAX_OUTSTANDING),
         };
 
         let ctx = Context {
@@ -784,6 +836,7 @@ impl<A: Actor> ActorRef<A> {
             links: links.clone(),
             linked_reason: linked_reason.clone(),
             mailbox: actor_ref.mailbox.clone(),
+            replies: actor_ref.replies.clone(),
         };
 
         if let Some(parent) = parent {
@@ -803,6 +856,7 @@ impl<A: Actor> ActorRef<A> {
         .with_mailbox_failures(actor_ref.sender.failures());
         let startup =
             crate::actor_cleanup::ActorStartup::new((actor, ctx, rx, cancellation_token), cleanup);
+        let replies = actor_ref.replies.clone();
         let _thread_handle = rt::spawn(move || {
             let ((mut actor, ctx, mut rx, cancellation_token), mut cleanup) = startup.into_parts();
             let primary = match catch_unwind(AssertUnwindSafe(|| {
@@ -817,10 +871,14 @@ impl<A: Actor> ActorRef<A> {
                     )))
                 }
             };
-            let outcome = crate::actor_cleanup::finish_actor_state(actor, primary);
-            // State destructors may still send through a retained context. Keep
-            // the receiver alive until state is gone, then drain before publish.
+            // Death (deferred-replies §5 step 3), only now that `stopped()`
+            // returned: close the registry (every open token answers
+            // ActorStopped), dispose the mailbox (queued requests answer
+            // ActorStopped; later sends from state destructors fail), then drop
+            // the state, all before the exit is published.
+            replies.close();
             drop(rx);
+            let outcome = crate::actor_cleanup::finish_actor_state(actor, primary);
             match outcome {
                 Ok(reason) => cleanup.complete(reason),
                 Err(reason) => cleanup.complete_secondary(reason),
@@ -870,6 +928,7 @@ fn run_actor_receiving<A: Actor>(
     }
 
     if cancellation_token.is_cancelled() {
+        ctx.replies.exiting();
         if let Err(panic) = catch_unwind(AssertUnwindSafe(|| {
             fail_point!("actor.before_stopped");
             actor.stopped(&ctx)
@@ -912,9 +971,11 @@ fn run_actor_receiving<A: Actor>(
                 let observation = envelope
                     .observation()
                     .map(|observation| observation.begin());
+                ctx.replies.begin_turn();
                 let result = catch_unwind(AssertUnwindSafe(|| {
                     envelope.handle(actor, &ctx);
                 }));
+                ctx.replies.end_turn(result.is_err());
                 #[cfg(feature = "metrics")]
                 if let Some(observation) = observation {
                     observation.finish(result.is_err());
@@ -936,6 +997,7 @@ fn run_actor_receiving<A: Actor>(
     }
 
     cancellation_token.cancel();
+    ctx.replies.exiting();
     let stop_result = catch_unwind(AssertUnwindSafe(|| {
         fail_point!("actor.before_stopped");
         actor.stopped(&ctx);

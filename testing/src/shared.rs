@@ -1,9 +1,9 @@
 //! Items identical in the `tasks` and `threads` modules, expanded in each.
 //!
-//! The two modes differ in their actor traits, `oneshot` channels and whether
+//! The two modes differ in their actor traits and whether
 //! waits are `async`; everything else about mocks and probes is written once
 //! here. Each macro resolves `Mock`, `MockRef`, `Probe`, `Recipient`,
-//! `Receiver`, `oneshot` and friends in the module that invokes it.
+//! `Receiver` and friends in the module that invokes it.
 
 /// Builder methods of `Mock`, except `delay` and `start`.
 macro_rules! mock_builder {
@@ -152,12 +152,20 @@ macro_rules! probe_common {
             fn send(&self, msg: M) -> Result<(), ActorError> {
                 ProbeCore::send(self, msg)
             }
-            fn request_raw(&self, msg: M) -> Result<oneshot::Receiver<M::Result>, ActorError> {
-                let (tx, rx) = oneshot::channel();
-                if let Some((value, record)) = self.request(msg)? {
-                    let _ = tx.send(value);
-                    // Logged `Handled` only once the reply is in the channel.
-                    record.finish();
+            fn request_raw_until(
+                &self,
+                msg: M,
+                deadline: Deadline,
+            ) -> Result<ReplyReceiver<M::Result>, ActorError> {
+                let (reply, rx) = spawned_concurrency::reply::reply_pair(deadline);
+                match self.request(msg)? {
+                    Some((value, record)) => {
+                        let _ = reply.reply(value);
+                        // Logged `Handled` only once the reply is in the slot.
+                        record.finish();
+                    }
+                    // An unexpected request is discharged as `ActorStopped`.
+                    None => reply.__discharge_stopped(),
                 }
                 Ok(rx)
             }
