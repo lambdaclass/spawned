@@ -25,6 +25,11 @@
 //!   [`tasks::restart_child`] crashes a supervised child and returns its
 //!   replacement; mocks delay, discard or crash on chosen messages.
 //!
+//! - **Linearizability** ([`linearizability`]): record concurrent request
+//!   histories and check them against a sequential model with a
+//!   Porcupine-style checker (memoised search, per-key partitions, pending
+//!   requests, failure explanations and an HTML timeline).
+//!
 //! Everything here uses the public `spawned-concurrency` API. Mocks stand in
 //! for a dependency reached through a protocol reference or a `Recipient<M>`;
 //! a field typed as a concrete `ActorRef<B>` cannot hold a mock (see the guide).
@@ -41,6 +46,7 @@ mod shared;
 
 pub mod faults;
 mod inbox;
+pub mod linearizability;
 mod probe;
 mod rules;
 #[cfg(feature = "async")]

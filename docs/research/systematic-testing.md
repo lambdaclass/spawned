@@ -200,12 +200,14 @@ column is our inference for Spawned.
   Prefer adapting to turmoil (tokio-rs, `tokio::net`-shaped) over owning a
   network simulator. Handlers that use Tokio I/O directly remain outside
   control unless their I/O goes through the simulated layer.
-- **Porcupine-style checker for `request_histories`** (testing to add): the
-  existing checker is a bounded search (16 operations, 100,000 states).
-  Partition histories per key (P-compositionality), use the search Porcupine
-  builds on (Lowe's linearizability testing with memoized states), and emit a
-  visual history on failure,
-  so longer histories from proptest, soak and canary runs can be checked.
+- **Porcupine-style checker for `request_histories`** (implemented in
+  `spawned_test::linearizability`): replaces the bounded search (16
+  operations, 100,000 states) with Porcupine's algorithm (Wing-Gong
+  backtracking over a call/return list with Lowe's memoised
+  `(linearized set, state)` cache), P-compositionality through
+  `Model::partition`, pending operations, a time/state budget that yields
+  `Unknown`, and a text explanation plus HTML timeline on failure. Still open:
+  feeding it histories from soak and canary runs.
 - **Rank 5c (production monitors)**: the section below.
 - **Not adopted:** P as a second modelling language. TLA+ is in place with trace
   validation; PObserve's *architecture* transfers without the language.

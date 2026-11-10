@@ -14,6 +14,7 @@ spawned-rt = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
+proptest = { version = "1", default-features = false, features = ["std"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "test-util"] }
 
 [features]

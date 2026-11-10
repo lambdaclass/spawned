@@ -1233,6 +1233,62 @@ exploration and replay (roadmap ranks 20-22) come later in the same crate.
 The [test kit example](../examples/capabilities/src/bin/test_kit.rs) runs a mock,
 a probe and each fault with assertions in both modes.
 
+### Check request histories for linearizability
+
+An actor serialises its requests, so whatever concurrent callers observe must be
+explainable by *some* sequential order that respects real time: each request
+takes effect at one instant between its call and its reply.
+`spawned_test::linearizability` checks a recorded history against a sequential
+model you write (Porcupine's algorithm: memoised backtracking, per-key
+partitions). It needs no feature and works in both modes.
+
+```rust
+use spawned_test::linearizability::{assert_linearizable, partition_by_key, Model, Operation, Recorder};
+
+struct Kv; // Put returns the previous value, Get reads.
+impl Model for Kv {
+    type State = Option<u64>;
+    type Input = KvOp;
+    type Output = Option<u64>;
+    fn init(&self) -> Option<u64> { None }
+    fn step(&self, s: &Option<u64>, op: &KvOp, out: Option<&Option<u64>>) -> Option<Option<u64>> {
+        let (next, produced) = match op {
+            KvOp::Put(_, v) => (Some(*v), *s),
+            KvOp::Get(_) => (*s, *s),
+        };
+        // `out` is None for a request whose reply never arrived.
+        out.is_none_or(|seen| *seen == produced).then_some(next)
+    }
+    fn partition(&self, h: &[Operation<KvOp, Option<u64>>]) -> Vec<Vec<usize>> {
+        partition_by_key(h, |op| op.key()) // keys are independent
+    }
+}
+
+let recorder = Recorder::new();
+// In each client thread or task:
+let call = recorder.call(client_id, op);
+if let Ok(reply) = actor.request_with_timeout(op, timeout).await {
+    call.complete(reply);
+} // dropping `call` records it as pending: it may or may not have taken effect
+// Afterwards:
+assert_linearizable(&Kv, &recorder.take());
+```
+
+- A timed-out or cancelled request is *pending*: the checker may place it
+  anywhere after its call or leave it out. Record a request whose send was
+  rejected as completed with an output your model treats as a no-op.
+- The verdict is `Linearizable`, `Illegal` or `Unknown` (the time or state
+  budget in `CheckOptions` ran out; never a pass).
+- On failure, `Report::explain` prints the longest linearizable prefix per
+  partition with the model state after each step, the operation that cannot
+  be placed and why each candidate was refused. `Report::to_html` renders a
+  Porcupine-style timeline; `assert_linearizable` writes it to
+  `$SPAWNED_LINEARIZABILITY_DIR` when set.
+- Partition whenever you can: thousands of operations split by key check in
+  milliseconds, while a single heavily concurrent partition is exponential in
+  the worst case (a corrupted read deep in a 1,000-operation single-key
+  history with 16 overlapping clients takes seconds in release builds).
+
 ---
 
 ## Further reading
