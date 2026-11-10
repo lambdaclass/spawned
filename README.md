@@ -95,6 +95,7 @@ For every feature (timers, type erasure, registry, backends, links, supervision,
 | [Migration](docs/MIGRATION.md) | Upgrade notes per version |
 | [Changelog](CHANGELOG.md) | Release history |
 | [Roadmap](ROADMAP.md) | Planned work and the ranked backlog |
+| [Semantics](docs/design/semantics.md) | Every guarantee Spawned gives (messages, requests, lifecycle, links, supervision, shutdown, timers, panics), what checks it, and what is not guaranteed |
 | [Testing](docs/TESTING.md) | Test suites, verification layers and the formal model |
 | [Design](docs/design/README.md) | Active design contracts |
 | [Research](docs/research/README.md) | Research notes behind roadmap items: virtual actors, systematic testing, Ethereum client testing, request semantics |

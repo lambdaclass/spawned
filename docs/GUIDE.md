@@ -4,7 +4,9 @@ The user guide for the spawned actor framework: lifecycle, messaging, execution
 modes, timers, type erasure, the registry, links, execution groups, supervision,
 metrics and testing. For a quick introduction, see the [README](../README.md); for
 upgrades, see [MIGRATION.md](MIGRATION.md); for runnable programs, see the
-[examples index](../examples/README.md).
+[examples index](../examples/README.md). The guarantees themselves, with the test
+or model that checks each one, are collected in the
+[semantics contract](design/semantics.md).
 
 ## Table of Contents
 
@@ -64,7 +66,7 @@ All three phases are wrapped in `catch_unwind`:
 
 - **Panic in `started()`** — the actor stops immediately. No messages are processed, `stopped()` is not called.
 - **Panic in a handler** — the current message is lost. The actor stops and `stopped()` is called.
-- **Panic in `stopped()`** — the panic is logged but `join()` still returns normally.
+- **Panic in `stopped()`** — the panic is logged and `join()` still returns, but the exit reason becomes `Panic("panic in stopped(): ...")` unless it was already abnormal.
 
 In all cases, `join()` will eventually return and subsequent `send()`/`request()` calls return `Err(ActorStopped)`.
 
@@ -72,7 +74,9 @@ In all cases, `join()` will eventually return and subsequent `send()`/`request()
 
 Call `ctx.stop()` from inside a handler or lifecycle hook. This cancels the actor's internal token, causing the message loop to exit after the current handler finishes.
 
-From outside, there is no direct stop method on `ActorRef`. Design your protocol with an explicit shutdown message, or use `ctx.stop()` from within the actor.
+From outside, use the actor's `ChildHandle` (`actor_ref.child_handle()`): `stop()` exits `Normal`, `shutdown()` exits `Shutdown`, and `stop_with_reason(reason)` picks the reason. All are cooperative: the running handler finishes and `stopped()` runs. They ignore `trap_exit`. `ActorRef` itself has no stop method; an explicit shutdown message in your protocol also works.
+
+Stopping discards messages still queued: once the stop is observed no further message is handled, and queued requests fail with `ActorStopped`.
 
 ---
 
@@ -550,7 +554,7 @@ pub enum ActorError {
 }
 ```
 
-- `send()` returns `Err(ActorStopped)` if the actor has stopped.
+- `send()` returns `Err(ActorStopped)` once the actor's mailbox has closed. While the actor is stopping (after a stop request, including during `stopped()`), `send()` still returns `Ok(())` and the message is dropped without being handled: `Ok` means accepted, not handled.
 - `request()` returns `Err(ActorStopped)` if the actor stops before replying, or `Err(RequestTimeout)` if the reply doesn't arrive in time.
 - `request_with_timeout()` lets you specify a custom timeout.
 
@@ -1364,6 +1368,7 @@ assert_linearizable(&Kv, &recorder.take());
 
 ## Further reading
 
+- [Semantics contract](design/semantics.md): every guarantee in one place (ordering, delivery, request outcomes, exit propagation, restarts, shutdown, timers, panics), each linked to what checks it, and what is not guaranteed.
 - [Execution groups and supervision design contract](design/execution-groups-supervision.md): the fuller boundaries of the v0.7 APIs.
 - [Testing](TESTING.md): scenario tests, failure windows, the TLA+ model and trace validation.
 - [Roadmap](../ROADMAP.md): what is planned and why.

@@ -92,7 +92,8 @@ each one catches bugs the others cannot:
    use with the clients' main branches, including runs that kill supervised
    actors on purpose.
 
-In short: TLA+ and Apalache check the design, trace validation ties the code to
+The [semantics contract](design/semantics.md) maps each guarantee to the layer
+that checks it. In short: TLA+ and Apalache check the design, trace validation ties the code to
 the design, simulation and Loom cover interleavings, failpoints and the safety
 suites cover faults, Kani and mutation testing harden functions and tests, and
 the clients and canaries check real use. A bug fix always comes with a test
@@ -507,6 +508,10 @@ layout is a regression check, not proof that Ethrex's RPC tests pass at a 2 MiB
 debug stack; that client rerun remains a review gate.
 
 ## Execution guarantees
+
+The full list of guarantees, each mapped to the invariant, test or example in
+this document that checks it (and the ones not yet checked), is the
+[semantics contract](design/semantics.md).
 
 Protocols continue to separate application logic from message dispatch. Each
 actor handles one message at a time, with both async and synchronous thread
