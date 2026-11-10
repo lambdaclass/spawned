@@ -428,19 +428,21 @@ already choose; per-sender FIFO is never broken.
 
 `concurrency/tests/sim_explore.rs` holds planted ordering bugs between real
 actors (lost updates through a store actor's get-then-set) and the PR #204
-never-started-child race; each test asserts the bug *is* found. Runs to the
-first failure (release build; hit rate over 10,000 runs in parentheses):
+never-started-child race. Planted bugs must be found; the PR #204 `Stopped`
+outcome, closed by PR #209, must not be. Runs to the first failure (release
+build; hit rate over 10,000 runs in parentheses):
 
 | Bug | random | `pct:d=2` | `pct:d=3` | `dfs:bound=1` | `dfs:bound=2` | `dfs:bound=3` |
 |---|---|---|---|---|---|---|
 | Lost update, one worker 12 polls behind | 244 (0.39%) | 2 (22%) | 8 (18%) | 5 | 51 | 95 |
 | Three workers all read before any write (noise 0/12/24) | not found in 100,000 (0%) | 6 (12%) | 5 (7.7%) | 23 | 661 | 6,476 |
-| PR #204: never-started child ends `Failed` | 13 (9.9%) | 12 (12%) | 8 (9.3%) | 1 | 1 | 1 |
-| PR #204: never-started child ends `Stopped` | 1 (93%) | 1 (73%) | 1 (73%) | 1 | 1 | 1 |
+| PR #204: never-started child ends `Failed` | 1 (95%) | 1 (75%) | 1 (74%) | 1 | 1 | 1 |
+| PR #204: never-started child ends `Stopped` | not found in 100,000 (0%) | not found in 100,000 (0%) | not found in 100,000 (0%) | exhausted (14) | exhausted (151) | exhausted (1,148) |
 
-The PR #204 race is not a hard target: both outcomes are common, and the
-canonical schedule (DFS's first run) already ends `Failed`. Deeper DFS bounds
-find a bug later because depth-first order tries late delays first.
+Since PR #209 a failed initial placement finishes every never-started child
+as `Failed`, so `Stopped` is unreachable: DFS exhausts each bounded space
+without finding it. Deeper DFS bounds find a bug later because depth-first
+order tries late delays first.
 
 ```sh
 RUSTFLAGS="--cfg spawned_sim" cargo test --release -p spawned-concurrency \

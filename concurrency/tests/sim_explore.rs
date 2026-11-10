@@ -1,7 +1,8 @@
 //! Systematic exploration (PCT, bounded DFS over delays) against the seeded
 //! random walk, on planted ordering bugs between real actors and on the PR
-//! #204 never-started-child race. Every test here asserts that the bug IS
-//! found: they are negative controls for the explorer. Run with:
+//! #204 never-started-child race. Every planted bug must be found: they are
+//! negative controls for the explorer. The PR #204 `Stopped` outcome, closed
+//! by PR #209, must not be. Run with:
 //!
 //! ```sh
 //! RUSTFLAGS="--cfg spawned_sim" cargo test -p spawned-concurrency --test sim_explore -- --nocapture
@@ -292,16 +293,22 @@ fn dfs_exhausts_a_bug_free_bounded_space() {
 
 #[test]
 fn pr204_race_found_by_each_strategy() {
-    for wanted in ["Failed", "Stopped"] {
-        let body = move |_| unstarted_child_never_ends(wanted);
-        println!("PR #204: never-started child ends {wanted}:");
-        let random = run("random", 500, &body);
-        let pct = run("pct:d=2", 500, &body);
-        let dfs = run("dfs:bound=2", 500, &body);
-        for report in [&random, &pct, &dfs] {
-            assert!(report.found.is_some(), "{}: not found", report.strategy);
-            assert_replays(report, &body);
-        }
+    // PR #209 finishes every never-started child of a failed initial
+    // placement as `Failed`: each strategy finds that outcome, and none
+    // reaches the old `Stopped` outcome (DFS exhausts its bounded space).
+    let failed = |_| unstarted_child_never_ends("Failed");
+    println!("PR #204: never-started child ends Failed:");
+    for strategy in ["random", "pct:d=2", "dfs:bound=2"] {
+        let report = run(strategy, 500, &failed);
+        assert!(report.found.is_some(), "{strategy}: not found");
+        assert_replays(&report, &failed);
+    }
+    let stopped = |_| unstarted_child_never_ends("Stopped");
+    println!("PR #204: never-started child ends Stopped (closed by PR #209):");
+    for strategy in ["random", "pct:d=2", "dfs:bound=2"] {
+        let report = run(strategy, 500, &stopped);
+        assert!(report.found.is_none(), "{strategy}: race reopened");
+        assert!(report.exhausted || !strategy.starts_with("dfs"));
     }
 }
 
