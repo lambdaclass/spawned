@@ -1,0 +1,146 @@
+#!/usr/bin/env bash
+# Inductive-invariant checks of the TLA+ supervision models with Apalache.
+# Run inside `nix develop` or via `nix run .#check-apalache` (both provide
+# apalache-mc, a JDK and perl). Exits non-zero if any check gives an
+# unexpected result.
+#
+#   apalache.sh                       prove every *Ind module at its default size
+#   apalache.sh --size N R            Supervision with N children, MaxRestarts R
+#   apalache.sh --negative-controls   also require counterexamples from mutated specs
+#   apalache.sh --model Supervision   one model only (Supervision, Cohorts, Nested)
+#
+# For each model the checks are, for the constants in MC<Model>Ind.tla:
+#   init     Init => IndInv                  --init=Init   --inv=IndInv  --length=0
+#   step     IndInv /\ Next => IndInv'       --init=IndInv --inv=IndInv  --length=1
+#   actions  IndInv /\ Next => action props  --init=IndInv --inv=ActionProps --length=1
+#   probe-*  IndInv admits states far outside TLC's bounds (must be violated)
+# The step check starts from every state satisfying IndInv, so it is not
+# bounded by depth or by MaxGen/MaxRounds, only by the fixed constants.
+set -euo pipefail
+
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+apalache="${APALACHE:-apalache-mc}"
+
+negative=0
+models="Supervision Cohorts Nested"
+size=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --negative-controls) negative=1 ;;
+    --size) size="$2 $3"; shift 2 ;;
+    --model) models="$2"; shift ;;
+    *) echo "usage: $0 [--size N R] [--model NAME] [--negative-controls]" >&2; exit 2 ;;
+  esac
+  shift
+done
+
+work="$(mktemp -d)"
+trap 'rm -rf "$work"' EXIT
+cp "$here"/*.tla "$work"/
+cd "$work"
+
+status=0
+
+# check LABEL EXPECT DIR MODULE INIT INV LENGTH
+# EXPECT is "holds" (Apalache reports NoError) or "violated" (a counterexample).
+check() {
+  local label="$1" expect="$2" dir="$3" module="$4" init="$5" inv="$6" length="$7"
+  local log="$work/${label//[^A-Za-z0-9-]/_}.log" got start=$SECONDS
+  (cd "$dir" && "$apalache" check --out-dir="$work/out" --cinit=ConstInit \
+      --init="$init" --next=Next --inv="$inv" --length="$length" --no-deadlock \
+      "$module.tla") >"$log" 2>&1 || true
+  if grep -q "The outcome is: NoError" "$log"; then got=holds
+  elif grep -q "The outcome is: Error" "$log"; then got=violated
+  else got=failed
+  fi
+  printf '%-48s %-9s (%ss)\n' "$label" "$got" "$((SECONDS - start))"
+  if [[ "$got" != "$expect" ]]; then
+    echo "  expected $expect; log follows" >&2
+    tail -40 "$log" >&2
+    status=1
+  fi
+}
+
+prove() {  # prove DIR MODULE PREFIX PROBES...
+  local dir="$1" module="$2" prefix="$3"; shift 3
+  check "$prefix init"    holds "$dir" "$module" Init   IndInv      0
+  check "$prefix step"    holds "$dir" "$module" IndInv IndInv      1
+  check "$prefix actions" holds "$dir" "$module" IndInv ActionProps 1
+  local probe
+  for probe in "$@"; do
+    check "$prefix probe $probe" violated "$dir" "$module" IndInv "$probe" 1
+  done
+}
+
+# mutate MODULE NAME FILE PERL_SUBST INV: copy the specs, apply one guard
+# removal with perl, require the substitution to change FILE, and require
+# a counterexample to induction (INV is IndInv or ActionProps).
+mutate() {
+  local module="$1" name="$2" file="$3" subst="$4" inv="$5"
+  local dir="$work/mut-$name"
+  mkdir -p "$dir"
+  cp "$work"/*.tla "$dir"/
+  perl -0pi -e "$subst" "$dir/$file"
+  if cmp -s "$work/$file" "$dir/$file"; then
+    echo "mutation $name did not apply to $file" >&2
+    status=1
+    return
+  fi
+  check "negative $module/$name" violated "$dir" "$module" IndInv "$inv" 1
+}
+
+for model in $models; do
+  case "$model" in
+    Supervision)
+      module=MCSupervisionInd
+      if [[ -n "$size" ]]; then
+        read -r n r <<<"$size"
+        module=MCSupervisionIndSized
+        sed -e "s/MODULE MCSupervisionInd /MODULE MCSupervisionIndSized /" \
+            -e "s/^OVERRIDE_N == .*/OVERRIDE_N == $n/" \
+            -e "s/^OVERRIDE_MaxRestarts == .*/OVERRIDE_MaxRestarts == $r/" \
+            MCSupervisionInd.tla >"$module.tla"
+      fi
+      echo "== Apalache $module ($(grep -E '^OVERRIDE_(N|MaxRestarts) ' "$module.tla" | tr '\n' ' '))"
+      prove "$work" "$module" Supervision NoDeepRunningState NoMidShutdownState NoRestartStep
+      if [[ "$negative" == 1 ]]; then
+        # Each removes one guard of Supervision.tla; the comment names the
+        # property whose induction must break.
+        # BudgetBounded: reserve retry capacity without checking the limit.
+        mutate "$module" budget Supervision.tla \
+          's/(RetryReserve\(c\) ==.*?) \/\\ budget < MaxRestarts/$1/s' IndInv
+        # ReadyMeansAllStarted: launch the next child before the previous is ready.
+        mutate "$module" ordered-start Supervision.tla \
+          's/IF sidx = 1 THEN TRUE ELSE initial\[sidx - 1\]/TRUE/' IndInv
+        # DoneMeansQuiescent: join without waiting for every controller.
+        mutate "$module" join Supervision.tla \
+          's/(SupJoin ==.*?)\/\\ \\A c \\in Children : pc\[c\] \\in \{"idle", "finished"\}/$1/s' IndInv
+        # TemporaryStartsOnce: restart regardless of mode and exit reason.
+        mutate "$module" restart-policy Supervision.tla \
+          's/ELSE IF Restarts\(Mode\[c\], exitR\[c\]\) THEN/ELSE IF TRUE THEN/' IndInv
+        # AtMostOneGeneration: a self-exit skips cleanup and goes straight to decide.
+        mutate "$module" skip-cleanup Supervision.tla \
+          's/(SelfExit\(c, r\) ==.*?)Goto\(c, "cleanup"\)/$1Goto(c, "decide")/s' IndInv
+        # PublishedIsLive: an observed stop leaves the instance published.
+        mutate "$module" stale-publication Supervision.tla \
+          's/(StopObserved\(c\) ==.*?)pub\x27 = \[pub EXCEPT !\[c\] = 0\]/$1UNCHANGED pub/s' IndInv
+        # NoStartAfterClose (negative_checks.py "Closed"): attempt ignores the gate.
+        mutate "$module" closed Supervision.tla \
+          's/(Attempt\(c\) ==\s*\/\\ pc\[c\] = "attempt"\s*\/\\ IF) open/$1 TRUE/s' ActionProps
+        # ReverseShutdown: move to the next stop turn before the current child
+        # finished. The single step from IndInv still satisfies ReverseShutdown;
+        # what breaks is H_shutdown, the lemma that carries it to the next turn.
+        mutate "$module" reverse-shutdown Supervision.tla \
+          's/\/\\ sphase = "waitchild" \/\\ cdone\[sidx\]/\/\\ sphase = "waitchild"/' IndInv
+      fi
+      ;;
+    Cohorts|Nested)
+      if [[ -f "MC${model}Ind.tla" ]]; then
+        echo "== Apalache MC${model}Ind"
+        prove "$work" "MC${model}Ind" "$model"
+      fi
+      ;;
+    *) echo "unknown model $model" >&2; exit 2 ;;
+  esac
+done
+exit "$status"
