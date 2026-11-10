@@ -58,6 +58,26 @@
   retried within the round. RestForOne already matched. `Cohorts.tla` allows
   one start per child and round (`OneStartPerRound`), with the old in-round
   retry as a negative control (`Fault = "InPlaceRetry"`, TLC and Apalache).
+- Simulation test harness: `#[spawned_macros::sim_test]` and
+  `spawned_rt::tasks::{sim_test, SimTest}` run one async test body on Tokio
+  normally and over a seed range under `--cfg spawned_sim`, printing the
+  failing seed, a `SPAWNED_SIM_SEED`/`SPAWNED_SIM_TAPE` replay command and a
+  decision-tape path. Tapes record every scheduling choice and clock jump,
+  replay by task id (so schedules survive RNG-consumption changes), and are
+  shrunk toward the canonical schedule. The supervision, group, cancellation
+  and canary suites now run under both builds. New `spawned_rt::time`
+  (`Instant`, `entropy`) is `std` time normally and virtual time under the cfg;
+  restart windows, backoff jitter seeding, shutdown deadlines and metrics
+  timings read it. Tape replay is strict (clock jumps come from the tape;
+  a pick that does not apply, a short tape or leftover decisions fail as
+  `replay diverged`), tapes record the spin limit, and the shrinker only keeps
+  candidates that reproduce under strict replay (and stays within its run
+  budget). Strict replay also checks every clock jump against the pending
+  timers and the id of each canonical pick, and fails a run that stops with
+  decisions left over. The busy-poll threshold halves every 100 creeps
+  without an idle moment, so multi-second timeouts fire before the livelock
+  guard even while other timers keep firing. `docs/TESTING.md` lists what the simulator
+  does not model and which suites are compiled out under the cfg.
 
 ## 0.7.2 — 2026-11-10
 
