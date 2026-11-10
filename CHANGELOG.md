@@ -2,13 +2,94 @@
 
 ## Unreleased
 
+## 0.7.3 — 2026-11-10
+
+Patch release with one supervision behaviour change: a failed restart (a
+replacement that stops before readiness) is retried within the restart
+budget, and OneForAll rebuilds the whole cohort, as in OTP; see the
+[migration notes](docs/MIGRATION.md#073). Also: a deterministic simulation
+backend with replay, shrinking and PCT/DFS exploration (opt-in via
+`--cfg spawned_sim --cfg tokio_unstable`), stack-depth budgets, trace coverage
+against the TLA+ models, client compatibility CI and test reliability fixes.
+API changes are additive only (`spawned_rt::time`, `spawned_rt::tasks::{SimTest,
+sim_test, yield_now}` and `#[spawned_macros::sim_test]`, which runs a normal
+Tokio test unless the simulation cfg is set).
+
+- Fix: a Transient child's replacement that stopped `Normal` or `Shutdown`
+  before readiness failed the whole supervisor ("non-restartable child failed
+  startup"). It is now a failed restart attempt, retried within the restart
+  budget, as OTP retries a failed restart whatever the child's restart type.
+  A child's first startup is unchanged: a Transient child stopping `Normal` or
+  `Shutdown` before its initial readiness still fails the start (semantics V7,
+  as OTP fails `init` when a child's start fails). Found by trace coverage:
+  trace validation rejected a replacement stopping with `Shutdown` while the
+  supervisor was open, which `Supervision.tla` allowed only after closure; the
+  model now allows it, `Decide` retries failed restart attempts, and
+  `negative_checks.py` rejects a trace edited back to failing the tree.
+  Under OneForAll a replacement failing before readiness (including a factory
+  error, which already took this path) now starts a new recovery round, so the
+  whole cohort is rebuilt again as OTP does; before, only that child was
+  retried within the round. RestForOne already matched. `Cohorts.tla` allows
+  one start per child and round (`OneStartPerRound`), with the old in-round
+  retry as a negative control (`Fault = "InPlaceRetry"`, TLC and Apalache).
+- Simulation backend spike: `RUSTFLAGS="--cfg spawned_sim --cfg tokio_unstable"` swaps
+  `spawned_rt::tasks` spawning and time for a deterministic single-thread
+  executor (`spawned_rt::tasks::sim`: seeded choice of the next ready task,
+  virtual time that advances only when every task is idle). Unmodified async
+  actors, supervisors and async execution groups run on it; `concurrency/tests/sim.rs`
+  sweeps the PR #204 never-started-child race (closed by the v0.7.1 lifecycle
+  fixes) and asserts no seed reproduces it. Thread and pinned
+  groups are rejected, `spawn_blocking`/`block_in_place` panic, and foreign-thread
+  wakeups, deadlocks and livelocks fail the run. Each poll runs inside a
+  per-run, driverless Tokio runtime, so Tokio's cooperative budget forces a
+  task that keeps receiving from a ready channel to yield (as on Tokio), and
+  Tokio's `select!`/`watch` RNG is seeded from the run's seed; that seeding
+  needs `--cfg tokio_unstable` alongside `--cfg spawned_sim`. A direct
+  `tokio::spawn` fails the run, a poll that never returns trips a wall-clock
+  watchdog (`SPAWNED_SIM_POLL_TIMEOUT`), a panicking task destructor becomes
+  that task's `JoinError`, and `sleep(Duration::ZERO)` yields once.
+  Native actors, the wall clock and direct Tokio timers/I/O stay outside its
+  control. Default builds are unchanged.
+- Simulation test harness: `#[spawned_macros::sim_test]` and
+  `spawned_rt::tasks::{sim_test, SimTest}` run one async test body on Tokio
+  normally and over a seed range under `--cfg spawned_sim`, printing the
+  failing seed, a `SPAWNED_SIM_SEED`/`SPAWNED_SIM_TAPE` replay command and a
+  decision-tape path. Tapes record every scheduling choice and clock jump,
+  replay by task id (so schedules survive RNG-consumption changes), and are
+  shrunk toward the canonical schedule. The supervision, group, cancellation
+  and canary suites now run under both builds. New `spawned_rt::time`
+  (`Instant`, `entropy`) is `std` time normally and virtual time under the cfg;
+  restart windows, backoff jitter seeding, shutdown deadlines and metrics
+  timings read it. Tape replay is strict (clock jumps come from the tape;
+  a pick that does not apply, a short tape or leftover decisions fail as
+  `replay diverged`), tapes record the spin limit, and the shrinker only keeps
+  candidates that reproduce under strict replay (and stays within its run
+  budget). Strict replay also checks every clock jump against the pending
+  timers and the id of each canonical pick, and fails a run that stops with
+  decisions left over. The busy-poll threshold halves every 100 creeps
+  without an idle moment, so multi-second timeouts fire before the livelock
+  guard even while other timers keep firing. `docs/TESTING.md` lists what the simulator
+  does not model and which suites are compiled out under the cfg.
+- Simulator exploration strategies (`spawned_rt::tasks::sim::explore`, under
+  `--cfg spawned_sim`): PCT and a delay-bounded DFS that reports exhaustion,
+  recorded into the decision tape and selected with `SPAWNED_SIM_STRATEGY` or
+  `#[sim_test(explore = "pct:d=3", iterations = N)]`, plus planted-bug tests.
+  PCT follows the paper's algorithm with a poll as the step (the task that
+  runs change point `k_i` drops to priority `i`, independently of time
+  order; checked against an independent implementation, including blocking
+  tasks), but no probability bound is claimed. DFS reports when the depth or
+  fairness cutoff truncated the space, checks that each replayed prefix met
+  the same ready sets, stops at a divergence (`Report::complete()` is false
+  then), keeps `SPAWNED_SIM_SEED` as every schedule's input, and the harness
+  fails a body that does not replay; strategies accept `fair=N`. Each
+  planted bug is checked by its own failure message, and the three-worker
+  control fails only when all reads precede every write.
 - Add the `stack_budget` test suite: nested request chains (async group,
   thread group, ambient runtime, threads mode), supervisor start/restart/
   shutdown and `ActorSystem::shutdown` run in child processes under a
   `RUST_MIN_STACK` budget of about 1.5x the measured minimum, so a stack-depth
   regression aborts the child and fails the test. Brought over from #217. See
   [testing](docs/TESTING.md#stack-depth-budgets).
-
 - Test reliability: tests wait on the condition they need instead of fixed
   sleeps or tight latency budgets (`test_wait::wait_for`, `join`, explicit
   release channels). Fixes flakes seen under load in
@@ -30,61 +111,6 @@
   it. A new test pins that the nested-supervisor adapter stops its subtree in
   `stopped()`, so a panic there (e.g. from an inner waiter's waker) stays a
   `stopped()` panic with `Drop` as the backstop.
-- Simulation backend spike: `RUSTFLAGS="--cfg spawned_sim --cfg tokio_unstable"` swaps
-  `spawned_rt::tasks` spawning and time for a deterministic single-thread
-  executor (`spawned_rt::tasks::sim`: seeded choice of the next ready task,
-  virtual time that advances only when every task is idle). Unmodified async
-  actors, supervisors and async execution groups run on it; `concurrency/tests/sim.rs`
-  sweeps the PR #204 never-started-child race (closed by the v0.7.1 lifecycle
-  fixes) and asserts no seed reproduces it. Thread and pinned
-  groups are rejected, `spawn_blocking`/`block_in_place` panic, and foreign-thread
-  wakeups, deadlocks and livelocks fail the run. Each poll runs inside a
-  per-run, driverless Tokio runtime, so Tokio's cooperative budget forces a
-  task that keeps receiving from a ready channel to yield (as on Tokio), and
-  Tokio's `select!`/`watch` RNG is seeded from the run's seed; that seeding
-  needs `--cfg tokio_unstable` alongside `--cfg spawned_sim`. A direct
-  `tokio::spawn` fails the run, a poll that never returns trips a wall-clock
-  watchdog (`SPAWNED_SIM_POLL_TIMEOUT`), a panicking task destructor becomes
-  that task's `JoinError`, and `sleep(Duration::ZERO)` yields once.
-  Native actors, the wall clock and direct Tokio timers/I/O stay outside its
-  control. Default builds are unchanged.
-- Fix: a Transient child's replacement that stopped `Normal` or `Shutdown`
-  before readiness failed the whole supervisor ("non-restartable child failed
-  startup"). It is now a failed restart attempt, retried within the restart
-  budget, as OTP retries a failed restart whatever the child's restart type.
-  A child's first startup is unchanged: a Transient child stopping `Normal` or
-  `Shutdown` before its initial readiness still fails the start (semantics V7,
-  as OTP fails `init` when a child's start fails). Found by trace coverage:
-  trace validation rejected a replacement stopping with `Shutdown` while the
-  supervisor was open, which `Supervision.tla` allowed only after closure; the
-  model now allows it, `Decide` retries failed restart attempts, and
-  `negative_checks.py` rejects a trace edited back to failing the tree.
-  Under OneForAll a replacement failing before readiness (including a factory
-  error, which already took this path) now starts a new recovery round, so the
-  whole cohort is rebuilt again as OTP does; before, only that child was
-  retried within the round. RestForOne already matched. `Cohorts.tla` allows
-  one start per child and round (`OneStartPerRound`), with the old in-round
-  retry as a negative control (`Fault = "InPlaceRetry"`, TLC and Apalache).
-- Simulation test harness: `#[spawned_macros::sim_test]` and
-  `spawned_rt::tasks::{sim_test, SimTest}` run one async test body on Tokio
-  normally and over a seed range under `--cfg spawned_sim`, printing the
-  failing seed, a `SPAWNED_SIM_SEED`/`SPAWNED_SIM_TAPE` replay command and a
-  decision-tape path. Tapes record every scheduling choice and clock jump,
-  replay by task id (so schedules survive RNG-consumption changes), and are
-  shrunk toward the canonical schedule. The supervision, group, cancellation
-  and canary suites now run under both builds. New `spawned_rt::time`
-  (`Instant`, `entropy`) is `std` time normally and virtual time under the cfg;
-  restart windows, backoff jitter seeding, shutdown deadlines and metrics
-  timings read it. Tape replay is strict (clock jumps come from the tape;
-  a pick that does not apply, a short tape or leftover decisions fail as
-  `replay diverged`), tapes record the spin limit, and the shrinker only keeps
-  candidates that reproduce under strict replay (and stays within its run
-  budget). Strict replay also checks every clock jump against the pending
-  timers and the id of each canonical pick, and fails a run that stops with
-  decisions left over. The busy-poll threshold halves every 100 creeps
-  without an idle moment, so multi-second timeouts fire before the livelock
-  guard even while other timers keep firing. `docs/TESTING.md` lists what the simulator
-  does not model and which suites are compiled out under the cfg.
 - Trace coverage against the TLA+ models: `verification/tla/trace_coverage.py`
   maps every recorded lifecycle trace onto keys defined in TLA+ (actions with
   outcome, per-child states, transitions in context, and a coarse transition
@@ -104,20 +130,6 @@
 - CI: client compatibility workflow (`client-compat.yml`) builds and tests
   ethrex and ethlambda `spawned-v0.7` against the commit under test, nightly,
   on push to main and on PRs labeled `client-compat`.
-- Simulator exploration strategies (`spawned_rt::tasks::sim::explore`, under
-  `--cfg spawned_sim`): PCT and a delay-bounded DFS that reports exhaustion,
-  recorded into the decision tape and selected with `SPAWNED_SIM_STRATEGY` or
-  `#[sim_test(explore = "pct:d=3", iterations = N)]`, plus planted-bug tests.
-  PCT follows the paper's algorithm with a poll as the step (the task that
-  runs change point `k_i` drops to priority `i`, independently of time
-  order; checked against an independent implementation, including blocking
-  tasks), but no probability bound is claimed. DFS reports when the depth or
-  fairness cutoff truncated the space, checks that each replayed prefix met
-  the same ready sets, stops at a divergence (`Report::complete()` is false
-  then), keeps `SPAWNED_SIM_SEED` as every schedule's input, and the harness
-  fails a body that does not replay; strategies accept `fair=N`. Each
-  planted bug is checked by its own failure message, and the three-worker
-  control fails only when all reads precede every write.
 
 ## 0.7.2 — 2026-11-10
 

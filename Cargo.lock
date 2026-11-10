@@ -1786,7 +1786,7 @@ dependencies = [
 
 [[package]]
 name = "spawned-concurrency"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "futures",
  "loom",
@@ -1807,7 +1807,7 @@ dependencies = [
 
 [[package]]
 name = "spawned-macros"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1823,7 +1823,7 @@ dependencies = [
 
 [[package]]
 name = "spawned-rt"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "async-task",
  "crossbeam-deque",
@@ -1839,7 +1839,7 @@ dependencies = [
 
 [[package]]
 name = "spawned-test"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "proptest",
  "spawned-concurrency",
