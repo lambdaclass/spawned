@@ -1761,10 +1761,7 @@ mod tests {
 
         fn hold(&mut self) {
             self.entered.store(true, atomic::Ordering::SeqCst);
-            let released = self
-                .release
-                .recv_timeout(crate::test_wait::WAIT)
-                .is_ok();
+            let released = self.release.recv_timeout(crate::test_wait::WAIT).is_ok();
             self.released.store(released, atomic::Ordering::SeqCst);
         }
     }

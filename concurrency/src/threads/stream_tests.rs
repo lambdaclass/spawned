@@ -1,11 +1,11 @@
 use crate::message::Message;
+use crate::test_wait::wait_for;
 use crate::threads::{spawn_listener, Actor, ActorStart, Context, Handler};
 use spawned_rt::threads::{self as rt};
 use std::sync::{
     atomic::{AtomicU64, Ordering},
     Arc,
 };
-use crate::test_wait::wait_for;
 use std::time::Duration;
 
 struct Collector {

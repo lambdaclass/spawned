@@ -1,7 +1,7 @@
 use super::{send_after, send_interval, Actor, ActorStart, Context, Handler};
 use crate::message::Message;
-use spawned_rt::tasks::{self as rt, CancellationToken};
 use crate::test_wait::wait_for_async;
+use spawned_rt::tasks::{self as rt, CancellationToken};
 use std::time::Duration;
 
 // --- Repeater (interval timer test) ---

@@ -1,7 +1,7 @@
 use crate::message::Message;
+use crate::test_wait::wait_for;
 use crate::threads::{send_after, send_interval, Actor, ActorStart, Context, Handler};
 use spawned_rt::threads::{self as rt, CancellationToken};
-use crate::test_wait::wait_for;
 use std::time::Duration;
 
 // --- Repeater (interval timer test) ---

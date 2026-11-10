@@ -1207,7 +1207,8 @@ mod tests {
         let actor = Counter { count: 0 }.start();
         let ctx = actor.context();
         send_message_on(ctx, || rt::sleep(Duration::from_millis(10)), Increment);
-        let count = crate::test_wait::wait_for(|| actor.request(GetCount), |c| matches!(c, Ok(1))).unwrap();
+        let count =
+            crate::test_wait::wait_for(|| actor.request(GetCount), |c| matches!(c, Ok(1))).unwrap();
         assert_eq!(count, 1);
     }
 

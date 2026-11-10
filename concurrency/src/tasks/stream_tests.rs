@@ -1,8 +1,8 @@
 use crate::message::Message;
 use crate::tasks::{send_after, stream::spawn_listener, Actor, ActorStart, Context, Handler};
+use crate::test_wait::wait_for_async;
 use futures::{stream, StreamExt};
 use spawned_rt::tasks::{self as rt, BroadcastStream, ReceiverStream};
-use crate::test_wait::wait_for_async;
 use std::time::Duration;
 
 // --- Messages ---
