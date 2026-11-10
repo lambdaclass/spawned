@@ -61,13 +61,12 @@ impl Handler<Crash> for Counter {
     async fn handle(
         &mut self,
         _: Crash,
-        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _reply: spawned_concurrency::reply::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
         {
             panic!("nested leaf failed");
         }
-        let _ = reply.reply(());
     }
 }
 type Published = Arc<Mutex<Option<SupervisedChild<Counter>>>>;
@@ -536,13 +535,12 @@ impl Handler<Crash> for MaybeStop {
     async fn handle(
         &mut self,
         _: Crash,
-        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _reply: spawned_concurrency::reply::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
         {
             panic!("nested leaf failed");
         }
-        let _ = reply.reply(());
     }
 }
 

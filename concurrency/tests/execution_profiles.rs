@@ -117,13 +117,12 @@ impl Handler<Crash> for Probe {
     async fn handle(
         &mut self,
         _: Crash,
-        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _reply: spawned_concurrency::reply::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
         {
             panic!("profile recovery injection");
         }
-        let _ = reply.reply(());
     }
 }
 // Not simulated: native execution groups need OS threads.

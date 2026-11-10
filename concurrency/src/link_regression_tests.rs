@@ -223,13 +223,12 @@ impl crate::tasks::Handler<Crash> for Idler {
     async fn handle(
         &mut self,
         _: Crash,
-        reply: crate::reply::PendingReply<'_, ()>,
+        _reply: crate::reply::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
         {
             panic!("linked failure during another actor's stopped hook");
         }
-        let _ = reply.reply(());
     }
 }
 struct Stopping {

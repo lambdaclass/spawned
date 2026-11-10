@@ -87,27 +87,25 @@ impl Handler<Crash> for Probe {
     async fn handle(
         &mut self,
         _: Crash,
-        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _reply: spawned_concurrency::reply::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
         {
             panic!("injected cohort failure");
         }
-        let _ = reply.reply(());
     }
 }
 impl Handler<CrashTogether> for Probe {
     async fn handle(
         &mut self,
         msg: CrashTogether,
-        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _reply: spawned_concurrency::reply::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
         {
             msg.0.wait().await;
             panic!("simultaneous cohort failure");
         }
-        let _ = reply.reply(());
     }
 }
 
@@ -732,12 +730,11 @@ impl Handler<CrashPlain> for MaybeStop {
     async fn handle(
         &mut self,
         _: CrashPlain,
-        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _reply: spawned_concurrency::reply::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
         {
             panic!("injected cohort failure");
         }
-        let _ = reply.reply(());
     }
 }

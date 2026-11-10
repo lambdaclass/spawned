@@ -198,11 +198,10 @@ mod native {
         fn handle(
             &mut self,
             _: Boom,
-            reply: spawned_concurrency::reply::PendingReply<'_, u64>,
+            _reply: spawned_concurrency::reply::PendingReply<'_, u64>,
             _: &Context<Self>,
         ) {
-            let __reply_value: u64 = { panic!("request handler panic") };
-            let _ = reply.reply(__reply_value);
+            let _reply_value: u64 = { panic!("request handler panic") };
         }
     }
 
@@ -225,10 +224,10 @@ mod native {
         );
 
         let raw = Panicker.start();
-        let receiver = raw.request_raw(Boom).unwrap();
-        assert!(receiver
-            .recv_timeout(LIMIT)
-            .is_err_and(|e| { e == std::sync::mpsc::RecvTimeoutError::Disconnected }));
+        let receiver = raw
+            .request_raw_until(Boom, spawned_concurrency::Deadline::after(LIMIT))
+            .unwrap();
+        assert!(matches!(receiver.recv(), Err(ActorError::ActorStopped)));
     }
 }
 
@@ -478,13 +477,12 @@ mod tasks {
         async fn handle(
             &mut self,
             _: Crash,
-            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            _reply: spawned_concurrency::reply::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
             {
                 panic!("injected crash");
             }
-            let _ = reply.reply(());
         }
     }
 
@@ -562,11 +560,10 @@ mod tasks {
         async fn handle(
             &mut self,
             _: Boom,
-            reply: spawned_concurrency::reply::PendingReply<'_, u64>,
+            _reply: spawned_concurrency::reply::PendingReply<'_, u64>,
             _: &Context<Self>,
         ) {
-            let __reply_value: u64 = { panic!("request handler panic") };
-            let _ = reply.reply(__reply_value);
+            let _reply_value: u64 = { panic!("request handler panic") };
         }
     }
 

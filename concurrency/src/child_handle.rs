@@ -639,13 +639,12 @@ mod tests {
             fn handle(
                 &mut self,
                 _msg: Boom,
-                reply: crate::reply::PendingReply<'_, ()>,
+                _reply: crate::reply::PendingReply<'_, ()>,
                 _ctx: &Context<Self>,
             ) {
                 {
                     panic!("intentional panic in handler");
                 }
-                let _ = reply.reply(());
             }
         }
 
@@ -679,13 +678,12 @@ mod tests {
             async fn handle(
                 &mut self,
                 _msg: Boom,
-                reply: crate::reply::PendingReply<'_, ()>,
+                _reply: crate::reply::PendingReply<'_, ()>,
                 _ctx: &Context<Self>,
             ) {
                 {
                     panic!("intentional panic in handler");
                 }
-                let _ = reply.reply(());
             }
         }
 

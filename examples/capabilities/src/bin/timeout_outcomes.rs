@@ -2,7 +2,7 @@
 use spawned_concurrency::{
     message::Message,
     tasks::{Actor, ActorStart, Context, Handler},
-    ActorError, Response,
+    ActorError, Deadline, Response,
 };
 use std::time::Duration;
 use tokio::sync::oneshot;
@@ -52,13 +52,18 @@ async fn main() {
     let counter = Counter(0).start();
     let (entered_tx, entered_rx) = oneshot::channel();
     let (release_tx, release_rx) = oneshot::channel();
-    let reply = counter.request_raw(Apply {
-        entered: entered_tx,
-        release: release_rx,
-    });
+    // The deadline is fixed at send (OTP's call/3): already due here. An
+    // expired request is still dispatched, as in OTP; its late reply is dropped.
+    let reply = counter.request_raw_until(
+        Apply {
+            entered: entered_tx,
+            release: release_rx,
+        },
+        Deadline::after(Duration::ZERO),
+    );
     entered_rx.await.unwrap();
     // A gate keeps the reply pending; no race-dependent sleep is needed.
-    let result = Response::from_with_timeout(reply, Duration::ZERO).await;
+    let result = Response::from(reply).await;
     assert!(matches!(result, Err(ActorError::RequestTimeout)));
     release_tx.send(()).unwrap();
     assert_eq!(counter.request(Read).await.unwrap(), 1);

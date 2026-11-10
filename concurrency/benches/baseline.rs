@@ -1,7 +1,7 @@
 //! Process-isolated baseline driver; methodology in benchmarks/README.md.
 #[path = "support/args.rs"]
 mod cli;
-use spawned_concurrency::{message::Message, tasks, threads, ChildHandle};
+use spawned_concurrency::{message::Message, tasks, threads, ChildHandle, Deadline, ReplyReceiver};
 use std::{
     alloc::{GlobalAlloc, Layout, System},
     hint::black_box,
@@ -127,19 +127,28 @@ enum Target {
     Tokio(tokio::sync::mpsc::UnboundedSender<(Work, tokio::sync::oneshot::Sender<Ack>)>),
 }
 enum Reply {
-    Tasks(tokio::sync::oneshot::Receiver<Ack>),
-    Threads(mpsc::Receiver<Ack>),
+    Tasks(ReplyReceiver<Ack>),
+    Tokio(tokio::sync::oneshot::Receiver<Ack>),
+    Threads(ReplyReceiver<Ack>),
 }
 impl Target {
     fn request(&self, work: Work) -> Reply {
         match self {
-            Self::Tasks(actor) => Reply::Tasks(actor.request_raw(work).expect("actor stopped")),
-            Self::Threads(actor) => Reply::Threads(actor.request_raw(work).expect("actor stopped")),
+            Self::Tasks(actor) => Reply::Tasks(
+                actor
+                    .request_raw_until(work, Deadline::after(Duration::from_secs(10)))
+                    .expect("actor stopped"),
+            ),
+            Self::Threads(actor) => Reply::Threads(
+                actor
+                    .request_raw_until(work, Deadline::after(Duration::from_secs(10)))
+                    .expect("actor stopped"),
+            ),
             Self::Tokio(tx) => {
                 let (reply, rx) = tokio::sync::oneshot::channel();
                 tx.send((work, reply))
                     .unwrap_or_else(|_| panic!("baseline stopped"));
-                Reply::Tasks(rx)
+                Reply::Tokio(rx)
             }
         }
     }
@@ -147,15 +156,14 @@ impl Target {
 impl Reply {
     fn wait(self, rt: &tokio::runtime::Handle) -> Ack {
         match self {
-            Self::Tasks(rx) => rt.block_on(async {
+            Self::Tasks(rx) => rt.block_on(rx).expect("reply timeout or dropped"),
+            Self::Tokio(rx) => rt.block_on(async {
                 tokio::time::timeout(Duration::from_secs(10), rx)
                     .await
                     .expect("reply timeout")
                     .expect("reply dropped")
             }),
-            Self::Threads(rx) => rx
-                .recv_timeout(Duration::from_secs(10))
-                .expect("reply timeout/disconnected"),
+            Self::Threads(rx) => rx.recv().expect("reply timeout/disconnected"),
         }
     }
 }
