@@ -225,8 +225,8 @@ Checked by: `src/tasks/actor.rs::link_propagates_panic_to_non_trapping_peer`,
 **X4. Direct stops are untrappable, propagated Kill is trappable.** Every
 direct stop (`stop`, `shutdown`, `stop_with_reason(any)`) ignores `trap_exit`.
 A `Kill` arriving over a link is trappable, so one kill cannot take down a
-graph of trapping observers. This is Erlang's `kill`/`killed` split, except the
-propagated value is still `Kill`.
+graph of trapping observers. This follows Erlang's `kill`/`killed` split, except the
+propagated value is still `Kill` (section 11).
 Checked by: [`kill_links`][kill_links] (both modes).
 
 **X5. Link registration.** Linking to an already-exited peer delivers that
@@ -235,7 +235,7 @@ peer's actual reason once, under X3, and retains no link (Erlang reports
 `unlink` stops future propagation but does not retract a signal in flight.
 `start_linked` registers the link before the child's `started()`. A link
 installed while the peer is between draining its links and publishing its exit
-still receives the exit.
+still receives the exit. See section 11 for the planned `NoProc`.
 Checked by: `src/tasks/actor.rs::link_to_already_dead_actor_delivers_signal`,
 `link_to_already_dead_delivers_exactly_once_to_trapping_peer`, `duplicate_link_is_idempotent`,
 `unlink_prevents_signal_delivery`; `src/link_regression_tests.rs::linking_in_post_drain_pre_completion_window_delivers_exit`,
@@ -485,16 +485,45 @@ Checked by: [`foreign_panics::panicking_panic_hook_aborts_like_plain_rust`][fore
 - **Distribution.** Single process only; `ActorRef`s cannot cross a process.
 - **Transparent references.** Nothing rebinds an `ActorRef` to a replacement;
   resolve through `SupervisedChild` or the registry.
-- **Erlang equivalence.** Differences: direct `Normal`/`Shutdown` stops ignore
-  `trap_exit` (X4); linking a dead peer reports its real reason, not `noproc`
-  (X5); propagated kills stay `Kill`; the restart budget counts child grants,
-  not rounds (V5).
+- **Erlang/OTP equivalence.** See section 11 for each current difference.
 - **Liveness under schedules nobody explored.** Tests run real schedulers;
   models abstract time and handler bodies (see [TESTING](../TESTING.md#how-spawned-is-verified)).
   The base actor lifecycle (links, monitors, requests around shutdown) has no
   TLA+ model yet ([next model](../../verification/tla/README.md#next-model)).
 
-## 11. Planned changes to these semantics
+## 11. Differences from Erlang/OTP
+
+Principle: match OTP as closely as possible. Deviate only where Rust forces it,
+where Rust types add strictness, or where Spawned adds bounds Erlang lacks.
+
+Already the same as OTP: per-sender FIFO (D1), at-most-once delivery (D2),
+`gen_server:call`'s 5 s default timeout (R3), a stop dropping the mailbox like a
+process exit (D4), linked exits propagating the same reason and `Normal` being
+ignored by non-trapping peers (X3), and the Permanent/Transient/Temporary table (V1).
+
+| Today | OTP | Status |
+|---|---|---|
+| Every direct stop (`stop`, `shutdown`, `stop_with_reason(any)`) ignores `trap_exit` (X4) | `exit(Pid, normal)` is ignored by a non-trapping process; every reason except `kill` is trappable | Planned v0.8, rank 5e: a `Normal` exit signal is ignored by a non-trapping actor, all reasons except `Kill` (including `Shutdown`) are trappable, only `Kill` is untrappable |
+| Supervisor shutdown cancels a trapping child directly | `shutdown` reaches a trapping child as an `'EXIT'` message and it runs normal termination | Planned v0.8, rank 5e |
+| A kill propagated over a link stays `Kill` (X4) | It arrives as `killed` | Planned v0.8, rank 5e: a distinct trappable `Killed` |
+| Linking or monitoring an already-exited actor delivers its real exit reason (X1, X5) | `noproc` | Planned v0.8, rank 5e: `NoProc` |
+| The restart budget counts every child factory call, collateral ones included (V5) | Intensity counts recovery rounds | Planned v0.8, rank 5f |
+| An actor dropped by its runtime exits `Kill` in tasks; the threads fallback is `Panic("unexpected framework panic")` (L4) | No counterpart | Planned v0.8, rank 5g: one reason in both modes |
+| Stop is cooperative: a running handler or blocking call is never interrupted (L3) | `kill` ends a process at once | Rust-forced: Rust cannot preempt or kill a thread |
+| Panics are caught only with unwinding (P2) | Process crashes are always isolated | Rust-forced: `panic = "abort"` and a panicking panic hook end the process |
+| No per-actor memory accounting | `max_heap_size` | Rust-forced (no per-actor heap); opt-in size hook proposed, rank 18a |
+| One `Handler<M>` per message type; no selective or catch-all receive; `ExitReason` is a closed enum | Any term, selective `receive` | Rust types add strictness; unhandled message types are compile errors |
+| Single process, no distribution | Location-transparent pids | Out of scope until a remote transport (rank 22a and later) |
+| Unbounded mailboxes (D5) | Unbounded | Same today; Spawned adds opt-in bounds (rank 17) and byte credits (rank 18) |
+
+## 12. Planned changes to these semantics
+
+- v0.8, rank 5e, exit signals as in OTP (proposed in #228): trappable
+  `Shutdown`, `Normal` ignored by non-trapping actors, `Killed` for propagated
+  kills, `NoProc` for links and monitors to exited actors, normal termination
+  for a trapping child on supervisor shutdown (changes X1, X3, X4, X5, L3, L4).
+- v0.8, rank 5f: the restart budget counts recovery rounds (changes V5).
+- v0.8, rank 5g: one exit reason for runtime-dropped actors in both modes (changes L4, X6).
 
 - Rank 11, deferred typed replies, forwarding and pipe-to-self: a reply may
   leave the handler's turn; adds exactly-one completion on panic and timeout.
