@@ -8,6 +8,9 @@
   and the `DeferredReplies` (reply slots) and `DeferredJobs` (pipe jobs) TLA+
   models with 22 negative controls, each checked against its named
   invariant.
+- Design (not implemented): exit signals, supervisor startup and runtime-drop
+  semantics as in OTP (ROADMAP ranks 5e, 5f, 5g), with the base actor
+  lifecycle TLA+ model; see `docs/design/otp-exit-signals.md`.
 
 ## 0.7.3 — 2026-11-10
 
