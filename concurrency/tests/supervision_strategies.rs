@@ -34,7 +34,10 @@ struct Crash;
 impl Message for Crash {
     type Result = ();
 }
-struct CrashTogether(Arc<std::sync::Barrier>);
+/// Both children panic only after both handlers are running. The rendezvous
+/// is async: a std barrier would block a worker, and a task parked in that
+/// worker's LIFO slot cannot be stolen, so the other child might never run.
+struct CrashTogether(Arc<tokio::sync::Barrier>);
 impl Message for CrashTogether {
     type Result = ();
 }
@@ -77,7 +80,7 @@ impl Handler<Crash> for Probe {
 }
 impl Handler<CrashTogether> for Probe {
     async fn handle(&mut self, msg: CrashTogether, _: &Context<Self>) {
-        msg.0.wait();
+        msg.0.wait().await;
         panic!("simultaneous cohort failure");
     }
 }
@@ -390,7 +393,7 @@ async fn simultaneous_failures_and_shutdown_do_not_overlap_cohorts_or_generation
                 );
             }
             let supervisor = tree.start().await.unwrap();
-            let barrier = Arc::new(std::sync::Barrier::new(3));
+            let barrier = Arc::new(tokio::sync::Barrier::new(2));
             for child in &children {
                 child
                     .current()
@@ -398,7 +401,6 @@ async fn simultaneous_failures_and_shutdown_do_not_overlap_cohorts_or_generation
                     .send(CrashTogether(barrier.clone()))
                     .unwrap();
             }
-            barrier.wait();
             for child in &children {
                 tokio::time::timeout(LIMIT, child.wait_for_generation(1))
                     .await
