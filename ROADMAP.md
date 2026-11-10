@@ -158,7 +158,7 @@ default (from the [Silver/flux study](legacy/docs/research/silver-flux.md#what-m
   infrastructure to make a backend faster;
 - mandatory dedicated cores or spinning for ordinary actors.
 
-**Principle: match Erlang/OTP as closely as possible.** Exit signals, links, monitors, `trap_exit`, supervision budgets and reply semantics follow OTP. A deviation is allowed only where Rust forces it, where Rust's types make spawned stricter (for example a typed reply token that must be answered), or where spawned adds a bound Erlang lacks (bounded outstanding work, backpressure). Every remaining deviation is listed with its reason in the [semantics contract](docs/design/semantics.md). Already aligned: stopping an actor discards its queued messages, as a process exit drops its mailbox (draining, rank 13, is the opt-in alternative).
+**Principle: match Erlang/OTP as closely as possible.** Exit signals, links, monitors, `trap_exit`, supervision budgets and reply semantics follow OTP. A deviation is allowed only where Rust forces it, where Rust's types make spawned stricter (for example a typed reply token that must be answered), or where spawned adds a bound Erlang lacks (bounded outstanding work, backpressure). Every remaining deviation is listed with its reason in the [semantics contract](docs/design/semantics.md). Already aligned: stopping an actor discards its queued messages, as a process exit drops its mailbox (draining, rank 13, is the opt-in alternative). Newer capabilities (Orleans-style virtual actors, rank 26; process groups and topics, 27; distribution, 44; durable execution, 51; CRDTs and sagas, 54) are layers built on this OTP-faithful core: they may add behaviour, but never change the core's semantics.
 
 ### Verification rule
 
