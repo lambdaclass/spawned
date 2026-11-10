@@ -217,6 +217,12 @@ API changes.
   and how to stop an actor from outside (`ChildHandle::stop`/`shutdown`/
   `stop_with_reason`); the `ExitReason::Normal` doc comment and the supervision
   design table are corrected.
+- Add the `stack_budget` test suite: nested request chains (async group,
+  thread group, ambient runtime, threads mode), supervisor start/restart/
+  shutdown and `ActorSystem::shutdown` run in child processes under a
+  `RUST_MIN_STACK` budget of about 1.5x the measured minimum, so a stack-depth
+  regression aborts the child and fails the test. Brought over from #217. See
+  [testing](docs/TESTING.md#stack-depth-budgets).
 
 ## 0.7.1 — 2026-11-10
 

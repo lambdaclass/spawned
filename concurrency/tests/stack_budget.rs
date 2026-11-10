@@ -24,11 +24,11 @@
 //! aarch64-apple-darwin (Rust 1.98),chain_ambient,68,8,104,16
 //! aarch64-apple-darwin (Rust 1.98),supervisor_restart_shutdown,52,20,80,32
 //! aarch64-apple-darwin (Rust 1.98),chain_threads,20,8,32,16
-//! x86_64-linux-gnu (Rust 1.94),chain_async_group,88,28,132,44
-//! x86_64-linux-gnu (Rust 1.94),chain_thread_group,84,28,132,44
-//! x86_64-linux-gnu (Rust 1.94),chain_ambient,88,28,132,44
-//! x86_64-linux-gnu (Rust 1.94),supervisor_restart_shutdown,80,8,120,16
-//! x86_64-linux-gnu (Rust 1.94),chain_threads,44,8,68,16
+//! x86_64-linux-gnu (Rust 1.93, v0.7.1),chain_async_group,84,28,132,44
+//! x86_64-linux-gnu (Rust 1.93, v0.7.1),chain_thread_group,80,28,132,44
+//! x86_64-linux-gnu (Rust 1.93, v0.7.1),chain_ambient,84,28,132,44
+//! x86_64-linux-gnu (Rust 1.93, v0.7.1),supervisor_restart_shutdown,80,8,120,32
+//! x86_64-linux-gnu (Rust 1.93, v0.7.1),chain_threads,40,8,68,16
 //!
 //! An 8 KiB minimum is the probe's floor (the platform rounds up). On
 //! aarch64-linux glibc's 128 KiB thread minimum hides every scenario, so the
