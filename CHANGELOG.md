@@ -6,8 +6,27 @@
   (ROADMAP rank 11), implementing
   [the design](docs/design/deferred-replies.md). Every request now has a reply
   slot: one packed atomic word (state, token, registry and running-job count)
-  whose transitions are checked with Loom (`reply_slot_loom`). See
-  [migration](docs/MIGRATION.md#unreleased).
+  whose transitions are checked with Loom (`reply_slot_loom`, 15 concurrent
+  pairs, 5 mutation controls). `Handler::handle` takes a `PendingReply<'_, R>`
+  and returns `()`; `#[actor]` generates it, and `#[deferred_handler]` methods
+  receive the obligation and may `defer()` it into a storable `ReplyTo<R>`
+  (bounded by `Actor::MAX_OUTSTANDING`, `Overloaded` at the bound). Dropped
+  obligations answer `ReplyDropped` (`ActorStopped` in a panicking turn or
+  while exiting); at death every open token answers `ActorStopped`. Request
+  deadlines are fixed at send (`Deadline`, `request_raw_until`; `request_raw`
+  gains the 5 s default); a per-actor deadline heap and service expire stored
+  tokens without a polling caller. `PendingReplies<K, R>` is a bounded token
+  table. Pipe-to-self jobs: `ctx.pipe`, `pipe_keyed`, `pipe_with`,
+  `pipe_blocking_with`, `pipe_reply`, `pipe_reply_with`,
+  `pipe_reply_blocking_with` (threads mode: the blocking forms on owned native
+  threads), with `JobOutcome`/`JobError::{Panicked, DeadlineExceeded}`, keyed
+  replacement and cancellation fenced at dispatch, `JobCtx::emit`/
+  `emit_blocking` with emit credits and the terminal message last,
+  `MAX_NATIVE_JOBS`, owner-exit cancellation and a bounded join after death
+  (`unfinished_at_stop`). `ActorError` is `#[non_exhaustive]` with
+  `ReplyDropped` and `Overloaded`; `metrics::Snapshot` gains
+  `requests_reply_dropped_total` and `requests_overloaded_total`. Example:
+  `deferred_replies`. See [migration](docs/MIGRATION.md#unreleased).
 - Design (not implementation) for rank 11, deferred typed replies and
   pipe-to-self, revised over four passes after independent reviews:
   `docs/design/deferred-replies.md`, client mapping for ethrex and ethlambda,

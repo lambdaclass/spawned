@@ -58,7 +58,12 @@ impl Message for Delegated {
 #[actor(protocol = RouterProtocol)]
 impl Router {
     #[deferred_handler]
-    async fn route(&mut self, msg: router_protocol::Route, reply: PendingReply<'_, u64>, ctx: &Context<Self>) {
+    async fn route(
+        &mut self,
+        msg: router_protocol::Route,
+        reply: PendingReply<'_, u64>,
+        ctx: &Context<Self>,
+    ) {
         let Ok(token) = reply.defer() else { return };
         // The downstream request inherits the caller's deadline.
         let deadline = token.deadline().map_or(Deadline::Never, Deadline::At);
@@ -174,7 +179,12 @@ impl Message for PeerResponse {
 #[actor]
 impl Connection {
     #[deferred_handler]
-    async fn outgoing(&mut self, msg: Outgoing, reply: PendingReply<'_, String>, _: &Context<Self>) {
+    async fn outgoing(
+        &mut self,
+        msg: Outgoing,
+        reply: PendingReply<'_, String>,
+        _: &Context<Self>,
+    ) {
         let Ok(token) = reply.defer() else { return };
         match self.current_requests.insert(msg.id, token) {
             Ok(()) => {} // the request goes out on the socket here
@@ -218,7 +228,12 @@ impl Message for Release {
 #[actor]
 impl PeerTable {
     #[deferred_handler]
-    async fn wait_for_peer(&mut self, _: WaitForPeer, reply: PendingReply<'_, u32>, _: &Context<Self>) {
+    async fn wait_for_peer(
+        &mut self,
+        _: WaitForPeer,
+        reply: PendingReply<'_, u32>,
+        _: &Context<Self>,
+    ) {
         if self.free > 0 {
             self.free -= 1;
             reply.reply(self.free);
@@ -238,7 +253,9 @@ impl PeerTable {
     async fn release(&mut self, msg: Release, _: &Context<Self>) {
         self.free += msg.0;
         while self.free > 0 {
-            let Some(token) = self.waiters.pop_front() else { break };
+            let Some(token) = self.waiters.pop_front() else {
+                break;
+            };
             if token.is_closed() {
                 continue;
             }
@@ -294,7 +311,10 @@ impl Parker {
 async fn main() {
     // 1. Delegation: the slow request does not block the router.
     let backend = Backend.start();
-    let router = Router { backend: backend.clone() }.start();
+    let router = Router {
+        backend: backend.clone(),
+    }
+    .start();
     let slow = router.route(300);
     assert_eq!(router.ping().await.unwrap(), "pong");
     assert_eq!(router.route(1).await.unwrap(), 1);
@@ -302,9 +322,22 @@ async fn main() {
     println!("1. router served other requests while a delegated one was pending");
 
     // 2. CPU offload: a fast check, a check past its job deadline.
-    let verifier = Verifier { verdicts: Vec::new() }.start();
-    verifier.send(Verify { id: 1, spin: Duration::from_millis(1) }).unwrap();
-    verifier.send(Verify { id: 2, spin: Duration::from_millis(400) }).unwrap();
+    let verifier = Verifier {
+        verdicts: Vec::new(),
+    }
+    .start();
+    verifier
+        .send(Verify {
+            id: 1,
+            spin: Duration::from_millis(1),
+        })
+        .unwrap();
+    verifier
+        .send(Verify {
+            id: 2,
+            spin: Duration::from_millis(400),
+        })
+        .unwrap();
     let mut verdicts = Vec::new();
     while verdicts.len() < 2 {
         verdicts.extend(verifier.request(Verdicts).await.unwrap());
@@ -326,22 +359,45 @@ async fn main() {
     assert!(matches!(dup.await, Err(ActorError::ReplyDropped)));
     assert!(matches!(full.await, Err(ActorError::Overloaded)));
     drop(b); // the caller gives up: its entry is purged on the next insert
-    assert!(conn.request(PeerResponse { id: 1, body: "block".into() }).await.unwrap());
+    assert!(conn
+        .request(PeerResponse {
+            id: 1,
+            body: "block".into()
+        })
+        .await
+        .unwrap());
     assert_eq!(a.await.unwrap(), "block");
-    assert!(!conn.request(PeerResponse { id: 2, body: "late".into() }).await.unwrap());
+    assert!(!conn
+        .request(PeerResponse {
+            id: 2,
+            body: "late".into()
+        })
+        .await
+        .unwrap());
     println!("3. responses matched by id; duplicate, full and late responses handled");
 
     // 4. Waiting for a free peer instead of polling.
-    let table = PeerTable { free: 0, waiters: VecDeque::new() }.start();
+    let table = PeerTable {
+        free: 0,
+        waiters: VecDeque::new(),
+    }
+    .start();
     let first = table.request_raw(WaitForPeer).unwrap();
     let second = table.request_raw(WaitForPeer).unwrap();
-    assert!(matches!(table.request(WaitForPeer).await, Err(ActorError::Overloaded)));
+    assert!(matches!(
+        table.request(WaitForPeer).await,
+        Err(ActorError::Overloaded)
+    ));
     table.send(Release(2)).unwrap();
     assert_eq!((first.await.unwrap(), second.await.unwrap()), (1, 0));
     println!("4. waiters answered when capacity freed; Overloaded at the queue bound");
 
     // 5. Owner stop: stopped() answers one caller, death answers the other.
-    let parker = Parker { parked: Vec::new(), answer_first: 0 }.start();
+    let parker = Parker {
+        parked: Vec::new(),
+        answer_first: 0,
+    }
+    .start();
     let one = parker.request_raw_until(Park, Deadline::Never).unwrap();
     let two = parker.request_raw_until(Park, Deadline::Never).unwrap();
     parker.request(StopAnswering(1)).await.unwrap();
@@ -350,7 +406,13 @@ async fn main() {
     parker.join().await;
     println!("5. stopped() answered a stored token; death answered the rest ActorStopped");
 
-    for actor in [router.child_handle(), backend.child_handle(), verifier.child_handle(), conn.child_handle(), table.child_handle()] {
+    for actor in [
+        router.child_handle(),
+        backend.child_handle(),
+        verifier.child_handle(),
+        conn.child_handle(),
+        table.child_handle(),
+    ] {
         actor.stop();
     }
 }
