@@ -17,10 +17,18 @@ use crate::link::{
 use crate::message::Message;
 use crate::monitor::{Down, MonitorCleanup, MonitorRef, MonitorTable};
 use crate::reply::{registry::Registry, reply_slot, SlotHandle};
-use crate::reply::{PendingReply, ReplyReceiver, DEFAULT_MAX_OUTSTANDING};
+use crate::reply::{Deadline, PendingReply, ReplyReceiver, DEFAULT_MAX_OUTSTANDING};
 use std::sync::atomic::Ordering;
 
 pub use crate::response::DEFAULT_REQUEST_TIMEOUT;
+
+/// Cleanup deadline for actors without a supervisor: the bound on joining an
+/// exiting actor's cancelled jobs.
+pub const DEFAULT_STOP_DEADLINE: Duration = Duration::from_secs(5);
+
+#[path = "jobs.rs"]
+mod jobs;
+pub use jobs::JobCtx;
 
 // ---------------------------------------------------------------------------
 // Actor trait
@@ -37,6 +45,10 @@ pub trait Actor: Send + Sized + 'static {
     /// linked jobs). At the bound `defer()` answers the caller `Overloaded`.
     /// Capped at 65535.
     const MAX_OUTSTANDING: usize = DEFAULT_MAX_OUTSTANDING;
+
+    /// Native threads this instance's jobs may run at once. `None`:
+    /// `min(4, available_parallelism)`.
+    const MAX_NATIVE_JOBS: Option<usize> = None;
 
     fn started(&mut self, _ctx: &Context<Self>) {}
     fn stopped(&mut self, _ctx: &Context<Self>) {}
@@ -186,6 +198,7 @@ pub struct Context<A: Actor> {
     linked_reason: LinkedExitReason,
     mailbox: crate::instrumentation::Mailbox,
     replies: Arc<Registry>,
+    jobs: Arc<crate::reply::jobs::JobSet>,
 }
 
 impl<A: Actor> Clone for Context<A> {
@@ -201,6 +214,7 @@ impl<A: Actor> Clone for Context<A> {
             linked_reason: self.linked_reason.clone(),
             mailbox: self.mailbox.clone(),
             replies: self.replies.clone(),
+            jobs: self.jobs.clone(),
         }
     }
 }
@@ -226,6 +240,7 @@ impl<A: Actor> Context<A> {
             linked_reason: actor_ref.linked_reason.clone(),
             mailbox: actor_ref.mailbox.clone(),
             replies: actor_ref.replies.clone(),
+            jobs: actor_ref.jobs.clone(),
         }
     }
 
@@ -352,6 +367,7 @@ impl<A: Actor> Context<A> {
             linked_reason: self.linked_reason.clone(),
             mailbox: self.mailbox.clone(),
             replies: self.replies.clone(),
+            jobs: self.jobs.clone(),
         }
     }
 
@@ -613,6 +629,7 @@ pub struct ActorRef<A: Actor> {
     linked_reason: LinkedExitReason,
     mailbox: crate::instrumentation::Mailbox,
     replies: Arc<Registry>,
+    jobs: Arc<crate::reply::jobs::JobSet>,
 }
 
 impl<A: Actor> Debug for ActorRef<A> {
@@ -634,6 +651,7 @@ impl<A: Actor> Clone for ActorRef<A> {
             linked_reason: self.linked_reason.clone(),
             mailbox: self.mailbox.clone(),
             replies: self.replies.clone(),
+            jobs: self.jobs.clone(),
         }
     }
 }
@@ -828,6 +846,10 @@ impl<A: Actor> ActorRef<A> {
             linked_reason: linked_reason.clone(),
             mailbox: crate::instrumentation::Mailbox::default(),
             replies: Registry::new(id, A::MAX_OUTSTANDING),
+            jobs: Arc::new(crate::reply::jobs::JobSet::new(
+                id,
+                A::MAX_NATIVE_JOBS.unwrap_or_else(crate::reply::jobs::default_max_native_jobs),
+            )),
         };
 
         let ctx = Context {
@@ -841,6 +863,7 @@ impl<A: Actor> ActorRef<A> {
             linked_reason: linked_reason.clone(),
             mailbox: actor_ref.mailbox.clone(),
             replies: actor_ref.replies.clone(),
+            jobs: actor_ref.jobs.clone(),
         };
 
         if let Some(parent) = parent {
@@ -861,6 +884,7 @@ impl<A: Actor> ActorRef<A> {
         let startup =
             crate::actor_cleanup::ActorStartup::new((actor, ctx, rx, cancellation_token), cleanup);
         let replies = actor_ref.replies.clone();
+        let jobs = actor_ref.jobs.clone();
         let _thread_handle = rt::spawn(move || {
             let ((mut actor, ctx, mut rx, cancellation_token), mut cleanup) = startup.into_parts();
             let primary = match catch_unwind(AssertUnwindSafe(|| {
@@ -886,6 +910,13 @@ impl<A: Actor> ActorRef<A> {
             match outcome {
                 Ok(reason) => cleanup.complete(reason),
                 Err(reason) => cleanup.complete_secondary(reason),
+            }
+            // Job cleanup (§5 step 4), after death: join the cancelled jobs
+            // that signal completion, bounded by the cleanup deadline.
+            if jobs.running() > 0 {
+                let unfinished =
+                    jobs.join_blocking(std::time::Instant::now() + DEFAULT_STOP_DEADLINE);
+                crate::reply::jobs::report_unfinished(jobs.owner(), unfinished);
             }
         });
 
@@ -933,6 +964,7 @@ fn run_actor_receiving<A: Actor>(
 
     if cancellation_token.is_cancelled() {
         ctx.replies.exiting();
+        ctx.jobs.cancel_all();
         if let Err(panic) = catch_unwind(AssertUnwindSafe(|| {
             fail_point!("actor.before_stopped");
             actor.stopped(&ctx)
@@ -1002,6 +1034,7 @@ fn run_actor_receiving<A: Actor>(
 
     cancellation_token.cancel();
     ctx.replies.exiting();
+    ctx.jobs.cancel_all();
     let stop_result = catch_unwind(AssertUnwindSafe(|| {
         fail_point!("actor.before_stopped");
         actor.stopped(&ctx);
@@ -1931,6 +1964,7 @@ mod idle_stop_regression {
             linked_reason: new_linked_exit_reason(),
             mailbox: crate::instrumentation::Mailbox::default(),
             replies: Registry::new(ActorId::next(), DEFAULT_MAX_OUTSTANDING),
+            jobs: Arc::new(crate::reply::jobs::JobSet::new(ActorId::next(), 1)),
         };
         let count = Arc::new(AtomicUsize::new(0));
         let seen = count.clone();
@@ -2053,6 +2087,7 @@ mod stop_wakeup_regression {
             linked_reason: new_linked_exit_reason(),
             mailbox: crate::instrumentation::Mailbox::default(),
             replies: Registry::new(ActorId::next(), DEFAULT_MAX_OUTSTANDING),
+            jobs: Arc::new(crate::reply::jobs::JobSet::new(ActorId::next(), 1)),
         };
         let (entered_tx, entered) = mpsc::channel();
         let (stopped_tx, stopped) = mpsc::channel();
