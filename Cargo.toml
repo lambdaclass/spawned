@@ -26,15 +26,15 @@ members = [
 ]
 
 [workspace.dependencies]
-spawned-rt = { path = "rt", version = "0.7.1", default-features = false }
-spawned-concurrency = { path = "concurrency", version = "0.7.1" }
-spawned-macros = { path = "macros", version = "0.7.1" }
-spawned-test = { path = "testing", version = "0.7.1" }
+spawned-rt = { path = "rt", version = "0.7.2", default-features = false }
+spawned-concurrency = { path = "concurrency", version = "0.7.2" }
+spawned-macros = { path = "macros", version = "0.7.2" }
+spawned-test = { path = "testing", version = "0.7.2" }
 tracing = { version = "0.1.41", features = ["log"] }
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 
 [workspace.package]
-version = "0.7.1"
+version = "0.7.2"
 license = "MIT"
 edition = "2021"
 repository = "https://github.com/lambdaclass/spawned"
