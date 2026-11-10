@@ -1,4 +1,6 @@
-//! Independent bounded sequential oracle. No runtime counters or implementation state.
+//! The original bounded sequential oracle (at most 16 operations, 100,000
+//! states). Superseded by `spawned_test::linearizability`; kept only so
+//! `request_histories` can show the new checker agrees with it.
 #![allow(dead_code)]
 use super::actor::Reply;
 use std::collections::HashSet;

@@ -1797,6 +1797,7 @@ dependencies = [
  "proptest",
  "spawned-macros",
  "spawned-rt",
+ "spawned-test",
  "thiserror",
  "tokio",
  "tokio-stream",
