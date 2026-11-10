@@ -94,6 +94,13 @@
   and how to stop an actor from outside (`ChildHandle::stop`/`shutdown`/
   `stop_with_reason`); the `ExitReason::Normal` doc comment and the supervision
   design table are corrected.
+- `tasks::ActorRef` and `tasks::Context` are one pointer wide again (8 bytes,
+  was 80, 88 with `metrics`; spawned 0.5 was 32): both share one `Arc`'d
+  state. Applications move handles by value through their futures, and debug
+  builds give every move its own stack slot, so the 0.7 handles cost ethrex's
+  debug RPC dispatch ~136 KiB of extra thread stack. Clone is one refcount
+  increment; one extra allocation per actor start, none per message.
+  `future_layout` now pins the one-pointer size and tighter future budgets.
 
 ## 0.7.1 — 2026-11-10
 
