@@ -37,6 +37,7 @@
   out-of-order rollback of a ready supervisor startup fixed in v0.7.1,
   which `negative_checks.py` also runs under TLC. Liveness stays TLC-only;
   TLC state counts are unchanged.
+- Trace coverage against the TLA+ models (work in progress).
 
 ## 0.7.1 — 2026-11-10
 
