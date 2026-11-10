@@ -67,10 +67,11 @@
 - Roadmap: per-actor memory limits (rank 18a), one semantics contract
   (rank 5d), an integrated request and lifecycle model for ranks 11, 13, 15,
   15a and 17-19, and a design-review rule: a design doc, TLA+ model, client
-  mapping and two independent reviews before any feature code. OTP alignment
-  for v0.8: propagated kills become `Killed` (rank 5e), the restart budget
-  counts recovery rounds (5f), and one exit reason when the runtime drops an
-  actor (5g); deliberate differences from OTP are listed.
+  mapping and two independent reviews before any feature code. The principle
+  is to match Erlang/OTP as closely as possible; for v0.8: exit signals as in
+  OTP (`Killed`, ignored `normal` exits, trappable `shutdown`, `NoProc`; rank
+  5e), the restart budget counts recovery rounds (5f), and one exit reason when
+  the runtime drops an actor (5g).
 
 ## 0.7.1 — 2026-11-10
 
