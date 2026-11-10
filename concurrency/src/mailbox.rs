@@ -52,83 +52,6 @@ impl Admission {
     }
 }
 
-// Native sends reserve admission until publication. Tokio already supplies a
-// close-and-receive-through-EOF protocol, so async sends keep their original
-// channel fast path. Neither mode runs user destructors with a send permit held.
-macro_rules! channel {
-    ($module:ident, $raw:path, $guard_sends:expr, $drain:expr) => {
-        pub(crate) mod $module {
-            use super::*;
-            pub(crate) use raw::SendError;
-            use $raw as raw;
-            pub(crate) struct Sender<T> {
-                pub(super) inner: raw::Sender<T>,
-                pub(super) admission: Arc<Admission>,
-            }
-            impl<T> Clone for Sender<T> {
-                fn clone(&self) -> Self {
-                    Self {
-                        inner: self.inner.clone(),
-                        admission: self.admission.clone(),
-                    }
-                }
-            }
-            impl<T> Sender<T> {
-                pub(crate) fn send(&self, value: T) -> Result<(), SendError<T>> {
-                    if !$guard_sends {
-                        return self.inner.send(value);
-                    }
-                    let Some(permit) = self.admission.enter() else {
-                        return Err(SendError(value));
-                    };
-                    let result = self.inner.send(value);
-                    drop(permit);
-                    result
-                }
-                pub(crate) fn failures(&self) -> Arc<DropFailures> {
-                    self.admission.failures.clone()
-                }
-            }
-            pub(crate) struct Receiver<T> {
-                inner: raw::Receiver<T>,
-                admission: Arc<Admission>,
-            }
-            impl<T> std::ops::Deref for Receiver<T> {
-                type Target = raw::Receiver<T>;
-                fn deref(&self) -> &Self::Target {
-                    &self.inner
-                }
-            }
-            impl<T> std::ops::DerefMut for Receiver<T> {
-                fn deref_mut(&mut self) -> &mut Self::Target {
-                    &mut self.inner
-                }
-            }
-            impl<T> Drop for Receiver<T> {
-                fn drop(&mut self) {
-                    if $guard_sends {
-                        self.admission.close();
-                    }
-                    ($drain)(&mut self.inner, &self.admission.failures);
-                }
-            }
-            pub(crate) fn channel<T>() -> (Sender<T>, Receiver<T>) {
-                let (send, recv) = raw::channel();
-                let admission = Arc::new(Admission::default());
-                (
-                    Sender {
-                        inner: send,
-                        admission: admission.clone(),
-                    },
-                    Receiver {
-                        inner: recv,
-                        admission,
-                    },
-                )
-            }
-        }
-    };
-}
 #[cfg(feature = "async")]
 pub(crate) mod tasks {
     use super::*;
@@ -199,16 +122,73 @@ pub(crate) mod tasks {
         )
     }
 }
-channel!(
-    threads,
-    spawned_rt::threads::mpsc,
-    true,
-    |rx: &mut raw::Receiver<_>, failures: &DropFailures| {
-        while let Ok(value) = rx.try_recv() {
-            failures.discard(value);
+// Native sends reserve admission until publication, so closing the receiver
+// can wait for in-flight sends and then drain everything that was accepted.
+// Tokio already supplies a close-and-receive-through-EOF protocol, so async
+// sends (`tasks` above) keep their original channel fast path. Neither mode
+// runs user destructors with a send permit held.
+pub(crate) mod threads {
+    use super::*;
+    pub(crate) use raw::SendError;
+    use spawned_rt::threads::mpsc as raw;
+    pub(crate) struct Sender<T> {
+        pub(super) inner: raw::Sender<T>,
+        pub(super) admission: Arc<Admission>,
+    }
+    impl<T> Clone for Sender<T> {
+        fn clone(&self) -> Self {
+            Self {
+                inner: self.inner.clone(),
+                admission: self.admission.clone(),
+            }
         }
     }
-);
+    impl<T> Sender<T> {
+        pub(crate) fn send(&self, value: T) -> Result<(), SendError<T>> {
+            let Some(permit) = self.admission.enter() else {
+                return Err(SendError(value));
+            };
+            let result = self.inner.send(value);
+            drop(permit);
+            result
+        }
+        pub(crate) fn failures(&self) -> Arc<DropFailures> {
+            self.admission.failures.clone()
+        }
+    }
+    pub(crate) struct Receiver<T> {
+        inner: raw::Receiver<T>,
+        admission: Arc<Admission>,
+    }
+    impl<T> std::ops::Deref for Receiver<T> {
+        type Target = raw::Receiver<T>;
+        fn deref(&self) -> &Self::Target {
+            &self.inner
+        }
+    }
+    impl<T> Drop for Receiver<T> {
+        fn drop(&mut self) {
+            self.admission.close();
+            while let Ok(value) = self.inner.try_recv() {
+                self.admission.failures.discard(value);
+            }
+        }
+    }
+    pub(crate) fn channel<T>() -> (Sender<T>, Receiver<T>) {
+        let (send, recv) = raw::channel();
+        let admission = Arc::new(Admission::default());
+        (
+            Sender {
+                inner: send,
+                admission: admission.clone(),
+            },
+            Receiver {
+                inner: recv,
+                admission,
+            },
+        )
+    }
+}
 
 #[cfg(feature = "async")]
 fn block_on_drop<F: std::future::Future>(future: F) -> F::Output {

@@ -170,9 +170,9 @@ impl GroupInner {
     ) -> Result<usize, SystemError> {
         let start = selection
             .unwrap_or_else(|| self.cursor.fetch_add(1, Ordering::Relaxed) % self.targets.len());
-        if start >= self.targets.len() {
-            return Err(SystemError::InvalidShard);
-        }
+        // `ExecutionGroup::shard` is the only source of a selection and
+        // rejects indices outside the fixed target list.
+        debug_assert!(start < self.targets.len());
         if let Some(free) = &mut state.free {
             let target = if selection.is_some() {
                 free.get(&start).copied()
