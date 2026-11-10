@@ -149,27 +149,30 @@ fn every_write_saw_zero(log: &[Access], n: usize) -> bool {
     writes(log) == vec![1; n]
 }
 
-/// Depth 2: one lost update between a quick worker and one that first does
-/// `NOISE` polls of unrelated work. The slow worker's read must land in the
-/// quick worker's one-poll window between its read and its write.
+/// Two workers: one lost update between a quick worker and one that first
+/// does `NOISE` polls of unrelated work. The slow worker's read must land in
+/// the quick worker's window between its read and its write.
 const NOISE: u32 = 12;
 
-const DEPTH2_BUG: &str = "both workers read 0 before either wrote";
-const DEPTH3_BUG: &str = "all three workers read 0 before any wrote";
+const TWO_WORKERS_BUG: &str = "both workers read 0 before either wrote";
+const THREE_WORKERS_BUG: &str = "all three workers read 0 before any wrote";
 
-async fn lost_update_depth2() {
+async fn lost_update_two_workers() {
     let log = bump_all(&[0, NOISE]).await;
-    assert!(!every_write_saw_zero(&log, 2), "{DEPTH2_BUG}: {log:?}");
+    assert!(!every_write_saw_zero(&log, 2), "{TWO_WORKERS_BUG}: {log:?}");
 }
 
-/// Three ordering constraints: the three workers (noise 0, NOISE, 2 * NOISE)
-/// all read before any of them writes. (A final value of 1 alone does not
-/// need that: A reads 0, B reads 0, A writes 1, C reads 1 and writes 2, B
-/// writes 1.) Its PCT depth is lower than 3: one demotion of the quick worker
-/// after its read is enough, since store round trips serialize the rest.
-async fn lost_update_depth3() {
+/// Three workers (noise 0, NOISE, 2 * NOISE) all read before any of them
+/// writes. (A final value of 1 alone does not need that: A reads 0, B reads
+/// 0, A writes 1, C reads 1 and writes 2, B writes 1.) This is a schedule
+/// with three ordering constraints, not a claim about its bug depth in the
+/// PCT sense: one demotion already reaches it.
+async fn lost_update_three_workers() {
     let log = bump_all(&[0, NOISE, 2 * NOISE]).await;
-    assert!(!every_write_saw_zero(&log, 3), "{DEPTH3_BUG}: {log:?}");
+    assert!(
+        !every_write_saw_zero(&log, 3),
+        "{THREE_WORKERS_BUG}: {log:?}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -322,22 +325,22 @@ where
 }
 
 #[test]
-fn lost_update_depth2_found_by_pct_and_dfs() {
-    let body = |_| lost_update_depth2();
+fn lost_update_two_workers_found_by_pct_and_dfs() {
+    let body = |_| lost_update_two_workers();
     println!("lost update, depth 2 (noise {NOISE}):");
     // Random is only reported: its count is not a property of the code.
     let _random = run("random", 200, &body);
     let pct = run("pct:d=2", 2_000, &body);
     let dfs = run("dfs:bound=1", 2_000, &body);
-    assert_found(&pct, DEPTH2_BUG);
-    assert_found(&dfs, DEPTH2_BUG);
+    assert_found(&pct, TWO_WORKERS_BUG);
+    assert_found(&dfs, TWO_WORKERS_BUG);
     assert_replays(&pct, &body);
     assert_replays(&dfs, &body);
 }
 
 #[test]
-fn lost_update_depth3_found_by_pct_and_dfs() {
-    let body = |_| lost_update_depth3();
+fn lost_update_three_workers_found_by_pct_and_dfs() {
+    let body = |_| lost_update_three_workers();
     println!(
         "all three read before any write (noise 0, {NOISE}, {}):",
         2 * NOISE
@@ -345,8 +348,8 @@ fn lost_update_depth3_found_by_pct_and_dfs() {
     let _random = run("random", 200, &body);
     let pct = run("pct:d=3", 20_000, &body);
     let dfs = run("dfs:bound=2", 20_000, &body);
-    assert_found(&pct, DEPTH3_BUG);
-    assert_found(&dfs, DEPTH3_BUG);
+    assert_found(&pct, THREE_WORKERS_BUG);
+    assert_found(&dfs, THREE_WORKERS_BUG);
     assert_replays(&pct, &body);
     assert_replays(&dfs, &body);
 }
@@ -357,7 +360,7 @@ fn lost_update_depth3_found_by_pct_and_dfs() {
 /// (the random walk practically never reaches the ordering): the planted
 /// failure and the claimed ordering always coincide, and both occur.
 #[test]
-fn depth3_bug_requires_all_reads_before_any_write() {
+fn three_worker_bug_requires_all_reads_before_any_write() {
     use std::sync::{Arc, Mutex};
     let check = |strategy: &str, noises: &'static [u32], runs: usize| {
         let seen: Arc<Mutex<Vec<Vec<Access>>>> = Arc::default();
@@ -393,9 +396,9 @@ fn depth3_bug_requires_all_reads_before_any_write() {
 }
 
 /// Codex P1 / agy H2 (#218), end to end: three tasks that each record a
-/// step and yield, three steps each. PCT with `d = 3` must reach every
-/// schedule the paper's algorithm can (138 over these runs, including
-/// `AAABBCBCC`); with change points sorted by time it reached 66.
+/// step and yield, three steps each. PCT with `d = 3` reaches `AAABBCBCC`,
+/// which change points sorted by time could not (they reached 66 of these
+/// schedules).
 #[test]
 fn pct_reaches_the_papers_schedules_of_three_yielding_tasks() {
     use std::sync::{Arc, Mutex};
@@ -429,7 +432,8 @@ fn pct_reaches_the_papers_schedules_of_three_yielding_tasks() {
     sweep(&Strategy::parse("pct:d=3,k=9").unwrap(), 0, 20_000, &body);
     let schedules = schedules.lock().unwrap();
     assert!(schedules.contains("AAABBCBCC"), "AAABBCBCC unreachable");
-    assert_eq!(schedules.len(), 138);
+    println!("{} distinct schedules", schedules.len());
+    assert!(schedules.len() > 66, "{}", schedules.len());
 }
 
 #[test]
@@ -520,14 +524,14 @@ fn explore_budget_table() {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(100_000);
-    table("lost update, depth 2", budget, DEPTH2_BUG, |_| {
-        lost_update_depth2()
+    table("lost update, two workers", budget, TWO_WORKERS_BUG, |_| {
+        lost_update_two_workers()
     });
     table(
         "all three read before any write",
         budget,
-        DEPTH3_BUG,
-        |_| lost_update_depth3(),
+        THREE_WORKERS_BUG,
+        |_| lost_update_three_workers(),
     );
     table(
         "PR #204: never-started child ends Stopped",
@@ -557,11 +561,10 @@ where
         }
         let strategy = match Strategy::parse(s).unwrap() {
             Strategy::Dfs { .. } => continue,
-            // PCT's k fixed at the most contested polls seen, so runs are
-            // independent.
+            // PCT's k fixed at the longest run seen, so runs are independent.
             Strategy::Pct { depth, .. } => Strategy::Pct {
                 depth,
-                steps: Some(report.max_contested.max(1)),
+                steps: Some(report.max_polls.max(1)),
                 fair_after: None,
             },
             other => other,
@@ -586,7 +589,7 @@ where
 #[spawned_macros::sim_test(explore = "pct:d=2", iterations = 200)]
 #[should_panic(expected = "both workers read 0 before either wrote")]
 async fn sim_test_pct_finds_lost_update() {
-    lost_update_depth2().await;
+    lost_update_two_workers().await;
 }
 
 /// The harness with a bounded DFS on a bug-free body passes, reporting the
@@ -594,4 +597,51 @@ async fn sim_test_pct_finds_lost_update() {
 #[spawned_macros::sim_test(explore = "dfs:bound=1", iterations = 10_000)]
 async fn sim_test_dfs_passes_bug_free_body() {
     assert_eq!(writes(&bump_all(&[0]).await), vec![1]);
+}
+
+/// Codex (round 2): a PCT failure found with `k` left to the strategy
+/// reproduces from its seed and the reported strategy alone (`k` and the
+/// fairness cutoff filled in), without the tape.
+#[test]
+fn pct_failure_reproduces_from_seed_and_reported_strategy() {
+    let body = |_| lost_update_two_workers();
+    let report = run("pct:d=2", 2_000, &body);
+    assert_found(&report, TWO_WORKERS_BUG);
+    let found = report.found.unwrap();
+    assert!(
+        found.strategy.to_string().contains(",k="),
+        "{}",
+        found.strategy
+    );
+    let again = explore(&found.strategy, found.seed, 1, &body);
+    let again = again
+        .found
+        .expect("seed and strategy did not reproduce the failure");
+    assert_eq!(again.outcome.failure, found.outcome.failure);
+    assert_eq!(again.outcome.tape, found.outcome.tape);
+}
+
+/// Codex/agy (round 2): a body that is not deterministic under the
+/// simulator (here it spawns an extra task every other run) makes DFS stop
+/// at the first diverging run instead of exploring from it, and the report
+/// is not `complete()`.
+#[test]
+fn dfs_stops_and_reports_incomplete_on_divergence() {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static RUNS: AtomicU64 = AtomicU64::new(0);
+    let body = |_| async {
+        let extra = RUNS.fetch_add(1, Ordering::SeqCst) % 2 == 1;
+        let a = spawned_rt::tasks::spawn(sim::yield_now());
+        let b = extra.then(|| spawned_rt::tasks::spawn(sim::yield_now()));
+        let c = spawned_rt::tasks::spawn(sim::yield_now());
+        a.await.unwrap();
+        c.await.unwrap();
+        if let Some(b) = b {
+            b.await.unwrap();
+        }
+    };
+    let report = explore(&Strategy::parse("dfs:bound=2").unwrap(), 0, 1_000, &body);
+    assert!(report.divergences >= 1, "{report:?}");
+    assert_eq!(report.runs, 2, "DFS kept exploring after a divergence");
+    assert!(!report.exhausted && !report.complete(), "{report:?}");
 }

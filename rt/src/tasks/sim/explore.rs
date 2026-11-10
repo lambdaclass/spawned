@@ -2,24 +2,25 @@
 //!
 //! The simulator makes one choice per poll: which ready task runs next. The
 //! default answers it with a seeded random walk. This module adds two
-//! strategies that search that choice space with known guarantees:
+//! systematic strategies:
 //!
 //! - **PCT** (probabilistic concurrency testing, Burckhardt et al., ASPLOS
-//!   2010). Every task gets a random priority when it first becomes ready and
-//!   the highest-priority ready task always runs. `d - 1` change points
-//!   `k_1..k_{d-1}` are drawn uniformly (and distinct) over an estimate `k`
-//!   of the run length; at step `k_i` the task about to run drops to
-//!   priority `i`, below every initial priority. As in the paper, `k_i` is
-//!   associated with priority `i` independently of where it falls in time
-//!   (a later change point can drop a task below an earlier one). Steps are
-//!   counted only at polls where more than one task is ready: a change point
-//!   on an uncontested poll could not change the schedule. The paper's bound
-//!   (a bug of depth `d` is found by one run with probability at least
-//!   `1 / (n * k^(d-1))` for `n` tasks) holds here only under its
-//!   assumptions: `k` must not underestimate the run's contested polls (with
-//!   `k` left to the strategy, it is the longest run seen so far, so early
-//!   runs can underestimate it), and polls after the fairness cutoff below
-//!   are not PCT steps, so a bug that needs them is outside the bound.
+//!   2010), with a poll as the step. Every task gets a random priority when
+//!   it first becomes ready (drawn in task-id order) and the highest-priority
+//!   ready task runs each poll. `d - 1` change points `k_1..k_{d-1}` are
+//!   drawn uniformly (and distinct) from `0..k`; the task that runs poll
+//!   `k_i` then drops to priority `i`, below every initial priority. As in
+//!   the paper, `k_i` is associated with priority `i` independently of where
+//!   it falls in time. A unit test checks the scheduler against an
+//!   independent implementation of the paper's algorithm, including tasks
+//!   that block and are re-enabled. **No probability bound is claimed:** the
+//!   paper's `1 / (n * k^(d-1))` needs `k` to bound the steps of every
+//!   execution and a bug of depth `d` in the paper's sense. Here `k` is an
+//!   estimate (the given `k`, or the longest run seen so far, which early
+//!   runs can underestimate), polls after the fairness cutoff are not PCT
+//!   steps, and a poll is coarser than the paper's instruction step. Treat
+//!   PCT as a well-founded heuristic and measure it. That a strategy with
+//!   `d = 2` or one DFS delay finds a bug does not establish the bug's depth.
 //! - **Bounded DFS over delays.** The same priority scheduler made
 //!   deterministic: priorities start in task-id order, so with no delays it
 //!   is the canonical schedule (always the smallest ready id). A *delay* at a
@@ -72,9 +73,9 @@ pub const DEFAULT_PCT_STEPS: u64 = 100;
 pub enum Strategy {
     /// Seeded uniform random walk, one seed per run (the default scheduler).
     Random,
-    /// PCT with bug depth `depth` (`depth - 1` change points) over a run
-    /// length estimate `steps` (contested polls); `None` estimates it as the
-    /// longest run so far. `fair_after` overrides `SPAWNED_SIM_FAIR_AFTER`.
+    /// PCT with `depth - 1` change points over a run length estimate `steps`
+    /// (polls); `None` estimates it as the longest run so far. `fair_after`
+    /// overrides `SPAWNED_SIM_FAIR_AFTER`.
     Pct {
         depth: u32,
         steps: Option<u64>,
@@ -205,19 +206,31 @@ impl Strategy {
 /// One poll of a PCT or DFS run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Choice {
-    /// Ready tasks at this poll (1 when the poll was not a choice point).
+    /// Ready tasks at this poll.
     pub ready: u32,
-    /// Delays (demotions) applied before picking.
+    /// Delays (DFS: demotions before picking) or change points (PCT: the
+    /// picked task's demotion after this step) applied at this poll.
     pub delays: u32,
-    /// Ready tasks that were not considered because the poll was past the
-    /// strategy's depth or fairness cutoff (0 at a choice point).
-    pub cut: u32,
+    /// Whether this poll was a choice point (false past the strategy's depth
+    /// or fairness cutoff, where alternatives are not explored).
+    pub choice: bool,
+    /// Hash of the sorted ready task ids, to check that a replayed prefix
+    /// met the same ready sets.
+    pub set: u64,
+}
+
+fn set_hash(ready: &[u64]) -> u64 {
+    let mut ids = ready.to_vec();
+    ids.sort_unstable();
+    ids.iter().fold(0xcbf2_9ce4_8422_2325, |h, id| {
+        (h ^ id).wrapping_mul(0x0100_0000_01b3)
+    })
 }
 
 #[derive(Debug)]
 enum Kind {
-    /// `change_points[i]` is the contested step at which the task about to
-    /// run drops to priority `i + 1` (in sampling order, not sorted by time).
+    /// `change_points[i]` is the step after which the task that ran it drops
+    /// to priority `i + 1` (kept in sampling order, not sorted by time).
     Pct {
         change_points: Vec<u64>,
     },
@@ -235,10 +248,8 @@ pub(super) struct Plan {
     /// Higher runs first; ties go to the smaller task id.
     priority: BTreeMap<u64, i64>,
     last_polled: BTreeMap<u64, u64>,
+    /// Polls so far (PCT's steps; every poll before the fairness cutoff).
     step: u64,
-    /// Polls with more than one ready task before the fairness cutoff (PCT's
-    /// steps).
-    contested: u64,
     fair_after: u64,
     demotions: i64,
     choices: Vec<Choice>,
@@ -259,7 +270,6 @@ impl Plan {
             priority: BTreeMap::new(),
             last_polled: BTreeMap::new(),
             step: 0,
-            contested: 0,
             fair_after,
             demotions: 0,
             choices: Vec::new(),
@@ -303,80 +313,73 @@ impl Plan {
     pub(super) fn pick(&mut self, ready: &[u64]) -> usize {
         let step = self.step;
         self.step += 1;
-        for &id in ready {
-            if !self.priority.contains_key(&id) {
-                let priority = match &self.kind {
-                    // Initial PCT priorities are all above the d - 1 change
-                    // priorities 1..d.
-                    Kind::Pct { change_points } => {
-                        change_points.len() as i64 + 1 + (splitmix(&mut self.rng) >> 33) as i64
-                    }
-                    Kind::Delays { .. } => 0,
-                };
-                self.priority.insert(id, priority);
-            }
+        // Tasks seen for the first time get their priorities in id order, so
+        // the draws do not depend on the order their wakers fired.
+        let mut fresh: Vec<u64> = ready
+            .iter()
+            .copied()
+            .filter(|id| !self.priority.contains_key(id))
+            .collect();
+        fresh.sort_unstable();
+        for id in fresh {
+            let priority = match &self.kind {
+                // Initial PCT priorities are all above the d - 1 change
+                // priorities 1..d.
+                Kind::Pct { change_points } => {
+                    change_points.len() as i64 + 1 + (splitmix(&mut self.rng) >> 33) as i64
+                }
+                Kind::Delays { .. } => 0,
+            };
+            self.priority.insert(id, priority);
         }
-        let index = if step >= self.fair_after {
-            self.choices.push(Choice {
-                ready: 1,
-                delays: 0,
-                cut: ready.len() as u32 - 1,
-            });
-            (0..ready.len())
+        let set = set_hash(ready);
+        let (index, delays, choice) = if step >= self.fair_after {
+            let index = (0..ready.len())
                 .min_by_key(|&i| (self.last_polled.get(&ready[i]).copied(), ready[i]))
-                .unwrap_or(0)
+                .unwrap_or(0);
+            (index, 0, false)
         } else {
-            let mut order = self.order(ready);
-            let mut delays = 0;
             match &self.kind {
                 Kind::Pct { change_points } => {
-                    // Change point k_i (the i-th drawn, 1-based) sets the
-                    // task about to run to priority i, below every initial
-                    // priority; whether it ranks above or below another
-                    // demoted task depends on i, not on which came first
+                    // The highest-priority ready task runs this step. If the
+                    // step is change point k_i (the i-th drawn, 1-based), that
+                    // task then drops to priority i, below every initial
+                    // priority; whether it ranks above another demoted task
+                    // depends on i, not on which change came first
                     // (Burckhardt et al. 2010, section 2.5).
-                    if ready.len() > 1 {
-                        let contested = self.contested;
-                        self.contested += 1;
-                        if let Some(i) = change_points.iter().position(|p| *p == contested) {
-                            self.priority.insert(ready[order[0]], i as i64 + 1);
-                            order = self.order(ready);
-                            delays = 1;
-                        }
+                    let index = self.order(ready)[0];
+                    let mut delays = 0;
+                    if let Some(i) = change_points.iter().position(|p| *p == step) {
+                        self.priority.insert(ready[index], i as i64 + 1);
+                        delays = 1;
                     }
-                    self.choices.push(Choice {
-                        ready: ready.len() as u32,
-                        delays,
-                        cut: 0,
-                    });
+                    (index, delays, true)
                 }
                 Kind::Delays { prefix, depth } => {
-                    let (choice_point, wanted) = if step < *depth {
-                        (true, prefix.get(step as usize).copied().unwrap_or(0))
+                    let choice = step < *depth;
+                    let wanted = if choice {
+                        prefix.get(step as usize).copied().unwrap_or(0)
                     } else {
-                        (false, 0)
+                        0
                     };
                     let wanted = wanted.min(ready.len() as u32 - 1);
+                    let mut order = self.order(ready);
                     for _ in 0..wanted {
                         // Demote below everything, including earlier delays.
                         self.demotions += 1;
                         self.priority.insert(ready[order[0]], -self.demotions);
                         order = self.order(ready);
-                        delays += 1;
                     }
-                    self.choices.push(Choice {
-                        ready: if choice_point { ready.len() as u32 } else { 1 },
-                        delays,
-                        cut: if choice_point {
-                            0
-                        } else {
-                            ready.len() as u32 - 1
-                        },
-                    });
+                    (order[0], wanted, choice)
                 }
             }
-            order[0]
         };
+        self.choices.push(Choice {
+            ready: ready.len() as u32,
+            delays,
+            choice,
+            set,
+        });
         self.last_polled.insert(ready[index], step);
         index
     }
@@ -407,30 +410,27 @@ pub struct Report {
     pub failures: usize,
     /// Distinct schedules (by schedule hash) among those runs.
     pub schedules: usize,
-    /// Longest run, in polls.
+    /// Longest run, in polls (PCT's run-length estimate `k` when not given).
     pub max_polls: u64,
-    /// Most contested polls (more than one task ready, before the fairness
-    /// cutoff) in one run: PCT's run length `k`.
-    pub max_contested: u64,
     /// DFS only: every schedule within the bound, with alternatives only
     /// before the depth and fairness cutoffs, was run.
     pub exhausted: bool,
     /// PCT and DFS: some run had more than one ready task at a poll past the
     /// depth or fairness cutoff, so alternatives there were not explored.
     pub truncated: bool,
-    /// DFS only: runs whose replayed prefix did not apply (the program made a
-    /// different choice available than the recorded run); nonzero means the
-    /// body is not deterministic under the simulator.
+    /// DFS only: runs whose replayed prefix did not apply (different ready
+    /// sets or delays than the run that produced it); nonzero means the body
+    /// is not deterministic under the simulator, and the search stopped there.
     pub divergences: usize,
     /// The first failing run.
     pub found: Option<Found>,
 }
 
 impl Report {
-    /// DFS only: the bounded space was exhausted and nothing was cut off, so
-    /// every schedule with at most `bound` delays ran.
+    /// DFS only: the bounded space was exhausted, nothing was cut off and no
+    /// run diverged, so every schedule with at most `bound` delays ran.
     pub fn complete(&self) -> bool {
-        self.exhausted && !self.truncated
+        self.exhausted && !self.truncated && self.divergences == 0
     }
 }
 
@@ -473,7 +473,6 @@ where
         failures: 0,
         schedules: 0,
         max_polls: 0,
-        max_contested: 0,
         exhausted: false,
         truncated: false,
         divergences: 0,
@@ -485,6 +484,8 @@ where
         _ => 0,
     };
     let mut prefix: Vec<u32> = Vec::new();
+    // DFS: the choices of the run that produced `prefix`.
+    let mut parent: Vec<Choice> = Vec::new();
     while report.runs < runs {
         let seed = match strategy {
             Strategy::Dfs { .. } => first_seed,
@@ -506,15 +507,16 @@ where
         hashes.insert(outcome.stats.schedule_hash);
         report.schedules = hashes.len();
         report.max_polls = report.max_polls.max(outcome.stats.steps);
-        let (contested, choices) = plan.map(|p| (p.contested, p.choices)).unwrap_or_default();
-        report.max_contested = report.max_contested.max(contested);
-        report.truncated |= choices.iter().any(|c| c.cut > 0);
-        if !choices
-            .iter()
-            .map(|c| c.delays)
-            .take(prefix.len())
-            .eq(prefix.iter().copied())
-        {
+        let choices = plan.map(|p| p.choices).unwrap_or_default();
+        report.truncated |= choices.iter().any(|c| !c.choice && c.ready > 1);
+        // A DFS run must replay its prefix: the same delays, at polls that
+        // met the same ready sets as the run it came from.
+        let diverged = choices.len() < prefix.len()
+            || prefix.iter().enumerate().any(|(i, &delays)| {
+                let (c, p) = (choices[i], parent[i]);
+                c.delays != delays || c.ready != p.ready || c.set != p.set || c.choice != p.choice
+            });
+        if diverged {
             report.divergences += 1;
         }
         if outcome.failure.is_some() {
@@ -537,11 +539,16 @@ where
             Strategy::Random => {}
             Strategy::Pct { steps, .. } => {
                 if steps.is_none() {
-                    estimate = report.max_contested.max(1);
+                    estimate = report.max_polls.max(1);
                 }
             }
+            // A diverged run says nothing reliable about the tree: stop.
+            Strategy::Dfs { .. } if diverged => break,
             Strategy::Dfs { bound, .. } => match next_prefix(&choices, *bound) {
-                Some(next) => prefix = next,
+                Some(next) => {
+                    prefix = next;
+                    parent = choices;
+                }
                 None => {
                     report.exhausted = true;
                     break;
@@ -563,7 +570,7 @@ fn next_prefix(choices: &[Choice], bound: u32) -> Option<Vec<u32>> {
     }
     (0..choices.len()).rev().find_map(|i| {
         let c = choices[i];
-        (c.delays + 1 < c.ready && used[i] + c.delays < bound).then(|| {
+        (c.choice && c.delays + 1 < c.ready && used[i] + c.delays < bound).then(|| {
             let mut next: Vec<u32> = choices[..i].iter().map(|c| c.delays).collect();
             next.push(c.delays + 1);
             next
@@ -631,33 +638,51 @@ mod tests {
     const TASKS: usize = 3;
     const STEPS: usize = 3;
 
-    /// The paper's algorithm, written independently of `Plan`: the enabled
-    /// thread with the highest priority runs; at step `k_i` the thread about
-    /// to run gets priority `i` (1-based) and the scheduler picks again.
-    fn paper_schedule(initial: &[i64], change_points: &[u64]) -> String {
+    /// A fixture: task `t` can run its step `j` only once every
+    /// `(other, n)` in `needs[t][j]` has run `n` steps.
+    type Needs = [[&'static [(usize, usize)]; STEPS]; TASKS];
+    /// Three always-ready tasks.
+    const FREE: Needs = [[&[]; STEPS]; TASKS];
+    /// Blocking and re-enabling: B's second step waits for A's second, C
+    /// starts only after B's first, and A's last step waits for C's second.
+    const BLOCKING: Needs = [
+        [&[], &[], &[(2, 2)]],
+        [&[], &[(0, 2)], &[]],
+        [&[(1, 1)], &[], &[]],
+    ];
+
+    fn enabled(needs: &Needs, done: &[usize; TASKS]) -> Vec<usize> {
+        (0..TASKS)
+            .filter(|&t| done[t] < STEPS && needs[t][done[t]].iter().all(|&(o, n)| done[o] >= n))
+            .collect()
+    }
+
+    /// The paper's algorithm (Burckhardt et al. 2010, Fig. 2), written
+    /// independently of `Plan`: the enabled thread with the highest priority
+    /// executes the step; if the step is `k_i`, that thread's priority then
+    /// becomes `i` (1-based).
+    fn paper_schedule(needs: &Needs, initial: &[i64], change_points: &[u64]) -> String {
         let mut priority = initial.to_vec();
-        let mut left = [STEPS; TASKS];
+        let mut done = [0; TASKS];
         let mut out = String::new();
-        let highest = |priority: &[i64], left: &[usize]| {
-            (0..TASKS)
-                .filter(|&t| left[t] > 0)
-                .max_by_key(|&t| priority[t])
-                .unwrap()
-        };
-        for step in 0..(TASKS * STEPS) as u64 {
-            let mut t = highest(&priority, &left);
+        let mut step = 0u64;
+        loop {
+            let ready = enabled(needs, &done);
+            let Some(&t) = ready.iter().max_by_key(|&&t| priority[t]) else {
+                break;
+            };
+            done[t] += 1;
+            out.push((b'A' + t as u8) as char);
             if let Some(i) = change_points.iter().position(|&k| k == step) {
                 priority[t] = i as i64 + 1;
-                t = highest(&priority, &left);
             }
-            left[t] -= 1;
-            out.push((b'A' + t as u8) as char);
+            step += 1;
         }
         out
     }
 
     /// The same schedule produced by `Plan` (task ids 1..=3).
-    fn plan_schedule(initial: &[i64], change_points: &[u64]) -> String {
+    fn plan_schedule(needs: &Needs, initial: &[i64], change_points: &[u64]) -> String {
         let mut plan = Plan::new(
             Kind::Pct {
                 change_points: change_points.to_vec(),
@@ -668,36 +693,34 @@ mod tests {
         for (t, &p) in initial.iter().enumerate() {
             plan.priority.insert(t as u64 + 1, p);
         }
-        let mut left = [STEPS; TASKS];
+        let mut done = [0; TASKS];
         let mut out = String::new();
-        while left.iter().any(|&l| l > 0) {
-            let ready: Vec<u64> = (0..TASKS)
-                .filter(|&t| left[t] > 0)
+        loop {
+            let ready: Vec<u64> = enabled(needs, &done)
+                .into_iter()
                 .map(|t| t as u64 + 1)
                 .collect();
+            if ready.is_empty() {
+                break;
+            }
             let t = ready[plan.pick(&ready)] as usize - 1;
-            left[t] -= 1;
+            done[t] += 1;
             out.push((b'A' + t as u8) as char);
         }
         out
     }
 
-    /// Codex/agy: PCT must associate change point `k_i` with priority `i`
-    /// independently of where it falls in time. Sorting the points (the
-    /// earliest always gets priority 1) made `AAABBCBCC` unreachable for three
-    /// always-ready three-step tasks with `d = 3` (66 reachable schedules
-    /// instead of 138). Every assignment of initial priorities and change
-    /// points must give the paper's schedule.
-    #[test]
-    fn pct_change_points_keep_independent_priorities() {
+    /// Every schedule reachable with `d = 3`, by `Plan` and by the paper,
+    /// over all initial priority orders and change-point assignments.
+    fn reachable(needs: &Needs) -> (BTreeSet<String>, BTreeSet<String>) {
         let depth = 3;
         let k = (TASKS * STEPS) as u64;
         let (mut paper, mut ours) = (BTreeSet::new(), BTreeSet::new());
         for order in permutations(TASKS) {
             let initial: Vec<i64> = order.iter().map(|&r| depth + r as i64).collect();
             for points in tuples(depth as usize - 1, k) {
-                let expected = paper_schedule(&initial, &points);
-                let got = plan_schedule(&initial, &points);
+                let expected = paper_schedule(needs, &initial, &points);
+                let got = plan_schedule(needs, &initial, &points);
                 assert_eq!(
                     got, expected,
                     "priorities {initial:?}, change points {points:?}"
@@ -706,20 +729,49 @@ mod tests {
                 ours.insert(got);
             }
         }
-        assert!(ours.contains("AAABBCBCC"));
-        assert_eq!(ours, paper);
-        assert_eq!(ours.len(), 138);
+        (paper, ours)
+    }
 
-        // And the sampled change points keep their draw order: some seeds
-        // put k_1 after k_2 (sorting them was the bug).
-        let unsorted =
-            (0..200u64).any(
-                |seed| match Plan::pct(seed, depth as u32, k, u64::MAX).kind {
-                    Kind::Pct { change_points } => change_points[0] > change_points[1],
-                    Kind::Delays { .. } => unreachable!(),
-                },
-            );
+    /// Codex/agy: PCT follows the paper. The task that executes step `k_i`
+    /// then drops to priority `i`, independently of where `k_i` falls in time
+    /// (sorting the points made `AAABBCBCC` unreachable). Checked against an
+    /// independent implementation of the paper's algorithm, for always-ready
+    /// tasks and for tasks that block and are re-enabled.
+    #[test]
+    fn pct_matches_the_papers_algorithm() {
+        let (paper, ours) = reachable(&FREE);
+        assert_eq!(ours, paper);
+        assert!(ours.contains("AAABBCBCC"), "{} schedules", ours.len());
+        assert_eq!(ours.len(), 126);
+        let (paper, ours) = reachable(&BLOCKING);
+        assert_eq!(ours, paper);
+        assert_eq!(ours.len(), 55);
+
+        // The sampled change points keep their draw order: some seeds put
+        // k_1 after k_2 (sorting them was the bug).
+        let unsorted = (0..200u64).any(|seed| match Plan::pct(seed, 3, 9, u64::MAX).kind {
+            Kind::Pct { change_points } => change_points[0] > change_points[1],
+            Kind::Delays { .. } => unreachable!(),
+        });
         assert!(unsorted, "PCT change points are always drawn in time order");
+    }
+
+    /// Codex (round 2): initial PCT priorities do not depend on the order
+    /// the ready list happens to be in.
+    #[test]
+    fn pct_priorities_do_not_depend_on_ready_order() {
+        for seed in 0..32 {
+            let mut a = Plan::pct(seed, 3, 9, u64::MAX);
+            let mut b = Plan::pct(seed, 3, 9, u64::MAX);
+            let forward = [1, 2, 3, 4];
+            let backward = [4, 3, 2, 1];
+            assert_eq!(
+                forward[a.pick(&forward)],
+                backward[b.pick(&backward)],
+                "seed {seed}"
+            );
+            assert_eq!(a.priority, b.priority, "seed {seed}");
+        }
     }
 
     #[test]
@@ -735,7 +787,8 @@ mod tests {
                 .map(|(i, &r)| Choice {
                     ready: r,
                     delays: prefix.get(i).copied().unwrap_or(0),
-                    cut: 0,
+                    choice: true,
+                    set: i as u64,
                 })
                 .collect();
             let schedule: Vec<u32> = choices.iter().map(|c| c.delays).collect();
