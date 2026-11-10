@@ -1,5 +1,7 @@
 #![cfg(feature = "async")]
 //! Deterministic characterization of executor capacity; no machine-wide tuning.
+// Tests that need OS threads are compiled out under spawned_sim.
+#![cfg_attr(spawned_sim, allow(unused_imports, dead_code))]
 use spawned_concurrency::{
     message::Message,
     tasks::{Actor, ActorStart, Backend, Context, Handler},
@@ -30,6 +32,8 @@ impl Actor for Worker {
 impl Handler<Ping> for Worker {
     async fn handle(&mut self, _: Ping, _: &Context<Self>) {}
 }
+// Not simulated: Blocking backend workers are OS threads.
+#[cfg(not(spawned_sim))]
 #[test]
 fn persistent_blocking_actors_queue_until_a_worker_is_released() {
     let rt = tokio::runtime::Builder::new_multi_thread()

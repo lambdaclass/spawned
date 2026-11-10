@@ -194,7 +194,9 @@ mod native {
     }
 }
 
-#[cfg(feature = "async")]
+// Not simulated: drives Tokio runtimes directly (multi-thread workers and the
+// paused Tokio clock via `tokio::time`), outside the simulator's control.
+#[cfg(all(feature = "async", not(spawned_sim)))]
 mod tasks {
     use super::*;
     use spawned_concurrency::{

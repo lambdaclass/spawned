@@ -36,7 +36,7 @@ fn native_explicit_exit_is_cooperative_and_first_reason_wins() {
 }
 
 #[cfg(feature = "async")]
-#[tokio::test]
+#[spawned_macros::sim_test]
 async fn async_explicit_exit_is_cooperative_and_first_reason_wins() {
     use spawned_concurrency::tasks::{Actor, ActorStart, Context, Handler};
     use std::sync::{
@@ -59,7 +59,7 @@ async fn async_explicit_exit_is_cooperative_and_first_reason_wins() {
         let cleaned = Arc::new(AtomicBool::new(false));
         let actor = Worker(cleaned.clone()).start();
         actor.request(Exit(reason.clone())).await.unwrap();
-        tokio::time::timeout(std::time::Duration::from_secs(5), actor.join())
+        spawned_rt::tasks::timeout(std::time::Duration::from_secs(5), actor.join())
             .await
             .unwrap();
         assert_eq!(actor.child_handle().exit_reason(), Some(reason));

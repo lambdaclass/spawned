@@ -2,6 +2,8 @@
 //! `spawned_test::linearizability` (a Porcupine-style checker). Timed-out work
 //! is pending (may or may not have taken effect), never assumed absent; only a
 //! proven enqueue rejection establishes no effect.
+// Tests that need OS threads are compiled out under spawned_sim.
+#![cfg_attr(spawned_sim, allow(unused_imports, dead_code))]
 #[path = "support/failure_actor.rs"]
 mod actor;
 #[path = "support/bounded_history.rs"]
@@ -183,6 +185,8 @@ fn checker_rejects_wrong_replies_duplicate_dispatch_and_lost_acknowledged_effect
     both(&unknown, false);
 }
 
+// Not simulated: mixes Thread and Blocking backends on OS threads.
+#[cfg(not(spawned_sim))]
 #[test]
 fn concurrent_histories_have_a_legal_sequential_explanation() {
     let cases: usize = std::env::var("SPAWNED_HISTORY_CASES")
@@ -553,6 +557,8 @@ fn store_cases() -> u32 {
         .unwrap()
 }
 
+// Not simulated: drives Task, Thread and native stores from a multi-thread Tokio runtime.
+#[cfg(not(spawned_sim))]
 #[test]
 fn parallel_command_histories_against_a_real_actor_are_linearizable() {
     let rt = runtime();
@@ -620,6 +626,8 @@ fn tripwire_program(seed: u64) -> Program {
     (prefix, branches)
 }
 
+// Not simulated: drives Task, Thread and native stores from a multi-thread Tokio runtime.
+#[cfg(not(spawned_sim))]
 #[test]
 fn checker_rejects_buggy_store_actors() {
     let rt = runtime();
@@ -650,6 +658,8 @@ fn checker_rejects_buggy_store_actors() {
     }
 }
 
+// Not simulated: drives Task, Thread and native stores from a multi-thread Tokio runtime.
+#[cfg(not(spawned_sim))]
 #[test]
 fn bugs_are_caught_by_parallel_branches_alone() {
     // No tripwire prefix: the generated concurrent traffic must expose each

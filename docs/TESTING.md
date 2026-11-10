@@ -309,6 +309,97 @@ Repeat a minimized case to investigate scheduling-dependent failures. Nightly
 CI retains regression files on failure and has an outer job timeout to catch
 hangs that prevent an in-process watchdog from making progress.
 
+### Seeds and decision tapes under `--cfg spawned_sim`
+
+`RUSTFLAGS="--cfg spawned_sim --cfg tokio_unstable"` runs async tests on the
+deterministic simulator in `spawned_rt::tasks::sim` (one thread, seeded choice
+of the next ready task, virtual time). `tokio_unstable` is required: the
+simulator seeds Tokio's thread-local RNG (`select!` branch order, `watch`
+waiter shards) per run, and Tokio only exposes that seed under its own cfg; a
+build with `spawned_sim` alone fails with a `compile_error!`.
+
+Tests written with `#[spawned_macros::sim_test]` (or
+`spawned_rt::tasks::sim_test`) run once on Tokio in normal builds and over
+seeds `0..SPAWNED_SIM_SEEDS` (default 8) under the cfg. A failure prints the
+seed, a `SPAWNED_SIM_SEED=n` replay command (carrying `SPAWNED_SIM_SPIN` and
+`SPAWNED_SIM_MAX_STEPS` if they were set), and the path of a decision tape
+with a `SPAWNED_SIM_TAPE=path` replay command. The tape records the seed, the
+spin limit and every pick and clock jump. Tapes replay by task id, so they
+survive changes in random-number consumption. Replay is strict: clock jumps
+come from the tape, and a pick whose task is not ready, a tape that runs out,
+or decisions left over (also after a failure, and for a bare
+`Runtime::replay`) fail the run as `replay diverged` rather than running a
+different schedule. Each clock jump must stay between the current time and
+the earliest pending timer (and equal that timer when nothing is ready), and
+each canonical pick is checked against the task id the tape recorded. The harness also writes a `.min.tape` shrunk toward the
+canonical schedule (`SPAWNED_SIM_SHRINK=0` disables shrinking); the shrinker
+guides candidates permissively but keeps one only if its recorded tape fails
+the same way under strict replay. Library time (restart windows, backoff
+jitter seeding, shutdown deadlines, metrics) reads `spawned_rt::time`, which is
+virtual under the cfg.
+
+Other `#[test]`s in a simulated binary that build a runtime with
+`spawned_rt::tasks::Runtime::new()` run on the simulator too, but only with
+seed 0 (or `SPAWNED_SIM_SEED`); they are not seed sweeps.
+
+**What the simulator does not model.** Determinism and replay hold only within
+these limits:
+
+- Everything a task does inside one poll is atomic: there is no OS preemption
+  between two statements without an `.await`, and no weak-memory reordering.
+  Races that need one (the PR #209 readiness/gate race) are invisible.
+- Tokio's cooperative budget is emulated (each poll runs inside a per-run
+  Tokio context, so a task is forced to yield after 128 ready channel
+  operations, as on Tokio), but Tokio's timer, I/O and blocking pools are not:
+  a direct `tokio::spawn` fails the run, and direct `tokio::time` use panics.
+- Timers fire only when no task is ready, or after `SPAWNED_SIM_SPIN` busy
+  polls (default 10,000) when the clock creeps by 1 ms; every 100 creeps
+  without an idle moment that threshold halves, down to one poll per
+  millisecond. A real clock would fire timers at wall-clock moments in the
+  middle of busy work, at a rate unrelated to poll counts.
+- One thread: Thread, Blocking, native and pinned placements, dedicated
+  runtimes and `spawn_blocking` do not run. A poll with no await point that
+  never returns trips a wall-clock watchdog (`SPAWNED_SIM_POLL_TIMEOUT`,
+  default 60 s) that aborts the process.
+- Direct `std::time`/`SystemTime` reads, `std::thread`, Tokio I/O and
+  direct Tokio timers are outside its control.
+- Remaining nondeterminism between runs in one process: actor, monitor and
+  registration ids come from process-global counters (their order within a
+  run is fixed, their values depend on earlier tests), and the name
+  registry, failpoint configuration and their counters are process-global
+  state shared by every world. `spawned_rt::time::Instant` read on a thread
+  with no live simulation falls back to wall-clock time. The poll watchdog is
+  wall-clock based: a debugger pause or an overloaded machine can trip it
+  (it only ever aborts, never changes a schedule); `SPAWNED_SIM_POLL_TIMEOUT=0`
+  disables it. `registry::registered()` returns names sorted, so its order
+  does not depend on the hash map's random state. Also wall-clock based:
+  the experimental time slice of `backend-experiments` actors
+  (`std::time::Instant`) and `FailScenario::setup()` without
+  `SPAWNED_FAILPOINTS_SEED` (seeded from `SystemTime`; use `with_seed`).
+  The harness's panic-output filter installs one process-wide panic hook.
+
+Excluded under the cfg (compiled out with `#[cfg(not(spawned_sim))]`, so not
+simulated at all): tests that need OS threads or a real Tokio runtime, in
+`actor_scenarios`, `backend_resource_limits`, `canary_feedback`,
+`cancellation_safety`, `cross_backend` (non-async placements and the fan-out
+and monitor workloads), `dedicated_runtime`, `delivery_simulation`,
+`execution_groups`, `execution_profiles`, `failure_windows`, `leaks`,
+`mailbox_drop_panic`, `nested_supervision`, `panic_safety`,
+`process_failures`, `protocol_compile`, `request_histories`,
+`resource_cleanup`, `semantics_gaps` (its async module), `shutdown_publication`, `startup_admission`,
+`supervision_strategies` and `supervision`. `leaks` replaces its excluded
+async checks with a `sim_leaks` module (actor, cycle, timer, monitor-waiter,
+system-actor and helper releases, counted from the simulator's task table over
+8 seeds), and `cross_backend` runs each async placement over 4 simulated seeds
+and compares all of them. The `testing` crate's kits and the
+threads-mode tests run their native threads unsimulated even in a simulator
+build.
+
+```sh
+RUSTFLAGS="--cfg spawned_sim --cfg tokio_unstable" CARGO_TARGET_DIR=target/sim \
+  cargo test -p spawned-concurrency --test supervision --test sim
+```
+
 ## Scope
 
 This is generated, model-checked scenario testing on real runtimes, not an

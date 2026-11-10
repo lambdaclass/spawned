@@ -66,7 +66,8 @@ fn native_propagated_kill_is_trappable_but_direct_kill_is_not() {
     ));
 }
 
-#[cfg(feature = "async")]
+// Not simulated: observes the links from spawn_blocking on OS threads.
+#[cfg(all(feature = "async", not(spawned_sim)))]
 #[tokio::test]
 async fn async_propagated_kill_is_trappable_but_direct_kill_is_not() {
     use spawned_concurrency::tasks::{Actor, ActorStart, Context, Handler};

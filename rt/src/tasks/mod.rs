@@ -22,6 +22,8 @@ compile_error!(
     "--cfg spawned_sim needs --cfg tokio_unstable too: \
      RUSTFLAGS=\"--cfg spawned_sim --cfg tokio_unstable\""
 );
+mod sim_test;
+pub use sim_test::{sim_test, SimTest};
 
 #[cfg(feature = "backend-experiments")]
 mod dispatch_gate;
@@ -36,8 +38,8 @@ pub mod affinity;
 
 #[cfg(spawned_sim)]
 pub use crate::tasks::sim::{
-    block_in_place, sleep, spawn, spawn_blocking, task_id, timeout, unconstrained, Handle,
-    JoinHandle, Runtime, RuntimeFlavor,
+    block_in_place, sleep, spawn, spawn_blocking, task_id, timeout, unconstrained, yield_now,
+    Handle, JoinHandle, Runtime, RuntimeFlavor,
 };
 pub use crate::tasks::tokio::mpsc;
 pub use crate::tasks::tokio::oneshot;
@@ -49,8 +51,8 @@ pub use crate::tasks::tokio::watch;
 pub use crate::tasks::tokio::CancellationToken;
 #[cfg(not(spawned_sim))]
 pub use crate::tasks::tokio::{
-    block_in_place, spawn, spawn_blocking, task_id, unconstrained, Handle, JoinHandle, Runtime,
-    RuntimeFlavor,
+    block_in_place, spawn, spawn_blocking, task_id, unconstrained, yield_now, Handle, JoinHandle,
+    Runtime, RuntimeFlavor,
 };
 pub use crate::tasks::tokio::{BroadcastStream, ReceiverStream};
 use std::future::Future;

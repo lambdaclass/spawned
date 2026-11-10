@@ -1,4 +1,6 @@
 #![cfg(feature = "async")]
+// Tests that need OS threads are compiled out under spawned_sim.
+#![cfg_attr(spawned_sim, allow(unused_imports, dead_code))]
 use spawned_concurrency::{
     message::Message,
     system::{ActorSystem, SystemError},
@@ -32,7 +34,9 @@ impl Handler<Down> for Worker {
     async fn handle(&mut self, _: Down, _: &Context<Self>) {}
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+// Not simulated: asserts OS worker thread names.
+#[cfg(not(spawned_sim))]
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn owned_groups_communicate_and_close_with_stale_handles() {
     let system = ActorSystem::new().unwrap();
     let a = system.async_group("critical", 1).unwrap();
@@ -108,7 +112,7 @@ impl Actor for Starting {
         self.stopped.fetch_add(1, Ordering::SeqCst);
     }
 }
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn expired_shutdown_retains_closed_runtime_until_startup_cleanup_finishes() {
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("slow-start", 1).unwrap();
@@ -122,7 +126,10 @@ async fn expired_shutdown_retains_closed_runtime_until_startup_cleanup_finishes(
     }
     .start_on(&group)
     .unwrap();
-    tokio::time::timeout(LIMIT, entered).await.unwrap().unwrap();
+    spawned_rt::tasks::timeout(LIMIT, entered)
+        .await
+        .unwrap()
+        .unwrap();
     let report = system.shutdown(Duration::from_millis(5)).await;
     assert!(!report.complete);
     assert_eq!(report.unfinished_groups, ["slow-start"]);
@@ -159,7 +166,7 @@ impl Actor for WithHelper {
         self.registered.take().unwrap().send(()).unwrap();
     }
 }
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn shutdown_joins_helper_drops_and_generation_owned_registration() {
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("helpers", 1).unwrap();
@@ -185,7 +192,9 @@ async fn shutdown_joins_helper_drops_and_generation_owned_registration() {
     .is_none());
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+// Not simulated: drops the system from a foreign OS thread.
+#[cfg(not(spawned_sim))]
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn dropping_system_requests_shutdown_without_an_ambient_runtime() {
     let system = ActorSystem::new().unwrap();
     assert!(system.async_group("bad", 0).is_err());
@@ -195,14 +204,16 @@ async fn dropping_system_requests_shutdown_without_an_ambient_runtime() {
     actor.ready().await.unwrap();
     std::thread::spawn(move || drop(system)).join().unwrap();
     assert_eq!(
-        tokio::time::timeout(LIMIT, actor.child_handle().wait_exit_async())
+        spawned_rt::tasks::timeout(LIMIT, actor.child_handle().wait_exit_async())
             .await
             .unwrap(),
         ExitReason::Shutdown
     );
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+// Not simulated: uses spawn_blocking.
+#[cfg(not(spawned_sim))]
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn registered_blocking_work_keeps_runtime_owned_until_native_completion() {
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("blocking-helper", 1).unwrap();
@@ -220,7 +231,10 @@ async fn registered_blocking_work_keeps_runtime_owned_until_native_completion() 
             let _ = release_rx.recv();
         })
         .unwrap();
-    tokio::time::timeout(LIMIT, entered).await.unwrap().unwrap();
+    spawned_rt::tasks::timeout(LIMIT, entered)
+        .await
+        .unwrap()
+        .unwrap();
     helper.abort(); // Active native code cannot be preempted.
     drop(helper);
     let report = system.shutdown(Duration::from_millis(10)).await;
@@ -231,7 +245,9 @@ async fn registered_blocking_work_keeps_runtime_owned_until_native_completion() 
     assert_eq!(dropped.load(Ordering::SeqCst), 1);
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+// Not simulated: uses spawn_blocking.
+#[cfg(not(spawned_sim))]
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn scoped_helpers_report_panics_and_framework_abort_drops_payload() {
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("helper-errors", 1).unwrap();
@@ -270,7 +286,9 @@ async fn scoped_helpers_report_panics_and_framework_abort_drops_payload() {
     assert!(system.shutdown(LIMIT).await.complete);
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+// Not simulated: asserts OS worker thread names.
+#[cfg(not(spawned_sim))]
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn ambient_actor_started_inside_group_is_unmanaged_and_aborted_at_teardown() {
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("ambient-child", 1).unwrap();
@@ -325,7 +343,7 @@ impl Handler<Queued> for FailedStartup {
         drop(msg.0);
     }
 }
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn failed_startup_discards_queued_payloads_and_reply_channels_without_dispatch() {
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("failed-startup", 1).unwrap();
@@ -342,17 +360,22 @@ async fn failed_startup_discards_queued_payloads_and_reply_channels_without_disp
     }
     .start_on(&group)
     .unwrap();
-    tokio::time::timeout(LIMIT, entered).await.unwrap().unwrap();
+    spawned_rt::tasks::timeout(LIMIT, entered)
+        .await
+        .unwrap()
+        .unwrap();
     let reply = actor.request_raw(Queued(Probe(dropped.clone()))).unwrap();
     actor.send(Queued(Probe(dropped.clone()))).unwrap();
     assert_eq!(handled.load(Ordering::SeqCst), 0);
     release.send(()).unwrap();
     assert!(matches!(
-        tokio::time::timeout(LIMIT, actor.ready()).await.unwrap(),
+        spawned_rt::tasks::timeout(LIMIT, actor.ready())
+            .await
+            .unwrap(),
         Err(SystemError::StartupFailed(ExitReason::Panic(_)))
     ));
     assert!(matches!(
-        tokio::time::timeout(LIMIT, actor.wait_exit())
+        spawned_rt::tasks::timeout(LIMIT, actor.wait_exit())
             .await
             .unwrap(),
         ExitReason::Panic(_)
@@ -364,7 +387,7 @@ async fn failed_startup_discards_queued_payloads_and_reply_channels_without_disp
     assert!(system.shutdown(LIMIT).await.complete);
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn old_scope_cleanup_cannot_remove_a_replacement_registration() {
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("registry-replacement", 1).unwrap();
@@ -408,7 +431,7 @@ impl ManagedProtocolActor {
         self.0
     }
 }
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn generated_protocols_work_unchanged_with_explicit_group_placement() {
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("generated-protocol", 1).unwrap();
@@ -419,7 +442,7 @@ async fn generated_protocols_work_unchanged_with_explicit_group_placement() {
     assert!(actor.value().await.is_err());
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn stuck_standalone_cleanup_does_not_leave_earlier_actor_running_forever() {
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("stuck-standalone-order", 1).unwrap();
@@ -446,9 +469,12 @@ async fn stuck_standalone_cleanup_does_not_leave_earlier_actor_running_forever()
     last.ready().await.unwrap();
     let report = system.shutdown(Duration::from_millis(20)).await;
     assert!(!report.complete);
-    tokio::time::timeout(LIMIT, entered).await.unwrap().unwrap();
+    spawned_rt::tasks::timeout(LIMIT, entered)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(
-        tokio::time::timeout(LIMIT, first.wait_exit())
+        spawned_rt::tasks::timeout(LIMIT, first.wait_exit())
             .await
             .unwrap(),
         ExitReason::Shutdown
@@ -463,7 +489,7 @@ struct StartupPanicAfterStop {
 impl Actor for StartupPanicAfterStop {
     async fn started(&mut self, ctx: &Context<Self>) {
         ctx.stop();
-        tokio::task::yield_now().await;
+        spawned_rt::tasks::yield_now().await;
         if !self.in_stopped {
             panic!("startup panic after stop");
         }
@@ -472,7 +498,7 @@ impl Actor for StartupPanicAfterStop {
         panic!("cleanup panic after startup stop");
     }
 }
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn readiness_reports_actual_panic_after_startup_stop_instead_of_early_normal() {
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("startup-panic-cause", 2).unwrap();
@@ -481,7 +507,9 @@ async fn readiness_reports_actual_panic_after_startup_stop_instead_of_early_norm
             let actor = StartupPanicAfterStop { in_stopped }
                 .start_on(&group)
                 .unwrap();
-            let ready = tokio::time::timeout(LIMIT, actor.ready()).await.unwrap();
+            let ready = spawned_rt::tasks::timeout(LIMIT, actor.ready())
+                .await
+                .unwrap();
             assert!(matches!(
                 ready,
                 Err(SystemError::StartupFailed(ExitReason::Panic(_)))
@@ -500,7 +528,7 @@ impl Actor for SnapshotHeld {
         let _ = self.release.take().unwrap().await;
     }
 }
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn concurrent_zero_deadline_reports_include_scopes_during_shutdown_initialization() {
     let system = Arc::new(ActorSystem::new().unwrap());
     let group = system.async_group("concurrent-reports", 1).unwrap();
@@ -514,9 +542,9 @@ async fn concurrent_zero_deadline_reports_include_scopes_during_shutdown_initial
     let mut reporters = Vec::new();
     for _ in 0..64 {
         let owner = system.clone();
-        reporters.push(tokio::spawn(
-            async move { owner.shutdown(Duration::ZERO).await },
-        ));
+        reporters.push(spawned_rt::tasks::spawn(async move {
+            owner.shutdown(Duration::ZERO).await
+        }));
     }
     for reporter in reporters {
         let report = reporter.await.unwrap();
@@ -548,7 +576,7 @@ impl Actor for Dependent {
         self.observed.fetch_add(1, Ordering::SeqCst);
     }
 }
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn ordered_shutdown_preserves_ordinary_calls_but_closes_new_helper_admission() {
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("shutdown-admission", 1).unwrap();
@@ -577,7 +605,7 @@ async fn ordered_shutdown_preserves_ordinary_calls_but_closes_new_helper_admissi
 
 /// Aborting a registered helper makes its join report cancellation
 /// (ScopedTask::abort and the cancelled branch of ScopedTask::join).
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn aborted_scoped_helper_joins_as_cancelled() {
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("helper-abort", 1).unwrap();
@@ -588,7 +616,7 @@ async fn aborted_scoped_helper_joins_as_cancelled() {
         .spawn_helper(std::future::pending::<()>())
         .unwrap();
     helper.abort();
-    let joined = tokio::time::timeout(LIMIT, helper.join())
+    let joined = spawned_rt::tasks::timeout(LIMIT, helper.join())
         .await
         .expect("aborted helper never completed");
     assert_eq!(
@@ -599,7 +627,7 @@ async fn aborted_scoped_helper_joins_as_cancelled() {
 }
 
 /// Group names and worker budgets are validated and reported back.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn groups_validate_names_and_report_their_budget() {
     let system = ActorSystem::new().unwrap();
     for name in ["", "nul\0name"] {
@@ -618,7 +646,7 @@ async fn groups_validate_names_and_report_their_budget() {
     assert!(system.shutdown(LIMIT).await.complete);
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn closed_system_rejects_new_groups_and_completed_reports_stay_complete() {
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("closing", 1).unwrap();
@@ -629,7 +657,7 @@ async fn closed_system_rejects_new_groups_and_completed_reports_stay_complete() 
     let report = system.shutdown(LIMIT).await;
     assert!(report.complete);
     // A completed report has nothing left to wait for.
-    let again = tokio::time::timeout(LIMIT, report.wait(Duration::ZERO))
+    let again = spawned_rt::tasks::timeout(LIMIT, report.wait(Duration::ZERO))
         .await
         .unwrap();
     assert!(again.complete);
@@ -637,6 +665,8 @@ async fn closed_system_rejects_new_groups_and_completed_reports_stay_complete() 
         system.async_group("late", 1),
         Err(SystemError::Closed)
     ));
+    // Native groups need OS threads, which the simulator rejects first.
+    #[cfg(not(spawned_sim))]
     assert!(matches!(
         system.thread_group("late-native", 1),
         Err(SystemError::Closed)
@@ -645,6 +675,8 @@ async fn closed_system_rejects_new_groups_and_completed_reports_stay_complete() 
     assert!(matches!(Worker.start_on(&group), Err(SystemError::Closed)));
 }
 
+// Not simulated: shards belong to native thread groups.
+#[cfg(not(spawned_sim))]
 #[test]
 fn shard_selection_accepts_every_slot_and_rejects_the_next() {
     let system = ActorSystem::new().unwrap();

@@ -1,4 +1,6 @@
 //! Controlled handler-progress simulation, not a replacement Tokio/OS scheduler.
+// Tests that need OS threads are compiled out under spawned_sim.
+#![cfg_attr(spawned_sim, allow(unused_imports, dead_code))]
 #[path = "support/failure_actor.rs"]
 mod actor;
 use actor::*;
@@ -183,6 +185,8 @@ impl<'a> World<'a> {
     }
 }
 
+// Not simulated: replays against every execution mode, including OS-thread ones.
+#[cfg(not(spawned_sim))]
 #[test]
 fn finite_model_witnesses_replay_against_all_execution_modes() {
     let mut visited = HashSet::from([INITIAL]);
@@ -219,6 +223,8 @@ fn finite_model_witnesses_replay_against_all_execution_modes() {
     println!("125 bounded abstract states; 500 real-backend witness replays; no claim of exhaustive Rust schedules");
 }
 
+// Not simulated: replays against every execution mode, including OS-thread ones.
+#[cfg(not(spawned_sim))]
 #[test]
 fn seeded_handler_interleavings_have_identical_audit_fingerprints() {
     let cases: usize = std::env::var("SPAWNED_SIM_CASES")

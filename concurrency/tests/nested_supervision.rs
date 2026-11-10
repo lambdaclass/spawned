@@ -1,4 +1,6 @@
 #![cfg(feature = "async")]
+// Tests that need OS threads are compiled out under spawned_sim.
+#![cfg_attr(spawned_sim, allow(unused_imports, dead_code))]
 use spawned_concurrency::{
     message::Message,
     supervision::{
@@ -54,7 +56,7 @@ impl Handler<Crash> for Counter {
 }
 type Published = Arc<Mutex<Option<SupervisedChild<Counter>>>>;
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn nested_budget_failure_reconstructs_fresh_subtree_and_preserves_parent_sibling() {
     let system = ActorSystem::new().unwrap();
     let controls = system.async_group("tree-controls", 1).unwrap();
@@ -96,10 +98,11 @@ async fn nested_budget_failure_reconstructs_fresh_subtree_and_preserves_parent_s
     let sibling_id = sibling.current().unwrap().id();
     assert_eq!(old_leaf.request(Next).await.unwrap(), 1);
     assert!(old_leaf.request(Crash).await.is_err());
-    let replacement = tokio::time::timeout(LIMIT, subtree.wait_for_generation(old_slot.generation))
-        .await
-        .unwrap()
-        .unwrap();
+    let replacement =
+        spawned_rt::tasks::timeout(LIMIT, subtree.wait_for_generation(old_slot.generation))
+            .await
+            .unwrap()
+            .unwrap();
     assert_ne!(subtree.snapshot().actor_id, old_slot.actor_id);
     assert_eq!(calls.load(Ordering::SeqCst), 2);
     assert!(old_tree.failure().unwrap().contains("budget exhausted"));
@@ -119,7 +122,7 @@ async fn nested_budget_failure_reconstructs_fresh_subtree_and_preserves_parent_s
     // The parent allowed exactly one subtree replacement. A second exhausted
     // leaf escalates through that parent budget, rather than constructing again.
     assert!(new_leaf.request(Crash).await.is_err());
-    tokio::time::timeout(LIMIT, supervisor.join())
+    spawned_rt::tasks::timeout(LIMIT, supervisor.join())
         .await
         .unwrap();
     assert!(supervisor.failure().unwrap().contains("budget exhausted"));
@@ -129,7 +132,7 @@ async fn nested_budget_failure_reconstructs_fresh_subtree_and_preserves_parent_s
     assert!(system.shutdown(LIMIT).await.complete);
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn failed_nested_startup_is_cleaned_before_parent_retries() {
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("nested-startup", 1).unwrap();
@@ -159,7 +162,7 @@ async fn failed_nested_startup_is_cleaned_before_parent_retries() {
             },
         ))
         .unwrap();
-    let supervisor = tokio::time::timeout(LIMIT, root.start())
+    let supervisor = spawned_rt::tasks::timeout(LIMIT, root.start())
         .await
         .unwrap()
         .unwrap();
@@ -180,7 +183,7 @@ impl Actor for HoldStart {
         let _ = self.release.take().unwrap().await;
     }
 }
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn cancellation_during_nested_startup_retains_parent_scope_until_descendants_finish() {
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("nested-cancel", 1).unwrap();
@@ -208,8 +211,11 @@ async fn cancellation_during_nested_startup_retains_parent_scope_until_descendan
         },
     ))
     .unwrap();
-    let startup = tokio::spawn(root.start());
-    tokio::time::timeout(LIMIT, entered).await.unwrap().unwrap();
+    let startup = spawned_rt::tasks::spawn(root.start());
+    spawned_rt::tasks::timeout(LIMIT, entered)
+        .await
+        .unwrap()
+        .unwrap();
     startup.abort();
     assert!(startup.await.is_err());
     let mut report = system.shutdown(Duration::from_millis(20)).await;
@@ -235,7 +241,7 @@ async fn cancellation_during_nested_startup_retains_parent_scope_until_descendan
     assert!(report.wait(LIMIT).await.complete);
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn nested_supervisors_can_form_multiple_levels_and_stop_from_the_root() {
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("three-level-tree", 1).unwrap();
@@ -264,7 +270,7 @@ async fn nested_supervisors_can_form_multiple_levels_and_stop_from_the_root() {
             },
         ))
         .unwrap();
-    let supervisor = tokio::time::timeout(LIMIT, root.start())
+    let supervisor = spawned_rt::tasks::timeout(LIMIT, root.start())
         .await
         .unwrap()
         .unwrap();
@@ -274,7 +280,9 @@ async fn nested_supervisors_can_form_multiple_levels_and_stop_from_the_root() {
     assert!(system.shutdown(LIMIT).await.complete);
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+// Not simulated: native groups need OS threads.
+#[cfg(not(spawned_sim))]
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn native_leaf_helper_blocks_subtree_replacement_and_remains_owned_after_adapter_exit() {
     let system = ActorSystem::new().unwrap();
     let controls = system.async_group("nested-helper-controls", 1).unwrap();
@@ -319,11 +327,14 @@ async fn native_leaf_helper_blocks_subtree_replacement_and_remains_owned_after_a
             release_rx.recv_timeout(LIMIT).unwrap();
         })
         .unwrap();
-    tokio::time::timeout(LIMIT, entered).await.unwrap().unwrap();
+    spawned_rt::tasks::timeout(LIMIT, entered)
+        .await
+        .unwrap()
+        .unwrap();
     assert!(leaf.request(Crash).await.is_err());
-    tokio::time::timeout(LIMIT, async {
+    spawned_rt::tasks::timeout(LIMIT, async {
         while supervisor.failure().is_none() {
-            tokio::task::yield_now().await;
+            spawned_rt::tasks::yield_now().await;
         }
     })
     .await
@@ -345,7 +356,7 @@ impl Actor for HeldStop {
         self.0.notified().await;
     }
 }
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn late_nested_cleanup_failures_are_retained_in_parent_and_system_reports() {
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("nested-late-cleanup", 2).unwrap();
@@ -372,9 +383,9 @@ async fn late_nested_cleanup_failures_are_retained_in_parent_and_system_reports(
     let supervisor = root.start().await.unwrap();
     let inner = nested.current().unwrap();
     supervisor.stop();
-    tokio::time::timeout(LIMIT, async {
+    spawned_rt::tasks::timeout(LIMIT, async {
         while inner.failure().is_none() {
-            tokio::task::yield_now().await;
+            spawned_rt::tasks::yield_now().await;
         }
     })
     .await
@@ -394,7 +405,7 @@ async fn late_nested_cleanup_failures_are_retained_in_parent_and_system_reports(
         .any(|failure| failure.contains("nested supervisor cleanup failed")));
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn aborted_initial_startup_rolls_back_before_a_later_stuck_shutdown_target() {
     let system = Arc::new(ActorSystem::new().unwrap());
     let group = system.async_group("startup-admission-close", 2).unwrap();
@@ -410,8 +421,8 @@ async fn aborted_initial_startup_rolls_back_before_a_later_stuck_shutdown_target
         }
     }))
     .unwrap();
-    let startup = tokio::spawn(root.start());
-    tokio::time::timeout(LIMIT, entered.notified())
+    let startup = spawned_rt::tasks::spawn(root.start());
+    spawned_rt::tasks::timeout(LIMIT, entered.notified())
         .await
         .unwrap();
     let release = Arc::new(tokio::sync::Notify::new());
@@ -419,13 +430,17 @@ async fn aborted_initial_startup_rolls_back_before_a_later_stuck_shutdown_target
     let later = HeldStop(release.clone()).start_on(&group).unwrap();
     later.ready().await.unwrap();
     let owner = system.clone();
-    let shutdown = tokio::spawn(async move { owner.shutdown(Duration::from_secs(30)).await });
+    let shutdown =
+        spawned_rt::tasks::spawn(async move { owner.shutdown(Duration::from_secs(30)).await });
     // The first shutdown grace is deliberately much longer than this bound.
-    let result = tokio::time::timeout(LIMIT, startup).await.unwrap().unwrap();
+    let result = spawned_rt::tasks::timeout(LIMIT, startup)
+        .await
+        .unwrap()
+        .unwrap();
     assert!(matches!(result, Err(SupervisorError::Stopped)));
     release.notify_one();
     assert!(
-        tokio::time::timeout(LIMIT, shutdown)
+        spawned_rt::tasks::timeout(LIMIT, shutdown)
             .await
             .unwrap()
             .unwrap()
@@ -433,7 +448,7 @@ async fn aborted_initial_startup_rolls_back_before_a_later_stuck_shutdown_target
     );
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn wait_ready_resolves_the_running_subtree() {
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("nested-ready", 1).unwrap();
@@ -453,7 +468,7 @@ async fn wait_ready_resolves_the_running_subtree() {
         ))
         .unwrap();
     let supervisor = root.start().await.unwrap();
-    let ready = tokio::time::timeout(LIMIT, subtree.wait_ready())
+    let ready = spawned_rt::tasks::timeout(LIMIT, subtree.wait_ready())
         .await
         .unwrap()
         .unwrap();
@@ -467,7 +482,7 @@ async fn wait_ready_resolves_the_running_subtree() {
     assert!(system.shutdown(LIMIT).await.complete);
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn subtree_startup_timeout_bounds_a_hung_child_factory() {
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("nested-startup-timeout", 1).unwrap();
@@ -485,7 +500,7 @@ async fn subtree_startup_timeout_bounds_a_hung_child_factory() {
         .startup_timeout(Duration::from_millis(50)),
     )
     .unwrap();
-    let started = tokio::time::timeout(Duration::from_secs(3), root.start())
+    let started = spawned_rt::tasks::timeout(Duration::from_secs(3), root.start())
         .await
         .expect("subtree startup_timeout did not bound the hung child");
     assert!(started.is_err());
@@ -510,7 +525,7 @@ impl Handler<Crash> for MaybeStop {
 /// A Transient leaf's failed replacement (stops before readiness) is retried
 /// inside its own subtree; when the subtree's budget runs out, the subtree
 /// fails and escalates, and the parent replaces it.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn nested_failed_replacement_retries_then_escalates_on_exhaustion() {
     for (inner_budget, escalates) in [(5, false), (1, true)] {
         let always = escalates;
@@ -548,7 +563,7 @@ async fn nested_failed_replacement_retries_then_escalates_on_exhaustion() {
         let old_leaf = published.lock().unwrap().take().unwrap();
         assert!(old_leaf.current().unwrap().request(Crash).await.is_err());
         if escalates {
-            tokio::time::timeout(LIMIT, subtree.wait_for_generation(1))
+            spawned_rt::tasks::timeout(LIMIT, subtree.wait_for_generation(1))
                 .await
                 .unwrap()
                 .unwrap();
@@ -557,7 +572,7 @@ async fn nested_failed_replacement_retries_then_escalates_on_exhaustion() {
             assert_eq!(new_leaf.snapshot().generation, 1);
             assert!(new_leaf.current().is_ok());
         } else {
-            tokio::time::timeout(LIMIT, old_leaf.wait_for_generation(2))
+            spawned_rt::tasks::timeout(LIMIT, old_leaf.wait_for_generation(2))
                 .await
                 .unwrap()
                 .unwrap();

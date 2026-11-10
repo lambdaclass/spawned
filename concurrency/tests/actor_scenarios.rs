@@ -1,4 +1,6 @@
 //! Generated lifecycle scenarios. See docs/TESTING.md for replay and guarantees.
+// Tests that need OS threads are compiled out under spawned_sim.
+#![cfg_attr(spawned_sim, allow(unused_imports, dead_code))]
 use proptest::prelude::*;
 use spawned_concurrency::{
     message::Message, ActorError, ChildHandle, Down, ExitReason, MonitorRef,
@@ -322,6 +324,8 @@ fn scenario_config() -> ProptestConfig {
 
 proptest! {
     #![proptest_config(scenario_config())]
+    // Not simulated: builds its own multi-thread Tokio runtime and mixes backends.
+    #[cfg(not(spawned_sim))]
     #[test]
     fn generated_actor_scenarios(
         count in 2usize..9,
@@ -332,6 +336,8 @@ proptest! {
     }
 }
 
+// Not simulated: builds its own multi-thread Tokio runtime and mixes backends.
+#[cfg(not(spawned_sim))]
 #[test]
 fn lifecycle_race_regression() {
     for backend in backends() {
@@ -339,6 +345,8 @@ fn lifecycle_race_regression() {
     }
 }
 
+// Not simulated: builds its own multi-thread Tokio runtime and mixes backends.
+#[cfg(not(spawned_sim))]
 #[test]
 fn concurrent_producers_preserve_order_and_reply_identity() {
     for backend in backends() {
@@ -405,6 +413,8 @@ fn concurrent_producers_preserve_order_and_reply_identity() {
     }
 }
 
+// Not simulated: builds its own multi-thread Tokio runtime and mixes backends.
+#[cfg(not(spawned_sim))]
 #[test]
 fn demonitor_before_exit_suppresses_notification_and_races_do_not_duplicate() {
     for backend in backends() {

@@ -105,7 +105,8 @@ mod native {
         }
     }
 }
-#[cfg(feature = "async")]
+// Not simulated: drives observers from spawn_blocking on OS threads.
+#[cfg(all(feature = "async", not(spawned_sim)))]
 mod asynchronous {
     use super::*;
     use spawned_concurrency::tasks::{Actor, ActorStart, Context, Handler};

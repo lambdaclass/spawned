@@ -1,4 +1,6 @@
 #![cfg(feature = "async")]
+// Tests that need OS threads are compiled out under spawned_sim.
+#![cfg_attr(spawned_sim, allow(unused_imports, dead_code))]
 use spawned_concurrency::{
     message::Message,
     supervision::{Backoff, ChildSpec, RestartMode, SupervisorConfig},
@@ -49,7 +51,7 @@ impl Handler<Crash> for Counter {
     }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn one_for_one_uses_fresh_state_same_group_and_instance_bound_refs() {
     let system = ActorSystem::new().unwrap();
     let critical = system.async_group("recovery-critical", 1).unwrap();
@@ -66,6 +68,8 @@ async fn one_for_one_uses_fresh_state_same_group_and_instance_bound_refs() {
                         ctx.execution_group().name().as_deref(),
                         Some("recovery-critical")
                     );
+                    // One simulated thread under spawned_sim: no group workers.
+                    #[cfg(not(spawned_sim))]
                     assert!(std::thread::current()
                         .name()
                         .unwrap()
@@ -87,7 +91,7 @@ async fn one_for_one_uses_fresh_state_same_group_and_instance_bound_refs() {
     let sibling_id = sibling.current().unwrap().id();
     assert_eq!(old.request(Next).await.unwrap(), 1);
     assert!(old.request(Crash).await.is_err());
-    let new = tokio::time::timeout(LIMIT, child.wait_for_generation(1))
+    let new = spawned_rt::tasks::timeout(LIMIT, child.wait_for_generation(1))
         .await
         .unwrap()
         .unwrap();
@@ -104,7 +108,7 @@ async fn one_for_one_uses_fresh_state_same_group_and_instance_bound_refs() {
     assert!(system.shutdown(LIMIT).await.complete);
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn restart_modes_distinguish_normal_shutdown_and_panic() {
     for mode in [
         RestartMode::Permanent,
@@ -128,7 +132,7 @@ async fn restart_modes_distinguish_normal_shutdown_and_panic() {
             } else {
                 old.child_handle().shutdown();
             }
-            let next = tokio::time::timeout(LIMIT, child.wait_for_generation(1))
+            let next = spawned_rt::tasks::timeout(LIMIT, child.wait_for_generation(1))
                 .await
                 .unwrap();
             assert_eq!(
@@ -141,7 +145,7 @@ async fn restart_modes_distinguish_normal_shutdown_and_panic() {
     }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn restart_budget_is_shared_between_siblings_and_exhaustion_closes_tree() {
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("budget", 2).unwrap();
@@ -158,17 +162,17 @@ async fn restart_budget_is_shared_between_siblings_and_exhaustion_closes_tree() 
         .unwrap();
     let supervisor = tree.start().await.unwrap();
     assert!(a.current().unwrap().request(Crash).await.is_err());
-    let a2 = tokio::time::timeout(LIMIT, a.wait_for_generation(1))
+    let a2 = spawned_rt::tasks::timeout(LIMIT, a.wait_for_generation(1))
         .await
         .unwrap()
         .unwrap();
     assert!(b.current().unwrap().request(Crash).await.is_err());
-    let b2 = tokio::time::timeout(LIMIT, b.wait_for_generation(1))
+    let b2 = spawned_rt::tasks::timeout(LIMIT, b.wait_for_generation(1))
         .await
         .unwrap()
         .unwrap();
     assert!(a2.request(Crash).await.is_err());
-    tokio::time::timeout(LIMIT, supervisor.join())
+    spawned_rt::tasks::timeout(LIMIT, supervisor.join())
         .await
         .unwrap();
     assert!(supervisor.failure().unwrap().contains("budget exhausted"));
@@ -186,7 +190,7 @@ impl Drop for DropFlag {
         self.0.store(false, Ordering::SeqCst);
     }
 }
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn failed_factories_cancel_owned_helpers_before_retry_and_catch_panics() {
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("factories", 1).unwrap();
@@ -220,7 +224,7 @@ async fn failed_factories_cancel_owned_helpers_before_retry_and_catch_panics() {
             }
         }))
         .unwrap();
-    let supervisor = tokio::time::timeout(LIMIT, tree.start())
+    let supervisor = spawned_rt::tasks::timeout(LIMIT, tree.start())
         .await
         .unwrap()
         .unwrap();
@@ -232,7 +236,7 @@ async fn failed_factories_cancel_owned_helpers_before_retry_and_catch_panics() {
     assert!(system.shutdown(LIMIT).await.complete);
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn shutdown_during_backoff_prevents_new_factory_invocation() {
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("backoff", 1).unwrap();
@@ -275,7 +279,9 @@ impl Handler<Crash> for SlowHelper {
         panic!("injected failure with active helper");
     }
 }
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+// Not simulated: a helper blocks an OS worker on purpose.
+#[cfg(not(spawned_sim))]
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn cleanup_deadline_escalates_without_overlapping_a_live_generation() {
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("stuck", 2).unwrap();
@@ -305,11 +311,14 @@ async fn cleanup_deadline_escalates_without_overlapping_a_live_generation() {
         )
         .unwrap();
     let supervisor = tree.start().await.unwrap();
-    tokio::time::timeout(LIMIT, entered).await.unwrap().unwrap();
+    spawned_rt::tasks::timeout(LIMIT, entered)
+        .await
+        .unwrap()
+        .unwrap();
     assert!(child.current().unwrap().request(Crash).await.is_err());
-    tokio::time::timeout(LIMIT, async {
+    spawned_rt::tasks::timeout(LIMIT, async {
         while supervisor.failure().is_none() {
-            tokio::task::yield_now().await;
+            spawned_rt::tasks::yield_now().await;
         }
     })
     .await
@@ -337,7 +346,9 @@ impl Handler<Crash> for SlowStop {
         panic!("failure before stuck stopped hook");
     }
 }
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+// Not simulated: a helper blocks an OS worker on purpose.
+#[cfg(not(spawned_sim))]
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn stuck_stopped_hook_triggers_cleanup_deadline_before_terminal_publication() {
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("stopped-hook", 1).unwrap();
@@ -369,12 +380,15 @@ async fn stuck_stopped_hook_triggers_cleanup_deadline_before_terminal_publicatio
     let supervisor = tree.start().await.unwrap();
     let old = child.current().unwrap();
     let response = old.request_raw(Crash).unwrap();
-    tokio::time::timeout(LIMIT, entered).await.unwrap().unwrap();
+    spawned_rt::tasks::timeout(LIMIT, entered)
+        .await
+        .unwrap()
+        .unwrap();
     assert!(response.await.is_err());
     assert!(old.exit_reason().is_none(), "stopped hook has not finished");
-    tokio::time::timeout(LIMIT, async {
+    spawned_rt::tasks::timeout(LIMIT, async {
         while supervisor.failure().is_none() {
-            tokio::task::yield_now().await;
+            spawned_rt::tasks::yield_now().await;
         }
     })
     .await
@@ -405,7 +419,7 @@ impl Actor for Ordered {
         self.log.lock().unwrap().push(format!("stop:{}", self.name));
     }
 }
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn initial_startup_and_shutdown_follow_dependency_order_across_groups() {
     let system = ActorSystem::new().unwrap();
     let a = system.async_group("ordered-a", 1).unwrap();
@@ -431,7 +445,7 @@ async fn initial_startup_and_shutdown_follow_dependency_order_across_groups() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn failed_partial_startup_rolls_back_without_starting_later_children() {
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("rollback", 1).unwrap();
@@ -454,7 +468,7 @@ async fn failed_partial_startup_rolls_back_without_starting_later_children() {
             async move { Ok::<_, String>(Ordered { name: "c", log }) }
         }))
         .unwrap();
-    assert!(tokio::time::timeout(LIMIT, tree.start())
+    assert!(spawned_rt::tasks::timeout(LIMIT, tree.start())
         .await
         .unwrap()
         .is_err());
@@ -463,7 +477,7 @@ async fn failed_partial_startup_rolls_back_without_starting_later_children() {
     assert_eq!(last.snapshot().generation, 0);
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn cancelling_public_startup_future_cancels_construction_and_owned_helpers() {
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("cancel-factory", 1).unwrap();
@@ -489,8 +503,11 @@ async fn cancelling_public_startup_future_cancels_construction_and_owned_helpers
             }
         }))
         .unwrap();
-    let startup = tokio::spawn(tree.start());
-    tokio::time::timeout(LIMIT, entered).await.unwrap().unwrap();
+    let startup = spawned_rt::tasks::spawn(tree.start());
+    spawned_rt::tasks::timeout(LIMIT, entered)
+        .await
+        .unwrap()
+        .unwrap();
     startup.abort();
     assert!(startup.await.is_err());
     assert!(system.shutdown(LIMIT).await.complete);
@@ -520,7 +537,7 @@ impl Handler<Next> for RaceActor {
         self.count
     }
 }
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn repeated_crash_producer_and_shutdown_races_never_overlap_generations() {
     for iteration in 0..32 {
         let system = ActorSystem::new().unwrap();
@@ -547,20 +564,20 @@ async fn repeated_crash_producer_and_shutdown_races_never_overlap_generations() 
         let mut producers = Vec::new();
         for _ in 0..8 {
             let actor = old.clone();
-            producers.push(tokio::spawn(async move {
+            producers.push(spawned_rt::tasks::spawn(async move {
                 for _ in 0..16 {
                     let _ = actor.request(Next).await;
-                    tokio::task::yield_now().await;
+                    spawned_rt::tasks::yield_now().await;
                 }
             }));
         }
         let _ = old.send(Crash);
         if iteration % 2 == 0 {
-            tokio::task::yield_now().await;
+            spawned_rt::tasks::yield_now().await;
         }
         assert!(supervisor.shutdown(LIMIT).await.complete);
         for producer in producers {
-            tokio::time::timeout(LIMIT, producer)
+            spawned_rt::tasks::timeout(LIMIT, producer)
                 .await
                 .unwrap()
                 .unwrap();
@@ -575,7 +592,7 @@ async fn repeated_crash_producer_and_shutdown_races_never_overlap_generations() 
     }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn configuration_rejects_foreign_groups_duplicate_names_and_capacity() {
     use spawned_concurrency::{supervision::SupervisorError, system::SystemError};
     let first = ActorSystem::new().unwrap();
@@ -621,7 +638,7 @@ async fn configuration_rejects_foreign_groups_duplicate_names_and_capacity() {
     assert!(second.shutdown(LIMIT).await.complete);
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn system_shutdown_orders_standalone_actors_and_supervisor_trees_together() {
     use spawned_concurrency::tasks::ActorStart;
     let system = ActorSystem::new().unwrap();
@@ -664,7 +681,7 @@ async fn system_shutdown_orders_standalone_actors_and_supervisor_trees_together(
     assert!(trees.iter().all(|s| s.failure().is_none()));
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn generation_waiters_wake_at_admission_close_before_their_shutdown_turn() {
     use spawned_concurrency::supervision::{ChildState, ChildUnavailable};
     let system = ActorSystem::new().unwrap();
@@ -692,9 +709,12 @@ async fn generation_waiters_wake_at_admission_close_before_their_shutdown_turn()
     let mut waiter = Box::pin(first.wait_for_generation(99));
     assert!(futures::poll!(waiter.as_mut()).is_pending());
     supervisor.stop();
-    tokio::time::timeout(LIMIT, entered).await.unwrap().unwrap();
+    spawned_rt::tasks::timeout(LIMIT, entered)
+        .await
+        .unwrap()
+        .unwrap();
     assert!(matches!(
-        tokio::time::timeout(LIMIT, waiter).await.unwrap(),
+        spawned_rt::tasks::timeout(LIMIT, waiter).await.unwrap(),
         Err(ChildUnavailable(ChildState::Stopping))
     ));
     release.send(()).unwrap();
@@ -702,7 +722,7 @@ async fn generation_waiters_wake_at_admission_close_before_their_shutdown_turn()
     assert!(system.shutdown(LIMIT).await.complete);
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn stuck_supervisor_does_not_prevent_earlier_standalone_shutdown_after_system_deadline() {
     use spawned_concurrency::tasks::ActorStart;
     let system = ActorSystem::new().unwrap();
@@ -735,15 +755,18 @@ async fn stuck_supervisor_does_not_prevent_earlier_standalone_shutdown_after_sys
     let inner_actor = inside.current().unwrap();
     let report = system.shutdown(Duration::from_millis(20)).await;
     assert!(!report.complete);
-    tokio::time::timeout(LIMIT, entered).await.unwrap().unwrap();
+    spawned_rt::tasks::timeout(LIMIT, entered)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(
-        tokio::time::timeout(LIMIT, earlier.wait_exit())
+        spawned_rt::tasks::timeout(LIMIT, earlier.wait_exit())
             .await
             .unwrap(),
         ExitReason::Shutdown
     );
     assert_eq!(
-        tokio::time::timeout(LIMIT, inner_actor.wait_exit())
+        spawned_rt::tasks::timeout(LIMIT, inner_actor.wait_exit())
             .await
             .unwrap(),
         ExitReason::Shutdown
@@ -758,7 +781,7 @@ impl Actor for StopDuringStart {
         ctx.stop();
     }
 }
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn normal_pre_ready_exit_records_real_cause_and_fails_transient_startup() {
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("normal-start-exit", 1).unwrap();
@@ -771,7 +794,7 @@ async fn normal_pre_ready_exit_records_real_cause_and_fails_transient_startup() 
             .restart(RestartMode::Transient),
         )
         .unwrap();
-    assert!(tokio::time::timeout(LIMIT, tree.start())
+    assert!(spawned_rt::tasks::timeout(LIMIT, tree.start())
         .await
         .unwrap()
         .is_err());
@@ -804,7 +827,7 @@ impl Handler<Crash> for ExitOnceDuringRestart {
 /// budget, as OTP retries a failed restart (`try_again_restart`) whatever the
 /// child's restart type. Only the initial start fails the tree
 /// (`normal_pre_ready_exit_records_real_cause_and_fails_transient_startup`).
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn transient_replacement_exiting_before_readiness_is_retried() {
     for reason in [ExitReason::Normal, ExitReason::Shutdown] {
         let system = ActorSystem::new().unwrap();
@@ -822,7 +845,7 @@ async fn transient_replacement_exiting_before_readiness_is_retried() {
             .unwrap();
         let supervisor = tree.start().await.unwrap();
         assert!(child.current().unwrap().request(Crash).await.is_err());
-        let replacement = tokio::time::timeout(LIMIT, child.wait_for_generation(2))
+        let replacement = spawned_rt::tasks::timeout(LIMIT, child.wait_for_generation(2))
             .await
             .unwrap();
         assert!(
@@ -841,7 +864,7 @@ async fn transient_replacement_exiting_before_readiness_is_retried() {
 /// `normal_pre_ready_exit_records_real_cause_and_fails_transient_startup`:
 /// before its initial readiness a Transient child stopping with `Shutdown`
 /// fails the start too.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn shutdown_pre_ready_exit_fails_transient_startup() {
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("shutdown-start-exit", 1).unwrap();
@@ -856,7 +879,7 @@ async fn shutdown_pre_ready_exit_fails_transient_startup() {
             .restart(RestartMode::Transient),
         )
         .unwrap();
-    assert!(tokio::time::timeout(LIMIT, tree.start())
+    assert!(spawned_rt::tasks::timeout(LIMIT, tree.start())
         .await
         .unwrap()
         .is_err());
@@ -870,7 +893,7 @@ async fn shutdown_pre_ready_exit_fails_transient_startup() {
 /// with `max_restarts` 3 a Transient child whose replacements always stop
 /// before readiness gets exactly three replacements, then the supervisor
 /// fails with an exhausted budget.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn failed_replacements_exhaust_the_restart_budget_exactly() {
     for reason in [ExitReason::Normal, ExitReason::Shutdown] {
         let system = ActorSystem::new().unwrap();
@@ -893,7 +916,7 @@ async fn failed_replacements_exhaust_the_restart_budget_exactly() {
             .unwrap();
         let supervisor = tree.start().await.unwrap();
         assert!(child.current().unwrap().request(Crash).await.is_err());
-        tokio::time::timeout(LIMIT, supervisor.join())
+        spawned_rt::tasks::timeout(LIMIT, supervisor.join())
             .await
             .unwrap();
         let failure = supervisor.failure().unwrap();
@@ -907,7 +930,7 @@ async fn failed_replacements_exhaust_the_restart_budget_exactly() {
     }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn disabled_retries_fail_without_waiting_for_a_long_backoff() {
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("no-retries", 1).unwrap();
@@ -920,10 +943,12 @@ async fn disabled_retries_fail_without_waiting_for_a_long_backoff() {
             Err::<Counter, _>("permanent construction failure")
         }))
         .unwrap();
-    assert!(tokio::time::timeout(Duration::from_secs(1), tree.start())
-        .await
-        .unwrap()
-        .is_err());
+    assert!(
+        spawned_rt::tasks::timeout(Duration::from_secs(1), tree.start())
+            .await
+            .unwrap()
+            .is_err()
+    );
     assert!(system.shutdown(LIMIT).await.complete);
     assert_eq!(child.snapshot().generation, 1);
 }
@@ -934,11 +959,11 @@ struct SlowInit {
 impl Actor for SlowInit {
     async fn started(&mut self, _: &Context<Self>) {
         if self.first {
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            spawned_rt::tasks::sleep(Duration::from_millis(100)).await;
         }
     }
 }
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn transient_startup_timeout_retries_after_actual_cleanup() {
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("startup-timeout-retry", 1).unwrap();
@@ -959,7 +984,7 @@ async fn transient_startup_timeout_retries_after_actual_cleanup() {
             .startup_timeout(Duration::from_millis(20)),
         )
         .unwrap();
-    let supervisor = tokio::time::timeout(LIMIT, tree.start())
+    let supervisor = spawned_rt::tasks::timeout(LIMIT, tree.start())
         .await
         .unwrap()
         .unwrap();
@@ -971,7 +996,7 @@ async fn transient_startup_timeout_retries_after_actual_cleanup() {
     assert!(system.shutdown(LIMIT).await.complete);
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn supervisor_report_deadline_signals_remaining_siblings() {
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("supervisor-report-grace", 1).unwrap();
@@ -1001,11 +1026,14 @@ async fn supervisor_report_deadline_signals_remaining_siblings() {
     let actor = first.current().unwrap();
     let report = supervisor.shutdown(Duration::from_millis(20)).await;
     assert!(!report.complete);
-    tokio::time::timeout(LIMIT, entered).await.unwrap().unwrap();
+    spawned_rt::tasks::timeout(LIMIT, entered)
+        .await
+        .unwrap()
+        .unwrap();
     // The first child must stop while the last one is still held, so the
     // bound is a hang detector, not a latency budget.
     assert_eq!(
-        tokio::time::timeout(LIMIT, actor.wait_exit())
+        spawned_rt::tasks::timeout(LIMIT, actor.wait_exit())
             .await
             .unwrap(),
         ExitReason::Shutdown
@@ -1025,9 +1053,9 @@ async fn restart_latency(
 ) -> Duration {
     let old = child.current().unwrap();
     let generation = child.snapshot().generation;
-    let began = std::time::Instant::now();
+    let began = spawned_rt::time::Instant::now();
     assert!(old.request(Crash).await.is_err());
-    tokio::time::timeout(LIMIT, child.wait_for_generation(generation))
+    spawned_rt::tasks::timeout(LIMIT, child.wait_for_generation(generation))
         .await
         .unwrap()
         .unwrap();
@@ -1036,7 +1064,7 @@ async fn restart_latency(
 
 /// Backoff grows across consecutive failures and resets only after a
 /// generation stayed ready for `stable_after` (Scope::was_stable/end_running).
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn backoff_exponent_resets_only_after_a_stable_generation() {
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("backoff-reset", 1).unwrap();
@@ -1072,7 +1100,7 @@ async fn backoff_exponent_resets_only_after_a_stable_generation() {
         "backoff did not grow without a stable generation: {unstable:?}"
     );
     // Stay ready past stable_after: the next restart uses the initial delay.
-    tokio::time::sleep(Duration::from_millis(450)).await;
+    spawned_rt::tasks::sleep(Duration::from_millis(450)).await;
     // Without the reset this delay would be 640 ms; the margin absorbs a
     // loaded scheduler without accepting a missed reset.
     let reset = restart_latency(&child).await;
@@ -1086,7 +1114,7 @@ async fn backoff_exponent_resets_only_after_a_stable_generation() {
 
 /// Dropping a builder that was never started finishes its children, so
 /// waiters observe Stopped instead of hanging (Drop for SupervisorBuilder).
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn dropping_an_unstarted_builder_releases_child_waiters() {
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("unstarted", 1).unwrap();
@@ -1097,7 +1125,7 @@ async fn dropping_an_unstarted_builder_releases_child_waiters() {
         }))
         .unwrap();
     drop(tree);
-    let waited = tokio::time::timeout(LIMIT, child.wait_ready())
+    let waited = spawned_rt::tasks::timeout(LIMIT, child.wait_ready())
         .await
         .expect("waiter hung after the builder was dropped");
     assert!(waited.is_err());
@@ -1110,7 +1138,7 @@ async fn dropping_an_unstarted_builder_releases_child_waiters() {
 
 /// Aborting the public startup future alone (without a system shutdown)
 /// cancels construction and its owned helpers (Drop for StartupGuard).
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn aborted_startup_cancels_construction_without_system_shutdown() {
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("abort-startup", 1).unwrap();
@@ -1135,13 +1163,16 @@ async fn aborted_startup_cancels_construction_without_system_shutdown() {
         }
     }))
     .unwrap();
-    let startup = tokio::spawn(tree.start());
-    tokio::time::timeout(LIMIT, entered).await.unwrap().unwrap();
+    let startup = spawned_rt::tasks::spawn(tree.start());
+    spawned_rt::tasks::timeout(LIMIT, entered)
+        .await
+        .unwrap()
+        .unwrap();
     startup.abort();
     assert!(startup.await.is_err());
-    tokio::time::timeout(LIMIT, async {
+    spawned_rt::tasks::timeout(LIMIT, async {
         while live.load(Ordering::SeqCst) {
-            tokio::time::sleep(Duration::from_millis(5)).await;
+            spawned_rt::tasks::sleep(Duration::from_millis(5)).await;
         }
     })
     .await
@@ -1151,7 +1182,7 @@ async fn aborted_startup_cancels_construction_without_system_shutdown() {
 
 /// A failed supervisor's error appears in the system shutdown report
 /// (ShutdownUnit::failure for Core).
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn system_shutdown_reports_supervisor_failures() {
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("report-failure", 1).unwrap();
@@ -1163,7 +1194,7 @@ async fn system_shutdown_reports_supervisor_failures() {
         .unwrap();
     let supervisor = tree.start().await.unwrap();
     assert!(child.current().unwrap().request(Crash).await.is_err());
-    tokio::time::timeout(LIMIT, supervisor.join())
+    spawned_rt::tasks::timeout(LIMIT, supervisor.join())
         .await
         .unwrap();
     assert!(supervisor.failure().is_some());
@@ -1180,7 +1211,7 @@ async fn system_shutdown_reports_supervisor_failures() {
 
 /// When the system deadline expires on a stuck later child, earlier
 /// supervised siblings are still signalled (ShutdownUnit::stop_remaining).
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn system_deadline_signals_remaining_supervised_siblings() {
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("system-report-grace", 1).unwrap();
@@ -1210,9 +1241,12 @@ async fn system_deadline_signals_remaining_supervised_siblings() {
     let actor = first.current().unwrap();
     let report = system.shutdown(Duration::from_millis(50)).await;
     assert!(!report.complete);
-    tokio::time::timeout(LIMIT, entered).await.unwrap().unwrap();
+    spawned_rt::tasks::timeout(LIMIT, entered)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(
-        tokio::time::timeout(Duration::from_secs(1), actor.wait_exit())
+        spawned_rt::tasks::timeout(Duration::from_secs(1), actor.wait_exit())
             .await
             .expect("earlier sibling was not stopped after the system deadline"),
         ExitReason::Shutdown
@@ -1223,7 +1257,7 @@ async fn system_deadline_signals_remaining_supervised_siblings() {
 
 /// Invalid child names and zero timeouts are rejected
 /// (SupervisorBuilder::add validation).
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn child_specs_reject_invalid_names_and_zero_timeouts() {
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("validation", 1).unwrap();
@@ -1260,7 +1294,7 @@ impl Handler<Crash> for Named {
 /// A generation's owned name registration is released before its
 /// replacement starts, so the replacement can register the same name
 /// (Drop for Lease accounting).
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn owned_registration_is_released_before_the_replacement_registers() {
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("registered", 1).unwrap();
@@ -1274,7 +1308,7 @@ async fn owned_registration_is_released_before_the_replacement_registers() {
     for generation in 1..=3 {
         let actor = child.current().unwrap();
         assert!(actor.request(Crash).await.is_err());
-        let replacement = tokio::time::timeout(LIMIT, child.wait_for_generation(generation))
+        let replacement = spawned_rt::tasks::timeout(LIMIT, child.wait_for_generation(generation))
             .await
             .unwrap()
             .expect("replacement failed to start");
@@ -1293,7 +1327,7 @@ async fn owned_registration_is_released_before_the_replacement_registers() {
 /// `FactoryContext::cancelled` stays pending while construction is live: a
 /// factory that waits on it never produces an actor, so its startup limit
 /// fails the tree instead of the factory finishing early.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn factory_cancelled_waits_for_construction_cancellation() {
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("factory-cancelled", 1).unwrap();
@@ -1306,14 +1340,16 @@ async fn factory_cancelled_waits_for_construction_cancellation() {
         .startup_timeout(Duration::from_millis(50)),
     )
     .unwrap();
-    let started = tokio::time::timeout(LIMIT, tree.start()).await.unwrap();
+    let started = spawned_rt::tasks::timeout(LIMIT, tree.start())
+        .await
+        .unwrap();
     assert!(started.is_err(), "factory finished before cancellation");
     assert!(system.shutdown(LIMIT).await.complete);
 }
 
 /// In a cohort strategy the failed child's backoff races only a superseding
 /// recovery round; with none pending it must sleep the full delay.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn one_for_all_restart_waits_for_its_backoff() {
     use spawned_concurrency::supervision::SupervisorStrategy;
     let system = ActorSystem::new().unwrap();

@@ -40,7 +40,7 @@ fn config(strategy: SupervisorStrategy) -> SupervisorConfig {
 #[path = "support/tree_record.rs"]
 mod tree_record;
 use tree_record::record;
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn mixed_strategy_three_level_shutdown_and_subtree_replacement() {
     for strategy in [
         SupervisorStrategy::OneForAll,
@@ -86,7 +86,7 @@ async fn mixed_strategy_three_level_shutdown_and_subtree_replacement() {
         let supervisor = root.start().await.unwrap();
         let old = leaf.lock().unwrap().as_ref().unwrap().current().unwrap();
         assert!(old.request(Crash).await.is_err());
-        tokio::time::timeout(LIMIT, subtree.wait_for_generation(1))
+        spawned_rt::tasks::timeout(LIMIT, subtree.wait_for_generation(1))
             .await
             .unwrap()
             .unwrap();

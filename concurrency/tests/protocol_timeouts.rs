@@ -59,23 +59,25 @@ mod asynchronous {
     impl Actor for Worker {}
     impl Handler<timed_protocol::Work> for Worker {
         async fn handle(&mut self, msg: timed_protocol::Work, _: &Context<Self>) -> u64 {
-            tokio::time::sleep(Duration::from_millis(msg.millis)).await;
+            spawned_rt::tasks::sleep(Duration::from_millis(msg.millis)).await;
             msg.millis
         }
     }
     impl Handler<timed_protocol::Brief> for Worker {
         async fn handle(&mut self, msg: timed_protocol::Brief, _: &Context<Self>) -> u64 {
-            tokio::time::sleep(Duration::from_millis(msg.millis)).await;
+            spawned_rt::tasks::sleep(Duration::from_millis(msg.millis)).await;
             msg.millis
         }
     }
     impl Handler<legacy_protocol::Legacy> for Worker {
         async fn handle(&mut self, msg: legacy_protocol::Legacy, _: &Context<Self>) -> u64 {
-            tokio::time::sleep(Duration::from_millis(msg.millis)).await;
+            spawned_rt::tasks::sleep(Duration::from_millis(msg.millis)).await;
             msg.millis
         }
     }
-    #[tokio::test(start_paused = true)]
+    // Tokio's paused clock normally; the simulator's clock is always virtual.
+    #[cfg_attr(not(spawned_sim), tokio::test(start_paused = true))]
+    #[cfg_attr(spawned_sim, spawned_macros::sim_test)]
     async fn protocol_method_and_handle_overrides_have_explicit_precedence() {
         let actor = Worker.start();
         // Virtual time: larger than the old five-second default.

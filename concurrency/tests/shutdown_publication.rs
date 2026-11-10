@@ -1,6 +1,8 @@
 #![cfg(feature = "async")]
 //! Hold a channel-block allocation after send admission to exercise shutdown
 //! against a sender that has reserved a queue position but not published it.
+// Tests that need OS threads are compiled out under spawned_sim.
+#![cfg_attr(spawned_sim, allow(unused_imports, dead_code))]
 use spawned_concurrency::{
     message::Message,
     tasks::{Actor, ActorStart, Context, Handler},
@@ -82,6 +84,8 @@ impl Drop for Cleanup {
     }
 }
 
+// Not simulated: builds its own multi-thread Tokio runtime.
+#[cfg(not(spawned_sim))]
 #[test]
 fn admitted_request_racing_shutdown_drops_its_reply_before_join_completes() {
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -145,7 +149,7 @@ fn admitted_request_racing_shutdown_drops_its_reply_before_join_completes() {
             ExitReason::Normal
         );
         let reply = result.expect("gate fired before mailbox admission; allocation hook is stale");
-        assert!(tokio::time::timeout(LIMIT, reply)
+        assert!(spawned_rt::tasks::timeout(LIMIT, reply)
             .await
             .expect("reply sender retained after actor termination")
             .is_err());

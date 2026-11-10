@@ -1,5 +1,7 @@
 #![cfg(feature = "async")]
 //! Abrupt process failure is distinct from a recoverable actor panic.
+// Tests that need OS threads are compiled out under spawned_sim.
+#![cfg_attr(spawned_sim, allow(unused_imports, dead_code))]
 use spawned_concurrency::{
     message::Message,
     tasks::{Actor, ActorStart, Context, Handler},
@@ -89,6 +91,8 @@ fn wait_for_effect(child: &mut Child, path: &Path) {
         std::thread::sleep(Duration::from_millis(5));
     }
 }
+// Not simulated: kills OS processes and threads.
+#[cfg(not(spawned_sim))]
 #[test]
 #[cfg(unix)]
 fn abort_and_external_kill_do_not_promise_stopped_hooks_or_rollback() {

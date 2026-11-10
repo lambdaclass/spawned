@@ -64,6 +64,11 @@ impl Drop for MonitorCleanup {
     fn drop(&mut self) {
         let monitors = self.0.lock().unwrap_or_else(|p| p.into_inner()).take();
         if let Some(monitors) = monitors {
+            // HashMap order is per-process random; under simulation, wake
+            // waiters in monitor-creation order so the schedule is seeded.
+            #[cfg(spawned_sim)]
+            let monitors: std::collections::BTreeMap<u64, _> =
+                monitors.into_iter().map(|(r, t)| (r.0, t)).collect();
             for token in monitors.into_values() {
                 token.cancel();
             }

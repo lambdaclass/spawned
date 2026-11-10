@@ -1,3 +1,5 @@
+// Tests that need OS threads are compiled out under spawned_sim.
+#![cfg_attr(spawned_sim, allow(unused_imports, dead_code))]
 #[cfg(feature = "async")]
 use spawned_concurrency::tasks;
 use spawned_concurrency::{message::Message, threads};
@@ -34,6 +36,8 @@ fn released(weak: &Weak<()>) {
         "background operation retained payload after shutdown"
     );
 }
+// Not simulated: builds its own Tokio runtime.
+#[cfg(not(spawned_sim))]
 #[test]
 fn timers_release_payloads_on_actor_exit() {
     #[cfg(feature = "async")]
@@ -73,6 +77,8 @@ fn timers_release_payloads_on_actor_exit() {
     released(&weak);
     drop((once, interval));
 }
+// Not simulated: builds its own Tokio runtime.
+#[cfg(not(spawned_sim))]
 #[cfg(feature = "async")]
 #[test]
 fn pending_async_listener_is_dropped_on_actor_exit() {

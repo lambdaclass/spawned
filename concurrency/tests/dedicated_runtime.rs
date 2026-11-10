@@ -1,6 +1,8 @@
 #![cfg(feature = "async")]
 //! Default dedicated-thread runtime contracts; run without private runtime overrides.
 //! Timer delays below exercise the timer driver, not ordering between test steps.
+// Tests that need OS threads are compiled out under spawned_sim.
+#![cfg_attr(spawned_sim, allow(unused_imports, dead_code))]
 use spawned_concurrency::{
     message::Message,
     tasks::{Actor, ActorStart, Backend, Context, Handler},
@@ -218,6 +220,8 @@ async fn finish(
     assert_ne!(root, worker);
 }
 
+// Not simulated: drives dedicated Tokio runtimes on OS threads.
+#[cfg(not(spawned_sim))]
 #[test]
 fn dedicated_actor_and_helpers_progress_without_an_ambient_runtime() {
     assert!(tokio::runtime::Handle::try_current().is_err());

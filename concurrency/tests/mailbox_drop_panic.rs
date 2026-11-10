@@ -1,5 +1,7 @@
 //! Run abort-sensitive checks in a subprocess so CI survives a regression.
 #![cfg(feature = "async")]
+// Tests that need OS threads are compiled out under spawned_sim.
+#![cfg_attr(spawned_sim, allow(unused_imports, dead_code))]
 use spawned_concurrency::{
     message::Message,
     system::ActorSystem,
@@ -70,6 +72,8 @@ impl Handler<Ping> for Observer {
     async fn handle(&mut self, _: Ping, _: &Context<Self>) {}
 }
 
+// Not simulated: builds its own multi-thread Tokio runtime.
+#[cfg(not(spawned_sim))]
 #[test]
 fn queued_destructor_panics_do_not_abort_or_kill_trapping_observers() {
     subprocess::run("mailbox_drop_child", "validated 30 queued panic cases");
@@ -184,6 +188,8 @@ fn mailbox_drop_child() {
     println!("validated 30 queued panic cases");
 }
 
+// Not simulated: the subprocess child builds its own multi-thread Tokio runtime.
+#[cfg(not(spawned_sim))]
 #[test]
 fn abandoned_receivers_and_committed_causes_are_safe() {
     subprocess::run(
@@ -293,6 +299,8 @@ fn abandoned_receiver_child() {
     println!("validated abandoned receivers and causes");
 }
 
+// Not simulated: the subprocess child builds its own multi-thread Tokio runtime.
+#[cfg(not(spawned_sim))]
 #[test]
 fn handler_panic_survives_state_and_queued_destructor_panics() {
     subprocess::run("primary_panic_child", "validated primary handler panic");

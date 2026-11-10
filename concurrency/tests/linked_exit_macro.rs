@@ -30,16 +30,12 @@ mod asynchronous {
     }
     #[test]
     fn macro_receives_linked_exit() {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        rt.block_on(async {
+        spawned_rt::tasks::sim_test(|_| async {
             let (tx, rx) = tokio::sync::oneshot::channel();
             let observer = Observer { seen: Some(tx) }.start();
             observer.context().trap_exit(true);
             let child = Failing.start_linked(&observer.context());
-            let event = tokio::time::timeout(std::time::Duration::from_secs(2), rx)
+            let event = spawned_rt::tasks::timeout(std::time::Duration::from_secs(2), rx)
                 .await
                 .unwrap()
                 .unwrap();

@@ -9,7 +9,8 @@
 //! cross-sender interleaving at one actor, and timer arrival order between
 //! distinct deadlines. See docs/TESTING.md.
 #![cfg(feature = "async")]
-
+// Tests that need OS threads are compiled out under spawned_sim.
+#![cfg_attr(spawned_sim, allow(unused_imports, dead_code))]
 #[path = "support/recorder.rs"]
 mod recorder;
 
@@ -408,6 +409,17 @@ impl Placement {
         )
     }
 }
+/// Under `--cfg spawned_sim` only the async placements exist: the others
+/// need OS threads, which the single-thread simulator cannot schedule.
+#[cfg(spawned_sim)]
+fn all_placements() -> Vec<Placement> {
+    vec![Placement::TasksAsync, Placement::GroupAsync]
+}
+#[cfg(spawned_sim)]
+fn group_placements() -> Vec<Placement> {
+    vec![Placement::GroupAsync]
+}
+#[cfg(not(spawned_sim))]
 fn all_placements() -> Vec<Placement> {
     let mut all = vec![
         Placement::TasksAsync,
@@ -418,6 +430,7 @@ fn all_placements() -> Vec<Placement> {
     all.extend(group_placements());
     all
 }
+#[cfg(not(spawned_sim))]
 fn group_placements() -> Vec<Placement> {
     #[allow(unused_mut)]
     let mut groups = vec![Placement::GroupAsync, Placement::GroupThread];
@@ -430,7 +443,7 @@ fn group_placements() -> Vec<Placement> {
 enum Ref {
     Tasks(
         spawned_concurrency::tasks::ActorRef<tasks_node::Node>,
-        tokio::runtime::Handle,
+        spawned_rt::tasks::Handle,
     ),
     Threads(spawned_concurrency::threads::ActorRef<threads_node::Node>),
 }
@@ -457,18 +470,23 @@ impl Ref {
 
 struct Env {
     placement: Placement,
-    rt: Option<tokio::runtime::Runtime>,
+    rt: Option<spawned_rt::tasks::Runtime>,
     system: Option<ActorSystem>,
     group: Option<ExecutionGroup>,
     started: Vec<ChildHandle>,
 }
 impl Env {
-    fn new(placement: Placement) -> Self {
+    /// `seed` picks the simulated schedule under `--cfg spawned_sim`; Tokio
+    /// ignores it.
+    fn new(placement: Placement, #[allow(unused_variables)] seed: u64) -> Self {
+        #[cfg(not(spawned_sim))]
         let rt = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .enable_all()
             .build()
             .unwrap();
+        #[cfg(spawned_sim)]
+        let rt = spawned_rt::tasks::Runtime::with_seed(seed);
         let (system, group) = if placement.managed() {
             let system = ActorSystem::new().unwrap();
             let group = match placement {
@@ -492,17 +510,15 @@ impl Env {
             started: Vec::new(),
         }
     }
-    fn handle(&self) -> tokio::runtime::Handle {
+    fn handle(&self) -> spawned_rt::tasks::Handle {
         self.rt.as_ref().unwrap().handle().clone()
     }
     fn block_on<F: std::future::Future>(&self, future: F) -> F::Output {
         self.rt.as_ref().unwrap().block_on(future)
     }
-    fn bounded<F: std::future::Future>(
-        &self,
-        future: F,
-    ) -> Result<F::Output, tokio::time::error::Elapsed> {
-        self.block_on(async move { tokio::time::timeout(LIMIT, future).await })
+    fn bounded<F: std::future::Future>(&self, future: F) -> Result<F::Output, String> {
+        self.block_on(async move { spawned_rt::tasks::timeout(LIMIT, future).await })
+            .map_err(|elapsed| elapsed.to_string())
     }
     fn start(&mut self, index: u32, peers: Vec<Ref>, log: &Log) -> Ref {
         use spawned_concurrency::tasks::{ActorStart as _, Backend};
@@ -570,6 +586,7 @@ impl Env {
             let report = self.block_on(system.shutdown(LIMIT));
             assert!(report.complete, "{:?}: system shutdown", self.placement);
         }
+        #[cfg(not(spawned_sim))]
         self.rt.take().unwrap().shutdown_timeout(LIMIT);
     }
 }
@@ -579,6 +596,7 @@ impl Drop for Env {
         for child in &self.started {
             child.stop();
         }
+        #[cfg(not(spawned_sim))]
         if let Some(rt) = self.rt.take() {
             rt.shutdown_background();
         }
@@ -590,19 +608,37 @@ fn metamorphic<T: PartialEq + std::fmt::Debug>(
     placements: Vec<Placement>,
     mut workload: impl FnMut(&mut Env) -> T,
 ) -> T {
-    let mut baseline: Option<(Placement, T)> = None;
+    let mut baseline: Option<(Placement, u64, T)> = None;
     for placement in placements {
-        let mut env = Env::new(placement);
-        let outcome = workload(&mut env);
-        env.finish();
-        match &baseline {
-            None => baseline = Some((placement, outcome)),
-            Some((first, expected)) => {
-                assert_eq!(&outcome, expected, "{placement:?} diverged from {first:?}")
+        for seed in seeds() {
+            let mut env = Env::new(placement, seed);
+            let outcome = workload(&mut env);
+            env.finish();
+            match &baseline {
+                None => baseline = Some((placement, seed, outcome)),
+                Some((first, first_seed, expected)) => assert_eq!(
+                    &outcome, expected,
+                    "{placement:?} (seed {seed}) diverged from {first:?} (seed {first_seed})"
+                ),
             }
         }
     }
-    baseline.unwrap().1
+    baseline.unwrap().2
+}
+
+/// One run per placement on Tokio. Under `--cfg spawned_sim`, where only two
+/// async placements exist, each also runs over simulated schedules
+/// `0..SPAWNED_SIM_SEEDS` (default 4), so the comparison covers schedules
+/// as well as placements.
+fn seeds() -> std::ops::Range<u64> {
+    if cfg!(spawned_sim) {
+        0..std::env::var("SPAWNED_SIM_SEEDS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(4)
+    } else {
+        0..1
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1093,6 +1129,8 @@ proptest! {
         prop_assert_eq!(replies, expected);
     }
 
+    // Not simulated: compares Tokio, Thread, Blocking and native placements.
+    #[cfg(not(spawned_sim))]
     #[test]
     fn fan_out_fan_in_match(
         leaves in 1u32..5,
@@ -1121,6 +1159,8 @@ proptest! {
         prop_assert_eq!(outcome.bystander, bystander);
     }
 
+    // Not simulated: the monitor workload blocks the test thread on a Condvar.
+    #[cfg(not(spawned_sim))]
     #[test]
     fn monitors_and_down_match(
         endings in prop::collection::vec(ending(), 1..5),
@@ -1186,12 +1226,17 @@ proptest! {
 #[test]
 fn fixed_workloads_match_across_placements() {
     let all = all_placements();
+    #[cfg(not(spawned_sim))]
     assert!(all.len() >= 6, "expected every non-pinned placement");
     metamorphic(all.clone(), |env| chain_workload(env, 3, &[1, 2, 3]));
+    // Not simulated: fan-out drives requests from OS threads, and the
+    // monitor workload blocks the test thread on a Condvar.
+    #[cfg(not(spawned_sim))]
     metamorphic(all.clone(), |env| fan_workload(env, 3, &[7], &[10, 10]));
     metamorphic(all.clone(), |env| {
         link_workload(env, &[Ending::Panic, Ending::Stop, Ending::Shutdown])
     });
+    #[cfg(not(spawned_sim))]
     metamorphic(all.clone(), |env| {
         monitor_workload(env, &[Ending::Shutdown, Ending::Panic], &[true])
     });
@@ -1258,6 +1303,8 @@ mod early_stop {
 /// threads actors retain their existing behavior of running `started()` then
 /// `stopped()`. All report Normal and every actor's state is dropped exactly
 /// once. Listed as an allowed difference in TESTING.md.
+// Not simulated: compares Tokio, Thread, Blocking and native placements.
+#[cfg(not(spawned_sim))]
 #[test]
 fn stop_before_first_poll_follows_managed_and_legacy_contract() {
     use early_stop::*;
@@ -1323,6 +1370,8 @@ fn fixed_shutdown_order_before_two_supervised_one_after_two() {
     assert!(outcome.complete);
 }
 
+// Not simulated: compares against a Thread-placement execution group.
+#[cfg(not(spawned_sim))]
 #[test]
 fn ordered_system_shutdown_matches_thread_placement() {
     let mut settings = config();
@@ -1334,7 +1383,7 @@ fn ordered_system_shutdown_matches_thread_placement() {
         .run(
             &(0u32..4, 1u32..4, 0u32..4),
             |(before, sup_children, after)| {
-                let mut env = Env::new(Placement::GroupThread);
+                let mut env = Env::new(Placement::GroupThread, 0);
                 let outcome = shutdown_workload(&mut env, before, sup_children, after);
                 env.finish();
                 let mut order: Vec<u32> = (200..200 + after).rev().collect();
