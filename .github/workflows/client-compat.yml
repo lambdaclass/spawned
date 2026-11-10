@@ -1,0 +1,139 @@
+# Build and test the two production clients against this spawned checkout.
+#
+# ethrex and ethlambda keep a `spawned-v0.7` branch that tracks spawned. This
+# workflow checks that branch out, points it at the spawned commit under test
+# with a generated `[patch]` section (the client's manifests are not edited;
+# see .github/scripts/client-compat-patch.sh) and runs the client's
+# spawned-related gates in debug. See docs/TESTING.md, "Client compatibility".
+#
+# Runs nightly, on every push to main, on PRs labeled `client-compat`, and by
+# hand (workflow_dispatch, with optional client refs).
+name: Client compatibility
+
+on:
+  schedule:
+    - cron: "37 3 * * *"
+  push:
+    branches: ["main"]
+  pull_request:
+    types: [opened, reopened, synchronize, labeled]
+  workflow_dispatch:
+    inputs:
+      ethrex_ref:
+        description: "ethrex branch, tag or SHA"
+        required: false
+        default: "spawned-v0.7"
+      ethlambda_ref:
+        description: "ethlambda branch, tag or SHA"
+        required: false
+        default: "spawned-v0.7"
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # Debug builds as the clients ship them, minus full debuginfo: line tables
+  # keep backtraces readable and roughly halve target/ on a hosted runner.
+  # Debuginfo does not change codegen, so stack frame sizes are unaffected.
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+  CARGO_PROFILE_TEST_DEBUG: line-tables-only
+  # Deliberately NOT setting RUST_MIN_STACK: test threads must keep the default
+  # 2 MiB stack, which is what caught the pre-0.7.1 ethrex stack overflow.
+
+jobs:
+  client:
+    name: ${{ matrix.client }}
+    # On PRs only when labeled `client-compat`; a `labeled` event for another
+    # label does not start (or cancel) a run.
+    if: >-
+      github.event_name != 'pull_request' ||
+      (contains(github.event.pull_request.labels.*.name, 'client-compat') &&
+       (github.event.action != 'labeled' || github.event.label.name == 'client-compat'))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    concurrency:
+      group: client-compat-${{ matrix.client }}-${{ github.event.pull_request.number || github.ref }}
+      cancel-in-progress: true
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - client: ethrex
+            repo: lambdaclass/ethrex
+            ref: ${{ inputs.ethrex_ref || 'spawned-v0.7' }}
+          - client: ethlambda
+            repo: lambdaclass/ethlambda
+            ref: ${{ inputs.ethlambda_ref || 'spawned-v0.7' }}
+    steps:
+      - name: Free disk space
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup \
+            /usr/local/share/boost /usr/local/share/powershell /usr/share/swift \
+            /opt/hostedtoolcache/CodeQL "$AGENT_TOOLSDIRECTORY" || true
+          sudo docker image prune --all --force > /dev/null || true
+          df -h /
+
+      - name: Checkout spawned
+        uses: actions/checkout@v4
+        with:
+          path: spawned
+
+      - name: Checkout ${{ matrix.repo }}@${{ matrix.ref }}
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ matrix.repo }}
+          ref: ${{ matrix.ref }}
+          path: client
+
+      - name: Read client toolchain
+        id: toolchain
+        working-directory: client
+        run: |
+          channel=$(sed -nE 's/^[[:space:]]*channel[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' rust-toolchain.toml)
+          [ -n "$channel" ] || { echo "::error::no channel in rust-toolchain.toml"; exit 1; }
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+          echo "client=${{ matrix.repo }}@$(git rev-parse HEAD) (${{ matrix.ref }}), toolchain $channel" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "spawned=$(git -C ../spawned rev-parse HEAD)" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Install Rust ${{ steps.toolchain.outputs.channel }}
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.toolchain.outputs.channel }}
+          components: clippy
+
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: client -> target
+          shared-key: client-compat-${{ matrix.client }}
+          # PR refs cannot share their entries; only main (push and schedule) saves.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Point ${{ matrix.client }} at this spawned checkout
+        run: bash spawned/.github/scripts/client-compat-patch.sh spawned client
+
+      - name: Gates
+        working-directory: client
+        env:
+          CLIENT: ${{ matrix.client }}
+        run: bash ../spawned/.github/scripts/client-compat-gates.sh "$CLIENT"
+
+      - name: Disk usage
+        if: always()
+        run: |
+          df -h /
+          du -sh client/target 2>/dev/null || true
+
+      - name: Upload logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: client-compat-${{ matrix.client }}-logs
+          path: |
+            ${{ runner.temp }}/client-compat-logs/
+            ${{ runner.temp }}/spawned-packages.txt
+            client/Cargo.lock
+            client/.cargo/config.toml
+          retention-days: 14
