@@ -412,10 +412,18 @@ impl<A: Actor> Context<A> {
         M: Message,
     {
         let observation = crate::instrumentation::RequestObservation::new();
-        let result = match self.request_raw_until(msg, Deadline::after(duration)) {
-            Err(error) => Err(error),
-            Ok(rx) => rx.await,
+        // Bind the receiver before awaiting it: awaiting inside a `match` on
+        // the `Result` keeps the scrutinee's storage alive beside the awaited
+        // receiver and doubles this future's size.
+        let rx = match self.request_raw_until(msg, Deadline::after(duration)) {
+            Ok(rx) => rx,
+            Err(error) => {
+                let result = Err(error);
+                observation.finish(&result);
+                return result;
+            }
         };
+        let result = rx.await;
         observation.finish(&result);
         result
     }
@@ -861,10 +869,18 @@ impl<A: Actor> ActorRef<A> {
         M: Message,
     {
         let observation = crate::instrumentation::RequestObservation::new();
-        let result = match self.request_raw_until(msg, Deadline::after(duration)) {
-            Err(error) => Err(error),
-            Ok(rx) => rx.await,
+        // Bind the receiver before awaiting it: awaiting inside a `match` on
+        // the `Result` keeps the scrutinee's storage alive beside the awaited
+        // receiver and doubles this future's size.
+        let rx = match self.request_raw_until(msg, Deadline::after(duration)) {
+            Ok(rx) => rx,
+            Err(error) => {
+                let result = Err(error);
+                observation.finish(&result);
+                return result;
+            }
         };
+        let result = rx.await;
         observation.finish(&result);
         result
     }
