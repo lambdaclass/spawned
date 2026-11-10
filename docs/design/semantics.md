@@ -14,7 +14,6 @@ How to read it:
   `concurrency/tests/`, or `src/...` for unit tests) or example that checks it.
 - **Not yet checked** means the code provides the behaviour by construction but
   no test, model or proof asserts it. Treat these as weaker than the rest.
-  Checks marked "added in #230" land with that PR.
 - **tasks** is `spawned_concurrency::tasks` (async, every `Backend` and execution
   group); **threads** is `spawned_concurrency::threads` (one OS thread per
   actor). Unmarked guarantees hold in both.
@@ -122,7 +121,7 @@ Checked by: [`cancellation_safety::request_family_is_cancel_safe`][cancellation_
 the caller gets an error, not a reply, and the actor exits with `Panic`.
 Checked by: [`semantics_gaps`][semantics_gaps]`::{native,tasks}::panicking_request_handler_gives_the_caller_actor_stopped`
 (exactly `ActorStopped`, every backend, a managed group, `Recipient` and raw
-receivers; added in #230), [`panic_safety`][panic_safety].
+receivers), [`panic_safety`][panic_safety].
 
 ## 4. Lifecycle
 
@@ -257,7 +256,7 @@ handler and discards its queue (D4). `Exit`/`Down` are enqueued only after the
 source has exited, so they follow every message the source sent earlier to the
 same observer.
 Checked by: [`semantics_gaps`][semantics_gaps]`::{native,tasks}::exit_and_down_follow_earlier_messages_from_the_source`
-(every reason including a real panic, all three tasks backends; added in #230),
+(every reason including a real panic, all three tasks backends),
 [`exit_signal_matrix`][exit_signal_matrix] (delivery).
 
 ## 6. Supervision
@@ -426,14 +425,14 @@ are dropped when the actor exits.
 Checked by: `src/{tasks,threads}/timer_tests.rs::test_send_after_and_cancellation`,
 `test_send_after_actor_shutdown`, [`resource_cleanup::timers_release_payloads_on_actor_exit`][resource_cleanup],
 [`cross_backend::timers_match`][cross_backend],
-[`semantics_gaps`][semantics_gaps]`::tasks::send_after_fires_once_no_earlier_than_its_delay` (paused time; added in #230).
+[`semantics_gaps`][semantics_gaps]`::tasks::send_after_fires_once_no_earlier_than_its_delay` (paused time).
 
 **T2. `send_interval`.** Repeats until cancelled or the actor stops. Fixed
 delay: each tick waits `period` after the previous send, so ticks drift and
 missed time is never caught up in a burst.
 Checked by: `src/{tasks,threads}/timer_tests.rs::test_send_interval_and_cancellation`,
 [`semantics_gaps`][semantics_gaps]`::tasks::send_interval_is_fixed_delay_and_never_catches_up` (paused time,
-one jump of 3.5 periods; added in #230). threads timers use real time and are
+one jump of 3.5 periods). threads timers use real time and are
 checked by construction only.
 
 **T3. Timers belong to one instance.** A timer targets the instance whose
@@ -441,8 +440,8 @@ checked by construction only.
 timers run on the actor's group. `send_message_on` does not send if the actor
 stopped first.
 Checked by: `src/tasks/actor.rs::send_message_on_cancelled`,
-[`semantics_gaps`][semantics_gaps]`::tasks::timers_are_not_carried_to_a_supervised_replacement` (added in #230;
-supervision is tasks-only).
+[`semantics_gaps`][semantics_gaps]`::tasks::timers_are_not_carried_to_a_supervised_replacement` (supervision
+is tasks-only).
 
 **T4. Clocks.** Delays use monotonic time (Tokio timers in tasks, so they follow
 paused Tokio time in tests; `recv_timeout` in threads). threads: each timer is
@@ -471,7 +470,7 @@ already unwinding, aborts under either profile.
 Checked by: the `panic-abort` CI job running [`panic_abort`][ex_panic_abort]
 under the `panic-abort` profile (both modes abort on a handler panic with no
 `stopped()` and no reply; a Transient child restarts after `Kill` and stays
-stopped after `Shutdown`; added in #230),
+stopped after `Shutdown`),
 [`foreign_panics::panicking_panic_hook_aborts_like_plain_rust`][foreign_panics].
 
 ## 10. Not guaranteed
@@ -487,7 +486,7 @@ stopped after `Shutdown`; added in #230),
   never interrupted; stop, shutdown deadlines and cleanup timeouts only signal
   and report. Rust cannot kill a thread.
 - **Bounded memory.** Mailboxes are unbounded (D5); there are no per-actor
-  memory limits (proposed rank 18a, [#228](https://github.com/lambdaclass/spawned/pull/228)).
+  memory limits (rank 18a).
 - **Deadlock detection.** A request cycle, or a handler requesting its own
   actor, waits until `RequestTimeout` (rank 7).
 - **Selective receive, priorities or a fair control lane.** Trapped `Exit` and
@@ -528,7 +527,7 @@ ignored by non-trapping peers (X3), and the Permanent/Transient/Temporary table 
 
 ## 12. Planned changes to these semantics
 
-- v0.8, rank 5e, exit signals as in OTP (proposed in #228): trappable
+- v0.8, rank 5e, exit signals as in OTP: trappable
   `Shutdown`, `Normal` ignored by non-trapping actors, `Killed` for propagated
   kills, `NoProc` for links and monitors to exited actors, normal termination
   for a trapping child on supervisor shutdown (changes X1, X3, X4, X5, L3, L4).
@@ -541,7 +540,7 @@ ignored by non-trapping peers (X3), and the Permanent/Transient/Temporary table 
   instead of discarding it (D4 remains the default).
 - Rank 14, fair control path: lifecycle signals not stuck behind a backlog (X7).
 - Rank 17, bounded mailboxes: opt-in capacity with reject or wait outcomes (D5).
-- Rank 18, byte credits, and rank 18a (proposed in #228), per-actor memory limits.
+- Rank 18, byte credits, and rank 18a, per-actor memory limits.
 - Rank 19, propagated deadlines: queued work can expire before dispatch (R4).
 
 See the [ranked backlog](../../ROADMAP.md#ranked-backlog).
