@@ -3,6 +3,20 @@
 Upgrade notes per release, newest first. The [CHANGELOG](../CHANGELOG.md) lists
 every change; this guide covers what you need to edit when upgrading.
 
+## 0.7.2
+
+No API changes; update the version. Two inputs the macros used to accept now
+fail to compile with a clear error, because they were already wrong:
+
+- `#[actor(protocol = A protocol = B)]` without a comma between entries. Add
+  the comma.
+- `#[actor]` on a trait impl such as `impl Default for X {}`, which silently
+  generated an `Actor` impl. Put `#[actor]` on the actor's inherent impl block.
+
+Macro error messages are clearer and point at the offending tokens; code that
+compiled before (apart from the two cases above) compiles unchanged.
+`#[actor(protocol = P)]` on a generic actor now compiles.
+
 ## 0.7.1
 
 `ActorId` Display now prints a bare decimal number, for example `3` instead of

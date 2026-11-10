@@ -2,6 +2,58 @@
 
 ## Unreleased
 
+- Test reliability: tests wait on the condition they need instead of fixed
+  sleeps or tight latency budgets (`test_wait::wait_for`, `join`, explicit
+  release channels). Fixes flakes seen under load in
+  `threads::timer_tests::test_send_interval_and_cancellation` (asserted an
+  exact tick count), `tasks::actor::tests::panic_in_started_stops_actor`,
+  `monitor_observes_panic_reason`, the badly-behaved/backend isolation tests,
+  `placement_failure_is_reported_and_fails_the_supervisor` (asserted the
+  child's terminal state before its controller published it), two supervisor
+  startup tests whose first `poll` raced the controller, a std `Barrier`
+  inside async handlers that could deadlock a worker, and a proptest case
+  count that broke once a regression file existed. New tests cover the
+  context/request-error/unlink/Debug APIs in both modes, closed-system
+  admission, nested `wait_ready`/`startup_timeout`, supervisor config limits,
+  shard bounds, factory cancellation, cohort backoff, monitor registration
+  cleanup and opposite-direction link lock ordering; they kill 20 surviving
+  cargo-mutants. The native mailbox no longer goes through a single-use
+  macro (cargo-mutants does not mutate macro bodies, so 21 mutants were
+  hidden), and shard selection asserts its invariant instead of re-checking
+  it. A new test pins that the nested-supervisor adapter stops its subtree in
+  `stopped()`, so a panic there (e.g. from an inner waiter's waker) stays a
+  `stopped()` panic with `Drop` as the backstop.
+
+## 0.7.2 — 2026-11-10
+
+Patch release. The main fix restores ethrex's debug RPC tests under the
+default 2 MiB stack by making `ActorRef`/`Context` one pointer again. The
+macros now reject two invalid inputs they used to accept (see below). No other
+API changes.
+
+- `tasks::ActorRef` and `tasks::Context` are one pointer wide again (8 bytes,
+  was 80, 88 with `metrics`; spawned 0.5 was 32): both share one `Arc`'d
+  state. Applications move handles by value through their futures, and debug
+  builds give every move its own stack slot, so the 0.7 handles cost ethrex's
+  debug RPC dispatch ~136 KiB of extra thread stack. Clone is one refcount
+  increment; one extra allocation per actor start, none per message.
+  `future_layout` now pins the one-pointer size and tighter future budgets.
+- trybuild coverage for `#[protocol]` and `#[actor]`: 64 new compile-fail
+  cases (73 in total) and 4 new pass cases, run only on the toolchain pinned in
+  `.tool-versions` (`SPAWNED_UI_TESTS=1` forces them elsewhere). The macros now
+  reject, with an error on the offending tokens, inputs that previously failed
+  inside the expansion or were silently accepted: generic, `unsafe`/`extern`/`const`,
+  duplicate and message-name-colliding protocol methods; borrowed and
+  `impl Trait` protocol parameters; generic handlers, handlers without a
+  `&self`/`&mut self` receiver or with a by-value context; two handler
+  attributes, or `#[started]` with `#[stopped]`, on one method; `mut self`
+  lifecycle hooks; mixed async and sync methods in one `#[actor]` block;
+  `#[actor]` on a trait impl; module paths and missing commas in
+  `#[actor(protocol ...)]`. Handler errors (wrong return or context type,
+  duplicate handlers, async handlers in a threads actor) now point at the
+  handler instead of `#[actor]`. `#[actor(protocol = ...)]` on a generic actor
+  no longer fails with "cannot find type `T`". See
+  [testing](docs/TESTING.md#macro-diagnostics).
 - Optional `failpoints` feature (off by default, compiled out otherwise): 16
   named fault-injection sites in actor startup/stop, supervision, shutdown,
   placement, registration, links and monitors, configurable from tests with
@@ -10,6 +62,16 @@
   the coordinator-panic and never-started-child scenarios that were known gaps
   before v0.7.1 now run as regular tests. See
   [testing](docs/TESTING.md#failpoints).
+- Tests for the semantics guarantees that were not yet checked
+  (`concurrency/tests/semantics_gaps.rs`, both modes where they apply): a
+  trapped `Exit` and a `Down` follow every message the source sent earlier;
+  `send_after` and fixed-delay `send_interval` (no catch-up burst after a clock
+  jump) under paused Tokio time; a timer never delivers to a supervised
+  replacement; a panicking request handler gives its caller exactly
+  `ActorStopped` on every backend. A `panic-abort` CI job runs the
+  `panic_abort` example under a new `panic-abort` profile: a panicking handler
+  aborts the process without `stopped()` or a reply, and supervision of `Kill`
+  and `Shutdown` exits still works.
 - Apalache 0.62.4 inductive-invariant checks for the supervision models
   (`verification/tla/apalache.sh`, `nix run .#check-apalache`, CI job
   `tla-apalache`). `Init => IndInv` and `IndInv /\ Next => IndInv'` hold for
@@ -47,33 +109,6 @@
   or Creusot proofs, turmoil/Jepsen-style tests and continuous nightly runs to
   the testing plan; record Apalache's status and the Veil spike as the next
   step toward invariants for any configuration size.
-- trybuild coverage for `#[protocol]` and `#[actor]`: 64 new compile-fail
-  cases (73 in total) and 4 new pass cases, run only on the toolchain pinned in
-  `.tool-versions` (`SPAWNED_UI_TESTS=1` forces them elsewhere). The macros now
-  reject, with an error on the offending tokens, inputs that previously failed
-  inside the expansion or were silently accepted: generic, `unsafe`/`extern`/`const`,
-  duplicate and message-name-colliding protocol methods; borrowed and
-  `impl Trait` protocol parameters; generic handlers, handlers without a
-  `&self`/`&mut self` receiver or with a by-value context; two handler
-  attributes, or `#[started]` with `#[stopped]`, on one method; `mut self`
-  lifecycle hooks; mixed async and sync methods in one `#[actor]` block;
-  `#[actor]` on a trait impl; module paths and missing commas in
-  `#[actor(protocol ...)]`. Handler errors (wrong return or context type,
-  duplicate handlers, async handlers in a threads actor) now point at the
-  handler instead of `#[actor]`. `#[actor(protocol = ...)]` on a generic actor
-  no longer fails with "cannot find type `T`". See
-  [testing](docs/TESTING.md#macro-diagnostics).
-- Tests for the semantics guarantees that were not yet checked
-  (`concurrency/tests/semantics_gaps.rs`, both modes where they apply): a
-  trapped `Exit` and a `Down` follow every message the source sent earlier;
-  `send_after` and fixed-delay `send_interval` (no catch-up burst after a clock
-  jump) under paused Tokio time; a timer never delivers to a supervised
-  replacement; a panicking request handler gives its caller exactly
-  `ActorStopped` on every backend. A `panic-abort` CI job runs the
-  `panic_abort` example under a new `panic-abort` profile: a panicking handler
-  aborts the process without `stopped()` or a reply, and supervision of `Kill`
-  and `Shutdown` exits still works.
-
 - Roadmap: per-actor memory limits (rank 18a), one semantics contract
   (rank 5d), an integrated request and lifecycle model for ranks 11, 13, 15,
   15a and 17-19, and a design-review rule: a design doc, TLA+ model, client
@@ -94,34 +129,6 @@
   and how to stop an actor from outside (`ChildHandle::stop`/`shutdown`/
   `stop_with_reason`); the `ExitReason::Normal` doc comment and the supervision
   design table are corrected.
-- `tasks::ActorRef` and `tasks::Context` are one pointer wide again (8 bytes,
-  was 80, 88 with `metrics`; spawned 0.5 was 32): both share one `Arc`'d
-  state. Applications move handles by value through their futures, and debug
-  builds give every move its own stack slot, so the 0.7 handles cost ethrex's
-  debug RPC dispatch ~136 KiB of extra thread stack. Clone is one refcount
-  increment; one extra allocation per actor start, none per message.
-  `future_layout` now pins the one-pointer size and tighter future budgets.
-- Test reliability: tests wait on the condition they need instead of fixed
-  sleeps or tight latency budgets (`test_wait::wait_for`, `join`, explicit
-  release channels). Fixes flakes seen under load in
-  `threads::timer_tests::test_send_interval_and_cancellation` (asserted an
-  exact tick count), `tasks::actor::tests::panic_in_started_stops_actor`,
-  `monitor_observes_panic_reason`, the badly-behaved/backend isolation tests,
-  `placement_failure_is_reported_and_fails_the_supervisor` (asserted the
-  child's terminal state before its controller published it), two supervisor
-  startup tests whose first `poll` raced the controller, a std `Barrier`
-  inside async handlers that could deadlock a worker, and a proptest case
-  count that broke once a regression file existed. New tests cover the
-  context/request-error/unlink/Debug APIs in both modes, closed-system
-  admission, nested `wait_ready`/`startup_timeout`, supervisor config limits,
-  shard bounds, factory cancellation, cohort backoff, monitor registration
-  cleanup and opposite-direction link lock ordering; they kill 20 surviving
-  cargo-mutants. The native mailbox no longer goes through a single-use
-  macro (cargo-mutants does not mutate macro bodies, so 21 mutants were
-  hidden), and shard selection asserts its invariant instead of re-checking
-  it. A new test pins that the nested-supervisor adapter stops its subtree in
-  `stopped()`, so a panic there (e.g. from an inner waiter's waker) stays a
-  `stopped()` panic with `Drop` as the backstop.
 
 ## 0.7.1 — 2026-11-10
 
