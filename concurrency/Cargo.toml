@@ -83,7 +83,7 @@ required-features = ["backend-experiments"]
 pprof = { version = "0.15", optional = true, features = ["flamegraph"] }
 
 [target.'cfg(spawned_scheduler_loom)'.dev-dependencies]
-loom = "0.7"
+loom = { version = "0.7", features = ["futures"] }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(spawned_scheduler_loom)', 'cfg(spawned_sim)', 'cfg(kani)', 'cfg(kani_slow)'] }
