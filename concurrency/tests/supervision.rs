@@ -782,6 +782,128 @@ async fn normal_pre_ready_exit_records_real_cause_and_fails_transient_startup() 
     assert!(snapshot.actor_id.is_some());
 }
 
+/// Exits before readiness on its second generation, then starts normally.
+struct ExitOnceDuringRestart {
+    exit: Option<ExitReason>,
+}
+impl Actor for ExitOnceDuringRestart {
+    async fn started(&mut self, ctx: &Context<Self>) {
+        if let Some(reason) = self.exit.take() {
+            ctx.stop_with_reason(reason);
+        }
+    }
+}
+impl Handler<Crash> for ExitOnceDuringRestart {
+    async fn handle(&mut self, _: Crash, _: &Context<Self>) {
+        panic!("injected child failure");
+    }
+}
+
+/// A Transient child's *replacement* that stops `Normal` or `Shutdown`
+/// before readiness is a failed restart attempt, retried within the restart
+/// budget, as OTP retries a failed restart (`try_again_restart`) whatever the
+/// child's restart type. Only the initial start fails the tree
+/// (`normal_pre_ready_exit_records_real_cause_and_fails_transient_startup`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn transient_replacement_exiting_before_readiness_is_retried() {
+    for reason in [ExitReason::Normal, ExitReason::Shutdown] {
+        let system = ActorSystem::new().unwrap();
+        let group = system.async_group("replacement-start-exit", 1).unwrap();
+        let mut tree = system.supervisor(config(5)).unwrap();
+        let exit = reason.clone();
+        let child = tree
+            .add(
+                ChildSpec::new("replacement", &group, move |ctx| {
+                    let exit = (ctx.generation() == 2).then(|| exit.clone());
+                    async move { Ok::<_, String>(ExitOnceDuringRestart { exit }) }
+                })
+                .restart(RestartMode::Transient),
+            )
+            .unwrap();
+        let supervisor = tree.start().await.unwrap();
+        assert!(child.current().unwrap().request(Crash).await.is_err());
+        let replacement = tokio::time::timeout(LIMIT, child.wait_for_generation(2))
+            .await
+            .unwrap();
+        assert!(
+            replacement.is_ok(),
+            "{reason:?}: replacement not retried; failure: {:?}",
+            supervisor.failure()
+        );
+        assert_eq!(child.snapshot().generation, 3);
+        assert!(supervisor.failure().is_none());
+        assert!(supervisor.shutdown(LIMIT).await.complete);
+        assert!(system.shutdown(LIMIT).await.complete);
+    }
+}
+
+/// The `Shutdown` twin of
+/// `normal_pre_ready_exit_records_real_cause_and_fails_transient_startup`:
+/// before its initial readiness a Transient child stopping with `Shutdown`
+/// fails the start too.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn shutdown_pre_ready_exit_fails_transient_startup() {
+    let system = ActorSystem::new().unwrap();
+    let group = system.async_group("shutdown-start-exit", 1).unwrap();
+    let mut tree = system.supervisor(config(5)).unwrap();
+    let child = tree
+        .add(
+            ChildSpec::new("self-shutdown", &group, |_| async {
+                Ok::<_, String>(ExitOnceDuringRestart {
+                    exit: Some(ExitReason::Shutdown),
+                })
+            })
+            .restart(RestartMode::Transient),
+        )
+        .unwrap();
+    assert!(tokio::time::timeout(LIMIT, tree.start())
+        .await
+        .unwrap()
+        .is_err());
+    assert!(system.shutdown(LIMIT).await.complete);
+    let snapshot = child.snapshot();
+    assert_eq!(snapshot.generation, 1);
+    assert_eq!(snapshot.last_exit, Some(ExitReason::Shutdown));
+}
+
+/// Failed replacements consume the restart budget like failed factories:
+/// with `max_restarts` 3 a Transient child whose replacements always stop
+/// before readiness gets exactly three replacements, then the supervisor
+/// fails with an exhausted budget.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn failed_replacements_exhaust_the_restart_budget_exactly() {
+    for reason in [ExitReason::Normal, ExitReason::Shutdown] {
+        let system = ActorSystem::new().unwrap();
+        let group = system.async_group("replacement-budget", 1).unwrap();
+        let mut policy = config(3);
+        policy.restart_window = Duration::from_secs(60);
+        let mut tree = system.supervisor(policy).unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let count = calls.clone();
+        let exit = reason.clone();
+        let child = tree
+            .add(
+                ChildSpec::new("always-fails-restart", &group, move |ctx| {
+                    count.fetch_add(1, Ordering::SeqCst);
+                    let exit = (ctx.generation() > 1).then(|| exit.clone());
+                    async move { Ok::<_, String>(ExitOnceDuringRestart { exit }) }
+                })
+                .restart(RestartMode::Transient),
+            )
+            .unwrap();
+        let supervisor = tree.start().await.unwrap();
+        assert!(child.current().unwrap().request(Crash).await.is_err());
+        tokio::time::timeout(LIMIT, supervisor.join())
+            .await
+            .unwrap();
+        let failure = supervisor.failure().unwrap();
+        assert!(failure.contains("budget exhausted"), "{reason:?}: {failure}");
+        assert_eq!(calls.load(Ordering::SeqCst), 4, "{reason:?}");
+        assert_eq!(child.snapshot().generation, 4, "{reason:?}");
+        assert!(system.shutdown(LIMIT).await.complete);
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn disabled_retries_fail_without_waiting_for_a_long_backoff() {
     let system = ActorSystem::new().unwrap();

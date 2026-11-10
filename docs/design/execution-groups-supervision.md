@@ -190,7 +190,8 @@ cleanup is considered complete; the existing unconditional `unregister(name)`
 is not a safe replacement for that operation.
 
 A non-restartable initial child failure fails startup; retries of restartable
-children use the policy above. No helper from a cancelled attempt may publish
+children use the policy above. A replacement that never becomes ready is a
+failed retry and is retried unless Temporary, whatever its exit reason. No helper from a cancelled attempt may publish
 readiness or install a registration for a newer generation.
 Explicit state recovery, durable outboxes, idempotency and logical proxy routing
 are separate application capabilities, not implied by ChildSpec.

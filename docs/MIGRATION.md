@@ -3,6 +3,19 @@
 Upgrade notes per release, newest first. The [CHANGELOG](../CHANGELOG.md) lists
 every change; this guide covers what you need to edit when upgrading.
 
+## Unreleased
+
+A Transient child's replacement (any generation after the child was first
+ready) that stops `Normal` or `Shutdown` from `started()`, or is shut down
+before readiness, no longer fails its supervisor. It is a failed restart,
+retried within `max_restarts` like a failed factory (factory errors are
+retried too). Under OneForAll a failed replacement now starts a new recovery
+round, so the whole cohort is stopped and rebuilt again, as in OTP; before,
+only the failed child was retried. If you relied on a failing child to stop a
+tree, stop it explicitly with `Supervisor::stop` or `Supervisor::shutdown`:
+budget exhaustion is not a reliable stop, since an expiring
+`restart_window` can keep granting retries. The first startup is unchanged.
+
 ## 0.7.2
 
 No API changes; update the version. Two inputs the macros used to accept now

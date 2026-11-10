@@ -82,7 +82,14 @@ How it works:
 Trace validation found one model gap: a ready actor can exit with `Shutdown`
 while its supervisor is open (`ChildHandle::shutdown`), which the design's
 restart table covers (Permanent restarts, Transient stays stopped), so
-`SelfExits` now includes `Shutdown`. Hand-edited traces (a `Close` moved
+`SelfExits` now includes `Shutdown`. A second gap, found through trace
+coverage: a generation can also stop with `Shutdown` before readiness while
+the supervisor is open (an actor stopping itself, or shut down, in
+`started()`), so `StartupFailed` allows it. The same trace exposed a code bug:
+a Transient replacement stopping `Normal` or `Shutdown` before readiness
+failed the tree; it is now retried (`Retries` in `Decide`, and
+`RestartFollowsPolicy` allows a failed restart attempt of a non-Temporary
+child), and a trace edited back to failing the tree is a negative control. Hand-edited traces (a `Close` moved
 before an `Attempt`, a restart after a Transient normal exit, forward shutdown
 order, budget exhaustion with a free retry) are rejected at the edited event.
 
@@ -100,7 +107,7 @@ Action and temporal properties:
 
 - `NoStartAfterClose`: no generation starts or is published after closure.
 - `RestartFollowsPolicy`: restarts follow the Permanent/Transient/Temporary table
-  (startup timeouts restart unless Temporary).
+  (startup timeouts and failed restart attempts restart unless Temporary).
 - `ReverseShutdown`: ready children get their stop turn only after every later
   child finished or timed out, unless the shutdown deadline forced `stop_remaining`.
 - `NeverReopens`, and liveness `ClosedLeadsToDone` assuming cleanup completes.
@@ -209,7 +216,7 @@ and `--negative-controls` removes one guard at a time and requires induction
 to fail: for `Supervision` the retry limit, ordered start, join wait, restart
 table, cleanup, unpublish-on-stop, admission gate on `Attempt` and the
 reverse-shutdown wait; for `Cohorts` and `NestedSupervision` the existing
-`Fault` mutations (`Selection`, `Cleanup`, `Retirement`, `Closed`, `Join`);
+`Fault` mutations (`Selection`, `Cleanup`, `Retirement`, `Closed`, `InPlaceRetry`, `Join`);
 for `Coordinator` see below.
 
 The type annotations are `\* @type:` comments, ignored by TLC. Apalache also
@@ -274,8 +281,9 @@ ordering and arbitrary Tokio/OS schedules remain outside these models.
 
 `--negative-controls` requires all three trace suites above. Four edited real
 traces must reject (wrong selection, early resume, early parent join, false
-cancellation). Six model mutations must yield counterexamples (selection,
-cleanup, retirement, closed admission, parent join and shutdown propagation).
+cancellation). Seven model mutations must yield counterexamples (selection,
+cleanup, retirement, closed admission, in-round retry of one child, parent join
+and shutdown propagation).
 A separate unsafe-final-event control checks `Safety` before the full-log completion
 sentinel. The ordinary `--traces-only` interface still accepts older OneForOne
 trace collections without requiring the new negative controls.

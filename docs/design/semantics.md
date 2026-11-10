@@ -269,7 +269,10 @@ Checked by: [`semantics_gaps`][semantics_gaps]`::{native,tasks}::exit_and_down_f
 | Transient | stay stopped | restart |
 | Temporary | stay stopped | stay stopped |
 
-Startup timeouts restart unless Temporary. Supervisor or system shutdown
+Startup timeouts restart unless Temporary, and so does a failed restart
+attempt: a generation that stops before readiness after the child was first
+ready is retried whatever its exit reason (OTP retries a failed restart).
+Supervisor or system shutdown
 suppresses every restart. Stopping a Permanent child from outside restarts it.
 Checked by: `Supervision!RestartFollowsPolicy`, `Supervision!TemporaryStartsOnce`,
 `Cohorts!TemporaryStartsOnce`; [`supervision::restart_modes_distinguish_normal_shutdown_and_panic`][supervision],
@@ -281,8 +284,11 @@ children stop in reverse declaration order and **all** of them finish cleanup
 before any replacement is constructed; replacements start in declaration
 order. Temporary collateral children are stopped, not rebuilt. Concurrent
 failures coalesce into one round; a new upstream failure supersedes a round.
+A replacement that fails before readiness (factory error, panic, startup
+timeout or a stop in `started()`) starts a new round, so OneForAll rebuilds
+the whole cohort again, as OTP re-runs the strategy on `try_again_restart`.
 Checked by: `Cohorts!StrategySelection`, `Cohorts!WholeCohortBarrier`,
-`Cohorts!NoRetiredParticipant`; [`supervision_strategies`][supervision_strategies],
+`Cohorts!NoRetiredParticipant`, `Cohorts!OneStartPerRound`; [`supervision_strategies`][supervision_strategies],
 [`cohort_trace`][cohort_trace], [`supervision_tree`][ex_supervision_tree] example.
 
 **V3. At most one live generation.** A slot never has two live generations: a
@@ -330,11 +336,15 @@ Checked by: Kani `backoff_bound_is_capped`, `backoff_jitter_stays_in_range`,
 ready only when every child is ready; a non-restartable failure (or exhausted
 retries) rolls back the started children in reverse order. Each attempt has a
 `startup_timeout` (default 5 s) that counts as a failure. A child that stops
-`Normal` before readiness is a startup failure. Factories run on the child's
+`Normal` (or `Shutdown`) before its initial readiness is a startup failure and,
+if Transient, fails the start, as a failed child `init` fails an OTP
+supervisor's start. A replacement that stops before readiness is a failed
+restart attempt and is retried (V1). Factories run on the child's
 group; a factory error or panic is a failed attempt. Cancelling the start future
 before readiness rolls the tree back.
 Checked by: `Supervision!ReadyMeansAllStarted`; [`supervision::failed_partial_startup_rolls_back_without_starting_later_children`][supervision],
 `transient_startup_timeout_retries_after_actual_cleanup`, `normal_pre_ready_exit_records_real_cause_and_fails_transient_startup`,
+`transient_replacement_exiting_before_readiness_is_retried`, [`supervision_trace::trace_replacement_exiting_before_readiness_is_retried`][supervision_trace],
 `failed_factories_cancel_owned_helpers_before_retry_and_catch_panics`,
 [`cancellation_safety::supervisor_start_is_cancel_safe`][cancellation_safety],
 [`panic_safety::factory_panics_are_retried`][panic_safety].
@@ -517,6 +527,7 @@ ignored by non-trapping peers (X3), and the Permanent/Transient/Temporary table 
 | A kill propagated over a link stays `Kill` (X4) | It arrives as `killed` | Planned v0.8, rank 5e: a distinct trappable `Killed` |
 | Linking or monitoring an already-exited actor delivers its real exit reason (X1, X5) | `noproc` | Planned v0.8, rank 5e: `NoProc` |
 | The restart budget counts every child factory call, collateral ones included (V5) | Intensity counts recovery rounds | Planned v0.8, rank 5f |
+| Initial startup retries a Permanent or Transient child whose factory fails, panics or times out (V7), within the budget | `start_link` aborts on any child start error | Planned v0.8, rank 5f |
 | An actor dropped by its runtime exits `Kill` in tasks; the threads fallback is `Panic("unexpected framework panic")` (L4) | No counterpart | Planned v0.8, rank 5g: one reason in both modes |
 | Stop is cooperative: a running handler or blocking call is never interrupted (L3) | `kill` ends a process at once | Rust-forced: Rust cannot preempt or kill a thread |
 | Panics are caught only with unwinding (P2) | Process crashes are always isolated | Rust-forced: `panic = "abort"` and a panicking panic hook end the process |

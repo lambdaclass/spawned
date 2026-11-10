@@ -133,7 +133,7 @@ for model in $models; do
           's/(SupJoin ==.*?)\/\\ \\A c \\in Children : pc\[c\] \\in \{"idle", "finished"\}/$1/s' IndInv
         # TemporaryStartsOnce: restart regardless of mode and exit reason.
         mutate "$module" restart-policy Supervision.tla \
-          's/ELSE IF Restarts\(Mode\[c\], exitR\[c\]\) THEN/ELSE IF TRUE THEN/' IndInv
+          's/ELSE IF Retries\(Mode\[c\], exitR\[c\], readyGen\[c\], initial\[c\]\) THEN/ELSE IF TRUE THEN/' IndInv
         # AtMostOneGeneration: a self-exit skips cleanup and goes straight to decide.
         mutate "$module" skip-cleanup Supervision.tla \
           's/(SelfExit\(c, r\) ==.*?)Goto\(c, "cleanup"\)/$1Goto(c, "decide")/s' IndInv
@@ -153,7 +153,7 @@ for model in $models; do
     Cohorts|Nested)
       module="MC${model}Ind"
       if [[ "$model" == Cohorts ]]; then
-        probes=NoMidRoundState faults="Selection Cleanup Retirement Closed"
+        probes=NoMidRoundState faults="Selection Cleanup Retirement Closed InPlaceRetry"
       else
         probes=NoFinishedSubtree faults="Join Closed"
       fi

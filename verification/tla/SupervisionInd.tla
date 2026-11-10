@@ -74,14 +74,16 @@ H_initial ==
     /\ sphase = "starting" => \A c \in Children : c < sidx - 1 => initial[c]
     /\ sphase = "starting" => ~sready
 
-\* A restartable exit is what sends a controller back to "top" (Decide),
-\* and exitR is only rewritten between Attempt and cleanup. So a controller
-\* waiting to retry holds an exit reason its restart mode allows. Since
-\* Restarts("Temporary", r) is FALSE, a Temporary child is back at "attempt"
+\* A restartable exit (or a failed restart attempt) is what sends a
+\* controller back to "top" (Decide), and exitR and readyGen are only
+\* rewritten between Attempt and cleanup. So a controller waiting to retry
+\* holds a state its restart mode allows. Since Retries("Temporary", ...) is
+\* FALSE, a Temporary child is back at "attempt"
 \* only with gen = 0 (gives TemporaryStartsOnce and RestartFollowsPolicy).
 \* Decide is reached through cleanup, so a generation exists.
 H_retry == \A c \in Children :
-    /\ pc[c] \in {"top", "backoff", "attempt"} /\ gen[c] > 0 => Restarts(Mode[c], exitR[c])
+    /\ pc[c] \in {"top", "backoff", "attempt"} /\ gen[c] > 0 =>
+           Retries(Mode[c], exitR[c], readyGen[c], initial[c])
     /\ pc[c] = "decide" => gen[c] > 0
 
 \* Reverse-order shutdown: while stopping, every child after sidx has
@@ -125,7 +127,9 @@ NoStartAfterCloseStep ==
     \A c \in Children : (gen'[c] > gen[c] \/ (pub'[c] # 0 /\ pub[c] = 0)) => open
 RestartFollowsPolicyStep ==
     \A c \in Children :
-        (gen'[c] > gen[c] /\ gen[c] > 0) => DesignAllowsRestart(Mode[c], exitR[c])
+        (gen'[c] > gen[c] /\ gen[c] > 0) =>
+            \/ DesignAllowsRestart(Mode[c], exitR[c])
+            \/ ~readyGen[c] /\ initial[c] /\ Mode[c] # "Temporary"
 ReverseShutdownStep ==
     \A c \in Children :
         (stopTurn'[c] /\ ~stopTurn[c] /\ ~deadline') =>

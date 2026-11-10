@@ -258,3 +258,71 @@ async fn trace_normally_retired_transient_is_skipped_by_later_cohorts() {
         );
     }
 }
+
+struct MaybeStop(bool);
+impl Actor for MaybeStop {
+    async fn started(&mut self, ctx: &Context<Self>) {
+        if self.0 {
+            ctx.stop();
+        }
+    }
+}
+impl Handler<Crash> for MaybeStop {
+    async fn handle(&mut self, _: Crash, _: &Context<Self>) {
+        panic!("trace cohort failure");
+    }
+}
+/// A replacement stopping before readiness inside a round requests a new
+/// round: OneForAll rebuilds the whole cohort again. `Cohorts.tla` allows one
+/// start per child and round (`OneStartPerRound`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn trace_failed_replacement_starts_a_new_round() {
+    for strategy in [
+        SupervisorStrategy::OneForAll,
+        SupervisorStrategy::RestForOne,
+    ] {
+        let system = ActorSystem::new().unwrap();
+        let group = system.async_group("cohort-pre-ready-trace", 2).unwrap();
+        let mut tree = system
+            .supervisor(SupervisorConfig {
+                strategy,
+                max_restarts: 30,
+                backoff: Backoff {
+                    initial: Duration::from_millis(1),
+                    maximum: Duration::from_millis(2),
+                    jitter: false,
+                    ..Backoff::default()
+                },
+                ..SupervisorConfig::default()
+            })
+            .unwrap();
+        let id = tree.trace_id();
+        tree.add(ChildSpec::new("a", &group, |_| async {
+            Ok::<_, String>(MaybeStop(false))
+        }))
+        .unwrap();
+        let b = tree
+            .add(
+                ChildSpec::new("b", &group, |ctx| {
+                    let stop = ctx.generation() == 2;
+                    async move { Ok::<_, String>(MaybeStop(stop)) }
+                })
+                .restart(RestartMode::Transient),
+            )
+            .unwrap();
+        let supervisor = tree.start().await.unwrap();
+        assert!(b.current().unwrap().request(Crash).await.is_err());
+        tokio::time::timeout(LIMIT, b.wait_for_generation(2))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(supervisor.shutdown(LIMIT).await.complete);
+        write_trace(
+            &format!("failed-replacement-{strategy:?}"),
+            id,
+            strategy,
+            &["Permanent", "Transient"],
+        );
+        assert!(system.shutdown(LIMIT).await.complete);
+    }
+}

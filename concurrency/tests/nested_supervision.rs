@@ -490,4 +490,81 @@ async fn subtree_startup_timeout_bounds_a_hung_child_factory() {
         .expect("subtree startup_timeout did not bound the hung child");
     assert!(started.is_err());
     assert!(system.shutdown(LIMIT).await.complete);
+/// Stops itself `Normal` before readiness when `stop` is set.
+struct MaybeStop(bool);
+impl Actor for MaybeStop {
+    async fn started(&mut self, ctx: &Context<Self>) {
+        if self.0 {
+            ctx.stop();
+        }
+    }
+}
+impl Handler<Crash> for MaybeStop {
+    async fn handle(&mut self, _: Crash, _: &Context<Self>) {
+        panic!("nested leaf failed");
+    }
+}
+
+/// A Transient leaf's failed replacement (stops before readiness) is retried
+/// inside its own subtree; when the subtree's budget runs out, the subtree
+/// fails and escalates, and the parent replaces it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn nested_failed_replacement_retries_then_escalates_on_exhaustion() {
+    for (inner_budget, escalates) in [(5, false), (1, true)] {
+        let always = escalates;
+        let system = ActorSystem::new().unwrap();
+        let controls = system.async_group("tree-controls", 1).unwrap();
+        let workers = system.async_group("tree-workers", 1).unwrap();
+        let published: Arc<Mutex<Option<SupervisedChild<MaybeStop>>>> =
+            Arc::new(Mutex::new(None));
+        let expose = published.clone();
+        let placement = workers.clone();
+        let mut root = system.supervisor(policy(5)).unwrap();
+        let subtree = root
+            .add_supervisor(SupervisorSpec::new(
+                "subtree",
+                &controls,
+                policy(inner_budget),
+                move |tree| {
+                    // Within one subtree instance: generation 2 stops before
+                    // readiness; then generation 3 succeeds (budget 5), or
+                    // every replacement stops and the second retry is refused
+                    // (budget 1).
+                    let leaf = tree.add(
+                        ChildSpec::new("leaf", &placement, move |ctx| {
+                            let generation = ctx.generation();
+                            let stop = generation == 2 || (always && generation > 1);
+                            async move { Ok::<_, String>(MaybeStop(stop)) }
+                        })
+                        .restart(RestartMode::Transient),
+                    )?;
+                    *expose.lock().unwrap() = Some(leaf);
+                    Ok::<_, SupervisorError>(())
+                },
+            ))
+            .unwrap();
+        let supervisor = root.start().await.unwrap();
+        let old_leaf = published.lock().unwrap().take().unwrap();
+        assert!(old_leaf.current().unwrap().request(Crash).await.is_err());
+        if escalates {
+            tokio::time::timeout(LIMIT, subtree.wait_for_generation(1))
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(subtree.snapshot().generation, 2);
+            let new_leaf = published.lock().unwrap().take().unwrap();
+            assert_eq!(new_leaf.snapshot().generation, 1);
+            assert!(new_leaf.current().is_ok());
+        } else {
+            tokio::time::timeout(LIMIT, old_leaf.wait_for_generation(2))
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(old_leaf.snapshot().generation, 3);
+            assert_eq!(subtree.snapshot().generation, 1);
+        }
+        assert!(supervisor.failure().is_none());
+        assert!(supervisor.shutdown(LIMIT).await.complete);
+        assert!(system.shutdown(LIMIT).await.complete);
+    }
 }

@@ -39,7 +39,7 @@ Modes    == {"Permanent", "Transient", "Temporary"}
 \* (ChildHandle::shutdown): the design restarts it if Permanent and keeps a
 \* Transient child stopped. Found by trace validation.
 SelfExits      == {"Normal", "Shutdown", "Panic", "Kill"}
-StartupResults == {"none", "timeout", "Normal", "Panic"}
+StartupResults == {"none", "timeout", "Normal", "Panic", "Shutdown"}
 Reasons        == {"none", "timeout", "Normal", "Shutdown", "Panic", "Kill"}
 
 ASSUME N \in Nat \ {0} /\ MaxRestarts \in Nat /\ MaxGen \in Nat \ {0}
@@ -51,6 +51,15 @@ Restarts(m, r) ==
     IF r = "timeout" THEN m # "Temporary"
     ELSE \/ m = "Permanent"
          \/ m = "Transient" /\ r \in {"none", "Panic", "Kill"}
+
+\* Whether a controller retries after cleanup. A generation that never became
+\* ready after the child's initial readiness is a failed restart attempt,
+\* retried whatever its exit reason (as OTP retries a failed restart), unless
+\* Temporary. Before initial readiness the restart table applies, so a
+\* Transient child stopping Normal or Shutdown in its first startup fails it.
+Retries(m, r, ready, init) ==
+    \/ Restarts(m, r)
+    \/ ~ready /\ init /\ m # "Temporary"
 
 Pcs == {"idle", "top", "backoff", "attempt", "constructing", "running",
         "cleanup", "decide", "finish", "finished"}
@@ -232,11 +241,12 @@ BecomeReady(c) ==
     /\ UNCHANGED <<sup, gen, alive, first, stopTurn, cdone>>
 
 \* Factory error/panic, startup timeout, or the actor exiting during
-\* started(); also admission closing while constructing.
+\* started() (with any reason it stops with, Shutdown included while the
+\* supervisor is open: found by trace validation); also admission closing
+\* while constructing.
 StartupFailed(c, r) ==
     /\ pc[c] = "constructing"
-    /\ r \in StartupResults \cup {"Shutdown"}
-    /\ (r = "Shutdown") => ~open
+    /\ r \in StartupResults
     /\ exitR' = [exitR EXCEPT ![c] = r]
     /\ Goto(c, "cleanup")
     /\ UNCHANGED <<sup, st, gen, alive, pub, initial, readyGen, first, stopTurn, cdone>>
@@ -285,7 +295,7 @@ CleanupStuck(c) ==
 Decide(c) ==
     /\ pc[c] = "decide"
     /\ IF ~open THEN Goto(c, "finish") /\ UNCHANGED <<open, failed>>
-       ELSE IF Restarts(Mode[c], exitR[c]) THEN Goto(c, "top") /\ UNCHANGED <<open, failed>>
+       ELSE IF Retries(Mode[c], exitR[c], readyGen[c], initial[c]) THEN Goto(c, "top") /\ UNCHANGED <<open, failed>>
        ELSE IF ~readyGen[c] THEN Fail /\ Goto(c, "finish")   \* non-restartable startup failure
        ELSE Goto(c, "finish") /\ UNCHANGED <<open, failed>>
     /\ UNCHANGED <<sphase, sidx, sready, sdone, budget, reserved, deadline, timedOut,
@@ -368,7 +378,7 @@ SupJoin ==
 
 ChildStep(c) ==
     \/ LoopTop(c) \/ RetryReserve(c) \/ RetryRelease(c) \/ BackoffDone(c) \/ Attempt(c) \/ BecomeReady(c)
-    \/ \E r \in StartupResults \cup {"Shutdown"} : StartupFailed(c, r)
+    \/ \E r \in StartupResults : StartupFailed(c, r)
     \/ \E r \in SelfExits : SelfExit(c, r)
     \/ StopObserved(c) \/ CleanupDone(c) \/ CleanupStuck(c)
     \/ Decide(c) \/ Finish(c)
@@ -441,10 +451,14 @@ DesignAllowsRestart(m, r) ==
       [] m = "Transient" -> r \in {"none", "timeout", "Panic", "Kill"}
 
 \* A new generation after the first only follows an exit for which the
-\* design table allows a restart.
+\* design table allows a restart, or a failed restart attempt (a generation
+\* that never became ready after the child's initial readiness) of a child
+\* that is not Temporary.
 RestartFollowsPolicy ==
     [][\A c \in Children :
-        (gen'[c] > gen[c] /\ gen[c] > 0) => DesignAllowsRestart(Mode[c], exitR[c])]_vars
+        (gen'[c] > gen[c] /\ gen[c] > 0) =>
+            \/ DesignAllowsRestart(Mode[c], exitR[c])
+            \/ ~readyGen[c] /\ initial[c] /\ Mode[c] # "Temporary"]_vars
 
 \* Ready children are stopped in reverse declaration order: a stop turn is
 \* only given once every later child finished or was abandoned, unless the

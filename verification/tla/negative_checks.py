@@ -123,6 +123,14 @@ def main():
                 event["x"] = "Panic"
     require_rejected(shutdown, escalate_shutdown,
                      "transient retirement after incorrectly escalated shutdown", args.tlc)
+    replacement = next(t for t in traces if t["name"] == "transient_replacement_normal_before_ready")
+    def fail_instead_of_retry(events):
+        failed = next(i for i, e in enumerate(events)
+                      if e["a"] == "StartupFailed" and e["x"] == "Normal")
+        decide = next(e for e in events[failed:] if e["a"] == "Decide")
+        decide["x"] = "fail"
+    require_rejected(replacement, fail_instead_of_retry,
+                     "Transient replacement failing the tree instead of retrying", args.tlc)
     cohort = next(t for t in traces if t.get("schema") == "cohort-v1" and t["strategy"] == "OneForAll")
     tree = next(t for t in traces if t.get("schema") == "tree-v1" and any(e["a"] == "TPropagate" for e in t["events"]))
     require_rejected(cohort, move_resume_early, "resume before cohort cleanup", args.tlc)
@@ -132,6 +140,8 @@ def main():
     unsafe_final_event(cohort, args.tlc)
     for fault in ("Selection", "Cleanup", "Retirement", "Closed"):
         model_fault("MCCohortsAll", fault, args.tlc)
+    # Needs a second generation within one round (MaxGen 3).
+    model_fault("MCCohortsAllSupersession", "InPlaceRetry", args.tlc)
     model_fault("MCCoordinator", "ReleaseEarly", args.tlc)
     model_fault("MCCoordinator", "ForgetFailure", args.tlc)
     model_fault("MCCoordinator", "ForgetSignal", args.tlc, invariant="JoinAfterAllSignalled")
