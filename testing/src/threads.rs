@@ -10,7 +10,7 @@ use spawned_concurrency::threads::{
     Actor, ActorRef, ActorStart, Context, Handler, Receiver, Recipient,
 };
 use spawned_concurrency::{ChildHandle, ExitReason};
-use spawned_rt::threads::oneshot;
+use spawned_concurrency::reply::{Deadline, PendingReply, ReplyReceiver};
 use std::ops::Deref;
 use std::panic::Location;
 use std::sync::Arc;
@@ -52,7 +52,7 @@ impl Mock {
 impl Actor for Mock {}
 
 impl<M: Message> Handler<M> for Mock {
-    fn handle(&mut self, msg: M, _: &Context<Self>) -> M::Result {
+    fn handle(&mut self, msg: M, reply: PendingReply<'_, M::Result>, _: &Context<Self>) {
         match self.rules.plan(&self.inbox, msg) {
             Plan::Reply {
                 delay,
@@ -65,7 +65,7 @@ impl<M: Message> Handler<M> for Mock {
                 if let Some(record) = record {
                     record.finish();
                 }
-                value
+                let _ = reply.reply(value);
             }
             Plan::Crash(reason) => panic!("{reason}"),
         }

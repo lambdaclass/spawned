@@ -50,7 +50,11 @@ pub(crate) fn panic_message(panic: &(dyn std::any::Any + Send)) -> String {
 }
 
 /// Errors that can occur when communicating with an actor.
+///
+/// Non-exhaustive: later releases add reasons (for example the exit reason of
+/// a dead actor, ROADMAP rank 5e). Match with a wildcard arm.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum ActorError {
     /// The actor has stopped or its mailbox channel is closed.
     ///
@@ -63,6 +67,14 @@ pub enum ActorError {
     /// does not reply in time.
     #[error("Request to Actor timed out")]
     RequestTimeout,
+    /// The handler dropped the request's reply obligation (a `PendingReply`
+    /// or a deferred `ReplyTo`) without answering it.
+    #[error("Reply dropped by the actor")]
+    ReplyDropped,
+    /// The actor rejected the request at a bound (for example its deferred
+    /// replies are at `MAX_OUTSTANDING`).
+    #[error("Actor overloaded")]
+    Overloaded,
 }
 
 impl<T> From<spawned_rt::threads::mpsc::SendError<T>> for ActorError {

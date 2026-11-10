@@ -39,12 +39,12 @@ pub mod affinity;
 #[cfg(spawned_sim)]
 pub use crate::tasks::sim::{
     block_in_place, sleep, spawn, spawn_blocking, task_id, timeout, unconstrained, yield_now,
-    Handle, JoinHandle, Runtime, RuntimeFlavor,
+    Handle, JoinHandle, Runtime, RuntimeFlavor, Sleep,
 };
 pub use crate::tasks::tokio::mpsc;
 pub use crate::tasks::tokio::oneshot;
 #[cfg(not(spawned_sim))]
-pub use crate::tasks::tokio::sleep;
+pub use crate::tasks::tokio::{sleep, Sleep};
 #[cfg(not(spawned_sim))]
 pub use crate::tasks::tokio::timeout;
 pub use crate::tasks::tokio::watch;

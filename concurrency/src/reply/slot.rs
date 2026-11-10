@@ -165,7 +165,10 @@ struct Inner<R> {
     /// Written only by the reply that moved the word to `WRITING`, and
     /// published by `WRITING -> REPLIED` under this lock.
     value: Option<R>,
+    /// The caller's receiver.
     waker: Option<Waker>,
+    /// The token holder waiting in `ReplyTo::closed()`.
+    watcher: Option<Waker>,
     /// The owner's pool, set by `defer()` before its CAS installs `TOKEN`.
     pool: Option<Arc<CreditPool>>,
     /// Threads parked in `recv_blocking`.
@@ -188,6 +191,7 @@ struct Wake {
     pool: Option<Arc<CreditPool>>,
     release: u64,
     waker: Option<Waker>,
+    watcher: Option<Waker>,
     notify: bool,
 }
 
@@ -198,6 +202,9 @@ impl Wake {
         }
         if let Some(waker) = self.waker {
             waker.wake();
+        }
+        if let Some(watcher) = self.watcher {
+            watcher.wake();
         }
         if self.notify {
             slot_parked.notify_all();
@@ -214,6 +221,7 @@ impl<R> Slot<R> {
             inner: Mutex::new(Inner {
                 value: None,
                 waker: None,
+                watcher: None,
                 pool: None,
                 parked: 0,
             }),
@@ -278,6 +286,7 @@ impl<R> Slot<R> {
                 pool: None,
                 release: 0,
                 waker: None,
+                watcher: None,
                 notify: false,
             };
         }
@@ -286,6 +295,7 @@ impl<R> Slot<R> {
             pool: if release > 0 { inner.pool.clone() } else { None },
             release,
             waker: if terminal { inner.waker.take() } else { None },
+            watcher: if terminal { inner.watcher.take() } else { None },
             notify: terminal && inner.parked > 0,
         }
     }
@@ -454,6 +464,7 @@ impl<R> Slot<R> {
                 pool: if release > 0 { inner.pool.clone() } else { None },
                 release,
                 waker: inner.waker.take(),
+                watcher: inner.watcher.take(),
                 notify: inner.parked > 0,
             }
         };
@@ -500,6 +511,25 @@ impl<R> Slot<R> {
             }
             return Poll::Pending;
         }
+    }
+
+    /// Token side: ready once the slot is terminal (or its deadline passed,
+    /// which expires it). Registers `waker` as the watcher otherwise.
+    pub(crate) fn poll_closed(&self, waker: &Waker, now: &impl Fn() -> u64) -> Poll<()> {
+        if !live(state(self.word())) || self.check_deadline(now) {
+            return Poll::Ready(());
+        }
+        let mut inner = lock(&self.inner);
+        if !live(state(self.word())) {
+            return Poll::Ready(());
+        }
+        let old = match &inner.watcher {
+            Some(old) if old.will_wake(waker) => None,
+            _ => inner.watcher.replace(waker.clone()),
+        };
+        drop(inner);
+        drop(old);
+        Poll::Pending
     }
 
     /// Non-blocking check from the caller's receiver.
