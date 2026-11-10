@@ -10,7 +10,7 @@ use super::{Actor, Context, Envelope, Handler, MailboxItem};
 use crate::message::Message;
 use crate::reply::deadline::Expirable;
 use crate::reply::jobs::{
-    JobCredit, JobDeadline, JobError, JobGone, JobHandle, JobKey, JobOptions, JobOutcome,
+    JobCredit, JobDeadline, JobError, JobGone, JobHandle, JobOptions, JobOutcome,
     JobState, PipeError, PipeErrorKind, PipeReplyError,
 };
 use crate::reply::slot::{Refused, Slot};

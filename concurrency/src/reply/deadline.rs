@@ -89,6 +89,7 @@ impl DeadlineHeap {
         self.heap.peek().map(|Reverse(e)| e.at)
     }
 
+    #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
         self.heap.len()
     }
