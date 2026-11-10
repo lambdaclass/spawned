@@ -69,6 +69,7 @@ struct Lists {
 pub(crate) struct Registry {
     owner: ActorId,
     /// Service key, unique per registry.
+    #[cfg_attr(all(spawned_sim, feature = "async"), allow(dead_code))]
     key: u64,
     pool: Arc<CreditPool>,
     phase: AtomicU8,
@@ -133,6 +134,7 @@ impl Registry {
         lists.tokens.push(weak);
     }
 
+    #[cfg_attr(all(spawned_sim, feature = "async"), allow(dead_code))]
     pub(crate) fn key(&self) -> u64 {
         self.key
     }
