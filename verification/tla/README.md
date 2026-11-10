@@ -13,6 +13,8 @@ this fits with Loom, Shuttle, Miri, ThreadSanitizer and mutation testing.
 | `Cohorts.tla`, `MCCohorts*.tla/.cfg` | OneForAll/RestForOne range selection, reverse cleanup, whole-cohort join barrier, ordered resume, stale notifications, superseding rounds and retired slots. Three-child mixed-mode and two-round configurations. |
 | `Coordinator.tla`, `MCCoordinator.tla/.cfg` | System shutdown coordinator: ordered stop of admitted roots, panic fallback that signals all remaining roots, records failure and retains runtime ownership until joins; ordered-shutdown invariants, cooperative cleanup liveness and four negative mutations. |
 | `NestedSupervision.tla`, `MCNested.tla/.cfg` | Dynamic subtree ownership and shutdown delivery; parent scope completion waits for descendant completion. Bounded three-node/two-generation model with fair cleanup. |
+| `DeferredReplies.tla`, `MCDeferredReplies*.tla/.cfg` | Rank 11 design model (not implemented), part 1: reply slots, send-time deadlines with shortening, deferral credits shared by a token and its first linked job, the exiting phase with unwind-local drops, a stuck phase (cleanup deadline passed while `stopped()` runs: nothing closed early, death later or never), death, and downstream request cleanup. Thirteen named negative controls. |
+| `DeferredJobs.tla`, `MCDeferredJobs*.tla/.cfg` | Rank 11 design model, part 2: pipe jobs with separate execution, cancellation and notification states; keyed replacement including notified jobs; optional job deadlines; a FIFO mailbox with emit credits and the terminal message last; `ActorId` fencing. `MCDeferredJobsEmits` is the fast configuration with emits. Nine named negative controls. |
 | `TraceCohorts.tla`, `TraceNested.tla` | Policy and ownership projections of real cohort/nested Rust executions. |
 | `trace_check.py`, `negative_checks.py` | Replay recorded traces; deliberately wrong selections, premature resume/join and broken propagation must be rejected or produce counterexamples. |
 | `SupervisionInd.tla`, `CohortsInd.tla`, `NestedSupervisionInd.tla`, `CoordinatorInd.tla`, `MC*Ind.tla`, `apalache.sh` | Inductive invariants (`IndInv`) checked with Apalache; see [Inductive invariants](#inductive-invariants-apalache). |
@@ -472,3 +474,101 @@ through its startup rollback (#209). The same safety invariants are proven
 inductive with Apalache ([Coordinator](#coordinator)). This is an abstract fault model,
 not a replay of Rust failpoint traces. Private Rust tests separately inject
 supervisor-launch and system-shutdown panics with real actor/helper cleanup.
+
+## Deferred replies (rank 11 design)
+
+The two models back the [deferred replies design](../../docs/design/deferred-replies.md).
+They were written before the implementation and revised over three review
+passes. They check the design's ordering and accounting decisions, not Rust
+memory orderings or schedules. The design's *What the models establish*
+section lists what is and is not covered.
+
+**`DeferredReplies.tla`** has a discrete clock, two callers, owner A with
+turns, a running-linked-job count per request, and downstream actor B.
+
+- **Callers and deadlines.** Every request owns a slot with one atomic
+  terminal transition. The deadline is fixed at send and may only shrink. A
+  reply at or after the deadline expires the slot instead of delivering.
+- **Dispatch.** Expired requests are still dispatched (OTP).
+- **Turns.** A turn replies in place, or defers and then stores, pipes or
+  drops the token. A turn may never end, and a panic drops the turn's tokens
+  while unwinding.
+- **Credits.** A linked job shares its token's credit only while the token is
+  open and no other job of that request runs.
+- **Job notifications** hand the token back to a turn; after a job deadline
+  the work keeps running.
+- **Exit.** While exiting, stored tokens can still be answered and drops
+  answer `Stopped`. At the cleanup deadline, a still-running `stopped()`
+  makes A stuck: nothing is closed early, `stopped()` may still reply, and
+  callers are bounded by their own deadlines. Only death closes the registry
+  and discards the mailbox.
+- **Downstream.** A job may call B, which has its own bound, and the
+  downstream request is abandoned when the request's last job ends.
+
+Invariants:
+
+- `AtMostOneDischarge`, `NoOrphan`, `NoSuccessAfterDeadline`, `TimelyExpiry`,
+  `DeadlineWithinCaller`;
+- `BoundedA` (combined credits) and `BoundedB`;
+- `PanicStopped`, `NoEarlyClose`, `DownstreamOwned`, `CallerConsistent`.
+
+Liveness is `EveryAcceptedDischarged` and `CallerNeverHangs`, with fairness
+only on the clock and the deadline service.
+
+**`DeferredJobs.tla`** has restarts with new `ActorId`s, unlinked and keyed
+jobs with optional deadlines, a FIFO mailbox, in-flight emit credits, emits
+only while the notification is pending, and a terminal message that takes no
+credit.
+
+- A new keyed job cancels every earlier uncancelled job for the key,
+  including notified and finished ones.
+- Dispatch fences on `ActorId` and on the job's cancellation flag.
+
+Invariants:
+
+- `NoLateResult`, `NoStaleAfterCancel`, `NoStaleKeyed`;
+- `AtMostOneTerminal`, `TerminalLast`;
+- `PermitsBounded`, `OneLivePerKey`, `EmitCreditsBounded`.
+
+Liveness is `JobReported`, for jobs with a deadline.
+
+**Negative controls.** `negative_checks.py` runs `named_fault`, which checks
+only `TypeOK` and the named invariant (safety only), so each control must break
+exactly the property it targets:
+
+| Model (configuration) | Mutation | Breaks |
+|---|---|---|
+| `DeferredReplies` | `NoAutoReply` | `NoOrphan` |
+| `DeferredReplies` | `NoAtomicExpiry` (abstract double discharge; the real race needs Loom) | `AtMostOneDischarge` |
+| `DeferredReplies` | `LateSuccess` | `NoSuccessAfterDeadline` |
+| `DeferredReplies` | `LoopDeadline` | `TimelyExpiry` |
+| `DeferredReplies` | `Lengthen` | `DeadlineWithinCaller` |
+| `DeferredReplies` | `Unbounded` | `BoundedA` |
+| `DeferredReplies` | `NoDestAdmission` | `BoundedB` |
+| `DeferredReplies` | `ExitStateOnly` | `NoOrphan` |
+| `DeferredReplies` | `UnwindDropped` | `PanicStopped` |
+| `DeferredReplies` | `ShareRunning` | `BoundedA` |
+| `DeferredReplies` | `AttachClosed` | `BoundedA` |
+| `DeferredReplies` | `LeakDownstream` | `DownstreamOwned` |
+| `DeferredReplies` | `EarlyClose` (closes the registry at the cleanup deadline) | `NoEarlyClose` |
+| `DeferredJobs` | `NoInstanceCheck` | `NoLateResult` |
+| `DeferredJobs` | `NoCancelFence` | `NoStaleAfterCancel` |
+| `DeferredJobs` | `DoubleTerminal` | `AtMostOneTerminal` |
+| `DeferredJobs` | `ReleaseOnTimeout` | `PermitsBounded` |
+| `DeferredJobs` | `KeyNoCancel` | `OneLivePerKey` |
+| `DeferredJobs` | `ReplacePendingOnly` (the round-2 trace: Start 1, Finish 1, Start 2, dispatch of job 1's terminal message) | `NoStaleKeyed` |
+| `DeferredJobs` (`MCDeferredJobsEmits`) | `NoCancelFence` | `NoStaleAfterCancel` |
+| `DeferredJobs` (`MCDeferredJobsEmits`) | `EmitAfterTerminal` | `TerminalLast` |
+| `DeferredJobs` (`MCDeferredJobsEmits`) | `NoEmitCredit` | `EmitCreditsBounded` |
+
+Measured 2026-11-10 (TLC 2.19, fede):
+
+| Configuration | Distinct states | Generated | Depth | Time |
+|---|---|---|---|---|
+| `MCDeferredReplies` (fast: 2 requests, `BoundA` 2, `BoundB` 1, clock 2; safety and liveness) | 2,932,280 | 16,385,809 | 33 | 56 s, 10 workers |
+| `MCDeferredRepliesDeep` (clock 3; safety) | 8,172,070 | 45,538,582 | 34 | 21 s, 10 workers |
+| `MCDeferredJobs` (fast: 3 jobs, 2 keyed, 2 permits, 2 instances, no emits; safety and liveness) | 229,070 | 487,283 | 17 | 5 s, 8 workers |
+| `MCDeferredJobsEmits` (fast: 2 keyed jobs, 1 instance, 2 emits each, 1 credit; safety and liveness) | 20,422 | 37,220 | 18 | 1 s, 8 workers |
+| `MCDeferredJobsDeep` (3 jobs, 2 instances, 1 emit each; safety) | 5,876,658 | 12,792,039 | 23 | 25 s, 12 workers |
+
+All 22 named controls find their counterexample, each in a few seconds.
