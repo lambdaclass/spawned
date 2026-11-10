@@ -2699,14 +2699,25 @@ mod policy_tests {
                 ..SupervisorConfig::default()
             })
             .unwrap();
+        // Hold construction until start() has been polled once, so the
+        // first poll is pending however fast the controller runs.
+        let (construct, gate) = rt::oneshot::channel::<()>();
+        let gate = Arc::new(Mutex::new(Some(gate)));
         let child = builder
-            .add(ChildSpec::new("ready-then-failed", &group, |_| async {
-                Ok::<_, String>(Idle)
+            .add(ChildSpec::new("ready-then-failed", &group, move |_| {
+                let gate = system::lock(&gate).take();
+                async move {
+                    if let Some(gate) = gate {
+                        let _ = gate.await;
+                    }
+                    Ok::<_, String>(Idle)
+                }
             }))
             .unwrap();
         let core = builder.core.clone();
         let mut startup = Box::pin(builder.start());
         assert!(futures::poll!(startup.as_mut()).is_pending());
+        construct.send(()).unwrap();
         assert!(
             rt::timeout(limit, system::wait_true(core.ready.subscribe()))
                 .await
