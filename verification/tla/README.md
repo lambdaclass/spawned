@@ -198,6 +198,10 @@ walking the remaining targets in order with a zero timeout, calling
 `GraceExpired` followed by `Emergency`, which signals all targets at once. A
 crash before `Begin` is also allowed by the model but cannot happen in Rust,
 where the coordinator task exists only after `begin_shutdown`.
+`record_coordinator_failure` dedupes and keeps at most 16 messages; the
+boolean `reported` stands for "the first failure is recorded", which holds
+because the coordinator panic is the first record of the single
+`begin_shutdown` run.
 
 Non-vacuity: `apalache.sh` requires probe predicates to be violated (IndInv
 admits, for example, five running children at generation > 1000 mid-shutdown),
