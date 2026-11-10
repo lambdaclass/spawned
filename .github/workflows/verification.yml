@@ -20,7 +20,7 @@ jobs:
   # (verification/tla). TLC comes from the flake.
   tla:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: DeterminateSystems/nix-installer-action@v16
@@ -30,12 +30,43 @@ jobs:
       - name: Record supervisor lifecycle traces
         env:
           LIFECYCLE_TRACE_DIR: ${{ github.workspace }}/lifecycle-traces
-        run: cargo test --locked -p spawned-concurrency --features lifecycle-trace --test supervision_trace --test cohort_trace --test tree_trace --test nested_supervision
+        run: cargo test --locked -p spawned-concurrency --features lifecycle-trace,failpoints --test supervision_trace --test cohort_trace --test tree_trace --test nested_supervision --test coverage_trace
       - name: Model-check (fast configuration) and validate traces
         run: nix run .#check-tla -- --traces lifecycle-traces --negative-controls
+      # Which model actions, projected states and transitions the recorded
+      # traces reach (verification/tla/README.md#trace-coverage). Report only,
+      # except that an action covered in coverage-baseline.json must stay
+      # covered. The model side comes from coverage-model.json.gz unless the
+      # models changed, in which case it is recomputed (several minutes).
+      - name: Trace coverage of the models
+        run: >
+          nix develop -c python3 verification/tla/trace_coverage.py
+          --traces dedicated=lifecycle-traces
+          --model-keys verification/tla/coverage-model.json.gz
+          --baseline verification/tla/coverage-baseline.json
       - name: Model-check (deep configuration)
         if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         run: nix run .#check-tla -- --deep
+      # Weekly: every test binary of spawned-concurrency dumps each finished
+      # supervisor's traces (LIFECYCLE_TRACE_ALL); report the combined coverage.
+      - name: Record traces from the whole test suite
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        env:
+          LIFECYCLE_TRACE_ALL: ${{ github.workspace }}/all-traces
+          LIFECYCLE_TRACE_DIR: ${{ github.workspace }}/all-traces-dedicated
+        run: cargo test --locked -p spawned-concurrency --features lifecycle-trace,failpoints --no-fail-fast || true
+      - name: Trace coverage including the whole test suite
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        run: >
+          nix develop -c python3 verification/tla/trace_coverage.py
+          --traces dedicated=lifecycle-traces --traces whole-suite=all-traces
+          --model-keys verification/tla/coverage-model.json.gz
+          --json trace-coverage.json --top 40
+      - uses: actions/upload-artifact@v4
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        with:
+          name: trace-coverage
+          path: trace-coverage.json
 
   # Inductive invariants of the same models with Apalache (verification/tla/
   # apalache.sh): Init => IndInv, IndInv /\ Next => IndInv' over every state

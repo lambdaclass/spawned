@@ -34,6 +34,10 @@ required-features = ["failpoints", "async"]
 name = "panic_abort"
 required-features = ["async"]
 
+[[test]]
+name = "coverage_trace"
+required-features = ["lifecycle-trace", "failpoints"]
+
 [[bench]]
 name = "baseline"
 harness = false
