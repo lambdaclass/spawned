@@ -97,6 +97,20 @@
 - CI: client compatibility workflow (`client-compat.yml`) builds and tests
   ethrex and ethlambda `spawned-v0.7` against the commit under test, nightly,
   on push to main and on PRs labeled `client-compat`.
+- Simulator exploration strategies (`spawned_rt::tasks::sim::explore`, under
+  `--cfg spawned_sim`): PCT and a delay-bounded DFS that reports exhaustion,
+  recorded into the decision tape and selected with `SPAWNED_SIM_STRATEGY` or
+  `#[sim_test(explore = "pct:d=3", iterations = N)]`, plus planted-bug tests.
+  PCT follows the paper's algorithm with a poll as the step (the task that
+  runs change point `k_i` drops to priority `i`, independently of time
+  order; checked against an independent implementation, including blocking
+  tasks), but no probability bound is claimed. DFS reports when the depth or
+  fairness cutoff truncated the space, checks that each replayed prefix met
+  the same ready sets, stops at a divergence (`Report::complete()` is false
+  then), keeps `SPAWNED_SIM_SEED` as every schedule's input, and the harness
+  fails a body that does not replay; strategies accept `fair=N`. Each
+  planted bug is checked by its own failure message, and the three-worker
+  control fails only when all reads precede every write.
 
 ## 0.7.2 — 2026-11-10
 
