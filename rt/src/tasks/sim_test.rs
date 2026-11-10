@@ -218,15 +218,7 @@ impl SimTest {
         }
         let Some(found) = report.found else {
             if strategy != Strategy::Random {
-                let space = match (report.exhausted, report.truncated) {
-                    (true, false) => ", bounded space exhausted".to_string(),
-                    (true, true) => format!(
-                        ", bounded space exhausted up to the depth/fairness cutoff \
-                         (fair after {} polls); later alternatives not explored",
-                        strategy.fair_after()
-                    ),
-                    (false, _) => String::new(),
-                };
+                let space = describe_space(&strategy, report.exhausted, report.truncated);
                 eprintln!(
                     "spawned_sim: `{name}` passed {} runs of {strategy} ({} distinct schedules{space})",
                     report.runs, report.schedules,
@@ -316,6 +308,35 @@ fn save(
     std::fs::write(path, format!("# strategy {strategy}\n{}", tape.to_text()))
 }
 
+/// How much of a strategy's space a passing exploration covered, naming the
+/// cutoffs that were active when some run had alternatives past them.
+#[cfg(spawned_sim)]
+fn describe_space(
+    strategy: &super::sim::explore::Strategy,
+    exhausted: bool,
+    truncated: bool,
+) -> String {
+    use super::sim::explore::Strategy;
+    let mut cutoffs = Vec::new();
+    if let Strategy::Dfs {
+        depth: Some(depth), ..
+    } = strategy
+    {
+        cutoffs.push(format!("depth {depth}"));
+    }
+    cutoffs.push(format!("fair after {} polls", strategy.fair_after()));
+    let cut = format!(
+        "alternatives past the cutoffs ({}) not explored",
+        cutoffs.join(", ")
+    );
+    match (exhausted, truncated) {
+        (true, false) => ", bounded space exhausted".into(),
+        (true, true) => format!(", bounded space exhausted up to the cutoffs; {cut}"),
+        (false, true) => format!(", budget spent; {cut}"),
+        (false, false) => String::new(),
+    }
+}
+
 /// A shrunk tape is worth writing if it has fewer non-canonical picks or is
 /// shorter (prefix bisection can shorten a tape without removing a pick).
 #[cfg(spawned_sim)]
@@ -328,6 +349,29 @@ mod tests {
     use super::super::sim::explore::Strategy;
     use super::super::sim::{Decision, Tape};
     use super::{shrunk, SimTest};
+
+    /// agy (round 2): the summary names the active cutoff (a DFS depth, not
+    /// only the fairness cutoff) and reports truncation even when the budget
+    /// ran out before exhaustion.
+    #[test]
+    fn exploration_summary_names_the_active_cutoffs() {
+        use super::describe_space;
+        let dfs = Strategy::parse("dfs:bound=2,depth=10,fair=500").unwrap();
+        let text = describe_space(&dfs, true, true);
+        assert!(
+            text.contains("depth 10") && text.contains("fair after 500"),
+            "{text}"
+        );
+        let text = describe_space(&dfs, false, true);
+        assert!(
+            text.contains("budget spent") && text.contains("not explored"),
+            "{text}"
+        );
+        assert_eq!(
+            describe_space(&dfs, true, false),
+            ", bounded space exhausted"
+        );
+    }
 
     /// Codex P2 (#218): DFS keeps the requested `SPAWNED_SIM_SEED` as the
     /// body's input for every schedule instead of always using 0.
