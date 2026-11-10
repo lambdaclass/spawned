@@ -94,6 +94,9 @@
   rejected whole-suite trace led to a model gap and a supervision bug, fixed
   separately (#233). See
   [trace coverage](verification/tla/README.md#trace-coverage).
+- CI: client compatibility workflow (`client-compat.yml`) builds and tests
+  ethrex and ethlambda `spawned-v0.7` against the commit under test, nightly,
+  on push to main and on PRs labeled `client-compat`.
 
 ## 0.7.2 — 2026-11-10
 
