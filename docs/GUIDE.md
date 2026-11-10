@@ -24,7 +24,7 @@ upgrades, see [MIGRATION.md](MIGRATION.md); for runnable programs, see the
 - [Links and trapped exits](#links-and-trapped-exits)
 - [Execution groups and supervision](#execution-groups-and-supervision) (v0.7)
 - [Metrics](#metrics)
-- [Testing your actors](#testing-your-actors) (unreleased)
+- [Testing your actors](#testing-your-actors)
 - [Further reading](#further-reading)
 
 ---
@@ -1170,7 +1170,7 @@ are archived.
 
 ## Testing your actors
 
-The `spawned-test` crate (unreleased, in this workspace) is a dev-dependency
+The `spawned-test` crate, first published with v0.7.1, is a dev-dependency
 for unit-testing actors in both execution modes. It uses only the public
 `spawned-concurrency` API. The `tasks` helpers need its default `async`
 feature; with `default-features = false` it builds Tokio-free with the
@@ -1178,7 +1178,7 @@ feature; with `default-features = false` it builds Tokio-free with the
 
 ```toml
 [dev-dependencies]
-spawned-test = { path = "../testing" } # published with the next release
+spawned-test = "0.7.1"
 ```
 
 ### Mock a dependency

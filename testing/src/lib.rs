@@ -1,12 +1,11 @@
 //! Test kit for [Spawned](https://github.com/lambdaclass/spawned) actors.
 //!
-//! Use it as a dev-dependency, the way `tokio-test` is used with Tokio. The
-//! crate is unreleased: depend on it by path (or from the repository) until
-//! the next release.
+//! Use it as a dev-dependency, the way `tokio-test` is used with Tokio.
+//! First published with Spawned v0.7.1.
 //!
 //! ```toml
 //! [dev-dependencies]
-//! spawned-test = { path = "../testing" } # published with the next release
+//! spawned-test = "0.7.1"
 //! ```
 //!
 //! - **Mocks** ([`tasks::Mock`], [`threads::Mock`]): closure-backed actors that

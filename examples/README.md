@@ -34,7 +34,7 @@ Usage of each feature is documented in the [guide](../docs/GUIDE.md).
 | Request timeout outcomes | [timeout_outcomes](capabilities/src/bin/timeout_outcomes.rs), [protocol_timeouts](capabilities/src/bin/protocol_timeouts.rs) | [protocol_timeouts](capabilities/src/bin/protocol_timeouts.rs) |
 | Draining a finite batch before stop | [graceful_drain](capabilities/src/bin/graceful_drain.rs) | gap |
 | Byte-budgeted pipeline (application adapter) | [byte_budget_pipeline](capabilities/src/bin/byte_budget_pipeline.rs) | gap |
-| Testing actors: mocks, probes, harness and fault injection (`spawned-test`), unreleased | [test_kit](capabilities/src/bin/test_kit.rs) | [test_kit](capabilities/src/bin/test_kit.rs) (native mock and injected stop) |
+| Testing actors: mocks, probes, harness and fault injection (`spawned-test`, since v0.7.1) | [test_kit](capabilities/src/bin/test_kit.rs) | [test_kit](capabilities/src/bin/test_kit.rs) (native mock and injected stop) |
 | Framework metrics (`metrics` feature) | [framework_metrics](capabilities/src/bin/framework_metrics.rs) | [thread_only](thread_only/README.md) with metrics |
 
 "n/a" means the feature exists only in tasks mode; "gap" means it exists in
