@@ -1,0 +1,32 @@
+[package]
+name = "spawned-fuzz"
+version = "0.0.0"
+description = "Coverage-guided scenario fuzzing of spawned on the deterministic simulator"
+publish = false
+edition = "2021"
+license = "MIT"
+
+[package.metadata]
+cargo-fuzz = true
+
+# Separate workspace: cargo-fuzz builds with nightly and its own flags, and the
+# harness only compiles under `--cfg spawned_sim --cfg tokio_unstable`.
+[workspace]
+members = ["."]
+
+[dependencies]
+arbitrary = { version = "1", features = ["derive"] }
+libfuzzer-sys = "0.4"
+spawned-rt = { path = "../rt" }
+spawned-concurrency = { path = "../concurrency" }
+spawned-macros = { path = "../macros" }
+
+[[bin]]
+name = "scenario"
+path = "fuzz_targets/scenario.rs"
+test = false
+doc = false
+bench = false
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(spawned_sim)', 'cfg(tokio_unstable)', 'cfg(fuzzing)'] }
