@@ -590,7 +590,17 @@ runs the lifecycle tests in CI. `cargo mutants` over `supervision.rs` and
 (`can_start`, `register`, `lease` checks only reachable in narrow windows),
 redundant system-level safety nets (group teardown also stops supervised
 children) and simple accessors. The backoff and jitter seed mixing mutants are
-killed by the Kani proofs below.
+killed by the Kani proofs below, and by unit tests so that `cargo mutants`
+(which does not run Kani) sees them caught too.
+
+Most other survivors are equivalent in a default build: arguments of
+`lifecycle-trace` events (`count`, trace indices), code behind `metrics`,
+`diagnostics` or `backend-experiments`, the random seed fallback, and the
+`with_pair` lock order flipped to `>`/`<=` (any consistent order is
+deadlock-free; `==`, which is not, is caught). Run cargo-mutants with the
+feature that compiles a mutated line before treating it as a gap. Code inside
+`macro_rules!` bodies is not mutated at all, so keep lifecycle code out of
+single-use macros.
 
 ## Kani proofs of supervisor arithmetic
 
