@@ -8,11 +8,7 @@ use crate::mailbox::tasks as mpsc;
 use crate::message::Message;
 use crate::monitor::{Down, MonitorCleanup, MonitorRef, MonitorTable};
 use crate::reply::{registry::Registry, reply_slot, SlotHandle};
-#[doc(no_inline)]
-#[allow(unused_imports)] // re-exported for `use spawned_concurrency::tasks::*` users
-pub use crate::reply::{
-    Deadline, DeferError, Delivery, PendingReply, ReplyReceiver, ReplyTo, DEFAULT_MAX_OUTSTANDING,
-};
+use crate::reply::{PendingReply, ReplyReceiver, DEFAULT_MAX_OUTSTANDING};
 use core::pin::pin;
 use futures::future::{self, FutureExt as _};
 use spawned_rt::{
@@ -39,11 +35,6 @@ pub const DEFAULT_STOP_DEADLINE: Duration = Duration::from_secs(5);
 #[path = "jobs.rs"]
 mod jobs;
 pub use jobs::JobCtx;
-#[doc(no_inline)]
-pub use crate::reply::jobs::{
-    JobError, JobGone, JobHandle, JobKey, JobOptions, JobOutcome, PipeError, PipeErrorKind,
-    PipeReplyError,
-};
 
 // ---------------------------------------------------------------------------
 // Backend
