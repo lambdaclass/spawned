@@ -11,6 +11,11 @@
   before v0.7.1 now run as regular tests. See
   [testing](docs/TESTING.md#failpoints).
 
+- Documentation: `docs/TESTING.md` opens with an overview of how spawned is
+  verified (design, model-to-code, interleavings, faults, behaviour, code and
+  tests, real workloads) and an up-to-date status table for every layer; the
+  README summarizes it.
+
 ## 0.7.1 — 2026-11-10
 
 - Contain tracing subscriber panics in caught lifecycle-panic diagnostics and
