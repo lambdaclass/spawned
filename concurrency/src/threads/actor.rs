@@ -17,11 +17,7 @@ use crate::link::{
 use crate::message::Message;
 use crate::monitor::{Down, MonitorCleanup, MonitorRef, MonitorTable};
 use crate::reply::{registry::Registry, reply_slot, SlotHandle};
-#[doc(no_inline)]
-#[allow(unused_imports)] // re-exported for `use spawned_concurrency::threads::*` users
-pub use crate::reply::{
-    Deadline, DeferError, Delivery, PendingReply, ReplyReceiver, ReplyTo, DEFAULT_MAX_OUTSTANDING,
-};
+use crate::reply::{PendingReply, ReplyReceiver, DEFAULT_MAX_OUTSTANDING};
 use std::sync::atomic::Ordering;
 
 pub use crate::response::DEFAULT_REQUEST_TIMEOUT;
