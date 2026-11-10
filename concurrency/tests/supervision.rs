@@ -1226,3 +1226,55 @@ async fn one_for_all_restart_waits_for_its_backoff() {
     assert!(supervisor.shutdown(LIMIT).await.complete);
     assert!(system.shutdown(LIMIT).await.complete);
 }
+
+#[test]
+fn supervisor_config_limits_are_validated_at_their_boundaries() {
+    use spawned_concurrency::supervision::SupervisorError;
+    let system = ActorSystem::new().unwrap();
+    let accepts = |config: SupervisorConfig| system.supervisor(config).is_ok();
+    let rejects = |config: SupervisorConfig| {
+        matches!(
+            system.supervisor(config),
+            Err(SupervisorError::Configuration(_))
+        )
+    };
+    let base = SupervisorConfig::default;
+    assert!(accepts(base()));
+    assert!(rejects(SupervisorConfig {
+        restart_window: Duration::ZERO,
+        ..base()
+    }));
+    assert!(rejects(SupervisorConfig {
+        max_children: 0,
+        ..base()
+    }));
+    assert!(accepts(SupervisorConfig {
+        max_children: 65536,
+        ..base()
+    }));
+    assert!(rejects(SupervisorConfig {
+        max_children: 65537,
+        ..base()
+    }));
+    assert!(accepts(SupervisorConfig {
+        max_restarts: 65536,
+        ..base()
+    }));
+    assert!(rejects(SupervisorConfig {
+        max_restarts: 65537,
+        ..base()
+    }));
+    let backoff = |initial, maximum| Backoff {
+        initial: Duration::from_millis(initial),
+        maximum: Duration::from_millis(maximum),
+        ..Backoff::default()
+    };
+    assert!(accepts(SupervisorConfig {
+        backoff: backoff(10, 10),
+        ..base()
+    }));
+    assert!(rejects(SupervisorConfig {
+        backoff: backoff(11, 10),
+        ..base()
+    }));
+}
