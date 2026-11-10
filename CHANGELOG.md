@@ -10,6 +10,20 @@
   the coordinator-panic and never-started-child scenarios that were known gaps
   before v0.7.1 now run as regular tests. See
   [testing](docs/TESTING.md#failpoints).
+- Apalache 0.62.4 inductive-invariant checks for the supervision models
+  (`verification/tla/apalache.sh`, `nix run .#check-apalache`, CI job
+  `tla-apalache`). `Init => IndInv` and `IndInv /\ Next => IndInv'` hold for
+  every safety invariant of `Supervision` (AtMostOneGeneration,
+  PublishedIsLive, BudgetBounded, TemporaryStartsOnce, ReadyMeansAllStarted,
+  DoneMeansQuiescent, plus the action properties NoStartAfterClose,
+  RestartFollowsPolicy, ReverseShutdown, NeverReopens) with 5 children and
+  `max_restarts` 4 (also run at 10/10), of `Cohorts` (both strategies, 5
+  children, 4 generations, 4 rounds) and of `NestedSupervision` (6 nodes, 3
+  slots, 3 generations), for every restart-mode table. The step check covers
+  all states of that size, not only reachable ones, with no depth or
+  generation bound. Guard-removal negative controls must break induction.
+  Specs gain Apalache type annotations (comments) and constant-bounded range
+  rewrites; TLC state counts are unchanged.
 
 ## 0.7.1 — 2026-11-10
 

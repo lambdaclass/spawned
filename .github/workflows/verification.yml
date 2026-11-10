@@ -37,6 +37,22 @@ jobs:
         if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         run: nix run .#check-tla -- --deep
 
+  # Inductive invariants of the same models with Apalache (verification/tla/
+  # apalache.sh): Init => IndInv, IndInv /\ Next => IndInv' over every state
+  # of the configured size, plus guard-removal negative controls. About
+  # 2-3 minutes; the larger Supervision instance adds under one minute.
+  tla-apalache:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/nix-installer-action@v16
+      - uses: DeterminateSystems/magic-nix-cache-action@v8
+      - name: Inductive invariants and negative controls
+        run: nix run .#check-apalache -- --negative-controls
+      - name: Supervision with 10 children and max_restarts 10
+        run: nix run .#check-apalache -- --model Supervision --size 10 10
+
   mailbox-loom:
     runs-on: ubuntu-latest
     timeout-minutes: 15

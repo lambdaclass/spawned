@@ -5,9 +5,9 @@
 (* OVERRIDE_Fault for the negative controls.                               *)
 EXTENDS CohortsInd
 
-OVERRIDE_N == 3
-OVERRIDE_MaxGen == 3
-OVERRIDE_MaxRounds == 3
+OVERRIDE_N == 5
+OVERRIDE_MaxGen == 4
+OVERRIDE_MaxRounds == 4
 OVERRIDE_Fault == "None"
 
 ConstInit ==

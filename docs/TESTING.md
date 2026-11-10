@@ -455,8 +455,15 @@ model. Hand-edited traces are rejected at the edited event. Trace validation
 found one model gap (a running child may exit with `Shutdown` while the
 supervisor is open, via `ChildHandle::shutdown`); no implementation deviation.
 
+Apalache checks that the safety invariants of `Supervision`, `Cohorts` and
+`NestedSupervision` are inductive (`Init => IndInv`, `IndInv /\ Next =>
+IndInv'`), so they hold at any depth, for the configured sizes (5 children and
+`max_restarts` 4, also 10/10, for `Supervision`); guard-removal negative
+controls must break induction. See [the model README](../verification/tla/README.md#inductive-invariants-apalache).
+
 ```bash
 nix run .#check-tla                                   # model check (TLC via the flake)
+nix run .#check-apalache -- --negative-controls       # inductive invariants (Apalache)
 cargo test -p spawned-concurrency --features lifecycle-trace --test supervision_trace
 nix run .#check-tla -- --traces target/lifecycle-traces
 ```

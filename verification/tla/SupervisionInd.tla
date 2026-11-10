@@ -59,18 +59,13 @@ H_gen == \A c \in Children : pc[c] \in Live => gen[c] >= 1
 \* Implies PublishedIsLive.
 H_pub == pub = [c \in Children |-> IF pc[c] = "running" THEN gen[c] ELSE 0]
 
-\* `first` is only cleared by LoopTop on its way to "attempt" and is TRUE
-\* initially, so a controller with first set has never attempted.
-H_first == \A c \in Children :
-    first[c] => pc[c] \in {"idle", "top", "finish", "finished"} /\ gen[c] = 0
-
 \* Until SupLaunch reaches c, its controller is idle (SupLaunch overwrites
 \* pc[sidx] unguarded, so this is what makes that write safe); once the
 \* initial loop is over nothing launches. An idle controller never ran.
 H_launch ==
     /\ sphase = "starting" => /\ sidx \in 1..N+1
                               /\ \A c \in Children : (pc[c] = "idle") <=> c >= sidx
-    /\ \A c \in Children : pc[c] = "idle" => first[c] /\ gen[c] = 0
+    /\ \A c \in Children : pc[c] = "idle" => gen[c] = 0
 
 \* The ordered start loop launches c+1 only after initial[c]; initial is
 \* never cleared. Together with SupStartDone's guard this gives
@@ -81,8 +76,10 @@ H_initial ==
 
 \* A restartable exit is what sends a controller back to "top" (Decide),
 \* and exitR is only rewritten between Attempt and cleanup. So a controller
-\* waiting to retry holds an exit reason its restart mode allows. A
-\* Temporary child never restarts, so it can only be pre-first-attempt.
+\* waiting to retry holds an exit reason its restart mode allows. Since
+\* Restarts("Temporary", r) is FALSE, a Temporary child is back at "attempt"
+\* only with gen = 0 (gives TemporaryStartsOnce and RestartFollowsPolicy).
+\* Decide is reached through cleanup, so a generation exists.
 H_retry == \A c \in Children :
     /\ pc[c] \in {"top", "backoff", "attempt"} /\ gen[c] > 0 => Restarts(Mode[c], exitR[c])
     /\ pc[c] = "decide" => gen[c] > 0
@@ -101,7 +98,9 @@ H_done ==
     /\ sdone <=> sphase = "done"
     /\ sphase = "done" => \A c \in Children : pc[c] \in {"idle", "finished"}
 
-\* Pending reservations never exceed the capacity they are counted in.
+\* Pending reservations never exceed the capacity they are counted in
+\* (a TypeOK conjunct; needed for WindowExpire/RetryRelease to keep
+\* budget >= 0, hence BudgetBounded).
 H_budget == Cardinality(reserved) <= budget
 
 -----------------------------------------------------------------------------
@@ -113,7 +112,7 @@ SafetyInd ==
     /\ TemporaryStartsOnce /\ ReadyMeansAllStarted /\ DoneMeansQuiescent
 
 Helpers ==
-    /\ H_gen /\ H_first /\ H_launch /\ H_initial
+    /\ H_gen /\ H_launch /\ H_initial
     /\ H_retry /\ H_shutdown /\ H_done /\ H_budget
 
 IndInv == TypeInd /\ H_alive /\ H_pub /\ Helpers /\ SafetyInd

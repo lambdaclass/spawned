@@ -15,6 +15,7 @@ this fits with Loom, Shuttle, Miri, ThreadSanitizer and mutation testing.
 | `NestedSupervision.tla`, `MCNested.tla/.cfg` | Dynamic subtree ownership and shutdown delivery; parent scope completion waits for descendant completion. Bounded three-node/two-generation model with fair cleanup. |
 | `TraceCohorts.tla`, `TraceNested.tla` | Policy and ownership projections of real cohort/nested Rust executions. |
 | `trace_check.py`, `negative_checks.py` | Replay recorded traces; deliberately wrong selections, premature resume/join and broken propagation must be rejected or produce counterexamples. |
+| `SupervisionInd.tla`, `CohortsInd.tla`, `NestedSupervisionInd.tla`, `MC*Ind.tla`, `apalache.sh` | Inductive invariants (`IndInv`) checked with Apalache; see [Inductive invariants](#inductive-invariants-apalache). |
 
 ## Running
 
@@ -103,6 +104,57 @@ Action and temporal properties:
 - `ReverseShutdown`: ready children get their stop turn only after every later
   child finished or timed out, unless the shutdown deadline forced `stop_remaining`.
 - `NeverReopens`, and liveness `ClosedLeadsToDone` assuming cleanup completes.
+
+## Inductive invariants (Apalache)
+
+TLC explores the states reachable within a configuration's bounds (MaxGen,
+search depth). Apalache 0.62.4 (symbolic, SMT-based) additionally checks that
+each model's safety invariants are *inductive*: for a strengthening `IndInv`
+(the invariants, a type predicate and a few helper lemmas),
+
+```text
+Init => IndInv                 apalache-mc check --init=Init   --inv=IndInv --length=0
+IndInv /\ Next => IndInv'      apalache-mc check --init=IndInv --inv=IndInv --length=1
+```
+
+The step check starts from *every* state satisfying `IndInv`, reachable or
+not, so it has no depth bound; together the two checks imply the invariants
+hold in every reachable state, however long the run. For `Supervision`,
+generation numbers are unbounded SMT integers and no `GenBound` constraint is
+used; the action properties (`NoStartAfterClose`, `RestartFollowsPolicy`,
+`ReverseShutdown`, `NeverReopens`) are checked as one-step action invariants
+from `IndInv`. "Unbounded" still means one instance size: the checks hold for
+the declared constants, not for all N.
+
+```bash
+nix run .#check-apalache                          # default sizes
+nix run .#check-apalache -- --negative-controls   # plus guard-removal mutations
+nix run .#check-apalache -- --model Supervision --size 10 10
+```
+
+| Model | Constants | Restart modes / strategy | Helper lemmas |
+|---|---|---|---|
+| `Supervision` | N = 5, MaxRestarts = 4 (CI also 10/10) | every `Mode` table | live generation = latest one while constructing/running/cleanup; `pub` = gen exactly while running; idle until launched; ordered-start prefix is `initial`; a retrying controller holds a restartable exit reason; children after the stop cursor are done or timed out; done only after every controller finished; reservations within budget |
+| `Cohorts` | N = 5, MaxGen = 4, MaxRounds = 4 | both strategies, every `Mode` table | stopped ⊆ affected, clean ⊆ stopped, resumed ≠ {} ⇒ clean = affected, no resumes while assigning/stopping; Done ⇒ closed |
+| `NestedSupervision` | 6 nodes, 3 slots, MaxGen = 3 | n/a | none: `Safety` is inductive as written |
+
+Each helper is commented in the `*Ind.tla` module with the reason it holds;
+dropping any one of them gives a counterexample to induction (an unreachable
+state). All checks together take about 2-3 minutes; `--size 10 10` for
+`Supervision` well under a minute. No counterexample exposed a real bug.
+
+Non-vacuity: `apalache.sh` requires probe predicates to be violated (IndInv
+admits, for example, five running children at generation > 1000 mid-shutdown),
+and `--negative-controls` removes one guard at a time and requires induction
+to fail: for `Supervision` the retry limit, ordered start, join wait, restart
+table, cleanup, unpublish-on-stop, admission gate on `Attempt` and the
+reverse-shutdown wait; for `Cohorts` and `NestedSupervision` the existing
+`Fault` mutations (`Selection`, `Cleanup`, `Retirement`, `Closed`, `Join`).
+
+The type annotations are `\* @type:` comments, ignored by TLC. Apalache also
+needs constant range bounds, so `r \in 1..s.epoch`-style guards in `Cohorts`
+and `NestedSupervision` are written as comparisons (the same predicate); TLC
+state counts are unchanged.
 
 ## Abstractions
 
