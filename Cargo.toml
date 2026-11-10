@@ -38,3 +38,9 @@ version = "0.7.1"
 license = "MIT"
 edition = "2021"
 repository = "https://github.com/lambdaclass/spawned"
+
+# Builds the `panic_abort` example (semantics guarantee P2). Test harnesses
+# always unwind, so that check is an example binary run in CI.
+[profile.panic-abort]
+inherits = "dev"
+panic = "abort"
