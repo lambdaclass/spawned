@@ -106,7 +106,7 @@ Status of each layer. "Planned" items are tracked in the
 | Layer | Tool | Catches | Status |
 |---|---|---|---|
 | Design | TLA+ and TLC | Holes in lifecycle, restart and shutdown rules | `Supervision`, `Cohorts`, `NestedSupervision` and `Coordinator` models in `verification/tla`, run in CI |
-| Design, unbounded depth | Apalache inductive invariants | An invariant that a state TLC never reached would break | Safety invariants of all four models proven inductive at fixed sizes, with negative controls; in review (PRs #213, #219) |
+| Design, unbounded depth | Apalache inductive invariants | An invariant that a state TLC never reached would break | Safety invariants of all four models proven inductive at fixed sizes, with negative controls; `tla-apalache` CI job |
 | Design, any size | TLAPS or Veil | An invariant that fails only for larger configurations | Planned ([verification tools](research/verification-tools.md)) |
 | Spec and code | Trace validation | The implementation doing something the model forbids | Real OneForOne, cohort and nested traces plus invalid-trace and model-mutation controls |
 | Spec and code coverage | Trace coverage | Model states no test ever reaches | In progress |
