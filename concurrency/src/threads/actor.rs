@@ -2122,19 +2122,22 @@ mod api_coverage {
         let a = Trapper { trap: true }.start();
         let b = Trapper { trap: true }.start();
         let (done, finished) = std_mpsc::channel();
-        let workers: Vec<_> = [(a.context(), b.child_handle()), (b.context(), a.child_handle())]
-            .into_iter()
-            .map(|(own, peer)| {
-                let done = done.clone();
-                std::thread::spawn(move || {
-                    for _ in 0..2_000 {
-                        own.link(&peer);
-                        own.unlink(&peer);
-                    }
-                    done.send(()).unwrap();
-                })
+        let workers: Vec<_> = [
+            (a.context(), b.child_handle()),
+            (b.context(), a.child_handle()),
+        ]
+        .into_iter()
+        .map(|(own, peer)| {
+            let done = done.clone();
+            std::thread::spawn(move || {
+                for _ in 0..2_000 {
+                    own.link(&peer);
+                    own.unlink(&peer);
+                }
+                done.send(()).unwrap();
             })
-            .collect();
+        })
+        .collect();
         for _ in 0..2 {
             finished
                 .recv_timeout(WAIT)
