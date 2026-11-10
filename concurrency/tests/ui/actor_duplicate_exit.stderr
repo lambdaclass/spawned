@@ -1,0 +1,5 @@
+error: only one #[exit_received] method is allowed per actor
+  --> tests/ui/actor_duplicate_exit.rs:17:5
+   |
+17 |     fn second(&mut self, _exit: Exit, _ctx: &Context<Self>) {}
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

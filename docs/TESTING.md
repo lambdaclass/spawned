@@ -325,8 +325,9 @@ Do not interpret a passing campaign as proof of race freedom.
 - Resource cleanup tests verify timer payloads and pending async streams are
   dropped after shutdown. Blocking iterator `next()` calls are not preemptible;
   the listener checks cancellation before invoking the next call.
-- Compile tests accept a working actor/protocol and snapshot diagnostics for
-  unsupported async methods, associated types, and missing receivers.
+- Compile tests (trybuild) accept valid `#[protocol]`/`#[actor]` edge cases and
+  snapshot the diagnostics for invalid ones; see
+  [Macro diagnostics](#macro-diagnostics).
 - Early-stop regressions ensure a cleanup panic remains an abnormal exit.
 
 The Loom tests instrument the actual thread CancellationToken implementation:
@@ -464,6 +465,31 @@ The repository's `.tool-versions` selects Rust 1.93.0. The workspace tests,
 including generated cases and compile diagnostics, have been validated with
 that compiler. Proptest and trybuild are dev-dependencies; proptest's unused
 default features are disabled. Cargo generates the lockfile.
+
+### Macro diagnostics
+
+`concurrency/tests/protocol_compile.rs` runs trybuild over
+`concurrency/tests/ui-pass/*.rs` (must compile and run) and
+`concurrency/tests/ui/*.rs` (must fail with the exact `.stderr` snapshot).
+Fail cases are named `protocol_*` or `actor_*` after the macro under test and
+cover receivers, generic and borrowed parameters, return types, timeout
+attributes and options, duplicate and colliding methods, non-trait/non-impl
+items, handler and lifecycle-hook signatures, async/sync mismatches, missing
+protocol handlers and attribute parameters.
+
+Snapshots depend on the exact compiler, so the test compares `rustc --version`
+with the version in `.tool-versions` (the one every CI job pins) and, on any
+other compiler, prints a notice and passes without running the cases.
+
+```sh
+cargo test --locked -p spawned-concurrency --test protocol_compile              # pinned toolchain
+SPAWNED_UI_TESTS=1 cargo test -p spawned-concurrency --test protocol_compile    # force on another toolchain
+TRYBUILD=overwrite cargo test -p spawned-concurrency --test protocol_compile    # regenerate snapshots (pinned toolchain only)
+```
+
+When bumping the pinned toolchain, update `.tool-versions` and the CI
+`dtolnay/rust-toolchain@` pins together and regenerate the snapshots in the
+same change.
 
 ## Debug future layouts
 

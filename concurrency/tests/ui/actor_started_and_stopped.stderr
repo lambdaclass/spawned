@@ -1,0 +1,5 @@
+error: cannot find attribute `stopped` in this scope
+  --> tests/ui/actor_started_and_stopped.rs:14:7
+   |
+14 |     #[stopped]
+   |       ^^^^^^^

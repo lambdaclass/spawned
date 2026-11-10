@@ -1,0 +1,5 @@
+error[E0425]: cannot find type `M` in this scope
+  --> tests/ui/actor_handler_generic.rs:14:84
+   |
+14 |     fn any<M: spawned_concurrency::message::Message<Result = ()>>(&mut self, _msg: M, _ctx: &Context<Self>) {}
+   |                                                                                    ^ not found in this scope

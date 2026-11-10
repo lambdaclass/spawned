@@ -1,0 +1,21 @@
+error[E0308]: mismatched types
+  --> tests/ui/actor_handler_ctx_by_value.rs:11:1
+   |
+11 | #[actor]
+   | ^^^^^^^^ expected `Context<Counter>`, found `&Context<Counter>`
+...
+14 |     fn bump(&mut self, msg: Bump, _ctx: Context<Self>) { self.0 += msg.by; }
+   |        ---- arguments to this method are incorrect
+   |
+   = note: expected struct `spawned_concurrency::threads::Context<Counter>`
+           found reference `&spawned_concurrency::threads::Context<Counter>`
+note: method defined here
+  --> tests/ui/actor_handler_ctx_by_value.rs:14:8
+   |
+14 |     fn bump(&mut self, msg: Bump, _ctx: Context<Self>) { self.0 += msg.by; }
+   |        ^^^^                       -------------------
+   = note: this error originates in the attribute macro `actor` (in Nightly builds, run with -Z macro-backtrace for more info)
+help: consider using clone here
+   |
+11 | #[actor].clone()
+   |         ++++++++

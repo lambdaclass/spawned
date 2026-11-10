@@ -1,0 +1,12 @@
+error[E0106]: missing lifetime specifier
+ --> tests/ui/protocol_borrowed_param.rs:5:28
+  |
+5 |     fn rename(&self, name: &str);
+  |                            ^ expected named lifetime parameter
+  |
+help: consider introducing a named lifetime parameter
+  |
+3 ~ #[protocol]<'a>
+4 | trait Invalid {
+5 ~     fn rename(&self, name: &'a str);
+  |

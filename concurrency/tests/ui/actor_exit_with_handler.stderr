@@ -1,0 +1,5 @@
+error: #[exit_received] cannot be combined with other lifecycle or handler attributes
+  --> tests/ui/actor_exit_with_handler.rs:16:5
+   |
+16 |     fn on_exit(&mut self, _exit: Exit, _ctx: &Context<Self>) {}
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

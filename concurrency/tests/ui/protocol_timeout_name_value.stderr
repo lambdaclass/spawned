@@ -1,0 +1,5 @@
+error: expected parentheses: #[request_timeout(...)]
+ --> tests/ui/protocol_timeout_name_value.rs:5:23
+  |
+5 |     #[request_timeout = 5]
+  |                       ^

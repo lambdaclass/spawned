@@ -1,0 +1,5 @@
+error: handler method must have 3 parameters (&mut self, msg: M, ctx: &Context<Self>), found 2
+  --> tests/ui/actor_handler_too_few_params.rs:14:5
+   |
+14 |     fn read(&mut self, _msg: Read) -> u64 { self.0 }
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

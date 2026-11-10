@@ -1,0 +1,19 @@
+error[E0599]: no method named `bump` found for mutable reference `&mut Counter` in the current scope
+  --> tests/ui/actor_handler_no_receiver.rs:14:8
+   |
+11 | #[actor]
+   | -------- help: use associated function syntax instead: `Counter::bump(&mut #[actor], #[actor], #[actor])`
+...
+14 |     fn bump(counter: &mut Counter, msg: Bump, _ctx: &Context<Counter>) { counter.0 += msg.by; }
+   |        ^^^^ this is an associated function, not a method
+   |
+   = note: found the following associated functions; to be used as methods, functions must have a `self` parameter
+note: the candidate is defined in an impl for the type `Counter`
+  --> tests/ui/actor_handler_no_receiver.rs:14:5
+   |
+14 |     fn bump(counter: &mut Counter, msg: Bump, _ctx: &Context<Counter>) { counter.0 += msg.by; }
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = help: items from traits can only be used if the trait is implemented and in scope
+   = note: the following traits define an item `bump`, perhaps you need to implement one of them:
+           candidate #1: `CounterProtocol`
+           candidate #2: `lock_api::mutex::RawMutexFair`

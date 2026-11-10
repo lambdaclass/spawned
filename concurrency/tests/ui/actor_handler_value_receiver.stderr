@@ -1,0 +1,23 @@
+error[E0507]: cannot move out of a mutable reference
+  --> tests/ui/actor_handler_value_receiver.rs:11:1
+   |
+11 | #[actor]
+   | ^^^^^^^^
+   | |
+   | value moved due to this method call
+   | move occurs because value has type `Counter`, which does not implement the `Copy` trait
+   |
+note: `Counter::bump` takes ownership of the receiver `self`, which moves value
+  --> tests/ui/actor_handler_value_receiver.rs:14:17
+   |
+14 |     fn bump(mut self, msg: Bump, _ctx: &Context<Self>) { self.0 += msg.by; }
+   |                 ^^^^
+note: if `Counter` implemented `Clone`, you could clone the value
+  --> tests/ui/actor_handler_value_receiver.rs:9:1
+   |
+ 9 | pub struct Counter(u64);
+   | ^^^^^^^^^^^^^^^^^^ consider implementing `Clone` for this type
+10 | use spawned_concurrency::threads::{Actor, Context, Handler};
+11 | #[actor]
+   | -------- you could clone this value
+   = note: this error originates in the attribute macro `actor` (in Nightly builds, run with -Z macro-backtrace for more info)

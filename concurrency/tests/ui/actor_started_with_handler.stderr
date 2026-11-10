@@ -1,0 +1,5 @@
+error: #[started] cannot be combined with handler attributes
+  --> tests/ui/actor_started_with_handler.rs:15:5
+   |
+15 |     fn on_start(&mut self, _ctx: &Context<Self>) {}
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

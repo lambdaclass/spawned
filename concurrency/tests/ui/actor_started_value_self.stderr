@@ -1,0 +1,12 @@
+error[E0053]: method `started` has an incompatible type for trait
+  --> tests/ui/actor_started_value_self.rs:14:21
+   |
+14 |     fn on_start(mut self, _ctx: &Context<Self>) { self.0 = 1; }
+   |                     ^^^^ expected `&mut Counter`, found `Counter`
+   |
+   = note: expected signature `fn(&mut Counter, &spawned_concurrency::threads::Context<Counter>)`
+              found signature `fn(Counter, &spawned_concurrency::threads::Context<Counter>)`
+help: change the self-receiver type to match the trait
+   |
+14 |     fn on_start(mut &mut self, _ctx: &Context<Self>) { self.0 = 1; }
+   |                     ++++

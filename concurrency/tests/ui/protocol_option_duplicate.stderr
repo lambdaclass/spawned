@@ -1,0 +1,5 @@
+error: duplicate protocol timeout
+ --> tests/ui/protocol_option_duplicate.rs:4:38
+  |
+4 | #[protocol(timeout = Duration::ZERO, timeout = Duration::MAX)]
+  |                                      ^^^^^^^
