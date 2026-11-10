@@ -879,8 +879,10 @@ async fn supervisor_report_deadline_signals_remaining_siblings() {
     let report = supervisor.shutdown(Duration::from_millis(20)).await;
     assert!(!report.complete);
     tokio::time::timeout(LIMIT, entered).await.unwrap().unwrap();
+    // The first child must stop while the last one is still held, so the
+    // bound is a hang detector, not a latency budget.
     assert_eq!(
-        tokio::time::timeout(Duration::from_millis(200), actor.wait_exit())
+        tokio::time::timeout(LIMIT, actor.wait_exit())
             .await
             .unwrap(),
         ExitReason::Shutdown
@@ -948,9 +950,11 @@ async fn backoff_exponent_resets_only_after_a_stable_generation() {
     );
     // Stay ready past stable_after: the next restart uses the initial delay.
     tokio::time::sleep(Duration::from_millis(450)).await;
+    // Without the reset this delay would be 640 ms; the margin absorbs a
+    // loaded scheduler without accepting a missed reset.
     let reset = restart_latency(&child).await;
     assert!(
-        reset < Duration::from_millis(200),
+        reset < Duration::from_millis(500),
         "backoff did not reset after a stable generation: {reset:?}"
     );
     assert!(supervisor.shutdown(LIMIT).await.complete);

@@ -1055,8 +1055,8 @@ mod tests {
         let actor = Counter { count: 0 }.start();
         assert_eq!(actor.request(GetCount).unwrap(), 0);
         assert_eq!(actor.request(Increment).unwrap(), 1);
+        // Same mailbox: the request is handled after the send.
         actor.send(Increment).unwrap();
-        rt::sleep(Duration::from_millis(50));
         assert_eq!(actor.request(GetCount).unwrap(), 2);
         actor.request(StopCounter).unwrap();
     }
@@ -1136,7 +1136,7 @@ mod tests {
         }
 
         let actor = PanicOnStart.start();
-        rt::sleep(Duration::from_millis(50));
+        actor.join();
         let result = actor.send(PingThread);
         assert!(result.is_err());
     }
@@ -1166,7 +1166,7 @@ mod tests {
 
         let actor = PanicOnMsg.start();
         actor.send(ExplodeThread).unwrap();
-        rt::sleep(Duration::from_millis(200));
+        actor.join();
         let result = actor.request(CheckThread);
         assert!(result.is_err());
     }
@@ -1207,8 +1207,7 @@ mod tests {
         let actor = Counter { count: 0 }.start();
         let ctx = actor.context();
         send_message_on(ctx, || rt::sleep(Duration::from_millis(10)), Increment);
-        rt::sleep(Duration::from_millis(200));
-        let count = actor.request(GetCount).unwrap();
+        let count = crate::test_wait::wait_for(|| actor.request(GetCount), |c| matches!(c, Ok(1))).unwrap();
         assert_eq!(count, 1);
     }
 
@@ -1335,9 +1334,11 @@ mod tests {
 
         target.request(StopCounter).unwrap();
         target.join();
-        rt::sleep(Duration::from_millis(150));
-
-        let downs = watcher.request(GetDowns).unwrap();
+        let downs = crate::test_wait::wait_for(
+            || watcher.request(GetDowns),
+            |downs| downs.as_ref().map_or(true, |d| d.len() >= 1),
+        )
+        .unwrap();
         assert_eq!(downs.len(), 1);
         assert_eq!(downs[0].monitor_ref, monitor_ref);
         assert!(matches!(downs[0].reason, ExitReason::Normal));
@@ -1352,9 +1353,11 @@ mod tests {
 
         let watcher = make_watcher();
         let _ = watcher.request(StartMonitor(target_handle)).unwrap();
-        rt::sleep(Duration::from_millis(150));
-
-        let downs = watcher.request(GetDowns).unwrap();
+        let downs = crate::test_wait::wait_for(
+            || watcher.request(GetDowns),
+            |downs| downs.as_ref().map_or(true, |d| d.len() >= 1),
+        )
+        .unwrap();
         assert_eq!(downs.len(), 1);
     }
 
@@ -1389,9 +1392,11 @@ mod tests {
 
         target.request(StopCounter).unwrap();
         target.join();
-        rt::sleep(Duration::from_millis(150));
-
-        let downs = watcher.request(GetDowns).unwrap();
+        let downs = crate::test_wait::wait_for(
+            || watcher.request(GetDowns),
+            |downs| downs.as_ref().map_or(true, |d| d.len() >= 2),
+        )
+        .unwrap();
         assert_eq!(downs.len(), 2);
         let refs: Vec<_> = downs.iter().map(|d| d.monitor_ref).collect();
         assert!(refs.contains(&r1));
@@ -1419,9 +1424,11 @@ mod tests {
         let _ = watcher.request(StartMonitor(target_handle)).unwrap();
         let _ = target.send(PanicMsg);
 
-        rt::sleep(Duration::from_millis(200));
-
-        let downs = watcher.request(GetDowns).unwrap();
+        let downs = crate::test_wait::wait_for(
+            || watcher.request(GetDowns),
+            |downs| downs.as_ref().map_or(true, |d| d.len() >= 1),
+        )
+        .unwrap();
         assert_eq!(downs.len(), 1);
         assert!(matches!(downs[0].reason, ExitReason::Panic(_)));
     }
@@ -1512,10 +1519,12 @@ mod tests {
 
         let _ = a.send(Boom);
         a.wait_exit();
-        rt::sleep(Duration::from_millis(150));
-
+        let exits = crate::test_wait::wait_for(
+            || b.request(GetExits),
+            |exits| exits.as_ref().map_or(true, |e| !e.is_empty()),
+        )
+        .unwrap();
         assert!(b.exit_reason().is_none());
-        let exits = b.request(GetExits).unwrap();
         assert_eq!(exits.len(), 1);
         assert_eq!(exits[0].from, a.id());
         assert!(matches!(exits[0].reason, ExitReason::Panic(_)));
@@ -1591,11 +1600,7 @@ mod monitor_cleanup_regressions {
         } else {
             observer.context().demonitor(monitor);
             // Only the waiter now owns this particular ChildHandle allocation.
-            let deadline = std::time::Instant::now() + Duration::from_secs(2);
-            while waiter.strong_count() != 0 && std::time::Instant::now() < deadline {
-                std::thread::sleep(Duration::from_millis(1));
-            }
-            let released = waiter.strong_count() == 0;
+            let released = crate::test_wait::wait_for(|| waiter.strong_count() == 0, |r| *r);
             observer.child_handle().stop();
             observer.join();
             drop(observer);
@@ -1604,11 +1609,7 @@ mod monitor_cleanup_regressions {
             assert!(released, "demonitor retained its waiter until target exit");
             return;
         }
-        let deadline = std::time::Instant::now() + Duration::from_secs(2);
-        while waiter.strong_count() != 0 && std::time::Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(1));
-        }
-        let released = waiter.strong_count() == 0;
+        let released = crate::test_wait::wait_for(|| waiter.strong_count() == 0, |r| *r);
         target.child_handle().stop();
         target.join();
         assert!(released, "stopped observer retained its monitor waiter");

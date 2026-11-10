@@ -384,7 +384,7 @@ fn linked_runtime_abort_is_trappable() {
     peer.context().link(&target.child_handle());
     drop(owner);
     survivor.block_on(async {
-        tokio::time::timeout(Duration::from_secs(1), async {
+        tokio::time::timeout(crate::test_wait::WAIT, async {
             while events.lock().unwrap().is_empty() {
                 tokio::time::sleep(Duration::from_millis(1)).await;
             }

@@ -5,6 +5,7 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
     Arc,
 };
+use crate::test_wait::wait_for;
 use std::time::Duration;
 
 struct Collector {
@@ -88,8 +89,9 @@ fn listener_stops_on_cancellation() {
 
     let _handle = spawn_listener(ctx, iter);
 
-    // Let a few items through then stop the actor
-    rt::sleep(Duration::from_millis(200));
+    // Let at least one item through, then stop the actor
+    let first = wait_for(|| done.load(Ordering::SeqCst), |n| *n > 0);
+    assert!(first > 0, "listener never delivered an item");
     actor.context().stop();
     actor.join();
 

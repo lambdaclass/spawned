@@ -2,6 +2,7 @@ use crate::message::Message;
 use crate::tasks::{send_after, stream::spawn_listener, Actor, ActorStart, Context, Handler};
 use futures::{stream, StreamExt};
 use spawned_rt::tasks::{self as rt, BroadcastStream, ReceiverStream};
+use crate::test_wait::wait_for_async;
 use std::time::Duration;
 
 // --- Messages ---
@@ -75,9 +76,12 @@ pub fn test_sum_numbers_from_stream() {
             stream.filter_map(|result| async move { result.ok().map(StreamMsg::Add) }),
         );
 
-        rt::sleep(Duration::from_secs(1)).await;
-
-        let val = summatory.request(GetValue).await.unwrap();
+        let val = wait_for_async(
+            || summatory.request(GetValue),
+            |val| matches!(val, Ok(n) if *n >= 15),
+        )
+        .await
+        .unwrap();
         assert_eq!(val, 15);
     })
 }
@@ -102,9 +106,12 @@ pub fn test_sum_numbers_from_channel() {
                 .filter_map(|result| async move { result.ok().map(StreamMsg::Add) }),
         );
 
-        rt::sleep(Duration::from_secs(1)).await;
-
-        let val = summatory.request(GetValue).await.unwrap();
+        let val = wait_for_async(
+            || summatory.request(GetValue),
+            |val| matches!(val, Ok(n) if *n >= 15),
+        )
+        .await
+        .unwrap();
         assert_eq!(val, 15);
     })
 }
@@ -129,9 +136,12 @@ pub fn test_sum_numbers_from_broadcast_channel() {
                 .filter_map(|result| async move { result.ok().map(StreamMsg::Add) }),
         );
 
-        rt::sleep(Duration::from_secs(1)).await;
-
-        let val = summatory.request(GetValue).await.unwrap();
+        let val = wait_for_async(
+            || summatory.request(GetValue),
+            |val| matches!(val, Ok(n) if *n >= 15),
+        )
+        .await
+        .unwrap();
         assert_eq!(val, 15);
     })
 }
@@ -170,7 +180,7 @@ pub fn test_stream_cancellation() {
 
         assert!(listener_handle.await.is_ok());
 
-        rt::sleep(Duration::from_millis(10)).await;
+        summatory.join().await;
         assert!(summatory.request(GetValue).await.is_err());
     })
 }
@@ -191,7 +201,8 @@ pub fn test_halting_on_stream_error() {
         let ctx = Context::from_ref(&summatory);
         spawn_listener(ctx, msg_stream);
 
-        rt::sleep(Duration::from_secs(1)).await;
+        // The error message stops the actor.
+        summatory.join().await;
 
         let result = summatory.request(GetValue).await;
         assert!(result.is_err());
@@ -214,9 +225,12 @@ pub fn test_skipping_on_stream_error() {
         let ctx = Context::from_ref(&summatory);
         spawn_listener(ctx, msg_stream);
 
-        rt::sleep(Duration::from_secs(1)).await;
-
-        let val = summatory.request(GetValue).await.unwrap();
+        let val = wait_for_async(
+            || summatory.request(GetValue),
+            |val| matches!(val, Ok(n) if *n >= 15),
+        )
+        .await
+        .unwrap();
         assert_eq!(val, 15);
     })
 }
