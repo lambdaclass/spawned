@@ -195,30 +195,45 @@ mod tasks_actors {
         }
     }
     impl Handler<Poke> for TaskVictim {
-        async fn handle(&mut self, _: Poke, _: &Context<Self>) {
+        async fn handle(&mut self, _: Poke, reply: spawned_concurrency::reply::PendingReply<'_, ()>, _: &Context<Self>) {
+            {
             self.0.fault(Fault::SendHandler, "injected handler panic");
+        }
+            let _ = reply.reply(());
         }
     }
     impl Handler<Ask> for TaskVictim {
-        async fn handle(&mut self, _: Ask, _: &Context<Self>) -> u64 {
+        async fn handle(&mut self, _: Ask, reply: spawned_concurrency::reply::PendingReply<'_, u64>, _: &Context<Self>) {
+            let __reply_value: u64 = {
             self.0.ask()
+        };
+            let _ = reply.reply(__reply_value);
         }
     }
     impl Handler<Payload> for TaskVictim {
-        async fn handle(&mut self, _: Payload, _: &Context<Self>) {}
+        async fn handle(&mut self, _: Payload, reply: spawned_concurrency::reply::PendingReply<'_, ()>, _: &Context<Self>) {
+            let _ = reply.reply(());
+        }
     }
     impl Handler<Gift> for TaskVictim {
-        async fn handle(&mut self, _: Gift, _: &Context<Self>) -> Bomb {
+        async fn handle(&mut self, _: Gift, reply: spawned_concurrency::reply::PendingReply<'_, Bomb>, _: &Context<Self>) {
+            let __reply_value: Bomb = {
             self.0.gift()
+        };
+            let _ = reply.reply(__reply_value);
         }
     }
     impl Handler<Hold> for TaskVictim {
-        async fn handle(&mut self, _: Hold, _: &Context<Self>) {
+        async fn handle(&mut self, _: Hold, reply: spawned_concurrency::reply::PendingReply<'_, ()>, _: &Context<Self>) {
+            {
             self.0.gate.wait();
+        }
+            let _ = reply.reply(());
         }
     }
     impl Handler<Setup> for TaskVictim {
-        async fn handle(&mut self, setup: Setup, ctx: &Context<Self>) -> Option<MonitorRef> {
+        async fn handle(&mut self, setup: Setup, reply: spawned_concurrency::reply::PendingReply<'_, Option<MonitorRef>>, ctx: &Context<Self>) {
+            let __reply_value: Option<MonitorRef> = async {
             match setup {
                 Setup::Trap => ctx.trap_exit(true),
                 Setup::Link(target) => ctx.link(&target),
@@ -226,10 +241,16 @@ mod tasks_actors {
             }
             None
         }
+            .await;
+            let _ = reply.reply(__reply_value);
+        }
     }
     impl Handler<Down> for TaskVictim {
-        async fn handle(&mut self, _: Down, _: &Context<Self>) {
+        async fn handle(&mut self, _: Down, reply: spawned_concurrency::reply::PendingReply<'_, ()>, _: &Context<Self>) {
+            {
             self.0.fault(Fault::DownHandler, "injected Down panic");
+        }
+            let _ = reply.reply(());
         }
     }
 
@@ -243,14 +264,18 @@ mod tasks_actors {
         }
     }
     impl Handler<Down> for TaskObserver {
-        async fn handle(&mut self, down: Down, _: &Context<Self>) {
+        async fn handle(&mut self, down: Down, reply: spawned_concurrency::reply::PendingReply<'_, ()>, _: &Context<Self>) {
+            {
             self.0
                 .events
                 .push(Event::Down(down.monitor_ref, down.reason));
         }
+            let _ = reply.reply(());
+        }
     }
     impl Handler<Setup> for TaskObserver {
-        async fn handle(&mut self, setup: Setup, ctx: &Context<Self>) -> Option<MonitorRef> {
+        async fn handle(&mut self, setup: Setup, reply: spawned_concurrency::reply::PendingReply<'_, Option<MonitorRef>>, ctx: &Context<Self>) {
+            let __reply_value: Option<MonitorRef> = async {
             match setup {
                 Setup::Trap => ctx.trap_exit(true),
                 Setup::Link(target) => ctx.link(&target),
@@ -258,10 +283,16 @@ mod tasks_actors {
             }
             None
         }
+            .await;
+            let _ = reply.reply(__reply_value);
+        }
     }
     impl Handler<Ask> for TaskObserver {
-        async fn handle(&mut self, _: Ask, _: &Context<Self>) -> u64 {
+        async fn handle(&mut self, _: Ask, reply: spawned_concurrency::reply::PendingReply<'_, u64>, _: &Context<Self>) {
+            let __reply_value: u64 = {
             7
+        };
+            let _ = reply.reply(__reply_value);
         }
     }
 }
@@ -286,41 +317,61 @@ mod thread_actors {
         }
     }
     impl Handler<Poke> for ThreadVictim {
-        fn handle(&mut self, _: Poke, _: &Context<Self>) {
+        fn handle(&mut self, _: Poke, reply: spawned_concurrency::reply::PendingReply<'_, ()>, _: &Context<Self>) {
+            {
             self.0.fault(Fault::SendHandler, "injected handler panic");
+        }
+            let _ = reply.reply(());
         }
     }
     impl Handler<Ask> for ThreadVictim {
-        fn handle(&mut self, _: Ask, _: &Context<Self>) -> u64 {
+        fn handle(&mut self, _: Ask, reply: spawned_concurrency::reply::PendingReply<'_, u64>, _: &Context<Self>) {
+            let __reply_value: u64 = {
             self.0.ask()
+        };
+            let _ = reply.reply(__reply_value);
         }
     }
     impl Handler<Payload> for ThreadVictim {
-        fn handle(&mut self, _: Payload, _: &Context<Self>) {}
+        fn handle(&mut self, _: Payload, reply: spawned_concurrency::reply::PendingReply<'_, ()>, _: &Context<Self>) {
+            let _ = reply.reply(());
+        }
     }
     impl Handler<Gift> for ThreadVictim {
-        fn handle(&mut self, _: Gift, _: &Context<Self>) -> Bomb {
+        fn handle(&mut self, _: Gift, reply: spawned_concurrency::reply::PendingReply<'_, Bomb>, _: &Context<Self>) {
+            let __reply_value: Bomb = {
             self.0.gift()
+        };
+            let _ = reply.reply(__reply_value);
         }
     }
     impl Handler<Hold> for ThreadVictim {
-        fn handle(&mut self, _: Hold, _: &Context<Self>) {
+        fn handle(&mut self, _: Hold, reply: spawned_concurrency::reply::PendingReply<'_, ()>, _: &Context<Self>) {
+            {
             self.0.gate.wait();
+        }
+            let _ = reply.reply(());
         }
     }
     impl Handler<Setup> for ThreadVictim {
-        fn handle(&mut self, setup: Setup, ctx: &Context<Self>) -> Option<MonitorRef> {
+        fn handle(&mut self, setup: Setup, reply: spawned_concurrency::reply::PendingReply<'_, Option<MonitorRef>>, ctx: &Context<Self>) {
+            let __reply_value: Option<MonitorRef> = (|| {
             match setup {
                 Setup::Trap => ctx.trap_exit(true),
                 Setup::Link(target) => ctx.link(&target),
                 Setup::Watch(target) => return Some(ctx.monitor(&target)),
             }
             None
+        })();
+            let _ = reply.reply(__reply_value);
         }
     }
     impl Handler<Down> for ThreadVictim {
-        fn handle(&mut self, _: Down, _: &Context<Self>) {
+        fn handle(&mut self, _: Down, reply: spawned_concurrency::reply::PendingReply<'_, ()>, _: &Context<Self>) {
+            {
             self.0.fault(Fault::DownHandler, "injected Down panic");
+        }
+            let _ = reply.reply(());
         }
     }
 
@@ -334,25 +385,34 @@ mod thread_actors {
         }
     }
     impl Handler<Down> for ThreadObserver {
-        fn handle(&mut self, down: Down, _: &Context<Self>) {
+        fn handle(&mut self, down: Down, reply: spawned_concurrency::reply::PendingReply<'_, ()>, _: &Context<Self>) {
+            {
             self.0
                 .events
                 .push(Event::Down(down.monitor_ref, down.reason));
         }
+            let _ = reply.reply(());
+        }
     }
     impl Handler<Setup> for ThreadObserver {
-        fn handle(&mut self, setup: Setup, ctx: &Context<Self>) -> Option<MonitorRef> {
+        fn handle(&mut self, setup: Setup, reply: spawned_concurrency::reply::PendingReply<'_, Option<MonitorRef>>, ctx: &Context<Self>) {
+            let __reply_value: Option<MonitorRef> = (|| {
             match setup {
                 Setup::Trap => ctx.trap_exit(true),
                 Setup::Link(target) => ctx.link(&target),
                 Setup::Watch(target) => return Some(ctx.monitor(&target)),
             }
             None
+        })();
+            let _ = reply.reply(__reply_value);
         }
     }
     impl Handler<Ask> for ThreadObserver {
-        fn handle(&mut self, _: Ask, _: &Context<Self>) -> u64 {
+        fn handle(&mut self, _: Ask, reply: spawned_concurrency::reply::PendingReply<'_, u64>, _: &Context<Self>) {
+            let __reply_value: u64 = {
             7
+        };
+            let _ = reply.reply(__reply_value);
         }
     }
 }

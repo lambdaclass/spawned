@@ -61,8 +61,11 @@ impl Message for Detonate {
     type Result = ();
 }
 impl threads::Handler<Detonate> for Fuse {
-    fn handle(&mut self, msg: Detonate, _: &threads::Context<Self>) {
+    fn handle(&mut self, msg: Detonate, reply: spawned_concurrency::reply::PendingReply<'_, ()>, _: &threads::Context<Self>) {
+        {
         panic!("{}", msg.0);
+    }
+        let _ = reply.reply(());
     }
 }
 

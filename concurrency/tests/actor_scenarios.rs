@@ -37,7 +37,8 @@ mod tasks {
     pub struct TestActor(pub Worker);
     impl Actor for TestActor {}
     impl Handler<Command> for TestActor {
-        async fn handle(&mut self, command: Command, ctx: &Context<Self>) -> Reply {
+        async fn handle(&mut self, command: Command, reply: spawned_concurrency::reply::PendingReply<'_, Reply>, ctx: &Context<Self>) {
+            let __reply_value: Reply = {
             match command {
                 Command::Work(id) => {
                     self.0
@@ -54,11 +55,16 @@ mod tasks {
                 }
                 Command::Boom => panic!("scenario injected panic"),
             }
+        };
+            let _ = reply.reply(__reply_value);
         }
     }
     impl Handler<Down> for TestActor {
-        async fn handle(&mut self, event: Down, _: &Context<Self>) {
+        async fn handle(&mut self, event: Down, reply: spawned_concurrency::reply::PendingReply<'_, ()>, _: &Context<Self>) {
+            {
             let _ = self.0.events.send(event);
+        }
+            let _ = reply.reply(());
         }
     }
 }
@@ -69,7 +75,8 @@ mod threads {
     pub struct TestActor(pub Worker);
     impl Actor for TestActor {}
     impl Handler<Command> for TestActor {
-        fn handle(&mut self, command: Command, ctx: &Context<Self>) -> Reply {
+        fn handle(&mut self, command: Command, reply: spawned_concurrency::reply::PendingReply<'_, Reply>, ctx: &Context<Self>) {
+            let __reply_value: Reply = {
             match command {
                 Command::Work(id) => {
                     self.0
@@ -86,11 +93,16 @@ mod threads {
                 }
                 Command::Boom => panic!("scenario injected panic"),
             }
+        };
+            let _ = reply.reply(__reply_value);
         }
     }
     impl Handler<Down> for TestActor {
-        fn handle(&mut self, event: Down, _: &Context<Self>) {
+        fn handle(&mut self, event: Down, reply: spawned_concurrency::reply::PendingReply<'_, ()>, _: &Context<Self>) {
+            {
             let _ = self.0.events.send(event);
+        }
+            let _ = reply.reply(());
         }
     }
 }

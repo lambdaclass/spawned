@@ -10,8 +10,11 @@ impl Message for Add {
     type Result = ();
 }
 impl Handler<Add> for Worker {
-    async fn handle(&mut self, _: Add, _: &Context<Self>) {
+    async fn handle(&mut self, _: Add, reply: spawned_concurrency::reply::PendingReply<'_, ()>, _: &Context<Self>) {
+        {
         self.0 += 1;
+    }
+        let _ = reply.reply(());
     }
 }
 struct Fence;
@@ -19,8 +22,11 @@ impl Message for Fence {
     type Result = usize;
 }
 impl Handler<Fence> for Worker {
-    async fn handle(&mut self, _: Fence, _: &Context<Self>) -> usize {
+    async fn handle(&mut self, _: Fence, reply: spawned_concurrency::reply::PendingReply<'_, usize>, _: &Context<Self>) {
+        let __reply_value: usize = {
         self.0
+    };
+        let _ = reply.reply(__reply_value);
     }
 }
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]

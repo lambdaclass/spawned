@@ -101,10 +101,13 @@ where
             observation.reject();
         }
     }
-    fn handle(self: Box<Self>, actor: &mut A, ctx: &Context<A>) {
+    fn handle(self: Box<Self>, actor: &mut A, reply: crate::reply::PendingReply<'_, ()>, ctx: &Context<A>) {
+        {
         let mut this = *self;
         let reply = PendingReply::new(this.slot.take(), &ctx.replies);
         actor.handle(this.msg, reply, ctx);
+    }
+        let _ = reply.reply(());
     }
 }
 
@@ -1093,22 +1096,31 @@ mod tests {
     impl Actor for Counter {}
 
     impl Handler<GetCount> for Counter {
-        fn handle(&mut self, _msg: GetCount, _ctx: &Context<Self>) -> u64 {
+        fn handle(&mut self, _msg: GetCount, reply: crate::reply::PendingReply<'_, u64>, _ctx: &Context<Self>) {
+            let __reply_value: u64 = {
             self.count
+        };
+            let _ = reply.reply(__reply_value);
         }
     }
 
     impl Handler<Increment> for Counter {
-        fn handle(&mut self, _msg: Increment, _ctx: &Context<Self>) -> u64 {
+        fn handle(&mut self, _msg: Increment, reply: crate::reply::PendingReply<'_, u64>, _ctx: &Context<Self>) {
+            let __reply_value: u64 = {
             self.count += 1;
             self.count
+        };
+            let _ = reply.reply(__reply_value);
         }
     }
 
     impl Handler<StopCounter> for Counter {
-        fn handle(&mut self, _msg: StopCounter, ctx: &Context<Self>) -> u64 {
+        fn handle(&mut self, _msg: StopCounter, reply: crate::reply::PendingReply<'_, u64>, ctx: &Context<Self>) {
+            let __reply_value: u64 = {
             ctx.stop();
             self.count
+        };
+            let _ = reply.reply(__reply_value);
         }
     }
 
@@ -1136,8 +1148,11 @@ mod tests {
             }
         }
         impl Handler<StopSlow> for SlowStop {
-            fn handle(&mut self, _msg: StopSlow, ctx: &Context<Self>) {
+            fn handle(&mut self, _msg: StopSlow, reply: crate::reply::PendingReply<'_, ()>, ctx: &Context<Self>) {
+                {
                 ctx.stop();
+            }
+                let _ = reply.reply(());
             }
         }
 
@@ -1160,8 +1175,11 @@ mod tests {
             }
         }
         impl Handler<StopSlow2> for SlowStop2 {
-            fn handle(&mut self, _msg: StopSlow2, ctx: &Context<Self>) {
+            fn handle(&mut self, _msg: StopSlow2, reply: crate::reply::PendingReply<'_, ()>, ctx: &Context<Self>) {
+                {
                 ctx.stop();
+            }
+                let _ = reply.reply(());
             }
         }
 
@@ -1194,7 +1212,9 @@ mod tests {
             }
         }
         impl Handler<PingThread> for PanicOnStart {
-            fn handle(&mut self, _msg: PingThread, _ctx: &Context<Self>) {}
+            fn handle(&mut self, _msg: PingThread, reply: crate::reply::PendingReply<'_, ()>, _ctx: &Context<Self>) {
+                let _ = reply.reply(());
+            }
         }
 
         let actor = PanicOnStart.start();
@@ -1216,13 +1236,19 @@ mod tests {
         }
         impl Actor for PanicOnMsg {}
         impl Handler<ExplodeThread> for PanicOnMsg {
-            fn handle(&mut self, _msg: ExplodeThread, _ctx: &Context<Self>) {
+            fn handle(&mut self, _msg: ExplodeThread, reply: crate::reply::PendingReply<'_, ()>, _ctx: &Context<Self>) {
+                {
                 panic!("boom in handler");
+            }
+                let _ = reply.reply(());
             }
         }
         impl Handler<CheckThread> for PanicOnMsg {
-            fn handle(&mut self, _msg: CheckThread, _ctx: &Context<Self>) -> u32 {
+            fn handle(&mut self, _msg: CheckThread, reply: crate::reply::PendingReply<'_, u32>, _ctx: &Context<Self>) {
+                let __reply_value: u32 = {
                 42
+            };
+                let _ = reply.reply(__reply_value);
             }
         }
 
@@ -1246,8 +1272,11 @@ mod tests {
             }
         }
         impl Handler<StopMeThread> for PanicOnStop {
-            fn handle(&mut self, _msg: StopMeThread, ctx: &Context<Self>) {
+            fn handle(&mut self, _msg: StopMeThread, reply: crate::reply::PendingReply<'_, ()>, ctx: &Context<Self>) {
+                {
                 ctx.stop();
+            }
+                let _ = reply.reply(());
             }
         }
 
@@ -1297,7 +1326,9 @@ mod tests {
             }
         }
         impl Handler<PingThread2> for PanicStartThread {
-            fn handle(&mut self, _msg: PingThread2, _ctx: &Context<Self>) {}
+            fn handle(&mut self, _msg: PingThread2, reply: crate::reply::PendingReply<'_, ()>, _ctx: &Context<Self>) {
+                let _ = reply.reply(());
+            }
         }
 
         let actor = PanicStartThread.start();
@@ -1314,8 +1345,11 @@ mod tests {
         }
         impl Actor for PanicHandlerThread {}
         impl Handler<ExplodeThread2> for PanicHandlerThread {
-            fn handle(&mut self, _msg: ExplodeThread2, _ctx: &Context<Self>) {
+            fn handle(&mut self, _msg: ExplodeThread2, reply: crate::reply::PendingReply<'_, ()>, _ctx: &Context<Self>) {
+                {
                 panic!("boom in handler");
+            }
+                let _ = reply.reply(());
             }
         }
 
@@ -1357,26 +1391,38 @@ mod tests {
     impl Actor for Watcher {}
 
     impl Handler<StartMonitor> for Watcher {
-        fn handle(&mut self, msg: StartMonitor, ctx: &Context<Self>) -> crate::monitor::MonitorRef {
+        fn handle(&mut self, msg: StartMonitor, reply: crate::reply::PendingReply<'_, crate::monitor::MonitorRef>, ctx: &Context<Self>) {
+            let __reply_value: crate::monitor::MonitorRef = {
             ctx.monitor(&msg.0)
+        };
+            let _ = reply.reply(__reply_value);
         }
     }
 
     impl Handler<CallDemonitor> for Watcher {
-        fn handle(&mut self, msg: CallDemonitor, ctx: &Context<Self>) {
+        fn handle(&mut self, msg: CallDemonitor, reply: crate::reply::PendingReply<'_, ()>, ctx: &Context<Self>) {
+            {
             ctx.demonitor(msg.0);
+        }
+            let _ = reply.reply(());
         }
     }
 
     impl Handler<crate::monitor::Down> for Watcher {
-        fn handle(&mut self, msg: crate::monitor::Down, _ctx: &Context<Self>) {
+        fn handle(&mut self, msg: crate::monitor::Down, reply: crate::reply::PendingReply<'_, ()>, _ctx: &Context<Self>) {
+            {
             self.downs.lock().unwrap().push(msg);
+        }
+            let _ = reply.reply(());
         }
     }
 
     impl Handler<GetDowns> for Watcher {
-        fn handle(&mut self, _msg: GetDowns, _ctx: &Context<Self>) -> Vec<crate::monitor::Down> {
+        fn handle(&mut self, _msg: GetDowns, reply: crate::reply::PendingReply<'_, Vec<crate::monitor::Down>>, _ctx: &Context<Self>) {
+            let __reply_value: Vec<crate::monitor::Down> = {
             self.downs.lock().unwrap().clone()
+        };
+            let _ = reply.reply(__reply_value);
         }
     }
 
@@ -1475,8 +1521,11 @@ mod tests {
         struct PanicMe;
         impl Actor for PanicMe {}
         impl Handler<PanicMsg> for PanicMe {
-            fn handle(&mut self, _msg: PanicMsg, _ctx: &Context<Self>) {
+            fn handle(&mut self, _msg: PanicMsg, reply: crate::reply::PendingReply<'_, ()>, _ctx: &Context<Self>) {
+                {
                 panic!("intentional panic");
+            }
+                let _ = reply.reply(());
             }
         }
 
@@ -1522,14 +1571,20 @@ mod tests {
     }
 
     impl Handler<LinkTo> for TrapActor {
-        fn handle(&mut self, msg: LinkTo, ctx: &Context<Self>) {
+        fn handle(&mut self, msg: LinkTo, reply: crate::reply::PendingReply<'_, ()>, ctx: &Context<Self>) {
+            {
             ctx.link(&msg.0);
+        }
+            let _ = reply.reply(());
         }
     }
 
     impl Handler<GetExits> for TrapActor {
-        fn handle(&mut self, _msg: GetExits, _ctx: &Context<Self>) -> Vec<Exit> {
+        fn handle(&mut self, _msg: GetExits, reply: crate::reply::PendingReply<'_, Vec<Exit>>, _ctx: &Context<Self>) {
+            let __reply_value: Vec<Exit> = {
             self.exits.lock().unwrap().clone()
+        };
+            let _ = reply.reply(__reply_value);
         }
     }
 
@@ -1548,8 +1603,11 @@ mod tests {
             type Result = ();
         }
         impl Handler<Boom> for TrapActor {
-            fn handle(&mut self, _msg: Boom, _ctx: &Context<Self>) {
+            fn handle(&mut self, _msg: Boom, reply: crate::reply::PendingReply<'_, ()>, _ctx: &Context<Self>) {
+                {
                 panic!("boom");
+            }
+                let _ = reply.reply(());
             }
         }
 
@@ -1571,8 +1629,11 @@ mod tests {
             type Result = ();
         }
         impl Handler<Boom> for TrapActor {
-            fn handle(&mut self, _msg: Boom, _ctx: &Context<Self>) {
+            fn handle(&mut self, _msg: Boom, reply: crate::reply::PendingReply<'_, ()>, _ctx: &Context<Self>) {
+                {
                 panic!("boom");
+            }
+                let _ = reply.reply(());
             }
         }
 
@@ -1606,8 +1667,11 @@ mod tests {
         }
         impl Actor for Parent {}
         impl Handler<PanicParent> for Parent {
-            fn handle(&mut self, _msg: PanicParent, _ctx: &Context<Self>) {
+            fn handle(&mut self, _msg: PanicParent, reply: crate::reply::PendingReply<'_, ()>, _ctx: &Context<Self>) {
+                {
                 panic!("parent boom");
+            }
+                let _ = reply.reply(());
             }
         }
 
@@ -1630,7 +1694,9 @@ mod monitor_cleanup_regressions {
     struct Idle;
     impl Actor for Idle {}
     impl Handler<Down> for Idle {
-        fn handle(&mut self, _: Down, _: &Context<Self>) {}
+        fn handle(&mut self, _: Down, reply: crate::reply::PendingReply<'_, ()>, _: &Context<Self>) {
+            let _ = reply.reply(());
+        }
     }
     #[test]
     fn closed_monitor_table_rejects_late_registration() {
@@ -1740,8 +1806,11 @@ mod idle_stop_regression {
         type Result = ();
     }
     impl Handler<Increment> for Counter {
-        fn handle(&mut self, _: Increment, _: &Context<Self>) {
+        fn handle(&mut self, _: Increment, reply: crate::reply::PendingReply<'_, ()>, _: &Context<Self>) {
+            {
             self.0.fetch_add(1, Ordering::SeqCst);
+        }
+            let _ = reply.reply(());
         }
     }
     #[test]
@@ -1828,7 +1897,9 @@ mod stop_wakeup_regression {
         type Result = ();
     }
     impl Handler<Noop> for Idle {
-        fn handle(&mut self, _: Noop, _: &Context<Self>) {}
+        fn handle(&mut self, _: Noop, reply: crate::reply::PendingReply<'_, ()>, _: &Context<Self>) {
+            let _ = reply.reply(());
+        }
     }
 
     #[test]
@@ -1906,8 +1977,11 @@ mod stop_wakeup_regression {
     struct Failing;
     impl Actor for Failing {}
     impl Handler<Crash> for Failing {
-        fn handle(&mut self, _: Crash, _: &Context<Self>) {
+        fn handle(&mut self, _: Crash, reply: crate::reply::PendingReply<'_, ()>, _: &Context<Self>) {
+            {
             panic!("linked wakeup regression");
+        }
+            let _ = reply.reply(());
         }
     }
 
@@ -1962,10 +2036,13 @@ mod stop_wakeup_regression {
         type Result = ();
     }
     impl Handler<Work> for Busy {
-        fn handle(&mut self, _: Work, _: &Context<Self>) {
+        fn handle(&mut self, _: Work, reply: crate::reply::PendingReply<'_, ()>, _: &Context<Self>) {
+            {
             self.handled.fetch_add(1, Ordering::SeqCst);
             let _ = self.entered.send(());
             self.release.recv_timeout(Duration::from_secs(5)).unwrap();
+        }
+            let _ = reply.reply(());
         }
     }
 
@@ -2038,24 +2115,36 @@ mod api_coverage {
     }
     impl Actor for Echo {}
     impl Handler<Ask> for Echo {
-        fn handle(&mut self, msg: Ask, _: &Context<Self>) -> u32 {
+        fn handle(&mut self, msg: Ask, reply: crate::reply::PendingReply<'_, u32>, _: &Context<Self>) {
+            let __reply_value: u32 = {
             msg.0
+        };
+            let _ = reply.reply(__reply_value);
         }
     }
     impl Handler<StopAfter> for Echo {
-        fn handle(&mut self, msg: StopAfter, ctx: &Context<Self>) {
+        fn handle(&mut self, msg: StopAfter, reply: crate::reply::PendingReply<'_, ()>, ctx: &Context<Self>) {
+            {
             let _ = msg.0.recv_timeout(WAIT);
             ctx.stop();
         }
+            let _ = reply.reply(());
+        }
     }
     impl Handler<OwnRecipient> for Echo {
-        fn handle(&mut self, _: OwnRecipient, ctx: &Context<Self>) -> (Recipient<Ask>, ActorId) {
+        fn handle(&mut self, _: OwnRecipient, reply: crate::reply::PendingReply<'_, (Recipient<Ask>, ActorId)>, ctx: &Context<Self>) {
+            let __reply_value: (Recipient<Ask>, ActorId) = {
             (ctx.recipient::<Ask>(), ctx.id())
+        };
+            let _ = reply.reply(__reply_value);
         }
     }
     impl Handler<Boom> for Echo {
-        fn handle(&mut self, _: Boom, _: &Context<Self>) {
+        fn handle(&mut self, _: Boom, reply: crate::reply::PendingReply<'_, ()>, _: &Context<Self>) {
+            {
             panic!("boom");
+        }
+            let _ = reply.reply(());
         }
     }
 
@@ -2133,13 +2222,19 @@ mod api_coverage {
         }
     }
     impl Handler<Ask> for Trapper {
-        fn handle(&mut self, msg: Ask, _: &Context<Self>) -> u32 {
+        fn handle(&mut self, msg: Ask, reply: crate::reply::PendingReply<'_, u32>, _: &Context<Self>) {
+            let __reply_value: u32 = {
             msg.0
+        };
+            let _ = reply.reply(__reply_value);
         }
     }
     impl Handler<Unlink> for Trapper {
-        fn handle(&mut self, msg: Unlink, ctx: &Context<Self>) {
+        fn handle(&mut self, msg: Unlink, reply: crate::reply::PendingReply<'_, ()>, ctx: &Context<Self>) {
+            {
             ctx.unlink(&msg.0);
+        }
+            let _ = reply.reply(());
         }
     }
 

@@ -230,7 +230,8 @@ struct Node {
 }
 impl Actor for Node {}
 impl Handler<Wire> for Node {
-    async fn handle(&mut self, msg: Wire, _: &Context<Self>) {
+    async fn handle(&mut self, msg: Wire, reply: spawned_concurrency::reply::PendingReply<'_, ()>, _: &Context<Self>) {
+        {
         if std::env::var("SPAWNED_EXPERIMENT_SCHEDULER").as_deref() == Ok("sharded") {
             assert_eq!(
                 std::thread::current().name().unwrap(),
@@ -238,6 +239,8 @@ impl Handler<Wire> for Node {
             );
         }
         self.children = msg.children;
+    }
+        let _ = reply.reply(());
     }
 }
 #[inline(never)]
@@ -248,7 +251,8 @@ fn cpu_work(mut value: u64, iterations: u32) -> u64 {
     value
 }
 impl Handler<Route> for Node {
-    async fn handle(&mut self, msg: Route, _: &Context<Self>) -> Ack {
+    async fn handle(&mut self, msg: Route, reply: spawned_concurrency::reply::PendingReply<'_, Ack>, _: &Context<Self>) {
+        let __reply_value: Ack = {
         let started = Instant::now();
         if msg.measured {
             self.meter.started.fetch_add(1, Ordering::Relaxed);
@@ -283,6 +287,8 @@ impl Handler<Route> for Node {
             queue_ns: started.duration_since(msg.enqueued).as_nanos() as u64,
             service_ns: completed.duration_since(started).as_nanos() as u64,
         }
+    };
+        let _ = reply.reply(__reply_value);
     }
 }
 fn layout(c: &Config) -> (Vec<usize>, Vec<usize>) {

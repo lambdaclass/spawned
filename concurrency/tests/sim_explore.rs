@@ -56,20 +56,29 @@ impl Message for Log {
     type Result = Vec<Access>;
 }
 impl Handler<Get> for Store {
-    async fn handle(&mut self, _: Get, _: &Context<Self>) -> u64 {
+    async fn handle(&mut self, _: Get, reply: spawned_concurrency::reply::PendingReply<'_, u64>, _: &Context<Self>) {
+        let __reply_value: u64 = {
         self.log.push(Access::Read(self.value));
         self.value
+    };
+        let _ = reply.reply(__reply_value);
     }
 }
 impl Handler<Set> for Store {
-    async fn handle(&mut self, Set(value): Set, _: &Context<Self>) {
+    async fn handle(&mut self, Set(value): Set, reply: spawned_concurrency::reply::PendingReply<'_, ()>, _: &Context<Self>) {
+        {
         self.log.push(Access::Write(value));
         self.value = value;
     }
+        let _ = reply.reply(());
+    }
 }
 impl Handler<Log> for Store {
-    async fn handle(&mut self, _: Log, _: &Context<Self>) -> Vec<Access> {
+    async fn handle(&mut self, _: Log, reply: spawned_concurrency::reply::PendingReply<'_, Vec<Access>>, _: &Context<Self>) {
+        let __reply_value: Vec<Access> = {
         self.log.clone()
+    };
+        let _ = reply.reply(__reply_value);
     }
 }
 
@@ -87,12 +96,15 @@ impl Message for Bump {
     type Result = ();
 }
 impl Handler<Bump> for Worker {
-    async fn handle(&mut self, _: Bump, _: &Context<Self>) {
+    async fn handle(&mut self, _: Bump, reply: spawned_concurrency::reply::PendingReply<'_, ()>, _: &Context<Self>) {
+        {
         for _ in 0..self.noise {
             spawned_rt::tasks::yield_now().await;
         }
         let value = self.store.request(Get).await.unwrap();
         self.store.request(Set(value + 1)).await.unwrap();
+    }
+        let _ = reply.reply(());
     }
 }
 
@@ -200,8 +212,11 @@ impl Actor for Node {
     }
 }
 impl Handler<Crash> for Node {
-    async fn handle(&mut self, _: Crash, _: &Context<Self>) {
+    async fn handle(&mut self, _: Crash, reply: spawned_concurrency::reply::PendingReply<'_, ()>, _: &Context<Self>) {
+        {
         panic!("injected crash after readiness");
+    }
+        let _ = reply.reply(());
     }
 }
 

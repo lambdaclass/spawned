@@ -12,11 +12,14 @@ impl Message for Location {
     type Result = (String, Option<usize>);
 }
 impl Handler<Location> for Worker {
-    async fn handle(&mut self, _: Location, _: &Context<Self>) -> <Location as Message>::Result {
+    async fn handle(&mut self, _: Location, reply: spawned_concurrency::reply::PendingReply<'_, <Location as Message>::Result>, _: &Context<Self>) {
+        let __reply_value: <Location as Message>::Result = {
         (
             std::thread::current().name().unwrap_or_default().to_owned(),
             spawned_rt::tasks::affinity::current_cpu().ok(),
         )
+    };
+        let _ = reply.reply(__reply_value);
     }
 }
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]

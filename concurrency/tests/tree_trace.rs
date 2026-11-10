@@ -20,8 +20,11 @@ impl Message for Crash {
     type Result = ();
 }
 impl Handler<Crash> for Worker {
-    async fn handle(&mut self, _: Crash, _: &Context<Self>) {
+    async fn handle(&mut self, _: Crash, reply: spawned_concurrency::reply::PendingReply<'_, ()>, _: &Context<Self>) {
+        {
         panic!("nested trace failure");
+    }
+        let _ = reply.reply(());
     }
 }
 fn config(strategy: SupervisorStrategy) -> SupervisorConfig {

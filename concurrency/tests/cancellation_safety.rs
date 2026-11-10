@@ -189,7 +189,8 @@ impl Message for Cmd {
     type Result = u64;
 }
 impl Handler<Cmd> for Probe {
-    async fn handle(&mut self, cmd: Cmd, ctx: &Context<Self>) -> u64 {
+    async fn handle(&mut self, cmd: Cmd, reply: spawned_concurrency::reply::PendingReply<'_, u64>, ctx: &Context<Self>) {
+        let __reply_value: u64 = {
         let c = &self.counters;
         match cmd {
             Cmd::Bump => c.effects.fetch_add(1, Ordering::SeqCst) as u64 + 1,
@@ -216,11 +217,16 @@ impl Handler<Cmd> for Probe {
                 0
             }
         }
+    };
+        let _ = reply.reply(__reply_value);
     }
 }
 impl Handler<Down> for Probe {
-    async fn handle(&mut self, _: Down, _: &Context<Self>) {
+    async fn handle(&mut self, _: Down, reply: spawned_concurrency::reply::PendingReply<'_, ()>, _: &Context<Self>) {
+        {
         self.counters.downs.fetch_add(1, Ordering::SeqCst);
+    }
+        let _ = reply.reply(());
     }
 }
 
@@ -229,8 +235,11 @@ pub trait Bumper: Send + Sync {
     fn bump(&self) -> Response<u64>;
 }
 impl Handler<bumper::Bump> for Probe {
-    async fn handle(&mut self, _: bumper::Bump, _: &Context<Self>) -> u64 {
+    async fn handle(&mut self, _: bumper::Bump, reply: spawned_concurrency::reply::PendingReply<'_, u64>, _: &Context<Self>) {
+        let __reply_value: u64 = {
         self.counters.effects.fetch_add(1, Ordering::SeqCst) as u64 + 1
+    };
+        let _ = reply.reply(__reply_value);
     }
 }
 

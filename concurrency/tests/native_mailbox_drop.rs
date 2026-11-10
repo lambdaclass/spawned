@@ -40,8 +40,11 @@ impl Drop for Victim {
     }
 }
 impl Handler<Bomb> for Victim {
-    fn handle(&mut self, _: Bomb, _: &Context<Self>) {
+    fn handle(&mut self, _: Bomb, reply: spawned_concurrency::reply::PendingReply<'_, ()>, _: &Context<Self>) {
+        {
         panic!("queued handler ran");
+    }
+        let _ = reply.reply(());
     }
 }
 
@@ -50,8 +53,11 @@ impl Message for Crash {
     type Result = ();
 }
 impl Handler<Crash> for Victim {
-    fn handle(&mut self, _: Crash, _: &Context<Self>) {
+    fn handle(&mut self, _: Crash, reply: spawned_concurrency::reply::PendingReply<'_, ()>, _: &Context<Self>) {
+        {
         panic!("native handler failure");
+    }
+        let _ = reply.reply(());
     }
 }
 

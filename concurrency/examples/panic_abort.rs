@@ -43,8 +43,11 @@ mod native {
         }
     }
     impl Handler<Boom> for Victim {
-        fn handle(&mut self, _: Boom, _: &Context<Self>) -> u64 {
+        fn handle(&mut self, _: Boom, reply: spawned_concurrency::reply::PendingReply<'_, u64>, _: &Context<Self>) {
+            let __reply_value: u64 = {
             panic!("{PANIC_TEXT}")
+        };
+            let _ = reply.reply(__reply_value);
         }
     }
     pub fn handler_panic() {
@@ -66,8 +69,11 @@ mod tasks {
         }
     }
     impl Handler<Boom> for Victim {
-        async fn handle(&mut self, _: Boom, _: &Context<Self>) -> u64 {
+        async fn handle(&mut self, _: Boom, reply: spawned_concurrency::reply::PendingReply<'_, u64>, _: &Context<Self>) {
+            let __reply_value: u64 = {
             panic!("{PANIC_TEXT}")
+        };
+            let _ = reply.reply(__reply_value);
         }
     }
     pub fn handler_panic() {

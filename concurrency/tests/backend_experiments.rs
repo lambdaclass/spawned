@@ -17,22 +17,28 @@ impl Message for Nested {
 struct Worker;
 impl Actor for Worker {}
 impl Handler<Probe> for Worker {
-    async fn handle(&mut self, _: Probe, _: &Context<Self>) -> u64 {
+    async fn handle(&mut self, _: Probe, reply: spawned_concurrency::reply::PendingReply<'_, u64>, _: &Context<Self>) {
+        let __reply_value: u64 = {
         let child = tokio::spawn(async {
             tokio::time::sleep(Duration::from_millis(1)).await;
             42
         });
         child.await.unwrap()
+    };
+        let _ = reply.reply(__reply_value);
     }
 }
 impl Handler<Nested> for Worker {
-    async fn handle(&mut self, _: Nested, _: &Context<Self>) -> bool {
+    async fn handle(&mut self, _: Nested, reply: spawned_concurrency::reply::PendingReply<'_, bool>, _: &Context<Self>) {
+        let __reply_value: bool = {
         let (tx, rx) = mpsc::channel();
         tokio::spawn(async move {
             let _ = tx.send(());
         });
         // Characterizes progress of a detached helper while its actor blocks.
         rx.recv_timeout(Duration::from_millis(100)).is_ok()
+    };
+        let _ = reply.reply(__reply_value);
     }
 }
 #[test]
@@ -63,7 +69,8 @@ impl Message for Network {
     type Result = u64;
 }
 impl Handler<Network> for Worker {
-    async fn handle(&mut self, _: Network, _: &Context<Self>) -> u64 {
+    async fn handle(&mut self, _: Network, reply: spawned_concurrency::reply::PendingReply<'_, u64>, _: &Context<Self>) {
+        let __reply_value: u64 = {
         use std::io::{Read, Write};
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -83,6 +90,8 @@ impl Handler<Network> for Worker {
         socket.read_exact(&mut data).await.unwrap();
         server.join().unwrap();
         u64::from_le_bytes(data)
+    };
+        let _ = reply.reply(__reply_value);
     }
 }
 #[test]
