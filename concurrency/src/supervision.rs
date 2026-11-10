@@ -2275,6 +2275,18 @@ fn snapshot_failure(snapshot: ChildSnapshot, kind: FailureKind, message: String)
 #[cfg(test)]
 mod policy_tests {
     use super::*;
+    #[test]
+    fn jitter_draw_covers_the_whole_range() {
+        // `nanos + 1` would overflow at the top of the range; the full range
+        // takes the stream value as is.
+        assert_eq!(jitter_draw(u64::MAX, 12345), 12345);
+        assert_eq!(jitter_draw(u64::MAX, u64::MAX), u64::MAX);
+        assert_eq!(jitter_draw(0, 12345), 0);
+        assert_eq!(jitter_draw(9, 12345), 12345 % 10);
+        let mut rng = 1;
+        assert!(jitter(Duration::MAX, &mut rng) <= Duration::from_nanos(u64::MAX));
+        assert_ne!(rng, 1, "each draw advances the stream");
+    }
     #[tokio::test]
     async fn failure_classification_is_typed_and_terminal_failure_is_sticky() {
         let system = ActorSystem::new().unwrap();
