@@ -1,13 +1,16 @@
 #!/usr/bin/env bash
-# Inductive-invariant checks of the TLA+ supervision models with Apalache.
+# Inductive-invariant checks of the TLA+ supervision and shutdown-coordinator
+# models with Apalache.
 # Run inside `nix develop` or via `nix run .#check-apalache` (both provide
 # apalache-mc, a JDK and perl). Exits non-zero if any check gives an
 # unexpected result.
 #
 #   apalache.sh                       prove every *Ind module at its default size
 #   apalache.sh --size N R            Supervision with N children, MaxRestarts R
+#   apalache.sh --targets K           Coordinator with K shutdown targets
 #   apalache.sh --negative-controls   also require counterexamples from mutated specs
-#   apalache.sh --model Supervision   one model only (Supervision, Cohorts, Nested)
+#   apalache.sh --model Supervision   one model only (Supervision, Cohorts, Nested,
+#                                     Coordinator)
 #
 # For each model the checks are, for the constants in MC<Model>Ind.tla:
 #   init     Init => IndInv                  --init=Init   --inv=IndInv  --length=0
@@ -25,14 +28,16 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 apalache="${APALACHE:-apalache-mc}"
 
 negative=0
-models="Supervision Cohorts Nested"
+models="Supervision Cohorts Nested Coordinator"
 size=""
+targets=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --negative-controls) negative=1 ;;
     --size) size="$2 $3"; shift 2 ;;
+    --targets) targets="$2"; shift ;;
     --model) models="$2"; shift ;;
-    *) echo "usage: $0 [--size N R] [--model NAME] [--negative-controls]" >&2; exit 2 ;;
+    *) echo "usage: $0 [--size N R] [--targets K] [--model NAME] [--negative-controls]" >&2; exit 2 ;;
   esac
   shift
 done
@@ -157,6 +162,43 @@ for model in $models; do
           mutate "$module" "$fault" "$module.tla" \
             "s/OVERRIDE_Fault == \"None\"/OVERRIDE_Fault == \"$fault\"/" IndInv
         done
+      fi
+      ;;
+    Coordinator)
+      module=MCCoordinatorInd
+      if [[ -n "$targets" ]]; then
+        module=MCCoordinatorIndSized
+        sed -e "s/MODULE MCCoordinatorInd /MODULE MCCoordinatorIndSized /" \
+            -e "s/^OVERRIDE_TargetCount == .*/OVERRIDE_TargetCount == $targets/" \
+            MCCoordinatorInd.tla >"$module.tla"
+      fi
+      echo "== Apalache $module ($(grep -E '^OVERRIDE_TargetCount ' "$module.tla"))"
+      prove "$work" "$module" Coordinator yes NoLateWaitingState NoPartialEmergencyJoin
+      if [[ "$negative" == 1 ]]; then
+        # The model's Fault mutations (negative_checks.py runs the same ones
+        # under TLC). ReleaseEarly: Join without every target finished;
+        # ForgetFailure: a crash not recorded; ForgetSignal: emergency join
+        # without signalling the remaining targets (JoinAfterAllSignalled);
+        # RollbackReady: the #209 bug, a ready root stopped by its startup
+        # rollback outside the coordinator's order (OrderedShutdown).
+        for fault in ReleaseEarly ForgetFailure ForgetSignal RollbackReady; do
+          mutate "$module" "$fault" "$module.tla" \
+            "s/OVERRIDE_Fault == \"None\"/OVERRIDE_Fault == \"$fault\"/" IndInv
+        done
+        # OrderedShutdown: advance to the next target before the current
+        # one finished.
+        mutate "$module" advance-early Coordinator.tla \
+          's/(Advance == \/\\ phase = "Waiting") \/\\ index \\in finished/$1/' IndInv
+        # OrderedSignalStep: stop targets in the reverse of the stop order
+        # (earliest-admitted root first).
+        mutate "$module" reverse-order Coordinator.tla \
+          's/signalled\x27 = signalled \\cup \{index\}/signalled\x27 = signalled \\cup {TargetCount + 1 - index}/' ActionProps
+        # Admission closed outside Running (Safety): begin shutdown, or
+        # crash, without closing admission.
+        mutate "$module" begin-keeps-open Coordinator.tla \
+          's/(Begin ==.*?)open\x27 = FALSE/$1open\x27 = open/s' IndInv
+        mutate "$module" crash-keeps-open Coordinator.tla \
+          's/(Crash ==.*?)open\x27 = FALSE/$1open\x27 = open/s' IndInv
       fi
       ;;
     *) echo "unknown model $model" >&2; exit 2 ;;
