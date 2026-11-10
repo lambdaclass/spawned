@@ -528,8 +528,15 @@ async fn placement_failure_is_reported_and_fails_the_supervisor() {
         }
         other => panic!("expected placement failure, got {:?}", other.err()),
     }
-    // Never started: `Failed` is sticky, so the outcome no longer depends on
-    // whether the unstarted-child sweep or the controller finishes last.
+    // start() returns once the supervisor has failed; the child's controller
+    // publishes its terminal state afterwards. Never started: `Failed` is
+    // sticky, so the outcome does not depend on whether the unstarted-child
+    // sweep or the controller finishes last.
+    let began = Instant::now();
+    while child.snapshot().state == ChildState::Waiting {
+        assert!(began.elapsed() < LIMIT, "child never left Waiting");
+        tokio::time::sleep(Duration::from_millis(2)).await;
+    }
     assert_eq!(child.snapshot().state, ChildState::Failed);
     assert_eq!(child.snapshot().generation, 0);
     failpoints::remove("system.reserve");
