@@ -409,6 +409,17 @@ impl Placement {
         )
     }
 }
+/// Under `--cfg spawned_sim` only the async placements exist: the others
+/// need OS threads, which the single-thread simulator cannot schedule.
+#[cfg(spawned_sim)]
+fn all_placements() -> Vec<Placement> {
+    vec![Placement::TasksAsync, Placement::GroupAsync]
+}
+#[cfg(spawned_sim)]
+fn group_placements() -> Vec<Placement> {
+    vec![Placement::GroupAsync]
+}
+#[cfg(not(spawned_sim))]
 fn all_placements() -> Vec<Placement> {
     let mut all = vec![
         Placement::TasksAsync,
@@ -419,6 +430,7 @@ fn all_placements() -> Vec<Placement> {
     all.extend(group_placements());
     all
 }
+#[cfg(not(spawned_sim))]
 fn group_placements() -> Vec<Placement> {
     #[allow(unused_mut)]
     let mut groups = vec![Placement::GroupAsync, Placement::GroupThread];
@@ -431,7 +443,7 @@ fn group_placements() -> Vec<Placement> {
 enum Ref {
     Tasks(
         spawned_concurrency::tasks::ActorRef<tasks_node::Node>,
-        tokio::runtime::Handle,
+        spawned_rt::tasks::Handle,
     ),
     Threads(spawned_concurrency::threads::ActorRef<threads_node::Node>),
 }
@@ -458,18 +470,21 @@ impl Ref {
 
 struct Env {
     placement: Placement,
-    rt: Option<tokio::runtime::Runtime>,
+    rt: Option<spawned_rt::tasks::Runtime>,
     system: Option<ActorSystem>,
     group: Option<ExecutionGroup>,
     started: Vec<ChildHandle>,
 }
 impl Env {
     fn new(placement: Placement) -> Self {
+        #[cfg(not(spawned_sim))]
         let rt = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .enable_all()
             .build()
             .unwrap();
+        #[cfg(spawned_sim)]
+        let rt = spawned_rt::tasks::Runtime::new().unwrap();
         let (system, group) = if placement.managed() {
             let system = ActorSystem::new().unwrap();
             let group = match placement {
@@ -493,17 +508,15 @@ impl Env {
             started: Vec::new(),
         }
     }
-    fn handle(&self) -> tokio::runtime::Handle {
+    fn handle(&self) -> spawned_rt::tasks::Handle {
         self.rt.as_ref().unwrap().handle().clone()
     }
     fn block_on<F: std::future::Future>(&self, future: F) -> F::Output {
         self.rt.as_ref().unwrap().block_on(future)
     }
-    fn bounded<F: std::future::Future>(
-        &self,
-        future: F,
-    ) -> Result<F::Output, tokio::time::error::Elapsed> {
-        self.block_on(async move { tokio::time::timeout(LIMIT, future).await })
+    fn bounded<F: std::future::Future>(&self, future: F) -> Result<F::Output, String> {
+        self.block_on(async move { spawned_rt::tasks::timeout(LIMIT, future).await })
+            .map_err(|elapsed| elapsed.to_string())
     }
     fn start(&mut self, index: u32, peers: Vec<Ref>, log: &Log) -> Ref {
         use spawned_concurrency::tasks::{ActorStart as _, Backend};
@@ -571,6 +584,7 @@ impl Env {
             let report = self.block_on(system.shutdown(LIMIT));
             assert!(report.complete, "{:?}: system shutdown", self.placement);
         }
+        #[cfg(not(spawned_sim))]
         self.rt.take().unwrap().shutdown_timeout(LIMIT);
     }
 }
@@ -580,6 +594,7 @@ impl Drop for Env {
         for child in &self.started {
             child.stop();
         }
+        #[cfg(not(spawned_sim))]
         if let Some(rt) = self.rt.take() {
             rt.shutdown_background();
         }
@@ -1086,8 +1101,6 @@ fn strategy() -> impl Strategy<Value = SupervisorStrategy> {
 proptest! {
     #![proptest_config(config())]
 
-    // Not simulated: compares Tokio, Thread, Blocking and native placements.
-    #[cfg(not(spawned_sim))]
     #[test]
     fn request_reply_chains_match(len in 1u32..5, values in prop::collection::vec(any::<u32>(), 1..6)) {
         let values: Vec<u64> = values.into_iter().map(u64::from).collect();
@@ -1112,8 +1125,6 @@ proptest! {
         }
     }
 
-    // Not simulated: compares Tokio, Thread, Blocking and native placements.
-    #[cfg(not(spawned_sim))]
     #[test]
     fn links_and_trapped_exits_match(endings in prop::collection::vec(ending(), 1..5)) {
         let outcome = metamorphic(all_placements(), |env| link_workload(env, &endings));
@@ -1128,7 +1139,7 @@ proptest! {
         prop_assert_eq!(outcome.bystander, bystander);
     }
 
-    // Not simulated: compares Tokio, Thread, Blocking and native placements.
+    // Not simulated: the monitor workload blocks the test thread on a Condvar.
     #[cfg(not(spawned_sim))]
     #[test]
     fn monitors_and_down_match(
@@ -1142,8 +1153,6 @@ proptest! {
         prop_assert_eq!(&outcome.downs[endings.len()], &vec![expected_reason(endings[0])]);
     }
 
-    // Not simulated: compares Tokio, Thread, Blocking and native placements.
-    #[cfg(not(spawned_sim))]
     #[test]
     fn timers_match(after in 0u32..6, pulses in 0u32..6) {
         let outcome = metamorphic(all_placements(), |env| timer_workload(env, after, pulses));
@@ -1154,8 +1163,6 @@ proptest! {
         });
     }
 
-    // Not simulated: compares Tokio, Thread, Blocking and native placements.
-    #[cfg(not(spawned_sim))]
     #[test]
     fn supervisor_restarts_match(
         strategy in strategy(),
@@ -1182,8 +1189,6 @@ proptest! {
         prop_assert!(outcome.complete);
     }
 
-    // Not simulated: compares Tokio, Thread, Blocking and native placements.
-    #[cfg(not(spawned_sim))]
     #[test]
     fn ordered_system_shutdown_matches(before in 0u32..4, sup_children in 0u32..4, after in 0u32..4) {
         let outcome = metamorphic(group_placements(), |env| shutdown_workload(env, before, sup_children, after));
@@ -1198,17 +1203,22 @@ proptest! {
 }
 
 /// Fixed regression covering every workload family once on every placement.
-// Not simulated: compares Tokio, Thread, Blocking and native placements.
-#[cfg(not(spawned_sim))]
 #[test]
 fn fixed_workloads_match_across_placements() {
     let all = all_placements();
-    assert!(all.len() >= 6, "expected every non-pinned placement");
+    assert!(
+        cfg!(spawned_sim) || all.len() >= 6,
+        "expected every non-pinned placement"
+    );
     metamorphic(all.clone(), |env| chain_workload(env, 3, &[1, 2, 3]));
+    // Not simulated: fan-out drives requests from OS threads, and the
+    // monitor workload blocks the test thread on a Condvar.
+    #[cfg(not(spawned_sim))]
     metamorphic(all.clone(), |env| fan_workload(env, 3, &[7], &[10, 10]));
     metamorphic(all.clone(), |env| {
         link_workload(env, &[Ending::Panic, Ending::Stop, Ending::Shutdown])
     });
+    #[cfg(not(spawned_sim))]
     metamorphic(all.clone(), |env| {
         monitor_workload(env, &[Ending::Shutdown, Ending::Panic], &[true])
     });
