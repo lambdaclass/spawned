@@ -18,10 +18,16 @@
 (***************************************************************************)
 EXTENDS Naturals, FiniteSets, Sequences
 
+\* The `@type:` comments are Apalache type annotations (SupervisionInd.tla,
+\* apalache.sh); TLC ignores them.
 CONSTANTS
+    \* @type: Int;
     N,            \* number of children, started in order 1..N
+    \* @type: Int -> Str;
     Mode,         \* Mode[c] \in {"Permanent", "Transient", "Temporary"}
+    \* @type: Int;
     MaxRestarts,  \* SupervisorConfig::max_restarts
+    \* @type: Int;
     MaxGen        \* bound on generations per child (state constraint only)
 
 Children == 1..N
@@ -50,17 +56,48 @@ Pcs == {"idle", "top", "backoff", "attempt", "constructing", "running",
         "cleanup", "decide", "finish", "finished"}
 
 VARIABLES
+    \* @type: Bool;
     open,       \* admission gate / core.cancel not yet closed
+    \* @type: Bool;
     failed,     \* core.failure is set
+    \* @type: Str;
     sphase,     \* run_supervisor program counter
+    \* @type: Int;
     sidx,       \* run_supervisor loop index
+    \* @type: Bool;
     sready,     \* core.ready published
+    \* @type: Bool;
     sdone,      \* core.done published
+    \* @type: Set(Int);
     reserved,   \* pending backoffs holding retry capacity
+    \* @type: Int;
     budget,     \* committed entries plus pending reservations
+    \* @type: Bool;
     deadline,   \* Supervisor::shutdown deadline hit (stop_remaining used)
+    \* @type: Set(Int);
     timedOut,   \* children whose cleanup deadline run_supervisor gave up on
-    pc, st, gen, alive, pub, initial, exitR, readyGen, first, stopTurn, cdone
+    \* @type: Int -> Str;
+    pc,
+    \* @type: Int -> Str;
+    st,
+    \* @type: Int -> Int;
+    gen,
+    \* @type: Int -> Set(Int);
+    alive,
+    \* @type: Int -> Int;
+    pub,
+    \* @type: Int -> Bool;
+    initial,
+    \* @type: Int -> Str;
+    exitR,
+    \* @type: Int -> Bool;
+    readyGen,
+    \* @type: Int -> Bool;
+    first,
+    \* @type: Int -> Bool;
+    stopTurn,
+    \* @type: Int -> Bool;
+    cdone
 
 sup   == <<open, failed, sphase, sidx, sready, sdone, budget, reserved, deadline, timedOut>>
 child == <<pc, st, gen, alive, pub, initial, exitR, readyGen, first, stopTurn, cdone>>
