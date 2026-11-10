@@ -30,6 +30,10 @@ spawned-test = { path = "../testing", default-features = false }
 name = "failpoints"
 required-features = ["failpoints", "async"]
 
+[[example]]
+name = "panic_abort"
+required-features = ["async"]
+
 [[bench]]
 name = "baseline"
 harness = false

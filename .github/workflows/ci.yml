@@ -75,6 +75,23 @@ jobs:
       - name: Workspace tests, CPU 0 only
         run: taskset -c 0 cargo test --locked --workspace
 
+  # Semantics guarantee P2 (docs/design/semantics.md): with panic = "abort" a
+  # panicking handler aborts the process (no stopped(), no reply), while
+  # supervision of Kill/Shutdown exits still works. Test harnesses always
+  # unwind, so the check is an example that runs each scenario in a subprocess.
+  panic-abort:
+    runs-on: ubuntu-latest
+    needs: build
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.93.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: panic-abort
+      - name: Handler panics abort; supervision of non-panic exits still works
+        run: cargo run --locked -p spawned-concurrency --example panic_abort --profile panic-abort
+
   # Advisories, licenses, duplicate versions and sources (deny.toml), plus
   # cargo-audit (.cargo/audit.toml). Accepted advisories are documented in both.
   supply-chain:
