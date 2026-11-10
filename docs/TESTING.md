@@ -41,51 +41,108 @@ for the scale table. It has no controlled
 scheduler: ordering exploration and replay (roadmap ranks 20-22) are later work
 in the same crate.
 
+## How spawned is verified
+
+No single tool shows that an actor runtime is correct. Spawned uses layers, and
+each one catches bugs the others cannot:
+
+1. **Design.** TLA+ models of supervision (`Supervision`), restart cohorts
+   (`Cohorts`), supervisor trees (`NestedSupervision`) and ordered system
+   shutdown (`Coordinator`). TLC explores every reachable state of a small
+   configuration and checks the invariants: at most one live generation, the
+   restart budget is never exceeded, shutdown runs in reverse order, nothing is
+   admitted after close. Apalache then proves the safety invariants
+   *inductive*: every step from any state that satisfies them keeps them, so
+   the result covers all states of a configuration size, with no depth bound.
+   Every proof has negative controls (deliberately broken models, including
+   real bugs we fixed) that must fail, so a check cannot pass vacuously.
+2. **Model to code.** Tests record lifecycle traces from the real Rust code and
+   TLC checks that each trace is a behaviour the model allows. A trace the
+   model rejects means the code and the design disagree.
+3. **Interleavings.** Loom explores every thread interleaving of small
+   primitives (cancellation, ready gate, wakeups) under the Rust memory model.
+   The deterministic simulation backend runs whole tests on a seeded,
+   single-threaded executor with virtual time; every scheduling choice is
+   recorded, so a failure replays exactly from its seed and shrinks to a
+   minimal schedule. Besides random schedules it can search with PCT and
+   bounded depth-first exploration. ThreadSanitizer and single-CPU runs cover
+   the real multithreaded runtime.
+4. **Faults.** Failpoints inject panics, errors, delays and yields at 16 named
+   sites in spawned's own lifecycle code. The panic-safety suite panics in
+   every user callback in turn (including `Drop`, tracing subscribers and
+   factories); the cancellation-safety suite drops every public future at
+   every await point; LeakSanitizer and leak assertions check that nothing
+   outlives shutdown.
+5. **Behaviour.** Proptest generates crash, exit and shutdown scripts for every
+   supervision strategy. Metamorphic tests run one workload on every backend
+   and require the same observable result. A Porcupine-style linearizability
+   checker (`spawned_test::linearizability`) checks concurrent request
+   histories of about 1,000 operations against a real actor.
+6. **Code and tests.** Kani proves small functions (backoff, jitter, the
+   restart window, recovery ids) free of overflow and panics for all inputs in
+   a bound. `cargo-mutants` breaks the code on purpose and requires some test
+   to fail. Size and stack-depth budgets catch handle, future and stack
+   growth. Every crate is `#![forbid(unsafe_code)]`, so the compiler rules out
+   undefined behaviour and Miri is not needed yet. `cargo-semver-checks`,
+   `cargo-hack`, `cargo-deny` and `cargo-audit` guard the public API, feature
+   combinations and dependencies.
+7. **Real workloads.** Client compatibility CI (in progress) builds and tests
+   Ethrex and Ethlambda against spawned changes, and canary nodes run both clients on the
+   Hoodi testnet, comparing shutdown time, restarts, saved state and resource
+   use with the clients' main branches, including runs that kill supervised
+   actors on purpose.
+
+In short: TLA+ and Apalache check the design, trace validation ties the code to
+the design, simulation and Loom cover interleavings, failpoints and the safety
+suites cover faults, Kani and mutation testing harden functions and tests, and
+the clients and canaries check real use. A bug fix always comes with a test
+that reproduces it ([reproducing-test rule](#reproducing-test-rule)).
+
 ## Verification layers
 
-`mailbox_drop_panic` runs a subprocess matrix of five task placements, 1/2/256
-queued panicking destructors and both ordinary/handler-panic shutdown. Its enabled
-parent test checks that the child actually ran all 30 cases, observes one Exit
-and one Down, verifies pending reply release and preserves the earlier failure.
-Both stdout and stderr are drained concurrently, with a 128 KiB stdout control.
-Only subprocess helpers are ignored; enabled parent regressions run in normal CI.
-Additional cases cover never-polled runtime teardown, cancellation mid-handler,
-state-destructor unwind, preserved Shutdown/Kill/linked-panic causes, and native
-queued-reply release while ActorRefs remain alive. Native coverage runs without
-async features. A never-polled Tracked future test checks cleanup before its lease
-is released. The production native send-gate algorithm is also used directly by
-`mailbox_admission_loom`; CI explores close/publication races and lost notifications.
-`startup_admission` forces a managed root to stay unpolled and contrasts its
-no-hook cleanup with legacy ambient startup. The `queued_drop_panic` lifecycle
-trace checks transient restart, with a negative control that erases the panic.
-
-No single tool covers lifecycle correctness; each layer catches a different
-class of bug. Coverage for v0.7.0:
+Status of each layer. "Planned" items are tracked in the
+[roadmap](../ROADMAP.md#database-grade-testing-program).
 
 | Layer | Tool | Catches | Status |
 |---|---|---|---|
-| Design | TLA+ | Holes in lifecycle and restart rules | Bounded OneForOne, cohort strategy and nested ownership models (`verification/tla`); wider base lifecycle remains |
-| Spec and code | Trace validation | The implementation doing something the model forbids | Real OneForOne/cohort/nested trace projections plus invalid-trace and model-mutation controls; not all runtime schedules |
-| Primitives | Loom | Atomic and memory-ordering bugs in cancellation, ready gate and wakeups | Exists; expand to mailbox publication versus shutdown |
-| Whole runtime | Shuttle | Scheduling races in multi-actor tests too large for Loom | Not started |
-| User level | Actor-level ordering exploration | Bugs in users' actor systems, reproducible from a seed | Planned ([roadmap](../ROADMAP.md) rank 20) in `spawned-test`; mocks, probes and fault injection exist (phase A) |
-| Production | Lifecycle monitors derived from the TLA+ invariants | A live node or recorded canary run breaking a modelled invariant | Planned ([roadmap](../ROADMAP.md) rank 5c; [design](research/systematic-testing.md#a-pobserve-for-spawned)) |
-| Memory safety | ThreadSanitizer, Miri | Data races and undefined behavior | TSAN in CI; Miri waits until unsafe code is proposed (all crates `#![forbid(unsafe_code)]`) |
-| Leaks | LeakSanitizer, `leaks.rs` | Actors, threads, tasks, registry entries and handle cycles that outlive shutdown | LSan job beside TSAN; leak assertions in every test run ([CI hardening](#ci-hardening)) |
+| Design | TLA+ and TLC | Holes in lifecycle, restart and shutdown rules | `Supervision`, `Cohorts`, `NestedSupervision` and `Coordinator` models in `verification/tla`, run in CI |
+| Design, unbounded depth | Apalache inductive invariants | An invariant that a state TLC never reached would break | Safety invariants of all four models proven inductive at fixed sizes, with negative controls; in review (PRs #213, #219) |
+| Design, any size | TLAPS or Veil | An invariant that fails only for larger configurations | Planned ([verification tools](research/verification-tools.md)) |
+| Spec and code | Trace validation | The implementation doing something the model forbids | Real OneForOne, cohort and nested traces plus invalid-trace and model-mutation controls |
+| Spec and code coverage | Trace coverage | Model states no test ever reaches | In progress |
+| Primitives | Loom | Atomic and memory-ordering bugs in cancellation, ready gate and wakeups | In CI; expand to reply slots and mailbox publication versus shutdown |
+| Whole runtime, deterministic | Simulation backend for `spawned-rt::tasks` (random, PCT, bounded DFS) | Async races, replayed from a seed with virtual time | In review (PRs #212, #214, #218) |
+| Resource stability | Soak tests | Memory, file descriptors, threads, tasks and registry entries growing over hours of actor churn and restarts | Planned |
+| Behaviour drift | Behaviour snapshots | Silent changes to lifecycle traces, shutdown reports and exit reasons in about 30 standard scenarios | Planned |
+| Model-derived tests | Tests generated from the TLA+ models | Interesting model states (a crash during backoff while shutdown starts, a restart racing a deadline) that no hand-written test reaches | Planned, after trace coverage |
+| Time | Clock-jump tests | Timers and backoff misbehaving on paused time or large forward and backward clock jumps | Planned |
+| Continuous runs | Nightly runs on a dedicated server | Bugs that need hours of simulator seeds, fuzzing, failpoint schedules and soak to appear | Planned (on hold) |
+| Generated scenarios | Coverage-guided fuzzing on the simulator (`cargo-fuzz`, `arbitrary`) | Bugs in operation sequences nobody wrote a test for, each replayable from a seed | Planned, after the simulation stack |
+| Whole runtime, randomized | Shuttle | Scheduling races in multi-actor tests too large for Loom | Not started |
+| Memory safety | ThreadSanitizer | Data races | In CI; Miri waits until unsafe code is proposed (all crates `#![forbid(unsafe_code)]`) |
 | Scheduling pressure | `taskset -c 0`, one Tokio worker | Code that assumes parallel progress; races that need preemption on one core | `single-cpu` CI job |
-| Supply chain | cargo-deny, cargo-audit | Vulnerable, unmaintained or unsound dependencies; license and source drift | `supply-chain` CI job; accepted advisories listed in `deny.toml` |
-| Flakiness | cargo-nextest with retries | Tests that pass only on retry | Nightly `flaky-tracking` job; a retry is reported, never silently passed |
+| Rare lifecycle paths | Failpoints (`BUGGIFY`-style) | Restart, shutdown, placement and registration windows reached on purpose | `failpoints` feature, compiled out by default ([failpoints](#failpoints)) |
+| Callback panics | Panic-safety suite | A panic in user or foreign code (handlers, `Drop`, subscribers, factories) losing the exit reason or skipping cleanup | In CI ([cross-backend, cancellation and panic safety](#cross-backend-cancellation-and-panic-safety)) |
+| Cancellation | Cancellation-safety suite | State left inconsistent when a public future is dropped at an await | In CI |
+| Leaks | LeakSanitizer, `leaks.rs` | Actors, threads, tasks, registry entries and handle cycles that outlive shutdown | LSan job beside TSAN; leak assertions in every test run ([CI hardening](#ci-hardening)) |
+| Behaviour | Proptest supervisor scripts | Wrong outcomes for generated crash, exit and shutdown sequences | In CI ([generated supervisor policy scripts](#generated-supervisor-policy-scripts)) |
+| Cross-backend | Metamorphic tests | Backend-specific differences in replies, exits and per-sender order | In CI |
+| Request semantics | Linearizability checker (`spawned_test::linearizability`) | Lost writes, stale reads and reordering in concurrent request histories | In CI |
+| Full functional proofs | Verus or Creusot | Restart budget, backoff window and generation logic wrong for inputs beyond Kani's bound | Later, once the APIs settle |
 | Pure arithmetic | Kani | Overflow, panics and off-by-one in backoff, jitter, the restart window and recovery ids, for all inputs in a bound | `concurrency/src/kani_proofs.rs`, weekly and on `concurrency/src` PRs |
 | Test quality | cargo-mutants | Tests that still pass when the code is broken | Weekly over supervision and system code |
-| Compatibility | cargo-semver-checks | Unexpected public API removals | Defaults/metrics and the explicit-async migration must remain patch-compatible with v0.6; raw no-default removals are checked against an exact declared list, not reported as compatible. Protocol macros also need trybuild. |
-| Feature separation | cargo-hack | Missing dependencies hidden by dev-dependency feature unification | CI builds each library feature, default, no-default and all features without dev dependencies; not the full feature powerset |
-| Small arithmetic | Kani | Overflow, panics and wrong bounds in backoff, jitter, the restart-budget window and generation counters | Planned ([roadmap](../ROADMAP.md#database-grade-testing-program) batch 1; [verification tools](research/verification-tools.md)) |
-| Rare lifecycle paths | Failpoints (`BUGGIFY`-style) | Restart, shutdown and registration windows reached on purpose | In review (PR #204) |
-| Whole runtime, deterministic | Simulation backend for `spawned-rt::tasks` | Async races replayed from a seed with virtual time | Planned spike ([roadmap](../ROADMAP.md#simulation-backend-spike)); first step toward rank 20 |
-| Cancellation and panic safety | Drop each public future at each await; panic in each user callback | State left inconsistent by a dropped future or a callback panic | Planned ([test techniques](research/test-techniques.md#cancellation-safety-in-async-rust)) |
-| Cross-backend | Metamorphic tests | Backend-specific differences in replies, exits and per-sender order | Planned ([test techniques](research/test-techniques.md)) |
-| Performance regressions | dhat allocation budgets; open-loop load (HdrHistogram) | Per-message allocation growth; tail latency hidden by coordinated omission | Planned ([test techniques](research/test-techniques.md)) |
+| Resource budgets | `future_layout`, `stack_budget` | Growth of handles, futures and lifecycle stack depth (a real client stack overflow before v0.7.1) | Sizes in CI; stack budgets in review (PR #220) |
+| Compatibility | cargo-semver-checks | Unexpected public API removals | In CI |
+| Macro misuse | trybuild compile-fail tests | `#[protocol]` and `#[actor]` misuse that compiles or gives an unclear error | Planned |
+| Feature separation | cargo-hack | Missing dependencies hidden by dev-dependency feature unification | CI builds each library feature, default, no-default and all features without dev dependencies |
+| Supply chain | cargo-deny, cargo-audit | Vulnerable, unmaintained or unsound dependencies; license and source drift | `supply-chain` CI job; accepted advisories listed in `deny.toml` |
+| Flakiness | cargo-nextest with retries | Tests that pass only on retry | Nightly `flaky-tracking` job; a retry is reported, never silently passed |
+| Client compatibility | Ethrex and Ethlambda builds and tests against spawned | Changes that break real users (API, behaviour, stack depth) | In progress |
+| Production | Hoodi canaries; lifecycle monitors derived from the TLA+ invariants | Regressions in real nodes; a live run breaking a modelled invariant | Canaries run manually; monitors planned ([roadmap](../ROADMAP.md) rank 5c) |
+| Production, under pressure | Canary faults: cgroup memory and CPU limits, `tc netem` or toxiproxy network faults, clock skew | Restart and shutdown bugs that appear only under resource pressure | Planned |
+| Performance regressions | Benchmark regression gate; dhat allocation budgets; open-loop load (HdrHistogram) | Per-message allocation growth; tail latency hidden by coordinated omission | Planned ([test techniques](research/test-techniques.md)) |
 | Platforms | Linux and macOS, x86 and arm64 CI jobs | Ordering, affinity and atomics assumptions tied to one platform | Planned ([test techniques](research/test-techniques.md)) |
+| Distribution | turmoil, Jepsen-style histories | Loss, delay, partitions and reordering between nodes | Only with a remote transport ([roadmap](../ROADMAP.md) rank 22a) |
 
 The fuller rationale is archived in the
 [verification strategy note](../legacy/docs/research/verification-strategy.md).
@@ -332,6 +389,22 @@ be cancelled without leaving a blocking-pool worker waiting for target exit.
 A regression with a one-worker blocking pool checks that property.
 
 ## Cross-backend, cancellation and panic safety
+
+`mailbox_drop_panic` runs a subprocess matrix of five task placements, 1/2/256
+queued panicking destructors and both ordinary/handler-panic shutdown. Its enabled
+parent test checks that the child actually ran all 30 cases, observes one Exit
+and one Down, verifies pending reply release and preserves the earlier failure.
+Both stdout and stderr are drained concurrently, with a 128 KiB stdout control.
+Only subprocess helpers are ignored; enabled parent regressions run in normal CI.
+Additional cases cover never-polled runtime teardown, cancellation mid-handler,
+state-destructor unwind, preserved Shutdown/Kill/linked-panic causes, and native
+queued-reply release while ActorRefs remain alive. Native coverage runs without
+async features. A never-polled Tracked future test checks cleanup before its lease
+is released. The production native send-gate algorithm is also used directly by
+`mailbox_admission_loom`; CI explores close/publication races and lost notifications.
+`startup_admission` forces a managed root to stay unpolled and contrasts its
+no-hook cleanup with legacy ambient startup. The `queued_drop_panic` lifecycle
+trace checks transient restart, with a negative control that erases the panic.
 
 Batch 1 of the [database-grade testing program](../ROADMAP.md). All three
 suites use handshakes and bounded waits (10 s per wait), never sleeps as

@@ -11,6 +11,17 @@
   before v0.7.1 now run as regular tests. See
   [testing](docs/TESTING.md#failpoints).
 
+- Documentation: `docs/TESTING.md` gains an overview of how spawned is
+  verified (design, model-to-code, interleavings, faults, behaviour, code and
+  tests, real workloads) and an up-to-date status table for every layer; the
+  README summarizes it.
+- Roadmap: add coverage-guided scenario fuzzing on the simulator, harsher
+  canary faults (cgroup limits, network faults, clock skew), a benchmark
+  regression gate, trybuild compile-fail tests for the macros, and later Verus
+  or Creusot proofs, turmoil/Jepsen-style tests and continuous nightly runs to
+  the testing plan; record Apalache's status and the Veil spike as the next
+  step toward invariants for any configuration size.
+
 ## 0.7.1 — 2026-11-10
 
 - Contain tracing subscriber panics in caught lifecycle-panic diagnostics and

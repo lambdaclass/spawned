@@ -260,5 +260,15 @@ results. Earlier reports and backend studies are archived in [legacy](legacy/REA
 
 ## Testing
 
-Run `cargo test --workspace`. See [testing](docs/TESTING.md) for generated
-lifecycle races, failure replay, the TLA+ model and longer campaigns.
+Run `cargo test --workspace`.
+
+Spawned is verified in layers. TLA+ models of supervision, restart cohorts,
+supervisor trees and system shutdown are model-checked with TLC and their
+safety invariants proven inductive with Apalache; recorded traces from the
+Rust code are checked against those models. A deterministic simulation
+backend, Loom and ThreadSanitizer cover interleavings; failpoints and
+panic-, cancellation- and leak-safety suites cover faults; Kani, mutation
+testing and size budgets harden individual functions and tests; and Ethrex
+and Ethlambda canaries check real nodes. See
+[how spawned is verified](docs/TESTING.md#how-spawned-is-verified) for what
+each layer catches and its status.
