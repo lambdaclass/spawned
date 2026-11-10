@@ -590,7 +590,17 @@ runs the lifecycle tests in CI. `cargo mutants` over `supervision.rs` and
 (`can_start`, `register`, `lease` checks only reachable in narrow windows),
 redundant system-level safety nets (group teardown also stops supervised
 children) and simple accessors. The backoff and jitter seed mixing mutants are
-killed by the Kani proofs below.
+killed by the Kani proofs below, and by unit tests so that `cargo mutants`
+(which does not run Kani) sees them caught too.
+
+Most other survivors are equivalent in a default build: arguments of
+`lifecycle-trace` events (`count`, trace indices), code behind `metrics`,
+`diagnostics` or `backend-experiments`, the random seed fallback, and the
+`with_pair` lock order flipped to `>`/`<=` (any consistent order is
+deadlock-free; `==`, which is not, is caught). Run cargo-mutants with the
+feature that compiles a mutated line before treating it as a gap. Code inside
+`macro_rules!` bodies is not mutated at all, so keep lifecycle code out of
+single-use macros.
 
 ## Kani proofs of supervisor arithmetic
 
@@ -823,3 +833,14 @@ reproduce it, fix it under the reproducing-test rule, or file it.
 cargo nextest run --workspace --profile flaky
 python3 scripts/flaky-report.py target/nextest/flaky/junit.xml
 ```
+
+Tests wait on the effect they need, not on the clock. A fixed sleep before an
+assertion, or a short timeout used as a latency budget, fails on a loaded
+machine even when the code is correct. In unit tests, `test_wait::wait_for`
+and `wait_for_async` (`concurrency/src/test_wait.rs`) poll the real condition
+with a 10 s bound, and the test then asserts on the value they return; prefer
+`join`/`wait_exit` or an explicit release channel when the code under test
+offers one. Bounds such as `LIMIT` are hang detectors. A fixed sleep remains
+only where a test checks that something does *not* happen (a demonitored
+`Down`, an unlinked `Exit`, a duplicate signal): it can let a bug through, but
+cannot fail a correct run.

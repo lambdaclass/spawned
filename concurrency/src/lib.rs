@@ -76,6 +76,9 @@
 #![forbid(unsafe_code)]
 
 #[cfg(test)]
+mod test_wait;
+
+#[cfg(test)]
 #[path = "../tests/support/drop_subprocess.rs"]
 mod drop_subprocess;
 

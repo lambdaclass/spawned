@@ -93,6 +93,30 @@ mod tests {
     }
 
     #[test]
+    fn dropped_registration_removes_only_its_own_entry() {
+        // A waiter future that is rejected or aborted before it runs must not
+        // leave its entry behind for the rest of the observer's lifetime.
+        let table: MonitorTable = Default::default();
+        let (mine, other) = (MonitorRef::next(), MonitorRef::next());
+        let mut entries = std::collections::HashMap::new();
+        entries.insert(mine, spawned_rt::sync::CancellationToken::new());
+        entries.insert(other, spawned_rt::sync::CancellationToken::new());
+        *table.lock().unwrap() = Some(entries);
+        drop(MonitorRegistration(table.clone(), mine));
+        let entries = table.lock().unwrap();
+        let entries = entries.as_ref().unwrap();
+        assert!(!entries.contains_key(&mine));
+        assert!(entries.contains_key(&other));
+    }
+
+    #[test]
+    fn registration_dropped_after_cleanup_is_harmless() {
+        let table: MonitorTable = Default::default();
+        drop(MonitorRegistration(table.clone(), MonitorRef::next()));
+        assert!(table.lock().unwrap().is_none());
+    }
+
+    #[test]
     fn monitor_ref_display() {
         let r = MonitorRef::next();
         assert!(format!("{r}").starts_with("MonitorRef("));

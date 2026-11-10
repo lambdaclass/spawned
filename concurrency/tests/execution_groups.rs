@@ -448,7 +448,7 @@ async fn stuck_standalone_cleanup_does_not_leave_earlier_actor_running_forever()
     assert!(!report.complete);
     tokio::time::timeout(LIMIT, entered).await.unwrap().unwrap();
     assert_eq!(
-        tokio::time::timeout(Duration::from_millis(200), first.wait_exit())
+        tokio::time::timeout(LIMIT, first.wait_exit())
             .await
             .unwrap(),
         ExitReason::Shutdown
@@ -616,4 +616,43 @@ async fn groups_validate_names_and_report_their_budget() {
     assert_eq!(group.name().as_deref(), Some("budgeted"));
     assert_eq!(group.worker_budget(), Some(3));
     assert!(system.shutdown(LIMIT).await.complete);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn closed_system_rejects_new_groups_and_completed_reports_stay_complete() {
+    let system = ActorSystem::new().unwrap();
+    let group = system.async_group("closing", 1).unwrap();
+    assert_eq!(
+        format!("{group:?}"),
+        "ExecutionGroup { name: Some(\"closing\") }"
+    );
+    let report = system.shutdown(LIMIT).await;
+    assert!(report.complete);
+    // A completed report has nothing left to wait for.
+    let again = tokio::time::timeout(LIMIT, report.wait(Duration::ZERO))
+        .await
+        .unwrap();
+    assert!(again.complete);
+    assert!(matches!(
+        system.async_group("late", 1),
+        Err(SystemError::Closed)
+    ));
+    assert!(matches!(
+        system.thread_group("late-native", 1),
+        Err(SystemError::Closed)
+    ));
+    assert!(group.is_closed());
+    assert!(matches!(Worker.start_on(&group), Err(SystemError::Closed)));
+}
+
+#[test]
+fn shard_selection_accepts_every_slot_and_rejects_the_next() {
+    let system = ActorSystem::new().unwrap();
+    let group = system.thread_group("two-slots", 2).unwrap();
+    for index in 0..2 {
+        assert!(group.shard(index).is_ok(), "slot {index} rejected");
+    }
+    assert!(matches!(group.shard(2), Err(SystemError::InvalidShard)));
+    let pool = system.async_group("pool", 2).unwrap();
+    assert!(matches!(pool.shard(0), Err(SystemError::InvalidShard)));
 }

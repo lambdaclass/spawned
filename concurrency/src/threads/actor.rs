@@ -1055,8 +1055,8 @@ mod tests {
         let actor = Counter { count: 0 }.start();
         assert_eq!(actor.request(GetCount).unwrap(), 0);
         assert_eq!(actor.request(Increment).unwrap(), 1);
+        // Same mailbox: the request is handled after the send.
         actor.send(Increment).unwrap();
-        rt::sleep(Duration::from_millis(50));
         assert_eq!(actor.request(GetCount).unwrap(), 2);
         actor.request(StopCounter).unwrap();
     }
@@ -1136,7 +1136,7 @@ mod tests {
         }
 
         let actor = PanicOnStart.start();
-        rt::sleep(Duration::from_millis(50));
+        actor.join();
         let result = actor.send(PingThread);
         assert!(result.is_err());
     }
@@ -1166,7 +1166,7 @@ mod tests {
 
         let actor = PanicOnMsg.start();
         actor.send(ExplodeThread).unwrap();
-        rt::sleep(Duration::from_millis(200));
+        actor.join();
         let result = actor.request(CheckThread);
         assert!(result.is_err());
     }
@@ -1207,8 +1207,8 @@ mod tests {
         let actor = Counter { count: 0 }.start();
         let ctx = actor.context();
         send_message_on(ctx, || rt::sleep(Duration::from_millis(10)), Increment);
-        rt::sleep(Duration::from_millis(200));
-        let count = actor.request(GetCount).unwrap();
+        let count =
+            crate::test_wait::wait_for(|| actor.request(GetCount), |c| matches!(c, Ok(1))).unwrap();
         assert_eq!(count, 1);
     }
 
@@ -1335,9 +1335,11 @@ mod tests {
 
         target.request(StopCounter).unwrap();
         target.join();
-        rt::sleep(Duration::from_millis(150));
-
-        let downs = watcher.request(GetDowns).unwrap();
+        let downs = crate::test_wait::wait_for(
+            || watcher.request(GetDowns),
+            |downs| downs.as_ref().map_or(true, |d| !d.is_empty()),
+        )
+        .unwrap();
         assert_eq!(downs.len(), 1);
         assert_eq!(downs[0].monitor_ref, monitor_ref);
         assert!(matches!(downs[0].reason, ExitReason::Normal));
@@ -1352,9 +1354,11 @@ mod tests {
 
         let watcher = make_watcher();
         let _ = watcher.request(StartMonitor(target_handle)).unwrap();
-        rt::sleep(Duration::from_millis(150));
-
-        let downs = watcher.request(GetDowns).unwrap();
+        let downs = crate::test_wait::wait_for(
+            || watcher.request(GetDowns),
+            |downs| downs.as_ref().map_or(true, |d| !d.is_empty()),
+        )
+        .unwrap();
         assert_eq!(downs.len(), 1);
     }
 
@@ -1389,9 +1393,11 @@ mod tests {
 
         target.request(StopCounter).unwrap();
         target.join();
-        rt::sleep(Duration::from_millis(150));
-
-        let downs = watcher.request(GetDowns).unwrap();
+        let downs = crate::test_wait::wait_for(
+            || watcher.request(GetDowns),
+            |downs| downs.as_ref().map_or(true, |d| d.len() >= 2),
+        )
+        .unwrap();
         assert_eq!(downs.len(), 2);
         let refs: Vec<_> = downs.iter().map(|d| d.monitor_ref).collect();
         assert!(refs.contains(&r1));
@@ -1419,9 +1425,11 @@ mod tests {
         let _ = watcher.request(StartMonitor(target_handle)).unwrap();
         let _ = target.send(PanicMsg);
 
-        rt::sleep(Duration::from_millis(200));
-
-        let downs = watcher.request(GetDowns).unwrap();
+        let downs = crate::test_wait::wait_for(
+            || watcher.request(GetDowns),
+            |downs| downs.as_ref().map_or(true, |d| !d.is_empty()),
+        )
+        .unwrap();
         assert_eq!(downs.len(), 1);
         assert!(matches!(downs[0].reason, ExitReason::Panic(_)));
     }
@@ -1512,10 +1520,12 @@ mod tests {
 
         let _ = a.send(Boom);
         a.wait_exit();
-        rt::sleep(Duration::from_millis(150));
-
+        let exits = crate::test_wait::wait_for(
+            || b.request(GetExits),
+            |exits| exits.as_ref().map_or(true, |e| !e.is_empty()),
+        )
+        .unwrap();
         assert!(b.exit_reason().is_none());
-        let exits = b.request(GetExits).unwrap();
         assert_eq!(exits.len(), 1);
         assert_eq!(exits[0].from, a.id());
         assert!(matches!(exits[0].reason, ExitReason::Panic(_)));
@@ -1591,11 +1601,7 @@ mod monitor_cleanup_regressions {
         } else {
             observer.context().demonitor(monitor);
             // Only the waiter now owns this particular ChildHandle allocation.
-            let deadline = std::time::Instant::now() + Duration::from_secs(2);
-            while waiter.strong_count() != 0 && std::time::Instant::now() < deadline {
-                std::thread::sleep(Duration::from_millis(1));
-            }
-            let released = waiter.strong_count() == 0;
+            let released = crate::test_wait::wait_for(|| waiter.strong_count() == 0, |r| *r);
             observer.child_handle().stop();
             observer.join();
             drop(observer);
@@ -1604,11 +1610,7 @@ mod monitor_cleanup_regressions {
             assert!(released, "demonitor retained its waiter until target exit");
             return;
         }
-        let deadline = std::time::Instant::now() + Duration::from_secs(2);
-        while waiter.strong_count() != 0 && std::time::Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(1));
-        }
-        let released = waiter.strong_count() == 0;
+        let released = crate::test_wait::wait_for(|| waiter.strong_count() == 0, |r| *r);
         target.child_handle().stop();
         target.join();
         assert!(released, "stopped observer retained its monitor waiter");
@@ -1939,5 +1941,223 @@ mod stop_wakeup_regression {
         }
         assert_eq!(actor.wait_exit(), ExitReason::Normal);
         assert_eq!(handled.load(Ordering::SeqCst), 1);
+    }
+}
+
+/// Context and request APIs that the behavioural tests above do not reach.
+#[cfg(test)]
+mod api_coverage {
+    use super::*;
+    use crate::test_wait::WAIT;
+    use std::sync::mpsc as std_mpsc;
+
+    struct Echo;
+    struct Ask(u32);
+    impl Message for Ask {
+        type Result = u32;
+    }
+    /// Holds the actor inside a handler until released, then stops it, so a
+    /// request queued behind it is admitted but never answered.
+    struct StopAfter(std_mpsc::Receiver<()>);
+    impl Message for StopAfter {
+        type Result = ();
+    }
+    struct OwnRecipient;
+    impl Message for OwnRecipient {
+        type Result = (Recipient<Ask>, ActorId);
+    }
+    struct Boom;
+    impl Message for Boom {
+        type Result = ();
+    }
+    struct Unlink(ChildHandle);
+    impl Message for Unlink {
+        type Result = ();
+    }
+    impl Actor for Echo {}
+    impl Handler<Ask> for Echo {
+        fn handle(&mut self, msg: Ask, _: &Context<Self>) -> u32 {
+            msg.0
+        }
+    }
+    impl Handler<StopAfter> for Echo {
+        fn handle(&mut self, msg: StopAfter, ctx: &Context<Self>) {
+            let _ = msg.0.recv_timeout(WAIT);
+            ctx.stop();
+        }
+    }
+    impl Handler<OwnRecipient> for Echo {
+        fn handle(&mut self, _: OwnRecipient, ctx: &Context<Self>) -> (Recipient<Ask>, ActorId) {
+            (ctx.recipient::<Ask>(), ctx.id())
+        }
+    }
+    impl Handler<Boom> for Echo {
+        fn handle(&mut self, _: Boom, _: &Context<Self>) {
+            panic!("boom");
+        }
+    }
+
+    #[test]
+    fn context_recipient_and_identity_reach_their_actor() {
+        let actor = Echo.start();
+        let (recipient, id) = actor.request(OwnRecipient).unwrap();
+        assert_eq!(id, actor.id());
+        assert!(matches!(request(&*recipient, Ask(7), WAIT), Ok(7)));
+        recipient.send(Ask(1)).unwrap();
+        actor.child_handle().stop();
+        actor.join();
+        assert!(matches!(
+            recipient.send(Ask(1)),
+            Err(ActorError::ActorStopped)
+        ));
+    }
+
+    #[test]
+    fn requests_to_a_stopped_actor_fail_without_waiting() {
+        let actor = Echo.start();
+        let recipient = actor.recipient::<Ask>();
+        actor.child_handle().stop();
+        actor.join();
+        assert!(matches!(
+            actor.request_with_timeout(Ask(1), WAIT),
+            Err(ActorError::ActorStopped)
+        ));
+        assert!(matches!(
+            request(&*recipient, Ask(1), WAIT),
+            Err(ActorError::ActorStopped)
+        ));
+    }
+
+    #[test]
+    fn admitted_requests_fail_when_the_handler_unwinds_before_replying() {
+        let actor = Echo.start();
+        assert!(matches!(
+            actor.request_with_timeout(Boom, WAIT),
+            Err(ActorError::ActorStopped)
+        ));
+        let other = Echo.start();
+        let recipient = other.recipient::<Boom>();
+        assert!(matches!(
+            request(&*recipient, Boom, WAIT),
+            Err(ActorError::ActorStopped)
+        ));
+    }
+
+    #[test]
+    fn requests_time_out_while_the_actor_is_busy() {
+        let actor = Echo.start();
+        let recipient = actor.recipient::<Ask>();
+        let (release, held) = std_mpsc::channel();
+        actor.send(StopAfter(held)).unwrap();
+        let short = Duration::from_millis(1);
+        assert!(matches!(
+            actor.request_with_timeout(Ask(1), short),
+            Err(ActorError::RequestTimeout)
+        ));
+        assert!(matches!(
+            request(&*recipient, Ask(1), short),
+            Err(ActorError::RequestTimeout)
+        ));
+        release.send(()).unwrap();
+        actor.join();
+    }
+
+    struct Trapper {
+        trap: bool,
+    }
+    impl Actor for Trapper {
+        fn started(&mut self, ctx: &Context<Self>) {
+            ctx.trap_exit(self.trap);
+        }
+    }
+    impl Handler<Ask> for Trapper {
+        fn handle(&mut self, msg: Ask, _: &Context<Self>) -> u32 {
+            msg.0
+        }
+    }
+    impl Handler<Unlink> for Trapper {
+        fn handle(&mut self, msg: Unlink, ctx: &Context<Self>) {
+            ctx.unlink(&msg.0);
+        }
+    }
+
+    #[test]
+    fn default_exit_received_keeps_a_trapping_actor_alive() {
+        let trapper = Trapper { trap: true }.start();
+        assert!(matches!(trapper.request(Ask(0)), Ok(0)));
+        let peer = Echo.start();
+        trapper.context().link(&peer.child_handle());
+        peer.send(Boom).unwrap();
+        assert!(matches!(peer.wait_exit(), ExitReason::Panic(_)));
+        // The Exit is handled by the default `exit_received`, which ignores it.
+        assert!(matches!(trapper.request(Ask(3)), Ok(3)));
+        assert!(trapper.exit_reason().is_none());
+        trapper.child_handle().shutdown();
+        assert_eq!(trapper.wait_exit(), ExitReason::Shutdown);
+    }
+
+    #[test]
+    fn unlink_prevents_signal_delivery() {
+        // Not trapping: a linked peer's panic would take this actor down.
+        let trapper = Trapper { trap: false }.start();
+        let peer = Echo.start();
+        let peer_handle = peer.child_handle();
+        trapper.context().link(&peer_handle);
+        trapper.request(Unlink(peer_handle.clone())).unwrap();
+        // Unlinking yourself or an already-unlinked peer is a no-op.
+        trapper.request(Unlink(trapper.child_handle())).unwrap();
+        trapper.request(Unlink(peer_handle)).unwrap();
+        peer.send(Boom).unwrap();
+        assert!(matches!(peer.wait_exit(), ExitReason::Panic(_)));
+        assert!(matches!(trapper.request(Ask(1)), Ok(1)));
+        assert!(trapper.exit_reason().is_none());
+        trapper.child_handle().shutdown();
+        trapper.join();
+    }
+
+    #[test]
+    fn opposite_links_between_the_same_pair_do_not_deadlock() {
+        // Each link/unlink locks both link tables. Both directions must take
+        // the locks in the same global order, or these two loops deadlock.
+        let a = Trapper { trap: true }.start();
+        let b = Trapper { trap: true }.start();
+        let (done, finished) = std_mpsc::channel();
+        let workers: Vec<_> = [
+            (a.context(), b.child_handle()),
+            (b.context(), a.child_handle()),
+        ]
+        .into_iter()
+        .map(|(own, peer)| {
+            let done = done.clone();
+            std::thread::spawn(move || {
+                for _ in 0..2_000 {
+                    own.link(&peer);
+                    own.unlink(&peer);
+                }
+                done.send(()).unwrap();
+            })
+        })
+        .collect();
+        for _ in 0..2 {
+            finished
+                .recv_timeout(WAIT)
+                .expect("opposite link directions deadlocked");
+        }
+        for worker in workers {
+            worker.join().unwrap();
+        }
+        for actor in [a, b] {
+            actor.child_handle().shutdown();
+            actor.join();
+        }
+    }
+
+    #[test]
+    fn debug_output_names_the_handle() {
+        let actor = Echo.start();
+        assert!(format!("{actor:?}").starts_with("ActorRef"));
+        assert!(format!("{:?}", actor.context()).starts_with("Context"));
+        actor.child_handle().stop();
+        actor.join();
     }
 }

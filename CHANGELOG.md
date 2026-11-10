@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+- Test reliability: tests wait on the condition they need instead of fixed
+  sleeps or tight latency budgets (`test_wait::wait_for`, `join`, explicit
+  release channels). Fixes flakes seen under load in
+  `threads::timer_tests::test_send_interval_and_cancellation` (asserted an
+  exact tick count), `tasks::actor::tests::panic_in_started_stops_actor`,
+  `monitor_observes_panic_reason`, the badly-behaved/backend isolation tests,
+  `placement_failure_is_reported_and_fails_the_supervisor` (asserted the
+  child's terminal state before its controller published it), two supervisor
+  startup tests whose first `poll` raced the controller, a std `Barrier`
+  inside async handlers that could deadlock a worker, and a proptest case
+  count that broke once a regression file existed. New tests cover the
+  context/request-error/unlink/Debug APIs in both modes, closed-system
+  admission, nested `wait_ready`/`startup_timeout`, supervisor config limits,
+  shard bounds, factory cancellation, cohort backoff, monitor registration
+  cleanup and opposite-direction link lock ordering; they kill 20 surviving
+  cargo-mutants. The native mailbox no longer goes through a single-use
+  macro (cargo-mutants does not mutate macro bodies, so 21 mutants were
+  hidden), and shard selection asserts its invariant instead of re-checking
+  it. A new test pins that the nested-supervisor adapter stops its subtree in
+  `stopped()`, so a panic there (e.g. from an inner waiter's waker) stays a
+  `stopped()` panic with `Drop` as the backstop.
+
 ## 0.7.2 — 2026-11-10
 
 Patch release. The main fix restores ethrex's debug RPC tests under the

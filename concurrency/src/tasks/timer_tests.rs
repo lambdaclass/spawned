@@ -1,5 +1,6 @@
 use super::{send_after, send_interval, Actor, ActorStart, Context, Handler};
 use crate::message::Message;
+use crate::test_wait::wait_for_async;
 use spawned_rt::tasks::{self as rt, CancellationToken};
 use std::time::Duration;
 
@@ -70,17 +71,25 @@ pub fn test_send_interval_and_cancellation() {
     runtime.block_on(async move {
         let repeater = Repeater::new(0).start();
 
-        rt::sleep(Duration::from_secs(1)).await;
+        // The interval keeps firing.
+        let count = wait_for_async(
+            || repeater.request(GetRepCount),
+            |count| matches!(count, Ok(n) if *n >= 3),
+        )
+        .await
+        .unwrap();
+        assert!(count >= 3, "interval stopped firing at {count}");
 
-        let count = repeater.request(GetRepCount).await.unwrap();
-        assert!((8..=10).contains(&count), "expected 8..=10, got {count}");
-
+        // StopTimer is handled before the next request. A tick that raced the
+        // cancellation may still land, but no more than one.
         repeater.send(StopTimer).unwrap();
-
-        rt::sleep(Duration::from_secs(1)).await;
-
-        let count2 = repeater.request(GetRepCount).await.unwrap();
-        assert_eq!(9, count2);
+        let stopped_at = repeater.request(GetRepCount).await.unwrap();
+        rt::sleep(Duration::from_millis(500)).await;
+        let after = repeater.request(GetRepCount).await.unwrap();
+        assert!(
+            after <= stopped_at + 1,
+            "interval kept firing after cancellation: {stopped_at} -> {after}"
+        );
     });
 }
 
@@ -140,9 +149,12 @@ pub fn test_send_after_and_cancellation() {
         let ctx = Context::from_ref(&repeater);
         let _ = send_after(Duration::from_millis(100), ctx, Inc);
 
-        rt::sleep(Duration::from_millis(200)).await;
-
-        let count = repeater.request(GetDelCount).await.unwrap();
+        let count = wait_for_async(
+            || repeater.request(GetDelCount),
+            |count| matches!(count, Ok(n) if *n >= 1),
+        )
+        .await
+        .unwrap();
         assert_eq!(1, count);
 
         let ctx = Context::from_ref(&repeater);
@@ -166,9 +178,12 @@ pub fn test_send_after_gen_server_teardown() {
         let ctx = Context::from_ref(&repeater);
         let _ = send_after(Duration::from_millis(100), ctx, Inc);
 
-        rt::sleep(Duration::from_millis(200)).await;
-
-        let count = repeater.request(GetDelCount).await.unwrap();
+        let count = wait_for_async(
+            || repeater.request(GetDelCount),
+            |count| matches!(count, Ok(n) if *n >= 1),
+        )
+        .await
+        .unwrap();
         assert_eq!(1, count);
 
         let ctx = Context::from_ref(&repeater);

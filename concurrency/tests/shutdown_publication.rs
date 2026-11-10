@@ -145,7 +145,7 @@ fn admitted_request_racing_shutdown_drops_its_reply_before_join_completes() {
             ExitReason::Normal
         );
         let reply = result.expect("gate fired before mailbox admission; allocation hook is stale");
-        assert!(tokio::time::timeout(Duration::from_millis(250), reply)
+        assert!(tokio::time::timeout(LIMIT, reply)
             .await
             .expect("reply sender retained after actor termination")
             .is_err());

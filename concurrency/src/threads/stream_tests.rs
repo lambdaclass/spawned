@@ -1,4 +1,5 @@
 use crate::message::Message;
+use crate::test_wait::wait_for;
 use crate::threads::{spawn_listener, Actor, ActorStart, Context, Handler};
 use spawned_rt::threads::{self as rt};
 use std::sync::{
@@ -88,8 +89,9 @@ fn listener_stops_on_cancellation() {
 
     let _handle = spawn_listener(ctx, iter);
 
-    // Let a few items through then stop the actor
-    rt::sleep(Duration::from_millis(200));
+    // Let at least one item through, then stop the actor
+    let first = wait_for(|| done.load(Ordering::SeqCst), |n| *n > 0);
+    assert!(first > 0, "listener never delivered an item");
     actor.context().stop();
     actor.join();
 

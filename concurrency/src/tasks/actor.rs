@@ -1576,9 +1576,9 @@ mod tests {
             let result = counter.request(Increment).await.unwrap();
             assert_eq!(result, 1);
 
-            // fire-and-forget send
+            // fire-and-forget send; the request below shares its mailbox, so
+            // it is handled after the send without any extra wait.
             counter.send(Increment).unwrap();
-            rt::sleep(Duration::from_millis(10)).await;
 
             let result = counter.request(GetCount).await.unwrap();
             assert_eq!(result, 2);
@@ -1601,7 +1601,6 @@ mod tests {
             assert_eq!(result, 1);
 
             counter.send(Increment).unwrap();
-            rt::sleep(Duration::from_millis(50)).await;
 
             let result = counter.request(GetCount).await.unwrap();
             assert_eq!(result, 2);
@@ -1624,7 +1623,6 @@ mod tests {
             assert_eq!(result, 1);
 
             counter.send(Increment).unwrap();
-            rt::sleep(Duration::from_millis(50)).await;
 
             let result = counter.request(GetCount).await.unwrap();
             assert_eq!(result, 2);
@@ -1672,7 +1670,9 @@ mod tests {
             impl Actor for SlowActor {}
             impl Handler<SlowOp> for SlowActor {
                 async fn handle(&mut self, _msg: SlowOp, _ctx: &Context<Self>) {
-                    rt::sleep(Duration::from_millis(200)).await;
+                    // Never replies, so the timeout is the only possible outcome
+                    // however late the runtime polls it.
+                    std::future::pending::<()>().await;
                 }
             }
 
@@ -1724,35 +1724,77 @@ mod tests {
         }
     }
 
+    /// Blocks its thread in a callback until the test releases it.
+    struct HeldThread {
+        entered: Arc<atomic::AtomicBool>,
+        release: std::sync::mpsc::Receiver<()>,
+        released: Arc<atomic::AtomicBool>,
+    }
+
+    impl HeldThread {
+        fn new() -> (Self, std::sync::mpsc::Sender<()>) {
+            let (tx, release) = std::sync::mpsc::channel();
+            let actor = HeldThread {
+                entered: Arc::default(),
+                release,
+                released: Arc::default(),
+            };
+            (actor, tx)
+        }
+
+        fn hold(&mut self) {
+            self.entered.store(true, atomic::Ordering::SeqCst);
+            let released = self.release.recv_timeout(crate::test_wait::WAIT).is_ok();
+            self.released.store(released, atomic::Ordering::SeqCst);
+        }
+    }
+
+    impl Actor for HeldThread {
+        async fn stopped(&mut self, _ctx: &Context<Self>) {
+            // Only the join test sends StopSlow; DoBlock already held.
+            if !self.entered.load(atomic::Ordering::SeqCst) {
+                self.hold();
+            }
+        }
+    }
+
+    impl Handler<StopSlow> for HeldThread {
+        async fn handle(&mut self, _msg: StopSlow, ctx: &Context<Self>) {
+            ctx.stop();
+        }
+    }
+
+    impl Handler<DoBlock> for HeldThread {
+        async fn handle(&mut self, _msg: DoBlock, ctx: &Context<Self>) {
+            self.hold();
+            ctx.stop();
+        }
+    }
+
     #[test]
     pub fn thread_backend_join_does_not_block_runtime() {
+        // stopped() blocks its OS thread until a task on this current-thread
+        // runtime releases it. If join() blocked the runtime, that task could
+        // never run and stopped() would give up after the timeout instead.
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .unwrap();
 
         runtime.block_on(async move {
-            let slow_actor = SlowShutdownActor.start_with_backend(Backend::Thread);
-
-            let tick_count = Arc::new(atomic::AtomicU64::new(0));
-            let tick_count_clone = tick_count.clone();
-            let _ticker = rt::spawn(async move {
-                for _ in 0..20 {
-                    rt::sleep(Duration::from_millis(50)).await;
-                    tick_count_clone.fetch_add(1, atomic::Ordering::SeqCst);
-                }
+            let (held, release) = HeldThread::new();
+            let released = held.released.clone();
+            let actor = held.start_with_backend(Backend::Thread);
+            actor.send(StopSlow).unwrap();
+            let _releaser = rt::spawn(async move {
+                let _ = release.send(());
             });
 
-            slow_actor.send(StopSlow).unwrap();
-            rt::sleep(Duration::from_millis(10)).await;
+            actor.join().await;
 
-            slow_actor.join().await;
-
-            let count_after_join = tick_count.load(atomic::Ordering::SeqCst);
             assert!(
-                count_after_join >= 8,
-                "Ticker should have completed ~10 ticks during the 500ms join(), but only got {count_after_join}. \
-                 This suggests join() blocked the runtime."
+                released.load(atomic::Ordering::SeqCst),
+                "join() blocked the runtime: the releasing task never ran"
             );
         });
     }
@@ -1839,7 +1881,13 @@ mod tests {
 
     #[test]
     pub fn badly_behaved_thread_non_blocking() {
-        let runtime = rt::Runtime::new().unwrap();
+        // An async actor that blocks its thread starves everything else on
+        // it. With one runtime thread this is deterministic; on a multi-thread
+        // runtime the well-behaved actor may run on another worker.
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
         runtime.block_on(async move {
             let badboy = BadlyBehavedTask.start();
             badboy.send(DoBlock).unwrap();
@@ -1847,39 +1895,57 @@ mod tests {
             goodboy.send(IncrementWell).unwrap();
             rt::sleep(Duration::from_secs(1)).await;
             let count = goodboy.request(GetCount).await.unwrap();
-            assert_ne!(count, 10);
+            // The blocking handler held the only thread for 2 s of the 1 s
+            // window, so the 100 ms chain could not get far.
+            assert!(count < 10, "blocked runtime still made progress: {count}");
+            goodboy.request(StopCounter).await.unwrap();
+        });
+    }
+
+    /// An async actor on a single-threaded runtime keeps making progress while
+    /// an actor on `backend` is blocked inside a handler. With only one runtime
+    /// thread, a blocked handler on that thread would stop all progress.
+    fn blocked_handler_does_not_stall_runtime(backend: Backend) {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async move {
+            let (held, release) = HeldThread::new();
+            let entered = held.entered.clone();
+            let badboy = held.start_with_backend(backend);
+            badboy.send(DoBlock).unwrap();
+            let entered = crate::test_wait::wait_for_async(
+                || async { entered.load(atomic::Ordering::SeqCst) },
+                |entered| *entered,
+            )
+            .await;
+            assert!(entered, "blocking handler never started");
+
+            let goodboy = WellBehavedTask { count: 0 }.start();
+            goodboy.send(IncrementWell).unwrap();
+            let count = crate::test_wait::wait_for_async(
+                || goodboy.request(GetCount),
+                |count| matches!(count, Ok(n) if *n >= 5),
+            )
+            .await
+            .unwrap();
+            assert!(count >= 5, "runtime stalled behind a blocked handler");
+
+            release.send(()).unwrap();
+            badboy.join().await;
             goodboy.request(StopCounter).await.unwrap();
         });
     }
 
     #[test]
     pub fn badly_behaved_thread() {
-        let runtime = rt::Runtime::new().unwrap();
-        runtime.block_on(async move {
-            let badboy = BadlyBehavedTask.start_with_backend(Backend::Blocking);
-            badboy.send(DoBlock).unwrap();
-            let goodboy = WellBehavedTask { count: 0 }.start();
-            goodboy.send(IncrementWell).unwrap();
-            rt::sleep(Duration::from_secs(1)).await;
-            let count = goodboy.request(GetCount).await.unwrap();
-            assert_eq!(count, 10);
-            goodboy.request(StopCounter).await.unwrap();
-        });
+        blocked_handler_does_not_stall_runtime(Backend::Blocking);
     }
 
     #[test]
     pub fn backend_thread_isolates_blocking_work() {
-        let runtime = rt::Runtime::new().unwrap();
-        runtime.block_on(async move {
-            let badboy = BadlyBehavedTask.start_with_backend(Backend::Thread);
-            badboy.send(DoBlock).unwrap();
-            let goodboy = WellBehavedTask { count: 0 }.start();
-            goodboy.send(IncrementWell).unwrap();
-            rt::sleep(Duration::from_secs(1)).await;
-            let count = goodboy.request(GetCount).await.unwrap();
-            assert_eq!(count, 10);
-            goodboy.request(StopCounter).await.unwrap();
-        });
+        blocked_handler_does_not_stall_runtime(Backend::Thread);
     }
 
     // --- Panic recovery tests ---
@@ -1903,7 +1969,7 @@ mod tests {
             }
 
             let actor = PanicOnStart.start();
-            rt::sleep(Duration::from_millis(50)).await;
+            actor.join().await;
             let result = actor.send(Ping);
             assert!(result.is_err());
         });
@@ -1936,7 +2002,7 @@ mod tests {
 
             let actor = PanicOnMsg.start();
             actor.send(Explode).unwrap();
-            rt::sleep(Duration::from_millis(50)).await;
+            actor.join().await;
             let result = actor.request(Check).await;
             assert!(result.is_err());
         });
@@ -1975,8 +2041,12 @@ mod tests {
             let counter = Counter { count: 0 }.start();
             let ctx = counter.context();
             send_message_on(ctx, rt::sleep(Duration::from_millis(10)), Increment);
-            rt::sleep(Duration::from_millis(100)).await;
-            let count = counter.request(GetCount).await.unwrap();
+            let count = crate::test_wait::wait_for_async(
+                || counter.request(GetCount),
+                |count| matches!(count, Ok(1)),
+            )
+            .await
+            .unwrap();
             assert_eq!(count, 1);
         });
     }
@@ -2145,10 +2215,12 @@ mod tests {
             target.request(StopCounter).await.unwrap();
             target.join().await;
 
-            // Give the watcher task time to deliver the message
-            rt::sleep(Duration::from_millis(50)).await;
-
-            let downs = watcher.request(GetDowns).await.unwrap();
+            let downs = crate::test_wait::wait_for_async(
+                || watcher.request(GetDowns),
+                |downs| downs.as_ref().map_or(true, |d| !d.is_empty()),
+            )
+            .await
+            .unwrap();
             assert_eq!(downs.len(), 1);
             assert_eq!(downs[0].monitor_ref, monitor_ref);
             assert!(matches!(downs[0].reason, ExitReason::Normal));
@@ -2171,10 +2243,12 @@ mod tests {
 
             let _ = watcher.request(StartMonitor(target_handle)).await.unwrap();
 
-            // Wait for the watcher task to deliver Down
-            rt::sleep(Duration::from_millis(50)).await;
-
-            let downs = watcher.request(GetDowns).await.unwrap();
+            let downs = crate::test_wait::wait_for_async(
+                || watcher.request(GetDowns),
+                |downs| downs.as_ref().map_or(true, |d| !d.is_empty()),
+            )
+            .await
+            .unwrap();
             assert_eq!(downs.len(), 1);
         });
     }
@@ -2225,9 +2299,12 @@ mod tests {
 
             target.request(StopCounter).await.unwrap();
             target.join().await;
-            rt::sleep(Duration::from_millis(50)).await;
-
-            let downs = watcher.request(GetDowns).await.unwrap();
+            let downs = crate::test_wait::wait_for_async(
+                || watcher.request(GetDowns),
+                |downs| downs.as_ref().map_or(true, |d| d.len() >= 2),
+            )
+            .await
+            .unwrap();
             assert_eq!(downs.len(), 2);
             let refs: Vec<_> = downs.iter().map(|d| d.monitor_ref).collect();
             assert!(refs.contains(&r1));
@@ -2270,11 +2347,13 @@ mod tests {
 
             target.request(StopCounter).await.unwrap();
             target.join().await;
-            // Give the watcher time to process and clean up
-            rt::sleep(Duration::from_millis(50)).await;
-
+            let entries = crate::test_wait::wait_for_async(
+                || watcher.request(Inspect),
+                |entries| !matches!(entries, Ok(n) if *n > 0),
+            )
+            .await;
             assert_eq!(
-                watcher.request(Inspect).await.unwrap(),
+                entries.unwrap(),
                 0,
                 "monitor table should be empty after target died"
             );
@@ -2308,10 +2387,12 @@ mod tests {
             let _ = watcher.request(StartMonitor(target_handle)).await.unwrap();
             let _ = target.send(PanicMsg);
 
-            // Wait for target to panic and watcher to deliver
-            rt::sleep(Duration::from_millis(100)).await;
-
-            let downs = watcher.request(GetDowns).await.unwrap();
+            let downs = crate::test_wait::wait_for_async(
+                || watcher.request(GetDowns),
+                |downs| downs.as_ref().map_or(true, |d| !d.is_empty()),
+            )
+            .await
+            .unwrap();
             assert_eq!(downs.len(), 1);
             assert!(matches!(downs[0].reason, ExitReason::Panic(_)));
         });
@@ -2446,12 +2527,15 @@ mod tests {
 
             let _ = a.send(Boom2);
             a.wait_exit().await;
-            // Give B time to process the Exit message
-            rt::sleep(Duration::from_millis(50)).await;
+            let exits = crate::test_wait::wait_for_async(
+                || b.request(GetExits),
+                |exits| exits.as_ref().map_or(true, |e| !e.is_empty()),
+            )
+            .await
+            .unwrap();
 
             // B should still be alive and have received an Exit
             assert!(b.exit_reason().is_none());
-            let exits = b.request(GetExits).await.unwrap();
             assert_eq!(exits.len(), 1);
             assert_eq!(exits[0].from, a.id());
             assert!(matches!(exits[0].reason, ExitReason::Panic(_)));
@@ -2510,8 +2594,12 @@ mod tests {
                 .await
                 .unwrap();
 
-            rt::sleep(Duration::from_millis(50)).await;
-            let exits = observer.request(GetExits).await.unwrap();
+            let exits = crate::test_wait::wait_for_async(
+                || observer.request(GetExits),
+                |exits| exits.as_ref().map_or(true, |e| !e.is_empty()),
+            )
+            .await
+            .unwrap();
             assert_eq!(exits.len(), 1);
             assert!(matches!(exits[0].reason, ExitReason::Panic(_)));
 
@@ -2586,6 +2674,13 @@ mod tests {
             }
             let _ = a.send(Boom5);
             a.wait_exit().await;
+            crate::test_wait::wait_for_async(
+                || b.request(GetExits),
+                |exits| exits.as_ref().map_or(true, |e| !e.is_empty()),
+            )
+            .await
+            .unwrap();
+            // Leave room for a duplicate before checking there is none.
             rt::sleep(Duration::from_millis(50)).await;
 
             // Should receive only ONE Exit, not two
@@ -2623,10 +2718,12 @@ mod tests {
             let _ = a.send(Boom6);
             a.wait_exit().await;
             b.wait_exit().await;
-            rt::sleep(Duration::from_millis(100)).await;
-
-            // C should have received an Exit (B's death propagated)
-            let exits = c.request(GetExits).await.unwrap();
+            let exits = crate::test_wait::wait_for_async(
+                || c.request(GetExits),
+                |exits| exits.as_ref().map_or(true, |e| !e.is_empty()),
+            )
+            .await
+            .unwrap();
             assert_eq!(exits.len(), 1, "expected C to receive Exit from B's death");
 
             let ch = c.child_handle();
@@ -2667,7 +2764,14 @@ mod tests {
                 .await
                 .unwrap();
 
-            rt::sleep(Duration::from_millis(100)).await;
+            crate::test_wait::wait_for_async(
+                || observer.request(GetExits),
+                |exits| exits.as_ref().map_or(true, |e| !e.is_empty()),
+            )
+            .await
+            .unwrap();
+            // Leave room for a duplicate before checking there is none.
+            rt::sleep(Duration::from_millis(50)).await;
             let exits = observer.request(GetExits).await.unwrap();
             assert_eq!(exits.len(), 1, "expected exactly one Exit, got {:?}", exits);
 
@@ -2755,11 +2859,7 @@ mod monitor_cleanup_regressions {
         } else {
             observer.context().demonitor(monitor);
             // Only the waiter now owns this particular ChildHandle allocation.
-            let deadline = std::time::Instant::now() + Duration::from_secs(2);
-            while waiter.strong_count() != 0 && std::time::Instant::now() < deadline {
-                std::thread::sleep(Duration::from_millis(1));
-            }
-            let released = waiter.strong_count() == 0;
+            let released = crate::test_wait::wait_for(|| waiter.strong_count() == 0, |r| *r);
             observer.child_handle().stop();
             rt.block_on(observer.join());
             drop(observer);
@@ -2768,11 +2868,7 @@ mod monitor_cleanup_regressions {
             assert!(released, "demonitor retained its waiter until target exit");
             return;
         }
-        let deadline = std::time::Instant::now() + Duration::from_secs(2);
-        while waiter.strong_count() != 0 && std::time::Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(1));
-        }
-        let released = waiter.strong_count() == 0;
+        let released = crate::test_wait::wait_for(|| waiter.strong_count() == 0, |r| *r);
         target.child_handle().stop();
         rt.block_on(target.join());
         assert!(released, "stopped observer retained its monitor waiter");
@@ -2985,6 +3081,166 @@ mod idle_stop_regression {
                 "idle actor dispatched queued work after stop"
             );
             assert!(response.await.is_err(), "queued request unexpectedly ran");
+        });
+    }
+}
+
+/// Context and request APIs that the behavioural tests above do not reach.
+#[cfg(test)]
+mod api_coverage {
+    use super::*;
+    use crate::test_wait::WAIT;
+
+    struct Echo;
+    struct Ask(u32);
+    impl Message for Ask {
+        type Result = u32;
+    }
+    /// Holds the actor inside a handler until released, then stops it, so a
+    /// request queued behind it is admitted but never answered.
+    struct StopAfter(rt::oneshot::Receiver<()>);
+    impl Message for StopAfter {
+        type Result = ();
+    }
+    struct OwnRecipient;
+    impl Message for OwnRecipient {
+        type Result = (Recipient<Ask>, ActorId);
+    }
+    struct Boom;
+    impl Message for Boom {
+        type Result = ();
+    }
+    impl Actor for Echo {}
+    impl Handler<Ask> for Echo {
+        async fn handle(&mut self, msg: Ask, _: &Context<Self>) -> u32 {
+            msg.0
+        }
+    }
+    impl Handler<StopAfter> for Echo {
+        async fn handle(&mut self, msg: StopAfter, ctx: &Context<Self>) {
+            let _ = msg.0.await;
+            ctx.stop();
+        }
+    }
+    impl Handler<OwnRecipient> for Echo {
+        async fn handle(
+            &mut self,
+            _: OwnRecipient,
+            ctx: &Context<Self>,
+        ) -> (Recipient<Ask>, ActorId) {
+            (ctx.recipient::<Ask>(), ctx.id())
+        }
+    }
+    impl Handler<Boom> for Echo {
+        async fn handle(&mut self, _: Boom, _: &Context<Self>) {
+            panic!("boom");
+        }
+    }
+
+    #[test]
+    fn context_recipient_reaches_its_actor() {
+        rt::Runtime::new().unwrap().block_on(async {
+            let actor = Echo.start();
+            let (recipient, id) = actor.request(OwnRecipient).await.unwrap();
+            assert_eq!(id, actor.id());
+            assert!(matches!(request(&*recipient, Ask(7), WAIT).await, Ok(7)));
+            recipient.send(Ask(1)).unwrap();
+            actor.child_handle().stop();
+            actor.join().await;
+            assert!(matches!(
+                recipient.send(Ask(1)),
+                Err(ActorError::ActorStopped)
+            ));
+        });
+    }
+
+    #[test]
+    fn requests_to_a_stopped_actor_fail_without_waiting() {
+        rt::Runtime::new().unwrap().block_on(async {
+            let actor = Echo.start();
+            let recipient = actor.recipient::<Ask>();
+            actor.child_handle().stop();
+            actor.join().await;
+            assert!(matches!(
+                actor.request_with_timeout(Ask(1), WAIT).await,
+                Err(ActorError::ActorStopped)
+            ));
+            assert!(matches!(
+                request(&*recipient, Ask(1), WAIT).await,
+                Err(ActorError::ActorStopped)
+            ));
+        });
+    }
+
+    #[test]
+    fn admitted_requests_fail_when_the_actor_stops_before_replying() {
+        rt::Runtime::new().unwrap().block_on(async {
+            let actor = Echo.start();
+            let recipient = actor.recipient::<Ask>();
+            let (release, held) = rt::oneshot::channel();
+            actor.send(StopAfter(held)).unwrap();
+            let mut direct = Box::pin(actor.request_with_timeout(Ask(1), WAIT));
+            let mut erased = Box::pin(request(&*recipient, Ask(2), WAIT));
+            assert!(futures::poll!(direct.as_mut()).is_pending());
+            assert!(futures::poll!(erased.as_mut()).is_pending());
+            release.send(()).unwrap();
+            assert!(matches!(direct.await, Err(ActorError::ActorStopped)));
+            assert!(matches!(erased.await, Err(ActorError::ActorStopped)));
+        });
+    }
+
+    #[test]
+    fn erased_request_times_out() {
+        rt::Runtime::new().unwrap().block_on(async {
+            let actor = Echo.start();
+            let recipient = actor.recipient::<Ask>();
+            let (release, held) = rt::oneshot::channel();
+            actor.send(StopAfter(held)).unwrap();
+            assert!(matches!(
+                request(&*recipient, Ask(1), Duration::from_millis(1)).await,
+                Err(ActorError::RequestTimeout)
+            ));
+            release.send(()).unwrap();
+            actor.join().await;
+        });
+    }
+
+    #[test]
+    fn default_exit_received_keeps_a_trapping_actor_alive() {
+        struct Trapper;
+        impl Actor for Trapper {
+            async fn started(&mut self, ctx: &Context<Self>) {
+                ctx.trap_exit(true);
+            }
+        }
+        impl Handler<Ask> for Trapper {
+            async fn handle(&mut self, msg: Ask, _: &Context<Self>) -> u32 {
+                msg.0
+            }
+        }
+        rt::Runtime::new().unwrap().block_on(async {
+            let trapper = Trapper.start();
+            assert!(matches!(trapper.request(Ask(0)).await, Ok(0)));
+            let peer = Echo.start();
+            trapper.context().link(&peer.child_handle());
+            peer.send(Boom).unwrap();
+            assert!(matches!(peer.wait_exit().await, ExitReason::Panic(_)));
+            // The Exit is handled by the default `exit_received`, which ignores it.
+            assert!(matches!(trapper.request(Ask(3)).await, Ok(3)));
+            assert!(trapper.exit_reason().is_none());
+            trapper.child_handle().shutdown();
+            assert_eq!(trapper.wait_exit().await, ExitReason::Shutdown);
+        });
+    }
+
+    #[test]
+    fn debug_output_names_the_handle() {
+        rt::Runtime::new().unwrap().block_on(async {
+            let actor = Echo.start();
+            assert!(format!("{actor:?}").starts_with("ActorRef"));
+            assert!(format!("{:?}", actor.context()).starts_with("Context"));
+            actor.child_handle().stop();
+            actor.join().await;
         });
     }
 }

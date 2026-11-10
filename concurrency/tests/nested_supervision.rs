@@ -432,3 +432,62 @@ async fn aborted_initial_startup_rolls_back_before_a_later_stuck_shutdown_target
             .complete
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn wait_ready_resolves_the_running_subtree() {
+    let system = ActorSystem::new().unwrap();
+    let group = system.async_group("nested-ready", 1).unwrap();
+    let placement = group.clone();
+    let mut root = system.supervisor(policy(0)).unwrap();
+    let subtree = root
+        .add_supervisor(SupervisorSpec::new(
+            "subtree",
+            &group,
+            policy(0),
+            move |tree| {
+                tree.add(ChildSpec::new("leaf", &placement, |_| async {
+                    Ok::<_, String>(Counter(0))
+                }))?;
+                Ok::<_, SupervisorError>(())
+            },
+        ))
+        .unwrap();
+    let supervisor = root.start().await.unwrap();
+    let ready = tokio::time::timeout(LIMIT, subtree.wait_ready())
+        .await
+        .unwrap()
+        .unwrap();
+    let leaf = &ready.snapshots()[0];
+    assert_eq!(leaf.name, "leaf");
+    assert_eq!(
+        leaf.actor_id,
+        subtree.current().unwrap().snapshots()[0].actor_id
+    );
+    assert!(supervisor.shutdown(LIMIT).await.complete);
+    assert!(system.shutdown(LIMIT).await.complete);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn subtree_startup_timeout_bounds_a_hung_child_factory() {
+    let system = ActorSystem::new().unwrap();
+    let group = system.async_group("nested-startup-timeout", 1).unwrap();
+    let placement = group.clone();
+    let mut root = system.supervisor(policy(0)).unwrap();
+    root.add_supervisor(
+        SupervisorSpec::new("subtree", &group, policy(0), move |tree| {
+            // The leaf's own startup limit (default 5 s) is far above the
+            // subtree's, so only the subtree limit can end this startup early.
+            tree.add(ChildSpec::new("hung", &placement, |_| async {
+                std::future::pending::<Result<Counter, String>>().await
+            }))?;
+            Ok::<_, SupervisorError>(())
+        })
+        .startup_timeout(Duration::from_millis(50)),
+    )
+    .unwrap();
+    let started = tokio::time::timeout(Duration::from_secs(3), root.start())
+        .await
+        .expect("subtree startup_timeout did not bound the hung child");
+    assert!(started.is_err());
+    assert!(system.shutdown(LIMIT).await.complete);
+}

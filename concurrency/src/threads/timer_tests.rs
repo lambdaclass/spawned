@@ -1,4 +1,5 @@
 use crate::message::Message;
+use crate::test_wait::wait_for;
 use crate::threads::{send_after, send_interval, Actor, ActorStart, Context, Handler};
 use spawned_rt::threads::{self as rt, CancellationToken};
 use std::time::Duration;
@@ -68,17 +69,25 @@ impl Handler<GetRepCount> for Repeater {
 pub fn test_send_interval_and_cancellation() {
     let repeater = Repeater::new(0).start();
 
-    rt::sleep(Duration::from_secs(1));
+    // The interval keeps firing.
+    let count = wait_for(
+        || repeater.request(GetRepCount),
+        |count| matches!(count, Ok(n) if *n >= 3),
+    )
+    .unwrap();
+    assert!(count >= 3, "interval stopped firing at {count}");
 
-    let count = repeater.request(GetRepCount).unwrap();
-    assert!((8..=10).contains(&count), "expected 8..=10, got {count}");
-
+    // StopTimer is handled before the next request. The timer thread checks
+    // the token and then sends, so one tick that raced the cancellation may
+    // still land, but no more than one.
     repeater.send(StopTimer).unwrap();
-
-    rt::sleep(Duration::from_secs(1));
-
-    let count2 = repeater.request(GetRepCount).unwrap();
-    assert_eq!(9, count2);
+    let stopped_at = repeater.request(GetRepCount).unwrap();
+    rt::sleep(Duration::from_millis(500));
+    let after = repeater.request(GetRepCount).unwrap();
+    assert!(
+        after <= stopped_at + 1,
+        "interval kept firing after cancellation: {stopped_at} -> {after}"
+    );
 }
 
 // --- Delayed (send_after test) ---
@@ -135,9 +144,11 @@ pub fn test_send_after_and_cancellation() {
     let ctx = Context::from_ref(&actor);
     let _ = send_after(Duration::from_millis(100), ctx, Inc);
 
-    rt::sleep(Duration::from_millis(200));
-
-    let count = actor.request(GetDelCount).unwrap();
+    let count = wait_for(
+        || actor.request(GetDelCount),
+        |count| matches!(count, Ok(n) if *n >= 1),
+    )
+    .unwrap();
     assert_eq!(1, count);
 
     let ctx = Context::from_ref(&actor);
@@ -158,9 +169,11 @@ pub fn test_send_after_actor_shutdown() {
     let ctx = Context::from_ref(&actor);
     let _ = send_after(Duration::from_millis(100), ctx, Inc);
 
-    rt::sleep(Duration::from_millis(200));
-
-    let count = actor.request(GetDelCount).unwrap();
+    let count = wait_for(
+        || actor.request(GetDelCount),
+        |count| matches!(count, Ok(n) if *n >= 1),
+    )
+    .unwrap();
     assert_eq!(1, count);
 
     let ctx = Context::from_ref(&actor);

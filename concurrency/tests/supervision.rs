@@ -694,9 +694,7 @@ async fn generation_waiters_wake_at_admission_close_before_their_shutdown_turn()
     supervisor.stop();
     tokio::time::timeout(LIMIT, entered).await.unwrap().unwrap();
     assert!(matches!(
-        tokio::time::timeout(Duration::from_millis(100), waiter)
-            .await
-            .unwrap(),
+        tokio::time::timeout(LIMIT, waiter).await.unwrap(),
         Err(ChildUnavailable(ChildState::Stopping))
     ));
     release.send(()).unwrap();
@@ -739,13 +737,13 @@ async fn stuck_supervisor_does_not_prevent_earlier_standalone_shutdown_after_sys
     assert!(!report.complete);
     tokio::time::timeout(LIMIT, entered).await.unwrap().unwrap();
     assert_eq!(
-        tokio::time::timeout(Duration::from_millis(200), earlier.wait_exit())
+        tokio::time::timeout(LIMIT, earlier.wait_exit())
             .await
             .unwrap(),
         ExitReason::Shutdown
     );
     assert_eq!(
-        tokio::time::timeout(Duration::from_millis(200), inner_actor.wait_exit())
+        tokio::time::timeout(LIMIT, inner_actor.wait_exit())
             .await
             .unwrap(),
         ExitReason::Shutdown
@@ -879,8 +877,10 @@ async fn supervisor_report_deadline_signals_remaining_siblings() {
     let report = supervisor.shutdown(Duration::from_millis(20)).await;
     assert!(!report.complete);
     tokio::time::timeout(LIMIT, entered).await.unwrap().unwrap();
+    // The first child must stop while the last one is still held, so the
+    // bound is a hang detector, not a latency budget.
     assert_eq!(
-        tokio::time::timeout(Duration::from_millis(200), actor.wait_exit())
+        tokio::time::timeout(LIMIT, actor.wait_exit())
             .await
             .unwrap(),
         ExitReason::Shutdown
@@ -948,9 +948,11 @@ async fn backoff_exponent_resets_only_after_a_stable_generation() {
     );
     // Stay ready past stable_after: the next restart uses the initial delay.
     tokio::time::sleep(Duration::from_millis(450)).await;
+    // Without the reset this delay would be 640 ms; the margin absorbs a
+    // loaded scheduler without accepting a missed reset.
     let reset = restart_latency(&child).await;
     assert!(
-        reset < Duration::from_millis(200),
+        reset < Duration::from_millis(500),
         "backoff did not reset after a stable generation: {reset:?}"
     );
     assert!(supervisor.shutdown(LIMIT).await.complete);
@@ -1161,4 +1163,118 @@ async fn owned_registration_is_released_before_the_replacement_registers() {
         )
         .is_none()
     );
+}
+
+/// `FactoryContext::cancelled` stays pending while construction is live: a
+/// factory that waits on it never produces an actor, so its startup limit
+/// fails the tree instead of the factory finishing early.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn factory_cancelled_waits_for_construction_cancellation() {
+    let system = ActorSystem::new().unwrap();
+    let group = system.async_group("factory-cancelled", 1).unwrap();
+    let mut tree = system.supervisor(config(0)).unwrap();
+    tree.add(
+        ChildSpec::new("waits", &group, |ctx| async move {
+            ctx.cancelled().await;
+            Ok::<_, String>(Counter(0))
+        })
+        .startup_timeout(Duration::from_millis(50)),
+    )
+    .unwrap();
+    let started = tokio::time::timeout(LIMIT, tree.start()).await.unwrap();
+    assert!(started.is_err(), "factory finished before cancellation");
+    assert!(system.shutdown(LIMIT).await.complete);
+}
+
+/// In a cohort strategy the failed child's backoff races only a superseding
+/// recovery round; with none pending it must sleep the full delay.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn one_for_all_restart_waits_for_its_backoff() {
+    use spawned_concurrency::supervision::SupervisorStrategy;
+    let system = ActorSystem::new().unwrap();
+    let group = system.async_group("ofa-backoff", 1).unwrap();
+    let mut tree = system
+        .supervisor(SupervisorConfig {
+            strategy: SupervisorStrategy::OneForAll,
+            max_restarts: 5,
+            backoff: Backoff {
+                initial: Duration::from_millis(300),
+                maximum: Duration::from_secs(2),
+                jitter: false,
+                seed: Some(1),
+                ..Backoff::default()
+            },
+            ..SupervisorConfig::default()
+        })
+        .unwrap();
+    let child = tree
+        .add(ChildSpec::new("a", &group, |_| async {
+            Ok::<_, String>(Counter(0))
+        }))
+        .unwrap();
+    tree.add(ChildSpec::new("b", &group, |_| async {
+        Ok::<_, String>(Counter(0))
+    }))
+    .unwrap();
+    let supervisor = tree.start().await.unwrap();
+    // A lower bound only: a slow machine makes the restart later, not earlier.
+    let latency = restart_latency(&child).await;
+    assert!(
+        latency >= Duration::from_millis(250),
+        "restart skipped its backoff: {latency:?}"
+    );
+    assert!(supervisor.shutdown(LIMIT).await.complete);
+    assert!(system.shutdown(LIMIT).await.complete);
+}
+
+#[test]
+fn supervisor_config_limits_are_validated_at_their_boundaries() {
+    use spawned_concurrency::supervision::SupervisorError;
+    let system = ActorSystem::new().unwrap();
+    let accepts = |config: SupervisorConfig| system.supervisor(config).is_ok();
+    let rejects = |config: SupervisorConfig| {
+        matches!(
+            system.supervisor(config),
+            Err(SupervisorError::Configuration(_))
+        )
+    };
+    let base = SupervisorConfig::default;
+    assert!(accepts(base()));
+    assert!(rejects(SupervisorConfig {
+        restart_window: Duration::ZERO,
+        ..base()
+    }));
+    assert!(rejects(SupervisorConfig {
+        max_children: 0,
+        ..base()
+    }));
+    assert!(accepts(SupervisorConfig {
+        max_children: 65536,
+        ..base()
+    }));
+    assert!(rejects(SupervisorConfig {
+        max_children: 65537,
+        ..base()
+    }));
+    assert!(accepts(SupervisorConfig {
+        max_restarts: 65536,
+        ..base()
+    }));
+    assert!(rejects(SupervisorConfig {
+        max_restarts: 65537,
+        ..base()
+    }));
+    let backoff = |initial, maximum| Backoff {
+        initial: Duration::from_millis(initial),
+        maximum: Duration::from_millis(maximum),
+        ..Backoff::default()
+    };
+    assert!(accepts(SupervisorConfig {
+        backoff: backoff(10, 10),
+        ..base()
+    }));
+    assert!(rejects(SupervisorConfig {
+        backoff: backoff(11, 10),
+        ..base()
+    }));
 }

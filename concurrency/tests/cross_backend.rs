@@ -1347,7 +1347,13 @@ fn ordered_system_shutdown_matches_thread_placement() {
             },
         )
         .unwrap();
-    assert_eq!(completed.get(), expected_cases);
+    // Persisted regressions (proptest-regressions/) are replayed before the
+    // configured cases, so a checkout that once recorded a failure runs more.
+    assert!(
+        completed.get() >= expected_cases,
+        "ran {} of {expected_cases} cases",
+        completed.get()
+    );
     println!(
         "validated {} thread-placement shutdown-order cases",
         completed.get()

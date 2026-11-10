@@ -24,7 +24,7 @@ impl threads::Handler<Probe> for Sink {
     }
 }
 fn released(weak: &Weak<()>) {
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = Instant::now() + Duration::from_secs(10);
     while weak.strong_count() > 0 && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(1));
     }
