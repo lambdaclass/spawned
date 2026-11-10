@@ -7,6 +7,8 @@
 //! entries are dropped, other actors keep working and shutdown completes.
 //! See docs/TESTING.md.
 
+// Tests that need OS threads are compiled out under spawned_sim.
+#![cfg_attr(spawned_sim, allow(unused_imports, dead_code))]
 #[path = "support/recorder.rs"]
 mod recorder;
 
@@ -610,7 +612,7 @@ mod tasks_mode {
         }
         fn bounded<F: std::future::Future>(&self, f: F) -> F::Output {
             self.rt
-                .block_on(async move { spawned_rt::tasks::timeout(LIMIT, f).await })
+                .block_on(async move { tokio::time::timeout(LIMIT, f).await })
                 .unwrap_or_else(|_| panic!("{:?}: wait timed out", self.place))
         }
         fn finish(self) {
@@ -681,6 +683,8 @@ mod tasks_mode {
         }
     }
 
+    // Not simulated: builds its own Tokio runtime and mixes backends.
+    #[cfg(not(spawned_sim))]
     #[test]
     fn every_callback_panic_is_contained_in_tasks_mode() {
         for place in PLACES {
@@ -749,6 +753,8 @@ mod tasks_mode {
 
     /// Under supervision the first generation fails in each callback; the
     /// Permanent child is rebuilt once and the tree stays healthy.
+    // Not simulated: builds its own Tokio runtime and mixes backends.
+    #[cfg(not(spawned_sim))]
     #[test]
     fn supervised_callback_panics_restart_once() {
         for place in [Place::GroupAsync, Place::GroupThread] {
@@ -807,6 +813,8 @@ mod tasks_mode {
 
     /// A ChildSpec factory panic, before or inside its future, is a failed
     /// construction attempt: retried, never fatal to the tree.
+    // Not simulated: builds its own Tokio runtime and mixes backends.
+    #[cfg(not(spawned_sim))]
     #[test]
     fn factory_panics_are_retried() {
         for place in [Place::GroupAsync, Place::GroupThread] {

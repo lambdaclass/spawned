@@ -1,4 +1,6 @@
 #![cfg(feature = "async")]
+// Tests that need OS threads are compiled out under spawned_sim.
+#![cfg_attr(spawned_sim, allow(unused_imports, dead_code))]
 use spawned_concurrency::{
     message::Message,
     supervision::{Backoff, ChildSpec, SupervisorConfig, SupervisorStrategy},
@@ -41,6 +43,8 @@ impl Handler<StartPeer> for Probe {
         ctx.execution_group().unwrap().start(Probe)
     }
 }
+// Not simulated: native execution groups need OS threads.
+#[cfg(not(spawned_sim))]
 #[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn native_context_placement_uses_a_free_slot_and_validates_helper_budgets() {
     let system = ActorSystem::new().unwrap();
@@ -95,6 +99,8 @@ impl Handler<Crash> for Probe {
         panic!("profile recovery injection");
     }
 }
+// Not simulated: native execution groups need OS threads.
+#[cfg(not(spawned_sim))]
 #[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn persistent_native_slots_bound_admission_and_helpers_progress_during_blocking_turns() {
     let system = ActorSystem::new().unwrap();
@@ -153,6 +159,8 @@ async fn persistent_native_slots_bound_admission_and_helpers_progress_during_blo
     assert!(system.shutdown(LIMIT).await.complete);
     assert!(matches!(Probe.start_on(&group), Err(SystemError::Closed)));
 }
+// Not simulated: native execution groups need OS threads.
+#[cfg(not(spawned_sim))]
 #[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn native_capacity_is_released_only_after_registered_helper_cleanup() {
     let system = ActorSystem::new().unwrap();
@@ -191,6 +199,8 @@ async fn native_capacity_is_released_only_after_registered_helper_cleanup() {
     replacement.ready().await.unwrap();
     assert!(system.shutdown(LIMIT).await.complete);
 }
+// Not simulated: native execution groups need OS threads.
+#[cfg(not(spawned_sim))]
 #[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn each_strategy_recovers_on_a_full_native_pool_without_overlapping_slots() {
     for strategy in [

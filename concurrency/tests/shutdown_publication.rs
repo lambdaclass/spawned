@@ -1,6 +1,8 @@
 #![cfg(feature = "async")]
 //! Hold a channel-block allocation after send admission to exercise shutdown
 //! against a sender that has reserved a queue position but not published it.
+// Tests that need OS threads are compiled out under spawned_sim.
+#![cfg_attr(spawned_sim, allow(unused_imports, dead_code))]
 use spawned_concurrency::{
     message::Message,
     tasks::{Actor, ActorStart, Context, Handler},
@@ -82,6 +84,8 @@ impl Drop for Cleanup {
     }
 }
 
+// Not simulated: builds its own multi-thread Tokio runtime.
+#[cfg(not(spawned_sim))]
 #[test]
 fn admitted_request_racing_shutdown_drops_its_reply_before_join_completes() {
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -101,7 +105,7 @@ fn admitted_request_racing_shutdown_drops_its_reply_before_join_completes() {
                 release: gate,
             })
             .unwrap();
-        spawned_rt::tasks::timeout(LIMIT, entered_rx)
+        tokio::time::timeout(LIMIT, entered_rx)
             .await
             .unwrap()
             .unwrap();
@@ -119,9 +123,9 @@ fn admitted_request_racing_shutdown_drops_its_reply_before_join_completes() {
             }
             panic!("channel allocation gate was not reached");
         });
-        spawned_rt::tasks::timeout(LIMIT, async {
+        tokio::time::timeout(LIMIT, async {
             while !PAUSED.load(Ordering::SeqCst) {
-                spawned_rt::tasks::yield_now().await;
+                tokio::task::yield_now().await;
             }
         })
         .await
@@ -132,17 +136,14 @@ fn admitted_request_racing_shutdown_drops_its_reply_before_join_completes() {
         );
         actor.child_handle().stop();
         release.send(()).unwrap();
-        spawned_rt::tasks::timeout(LIMIT, stop_rx)
-            .await
-            .unwrap()
-            .unwrap();
+        tokio::time::timeout(LIMIT, stop_rx).await.unwrap().unwrap();
         // Let the actor reach its receiver cleanup while publication is suspended.
         // Both completion timings are legal; the reply must resolve after send/join.
-        let _ = spawned_rt::tasks::timeout(Duration::from_millis(50), actor.wait_exit()).await;
+        let _ = tokio::time::timeout(Duration::from_millis(50), actor.wait_exit()).await;
         RELEASE.store(true, Ordering::SeqCst);
         let result = producer.join().unwrap();
         assert_eq!(
-            spawned_rt::tasks::timeout(LIMIT, actor.wait_exit())
+            tokio::time::timeout(LIMIT, actor.wait_exit())
                 .await
                 .unwrap(),
             ExitReason::Normal

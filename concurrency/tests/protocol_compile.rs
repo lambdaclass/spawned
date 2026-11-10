@@ -6,6 +6,8 @@
 //! them anyway, and `TRYBUILD=overwrite` (on the pinned toolchain) to
 //! regenerate the snapshots. See docs/TESTING.md, "Macro diagnostics".
 #![cfg(feature = "async")]
+// Tests that need OS threads are compiled out under spawned_sim.
+#![cfg_attr(spawned_sim, allow(unused_imports, dead_code))]
 
 use std::process::Command;
 
@@ -26,6 +28,8 @@ fn current_toolchain() -> Option<String> {
     version.split_whitespace().nth(1).map(str::to_owned)
 }
 
+// Not simulated: trybuild compiles fixtures outside the cfg.
+#[cfg(not(spawned_sim))]
 #[test]
 fn protocol_diagnostics() {
     let pinned = pinned_toolchain();

@@ -14,6 +14,8 @@
 //! Not publicly observable (covered only by LeakSanitizer in CI, which reports
 //! unreachable allocations at process exit): framework-internal clones of
 //! `ActorRef`/`Context`, link tables, and native monitor waiter threads.
+// Tests that need OS threads are compiled out under spawned_sim.
+#![cfg_attr(spawned_sim, allow(unused_imports, dead_code))]
 use spawned_concurrency::{message::Message, registry, threads};
 use std::cell::RefCell;
 use std::sync::{Arc, Weak};
@@ -212,6 +214,8 @@ mod async_leaks {
         async fn handle(&mut self, _: Down, _: &Context<Self>) {}
     }
 
+    // Not simulated: counts Tokio runtime tasks and OS threads.
+    #[cfg(not(spawned_sim))]
     #[test]
     fn actor_tasks_threads_and_state_released_on_every_backend() {
         for backend in [Backend::Async, Backend::Blocking, Backend::Thread] {
@@ -241,6 +245,8 @@ mod async_leaks {
         }
     }
 
+    // Not simulated: counts Tokio runtime tasks and OS threads.
+    #[cfg(not(spawned_sim))]
     #[test]
     fn monitor_waiters_released_on_demonitor_owner_exit_and_target_exit() {
         let rt = runtime();
@@ -319,6 +325,8 @@ mod async_leaks {
         }
     }
 
+    // Not simulated: counts Tokio runtime tasks and OS threads.
+    #[cfg(not(spawned_sim))]
     #[test]
     fn actor_reference_cycle_released_after_stop_on_every_backend() {
         for backend in [Backend::Async, Backend::Blocking, Backend::Thread] {
@@ -363,6 +371,8 @@ mod async_leaks {
     /// Actors are not reference counted: dropping every external handle of an
     /// idle cycle does not stop it. This documents the contract (an explicit
     /// stop or an owner is required) rather than a leak in the framework.
+    // Not simulated: counts Tokio runtime tasks and OS threads.
+    #[cfg(not(spawned_sim))]
     #[test]
     fn unstopped_cycle_keeps_running_until_explicit_stop() {
         let rt = runtime();
@@ -399,6 +409,8 @@ mod async_leaks {
         tasks_drain_to(&rt, 0, "unstopped cycle: runtime tasks after stop");
     }
 
+    // Not simulated: counts Tokio runtime tasks and OS threads.
+    #[cfg(not(spawned_sim))]
     #[test]
     fn supervisor_and_system_release_generations_registrations_and_workers() {
         let rt = runtime();
@@ -447,7 +459,7 @@ mod async_leaks {
                     .await
                     .unwrap();
                 current.request(Crash).await.unwrap_err();
-                spawned_rt::tasks::timeout(LIMIT, children[0].wait_for_generation(generation))
+                tokio::time::timeout(LIMIT, children[0].wait_for_generation(generation))
                     .await
                     .unwrap()
                     .unwrap();
@@ -473,6 +485,8 @@ mod async_leaks {
         tasks_drain_to(&rt, 0, "caller runtime tasks after system shutdown");
     }
 
+    // Not simulated: counts Tokio runtime tasks and OS threads.
+    #[cfg(not(spawned_sim))]
     #[test]
     fn system_actors_and_helpers_released_after_system_shutdown() {
         let rt = runtime();

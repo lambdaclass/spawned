@@ -9,7 +9,8 @@
 //! cross-sender interleaving at one actor, and timer arrival order between
 //! distinct deadlines. See docs/TESTING.md.
 #![cfg(feature = "async")]
-
+// Tests that need OS threads are compiled out under spawned_sim.
+#![cfg_attr(spawned_sim, allow(unused_imports, dead_code))]
 #[path = "support/recorder.rs"]
 mod recorder;
 
@@ -1085,6 +1086,8 @@ fn strategy() -> impl Strategy<Value = SupervisorStrategy> {
 proptest! {
     #![proptest_config(config())]
 
+    // Not simulated: compares Tokio, Thread, Blocking and native placements.
+    #[cfg(not(spawned_sim))]
     #[test]
     fn request_reply_chains_match(len in 1u32..5, values in prop::collection::vec(any::<u32>(), 1..6)) {
         let values: Vec<u64> = values.into_iter().map(u64::from).collect();
@@ -1093,6 +1096,8 @@ proptest! {
         prop_assert_eq!(replies, expected);
     }
 
+    // Not simulated: compares Tokio, Thread, Blocking and native placements.
+    #[cfg(not(spawned_sim))]
     #[test]
     fn fan_out_fan_in_match(
         leaves in 1u32..5,
@@ -1107,6 +1112,8 @@ proptest! {
         }
     }
 
+    // Not simulated: compares Tokio, Thread, Blocking and native placements.
+    #[cfg(not(spawned_sim))]
     #[test]
     fn links_and_trapped_exits_match(endings in prop::collection::vec(ending(), 1..5)) {
         let outcome = metamorphic(all_placements(), |env| link_workload(env, &endings));
@@ -1121,6 +1128,8 @@ proptest! {
         prop_assert_eq!(outcome.bystander, bystander);
     }
 
+    // Not simulated: compares Tokio, Thread, Blocking and native placements.
+    #[cfg(not(spawned_sim))]
     #[test]
     fn monitors_and_down_match(
         endings in prop::collection::vec(ending(), 1..5),
@@ -1133,6 +1142,8 @@ proptest! {
         prop_assert_eq!(&outcome.downs[endings.len()], &vec![expected_reason(endings[0])]);
     }
 
+    // Not simulated: compares Tokio, Thread, Blocking and native placements.
+    #[cfg(not(spawned_sim))]
     #[test]
     fn timers_match(after in 0u32..6, pulses in 0u32..6) {
         let outcome = metamorphic(all_placements(), |env| timer_workload(env, after, pulses));
@@ -1143,6 +1154,8 @@ proptest! {
         });
     }
 
+    // Not simulated: compares Tokio, Thread, Blocking and native placements.
+    #[cfg(not(spawned_sim))]
     #[test]
     fn supervisor_restarts_match(
         strategy in strategy(),
@@ -1169,6 +1182,8 @@ proptest! {
         prop_assert!(outcome.complete);
     }
 
+    // Not simulated: compares Tokio, Thread, Blocking and native placements.
+    #[cfg(not(spawned_sim))]
     #[test]
     fn ordered_system_shutdown_matches(before in 0u32..4, sup_children in 0u32..4, after in 0u32..4) {
         let outcome = metamorphic(group_placements(), |env| shutdown_workload(env, before, sup_children, after));
@@ -1183,6 +1198,8 @@ proptest! {
 }
 
 /// Fixed regression covering every workload family once on every placement.
+// Not simulated: compares Tokio, Thread, Blocking and native placements.
+#[cfg(not(spawned_sim))]
 #[test]
 fn fixed_workloads_match_across_placements() {
     let all = all_placements();
@@ -1258,6 +1275,8 @@ mod early_stop {
 /// threads actors retain their existing behavior of running `started()` then
 /// `stopped()`. All report Normal and every actor's state is dropped exactly
 /// once. Listed as an allowed difference in TESTING.md.
+// Not simulated: compares Tokio, Thread, Blocking and native placements.
+#[cfg(not(spawned_sim))]
 #[test]
 fn stop_before_first_poll_follows_managed_and_legacy_contract() {
     use early_stop::*;
@@ -1272,7 +1291,7 @@ fn stop_before_first_poll_follows_managed_and_legacy_contract() {
         spawned_concurrency::tasks::ActorStart::start(Hooks(hooks.clone()))
     };
     actor.child_handle().stop();
-    let reason = rt.block_on(async { spawned_rt::tasks::timeout(LIMIT, actor.wait_exit()).await });
+    let reason = rt.block_on(async { tokio::time::timeout(LIMIT, actor.wait_exit()).await });
     assert_eq!(reason.unwrap(), ExitReason::Normal);
     let done = |e: &[&str]| e.contains(&"dropped");
     let legacy = ["started", "stopped", "dropped"];
@@ -1296,7 +1315,7 @@ fn stop_before_first_poll_follows_managed_and_legacy_contract() {
     let group = system.async_group("early-stop", 1).unwrap();
     let blocker_hooks = Recorder::new();
     let blocker = group.start(Hooks(blocker_hooks.clone())).unwrap();
-    rt.block_on(async { spawned_rt::tasks::timeout(LIMIT, blocker.ready()).await })
+    rt.block_on(async { tokio::time::timeout(LIMIT, blocker.ready()).await })
         .unwrap()
         .unwrap();
     let (release, wait) = std::sync::mpsc::channel();
@@ -1309,7 +1328,7 @@ fn stop_before_first_poll_follows_managed_and_legacy_contract() {
     let actor = group.start(Hooks(hooks.clone())).unwrap();
     actor.child_handle().stop();
     release.send(()).unwrap();
-    let reason = rt.block_on(async { spawned_rt::tasks::timeout(LIMIT, actor.wait_exit()).await });
+    let reason = rt.block_on(async { tokio::time::timeout(LIMIT, actor.wait_exit()).await });
     assert_eq!(reason.unwrap(), ExitReason::Normal);
     assert_eq!(hooks.wait_until(LIMIT, "managed drop", done), ["dropped"]);
     let report = rt.block_on(system.shutdown(LIMIT));

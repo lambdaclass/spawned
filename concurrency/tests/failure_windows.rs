@@ -1,4 +1,6 @@
 //! Handshake-controlled failures with semantic coverage, not random hit counts.
+// Tests that need OS threads are compiled out under spawned_sim.
+#![cfg_attr(spawned_sim, allow(unused_imports, dead_code))]
 #[path = "support/failure_actor.rs"]
 mod actor;
 use actor::*;
@@ -21,6 +23,8 @@ const REQUIRED: [&str; 9] = [
     "demonitor_after_down_dispatch",
 ];
 
+// Not simulated: runs on every backend, including OS-thread ones.
+#[cfg(not(spawned_sim))]
 #[test]
 fn controlled_failures_reach_every_required_window_on_every_backend() {
     let rt = runtime();

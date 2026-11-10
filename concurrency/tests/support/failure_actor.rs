@@ -329,7 +329,7 @@ impl Handle {
         return wait_native(&self.child());
         #[cfg(feature = "async")]
         _rt.block_on(async {
-            spawned_rt::tasks::timeout(LIMIT, self.child().wait_exit_async())
+            tokio::time::timeout(LIMIT, self.child().wait_exit_async())
                 .await
                 .expect("actor did not finish")
         })

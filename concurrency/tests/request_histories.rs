@@ -2,6 +2,8 @@
 //! `spawned_test::linearizability` (a Porcupine-style checker). Timed-out work
 //! is pending (may or may not have taken effect), never assumed absent; only a
 //! proven enqueue rejection establishes no effect.
+// Tests that need OS threads are compiled out under spawned_sim.
+#![cfg_attr(spawned_sim, allow(unused_imports, dead_code))]
 #[path = "support/failure_actor.rs"]
 mod actor;
 #[path = "support/bounded_history.rs"]
@@ -183,6 +185,8 @@ fn checker_rejects_wrong_replies_duplicate_dispatch_and_lost_acknowledged_effect
     both(&unknown, false);
 }
 
+// Not simulated: mixes Thread and Blocking backends on OS threads.
+#[cfg(not(spawned_sim))]
 #[test]
 fn concurrent_histories_have_a_legal_sequential_explanation() {
     let cases: usize = std::env::var("SPAWNED_HISTORY_CASES")

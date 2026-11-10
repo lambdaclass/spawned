@@ -1,5 +1,7 @@
 #![cfg(feature = "async")]
 //! Deterministic characterization of executor capacity; no machine-wide tuning.
+// Tests that need OS threads are compiled out under spawned_sim.
+#![cfg_attr(spawned_sim, allow(unused_imports, dead_code))]
 use spawned_concurrency::{
     message::Message,
     tasks::{Actor, ActorStart, Backend, Context, Handler},
@@ -30,6 +32,8 @@ impl Actor for Worker {
 impl Handler<Ping> for Worker {
     async fn handle(&mut self, _: Ping, _: &Context<Self>) {}
 }
+// Not simulated: Blocking backend workers are OS threads.
+#[cfg(not(spawned_sim))]
 #[test]
 fn persistent_blocking_actors_queue_until_a_worker_is_released() {
     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -46,10 +50,7 @@ fn persistent_blocking_actors_queue_until_a_worker_is_released() {
             let (tx, rx) = tokio::sync::oneshot::channel();
             let actor = Worker(Some(tx)).start_with_backend(Backend::Blocking);
             cleanup.0.push(actor.child_handle());
-            spawned_rt::tasks::timeout(LIMIT, rx)
-                .await
-                .unwrap()
-                .unwrap();
+            tokio::time::timeout(LIMIT, rx).await.unwrap().unwrap();
             actors.push(actor);
         }
         let (tx, mut started) = tokio::sync::oneshot::channel();
@@ -60,26 +61,21 @@ fn persistent_blocking_actors_queue_until_a_worker_is_released() {
             Err(tokio::sync::oneshot::error::TryRecvError::Empty)
         ));
         assert!(
-            spawned_rt::tasks::timeout(Duration::from_millis(25), &mut started)
+            tokio::time::timeout(Duration::from_millis(25), &mut started)
                 .await
                 .is_err(),
             "a third persistent actor unexpectedly obtained a blocking worker"
         );
         // Stopping an occupied actor releases a worker, allowing the queued actor to start.
         actors[0].child_handle().stop();
-        spawned_rt::tasks::timeout(LIMIT, actors[0].join())
-            .await
-            .unwrap();
-        spawned_rt::tasks::timeout(LIMIT, started)
-            .await
-            .unwrap()
-            .unwrap();
+        tokio::time::timeout(LIMIT, actors[0].join()).await.unwrap();
+        tokio::time::timeout(LIMIT, started).await.unwrap().unwrap();
         queued.request(Ping).await.unwrap();
         for actor in &cleanup.0 {
             actor.stop();
         }
         for actor in &cleanup.0 {
-            spawned_rt::tasks::timeout(LIMIT, actor.wait_exit_async())
+            tokio::time::timeout(LIMIT, actor.wait_exit_async())
                 .await
                 .unwrap();
         }
@@ -179,7 +175,7 @@ fn descriptor_limit_child() {
             } else {
                 assert!(outcome.is_err());
                 assert_eq!(
-                    spawned_rt::tasks::timeout(LIMIT, actor.wait_exit())
+                    tokio::time::timeout(LIMIT, actor.wait_exit())
                         .await
                         .unwrap(),
                     spawned_concurrency::ExitReason::Kill
@@ -204,7 +200,7 @@ fn descriptor_limit_child() {
             actor.stop();
         }
         for actor in &cleanup.0 {
-            spawned_rt::tasks::timeout(LIMIT, actor.wait_exit_async())
+            tokio::time::timeout(LIMIT, actor.wait_exit_async())
                 .await
                 .unwrap();
         }

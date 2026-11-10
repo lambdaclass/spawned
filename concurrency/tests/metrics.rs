@@ -153,7 +153,7 @@ fn metrics_conserve_work_across_all_lifecycle_paths() {
         let first = child.current().unwrap();
         assert_eq!(first.query().await.unwrap(), 9);
         assert!(first.request(Crash).await.is_err());
-        let next = spawned_rt::tasks::timeout(Duration::from_secs(3), child.wait_for_generation(1))
+        let next = tokio::time::timeout(Duration::from_secs(3), child.wait_for_generation(1))
             .await
             .unwrap()
             .unwrap();

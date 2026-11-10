@@ -1,5 +1,7 @@
 //! Run abort-sensitive checks in a subprocess so CI survives a regression.
 #![cfg(feature = "async")]
+// Tests that need OS threads are compiled out under spawned_sim.
+#![cfg_attr(spawned_sim, allow(unused_imports, dead_code))]
 use spawned_concurrency::{
     message::Message,
     system::ActorSystem,
@@ -70,6 +72,8 @@ impl Handler<Ping> for Observer {
     async fn handle(&mut self, _: Ping, _: &Context<Self>) {}
 }
 
+// Not simulated: builds its own multi-thread Tokio runtime.
+#[cfg(not(spawned_sim))]
 #[test]
 fn queued_destructor_panics_do_not_abort_or_kill_trapping_observers() {
     subprocess::run("mailbox_drop_child", "validated 30 queued panic cases");
@@ -120,16 +124,13 @@ fn mailbox_drop_child() {
                     let (entered, arrival) = oneshot::channel();
                     let (release, gate) = oneshot::channel();
                     victim.send(Hold(entered, gate, handler_panics)).unwrap();
-                    spawned_rt::tasks::timeout(LIMIT, arrival)
-                        .await
-                        .unwrap()
-                        .unwrap();
+                    tokio::time::timeout(LIMIT, arrival).await.unwrap().unwrap();
                     let replies: Vec<_> = (0..bombs)
                         .map(|_| victim.request_raw(Bomb(dropped.clone())).unwrap())
                         .collect();
                     victim.context().stop();
                     release.send(()).unwrap();
-                    let reason = spawned_rt::tasks::timeout(LIMIT, victim.wait_exit())
+                    let reason = tokio::time::timeout(LIMIT, victim.wait_exit())
                         .await
                         .unwrap();
                     if handler_panics {
@@ -145,11 +146,11 @@ fn mailbox_drop_child() {
                             )
                         );
                     }
-                    let first = spawned_rt::tasks::timeout(LIMIT, events.recv())
+                    let first = tokio::time::timeout(LIMIT, events.recv())
                         .await
                         .unwrap()
                         .unwrap();
-                    let second = spawned_rt::tasks::timeout(LIMIT, events.recv())
+                    let second = tokio::time::timeout(LIMIT, events.recv())
                         .await
                         .unwrap()
                         .unwrap();
@@ -160,15 +161,10 @@ fn mailbox_drop_child() {
                     assert_eq!(dropped.load(Ordering::SeqCst), bombs);
                     assert_eq!(handled.load(Ordering::SeqCst), 0);
                     for reply in replies {
-                        assert!(spawned_rt::tasks::timeout(LIMIT, reply)
-                            .await
-                            .unwrap()
-                            .is_err());
+                        assert!(tokio::time::timeout(LIMIT, reply).await.unwrap().is_err());
                     }
                     observer.context().stop();
-                    spawned_rt::tasks::timeout(LIMIT, observer.join())
-                        .await
-                        .unwrap();
+                    tokio::time::timeout(LIMIT, observer.join()).await.unwrap();
                     assert!(
                         matches!(
                             events.try_recv(),

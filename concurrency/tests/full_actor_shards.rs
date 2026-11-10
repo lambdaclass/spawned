@@ -65,8 +65,8 @@ impl Handler<Nested> for Worker {
         let _ = child.request(Thread).await.unwrap();
         child.child_handle().stop();
         child.join().await;
-        let helper = spawned_rt::tasks::spawn(async {
-            spawned_rt::tasks::sleep(Duration::from_millis(1)).await;
+        let helper = tokio::spawn(async {
+            tokio::time::sleep(Duration::from_millis(1)).await;
             42u64
         });
         let mut socket = tokio::net::TcpStream::connect(msg.0).await.unwrap();
@@ -111,7 +111,7 @@ fn nested_spawn_helpers_timers_and_tcp_use_the_actor_reactor() {
         );
         actor.child_handle().stop();
         assert_eq!(
-            spawned_rt::tasks::timeout(LIMIT, actor.wait_exit())
+            tokio::time::timeout(LIMIT, actor.wait_exit())
                 .await
                 .unwrap(),
             ExitReason::Normal
@@ -133,31 +133,22 @@ fn stop_finishes_in_flight_handler_and_rejects_queued_work() {
                 release: gate,
             })
             .unwrap();
-        spawned_rt::tasks::timeout(LIMIT, rx)
-            .await
-            .unwrap()
-            .unwrap();
+        tokio::time::timeout(LIMIT, rx).await.unwrap().unwrap();
         let queued = actor.request_raw(Thread).unwrap();
         actor.child_handle().stop();
         assert!(actor.exit_reason().is_none());
         release.send(()).unwrap();
         assert_eq!(
-            spawned_rt::tasks::timeout(LIMIT, reply)
-                .await
-                .unwrap()
-                .unwrap(),
+            tokio::time::timeout(LIMIT, reply).await.unwrap().unwrap(),
             42
         );
         assert_eq!(
-            spawned_rt::tasks::timeout(LIMIT, actor.wait_exit())
+            tokio::time::timeout(LIMIT, actor.wait_exit())
                 .await
                 .unwrap(),
             ExitReason::Normal
         );
-        assert!(spawned_rt::tasks::timeout(LIMIT, queued)
-            .await
-            .unwrap()
-            .is_err());
+        assert!(tokio::time::timeout(LIMIT, queued).await.unwrap().is_err());
     });
 }
 #[test]
@@ -196,27 +187,21 @@ fn suspended_actor_does_not_block_another_actor_on_its_shard() {
                 release: gate,
             })
             .unwrap();
-        spawned_rt::tasks::timeout(LIMIT, rx)
-            .await
-            .unwrap()
-            .unwrap();
+        tokio::time::timeout(LIMIT, rx).await.unwrap().unwrap();
         assert_eq!(
             actors[b].request_with_timeout(Thread, LIMIT).await.unwrap(),
             names[a]
         );
         release.send(()).unwrap();
         assert_eq!(
-            spawned_rt::tasks::timeout(LIMIT, held)
-                .await
-                .unwrap()
-                .unwrap(),
+            tokio::time::timeout(LIMIT, held).await.unwrap().unwrap(),
             42
         );
         for actor in &cleanup.0 {
             actor.stop();
         }
         for actor in &cleanup.0 {
-            spawned_rt::tasks::timeout(LIMIT, actor.wait_exit_async())
+            tokio::time::timeout(LIMIT, actor.wait_exit_async())
                 .await
                 .unwrap();
         }
@@ -242,9 +227,7 @@ fn actors_outlive_their_caller_runtime() {
         let name = actor.request_with_timeout(Thread, LIMIT).await.unwrap();
         assert!(name.starts_with("spawned-shard-") || name.starts_with("actor-worker-"));
         actor.child_handle().stop();
-        spawned_rt::tasks::timeout(LIMIT, actor.join())
-            .await
-            .unwrap();
+        tokio::time::timeout(LIMIT, actor.join()).await.unwrap();
     });
 }
 
@@ -295,10 +278,7 @@ fn blocking_handler_stalls_its_shard_while_another_shard_progresses() {
                 release: gate,
             })
             .unwrap();
-        spawned_rt::tasks::timeout(LIMIT, rx)
-            .await
-            .unwrap()
-            .unwrap();
+        tokio::time::timeout(LIMIT, rx).await.unwrap().unwrap();
         let mut queued = actors[b].request_raw(Thread).unwrap();
         assert!(matches!(
             queued.try_recv(),
@@ -314,22 +294,16 @@ fn blocking_handler_stalls_its_shard_while_another_shard_progresses() {
             );
         }
         release.send(()).unwrap();
-        spawned_rt::tasks::timeout(LIMIT, frozen)
-            .await
-            .unwrap()
-            .unwrap();
+        tokio::time::timeout(LIMIT, frozen).await.unwrap().unwrap();
         assert_eq!(
-            spawned_rt::tasks::timeout(LIMIT, queued)
-                .await
-                .unwrap()
-                .unwrap(),
+            tokio::time::timeout(LIMIT, queued).await.unwrap().unwrap(),
             names[a]
         );
         for actor in &cleanup.0 {
             actor.stop();
         }
         for actor in &cleanup.0 {
-            spawned_rt::tasks::timeout(LIMIT, actor.wait_exit_async())
+            tokio::time::timeout(LIMIT, actor.wait_exit_async())
                 .await
                 .unwrap();
         }
@@ -342,7 +316,7 @@ impl Message for Tick {
 }
 impl Handler<Tick> for Worker {
     async fn handle(&mut self, _: Tick, _: &Context<Self>) -> u64 {
-        spawned_rt::tasks::sleep(Duration::from_millis(1)).await;
+        tokio::time::sleep(Duration::from_millis(1)).await;
         42
     }
 }
@@ -365,9 +339,9 @@ impl Message for Helper {
 }
 impl Handler<Helper> for Worker {
     async fn handle(&mut self, msg: Helper, _: &Context<Self>) -> tokio::task::JoinHandle<u64> {
-        spawned_rt::tasks::spawn(async move {
+        tokio::spawn(async move {
             msg.0.await.unwrap();
-            spawned_rt::tasks::sleep(Duration::from_millis(1)).await;
+            tokio::time::sleep(Duration::from_millis(1)).await;
             42
         })
     }
@@ -388,22 +362,15 @@ fn detached_helper_and_blocking_child_outlive_parent_stop() {
             .await
             .unwrap();
         actor.child_handle().stop();
-        spawned_rt::tasks::timeout(LIMIT, actor.join())
-            .await
-            .unwrap();
+        tokio::time::timeout(LIMIT, actor.join()).await.unwrap();
         release.send(()).unwrap();
         assert_eq!(
-            spawned_rt::tasks::timeout(LIMIT, helper)
-                .await
-                .unwrap()
-                .unwrap(),
+            tokio::time::timeout(LIMIT, helper).await.unwrap().unwrap(),
             42
         );
         assert_eq!(child.request_with_timeout(Tick, LIMIT).await.unwrap(), 42);
         child.child_handle().stop();
-        spawned_rt::tasks::timeout(LIMIT, child.join())
-            .await
-            .unwrap();
+        tokio::time::timeout(LIMIT, child.join()).await.unwrap();
     });
 }
 
@@ -456,28 +423,22 @@ fn monitor_helper_survives_the_last_sharded_actor_stopping() {
             .await
             .unwrap();
         installer.child_handle().stop();
-        spawned_rt::tasks::timeout(LIMIT, installer.join())
-            .await
-            .unwrap();
+        tokio::time::timeout(LIMIT, installer.join()).await.unwrap();
         target.child_handle().stop();
-        spawned_rt::tasks::timeout(LIMIT, target.join())
-            .await
-            .unwrap();
-        spawned_rt::tasks::timeout(LIMIT, async {
+        tokio::time::timeout(LIMIT, target.join()).await.unwrap();
+        tokio::time::timeout(LIMIT, async {
             loop {
                 let events = observer.request_with_timeout(Events, LIMIT).await.unwrap();
                 if events.contains(&"down") {
                     assert_eq!(events.iter().filter(|&&v| v == "down").count(), 1);
                     break;
                 }
-                spawned_rt::tasks::sleep(Duration::from_millis(1)).await;
+                tokio::time::sleep(Duration::from_millis(1)).await;
             }
         })
         .await
         .unwrap();
         observer.child_handle().stop();
-        spawned_rt::tasks::timeout(LIMIT, observer.join())
-            .await
-            .unwrap();
+        tokio::time::timeout(LIMIT, observer.join()).await.unwrap();
     });
 }

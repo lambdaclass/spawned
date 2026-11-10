@@ -1,3 +1,5 @@
+// Tests that need OS threads are compiled out under spawned_sim.
+#![cfg_attr(spawned_sim, allow(unused_imports, dead_code))]
 #[cfg(feature = "async")]
 use spawned_concurrency::tasks;
 use spawned_concurrency::{message::Message, threads};
@@ -34,6 +36,8 @@ fn released(weak: &Weak<()>) {
         "background operation retained payload after shutdown"
     );
 }
+// Not simulated: builds its own Tokio runtime.
+#[cfg(not(spawned_sim))]
 #[test]
 fn timers_release_payloads_on_actor_exit() {
     #[cfg(feature = "async")]
@@ -73,6 +77,8 @@ fn timers_release_payloads_on_actor_exit() {
     released(&weak);
     drop((once, interval));
 }
+// Not simulated: builds its own Tokio runtime.
+#[cfg(not(spawned_sim))]
 #[cfg(feature = "async")]
 #[test]
 fn pending_async_listener_is_dropped_on_actor_exit() {
@@ -94,7 +100,7 @@ fn pending_async_listener_is_dropped_on_actor_exit() {
             let listener = tasks::spawn_listener(actor.context(), stream);
             actor.child_handle().stop();
             actor.join().await;
-            spawned_rt::tasks::timeout(Duration::from_secs(2), listener)
+            tokio::time::timeout(Duration::from_secs(2), listener)
                 .await
                 .unwrap()
                 .unwrap();
@@ -116,12 +122,12 @@ fn cancelled_thread_exit_wait_does_not_occupy_blocking_pool() {
     let child = actor.child_handle();
     let available = rt.block_on(async {
         assert!(
-            spawned_rt::tasks::timeout(Duration::from_millis(10), child.wait_exit_async())
+            tokio::time::timeout(Duration::from_millis(10), child.wait_exit_async())
                 .await
                 .is_err()
         );
         let probe = tokio::task::spawn_blocking(|| 42);
-        spawned_rt::tasks::timeout(Duration::from_secs(1), probe)
+        tokio::time::timeout(Duration::from_secs(1), probe)
             .await
             .is_ok()
     });
