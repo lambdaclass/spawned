@@ -1,7 +1,10 @@
+// Owner and coordinator threads are compiled out under simulation.
+#![cfg_attr(spawned_sim, allow(dead_code))]
 use super::*;
 use std::{sync::mpsc, thread};
 
 type WorkFuture = BoxFuture<'static, ()>;
+
 enum Work {
     Actor(WorkFuture),
     Stop,
@@ -17,10 +20,52 @@ pub(crate) struct GroupInner {
     targets: Vec<Target>,
     cursor: std::sync::atomic::AtomicUsize,
     finish: mpsc::Sender<()>,
+    #[cfg(spawned_sim)]
+    sim_done: Mutex<Option<watch::Sender<bool>>>,
     pub(super) done: watch::Receiver<bool>,
     pub(super) failures: Arc<Mutex<Vec<String>>>,
 }
 impl GroupInner {
+    /// Simulation: every async group maps onto the thread's one simulated
+    /// executor; there are no owner or coordinator threads, so retirement is
+    /// published as soon as the last scope leaves. Native and pinned groups
+    /// need OS threads and are rejected.
+    #[cfg(spawned_sim)]
+    pub(super) fn new(
+        name: String,
+        profile: ExecutionProfile,
+        borrowed: Option<Handle>,
+    ) -> Result<Arc<Self>, SystemError> {
+        let ExecutionProfile::AsyncPool { .. } = profile else {
+            return Err(SystemError::Runtime(format!(
+                "spawned_sim: execution group {name} needs OS threads ({profile:?}); \
+                 only async groups run under the simulation backend"
+            )));
+        };
+        let (finish, _) = mpsc::channel();
+        let (done_tx, done) = watch::channel(false);
+        let handle = borrowed.unwrap_or_else(rt::sim::ambient_handle);
+        Ok(Arc::new(Self {
+            name,
+            profile,
+            state: Mutex::new(GroupState {
+                closing: false,
+                retiring: false,
+                scopes: BTreeMap::new(),
+                free: None,
+            }),
+            targets: vec![Target {
+                handle,
+                native: None,
+            }],
+            cursor: std::sync::atomic::AtomicUsize::new(0),
+            finish,
+            sim_done: Mutex::new(Some(done_tx)),
+            done,
+            failures: Arc::new(Mutex::new(Vec::new())),
+        }))
+    }
+    #[cfg(not(spawned_sim))]
     pub(super) fn new(
         name: String,
         profile: ExecutionProfile,
@@ -236,6 +281,10 @@ impl GroupInner {
         };
         if finish {
             let _ = self.finish.send(());
+            #[cfg(spawned_sim)]
+            if let Some(done) = lock(&self.sim_done).take() {
+                done.send_replace(true);
+            }
         }
     }
 }

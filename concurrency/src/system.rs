@@ -192,6 +192,25 @@ pub(crate) struct Control {
     done: watch::Receiver<bool>,
 }
 impl Control {
+    /// Simulation: the control "runtime" is the thread's simulated executor;
+    /// `done` is published by a simulated task once the system closes.
+    #[cfg(spawned_sim)]
+    fn new() -> Result<Self, SystemError> {
+        let close = CancellationToken::new();
+        let closing = close.clone();
+        let (done_tx, done) = watch::channel(false);
+        let handle = rt::sim::ambient_handle();
+        drop(handle.spawn(async move {
+            closing.cancelled().await;
+            done_tx.send_replace(true);
+        }));
+        Ok(Self {
+            handle,
+            close,
+            done,
+        })
+    }
+    #[cfg(not(spawned_sim))]
     fn new() -> Result<Self, SystemError> {
         let close = CancellationToken::new();
         let closing = close.clone();

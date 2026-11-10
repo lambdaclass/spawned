@@ -21,9 +21,12 @@ pub use std::{
     thread::{sleep, spawn, JoinHandle},
 };
 
-#[cfg(feature = "async")]
+#[cfg(all(feature = "async", not(spawned_sim)))]
 use crate::tasks::Runtime;
+// Native actors keep real Tokio under simulation: they run on OS threads.
 use crate::tracing::init_tracing;
+#[cfg(all(feature = "async", spawned_sim))]
+use tokio::runtime::Runtime;
 
 /// Global list of Ctrl+C subscribers
 static CTRL_C_SUBSCRIBERS: OnceLock<Mutex<Vec<std_mpsc::Sender<()>>>> = OnceLock::new();
