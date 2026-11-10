@@ -1840,6 +1840,7 @@ dependencies = [
 name = "spawned-test"
 version = "0.7.0"
 dependencies = [
+ "proptest",
  "spawned-concurrency",
  "spawned-rt",
  "tokio",
