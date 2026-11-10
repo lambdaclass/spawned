@@ -751,10 +751,16 @@ pub async fn request<M: Message>(
 ) -> Result<M::Result, ActorError> {
     let observation = crate::instrumentation::RequestObservation::new();
     // The deadline is computed before enqueueing (send time, as OTP's call).
-    let result = match recipient.request_raw_until(msg, Deadline::after(timeout_duration)) {
-        Err(error) => Err(error),
-        Ok(rx) => rx.await,
+    // Bind the receiver before awaiting it (see `ActorRef::request_with_timeout`).
+    let rx = match recipient.request_raw_until(msg, Deadline::after(timeout_duration)) {
+        Ok(rx) => rx,
+        Err(error) => {
+            let result = Err(error);
+            observation.finish(&result);
+            return result;
+        }
     };
+    let result = rx.await;
     observation.finish(&result);
     result
 }
