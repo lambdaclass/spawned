@@ -1,4 +1,5 @@
-#![cfg(feature = "async")]
+// Not simulated: borrows a caller-owned multi-thread Tokio runtime.
+#![cfg(all(feature = "async", not(spawned_sim)))]
 
 use spawned_concurrency::{
     message::Message,

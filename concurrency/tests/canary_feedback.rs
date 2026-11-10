@@ -237,74 +237,80 @@ async fn supervision_logs_restart_budget_exhaustion_and_give_up() {
         )
         .unwrap();
     assert!(failing.start().await.is_err());
-    // The healthy collateral child takes the last retry grant. Its failing
-    // sibling must give up before a 60-second backoff, and lookups must report
-    // owner failure even while the healthy sibling's owned cleanup is pending.
-    let mut cohort = system
-        .supervisor(SupervisorConfig {
-            strategy: SupervisorStrategy::OneForAll,
-            max_restarts: 1,
-            backoff: Backoff {
-                initial: Duration::from_secs(60),
-                maximum: Duration::from_secs(60),
-                jitter: false,
-                ..Backoff::default()
-            },
-            ..SupervisorConfig::default()
-        })
-        .unwrap();
-    let (release, gate) = std::sync::mpsc::channel();
-    let gate = Arc::new(Mutex::new(Some(gate)));
-    let healthy = cohort
-        .add(
-            ChildSpec::new("canary-healthy", &group, move |ctx| {
-                let gate = gate.clone();
-                async move {
-                    if ctx.generation() == 2 {
-                        let gate = gate.lock().unwrap().take().unwrap();
-                        let (entered, arrival) = oneshot::channel();
-                        ctx.spawn_blocking_helper(move || {
-                            entered.send(()).unwrap();
-                            gate.recv_timeout(LIMIT).unwrap();
-                        })
-                        .unwrap();
-                        arrival.await.unwrap();
-                    }
-                    Ok::<_, String>(Worker)
-                }
+    // Not simulated: the cohort case blocks a spawn_blocking helper.
+    #[cfg(not(spawned_sim))]
+    {
+        // The healthy collateral child takes the last retry grant. Its failing
+        // sibling must give up before a 60-second backoff, and lookups must report
+        // owner failure even while the healthy sibling's owned cleanup is pending.
+        let mut cohort = system
+            .supervisor(SupervisorConfig {
+                strategy: SupervisorStrategy::OneForAll,
+                max_restarts: 1,
+                backoff: Backoff {
+                    initial: Duration::from_secs(60),
+                    maximum: Duration::from_secs(60),
+                    jitter: false,
+                    ..Backoff::default()
+                },
+                ..SupervisorConfig::default()
             })
-            .shutdown_timeout(LIMIT),
-        )
-        .unwrap();
-    let origin = cohort
-        .add(ChildSpec::new("canary-origin", &group, |_| async {
-            Ok::<_, String>(Worker)
-        }))
-        .unwrap();
-    let cohort = cohort.start().await.unwrap();
-    origin
-        .current()
-        .unwrap()
-        .request(Quit(ExitReason::Panic("canary failure".into())))
-        .await
-        .unwrap();
-    assert!(matches!(
-        tokio::time::timeout(LIMIT, origin.wait_for_generation(1))
+            .unwrap();
+        let (release, gate) = std::sync::mpsc::channel();
+        let gate = Arc::new(Mutex::new(Some(gate)));
+        let healthy = cohort
+            .add(
+                ChildSpec::new("canary-healthy", &group, move |ctx| {
+                    let gate = gate.clone();
+                    async move {
+                        if ctx.generation() == 2 {
+                            let gate = gate.lock().unwrap().take().unwrap();
+                            let (entered, arrival) = oneshot::channel();
+                            ctx.spawn_blocking_helper(move || {
+                                entered.send(()).unwrap();
+                                gate.recv_timeout(LIMIT).unwrap();
+                            })
+                            .unwrap();
+                            arrival.await.unwrap();
+                        }
+                        Ok::<_, String>(Worker)
+                    }
+                })
+                .shutdown_timeout(LIMIT),
+            )
+            .unwrap();
+        let origin = cohort
+            .add(ChildSpec::new("canary-origin", &group, |_| async {
+                Ok::<_, String>(Worker)
+            }))
+            .unwrap();
+        let cohort = cohort.start().await.unwrap();
+        origin
+            .current()
+            .unwrap()
+            .request(Quit(ExitReason::Panic("canary failure".into())))
             .await
-            .unwrap(),
-        Err(ChildUnavailable(ChildState::Failed))
-    ));
-    assert!(matches!(
-        origin.current(),
-        Err(ChildUnavailable(ChildState::Failed))
-    ));
-    assert!(matches!(
-        healthy.current(),
-        Err(ChildUnavailable(ChildState::Failed))
-    ));
-    assert_eq!(healthy.snapshot().generation, 2);
-    release.send(()).unwrap();
-    tokio::time::timeout(LIMIT, cohort.join()).await.unwrap();
+            .unwrap();
+        assert!(matches!(
+            spawned_rt::tasks::timeout(LIMIT, origin.wait_for_generation(1))
+                .await
+                .unwrap(),
+            Err(ChildUnavailable(ChildState::Failed))
+        ));
+        assert!(matches!(
+            origin.current(),
+            Err(ChildUnavailable(ChildState::Failed))
+        ));
+        assert!(matches!(
+            healthy.current(),
+            Err(ChildUnavailable(ChildState::Failed))
+        ));
+        assert_eq!(healthy.snapshot().generation, 2);
+        release.send(()).unwrap();
+        spawned_rt::tasks::timeout(LIMIT, cohort.join())
+            .await
+            .unwrap();
+    }
     assert!(system.shutdown(LIMIT).await.complete);
     let events = capture.0.lock().unwrap();
     for (event, level, generation) in [
@@ -337,12 +343,14 @@ async fn supervision_logs_restart_budget_exhaustion_and_give_up() {
         .collect();
     assert_eq!(
         exhausted.len(),
-        2,
+        if cfg!(spawned_sim) { 1 } else { 2 },
         "duplicate or missing exhaustion events: {events:?}"
     );
-    assert!(exhausted
-        .iter()
-        .any(|(_, fields)| fields.get("child").map(String::as_str) == Some("canary-origin")));
+    if !cfg!(spawned_sim) {
+        assert!(exhausted
+            .iter()
+            .any(|(_, fields)| fields.get("child").map(String::as_str) == Some("canary-origin")));
+    }
     assert!(!exhausted
         .iter()
         .any(|(_, fields)| fields.get("child").map(String::as_str) == Some("canary-healthy")));
@@ -423,7 +431,7 @@ async fn panicked_turn_is_cleared_before_stopped_hook() {
 }
 
 #[cfg(feature = "diagnostics")]
-#[tokio::test]
+#[spawned_macros::sim_test]
 async fn trapped_exit_diagnostics_use_the_public_signal_name() {
     struct Observer {
         entered: Option<oneshot::Sender<()>>,
@@ -455,7 +463,10 @@ async fn trapped_exit_diagnostics_use_the_public_signal_name() {
     source
         .child_handle()
         .stop_with_reason(ExitReason::Panic("reported failure".into()));
-    tokio::time::timeout(LIMIT, arrival).await.unwrap().unwrap();
+    spawned_rt::tasks::timeout(LIMIT, arrival)
+        .await
+        .unwrap()
+        .unwrap();
     let report = system.shutdown(Duration::from_millis(10)).await;
     let detail = report
         .unfinished_actor_details

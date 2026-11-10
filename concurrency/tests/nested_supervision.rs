@@ -122,7 +122,7 @@ async fn nested_budget_failure_reconstructs_fresh_subtree_and_preserves_parent_s
     // The parent allowed exactly one subtree replacement. A second exhausted
     // leaf escalates through that parent budget, rather than constructing again.
     assert!(new_leaf.request(Crash).await.is_err());
-    tokio::time::timeout(LIMIT, supervisor.join())
+    spawned_rt::tasks::timeout(LIMIT, supervisor.join())
         .await
         .unwrap();
     assert!(supervisor.failure().unwrap().contains("budget exhausted"));

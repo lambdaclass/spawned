@@ -159,7 +159,7 @@ async fn trace_queued_destructor_panic_restarts_transient_child() {
     assert!(system.shutdown(LIMIT).await.complete);
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn trace_queued_destructor_failure_preserves_shutdown() {
     use spawned_concurrency::ExitReason;
     let system = ActorSystem::new().unwrap();
@@ -173,7 +173,10 @@ async fn trace_queued_destructor_failure_preserves_shutdown() {
     let (entered, arrival) = tokio::sync::oneshot::channel();
     let (release, gate) = tokio::sync::oneshot::channel();
     actor.send(HoldForDrain(entered, gate)).unwrap();
-    tokio::time::timeout(LIMIT, arrival).await.unwrap().unwrap();
+    spawned_rt::tasks::timeout(LIMIT, arrival)
+        .await
+        .unwrap()
+        .unwrap();
     actor.send(DropBomb).unwrap();
     actor.child_handle().shutdown();
     release.send(()).unwrap();

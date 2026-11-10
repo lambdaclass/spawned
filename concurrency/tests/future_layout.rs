@@ -73,7 +73,7 @@ async fn configured_protocol(actor: ActorRef<Worker>) -> Result<u64, ActorError>
         .query(1)
         .await
 }
-#[tokio::test]
+#[spawned_macros::sim_test]
 async fn owned_send_request_and_protocol_futures_fit_the_pre_guard_layout() {
     let actor = Worker.start();
     let baseline = Baseline([0; BASELINE_WORDS]);

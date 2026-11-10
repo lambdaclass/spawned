@@ -13,7 +13,8 @@
 //! recorder, exporter or callback hook, so no foreign code runs inside it.
 //!
 //! See docs/TESTING.md.
-#![cfg(feature = "async")]
+// Not simulated: subprocess children on OS threads and dedicated runtimes.
+#![cfg(all(feature = "async", not(spawned_sim)))]
 
 #[path = "support/drop_subprocess.rs"]
 mod subprocess;

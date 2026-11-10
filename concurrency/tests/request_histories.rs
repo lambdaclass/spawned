@@ -557,6 +557,8 @@ fn store_cases() -> u32 {
         .unwrap()
 }
 
+// Not simulated: drives Task, Thread and native stores from a multi-thread Tokio runtime.
+#[cfg(not(spawned_sim))]
 #[test]
 fn parallel_command_histories_against_a_real_actor_are_linearizable() {
     let rt = runtime();
@@ -624,6 +626,8 @@ fn tripwire_program(seed: u64) -> Program {
     (prefix, branches)
 }
 
+// Not simulated: drives Task, Thread and native stores from a multi-thread Tokio runtime.
+#[cfg(not(spawned_sim))]
 #[test]
 fn checker_rejects_buggy_store_actors() {
     let rt = runtime();
@@ -654,6 +658,8 @@ fn checker_rejects_buggy_store_actors() {
     }
 }
 
+// Not simulated: drives Task, Thread and native stores from a multi-thread Tokio runtime.
+#[cfg(not(spawned_sim))]
 #[test]
 fn bugs_are_caught_by_parallel_branches_alone() {
     // No tripwire prefix: the generated concurrent traffic must expose each

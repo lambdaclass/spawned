@@ -109,7 +109,10 @@ async fn managed_actor_stopped_before_first_poll_runs_no_hooks_but_drops_state()
         Some("unstarted queued destructor")
     );
     for reply in replies {
-        assert!(tokio::time::timeout(LIMIT, reply).await.unwrap().is_err());
+        assert!(spawned_rt::tasks::timeout(LIMIT, reply)
+            .await
+            .unwrap()
+            .is_err());
     }
     assert!(system.shutdown(LIMIT).await.complete);
 }

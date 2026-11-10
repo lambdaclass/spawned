@@ -270,7 +270,8 @@ async fn each_strategy_recovers_on_a_full_native_pool_without_overlapping_slots(
         assert!(system.shutdown(LIMIT).await.complete);
     }
 }
-#[cfg(target_os = "linux")]
+// Not simulated: pinned execution groups need OS threads.
+#[cfg(all(target_os = "linux", not(spawned_sim)))]
 #[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn pinned_shards_preserve_explicit_cpu_placement_and_cross_shard_requests() {
     let cpus = spawned_rt::tasks::affinity::available_cpus().unwrap();
@@ -321,7 +322,8 @@ async fn pinned_shards_preserve_explicit_cpu_placement_and_cross_shard_requests(
     assert!(report.complete);
     assert!(report.group_failures.is_empty());
 }
-#[cfg(target_os = "linux")]
+// Not simulated: pinned execution groups need OS threads.
+#[cfg(all(target_os = "linux", not(spawned_sim)))]
 mod tls_join {
     use super::*;
     thread_local! { static PROBE: std::cell::RefCell<Option<DropProbe>> = const { std::cell::RefCell::new(None) }; }
@@ -377,7 +379,8 @@ mod tls_join {
     }
 }
 
-#[cfg(target_os = "linux")]
+// Not simulated: pinned execution groups need OS threads.
+#[cfg(all(target_os = "linux", not(spawned_sim)))]
 #[test]
 fn partial_pinned_construction_rolls_back_before_returning_error() {
     const CHILD: &str = "SPAWNED_PROFILE_FD_FAULT_CHILD";

@@ -1206,10 +1206,8 @@ proptest! {
 #[test]
 fn fixed_workloads_match_across_placements() {
     let all = all_placements();
-    assert!(
-        cfg!(spawned_sim) || all.len() >= 6,
-        "expected every non-pinned placement"
-    );
+    #[cfg(not(spawned_sim))]
+    assert!(all.len() >= 6, "expected every non-pinned placement");
     metamorphic(all.clone(), |env| chain_workload(env, 3, &[1, 2, 3]));
     // Not simulated: fan-out drives requests from OS threads, and the
     // monitor workload blocks the test thread on a Condvar.
@@ -1352,6 +1350,8 @@ fn fixed_shutdown_order_before_two_supervised_one_after_two() {
     assert!(outcome.complete);
 }
 
+// Not simulated: compares against a Thread-placement execution group.
+#[cfg(not(spawned_sim))]
 #[test]
 fn ordered_system_shutdown_matches_thread_placement() {
     let mut settings = config();

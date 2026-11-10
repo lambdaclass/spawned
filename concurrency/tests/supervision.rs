@@ -69,13 +69,11 @@ async fn one_for_one_uses_fresh_state_same_group_and_instance_bound_refs() {
                         Some("recovery-critical")
                     );
                     // One simulated thread under spawned_sim: no group workers.
-                    assert!(
-                        cfg!(spawned_sim)
-                            || std::thread::current()
-                                .name()
-                                .unwrap()
-                                .starts_with("spawned-recovery-critical")
-                    );
+                    #[cfg(not(spawned_sim))]
+                    assert!(std::thread::current()
+                        .name()
+                        .unwrap()
+                        .starts_with("spawned-recovery-critical"));
                     observed.fetch_add(1, Ordering::SeqCst);
                     Ok::<_, String>(Counter(0))
                 }
