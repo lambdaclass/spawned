@@ -103,9 +103,8 @@ fn never_polled_actor_propagates_runtime_shutdown_to_peer() {
     peer.context().link(&target.child_handle());
     // The owner runtime never polls its actor. Dropping it must still close links.
     drop(owner);
-    let result = survivor.block_on(async {
-        tokio::time::timeout(crate::test_wait::WAIT, peer.wait_exit()).await
-    });
+    let result = survivor
+        .block_on(async { tokio::time::timeout(crate::test_wait::WAIT, peer.wait_exit()).await });
     peer.child_handle().stop();
     survivor.block_on(peer.wait_exit());
     assert_eq!(

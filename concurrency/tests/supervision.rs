@@ -694,9 +694,7 @@ async fn generation_waiters_wake_at_admission_close_before_their_shutdown_turn()
     supervisor.stop();
     tokio::time::timeout(LIMIT, entered).await.unwrap().unwrap();
     assert!(matches!(
-        tokio::time::timeout(LIMIT, waiter)
-            .await
-            .unwrap(),
+        tokio::time::timeout(LIMIT, waiter).await.unwrap(),
         Err(ChildUnavailable(ChildState::Stopping))
     ));
     release.send(()).unwrap();

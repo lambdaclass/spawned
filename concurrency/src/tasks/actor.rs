@@ -3127,7 +3127,11 @@ mod api_coverage {
         }
     }
     impl Handler<OwnRecipient> for Echo {
-        async fn handle(&mut self, _: OwnRecipient, ctx: &Context<Self>) -> (Recipient<Ask>, ActorId) {
+        async fn handle(
+            &mut self,
+            _: OwnRecipient,
+            ctx: &Context<Self>,
+        ) -> (Recipient<Ask>, ActorId) {
             (ctx.recipient::<Ask>(), ctx.id())
         }
     }
@@ -3147,7 +3151,10 @@ mod api_coverage {
             recipient.send(Ask(1)).unwrap();
             actor.child_handle().stop();
             actor.join().await;
-            assert!(matches!(recipient.send(Ask(1)), Err(ActorError::ActorStopped)));
+            assert!(matches!(
+                recipient.send(Ask(1)),
+                Err(ActorError::ActorStopped)
+            ));
         });
     }
 
@@ -3158,8 +3165,14 @@ mod api_coverage {
             let recipient = actor.recipient::<Ask>();
             actor.child_handle().stop();
             actor.join().await;
-            assert!(matches!(actor.request_with_timeout(Ask(1), WAIT).await, Err(ActorError::ActorStopped)));
-            assert!(matches!(request(&*recipient, Ask(1), WAIT).await, Err(ActorError::ActorStopped)));
+            assert!(matches!(
+                actor.request_with_timeout(Ask(1), WAIT).await,
+                Err(ActorError::ActorStopped)
+            ));
+            assert!(matches!(
+                request(&*recipient, Ask(1), WAIT).await,
+                Err(ActorError::ActorStopped)
+            ));
         });
     }
 
@@ -3187,7 +3200,10 @@ mod api_coverage {
             let recipient = actor.recipient::<Ask>();
             let (release, held) = rt::oneshot::channel();
             actor.send(StopAfter(held)).unwrap();
-            assert!(matches!(request(&*recipient, Ask(1), Duration::from_millis(1)).await, Err(ActorError::RequestTimeout)));
+            assert!(matches!(
+                request(&*recipient, Ask(1), Duration::from_millis(1)).await,
+                Err(ActorError::RequestTimeout)
+            ));
             release.send(()).unwrap();
             actor.join().await;
         });
