@@ -133,7 +133,7 @@ Status of each layer. "Planned" items are tracked in the
 | Test quality | cargo-mutants | Tests that still pass when the code is broken | Weekly over supervision and system code |
 | Resource budgets | `future_layout`, `stack_budget` | Growth of handles, futures and lifecycle stack depth (a real client stack overflow before v0.7.1) | Sizes in CI; stack budgets in review (PR #220) |
 | Compatibility | cargo-semver-checks | Unexpected public API removals | In CI |
-| Macro misuse | trybuild compile-fail tests | `#[protocol]` and `#[actor]` misuse that compiles or gives an unclear error | Planned |
+| Macro misuse | trybuild compile-fail tests | `#[protocol]` and `#[actor]` misuse that compiles or gives an unclear error | In CI on the pinned toolchain ([macro diagnostics](#macro-diagnostics)) |
 | Feature separation | cargo-hack | Missing dependencies hidden by dev-dependency feature unification | CI builds each library feature, default, no-default and all features without dev dependencies |
 | Supply chain | cargo-deny, cargo-audit | Vulnerable, unmaintained or unsound dependencies; license and source drift | `supply-chain` CI job; accepted advisories listed in `deny.toml` |
 | Flakiness | cargo-nextest with retries | Tests that pass only on retry | Nightly `flaky-tracking` job; a retry is reported, never silently passed |
