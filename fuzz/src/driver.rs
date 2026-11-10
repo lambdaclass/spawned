@@ -487,6 +487,10 @@ impl Driver {
                 };
                 self.may_stop(pa.id());
                 self.may_stop(pb.id());
+                // A context whose actor already exited cannot link: the call
+                // is a no-op (`register_link` sees its own table closed), so
+                // nothing is predicted for the pair.
+                let linker_exited = pa.child_handle().exit_reason().is_some();
                 pa.context().link(&pb.child_handle());
                 let trap = |d: &Self, id| d.traps.get(&id).map_or(false, |t| t.0);
                 self.links.push(LinkRec {
@@ -495,7 +499,7 @@ impl Driver {
                     a: pa,
                     b: pb,
                     at: self.op,
-                    unlinked: false,
+                    unlinked: linker_exited,
                 });
             }
             Op::Unlink { a, b } => {
