@@ -189,10 +189,11 @@ regenerated: Supervision has 7,142 transition keys (was 7,130) and 545 coarse
 ones (was 544), Cohorts the same key counts over more states. The dedicated
 suites, now including #233's traces (30 OneForOne, 8 cohort), cover 36 of 40
 Supervision actions: `StartupFailed/Shutdown` (a replacement stopping with
-`Shutdown` while the supervisor is open) joined the baseline. Still unreached
-there: `Attempt`/`BecomeReady` with the gate closed are timing races reached
-only by the whole suite or `coverage_trace` in some runs, plus `CleanupStuck`
-and `LoopTop/finish`.
+`Shutdown` while the supervisor is open) joined the baseline. Not in the
+dedicated suites: `BecomeReady/closed` and `LoopTop/finish` (closure racing a
+publication or a loop iteration), `StartupFailed/Panic` (a panic in
+`started()` of a supervised child) and `WindowExpire` (an expiring restart
+window between retries).
 
 The one whole-suite action that comes and goes is `LoopTop/finish` (a
 controller seeing the closed gate at the top of its loop): only a race in some
