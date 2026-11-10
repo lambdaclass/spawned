@@ -10,6 +10,33 @@
   the coordinator-panic and never-started-child scenarios that were known gaps
   before v0.7.1 now run as regular tests. See
   [testing](docs/TESTING.md#failpoints).
+- Apalache 0.62.4 inductive-invariant checks for the supervision models
+  (`verification/tla/apalache.sh`, `nix run .#check-apalache`, CI job
+  `tla-apalache`). `Init => IndInv` and `IndInv /\ Next => IndInv'` hold for
+  every safety invariant of `Supervision` (AtMostOneGeneration,
+  PublishedIsLive, BudgetBounded, TemporaryStartsOnce, ReadyMeansAllStarted,
+  DoneMeansQuiescent, plus the action properties NoStartAfterClose,
+  RestartFollowsPolicy, ReverseShutdown, NeverReopens) with 5 children and
+  `max_restarts` 4 (also run at 10/10), of `Cohorts` (both strategies, 5
+  children, 4 generations, 4 rounds) and of `NestedSupervision` (6 nodes, 3
+  slots, 3 generations), for every restart-mode table. The step check covers
+  all states of that size, not only reachable ones, with no depth or
+  generation bound. Guard-removal negative controls must break induction.
+  Specs gain Apalache type annotations (comments) and constant-bounded range
+  rewrites; TLC state counts are unchanged.
+- Apalache inductive-invariant checks for the system shutdown coordinator
+  model (`Coordinator.tla`, `CoordinatorInd.tla`, CI step `--model
+  Coordinator --targets 32`). `Safety` (admission closed after shutdown
+  begins, finished within signalled, runtime ownership released only once
+  every target finished, coordinator failures recorded) and two new
+  invariants, `OrderedShutdown` (a root is signalled only after every
+  later-admitted root finished) and `JoinAfterAllSignalled`, plus four
+  action properties, are inductive at 8 and 32 shutdown targets with one
+  helper lemma. Eight negative controls must break induction and also give
+  a counterexample reachable from `Init`, including `RollbackReady`, the
+  out-of-order rollback of a ready supervisor startup fixed in v0.7.1,
+  which `negative_checks.py` also runs under TLC. Liveness stays TLC-only;
+  TLC state counts are unchanged.
 
 - Documentation: `docs/TESTING.md` gains an overview of how spawned is
   verified (design, model-to-code, interleavings, faults, behaviour, code and

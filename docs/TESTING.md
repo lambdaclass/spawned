@@ -106,7 +106,7 @@ Status of each layer. "Planned" items are tracked in the
 | Layer | Tool | Catches | Status |
 |---|---|---|---|
 | Design | TLA+ and TLC | Holes in lifecycle, restart and shutdown rules | `Supervision`, `Cohorts`, `NestedSupervision` and `Coordinator` models in `verification/tla`, run in CI |
-| Design, unbounded depth | Apalache inductive invariants | An invariant that a state TLC never reached would break | Safety invariants of all four models proven inductive at fixed sizes, with negative controls; in review (PRs #213, #219) |
+| Design, unbounded depth | Apalache inductive invariants | An invariant that a state TLC never reached would break | Safety invariants of all four models proven inductive at fixed sizes, with negative controls; `tla-apalache` CI job |
 | Design, any size | TLAPS or Veil | An invariant that fails only for larger configurations | Planned ([verification tools](research/verification-tools.md)) |
 | Spec and code | Trace validation | The implementation doing something the model forbids | Real OneForOne, cohort and nested traces plus invalid-trace and model-mutation controls |
 | Spec and code coverage | Trace coverage | Model states no test ever reaches | In progress |
@@ -528,8 +528,16 @@ model. Hand-edited traces are rejected at the edited event. Trace validation
 found one model gap (a running child may exit with `Shutdown` while the
 supervisor is open, via `ChildHandle::shutdown`); no implementation deviation.
 
+Apalache checks that the safety invariants of `Supervision`, `Cohorts`,
+`NestedSupervision` and `Coordinator` are inductive (`Init => IndInv`,
+`IndInv /\ Next => IndInv'`), so they hold at any depth, for the configured
+sizes (5 children and `max_restarts` 4, also 10/10, for `Supervision`; 8 and
+32 shutdown targets for `Coordinator`); guard-removal negative
+controls must break induction. See [the model README](../verification/tla/README.md#inductive-invariants-apalache).
+
 ```bash
 nix run .#check-tla                                   # model check (TLC via the flake)
+nix run .#check-apalache -- --negative-controls       # inductive invariants (Apalache)
 cargo test -p spawned-concurrency --features lifecycle-trace --test supervision_trace
 nix run .#check-tla -- --traces target/lifecycle-traces
 ```
