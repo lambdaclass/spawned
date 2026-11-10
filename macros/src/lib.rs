@@ -1566,7 +1566,13 @@ pub fn actor(attr: TokenStream, item: TokenStream) -> TokenStream {
                     ReturnType::Default => method.sig.paren_token.span.join(),
                     ReturnType::Type(_, ty) => ty.span(),
                 };
-                let asynchronous = method.sig.asyncness.is_some();
+                // A tasks handler may also be a plain `fn` returning
+                // `impl Future`; its result is awaited like an `async fn`'s.
+                let returns_future = matches!(
+                    &method.sig.output,
+                    ReturnType::Type(_, ty) if matches!(**ty, Type::ImplTrait(_))
+                );
+                let asynchronous = method.sig.asyncness.is_some() || returns_future;
                 let call = match (deferred, asynchronous) {
                     (true, true) => quote! { self.#method_name(msg, reply, ctx).await },
                     (true, false) => quote! { self.#method_name(msg, reply, ctx) },
