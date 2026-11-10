@@ -246,6 +246,159 @@ mod imp {
     pub fn take(id: u64) -> Vec<Event> {
         lock(&TRACES).remove(&id).unwrap_or_default()
     }
+
+    /// What a dumped trace needs besides its events: the constants
+    /// `trace_check.py` instantiates the model with.
+    struct Meta {
+        origin: String,
+        strategy: &'static str,
+        max_restarts: usize,
+        modes: Vec<&'static str>,
+    }
+    static META: Mutex<BTreeMap<u64, Meta>> = Mutex::new(BTreeMap::new());
+
+    /// Remember a new supervisor's strategy and budget, and the thread
+    /// (usually the test) that built it, for [`dump_all`].
+    pub(crate) fn describe(id: TraceId, strategy: &'static str, max_restarts: usize) {
+        let origin = std::thread::current()
+            .name()
+            .unwrap_or("unnamed")
+            .to_string();
+        lock(&META).insert(
+            id.0,
+            Meta {
+                origin,
+                strategy,
+                max_restarts,
+                modes: Vec::new(),
+            },
+        );
+    }
+
+    /// Remember the restart mode of the next declared child.
+    pub(crate) fn describe_child(id: TraceId, mode: &'static str) {
+        if let Some(meta) = lock(&META).get_mut(&id.0) {
+            meta.modes.push(mode);
+        }
+    }
+
+    const COHORT_EVENTS: &[&str] = &[
+        "CRequest",
+        "CSelect",
+        "CAssign",
+        "CStop",
+        "CClean",
+        "CResume",
+        "CBegin",
+        "CReady",
+        "CJoined",
+        "CRetire",
+        "CAck",
+        "CEnd",
+        "CInitialReady",
+        "CClose",
+        "CDone",
+    ];
+
+    fn sanitize(name: &str) -> String {
+        name.chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+            .collect()
+    }
+
+    /// If `LIFECYCLE_TRACE_ALL` names a directory, write a copy of this
+    /// finished supervisor's policy tape (and, for a root, its ownership
+    /// tree) there, in the formats of the dedicated trace tests. Lets any
+    /// test binary built with the feature contribute traces to
+    /// `verification/tla/trace_coverage.py` without changing the test; the
+    /// events stay buffered, so `take`/`take_tree` still see them.
+    pub(crate) fn dump_all(id: TraceId) {
+        let meta = lock(&META).remove(&id.0);
+        let Some(directory) = std::env::var_os("LIFECYCLE_TRACE_ALL") else {
+            return;
+        };
+        let directory = std::path::PathBuf::from(directory);
+        let (events, tree, meta) = atomic(|| {
+            let events = lock(&TRACES).get(&id.0).cloned().unwrap_or_default();
+            let trees = lock(&TREES);
+            let attached = trees
+                .iter()
+                .any(|e| e.action == "TAttach" && e.peer == id.0);
+            let mut tree = Vec::new();
+            if !attached {
+                let mut nodes = std::collections::BTreeSet::from([id.0]);
+                loop {
+                    let before = nodes.len();
+                    for event in trees.iter() {
+                        if event.action == "TAttach" && nodes.contains(&event.node) {
+                            nodes.insert(event.peer);
+                        }
+                    }
+                    if nodes.len() == before {
+                        break;
+                    }
+                }
+                tree = trees
+                    .iter()
+                    .filter(|e| nodes.contains(&e.node))
+                    .cloned()
+                    .collect();
+            }
+            (events, tree, meta)
+        });
+        let Some(meta) = meta else { return };
+        let exe = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.file_stem().map(|s| s.to_string_lossy().into_owned()))
+            .unwrap_or_default();
+        let name = format!(
+            "{}-{}-{}-{}",
+            sanitize(&exe),
+            sanitize(&meta.origin),
+            std::process::id(),
+            id.0
+        );
+        let modes = meta
+            .modes
+            .iter()
+            .map(|m| format!("\"{m}\""))
+            .collect::<Vec<_>>()
+            .join(",");
+        let json = |events: &mut dyn Iterator<Item = String>| events.collect::<Vec<_>>().join(",\n");
+        let policy = if meta.strategy == "OneForOne" {
+            format!(
+                "{{\"name\":\"{name}\",\"origin\":\"{}\",\"n\":{},\"modes\":[{modes}],\"max_restarts\":{},\"events\":[\n{}\n]}}\n",
+                sanitize(&meta.origin),
+                meta.modes.len(),
+                meta.max_restarts,
+                json(&mut events.iter().map(Event::to_json))
+            )
+        } else {
+            format!(
+                "{{\"schema\":\"cohort-v1\",\"name\":\"{name}\",\"origin\":\"{}\",\"strategy\":\"{}\",\"n\":{},\"modes\":[{modes}],\"events\":[\n{}\n]}}\n",
+                sanitize(&meta.origin),
+                meta.strategy,
+                meta.modes.len(),
+                json(&mut events
+                    .iter()
+                    .filter(|e| COHORT_EVENTS.contains(&e.action))
+                    .map(Event::to_json))
+            )
+        };
+        let _ = std::fs::create_dir_all(&directory);
+        if !meta.modes.is_empty() {
+            let _ = std::fs::write(directory.join(format!("policy-{name}.json")), policy);
+        }
+        if !tree.is_empty() {
+            let tree = format!(
+                "{{\"schema\":\"tree-v1\",\"name\":\"{name}\",\"origin\":\"{}\",\"root\":{},\"events\":[\n{}\n]}}\n",
+                sanitize(&meta.origin),
+                id.0,
+                json(&mut tree.iter().map(TreeEvent::to_json))
+            );
+            let _ = std::fs::write(directory.join(format!("tree-{name}.json")), tree);
+        }
+    }
 }
 
 #[cfg(not(feature = "lifecycle-trace"))]

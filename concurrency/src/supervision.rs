@@ -1061,6 +1061,16 @@ impl SupervisorBuilder {
             #[cfg(feature = "lifecycle-trace")]
             deadline_recorded: Default::default(),
         });
+        #[cfg(feature = "lifecycle-trace")]
+        trace::describe(
+            core.trace,
+            match core.config.strategy {
+                SupervisorStrategy::OneForOne => "OneForOne",
+                SupervisorStrategy::OneForAll => "OneForAll",
+                SupervisorStrategy::RestForOne => "RestForOne",
+            },
+            core.config.max_restarts,
+        );
         Ok(Self {
             owner,
             core,
@@ -1134,6 +1144,15 @@ impl SupervisorBuilder {
             trace_index: children.len() + 1,
         });
         children.push(view.clone());
+        #[cfg(feature = "lifecycle-trace")]
+        trace::describe_child(
+            self.core.trace,
+            match spec.restart {
+                RestartMode::Permanent => "Permanent",
+                RestartMode::Transient => "Transient",
+                RestartMode::Temporary => "Temporary",
+            },
+        );
         {
             let mut queue = system::lock(&self.core.recovery);
             queue.pending.push(false);
@@ -1339,6 +1358,9 @@ async fn run_supervisor(core: Arc<Core>, runners: Vec<Box<dyn Runner>>) {
                 trace::emit(core.trace, || Event::sup("SupJoin"));
                 core.cohort(|| Event::sup("CDone"));
                 trace::tree(core.trace, |id| TreeEvent::new("TDone", id));
+                // Copy the tapes before `done` lets a test `take` them.
+                #[cfg(feature = "lifecycle-trace")]
+                trace::dump_all(core.trace);
                 core.done.send_replace(true);
             });
             true
