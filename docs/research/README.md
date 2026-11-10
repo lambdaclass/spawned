@@ -14,7 +14,7 @@ rather than repeat it.
 | [How the Ethereum ecosystem tests clients](ethereum-testing.md) | Ranks 5, 5c, 20-22 |
 | [Request semantics references](request-semantics-references.md) | Ranks 11, 11a, 47, 47a |
 | [Other concurrency models](concurrency-models.md) | Ranks 8a, 11b, 15a (new); notes on 11a, 13, 15, 19, 33, 34, 39, 48; research pointers 52-54 |
-| [Rust verification tools](verification-tools.md) | Phase 4 batch 1 (Kani), testing to add (Kani row), rank 3 |
+| [Rust verification tools](verification-tools.md) | Phase 4 batch 1 (Kani), batch 2 (Apalache, Veil), testing to add (Kani and unbounded-invariant rows), rank 3 |
 | [Observability](observability.md) | Ranks 9, 28, 29, 30 |
 | [Actor test kits](actor-testing.md) | Rank 6 (remaining work), rank 20 (Concuerror), Porcupine row, simulation backend spike |
 | [Rust actor landscape](rust-actor-landscape.md) | North star; notes on ranks 30, 44, 49 |
@@ -71,7 +71,9 @@ per-turn work measurement next to the stall watchdog (rank 8a).
 on CBMC, used by AWS on Firecracker and the Rust standard library verification
 effort), Prusti, Verus, Creusot, Flux and Miri, and when each fits. Spawned uses
 Kani for small arithmetic (backoff, jitter, the restart-budget window,
-generations; the surviving mutants) and TLA+ for protocols; Miri waits for
+generations; the surviving mutants) and TLA+ for protocols, with Apalache
+inductive checks and a Veil (Lean 4) spike to prove the protocol invariants for
+any number of children; Miri waits for
 unsafe code. *Landed in:* phase 4 batch 1 and the Kani row of testing to add;
 rank 3.
 

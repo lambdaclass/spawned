@@ -5,7 +5,9 @@ the Kani row of the [database-grade testing program](../../ROADMAP.md#database-g
 (batch 1) and ranks 1-4 of the [roadmap](../../ROADMAP.md#ranked-backlog). The
 earlier [verification strategy](../../legacy/docs/research/verification-strategy.md)
 chose TLA+ plus trace validation for lifecycle protocols; this note covers the
-tools that check Rust code itself, and where each fits next to TLA+.
+tools that check Rust code itself, and where each fits next to TLA+, plus the
+tools that prove the TLA+-level protocol invariants for unbounded configurations
+(Apalache, TLAPS, Veil).
 
 ## What it is
 
@@ -156,6 +158,48 @@ interpreter picks.
   mailbox or reply slot for ranks 11 and 17) if it gains unsafe code; revisit
   then.
 
+## Beyond TLC: proving protocol invariants (Apalache, TLAPS, Veil)
+
+TLC checks the TLA+ models in small configurations (two or three children, a
+few restarts). A bug that needs a larger configuration than the model is
+invisible to it; the shutdown-order race CI caught on PR #204 needed a specific
+interleaving that a small model can miss. Three tools prove invariants for any
+number of children and restarts instead:
+
+- **Apalache** (symbolic model checker for TLA+, SMT-based). Checks that an
+  invariant is *inductive*: it holds initially and every step preserves it. If
+  so, it holds for all reachable states, with no bound on the model's size for
+  that check. Works on the existing `Supervision.tla`, `Cohorts` and
+  `NestedSupervision` specs, so trace validation keeps working unchanged. It
+  needs type annotations and finite domains for the check itself.
+- **TLAPS** (TLA+ proof system). Machine-checked proofs over the same specs;
+  more manual than Apalache. Used for a few critical invariants only.
+- **Veil** (verse-lab, Apache-2.0, [veil.dev](https://veil.dev)). A framework
+  on Lean 4 for specifying transition systems, model checking them and proving
+  safety and liveness. Descends from Ivy: specifications are written in a style
+  that admits push-button SMT proofs of safety, with Lean as the fallback.
+  Finds inductive invariants interactively (counterexamples to induction) or
+  automatically (UPDR). Veil 2.0 adds verified model checkers for safety and
+  liveness (the authors report 2–20x faster than TLC), an LTL proof mode, a
+  PlusCal-style DSL and an LLM skill that translates TLA+ into Veil. Costs: a
+  second specification language beside TLA+, which our trace validation does
+  not read; Lean when automation fails; a young academic tool whose language
+  may change.
+
+Candidate invariants for any of them: a stopped generation is never readmitted
+(`AtMostOneGeneration`); granted plus reserved restarts never exceed
+`max_restarts` in the window (`BudgetBounded`); shutdown stops admissions in
+reverse order (`ReverseShutdown`); a published child is live (`PublishedIsLive`).
+
+**Order.** Apalache inductive checks on the existing models first (phase 4,
+batch 2): no new language. Veil next, as a time-boxed spike (about two days):
+translate `Supervision.tla` with its TLA+ skill, prove `AtMostOneGeneration` and
+`BudgetBounded` for unbounded children, and compare its model checker against
+TLC on the same configuration. Adopt Veil only if Apalache cannot handle our
+models or we need liveness proofs (every accepted request is eventually answered
+or `ActorStopped`, rank 11). TLA+ stays the source of truth for trace validation
+either way.
+
 ## Sources
 
 - [Kani Rust Verifier](https://model-checking.github.io/kani/); [Kani: dyn trait paper, ICSE-SEIP 2022 preprint](https://cs.wellesley.edu/~avh/dyn-trait-icse-seip-2022-preprint.pdf)
@@ -166,3 +210,6 @@ interpreter picks.
 - [Creusot](https://github.com/creusot-rs/creusot)
 - [Flux](https://github.com/flux-rs/flux), [Flux site](https://flux-rs.github.io)
 - [Miri](https://github.com/rust-lang/miri)
+- [Apalache](https://apalache-mc.org/), [inductive invariants in Apalache](https://apalache-mc.org/docs/apalache/running.html)
+- [TLAPS](https://proofs.tlapl.us/)
+- [Veil](https://veil.dev), [source](https://github.com/verse-lab/veil), [playground](https://try.veil.dev); UPDR: [Karbyshev et al., doi:10.1145/3022187](https://doi.org/10.1145/3022187)
