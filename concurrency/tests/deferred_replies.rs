@@ -95,7 +95,12 @@ mod tasks_mode {
         }
     }
     impl Handler<Release> for Parker {
-        async fn handle(&mut self, msg: Release, reply: PendingReply<'_, usize>, _: &Context<Self>) {
+        async fn handle(
+            &mut self,
+            msg: Release,
+            reply: PendingReply<'_, usize>,
+            _: &Context<Self>,
+        ) {
             let n = self.parked.len();
             for (v, token) in self.parked.drain(..) {
                 let delivery = token.reply(v + msg.0);
@@ -141,7 +146,12 @@ mod tasks_mode {
         }
     }
     impl Handler<Outstanding> for Parker {
-        async fn handle(&mut self, _: Outstanding, reply: PendingReply<'_, usize>, ctx: &Context<Self>) {
+        async fn handle(
+            &mut self,
+            _: Outstanding,
+            reply: PendingReply<'_, usize>,
+            ctx: &Context<Self>,
+        ) {
             reply.reply(ctx.deferred_outstanding());
         }
     }
@@ -184,7 +194,10 @@ mod tasks_mode {
     #[spawned_macros::sim_test]
     async fn unanswered_turn_answers_reply_dropped() {
         let (actor, _) = start();
-        assert!(matches!(actor.request(Forget).await, Err(ActorError::ReplyDropped)));
+        assert!(matches!(
+            actor.request(Forget).await,
+            Err(ActorError::ReplyDropped)
+        ));
         actor.context().stop();
         actor.join().await;
     }
@@ -194,7 +207,10 @@ mod tasks_mode {
         for defer_first in [false, true] {
             let (actor, _) = start();
             let result = actor.request(Explode { defer_first }).await;
-            assert!(matches!(result, Err(ActorError::ActorStopped)), "{result:?}");
+            assert!(
+                matches!(result, Err(ActorError::ActorStopped)),
+                "{result:?}"
+            );
             actor.join().await;
         }
     }
@@ -205,7 +221,10 @@ mod tasks_mode {
         let a = actor.request_raw_until(Park(1), Deadline::Never).unwrap();
         let b = actor.request_raw_until(Park(2), Deadline::Never).unwrap();
         // MAX_OUTSTANDING is 2: the third deferral is refused in the same step.
-        assert!(matches!(actor.request(Park(3)).await, Err(ActorError::Overloaded)));
+        assert!(matches!(
+            actor.request(Park(3)).await,
+            Err(ActorError::Overloaded)
+        ));
         assert_eq!(*seen.defer_errors.lock().unwrap(), [DeferError::Overloaded]);
         assert_eq!(actor.request(Release(0)).await.unwrap(), 2);
         assert_eq!((a.await.unwrap(), b.await.unwrap()), (1, 2));
@@ -219,7 +238,11 @@ mod tasks_mode {
         let rx = actor.request_raw_until(Park(1), Deadline::Never).unwrap();
         assert_eq!(settle(&actor).await, 1);
         drop(rx);
-        assert_eq!(settle(&actor).await, 0, "abandonment returns the credit at once");
+        assert_eq!(
+            settle(&actor).await,
+            0,
+            "abandonment returns the credit at once"
+        );
         actor.request(Release(0)).await.unwrap();
         assert_eq!(*seen.late.lock().unwrap(), [Delivery::CallerGone]);
         actor.context().stop();
@@ -456,11 +479,17 @@ mod threads_mode {
         actor.request(DropAll).unwrap();
         assert!(matches!(b.recv(), Err(ActorError::ReplyDropped)));
         // Unanswered turn.
-        assert!(matches!(actor.request(Forget), Err(ActorError::ReplyDropped)));
+        assert!(matches!(
+            actor.request(Forget),
+            Err(ActorError::ReplyDropped)
+        ));
         // Bound.
         let c = actor.request_raw_until(Park(1), Deadline::Never).unwrap();
         let d = actor.request_raw_until(Park(2), Deadline::Never).unwrap();
-        assert!(matches!(actor.request(Park(3)), Err(ActorError::Overloaded)));
+        assert!(matches!(
+            actor.request(Park(3)),
+            Err(ActorError::Overloaded)
+        ));
         assert_eq!(*seen.defer_errors.lock().unwrap(), [DeferError::Overloaded]);
         // Abandonment returns the credit.
         drop(c);
