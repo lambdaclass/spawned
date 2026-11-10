@@ -253,7 +253,10 @@ fn never_started_child_state_replays_from_seed() {
     for yields in 0..4 {
         for seed in 0..n {
             let run = simulate(seed, false, |log| initial_failure(log, yields));
-            outcomes.entry((yields, run.outcome)).or_default().push(seed);
+            outcomes
+                .entry((yields, run.outcome))
+                .or_default()
+                .push(seed);
         }
     }
     let elapsed = began.elapsed();
