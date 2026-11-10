@@ -700,3 +700,14 @@ reproduce it, fix it under the reproducing-test rule, or file it.
 cargo nextest run --workspace --profile flaky
 python3 scripts/flaky-report.py target/nextest/flaky/junit.xml
 ```
+
+Tests wait on the effect they need, not on the clock. A fixed sleep before an
+assertion, or a short timeout used as a latency budget, fails on a loaded
+machine even when the code is correct. In unit tests, `test_wait::wait_for`
+and `wait_for_async` (`concurrency/src/test_wait.rs`) poll the real condition
+with a 10 s bound, and the test then asserts on the value they return; prefer
+`join`/`wait_exit` or an explicit release channel when the code under test
+offers one. Bounds such as `LIMIT` are hang detectors. A fixed sleep remains
+only where a test checks that something does *not* happen (a demonitored
+`Down`, an unlinked `Exit`, a duplicate signal): it can let a bug through, but
+cannot fail a correct run.
