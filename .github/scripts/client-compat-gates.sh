@@ -60,15 +60,20 @@ case "$client" in
     gate check cargo check --workspace --all-targets
     # shellcheck disable=SC2086 # one -p flag per package
     gate clippy cargo clippy $pkgs --all-targets -- -D warnings
-    gate test-p2p cargo test -p ethrex-p2p
+    gate test-p2p cargo test --no-fail-fast -p ethrex-p2p
     gate test-p2p-group cargo test -p ethrex-test --test ethrex_tests p2p::
     gate test-rpc-lib cargo test -p ethrex-rpc --lib
+    # Debug build at the default 2 MiB test-thread stack: no RUST_MIN_STACK.
     gate test-rpc-group cargo test -p ethrex-test --test ethrex_tests rpc::
     gate test-ethrex-lib cargo test -p ethrex --lib
     ;;
   ethlambda)
     gate clippy cargo clippy --workspace --all-targets -- -D warnings
-    gate test cargo test --workspace
+    # ethlambda's suite is only supported under its `release-fast` profile
+    # (its Makefile `test` target): in plain debug, signature checks overflow
+    # the stack and several rpc test fixtures overflow u8 arithmetic, failures
+    # that have nothing to do with spawned. release-fast keeps debug assertions.
+    gate test cargo test --workspace --profile release-fast --no-fail-fast
     ;;
   *)
     echo "::error::unknown client $client"

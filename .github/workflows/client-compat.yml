@@ -27,6 +27,11 @@ on:
         description: "ethlambda branch, tag or SHA"
         required: false
         default: "spawned-v0.7"
+      baseline:
+        description: "Skip the patch: run the gates against the spawned the client pins, to tell a client failure from a spawned regression"
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
@@ -66,9 +71,14 @@ jobs:
             repo: lambdaclass/ethlambda
             ref: ${{ inputs.ethlambda_ref || 'spawned-v0.7' }}
     steps:
+      # A cold ethrex run grows the disk by about 16 GB. ubuntu-24.04 runners
+      # currently report ~86 GB free, so the slow cleanup only runs when a
+      # runner image comes with less.
       - name: Free disk space
         run: |
           df -h /
+          avail_gb=$(df --output=avail -BG / | tail -1 | tr -dc 0-9)
+          if [ "$avail_gb" -ge 40 ]; then echo "${avail_gb} GB free, no cleanup needed"; exit 0; fi
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup \
             /usr/local/share/boost /usr/local/share/powershell /usr/share/swift \
             /opt/hostedtoolcache/CodeQL "$AGENT_TOOLSDIRECTORY" || true
@@ -112,7 +122,15 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Point ${{ matrix.client }} at this spawned checkout
+        if: ${{ !inputs.baseline }}
         run: bash spawned/.github/scripts/client-compat-patch.sh spawned client
+
+      - name: Baseline (client's own spawned, no patch)
+        if: ${{ inputs.baseline }}
+        working-directory: client
+        run: |
+          echo "**Baseline run: gates use the spawned version the client pins, not this checkout.**" >> "$GITHUB_STEP_SUMMARY"
+          cargo metadata --format-version 1 > "$RUNNER_TEMP/client-metadata.json"
 
       - name: Gates
         working-directory: client
