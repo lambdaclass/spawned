@@ -113,6 +113,21 @@ pub async fn run_body(scenario: Scenario, seed: u64) {
     let world = World::new();
     let baseline = sim::stats().tasks;
     let mut driver = Driver::new(world.clone(), seed);
+    if std::env::var_os("SPAWNED_FUZZ_WATCH").is_some() {
+        // Debugging aid (changes the schedule): report progress while the
+        // driver is blocked.
+        drop(rt::spawn(async {
+            let mut last = 0;
+            loop {
+                let stats = sim::stats();
+                if stats.steps >= last + 200_000 {
+                    last = stats.steps;
+                    eprintln!("[watch] {:?} poll {} tasks {} ready {}", stats.now, stats.steps, stats.tasks, stats.ready);
+                }
+                sim::yield_now().await;
+            }
+        }));
+    }
     for op in scenario.ops.iter().take(MAX_OPS) {
         driver.op += 1;
         trace(|| format!("op {}: {op:?}", driver.op));
