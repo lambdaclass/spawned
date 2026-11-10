@@ -6,7 +6,8 @@
 //!   cargo run --example repro -- artifacts/scenario/crash-<sha> [--emit <name>]
 //! ```
 //!
-//! Prints the decoded scenario and the run's outcome. On failure it shrinks
+//! `--print` only decodes and prints the scenario. Otherwise it prints the
+//! decoded scenario and the run's outcome. On failure it shrinks
 //! the tape toward the canonical schedule (`SPAWNED_SIM_SHRINK` runs, default
 //! 200) and, with `--emit <name>`, writes `regressions/<name>.input`,
 //! `regressions/<name>.tape` and `tests/<name>.rs`, a test that replays the
@@ -34,6 +35,9 @@ fn main() {
     };
     println!("{scenario:#?}");
     println!("strategy {}, seed {}", strategy(scenario.sched), scenario.seed);
+    if args.iter().any(|a| a == "--print") {
+        return;
+    }
     let run = execute(&scenario, None);
     let Some(failure) = run.failure else {
         println!("PASS ({} polls)", run.polls);
