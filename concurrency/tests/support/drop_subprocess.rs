@@ -1,18 +1,37 @@
 //! Drain both pipes concurrently; a regression must fail without hanging CI.
 use std::{
     io::Read,
-    process::{Command, Stdio},
+    process::{Command, ExitStatus, Stdio},
     time::{Duration, Instant},
 };
-pub fn run(test: &str, marker: &str) {
-    let mut child = Command::new(std::env::current_exe().unwrap())
-        .args(["--exact", test, "--ignored", "--nocapture"])
+
+/// What an ignored child test produced when run in its own process.
+pub struct Outcome {
+    pub status: ExitStatus,
+    pub output: String,
+    pub errors: String,
+}
+
+/// Run one ignored test of this binary in a child process with `env` added,
+/// killing it after `limit`. Returns `None` on timeout.
+pub fn spawn(test: &str, env: &[(&str, String)], limit: Duration) -> Option<Outcome> {
+    let mut command = Command::new(std::env::current_exe().unwrap());
+    command
+        .args([
+            "--exact",
+            test,
+            "--ignored",
+            "--nocapture",
+            "--test-threads=1",
+        ])
         .env("SPAWNED_MAILBOX_DROP_CHILD", "1")
         .env("RUST_BACKTRACE", "0")
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
+        .stderr(Stdio::piped());
+    for (key, value) in env {
+        command.env(key, value);
+    }
+    let mut child = command.spawn().unwrap();
     fn reader(mut pipe: impl Read + Send + 'static) -> std::thread::JoinHandle<String> {
         std::thread::spawn(move || {
             let mut text = String::new();
@@ -22,24 +41,42 @@ pub fn run(test: &str, marker: &str) {
     }
     let output = reader(child.stdout.take().unwrap());
     let errors = reader(child.stderr.take().unwrap());
-    let until = Instant::now() + Duration::from_secs(120);
+    let until = Instant::now() + limit;
     let status = loop {
         if let Some(status) = child.try_wait().unwrap() {
-            break status;
+            break Some(status);
         }
         if Instant::now() >= until {
             child.kill().unwrap();
             let _ = child.wait();
-            panic!(
-                "{test} timed out: {}\n{}",
-                output.join().unwrap(),
-                errors.join().unwrap()
-            );
+            break None;
         }
         std::thread::sleep(Duration::from_millis(10));
     };
     let output = output.join().unwrap();
     let errors = errors.join().unwrap();
+    status.map(|status| Outcome {
+        status,
+        output,
+        errors,
+    })
+}
+
+#[allow(dead_code)]
+pub fn run(test: &str, marker: &str) {
+    run_with(test, marker, &[]);
+}
+
+#[allow(dead_code)]
+pub fn run_with(test: &str, marker: &str, env: &[(&str, String)]) {
+    let Some(Outcome {
+        status,
+        output,
+        errors,
+    }) = spawn(test, env, Duration::from_secs(120))
+    else {
+        panic!("{test} timed out");
+    };
     assert!(
         status.success(),
         "{test} failed ({status}): {output}\n{errors}"
