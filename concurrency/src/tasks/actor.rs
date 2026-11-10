@@ -3241,7 +3241,9 @@ mod api_coverage {
             assert!(format!("{:?}", actor.context()).starts_with("Context"));
             actor.child_handle().stop();
             actor.join().await;
-||||||| 3a0df6fc
+        });
+    }
+}
 
 #[cfg(test)]
 mod shared_state_release {
