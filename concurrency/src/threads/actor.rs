@@ -2116,6 +2116,40 @@ mod api_coverage {
     }
 
     #[test]
+    fn opposite_links_between_the_same_pair_do_not_deadlock() {
+        // Each link/unlink locks both link tables. Both directions must take
+        // the locks in the same global order, or these two loops deadlock.
+        let a = Trapper { trap: true }.start();
+        let b = Trapper { trap: true }.start();
+        let (done, finished) = std_mpsc::channel();
+        let workers: Vec<_> = [(a.context(), b.child_handle()), (b.context(), a.child_handle())]
+            .into_iter()
+            .map(|(own, peer)| {
+                let done = done.clone();
+                std::thread::spawn(move || {
+                    for _ in 0..2_000 {
+                        own.link(&peer);
+                        own.unlink(&peer);
+                    }
+                    done.send(()).unwrap();
+                })
+            })
+            .collect();
+        for _ in 0..2 {
+            finished
+                .recv_timeout(WAIT)
+                .expect("opposite link directions deadlocked");
+        }
+        for worker in workers {
+            worker.join().unwrap();
+        }
+        for actor in [a, b] {
+            actor.child_handle().shutdown();
+            actor.join();
+        }
+    }
+
+    #[test]
     fn debug_output_names_the_handle() {
         let actor = Echo.start();
         assert!(format!("{actor:?}").starts_with("ActorRef"));
