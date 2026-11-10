@@ -55,9 +55,8 @@ mod linux {
             reply: spawned_concurrency::reply::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
-            
-                self.next = m.0;
-reply.reply(());
+            self.next = m.0;
+            reply.reply(());
         }
     }
     struct Work {

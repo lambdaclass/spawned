@@ -478,9 +478,8 @@ mod tests {
                 reply: crate::reply::PendingReply<'_, ()>,
                 ctx: &Context<Self>,
             ) {
-                
-                    ctx.stop();
-reply.reply(());
+                ctx.stop();
+                reply.reply(());
             }
         }
 
@@ -516,9 +515,8 @@ reply.reply(());
                 reply: crate::reply::PendingReply<'_, ()>,
                 ctx: &Context<Self>,
             ) {
-                
-                    ctx.stop();
-reply.reply(());
+                ctx.stop();
+                reply.reply(());
             }
         }
 

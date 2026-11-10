@@ -229,11 +229,10 @@ mod tasks_chain {
             reply: spawned_concurrency::reply::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
-            
-                if self.generation == 1 {
-                    panic!("injected stack-budget crash");
-                }
-reply.reply(());
+            if self.generation == 1 {
+                panic!("injected stack-budget crash");
+            }
+            reply.reply(());
         }
     }
     impl Handler<relay::Forward> for Flaky {

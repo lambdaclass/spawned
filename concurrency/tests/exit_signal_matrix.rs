@@ -45,7 +45,7 @@ macro_rules! actors {
         }
         impl Handler<Down> for Observer {
             $($asynchronous)? fn handle(&mut self, down: Down, reply: spawned_concurrency::reply::PendingReply<'_, ()>, _: &Context<Self>) {
-                
+
                 self.0.send(Notice::Down(down.reason)).unwrap();
 reply.reply(());
             }

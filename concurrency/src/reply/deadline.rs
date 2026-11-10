@@ -97,7 +97,10 @@ impl DeadlineHeap {
     /// Rebuild without stale entries.
     fn compact(&mut self) {
         let entries = std::mem::take(&mut self.heap).into_vec();
-        self.heap = entries.into_iter().filter(|Reverse(e)| e.is_live()).collect();
+        self.heap = entries
+            .into_iter()
+            .filter(|Reverse(e)| e.is_live())
+            .collect();
         self.live_at_rebuild = self.heap.len();
     }
 

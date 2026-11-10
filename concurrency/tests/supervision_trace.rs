@@ -104,10 +104,9 @@ impl Handler<HoldForDrain> for Worker {
         reply: spawned_concurrency::reply::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
-        
-            msg.0.send(()).unwrap();
-            let _ = msg.1.await;
-reply.reply(());
+        msg.0.send(()).unwrap();
+        let _ = msg.1.await;
+        reply.reply(());
     }
 }
 struct DropBomb;
@@ -126,9 +125,7 @@ impl Handler<DropBomb> for Worker {
         _reply: spawned_concurrency::reply::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
-        
-            panic!("discarded message must not be handled");
-
+        panic!("discarded message must not be handled");
     }
 }
 
@@ -217,9 +214,7 @@ impl Handler<Crash> for Worker {
         _reply: spawned_concurrency::reply::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
-        
-            panic!("injected child failure");
-
+        panic!("injected child failure");
     }
 }
 impl Handler<Quit> for Worker {
@@ -229,9 +224,8 @@ impl Handler<Quit> for Worker {
         reply: spawned_concurrency::reply::PendingReply<'_, ()>,
         ctx: &Context<Self>,
     ) {
-        
-            ctx.stop();
-reply.reply(());
+        ctx.stop();
+        reply.reply(());
     }
 }
 impl Handler<ExitWith> for Worker {
@@ -241,9 +235,8 @@ impl Handler<ExitWith> for Worker {
         reply: spawned_concurrency::reply::PendingReply<'_, ()>,
         ctx: &Context<Self>,
     ) {
-        
-            ctx.stop_with_reason(msg.0);
-reply.reply(());
+        ctx.stop_with_reason(msg.0);
+        reply.reply(());
     }
 }
 
@@ -539,9 +532,7 @@ impl Handler<Crash> for ExitOnceDuringRestart {
         _reply: spawned_concurrency::reply::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
-        
-            panic!("injected child failure");
-
+        panic!("injected child failure");
     }
 }
 

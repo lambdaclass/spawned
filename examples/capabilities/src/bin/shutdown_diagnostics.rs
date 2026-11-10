@@ -22,10 +22,9 @@ impl Handler<Hold> for Worker {
         reply: spawned_concurrency::reply::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
-        
-            let _ = msg.0.send(());
-            let _ = msg.1.await;
-reply.reply(());
+        let _ = msg.0.send(());
+        let _ = msg.1.await;
+        reply.reply(());
     }
 }
 struct Unhealthy;
@@ -39,10 +38,9 @@ impl Handler<Unhealthy> for Worker {
         reply: spawned_concurrency::reply::PendingReply<'_, ()>,
         ctx: &Context<Self>,
     ) {
-        
-            // Cooperative abnormal exit, without a panic or forced interruption.
-            ctx.stop_with_reason(ExitReason::Panic("reported unhealthy worker".into()));
-reply.reply(());
+        // Cooperative abnormal exit, without a panic or forced interruption.
+        ctx.stop_with_reason(ExitReason::Panic("reported unhealthy worker".into()));
+        reply.reply(());
     }
 }
 

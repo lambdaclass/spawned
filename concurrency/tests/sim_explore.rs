@@ -76,10 +76,9 @@ impl Handler<Set> for Store {
         reply: spawned_concurrency::reply::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
-        
-            self.log.push(Access::Write(value));
-            self.value = value;
-reply.reply(());
+        self.log.push(Access::Write(value));
+        self.value = value;
+        reply.reply(());
     }
 }
 impl Handler<Log> for Store {
@@ -113,13 +112,12 @@ impl Handler<Bump> for Worker {
         reply: spawned_concurrency::reply::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
-        
-            for _ in 0..self.noise {
-                spawned_rt::tasks::yield_now().await;
-            }
-            let value = self.store.request(Get).await.unwrap();
-            self.store.request(Set(value + 1)).await.unwrap();
-reply.reply(());
+        for _ in 0..self.noise {
+            spawned_rt::tasks::yield_now().await;
+        }
+        let value = self.store.request(Get).await.unwrap();
+        self.store.request(Set(value + 1)).await.unwrap();
+        reply.reply(());
     }
 }
 
@@ -233,9 +231,7 @@ impl Handler<Crash> for Node {
         _reply: spawned_concurrency::reply::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
-        
-            panic!("injected crash after readiness");
-
+        panic!("injected crash after readiness");
     }
 }
 

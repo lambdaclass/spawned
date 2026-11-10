@@ -331,18 +331,30 @@ mod tests {
             let slot = deferred(&registry, NEVER);
             registry.begin_turn();
             registry.dropped(slot.clone());
-            assert!(!slot.is_terminal(), "an in-turn drop waits for the turn end");
+            assert!(
+                !slot.is_terminal(),
+                "an in-turn drop waits for the turn end"
+            );
             registry.end_turn(panicked);
-            assert_eq!(Terminal::of(crate::reply::slot::state(slot.word())), Some(expected));
+            assert_eq!(
+                Terminal::of(crate::reply::slot::state(slot.word())),
+                Some(expected)
+            );
         }
         // Between turns a drop answers at once; while exiting, Stopped.
         let slot = deferred(&registry, NEVER);
         registry.dropped(slot.clone());
-        assert_eq!(Terminal::of(crate::reply::slot::state(slot.word())), Some(Terminal::Dropped));
+        assert_eq!(
+            Terminal::of(crate::reply::slot::state(slot.word())),
+            Some(Terminal::Dropped)
+        );
         registry.exiting();
         let slot = deferred(&registry, NEVER);
         registry.dropped(slot.clone());
-        assert_eq!(Terminal::of(crate::reply::slot::state(slot.word())), Some(Terminal::Stopped));
+        assert_eq!(
+            Terminal::of(crate::reply::slot::state(slot.word())),
+            Some(Terminal::Stopped)
+        );
         assert_eq!(registry.outstanding(), 0);
     }
 
@@ -353,7 +365,10 @@ mod tests {
         let answered = deferred(&registry, NEVER);
         answered.reply(1, &|| 0);
         assert_eq!(registry.close(), 1);
-        assert_eq!(Terminal::of(crate::reply::slot::state(open.word())), Some(Terminal::Stopped));
+        assert_eq!(
+            Terminal::of(crate::reply::slot::state(open.word())),
+            Some(Terminal::Stopped)
+        );
         assert_eq!(registry.outstanding(), 0);
         assert_eq!(registry.heap_entries(), 0, "the heap is dropped at death");
     }

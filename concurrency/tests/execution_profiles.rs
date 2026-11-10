@@ -100,12 +100,11 @@ impl Handler<Block> for Probe {
         reply: spawned_concurrency::reply::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
-        
-            tokio::task::block_in_place(|| {
-                let _ = msg.entered.send(());
-                msg.release.recv_timeout(LIMIT).unwrap();
-            });
-reply.reply(());
+        tokio::task::block_in_place(|| {
+            let _ = msg.entered.send(());
+            msg.release.recv_timeout(LIMIT).unwrap();
+        });
+        reply.reply(());
     }
 }
 struct Crash;
@@ -375,9 +374,8 @@ mod tls_join {
             reply: spawned_concurrency::reply::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
-            
-                PROBE.with(|p| *p.borrow_mut() = Some(msg.0));
-reply.reply(());
+            PROBE.with(|p| *p.borrow_mut() = Some(msg.0));
+            reply.reply(());
         }
     }
     #[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]

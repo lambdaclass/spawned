@@ -21,9 +21,8 @@ impl tasks::Handler<Probe> for Sink {
         reply: spawned_concurrency::reply::PendingReply<'_, ()>,
         _: &tasks::Context<Self>,
     ) {
-        
-            drop(msg.0);
-reply.reply(());
+        drop(msg.0);
+        reply.reply(());
     }
 }
 impl threads::Actor for Sink {}
@@ -34,9 +33,8 @@ impl threads::Handler<Probe> for Sink {
         reply: spawned_concurrency::reply::PendingReply<'_, ()>,
         _: &threads::Context<Self>,
     ) {
-        
-            drop(msg.0);
-reply.reply(());
+        drop(msg.0);
+        reply.reply(());
     }
 }
 fn released(weak: &Weak<()>) {

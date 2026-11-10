@@ -39,10 +39,9 @@ impl Handler<Hold> for Worker {
         reply: spawned_concurrency::reply::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
-        
-            let _ = hold.entered.send(());
-            let _ = hold.release.await;
-reply.reply(());
+        let _ = hold.entered.send(());
+        let _ = hold.release.await;
+        reply.reply(());
     }
 }
 impl Handler<Quit> for Worker {
@@ -52,9 +51,8 @@ impl Handler<Quit> for Worker {
         reply: spawned_concurrency::reply::PendingReply<'_, ()>,
         ctx: &Context<Self>,
     ) {
-        
-            ctx.stop_with_reason(quit.0);
-reply.reply(());
+        ctx.stop_with_reason(quit.0);
+        reply.reply(());
     }
 }
 

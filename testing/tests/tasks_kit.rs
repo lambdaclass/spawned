@@ -231,9 +231,8 @@ impl Handler<Bump> for Counter {
         reply: spawned_concurrency::reply::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
-        
-            self.0.fetch_add(1, Ordering::SeqCst);
-reply.reply(());
+        self.0.fetch_add(1, Ordering::SeqCst);
+        reply.reply(());
     }
 }
 impl Handler<Get> for Counter {
@@ -348,11 +347,10 @@ impl Handler<Hang> for Stuck {
         reply: spawned_concurrency::reply::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
-        
-            self.0.store(true, Ordering::SeqCst);
-            // Blocking code is never preempted, so shutdown cannot finish in time.
-            std::thread::sleep(Duration::from_millis(500));
-reply.reply(());
+        self.0.store(true, Ordering::SeqCst);
+        // Blocking code is never preempted, so shutdown cannot finish in time.
+        std::thread::sleep(Duration::from_millis(500));
+        reply.reply(());
     }
 }
 

@@ -48,11 +48,10 @@ impl Handler<Hold> for Victim {
         reply: spawned_concurrency::reply::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
-        
-            msg.0.send(()).unwrap();
-            let _ = msg.1.await;
-            assert!(!msg.2, "original handler failure");
-reply.reply(());
+        msg.0.send(()).unwrap();
+        let _ = msg.1.await;
+        assert!(!msg.2, "original handler failure");
+        reply.reply(());
     }
 }
 impl Handler<Bomb> for Victim {
@@ -62,9 +61,8 @@ impl Handler<Bomb> for Victim {
         reply: spawned_concurrency::reply::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
-        
-            self.0.fetch_add(1, Ordering::SeqCst);
-reply.reply(());
+        self.0.fetch_add(1, Ordering::SeqCst);
+        reply.reply(());
     }
 }
 struct Ping;
@@ -84,9 +82,8 @@ impl Handler<Down> for Observer {
         reply: spawned_concurrency::reply::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
-        
-            self.0.send((false, down.reason)).unwrap();
-reply.reply(());
+        self.0.send((false, down.reason)).unwrap();
+        reply.reply(());
     }
 }
 impl Handler<Ping> for Observer {

@@ -39,10 +39,12 @@ impl Handler<Thread> for Worker {
         reply: spawned_concurrency::reply::PendingReply<'_, String>,
         _: &Context<Self>,
     ) {
-        reply.reply(std::thread::current()
+        reply.reply(
+            std::thread::current()
                 .name()
                 .unwrap_or("unnamed")
-                .to_owned());
+                .to_owned(),
+        );
     }
 }
 struct Hold {
@@ -266,10 +268,9 @@ impl Handler<Freeze> for Worker {
         reply: spawned_concurrency::reply::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
-        
-            let _ = msg.started.send(());
-            msg.release.recv_timeout(LIMIT).unwrap();
-reply.reply(());
+        let _ = msg.started.send(());
+        msg.release.recv_timeout(LIMIT).unwrap();
+        reply.reply(());
     }
 }
 #[test]
@@ -370,8 +371,10 @@ impl Handler<SpawnBlockingChild> for Worker {
         >,
         _: &Context<Self>,
     ) {
-        reply.reply(Worker(Default::default())
-                .start_with_backend(spawned_concurrency::tasks::Backend::Blocking));
+        reply.reply(
+            Worker(Default::default())
+                .start_with_backend(spawned_concurrency::tasks::Backend::Blocking),
+        );
     }
 }
 struct Helper(tokio::sync::oneshot::Receiver<()>);
@@ -386,10 +389,10 @@ impl Handler<Helper> for Worker {
         _: &Context<Self>,
     ) {
         reply.reply(tokio::spawn(async move {
-                msg.0.await.unwrap();
-                tokio::time::sleep(Duration::from_millis(1)).await;
-                42
-            }));
+            msg.0.await.unwrap();
+            tokio::time::sleep(Duration::from_millis(1)).await;
+            42
+        }));
     }
 }
 #[test]
@@ -434,9 +437,8 @@ impl Handler<InstallMonitor> for Worker {
         reply: spawned_concurrency::reply::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
-        
-            msg.observer.monitor(&msg.target);
-reply.reply(());
+        msg.observer.monitor(&msg.target);
+        reply.reply(());
     }
 }
 impl Handler<spawned_concurrency::Down> for Worker {
@@ -446,9 +448,8 @@ impl Handler<spawned_concurrency::Down> for Worker {
         reply: spawned_concurrency::reply::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
-        
-            self.0.lock().unwrap().push("down");
-reply.reply(());
+        self.0.lock().unwrap().push("down");
+        reply.reply(());
     }
 }
 struct Events;

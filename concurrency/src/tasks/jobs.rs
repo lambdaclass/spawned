@@ -8,8 +8,8 @@ use super::{Actor, Context, Envelope, Handler};
 use crate::message::Message;
 use crate::reply::deadline::Expirable;
 use crate::reply::jobs::{
-    JobCredit, JobDeadline, JobError, JobGone, JobHandle, JobKey, JobOptions, JobOutcome,
-    JobState, PipeError, PipeErrorKind, PipeReplyError,
+    JobCredit, JobDeadline, JobError, JobGone, JobHandle, JobKey, JobOptions, JobOutcome, JobState,
+    PipeError, PipeErrorKind, PipeReplyError,
 };
 use crate::reply::slot::{Refused, Slot};
 use crate::reply::{now_ticks, PendingReply, ReplyTo};
@@ -254,7 +254,11 @@ impl<A: Actor> Context<A> {
         Ok(JobState::new(self.id(), opts.emit_credits))
     }
 
-    fn arm_deadline<T, M>(&self, opts: &JobOptions, run: &Arc<Run<A, T, M>>) -> Option<Arc<JobDeadline>>
+    fn arm_deadline<T, M>(
+        &self,
+        opts: &JobOptions,
+        run: &Arc<Run<A, T, M>>,
+    ) -> Option<Arc<JobDeadline>>
     where
         A: Handler<M>,
         M: Message,

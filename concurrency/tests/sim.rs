@@ -91,9 +91,7 @@ impl Handler<Crash> for Node {
         _reply: spawned_concurrency::reply::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
-        
-            panic!("injected crash after readiness");
-
+        panic!("injected crash after readiness");
     }
 }
 

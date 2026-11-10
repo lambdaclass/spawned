@@ -16,9 +16,8 @@ impl Handler<Add> for Worker {
         reply: spawned_concurrency::reply::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
-        
-            self.0 += 1;
-reply.reply(());
+        self.0 += 1;
+        reply.reply(());
     }
 }
 struct Fence;

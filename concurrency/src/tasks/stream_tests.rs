@@ -49,12 +49,11 @@ impl Handler<StreamMsg> for Summatory {
         reply: crate::reply::PendingReply<'_, ()>,
         ctx: &Context<Self>,
     ) {
-        
-            match msg {
-                StreamMsg::Add(val) => self.count += val,
-                StreamMsg::Error => ctx.stop(),
-            }
-reply.reply(());
+        match msg {
+            StreamMsg::Add(val) => self.count += val,
+            StreamMsg::Error => ctx.stop(),
+        }
+        reply.reply(());
     }
 }
 
@@ -65,9 +64,8 @@ impl Handler<StopSum> for Summatory {
         reply: crate::reply::PendingReply<'_, ()>,
         ctx: &Context<Self>,
     ) {
-        
-            ctx.stop();
-reply.reply(());
+        ctx.stop();
+        reply.reply(());
     }
 }
 

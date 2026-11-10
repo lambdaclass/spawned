@@ -233,9 +233,8 @@ impl Handler<Down> for Probe {
         reply: spawned_concurrency::reply::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
-        
-            self.counters.downs.fetch_add(1, Ordering::SeqCst);
-reply.reply(());
+        self.counters.downs.fetch_add(1, Ordering::SeqCst);
+        reply.reply(());
     }
 }
 

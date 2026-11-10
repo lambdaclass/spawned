@@ -193,9 +193,8 @@ fn main() {
                 reply: spawned_concurrency::reply::PendingReply<'_, ()>,
                 ctx: &Context<Self>,
             ) {
-                
-                    ctx.demonitor(msg.0);
-reply.reply(());
+                ctx.demonitor(msg.0);
+                reply.reply(());
             }
         }
         impl Handler<Down> for Observer {
@@ -205,14 +204,13 @@ reply.reply(());
                 reply: spawned_concurrency::reply::PendingReply<'_, ()>,
                 _ctx: &Context<Self>,
             ) {
-                
-                    tracing::info!(
-                        "[observer] received Down for {} ({})",
-                        msg.monitor_ref,
-                        msg.reason
-                    );
-                    self.log.lock().unwrap().push(msg);
-reply.reply(());
+                tracing::info!(
+                    "[observer] received Down for {} ({})",
+                    msg.monitor_ref,
+                    msg.reason
+                );
+                self.log.lock().unwrap().push(msg);
+                reply.reply(());
             }
         }
 
@@ -291,9 +289,8 @@ reply.reply(());
                 reply: spawned_concurrency::reply::PendingReply<'_, ()>,
                 ctx: &Context<Self>,
             ) {
-                
-                    ctx.link(&msg.0);
-reply.reply(());
+                ctx.link(&msg.0);
+                reply.reply(());
             }
         }
 

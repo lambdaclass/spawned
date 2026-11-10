@@ -188,9 +188,8 @@ mod task_actors {
             reply: spawned_concurrency::reply::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
-            
-                self.0.on_crash();
-reply.reply(());
+            self.0.on_crash();
+            reply.reply(());
         }
     }
     impl Handler<Ping> for TaskVictim {
@@ -224,9 +223,8 @@ reply.reply(());
             reply: spawned_concurrency::reply::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
-            
-                self.0.stash.push(Bomb(Some(REPLY_PANIC)));
-reply.reply(());
+            self.0.stash.push(Bomb(Some(REPLY_PANIC)));
+            reply.reply(());
         }
     }
 }
@@ -250,9 +248,8 @@ mod thread_actors {
             reply: spawned_concurrency::reply::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
-            
-                self.0.on_crash();
-reply.reply(());
+            self.0.on_crash();
+            reply.reply(());
         }
     }
     impl Handler<Ping> for ThreadVictim {
@@ -286,9 +283,8 @@ reply.reply(());
             reply: spawned_concurrency::reply::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
-            
-                self.0.stash.push(Bomb(Some(REPLY_PANIC)));
-reply.reply(());
+            self.0.stash.push(Bomb(Some(REPLY_PANIC)));
+            reply.reply(());
         }
     }
 }

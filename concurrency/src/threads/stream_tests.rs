@@ -34,10 +34,9 @@ impl Handler<Push> for Collector {
         reply: crate::reply::PendingReply<'_, ()>,
         _ctx: &Context<Self>,
     ) {
-        
-            self.items.push(msg.value);
-            self.done.fetch_add(1, Ordering::SeqCst);
-reply.reply(());
+        self.items.push(msg.value);
+        self.done.fetch_add(1, Ordering::SeqCst);
+        reply.reply(());
     }
 }
 

@@ -97,9 +97,7 @@ impl Handler<Crash> for Worker {
         _reply: spawned_concurrency::reply::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
-        
-            panic!("injected child failure");
-
+        panic!("injected child failure");
     }
 }
 
@@ -303,9 +301,7 @@ impl Handler<Crash> for QuitInStarted {
         _reply: spawned_concurrency::reply::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
-        
-            panic!("injected child failure");
-
+        panic!("injected child failure");
     }
 }
 

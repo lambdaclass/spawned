@@ -170,9 +170,8 @@ impl crate::tasks::Handler<crate::Down> for MonitorObserver {
         reply: crate::reply::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
-        
-            self.0.take().unwrap().send(down).unwrap();
-reply.reply(());
+        self.0.take().unwrap().send(down).unwrap();
+        reply.reply(());
     }
 }
 #[test]
@@ -247,9 +246,8 @@ impl crate::tasks::Handler<Stop> for Stopping {
         reply: crate::reply::PendingReply<'_, ()>,
         ctx: &Context<Self>,
     ) {
-        
-            ctx.stop();
-reply.reply(());
+        ctx.stop();
+        reply.reply(());
     }
 }
 #[test]

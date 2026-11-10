@@ -99,9 +99,7 @@ impl Handler<Crash> for Worker {
         _reply: spawned_concurrency::reply::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
-        
-            panic!("injected child failure");
-
+        panic!("injected child failure");
     }
 }
 impl Handler<Ping> for Worker {
@@ -668,9 +666,8 @@ impl Handler<LinkTo> for Linker {
         reply: spawned_concurrency::reply::PendingReply<'_, ()>,
         ctx: &Context<Self>,
     ) {
-        
-            ctx.link(&msg.0);
-reply.reply(());
+        ctx.link(&msg.0);
+        reply.reply(());
     }
 }
 impl Handler<Watch> for Linker {
@@ -680,9 +677,8 @@ impl Handler<Watch> for Linker {
         reply: spawned_concurrency::reply::PendingReply<'_, ()>,
         ctx: &Context<Self>,
     ) {
-        
-            ctx.monitor(&msg.0);
-reply.reply(());
+        ctx.monitor(&msg.0);
+        reply.reply(());
     }
 }
 impl Handler<Ping> for Linker {
@@ -702,9 +698,8 @@ impl Handler<Down> for Linker {
         reply: spawned_concurrency::reply::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
-        
-            let _ = self.downs.send(msg.reason);
-reply.reply(());
+        let _ = self.downs.send(msg.reason);
+        reply.reply(());
     }
 }
 
@@ -922,19 +917,26 @@ mod native {
     struct Target;
     impl NativeActor for Target {}
     impl NativeHandler<Crash> for Target {
-        fn handle(&mut self, _: Crash, _reply: spawned_concurrency::reply::PendingReply<'_, ()>, _: &NativeContext<Self>) {
-            
+        fn handle(
+            &mut self,
+            _: Crash,
+            _reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            _: &NativeContext<Self>,
+        ) {
             panic!("injected native failure");
-
         }
     }
     struct Peer;
     impl NativeActor for Peer {}
     impl NativeHandler<LinkTo> for Peer {
-        fn handle(&mut self, msg: LinkTo, reply: spawned_concurrency::reply::PendingReply<'_, ()>, ctx: &NativeContext<Self>) {
-            
+        fn handle(
+            &mut self,
+            msg: LinkTo,
+            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            ctx: &NativeContext<Self>,
+        ) {
             ctx.link(&msg.0);
-reply.reply(());
+            reply.reply(());
         }
     }
 

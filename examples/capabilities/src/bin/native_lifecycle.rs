@@ -25,10 +25,9 @@ impl Handler<Down> for Observer {
         reply: spawned_concurrency::reply::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
-        
-            self.counts.1 += 1;
-            self.downs.send(event).unwrap();
-reply.reply(());
+        self.counts.1 += 1;
+        self.downs.send(event).unwrap();
+        reply.reply(());
     }
 }
 struct Counts;

@@ -25,9 +25,8 @@ mod asynchronous {
             reply: spawned_concurrency::reply::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
-            
-                self.0 += N * msg.0;
-reply.reply(());
+            self.0 += N * msg.0;
+            reply.reply(());
         }
     }
     impl<const N: u64> Handler<Total> for Counter<N> {
@@ -91,9 +90,8 @@ mod synchronous {
             reply: spawned_concurrency::reply::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
-            
-                self.0 += N * msg.0;
-reply.reply(());
+            self.0 += N * msg.0;
+            reply.reply(());
         }
     }
     impl<const N: u64> Handler<Total> for Counter<N> {
