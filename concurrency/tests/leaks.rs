@@ -575,23 +575,39 @@ mod sim_leaks {
         async fn handle(&mut self, _: Down, _: &Context<Self>) {}
     }
 
+    /// A holds B's ref and recipient, B holds A's: a reference cycle through
+    /// actor state, as in the Tokio cycle test.
     struct A {
         _state: Arc<()>,
-        peer: Option<tasks::ActorRef<B>>,
+        peer: Option<(tasks::ActorRef<B>, tasks::Recipient<Ping>)>,
     }
     struct B {
         _state: Arc<()>,
-        peer: Option<tasks::ActorRef<A>>,
+        peer: Option<(tasks::ActorRef<A>, tasks::Recipient<Ping>)>,
     }
     impl Actor for A {}
     impl Actor for B {}
-    impl Handler<SetPeer<tasks::ActorRef<B>>> for A {
-        async fn handle(&mut self, msg: SetPeer<tasks::ActorRef<B>>, _: &Context<Self>) {
+    impl Handler<Ping> for A {
+        async fn handle(&mut self, _: Ping, _: &Context<Self>) {}
+    }
+    impl Handler<Ping> for B {
+        async fn handle(&mut self, _: Ping, _: &Context<Self>) {}
+    }
+    impl Handler<SetPeer<(tasks::ActorRef<B>, tasks::Recipient<Ping>)>> for A {
+        async fn handle(
+            &mut self,
+            msg: SetPeer<(tasks::ActorRef<B>, tasks::Recipient<Ping>)>,
+            _: &Context<Self>,
+        ) {
             self.peer = Some(msg.0);
         }
     }
-    impl Handler<SetPeer<tasks::ActorRef<A>>> for B {
-        async fn handle(&mut self, msg: SetPeer<tasks::ActorRef<A>>, _: &Context<Self>) {
+    impl Handler<SetPeer<(tasks::ActorRef<A>, tasks::Recipient<Ping>)>> for B {
+        async fn handle(
+            &mut self,
+            msg: SetPeer<(tasks::ActorRef<A>, tasks::Recipient<Ping>)>,
+            _: &Context<Self>,
+        ) {
             self.peer = Some(msg.0);
         }
     }
@@ -617,8 +633,10 @@ mod sim_leaks {
                     peer: None,
                 }
                 .start();
-                a.request(SetPeer(b.clone())).await.unwrap();
-                b.request(SetPeer(a.clone())).await.unwrap();
+                let (ra, rb) = (a.recipient::<Ping>(), b.recipient::<Ping>());
+                let recipients = [Arc::downgrade(&ra), Arc::downgrade(&rb)];
+                a.request(SetPeer((b.clone(), rb))).await.unwrap();
+                b.request(SetPeer((a.clone(), ra))).await.unwrap();
                 a.context().link(&b.child_handle());
                 probe.context().stop();
                 a.context().stop();
@@ -629,6 +647,10 @@ mod sim_leaks {
                 drop((probe, timer, a, b));
                 settle(&format!("seed {seed}: actor state"), || {
                     weak.iter().all(|w| w.strong_count() == 0)
+                })
+                .await;
+                settle(&format!("seed {seed}: cycle recipients"), || {
+                    recipients.iter().all(|w| w.strong_count() == 0)
                 })
                 .await;
                 settle(&format!("seed {seed}: simulated tasks"), || {
@@ -709,6 +731,124 @@ mod sim_leaks {
                 !registry::registered().iter().any(|n| n == name),
                 "seed {seed}: registry entry after shutdown"
             );
+        }
+    }
+
+    struct Crash;
+    impl Message for Crash {
+        type Result = ();
+    }
+    impl Handler<Crash> for Probe {
+        async fn handle(&mut self, _: Crash, _: &Context<Self>) {
+            panic!("injected failure for leak test");
+        }
+    }
+
+    /// A monitor whose target exits delivers `Down` and releases its waiter.
+    #[test]
+    fn monitor_waiter_released_on_target_exit() {
+        for seed in seeds() {
+            let rt = Runtime::with_seed(seed);
+            rt.block_on(async {
+                let watcher = Probe {
+                    _state: Arc::new(()),
+                }
+                .start();
+                let target = Probe {
+                    _state: Arc::new(()),
+                }
+                .start();
+                watcher.request(Ping).await.unwrap();
+                target.request(Ping).await.unwrap();
+                let baseline = rt.stats().tasks;
+                watcher.context().monitor(&target.child_handle());
+                target.request(Crash).await.unwrap_err();
+                target.join().await;
+                watcher.request(Ping).await.unwrap();
+                // The target's task and the waiter are both gone.
+                settle(&format!("seed {seed}: waiter after target exit"), || {
+                    rt.stats().tasks < baseline
+                })
+                .await;
+                watcher.context().stop();
+                watcher.join().await;
+            });
+        }
+    }
+
+    /// Restarted generations of a supervised child, and their registrations,
+    /// are released when the supervisor and the system shut down.
+    #[test]
+    fn supervisor_generations_and_registrations_released() {
+        use spawned_concurrency::supervision::{Backoff, ChildSpec, SupervisorConfig};
+        for seed in seeds() {
+            let rt = Runtime::with_seed(seed);
+            let generations = Arc::new(());
+            let gen_weak = Arc::downgrade(&generations);
+            let name = "leaks-sim-supervised";
+            rt.block_on(async move {
+                let system = ActorSystem::new().unwrap();
+                let group = system.async_group("leaks-sim-sup", 1).unwrap();
+                let mut tree = system
+                    .supervisor(SupervisorConfig {
+                        max_restarts: 100,
+                        backoff: Backoff {
+                            initial: Duration::ZERO,
+                            maximum: Duration::ZERO,
+                            jitter: false,
+                            ..Backoff::default()
+                        },
+                        ..SupervisorConfig::default()
+                    })
+                    .unwrap();
+                let child = tree
+                    .add(ChildSpec::new(name, &group, move |_| {
+                        let generations = generations.clone();
+                        async move {
+                            Ok::<_, String>(Named {
+                                _probe: Probe {
+                                    _state: generations,
+                                },
+                                name,
+                            })
+                        }
+                    }))
+                    .unwrap();
+                let supervisor = tree.start().await.unwrap();
+                for generation in 1..=3 {
+                    let current = child.wait_for_generation(generation - 1).await.unwrap();
+                    current.request(Crash).await.unwrap_err();
+                    child.wait_for_generation(generation).await.unwrap();
+                }
+                assert!(registry::registered().iter().any(|n| n == name));
+                assert!(supervisor.shutdown(Duration::from_secs(5)).await.complete);
+                assert!(system.shutdown(Duration::from_secs(5)).await.complete);
+                drop(child);
+                settle(&format!("seed {seed}: supervised generations"), || {
+                    gen_weak.strong_count() == 0
+                })
+                .await;
+            });
+            assert!(
+                !registry::registered().iter().any(|n| n == name),
+                "seed {seed}: registry entry after shutdown"
+            );
+        }
+    }
+
+    /// A probe that registers a name when it starts.
+    struct Named {
+        _probe: Probe,
+        name: &'static str,
+    }
+    impl Actor for Named {
+        async fn started(&mut self, ctx: &Context<Self>) {
+            ctx.register_name(self.name).unwrap();
+        }
+    }
+    impl Handler<Crash> for Named {
+        async fn handle(&mut self, _: Crash, _: &Context<Self>) {
+            panic!("injected failure for leak test");
         }
     }
 }

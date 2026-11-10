@@ -230,7 +230,7 @@ mod tests {
             seed: 1,
             spin: None,
             decisions: std::iter::once(Decision::Poll(3))
-                .chain(std::iter::repeat_n(Decision::Canonical, n))
+                .chain(std::iter::repeat_n(Decision::Canonical(None), n))
                 .collect(),
         };
         assert!(shrunk(&tape(2), &tape(9)));

@@ -618,36 +618,39 @@ async fn spin_vs_timeout() {
 /// the tape carries the recorded spin limit.
 #[test]
 fn strict_replay_follows_recorded_clock_jumps() {
+    let failure_of = |rt: &Runtime| {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            rt.block_on(spin_vs_timeout())
+        }));
+        result
+            .err()
+            .map(|payload| match payload.downcast::<String>() {
+                Ok(message) => *message,
+                Err(payload) => payload
+                    .downcast::<&str>()
+                    .map(|m| m.to_string())
+                    .unwrap_or_default(),
+            })
+    };
     let record = |spin: u64| {
         let rt = Runtime::with_seed(4);
         rt.set_spin_limit(spin);
         rt.record_tape();
-        let failed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            rt.block_on(spin_vs_timeout())
-        }))
-        .is_err();
-        (failed, rt.tape())
+        (failure_of(&rt), rt.tape())
     };
-    let (failed, tape) = record(100);
-    assert!(
-        failed,
-        "a 100-poll spin limit should time the spin-wait out"
-    );
-    assert!(!record(1_000_000).0, "a large spin limit should not");
+    let (failure, tape) = record(100);
+    let failure = failure.expect("a 100-poll spin limit should time the spin-wait out");
+    assert!(failure.contains("spin-wait timed out"), "{failure}");
+    assert_eq!(record(1_000_000).0, None, "a large spin limit should not");
     assert_eq!(tape.spin, Some(100));
     assert_eq!(sim::Tape::parse(&tape.to_text()).unwrap(), tape);
 
-    // Strict replay with a different spin limit in force still times out.
+    // Strict replay with a different spin limit in force reproduces exactly
+    // that failure (not a divergence) and consumes the whole tape.
     let rt = Runtime::with_seed(4);
     rt.replay(&tape);
     rt.set_spin_limit(1_000_000);
-    let replayed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        rt.block_on(spin_vs_timeout())
-    }));
-    assert!(
-        replayed.is_err(),
-        "strict replay did not reproduce the timeout"
-    );
+    assert_eq!(failure_of(&rt).as_deref(), Some(failure.as_str()));
     assert_eq!(rt.stats().tape_left, 0);
 }
 
@@ -700,7 +703,7 @@ fn strict_replay_fails_on_a_short_or_long_tape() {
     );
 
     let mut long = recorded.tape.clone();
-    long.decisions.push(sim::Decision::Canonical);
+    long.decisions.push(sim::Decision::Canonical(None));
     let failure = sim::run_once(2, Some(&long), &body)
         .failure
         .unwrap_or_default();
@@ -762,4 +765,169 @@ fn run_once_drains_a_world_kept_alive_by_a_task() {
     assert_eq!(sim::run_once(3, None, &body).failure, None);
     drop(body);
     assert_eq!(weak.strong_count(), 0, "parked task leaked with its world");
+}
+
+/// Codex (round 2): a strict replay that stops with decisions left over has
+/// not reproduced the run, even if it fails; and a bare `Runtime::replay`
+/// that finishes with decisions left over fails too.
+#[test]
+fn strict_replay_rejects_leftover_decisions_after_a_failure_and_on_bare_replay() {
+    let failing = |_| async {
+        small_schedule().await;
+        panic!("planted failure");
+    };
+    let recorded = sim::run_once(2, None, &failing);
+    assert_eq!(recorded.failure.as_deref(), Some("planted failure"));
+    let mut long = recorded.tape.clone();
+    long.decisions.push(sim::Decision::Canonical(None));
+    let failure = sim::run_once(2, Some(&long), &failing)
+        .failure
+        .unwrap_or_default();
+    assert!(failure.contains("replay diverged"), "{failure}");
+    assert!(failure.contains("planted failure"), "{failure}");
+
+    let ok = sim::run_once(3, None, &|_| small_schedule());
+    let mut long = ok.tape.clone();
+    long.decisions.push(sim::Decision::Canonical(None));
+    let rt = Runtime::with_seed(3);
+    rt.replay(&long);
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rt.block_on(small_schedule())
+    }));
+    let message = *result.unwrap_err().downcast::<String>().unwrap();
+    assert!(message.contains("1 tape decisions unused"), "{message}");
+}
+
+/// A root that sleeps 10 ms, then 20 ms more.
+async fn two_sleeps() {
+    spawned_rt::tasks::sleep(Duration::from_millis(10)).await;
+    spawned_rt::tasks::sleep(Duration::from_millis(20)).await;
+}
+
+/// Codex/agy (round 2): strict replay checks clock jumps against the pending
+/// timers (no backward jump, no jump past the earliest timer, a jump to it
+/// when idle) and canonical picks against the recorded task id.
+#[test]
+fn strict_replay_validates_clock_jumps_and_canonical_ids() {
+    let body = |_| two_sleeps();
+    let recorded = sim::run_once(1, None, &body);
+    assert_eq!(recorded.failure, None);
+    assert_eq!(sim::run_once(1, Some(&recorded.tape), &body).failure, None);
+    let fires: Vec<usize> = recorded
+        .tape
+        .decisions
+        .iter()
+        .enumerate()
+        .filter_map(|(i, d)| matches!(d, sim::Decision::Fire(_)).then_some(i))
+        .collect();
+    assert_eq!(fires.len(), 2, "{:?}", recorded.tape);
+    let edited = |at: usize, decision: sim::Decision| {
+        let mut tape = recorded.tape.clone();
+        tape.decisions[at] = decision;
+        sim::run_once(1, Some(&tape), &body)
+            .failure
+            .unwrap_or_default()
+    };
+    for (at, decision, expected) in [
+        (
+            fires[0],
+            sim::Decision::Fire(Duration::from_millis(15)),
+            "past the earliest",
+        ),
+        (
+            fires[0],
+            sim::Decision::Fire(Duration::from_millis(5)),
+            "while no task is ready",
+        ),
+        (
+            fires[1],
+            sim::Decision::Fire(Duration::from_millis(1)),
+            "moves the clock back",
+        ),
+        (
+            0,
+            sim::Decision::Canonical(Some(77)),
+            "polls task 77 as the canonical choice",
+        ),
+    ] {
+        let failure = edited(at, decision);
+        assert!(
+            failure.contains("replay diverged"),
+            "{decision:?}: {failure}"
+        );
+        assert!(failure.contains(expected), "{decision:?}: {failure}");
+    }
+}
+
+/// Codex (round 2): a timer that keeps firing during a spin-wait (a 1 ms
+/// sleeper) must not keep the clock creeping at 1 ms per 10,000 polls: the
+/// 5 s timeout still fires before the livelock guard.
+#[test]
+fn spin_wait_times_out_while_another_timer_keeps_firing() {
+    let rt = Runtime::with_seed(6);
+    let waited = rt.block_on(async {
+        let ticker = spawned_rt::tasks::spawn(async {
+            loop {
+                spawned_rt::tasks::sleep(Duration::from_millis(1)).await;
+            }
+        });
+        let waited = spawned_rt::tasks::timeout(Duration::from_secs(5), async {
+            loop {
+                sim::yield_now().await;
+            }
+        })
+        .await;
+        ticker.abort();
+        waited
+    });
+    assert!(waited.is_err());
+    let stats = rt.stats();
+    assert!(stats.now >= Duration::from_secs(5), "{stats:?}");
+    println!(
+        "5 s spin-wait beside a 1 ms ticker timed out after {} polls",
+        stats.steps
+    );
+}
+
+/// agy (round 2): replaying on a world that already ran rebuilds its Tokio
+/// runtime with the tape's seed, so `select!` takes the recorded branches.
+#[test]
+fn replay_on_a_used_world_reseeds_tokio() {
+    async fn branches() -> Vec<bool> {
+        let mut picks = Vec::new();
+        for _ in 0..16 {
+            picks.push(tokio::select! {
+                _ = async {} => true,
+                _ = async {} => false,
+            });
+            sim::yield_now().await;
+        }
+        picks
+    }
+    let fresh = Runtime::with_seed(2);
+    fresh.record_tape();
+    let expected = fresh.block_on(branches());
+    let tape = fresh.tape();
+
+    let used = Runtime::with_seed(1);
+    let other = used.block_on(branches());
+    assert_ne!(other, expected, "seeds 1 and 2 should differ");
+    used.replay(&tape);
+    assert_eq!(used.block_on(branches()), expected);
+}
+
+/// Codex (round 2): the shrinker never spends more runs than its budget
+/// (a candidate costs a permissive and a strict run).
+#[test]
+fn shrink_stays_within_its_run_budget() {
+    let body = |_| unstarted_children_end_stopped();
+    let failing = (0..200)
+        .map(|seed| sim::run_once(seed, None, &body))
+        .find(|outcome| outcome.failure.is_some())
+        .expect("no failing seed");
+    let failure = failing.failure.clone().unwrap();
+    for budget in [0, 1, 2, 3, 7] {
+        let (_, runs) = sim::shrink(&failing.tape, &failure, &body, budget);
+        assert!(runs <= budget, "budget {budget}: spent {runs}");
+    }
 }
