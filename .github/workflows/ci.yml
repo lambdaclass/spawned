@@ -120,6 +120,13 @@ jobs:
           key: panic-abort
       - name: Handler panics abort; supervision of non-panic exits still works
         run: cargo run --locked -p spawned-concurrency --example panic_abort --profile panic-abort
+      # ROADMAP rank 6b: `#[actor]` warns once per crate built with
+      # panic = "abort" (chat_room has two actors, so exactly one warning).
+      - name: '#[actor] warns once per crate under panic = "abort"'
+        run: |
+          out=$(cargo build --locked -p chat_room --profile panic-abort 2>&1) || { echo "$out"; exit 1; }
+          echo "$out"
+          test "$(grep -c 'PanicAbortInActorCrate' <<<"$out")" = 1
 
   # Advisories, licenses, duplicate versions and sources (deny.toml), plus
   # cargo-audit (.cargo/audit.toml). Accepted advisories are documented in both.
