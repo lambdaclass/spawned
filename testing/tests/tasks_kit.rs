@@ -562,7 +562,7 @@ async fn exit_injection_never_blocks_a_current_thread_runtime() {
 // Regression: `deadline` bounds the whole call, not each of its phases. Each
 // phase here waits out a 400 ms backoff, so two phases exceed 600 ms.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[should_panic(expected = "one deadline for the whole call")]
+#[should_panic(expected = "one limit for the whole call")]
 async fn restart_child_has_one_deadline_for_the_whole_call() {
     let test = TestSystem::new();
     let mut tree = test
