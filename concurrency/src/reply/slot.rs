@@ -425,10 +425,10 @@ impl<R> Slot<R> {
         }) {
             Ok(_) => Ok(()),
             Err(Some(())) => Err(Refused::Closed),
-            Err(None) => {
-                self.terminate(Terminal::Overloaded);
-                Err(Refused::Overloaded)
-            }
+            // At the bound the caller is answered `Overloaded` in the same
+            // step; if it closed first (abandoned, expired), this is `Closed`.
+            Err(None) if self.terminate(Terminal::Overloaded) => Err(Refused::Overloaded),
+            Err(None) => Err(Refused::Closed),
         }
     }
 
