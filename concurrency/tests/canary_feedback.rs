@@ -201,16 +201,14 @@ async fn supervision_logs_restart_budget_exhaustion_and_give_up() {
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("canary-tracing", 1).unwrap();
     let mut builder = system
-        .supervisor(SupervisorConfig {
-            max_restarts: 1,
-            backoff: Backoff {
-                initial: Duration::ZERO,
-                maximum: Duration::ZERO,
-                jitter: false,
-                ..Backoff::default()
-            },
-            ..SupervisorConfig::default()
-        })
+        .supervisor(
+            SupervisorConfig::default().max_restarts(1).backoff(
+                Backoff::default()
+                    .initial(Duration::ZERO)
+                    .maximum(Duration::ZERO)
+                    .jitter(false),
+            ),
+        )
         .unwrap();
     let child = builder
         .add(
@@ -257,17 +255,17 @@ async fn supervision_logs_restart_budget_exhaustion_and_give_up() {
         // 60-second backoff, and lookups must report owner failure even while
         // the healthy sibling's owned cleanup is pending.
         let mut cohort = system
-            .supervisor(SupervisorConfig {
-                strategy: SupervisorStrategy::OneForAll,
-                max_restarts: 0,
-                backoff: Backoff {
-                    initial: Duration::from_secs(60),
-                    maximum: Duration::from_secs(60),
-                    jitter: false,
-                    ..Backoff::default()
-                },
-                ..SupervisorConfig::default()
-            })
+            .supervisor(
+                SupervisorConfig::default()
+                    .strategy(SupervisorStrategy::OneForAll)
+                    .max_restarts(0)
+                    .backoff(
+                        Backoff::default()
+                            .initial(Duration::from_secs(60))
+                            .maximum(Duration::from_secs(60))
+                            .jitter(false),
+                    ),
+            )
             .unwrap();
         let (release, gate) = std::sync::mpsc::channel();
         let gate = Arc::new(Mutex::new(Some(gate)));

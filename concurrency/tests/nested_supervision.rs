@@ -22,16 +22,12 @@ use std::{
 mod tree_record;
 const LIMIT: Duration = Duration::from_secs(5);
 fn policy(retries: usize) -> SupervisorConfig {
-    SupervisorConfig {
-        max_restarts: retries,
-        backoff: Backoff {
-            initial: Duration::from_millis(1),
-            maximum: Duration::from_millis(4),
-            jitter: false,
-            ..Backoff::default()
-        },
-        ..SupervisorConfig::default()
-    }
+    SupervisorConfig::default().max_restarts(retries).backoff(
+        Backoff::default()
+            .initial(Duration::from_millis(1))
+            .maximum(Duration::from_millis(4))
+            .jitter(false),
+    )
 }
 struct Next;
 impl Message for Next {

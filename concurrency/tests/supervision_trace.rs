@@ -23,17 +23,15 @@ use std::{
 const LIMIT: Duration = Duration::from_secs(4);
 
 fn config(max_restarts: usize) -> SupervisorConfig {
-    SupervisorConfig {
-        max_restarts,
-        backoff: Backoff {
-            initial: Duration::from_millis(1),
-            maximum: Duration::from_millis(8),
-            jitter: false,
-            seed: Some(7),
-            ..Backoff::default()
-        },
-        ..SupervisorConfig::default()
-    }
+    SupervisorConfig::default()
+        .max_restarts(max_restarts)
+        .backoff(
+            Backoff::default()
+                .initial(Duration::from_millis(1))
+                .maximum(Duration::from_millis(8))
+                .jitter(false)
+                .seed(7),
+        )
 }
 
 fn mode_name(mode: RestartMode) -> &'static str {

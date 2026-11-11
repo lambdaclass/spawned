@@ -169,10 +169,7 @@ async fn settle(actor: &ActorRef<Owner>) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn deferred_and_job_families_count_each_outcome_once() {
-    metrics::configure(Config {
-        timing_sample_every: 1,
-    })
-    .unwrap();
+    metrics::configure(Config::default().timing_sample_every(1)).unwrap();
     let before = metrics::snapshot();
     let actor = Owner::default().start();
 

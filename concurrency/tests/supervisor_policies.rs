@@ -231,19 +231,19 @@ async fn scenario(
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("policy-oracle", 1).unwrap();
     let mut tree = system
-        .supervisor(SupervisorConfig {
-            strategy,
-            max_restarts: 128,
-            restart_window: Duration::from_secs(3600),
-            backoff: Backoff {
-                initial: Duration::ZERO,
-                maximum: Duration::ZERO,
-                jitter: false,
-                seed: Some(42),
-                ..Backoff::default()
-            },
-            ..SupervisorConfig::default()
-        })
+        .supervisor(
+            SupervisorConfig::default()
+                .strategy(strategy)
+                .max_restarts(128)
+                .restart_window(Duration::from_secs(3600))
+                .backoff(
+                    Backoff::default()
+                        .initial(Duration::ZERO)
+                        .maximum(Duration::ZERO)
+                        .jitter(false)
+                        .seed(42),
+                ),
+        )
         .unwrap();
     let mut children = Vec::new();
     for (index, restart) in modes.iter().enumerate() {

@@ -440,17 +440,13 @@ mod env {
             let Some(group) = self.group.clone() else {
                 return true;
             };
-            let config = SupervisorConfig {
-                max_restarts: 10,
-                backoff: Backoff {
-                    initial: Duration::ZERO,
-                    maximum: Duration::ZERO,
-                    jitter: false,
-                    seed: Some(1),
-                    ..Backoff::default()
-                },
-                ..SupervisorConfig::default()
-            };
+            let config = SupervisorConfig::default().max_restarts(10).backoff(
+                Backoff::default()
+                    .initial(Duration::ZERO)
+                    .maximum(Duration::ZERO)
+                    .jitter(false)
+                    .seed(1),
+            );
             let mut tree = self.system.supervisor(config).unwrap();
             let stopped = stopped.clone();
             let child = tree

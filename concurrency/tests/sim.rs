@@ -39,19 +39,17 @@ fn push(log: &Log, event: String) {
 }
 
 fn config(strategy: SupervisorStrategy) -> SupervisorConfig {
-    SupervisorConfig {
-        strategy,
-        max_restarts: 3,
-        backoff: Backoff {
-            initial: Duration::from_millis(1),
-            maximum: Duration::from_millis(4),
-            jitter: false,
-            // Fixed jitter seed: otherwise it comes from SystemTime.
-            seed: Some(7),
-            ..Backoff::default()
-        },
-        ..SupervisorConfig::default()
-    }
+    SupervisorConfig::default()
+        .strategy(strategy)
+        .max_restarts(3)
+        .backoff(
+            Backoff::default()
+                .initial(Duration::from_millis(1))
+                .maximum(Duration::from_millis(4))
+                .jitter(false)
+                // Fixed jitter seed: otherwise it comes from SystemTime.
+                .seed(7),
+        )
 }
 
 struct Crash;
@@ -415,20 +413,21 @@ async fn restart_window(out: Arc<Mutex<Option<WindowRun>>>) {
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("sim-window", 1).unwrap();
     let mut tree = system
-        .supervisor(SupervisorConfig {
-            strategy: SupervisorStrategy::OneForOne,
-            max_restarts: 3,
-            restart_window: Duration::from_secs(60),
-            backoff: Backoff {
-                initial: Duration::from_secs(1),
-                maximum: Duration::from_secs(8),
-                stable_after: Duration::from_secs(3600),
-                jitter: true,
-                // Left to spawned_rt::time::entropy: seeded by the simulation.
-                seed: None,
-            },
-            ..SupervisorConfig::default()
-        })
+        .supervisor(
+            SupervisorConfig::default()
+                .strategy(SupervisorStrategy::OneForOne)
+                .max_restarts(3)
+                .restart_window(Duration::from_secs(60))
+                // No fixed seed: jitter is left to spawned_rt::time::entropy,
+                // seeded by the simulation.
+                .backoff(
+                    Backoff::default()
+                        .initial(Duration::from_secs(1))
+                        .maximum(Duration::from_secs(8))
+                        .stable_after(Duration::from_secs(3600))
+                        .jitter(true),
+                ),
+        )
         .unwrap();
     let child: SupervisedChild<Node> = tree
         .add(ChildSpec::new("flappy", &group, |_| async {

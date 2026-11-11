@@ -56,15 +56,14 @@ async fn main() {
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("named-service", 1).unwrap();
     let mut tree = system
-        .supervisor(SupervisorConfig {
-            backoff: Backoff {
-                initial: Duration::ZERO,
-                maximum: Duration::ZERO,
-                jitter: false,
-                ..Backoff::default()
-            },
-            ..SupervisorConfig::default()
-        })
+        .supervisor(
+            SupervisorConfig::default().backoff(
+                Backoff::default()
+                    .initial(Duration::ZERO)
+                    .maximum(Duration::ZERO)
+                    .jitter(false),
+            ),
+        )
         .unwrap();
     let service = tree
         .add(ChildSpec::new("prices", &group, |_| async {

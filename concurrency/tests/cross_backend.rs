@@ -1005,19 +1005,17 @@ fn affected(strategy: SupervisorStrategy, n: usize, crashed: usize) -> std::ops:
     }
 }
 fn supervisor_config(strategy: SupervisorStrategy) -> SupervisorConfig {
-    SupervisorConfig {
-        strategy,
-        max_restarts: 10_000,
-        restart_window: Duration::from_secs(60),
-        backoff: Backoff {
-            initial: Duration::ZERO,
-            maximum: Duration::ZERO,
-            jitter: false,
-            seed: Some(1),
-            ..Backoff::default()
-        },
-        ..SupervisorConfig::default()
-    }
+    SupervisorConfig::default()
+        .strategy(strategy)
+        .max_restarts(10_000)
+        .restart_window(Duration::from_secs(60))
+        .backoff(
+            Backoff::default()
+                .initial(Duration::ZERO)
+                .maximum(Duration::ZERO)
+                .jitter(false)
+                .seed(1),
+        )
 }
 fn supervisor_workload(
     env: &mut Env,

@@ -247,26 +247,25 @@ fn restart_mode(v: u8) -> RestartMode {
 
 fn config(p: &Policy, seed: u64) -> SupervisorConfig {
     let initial = Duration::from_millis(p.backoff as u64);
-    SupervisorConfig {
-        strategy: match p.strategy % 3 {
+    SupervisorConfig::default()
+        .strategy(match p.strategy % 3 {
             0 => SupervisorStrategy::OneForOne,
             1 => SupervisorStrategy::OneForAll,
             _ => SupervisorStrategy::RestForOne,
-        },
-        max_restarts: (p.max_restarts % 7) as usize,
+        })
+        .max_restarts((p.max_restarts % 7) as usize)
         // At least 50 ms, so a fast restart loop exhausts the budget
         // instead of restarting forever as virtual time creeps.
-        restart_window: Duration::from_millis(50 + 2 * p.window as u64),
-        backoff: Backoff {
-            initial,
-            maximum: initial * 4,
-            stable_after: Duration::from_millis(10 * p.stable as u64 + 1),
-            jitter: p.jitter,
-            // Never the default (wall-clock) jitter seed.
-            seed: Some(seed),
-        },
-        ..SupervisorConfig::default()
-    }
+        .restart_window(Duration::from_millis(50 + 2 * p.window as u64))
+        .backoff(
+            Backoff::default()
+                .initial(initial)
+                .maximum(initial * 4)
+                .stable_after(Duration::from_millis(10 * p.stable as u64 + 1))
+                .jitter(p.jitter)
+                // Never the default (wall-clock) jitter seed.
+                .seed(seed),
+        )
 }
 
 fn cfg_strategy(p: &Policy) -> SupervisorStrategy {

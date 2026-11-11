@@ -228,18 +228,18 @@ async fn initial_failure() -> Vec<(String, u64)> {
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("explore-initial", 2).unwrap();
     let mut tree = system
-        .supervisor(SupervisorConfig {
-            strategy: SupervisorStrategy::OneForAll,
-            max_restarts: 3,
-            backoff: Backoff {
-                initial: Duration::from_millis(1),
-                maximum: Duration::from_millis(4),
-                jitter: false,
-                seed: Some(7),
-                ..Backoff::default()
-            },
-            ..SupervisorConfig::default()
-        })
+        .supervisor(
+            SupervisorConfig::default()
+                .strategy(SupervisorStrategy::OneForAll)
+                .max_restarts(3)
+                .backoff(
+                    Backoff::default()
+                        .initial(Duration::from_millis(1))
+                        .maximum(Duration::from_millis(4))
+                        .jitter(false)
+                        .seed(7),
+                ),
+        )
         .unwrap();
     let children: Vec<_> = (0..3)
         .map(|index| {

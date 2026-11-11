@@ -81,17 +81,17 @@ async fn trace_cohort_selection_and_temporary_retirement() {
         let system = ActorSystem::new().unwrap();
         let group = system.async_group("cohort-trace", 2).unwrap();
         let mut tree = system
-            .supervisor(SupervisorConfig {
-                strategy,
-                max_restarts: 30,
-                backoff: Backoff {
-                    initial: Duration::from_millis(1),
-                    maximum: Duration::from_millis(2),
-                    jitter: false,
-                    ..Backoff::default()
-                },
-                ..SupervisorConfig::default()
-            })
+            .supervisor(
+                SupervisorConfig::default()
+                    .strategy(strategy)
+                    .max_restarts(30)
+                    .backoff(
+                        Backoff::default()
+                            .initial(Duration::from_millis(1))
+                            .maximum(Duration::from_millis(2))
+                            .jitter(false),
+                    ),
+            )
             .unwrap();
         let id = tree.trace_id();
         let mut children = Vec::new();
@@ -142,11 +142,11 @@ async fn trace_superseded_round_with_parked_temporary_tail() {
         let group = system.async_group("cohort-superseded-trace", 2).unwrap();
         let entered = Arc::new(tokio::sync::Notify::new());
         let mut tree = system
-            .supervisor(SupervisorConfig {
-                strategy,
-                max_restarts: 30,
-                ..SupervisorConfig::default()
-            })
+            .supervisor(
+                SupervisorConfig::default()
+                    .strategy(strategy)
+                    .max_restarts(30),
+            )
             .unwrap();
         let id = tree.trace_id();
         let mut children = Vec::new();
@@ -215,10 +215,7 @@ async fn trace_normally_retired_transient_is_skipped_by_later_cohorts() {
         let system = ActorSystem::new().unwrap();
         let group = system.async_group("retired-transient-trace", 2).unwrap();
         let mut tree = system
-            .supervisor(SupervisorConfig {
-                strategy,
-                ..SupervisorConfig::default()
-            })
+            .supervisor(SupervisorConfig::default().strategy(strategy))
             .unwrap();
         let mut children = Vec::new();
         for i in 0..3 {
@@ -294,17 +291,17 @@ async fn trace_failed_replacement_starts_a_new_round() {
         let system = ActorSystem::new().unwrap();
         let group = system.async_group("cohort-pre-ready-trace", 2).unwrap();
         let mut tree = system
-            .supervisor(SupervisorConfig {
-                strategy,
-                max_restarts: 30,
-                backoff: Backoff {
-                    initial: Duration::from_millis(1),
-                    maximum: Duration::from_millis(2),
-                    jitter: false,
-                    ..Backoff::default()
-                },
-                ..SupervisorConfig::default()
-            })
+            .supervisor(
+                SupervisorConfig::default()
+                    .strategy(strategy)
+                    .max_restarts(30)
+                    .backoff(
+                        Backoff::default()
+                            .initial(Duration::from_millis(1))
+                            .maximum(Duration::from_millis(2))
+                            .jitter(false),
+                    ),
+            )
             .unwrap();
         let id = tree.trace_id();
         tree.add(ChildSpec::new("a", &group, |_| async {

@@ -91,10 +91,7 @@ fn runtime() -> tokio::runtime::Runtime {
 // reset, and these assertions must not race unrelated actors in other tests.
 #[test]
 fn metrics_conserve_work_across_all_lifecycle_paths() {
-    metrics::configure(metrics::Config {
-        timing_sample_every: 1,
-    })
-    .unwrap();
+    metrics::configure(metrics::Config::default().timing_sample_every(1)).unwrap();
     runtime().block_on(async {
         let (release, gate) = oneshot::channel();
         let actor = Probe { gate: Some(gate) }.start();

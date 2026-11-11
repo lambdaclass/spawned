@@ -110,15 +110,14 @@ async fn main() {
     let test = kit::TestSystem::new();
     let mut tree = test
         .system()
-        .supervisor(SupervisorConfig {
-            backoff: Backoff {
-                initial: Duration::ZERO,
-                maximum: Duration::ZERO,
-                jitter: false,
-                ..Backoff::default()
-            },
-            ..SupervisorConfig::default()
-        })
+        .supervisor(
+            SupervisorConfig::default().backoff(
+                Backoff::default()
+                    .initial(Duration::ZERO)
+                    .maximum(Duration::ZERO)
+                    .jitter(false),
+            ),
+        )
         .unwrap();
     let rates_ref = rates.to_rates_ref();
     let probe = out.clone();

@@ -1095,10 +1095,7 @@ mod tasks_mode {
             ] {
                 let system = ActorSystem::new().unwrap();
                 let group = system.async_group("s1", 1).unwrap();
-                let config = SupervisorConfig {
-                    strategy,
-                    ..SupervisorConfig::default()
-                };
+                let config = SupervisorConfig::default().strategy(strategy);
                 let mut tree = system.supervisor(config).unwrap();
                 let seen = Seen::default();
                 let first = tree

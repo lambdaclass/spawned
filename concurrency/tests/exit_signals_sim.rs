@@ -471,10 +471,7 @@ async fn deferred_exit_vs_commit(seed: u64) {
     let log = Log::default();
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("sim-s1", 2).unwrap();
-    let config = SupervisorConfig {
-        strategy: SupervisorStrategy::OneForOne,
-        ..SupervisorConfig::default()
-    };
+    let config = SupervisorConfig::default().strategy(SupervisorStrategy::OneForOne);
     let mut tree = system.supervisor(config).unwrap();
     let (l, starts) = (log.clone(), Arc::new(Mutex::new(0u32)));
     let first = tree

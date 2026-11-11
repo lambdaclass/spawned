@@ -63,7 +63,10 @@ fn exit_class(reason: &ExitReason, cleanup_failed: bool) -> &'static str {
     }
 }
 
+/// Restart delay policy. Non-exhaustive: start from `Backoff::default()` (or
+/// `new()`) and chain the setters, or assign the public fields of a value.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct Backoff {
     /// First retry's delay cap, not its minimum. With jitter enabled the delay
     /// can be anywhere from zero through this value (1s permits a 150ms retry).
@@ -93,6 +96,37 @@ impl Default for Backoff {
     }
 }
 impl Backoff {
+    /// The default policy: 10 ms initial cap, 5 s maximum, stable after
+    /// 30 s, jitter on, no fixed seed.
+    pub fn new() -> Self {
+        Self::default()
+    }
+    /// Set [`initial`](Self::initial).
+    pub fn initial(mut self, initial: Duration) -> Self {
+        self.initial = initial;
+        self
+    }
+    /// Set [`maximum`](Self::maximum).
+    pub fn maximum(mut self, maximum: Duration) -> Self {
+        self.maximum = maximum;
+        self
+    }
+    /// Set [`stable_after`](Self::stable_after).
+    pub fn stable_after(mut self, stable_after: Duration) -> Self {
+        self.stable_after = stable_after;
+        self
+    }
+    /// Set [`jitter`](Self::jitter).
+    pub fn jitter(mut self, jitter: bool) -> Self {
+        self.jitter = jitter;
+        self
+    }
+    /// Seed the jitter for reproducible tests.
+    pub fn seed(mut self, seed: u64) -> Self {
+        self.seed = Some(seed);
+        self
+    }
+
     /// Capped exponential delay before jitter.
     pub(crate) fn bound(&self, failures: u32) -> Duration {
         self.initial
@@ -145,7 +179,13 @@ pub enum SupervisorStrategy {
     RestForOne,
 }
 
+/// Supervisor flags (OTP's `strategy`, `intensity` and `period`, plus a
+/// child cap and a restart backoff). Non-exhaustive: start from
+/// `SupervisorConfig::default()` (or `new()`) and chain the setters,
+/// `SupervisorConfig::new().strategy(SupervisorStrategy::OneForAll).max_restarts(3)`,
+/// or assign the public fields of a value.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct SupervisorConfig {
     pub strategy: SupervisorStrategy,
     /// Supervisor-wide restarts per `restart_window` (OTP's intensity and

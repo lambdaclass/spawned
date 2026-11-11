@@ -104,10 +104,7 @@ async fn main() {
     let stops: Stops = Arc::default();
     // RestForOne rebuilds dependents retaining an earlier instance's reference.
     let mut tree = system
-        .supervisor(SupervisorConfig {
-            strategy: SupervisorStrategy::RestForOne,
-            ..SupervisorConfig::default()
-        })
+        .supervisor(SupervisorConfig::default().strategy(SupervisorStrategy::RestForOne))
         .unwrap();
     let events = stops.clone();
     let peers = tree

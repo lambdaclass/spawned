@@ -54,9 +54,9 @@ fn main() {
     assert!(actors > 0 && actors <= 1024 && producers > 0 && producers <= 1024);
     assert!(duration.as_secs() > 0 && duration.as_secs() <= 60 && work <= 1_000_000);
     #[cfg(feature = "metrics")]
-    spawned_concurrency::metrics::configure(spawned_concurrency::metrics::Config {
-        timing_sample_every: _sample_every,
-    })
+    spawned_concurrency::metrics::configure(
+        spawned_concurrency::metrics::Config::default().timing_sample_every(_sample_every),
+    )
     .unwrap();
     let (requests, elapsed) = if mode == "async" {
         use tasks::ActorStart;

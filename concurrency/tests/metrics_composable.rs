@@ -29,25 +29,15 @@ fn embedded_components_can_add_sampling_requirements_after_actors_start() {
     actor.request(Ping).unwrap();
     assert_eq!(metrics::snapshot().queue_wait.count, 1);
     // The implicit default did not register an application requirement.
-    metrics::configure_composable(Config {
-        timing_sample_every: 0,
-    });
+    metrics::configure_composable(Config::default().timing_sample_every(0));
     actor.request(Ping).unwrap();
     assert_eq!(metrics::snapshot().queue_wait.count, 1);
 
     // Two libraries initialize independently, after the host is already running.
-    metrics::configure_composable(Config {
-        timing_sample_every: 8,
-    });
-    metrics::configure_composable(Config {
-        timing_sample_every: 2,
-    });
-    metrics::configure_composable(Config {
-        timing_sample_every: 0,
-    });
-    metrics::configure_composable(Config {
-        timing_sample_every: 16,
-    });
+    metrics::configure_composable(Config::default().timing_sample_every(8));
+    metrics::configure_composable(Config::default().timing_sample_every(2));
+    metrics::configure_composable(Config::default().timing_sample_every(0));
+    metrics::configure_composable(Config::default().timing_sample_every(16));
     assert_eq!(metrics::configuration().timing_sample_every, 2);
     for _ in 0..32 {
         actor.request(Ping).unwrap();

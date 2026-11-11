@@ -479,15 +479,12 @@ mod tasks {
     async fn timers_are_not_carried_to_a_supervised_replacement() {
         let system = ActorSystem::new().unwrap();
         let group = system.async_group("timers", 1).unwrap();
-        let config = SupervisorConfig {
-            backoff: Backoff {
-                initial: Duration::from_millis(1),
-                maximum: Duration::from_millis(1),
-                jitter: false,
-                ..Backoff::default()
-            },
-            ..SupervisorConfig::default()
-        };
+        let config = SupervisorConfig::default().backoff(
+            Backoff::default()
+                .initial(Duration::from_millis(1))
+                .maximum(Duration::from_millis(1))
+                .jitter(false),
+        );
         let (tx, mut rx) = unbounded_channel();
         let first = Arc::new(AtomicBool::new(true));
         let mut tree = system.supervisor(config).unwrap();
@@ -1893,18 +1890,16 @@ mod supervision_contract {
     };
 
     fn config(strategy: SupervisorStrategy, initial: Duration) -> SupervisorConfig {
-        SupervisorConfig {
-            strategy,
-            max_restarts: 20,
-            backoff: Backoff {
-                initial,
-                maximum: Duration::from_secs(10),
-                jitter: false,
-                seed: Some(7),
-                ..Backoff::default()
-            },
-            ..SupervisorConfig::default()
-        }
+        SupervisorConfig::default()
+            .strategy(strategy)
+            .max_restarts(20)
+            .backoff(
+                Backoff::default()
+                    .initial(initial)
+                    .maximum(Duration::from_secs(10))
+                    .jitter(false)
+                    .seed(7),
+            )
     }
 
     struct Hold {

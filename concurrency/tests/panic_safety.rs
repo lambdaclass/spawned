@@ -885,17 +885,13 @@ mod tasks_mode {
     }
 
     fn config() -> SupervisorConfig {
-        SupervisorConfig {
-            max_restarts: 10,
-            backoff: Backoff {
-                initial: Duration::ZERO,
-                maximum: Duration::ZERO,
-                jitter: false,
-                seed: Some(1),
-                ..Backoff::default()
-            },
-            ..SupervisorConfig::default()
-        }
+        SupervisorConfig::default().max_restarts(10).backoff(
+            Backoff::default()
+                .initial(Duration::ZERO)
+                .maximum(Duration::ZERO)
+                .jitter(false)
+                .seed(1),
+        )
     }
 
     /// Under supervision the first generation fails in each callback; the

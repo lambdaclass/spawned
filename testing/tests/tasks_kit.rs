@@ -304,15 +304,14 @@ async fn supervised_child_restarts_after_injected_crash() {
     let test = TestSystem::new();
     let mut tree = test
         .system()
-        .supervisor(SupervisorConfig {
-            backoff: Backoff {
-                initial: Duration::ZERO,
-                maximum: Duration::ZERO,
-                jitter: false,
-                ..Backoff::default()
-            },
-            ..SupervisorConfig::default()
-        })
+        .supervisor(
+            SupervisorConfig::default().backoff(
+                Backoff::default()
+                    .initial(Duration::ZERO)
+                    .maximum(Duration::ZERO)
+                    .jitter(false),
+            ),
+        )
         .unwrap();
     let child = tree
         .add(ChildSpec::new("counter", test.group(), |_| async {
@@ -508,15 +507,14 @@ async fn restart_child_waits_out_a_restart_in_progress() {
     let test = TestSystem::new();
     let mut tree = test
         .system()
-        .supervisor(SupervisorConfig {
-            backoff: Backoff {
-                initial: Duration::from_millis(100),
-                maximum: Duration::from_millis(100),
-                jitter: false,
-                ..Backoff::default()
-            },
-            ..SupervisorConfig::default()
-        })
+        .supervisor(
+            SupervisorConfig::default().backoff(
+                Backoff::default()
+                    .initial(Duration::from_millis(100))
+                    .maximum(Duration::from_millis(100))
+                    .jitter(false),
+            ),
+        )
         .unwrap();
     let child = tree
         .add(ChildSpec::new("counter", test.group(), |_| async {
@@ -569,15 +567,14 @@ async fn restart_child_has_one_deadline_for_the_whole_call() {
     let test = TestSystem::new();
     let mut tree = test
         .system()
-        .supervisor(SupervisorConfig {
-            backoff: Backoff {
-                initial: Duration::from_millis(400),
-                maximum: Duration::from_millis(400),
-                jitter: false,
-                ..Backoff::default()
-            },
-            ..SupervisorConfig::default()
-        })
+        .supervisor(
+            SupervisorConfig::default().backoff(
+                Backoff::default()
+                    .initial(Duration::from_millis(400))
+                    .maximum(Duration::from_millis(400))
+                    .jitter(false),
+            ),
+        )
         .unwrap();
     let child = tree
         .add(ChildSpec::new("counter", test.group(), |_| async {

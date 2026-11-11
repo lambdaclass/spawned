@@ -54,6 +54,9 @@
     `SupervisorReport`, `ActorExit`, `metrics::Snapshot`,
     `HistogramSnapshot`). `Down` gains `actor`, the monitored `ActorId`
     (OTP's `Object` in `{'DOWN', Ref, process, Object, Info}`).
+  - `SupervisorConfig`, `Backoff` and `metrics::Config` are
+    `#[non_exhaustive]` with builders (`new()` plus one setter per field;
+    `Backoff::seed(u64)`).
 - Deferred replies and jobs, fixes from the 0.8 pre-release review: a job
   deadline still fires while the result waits for scheduled emits, and the
   job keeps its `MAX_OUTSTANDING` credit until its terminal message; a job

@@ -235,17 +235,17 @@ async fn each_strategy_recovers_on_a_full_native_pool_without_overlapping_slots(
         let system = ActorSystem::new().unwrap();
         let group = system.thread_group("supervised-roots", 3).unwrap();
         let mut tree = system
-            .supervisor(SupervisorConfig {
-                strategy,
-                max_restarts: 20,
-                backoff: Backoff {
-                    initial: Duration::from_millis(1),
-                    maximum: Duration::from_millis(2),
-                    jitter: false,
-                    ..Backoff::default()
-                },
-                ..SupervisorConfig::default()
-            })
+            .supervisor(
+                SupervisorConfig::default()
+                    .strategy(strategy)
+                    .max_restarts(20)
+                    .backoff(
+                        Backoff::default()
+                            .initial(Duration::from_millis(1))
+                            .maximum(Duration::from_millis(2))
+                            .jitter(false),
+                    ),
+            )
             .unwrap();
         let calls = Arc::new(AtomicUsize::new(0));
         let mut children = Vec::new();

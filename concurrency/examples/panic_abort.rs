@@ -103,15 +103,12 @@ mod tasks {
         tokio::runtime::Runtime::new().unwrap().block_on(async {
             let system = ActorSystem::new().unwrap();
             let group = system.async_group("abort", 1).unwrap();
-            let config = SupervisorConfig {
-                backoff: Backoff {
-                    initial: Duration::from_millis(1),
-                    maximum: Duration::from_millis(1),
-                    jitter: false,
-                    ..Backoff::default()
-                },
-                ..SupervisorConfig::default()
-            };
+            let config = SupervisorConfig::default().backoff(
+                Backoff::default()
+                    .initial(Duration::from_millis(1))
+                    .maximum(Duration::from_millis(1))
+                    .jitter(false),
+            );
             let mut tree = system.supervisor(config).unwrap();
             let child = tree
                 .add(

@@ -257,17 +257,13 @@ mod tasks_chain {
                 system.async_group("stack-async", 2).unwrap(),
                 system.thread_group("stack-thread", 4).unwrap(),
             ] {
-                let config = SupervisorConfig {
-                    max_restarts: 10,
-                    backoff: Backoff {
-                        initial: Duration::ZERO,
-                        maximum: Duration::ZERO,
-                        jitter: false,
-                        seed: Some(1),
-                        ..Backoff::default()
-                    },
-                    ..SupervisorConfig::default()
-                };
+                let config = SupervisorConfig::default().max_restarts(10).backoff(
+                    Backoff::default()
+                        .initial(Duration::ZERO)
+                        .maximum(Duration::ZERO)
+                        .jitter(false)
+                        .seed(1),
+                );
                 let mut tree = system.supervisor(config).unwrap();
                 let child = tree
                     .add(ChildSpec::new("flaky", &group, |ctx| {

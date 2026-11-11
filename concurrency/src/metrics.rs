@@ -25,7 +25,9 @@ use spawned_rt::time::Instant;
 
 /// Timing samples are deterministic, one in every N observations per category.
 /// Zero disables clocks/histograms while retaining counters and gauges.
+/// Non-exhaustive: `Config::new().timing_sample_every(n)`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Config {
     pub timing_sample_every: u64,
 }
@@ -34,6 +36,18 @@ impl Default for Config {
         Self {
             timing_sample_every: 1,
         }
+    }
+}
+impl Config {
+    /// Time every observation (`timing_sample_every = 1`).
+    pub fn new() -> Self {
+        Self::default()
+    }
+    /// Time one in every `n` observations per category; 0 keeps counters
+    /// and gauges only.
+    pub fn timing_sample_every(mut self, n: u64) -> Self {
+        self.timing_sample_every = n;
+        self
     }
 }
 struct SamplingPolicy {

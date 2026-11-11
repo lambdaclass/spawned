@@ -45,6 +45,9 @@ every change; this guide covers what you need to edit when upgrading.
 | `Down { monitor_ref, reason }` (pattern) | `Down { monitor_ref, reason, .. }`; `Down` gains `actor: ActorId` (the monitored actor) and, like `Exit`, is `#[non_exhaustive]` |
 | exhaustive `match` on `SupervisorError`, `SystemError`, `HelperError`, `RegistryError`, `SupervisorStrategy`, `ExecutionProfile`, `ChildState`, `Backend`, `spawned_test::Outcome` | add a wildcard arm (all `#[non_exhaustive]`) |
 | struct literal or exhaustive pattern of `ChildSnapshot`, `SupervisorReport`, `ActorExit`, `metrics::Snapshot`, `HistogramSnapshot` | read the fields; patterns need `..` (all `#[non_exhaustive]`) |
+| `SupervisorConfig { strategy: s, max_restarts: n, ..Default::default() }` | `SupervisorConfig::new().strategy(s).max_restarts(n)` (or assign fields of `SupervisorConfig::default()`) |
+| `Backoff { initial: a, jitter: false, seed: Some(7), ..Default::default() }` | `Backoff::new().initial(a).jitter(false).seed(7)` |
+| `metrics::Config { timing_sample_every: n }` | `metrics::Config::new().timing_sample_every(n)` |
 
 ### Exit signals, startup and runtime drops as in OTP (ranks 5e, 5f, 5g, targets 0.8, in progress)
 

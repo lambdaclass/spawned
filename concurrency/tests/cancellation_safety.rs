@@ -580,17 +580,13 @@ async fn group_ready_wait_is_cancel_safe() {
 // ---------------------------------------------------------------------------
 
 fn config() -> SupervisorConfig {
-    SupervisorConfig {
-        max_restarts: 100,
-        backoff: Backoff {
-            initial: Duration::ZERO,
-            maximum: Duration::ZERO,
-            jitter: false,
-            seed: Some(1),
-            ..Backoff::default()
-        },
-        ..SupervisorConfig::default()
-    }
+    SupervisorConfig::default().max_restarts(100).backoff(
+        Backoff::default()
+            .initial(Duration::ZERO)
+            .maximum(Duration::ZERO)
+            .jitter(false)
+            .seed(1),
+    )
 }
 
 /// SupervisorBuilder::start: a dropped startup requests cleanup of every

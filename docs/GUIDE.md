@@ -1276,6 +1276,19 @@ zero through one second, including 0.15–0.8s. Subsequent caps double up to
 ready lifetime resets that child's exponent. Cleanup time is not healthy uptime.
 Use `Backoff::seed` for reproducible policy tests, not security randomness.
 
+`SupervisorConfig` and `Backoff` are `#[non_exhaustive]` (OTP's supervisor
+flags grew in OTP 24, and so will these): build them with the setters,
+
+```rust
+let config = SupervisorConfig::new()
+    .strategy(SupervisorStrategy::OneForAll)
+    .max_restarts(3)
+    .restart_window(Duration::from_secs(10))
+    .backoff(Backoff::new().initial(Duration::from_millis(50)).jitter(false));
+```
+
+or assign the public fields of a `default()` value.
+
 ### Recovery strategies and nested trees
 
 Set `SupervisorConfig::strategy` explicitly; OneForOne remains the default.
@@ -1425,7 +1438,7 @@ Configure before starting actors or constructing observed requests:
 ```rust
 use spawned_concurrency::metrics::{self, Config};
 
-metrics::configure(Config { timing_sample_every: 16 }).unwrap();
+metrics::configure(Config::new().timing_sample_every(16)).unwrap();
 // Counters include every operation; one in 16 observations gets timing samples.
 let snapshot = metrics::snapshot();
 let prometheus_text = metrics::render_prometheus();
@@ -1437,7 +1450,7 @@ histogram observations. Configuration is process-wide. The one-time `configure` 
 requirements later, including with a policy previously set by `configure`.
 
 For embedded components that initialize independently, use
-`metrics::configure_composable(Config { timing_sample_every: 16 })` instead.
+`metrics::configure_composable(Config::new().timing_sample_every(16))` instead.
 It can be called after actors start. The smallest nonzero interval requested by
 any component wins; zero means “I only require counters” and never disables
 another component's timings. Requirements last for the process lifetime. Instrumentation initially samples every observation until an explicit policy

@@ -480,16 +480,14 @@ mod async_leaks {
             let system = ActorSystem::new().unwrap();
             let group = system.async_group("leaks", 1).unwrap();
             let mut tree = system
-                .supervisor(SupervisorConfig {
-                    max_restarts: 100,
-                    backoff: Backoff {
-                        initial: Duration::ZERO,
-                        maximum: Duration::ZERO,
-                        jitter: false,
-                        ..Backoff::default()
-                    },
-                    ..SupervisorConfig::default()
-                })
+                .supervisor(
+                    SupervisorConfig::default().max_restarts(100).backoff(
+                        Backoff::default()
+                            .initial(Duration::ZERO)
+                            .maximum(Duration::ZERO)
+                            .jitter(false),
+                    ),
+                )
                 .unwrap();
             let mut children = Vec::new();
             for name in names {
@@ -885,16 +883,14 @@ mod sim_leaks {
                 let system = ActorSystem::new().unwrap();
                 let group = system.async_group("leaks-sim-sup", 1).unwrap();
                 let mut tree = system
-                    .supervisor(SupervisorConfig {
-                        max_restarts: 100,
-                        backoff: Backoff {
-                            initial: Duration::ZERO,
-                            maximum: Duration::ZERO,
-                            jitter: false,
-                            ..Backoff::default()
-                        },
-                        ..SupervisorConfig::default()
-                    })
+                    .supervisor(
+                        SupervisorConfig::default().max_restarts(100).backoff(
+                            Backoff::default()
+                                .initial(Duration::ZERO)
+                                .maximum(Duration::ZERO)
+                                .jitter(false),
+                        ),
+                    )
                     .unwrap();
                 let child = tree
                     .add(ChildSpec::new(name, &group, move |_| {

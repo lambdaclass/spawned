@@ -17,17 +17,15 @@ use std::{
 };
 const LIMIT: Duration = Duration::from_secs(4);
 fn config(max_restarts: usize) -> SupervisorConfig {
-    SupervisorConfig {
-        max_restarts,
-        backoff: Backoff {
-            initial: Duration::from_millis(1),
-            maximum: Duration::from_millis(8),
-            jitter: false,
-            seed: Some(7),
-            ..Backoff::default()
-        },
-        ..SupervisorConfig::default()
-    }
+    SupervisorConfig::default()
+        .max_restarts(max_restarts)
+        .backoff(
+            Backoff::default()
+                .initial(Duration::from_millis(1))
+                .maximum(Duration::from_millis(8))
+                .jitter(false)
+                .seed(7),
+        )
 }
 struct Next;
 impl Message for Next {
@@ -1164,17 +1162,16 @@ async fn backoff_exponent_resets_only_after_a_stable_generation() {
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("backoff-reset", 1).unwrap();
     let mut tree = system
-        .supervisor(SupervisorConfig {
-            max_restarts: 20,
-            backoff: Backoff {
-                initial: Duration::from_millis(20),
-                maximum: Duration::from_secs(2),
-                stable_after: Duration::from_millis(300),
-                jitter: false,
-                seed: Some(7),
-            },
-            ..SupervisorConfig::default()
-        })
+        .supervisor(
+            SupervisorConfig::default().max_restarts(20).backoff(
+                Backoff::default()
+                    .initial(Duration::from_millis(20))
+                    .maximum(Duration::from_secs(2))
+                    .stable_after(Duration::from_millis(300))
+                    .jitter(false)
+                    .seed(7),
+            ),
+        )
         .unwrap();
     let child = tree
         .add(ChildSpec::new("flappy", &group, |_| async {
@@ -1461,18 +1458,18 @@ async fn one_for_all_restart_waits_for_its_backoff() {
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("ofa-backoff", 1).unwrap();
     let mut tree = system
-        .supervisor(SupervisorConfig {
-            strategy: SupervisorStrategy::OneForAll,
-            max_restarts: 5,
-            backoff: Backoff {
-                initial: Duration::from_millis(300),
-                maximum: Duration::from_secs(2),
-                jitter: false,
-                seed: Some(1),
-                ..Backoff::default()
-            },
-            ..SupervisorConfig::default()
-        })
+        .supervisor(
+            SupervisorConfig::default()
+                .strategy(SupervisorStrategy::OneForAll)
+                .max_restarts(5)
+                .backoff(
+                    Backoff::default()
+                        .initial(Duration::from_millis(300))
+                        .maximum(Duration::from_secs(2))
+                        .jitter(false)
+                        .seed(1),
+                ),
+        )
         .unwrap();
     let child = tree
         .add(ChildSpec::new("a", &group, |_| async {
@@ -1507,43 +1504,19 @@ fn supervisor_config_limits_are_validated_at_their_boundaries() {
     };
     let base = SupervisorConfig::default;
     assert!(accepts(base()));
-    assert!(rejects(SupervisorConfig {
-        restart_window: Duration::ZERO,
-        ..base()
-    }));
-    assert!(rejects(SupervisorConfig {
-        max_children: 0,
-        ..base()
-    }));
-    assert!(accepts(SupervisorConfig {
-        max_children: 65536,
-        ..base()
-    }));
-    assert!(rejects(SupervisorConfig {
-        max_children: 65537,
-        ..base()
-    }));
-    assert!(accepts(SupervisorConfig {
-        max_restarts: 65536,
-        ..base()
-    }));
-    assert!(rejects(SupervisorConfig {
-        max_restarts: 65537,
-        ..base()
-    }));
-    let backoff = |initial, maximum| Backoff {
-        initial: Duration::from_millis(initial),
-        maximum: Duration::from_millis(maximum),
-        ..Backoff::default()
+    assert!(rejects(base().restart_window(Duration::ZERO)));
+    assert!(rejects(base().max_children(0)));
+    assert!(accepts(base().max_children(65536)));
+    assert!(rejects(base().max_children(65537)));
+    assert!(accepts(base().max_restarts(65536)));
+    assert!(rejects(base().max_restarts(65537)));
+    let backoff = |initial, maximum| {
+        Backoff::default()
+            .initial(Duration::from_millis(initial))
+            .maximum(Duration::from_millis(maximum))
     };
-    assert!(accepts(SupervisorConfig {
-        backoff: backoff(10, 10),
-        ..base()
-    }));
-    assert!(rejects(SupervisorConfig {
-        backoff: backoff(11, 10),
-        ..base()
-    }));
+    assert!(accepts(base().backoff(backoff(10, 10))));
+    assert!(rejects(base().backoff(backoff(11, 10))));
 }
 
 /// T4/V5: on native threads (`thread_group`) the restart window runs on the
@@ -1564,11 +1537,7 @@ fn native_restart_window_expires_on_the_monotonic_clock() {
         let system = ActorSystem::new().unwrap();
         let group = system.thread_group("window", 4).unwrap();
         let mut tree = system
-            .supervisor(SupervisorConfig {
-                max_restarts: 1,
-                restart_window: window,
-                ..config(1)
-            })
+            .supervisor(config(1).max_restarts(1).restart_window(window))
             .unwrap();
         let child = tree
             .add(ChildSpec::new("native", &group, |_| async {
