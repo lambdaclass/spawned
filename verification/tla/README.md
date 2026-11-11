@@ -618,7 +618,7 @@ Liveness: `ParentExitReachesChild` (`MCStartLive`).
 | `MCStart` | per PR | two children, every waiting variant, default placements, one name, timeouts, a closing group with room for two |
 | `MCStartContinue` | per PR | one child of every variant, two messages from others, no name |
 | `MCStartLive` | per PR | two linked or monitored children of a managed parent, liveness |
-| `MCStartDeep` | weekly | as `MCStart`, plus every explicit placement, `spawn` and messages |
+| `MCStartDeep` | weekly | as `MCStart`, plus every explicit placement and `spawn` (57M states, about 6 minutes on 4 workers) |
 
 **Negative controls** (`START_CONTROLS` and `START_TEMPORAL_CONTROLS` in
 `negative_checks.py`; each checks `TypeOK` and only the named property):

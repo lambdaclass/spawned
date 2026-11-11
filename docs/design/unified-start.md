@@ -753,9 +753,10 @@ non-`Normal` reason, also during its `started()`, dies (or was refused).
 | `MCStart` | per PR, safety | 2,896,748 | 24 | 23 s |
 | `MCStartContinue` | per PR, safety | 17,720 | 16 | 1 s |
 | `MCStartLive` | per PR, safety + liveness | 424,172 | 23 | 20 s |
-| `MCStartDeep` | weekly (every explicit placement, `spawn`, messages) | see below | | |
+| `MCStartDeep` | weekly (every explicit placement, every variant including `spawn`) | 56,947,732 | 24 | 6 min 23 s |
 
-MCStartDeep is reported in the PR description once its run completes.
+`MCStartDeep` with messages from others as well passed 74M distinct states
+with its queue still growing, so messages stay in `MCStartContinue`.
 
 **Negative controls.** `negative_checks.py` runs `named_fault` with
 `TypeOK` and only the named invariant, and `named_temporal` for the
