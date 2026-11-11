@@ -1076,6 +1076,32 @@ impl Driver {
     /// Units in start order: each later unit must be fully finished (state
     /// dropped) before any member of an earlier unit begins `stopped()`.
     fn check_order(&self, kind: &'static str, units: &[Vec<usize>]) {
+        // A linked member can be stopped by a later unit's exit, out of the
+        // coordinator's order (and before the units in between): skip it.
+        let linked: std::collections::HashSet<ActorId> = {
+            let s = self.world.lock();
+            self.links
+                .iter()
+                .flat_map(|l| [l.a.id(), l.b.id()])
+                .chain(s.uncertain.iter().copied())
+                .collect()
+        };
+        let units: Vec<Vec<usize>> = {
+            let s = self.world.lock();
+            units
+                .iter()
+                .map(|u| {
+                    let linked = u
+                        .iter()
+                        .any(|&i| s.insts[i].id.is_some_and(|id| linked.contains(&id)));
+                    if linked {
+                        Vec::new()
+                    } else {
+                        u.clone()
+                    }
+                })
+                .collect()
+        };
         let found = {
             let s = self.world.lock();
             let first_stop =
