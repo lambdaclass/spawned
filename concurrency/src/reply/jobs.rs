@@ -392,6 +392,8 @@ impl JobState {
         track: impl FnOnce(u64, std::sync::Weak<dyn Expirable>),
     ) -> Result<(), JobGone> {
         self.core.schedule()?;
+        #[cfg(test)]
+        tests::after_schedule();
         let emit = Arc::new(ScheduledEmit {
             at,
             job: Arc::downgrade(self),
@@ -400,11 +402,13 @@ impl JobState {
         lock(&self.scheduled).push(emit.clone());
         if self.is_cancelled() {
             // Cancelled between the check and the registration: the cancel
-            // may have missed it.
-            for emit in std::mem::take(&mut *lock(&self.scheduled)) {
+            // may have missed it. Take the list in its own statement: the
+            // discard locks it again (`settle`), so its guard must be gone.
+            let scheduled = std::mem::take(&mut *lock(&self.scheduled));
+            for emit in scheduled {
                 emit.discard(self);
             }
-            return Ok(());
+            return Err(JobGone);
         }
         if at <= super::now_ticks() {
             emit.expire(at);
@@ -829,6 +833,46 @@ pub(crate) fn cancel_when_closed<R>(slot: &super::slot::Slot<R>, state: &Arc<Job
 mod tests {
     use super::*;
     use crate::reply::registry::Registry;
+
+    std::thread_local! {
+        /// Runs once between `schedule_emit`'s `JobCore::schedule` and its
+        /// registration of the emit (a deterministic interleaving).
+        static AFTER_SCHEDULE: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+            const { std::cell::RefCell::new(None) };
+    }
+
+    pub(super) fn after_schedule() {
+        if let Some(hook) = AFTER_SCHEDULE.with(|hook| hook.borrow_mut().take()) {
+            hook();
+        }
+    }
+
+    /// Review P1 (Codex 3): a cancel that drains the still-empty scheduled
+    /// list between `JobCore::schedule` and the registration leaves the
+    /// registration to discard its own emit. It used to iterate under the
+    /// list's guard while `settle` locked the list again: a self-deadlock.
+    #[test]
+    fn cancel_between_schedule_and_registration_discards_without_deadlock() {
+        let state = JobState::new(ActorId::next(), 2);
+        let cancelled = state.clone();
+        let (sent_tx, sent_rx) = std::sync::mpsc::channel::<()>();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            AFTER_SCHEDULE.with(|hook| *hook.borrow_mut() = Some(Box::new(move || cancelled.cancel())));
+            let send: SendScheduled = Box::new(move || {
+                let _ = sent_tx.send(());
+                Ok(())
+            });
+            let result = state.schedule_emit(u64::MAX - 1, send, |_, _| {});
+            let _ = done_tx.send((result, state.core.scheduled()));
+        });
+        let (result, scheduled) = done_rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("schedule_emit deadlocked discarding its own emit");
+        assert_eq!(result, Err(JobGone));
+        assert_eq!(scheduled, 0, "the discarded emit is no longer scheduled");
+        assert!(sent_rx.try_recv().is_err(), "a cancelled job's emit was sent");
+    }
 
     /// Review P1: a rejected reservation must not build a guard whose drop
     /// releases a credit that was never taken.
