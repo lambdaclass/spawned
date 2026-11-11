@@ -178,6 +178,14 @@ impl<R: Send + 'static> SlotHandle<R> {
     pub(crate) fn take(&mut self) -> Option<Arc<Slot<R>>> {
         self.0.take()
     }
+    /// The request's slot, type-erased (the turn's caller, for the death
+    /// point to answer if the turn is destroyed unfinished).
+    #[cfg_attr(not(feature = "async"), allow(dead_code))]
+    pub(crate) fn caller(&self) -> Option<Arc<dyn registry::Closeable>> {
+        self.0
+            .as_ref()
+            .map(|slot| slot.clone() as Arc<dyn registry::Closeable>)
+    }
 }
 
 impl<R: Send + 'static> Drop for SlotHandle<R> {

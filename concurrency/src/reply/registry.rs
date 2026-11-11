@@ -37,13 +37,15 @@ use super::turn::{Outcome, TurnPhase, DEAD, EXITING};
 
 /// A slot seen without its reply type.
 pub(crate) trait Closeable: Send + Sync {
-    fn close(&self) -> bool;
     /// Close without waking; the returned work runs with `run_wake`.
     fn close_collect(&self) -> Option<Wake>;
     fn run_wake(&self, wake: Wake);
     fn terminate(&self, to: Terminal) -> bool;
     fn is_terminal(&self) -> bool;
 }
+
+/// A closed slot and its deferred wake-up.
+type PendingWake = (Arc<dyn Closeable>, Wake);
 
 impl<R: Send> Expirable for Slot<R> {
     fn pending_deadline(&self) -> Option<u64> {
@@ -56,9 +58,6 @@ impl<R: Send> Expirable for Slot<R> {
 }
 
 impl<R: Send> Closeable for Slot<R> {
-    fn close(&self) -> bool {
-        Slot::close(self)
-    }
     fn close_collect(&self) -> Option<Wake> {
         Slot::close_collect(self)
     }
@@ -106,7 +105,7 @@ pub(crate) struct Registry {
     /// [`end_discharge`](Self::end_discharge)): the wake-ups of the slots it
     /// closed, run only once every obligation is answered, so no waker runs
     /// between two closes.
-    discharge: Mutex<Option<Vec<(Arc<dyn Closeable>, Wake)>>>,
+    discharge: Mutex<Option<Vec<PendingWake>>>,
     #[cfg(all(spawned_sim, feature = "async"))]
     sim: deadline::SimService,
 }
@@ -407,6 +406,13 @@ impl Registry {
         for (slot, wake) in batch.into_iter().flatten() {
             slot.run_wake(wake);
         }
+    }
+
+    /// A turn destroyed unfinished (its runtime dropped the actor): its
+    /// caller is answered at the death point like every other one.
+    #[cfg_attr(not(feature = "async"), allow(dead_code))]
+    pub(crate) fn answer_turn(&self, caller: Arc<dyn Closeable>) {
+        self.close_slot(caller);
     }
 
     /// Close one slot as `STOPPED`, deferring its wake-up while discharging.

@@ -130,8 +130,14 @@ type StartupPayload<A> = (
     mpsc::Receiver<MailboxItem<A>>,
     CancellationToken,
 );
-fn discharge_startup<A: Actor>(payload: &mut StartupPayload<A>) -> Box<dyn Send> {
-    Box::new(answer_mailbox(&mut payload.2, None))
+fn discharge_startup<A: Actor>(payload: &mut StartupPayload<A>) -> Vec<Box<dyn Send>> {
+    erase(answer_mailbox(&mut payload.2, None))
+}
+fn erase<T: Send + 'static>(items: Vec<T>) -> Vec<Box<dyn Send>> {
+    items
+        .into_iter()
+        .map(|item| Box::new(item) as Box<dyn Send>)
+        .collect()
 }
 
 struct MessageEnvelope<M: Message> {

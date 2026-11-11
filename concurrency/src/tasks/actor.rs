@@ -167,6 +167,12 @@ trait Envelope<A: Actor>: Send {
     /// mailbox is destroyed. No user code runs.
     fn discharge(&mut self) {}
 
+    /// The request's caller, if any (answered at the death point if the
+    /// runtime destroys the turn before it finishes).
+    fn caller(&self) -> Option<Arc<dyn crate::reply::registry::Closeable>> {
+        None
+    }
+
     fn handle<'a>(
         self: Box<Self>,
         actor: &'a mut A,
@@ -195,8 +201,14 @@ type StartupPayload<A> = (
     mpsc::Receiver<Box<dyn Envelope<A> + Send>>,
     CancellationToken,
 );
-fn discharge_startup<A: Actor>(payload: &mut StartupPayload<A>) -> Box<dyn Send> {
-    Box::new(answer_mailbox(&mut payload.2))
+fn discharge_startup<A: Actor>(payload: &mut StartupPayload<A>) -> Vec<Box<dyn Send>> {
+    erase(answer_mailbox(&mut payload.2))
+}
+fn erase<T: Send + 'static>(items: Vec<T>) -> Vec<Box<dyn Send>> {
+    items
+        .into_iter()
+        .map(|item| Box::new(item) as Box<dyn Send>)
+        .collect()
 }
 
 struct MessageEnvelope<M: Message> {
@@ -233,6 +245,9 @@ where
     }
     fn discharge(&mut self) {
         drop(std::mem::replace(&mut self.slot, SlotHandle::detached()));
+    }
+    fn caller(&self) -> Option<Arc<dyn crate::reply::registry::Closeable>> {
+        self.slot.caller()
     }
     fn handle<'a>(
         self: Box<Self>,
@@ -308,6 +323,9 @@ impl<A: Actor, R: Send + 'static> Envelope<A> for InTurnEnvelope<A, R> {
     }
     fn discharge(&mut self) {
         drop(std::mem::replace(&mut self.slot, SlotHandle::detached()));
+    }
+    fn caller(&self) -> Option<Arc<dyn crate::reply::registry::Closeable>> {
+        self.slot.caller()
     }
     fn handle<'a>(
         self: Box<Self>,
@@ -1669,6 +1687,79 @@ impl MessageTurn {
     }
 }
 
+/// A pending user future of the lifecycle: `started()`, a turn (handler,
+/// `exit_received`, a job's `done`) or `stopped()`. If the runtime drops the
+/// lifecycle while it is pending (G1), its `Drop` reaches the death point
+/// first: the turn's own caller, every deferred token and every queued
+/// request are answered and woken before this future and its captures (the
+/// message, the handler's locals) are destroyed. A destructor panic of the
+/// future is a cleanup failure.
+struct DeathFirst<'a, A: Actor, C: Fn()> {
+    inner: Option<Pin<Box<dyn Future<Output = ()> + Send + 'a>>>,
+    rx: &'a mut mpsc::Receiver<Box<dyn Envelope<A> + Send>>,
+    cleanup: &'a mut crate::actor_cleanup::ActorCleanup<C>,
+    caller: Option<Arc<dyn crate::reply::registry::Closeable>>,
+}
+impl<'a, A: Actor, C: Fn()> DeathFirst<'a, A, C> {
+    fn new(
+        inner: Pin<Box<dyn Future<Output = ()> + Send + 'a>>,
+        rx: &'a mut mpsc::Receiver<Box<dyn Envelope<A> + Send>>,
+        cleanup: &'a mut crate::actor_cleanup::ActorCleanup<C>,
+        caller: Option<Arc<dyn crate::reply::registry::Closeable>>,
+    ) -> Self {
+        Self {
+            inner: Some(inner),
+            rx,
+            cleanup,
+            caller,
+        }
+    }
+}
+impl<A: Actor, C: Fn()> Future for DeathFirst<'_, A, C> {
+    type Output = ();
+    fn poll(self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<()> {
+        let this = self.get_mut();
+        let inner = this.inner.as_mut().expect("polled after completion");
+        match std::panic::catch_unwind(AssertUnwindSafe(|| inner.as_mut().poll(cx))) {
+            Ok(std::task::Poll::Pending) => std::task::Poll::Pending,
+            Ok(std::task::Poll::Ready(())) => {
+                this.inner = None;
+                std::task::Poll::Ready(())
+            }
+            // A panic is the turn's (or hook's) panic, not a runtime drop:
+            // the future is gone before the panic continues.
+            Err(panic) => {
+                let inner = this.inner.take();
+                if let Err(secondary) = std::panic::catch_unwind(AssertUnwindSafe(|| drop(inner))) {
+                    crate::mailbox::dispose_panic(secondary);
+                }
+                std::panic::resume_unwind(panic)
+            }
+        }
+    }
+}
+impl<A: Actor, C: Fn()> Drop for DeathFirst<'_, A, C> {
+    fn drop(&mut self) {
+        let Some(inner) = self.inner.take() else {
+            return;
+        };
+        // Destroyed while pending: the runtime dropped the actor.
+        self.cleanup.die_dropped();
+        if let Some(caller) = self.caller.take() {
+            self.cleanup.answer_turn(caller);
+        }
+        let queued = answer_mailbox(self.rx);
+        self.cleanup.discharged();
+        self.rx.discard_all(queued);
+        if let Err(panic) = std::panic::catch_unwind(AssertUnwindSafe(|| drop(inner))) {
+            let message = panic_message(&*panic);
+            crate::mailbox::dispose_panic(panic);
+            self.cleanup
+                .cleanup_failed(format!("dropped turn destructor: {message}"));
+        }
+    }
+}
+
 /// The actor's state and mailbox while its lifecycle runs. They are
 /// destroyed only after the death point D: normally at the end of
 /// [`run_actor`]; if the lifecycle future is dropped mid-way (its runtime was
@@ -1726,6 +1817,7 @@ async fn run_actor<A: Actor, C: Fn()>(
         owned.actor.as_mut().expect("the state lives until death"),
         ctx,
         &mut owned.rx,
+        &mut *owned.cleanup,
         cancellation_token,
         #[cfg(feature = "backend-experiments")]
         turn,
@@ -1749,10 +1841,11 @@ async fn run_actor<A: Actor, C: Fn()>(
     owned.finish(false);
 }
 
-async fn run_actor_lifecycle<A: Actor>(
+async fn run_actor_lifecycle<A: Actor, C: Fn()>(
     actor: &mut A,
     ctx: Context<A>,
     rx: &mut mpsc::Receiver<Box<dyn Envelope<A> + Send>>,
+    cleanup: &mut crate::actor_cleanup::ActorCleanup<C>,
     cancellation_token: CancellationToken,
     #[cfg(feature = "backend-experiments")] mut turn: Option<MessageTurn>,
 ) {
@@ -1767,7 +1860,7 @@ async fn run_actor_lifecycle<A: Actor>(
     }
     let start_result = AssertUnwindSafe(async {
         fail_point!("actor.before_started", async);
-        actor.started(&ctx).await
+        DeathFirst::new(Box::pin(actor.started(&ctx)), &mut *rx, &mut *cleanup, None).await
     })
     .catch_unwind()
     .await;
@@ -1858,9 +1951,13 @@ async fn run_actor_lifecycle<A: Actor>(
                 // manual `Handler` may panic before it returns one, and that
                 // is a handler panic like any other (threads mode catches the
                 // same call).
-                let result = AssertUnwindSafe(async { envelope.handle(actor, &ctx).await })
-                    .catch_unwind()
-                    .await;
+                let caller = envelope.caller();
+                let result = AssertUnwindSafe(async {
+                    let turn = envelope.handle(actor, &ctx);
+                    DeathFirst::new(turn, &mut *rx, &mut *cleanup, caller).await
+                })
+                .catch_unwind()
+                .await;
                 ctx.shared.replies.end_turn(result.is_err());
                 #[cfg(feature = "diagnostics")]
                 drop(_turn);
@@ -1933,7 +2030,7 @@ async fn run_actor_lifecycle<A: Actor>(
     }
     let stop_result = AssertUnwindSafe(async {
         fail_point!("actor.before_stopped", async);
-        actor.stopped(&ctx).await
+        DeathFirst::new(Box::pin(actor.stopped(&ctx)), &mut *rx, &mut *cleanup, None).await
     })
     .catch_unwind()
     .await;

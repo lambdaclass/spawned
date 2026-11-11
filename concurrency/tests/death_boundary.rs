@@ -11,8 +11,9 @@ use std::time::{Duration, Instant};
 
 const LIMIT: Duration = Duration::from_secs(5);
 
-/// A payload whose destructor blocks until released (or `LIMIT`), and
-/// reports that it started.
+/// A payload whose destructor blocks until released, and reports that it
+/// started. It never releases itself within an assertion window (`LIMIT`):
+/// a test that answers only after destruction fails, never passes late.
 struct Gated {
     started: Option<mpsc::Sender<()>>,
     release: Option<mpsc::Receiver<()>>,
@@ -21,7 +22,7 @@ impl Drop for Gated {
     fn drop(&mut self) {
         if let (Some(started), Some(release)) = (self.started.take(), self.release.take()) {
             let _ = started.send(());
-            let _ = release.recv_timeout(LIMIT);
+            let _ = release.recv_timeout(LIMIT * 6);
         }
     }
 }
@@ -223,6 +224,64 @@ mod tasks_mode {
                 "a job payload (held: {held}) was destroyed before the queued caller was answered"
             );
         }
+    }
+
+    /// Holds its message (and its destructor) across a pending await.
+    struct Hang(#[allow(dead_code)] Gated, mpsc::Sender<()>);
+    impl Message for Hang {
+        type Result = ();
+    }
+    impl Handler<Hang> for Owner {
+        async fn handle(&mut self, msg: Hang, _: PendingReply<'_, ()>, _: &Context<Self>) {
+            let msg = msg;
+            let _ = msg.1.send(());
+            std::future::pending::<()>().await;
+            drop(msg);
+        }
+    }
+
+    /// Review round 2 (Codex 2, agy 1): a runtime that drops an actor while
+    /// a turn is pending destroys the turn (its message, the handler's
+    /// locals) only after the death point answered the turn's own caller and
+    /// every queued one. The pending lifecycle future used to be destroyed
+    /// first, so a blocking destructor in it left every caller waiting.
+    #[test]
+    fn a_dropped_pending_turn_is_destroyed_after_every_caller_is_answered() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let (payload, destroying, release) = gated();
+        let (entered_tx, entered) = mpsc::channel();
+        let never = spawned_concurrency::Deadline::Never;
+        let (actor, mut turn_caller, mut queued) = runtime.block_on(async {
+            let actor = Owner {
+                _state: inert(),
+                parked: Vec::new(),
+            }
+            .start();
+            let turn_caller = actor
+                .request_raw_until(Hang(payload, entered_tx), never)
+                .unwrap();
+            let queued = actor.request_raw_until(Queued(inert()), never).unwrap();
+            while entered.try_recv().is_err() {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+            (actor, turn_caller, queued)
+        });
+        let dropper = std::thread::spawn(move || drop(runtime));
+        // The pending turn's message is being destroyed (and blocks).
+        destroying.recv_timeout(LIMIT).unwrap();
+        eventually(
+            "the dropped turn's caller waited for its destruction",
+            || stopped(turn_caller.try_recv(), &ExitReason::Killed),
+        );
+        eventually("a queued caller waited for the turn's destruction", || {
+            stopped(queued.try_recv(), &ExitReason::Killed)
+        });
+        release.send(()).unwrap();
+        dropper.join().unwrap();
+        assert_eq!(actor.exit_reason(), Some(ExitReason::Killed));
     }
 
     /// Review round 2 (Codex 5): the death point answers every caller before

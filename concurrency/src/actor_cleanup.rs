@@ -177,6 +177,18 @@ impl<C: Fn()> ActorCleanup<C> {
         reason
     }
 
+    /// Answer a destroyed turn's own caller at the death point (its slot is
+    /// held by the turn's `PendingReply`, not listed in the registry).
+    #[cfg_attr(not(feature = "async"), allow(dead_code))]
+    pub(crate) fn answer_turn(
+        &self,
+        caller: std::sync::Arc<dyn crate::reply::registry::Closeable>,
+    ) {
+        if let Some(replies) = &self.replies {
+            replies.answer_turn(caller);
+        }
+    }
+
     /// Every obligation of the death point is answered (the mode answered
     /// its queued requests after [`die`](Self::die)): now run the deferred
     /// wake-ups, then log a skipped `stopped()`, then destroy what the jobs'
@@ -276,15 +288,15 @@ pub(crate) fn finish_actor_state<A>(actor: A) -> Option<String> {
 pub(crate) struct ActorStartup<P, C: Fn()> {
     payload: Option<P>,
     cleanup: Option<ActorCleanup<C>>,
-    /// Answers the queued requests and returns what it drained, destroyed
-    /// with the payload once the wake-ups ran.
-    discharge: fn(&mut P) -> Box<dyn Send>,
+    /// Answers the queued requests and returns what it drained, each item
+    /// destroyed on its own (contained) once the wake-ups ran.
+    discharge: fn(&mut P) -> Vec<Box<dyn Send>>,
 }
 impl<P, C: Fn()> ActorStartup<P, C> {
     pub(crate) fn new(
         payload: P,
         cleanup: ActorCleanup<C>,
-        discharge: fn(&mut P) -> Box<dyn Send>,
+        discharge: fn(&mut P) -> Vec<Box<dyn Send>>,
     ) -> Self {
         Self {
             payload: Some(payload),
@@ -308,8 +320,21 @@ impl<P, C: Fn()> Drop for ActorStartup<P, C> {
             if let Some(cleanup) = &mut self.cleanup {
                 cleanup.discharged();
             }
+            // One at a time: a panicking destructor must not unwind into the
+            // next one (that would abort).
+            for item in queued {
+                if let Err(panic) =
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(item)))
+                {
+                    let message = crate::error::panic_message(&*panic);
+                    crate::mailbox::dispose_panic(panic);
+                    if let Some(cleanup) = &mut self.cleanup {
+                        cleanup.cleanup_failed(message);
+                    }
+                }
+            }
             if let Err(panic) =
-                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop((queued, payload))))
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(payload)))
             {
                 let message = crate::error::panic_message(&*panic);
                 crate::mailbox::dispose_panic(panic);
