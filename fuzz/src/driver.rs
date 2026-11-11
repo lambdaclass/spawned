@@ -201,7 +201,7 @@ async fn leaks(world: &World, baseline: usize) {
             return;
         }
         i += 1;
-        if i % 100 == 0 {
+        if i.is_multiple_of(100) {
             rt::sleep(Duration::from_millis(100)).await;
         } else {
             sim::yield_now().await;
