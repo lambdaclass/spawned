@@ -18,7 +18,8 @@ EXTENDS Naturals, FiniteSets
 (*     panics or stops abnormally; signals received meanwhile are held     *)
 (*     until it returns. A continuation runs before any mailbox message.   *)
 (*     start, start_link and start_monitor return after started() (the     *)
-(*     ack): Ok when it returned ready with no exit pending, else the error after *)
+(*     ack): Ok when it returned ready with no exit pending, else the     *)
+(*     error after *)
 (*     the child's death point D, consuming the link notice (trapping      *)
 (*     parent) or the Down. A startup timeout unlinks and demonitors       *)
 (*     first, then kills.                                                  *)
@@ -67,6 +68,8 @@ CONSTANTS
 (*  IgnoreCap        a full group admits          -> CapacityRespected     *)
 (*  ContinueQueued   the continuation is queued behind earlier messages    *)
 (*                                                -> ContinueFirst         *)
+(*  AbandonDropsNotice a dropped start future loses the diverted notice    *)
+(*                                     -> AbandonedNoticeDelivered         *)
 (*  DropHeld         a parent exit held during started() is dropped        *)
 (*                                (liveness)      -> ParentExitReachesChild*)
 
@@ -76,7 +79,7 @@ Reasons == {"Normal"} \cup Abnormal
 Phases == {"idle", "begun", "admitted", "linked", "registered", "starting",
            "ready", "exiting", "dead", "aborted"}
 Results == {"none", "pending", "ok", "failed", "timeout", "closed",
-            "capacity", "already", "noproc"}
+            "capacity", "already", "noproc", "abandoned"}
 
 VARIABLES
     pst,      \* P: "run", "exiting" (exit begun, before D) or "dead" (past D)
@@ -103,6 +106,8 @@ VARIABLES
     cont,     \* [Kids -> a continuation is pending]
     msgs,     \* [Kids -> messages sent to the child by others]
     early,    \* [Kids -> a message was handled before the continuation]
+    div,      \* [Kids -> notice diverted to the waiting start call, or None]
+    divEver,  \* [Kids -> a notice was ever diverted]
     why,      \* [Kids -> exit reason or None]
     res,      \* [Kids -> what the start call returned]
     reg,      \* children holding the name
@@ -111,11 +116,11 @@ VARIABLES
 
 vars == <<pst, pplace, ptrap, pwhy, pcause, gopen, kind, expl, wname, phase,
           place, admOpen, edge, mon, linkedAt, monAt, began, retd, killed,
-          pex, pexAbn, cont, msgs, early, why, res, reg, exits, downs>>
+          pex, pexAbn, cont, msgs, early, div, divEver, why, res, reg, exits, downs>>
 pVars == <<pst, pplace, ptrap, pwhy, pcause, gopen>>
 optVars == <<kind, expl, wname>>
 startVars == <<began, retd, killed, pex, pexAbn, why, cont, msgs, early>>
-obsVars == <<reg, exits, downs>>
+obsVars == <<reg, exits, downs, div, divEver>>
 
 Live(c) == phase[c] \in {"admitted", "linked", "registered", "starting",
                          "ready", "exiting"}
@@ -163,6 +168,8 @@ TypeOK ==
     /\ reg \subseteq Kids
     /\ exits \subseteq [c : Kids, r : Reasons]
     /\ downs \subseteq [c : Kids, r : Reasons]
+    /\ div \in [Kids -> Reasons \cup {None}]
+    /\ divEver \in [Kids -> BOOLEAN]
 
 Init ==
     /\ pst = "run"
@@ -194,6 +201,8 @@ Init ==
     /\ reg = {}
     /\ exits = {}
     /\ downs = {}
+    /\ div = [c \in Kids |-> None]
+    /\ divEver = [c \in Kids |-> FALSE]
 
 -----------------------------------------------------------------------------
 (* Stage 1, in the caller. *)
@@ -233,7 +242,7 @@ Admit(c) ==
               /\ UNCHANGED <<res, edge, mon, reg>>
          ELSE /\ Abort(c, IF ~gopen THEN "closed" ELSE "capacity")
               /\ UNCHANGED admOpen
-    /\ UNCHANGED <<pVars, optVars, linkedAt, monAt, startVars, exits, downs>>
+    /\ UNCHANGED <<pVars, optVars, linkedAt, monAt, startVars, exits, downs, div, divEver>>
 
 \* start_link / start_monitor: the edge is recorded in one transaction with
 \* the parent's state; an exiting or dead parent refuses the start.
@@ -251,7 +260,7 @@ Link(c) ==
             /\ UNCHANGED <<res, place, reg>>
        ELSE /\ Abort(c, "noproc")
             /\ UNCHANGED <<linkedAt, monAt>>
-    /\ UNCHANGED <<pVars, optVars, admOpen, startVars, exits, downs>>
+    /\ UNCHANGED <<pVars, optVars, admOpen, startVars, exits, downs, div, divEver>>
 
 \* The name is taken atomically, or the start is refused with AlreadyStarted.
 Register(c) ==
@@ -264,7 +273,7 @@ Register(c) ==
             /\ reg' = reg \cup {c}
             /\ UNCHANGED <<res, place, edge, mon>>
        ELSE Abort(c, "already")
-    /\ UNCHANGED <<pVars, optVars, admOpen, linkedAt, monAt, startVars, exits, downs>>
+    /\ UNCHANGED <<pVars, optVars, admOpen, linkedAt, monAt, startVars, exits, downs, div, divEver>>
 
 \* The child is handed to its executor; spawn returns Ok here, start,
 \* start_link and start_monitor wait for the ack.
@@ -375,8 +384,9 @@ ApplyParentExit(c) ==
 
 \* The child's death point D: the name is released, then the link notice
 \* and the Down are taken. While the start call still waits (res pending),
-\* the call consumes them (a trapping parent sees no Exit, no Down is
-\* delivered); a non-trapping parent still exits on an abnormal notice.
+\* they are diverted to it (a trapping parent's Exit, the Down) and the
+\* error consumes them; a non-trapping parent still exits on a non-Normal
+\* notice.
 ChildDie(c) ==
     /\ phase[c] = "exiting"
     /\ phase' = [phase EXCEPT ![c] = "dead"]
@@ -390,6 +400,10 @@ ChildDie(c) ==
                       THEN exits \cup {[c |-> c, r |-> r]} ELSE exits
           /\ downs' = IF monTaken /\ (~pending \/ Fault = "NoMonitorFlush")
                       THEN downs \cup {[c |-> c, r |-> r]} ELSE downs
+          /\ div' = IF pending /\ ((linkTaken /\ ptrap) \/ monTaken)
+                    THEN [div EXCEPT ![c] = r] ELSE div
+          /\ divEver' = IF pending /\ ((linkTaken /\ ptrap) \/ monTaken)
+                        THEN [divEver EXCEPT ![c] = TRUE] ELSE divEver
           /\ pst' = IF kills THEN "exiting" ELSE pst
           /\ pwhy' = IF kills THEN r ELSE pwhy
           /\ pcause' = IF kills THEN c ELSE pcause
@@ -416,8 +430,9 @@ AckFail(c) ==
     /\ ~killed[c]
     /\ phase[c] = "dead" \/ (Fault = "EarlyFailAck" /\ phase[c] = "exiting")
     /\ res' = [res EXCEPT ![c] = "failed"]
+    /\ div' = [div EXCEPT ![c] = None]
     /\ UNCHANGED <<pVars, optVars, phase, place, admOpen, edge, mon, linkedAt,
-                   monAt, startVars, obsVars>>
+                   monAt, startVars, reg, exits, downs, divEver>>
 
 \* startup_timeout: unlink and demonitor (fences), then kill.
 Timeout(c) ==
@@ -437,8 +452,23 @@ AckTimeout(c) ==
     /\ res[c] = "pending"
     /\ killed[c]
     /\ res' = [res EXCEPT ![c] = "timeout"]
+    /\ div' = [div EXCEPT ![c] = None]
     /\ UNCHANGED <<pVars, optVars, phase, place, admOpen, edge, mon, linkedAt,
-                   monAt, startVars, obsVars>>
+                   monAt, startVars, reg, exits, downs, divEver>>
+
+\* The start future is dropped before it resolves: the child keeps running
+\* and stays linked or monitored; a notice already diverted goes to P as if
+\* it had never been diverted.
+Abandon(c) ==
+    /\ res[c] = "pending"
+    /\ res' = [res EXCEPT ![c] = "abandoned"]
+    /\ div' = [div EXCEPT ![c] = None]
+    /\ LET r == div[c]
+           give == r # None /\ Fault # "AbandonDropsNotice"
+       IN /\ exits' = IF give /\ kind[c] = "link" THEN exits \cup {[c |-> c, r |-> r]} ELSE exits
+          /\ downs' = IF give /\ kind[c] = "monitor" THEN downs \cup {[c |-> c, r |-> r]} ELSE downs
+    /\ UNCHANGED <<pVars, optVars, phase, place, admOpen, edge, mon, linkedAt,
+                   monAt, startVars, reg, divEver>>
 
 -----------------------------------------------------------------------------
 (* The parent and the group. *)
@@ -477,7 +507,7 @@ ChildStep(c) ==
     \/ StartedBegin(c) \/ LateLink(c) \/ KilledEarly(c) \/ StartedEnd(c)
     \/ ApplyParentExit(c) \/ ChildDie(c)
     \/ Send(c) \/ RunContinue(c) \/ Handle(c)
-    \/ AckOk(c) \/ AckFail(c) \/ Timeout(c) \/ AckTimeout(c)
+    \/ AckOk(c) \/ AckFail(c) \/ Timeout(c) \/ AckTimeout(c) \/ Abandon(c)
 
 Next == (\E c \in Kids : ChildStep(c)) \/ PExit \/ PDie \/ GClose
 
@@ -521,6 +551,11 @@ AbortInvisible ==
 AckMeansStarted ==
     \A c \in Kids : (res[c] = "ok" /\ kind[c] \in {"start", "link", "monitor"}) => retd[c]
 
+\* A notice diverted to a start call that was then dropped reaches P.
+AbandonedNoticeDelivered ==
+    \A c \in Kids : (res[c] = "abandoned" /\ divEver[c]) =>
+        \E e \in exits \cup downs : e.c = c
+
 \* No mailbox message is handled before the continuation.
 ContinueFirst == \A c \in Kids : ~early[c]
 
@@ -557,7 +592,7 @@ Safety ==
     /\ NameReleasedAtDeath /\ AbortInvisible /\ AckMeansStarted
     /\ FailureAfterDeath /\ FailureFlushed /\ TimeoutContained
     /\ NoEdgeToDeadParent /\ AdmittedOnlyOpen /\ CapacityRespected /\ NoticeOnce
-    /\ ContinueFirst
+    /\ ContinueFirst /\ AbandonedNoticeDelivered
 
 (* Liveness: a child linked to a parent that dies abnormally, also during   *)
 (* the child's started(), dies.                                            *)

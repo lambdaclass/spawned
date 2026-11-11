@@ -257,6 +257,7 @@ START_CONTROLS = [
     ("MCStart", "LinkCheckLate", "NoEdgeToDeadParent"),
     ("MCStart", "AdmitClosed", "AdmittedOnlyOpen"),
     ("MCStart", "IgnoreCap", "CapacityRespected"),
+    ("MCStart", "AbandonDropsNotice", "AbandonedNoticeDelivered"),
     ("MCStartContinue", "ContinueQueued", "ContinueFirst"),
 ]
 START_TEMPORAL_CONTROLS = [
