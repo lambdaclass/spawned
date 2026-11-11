@@ -891,6 +891,13 @@ It establishes, within its bounds:
   owner (cleanup deadline passed while `stopped()` runs) closes nothing
   early: no token is answered `Stopped` before death (`NoEarlyClose`).
   `stopped()` may still reply while stuck, and death may never follow.
+- **Death boundary.** Death is the three steps of `actor_cleanup.rs`: the
+  death point fences the reply gate and seals the registry, then the batch
+  answers every held token and queued request one at a time (callers and the
+  deadline service interleave), then the collected wake-ups run. No reply is
+  admitted after the death point (`NoReplyAfterDeath`, control
+  `NoReplyFence`), and a caller woken with `Stopped` finds the whole death
+  answered (`WokenAfterDischarge`, control `CallbackBeforeDischarge`).
 - **Downstream cleanup.** A downstream request ends with its last job
   (`DownstreamOwned`).
 - **Liveness without handler fairness:** `EveryAcceptedDischarged` and
@@ -913,6 +920,12 @@ It establishes:
 - **Terminal messages.** `AtMostOneTerminal` and `TerminalLast`.
 - **Bounds.** `PermitsBounded` (running work keeps its permit), `OneLivePerKey`
   and `EmitCreditsBounded`.
+- **Held results.** A held result keeps its credit until its terminal
+  message (`HeldCounted`) and its deadline stays armed
+  (`DeadlineArmedWhileHeld`).
+- **Owner exit.** Admission and `cancel_all` are serialized, and the exit
+  cancels running work, scheduled emits and held results alike
+  (`ExitCancelsJobs`, controls `NoAdmissionFence` and `ExitKeepsHeld`).
 - **Liveness.** `JobReported` for jobs with a deadline.
 
 Abstraction: credits return at dispatch (fenced or not); mailbox disposal at
@@ -931,7 +944,8 @@ Requests and timing:
 Tokens and synchronization:
 
 - token drops by other tasks during an unrelated turn;
-- `WRITING` versus registry close;
+- `WRITING` versus registry close (the reply permit is modelled as the
+  reply gate closing at the death point; the CAS race is Loom territory);
 - the packed-word counter deltas;
 - memory orderings and wakeups.
 

@@ -31,8 +31,14 @@
 (* pending" (pendA): the registry keeps it open and death answers it with *)
 (* the final reason (docs/design/otp-exit-signals.md, "Required changes   *)
 (* to rank 11"); only the caller's deadline or abandonment comes first.   *)
-(* Death closes the registry (every token A holds, wherever it is, and    *)
-(* every exit-pending slot) and discards the mailbox. The model has no    *)
+(* Death follows actor_cleanup.rs. Death (the point D) fences the reply   *)
+(* gate (a reply already past it has discharged; none is admitted after)  *)
+(* and seals the registry ("sealed": no new request is admitted); callers,*)
+(* the deadline service and stored replies race it. Answer then closes   *)
+(* every token A holds (wherever it is), every exit-pending slot and the  *)
+(* mailbox with Stopped, as one batch of terminal transitions, and runs  *)
+(* the collected wake-ups after the last answer ("dead"): no waker,       *)
+(* callback or destructor runs in between. The model has no               *)
 (* reasons: the reason is fixed at death (Lifecycle.tla), so StoppedAtDeath*)
 (* (Stopped only in the death step) is what makes callers see it.         *)
 (* If stopped() (or a destructor) is still                                 *)
@@ -58,6 +64,9 @@
 (*                                         registry before death            *)
 (*   EarlyStopped    (StoppedAtDeath)      exit errors answered Stopped at  *)
 (*                                         once (rank 11 before 5e)         *)
+(*   NoReplyFence    (NoReplyAfterDeath)   a reply is admitted after D      *)
+(*   CallbackBeforeDischarge (WokenAfterDischarge) an answer's wake-up    *)
+(*                                         runs before the last answer      *)
 (***************************************************************************)
 EXTENDS Naturals, FiniteSets
 CONSTANTS N, BoundA, BoundB, MaxTime, MaxWait, Fault
@@ -65,7 +74,7 @@ ASSUME Fault \in {"None", "NoAutoReply", "NoAtomicExpiry", "LateSuccess",
                   "LoopDeadline", "Lengthen", "Unbounded", "NoDestAdmission",
                   "ExitStateOnly", "UnwindDropped", "ShareRunning",
                   "AttachClosed", "LeakDownstream", "EarlyClose",
-                  "EarlyStopped"}
+                  "EarlyStopped", "NoReplyFence", "CallbackBeforeDischarge"}
 
 Req == 1..N
 \* qA queued; turnA PendingReply in a turn; localA ReplyTo in a turn;
@@ -78,13 +87,15 @@ Terminal == {"ok", "timeout", "overloaded", "stopped", "dropped", "abandoned"}
 VARIABLES now, caller, sent, dl, slot, holder, discharges, okAt,
           jobs,     \* running linked jobs per request (0..2)
           down,     \* downstream request to B: none, qB, stateB, done, abandoned
-          phase,    \* A: run, exiting, stuck (cleanup deadline passed), dead
+          phase,    \* A: run, exiting, stuck (cleanup deadline passed),
+                    \* sealed (past D, answering), dead (answered, woken)
           turnA,    \* request in A's turn, 0 if idle
           panicked, \* history: requests whose token was in a panicking turn
-          earlyClosed \* history: tokens answered Stopped by a close before death
+          earlyClosed, \* history: tokens answered Stopped by a close before death
+          lateOk    \* history: requests answered Ok by a reply admitted after D
 
 vars == <<now, caller, sent, dl, slot, holder, discharges, okAt, jobs, down,
-          phase, turnA, panicked, earlyClosed>>
+          phase, turnA, panicked, earlyClosed, lateOk>>
 
 Init ==
     /\ now = 0 /\ caller = [r \in Req |-> "idle"]
@@ -92,7 +103,7 @@ Init ==
     /\ slot = [r \in Req |-> "none"] /\ holder = [r \in Req |-> "none"]
     /\ discharges = [r \in Req |-> 0] /\ okAt = [r \in Req |-> 0]
     /\ jobs = [r \in Req |-> 0] /\ down = [r \in Req |-> "none"]
-    /\ phase = "run" /\ turnA = 0 /\ panicked = {} /\ earlyClosed = {}
+    /\ phase = "run" /\ turnA = 0 /\ panicked = {} /\ earlyClosed = {} /\ lateOk = {}
 
 Open(r) == slot[r] = "open"
 TokenHeld(r) == Open(r) /\ holder[r] \in {"localA", "dropA", "stateA", "doneA"}
@@ -139,7 +150,7 @@ U(v) == UNCHANGED v
 \* Callers
 
 Send(r) ==
-    /\ caller[r] = "idle" /\ phase # "dead"
+    /\ caller[r] = "idle" /\ phase \notin {"sealed", "dead"}
     /\ \E d \in 1..MaxWait : now + d <= MaxTime
           /\ sent' = [sent EXCEPT ![r] = now + d] /\ dl' = [dl EXCEPT ![r] = now + d]
     /\ slot' = [slot EXCEPT ![r] = "open"] /\ holder' = [holder EXCEPT ![r] = "qA"]
@@ -238,9 +249,14 @@ Panic ==
     /\ U(<<now, sent, dl, jobs, down>>)
 
 \* A later turn, or stopped() while exiting, answers or drops a stored token.
+\* The reply gate admits it only before D (the reply permit; Death waits
+\* out a reply already admitted).
+ReplyGateOpen == phase \in {"run", "exiting", "stuck"}
+                 \/ (Fault = "NoReplyFence" /\ phase = "sealed")
 LaterReply(r) ==
-    /\ phase \in {"run", "exiting", "stuck"} /\ turnA = 0 /\ holder[r] = "stateA"
+    /\ ReplyGateOpen /\ turnA = 0 /\ holder[r] = "stateA"
     /\ holder' = [holder EXCEPT ![r] = "gone"] /\ TryReply(r)
+    /\ lateOk' = IF phase = "sealed" /\ Open(r) /\ now < dl[r] THEN lateOk \cup {r} ELSE lateOk
     /\ U(<<now, sent, dl, jobs, down, phase, turnA, panicked>>)
 
 LaterDrop(r) ==
@@ -264,12 +280,49 @@ CleanupDeadline ==
        ELSE Keep /\ UNCHANGED earlyClosed
     /\ U(<<now, sent, dl, holder, jobs, down, turnA, panicked>>)
 
+\* The death point D: the reply gate is fenced and the registry sealed.
 Death ==
-    /\ phase \in {"exiting", "stuck"} /\ phase' = "dead"
-    /\ DischargeSet(OpenOf({r \in Req : holder[r] \in
-                     (IF Fault = "ExitStateOnly" THEN {"qA", "stateA", "pendA"}
-                      ELSE {"qA", "stateA", "doneA", "pendA"})}), "stopped")
-    /\ U(<<now, sent, dl, holder, jobs, down, turnA, panicked>>)
+    /\ phase \in {"exiting", "stuck"} /\ phase' = "sealed"
+    /\ Keep /\ U(<<now, sent, dl, holder, jobs, down, turnA, panicked>>)
+
+\* What death answers: every token A holds and every exit-pending slot.
+DeathHeld == OpenOf({r \in Req : holder[r] \in
+                 (IF Fault = "ExitStateOnly" THEN {"qA", "stateA", "pendA"}
+                  ELSE {"qA", "stateA", "doneA", "pendA"})})
+
+\* The batch of answers and then its collected wake-ups. Each slot's
+\* transition is its own CAS, and the only other steps on a held slot
+\* (expiry, abandonment) are terminal transitions of that slot, so an
+\* interleaving of them with the batch reaches the same states as one taken
+\* before it; the wake-ups follow the batch with no user code in between.
+\* So the batch and its wake-ups are one step (Answer); what the model keeps
+\* apart is D (Death) and the batch, with callers, the deadline service and
+\* replies racing D in between. CallbackBeforeDischarge answers one slot at
+\* a time, waking its caller at once, and ends with Discharged.
+Answer(r) ==
+    /\ phase = "sealed"
+    /\ IF Fault = "CallbackBeforeDischarge"
+       THEN /\ r \in DeathHeld
+            /\ slot' = [slot EXCEPT ![r] = "stopped"]
+            /\ discharges' = [discharges EXCEPT ![r] = @ + 1]
+            /\ caller' = IF caller[r] = "waiting" THEN [caller EXCEPT ![r] = "err"] ELSE caller
+            /\ UNCHANGED phase
+       ELSE /\ r = 1
+            /\ slot' = [q \in Req |-> IF q \in DeathHeld THEN "stopped" ELSE slot[q]]
+            /\ discharges' = [q \in Req |-> IF q \in DeathHeld THEN discharges[q] + 1
+                                           ELSE discharges[q]]
+            /\ caller' = [q \in Req |-> IF q \in DeathHeld /\ caller[q] = "waiting"
+                                        THEN "err" ELSE caller[q]]
+            /\ phase' = "dead"
+    /\ U(<<now, sent, dl, holder, okAt, jobs, down, turnA, panicked>>)
+
+\* The batch is done: the collected wake-ups run.
+Discharged ==
+    /\ Fault = "CallbackBeforeDischarge"
+    /\ phase = "sealed" /\ DeathHeld = {} /\ phase' = "dead"
+    /\ caller' = [r \in Req |-> IF slot[r] = "stopped" /\ caller[r] = "waiting"
+                                THEN "err" ELSE caller[r]]
+    /\ U(<<now, sent, dl, slot, holder, discharges, okAt, jobs, down, turnA, panicked>>)
 
 ------------------------------------------------------------------------------
 \* Linked jobs and the downstream actor B
@@ -343,21 +396,26 @@ Tick ==
 ------------------------------------------------------------------------------
 
 NextOther ==
-    \/ Tick \/ EndTurn \/ Panic \/ ExitBegin \/ Death
+    \/ Tick \/ EndTurn \/ Panic \/ ExitBegin \/ Death \/ Discharged
     \/ \E r \in Req :
+        \/ Answer(r)
         \/ Send(r) \/ CallerGivesUp(r) \/ DispatchA(r) \/ ReplyNow(r) \/ Defer(r)
-        \/ Store(r) \/ DropInTurn(r) \/ PipeReply(r) \/ LaterReply(r) \/ LaterDrop(r)
+        \/ Store(r) \/ DropInTurn(r) \/ PipeReply(r) \/ LaterDrop(r)
         \/ JobNotify(r) \/ JobEnds(r) \/ JobCancel(r) \/ JobCallB(r)
         \/ BDispatch(r) \/ BReply(r) \/ Shorten(r) \/ Expire(r)
 
 Next ==
-    \/ CleanupDeadline
-    \/ (UNCHANGED earlyClosed /\ NextOther)
+    \/ CleanupDeadline /\ UNCHANGED lateOk
+    \/ \E r \in Req : LaterReply(r) /\ UNCHANGED earlyClosed
+    \/ (UNCHANGED <<earlyClosed, lateOk>> /\ NextOther)
 
 Spec == Init /\ [][Next]_vars
-\* Fairness only for the clock and the deadline service.
-FairSpec == Spec /\ WF_vars(Tick /\ UNCHANGED earlyClosed)
-                 /\ \A r \in Req : WF_vars(Expire(r) /\ UNCHANGED earlyClosed)
+\* Fairness for the clock, the deadline service and the steps of death
+\* after D (framework code: no user code runs between them).
+Quiet == UNCHANGED <<earlyClosed, lateOk>>
+FairSpec == Spec /\ WF_vars(Tick /\ Quiet)
+                 /\ \A r \in Req : WF_vars(Expire(r) /\ Quiet) /\ WF_vars(Answer(r) /\ Quiet)
+                 /\ WF_vars(Discharged /\ Quiet)
 
 ------------------------------------------------------------------------------
 \* Properties
@@ -365,7 +423,7 @@ FairSpec == Spec /\ WF_vars(Tick /\ UNCHANGED earlyClosed)
 TypeOK ==
     /\ now \in 0..MaxTime /\ holder \in [Req -> Holders]
     /\ slot \in [Req -> {"none", "open"} \cup Terminal]
-    /\ jobs \in [Req -> 0..2] /\ phase \in {"run", "exiting", "stuck", "dead"}
+    /\ jobs \in [Req -> 0..2] /\ phase \in {"run", "exiting", "stuck", "sealed", "dead"}
 
 AtMostOneDischarge == \A r \in Req : discharges[r] <= 1
 NoOrphan ==
@@ -383,7 +441,13 @@ PanicStopped == \A r \in panicked : slot[r] \in {"open", "stopped", "timeout", "
 \* Exit errors wait for death: a Stopped discharge happens only in the death
 \* step, where the reason is final (otp-exit-signals.md; the same property
 \* Lifecycle.tla checks as StoppedAtDeath).
-StoppedAtDeath == \A r \in Req : slot[r] = "stopped" => phase = "dead"
+StoppedAtDeath == \A r \in Req : slot[r] = "stopped" => phase \in {"sealed", "dead"}
+\* No reply is admitted after D: an Ok always comes from a live instance.
+NoReplyAfterDeath == lateOk = {}
+\* A caller woken with Stopped finds the whole death answered: no answer's
+\* wake-up (user code) runs while another request A held is still open.
+WokenAfterDischarge ==
+    (\E r \in Req : slot[r] = "stopped" /\ caller[r] = "err") => DeathHeld = {}
 \* The registry closes only at actual death: no token is answered Stopped
 \* by a close while the instance (its stopped()) is still alive.
 NoEarlyClose == earlyClosed = {}
@@ -396,7 +460,7 @@ Safety ==
     /\ TypeOK /\ AtMostOneDischarge /\ NoOrphan /\ NoSuccessAfterDeadline
     /\ TimelyExpiry /\ DeadlineWithinCaller /\ BoundedA /\ BoundedB
     /\ PanicStopped /\ StoppedAtDeath /\ NoEarlyClose /\ DownstreamOwned
-    /\ CallerConsistent
+    /\ CallerConsistent /\ NoReplyAfterDeath /\ WokenAfterDischarge
 
 EveryAcceptedDischarged == \A r \in Req : (slot[r] = "open") ~> (slot[r] \in Terminal)
 CallerNeverHangs == \A r \in Req : (caller[r] = "waiting") ~> (caller[r] # "waiting")

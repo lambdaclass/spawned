@@ -8,8 +8,9 @@
 (* Discharge (the slot's one OPEN -> terminal transition, recorded in the  *)
 (* trace section together with the CAS; a reply counts at WRITING), Exit   *)
 (* (the registry enters exiting, after committing the turn's drops) and    *)
-(* Death (the registry closes; the closes it and the mailbox disposal      *)
-(* perform belong to this one model step and are not logged).             *)
+(* Death (the death point D: the reply gate is fenced and the registry    *)
+(* sealed). The answers death then gives and their wake-ups (Answer) are  *)
+(* not logged and are taken silently.                                      *)
 (*                                                                         *)
 (* Turn-internal steps leave no trace and are taken silently: Defer that   *)
 (* takes a credit (or finds the slot closed), Store, DropInTurn, a turn    *)
@@ -55,10 +56,14 @@ Silent ==
        \/ \E r \in Req : Defer(r) \/ Store(r) \/ DropInTurn(r) \/ LaterDrop(r)
     /\ UNCHANGED slot
 
+\* The steps of death after D, which leave no trace.
+DeathSilent == \/ \E r \in Req : Answer(r)
+               \/ Discharged
+
 TraceNext ==
     /\ i < Len(Trace)
-    /\ \/ Step(Trace[i + 1]) /\ UNCHANGED earlyClosed /\ i' = i + 1
-       \/ Silent /\ UNCHANGED earlyClosed /\ UNCHANGED i
+    /\ \/ Step(Trace[i + 1]) /\ UNCHANGED <<earlyClosed, lateOk>> /\ i' = i + 1
+       \/ (Silent \/ DeathSilent) /\ UNCHANGED <<earlyClosed, lateOk>> /\ UNCHANGED i
 
 TraceSpec == TraceInit /\ [][TraceNext]_traceVars
 
