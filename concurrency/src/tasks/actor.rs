@@ -1347,8 +1347,25 @@ impl MessageTurn {
     }
 }
 
+/// The actor's state while its lifecycle runs. If the lifecycle future is
+/// dropped mid-way (its runtime was destroyed), exit begins before the state
+/// is dropped, so tokens held in it answer `ActorStopped`, not `ReplyDropped`.
+struct ExitOnDrop<A> {
+    actor: Option<A>,
+    replies: Arc<Registry>,
+    jobs: Arc<crate::reply::jobs::JobSet>,
+}
+impl<A> Drop for ExitOnDrop<A> {
+    fn drop(&mut self) {
+        if self.actor.is_some() {
+            self.replies.exiting();
+            self.jobs.cancel_all();
+        }
+    }
+}
+
 async fn run_actor<A: Actor>(
-    mut actor: A,
+    actor: A,
     ctx: Context<A>,
     mut rx: mpsc::Receiver<Box<dyn Envelope<A> + Send>>,
     cancellation_token: CancellationToken,
@@ -1356,8 +1373,13 @@ async fn run_actor<A: Actor>(
 ) -> Result<ExitReason, ExitReason> {
     let replies = ctx.shared.replies.clone();
     let jobs = ctx.shared.jobs.clone();
+    let mut owned = ExitOnDrop {
+        actor: Some(actor),
+        replies: replies.clone(),
+        jobs: jobs.clone(),
+    };
     let primary = match AssertUnwindSafe(run_actor_lifecycle(
-        &mut actor,
+        owned.actor.as_mut().expect("the state lives until death"),
         ctx,
         &mut rx,
         cancellation_token,
@@ -1385,6 +1407,7 @@ async fn run_actor<A: Actor>(
     jobs.cancel_all();
     replies.close();
     drop(rx);
+    let actor = owned.actor.take().expect("the state lives until death");
     crate::actor_cleanup::finish_actor_state(actor, primary)
 }
 

@@ -614,3 +614,35 @@ pub(crate) fn cancel_when_closed<R>(slot: &super::slot::Slot<R>, state: &Arc<Job
         state.cancel();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::reply::registry::Registry;
+
+    /// Review P1: a rejected reservation must not build a guard whose drop
+    /// releases a credit that was never taken.
+    #[test]
+    fn a_rejected_credit_releases_nothing() {
+        let registry = Registry::new(ActorId::next(), 1);
+        let held = JobCredit::reserve(&registry).expect("first credit");
+        assert!(JobCredit::reserve(&registry).is_none());
+        assert_eq!(registry.outstanding(), 1, "a rejected job released a credit");
+        drop(held);
+        assert_eq!(registry.outstanding(), 0);
+    }
+
+    /// Review P1: a finished keyed job stays replaceable, so its queued
+    /// messages are fenced when a newer job takes the key.
+    #[test]
+    fn replacement_cancels_a_finished_keyed_job() {
+        let set = JobSet::new(ActorId::next(), 1);
+        let old = JobState::new(set.owner(), 1);
+        set.admit(&old, Some(JobKey::new("k")));
+        set.ended(&old);
+        let new = JobState::new(set.owner(), 1);
+        set.admit(&new, Some(JobKey::new("k")));
+        assert!(old.is_cancelled(), "the finished job escaped replacement");
+        assert!(!new.is_cancelled());
+    }
+}

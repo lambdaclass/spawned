@@ -34,6 +34,9 @@ mod tasks_mode {
     impl Actor for Owner {
         const MAX_OUTSTANDING: usize = 4;
         const MAX_NATIVE_JOBS: Option<usize> = Some(1);
+        async fn stopped(&mut self, _: &Context<Self>) {
+            self.log.push("stopped");
+        }
     }
 
     struct Done(String);
@@ -252,6 +255,64 @@ mod tasks_mode {
         assert!(log.take().is_empty());
         assert_eq!(actor.request(Outstanding).await.unwrap(), 0);
         stop(actor).await;
+    }
+
+    struct ReplaceAfterFinish;
+    impl Message for ReplaceAfterFinish {
+        type Result = ();
+    }
+    impl Handler<ReplaceAfterFinish> for Owner {
+        async fn handle(&mut self, _: ReplaceAfterFinish, reply: PendingReply<'_, ()>, ctx: &Context<Self>) {
+            // The old job finishes (its terminal message queued behind this
+            // turn) before the replacement takes the key.
+            let old = ctx
+                .pipe_keyed("r", async { 1 }, |o| describe("old", o))
+                .unwrap();
+            while old.is_running() {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            ctx.pipe_keyed("r", async { 2 }, |o| describe("new", o))
+                .unwrap();
+            reply.reply(());
+        }
+    }
+
+    /// Review P1 (`NoStaleKeyed`): a finished keyed job's queued terminal
+    /// message is fenced by its replacement.
+    #[cfg(not(spawned_sim))]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn replacement_fences_a_finished_keyed_job() {
+        let (actor, log) = start();
+        actor.request(ReplaceAfterFinish).await.unwrap();
+        assert_eq!(entries(&actor, &log, 1).await, ["new:ok:2"]);
+        sleep(Duration::from_millis(20)).await;
+        assert!(log.take().is_empty());
+        stop(actor).await;
+    }
+
+    struct Bomb;
+    impl Message for Bomb {
+        type Result = ();
+    }
+    impl Handler<Bomb> for Owner {
+        async fn handle(&mut self, _: Bomb, reply: PendingReply<'_, ()>, ctx: &Context<Self>) {
+            ctx.pipe(async {}, |_: JobOutcome<()>| -> Done { panic!("done boom") })
+                .unwrap();
+            reply.reply(());
+        }
+    }
+
+    /// Review P1: a panicking `done` is a handler panic: `stopped()` runs
+    /// and the owner's other jobs are cancelled.
+    #[spawned_macros::sim_test]
+    async fn a_panicking_done_runs_stopped_and_cancels_jobs() {
+        let (actor, log) = start();
+        actor.request(Start::Gated("survivor", None)).await.unwrap().unwrap();
+        actor.request(Bomb).await.unwrap();
+        let reason = actor.wait_exit().await;
+        assert!(matches!(reason, spawned_concurrency::ExitReason::Panic(_)), "{reason:?}");
+        assert!(log.take().contains(&"stopped".to_string()), "stopped() did not run");
+        actor.join().await;
     }
 
     #[spawned_macros::sim_test]

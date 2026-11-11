@@ -302,6 +302,34 @@ mod tasks_mode {
         actor.join().await;
     }
 
+    /// Review P1: destroying the runtime under a live actor still closes its
+    /// registry; a `Deadline::Never` caller is answered `ActorStopped`.
+    #[cfg(not(spawned_sim))]
+    #[test]
+    fn runtime_destruction_closes_the_registry() {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .unwrap();
+        let (actor, rx) = rt.block_on(async {
+            let (actor, _) = start();
+            let rx = actor.request_raw_until(Park(1), Deadline::Never).unwrap();
+            assert_eq!(settle(&actor).await, 1);
+            (actor, rx)
+        });
+        drop(rt);
+        let caller = std::thread::spawn(move || rx.recv());
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !caller.is_finished() {
+            assert!(std::time::Instant::now() < deadline, "the caller hangs");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let result = caller.join().unwrap();
+        assert!(matches!(result, Err(ActorError::ActorStopped)), "{result:?}");
+        drop(actor);
+    }
+
     #[spawned_macros::sim_test]
     async fn stopped_may_answer_stored_tokens() {
         let (actor, _) = start();
