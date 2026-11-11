@@ -11,6 +11,7 @@ mod sync {
     pub(crate) use loom::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
     pub(crate) use loom::sync::{Arc, Condvar, Mutex, MutexGuard};
     pub(crate) use loom::thread::yield_now;
+    pub(crate) type SlotOwner = Option<()>;
 
     /// Loom has no timed wait; tests park only on slots without a deadline.
     pub(crate) fn wait_ticks<'a, T>(

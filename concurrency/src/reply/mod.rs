@@ -31,6 +31,7 @@ mod sync {
     pub(crate) use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
     pub(crate) use std::sync::{Arc, Condvar, Mutex, MutexGuard};
     pub(crate) use std::thread::yield_now;
+    pub(crate) type SlotOwner = Option<Arc<super::registry::Registry>>;
 
     /// Wait on `condvar` for at most `ticks` clock ticks (nanoseconds), or
     /// until notified when `None`.
@@ -118,10 +119,8 @@ pub(crate) fn reply_slot<R>(
     deadline: Deadline,
     owner: Option<&Arc<Registry>>,
 ) -> (SlotHandle<R>, ReplyReceiver<R>) {
-    let slot = Arc::new(Slot::new(deadline.ticks()));
-    let mut receiver = ReplyReceiver::new(slot.clone());
-    receiver.owner = owner.cloned();
-    (SlotHandle(Some(slot)), receiver)
+    let slot = Arc::new(Slot::with_owner(deadline.ticks(), owner.cloned()));
+    (SlotHandle(Some(slot.clone())), ReplyReceiver::new(slot))
 }
 
 // ---------------------------------------------------------------------------
@@ -435,7 +434,6 @@ impl<R: Send + 'static> Drop for ReplyTo<R> {
 /// any deferred credit returns at once.
 pub struct ReplyReceiver<R> {
     slot: Option<Arc<Slot<R>>>,
-    owner: Option<Arc<Registry>>,
 }
 
 impl<R> Drop for ReplyReceiver<R> {
@@ -456,10 +454,7 @@ impl<R> std::fmt::Debug for ReplyReceiver<R> {
 
 impl<R> ReplyReceiver<R> {
     fn new(slot: Arc<Slot<R>>) -> Self {
-        Self {
-            slot: Some(slot),
-            owner: None,
-        }
+        Self { slot: Some(slot) }
     }
 
     /// Await with the caller's own runtime timer (the `request` and
@@ -562,7 +557,7 @@ impl<R: Send + 'static> std::future::Future for ReplyFuture<R> {
             // deadline heap; the service expires the slot (waking this
             // future) without a per-request runtime timer.
             if !*this.timer {
-                if let Some(owner) = &this.rx.owner {
+                if let Some(owner) = &slot.owner {
                     if !*this.tracked {
                         owner.track_deadline(slot);
                         *this.tracked = true;

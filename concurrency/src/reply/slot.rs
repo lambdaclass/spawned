@@ -178,6 +178,9 @@ struct Inner<R> {
 }
 
 pub(crate) struct Slot<R> {
+    /// The receiving instance (production: its registry), whose deadline
+    /// heap expires an awaited raw request.
+    pub(crate) owner: super::sync::SlotOwner,
     word: AtomicU64,
     deadline: AtomicU64,
     inner: Mutex<Inner<R>>,
@@ -217,7 +220,12 @@ impl Wake {
 impl<R> Slot<R> {
     /// A fresh `OPEN` slot whose deadline is `deadline` ticks (`NEVER` for none).
     pub(crate) fn new(deadline: u64) -> Self {
+        Self::with_owner(deadline, Default::default())
+    }
+
+    pub(crate) fn with_owner(deadline: u64, owner: super::sync::SlotOwner) -> Self {
         Self {
+            owner,
             word: AtomicU64::new(OPEN),
             deadline: AtomicU64::new(deadline),
             inner: Mutex::new(Inner {
