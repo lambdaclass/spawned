@@ -174,15 +174,18 @@ trait Envelope<A: Actor>: Send {
     ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
 }
 
-/// Answer every request queued in a dead owner's mailbox, then destroy the
-/// queued payloads (a destructor panic is a cleanup failure). Admission is
-/// closed first, so nothing is queued after.
-fn discharge_mailbox<A: Actor>(rx: &mut mpsc::Receiver<Box<dyn Envelope<A> + Send>>) {
+/// Answer every request queued in a dead owner's mailbox, destroying
+/// nothing: the drained envelopes come back, to be destroyed once the death
+/// point's wake-ups ran. Admission is closed first, so nothing is queued
+/// after.
+fn answer_mailbox<A: Actor>(
+    rx: &mut mpsc::Receiver<Box<dyn Envelope<A> + Send>>,
+) -> Vec<Box<dyn Envelope<A> + Send>> {
     let mut queued = rx.drain();
     for envelope in &mut queued {
         envelope.discharge();
     }
-    rx.discard_all(queued);
+    queued
 }
 
 /// A never-polled actor's startup payload, dropped with its runtime.
@@ -192,8 +195,8 @@ type StartupPayload<A> = (
     mpsc::Receiver<Box<dyn Envelope<A> + Send>>,
     CancellationToken,
 );
-fn discharge_startup<A: Actor>(payload: &mut StartupPayload<A>) {
-    discharge_mailbox(&mut payload.2);
+fn discharge_startup<A: Actor>(payload: &mut StartupPayload<A>) -> Box<dyn Send> {
+    Box::new(answer_mailbox(&mut payload.2))
 }
 
 struct MessageEnvelope<M: Message> {
@@ -1688,8 +1691,12 @@ impl<A: Actor, C: Fn()> ExitOnDrop<'_, A, C> {
         } else {
             self.cleanup.die();
         }
-        discharge_mailbox(&mut self.rx);
-        // Destruction: a destructor panic is a cleanup failure, never the reason.
+        let queued = answer_mailbox(&mut self.rx);
+        // Every caller is answered: wake them, then destroy (queued
+        // payloads, then state). A destructor panic is a cleanup failure,
+        // never the reason.
+        self.cleanup.discharged();
+        self.rx.discard_all(queued);
         if let Some(failure) = crate::actor_cleanup::finish_actor_state(actor) {
             self.cleanup.cleanup_failed(failure);
         }

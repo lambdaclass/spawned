@@ -59,6 +59,11 @@ pub(crate) struct ActorCleanup<C: Fn()> {
     replies: Option<std::sync::Arc<crate::reply::registry::Registry>>,
     /// The owner's jobs: admission closes and they are cancelled at D.
     jobs: Option<std::sync::Arc<crate::reply::jobs::JobSet>>,
+    /// A runtime drop skipped `stopped()`: logged once every obligation is
+    /// answered (a subscriber is user code).
+    skip_log: Option<ExitReason>,
+    /// [`discharged`](Self::discharged) ran.
+    discharged: bool,
 }
 impl<C: Fn()> ActorCleanup<C> {
     pub(crate) fn new(
@@ -82,6 +87,8 @@ impl<C: Fn()> ActorCleanup<C> {
             failures: None,
             replies: None,
             jobs: None,
+            skip_log: None,
+            discharged: false,
         }
     }
     /// Seal `replies` with the final reason at D, inside the exit-table
@@ -155,15 +162,35 @@ impl<C: Fn()> ActorCleanup<C> {
             self.close(reason)
         });
         if skipped {
-            log_stopped_skipped(self.id, "", "runtime_drop", Some(&reason));
+            self.skip_log = Some(reason.clone());
         }
         fail_point!("actor.at_death");
         // Every open deferred reply (and every exit-pending one) is answered
-        // with the final reason, before any destructor runs.
+        // with the final reason, before any destructor runs. Their wake-ups
+        // wait until the mailbox's queued requests are answered too
+        // ([`discharged`](Self::discharged)): no waker runs between two
+        // answers.
         if let Some(replies) = &self.replies {
+            replies.begin_discharge();
             replies.close();
         }
         reason
+    }
+
+    /// Every obligation of the death point is answered (the mode answered
+    /// its queued requests after [`die`](Self::die)): now run the deferred
+    /// wake-ups, then log a skipped `stopped()`. Call it before destroying
+    /// any payload or state. Idempotent.
+    pub(crate) fn discharged(&mut self) {
+        if std::mem::replace(&mut self.discharged, true) {
+            return;
+        }
+        if let Some(replies) = &self.replies {
+            replies.end_discharge();
+        }
+        if let Some(reason) = self.skip_log.take() {
+            log_stopped_skipped(self.id, "", "runtime_drop", Some(&reason));
+        }
     }
     fn close(&mut self, reason: ExitReason) -> ExitReason {
         let replies = self.replies.as_deref();
@@ -193,6 +220,7 @@ impl<C: Fn()> Drop for ActorCleanup<C> {
         // Normally D was reached already; otherwise the runtime dropped the
         // actor (G1) and nothing of it is left to destroy.
         let reason = self.die_dropped();
+        self.discharged();
         if let Some(message) = self.failures.as_ref().and_then(|f| f.first()) {
             // Subscriber code must not unwind through a receiver/actor teardown.
             log_safely(|| {
@@ -243,10 +271,16 @@ pub(crate) fn finish_actor_state<A>(actor: A) -> Option<String> {
 pub(crate) struct ActorStartup<P, C: Fn()> {
     payload: Option<P>,
     cleanup: Option<ActorCleanup<C>>,
-    discharge: fn(&mut P),
+    /// Answers the queued requests and returns what it drained, destroyed
+    /// with the payload once the wake-ups ran.
+    discharge: fn(&mut P) -> Box<dyn Send>,
 }
 impl<P, C: Fn()> ActorStartup<P, C> {
-    pub(crate) fn new(payload: P, cleanup: ActorCleanup<C>, discharge: fn(&mut P)) -> Self {
+    pub(crate) fn new(
+        payload: P,
+        cleanup: ActorCleanup<C>,
+        discharge: fn(&mut P) -> Box<dyn Send>,
+    ) -> Self {
         Self {
             payload: Some(payload),
             cleanup: Some(cleanup),
@@ -263,9 +297,14 @@ impl<P, C: Fn()> Drop for ActorStartup<P, C> {
             cleanup.die_dropped();
         }
         if let Some(mut payload) = self.payload.take() {
-            (self.discharge)(&mut payload);
+            // Answers the queued requests; their payloads are destroyed with
+            // the rest of the startup payload, after the wake-ups.
+            let queued = (self.discharge)(&mut payload);
+            if let Some(cleanup) = &mut self.cleanup {
+                cleanup.discharged();
+            }
             if let Err(panic) =
-                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(payload)))
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop((queued, payload))))
             {
                 let message = crate::error::panic_message(&*panic);
                 crate::mailbox::dispose_panic(panic);

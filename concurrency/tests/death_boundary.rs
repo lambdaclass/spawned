@@ -116,6 +116,69 @@ mod tasks_mode {
         }
     }
 
+    /// Review round 2 (Codex 5): the death point answers every caller before
+    /// any wake-up runs. The first queued caller's waker waits for the second
+    /// caller's answer; closing the first slot used to run that waker before
+    /// the second slot was closed, so the second answer had to wait.
+    #[test]
+    fn every_queued_caller_is_answered_before_any_wake_runs() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Mutex;
+        use std::task::{Wake, Waker};
+        type Receiver = spawned_concurrency::ReplyReceiver<()>;
+        struct WaitForSecond {
+            second: Mutex<Receiver>,
+            answered: AtomicBool,
+        }
+        impl Wake for WaitForSecond {
+            fn wake(self: Arc<Self>) {
+                let began = Instant::now();
+                while began.elapsed() < Duration::from_secs(3) {
+                    if self.second.lock().unwrap().try_recv().is_some() {
+                        self.answered.store(true, Ordering::SeqCst);
+                        return;
+                    }
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+            }
+        }
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        let _guard = runtime.enter();
+        let actor = Owner {
+            _state: inert(),
+            parked: Vec::new(),
+        }
+        .start();
+        let (unblock, blocked) = mpsc::channel();
+        let (entered_tx, entered) = mpsc::channel();
+        actor.send(Block(blocked, entered_tx)).unwrap();
+        entered.recv_timeout(LIMIT).unwrap();
+        let never = spawned_concurrency::Deadline::Never;
+        let first = actor.request_raw_until(Queued(inert()), never).unwrap();
+        let second = actor.request_raw_until(Queued(inert()), never).unwrap();
+        let waiter = Arc::new(WaitForSecond {
+            second: Mutex::new(second),
+            answered: AtomicBool::new(false),
+        });
+        let waker = Waker::from(waiter.clone());
+        let mut awaiting = Box::pin(std::future::IntoFuture::into_future(first));
+        assert!(awaiting
+            .as_mut()
+            .poll(&mut std::task::Context::from_waker(&waker))
+            .is_pending());
+        actor.context().stop();
+        unblock.send(()).unwrap();
+        runtime.block_on(actor.join());
+        assert!(
+            waiter.answered.load(Ordering::SeqCst),
+            "a wake-up ran before every queued caller was answered"
+        );
+    }
+
     /// Review round 2 (Codex 3): `ReplyTo::overloaded()` holds its
     /// death-fence permit only across the transition. Its caller's waker
     /// runs after: here it stops the owner and waits for the published
@@ -334,5 +397,101 @@ mod threads_mode {
         );
         release.send(()).unwrap();
         actor.join();
+    }
+}
+
+#[cfg(feature = "async")]
+#[path = "support/drop_subprocess.rs"]
+mod subprocess;
+
+/// Review round 2 (Codex 5): a runtime drop's "stopped() skipped" log (a
+/// tracing subscriber is user code) runs after every caller is answered. It
+/// used to run between the seal and the answers, so a subscriber waiting for
+/// a queued caller blocked the death point. Global subscriber: own process.
+#[cfg(feature = "async")]
+mod subscriber_after_discharge {
+    use super::subprocess;
+    use super::*;
+    use spawned_concurrency::tasks::{Actor, ActorStart, Context, Handler};
+    use spawned_concurrency::{PendingReply, ReplyReceiver};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Mutex;
+
+    static QUEUED: Mutex<Option<ReplyReceiver<()>>> = Mutex::new(None);
+    static ANSWERED_WHEN_LOGGED: AtomicBool = AtomicBool::new(false);
+    static LOGGED: AtomicBool = AtomicBool::new(false);
+
+    /// Waits (bounded) in every event for the queued caller's answer.
+    struct WaitingSubscriber;
+    impl tracing::Subscriber for WaitingSubscriber {
+        fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+            true
+        }
+        fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            tracing::span::Id::from_u64(1)
+        }
+        fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+        fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+        fn event(&self, _: &tracing::Event<'_>) {
+            let Some(mut queued) = QUEUED.lock().unwrap().take() else {
+                return;
+            };
+            LOGGED.store(true, Ordering::SeqCst);
+            let began = Instant::now();
+            while began.elapsed() < Duration::from_secs(3) {
+                if queued.try_recv().is_some() {
+                    ANSWERED_WHEN_LOGGED.store(true, Ordering::SeqCst);
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
+        fn enter(&self, _: &tracing::span::Id) {}
+        fn exit(&self, _: &tracing::span::Id) {}
+    }
+
+    struct Idle;
+    impl Actor for Idle {}
+    impl Handler<Queued> for Idle {
+        async fn handle(&mut self, _: Queued, reply: PendingReply<'_, ()>, _: &Context<Self>) {
+            reply.reply(());
+        }
+    }
+
+    #[test]
+    fn the_skipped_stopped_log_runs_after_every_caller_is_answered() {
+        subprocess::run(
+            "subscriber_after_discharge::child",
+            "skipped-stopped log ran after the answers",
+        );
+    }
+
+    #[test]
+    #[ignore = "subprocess helper exercised by the enabled parent"]
+    fn child() {
+        if std::env::var_os("SPAWNED_MAILBOX_DROP_CHILD").is_none() {
+            return;
+        }
+        tracing::subscriber::set_global_default(WaitingSubscriber).unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        // Never polled: dropping the runtime drops it before `stopped()`.
+        let actor = {
+            let _guard = runtime.enter();
+            Idle.start()
+        };
+        let queued = actor
+            .request_raw_until(Queued(inert()), spawned_concurrency::Deadline::Never)
+            .unwrap();
+        *QUEUED.lock().unwrap() = Some(queued);
+        drop(runtime);
+        assert!(LOGGED.load(Ordering::SeqCst), "nothing was logged");
+        assert!(
+            ANSWERED_WHEN_LOGGED.load(Ordering::SeqCst),
+            "the log ran before the queued caller was answered"
+        );
+        println!("skipped-stopped log ran after the answers");
     }
 }

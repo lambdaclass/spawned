@@ -106,13 +106,13 @@ trait Envelope<A: Actor>: Send {
 }
 
 /// Answer every request queued in a dead owner's mailbox (and `extra`, an
-/// envelope received after the stop), then destroy the queued payloads (a
-/// destructor panic is a cleanup failure). Admission is closed first
-/// (waiting for in-flight sends), so nothing is queued after.
-fn discharge_mailbox<A: Actor>(
+/// envelope received after the stop), destroying nothing: the items come
+/// back, to be destroyed once the death point's wake-ups ran. Admission is
+/// closed first (waiting for in-flight sends), so nothing is queued after.
+fn answer_mailbox<A: Actor>(
     rx: &mut mpsc::Receiver<MailboxItem<A>>,
     extra: Option<Box<dyn Envelope<A> + Send>>,
-) {
+) -> Vec<MailboxItem<A>> {
     let mut queued = rx.drain();
     queued.extend(extra.map(MailboxItem::Message));
     for item in &mut queued {
@@ -120,7 +120,7 @@ fn discharge_mailbox<A: Actor>(
             envelope.discharge();
         }
     }
-    rx.discard_all(queued);
+    queued
 }
 
 /// A never-polled actor's startup payload (its thread was never started).
@@ -130,8 +130,8 @@ type StartupPayload<A> = (
     mpsc::Receiver<MailboxItem<A>>,
     CancellationToken,
 );
-fn discharge_startup<A: Actor>(payload: &mut StartupPayload<A>) {
-    discharge_mailbox(&mut payload.2, None);
+fn discharge_startup<A: Actor>(payload: &mut StartupPayload<A>) -> Box<dyn Send> {
+    Box::new(answer_mailbox(&mut payload.2, None))
 }
 
 struct MessageEnvelope<M: Message> {
@@ -1238,7 +1238,11 @@ impl<A: Actor> ActorRef<A> {
             // requests (and one received after the stop) are answered, all
             // before any destructor.
             cleanup.die();
-            discharge_mailbox(&mut rx, discarded);
+            let queued = answer_mailbox(&mut rx, discarded);
+            // Every caller is answered: wake them, then destroy (queued
+            // payloads, then state).
+            cleanup.discharged();
+            rx.discard_all(queued);
             drop(rx);
             // Destruction: a destructor panic is a cleanup failure only.
             if let Some(failure) = crate::actor_cleanup::finish_actor_state(actor) {

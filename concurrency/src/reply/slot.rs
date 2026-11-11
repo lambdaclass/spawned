@@ -208,7 +208,7 @@ fn lock<T>(mutex: &Mutex<T>) -> super::sync::MutexGuard<'_, T> {
 }
 
 /// What a winning transition must do after its CAS: return credits, then wake.
-struct Wake {
+pub(crate) struct Wake {
     pool: Option<Arc<CreditPool>>,
     release: u64,
     waker: Option<Waker>,
@@ -403,15 +403,45 @@ impl<R> Slot<R> {
     /// `STOPPED`. A reply in `WRITING` is a value write with no user code in
     /// it, so the close waits for it to resolve.
     pub(crate) fn close(&self) -> bool {
+        match self.close_collect() {
+            Some(wake) => {
+                wake.run(&self.parked);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// [`close`](Self::close) without the wake-up: the transition (and its
+    /// credit return) happens now and the caller runs the returned work with
+    /// [`run_wake`](Self::run_wake) once a whole batch is closed, so no
+    /// waker (executor or user code) runs between two closes.
+    pub(crate) fn close_collect(&self) -> Option<Wake> {
         loop {
-            if self.terminate(Terminal::Stopped) {
-                return true;
+            if let Ok((old, new)) = self.cas::<()>(None, |w| {
+                if state(w) == OPEN {
+                    Ok(with_state(w, STOPPED))
+                } else {
+                    Err(())
+                }
+            }) {
+                let mut wake = self.after(old, new);
+                // The credit returns with the transition; only wakes wait.
+                if let Some(pool) = wake.pool.take() {
+                    pool.release(wake.release);
+                }
+                return Some(wake);
             }
             if state(self.word()) != WRITING {
-                return false;
+                return None;
             }
             yield_now();
         }
+    }
+
+    /// Run the wake-up work [`close_collect`](Self::close_collect) returned.
+    pub(crate) fn run_wake(&self, wake: Wake) {
+        wake.run(&self.parked);
     }
 
     /// `[deadline]`: expire the slot if `now >= deadline`. Returns whether the

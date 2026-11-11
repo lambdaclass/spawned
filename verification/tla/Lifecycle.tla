@@ -224,9 +224,12 @@ Fire(a, r) ==
 (* requests are answered, the table closes. Shared by Die and RuntimeDrop. *)
 (* The code fences outgoing exit signals and replies first, then seals and *)
 (* closes the table, then answers deferred and queued requests, and only   *)
-(* then destroys payloads and state (actor_cleanup.rs). The answers follow *)
-(* the seal but run no user code and nothing in between depends on them,  *)
-(* so they commute left to it: this atomic step is a sound abstraction.    *)
+(* then runs the answers' wake-ups and logging, and destroys payloads and  *)
+(* state (actor_cleanup.rs). Between the seal and the last answer the code *)
+(* runs only terminal transitions of slots (no waker, subscriber, callback *)
+(* or destructor: wake-ups are collected and run after the batch), and no  *)
+(* other step depends on those answers, so they commute left to the seal:  *)
+(* this atomic step is a sound abstraction.                                *)
 Death(a, r) ==
     /\ st' = [st EXCEPT ![a] = "gone"]
     /\ mbox' = [mbox EXCEPT ![a] = <<>>]

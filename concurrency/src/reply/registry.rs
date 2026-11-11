@@ -25,7 +25,7 @@
 //! lands on it (`IN_TURN_PENDING`).
 
 use super::deadline::{self, DeadlineHeap, Expirable};
-use super::slot::{CreditPool, Slot, Terminal, NEVER};
+use super::slot::{CreditPool, Slot, Terminal, Wake, NEVER};
 use crate::{ActorId, ExitReason};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
@@ -38,6 +38,9 @@ use super::turn::{Outcome, TurnPhase, DEAD, EXITING};
 /// A slot seen without its reply type.
 pub(crate) trait Closeable: Send + Sync {
     fn close(&self) -> bool;
+    /// Close without waking; the returned work runs with `run_wake`.
+    fn close_collect(&self) -> Option<Wake>;
+    fn run_wake(&self, wake: Wake);
     fn terminate(&self, to: Terminal) -> bool;
     fn is_terminal(&self) -> bool;
 }
@@ -55,6 +58,12 @@ impl<R: Send> Expirable for Slot<R> {
 impl<R: Send> Closeable for Slot<R> {
     fn close(&self) -> bool {
         Slot::close(self)
+    }
+    fn close_collect(&self) -> Option<Wake> {
+        Slot::close_collect(self)
+    }
+    fn run_wake(&self, wake: Wake) {
+        Slot::run_wake(self, wake)
     }
     fn terminate(&self, to: Terminal) -> bool {
         Slot::terminate(self, to)
@@ -93,6 +102,11 @@ pub(crate) struct Registry {
     /// at the death point, before the death notices are taken, so a signal
     /// sent before death is delivered before them.
     signals: crate::mailbox::SendGate,
+    /// While the death point discharges (from its close until
+    /// [`end_discharge`](Self::end_discharge)): the wake-ups of the slots it
+    /// closed, run only once every obligation is answered, so no waker runs
+    /// between two closes.
+    discharge: Mutex<Option<Vec<(Arc<dyn Closeable>, Wake)>>>,
     #[cfg(all(spawned_sim, feature = "async"))]
     sim: deadline::SimService,
 }
@@ -118,6 +132,7 @@ impl Registry {
             final_reason: OnceLock::new(),
             replies: crate::mailbox::SendGate::default(),
             signals: crate::mailbox::SendGate::default(),
+            discharge: Mutex::new(None),
             #[cfg(all(spawned_sim, feature = "async"))]
             sim: deadline::SimService::default(),
         })
@@ -276,7 +291,7 @@ impl Registry {
         // slot listed here is either taken by that close or closed below.
         if self.is_dead() {
             drop(lists);
-            slot.close();
+            self.close_slot(slot.clone());
         } else {
             lists.tokens.push(Arc::downgrade(&slot));
             drop(lists);
@@ -373,6 +388,43 @@ impl Registry {
         self.turn.load() >= EXITING
     }
 
+    /// The death point starts discharging: closes from here until
+    /// [`end_discharge`](Self::end_discharge) defer their wake-ups.
+    pub(crate) fn begin_discharge(&self) {
+        let mut batch = self.discharge.lock().unwrap_or_else(|p| p.into_inner());
+        batch.get_or_insert_with(Vec::new);
+    }
+
+    /// Every obligation of the death point is answered: run the collected
+    /// wake-ups (executor or user code), outside every lock. Later closes
+    /// wake at once. Idempotent.
+    pub(crate) fn end_discharge(&self) {
+        let batch = self
+            .discharge
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take();
+        for (slot, wake) in batch.into_iter().flatten() {
+            slot.run_wake(wake);
+        }
+    }
+
+    /// Close one slot as `STOPPED`, deferring its wake-up while discharging.
+    fn close_slot(&self, slot: Arc<dyn Closeable>) -> bool {
+        let Some(wake) = slot.close_collect() else {
+            return false;
+        };
+        let mut batch = self.discharge.lock().unwrap_or_else(|p| p.into_inner());
+        match batch.as_mut() {
+            Some(batch) => batch.push((slot, wake)),
+            None => {
+                drop(batch);
+                slot.run_wake(wake);
+            }
+        }
+        true
+    }
+
     /// Death: every open token listed, and every exit-pending slot, becomes
     /// `STOPPED` with the final reason, wherever it is. Returns how many were
     /// closed.
@@ -384,13 +436,13 @@ impl Registry {
         self.seal(&ExitReason::Killed);
         crate::lifecycle_trace::reply(self.owner.raw(), "Death", 0, "");
         for slot in self.turn.close() {
-            slot.close();
+            self.close_slot(slot);
         }
         let tokens = std::mem::take(&mut lock(&self.lists).tokens);
         let closed = tokens
             .into_iter()
             .filter_map(|t| t.upgrade())
-            .filter(|s| s.close())
+            .filter(|s| self.close_slot(s.clone()))
             .count();
         // The heap is dropped after the close (§5 step 3.4), and the service
         // forgets this owner, so dead actors leave nothing behind.
