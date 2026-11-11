@@ -735,7 +735,7 @@ remaining differences of the exit-signal design are listed in
 | v0.7 propagated a kill over a link as `Kill` | It arrives as `killed` | Aligned in v0.8 (rank 5e, #240): `Killed` (X4) |
 | v0.7 linking or monitoring an already-exited actor delivered its real exit reason | `noproc` | Aligned in v0.8 (rank 5e, #240): `NoProc` (X1, X5) |
 | A kill or late signal does not interrupt a running `stopped()` (L3) | The process dies at once | Rust-forced: the reason still becomes `Killed` or the signal's reason |
-| The restart budget counts every child factory call, collateral ones included (V5) | Intensity counts recovery rounds | Planned v0.8, rank 5f |
+| v0.7 charged the restart budget for every child factory call, collateral ones included | Intensity counts restart actions: one per `one_for_all`/`rest_for_one` round | Aligned in v0.8 (rank 5f, #240): a OneForAll or RestForOne recovery round takes one grant however many children it rebuilds (V5) |
 | Initial startup retried a Permanent or Transient child whose factory failed, panicked or timed out (V7), within the budget | `start_link` aborts on any child start error | Aligned in v0.8 (rank 5f, #240): any first-start failure fails `start()` |
 | v0.7 reported a runtime-dropped actor as `Kill` (tasks) or `Panic("unexpected framework panic")` (threads) | No counterpart | v0.8 (rank 5g, #240): `Killed` in both modes (X6) |
 | Stop is cooperative: a running handler or blocking call is never interrupted (L3) | `kill` ends a process at once | Rust-forced: Rust cannot preempt or kill a thread |
@@ -750,8 +750,8 @@ remaining differences of the exit-signal design are listed in
 - v0.8, ranks 5e, 5f (startup) and 5g, exit signals, startup and runtime
   drop as in OTP ([otp-exit-signals.md](otp-exit-signals.md)): implemented on
   the exit-signals branch (#240, on top of rank 11's #239) and described in
-  L3-L6, X1-X6, V1, V3, V7 and V9 above.
-- v0.8, rank 5f: the restart budget counts recovery rounds (changes V5).
+  L3-L6, X1-X6, V1, V3, V5 (the restart budget counts recovery rounds), V7
+  and V9 above.
 
 - Rank 11, deferred typed replies, forwarding and pipe-to-self: a reply may
   leave the handler's turn; adds exactly-one completion on panic and timeout.
