@@ -303,7 +303,8 @@ impl<A: Actor> ChildSpec<A> {
         self
     }
     /// Override `Actor::MAX_NATIVE_JOBS` (blocking jobs running at once) for
-    /// every generation of this child.
+    /// every generation of this child. The default (at most 4) is easy to
+    /// outgrow; its only symptom under load is `NativeBudget` refusals.
     pub fn max_native_jobs(mut self, max: usize) -> Self {
         self.bounds.max_native_jobs = Some(max);
         self

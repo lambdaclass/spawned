@@ -200,7 +200,11 @@ that builds a `Snapshot` with a struct literal must add them.
   Tokio's blocking pool. Remove a `pipe_with(.., async { spawn_blocking(f)
   .await })` workaround (and its `resume_unwind` of the join error):
   `pipe_blocking_with(opts, move |_job| f(), done)` reports a panic as
-  `JobError::Panicked`. Raise the native budget with
+  `JobError::Panicked`. **Size the native budget:** the default is
+  `min(4, available_parallelism)` blocking jobs per actor, easy to outgrow
+  (one client port needed 352), and under load its only symptom is
+  `PipeErrorKind::NativeBudget` refusals (the first one per actor is logged
+  as `native_budget_exhausted`). Raise it with
   `#[actor(max_native_jobs = N)]` (or `ChildSpec::max_native_jobs(N)` for a
   supervised child) instead of avoiding native jobs. A Tokio runtime being
   dropped now waits for blocking jobs still running, as for any

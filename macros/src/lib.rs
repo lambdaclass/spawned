@@ -1120,8 +1120,10 @@ fn is_actor_method_attribute(attr: &Attribute) -> bool {
 ///
 /// `max_outstanding = N` sets `Actor::MAX_OUTSTANDING` (deferred credits per
 /// instance) and `max_native_jobs = N` sets `Actor::MAX_NATIVE_JOBS` (blocking
-/// jobs running at once). Both take any constant expression and combine with
-/// `protocol`; a supervised child can still override them per `ChildSpec`:
+/// jobs running at once; the default, `min(4, available_parallelism)`, is
+/// easy to outgrow: under load the only symptom is `NativeBudget` refusals).
+/// Both take any constant expression and combine with `protocol`; a
+/// supervised child can still override them per `ChildSpec`:
 ///
 /// ```ignore
 /// #[actor(protocol = P2PProtocol, max_native_jobs = 64, max_outstanding = 4096)]

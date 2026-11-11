@@ -371,6 +371,10 @@ impl<J: Job + 'static, K: Hash + Eq> JobSetCore<J, K> {
         debug_assert!(previous > 0, "native job budget underflow");
     }
 
+    pub(crate) fn max_native(&self) -> usize {
+        self.max_native
+    }
+
     #[allow(dead_code)] // used by the Loom model
     pub(crate) fn native(&self) -> usize {
         self.native.load(Ordering::Acquire)

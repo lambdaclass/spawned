@@ -575,6 +575,8 @@ pub(crate) struct JobSet {
     /// Whether the owner's exit was recorded (lifecycle traces).
     #[cfg(feature = "lifecycle-trace")]
     exited: std::sync::atomic::AtomicBool,
+    /// The first `NativeBudget` refusal was logged (only refusals touch it).
+    native_refusal_logged: std::sync::atomic::AtomicBool,
     #[cfg(feature = "async")]
     idle_async: Mutex<Vec<std::task::Waker>>,
 }
@@ -586,6 +588,7 @@ impl JobSet {
             core: JobSetCore::new(max_native),
             #[cfg(feature = "lifecycle-trace")]
             exited: std::sync::atomic::AtomicBool::new(false),
+            native_refusal_logged: std::sync::atomic::AtomicBool::new(false),
             #[cfg(feature = "async")]
             idle_async: Mutex::new(Vec::new()),
         }
@@ -596,10 +599,26 @@ impl JobSet {
     }
 
     /// Reserve a native slot (`MAX_NATIVE_JOBS`), rejecting at the bound.
+    /// The first refusal per instance is logged (a `warn`): under load the
+    /// default budget is easy to miss, and `NativeBudget` is otherwise the
+    /// only symptom. The reserving path itself is unchanged.
     pub(crate) fn reserve_native(&self) -> bool {
         let reserved = self.core.reserve_native();
         if !reserved {
             crate::instrumentation::hooks::job_rejected();
+            if !self
+                .native_refusal_logged
+                .swap(true, std::sync::atomic::Ordering::Relaxed)
+            {
+                let max_native_jobs = self.core.max_native();
+                crate::actor_cleanup::log_safely(|| {
+                    tracing::warn!(event = "native_budget_exhausted", actor = %self.owner,
+                        max_native_jobs, "blocking job refused (NativeBudget): all native \
+                        job slots are in use; raise MAX_NATIVE_JOBS \
+                        (#[actor(max_native_jobs = N)] or ChildSpec::max_native_jobs) if \
+                        this is expected load. Logged once per actor instance");
+                });
+            }
         }
         reserved
     }
@@ -988,6 +1007,20 @@ mod tests {
         );
         drop(held);
         assert_eq!(registry.outstanding(), 0);
+    }
+
+    /// The first `NativeBudget` refusal per instance is flagged (and
+    /// logged); a reservation that succeeds never touches the flag.
+    #[test]
+    fn the_first_native_refusal_is_flagged_once() {
+        use std::sync::atomic::Ordering;
+        let set = JobSet::new(ActorId::next(), 1);
+        assert!(set.reserve_native());
+        assert!(!set.native_refusal_logged.load(Ordering::Relaxed));
+        assert!(!set.reserve_native());
+        assert!(set.native_refusal_logged.load(Ordering::Relaxed));
+        assert!(!set.reserve_native());
+        set.release_native();
     }
 
     /// Review P1: a finished keyed job stays replaceable, so its queued

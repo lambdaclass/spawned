@@ -712,7 +712,16 @@ ctx.pipe_reply(token, async move { downstream?.await }, |res, token| Delegated {
   `--cfg spawned_sim`, so code need not depend on `spawned-rt`.
 - **Bounds.** Each unlinked job holds one `MAX_OUTSTANDING` credit; blocking
   jobs also count against `Actor::MAX_NATIVE_JOBS` (default
-  `min(4, available_parallelism)`). Set both in the macro,
+  `min(4, available_parallelism)`).
+
+  > **Size the native budget.** The default of at most 4 blocking jobs per
+  > actor is easy to outgrow now that blocking jobs run on Tokio's blocking
+  > pool: an actor that verifies, proves or does I/O in blocking jobs
+  > usually needs tens or hundreds (one client port needed 352). Under load
+  > the only symptom is `PipeErrorKind::NativeBudget` refusals; the first one
+  > per actor instance is logged as a `native_budget_exhausted` warning.
+
+  Set both in the macro,
   `#[actor(max_native_jobs = 64, max_outstanding = 4096)]` (or as `Actor`
   constants in a manual impl), and override them per supervised child with
   `ChildSpec::max_native_jobs(n)` / `ChildSpec::max_outstanding(n)`.

@@ -48,6 +48,12 @@ pub trait Actor: Send + Sized + 'static {
 
     /// Native threads this instance's jobs may run at once. `None`:
     /// `min(4, available_parallelism)`.
+    ///
+    /// The default is small: an actor that runs many blocking jobs at once
+    /// usually needs more, and under load the only symptom is
+    /// `PipeErrorKind::NativeBudget` refusals (the first one per instance is
+    /// logged as a `native_budget_exhausted` warning). Set it with
+    /// `#[actor(max_native_jobs = N)]`.
     const MAX_NATIVE_JOBS: Option<usize> = None;
 
     fn started(&mut self, _ctx: &Context<Self>) {}
