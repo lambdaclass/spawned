@@ -425,6 +425,7 @@ impl ActorSystem {
             supervisor_failures: Vec::new(),
             group_failures: Vec::new(),
             coordinator_failures: Vec::new(),
+            unfinished_jobs: Vec::new(),
         }
         .wait(deadline)
         .await
@@ -523,6 +524,7 @@ impl SystemInner {
                             }
                         }
                         ShutdownTarget::Scope(scope) => {
+                            scope.set_cleanup_timeout(remaining);
                             scope.stop(ExitReason::Shutdown);
                             let _ = rt::timeout(remaining, scope.joined()).await;
                         }
@@ -663,6 +665,9 @@ pub struct ShutdownReport {
     pub group_failures: Vec<String>,
     /// Coordinator panics recovered through emergency stop-and-join.
     pub coordinator_failures: Vec<String>,
+    /// Dead actors whose job cleanup is incomplete: `(actor, running jobs)`
+    /// still executing after the cleanup deadline (deferred-replies §5).
+    pub unfinished_jobs: Vec<(crate::ActorId, usize)>,
 }
 #[derive(Debug, Clone)]
 pub struct ActorExit {
@@ -705,6 +710,14 @@ impl ShutdownReport {
             .filter_map(|s| s.diagnostic())
             .collect();
         self.unfinished_actors = self.unfinished_actor_details.iter().map(|d| d.id).collect();
+        self.unfinished_jobs = state
+            .shutdown_scopes
+            .iter()
+            .filter_map(|s| {
+                let running = s.unfinished_jobs();
+                (running > 0).then(|| s.child().map(|c| (c.id(), running)))?
+            })
+            .collect();
         self.exits = state
             .shutdown_scopes
             .iter()
@@ -853,6 +866,10 @@ impl ExecutionGroup {
             active_turn: Mutex::new(None),
             ready,
             done,
+            cleanup_timeout: std::sync::atomic::AtomicU64::new(
+                crate::tasks::DEFAULT_STOP_DEADLINE.as_nanos() as u64,
+            ),
+            jobs: Mutex::new(None),
         });
         state.scopes.insert(id, scope.clone());
         Ok((scope.clone(), Lease { scope, root: true }))
@@ -890,8 +907,32 @@ pub(crate) struct Scope {
     active_turn: Mutex<Option<(&'static str, Instant)>>,
     ready: watch::Sender<StartupState>,
     done: watch::Sender<bool>,
+    /// The actor's cleanup deadline (deferred-replies §5): the supervisor's
+    /// `shutdown_timeout` or the system's remaining grace, in nanoseconds.
+    cleanup_timeout: std::sync::atomic::AtomicU64,
+    /// The actor's job set, for unfinished-job reporting.
+    jobs: Mutex<Option<std::sync::Weak<crate::reply::jobs::JobSet>>>,
 }
 impl Scope {
+    /// Shorten the cleanup deadline that bounds the actor's job join.
+    pub(crate) fn set_cleanup_timeout(&self, timeout: Duration) {
+        let nanos = u64::try_from(timeout.as_nanos()).unwrap_or(u64::MAX);
+        self.cleanup_timeout
+            .fetch_min(nanos, std::sync::atomic::Ordering::AcqRel);
+    }
+    pub(crate) fn cleanup_timeout(&self) -> Duration {
+        Duration::from_nanos(self.cleanup_timeout.load(std::sync::atomic::Ordering::Acquire))
+    }
+    pub(crate) fn set_jobs(&self, jobs: std::sync::Weak<crate::reply::jobs::JobSet>) {
+        *lock(&self.jobs) = Some(jobs);
+    }
+    /// Jobs still running after the actor's death (job cleanup incomplete).
+    fn unfinished_jobs(&self) -> usize {
+        lock(&self.jobs)
+            .as_ref()
+            .and_then(std::sync::Weak::upgrade)
+            .map_or(0, |jobs| jobs.running())
+    }
     pub(crate) fn group(&self) -> ExecutionGroup {
         ExecutionGroup {
             inner: self.group.clone(),

@@ -2045,6 +2045,8 @@ async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, core: Arc<C
                     });
                     let cleanup_started = Instant::now();
                     cleanup_until = Some(cleanup_started);
+                    // The child's jobs are joined within the same deadline.
+                    scope.set_cleanup_timeout(spec.shutdown_timeout);
                     exit = Some(
                         match rt::timeout(spec.shutdown_timeout, child.wait_exit_async()).await {
                             Ok(reason) => {

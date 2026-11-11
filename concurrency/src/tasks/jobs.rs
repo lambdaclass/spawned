@@ -460,6 +460,43 @@ impl<A: Actor> Context<A> {
         ))
     }
 
+    /// [`pipe_with`](Self::pipe_with) for async work that needs its
+    /// [`JobCtx`]: `work` receives it to check cancellation and `emit` fenced
+    /// messages (bounded by `JobOptions::emit_credits`; the terminal message
+    /// is always last).
+    pub fn pipe_with_ctx<T, M, F, W, D>(
+        &self,
+        opts: JobOptions,
+        work: F,
+        done: D,
+    ) -> Result<JobHandle, PipeError>
+    where
+        A: Handler<M>,
+        M: Message,
+        T: Send + 'static,
+        F: FnOnce(JobCtx<A>) -> W,
+        W: Future<Output = T> + Send + 'static,
+        D: FnOnce(JobOutcome<T>) -> M + Send + 'static,
+    {
+        let state = self.admit(&opts).map_err(|kind| PipeError { kind })?;
+        let credit = JobCredit::reserve(&self.shared.replies).ok_or(PipeError {
+            kind: PipeErrorKind::Overloaded,
+        })?;
+        let job = JobCtx {
+            state: state.clone(),
+            ctx: self.clone(),
+        };
+        let work = work(job);
+        Ok(self.launch_async::<T, M, (), W>(
+            opts,
+            state,
+            Hold::Credit(credit),
+            work,
+            Box::new(done),
+            None,
+        ))
+    }
+
     /// Run blocking `work` on an owned native thread, under the actor's
     /// `MAX_NATIVE_JOBS` budget. `work` gets a [`JobCtx`] to check
     /// cancellation and `emit_blocking` fenced messages.

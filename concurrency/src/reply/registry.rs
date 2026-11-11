@@ -74,6 +74,8 @@ pub(crate) struct Registry {
     pool: Arc<CreditPool>,
     phase: AtomicU8,
     lists: Mutex<Lists>,
+    /// When exit began: the cleanup deadline is armed from here.
+    exit_began: Mutex<Option<spawned_rt::time::Instant>>,
     #[cfg(all(spawned_sim, feature = "async"))]
     sim: deadline::SimService,
 }
@@ -95,6 +97,7 @@ impl Registry {
                 prune_at: 16,
                 ..Lists::default()
             }),
+            exit_began: Mutex::new(None),
             #[cfg(all(spawned_sim, feature = "async"))]
             sim: deadline::SimService::default(),
         })
@@ -273,9 +276,19 @@ impl Registry {
         if previous == DEAD {
             return;
         }
+        self.exit_began
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get_or_insert_with(spawned_rt::time::Instant::now);
         if self.phase.swap(EXITING, Ordering::AcqRel) == IN_TURN_PENDING {
             self.commit(Terminal::Stopped);
         }
+    }
+
+    /// What remains of `timeout`, measured from the start of exit.
+    pub(crate) fn cleanup_remaining(&self, timeout: std::time::Duration) -> std::time::Duration {
+        let began = *self.exit_began.lock().unwrap_or_else(|p| p.into_inner());
+        began.map_or(timeout, |began| timeout.saturating_sub(began.elapsed()))
     }
 
     pub(crate) fn is_exiting(&self) -> bool {

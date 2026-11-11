@@ -303,7 +303,10 @@ struct ActorShared<A: Actor> {
     /// This instance's reply registry: deferred tokens, credits, turn phase.
     replies: Arc<Registry>,
     /// This instance's pipe-to-self jobs.
-    jobs: crate::reply::jobs::JobSet,
+    jobs: Arc<crate::reply::jobs::JobSet>,
+    /// Becomes `true` when cleanup completes (death plus the bounded job
+    /// join); closed if the actor task is dropped. `join()` waits for it.
+    cleaned: watch::Receiver<bool>,
 }
 
 impl<A: Actor> Clone for Context<A> {
@@ -922,8 +925,23 @@ impl<A: Actor> ActorRef<A> {
     }
 
     /// Wait until the actor has fully stopped (including `stopped()` callback).
+    ///
+    /// Returns when cleanup completes: the actor died and its cancelled jobs
+    /// were joined (bounded by the cleanup deadline; jobs still running then
+    /// are reported, not awaited). A `stopped()` or state destructor that
+    /// never returns keeps it waiting; bound it with a timeout, or use
+    /// [`wait_exit`](Self::wait_exit) to observe death alone.
     pub async fn join(&self) {
         let _ = self.wait_exit().await;
+        let mut cleaned = self.shared.cleaned.clone();
+        loop {
+            if *cleaned.borrow_and_update() {
+                return;
+            }
+            if cleaned.changed().await.is_err() {
+                return;
+            }
+        }
     }
 
     /// Poll the exit reason. Returns `None` if the actor is still running.
@@ -1064,14 +1082,16 @@ impl<A: Actor> ActorRef<A> {
             .unwrap_or_else(new_linked_exit_reason);
 
         let id = ActorId::next();
+        let (cleaned_tx, cleaned_rx) = watch::channel(false);
         let actor_ref = ActorRef {
             shared: Arc::new(ActorShared {
                 id,
                 replies: Registry::new(id, A::MAX_OUTSTANDING),
-                jobs: crate::reply::jobs::JobSet::new(
+                jobs: Arc::new(crate::reply::jobs::JobSet::new(
                     id,
                     A::MAX_NATIVE_JOBS.unwrap_or_else(crate::reply::jobs::default_max_native_jobs),
-                ),
+                )),
+                cleaned: cleaned_rx,
                 sender: tx,
                 cancellation_token: cancellation_token.clone(),
                 completion_rx,
@@ -1087,6 +1107,7 @@ impl<A: Actor> ActorRef<A> {
 
         if let Some(scope) = &managed {
             scope.attach::<A>(actor_ref.child_handle());
+            scope.set_jobs(Arc::downgrade(&actor_ref.shared.jobs));
         }
 
         if let Some(parent) = parent {
@@ -1139,6 +1160,7 @@ impl<A: Actor> ActorRef<A> {
         let startup =
             crate::actor_cleanup::ActorStartup::new((actor, ctx, rx, cancellation_token), cleanup);
         let job_owner = actor_ref.shared.clone();
+        let cleaned_tx = cleaned_tx;
         let inner_future = async move {
             let ((actor, ctx, rx, cancellation_token), mut cleanup) = startup.into_parts();
             #[cfg(feature = "backend-experiments")]
@@ -1172,9 +1194,16 @@ impl<A: Actor> ActorRef<A> {
             // cancelled jobs, bounded by the cleanup deadline; a job still
             // running then does not undo death and is reported unfinished.
             if job_owner.jobs.running() > 0 {
-                let unfinished = job_owner.jobs.join(DEFAULT_STOP_DEADLINE).await;
+                let timeout = job_owner
+                    .managed
+                    .as_ref()
+                    .map_or(DEFAULT_STOP_DEADLINE, |scope| scope.cleanup_timeout());
+                let remaining = job_owner.replies.cleanup_remaining(timeout);
+                let unfinished = job_owner.jobs.join(remaining).await;
                 crate::reply::jobs::report_unfinished(job_owner.id, unfinished);
             }
+            drop(job_owner);
+            let _ = cleaned_tx.send(true);
         };
 
         if let Some(lease) = lease {
@@ -3344,7 +3373,8 @@ mod turn_regressions {
                     mailbox: crate::instrumentation::Mailbox::default(),
                     managed: None,
                     replies: Registry::new(ActorId::next(), DEFAULT_MAX_OUTSTANDING),
-                    jobs: crate::reply::jobs::JobSet::new(ActorId::next(), 1),
+                    jobs: Arc::new(crate::reply::jobs::JobSet::new(ActorId::next(), 1)),
+                    cleaned: watch::channel(false).1,
                 }),
             };
             let count = Arc::new(AtomicUsize::new(0));
@@ -3420,7 +3450,8 @@ mod idle_stop_regression {
                     mailbox: crate::instrumentation::Mailbox::default(),
                     managed: None,
                     replies: Registry::new(ActorId::next(), DEFAULT_MAX_OUTSTANDING),
-                    jobs: crate::reply::jobs::JobSet::new(ActorId::next(), 1),
+                    jobs: Arc::new(crate::reply::jobs::JobSet::new(ActorId::next(), 1)),
+                    cleaned: watch::channel(false).1,
                 }),
             };
             let count = Arc::new(AtomicUsize::new(0));

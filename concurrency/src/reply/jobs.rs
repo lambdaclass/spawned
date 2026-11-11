@@ -571,3 +571,30 @@ impl Expirable for JobDeadline {
         }
     }
 }
+
+/// Threads-mode cleanup completion (death plus the bounded job join), for
+/// `join()`. Set when the guard drops, so a panicking cleanup also releases
+/// joiners.
+#[derive(Default)]
+pub(crate) struct Cleaned {
+    done: Mutex<bool>,
+    changed: Condvar,
+}
+
+impl Cleaned {
+    pub(crate) fn wait(&self) {
+        let mut done = lock(&self.done);
+        while !*done {
+            done = self.changed.wait(done).unwrap_or_else(|p| p.into_inner());
+        }
+    }
+}
+
+pub(crate) struct CleanedGuard(pub(crate) Arc<Cleaned>);
+
+impl Drop for CleanedGuard {
+    fn drop(&mut self) {
+        *lock(&self.0.done) = true;
+        self.0.changed.notify_all();
+    }
+}

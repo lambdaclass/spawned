@@ -199,6 +199,7 @@ pub struct Context<A: Actor> {
     mailbox: crate::instrumentation::Mailbox,
     replies: Arc<Registry>,
     jobs: Arc<crate::reply::jobs::JobSet>,
+    cleaned: Arc<crate::reply::jobs::Cleaned>,
 }
 
 impl<A: Actor> Clone for Context<A> {
@@ -215,6 +216,7 @@ impl<A: Actor> Clone for Context<A> {
             mailbox: self.mailbox.clone(),
             replies: self.replies.clone(),
             jobs: self.jobs.clone(),
+            cleaned: self.cleaned.clone(),
         }
     }
 }
@@ -241,6 +243,7 @@ impl<A: Actor> Context<A> {
             mailbox: actor_ref.mailbox.clone(),
             replies: actor_ref.replies.clone(),
             jobs: actor_ref.jobs.clone(),
+            cleaned: actor_ref.cleaned.clone(),
         }
     }
 
@@ -368,6 +371,7 @@ impl<A: Actor> Context<A> {
             mailbox: self.mailbox.clone(),
             replies: self.replies.clone(),
             jobs: self.jobs.clone(),
+            cleaned: self.cleaned.clone(),
         }
     }
 
@@ -630,6 +634,7 @@ pub struct ActorRef<A: Actor> {
     mailbox: crate::instrumentation::Mailbox,
     replies: Arc<Registry>,
     jobs: Arc<crate::reply::jobs::JobSet>,
+    cleaned: Arc<crate::reply::jobs::Cleaned>,
 }
 
 impl<A: Actor> Debug for ActorRef<A> {
@@ -652,6 +657,7 @@ impl<A: Actor> Clone for ActorRef<A> {
             mailbox: self.mailbox.clone(),
             replies: self.replies.clone(),
             jobs: self.jobs.clone(),
+            cleaned: self.cleaned.clone(),
         }
     }
 }
@@ -742,8 +748,13 @@ impl<A: Actor> ActorRef<A> {
     }
 
     /// Block until the actor has fully stopped (including `stopped()` callback).
+    ///
+    /// Returns when cleanup completes: the actor died and its cancelled jobs
+    /// were joined (bounded by the cleanup deadline). Use
+    /// [`wait_exit`](Self::wait_exit) to observe death alone.
     pub fn join(&self) {
         let _ = self.wait_exit();
+        self.cleaned.wait();
     }
 
     /// Poll the exit reason. Returns `None` if the actor is still running.
@@ -850,6 +861,7 @@ impl<A: Actor> ActorRef<A> {
                 id,
                 A::MAX_NATIVE_JOBS.unwrap_or_else(crate::reply::jobs::default_max_native_jobs),
             )),
+            cleaned: Arc::default(),
         };
 
         let ctx = Context {
@@ -864,6 +876,7 @@ impl<A: Actor> ActorRef<A> {
             mailbox: actor_ref.mailbox.clone(),
             replies: actor_ref.replies.clone(),
             jobs: actor_ref.jobs.clone(),
+            cleaned: actor_ref.cleaned.clone(),
         };
 
         if let Some(parent) = parent {
@@ -885,7 +898,9 @@ impl<A: Actor> ActorRef<A> {
             crate::actor_cleanup::ActorStartup::new((actor, ctx, rx, cancellation_token), cleanup);
         let replies = actor_ref.replies.clone();
         let jobs = actor_ref.jobs.clone();
+        let cleaned = crate::reply::jobs::CleanedGuard(actor_ref.cleaned.clone());
         let _thread_handle = rt::spawn(move || {
+            let _cleaned = cleaned;
             let ((mut actor, ctx, mut rx, cancellation_token), mut cleanup) = startup.into_parts();
             let primary = match catch_unwind(AssertUnwindSafe(|| {
                 run_actor(&mut actor, ctx, &mut rx, cancellation_token)
@@ -914,8 +929,8 @@ impl<A: Actor> ActorRef<A> {
             // Job cleanup (§5 step 4), after death: join the cancelled jobs
             // that signal completion, bounded by the cleanup deadline.
             if jobs.running() > 0 {
-                let unfinished =
-                    jobs.join_blocking(std::time::Instant::now() + DEFAULT_STOP_DEADLINE);
+                let remaining = replies.cleanup_remaining(DEFAULT_STOP_DEADLINE);
+                let unfinished = jobs.join_blocking(std::time::Instant::now() + remaining);
                 crate::reply::jobs::report_unfinished(jobs.owner(), unfinished);
             }
         });
@@ -1946,6 +1961,7 @@ mod idle_stop_regression {
             mailbox: crate::instrumentation::Mailbox::default(),
             replies: Registry::new(ActorId::next(), DEFAULT_MAX_OUTSTANDING),
             jobs: Arc::new(crate::reply::jobs::JobSet::new(ActorId::next(), 1)),
+            cleaned: Arc::default(),
         };
         let count = Arc::new(AtomicUsize::new(0));
         let seen = count.clone();
@@ -2069,6 +2085,7 @@ mod stop_wakeup_regression {
             mailbox: crate::instrumentation::Mailbox::default(),
             replies: Registry::new(ActorId::next(), DEFAULT_MAX_OUTSTANDING),
             jobs: Arc::new(crate::reply::jobs::JobSet::new(ActorId::next(), 1)),
+            cleaned: Arc::default(),
         };
         let (entered_tx, entered) = mpsc::channel();
         let (stopped_tx, stopped) = mpsc::channel();
