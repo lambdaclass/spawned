@@ -61,6 +61,28 @@ Decided 2026-11-11, in this order: **soundness, introspection, determinism, test
 5. **Features a client needs.** Dynamic supervisor (12a), bounded mailboxes (17).
 6. **Performance, behind a regression gate.** A small benchmark set on every hot-path PR that flags slowdowns past a threshold, so "no cost on the default path" is enforced, not remembered. Then profiling, rank 37 and the [runtime direction](#runtime-direction).
 
+## Path to 1.0
+
+1.0 is a promise, not a feature set: the API is stable, every guarantee is checked, and it has been proven in production. Planned order (each release follows the [Priorities](#priorities)):
+
+- **0.8:** deferred replies and pipe-to-self (rank 11), OTP exit signals, startup and runtime-drop semantics (5e, 5f, 5g), and an API cleanup (smaller job API, `#[non_exhaustive]` and builders, OTP names such as `send_request`).
+- **0.9:** unified start API (`start`, `start_link`, `start_monitor` with `StartOptions`, children inheriting their parent's placement), dynamic supervisor (12a), supervisor alignment with OTP (budget exhaustion exits `Shutdown`, static `terminate_child`), introspection v1 (`process_info`, `get_state`, tree and system snapshots, opt-in stall watchdog), and the determinism fixes found by the audit.
+- **0.10:** the admission package designed together: bounded mailboxes (17), byte credits (18), deadlines (19); bounded draining on shutdown (13); the OTP control lane (14); per-actor memory limits (18a).
+- **1.0:** stabilization.
+
+What 1.0 requires:
+
+1. **Stable API with written rules:** a final full API review; every public enum `#[non_exhaustive]`; user-implemented traits sealed where possible; `spawned-rt` declared internal; a semver, MSRV and deprecation policy.
+2. **Complete, versioned semantics contract:** every guarantee in `semantics.md` checked by something that fails if it breaks; every OTP deviation listed with its Rust-forced reason; every TLA+ model with trace validation and Apalache inductive proofs of its safety invariants.
+3. **Production-safe defaults:** the 0.10 admission package; 1.0 does not ship with only unbounded mailboxes.
+4. **Introspection complete:** `spawned-top` (30), the flight recorder (9) and causal tracing (28) on top of 0.9's introspection v1.
+5. **Determinism complete for spawned itself:** nothing in spawned escapes the simulator; a CI check that the same seed gives identical traces; a versioned decision-tape format, so a tape saved on 1.0 replays on any 1.x.
+6. **Release gates run every time:** a soak run, the benchmark regression gate, a long fuzzer campaign, a mutation-score target on the core modules, and the planted-bug matrix catching every planted bug.
+7. **Production proof:** Ethrex and Ethlambda running the 1.0 candidate on testnet canaries for several weeks with no incident attributed to Spawned; an external review of the semantics contract and the models.
+8. **Documentation:** the GUIDE complete, every feature with an example in both modes, a cookbook (connection per peer, worker pools, timeouts, graceful shutdown), and MIGRATION for every version.
+
+After 1.0, as additive 1.x layers that never change the core's semantics: actor-owned I/O and whole-node simulation (22a), distribution (44), virtual actors (26), durable execution (49-51) and an io_uring backend (52).
+
 ## North star
 
 Spawned aims to be the best-designed and best-tested actor framework. This list
