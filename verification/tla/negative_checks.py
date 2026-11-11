@@ -96,10 +96,13 @@ def model_fault(module, fault, tlc, temporal=False, invariant="Safety", drop=())
     print(f"COUNTEREXAMPLE model: {module}/{fault}" + ("" if temporal else f" ({invariant})"))
 
 
-def named_fault(module, fault, invariant, tlc):
+def named_fault(module, fault, invariant, tlc, constants=None):
     """Run MODULE (safety only) with Fault = FAULT, checking TypeOK and the
     single named INVARIANT, and require that invariant to be violated. This
-    shows the mutation breaks the property it targets, not just Safety."""
+    shows the mutation breaks the property it targets, not just Safety.
+    CONSTANTS overrides constant values (an instance where the fault can
+    show)."""
+    constants = constants or {}
     with tempfile.TemporaryDirectory(prefix="bad-model-") as directory:
         work = Path(directory)
         for source in HERE.glob("*.tla"):
@@ -112,6 +115,9 @@ def named_fault(module, fault, invariant, tlc):
                 line = "SPECIFICATION Spec"
             if line.startswith("INVARIANT"):
                 line = f"INVARIANT TypeOK\nINVARIANT {invariant}"
+            name = line.strip().split(" ")[0]
+            if name in constants:
+                line = f"    {name} = {constants[name]}"
             lines.append(line.replace('Fault = "None"', f'Fault = "{fault}"'))
         (work / f"{module}.cfg").write_text("\n".join(lines) + "\n")
         result = subprocess.run(shlex.split(tlc) + ["-workers", "1", "-deadlock", "-cleanup", module],
@@ -196,7 +202,8 @@ DYNAMIC_CONTROLS = [
     ("MCDynamicSupervisor", "NoEscalate", "ExhaustionCloses"),
     ("MCDynamicSupervisor", "EarlyDone", "NoChildOutlivesSupervisor"),
     ("MCDynamicSupervisor", "Sequential", "ConcurrentShutdown"),
-    ("MCDynamicSupervisor", "ConcurrentStart", "SerialConstruction"),
+    # Two constructions at once need room for two children.
+    ("MCDynamicSupervisor", "ConcurrentStart", "SerialConstruction", {"MaxChildren": "2"}),
     ("MCDynamicSupervisor", "StuckFailsAll", "StuckIsolated"),
     ("MCDynamicSupervisor", "PublishAfterClose", "NoPublishAfterStop"),
     ("MCDynamicSupervisor", "OverlapGeneration", "AtMostOneGeneration"),
@@ -304,8 +311,8 @@ def main():
         named_fault(module, fault, invariant, args.tlc)
     for fault, prop in LIFECYCLE_TEMPORAL_CONTROLS:
         named_temporal("MCLifecycleLive", fault, prop, args.tlc, LIFECYCLE_SMALL)
-    for module, fault, invariant in DYNAMIC_CONTROLS:
-        named_fault(module, fault, invariant, args.tlc)
+    for module, fault, invariant, *constants in DYNAMIC_CONTROLS:
+        named_fault(module, fault, invariant, args.tlc, *constants)
     for fault, prop in DYNAMIC_TEMPORAL_CONTROLS:
         named_temporal("MCDynamicSupervisorLive", fault, prop, args.tlc)
 
