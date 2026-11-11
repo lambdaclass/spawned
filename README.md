@@ -1,19 +1,15 @@
 # Spawned
 
-An actor framework for Rust, inspired by Erlang/OTP.
+An actor framework for Rust, inspired by Erlang/OTP, built so that its guarantees
+are verified once and inherited by every application, and so that concurrency
+tests replay exactly.
 
 [![Crates.io](https://img.shields.io/crates/v/spawned-concurrency.svg)](https://crates.io/crates/spawned-concurrency)
 [![docs.rs](https://img.shields.io/docsrs/spawned-concurrency)](https://docs.rs/spawned-concurrency)
 [![CI](https://github.com/lambdaclass/spawned/actions/workflows/ci.yml/badge.svg)](https://github.com/lambdaclass/spawned/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-## Project Status
-
-**Spawned is actively maintained and used in production.** It powers the concurrency layer of [ethrex](https://github.com/lambdaclass/ethrex) (Ethereum L1/L2 execution client) and [ethlambda](https://github.com/lambdaclass/ethlambda) (Lean Ethereum consensus client), both developed by [LambdaClass](https://github.com/lambdaclass).
-
-The core API is stable, so periods without commits are expected (they mean things are working, not that the project is abandoned). New features land as those projects need them (see the [roadmap](ROADMAP.md)). Bug reports, questions, and pull requests are welcome and get answered.
-
-## Why Spawned instead of raw Tokio or threads
+## Why Spawned
 
 More and more code is written by LLMs and reviewed by people who did not write it. Concurrency is where that goes wrong: each call site looks plausible, and the bugs live in how the call sites interact. Spawned matters for two reasons.
 
@@ -30,6 +26,12 @@ More and more code is written by LLMs and reviewed by people who did not write i
 Every application built on Spawned inherits that work instead of redoing it. [TESTING.md](docs/TESTING.md) describes each layer.
 
 **Tests are deterministic.** Under `--cfg spawned_sim`, async tests written with `#[spawned_macros::sim_test]` run on a seeded, single-threaded simulator with virtual time, across many schedules. A failure prints its seed and a decision tape. The tape replays the exact interleaving and is shrunk to a minimal one. With raw Tokio, the same race shows up as a flaky CI run that nobody can reproduce. The simulator covers `tasks` mode. Code that calls `tokio::spawn` or `tokio::time` directly, instead of going through Spawned, cannot run on it. See [what the simulator does not model](docs/TESTING.md#seeds-and-decision-tapes-under---cfg-spawned_sim).
+
+## Project Status
+
+**Spawned is actively maintained and used in production.** It powers the concurrency layer of [ethrex](https://github.com/lambdaclass/ethrex) (Ethereum L1/L2 execution client) and [ethlambda](https://github.com/lambdaclass/ethlambda) (Lean Ethereum consensus client), both developed by [LambdaClass](https://github.com/lambdaclass).
+
+The core API is stable, so periods without commits are expected (they mean things are working, not that the project is abandoned). New features land as those projects need them (see the [roadmap](ROADMAP.md)). Bug reports, questions, and pull requests are welcome and get answered.
 
 ## Quick Example
 
@@ -122,6 +124,8 @@ For every feature (timers, type erasure, registry, backends, links, supervision,
 
 ## Features
 
+- **Verified semantics** — every guarantee is written down in the [semantics contract](docs/design/semantics.md) and checked by TLA+ models, trace validation, Loom, the simulator, fuzzing and the client test suites
+- **Deterministic simulation testing** — `#[spawned_macros::sim_test]` runs your async actor tests over many seeded schedules with virtual time; a failure replays exactly from its seed or decision tape
 - **Protocol macros** — `#[protocol]` generates message types, blanket impls, and type-erased refs from a trait definition
 - **Actor macros** — `#[actor]` generates `impl Actor` and `Handler<M>` impls from annotated methods
 - **Dual execution modes** — async/tokio (`tasks`) or blocking OS threads (`threads`) with the same API
@@ -280,6 +284,34 @@ results. Earlier reports and backend studies are archived in [legacy](legacy/REA
 ## Testing
 
 Run `cargo test --workspace`.
+
+### Testing your own actors deterministically
+
+Add `spawned-macros` and `spawned-rt` as dev-dependencies and mark async tests
+with `#[spawned_macros::sim_test]`. In a normal build they run
+once on Tokio. Built with `RUSTFLAGS="--cfg spawned_sim --cfg tokio_unstable"`,
+each one runs on the simulator over seeds `0..SPAWNED_SIM_SEEDS` (default 8)
+with virtual time, so timers and restart backoff take no wall-clock time:
+
+```rust
+#[spawned_macros::sim_test]
+async fn find_returns_what_add_stored() {
+    let ns = NameServer::new().start();
+    ns.add("Joe".into(), "At Home".into()).await.unwrap();
+    assert_eq!(
+        ns.find("Joe".into()).await.unwrap(),
+        FindResult::Found { value: "At Home".to_string() }
+    );
+}
+```
+
+A failing run prints its seed and the path of a decision tape. Rerun with
+`SPAWNED_SIM_SEED=n` or `SPAWNED_SIM_TAPE=path` to get exactly the same
+interleaving, and use the `.min.tape` the harness writes for a shrunk one.
+[TESTING.md](docs/TESTING.md#seeds-and-decision-tapes-under---cfg-spawned_sim)
+covers PCT and bounded exploration and what the simulator does not model.
+
+### How Spawned itself is verified
 
 Spawned is verified in layers. TLA+ models of supervision, restart cohorts,
 supervisor trees and system shutdown are model-checked with TLC and their
