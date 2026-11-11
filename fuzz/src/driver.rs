@@ -820,6 +820,9 @@ impl Driver {
                 }
             }
         }
+        let model = modes
+            .filter(|m| !m.is_empty())
+            .map(|m| (cfg_strategy(&spec.policy), (spec.policy.max_restarts % 7) as usize, m));
         self.units.push((sys, Unit::Root(root)));
         trace(|| format!("supervisor r{root}: start"));
         // A tree whose subtree restarts slower than its budget refills
