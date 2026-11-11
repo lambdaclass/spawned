@@ -112,6 +112,18 @@ pub use monitor::{Down, MonitorRef};
 pub use response::Response;
 pub use spawned_macros::{actor, protocol};
 
+/// Seeded async test attribute: `#[spawned_concurrency::sim_test]`.
+///
+/// Runs the test once on Tokio in normal builds, and over a range of seeds on
+/// the deterministic simulator (one thread, seeded scheduling, virtual time)
+/// under `RUSTFLAGS="--cfg spawned_sim --cfg tokio_unstable"`. The expansion
+/// calls `spawned_rt::tasks::SimTest`, so the crate using it also depends on
+/// `spawned-rt`. Failing seeds print `SPAWNED_SIM_SEED` and `SPAWNED_SIM_TAPE`
+/// replay commands. See `docs/TESTING.md`, "Seeds and decision tapes under
+/// `--cfg spawned_sim`", for the options, replay and what the simulator does
+/// not model.
+pub use spawned_macros::sim_test;
+
 #[cfg(all(kani, feature = "async"))]
 mod kani_proofs;
 #[cfg(all(test, feature = "async"))]

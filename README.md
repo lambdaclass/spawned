@@ -286,14 +286,14 @@ Run `cargo test --workspace`.
 
 ### Testing your own actors deterministically
 
-Add `spawned-macros` and `spawned-rt` as dev-dependencies and mark async tests
-with `#[spawned_macros::sim_test]`. In a normal build they run
+Mark async tests with `#[spawned_concurrency::sim_test]` (the crate also
+needs `spawned-rt`, which it already uses to run actors). In a normal build they run
 once on Tokio. Built with `RUSTFLAGS="--cfg spawned_sim --cfg tokio_unstable"`,
 each one runs on the simulator over seeds `0..SPAWNED_SIM_SEEDS` (default 8)
 with virtual time, so timers and restart backoff take no wall-clock time:
 
 ```rust
-#[spawned_macros::sim_test]
+#[spawned_concurrency::sim_test]
 async fn find_returns_what_add_stored() {
     let ns = NameServer::new().start();
     ns.add("Joe".into(), "At Home".into()).await.unwrap();
@@ -308,7 +308,9 @@ A failing run prints its seed and the path of a decision tape. Rerun with
 `SPAWNED_SIM_SEED=n` or `SPAWNED_SIM_TAPE=path` to get exactly the same
 interleaving, and use the `.min.tape` the harness writes for a shrunk one.
 [TESTING.md](docs/TESTING.md#seeds-and-decision-tapes-under---cfg-spawned_sim)
-covers PCT and bounded exploration and what the simulator does not model.
+covers PCT and bounded exploration and what the simulator does not model;
+[deterministic_simulation.rs](examples/capabilities/tests/deterministic_simulation.rs)
+is a runnable example.
 
 ### How Spawned itself is verified
 
