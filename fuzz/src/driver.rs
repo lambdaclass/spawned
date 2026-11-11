@@ -107,6 +107,8 @@ struct Driver {
     traps: HashMap<ActorId, (bool, u64)>,
     handles: HashMap<ActorId, ChildHandle>,
     first_exit: HashMap<ActorId, ExitReason>,
+    /// Total handler sleep ever sent: a fence may wait behind all of it.
+    queued_sleep: Duration,
 }
 
 /// Run one scenario in the current simulated world; panics with the first
@@ -309,6 +311,7 @@ impl Driver {
             traps: HashMap::new(),
             handles: HashMap::new(),
             first_exit: HashMap::new(),
+            queued_sleep: Duration::ZERO,
         };
         driver.new_system();
         driver
@@ -387,7 +390,11 @@ impl Driver {
                 self.may_stop(to.id());
                 Act::Panic
             }
-            Cmd::Sleep(v) => Act::Sleep(Duration::from_millis(20 * v as u64)),
+            Cmd::Sleep(v) => {
+                let d = Duration::from_millis(20 * v as u64);
+                self.queued_sleep += d;
+                Act::Sleep(d)
+            }
             Cmd::StopSelf(r) => {
                 self.may_stop(to.id());
                 Act::StopSelf(reason(r))
@@ -594,6 +601,13 @@ impl Driver {
                     return;
                 }
                 let Some(aref) = self.pick(to) else { return };
+                // A repeating sleep would queue unbounded work (one tick per
+                // millisecond, each sleeping seconds): fences could never
+                // catch up. One-shot timers may sleep.
+                let cmd = match cmd {
+                    Cmd::Sleep(_) if interval => Cmd::Noop,
+                    cmd => cmd,
+                };
                 let act = self.act(cmd, &aref);
                 let msg = Do {
                     nonce: 0,
@@ -1134,7 +1148,7 @@ impl Driver {
             lane: 0,
             act: Act::Noop,
         };
-        match aref.request_with_timeout(msg, LONG).await {
+        match aref.request_with_timeout(msg, LONG + self.queued_sleep).await {
             Ok(n) => {
                 if n != nonce {
                     self.violate("R2: a reply reached the wrong request", format!("{n} for {nonce}"));
@@ -1148,7 +1162,10 @@ impl Driver {
                 false
             }
             Err(_) => {
-                self.violate("liveness: an actor did not answer a fence within 600 s", String::new());
+                self.violate(
+                    "liveness: an actor did not answer a fence behind all queued work",
+                    String::new(),
+                );
                 false
             }
         }
