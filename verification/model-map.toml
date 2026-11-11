@@ -126,7 +126,7 @@ code = [
     "concurrency/src/reply/**",
     "concurrency/src/lifecycle_trace.rs",
 ]
-coverage_floor = 5   # of 5 trace-spec arms (trace_coverage.py STATIC)
+coverage_floor = 14   # of 14 action keys (TraceReplies arms)
 
 [models.DeferredJobs]
 # Rank 11: pipe jobs, keyed replacement, ActorId and cancellation fencing,

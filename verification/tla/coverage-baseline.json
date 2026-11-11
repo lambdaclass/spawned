@@ -124,10 +124,19 @@
   "A|Start"
  ],
  "DeferredReplies": [
+  "A|BDispatch",
+  "A|BReply",
+  "A|CallB",
   "A|Death",
   "A|Discharge",
   "A|Dispatch",
   "A|Exit",
-  "A|Send"
+  "A|JobCancel",
+  "A|JobEnd",
+  "A|JobNotify",
+  "A|PipeReply",
+  "A|Send",
+  "A|Shorten",
+  "A|Stuck"
  ]
 }
