@@ -1086,7 +1086,16 @@ are not assumed to fire):
 one at a time; every number is from a run that ended with TLC's own "No
 error has been found"):
 
-RESULTS_TABLE
+| Configuration | Run | Instance | Distinct states | Depth | Time |
+|---|---|---|---|---|---|
+| `MCStart` | per PR | one link/monitor child of a managed parent that may trap and exit: every init outcome and notice disposition, abandonment, the cleanup deadline | 7,086 | 13 | 1 s |
+| `MCStartNames` | per PR | two named `start` children in P's group, closure, lookups, refusals, retry | 703,268 | 22 | 10 s |
+| `MCStartCap` | per PR | three children spawned into P's group of three | 628,622 | 26 | 11 s |
+| `MCStartTimeout` | per PR | one child of each waiting variant; init timer, outside kills (also before D), administrative stops, closure; managed or unmanaged parent | 258,868 | 17 | 4 s |
+| `MCStartContinue` | per PR | one child of every variant and explicit placement, two messages, trapping | 2,017,292 | 17 | 19 s |
+| `MCStartScope` | per PR | S8: one linked child owned (`G`, `G2`) or not, trapping, unlink, owner closure, P's D and publication, polite Shutdown, scope deadline; liveness `OwnedScopeFinishes` | 221,072 | 17 | 15 s |
+| `MCStartLive` | per PR | liveness `ParentExitReachesChild`, `StartAnswered` | 29,834 | 14 | 4 s |
+| `MCStartDeep` | weekly | two named link/monitor children of an exiting parent (`MCStart` and `MCStartNames` combined) | 30,230,014 | 24 | 5 min 19 s |
 
 **Negative controls** (`negative_checks.py`, each with `TypeOK` and only the
 named property, run one at a time):
