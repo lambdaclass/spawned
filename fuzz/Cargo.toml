@@ -14,6 +14,10 @@ cargo-fuzz = true
 [workspace]
 members = ["."]
 
+[lib]
+# Doctests do not get RUSTFLAGS, so they cannot see the simulator cfg.
+doctest = false
+
 [dependencies]
 arbitrary = { version = "1", features = ["derive"] }
 libfuzzer-sys = "0.4"
