@@ -8,9 +8,6 @@
   deterministically" section showing `#[spawned_macros::sim_test]`.
 - Lockfile: `rustix` 1.1.2 -> 1.1.6 for RUSTSEC-2026-0486 (pulled in by the
   examples' `native-tls` dependency; spawned's crates are unaffected).
-- CI: a `sim` job runs the simulated test suites (`--cfg spawned_sim`)
-  on every pull request, one test per process with a timeout. `stack_budget`
-  is compiled out under the simulator: it measures real thread stacks.
 - CI: a `sim` job runs the simulated test suites (`--cfg spawned_sim`) on
   every pull request: all integration tests of `spawned-concurrency` and
   `spawned-rt` plus the executor unit tests, one test per process with a
@@ -18,8 +15,9 @@
   failure. `stack_budget` is compiled out under the simulator: it measures
   real thread stacks.
 - CI: the core workflows (`ci`, `verification`, `failpoints`) also run on
-  `merge_group`, so pull requests can go through GitHub's merge queue.
-
+  `merge_group`, so pull requests go through GitHub's merge queue, which runs
+  all 19 required checks (including `sim`) on the merged result before
+  anything lands on `main`.
 - Design (not implementation) for rank 11, deferred typed replies and
   pipe-to-self, revised over four passes after independent reviews:
   `docs/design/deferred-replies.md`, client mapping for ethrex and ethlambda,
