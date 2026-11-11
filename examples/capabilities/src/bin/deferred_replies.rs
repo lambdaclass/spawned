@@ -246,11 +246,10 @@ impl PeerTable {
         if self.waiters.len() >= MAX_WAITERS {
             return reply.overloaded();
         }
-        match reply.defer() {
-            Ok(token) => self.waiters.push_back(token),
-            // Overloaded, Closed or NoCaller: the caller was already answered
-            // (or there is none). `DeferError` is `#[non_exhaustive]`.
-            Err(_) => {}
+        // On `Err` (Overloaded, Closed or NoCaller) the caller was already
+        // answered, or there is none.
+        if let Ok(token) = reply.defer() {
+            self.waiters.push_back(token);
         }
     }
 
