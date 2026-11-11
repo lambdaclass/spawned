@@ -240,7 +240,7 @@ From a comparison against OTP 28/29, Elixir 1.20 and gleam_otp 1.3 on 2026-11-11
 | G20 | Per-actor memory limit (`max_heap_size`) | features | 1.x (rank 18a) |
 | G21 | Demand-driven pipelines (GenStage, Broadway) | features | 1.x (ranks 18, 33, 35) |
 | G22 | Node watchdog (`heart`): feed systemd's watchdog from the stall watchdog | introspection | 1.0 (documentation) |
-| G23 | Remote console like `erl -remsh`: an opt-in, local-only control socket and CLI for querying a running system (list actors, `process_info`, tree, `get_state`, start or stop tracing, terminate or restart a child), built on introspection; no arbitrary code evaluation | introspection | 0.10, opt-in (with rank 30 `spawned-top`) |
+| G23 | Remote console like `erl -remsh`: every binary running an `ActorSystem` is attachable through a local Unix socket (`0600`, per process, on by default, read-only by default; mutating commands opt-in; `SPAWNED_CONSOLE=off` or a Cargo feature to remove it) and a `spawned-ctl` CLI (`attach`, `ps`, `info`, `state`, `tree`, `stuck`, `trace`, `restart`); built on introspection, no code evaluation, nothing on the send or dispatch path | introspection | 0.9 (introspection v1) |
 
 Kept on purpose, where Rust's types do better than Erlang: typed replies, reply tokens that must be answered, a `Result` instead of crashing the caller on a timeout, bounded work, and the explicit stuck policy instead of `brutal_kill`.
 
