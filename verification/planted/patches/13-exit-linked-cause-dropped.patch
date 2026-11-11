@@ -1,0 +1,15 @@
+Planted bug 13 (exit-linked-cause-dropped): An actor killed through a link exits Normal, so the crash stops propagating
+
+diff --git a/concurrency/src/actor_cleanup.rs b/concurrency/src/actor_cleanup.rs
+index 69e376ff..0fa2c19d 100644
+--- a/concurrency/src/actor_cleanup.rs
++++ b/concurrency/src/actor_cleanup.rs
+@@ -72,7 +72,7 @@ impl<C: Fn()> ActorCleanup<C> {
+             }
+         }
+         if matches!(reason, ExitReason::Normal) {
+-            if let Some(linked) = cause.as_ref() {
++            if let Some(linked) = cause.as_ref().filter(|c| !c.is_abnormal()) {
+                 reason = linked.clone();
+             }
+             if reason == ExitReason::Normal {

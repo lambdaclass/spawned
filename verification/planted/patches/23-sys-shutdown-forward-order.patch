@@ -1,0 +1,15 @@
+Planted bug 23 (sys-shutdown-forward-order): ActorSystem shutdown stops targets in admission order instead of reverse
+
+diff --git a/concurrency/src/system.rs b/concurrency/src/system.rs
+index 0de9b0f5..2dfe7c4a 100644
+--- a/concurrency/src/system.rs
++++ b/concurrency/src/system.rs
+@@ -512,7 +512,7 @@ impl SystemInner {
+                 // Keep reverse admission order across standalone actors and trees.
+                 // At the initial shutdown deadline, signal remaining targets rather
+                 // than leaving earlier dependencies running behind stuck cleanup.
+-                for target in targets.iter().rev() {
++                for target in targets.iter() {
+                     fail_point!("system.shutdown_before_target", async);
+                     let remaining = grace.saturating_sub(began.elapsed());
+                     match target {

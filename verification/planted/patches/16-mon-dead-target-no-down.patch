@@ -1,0 +1,15 @@
+Planted bug 16 (mon-dead-target-no-down): Monitoring an already-dead actor returns an inert ref and no Down
+
+diff --git a/concurrency/src/tasks/actor.rs b/concurrency/src/tasks/actor.rs
+index a7fb0ec2..92ed728e 100644
+--- a/concurrency/src/tasks/actor.rs
++++ b/concurrency/src/tasks/actor.rs
+@@ -424,7 +424,7 @@ impl<A: Actor> Context<A> {
+             // The token check makes registration inert once shutdown starts.
+             // The closed table below serializes registration with exit cleanup,
+             // even on paths that unwind before cancelling the owner token.
+-            if self.shared.cancellation_token.is_cancelled() {
++            if self.shared.cancellation_token.is_cancelled() || !target.is_alive() {
+                 return monitor_ref;
+             }
+             let Some(monitors) = monitors.as_mut() else {
