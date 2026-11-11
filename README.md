@@ -25,7 +25,7 @@ More and more code is written by LLMs and reviewed by people who did not write i
 
 Every application built on Spawned inherits that work instead of redoing it. [TESTING.md](docs/TESTING.md) describes each layer.
 
-**Tests are deterministic.** Under `--cfg spawned_sim`, async tests written with `#[spawned_macros::sim_test]` run on a seeded, single-threaded simulator with virtual time, across many schedules. A failure prints its seed and a decision tape. The tape replays the exact interleaving and is shrunk to a minimal one. With raw Tokio, the same race shows up as a flaky CI run that nobody can reproduce. The simulator covers `tasks` mode. Code that calls `tokio::spawn` or `tokio::time` directly, instead of going through Spawned, cannot run on it. See [what the simulator does not model](docs/TESTING.md#seeds-and-decision-tapes-under---cfg-spawned_sim).
+**Tests are deterministic.** Under `--cfg spawned_sim`, async tests written with `#[spawned_concurrency::sim_test]` run on a seeded, single-threaded simulator with virtual time, across many schedules. A failure prints its seed and a decision tape. The tape replays the exact interleaving and is shrunk to a minimal one. With raw Tokio, the same race shows up as a flaky CI run that nobody can reproduce. The simulator covers `tasks` mode. Code that calls `tokio::spawn` or `tokio::time` directly, instead of going through Spawned, cannot run on it. See [what the simulator does not model](docs/TESTING.md#seeds-and-decision-tapes-under---cfg-spawned_sim).
 
 ## Project Status
 
@@ -125,7 +125,7 @@ For every feature (timers, type erasure, registry, backends, links, supervision,
 ## Features
 
 - **Verified semantics** — every guarantee is written down in the [semantics contract](docs/design/semantics.md) and checked by TLA+ models, trace validation, Loom, the simulator, fuzzing and the client test suites
-- **Deterministic simulation testing** — `#[spawned_macros::sim_test]` runs your async actor tests over many seeded schedules with virtual time; a failure replays exactly from its seed or decision tape
+- **Deterministic simulation testing** — `#[spawned_concurrency::sim_test]` runs your async actor tests over many seeded schedules with virtual time; a failure replays exactly from its seed or decision tape
 - **Protocol macros** — `#[protocol]` generates message types, blanket impls, and type-erased refs from a trait definition
 - **Actor macros** — `#[actor]` generates `impl Actor` and `Handler<M>` impls from annotated methods
 - **Dual execution modes** — async/tokio (`tasks`) or blocking OS threads (`threads`) with the same API
