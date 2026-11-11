@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Fix: `PendingReplies::drain` yields live tokens in insertion order. It
+  walked a `HashMap` with a per-process `RandomState`, so deferred replies
+  were answered in a different order in each process, and a same-seed
+  simulator run did not reproduce its schedule (#261). `take` is now a
+  linear scan of the capped table.
 - **Breaking (0.8), API pass before publishing** (each change is a row of the
   [0.7 to 0.8 call-site table](docs/MIGRATION.md#07-to-08-api-call-site-table)):
   - Jobs: one call per shape, options first (`pipe`, `pipe_blocking`,

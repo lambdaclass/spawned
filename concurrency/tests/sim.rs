@@ -947,3 +947,119 @@ fn shrink_stays_within_its_run_budget() {
         assert!(runs <= budget, "budget {budget}: spent {runs}");
     }
 }
+
+// ---------------------------------------------------------------------------
+// Workload: deferred replies parked in a `PendingReplies` and drained at
+// once (#261). The drain order decides which caller is answered first, so
+// it must not depend on a per-process hash seed.
+// ---------------------------------------------------------------------------
+
+struct Park(u32);
+impl Message for Park {
+    type Result = u32;
+}
+struct Release;
+impl Message for Release {
+    type Result = Vec<u32>;
+}
+struct Parked;
+impl Message for Parked {
+    type Result = usize;
+}
+
+struct Parker {
+    pending: spawned_concurrency::tasks::PendingReplies<u32, u32>,
+}
+impl Actor for Parker {}
+impl Handler<Park> for Parker {
+    async fn handle(
+        &mut self,
+        Park(id): Park,
+        reply: spawned_concurrency::reply::PendingReply<'_, u32>,
+        _: &Context<Self>,
+    ) {
+        if let Ok(token) = reply.defer() {
+            assert!(self.pending.insert(id, token).is_ok());
+        }
+    }
+}
+impl Handler<Parked> for Parker {
+    async fn handle(
+        &mut self,
+        _: Parked,
+        reply: spawned_concurrency::reply::PendingReply<'_, usize>,
+        _: &Context<Self>,
+    ) {
+        reply.reply(self.pending.len());
+    }
+}
+impl Handler<Release> for Parker {
+    async fn handle(
+        &mut self,
+        _: Release,
+        reply: spawned_concurrency::reply::PendingReply<'_, Vec<u32>>,
+        _: &Context<Self>,
+    ) {
+        let mut order = Vec::new();
+        for (id, token) in self.pending.drain() {
+            token.reply(id);
+            order.push(id);
+        }
+        reply.reply(order);
+    }
+}
+
+/// Sixteen callers park in an order the scheduler picks; one `Release`
+/// drains them. Returns the drain order; callers log their answers.
+async fn drain_pending(log: Log) -> Vec<u32> {
+    const CALLERS: u32 = 16;
+    let parker = Parker {
+        pending: spawned_concurrency::tasks::PendingReplies::with_capacity(CALLERS as usize),
+    }
+    .start();
+    let callers: Vec<_> = (0..CALLERS)
+        .map(|id| {
+            let (parker, log) = (parker.clone(), log.clone());
+            spawned_rt::tasks::spawn(async move {
+                let answer = parker.request(Park(id)).await.unwrap();
+                push(&log, format!("answered:{answer}"));
+            })
+        })
+        .collect();
+    while parker.request(Parked).await.unwrap() < CALLERS as usize {
+        sim::yield_now().await;
+    }
+    let order = parker.request(Release).await.unwrap();
+    for caller in callers {
+        caller.await.unwrap();
+    }
+    parker.context().stop();
+    parker.join().await;
+    order
+}
+
+/// #261: the same seed gives the same drain order, caller log, scheduler
+/// trace and tape. With a `HashMap` table each run drew its own
+/// `RandomState`, so the order (and with it the schedule) differed.
+#[test]
+fn pending_replies_drain_is_reproducible() {
+    let record = || {
+        let rt = Runtime::with_seed(7);
+        rt.record_trace();
+        rt.record_tape();
+        let log: Log = Arc::default();
+        let order = rt.block_on(drain_pending(log.clone()));
+        let log = log.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        (order, log, rt.trace(), rt.tape())
+    };
+    let (order, log, trace, tape) = record();
+    let again = record();
+    assert_eq!(order.len(), 16);
+    assert_eq!(again.0, order, "drain order differs between same-seed runs");
+    assert_eq!(again.1, log, "caller answers differ between same-seed runs");
+    assert_eq!(
+        again.2, trace,
+        "scheduler trace differs between same-seed runs"
+    );
+    assert_eq!(again.3, tape, "tape differs between same-seed runs");
+}

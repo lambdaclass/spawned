@@ -2,7 +2,6 @@
 //! (docs/design/deferred-replies.md §7).
 
 use super::ReplyTo;
-use std::collections::HashMap;
 use std::hash::Hash;
 
 /// Why [`PendingReplies::insert`] handed the token back. The handler decides
@@ -32,9 +31,15 @@ impl<R: Send + 'static> InsertError<R> {
 ///
 /// Experimental in 0.8: a utility shaped by one client (requests by id
 /// answered when a peer responds); it may change before 1.0.
+///
+/// Entries keep insertion order: [`drain`](Self::drain) yields them oldest
+/// first, the same in every process, so answering a drained table is
+/// reproducible under the simulator (no per-process hash seed decides it).
+/// The table is a scan (insert already purges the whole table, and `cap`
+/// bounds it): `take` and `insert` are linear in the held entries.
 pub struct PendingReplies<K, R: Send + 'static> {
     cap: usize,
-    tokens: HashMap<K, ReplyTo<R>>,
+    tokens: Vec<(K, ReplyTo<R>)>,
 }
 
 impl<K, R: Send + 'static> std::fmt::Debug for PendingReplies<K, R> {
@@ -50,7 +55,7 @@ impl<K: Hash + Eq, R: Send + 'static> PendingReplies<K, R> {
     pub fn with_capacity(cap: usize) -> Self {
         Self {
             cap,
-            tokens: HashMap::new(),
+            tokens: Vec::new(),
         }
     }
 
@@ -58,32 +63,33 @@ impl<K: Hash + Eq, R: Send + 'static> PendingReplies<K, R> {
     /// token) or a full table hands the new token back.
     pub fn insert(&mut self, key: K, token: ReplyTo<R>) -> Result<(), InsertError<R>> {
         self.purge();
-        if self.tokens.contains_key(&key) {
+        if self.tokens.iter().any(|(k, _)| *k == key) {
             return Err(InsertError::Duplicate(token));
         }
         if self.tokens.len() >= self.cap {
             return Err(InsertError::Full(token));
         }
-        self.tokens.insert(key, token);
+        self.tokens.push((key, token));
         Ok(())
     }
 
     /// Remove and return the live token under `key`; a terminal one is
     /// removed and skipped.
     pub fn take(&mut self, key: &K) -> Option<ReplyTo<R>> {
-        let token = self.tokens.remove(key)?;
+        let at = self.tokens.iter().position(|(k, _)| k == key)?;
+        let (_, token) = self.tokens.remove(at);
         (!token.is_closed()).then_some(token)
     }
 
     /// Remove every terminal token.
     fn purge(&mut self) {
-        self.tokens.retain(|_, token| !token.is_closed());
+        self.tokens.retain(|(_, token)| !token.is_closed());
     }
 
     /// Live (non-terminal) tokens held: a scan, so a token whose caller
     /// just left no longer counts.
     pub fn len(&self) -> usize {
-        self.tokens.values().filter(|t| !t.is_closed()).count()
+        self.tokens.iter().filter(|(_, t)| !t.is_closed()).count()
     }
 
     /// Whether no live token is held.
@@ -91,9 +97,12 @@ impl<K: Hash + Eq, R: Send + 'static> PendingReplies<K, R> {
         self.len() == 0
     }
 
-    /// Take every live token (for example to answer them in `stopped()`).
+    /// Take every live token, oldest first (for example to answer them in
+    /// `stopped()`).
     pub fn drain(&mut self) -> impl Iterator<Item = (K, ReplyTo<R>)> + '_ {
-        self.tokens.drain().filter(|(_, token)| !token.is_closed())
+        self.tokens
+            .drain(..)
+            .filter(|(_, token)| !token.is_closed())
     }
 }
 
@@ -142,5 +151,49 @@ mod tests {
         table.take(&4).unwrap().reply(40);
         assert_eq!(ra.recv().unwrap(), 10);
         assert_eq!(rd.recv().unwrap(), 40);
+    }
+    /// #261: draining follows insertion order, so two tables built the
+    /// same way (in the old `HashMap`, two different `RandomState` seeds)
+    /// drain identically, oldest first, with taken and terminal entries
+    /// skipped.
+    #[test]
+    fn drain_follows_insertion_order() {
+        let keys: Vec<u64> = (0..64).map(|i| (i * 7_919) % 1_000).collect();
+        let build = || {
+            let mut table = PendingReplies::with_capacity(keys.len());
+            let mut receivers = Vec::new();
+            for &k in &keys {
+                let (t, rx) = token();
+                table.insert(k, t).unwrap();
+                receivers.push(rx);
+            }
+            table.take(&keys[3]).unwrap().reply(0);
+            drop(receivers.remove(10)); // abandoned: terminal, skipped
+            (table, receivers)
+        };
+        let (mut first, _a) = build();
+        let (mut second, _b) = build();
+        let once: Vec<u64> = first
+            .drain()
+            .map(|(k, t)| {
+                drop(t);
+                k
+            })
+            .collect();
+        let twice: Vec<u64> = second
+            .drain()
+            .map(|(k, t)| {
+                drop(t);
+                k
+            })
+            .collect();
+        let expected: Vec<u64> = keys
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| *i != 3 && *i != 10)
+            .map(|(_, k)| *k)
+            .collect();
+        assert_eq!(once, expected);
+        assert_eq!(twice, expected);
     }
 }

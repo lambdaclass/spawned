@@ -494,7 +494,7 @@ impl<K: Hash + Eq, R> PendingReplies<K, R> {
     pub fn take(&mut self, key: &K) -> Option<ReplyTo<R>>;   // skips (and removes) terminal entries
     pub fn len(&self) -> usize;                               // live entries (scan)
     pub fn is_empty(&self) -> bool;
-    pub fn drain(&mut self) -> impl Iterator<Item = (K, ReplyTo<R>)>;
+    pub fn drain(&mut self) -> impl Iterator<Item = (K, ReplyTo<R>)>; // live tokens, oldest first
 }
 #[non_exhaustive]
 pub enum InsertError<R> { Duplicate(ReplyTo<R>), Full(ReplyTo<R>) }   // into_inner()
@@ -502,7 +502,12 @@ pub enum InsertError<R> { Duplicate(ReplyTo<R>), Full(ReplyTo<R>) }   // into_in
 
 Retained entries never exceed `cap`, however fast tokens expire. The handler
 decides what to answer on `InsertError` (typically `Overloaded` or a domain
-error) and still owns the token.
+error) and still owns the token. Entries keep insertion order, so `drain`
+answers callers in the same order in every process: the order never comes
+from a per-process hash seed, and a same-seed simulator run reproduces it
+(#261; `reply::pending::tests::drain_follows_insertion_order`,
+`tests/sim.rs::pending_replies_drain_is_reproducible`). The table is a scan
+bounded by `cap`: `insert` already purges it whole, and `take` is linear.
 
 ## 8. Bounds
 
