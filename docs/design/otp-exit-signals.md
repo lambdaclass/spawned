@@ -82,6 +82,11 @@ both from the end of owned background work. Each actor instance goes through:
    stops and kills that arrive before it returns take effect when it returns,
    in arrival order, with the trap flag read then, so `ctx.trap_exit(true)` in
    `started()` covers them (as OTP code sets the flag first thing in `init`).
+   They are held in the mailbox as signal envelopes in arrival order, so
+   per-sender FIFO is kept: when `started()` returns, the run loop resolves
+   them in order before dispatching anything else; for a trapping actor each
+   becomes an `Exit` (or parent exit) in its own place in the queue, for a
+   non-trapping actor the first effective one begins exit.
    This includes the `NoProc` parent exit of a `start_linked` child whose
    parent was already past D. A kill received meanwhile makes the exit
    `Killed` without `stopped()`. A panic in `started()` goes to D without
@@ -269,7 +274,9 @@ notices consult the flag ([link.rs `make_signal`](../../concurrency/src/link.rs)
    | `Kill` (a signal, not a link notice) | ends `Killed` (E1) | ends `Killed` (E1) |
    | `Normal` | ignored | `Exit { from, reason: Normal }` queued |
    | anything else | begins exit with that reason after its current handler; queue discarded | `Exit { from, reason }` queued |
-   | any, from the target's parent | as above | parent exit queued (E3) |
+   | any but `Kill`, from the target's parent | as above | parent exit queued (E3) |
+
+   A `Kill` from the parent is still a kill: the target ends `Killed`.
 
    Any `ExitReason` may be sent, including `Killed` and `NoProc`; they behave
    as ordinary reasons. Only a `Kill` *signal* produces `Killed`. A non-kill
@@ -500,8 +507,10 @@ signal in flight").
   still present, and removes it, enqueuing or requesting the stop inside that
   critical section. `unlink`/`demonitor` remove records under the same lock;
   a removed record is never recreated, because only a new registration with a
-  new generation creates one. Model: `CancelFenced`; control
-`NoFence`.
+  new generation creates one.
+
+Model: `CancelFenced` on `MCLifecycleFence`; controls `NoUnlinkFence`,
+`NoDemonitorFence`.
 
 ### E7. Ordering
 
@@ -907,11 +916,16 @@ Round 1: Codex no-go (one blocker, eight majors), agy go with changes (six
 majors). Both reviewed the design and model without the author's answers to
 the open questions.
 
-### Round 4 (Codex: go with changes, one minor; agy: see below)
+### Round 4 (Codex: go with changes, one minor; agy: go, three nits)
+
+Only maintainer decisions (the open questions) remain after these.
 
 | Finding | Resolution |
 |---|---|
 | Codex 1. The v0.7 column said `mailbox_cleanup_failure()` reports state destructor failures after `Shutdown` | Corrected: in v0.7 only queued-message failures reach the accessor; a state destructor failure is only logged. |
+| agy nit 1. Stale control name `NoFence` in E6 | Replaced by `NoUnlinkFence`/`NoDemonitorFence` on `MCLifecycleFence`. |
+| agy nit 2. E2 parent row vs a parent's `Kill` | Row limited to non-kill reasons; a parent's kill is a kill. |
+| agy nit 3. Per-sender FIFO for signals held during `started()` | Phase 0: held as signal envelopes in arrival order and resolved in place. |
 
 ### Round 3, agy (go with changes, three must-fix)
 
