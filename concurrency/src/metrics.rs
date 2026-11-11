@@ -177,6 +177,8 @@ counters!(
     actors_exited_shutdown_total,
     actors_exited_panic_total,
     actors_exited_kill_total,
+    actors_exited_killed_total,
+    actors_exited_noproc_total,
     messages_enqueued_total,
     messages_rejected_total,
     mailbox_depth,
@@ -466,6 +468,8 @@ impl ActorObservation {
             ExitReason::Shutdown => &COUNTERS.actors_exited_shutdown_total,
             ExitReason::Panic(_) => &COUNTERS.actors_exited_panic_total,
             ExitReason::Kill => &COUNTERS.actors_exited_kill_total,
+            ExitReason::Killed => &COUNTERS.actors_exited_killed_total,
+            ExitReason::NoProc => &COUNTERS.actors_exited_noproc_total,
         }
         .fetch_add(1, Relaxed);
     }
@@ -473,7 +477,7 @@ impl ActorObservation {
 impl Drop for ActorObservation {
     fn drop(&mut self) {
         if !self.finished {
-            self.finish(&ExitReason::Kill);
+            self.finish(&ExitReason::Killed);
         }
     }
 }

@@ -298,6 +298,8 @@ fn metrics_conserve_work_across_all_lifecycle_paths() {
             + s.actors_exited_shutdown_total
             + s.actors_exited_panic_total
             + s.actors_exited_kill_total
+            + s.actors_exited_killed_total
+            + s.actors_exited_noproc_total
     );
     assert_eq!(
         s.messages_enqueued_total,

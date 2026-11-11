@@ -181,6 +181,9 @@ pub(crate) fn reason(reason: Option<&crate::ExitReason>) -> &'static str {
         Some(ExitReason::Shutdown) => "Shutdown",
         Some(ExitReason::Panic(_)) => "Panic",
         Some(ExitReason::Kill) => "Kill",
+        // Supervision.tla has one class per restart behaviour: Killed and
+        // NoProc are abnormal, as Kill.
+        Some(_) => "Kill",
     }
 }
 
