@@ -1326,8 +1326,25 @@ impl Driver {
                     if let (Some(stop), Some(drop)) = (first_stop(&units[i]), last_drop(&units[j]))
                     {
                         if stop < drop {
-                            found =
-                                Some(format!("unit {i} began stopping before unit {j} finished"));
+                            let describe = |u: &Vec<usize>| -> String {
+                                u.iter()
+                                    .map(|&m| {
+                                        let x = &s.insts[m];
+                                        format!(
+                                            "w{m}({}: stop {:?} drop {:?})",
+                                            x.slot.as_deref().unwrap_or("-"),
+                                            x.stopped_begin,
+                                            x.dropped
+                                        )
+                                    })
+                                    .collect::<Vec<_>>()
+                                    .join(" ")
+                            };
+                            found = Some(format!(
+                                "unit {i} [{}] began stopping before unit {j} [{}] finished",
+                                describe(&units[i]),
+                                describe(&units[j])
+                            ));
                             break 'outer;
                         }
                     }
