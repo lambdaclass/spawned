@@ -1148,3 +1148,30 @@ was checked against the code and sources before acting on it.
    silently weaken Permanent.
 3. **The one-step fan-out abstraction** in the model: acceptable with trace
    validation, or should the model interleave signals with child steps?
+
+### Round 2
+
+Codex (F1-F9 P1, F10 P2) and agy (1-5 P1, 6 P2), both "approve after the
+listed changes", no P0. Each was checked against the model and the doc.
+
+| Finding | Resolution |
+|---|---|
+| **Codex F1 = agy 2**: id calls looked up at call time in prose but not in the model; queued call at shutdown could become `Ok`; `Release` freed the loop before the terminate resolved; `CleanupStuck` could later become `Ok` | **Accepted.** Lookup happens when the loop handles the call; the model carries the generation the caller named and two calls (by id and by slot). A call still queued at shutdown gets `Stopped`. The loop stays held until the call resolves. `CleanupStuck` is committed at the deadline and never changes. Duplicates are not shared waiters: a second call is handled after the first and gets `NotFound` or `CleanupStuck` (Elixir). `TermResultsSound`, `TermResultStable`; controls `SlotLookup`, `QueuedTermOk`, `StuckResultLost`, `TermReplyEarly` |
+| **Codex F2**: serialisation checked, arrival order not | **Accepted.** One FIFO queue of starts, terminate calls, exit notices and retries; history variable on the served ticket; `FifoOrder`, control `LaterOp`. The three-slot targeted instance has more arrivals |
+| **Codex F3 = agy 1**: Transient normal exit with stalled cleanup listed as both isolated and restartable; `StuckIsolated` trusted the action's label; a wrong decision that exhausts the budget escaped `RestartFollowsPolicy` | **Accepted.** A stall is not a recorded cleanup failure: classification by exit reason only, Transient-normal stuck children are isolated. `StuckIsolated` re-derives "restart" from the table. `RestartFollowsPolicy` checks every decision (reservation, attempt, exhaustion). Controls `MisclassifyStuck` and `TransientNormalRestart` at zero budget |
+| **Codex F4**: caller liveness assumed cleanup finishes | **Accepted.** `CallerSpec` gives progress only to loop work and deadlines; `StartAnswered` and `TerminateAnswered` hold under it; `ClosedLeadsToDone` and `RecoveryProgress` keep `Spec`. Control `NoDeadline` |
+| **Codex F5 = agy 3**: `FailedAfterCleanup` checked a label | **Accepted.** It now requires removal with no live generation, or a recorded deadline failure; control `EarlyRemove` |
+| **Codex F6 = agy 3**: `Sequential`'s witness signalled a queued, unadmitted start | **Accepted.** Fan-out targets admitted children only. `Sequential` now runs on the interleaved refinement with two admitted children (`max_children` 2) against `FanoutCompletes`; `ConcurrentShutdown` gets its own control `SkipSignal` |
+| **agy 3**: `PublishedIsLive` ignored the slot state; `BudgetBounded`, `RecoveryProgress`, `TerminateAnswered` had no controls | **Accepted.** `PublishedIsLive` requires `running` (control `PublishAfterExit`); controls `OverReserve`, `LostRestart`, `TermLost`. Every invariant and liveness property now has a control; the two action properties do not, and the doc says so |
+| **Codex F7**: 2 × T + 1 s cannot cover an unbounded fan-out; timer epoch is a deviation | **Accepted.** The nested adapter waits for the inner supervisor by default (OTP's `infinity`); a finite value is a reporting bound keeping the barrier. The per-child timer epoch is listed as an inherited E3 deviation (alignment row 16) |
+| **Codex F8**: destruction of retained arguments | **Accepted.** Slot finalization is distinct from generation cleanup, runs as a tracked task on the group (never on the loop or under a lock), after the removal decision, so its failure never triggers a restart; a hang makes the slot stuck as retiring |
+| **Codex F9 = agy 5**: teardown protocol incomplete; a message from `Drop` arrives before `Down` | **Accepted, with decision R5.** No message from `Drop`. Each owner (peer table, broadcaster, mempool records) stores the connection's identity at registration and releases exactly on `Down`; re-requests are best effort, after removal, with local lookup, skipped during shutdown |
+| **agy 4**: backoff `None` in the model always went through a backoff state | **Accepted.** `BackoffOn` constant: without backoff the decision reserves, stamps and runs the attempt in the same turn; a failed attempt re-queues its exit at the tail (`try_again_restart`). Both variants are checked |
+| **Codex F10 (P2)**: two slots are bounded evidence | **Accepted.** No sufficiency claim; a three-slot targeted instance (FIFO, cap with a restarting child, shared budget); repeated churn of one slot stays out of scope (it would need fresh identities) |
+| **agy 6 (P2)** | **Accepted.** `SupervisedDynamicSupervisor` and spec builder methods shown; `ready` documented as "state is Running"; `latePub` catches any change to a non-zero value |
+
+Also from the OTP/Elixir/Gleam comparison: decisions G1-G5 (continuation,
+`temporary()` for connections, `ignore`, start data, shared introspection
+types), and the standing rule that models are related to the code: the
+[test plan](#test-plan-relating-the-model-to-the-code) lists the events, their
+action mapping, the required tests and the expected coverage.

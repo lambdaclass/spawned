@@ -57,7 +57,11 @@
   serialised starts, Elixir's 3-in-5 s budget with opt-in backoff,
   `Shutdown` on exhaustion, arguments returned on rejection) and both
   reviews (stuck-child isolation, reservation protocol, history-based
-  invariants), with 27 named negative controls.
+  invariants), with 27 named negative controls. Revision 3 applies the
+  second reviews and the round-two decisions: one FIFO operation queue,
+  terminate lookup when the loop handles the call, stuck classification by
+  exit reason, caller liveness without assuming cleanup ends, `ignore` and
+  start data, a trace-validation test plan, and 40 negative controls.
 
 ## 0.7.3 — 2026-11-10
 
