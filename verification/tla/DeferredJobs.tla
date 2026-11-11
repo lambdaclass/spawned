@@ -4,7 +4,7 @@
 (* docs/design/deferred-replies.md. Part 1 is DeferredReplies.tla.        *)
 (*                                                                         *)
 (* An owner slot is restarted up to MaxGen times; each instance has a new *)
-(* ActorId. Jobs are unlinked (ctx.pipe) or keyed (ctx.pipe_keyed), with  *)
+(* ActorId. Jobs are unlinked (ctx.pipe) or keyed (JobOptions::key), with *)
 (* or without a job deadline. Each job has three separate states:         *)
 (* execution (running/finished; cancellation is cooperative, so cancelled *)
 (* or timed-out work keeps running and keeps its work permit),            *)

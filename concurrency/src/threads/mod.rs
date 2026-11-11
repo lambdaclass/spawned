@@ -9,8 +9,7 @@ mod timer_tests;
 mod stream_tests;
 
 pub use crate::reply::jobs::{
-    JobError, JobGone, JobHandle, JobKey, JobOptions, JobOutcome, PipeError, PipeErrorKind,
-    PipeReplyError,
+    JobError, JobGone, JobHandle, JobKey, JobOptions, JobOutcome, PipeError, PipeReplyError,
 };
 pub use crate::reply::{
     Deadline, DeferError, Delivery, InsertError, PendingReplies, PendingReply, ReplyReceiver,

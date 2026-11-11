@@ -118,6 +118,21 @@ impl Deadline {
     }
 }
 
+/// A timeout from now: [`Deadline::after`]. Every call that takes
+/// `impl Into<Deadline>` takes a `Duration`, an `Instant` or a `Deadline`.
+impl From<Duration> for Deadline {
+    fn from(timeout: Duration) -> Self {
+        Self::after(timeout)
+    }
+}
+
+/// An absolute instant on the `spawned_rt::time` clock.
+impl From<Instant> for Deadline {
+    fn from(at: Instant) -> Self {
+        Self::At(at)
+    }
+}
+
 fn record(_delivery: Delivery) {
     #[cfg(feature = "metrics")]
     crate::instrumentation::reply(_delivery == Delivery::Delivered);

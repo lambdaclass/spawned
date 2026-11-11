@@ -2,7 +2,7 @@
 //!
 //! 1. a router delegates a slow request with `pipe_reply` and keeps serving
 //!    its mailbox meanwhile;
-//! 2. CPU work offloaded with a reserved `pipe_blocking_with` (Tokio's
+//! 2. CPU work offloaded with a reserved `pipe_blocking` (Tokio's
 //!    blocking pool) and a job deadline;
 //! 3. the ethrex `outgoing_request` pattern: request ids in a bounded
 //!    `PendingReplies`, answered when the "peer" responds, late responses
@@ -72,7 +72,12 @@ impl Router {
             .backend
             .request_raw_until(backend_protocol::Lookup { millis: msg.millis }, deadline);
         let work = async move { downstream?.await };
-        if let Err(e) = ctx.pipe_reply(token, work, |res, token| Delegated { res, token }) {
+        if let Err(e) = ctx.pipe_reply(
+            JobOptions::new(),
+            token,
+            |_| work,
+            |res, token| Delegated { res, token },
+        ) {
             e.into_token().overloaded();
         }
     }
@@ -85,7 +90,7 @@ impl Router {
     #[send_handler]
     async fn delegated(&mut self, msg: Delegated, _: &Context<Self>) {
         match msg.res {
-            JobOutcome::Ok(Ok(v)) => {
+            Ok(Ok(v)) => {
                 msg.token.reply(v);
             }
             _ => msg.token.overloaded(),
@@ -125,14 +130,14 @@ impl Verifier {
     async fn verify(&mut self, msg: Verify, ctx: &Context<Self>) {
         // Reserve first: a refusal still has `msg` to report, so every
         // object gets exactly one verdict.
-        let permit = match ctx.reserve_blocking_job() {
+        let opts = JobOptions::new().deadline(Duration::from_millis(100));
+        let permit = match ctx.reserve_blocking_job(opts) {
             Ok(permit) => permit,
             Err(e) => return self.verdicts.push(format!("{}: rejected ({e})", msg.id)),
         };
         let (id, spin) = (msg.id, msg.spin);
         // On Tokio's blocking pool, under the actor's native-job budget.
-        permit.pipe_blocking_with(
-            JobOptions::default().deadline_after(Duration::from_millis(100)),
+        permit.pipe_blocking(
             move |_job| {
                 std::thread::sleep(spin); // stands in for a CPU-bound check
                 true
@@ -144,7 +149,7 @@ impl Verifier {
     #[send_handler]
     async fn verdict(&mut self, msg: Verdict, _: &Context<Self>) {
         // `JobOutcome` and `JobError` are `#[non_exhaustive]`.
-        self.verdicts.push(match msg.res.into_result() {
+        self.verdicts.push(match msg.res {
             Ok(valid) => format!("{}: valid={valid}", msg.id),
             Err(JobError::DeadlineExceeded) => format!("{}: timed out", msg.id),
             Err(JobError::Panicked(m)) => format!("{}: panicked {m}", msg.id),

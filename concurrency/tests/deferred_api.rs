@@ -36,7 +36,7 @@ mod tasks_mode {
     use spawned_concurrency::system::ActorSystem;
     use spawned_concurrency::tasks::{
         Actor, ActorRef, ActorStart, Context, Handler, Instant, JobError, JobGone, JobOptions,
-        JobOutcome, PipeErrorKind,
+        JobOutcome, PipeError,
     };
     use spawned_concurrency::{actor, send_handler};
     use std::time::Duration;
@@ -74,7 +74,7 @@ mod tasks_mode {
     }
 
     fn describe<T: std::fmt::Debug>(name: &str, outcome: JobOutcome<T>) -> Note {
-        Note(match outcome.into_result() {
+        Note(match outcome {
             Ok(v) => format!("{name}:ok:{v:?}"),
             Err(JobError::Panicked(m)) => format!("{name}:panicked:{m}"),
             Err(JobError::DeadlineExceeded) => format!("{name}:deadline"),
@@ -108,24 +108,28 @@ mod tasks_mode {
     async fn macro_bounds_apply_and_permits_keep_the_parts() {
         let (actor, _log) = start();
         let kinds = in_actor(&actor, |_, ctx| {
-            let a = ctx.reserve_blocking_job().expect("first native slot");
-            let b = ctx.reserve_blocking_job().expect("second native slot");
+            let a = ctx
+                .reserve_blocking_job(JobOptions::new())
+                .expect("first native slot");
+            let b = ctx
+                .reserve_blocking_job(JobOptions::new())
+                .expect("second native slot");
             // max_native_jobs = 2: the third is refused, and the caller keeps
             // whatever it meant to move into the job.
-            let third = ctx.reserve_blocking_job().err().map(|e| e.kind);
+            let third = ctx.reserve_blocking_job(JobOptions::new()).err();
             drop((a, b));
-            let c = ctx.reserve_job().expect("credit");
-            let d = ctx.reserve_job().expect("credit");
-            let e = ctx.reserve_job().expect("credit");
+            let c = ctx.reserve_job(JobOptions::new()).expect("credit");
+            let d = ctx.reserve_job(JobOptions::new()).expect("credit");
+            let e = ctx.reserve_job(JobOptions::new()).expect("credit");
             // max_outstanding = 3.
-            let fourth = ctx.reserve_job().err().map(|e| e.kind);
+            let fourth = ctx.reserve_job(JobOptions::new()).err();
             drop((c, d, e));
-            let again = ctx.reserve_job().is_ok();
+            let again = ctx.reserve_job(JobOptions::new()).is_ok();
             (third, fourth, again, ctx.deferred_outstanding())
         })
         .await;
-        assert!(matches!(kinds.0, Some(PipeErrorKind::NativeBudget)));
-        assert!(matches!(kinds.1, Some(PipeErrorKind::Overloaded)));
+        assert!(matches!(kinds.0, Some(PipeError::NativeBudget)));
+        assert!(matches!(kinds.1, Some(PipeError::Overloaded)));
         assert!(kinds.2, "dropped permits return their credits");
         assert_eq!(kinds.3, 0);
         actor.context().stop();
@@ -137,14 +141,13 @@ mod tasks_mode {
     async fn blocking_jobs_run_on_the_tokio_blocking_pool() {
         let (actor, log) = start();
         in_actor(&actor, |_, ctx| {
-            let permit = ctx.reserve_blocking_job().unwrap();
-            permit.pipe_blocking_with(
-                JobOptions::default(),
+            let permit = ctx.reserve_blocking_job(JobOptions::new()).unwrap();
+            permit.pipe_blocking(
                 |_| std::thread::current().name().map(str::to_owned),
                 |o| describe("thread", o),
             );
-            ctx.pipe_blocking_with(
-                JobOptions::default(),
+            ctx.pipe_blocking(
+                JobOptions::new(),
                 |_| -> u32 { panic!("check boom") },
                 |o| describe("panics", o),
             )
@@ -168,8 +171,8 @@ mod tasks_mode {
     async fn emit_at_arrives_late_but_before_the_terminal_message() {
         let (actor, log) = start();
         in_actor(&actor, |_, ctx| {
-            ctx.pipe_blocking_with(
-                JobOptions::default(),
+            ctx.pipe_blocking(
+                JobOptions::new(),
                 |job| {
                     let at = Instant::now() + Duration::from_millis(80);
                     job.emit_at_blocking(at, Note("late".into()))?;
@@ -191,8 +194,8 @@ mod tasks_mode {
     async fn async_emit_at_holds_the_terminal_message() {
         let (actor, log) = start();
         in_actor(&actor, |_, ctx| {
-            ctx.pipe_with_ctx(
-                JobOptions::default(),
+            ctx.pipe(
+                JobOptions::new(),
                 |job| async move {
                     let at = Instant::now() + Duration::from_millis(50);
                     job.emit_at(at, Note("late".into())).await?;
@@ -215,11 +218,8 @@ mod tasks_mode {
     async fn a_cancelled_job_fences_its_scheduled_emits() {
         let (actor, log) = start();
         in_actor(&actor, |_, ctx| {
-            let opts = JobOptions {
-                key: Some("k".into()),
-                ..JobOptions::default()
-            };
-            ctx.pipe_with_ctx(
+            let opts = JobOptions::new().key("k");
+            ctx.pipe(
                 opts.clone(),
                 |job| async move {
                     let at = Instant::now() + Duration::from_millis(60);
@@ -233,11 +233,8 @@ mod tasks_mode {
         // The replacement cancels the previous job: its scheduled emit and
         // its held terminal message are dropped.
         in_actor(&actor, |_, ctx| {
-            let opts = JobOptions {
-                key: Some("k".into()),
-                ..JobOptions::default()
-            };
-            ctx.pipe_with(opts, async { 1 }, |o| describe("new", o))
+            let opts = JobOptions::new().key("k");
+            ctx.pipe(opts, |_| async { 1 }, |o| describe("new", o))
                 .unwrap();
         })
         .await;
@@ -254,8 +251,8 @@ mod tasks_mode {
     async fn job_deadlines_are_hard() {
         let (actor, log) = start();
         in_actor(&actor, |_, ctx| {
-            let opts = JobOptions::default().deadline_after(Duration::from_millis(30));
-            ctx.pipe_blocking_with(
+            let opts = JobOptions::new().deadline(Duration::from_millis(30));
+            ctx.pipe_blocking(
                 opts,
                 |job| {
                     std::thread::sleep(Duration::from_millis(120));
@@ -282,8 +279,8 @@ mod tasks_mode {
     async fn a_deadline_overtakes_a_result_held_for_scheduled_emits() {
         let (actor, log) = start();
         in_actor(&actor, |_, ctx| {
-            let opts = JobOptions::default().deadline_after(Duration::from_millis(40));
-            ctx.pipe_with_ctx(
+            let opts = JobOptions::new().deadline(Duration::from_millis(40));
+            ctx.pipe(
                 opts,
                 |job| async move {
                     let at = Instant::now() + Duration::from_millis(300);
@@ -313,8 +310,8 @@ mod tasks_mode {
     async fn a_deadline_overtakes_a_blocking_jobs_held_result() {
         let (actor, log) = start();
         in_actor(&actor, |_, ctx| {
-            let opts = JobOptions::default().deadline_after(Duration::from_millis(40));
-            ctx.pipe_blocking_with(
+            let opts = JobOptions::new().deadline(Duration::from_millis(40));
+            ctx.pipe_blocking(
                 opts,
                 |job| {
                     let at = Instant::now() + Duration::from_millis(400);
@@ -342,8 +339,8 @@ mod tasks_mode {
     async fn a_held_result_keeps_its_credit_until_the_terminal_message() {
         let (actor, log) = start();
         let job = in_actor(&actor, |_, ctx| {
-            ctx.pipe_with_ctx(
-                JobOptions::default(),
+            ctx.pipe(
+                JobOptions::new(),
                 |job| async move {
                     let at = Instant::now() + Duration::from_millis(200);
                     job.emit_at(at, Note("late".into())).await.unwrap();
@@ -374,8 +371,8 @@ mod tasks_mode {
     async fn emit_at_a_past_instant_is_delivered_immediately() {
         let (actor, log) = start();
         in_actor(&actor, |_, ctx| {
-            ctx.pipe_with_ctx(
-                JobOptions::default(),
+            ctx.pipe(
+                JobOptions::new(),
                 |job| async move {
                     let past = Instant::now();
                     spawned_rt::tasks::sleep(Duration::from_millis(5)).await;
@@ -424,18 +421,23 @@ mod tasks_mode {
         let _supervisor = builder.start().await.unwrap();
         let actor = child.current().unwrap();
         let refused = in_actor(&actor, |_, ctx| {
-            let native = ctx.reserve_blocking_job().expect("one native slot");
-            let second_native = ctx.reserve_blocking_job().err().map(|e| e.kind);
+            let native = ctx
+                .reserve_blocking_job(JobOptions::new())
+                .expect("one native slot");
+            let second_native = ctx.reserve_blocking_job(JobOptions::new()).err();
             drop(native);
-            let credits = (ctx.reserve_job(), ctx.reserve_job());
+            let credits = (
+                ctx.reserve_job(JobOptions::new()),
+                ctx.reserve_job(JobOptions::new()),
+            );
             assert!(credits.0.is_ok() && credits.1.is_ok(), "two credits");
-            let second_credit = ctx.reserve_job().err().map(|e| e.kind);
+            let second_credit = ctx.reserve_job(JobOptions::new()).err();
             drop(credits);
             (second_native, second_credit)
         })
         .await;
-        assert!(matches!(refused.0, Some(PipeErrorKind::NativeBudget)));
-        assert!(matches!(refused.1, Some(PipeErrorKind::Overloaded)));
+        assert!(matches!(refused.0, Some(PipeError::NativeBudget)));
+        assert!(matches!(refused.1, Some(PipeError::Overloaded)));
         let _ = system.shutdown(Duration::from_secs(5)).await;
     }
 }
@@ -444,8 +446,7 @@ mod tasks_mode {
 mod threads_mode {
     use super::*;
     use spawned_concurrency::threads::{
-        Actor, ActorStart, Context, Handler, Instant, JobGone, JobOptions, JobOutcome,
-        PipeErrorKind,
+        Actor, ActorStart, Context, Handler, Instant, JobGone, JobOptions, JobOutcome, PipeError,
     };
     use spawned_concurrency::{actor, send_handler};
     use spawned_test::threads::in_actor;
@@ -485,7 +486,7 @@ mod threads_mode {
     }
 
     fn label(name: &str, outcome: JobOutcome<Result<(), JobGone>>) -> Note {
-        Note(format!("{name}:{:?}", outcome.into_result()))
+        Note(format!("{name}:{:?}", outcome))
     }
 
     #[test]
@@ -493,11 +494,12 @@ mod threads_mode {
         let log = Arc::new(Log::default());
         let actor = Owner { log: log.clone() }.start();
         let refused = in_actor(&actor, |_, ctx| {
-            let permit = ctx.reserve_blocking_job().expect("one native slot");
+            let permit = ctx
+                .reserve_blocking_job(JobOptions::new())
+                .expect("one native slot");
             // max_native_jobs = 1.
-            let second = ctx.reserve_blocking_job().err().map(|e| e.kind);
-            permit.pipe_blocking_with(
-                JobOptions::default(),
+            let second = ctx.reserve_blocking_job(JobOptions::new()).err();
+            permit.pipe_blocking(
                 |job| {
                     let at = Instant::now() + Duration::from_millis(60);
                     job.emit_at_blocking(at, Note("late".into()))?;
@@ -507,7 +509,7 @@ mod threads_mode {
             );
             second
         });
-        assert!(matches!(refused, Some(PipeErrorKind::NativeBudget)));
+        assert!(matches!(refused, Some(PipeError::NativeBudget)));
         assert_eq!(wait_for(&log, 3), ["now", "late", "job:Ok(Ok(()))"]);
         actor.context().stop();
         actor.join();
@@ -520,8 +522,8 @@ mod threads_mode {
         let log = Arc::new(Log::default());
         let actor = Owner { log: log.clone() }.start();
         in_actor(&actor, |_, ctx| {
-            let opts = JobOptions::default().deadline_after(Duration::from_millis(40));
-            ctx.pipe_blocking_with(
+            let opts = JobOptions::new().deadline(Duration::from_millis(40));
+            ctx.pipe_blocking(
                 opts,
                 |job| {
                     let at = Instant::now() + Duration::from_millis(300);
@@ -546,8 +548,8 @@ mod threads_mode {
         let log = Arc::new(Log::default());
         let actor = Owner { log: log.clone() }.start();
         let job = in_actor(&actor, |_, ctx| {
-            ctx.pipe_blocking_with(
-                JobOptions::default(),
+            ctx.pipe_blocking(
+                JobOptions::new(),
                 |job| {
                     let at = Instant::now() + Duration::from_millis(200);
                     job.emit_at_blocking(at, Note("late".into()))
@@ -578,8 +580,8 @@ mod threads_mode {
         let log = Arc::new(Log::default());
         let actor = Owner { log: log.clone() }.start();
         in_actor(&actor, |_, ctx| {
-            ctx.pipe_blocking_with(
-                JobOptions::default(),
+            ctx.pipe_blocking(
+                JobOptions::new(),
                 |job| {
                     let past = Instant::now();
                     std::thread::sleep(Duration::from_millis(5));
@@ -645,13 +647,11 @@ mod caller_gone_vs_shortening_tasks {
             ctx: &Context<Self>,
         ) {
             let token = reply.defer().unwrap();
-            let opts = JobOptions {
-                cancel_on_caller_gone: true,
-                ..JobOptions::default()
-            }
-            .deadline_after(Duration::from_millis(20));
+            let opts = JobOptions::new()
+                .cancel_on_caller_gone()
+                .deadline(Duration::from_millis(20));
             let job = ctx
-                .pipe_reply_blocking_with(
+                .pipe_reply_blocking(
                     opts,
                     token,
                     |_| std::thread::sleep(Duration::from_millis(300)),
@@ -681,12 +681,9 @@ mod caller_gone_vs_shortening_tasks {
     impl Handler<Leave> for Delegator {
         async fn handle(&mut self, _: Leave, reply: PendingReply<'_, ()>, ctx: &Context<Self>) {
             let token = reply.defer().unwrap();
-            let opts = JobOptions {
-                cancel_on_caller_gone: true,
-                ..JobOptions::default()
-            };
+            let opts = JobOptions::new().cancel_on_caller_gone();
             let job = ctx
-                .pipe_reply_blocking_with(
+                .pipe_reply_blocking(
                     opts,
                     token,
                     |job| {
@@ -708,7 +705,7 @@ mod caller_gone_vs_shortening_tasks {
     impl Handler<Delegated> for Delegator {
         async fn handle(&mut self, msg: Delegated, _: PendingReply<'_, ()>, _: &Context<Self>) {
             let Delegated(outcome, token) = msg;
-            let deadline = matches!(outcome.into_result(), Err(JobError::DeadlineExceeded));
+            let deadline = matches!(outcome, Err(JobError::DeadlineExceeded));
             token.with_deadline(Instant::now() + Duration::from_secs(30));
             let cancelled = self.job.as_ref().unwrap().is_cancelled();
             token.reply((deadline, cancelled));
@@ -773,13 +770,11 @@ mod caller_gone_vs_shortening_threads {
     impl Handler<Ask> for Delegator {
         fn handle(&mut self, _: Ask, reply: PendingReply<'_, (bool, bool)>, ctx: &Context<Self>) {
             let token = reply.defer().unwrap();
-            let opts = JobOptions {
-                cancel_on_caller_gone: true,
-                ..JobOptions::default()
-            }
-            .deadline_after(Duration::from_millis(20));
+            let opts = JobOptions::new()
+                .cancel_on_caller_gone()
+                .deadline(Duration::from_millis(20));
             let job = ctx
-                .pipe_reply_blocking_with(
+                .pipe_reply_blocking(
                     opts,
                     token,
                     |_| std::thread::sleep(Duration::from_millis(300)),
@@ -809,12 +804,9 @@ mod caller_gone_vs_shortening_threads {
     impl Handler<Leave> for Delegator {
         fn handle(&mut self, _: Leave, reply: PendingReply<'_, ()>, ctx: &Context<Self>) {
             let token = reply.defer().unwrap();
-            let opts = JobOptions {
-                cancel_on_caller_gone: true,
-                ..JobOptions::default()
-            };
+            let opts = JobOptions::new().cancel_on_caller_gone();
             let job = ctx
-                .pipe_reply_blocking_with(
+                .pipe_reply_blocking(
                     opts,
                     token,
                     |job| {
@@ -836,7 +828,7 @@ mod caller_gone_vs_shortening_threads {
     impl Handler<Delegated> for Delegator {
         fn handle(&mut self, msg: Delegated, _: PendingReply<'_, ()>, _: &Context<Self>) {
             let Delegated(outcome, token) = msg;
-            let deadline = matches!(outcome.into_result(), Err(JobError::DeadlineExceeded));
+            let deadline = matches!(outcome, Err(JobError::DeadlineExceeded));
             token.with_deadline(Instant::now() + Duration::from_secs(30));
             let cancelled = self.job.as_ref().unwrap().is_cancelled();
             token.reply((deadline, cancelled));

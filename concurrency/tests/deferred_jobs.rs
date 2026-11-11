@@ -21,7 +21,7 @@ mod tasks_mode {
     use super::*;
     use spawned_concurrency::tasks::{
         Actor, ActorRef, ActorStart, Context, Deadline, Handler, JobError, JobGone, JobOptions,
-        JobOutcome, PendingReply, PipeErrorKind, PipeReplyError, ReplyTo,
+        JobOutcome, PendingReply, PipeError, PipeReplyError, ReplyTo,
     };
     use spawned_concurrency::ActorError;
     use spawned_rt::tasks::{oneshot, sleep};
@@ -78,7 +78,7 @@ mod tasks_mode {
     }
 
     fn describe<T: std::fmt::Debug>(name: &str, outcome: JobOutcome<T>) -> Done {
-        Done(match outcome.into_result() {
+        Done(match outcome {
             Ok(v) => format!("{name}:ok:{v:?}"),
             Err(JobError::Panicked(m)) => format!("{name}:panicked:{m}"),
             Err(JobError::DeadlineExceeded) => format!("{name}:deadline"),
@@ -110,49 +110,59 @@ mod tasks_mode {
         ) {
             let result = match msg {
                 Start::Pipe(name, v) => ctx
-                    .pipe(async move { v * 2 }, move |o| describe(name, o))
+                    .pipe(
+                        JobOptions::new(),
+                        |_| async move { v * 2 },
+                        move |o| describe(name, o),
+                    )
                     .map(drop)
                     .map_err(|e| e.to_string()),
                 Start::Panics => ctx
-                    .pipe(async { panic!("job boom") }, |o: JobOutcome<()>| {
-                        describe("p", o)
-                    })
+                    .pipe(
+                        JobOptions::new(),
+                        |_| async { panic!("job boom") },
+                        |o: JobOutcome<()>| describe("p", o),
+                    )
                     .map(drop)
                     .map_err(|e| e.to_string()),
                 Start::Gated(name, deadline) => {
                     let (open, gate) = oneshot::channel::<()>();
                     self.gates.push(open);
-                    let opts = JobOptions {
-                        deadline: deadline.map(|d| spawned_rt::time::Instant::now() + d),
-                        ..JobOptions::default()
-                    };
-                    ctx.pipe_with(opts, async move { gate.await.is_ok() }, move |o| {
-                        describe(name, o)
-                    })
+                    let opts = JobOptions::new()
+                        .deadline(deadline.map_or(Deadline::Never, Deadline::after));
+                    ctx.pipe(
+                        opts,
+                        |_| async move { gate.await.is_ok() },
+                        move |o| describe(name, o),
+                    )
                     .map(drop)
                     .map_err(|e| e.to_string())
                 }
                 Start::Keyed(name) => {
                     let (open, gate) = oneshot::channel::<()>();
                     self.gates.push(open);
-                    ctx.pipe_keyed("k", async move { gate.await.is_ok() }, move |o| {
-                        describe(name, o)
-                    })
+                    ctx.pipe(
+                        JobOptions::new().key("k"),
+                        |_| async move { gate.await.is_ok() },
+                        move |o| describe(name, o),
+                    )
                     .map(drop)
                     .map_err(|e| e.to_string())
                 }
                 Start::CancelAfterSpawn => {
                     let (open, gate) = oneshot::channel::<()>();
                     self.gates.push(open);
-                    ctx.pipe(async move { gate.await.is_ok() }, |o| {
-                        describe("cancelled", o)
-                    })
+                    ctx.pipe(
+                        JobOptions::new(),
+                        |_| async move { gate.await.is_ok() },
+                        |o| describe("cancelled", o),
+                    )
                     .map(|job| job.cancel())
                     .map_err(|e| e.to_string())
                 }
                 Start::Blocking(v) => ctx
-                    .pipe_blocking_with(
-                        JobOptions::default(),
+                    .pipe_blocking(
+                        JobOptions::new(),
                         move |_| v + 1,
                         |o| describe("blocking", o),
                     )
@@ -160,31 +170,26 @@ mod tasks_mode {
                     .map_err(|e| e.to_string()),
                 Start::NativeBudget => {
                     let (hold, held) = std::sync::mpsc::channel::<()>();
-                    let first = ctx.pipe_blocking_with(
-                        JobOptions::default(),
+                    let first = ctx.pipe_blocking(
+                        JobOptions::new(),
                         move |_| {
                             let _ = held.recv();
                         },
                         |o| describe("first", o),
                     );
-                    let second = ctx.pipe_blocking_with(
-                        JobOptions::default(),
-                        |_| (),
-                        |o| describe("second", o),
-                    );
+                    let second =
+                        ctx.pipe_blocking(JobOptions::new(), |_| (), |o| describe("second", o));
                     drop(hold);
                     match (&first, &second) {
-                        (Ok(_), Err(e)) if matches!(e.kind, PipeErrorKind::NativeBudget) => Ok(()),
+                        (Ok(_), Err(PipeError::NativeBudget)) => Ok(()),
                         _ => Err(format!("{first:?} / {second:?}")),
                     }
                 }
                 Start::Emits(name, n) => ctx
-                    .pipe_blocking_with(
-                        JobOptions {
-                            key: Some("emits".into()),
-                            emit_credits: 2,
-                            ..JobOptions::default()
-                        },
+                    .pipe_blocking(
+                        JobOptions::new()
+                            .key("emits")
+                            .emit_credits(std::num::NonZeroU16::new(2).unwrap()),
                         move |job| {
                             for i in 0..n {
                                 job.emit_blocking(Done(format!("{name}:emit:{i}")))?;
@@ -273,9 +278,9 @@ mod tasks_mode {
         ) {
             let (open, gate) = oneshot::channel::<()>();
             let job = ctx
-                .pipe_keyed(
-                    "r",
-                    async move { gate.await.map(|()| 1).unwrap_or(0) },
+                .pipe(
+                    JobOptions::new().key("r"),
+                    |_| async move { gate.await.map(|()| 1).unwrap_or(0) },
                     |o| describe("old", o),
                 )
                 .unwrap();
@@ -294,8 +299,12 @@ mod tasks_mode {
     impl Handler<ReplaceWhen> for Owner {
         async fn handle(&mut self, msg: ReplaceWhen, _: PendingReply<'_, ()>, ctx: &Context<Self>) {
             msg.0.await.unwrap();
-            ctx.pipe_keyed("r", async { 2 }, |o| describe("new", o))
-                .unwrap();
+            ctx.pipe(
+                JobOptions::new().key("r"),
+                |_| async { 2 },
+                |o| describe("new", o),
+            )
+            .unwrap();
         }
     }
 
@@ -332,9 +341,11 @@ mod tasks_mode {
     }
     impl Handler<Bomb> for Owner {
         async fn handle(&mut self, _: Bomb, reply: PendingReply<'_, ()>, ctx: &Context<Self>) {
-            ctx.pipe(async {}, |_: JobOutcome<()>| -> Done {
-                panic!("done boom")
-            })
+            ctx.pipe(
+                JobOptions::new(),
+                |_| async {},
+                |_: JobOutcome<()>| -> Done { panic!("done boom") },
+            )
             .unwrap();
             reply.reply(());
         }
@@ -480,7 +491,12 @@ mod tasks_mode {
                     Err(e) => Err(e),
                 }
             };
-            if let Err(e) = ctx.pipe_reply(token, work, |res, token| Delegated { res, token }) {
+            if let Err(e) = ctx.pipe_reply(
+                JobOptions::new(),
+                token,
+                |_| work,
+                |res, token| Delegated { res, token },
+            ) {
                 drop(e.into_token());
             }
         }
@@ -488,7 +504,7 @@ mod tasks_mode {
     impl Handler<Delegated> for Router {
         async fn handle(&mut self, msg: Delegated, _: PendingReply<'_, ()>, _: &Context<Self>) {
             match msg.res {
-                JobOutcome::Ok(Ok(v)) => {
+                Ok(Ok(v)) => {
                     msg.token.reply(v);
                 }
                 _ => msg.token.overloaded(),
@@ -512,10 +528,15 @@ mod tasks_mode {
             reply: PendingReply<'_, bool>,
             ctx: &Context<Self>,
         ) {
-            let refused = ctx.pipe_reply(msg.0, async { 1u64 }, |_, token| Delegated {
-                res: JobOutcome::Ok(Ok(0)),
-                token,
-            });
+            let refused = ctx.pipe_reply(
+                JobOptions::new(),
+                msg.0,
+                |_| async { 1u64 },
+                |_, token| Delegated {
+                    res: Ok(Ok(0)),
+                    token,
+                },
+            );
             let wrong_owner = matches!(refused, Err(PipeReplyError::WrongOwner(_)));
             if let Err(e) = refused {
                 e.into_token().reply(7);
@@ -634,8 +655,8 @@ mod threads_mode {
         fn handle(&mut self, msg: Compute, reply: PendingReply<'_, u64>, ctx: &Context<Self>) {
             let Ok(token) = reply.defer() else { return };
             let n = msg.0;
-            let _ = ctx.pipe_reply_blocking_with(
-                JobOptions::default(),
+            let _ = ctx.pipe_reply_blocking(
+                JobOptions::new(),
                 token,
                 move |job| {
                     job.emit_blocking(Done(format!("computing {n}"))).unwrap();
@@ -650,7 +671,7 @@ mod threads_mode {
     }
     impl Handler<Computed> for Owner {
         fn handle(&mut self, msg: Computed, _: PendingReply<'_, ()>, _: &Context<Self>) {
-            match msg.res.into_result() {
+            match msg.res {
                 Ok(v) => {
                     msg.token.reply(v);
                 }

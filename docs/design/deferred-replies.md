@@ -32,8 +32,8 @@ See [Differences from OTP](#differences-from-otp).
 | `handle_call` returns `{noreply, State}` and keeps `From` | the handler receives a `PendingReply<'_, R>`; `defer()` gives a storable `ReplyTo<R>` |
 | `gen_server:reply(From, R)` | `reply_to.reply(value)` |
 | `handle_cast` | the same handler, reached by `send`; the `PendingReply` is detached |
-| delegating with `From` | `ctx.pipe_reply(token, other.request(msg), ..)`; the obligation stays here |
-| `Task.Supervisor.async_nolink` + `handle_info` | `ctx.pipe(work, done)`; the result or a caught panic arrives as one message |
+| delegating with `From` | `ctx.pipe_reply(opts, token, \|_\| other.request(msg), ..)`; the obligation stays here |
+| `Task.Supervisor.async_nolink` + `handle_info` | `ctx.pipe(opts, work, done)`; the result or a caught panic arrives as one message |
 | `gen_server:call/3` timeout (default 5000, or `infinity`) | one deadline fixed at send (default 5 s, or `Deadline::Never`) |
 | a call times out; the server still handles it; the late reply is dropped | the same: expired requests are dispatched, and a late reply is a no-op |
 | call monitors the server and fails when it dies | the owner's death discharges every token it holds |
@@ -472,7 +472,7 @@ There is no `ReplyTo::forward` in v1.
 
 ```rust
 let token = reply.defer()?;
-ctx.pipe_reply(token, other.request(msg), |res, token| Delegated { res, token })?;
+ctx.pipe_reply(JobOptions::new(), token, |_| other.request(msg), |res, token| Delegated { res, token })?;
 ```
 
 The downstream request is an ordinary request with the destination's own
@@ -550,32 +550,35 @@ otherwise `PipeReplyError::WrongOwner` hands the token back.
 ## 9. Pipe-to-self jobs
 
 ```rust
-pub struct JobOptions {
-    pub deadline: Option<Instant>,          // none: no job deadline
-    pub key: Option<JobKey>,                // cancel-previous
-    pub cancel_on_caller_gone: bool,        // pipe_reply only; default false (OTP)
-    pub emit_credits: u16,                  // default 16
+#[non_exhaustive]
+pub struct JobOptions { /* private */ }     // OTP-style option list, passed first
+impl JobOptions {
+    pub fn new() -> Self;                                   // = default()
+    pub fn key(self, key: impl Into<JobKey>) -> Self;       // cancel-previous
+    pub fn deadline(self, d: impl Into<Deadline>) -> Self;  // Duration, Instant or Deadline
+    pub fn emit_credits(self, n: NonZeroU16) -> Self;       // default 16
+    pub fn cancel_on_caller_gone(self) -> Self;             // pipe_reply* only; off by default (OTP)
 }
-// Spawn at once; options are passed first, never chained afterwards.
-ctx.pipe(work, done)                                   -> Result<JobHandle, PipeError>
-ctx.pipe_with(opts, work, done)                        -> Result<JobHandle, PipeError>
-ctx.pipe_blocking_with(opts, |job| .., done)           -> Result<JobHandle, PipeError>
-ctx.pipe_reply(token, work, done)                      -> Result<JobHandle, PipeReplyError<R>>
-ctx.pipe_reply_with(opts, token, work, done)           -> Result<JobHandle, PipeReplyError<R>>
-ctx.pipe_reply_blocking_with(opts, token, |job| .., done) -> Result<JobHandle, PipeReplyError<R>>
+// One call per shape; spawn at once. `work` receives the job's `JobCtx`.
+ctx.pipe(opts, |job| async { .. }, done)                     -> Result<JobHandle, PipeError>
+ctx.pipe_blocking(opts, |job| .., done)                      -> Result<JobHandle, PipeError>
+ctx.pipe_reply(opts, token, |job| async { .. }, done)        -> Result<JobHandle, PipeReplyError<R>>
+ctx.pipe_reply_blocking(opts, token, |job| .., done)         -> Result<JobHandle, PipeReplyError<R>>
 // Reserve-then-spawn: the admission checks (owner running, credit, native
 // slot) before `work`/`done` exist; spawning from the permit cannot fail.
-ctx.reserve_job()          -> Result<JobPermit<A>, PipeError>        // .pipe/.pipe_with/.pipe_with_ctx
-ctx.reserve_blocking_job() -> Result<BlockingJobPermit<A>, PipeError> // .pipe_blocking_with
+ctx.reserve_job(opts)          -> Result<JobPermit<A>, PipeError>         // .pipe(work, done)
+ctx.reserve_blocking_job(opts) -> Result<BlockingJobPermit<A>, PipeError> // .pipe_blocking(work, done)
 
-pub enum PipeErrorKind { Overloaded, NativeBudget, SpawnFailed(io::Error), OwnerStopping }
-pub struct PipeError { pub kind: PipeErrorKind }
+#[non_exhaustive]
+pub enum PipeError { Overloaded, NativeBudget, SpawnFailed(io::Error), OwnerStopping }
+#[non_exhaustive]
 pub enum PipeReplyError<R> {
-    Failed { token: ReplyTo<R>, kind: PipeErrorKind },
+    Failed { token: ReplyTo<R>, error: PipeError },
     Closed(ReplyTo<R>),
     WrongOwner(ReplyTo<R>),
 }
-pub enum JobOutcome<T> { Ok(T), Err(JobError) }
+pub type JobOutcome<T> = Result<T, JobError>;
+#[non_exhaustive]
 pub enum JobError { Panicked(String), DeadlineExceeded }
 impl<A> JobCtx<A> {
     pub fn is_cancelled(&self) -> bool;
@@ -586,8 +589,6 @@ impl<A> JobCtx<A> {
     pub async fn emit_at<M>(&self, at: Instant, msg: M) -> Result<(), JobGone> where A: Handler<M>;
     pub fn emit_at_blocking<M>(&self, at: Instant, msg: M) -> Result<(), JobGone> where A: Handler<M>;
 }
-// `JobOutcome`, `JobError` and `PipeErrorKind` are #[non_exhaustive];
-// `JobOptions::deadline_after(d)` sets `deadline` to now + d.
 ```
 
 **Failure disposition.** On every error no job is spawned, and any credit
@@ -660,7 +661,7 @@ the owner's `ActorId`. The run loop drops it before the handler runs if:
   `ActorId`, not a per-slot supervisor generation); or
 - the job is cancelled.
 
-**Keyed replacement.** `pipe_keyed` / `JobOptions::key` cancels the previous
+**Keyed replacement.** `JobOptions::key` cancels the previous
 job for the key **whatever its notification state**: pending, notified (its
 deadline fired) or finished with a queued terminal message. So none of its
 queued messages reach the handler. The key map holds only the current job.
@@ -765,7 +766,7 @@ Aligned with OTP, so not differences:
 - **`stopped()` may reply**, and callers learn at death.
 - **Replies are immediate.**
 - **Completions are turns** (`handle_info`).
-- **`pipe_keyed` is shorthand** for cancel then start.
+- **A keyed job (`JobOptions::key`) is shorthand** for cancel then start.
 
 ## Decisions on rank 11a
 
@@ -782,7 +783,7 @@ Aligned with OTP, so not differences:
 
 | Rank | Reuses |
 |---|---|
-| 11b | `JobState`, the emit protocol, fencing, `done`, credits, `PipeErrorKind` |
+| 11b | `JobState`, the emit protocol, fencing, `done`, credits, `PipeError` |
 | 13 | `stopped()` replies, the registry outstanding count, the unfinished report |
 | 15 | the per-instance job set, keyed cancel-previous, the bounded join |
 | 15a | a slot is a request scope; `JobOptions::deadline` is never later than its parent's |
@@ -1017,9 +1018,9 @@ semantics above.
   during `ActorSystem::shutdown`, otherwise `DEFAULT_STOP_DEADLINE` (5 s).
   Jobs still running then appear in `ShutdownReport::unfinished_jobs` and as
   an `unfinished_at_stop` event.
-- **Async emits.** `ctx.pipe_with_ctx(opts, |job| async move { .. }, done)`
-  hands async work its `JobCtx` (`emit`, `cancelled`); `pipe(work, done)`
-  keeps taking a plain future, as in the delegation example.
+- **Async emits.** Every `pipe*` hands the work its `JobCtx` (`emit`,
+  `cancelled`): `ctx.pipe(opts, |job| async move { .. }, done)`; `|_| fut`
+  when the work needs neither.
 - **Destruction.** If an owner's lifecycle future is dropped (its runtime
   destroyed), exit begins before its state is dropped and the registry
   closes, so open tokens answer `ActorStopped`.
@@ -1074,7 +1075,7 @@ changes).
 | 2.5.1 Attach after expiry | Attach CAS requires `OPEN`; otherwise `Closed` with the token (§8). |
 | 2.5.2 `TimedOut` does not trigger cancellation | The opt-in coupling triggers on `ABANDONED` and `TIMED_OUT` (§9). |
 | 2.5.3 `WrongOwner` shape; token lost on error | `PipeReplyError<R>` returns the token in every variant (§9). |
-| 2.5.4 No `pipe_reply_with` | `pipe_reply_with` and `pipe_reply_blocking_with` added (§9). |
+| 2.5.4 No `pipe_reply_with` | `pipe_reply` and `pipe_reply_blocking` take `JobOptions` first (§9). |
 | 2.6.1 Keyed replacement after a deadline | Fixed (Codex 4). |
 | 2.6.2 Fenced payload drop panics | `DropFailures` path (§1 rule 5). |
 | 2.7.1 Emit credit deadlock on stop | Cancel and exit wake blocked emitters with `JobGone`; credits also return at mailbox disposal (§9). |

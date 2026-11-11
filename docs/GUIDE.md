@@ -641,17 +641,17 @@ reports exactly one outcome per object even when the actor is at a bound:
 #[send_handler]
 async fn on_gossip(&mut self, msg: Gossip, ctx: &Context<Self>) {
     // Reserve first: on refusal nothing has been moved into the job yet.
-    let Ok(permit) = ctx.reserve_blocking_job() else {
+    let opts = JobOptions::new().deadline(VERDICT_DEADLINE);
+    let Ok(permit) = ctx.reserve_blocking_job(opts) else {
         return self.report(msg.id, Verdict::Ignore(Overloaded));
     };
     let Gossip { id, object } = msg;
-    let opts = JobOptions::default().deadline_after(VERDICT_DEADLINE);
-    permit.pipe_blocking_with(opts, move |_job| check(&object), move |res| Checked { id, res });
+    permit.pipe_blocking(move |_job| check(&object), move |res| Checked { id, res });
 }
 
 #[send_handler]
 async fn on_checked(&mut self, msg: Checked, _ctx: &Context<Self>) {
-    let verdict = match msg.res.into_result() {
+    let verdict = match msg.res {
         Ok(outcome) => outcome,
         Err(JobError::DeadlineExceeded) => Verdict::Ignore(TimedOut),
         Err(_) => Verdict::Reject(CheckFailed), // a panic in `check`
@@ -662,21 +662,28 @@ async fn on_checked(&mut self, msg: Checked, _ctx: &Context<Self>) {
 // Delegation: the obligation and its credit stay here.
 let token = reply.defer()?;
 let downstream = other.request_raw_until(Lookup(key), token.deadline().map_or(Deadline::Never, Deadline::At));
-ctx.pipe_reply(token, async move { downstream?.await }, |res, token| Delegated { res, token })?;
+ctx.pipe_reply(JobOptions::new(), token, |_| async move { downstream?.await }, |res, token| Delegated { res, token })?;
 ```
 
-- `done(outcome)` runs in the owner's turn; `JobOutcome::Err` carries
-  `JobError::Panicked` or `JobError::DeadlineExceeded`. `JobOutcome`,
-  `JobError` and `PipeErrorKind` are `#[non_exhaustive]`: match with a
-  wildcard arm (or `outcome.into_result()`).
+- Four calls, one per shape: `ctx.pipe` (async work), `ctx.pipe_blocking`,
+  `ctx.pipe_reply` and `ctx.pipe_reply_blocking` (linked to a deferred
+  reply). Each takes `JobOptions` first, built with `JobOptions::new()` and
+  `.key(k)`, `.deadline(d)` (a `Duration`, `Instant` or `Deadline`),
+  `.emit_credits(n)` and, for `pipe_reply*` only,
+  `.cancel_on_caller_gone()`. The work receives the job's `JobCtx` by
+  value (`|_| fut` when it needs neither cancellation nor emits).
+- `done(outcome)` runs in the owner's turn. `JobOutcome<T>` is
+  `Result<T, JobError>`; `Err` carries `JobError::Panicked` or
+  `JobError::DeadlineExceeded`. `JobError` and `PipeError` are
+  `#[non_exhaustive]`: match with a wildcard arm.
 - `ctx.pipe*` reject at once at a bound (`PipeError`, never waiting) and drop
   `work` and `done`. When the caller must still produce a result,
-  `ctx.reserve_job()` / `ctx.reserve_blocking_job()` take the admission
-  first (owner running, a credit, and for blocking jobs a native slot) and
-  return a permit whose `pipe*` cannot fail. `pipe_reply*` errors hand the
-  token back.
-- `pipe_keyed` / `JobOptions::key` cancel the previous job with that key and
-  fence its queued messages; `JobHandle::cancel` fences one job.
+  `ctx.reserve_job(opts)` / `ctx.reserve_blocking_job(opts)` take the
+  admission first (owner running, a credit, and for blocking jobs a native
+  slot) and return a permit whose `pipe` / `pipe_blocking` cannot fail.
+  `pipe_reply*` errors hand the token back.
+- `JobOptions::key` cancels the previous job with that key and
+  fences its queued messages; `JobHandle::cancel` fences one job.
 - `JobCtx::emit_blocking` (and `emit` for async jobs) sends fenced messages,
   bounded by `JobOptions::emit_credits`; the terminal message is always last.
   `JobCtx::emit_at(at, msg)` (`emit_at_blocking` in blocking jobs) delivers
@@ -689,8 +696,7 @@ ctx.pipe_reply(token, async move { downstream?.await }, |res, token| Delegated {
   deadline passes first it takes the notification and the emit is dropped
   at its instant (if the job finishes first, the emit and then the result
   arrive as usual).
-- **Job deadlines are hard.** When `JobOptions::deadline` (or
-  `deadline_after(d)`) passes, `done` gets `DeadlineExceeded` at once, later
+- **Job deadlines are hard.** When `JobOptions::deadline` passes, `done` gets `DeadlineExceeded` at once, later
   emits fail with `JobGone` and the work's eventual result is dropped. The
   work itself keeps running (cooperative cancellation) and keeps its credit
   and native slot until it returns. For a **soft deadline** (stop starting
@@ -699,7 +705,7 @@ ctx.pipe_reply(token, async move { downstream?.await }, |res, token| Delegated {
 
   ```rust
   let stop_starting_at = Instant::now() + SOFT_DEADLINE;
-  ctx.pipe_blocking_with(JobOptions::default(), move |job| {
+  ctx.pipe_blocking(JobOptions::new(), move |job| {
       let mut done = Vec::new();
       for item in batch {
           if job.is_cancelled() || Instant::now() >= stop_starting_at { break; }
@@ -722,7 +728,7 @@ ctx.pipe_reply(token, async move { downstream?.await }, |res, token| Delegated {
   > actor is easy to outgrow now that blocking jobs run on Tokio's blocking
   > pool: an actor that verifies, proves or does I/O in blocking jobs
   > usually needs tens or hundreds (one client port needed 352). Under load
-  > the only symptom is `PipeErrorKind::NativeBudget` refusals; the first one
+  > the only symptom is `PipeError::NativeBudget` refusals; the first one
   > per actor instance is logged as a `native_budget_exhausted` warning.
 
   Set both in the macro,
@@ -733,8 +739,8 @@ ctx.pipe_reply(token, async move { downstream?.await }, |res, token| Delegated {
   blocking jobs on Tokio's blocking pool (`spawn_blocking` of the actor's
   group runtime, or the current runtime), still bounded by the native
   budget; a runtime that is dropped waits for blocking jobs still running,
-  as with any `spawn_blocking`. `threads` mode offers `pipe_blocking_with`
-  and `pipe_reply_blocking_with` on owned native threads (a reservation
+  as with any `spawn_blocking`. `threads` mode offers `pipe_blocking`
+  and `pipe_reply_blocking` on owned native threads (a reservation
   spawns the thread, parked until the job starts).
 - Owner exit cancels every job; after death the jobs are joined, bounded by
   the cleanup deadline, and stragglers are reported (`unfinished_at_stop`).

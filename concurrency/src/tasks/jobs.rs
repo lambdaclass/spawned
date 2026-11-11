@@ -8,8 +8,8 @@ use super::{Actor, Context, Envelope, Handler};
 use crate::message::Message;
 use crate::reply::deadline::Expirable;
 use crate::reply::jobs::{
-    JobCredit, JobDeadline, JobError, JobGone, JobHandle, JobKey, JobOptions, JobOutcome, JobState,
-    PipeError, PipeErrorKind, PipeReplyError, SendScheduled,
+    JobCredit, JobDeadline, JobError, JobGone, JobHandle, JobOptions, JobOutcome, JobState,
+    PipeError, PipeReplyError, SendScheduled,
 };
 use crate::reply::slot::{Refused, Slot};
 use crate::reply::{now_ticks, PendingReply, ReplyTo};
@@ -91,7 +91,7 @@ where
         ctx: &'a Context<A>,
     ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
         let TerminalEnvelope { job, done, outcome } = *self;
-        let kind = if matches!(outcome, JobOutcome::Err(JobError::DeadlineExceeded)) {
+        let kind = if matches!(outcome, Err(JobError::DeadlineExceeded)) {
             "deadline"
         } else {
             "done"
@@ -133,9 +133,9 @@ struct Run<A: Actor, T, M> {
 
 fn end_of<T>(outcome: &JobOutcome<T>) -> &'static str {
     match outcome {
-        JobOutcome::Ok(_) => "ok",
-        JobOutcome::Err(JobError::Panicked(_)) => "panicked",
-        JobOutcome::Err(JobError::DeadlineExceeded) => "deadline",
+        Ok(_) => "ok",
+        Err(JobError::Panicked(_)) => "panicked",
+        Err(JobError::DeadlineExceeded) => "deadline",
     }
 }
 
@@ -293,14 +293,11 @@ impl<A: Actor> Drop for Ended<A> {
 }
 
 fn caught<T>(result: std::thread::Result<T>) -> JobOutcome<T> {
-    match result {
-        Ok(value) => JobOutcome::Ok(value),
-        Err(panic) => {
-            let message = crate::error::panic_message(&*panic);
-            crate::mailbox::dispose_panic(panic);
-            JobOutcome::Err(JobError::Panicked(message))
-        }
-    }
+    result.map_err(|panic| {
+        let message = crate::error::panic_message(&*panic);
+        crate::mailbox::dispose_panic(panic);
+        JobError::Panicked(message)
+    })
 }
 
 /// The job's handle on its owner while it runs.
@@ -431,22 +428,24 @@ impl<A: Actor> JobCtx<A> {
 // Context API
 // ---------------------------------------------------------------------------
 
-/// A job admission reserved ahead of building the work: `ctx.reserve_job()`
-/// takes the credit (and checks the owner is not stopping) without consuming
-/// anything, so a caller that is refused still holds what it would have
-/// moved into `work` and `done`. Spawning from a permit cannot fail.
-/// Dropping an unused permit returns its credit.
+/// A job admission reserved ahead of building the work:
+/// `ctx.reserve_job(opts)` takes the credit (and checks the owner is not
+/// stopping) without consuming anything, so a caller that is refused still
+/// holds what it would have moved into `work` and `done`. Spawning from a
+/// permit cannot fail. Dropping an unused permit returns its credit.
 #[must_use = "an unused permit only holds a credit; spawn the job with it or drop it"]
 pub struct JobPermit<A: Actor> {
     ctx: Context<A>,
+    opts: JobOptions,
     credit: JobCredit,
 }
 
 /// [`JobPermit`] for a blocking job: it also holds a native slot
-/// (`MAX_NATIVE_JOBS`). From `ctx.reserve_blocking_job()`.
+/// (`MAX_NATIVE_JOBS`). From `ctx.reserve_blocking_job(opts)`.
 #[must_use = "an unused permit only holds a credit and a native slot; spawn the job with it or drop it"]
 pub struct BlockingJobPermit<A: Actor> {
     ctx: Context<A>,
+    opts: JobOptions,
     credit: JobCredit,
     native: NativeSlot<A>,
 }
@@ -464,49 +463,11 @@ impl<A: Actor> std::fmt::Debug for BlockingJobPermit<A> {
 }
 
 impl<A: Actor> JobPermit<A> {
-    /// [`Context::pipe`] with this permit's credit.
-    pub fn pipe<T, M, W, D>(self, work: W, done: D) -> JobHandle
-    where
-        A: Handler<M>,
-        M: Message,
-        T: Send + 'static,
-        W: Future<Output = T> + Send + 'static,
-        D: FnOnce(JobOutcome<T>) -> M + Send + 'static,
-    {
-        self.pipe_with(JobOptions::default(), work, done)
-    }
-
-    /// [`Context::pipe_with`] with this permit's credit. If the owner began
-    /// exiting since the reservation, nothing runs: `work` and `done` are
-    /// dropped and the handle reports the job cancelled (as owner exit
-    /// cancels every job).
-    pub fn pipe_with<T, M, W, D>(self, opts: JobOptions, work: W, done: D) -> JobHandle
-    where
-        A: Handler<M>,
-        M: Message,
-        T: Send + 'static,
-        W: Future<Output = T> + Send + 'static,
-        D: FnOnce(JobOutcome<T>) -> M + Send + 'static,
-    {
-        let JobPermit { ctx, credit } = self;
-        let Some(state) = ctx.start_job(&opts) else {
-            return ctx.refused_job(&opts, (work, done));
-        };
-        if !ctx.admit_job(&state, &opts) {
-            return ctx.refuse(state, (work, done, credit));
-        }
-        ctx.launch_async::<T, M, (), W>(
-            opts,
-            state,
-            Hold::Credit(credit),
-            work,
-            Box::new(done),
-            None,
-        )
-    }
-
-    /// [`Context::pipe_with_ctx`] with this permit's credit.
-    pub fn pipe_with_ctx<T, M, F, W, D>(self, opts: JobOptions, work: F, done: D) -> JobHandle
+    /// [`Context::pipe`] with this permit's options and credit; cannot
+    /// fail. If the owner began exiting since the reservation, nothing runs:
+    /// `work` and `done` are dropped and the handle reports the job
+    /// cancelled (as owner exit cancels every job).
+    pub fn pipe<T, M, F, W, D>(self, work: F, done: D) -> JobHandle
     where
         A: Handler<M>,
         M: Message,
@@ -515,7 +476,7 @@ impl<A: Actor> JobPermit<A> {
         W: Future<Output = T> + Send + 'static,
         D: FnOnce(JobOutcome<T>) -> M + Send + 'static,
     {
-        let JobPermit { ctx, credit } = self;
+        let JobPermit { ctx, opts, credit } = self;
         let Some(state) = ctx.start_job(&opts) else {
             return ctx.refused_job(&opts, (work, done));
         };
@@ -541,19 +502,20 @@ impl<A: Actor> JobPermit<A> {
 }
 
 impl<A: Actor> BlockingJobPermit<A> {
-    /// [`Context::pipe_blocking_with`] with this permit's credit and native
-    /// slot; cannot fail. If the owner began exiting since the reservation,
-    /// nothing runs (see [`JobPermit::pipe_with`]).
-    pub fn pipe_blocking_with<T, M, W, D>(self, opts: JobOptions, work: W, done: D) -> JobHandle
+    /// [`Context::pipe_blocking`] with this permit's options, credit and
+    /// native slot; cannot fail. If the owner began exiting since the
+    /// reservation, nothing runs (see [`JobPermit::pipe`]).
+    pub fn pipe_blocking<T, M, W, D>(self, work: W, done: D) -> JobHandle
     where
         A: Handler<M>,
         M: Message,
         T: Send + 'static,
-        W: FnOnce(&JobCtx<A>) -> T + Send + 'static,
+        W: FnOnce(JobCtx<A>) -> T + Send + 'static,
         D: FnOnce(JobOutcome<T>) -> M + Send + 'static,
     {
         let BlockingJobPermit {
             ctx,
+            opts,
             credit,
             mut native,
         } = self;
@@ -606,13 +568,9 @@ impl<A: Actor> Context<A> {
 
     fn reserve_credit(&self) -> Result<JobCredit, PipeError> {
         if self.shared.replies.is_exiting() {
-            return Err(PipeError {
-                kind: PipeErrorKind::OwnerStopping,
-            });
+            return Err(PipeError::OwnerStopping);
         }
-        JobCredit::reserve(&self.shared.replies).ok_or(PipeError {
-            kind: PipeErrorKind::Overloaded,
-        })
+        JobCredit::reserve(&self.shared.replies).ok_or(PipeError::Overloaded)
     }
 
     /// Reserve a native slot (`MAX_NATIVE_JOBS`) and where the job will run:
@@ -620,9 +578,9 @@ impl<A: Actor> Context<A> {
     /// here, never at launch). A failure releases the slot. A managed
     /// actor's scope lease is taken later, at admission
     /// ([`admit_native`](Self::admit_native)).
-    fn reserve_native(&self) -> Result<NativeSlot<A>, PipeErrorKind> {
+    fn reserve_native(&self) -> Result<NativeSlot<A>, PipeError> {
         if !self.shared.jobs.reserve_native() {
-            return Err(PipeErrorKind::NativeBudget);
+            return Err(PipeError::NativeBudget);
         }
         let mut slot = NativeSlot {
             ctx: self.clone(),
@@ -648,7 +606,7 @@ impl<A: Actor> Context<A> {
                             task();
                         }
                     })
-                    .map_err(PipeErrorKind::SpawnFailed)?;
+                    .map_err(PipeError::SpawnFailed)?;
                 RunnerPool::Thread(start)
             }
         };
@@ -688,25 +646,38 @@ impl<A: Actor> Context<A> {
     /// and spawning from the permit cannot fail.
     ///
     /// ```ignore
-    /// let Ok(permit) = ctx.reserve_job() else {
+    /// let Ok(permit) = ctx.reserve_job(JobOptions::new()) else {
     ///     return self.report(id, Verdict::Overloaded); // `id` was not moved
     /// };
-    /// permit.pipe(fetch(object), move |res| Fetched { id, res });
+    /// permit.pipe(|_| fetch(object), move |res| Fetched { id, res });
     /// ```
-    pub fn reserve_job(&self) -> Result<JobPermit<A>, PipeError> {
+    pub fn reserve_job(&self, opts: JobOptions) -> Result<JobPermit<A>, PipeError> {
+        debug_assert!(
+            !opts.cancel_on_caller_gone,
+            "cancel_on_caller_gone applies to pipe_reply* only"
+        );
         Ok(JobPermit {
             ctx: self.clone(),
             credit: self.reserve_credit()?,
+            opts,
         })
     }
 
     /// [`reserve_job`](Self::reserve_job) for a blocking job: also takes a
     /// native slot (`MAX_NATIVE_JOBS`, `NativeBudget` at the bound).
-    pub fn reserve_blocking_job(&self) -> Result<BlockingJobPermit<A>, PipeError> {
+    pub fn reserve_blocking_job(
+        &self,
+        opts: JobOptions,
+    ) -> Result<BlockingJobPermit<A>, PipeError> {
+        debug_assert!(
+            !opts.cancel_on_caller_gone,
+            "cancel_on_caller_gone applies to pipe_reply* only"
+        );
         let credit = self.reserve_credit()?;
-        let native = self.reserve_native().map_err(|kind| PipeError { kind })?;
+        let native = self.reserve_native()?;
         Ok(BlockingJobPermit {
             ctx: self.clone(),
+            opts,
             credit,
             native,
         })
@@ -727,7 +698,7 @@ impl<A: Actor> Context<A> {
             state: run.state.clone(),
             notify: Mutex::new(Some(Box::new(move || {
                 if let Some(run) = weak.upgrade() {
-                    run.notify(JobOutcome::Err(JobError::DeadlineExceeded));
+                    run.notify(Err(JobError::DeadlineExceeded));
                 }
             }))),
         });
@@ -810,7 +781,7 @@ impl<A: Actor> Context<A> {
         M: Message,
         T: Send + 'static,
         R: Send + 'static,
-        W: FnOnce(&JobCtx<A>) -> T + Send + 'static,
+        W: FnOnce(JobCtx<A>) -> T + Send + 'static,
     {
         let run = Arc::new(Run {
             state: state.clone(),
@@ -831,7 +802,7 @@ impl<A: Actor> Context<A> {
             .expect("a native slot is reserved with its runner");
         runner.run(move || {
             let _ended = ended;
-            let result = std::panic::catch_unwind(AssertUnwindSafe(|| work(&job)));
+            let result = std::panic::catch_unwind(AssertUnwindSafe(|| work(job)));
             // Execution ended: release the native slot now; the run returns
             // the credit when the terminal message is enqueued.
             drop(native);
@@ -840,67 +811,21 @@ impl<A: Actor> Context<A> {
         JobHandle::new(state)
     }
 
-    /// Run `work` as a job owned by this actor instance and deliver
-    /// `done(outcome)` as one message in a later turn (`handle_info`). A
-    /// panic arrives as `JobOutcome::Err(JobError::Panicked)`. Holds one
-    /// `MAX_OUTSTANDING` credit while it executes. Rejects at once at a
-    /// bound; never waits. On `Err`, `work` and `done` are dropped: use
-    /// [`reserve_job`](Self::reserve_job) to keep them.
-    pub fn pipe<T, M, W, D>(&self, work: W, done: D) -> Result<JobHandle, PipeError>
-    where
-        A: Handler<M>,
-        M: Message,
-        T: Send + 'static,
-        W: Future<Output = T> + Send + 'static,
-        D: FnOnce(JobOutcome<T>) -> M + Send + 'static,
-    {
-        self.pipe_with(JobOptions::default(), work, done)
-    }
-
-    /// [`pipe`](Self::pipe) that first cancels the previous job with `key`
-    /// (whatever its notification state) and fences its queued messages.
-    pub fn pipe_keyed<T, M, W, D>(
-        &self,
-        key: impl Into<JobKey>,
-        work: W,
-        done: D,
-    ) -> Result<JobHandle, PipeError>
-    where
-        A: Handler<M>,
-        M: Message,
-        T: Send + 'static,
-        W: Future<Output = T> + Send + 'static,
-        D: FnOnce(JobOutcome<T>) -> M + Send + 'static,
-    {
-        let opts = JobOptions {
-            key: Some(key.into()),
-            ..JobOptions::default()
-        };
-        self.pipe_with(opts, work, done)
-    }
-
-    /// [`pipe`](Self::pipe) with options (deadline, key, emit credits).
-    pub fn pipe_with<T, M, W, D>(
-        &self,
-        opts: JobOptions,
-        work: W,
-        done: D,
-    ) -> Result<JobHandle, PipeError>
-    where
-        A: Handler<M>,
-        M: Message,
-        T: Send + 'static,
-        W: Future<Output = T> + Send + 'static,
-        D: FnOnce(JobOutcome<T>) -> M + Send + 'static,
-    {
-        Ok(self.reserve_job()?.pipe_with(opts, work, done))
-    }
-
-    /// [`pipe_with`](Self::pipe_with) for async work that needs its
-    /// [`JobCtx`]: `work` receives it to check cancellation and `emit` fenced
-    /// messages (bounded by `JobOptions::emit_credits`; the terminal message
-    /// is always last).
-    pub fn pipe_with_ctx<T, M, F, W, D>(
+    /// Run async work as a job owned by this actor instance and deliver
+    /// `done(outcome)` as one message in a later turn (`handle_info`), as
+    /// `Task.async` + `handle_info` would. `work` receives the job's
+    /// [`JobCtx`] (to check cancellation and `emit` fenced messages, bounded
+    /// by `emit_credits`; the terminal message is always last) and returns
+    /// the future to run; `|_| fut` when it needs neither. A panic arrives
+    /// as `Err(JobError::Panicked)`. Holds one `MAX_OUTSTANDING` credit
+    /// while it executes. Rejects at once at a bound; never waits. On `Err`,
+    /// `work` and `done` are dropped: use [`reserve_job`](Self::reserve_job)
+    /// to keep them.
+    ///
+    /// ```ignore
+    /// ctx.pipe(JobOptions::new().key("fetch"), |_| fetch(url), Fetched)?;
+    /// ```
+    pub fn pipe<T, M, F, W, D>(
         &self,
         opts: JobOptions,
         work: F,
@@ -914,16 +839,16 @@ impl<A: Actor> Context<A> {
         W: Future<Output = T> + Send + 'static,
         D: FnOnce(JobOutcome<T>) -> M + Send + 'static,
     {
-        Ok(self.reserve_job()?.pipe_with_ctx(opts, work, done))
+        Ok(self.reserve_job(opts)?.pipe(work, done))
     }
 
     /// Run blocking `work` on Tokio's blocking pool, under the actor's
     /// `MAX_NATIVE_JOBS` budget (cancellation stays cooperative: the job
-    /// checks its [`JobCtx`]). `work` gets a [`JobCtx`] to check
+    /// checks its [`JobCtx`]). `work` gets the [`JobCtx`] to check
     /// cancellation and `emit_blocking` fenced messages; a panic arrives as
     /// `JobError::Panicked`. On `Err`, `work` and `done` are dropped: use
     /// [`reserve_blocking_job`](Self::reserve_blocking_job) to keep them.
-    pub fn pipe_blocking_with<T, M, W, D>(
+    pub fn pipe_blocking<T, M, W, D>(
         &self,
         opts: JobOptions,
         work: W,
@@ -933,43 +858,25 @@ impl<A: Actor> Context<A> {
         A: Handler<M>,
         M: Message,
         T: Send + 'static,
-        W: FnOnce(&JobCtx<A>) -> T + Send + 'static,
+        W: FnOnce(JobCtx<A>) -> T + Send + 'static,
         D: FnOnce(JobOutcome<T>) -> M + Send + 'static,
     {
-        Ok(self
-            .reserve_blocking_job()?
-            .pipe_blocking_with(opts, work, done))
+        Ok(self.reserve_blocking_job(opts)?.pipe_blocking(work, done))
     }
 
-    /// Delegate a deferred reply: run `work` as a job linked to `token`'s
-    /// request and deliver `done(outcome, token)` in a later turn. The
+    /// Delegate a deferred reply: run async work as a job linked to
+    /// `token`'s request and deliver `done(outcome, token)` in a later turn.
+    /// `work` receives the [`JobCtx`] as in [`pipe`](Self::pipe). The
     /// obligation and credit stay in this actor: the token and its first
-    /// linked job share one credit. On every error the token comes back.
-    pub fn pipe_reply<R, T, M, W, D>(
-        &self,
-        token: ReplyTo<R>,
-        work: W,
-        done: D,
-    ) -> Result<JobHandle, PipeReplyError<R>>
-    where
-        A: Handler<M>,
-        M: Message,
-        R: Send + 'static,
-        T: Send + 'static,
-        W: Future<Output = T> + Send + 'static,
-        D: FnOnce(JobOutcome<T>, ReplyTo<R>) -> M + Send + 'static,
-    {
-        self.pipe_reply_with(JobOptions::default(), token, work, done)
-    }
-
-    /// [`pipe_reply`](Self::pipe_reply) with options. With
-    /// `cancel_on_caller_gone` the job is cancelled when the caller leaves
-    /// or the request's deadline passes (off by default, as in OTP).
-    pub fn pipe_reply_with<R, T, M, W, D>(
+    /// linked job share one credit. With
+    /// [`JobOptions::cancel_on_caller_gone`] the job is cancelled when the
+    /// caller leaves or the request's deadline passes (off by default, as
+    /// in OTP). On every error the token comes back.
+    pub fn pipe_reply<R, T, M, F, W, D>(
         &self,
         opts: JobOptions,
         token: ReplyTo<R>,
-        work: W,
+        work: F,
         done: D,
     ) -> Result<JobHandle, PipeReplyError<R>>
     where
@@ -977,18 +884,26 @@ impl<A: Actor> Context<A> {
         M: Message,
         R: Send + 'static,
         T: Send + 'static,
+        F: FnOnce(JobCtx<A>) -> W,
         W: Future<Output = T> + Send + 'static,
         D: FnOnce(JobOutcome<T>, ReplyTo<R>) -> M + Send + 'static,
     {
         let (state, slot, token) = self.link_reply(&opts, token)?;
         let watch = opts.cancel_on_caller_gone.then(|| slot.clone());
         let hold = Hold::Linked(LinkedJob(slot));
+        let job = JobCtx {
+            state: state.clone(),
+            ctx: self.clone(),
+        };
+        // User code; a panic here drops the hold, which detaches the
+        // linked job from the slot.
+        let work = work(job);
         if !self.admit_job(&state, &opts) {
             // Dropping the hold detaches the linked job from the slot.
-            drop((hold, watch));
+            drop((hold, watch, work));
             return Err(PipeReplyError::Failed {
                 token,
-                kind: PipeErrorKind::OwnerStopping,
+                error: PipeError::OwnerStopping,
             });
         }
         Ok(self.launch_async(opts, state, hold, work, linked_done(token, done), watch))
@@ -996,7 +911,7 @@ impl<A: Actor> Context<A> {
 
     /// Blocking [`pipe_reply`](Self::pipe_reply) on Tokio's blocking pool,
     /// under the `MAX_NATIVE_JOBS` budget.
-    pub fn pipe_reply_blocking_with<R, T, M, W, D>(
+    pub fn pipe_reply_blocking<R, T, M, W, D>(
         &self,
         opts: JobOptions,
         token: ReplyTo<R>,
@@ -1008,7 +923,7 @@ impl<A: Actor> Context<A> {
         M: Message,
         R: Send + 'static,
         T: Send + 'static,
-        W: FnOnce(&JobCtx<A>) -> T + Send + 'static,
+        W: FnOnce(JobCtx<A>) -> T + Send + 'static,
         D: FnOnce(JobOutcome<T>, ReplyTo<R>) -> M + Send + 'static,
     {
         let (state, slot, token) = self.link_reply(&opts, token)?;
@@ -1016,16 +931,16 @@ impl<A: Actor> Context<A> {
         let mut native = match self.reserve_native() {
             Ok(native) => native,
             // Dropping the hold detaches the linked job from the slot.
-            Err(kind) => {
+            Err(error) => {
                 drop(hold);
-                return Err(PipeReplyError::Failed { token, kind });
+                return Err(PipeReplyError::Failed { token, error });
             }
         };
         if !self.admit_native(&state, &opts, &mut native) {
             drop((hold, native));
             return Err(PipeReplyError::Failed {
                 token,
-                kind: PipeErrorKind::OwnerStopping,
+                error: PipeError::OwnerStopping,
             });
         }
         if opts.cancel_on_caller_gone {
@@ -1049,7 +964,7 @@ impl<A: Actor> Context<A> {
         let Some(state) = self.start_job(opts) else {
             return Err(PipeReplyError::Failed {
                 token,
-                kind: PipeErrorKind::OwnerStopping,
+                error: PipeError::OwnerStopping,
             });
         };
         let slot = token.slot_arc().clone();
@@ -1058,7 +973,7 @@ impl<A: Actor> Context<A> {
             Err(Refused::Closed) => Err(PipeReplyError::Closed(token)),
             Err(Refused::Overloaded) => Err(PipeReplyError::Failed {
                 token,
-                kind: PipeErrorKind::Overloaded,
+                error: PipeError::Overloaded,
             }),
         }
     }
@@ -1109,6 +1024,24 @@ mod tests {
             assert_eq!(state.emit_credits(), credits, "credit returned twice");
         }
         owner.context().stop();
+        owner.join().await;
+    }
+
+    /// `cancel_on_caller_gone` applies to reply jobs only: a plain job has no
+    /// caller, so setting it there is a bug, caught in debug builds.
+    #[cfg(debug_assertions)]
+    #[tokio::test]
+    async fn cancel_on_caller_gone_on_a_plain_job_is_a_bug() {
+        let owner = Owner.start();
+        let ctx = owner.context();
+        let refused = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            ctx.reserve_blocking_job(JobOptions::new().cancel_on_caller_gone())
+                .map(drop)
+        }));
+        assert!(refused.is_err(), "the option was accepted on a plain job");
+        let plain = ctx.reserve_blocking_job(JobOptions::new()).map(drop);
+        assert!(plain.is_ok());
+        ctx.stop();
         owner.join().await;
     }
 }

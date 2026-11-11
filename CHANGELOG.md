@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- **Breaking (0.8), API pass before publishing** (each change is a row of the
+  [0.7 to 0.8 call-site table](docs/MIGRATION.md#07-to-08-api-call-site-table)):
+  - Jobs: one call per shape, options first (`pipe`, `pipe_blocking`,
+    `pipe_reply`, `pipe_reply_blocking`, `reserve_job(opts)`,
+    `reserve_blocking_job(opts)`); every `work` receives its `JobCtx` by
+    value. `pipe_with`, `pipe_with_ctx`, `pipe_keyed`, `pipe_blocking_with`,
+    `pipe_reply_with` and `pipe_reply_blocking_with` are gone.
+    `JobOptions` is `#[non_exhaustive]` with a builder (`new`, `key`,
+    `deadline(impl Into<Deadline>)`, `emit_credits(NonZeroU16)`,
+    `cancel_on_caller_gone`, which `debug_assert!`s outside `pipe_reply*`);
+    `deadline_after` is folded into `deadline`. `JobOutcome<T>` is
+    `Result<T, JobError>`. `PipeError` is the `#[non_exhaustive]` enum (no
+    `kind` wrapper); `PipeReplyError` is `#[non_exhaustive]` and its
+    `Failed` variant carries `error`. `Deadline` implements
+    `From<Duration>` and `From<Instant>`. `DEFAULT_EMIT_CREDITS` and
+    `default_max_native_jobs` are no longer public.
 - Deferred replies and jobs, fixes from the 0.8 pre-release review: a job
   deadline still fires while the result waits for scheduled emits, and the
   job keeps its `MAX_OUTSTANDING` credit until its terminal message; a job
@@ -18,8 +34,7 @@
   stops the process-wide deadline service; a tasks handler that panics
   while building its future is a handler panic (`stopped()` runs).
 - **Breaking (0.8):** `DeferError` and `Delivery` are `#[non_exhaustive]`
-  (like `JobOutcome`, `JobError` and `PipeErrorKind`): match them with a
-  wildcard arm.
+  (like `JobError` and `PipeError`): match them with a wildcard arm.
 - **Breaking (0.8):** the restart budget counts restart actions, as OTP's
   intensity does (ROADMAP rank 5f): a OneForAll or RestForOne recovery round
   takes one `max_restarts` grant when the coordinator selects it, before the
@@ -163,9 +178,8 @@
   deadlines are fixed at send (`Deadline`, `request_raw_until`; `request_raw`
   gains the 5 s default); a per-actor deadline heap and service expire stored
   tokens without a polling caller. `PendingReplies<K, R>` is a bounded token
-  table. Pipe-to-self jobs: `ctx.pipe`, `pipe_keyed`, `pipe_with`,
-  `pipe_blocking_with`, `pipe_reply`, `pipe_reply_with`,
-  `pipe_reply_blocking_with` (threads mode: the blocking forms on owned native
+  table. Pipe-to-self jobs: `ctx.pipe`, `pipe_blocking`, `pipe_reply`,
+  `pipe_reply_blocking` (threads mode: the blocking forms on owned native
   threads), with `JobOutcome`/`JobError::{Panicked, DeadlineExceeded}`, keyed
   replacement and cancellation fenced at dispatch, `JobCtx::emit`/
   `emit_blocking` with emit credits and the terminal message last,
@@ -182,19 +196,18 @@
   thread each, still under `MAX_NATIVE_JOBS`, with panics as
   `JobError::Panicked` and cancellation and fencing unchanged (threads mode
   keeps owned threads; a reservation pre-spawns the job's thread).
-  Reserve-then-spawn: `ctx.reserve_job()` / `ctx.reserve_blocking_job()`
+  Reserve-then-spawn: `ctx.reserve_job(opts)` / `ctx.reserve_blocking_job(opts)`
   return a `JobPermit` / `BlockingJobPermit` whose `pipe*` cannot fail, so a
   refused caller keeps what it would have moved into `work` and `done`.
   `JobCtx::emit_at` / `emit_at_blocking` deliver a fenced, credit-accounted
   message at an instant; the job's terminal message waits for its scheduled
   emits (new Loom model `scheduled_emit_vs_finish_and_cancel`).
-  `JobOptions::deadline_after(Duration)`; `spawned_concurrency::Instant`
+  `spawned_concurrency::Instant`
   (also `tasks::`/`threads::Instant`) re-exports the deadline clock.
   `#[send_handler]` on a manual `impl Handler<M>` (for `Result = ()`) drops
   the reply parameter and answers `()` when `handle` returns.
   `spawned_test::tasks::in_actor` / `threads::in_actor` run a closure in a
-  live actor's turn. `JobOutcome`, `JobError` and `PipeErrorKind` are
-  `#[non_exhaustive]`. GUIDE: hard job deadlines and the soft-deadline
+  live actor's turn. GUIDE: hard job deadlines and the soft-deadline
   pattern, replies carrying a reason through `R = Result<..>`, the
   `request_raw` rows.
 - ROADMAP: a Path to 1.0 section (0.8, 0.9, 0.10 contents and what 1.0

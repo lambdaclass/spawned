@@ -183,8 +183,8 @@ mod tasks_mode {
             runtime.block_on(async {
                 actor
                     .__in_turn(move |_, ctx| {
-                        ctx.pipe_with_ctx(
-                            JobOptions::default(),
+                        ctx.pipe(
+                            JobOptions::new(),
                             move |job| async move {
                                 let far = spawned_concurrency::Instant::now() + LIMIT * 10;
                                 if held {
@@ -558,8 +558,8 @@ mod threads_mode {
         };
         let (scheduled_tx, scheduled) = mpsc::channel();
         spawned_test::threads::in_actor(&actor, move |_, ctx| {
-            ctx.pipe_blocking_with(
-                JobOptions::default(),
+            ctx.pipe_blocking(
+                JobOptions::new(),
                 move |job| {
                     let far = spawned_concurrency::Instant::now() + LIMIT * 10;
                     job.emit_at_blocking(far, Waiting(payload)).unwrap();

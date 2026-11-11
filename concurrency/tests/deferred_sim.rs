@@ -96,13 +96,13 @@ impl Message for StartKeyed {
 impl Handler<StartKeyed> for Owner {
     async fn handle(&mut self, msg: StartKeyed, _: PendingReply<'_, ()>, ctx: &Context<Self>) {
         let StartKeyed(name, delay) = msg;
-        ctx.pipe_keyed(
-            "k",
-            async move {
+        ctx.pipe(
+            JobOptions::new().key("k"),
+            |_| async move {
                 sleep(Duration::from_millis(delay)).await;
                 name
             },
-            |outcome: JobOutcome<&'static str>| Done(outcome.into_result().unwrap()),
+            |outcome: JobOutcome<&'static str>| Done(outcome.unwrap()),
         )
         .unwrap();
         push(&self.log, format!("start:{name}"));
@@ -135,12 +135,9 @@ impl Message for StartEmitter {
 }
 impl Handler<StartEmitter> for Owner {
     async fn handle(&mut self, _: StartEmitter, _: PendingReply<'_, ()>, ctx: &Context<Self>) {
-        let opts = JobOptions {
-            emit_credits: 1,
-            ..Default::default()
-        };
+        let opts = JobOptions::new().emit_credits(std::num::NonZeroU16::new(1).unwrap());
         let job = ctx
-            .pipe_with_ctx(
+            .pipe(
                 opts,
                 |job: JobCtx<Owner>| async move {
                     for i in 0..3 {
@@ -151,7 +148,7 @@ impl Handler<StartEmitter> for Owner {
                     }
                     "emitter"
                 },
-                |outcome: JobOutcome<&'static str>| Done(outcome.into_result().unwrap()),
+                |outcome: JobOutcome<&'static str>| Done(outcome.unwrap()),
             )
             .unwrap();
         self.job = Some(job);

@@ -5,6 +5,32 @@ every change; this guide covers what you need to edit when upgrading.
 
 ## Unreleased
 
+### 0.7 to 0.8: API call-site table
+
+0.8 is a breaking release. Every renamed or reshaped call is listed here
+(old call, new call); the sections below explain the semantics. Rows marked
+*(0.8 pre-release)* changed an API that only existed on the 0.8 branch
+(ported clients used it), not in 0.7.
+
+| Old call | New call |
+|---|---|
+| `ctx.pipe(work_future, done)` *(0.8 pre-release)* | `ctx.pipe(JobOptions::new(), \|_\| work_future, done)` |
+| `ctx.pipe_with(opts, work_future, done)` *(0.8 pre-release)* | `ctx.pipe(opts, \|_\| work_future, done)` |
+| `ctx.pipe_with_ctx(opts, \|job\| fut, done)` *(0.8 pre-release)* | `ctx.pipe(opts, \|job\| fut, done)` |
+| `ctx.pipe_keyed(key, work_future, done)` *(0.8 pre-release)* | `ctx.pipe(JobOptions::new().key(key), \|_\| work_future, done)` |
+| `ctx.pipe_blocking_with(opts, \|job: &JobCtx<_>\| .., done)` *(0.8 pre-release)* | `ctx.pipe_blocking(opts, \|job: JobCtx<_>\| .., done)` (the job context is passed by value) |
+| `ctx.pipe_reply(token, work_future, done)` *(0.8 pre-release)* | `ctx.pipe_reply(JobOptions::new(), token, \|_\| work_future, done)` |
+| `ctx.pipe_reply_with(opts, token, work_future, done)` *(0.8 pre-release)* | `ctx.pipe_reply(opts, token, \|_\| work_future, done)` |
+| `ctx.pipe_reply_blocking_with(opts, token, work, done)` *(0.8 pre-release)* | `ctx.pipe_reply_blocking(opts, token, work, done)` |
+| `ctx.reserve_job()?.pipe_with(opts, work, done)` *(0.8 pre-release)* | `ctx.reserve_job(opts)?.pipe(\|_\| work, done)` |
+| `ctx.reserve_blocking_job()?.pipe_blocking_with(opts, work, done)` *(0.8 pre-release)* | `ctx.reserve_blocking_job(opts)?.pipe_blocking(work, done)` |
+| `JobOptions { deadline: Some(at), key: Some(k), emit_credits: n, cancel_on_caller_gone: true }` *(0.8 pre-release)* | `JobOptions::new().deadline(at).key(k).emit_credits(NonZeroU16::new(n).unwrap()).cancel_on_caller_gone()` |
+| `JobOptions::default().deadline_after(d)` *(0.8 pre-release)* | `JobOptions::new().deadline(d)` (a `Duration`, an `Instant` or a `Deadline`) |
+| `JobOutcome::Ok(v)` / `JobOutcome::Err(e)` / `outcome.into_result()` *(0.8 pre-release)* | `Ok(v)` / `Err(e)` / `outcome` (`JobOutcome<T>` is `Result<T, JobError>`) |
+| `PipeError { kind: PipeErrorKind::Overloaded }`, `e.kind` *(0.8 pre-release)* | `PipeError::Overloaded`, `e` |
+| `PipeReplyError::Failed { token, kind }` *(0.8 pre-release)* | `PipeReplyError::Failed { token, error }` (`#[non_exhaustive]`) |
+| `DEFAULT_EMIT_CREDITS`, `default_max_native_jobs()` *(0.8 pre-release)* | removed from the public API (the defaults, 16 and `min(4, cores)`, are documented) |
+
 ### Exit signals, startup and runtime drops as in OTP (ranks 5e, 5f, 5g, targets 0.8, in progress)
 
 Design: [otp-exit-signals.md](design/otp-exit-signals.md) (its migration
@@ -194,32 +220,41 @@ that builds a `Snapshot` with a struct literal must add them.
 
 **Jobs (API refinements).**
 
-- `JobOutcome`, `JobError` and `PipeErrorKind` are `#[non_exhaustive]`: add
-  a wildcard arm, or match `outcome.into_result()` with an `Err(_)` arm.
-- `tasks` mode: `pipe_blocking_with` / `pipe_reply_blocking_with` run on
-  Tokio's blocking pool. Remove a `pipe_with(.., async { spawn_blocking(f)
+- One spawn per shape: `pipe` (async), `pipe_blocking`, `pipe_reply`,
+  `pipe_reply_blocking`, each taking `JobOptions` first (as OTP's `*_opt`
+  calls take an option list). The work of every form receives its
+  `JobCtx` (by value; `|_| fut` when unused). See the table above.
+- `JobOptions` is `#[non_exhaustive]`: build it with `JobOptions::new()`
+  and the `key`, `deadline`, `emit_credits` and `cancel_on_caller_gone`
+  methods. `deadline` takes a `Duration`, an `Instant` or a `Deadline`;
+  `emit_credits` takes a `NonZeroU16`. `cancel_on_caller_gone` applies to
+  `pipe_reply*` only (a `debug_assert!` in the plain forms).
+- `JobOutcome<T>` is `Result<T, JobError>`: `?` and the `Result`
+  combinators work, `into_result()` is gone. `JobError` and `PipeError`
+  (now the enum itself, without the `kind` wrapper) are
+  `#[non_exhaustive]`: add a wildcard arm.
+- `tasks` mode: `pipe_blocking` / `pipe_reply_blocking` run on
+  Tokio's blocking pool. Remove a `pipe(.., |_| async { spawn_blocking(f)
   .await })` workaround (and its `resume_unwind` of the join error):
-  `pipe_blocking_with(opts, move |_job| f(), done)` reports a panic as
+  `pipe_blocking(opts, move |_job| f(), done)` reports a panic as
   `JobError::Panicked`. **Size the native budget:** the default is
   `min(4, available_parallelism)` blocking jobs per actor, easy to outgrow
   (one client port needed 352), and under load its only symptom is
-  `PipeErrorKind::NativeBudget` refusals (the first one per actor is logged
+  `PipeError::NativeBudget` refusals (the first one per actor is logged
   as `native_budget_exhausted`). Raise it with
   `#[actor(max_native_jobs = N)]` (or `ChildSpec::max_native_jobs(N)` for a
   supervised child) instead of avoiding native jobs. A Tokio runtime being
   dropped now waits for blocking jobs still running, as for any
   `spawn_blocking`.
 - To keep "exactly one result" when a job is refused, reserve first instead
-  of cloning ahead: `let Ok(permit) = ctx.reserve_blocking_job() else {
+  of cloning ahead: `let Ok(permit) = ctx.reserve_blocking_job(opts) else {
   /* report with the values you still own */ };
-  permit.pipe_blocking_with(opts, work, done);` (`reserve_job` for async
+  permit.pipe_blocking(work, done);` (`reserve_job` for async
   jobs). Spawning from a permit cannot fail.
 - A job that re-scheduled its messages with `send_after` (unfenced) can use
   `job.emit_at(at, msg)` / `emit_at_blocking`: fenced with the job, counted
   against its emit credits, and the terminal message waits for it.
-- `JobOptions::default().deadline_after(d)` replaces
-  `JobOptions { deadline: Some(spawned_rt::time::Instant::now() + d), .. }`;
-  use `spawned_concurrency::Instant` instead of `spawned_rt::time::Instant`.
+- Use `spawned_concurrency::Instant` instead of `spawned_rt::time::Instant`.
   Job deadlines are hard (later emits fail, the result is dropped); for a
   soft deadline, check the time in the work (see the GUIDE).
 

@@ -24,10 +24,10 @@ use crate::ActorId;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 
 /// Default emit credits per job (`JobOptions::emit_credits`).
-pub const DEFAULT_EMIT_CREDITS: u16 = 16;
+pub(crate) const DEFAULT_EMIT_CREDITS: u16 = 16;
 
 /// Default `Actor::MAX_NATIVE_JOBS`: `min(4, available_parallelism)`.
-pub fn default_max_native_jobs() -> usize {
+pub(crate) fn default_max_native_jobs() -> usize {
     std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(1)
@@ -58,7 +58,7 @@ impl Bounds {
     }
 }
 
-/// A key for cancel-previous jobs (`pipe_keyed`, `JobOptions::key`).
+/// A key for cancel-previous jobs (`JobOptions::key`).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct JobKey(std::borrow::Cow<'static, str>);
 
@@ -76,35 +76,67 @@ impl From<&'static str> for JobKey {
     }
 }
 
-/// Options for `pipe_with`, `pipe_blocking_with`, `pipe_reply_with` and
-/// `pipe_reply_blocking_with`. Passed first; never chained afterwards.
+/// Options of a job, passed first to every `pipe*` call and to
+/// `reserve_*_job` (as OTP's `*_opt` functions take an option list).
+/// Non-exhaustive: build it with the methods, starting from
+/// [`JobOptions::new`] (or `default()`).
+///
+/// ```ignore
+/// ctx.pipe(JobOptions::new().key("fetch").deadline(Duration::from_secs(2)), work, done)?;
+/// ```
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct JobOptions {
-    /// Deliver `JobError::DeadlineExceeded` at this instant if the job has
-    /// not finished. The work keeps running and keeps its credit.
-    pub deadline: Option<spawned_rt::time::Instant>,
-    /// Cancel the previous job with this key (whatever its notification
-    /// state) and fence its queued messages.
-    pub key: Option<JobKey>,
-    /// `pipe_reply` only: cancel the job when its caller leaves or its
-    /// deadline passes. Off by default, as in OTP.
-    pub cancel_on_caller_gone: bool,
-    /// Emits in flight before `emit` waits (blocks in `emit_blocking`).
-    pub emit_credits: u16,
+    pub(crate) deadline: Option<spawned_rt::time::Instant>,
+    pub(crate) key: Option<JobKey>,
+    pub(crate) cancel_on_caller_gone: bool,
+    pub(crate) emit_credits: u16,
 }
 
 impl JobOptions {
-    /// Set [`deadline`](Self::deadline) to `timeout` from now, on the
-    /// runtime's clock (the simulated one under `spawned_sim`):
-    /// `JobOptions::default().deadline_after(Duration::from_secs(2))`.
-    ///
-    /// The deadline is hard: when it passes, `done` receives
-    /// `JobError::DeadlineExceeded`, the job's later emits fail with
-    /// [`JobGone`], and its eventual result is dropped. For a soft deadline
-    /// (stop starting new work, finish what is in hand), check the time
-    /// inside the work instead.
-    pub fn deadline_after(mut self, timeout: std::time::Duration) -> Self {
-        self.deadline = Some(spawned_rt::time::Instant::now() + timeout);
+    /// No deadline, no key, 16 emit credits, not cancelled when the caller
+    /// leaves.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Cancel the previous job with this key (whatever its notification
+    /// state) and fence its queued messages: the replacement is the only
+    /// live job of the key.
+    pub fn key(mut self, key: impl Into<JobKey>) -> Self {
+        self.key = Some(key.into());
+        self
+    }
+
+    /// A hard deadline: a `Duration` from now or an `Instant` (on the
+    /// runtime's clock, the simulated one under `spawned_sim`), or
+    /// `Deadline::Never`. When it passes, `done` receives
+    /// `Err(JobError::DeadlineExceeded)`, the job's later emits fail with
+    /// [`JobGone`] and its eventual result is dropped; the work keeps
+    /// running (cooperative cancellation) and keeps its credit. For a soft
+    /// deadline (stop starting new work, finish what is in hand), check the
+    /// time inside the work instead.
+    pub fn deadline(mut self, deadline: impl Into<super::Deadline>) -> Self {
+        self.deadline = match deadline.into() {
+            super::Deadline::At(at) => Some(at),
+            super::Deadline::Never => None,
+        };
+        self
+    }
+
+    /// Emits in flight before `emit` waits (`emit_blocking` blocks). The
+    /// default is 16.
+    pub fn emit_credits(mut self, credits: std::num::NonZeroU16) -> Self {
+        self.emit_credits = credits.get();
+        self
+    }
+
+    /// Reply jobs (`pipe_reply*`) only: cancel the job when its caller
+    /// leaves or the request's deadline passes. Off by default, as in OTP.
+    /// Plain `pipe*` jobs have no caller: setting it there is a bug
+    /// (`debug_assert!`).
+    pub fn cancel_on_caller_gone(mut self) -> Self {
+        self.cancel_on_caller_gone = true;
         self
     }
 }
@@ -120,22 +152,10 @@ impl Default for JobOptions {
     }
 }
 
-/// How a job ended, delivered to `done` in the owner's turn.
-#[derive(Debug)]
-#[non_exhaustive]
-pub enum JobOutcome<T> {
-    Ok(T),
-    Err(JobError),
-}
-
-impl<T> JobOutcome<T> {
-    pub fn into_result(self) -> Result<T, JobError> {
-        match self {
-            Self::Ok(value) => Ok(value),
-            Self::Err(error) => Err(error),
-        }
-    }
-}
+/// How a job ended, delivered to `done` in the owner's turn: the work's
+/// value, or why there is none. A plain `Result`, so `?` and every
+/// `Result` combinator work.
+pub type JobOutcome<T> = Result<T, JobError>;
 
 /// Why a job produced no value.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -144,17 +164,19 @@ pub enum JobError {
     /// The work panicked; caught at the job boundary.
     #[error("job panicked: {0}")]
     Panicked(String),
-    /// `JobOptions::deadline` passed first. The deadline is hard: the job's
-    /// later emits fail and its eventual result is dropped. The work may
-    /// still be running (cooperative cancellation).
+    /// The job's deadline (`JobOptions::deadline`) passed first. The
+    /// deadline is hard: the job's later emits fail and its eventual result
+    /// is dropped. The work may still be running (cooperative
+    /// cancellation).
     #[error("job deadline exceeded")]
     DeadlineExceeded,
 }
 
-/// Why a job was not spawned.
+/// Why a job was not spawned. No job runs, and any credit or native slot
+/// reserved for it was released.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
-pub enum PipeErrorKind {
+pub enum PipeError {
     /// The owner's `MAX_OUTSTANDING` credits are in use.
     #[error("deferred credits at the bound")]
     Overloaded,
@@ -169,19 +191,14 @@ pub enum PipeErrorKind {
     OwnerStopping,
 }
 
-/// `pipe*` failed; no job was spawned and any reserved credit was released.
-#[derive(Debug, thiserror::Error)]
-#[error("{kind}")]
-pub struct PipeError {
-    pub kind: PipeErrorKind,
-}
-
 /// `pipe_reply*` failed; the token comes back in every case.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum PipeReplyError<R: Send + 'static> {
+    /// The job could not be spawned.
     Failed {
         token: super::ReplyTo<R>,
-        kind: PipeErrorKind,
+        error: PipeError,
     },
     /// The request is no longer open (or past its deadline).
     Closed(super::ReplyTo<R>),

@@ -31,8 +31,8 @@ impl Actor for Gated {
     async fn started(&mut self, ctx: &Context<Self>) {
         let gate = self.gate.lock().unwrap().take().unwrap();
         let running = self.running.clone();
-        ctx.pipe_blocking_with(
-            JobOptions::default(),
+        ctx.pipe_blocking(
+            JobOptions::new(),
             move |_| {
                 running.store(true, Ordering::SeqCst);
                 let _ = gate.recv();
@@ -120,8 +120,8 @@ async fn a_supervisor_does_not_replace_a_child_whose_blocking_job_still_runs() {
             if let Some(gated) = &mut self.0 {
                 let gate = gated.gate.lock().unwrap().take().unwrap();
                 let running = gated.running.clone();
-                ctx.pipe_blocking_with(
-                    JobOptions::default(),
+                ctx.pipe_blocking(
+                    JobOptions::new(),
                     move |_| {
                         running.store(true, Ordering::SeqCst);
                         let _ = gate.recv();
@@ -193,7 +193,7 @@ async fn a_supervisor_does_not_replace_a_child_whose_blocking_job_still_runs() {
 }
 
 /// Review P1 (Codex 6): job admission is one step with the owner's exit.
-/// `pipe_with_ctx` builds the work (user code) between its exit check and
+/// `pipe` builds the work (user code) between its exit check and
 /// the admission; an owner that exits meanwhile refuses the job, so it
 /// never runs. It used to be admitted into the job set the exit had already
 /// drained: uncancelled work outliving its owner.
@@ -211,8 +211,8 @@ async fn a_job_admitted_after_its_owner_exited_never_runs() {
     let ran = Arc::new(AtomicBool::new(false));
     let work_ran = ran.clone();
     let handle = tokio::task::spawn_blocking(move || {
-        ctx.pipe_with_ctx(
-            JobOptions::default(),
+        ctx.pipe(
+            JobOptions::new(),
             |job| {
                 // While the work is built, the owner exits and dies.
                 owner.context().stop();
@@ -263,7 +263,10 @@ async fn an_unused_permit_does_not_hold_the_scope(borrowed: bool) {
     let actor = Owner.start_on(&group).unwrap();
     actor.ready().await.unwrap();
     // Reserved through a cloned context and kept outside the actor, unused.
-    let permit: BlockingJobPermit<Owner> = actor.context().reserve_blocking_job().unwrap();
+    let permit: BlockingJobPermit<Owner> = actor
+        .context()
+        .reserve_blocking_job(JobOptions::new())
+        .unwrap();
     actor.context().stop();
     assert_eq!(
         actor.wait_exit().await,
@@ -275,7 +278,7 @@ async fn an_unused_permit_does_not_hold_the_scope(borrowed: bool) {
         "an unused blocking permit kept the dead actor's scope owned"
     );
     // Using it now is refused: nothing runs.
-    let handle = permit.pipe_blocking_with(JobOptions::default(), |_| (), |_| Done);
+    let handle = permit.pipe_blocking(|_| (), |_| Done);
     assert!(handle.is_cancelled());
 }
 
@@ -309,7 +312,7 @@ fn a_failed_job_thread_spawn_is_a_reservation_error() {
 #[ignore = "subprocess helper exercised by the enabled parent"]
 fn job_thread_spawn_failure_child() {
     use nix::sys::resource::{getrlimit, setrlimit, Resource};
-    use spawned_concurrency::tasks::{ActorStart, Backend, PipeErrorKind};
+    use spawned_concurrency::tasks::{ActorStart, Backend, PipeError};
     if std::env::var_os("SPAWNED_MAILBOX_DROP_CHILD").is_none() {
         return;
     }
@@ -333,19 +336,16 @@ fn job_thread_spawn_failure_child() {
         println!("job thread spawn failure reported (RLIMIT_NPROC not enforced)");
         return;
     }
-    let reserved = ctx.reserve_blocking_job();
-    let piped = ctx.pipe_blocking_with(JobOptions::default(), |_| (), |_| Done);
+    let reserved = ctx.reserve_blocking_job(JobOptions::new());
+    let piped = ctx.pipe_blocking(JobOptions::new(), |_| (), |_| Done);
     setrlimit(Resource::RLIMIT_NPROC, soft, hard).unwrap();
     match reserved {
-        Err(error) => assert!(
-            matches!(error.kind, PipeErrorKind::SpawnFailed(_)),
-            "{error}"
-        ),
+        Err(error) => assert!(matches!(error, PipeError::SpawnFailed(_)), "{error}"),
         Ok(_) => panic!("the reservation succeeded without a job thread"),
     }
     assert!(
-        matches!(piped, Err(ref e) if matches!(e.kind, PipeErrorKind::SpawnFailed(_))),
-        "pipe_blocking_with returned {piped:?}"
+        matches!(piped, Err(ref e) if matches!(e, PipeError::SpawnFailed(_))),
+        "pipe_blocking returned {piped:?}"
     );
     assert_eq!(
         ctx.deferred_outstanding(),
@@ -353,7 +353,9 @@ fn job_thread_spawn_failure_child() {
         "a refused job kept its credit"
     );
     // With threads available again, the same call runs the job.
-    let permit = ctx.reserve_blocking_job().expect("a job thread");
+    let permit = ctx
+        .reserve_blocking_job(JobOptions::new())
+        .expect("a job thread");
     drop(permit);
     ctx.stop();
     std::thread::sleep(Duration::from_millis(50));

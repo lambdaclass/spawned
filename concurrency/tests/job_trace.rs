@@ -74,7 +74,7 @@ impl Handler<Emitted> for Owner {
 
 fn done<T: std::fmt::Debug>(name: &'static str) -> impl FnOnce(JobOutcome<T>) -> Done {
     move |outcome| {
-        Done(match outcome.into_result() {
+        Done(match outcome {
             Ok(v) => format!("{name}:ok:{v:?}"),
             Err(e) => format!("{name}:{e}"),
         })
@@ -99,25 +99,23 @@ impl Handler<Run> for Owner {
     async fn handle(&mut self, msg: Run, reply: PendingReply<'_, ()>, ctx: &Context<Self>) {
         match msg.0 {
             Scenario::Plain => {
-                ctx.pipe(async { 1u32 }, done("plain")).unwrap();
+                ctx.pipe(JobOptions::new(), |_| async { 1u32 }, done("plain"))
+                    .unwrap();
             }
             Scenario::KeyedFenced => {
                 let (open, gate) = oneshot::channel::<()>();
                 let old = ctx
-                    .pipe_keyed(
-                        "k",
-                        async move { gate.await.map(|()| 1u32).unwrap_or(0) },
+                    .pipe(
+                        JobOptions::new().key("k"),
+                        |_| async move { gate.await.map(|()| 1u32).unwrap_or(0) },
                         done("old"),
                     )
                     .unwrap();
                 *self.old.lock().unwrap() = Some((old, open));
             }
             Scenario::Emits => {
-                let opts = JobOptions {
-                    emit_credits: 1,
-                    ..Default::default()
-                };
-                ctx.pipe_with_ctx(
+                let opts = JobOptions::new().emit_credits(std::num::NonZeroU16::new(1).unwrap());
+                ctx.pipe(
                     opts,
                     |job: JobCtx<Owner>| async move {
                         for i in 0..3 {
@@ -135,7 +133,8 @@ impl Handler<Run> for Owner {
                 let (open, gate) = oneshot::channel::<()>();
                 let handle = ctx
                     .pipe(
-                        async move { gate.await.map(|()| 1u32).unwrap_or(0) },
+                        JobOptions::new(),
+                        |_| async move { gate.await.map(|()| 1u32).unwrap_or(0) },
                         done("gated"),
                     )
                     .unwrap();
@@ -143,13 +142,10 @@ impl Handler<Run> for Owner {
                 self.gates.push(open);
             }
             Scenario::Deadline => {
-                let opts = JobOptions {
-                    deadline: Some(spawned_rt::time::Instant::now() + Duration::from_millis(30)),
-                    ..Default::default()
-                };
-                ctx.pipe_with(
+                let opts = JobOptions::new().deadline(Duration::from_millis(30));
+                ctx.pipe(
                     opts,
-                    async {
+                    |_| async {
                         sleep(Duration::from_millis(120)).await;
                         1u32
                     },
@@ -158,13 +154,10 @@ impl Handler<Run> for Owner {
                 .unwrap();
             }
             Scenario::Blocking => {
-                let opts = JobOptions {
-                    emit_credits: 2,
-                    ..Default::default()
-                };
-                ctx.pipe_blocking_with(
+                let opts = JobOptions::new().emit_credits(std::num::NonZeroU16::new(2).unwrap());
+                ctx.pipe_blocking(
                     opts,
-                    |job: &JobCtx<Owner>| {
+                    |job: JobCtx<Owner>| {
                         let _ = job.emit_blocking(Emitted(0));
                         let _ = job.emit_blocking(Emitted(1));
                         5u32
@@ -189,7 +182,8 @@ impl Message for ReplaceWhen {
 impl Handler<ReplaceWhen> for Owner {
     async fn handle(&mut self, msg: ReplaceWhen, _: PendingReply<'_, ()>, ctx: &Context<Self>) {
         msg.0.await.unwrap();
-        ctx.pipe_keyed("k", async { 2u32 }, done("new")).unwrap();
+        ctx.pipe(JobOptions::new().key("k"), |_| async { 2u32 }, done("new"))
+            .unwrap();
     }
 }
 

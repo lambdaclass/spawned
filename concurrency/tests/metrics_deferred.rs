@@ -96,19 +96,19 @@ impl Message for Jobs {
 impl Handler<Jobs> for Owner {
     async fn handle(&mut self, msg: Jobs, reply: PendingReply<'_, ()>, ctx: &Context<Self>) {
         match msg {
-            Jobs::Ok => drop(ctx.pipe(async { 1 }, done).unwrap()),
-            Jobs::Panics => drop(ctx.pipe(async { panic!("job") }, done::<()>).unwrap()),
+            Jobs::Ok => drop(ctx.pipe(JobOptions::new(), |_| async { 1 }, done).unwrap()),
+            Jobs::Panics => drop(
+                ctx.pipe(JobOptions::new(), |_| async { panic!("job") }, done::<()>)
+                    .unwrap(),
+            ),
             Jobs::Deadline => {
-                let opts = JobOptions {
-                    deadline: Some(spawned_rt::time::Instant::now() + Duration::from_millis(10)),
-                    ..Default::default()
-                };
-                ctx.pipe_with(opts, sleep(Duration::from_millis(60)), done)
+                let opts = JobOptions::new().deadline(Duration::from_millis(10));
+                ctx.pipe(opts, |_| sleep(Duration::from_millis(60)), done)
                     .unwrap();
             }
             Jobs::Emits => {
-                ctx.pipe_with_ctx(
-                    JobOptions::default(),
+                ctx.pipe(
+                    JobOptions::new(),
                     |job: JobCtx<Owner>| async move {
                         job.emit(Done).await.unwrap();
                         job.emit(Done).await.unwrap();
@@ -119,7 +119,7 @@ impl Handler<Jobs> for Owner {
             }
             Jobs::Fenced => {
                 let job = ctx
-                    .pipe_blocking_with(JobOptions::default(), |_: &JobCtx<Owner>| 1, done)
+                    .pipe_blocking(JobOptions::new(), |_: JobCtx<Owner>| 1, done)
                     .unwrap();
                 while job.is_running() {
                     std::thread::sleep(Duration::from_millis(1));
@@ -128,20 +128,26 @@ impl Handler<Jobs> for Owner {
             }
             Jobs::Budget => {
                 let (open, gate) = std::sync::mpsc::channel::<()>();
-                ctx.pipe_blocking_with(
-                    JobOptions::default(),
-                    move |_: &JobCtx<Owner>| gate.recv().ok(),
+                ctx.pipe_blocking(
+                    JobOptions::new(),
+                    move |_: JobCtx<Owner>| gate.recv().ok(),
                     done,
                 )
                 .unwrap();
                 assert!(ctx
-                    .pipe_blocking_with(JobOptions::default(), |_: &JobCtx<Owner>| (), done)
+                    .pipe_blocking(JobOptions::new(), |_: JobCtx<Owner>| (), done)
                     .is_err());
                 open.send(()).unwrap();
             }
             Jobs::Cancel => {
                 let (open, gate) = oneshot::channel::<()>();
-                let job = ctx.pipe(async move { gate.await.is_ok() }, done).unwrap();
+                let job = ctx
+                    .pipe(
+                        JobOptions::new(),
+                        |_| async move { gate.await.is_ok() },
+                        done,
+                    )
+                    .unwrap();
                 job.cancel();
                 self.gates.push(open);
             }

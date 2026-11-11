@@ -75,8 +75,8 @@ fn deadline_service_child() {
         let owner = Owner::default().start();
         owner
             .__in_turn(|_, ctx| {
-                let opts = JobOptions::default().deadline_after(Duration::from_millis(20));
-                ctx.pipe_blocking_with(
+                let opts = JobOptions::new().deadline(Duration::from_millis(20));
+                ctx.pipe_blocking(
                     opts,
                     |job| {
                         let at = Instant::now() + Duration::from_millis(40);
@@ -108,12 +108,12 @@ fn deadline_service_child() {
         let fired = other
             .__in_turn(|_, ctx| {
                 let (tx, rx) = std::sync::mpsc::channel();
-                let opts = JobOptions::default().deadline_after(Duration::from_millis(20));
-                ctx.pipe_blocking_with(
+                let opts = JobOptions::new().deadline(Duration::from_millis(20));
+                ctx.pipe_blocking(
                     opts,
                     |_| std::thread::sleep(Duration::from_millis(300)),
                     move |outcome: JobOutcome<()>| {
-                        let _ = tx.send(outcome.into_result().is_err());
+                        let _ = tx.send(outcome.is_err());
                         Done
                     },
                 )
