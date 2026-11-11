@@ -584,7 +584,13 @@ is tasks-only).
 
 **T4. Clocks.** Delays use monotonic time (Tokio timers in tasks, so they follow
 paused Tokio time in tests; `recv_timeout` in threads). threads: each timer is
-one OS thread. Nothing is persisted across process restarts.
+one OS thread. Nothing is persisted across process restarts. Request
+deadlines are instants on the `spawned_rt` clock: `request`,
+`request_with_timeout` and `Response::from` wait on the runtime's timer (paused
+Tokio time applies, and a shortened deadline re-arms it); token and job
+deadlines, `emit_at` and a raw receiver awaited directly are serviced by the
+owner's deadline heap on the real clock (the simulated clock under
+`spawned_sim`), not by paused Tokio time.
 
 ## 9. Panics
 

@@ -204,8 +204,14 @@ absolute instant, and OTP's `call` starts waiting when it sends.
 
 **Who expires a slot.**
 
-- **A polling receiver.** It sleeps until the slot's deadline (rt clock) and
-  then `CAS OPEN -> TIMED_OUT`.
+- **A polling receiver.** `request`, `request_with_timeout` and
+  `Response::from` sleep on the runtime's timer until the slot's deadline
+  and then `CAS OPEN -> TIMED_OUT` (so they follow paused Tokio clocks). A
+  raw receiver awaited directly (`request_raw(..)?.await`) instead puts its
+  deadline once in the owner's heap, which expires it on the service's clock
+  (real time, or the simulated clock under `spawned_sim`), saving a timer
+  per request. A shortened deadline (`ReplyTo::with_deadline`) wakes the
+  awaiting or parked receiver, which re-arms for it.
 - **`defer()`, the `pipe_reply` attach and `is_closed()`.** They check the
   deadline first, so an unpolled, expired request reports `Closed`.
 - **The owner's deadline heap,** for deferred tokens and for job deadlines.
@@ -232,7 +238,9 @@ handles a call even after the caller timed out, and the late reply is dropped.
   `with_deadline`).
 - **Compaction.** The heap is rebuilt when stale entries exceed live ones,
   per actor. So storage is at most about 2 × (live deferred tokens + live
-  jobs with deadlines), at most about 2 × (`MAX_OUTSTANDING` + job count).
+  jobs with deadlines + awaited raw receivers); the first two are bounded by
+  `MAX_OUTSTANDING` + job count, the last by the requests callers are
+  awaiting (each also holds a queued envelope or an open slot).
 - **Ownership.** Entries hold `Weak` references, so the heap owns no slot and
   no job. The heap is dropped at the owner's death, after the registry close.
 - **Service.** A per-system service holds one entry per actor: its earliest
@@ -972,9 +980,12 @@ semantics above.
   lock that a shortening takes, which makes a shortening after the `WRITING`
   CAS a no-op (Loom: `reply_vs_shortening`).
 - **Receiver and timer.** `ReplyReceiver<R>` is one pointer and implements
-  `IntoFuture`; the deadline timer lives in the awaiting `ReplyFuture`. When
-  the runtime's timer fires the receiver expires the slot, so paused Tokio
-  clocks keep working.
+  `IntoFuture`; the deadline timer lives in the awaiting `ReplyFuture`. On
+  the `request` and `Response` paths, when the runtime's timer fires the
+  receiver expires the slot, so paused Tokio clocks keep working. A raw
+  receiver awaited directly registers its deadline in the owner's heap
+  instead (no runtime timer per request), so it follows the deadline
+  service's clock, not a paused Tokio clock.
 - **Deadline service.** Unmanaged and managed actors share one process-wide
   service thread (not a task on the `ActorSystem` control runtime); a dead
   owner is forgotten at its registry close. Under `spawned_sim` each owner's

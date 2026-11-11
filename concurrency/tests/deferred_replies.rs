@@ -441,6 +441,42 @@ mod tasks_mode {
         assert!(token.is_closed());
     }
 
+    /// Review P1 (agy 4): shortening a token's deadline wakes an awaiting
+    /// caller, so its own timer re-arms for the earlier deadline. Without
+    /// the wake it kept sleeping until the deadline fixed at send; real time
+    /// was saved by the owner's heap, but a paused Tokio clock auto-advanced
+    /// to the old deadline (here 60 s instead of 50 ms).
+    #[cfg(not(spawned_sim))]
+    #[tokio::test(start_paused = true)]
+    async fn a_shortened_deadline_rearms_the_callers_timer() {
+        struct Shortener(Option<spawned_concurrency::ReplyTo<()>>);
+        impl Actor for Shortener {}
+        struct Shorten;
+        impl spawned_concurrency::message::Message for Shorten {
+            type Result = ();
+        }
+        impl Handler<Shorten> for Shortener {
+            async fn handle(&mut self, _: Shorten, reply: PendingReply<'_, ()>, _: &Context<Self>) {
+                let token = reply.defer().unwrap();
+                token.with_deadline(spawned_rt::time::Instant::now() + Duration::from_millis(50));
+                self.0 = Some(token);
+            }
+        }
+        let actor = Shortener(None).start();
+        let began = tokio::time::Instant::now();
+        let result = actor
+            .request_with_timeout(Shorten, Duration::from_secs(60))
+            .await;
+        assert!(matches!(result, Err(ActorError::RequestTimeout)), "{result:?}");
+        assert!(
+            began.elapsed() < Duration::from_secs(5),
+            "the caller slept until the old deadline: {:?}",
+            began.elapsed()
+        );
+        actor.context().stop();
+        actor.join().await;
+    }
+
     #[spawned_macros::sim_test]
     async fn request_timeout_starts_at_send() {
         let (actor, _) = start();

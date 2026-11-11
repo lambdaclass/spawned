@@ -422,25 +422,34 @@ impl<R> Slot<R> {
     /// finds `WRITING` (or later) is a no-op; one that lowers the deadline is
     /// seen by any reply that has not read it yet.
     pub(crate) fn shorten(&self, at: u64, now: &impl Fn() -> u64) -> bool {
-        let lowered = {
-            let mut _inner = lock(&self.inner);
+        let (lowered, watchers, waker, parked) = {
+            let mut inner = lock(&self.inner);
             let lower = state(self.word()) == OPEN && at < self.deadline();
             if lower {
                 self.deadline.store(at, Ordering::Release);
+                // Moved out, not cloned: no executor code under the lock. A
+                // woken receiver re-registers when it polls again.
+                (
+                    true,
+                    std::mem::take(&mut inner.watchers),
+                    inner.waker.take(),
+                    inner.parked > 0,
+                )
+            } else {
+                (false, Vec::new(), None, false)
             }
-            (
-                lower,
-                if lower {
-                    std::mem::take(&mut _inner.watchers)
-                } else {
-                    Vec::new()
-                },
-            )
         };
-        let (lowered, watchers) = lowered;
-        // Token-side waiters re-arm their timers for the earlier deadline.
+        // Both sides re-arm their timers for the earlier deadline: the
+        // token's waiters, the caller's receiver and parked `recv_blocking`
+        // threads (which recompute their wait).
         for watcher in watchers {
             watcher.wake();
+        }
+        if let Some(waker) = waker {
+            waker.wake();
+        }
+        if parked {
+            self.parked.notify_all();
         }
         self.check_deadline(now);
         lowered
