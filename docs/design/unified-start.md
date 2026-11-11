@@ -621,12 +621,20 @@ publication split for the trace mapping; Codex R8):
    0.8.
 2. **Destruction.** Queued messages and the state `A` are dropped, outside
    framework locks.
-3. **Release.** The name is released (registry lock), then the admission
-   slot (group lock).
-4. **Publication.** Under the cell lock, each taken notice is disposed of by
-   the commitment and the waiter state (table below). Deliveries happen
-   after the lock is released. Then `wait_exit` is published, and answers
-   become available.
+3. **Release of the name**, under the registry lock: one atomic point
+   (`SReleaseName`).
+4. **Release of the slot**, under the group lock: a second atomic point
+   (`SReleaseSlot`). The two are separate because they are separate locks.
+   A competing start can commit the freed name between them, and still be
+   refused for capacity (round 3, Codex 2).
+5. **Publication.** Under the cell lock, each taken notice is disposed of by
+   the commitment and the waiter state (table below) (`SPublish`). Then
+   `wait_exit` is published, and answers become available.
+6. **Delivery.** Each notice publication disposed of as "deliver" or "apply"
+   is delivered after the cell lock is released, one `PNotice` per notice.
+   Other events may interleave between a disposition and its delivery. If P
+   passed its D in between, the notice is dropped, since P's mailbox no
+   longer admits it.
 
 The waiter answers only from publication, so a retry never overlaps the old
 instance's `Drop` and the reported reason is final. Model:
@@ -1248,7 +1256,7 @@ transition (Codex R8).
 | `SPrepareFail` | c, error | `PrepareFail` | the prepare step's error return |
 | `SCommit` | c, place, edge kind, named, owned | `Commit` | inside the commit section, all locks held |
 | `SRefuse` | c, reason, blamed holder | `Commit` (refusal) | inside the commit section |
-| `SLookup` | name, hit c or miss | `Lookup` (hit) or a stuttering step whose guard requires the name free (miss) | `whereis`, under the registry lock (test probes) |
+| `SLookup` | name, hit c or miss | `Lookup` (hit; any number of times, a repeat is a stuttering step) or a stuttering step whose guard requires the name free (miss) | `whereis`, under the registry lock (test probes) |
 | `SStartedBegin` | c | `StartedBegin` | before the first poll of `started()` |
 | `SAdminStop`, `SKill` | c | `AdminStop`, `OutsideKill` | the signal's arrival (exit-request lock) |
 | `SResolve` | c, outcome, trap flag, held signals, commitment, requested reason | `StartedEnd` / `KilledEarly` | under the cell lock at the end of `started()`; every pre-readiness exit is recorded here and never as `SExit` (agy F8) |
@@ -1259,21 +1267,27 @@ transition (Codex R8).
 | `SReason` | c, new reason | `KillExiting` | a pre-D reason change (exit-request lock) |
 | `SUnlink` | c | `ChildUnlink` | the unlink fence |
 | `SDie` | c, final reason, taken notes | `Die` | D (0.8 phase 4) |
-| `SRelease` | c, name released, slot released | `Release` | after destruction; registry then group lock |
+| `SReleaseName` | c | `ReleaseName` | after destruction, under the registry lock |
+| `SReleaseSlot` | c | `ReleaseSlot` | after the name, under the group lock |
 | `SPublish` | c, disposition per note (delivered, diverted, applied, dropped) | `Publish` | publication, under the cell lock |
 | `SAnswer` | c, result, reason, pending | `AckOk` / `AckFail` | under the cell lock when the waiter takes the result |
 | `SReady` | c, observed result | a stuttering step whose guard requires the commitment (and publication or the deadline) to match | `ready()` returning |
 | `SAbandon` | c, handed-on notice | `Abandon` | `Drop` of `Starting`, under the cell lock |
 | `PExitBegin`, `PDie`, `PPublish` | reason; per child: link note taken; per child: notice and polite Shutdown | `PExit`, `PDie`, `PPublish` | the parent's exit begin, D and publication |
 | `POwnerClose` | | `OwnerClose` | the owner's gate closing |
-| `PNotice` | c, kind, reason | part of `Publish`/`Abandon` | enqueue into the parent's mailbox, or the signal applied to it |
+| `PNotice` | c, kind, reason | `Deliver` | enqueue into the parent's mailbox, or the signal applied to it, after the cell lock is released |
 | `GClose`, `GScopeKill`, `GGenDone` | | `GClose`, `ScopeDeadline`, `GenDone` | group close; the scope deadline; the generation-end commit |
 
-- **Interleavings.** `SRelease` and `SPublish` are separate events because
-  the release and the disposition happen under different locks. A trace in
-  which C1's name is released, C2 commits the same name, and then C1
-  publishes replays faithfully. A control moves `SRelease` after the
-  competing `SCommit` and must be rejected.
+- **Interleavings.** Name release, slot release, disposition and delivery are
+  four events, because they happen under four different locks or after
+  them. A trace in which C1 releases its name, C2 commits the same name, and
+  C1 then releases its slot and publishes replays faithfully.
+- **Refinement rule for delivery.** Each `SPublish` or `SAbandon` adds the
+  deliveries it disposed of to c's pending list. Each `PNotice` for c
+  consumes the oldest pending delivery, which must match its kind and
+  reason. At the end of a trace no pending delivery may remain unless the
+  parent passed its D, in which case the replay requires the trace to show
+  P's `PDie` before the missing `PNotice`.
 - **Complete consumption.** Replay must consume every event without inventing
   observable events. Every notice the parent sees has its own `PNotice`,
   which must match the disposition in `SPublish` or `SAbandon`.
@@ -1284,7 +1298,10 @@ transition (Codex R8).
   trace, which the checker must reject:
   - move `SCommit` after `SStartedBegin`;
   - give two children overlapping names;
-  - move a `SRelease` after a competing `SCommit`;
+  - move a `SReleaseName` after a competing `SCommit` of the same name;
+  - move a `SReleaseSlot` before its `SReleaseName`;
+  - add a `PNotice` with no pending delivery, or a second one for a single
+    delivery;
   - change a managed child's place to unmanaged;
   - add a `PNotice` after an error answer to a trapping parent;
   - move an error `SAnswer` before `SPublish` without an `SDeadline`;
