@@ -1,8 +1,7 @@
 ---------------------------- MODULE MCStartCap ----------------------------
 EXTENDS Start
-\* Per-PR instance for group capacity: a managed parent and three children
-\* spawned into its group of three (capacity does not depend on the start
-\* variant, so no edges or waiters): two children run beside the parent, a
-\* third is refused while the slots are held (until publication), and gets
-\* a slot after a failure is published. AdmitClosed and IgnoreCap run here.
+\* Per-PR instance for capacity: a managed parent and three children
+\* spawned into its group of three: slots (P's included) are held until
+\* release (P's until its publication), a start is refused while they are
+\* held, and a retry gets a slot after a release.
 =============================================================================
