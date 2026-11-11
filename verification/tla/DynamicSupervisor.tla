@@ -162,8 +162,10 @@ DesignAllowsRestart(m, r, cf) ==
     CASE m = "Temporary" -> FALSE
       [] m = "Permanent" -> TRUE
       [] m = "Transient" -> r \in {"Panic", "Kill", "Killed"} \/ cf
+\* An attempt that ignored is dropped, never restarted (OTP: ignore on a
+\* restart removes the child).
 Allowed(s) ==
-    /\ sl[s].everReady
+    /\ sl[s].everReady /\ ~sl[s].ign
     /\ \/ DesignAllowsRestart(mode[s], sl[s].reason, sl[s].cfail)
        \/ ~sl[s].readyGen /\ mode[s] # "Temporary"
 
