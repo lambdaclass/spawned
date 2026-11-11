@@ -277,6 +277,11 @@ impl<A: Actor> JobCtx<A> {
     /// like an emit: dropped if the job was cancelled or replaced, or its
     /// deadline passed. The job's terminal message waits for its scheduled
     /// emits, so it stays last even when the work finishes first.
+    ///
+    /// `at` is an instant of the monotonic deadline clock. One already
+    /// reached (or in the past) is an immediate emit: the message is
+    /// enqueued at the call, ahead of later emits, so there is no need to
+    /// branch to [`emit_blocking`](Self::emit_blocking).
     pub fn emit_at_blocking<M>(&self, at: crate::Instant, msg: M) -> Result<(), JobGone>
     where
         A: Handler<M>,

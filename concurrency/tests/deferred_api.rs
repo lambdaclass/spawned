@@ -337,6 +337,30 @@ mod tasks_mode {
         actor.join().await;
     }
 
+    /// `emit_at` with an instant already reached (or in the past) is an
+    /// immediate emit: enqueued at the call, ahead of later emits.
+    #[spawned_macros::sim_test]
+    async fn emit_at_a_past_instant_is_delivered_immediately() {
+        let (actor, log) = start();
+        in_actor(&actor, |_, ctx| {
+            ctx.pipe_with_ctx(
+                JobOptions::default(),
+                |job| async move {
+                    let past = Instant::now();
+                    spawned_rt::tasks::sleep(Duration::from_millis(5)).await;
+                    job.emit_at(past, Note("past".into())).await?;
+                    job.emit(Note("later".into())).await
+                },
+                |o| describe("job", o),
+            )
+            .unwrap();
+        })
+        .await;
+        assert_eq!(wait_for(&log, 3).await, ["past", "later", "job:ok:Ok(())"]);
+        actor.context().stop();
+        actor.join().await;
+    }
+
     #[spawned_macros::sim_test]
     async fn send_handler_impls_answer_requests_with_unit() {
         let (actor, log) = start();
@@ -510,6 +534,29 @@ mod threads_mode {
         );
         assert_eq!(wait_for(&log, 2), ["late", "job:Ok(Ok(()))"]);
         assert_eq!(in_actor(&actor, |_, ctx| ctx.deferred_outstanding()), 0);
+        actor.context().stop();
+        actor.join();
+    }
+
+    /// `emit_at_blocking` with an instant already reached is immediate.
+    #[test]
+    fn emit_at_a_past_instant_is_delivered_immediately() {
+        let log = Arc::new(Log::default());
+        let actor = Owner { log: log.clone() }.start();
+        in_actor(&actor, |_, ctx| {
+            ctx.pipe_blocking_with(
+                JobOptions::default(),
+                |job| {
+                    let past = Instant::now();
+                    std::thread::sleep(Duration::from_millis(5));
+                    job.emit_at_blocking(past, Note("past".into()))?;
+                    job.emit_blocking(Note("later".into()))
+                },
+                |o| label("job", o),
+            )
+            .unwrap();
+        });
+        assert_eq!(wait_for(&log, 3), ["past", "later", "job:Ok(Ok(()))"]);
         actor.context().stop();
         actor.join();
     }

@@ -349,6 +349,12 @@ impl<A: Actor> JobCtx<A> {
     /// it stays last even when the work finishes first. Fails with
     /// [`JobGone`] at the call once the job is cancelled or its notification
     /// was taken.
+    ///
+    /// `at` is an instant of the monotonic deadline clock. One already
+    /// reached (or in the past) is an immediate emit: the message is
+    /// enqueued at the call, ahead of later emits, so there is no need to
+    /// branch to [`emit`](Self::emit). An `at` past `JobOptions::deadline`
+    /// is accepted; the deadline fences it (the emit is dropped at `at`).
     pub async fn emit_at<M>(&self, at: crate::Instant, msg: M) -> Result<(), JobGone>
     where
         A: Handler<M>,

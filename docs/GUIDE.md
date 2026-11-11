@@ -682,7 +682,9 @@ ctx.pipe_reply(token, async move { downstream?.await }, |res, token| Delegated {
   `JobCtx::emit_at(at, msg)` (`emit_at_blocking` in blocking jobs) delivers
   at `at`, fenced and credit-accounted the same way: it never reaches a newer
   job's turn or a newer instance, it is dropped if the job is cancelled or
-  replaced first, and the job's terminal message waits for it.
+  replaced first, and the job's terminal message waits for it. An `at`
+  already reached, or in the past, is an immediate emit (enqueued at the
+  call, ahead of later emits): no need to branch to `emit` yourself.
 - **Job deadlines are hard.** When `JobOptions::deadline` (or
   `deadline_after(d)`) passes, `done` gets `DeadlineExceeded` at once, later
   emits fail with `JobGone` and the work's eventual result is dropped. The
