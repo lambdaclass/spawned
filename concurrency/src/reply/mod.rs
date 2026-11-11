@@ -391,33 +391,24 @@ impl<R: Send + 'static> Drop for ReplyTo<R> {
 // ReplyReceiver
 // ---------------------------------------------------------------------------
 
-#[cfg(feature = "async")]
-type DeadlineSleep = spawned_rt::tasks::Sleep;
-#[cfg(not(feature = "async"))]
-type DeadlineSleep = std::future::Pending<()>;
+/// The caller's side of a request: `.await` it in `tasks` mode (it is
+/// [`IntoFuture`](std::future::IntoFuture)), or call [`recv`](Self::recv) in
+/// `threads` mode. Yields `Ok(reply)`, or `RequestTimeout` at the deadline
+/// fixed at send, `ReplyDropped`, `Overloaded`, or `ActorStopped` when the
+/// owner died.
+///
+/// One pointer wide: the deadline timer lives in the awaiting future
+/// ([`ReplyFuture`]), not in the receiver, so receivers are cheap to store
+/// and move. Dropping it abandons the request: a later reply is dropped and
+/// any deferred credit returns at once.
+pub struct ReplyReceiver<R> {
+    slot: Option<Arc<Slot<R>>>,
+}
 
-pin_project_lite::pin_project! {
-    /// The caller's side of a request: a future in `tasks` mode, and
-    /// [`recv`](Self::recv) in `threads` mode. Yields `Ok(reply)`, or
-    /// `RequestTimeout` at the deadline fixed at send, `ReplyDropped`,
-    /// `Overloaded`, or `ActorStopped` when the owner died.
-    ///
-    /// While polled it sleeps until the slot's deadline and then expires the
-    /// slot. Dropping it abandons the request: a later reply is dropped and
-    /// any deferred credit returns at once.
-    pub struct ReplyReceiver<R> {
-        slot: Arc<Slot<R>>,
-        done: bool,
-        armed: u64,
-        #[pin]
-        sleep: Option<DeadlineSleep>,
-    }
-    impl<R> PinnedDrop for ReplyReceiver<R> {
-        fn drop(this: Pin<&mut Self>) {
-            let this = this.project();
-            if !*this.done {
-                this.slot.abandon();
-            }
+impl<R> Drop for ReplyReceiver<R> {
+    fn drop(&mut self) {
+        if let Some(slot) = self.slot.take() {
+            slot.abandon();
         }
     }
 }
@@ -425,45 +416,74 @@ pin_project_lite::pin_project! {
 impl<R> std::fmt::Debug for ReplyReceiver<R> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ReplyReceiver")
-            .field("done", &self.done)
+            .field("done", &self.slot.is_none())
             .finish_non_exhaustive()
     }
 }
 
 impl<R> ReplyReceiver<R> {
     fn new(slot: Arc<Slot<R>>) -> Self {
-        Self {
-            slot,
-            done: false,
-            armed: NEVER,
-            sleep: None,
-        }
+        Self { slot: Some(slot) }
+    }
+
+    fn slot(&self) -> &Arc<Slot<R>> {
+        self.slot.as_ref().expect("ReplyReceiver used after completion")
     }
 
     /// The deadline fixed at send, or `None` for [`Deadline::Never`].
     pub fn deadline(&self) -> Option<Instant> {
-        Deadline::from_ticks(self.slot.deadline())
+        Deadline::from_ticks(self.slot().deadline())
     }
 
     /// Block the calling thread until the reply, the deadline or the owner's
     /// death. Do not call it on an async executor thread.
     pub fn recv(mut self) -> Result<R, ActorError> {
-        let result = self.slot.recv_blocking(&now_ticks).map_err(terminal_error);
-        self.done = true;
-        result
+        let slot = self.slot.take().expect("ReplyReceiver used after completion");
+        slot.recv_blocking(&now_ticks).map_err(terminal_error)
     }
 
     /// Non-blocking check: `None` while the request is still open.
     pub fn try_recv(&mut self) -> Option<Result<R, ActorError>> {
-        assert!(!self.done, "ReplyReceiver used after completion");
-        let result = self.slot.try_take(&now_ticks)?.map_err(terminal_error);
-        self.done = true;
+        let result = self.slot().try_take(&now_ticks)?.map_err(terminal_error);
+        self.slot = None;
         Some(result)
     }
 }
 
 #[cfg(feature = "async")]
-impl<R> std::future::Future for ReplyReceiver<R> {
+impl<R> std::future::IntoFuture for ReplyReceiver<R> {
+    type Output = Result<R, ActorError>;
+    type IntoFuture = ReplyFuture<R>;
+    fn into_future(self) -> ReplyFuture<R> {
+        ReplyFuture {
+            rx: self,
+            armed: NEVER,
+            sleep: None,
+        }
+    }
+}
+
+#[cfg(feature = "async")]
+pin_project_lite::pin_project! {
+    /// Awaiting a [`ReplyReceiver`]: polls the slot and, while it is open,
+    /// sleeps until its deadline and then expires it.
+    pub struct ReplyFuture<R> {
+        rx: ReplyReceiver<R>,
+        armed: u64,
+        #[pin]
+        sleep: Option<spawned_rt::tasks::Sleep>,
+    }
+}
+
+#[cfg(feature = "async")]
+impl<R> std::fmt::Debug for ReplyFuture<R> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ReplyFuture").finish_non_exhaustive()
+    }
+}
+
+#[cfg(feature = "async")]
+impl<R> std::future::Future for ReplyFuture<R> {
     type Output = Result<R, ActorError>;
 
     fn poll(
@@ -472,13 +492,13 @@ impl<R> std::future::Future for ReplyReceiver<R> {
     ) -> std::task::Poll<Self::Output> {
         use std::task::Poll;
         let mut this = self.project();
-        assert!(!*this.done, "ReplyReceiver polled after completion");
         loop {
-            if let Poll::Ready(result) = this.slot.poll(cx.waker()) {
-                *this.done = true;
+            let slot = this.rx.slot();
+            if let Poll::Ready(result) = slot.poll(cx.waker()) {
+                this.rx.slot = None;
                 return Poll::Ready(result.map_err(terminal_error));
             }
-            let deadline = this.slot.deadline();
+            let deadline = slot.deadline();
             if deadline == NEVER {
                 return Poll::Pending;
             }
@@ -496,7 +516,7 @@ impl<R> std::future::Future for ReplyReceiver<R> {
                 // keep working.
                 Poll::Ready(()) => {
                     this.sleep.set(None);
-                    this.slot.terminate(Terminal::TimedOut);
+                    this.rx.slot().terminate(Terminal::TimedOut);
                 }
             }
         }

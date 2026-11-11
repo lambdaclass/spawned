@@ -12,8 +12,8 @@ pub use crate::reply::jobs::{
     PipeReplyError,
 };
 pub use crate::reply::{
-    Deadline, DeferError, Delivery, InsertError, PendingReplies, PendingReply, ReplyReceiver,
-    ReplyTo, DEFAULT_MAX_OUTSTANDING,
+    Deadline, DeferError, Delivery, InsertError, PendingReplies, PendingReply, ReplyFuture,
+    ReplyReceiver, ReplyTo, DEFAULT_MAX_OUTSTANDING,
 };
 pub use crate::response::Response;
 pub use actor::{
