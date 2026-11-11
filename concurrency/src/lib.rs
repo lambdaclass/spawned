@@ -147,7 +147,7 @@ pub mod __private {
     use crate::reply::{Deadline, PendingReply, ReplyReceiver};
     use crate::ActorError;
 
-    /// Seals [`Receiver`](crate::tasks::Receiver): implemented by
+    /// Seals `Receiver` (tasks and threads): implemented by
     /// `ActorRef`, `Context` and spawned-test's probe only.
     pub trait Sealed {}
 

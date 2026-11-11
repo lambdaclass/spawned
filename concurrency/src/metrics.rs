@@ -6,7 +6,7 @@
 //!
 //! ```
 //! use spawned_concurrency::metrics::{self, Config};
-//! metrics::configure(Config { timing_sample_every: 16 }).unwrap();
+//! metrics::configure(Config::new().timing_sample_every(16)).unwrap();
 //! let snapshot = metrics::snapshot();
 //! assert_eq!(snapshot.actors_active, 0);
 //! let text = metrics::render_prometheus();
