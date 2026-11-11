@@ -226,6 +226,102 @@ action waits for a settled boundary; this suite does not control Tokio/OS
 scheduling or replace the concurrent recovery/shutdown tests and trace models.
 Real client recovery under fault injection remains a separate application rollout gate.
 
+## Semantics coverage
+
+Audit of every guarantee in the [semantics contract](design/semantics.md)
+(2026-11-11, PR #246). A guarantee counts as **covered** when every clause has
+a check that fails if the clause breaks; a test that only runs the path, a
+sleep-bounded "nothing happened" window or an example that prints does not
+count. **Partial** means some clause is only exercised or holds by
+construction. The contract's "Checked by" lines name the checks.
+
+Modes: A `Backend::Async`, B `Blocking`, T `Thread`, N threads mode,
+G `async_group`, TG `thread_group`, P `pinned_group` (Linux), Sim the
+deterministic simulator (seed sweeps, or PCT and bounded DFS where marked),
+Fz the scenario fuzzer's oracles (simulator, Async and async groups only),
+Model TLA+/Apalache/Kani.
+
+Totals: 50 guarantees. Before this audit 31 covered, 18 partial, 1 unchecked
+(D5, only a nightly `#[ignore]` stress test). After: 46 covered, 4 partial.
+Mutation checks on the new tests: removing the run loop's stop-before-receive
+check fails `sim_ordering::stop_discards_*` and `tasks_contract::stop_window_*`;
+giving collateral children their own backoff fails
+`supervision_contract::collateral_children_add_no_backoff` (600 ms instead of 200 ms).
+
+| Id | Strongest checks | Modes | Before → after | Still unchecked |
+|---|---|---|---|---|
+| M1 | `request_histories` linearizability; `*_contract::hooks_and_turns_*` (read-modify-write across an await); `sim_ordering::turns_*` | A B T N G TG, Sim (PCT, DFS) | partial → covered | |
+| M2 | `semantics_gaps::*::exit_and_down_follow_*` (`Down`/`Exit` behind messages) | A B T N | covered | no priorities: by construction |
+| M3 | `cross_backend` (independent oracle per workload) | A B T N G TG P, Sim (A, G) | covered | Sim skips fan-out and monitor workloads |
+| M4 | `supervision::one_for_one_uses_fresh_state_*`; `*_contract::actor_ids_are_never_reused` | A B T N G TG, Sim | partial → covered | |
+| M5 | `*_contract::dropping_every_actor_ref_keeps_the_actor_running`; `leaks` | A B T N G TG | partial → covered | |
+| D1 | `actor_scenarios` fences; `cross_backend`; `sim_ordering::per_sender_fifo_*`; Fz | A B T N G TG P, Sim (PCT, DFS) | covered | |
+| D2 | `actor_scenarios` exact logs; `request_histories`; Fz | A B T N, Sim | covered | |
+| D3 | `*_contract::stop_window_*` (sends after the stop and from `stopped()` are `Ok`, never handled); `mailbox_admission_loom` | A B T N G TG, Loom | partial → covered | |
+| D4 | threads/tasks unit tests; `mailbox_drop_panic`; `*_contract::stop_window_*` and `sim_ordering::stop_discards_*` (payloads dropped and reply senders closed when `join()` returns) | A B T N G TG, Sim (PCT, DFS) | partial → covered | |
+| D5 | `*_contract::unbounded_mailbox_*` (100,000 sends behind a blocked handler) | A B T N G TG | unchecked → covered | |
+| R1 | `actor_scenarios`; `failure_windows` (all three outcomes); Fz | A B T N, Sim | covered | `RequestTimeout` not on groups |
+| R2 | `actor_scenarios`; `sim_ordering::per_sender_fifo_*`; Fz | A B T N, Sim (PCT, DFS) | covered | |
+| R3 | `protocol_timeouts` precedence; `tasks_contract::default_request_timeout_*` (4.9 s Ok, 5.1 s timeout, no timer before first poll) | A N, Sim | partial → covered | send-only methods: by type (no `Response`) |
+| R4 | `cancellation_safety`; `request_histories` pending ops | A B T G TG, Sim | covered | |
+| R5 | `semantics_gaps::*::panicking_request_handler_*`; `cross_backend` | A B T N G TG P | covered | |
+| L1 | `sim_ordering::turns_*`; `*_contract::hooks_and_turns_*`; Fz | A B T N G TG, Sim (PCT, DFS) | covered (A only) → covered | |
+| L2 | `startup_admission`; `execution_groups::failed_startup_*`; `tasks_contract::managed_readiness_*` (historical `ready()`) | G TG, Sim (G) | partial → covered | |
+| L3 | `context_exit` (first reason wins); `sim_ordering::turns_*` (stop never splits a turn) | A N, Sim | partial | cleanup panic after a committed reason; owned by #240 (rank 5e) |
+| L4 | `exit_signal_matrix`, `context_exit`, `panic_safety` | A B T N G TG | covered | owned by #240 |
+| L5 | `foreign_panics` (strict); `tasks_contract::panics_in_hooks_*` | A B T N G TG | covered (B, T unchecked) → covered | |
+| L6 | `mailbox_drop_panic` (5 placements x 1/2/256), `native_mailbox_drop`, lifecycle traces | A B T N G TG | covered | not simulated (subprocesses) |
+| L7 | `shutdown_publication`; `*_contract::stop_window_*`; `sim_ordering::stop_discards_*` | A B T N G TG, Sim | partial | outgoing monitors cancelled before publication |
+| X1 | `actor_scenarios` monitor races; `exit_signal_matrix`; Fz | A B T N, Sim | covered | owned by #240 |
+| X2 | unit `demonitor_*`, `closed_monitor_table_*`; `leaks` | A N | covered | demonitor checks use a bounded window |
+| X3 | unit link tests; `exit_signal_matrix`; Fz | A N, Sim | covered | owned by #240; threads lacks the Normal and chain variants |
+| X4 | `kill_links` | A N | covered | owned by #240 |
+| X5 | unit link tests; `link_regression_tests` | A N | covered | owned by #240 |
+| X6 | `link_regression_tests` | A | covered | owned by #240 |
+| X7 | `semantics_gaps::*::exit_and_down_follow_*`; `sim_ordering::exit_and_down_follow_the_last_message_*`; Fz | A B T N, Sim (PCT, DFS) | partial | a non-trapping linked stop after the current handler (exit signals, #240) |
+| V1 | `supervisor_policies` oracle; `Supervision!RestartFollowsPolicy` | G, Sim, Model | covered | `restart_modes_*` never sends a `Normal` exit (`supervisor_policies` does) |
+| V2 | Cohorts invariants; `supervision_strategies`; `cohort_trace`; `supervision_contract::concurrent_failures_coalesce_*` | G, Sim, Model | covered | reverse stop order only via trace conformance |
+| V3 | `*!AtMostOneGeneration`; factory asserts no live generation; Fz | G TG, Sim, Model | covered | |
+| V4 | `*!PublishedIsLive`; `supervision_contract::queued_messages_are_not_replayed_*`; Fz | G, Sim, Model | partial → covered | |
+| V5 | `Supervision!BudgetBounded`; Kani; budget tests | G, Sim, Model | covered | owned by #240 (rank 5f) |
+| V6 | Kani backoff harnesses; `backoff_exponent_resets_*`; `supervision_contract::collateral_children_add_no_backoff` | G, Sim, Kani | partial → covered | jitter only by Kani and unit tests |
+| V7 | `Supervision!ReadyMeansAllStarted`; startup tests | G, Sim, Model | covered | owned by #240 (rank 5f) |
+| V8 | `NestedSupervision` invariants; `nested_supervision`; `tree_trace` | G TG, Sim, Model | covered | |
+| V9 | Supervision invariants; failpoints; `supervision_contract::message_backlog_does_not_delay_restart`; Fz | G TG P, Sim, Model | partial → covered | |
+| S1 | `Coordinator!Safety`; `execution_groups`; `execution_profiles` (`Capacity`); `supervision_contract::admission_is_closed_*` | G TG, Sim, Model | partial → covered | |
+| S2 | `Coordinator!OrderedShutdown`; `system_shutdown_orders_*`; `cross_backend::ordered_system_shutdown_matches` | G TG P, Sim, Model | covered | |
+| S3 | `Coordinator!Safety`, `CoordinatorInd` steps; `execution_groups`; `supervision_contract::dropping_a_system_shuts_down_*` (non-blocking drop, 5 s grace) | G, Sim, Model | partial → covered | |
+| S4 | `src/system.rs::coordinator_fault_*`; failpoints | G, Model | covered | not simulated (failpoints) |
+| S5 | `execution_groups`, `supervision`, `src/registry.rs` tests; Fz | G, Sim | covered | |
+| S6 | `execution_groups::ambient_actor_*`; `tasks_contract::unmanaged_tasks_and_threads_*` | G | partial → covered | |
+| T1 | `semantics_gaps::tasks::send_after_fires_once_*` (paused time); `resource_cleanup`; `cross_backend::timers_match` | A B T N G TG P | covered | |
+| T2 | `semantics_gaps::tasks::send_interval_is_fixed_delay_*` (paused time) | A | covered | threads by construction |
+| T3 | `semantics_gaps::tasks::timers_are_not_carried_*`; `tasks_contract::managed_timers_run_on_the_group_*` | G | partial → covered | `send_message_on` in threads |
+| T4 | paused-time tests and the simulator clock | A, Sim | partial | threads by construction |
+| P1 | `panic_safety`; `foreign_panics`; `mailbox_drop_panic`; failpoints | A B T N G TG | covered | not simulated |
+| P2 | `panic-abort` CI job; `foreign_panics::panicking_panic_hook_*` | A N | covered | no observer for `Down`/`Exit` |
+
+Bugs found: none. Every gap test passed on the first correct run in both
+builds; the two initial `sim_ordering` failures were test errors (a stop
+before the burst was dequeued, which D4 discards, and a busy-wait that PCT
+starved), fixed in the tests.
+
+Citation fixes made by the audit: L2 cited `ready_gate_loom`, which checks the
+benchmark scheduler's gate rather than readiness; L1 cited `cross_backend`,
+which records `stopped()` only for shutdown order; S1 cited a supervisor
+`max_children` test for `thread_group` capacity; the `Coordinator!*Step`
+properties live in `CoordinatorInd.tla` (Apalache); T1 named a threads-only
+test for tasks. `supervision::restart_modes_distinguish_normal_shutdown_and_panic`
+uses `shutdown()` for its "normal" branch; `Supervision!TemporaryStartsOnce`
+is vacuous in the per-PR `MCSupervision.cfg` (no Temporary child) and checked
+by the weekly deep configuration and `Cohorts`.
+
+```sh
+cargo test --locked -p spawned-concurrency --test semantics_gaps --test sim_ordering
+RUSTFLAGS="--cfg spawned_sim --cfg tokio_unstable" CARGO_TARGET_DIR=target/sim \
+  cargo test --locked -p spawned-concurrency --test semantics_gaps --test sim_ordering
+```
+
 ## Controlled failures, histories and simulations
 
 | Suite | Evidence provided | Limit |
