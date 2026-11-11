@@ -1722,17 +1722,15 @@ fn is_shared_mutable_constructor(call: &syn::ExprCall) -> bool {
     let syn::Expr::Path(func) = &*call.func else {
         return false;
     };
-    if !func.path.segments.last().is_some_and(|s| s.ident == "new")
-        || !call_type_segment(&call.func).is_some_and(is_shared_pointer)
-        || call.args.len() != 1
-    {
-        return false;
-    }
-    matches!(
-        call.args.first(),
-        Some(syn::Expr::Call(inner))
-            if call_type_segment(&inner.func).is_some_and(is_interior_mutable)
-    )
+    let wraps_in_pointer = func.path.segments.last().is_some_and(|s| s.ident == "new")
+        && call_type_segment(&call.func).is_some_and(is_shared_pointer)
+        && call.args.len() == 1;
+    wraps_in_pointer
+        && matches!(
+            call.args.first(),
+            Some(syn::Expr::Call(inner))
+                if call_type_segment(&inner.func).is_some_and(is_interior_mutable)
+        )
 }
 
 #[derive(Default)]
