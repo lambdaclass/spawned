@@ -587,7 +587,7 @@ def main():
     model_fault("MCCoordinator", "ForgetFailure", args.tlc)
     model_fault("MCCoordinator", "ForgetSignal", args.tlc, invariant="JoinAfterAllSignalled")
     model_fault("MCCoordinator", "ForgetSignal", args.tlc, temporal=True,
-                drop=("JoinAfterAllSignalled",))
+                drop=("JoinAfterAllSignalled", "GraceKillsRemaining"))
     model_fault("MCCoordinator", "RollbackReady", args.tlc, invariant="OrderedShutdown")
     # v0.8 grace expiry: no kill (a stuck trapping root holds the join), or a
     # kill in the ordered loop (stopped() skipped before the grace expired).
