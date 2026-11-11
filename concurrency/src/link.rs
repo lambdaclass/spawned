@@ -645,11 +645,17 @@ mod tests {
         assert_eq!(seen.load(Ordering::SeqCst), 1);
         assert!(bt.lock().unwrap().entries.is_empty());
         // b links to the dead a: a late NoProc notice, delivered and removed.
-        // b, already exiting, gets the late NoProc signal, which replaces
-        // its reason (decision 8).
-        assert_eq!(register_link(&b, &bt, &a, &at, false), LinkOutcome::NoProc);
+        // b is exiting (the notice began its exit): its link is inert
+        // (model: Link requires a running caller).
+        assert_eq!(register_link(&b, &bt, &a, &at, false), LinkOutcome::Unchanged);
+        assert_eq!(seen.load(Ordering::SeqCst), 1);
+        // A running c linking to the dead a gets the late NoProc notice.
+        let c = Arc::new(target(&seen));
+        let ct = new_link_table();
+        assert_eq!(register_link(&c, &ct, &a, &at, false), LinkOutcome::NoProc);
         assert_eq!(seen.load(Ordering::SeqCst), 2);
-        assert_eq!(lock_request(&b.request).reason(), Some(&ExitReason::NoProc));
+        assert_eq!(lock_request(&c.request).reason(), Some(&ExitReason::NoProc));
+        assert!(ct.lock().unwrap().entries.is_empty());
         assert!(at.lock().unwrap().entries.is_empty() && bt.lock().unwrap().entries.is_empty());
     }
     #[test]
