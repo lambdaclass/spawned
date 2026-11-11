@@ -99,6 +99,14 @@ struct Run<A: Actor, T, M> {
     state: Arc<JobState>,
     ctx: Context<A>,
     done: Mutex<Option<Done<T, M>>>,
+    /// The job's deadline (the heap holds a `Weak`): owned until the run is
+    /// dropped, so it still fires while a result waits for scheduled emits.
+    deadline: std::sync::OnceLock<Arc<JobDeadline>>,
+    /// What execution held (its credit, or its place in a linked slot),
+    /// handed over when execution ends and released when the terminal
+    /// message is enqueued (or the run is dropped): a result waiting for
+    /// scheduled emits keeps it, so `MAX_OUTSTANDING` still bounds it.
+    hold: Mutex<Option<Box<dyn Send>>>,
 }
 
 fn end_of<T>(outcome: &JobOutcome<T>) -> &'static str {
@@ -125,6 +133,12 @@ where
 
     fn enqueue_terminal(&self, outcome: JobOutcome<T>) -> Option<MailboxItem<A>> {
         let done = self.done.lock().unwrap_or_else(|p| p.into_inner()).take()?;
+        // Execution ended (or is still running past its deadline, and then
+        // keeps its hold): return the credit before the terminal message
+        // can be dispatched, so `done`'s turn can start the next job at the
+        // bound. Only atomics run here (a credit or the slot's job count).
+        let hold = self.hold.lock().unwrap_or_else(|p| p.into_inner()).take();
+        drop(hold);
         let envelope: Box<dyn Envelope<A> + Send> = Box::new(TerminalEnvelope {
             job: self.state.clone(),
             done,
@@ -139,8 +153,10 @@ where
 
     /// The work's result: notify now, or, while delayed emits are still
     /// scheduled, hold it for the last of them so the terminal message
-    /// stays last.
-    fn finish(self: &Arc<Self>, outcome: JobOutcome<T>) {
+    /// stays last. `hold` is what execution held; the terminal message
+    /// releases it.
+    fn finish(self: &Arc<Self>, outcome: JobOutcome<T>, hold: Box<dyn Send>) {
+        *self.hold.lock().unwrap_or_else(|p| p.into_inner()) = Some(hold);
         let end = end_of(&outcome);
         let outcome = std::cell::Cell::new(Some(outcome));
         let unsent = self.state.finish(
@@ -400,17 +416,15 @@ impl<A: Actor> Context<A> {
         })
     }
 
-    fn arm_deadline<T, M>(
-        &self,
-        opts: &JobOptions,
-        run: &Arc<Run<A, T, M>>,
-    ) -> Option<Arc<JobDeadline>>
+    fn arm_deadline<T, M>(&self, opts: &JobOptions, run: &Arc<Run<A, T, M>>)
     where
         A: Handler<M>,
         M: Message,
         T: Send + 'static,
     {
-        let at = spawned_rt::time::to_ticks(opts.deadline?);
+        let Some(at) = opts.deadline.map(spawned_rt::time::to_ticks) else {
+            return;
+        };
         let weak = Arc::downgrade(run);
         let deadline = Arc::new(JobDeadline {
             at,
@@ -421,13 +435,14 @@ impl<A: Actor> Context<A> {
                 }
             }))),
         });
+        // The run owns it; the heap only refers to it.
+        let _ = run.deadline.set(deadline.clone());
         if at <= now_ticks() {
             deadline.expire(at);
         } else {
             let item: Weak<dyn Expirable> = Arc::downgrade(&deadline) as Weak<dyn Expirable>;
             self.replies.track(at, item);
         }
-        Some(deadline)
     }
 
     fn launch_blocking<T, M, R, W>(
@@ -452,8 +467,10 @@ impl<A: Actor> Context<A> {
             state: state.clone(),
             ctx: self.clone(),
             done: Mutex::new(Some(done)),
+            deadline: std::sync::OnceLock::new(),
+            hold: Mutex::new(None),
         });
-        let deadline = self.arm_deadline(&opts, &run);
+        self.arm_deadline(&opts, &run);
         let ended = Ended(self.clone(), state.clone());
         let job = JobCtx {
             state: state.clone(),
@@ -461,11 +478,11 @@ impl<A: Actor> Context<A> {
         };
         let task: NativeTask<A> = Box::new(move |native| {
             let _ended = ended;
-            let _deadline = deadline;
             let result = std::panic::catch_unwind(AssertUnwindSafe(|| work(&job)));
-            // Execution ended: release the native slot and credit first.
-            drop((native, hold));
-            run.finish(caught(result));
+            // Execution ended: release the native slot now; the run returns
+            // the credit when the terminal message is enqueued.
+            drop(native);
+            run.finish(caught(result), Box::new(hold));
         });
         // The worker thread is parked on `recv` until this send (or its
         // sender's drop); it cannot have exited.

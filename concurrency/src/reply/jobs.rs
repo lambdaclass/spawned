@@ -385,6 +385,11 @@ impl JobState {
     /// when the deadline fires, fenced like any emit, and the job's terminal
     /// message waits for it. `track` arms the owner's deadline heap. On
     /// `Err` the caller's credit guard (inside `send`) returns the credit.
+    ///
+    /// `JobGone` also when the emit will never be delivered: the job was
+    /// cancelled while registering, or an emit already due was refused. An
+    /// `at` past the job's deadline is accepted: the deadline takes the
+    /// notification first and the emit is dropped at its instant.
     pub(crate) fn schedule_emit(
         self: &Arc<Self>,
         at: u64,
@@ -411,7 +416,9 @@ impl JobState {
             return Err(JobGone);
         }
         if at <= super::now_ticks() {
-            emit.expire(at);
+            if !emit.settle(self, true) {
+                return Err(JobGone);
+            }
         } else {
             let weak: std::sync::Weak<dyn Expirable> = Arc::downgrade(&emit) as _;
             track(at, weak);
@@ -747,9 +754,10 @@ pub(crate) struct ScheduledEmit {
 impl ScheduledEmit {
     /// Fire (`deliver`) or discard: step 2 of the emit protocol under the
     /// job's lock, then remove it from the job, then run a held terminal.
-    fn settle(&self, job: &JobState, deliver: bool) {
+    /// Returns whether the message was enqueued.
+    fn settle(&self, job: &JobState, deliver: bool) -> bool {
         let Some(send) = lock(&self.send).take() else {
-            return;
+            return false;
         };
         // A discarded message (and its credit guard) drops at the end,
         // outside the trace section and every lock.
@@ -766,6 +774,7 @@ impl ScheduledEmit {
             }
             (result, held)
         });
+        let delivered = result.is_ok();
         // A refused envelope (and its credit guard) drops here, unlocked.
         drop(result);
         lock(&job.scheduled).retain(|emit| !std::ptr::eq(Arc::as_ptr(emit), self));
@@ -774,6 +783,7 @@ impl ScheduledEmit {
         }
         #[cfg(feature = "async")]
         job.wake_emitters();
+        delivered
     }
 
     fn discard(&self, job: &JobState) {

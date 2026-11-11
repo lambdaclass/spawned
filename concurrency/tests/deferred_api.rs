@@ -274,6 +274,69 @@ mod tasks_mode {
         actor.join().await;
     }
 
+    /// Review P1 (Codex 8, agy 1): a hard deadline overtakes a result held
+    /// for a scheduled emit. The run used to drop its only strong reference
+    /// to the deadline when the work returned, so the deadline never fired:
+    /// the emit and `Ok` arrived at the emit's instant instead.
+    #[spawned_macros::sim_test]
+    async fn a_deadline_overtakes_a_result_held_for_scheduled_emits() {
+        let (actor, log) = start();
+        in_actor(&actor, |_, ctx| {
+            let opts = JobOptions::default().deadline_after(Duration::from_millis(40));
+            ctx.pipe_with_ctx(
+                opts,
+                |job| async move {
+                    let at = Instant::now() + Duration::from_millis(300);
+                    job.emit_at(at, Note("late".into())).await.unwrap();
+                    7
+                },
+                |o| describe("job", o),
+            )
+            .unwrap();
+        })
+        .await;
+        spawned_rt::tasks::sleep(Duration::from_millis(150)).await;
+        assert_eq!(log.snapshot(), ["job:deadline"]);
+        // The scheduled emit is dropped at its instant (the job is over).
+        spawned_rt::tasks::sleep(Duration::from_millis(300)).await;
+        assert_eq!(log.snapshot(), ["job:deadline"]);
+        let outstanding = in_actor(&actor, |_, ctx| ctx.deferred_outstanding()).await;
+        assert_eq!(outstanding, 0);
+        actor.context().stop();
+        actor.join().await;
+    }
+
+    /// Review P1 (agy 5): a result held for scheduled emits keeps the job's
+    /// `MAX_OUTSTANDING` credit until its terminal message is enqueued. It
+    /// used to return the credit when the work returned, so held jobs (and
+    /// their scheduled emits) were not bounded by `MAX_OUTSTANDING`.
+    #[spawned_macros::sim_test]
+    async fn a_held_result_keeps_its_credit_until_the_terminal_message() {
+        let (actor, log) = start();
+        in_actor(&actor, |_, ctx| {
+            ctx.pipe_with_ctx(
+                JobOptions::default(),
+                |job| async move {
+                    let at = Instant::now() + Duration::from_millis(200);
+                    job.emit_at(at, Note("late".into())).await.unwrap();
+                    1
+                },
+                |o| describe("job", o),
+            )
+            .unwrap();
+        })
+        .await;
+        spawned_rt::tasks::sleep(Duration::from_millis(50)).await;
+        assert!(log.snapshot().is_empty());
+        let outstanding = in_actor(&actor, |_, ctx| ctx.deferred_outstanding()).await;
+        assert_eq!(outstanding, 1, "a held result returned its credit early");
+        assert_eq!(wait_for(&log, 2).await, ["late", "job:ok:1"]);
+        let outstanding = in_actor(&actor, |_, ctx| ctx.deferred_outstanding()).await;
+        assert_eq!(outstanding, 0);
+        actor.context().stop();
+        actor.join().await;
+    }
+
     #[spawned_macros::sim_test]
     async fn send_handler_impls_answer_requests_with_unit() {
         let (actor, log) = start();
@@ -391,6 +454,62 @@ mod threads_mode {
         });
         assert!(matches!(refused, Some(PipeErrorKind::NativeBudget)));
         assert_eq!(wait_for(&log, 3), ["now", "late", "job:Ok(Ok(()))"]);
+        actor.context().stop();
+        actor.join();
+    }
+
+    /// Review P1 (Codex 8, agy 1), threads mode: a hard deadline overtakes
+    /// a result held for a scheduled emit.
+    #[test]
+    fn a_deadline_overtakes_a_result_held_for_scheduled_emits() {
+        let log = Arc::new(Log::default());
+        let actor = Owner { log: log.clone() }.start();
+        in_actor(&actor, |_, ctx| {
+            let opts = JobOptions::default().deadline_after(Duration::from_millis(40));
+            ctx.pipe_blocking_with(
+                opts,
+                |job| {
+                    let at = Instant::now() + Duration::from_millis(300);
+                    job.emit_at_blocking(at, Note("late".into()))
+                },
+                |o| label("job", o),
+            )
+            .unwrap();
+        });
+        std::thread::sleep(Duration::from_millis(150));
+        assert_eq!(log.snapshot(), ["job:Err(DeadlineExceeded)"]);
+        std::thread::sleep(Duration::from_millis(300));
+        assert_eq!(log.snapshot(), ["job:Err(DeadlineExceeded)"]);
+        assert_eq!(in_actor(&actor, |_, ctx| ctx.deferred_outstanding()), 0);
+        actor.context().stop();
+        actor.join();
+    }
+
+    /// Review P1 (agy 5), threads mode: a held result keeps its credit.
+    #[test]
+    fn a_held_result_keeps_its_credit_until_the_terminal_message() {
+        let log = Arc::new(Log::default());
+        let actor = Owner { log: log.clone() }.start();
+        in_actor(&actor, |_, ctx| {
+            ctx.pipe_blocking_with(
+                JobOptions::default(),
+                |job| {
+                    let at = Instant::now() + Duration::from_millis(200);
+                    job.emit_at_blocking(at, Note("late".into()))
+                },
+                |o| label("job", o),
+            )
+            .unwrap();
+        });
+        std::thread::sleep(Duration::from_millis(50));
+        assert!(log.snapshot().is_empty());
+        assert_eq!(
+            in_actor(&actor, |_, ctx| ctx.deferred_outstanding()),
+            1,
+            "a held result returned its credit early"
+        );
+        assert_eq!(wait_for(&log, 2), ["late", "job:Ok(Ok(()))"]);
+        assert_eq!(in_actor(&actor, |_, ctx| ctx.deferred_outstanding()), 0);
         actor.context().stop();
         actor.join();
     }
