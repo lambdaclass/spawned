@@ -738,3 +738,7 @@ model needs type annotations and an `IndInv` with helper lemmas like
    (a separate change), or keep it?
 6. **`terminate_child` on static supervisors.** Add it in the same release
    (ROADMAP research note), or later?
+7. **Rejected arguments.** `MaxChildren`, `Stopped` and `System` errors drop
+   the arguments (ethrex's `TcpStream` closes without an RLPx Disconnect, as
+   today). Should these errors hand the arguments back (`Err((error, args))`),
+   or should a `try_reserve()` permit precede `start_child`?
