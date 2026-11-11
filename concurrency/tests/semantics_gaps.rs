@@ -852,7 +852,7 @@ mod native_contract {
         }
         assert!(handle.is_alive(), "M5: actor stopped when its refs dropped");
         handle.stop();
-        assert_eq!(handle.wait_exit(), ExitReason::Normal);
+        assert_eq!(handle.wait_exit_blocking(), ExitReason::Normal);
     }
 
     /// M4: no `ActorId` is ever reused, also after earlier actors exited.
@@ -1688,7 +1688,7 @@ mod supervision_contract {
     impl Actor for Prober {
         async fn stopped(&mut self, ctx: &Context<Self>) {
             let probe = Probe {
-                target: ctx.child_handle(),
+                target: ctx.actor_ref().child_handle(),
             };
             *self.result.lock().unwrap() = Some(self.late.request(probe).await.unwrap());
             sleep(Duration::from_millis(50)).await;
