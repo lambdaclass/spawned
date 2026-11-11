@@ -284,7 +284,7 @@ now exercising the monitor guard.
 ### Things to watch in a migration
 
 - **Serialised starts.** Anything slow left in `started()` holds every
-  accept and dial. Keep `started()` to state setup and the self-send.
+  accept and dial. Keep `started()` to state setup; the handshake is the continuation.
 - **Stuck cleanup.** A connection's own exit gets one `shutdown_timeout`
   for its owned cleanup (E3 row 4, no kill); a terminated or shut-down one
   gets the signal, the kill after `shutdown_timeout` and a second interval.

@@ -129,7 +129,7 @@ rule:
 
 | # | Question | Decision |
 |---|---|---|
-| Q1 | Concurrent or serialised construction | **Serialised, as OTP.** One control loop runs each start (admission, factory, `started()`) to completion before the next operation. Factories still run on the target group. Long work (ethrex's RLPx handshake) moves out of `started()` into the first message, OTP's `handle_continue` idiom |
+| Q1 | Concurrent or serialised construction | **Serialised, as OTP.** One control loop runs each start (admission, factory, `started()`) to completion before the next operation. Factories still run on the target group. Long work (ethrex's RLPx handshake) moves out of `started()` into the post-start continuation, OTP's `handle_continue` (decision G1) |
 | Q2 | Heterogeneous children | The typed template is enough for v1 |
 | Q3 | Defaults | Elixir's: `max_restarts = 3`, `restart_window = 5 s`; backoff **opt-in** (`None` by default); `max_children = None` |
 | Q4 | Group capacity across restarts | The slot holds a **transferable native-capacity reservation** from admission to removal, separate from any generation's scope lease |
@@ -761,7 +761,7 @@ As for any actor (exit-signals design, phases of an exit, with rank 11):
 - **No queueing** at `max_children`: a full supervisor rejects. Waiting for
   a slot is rank 17's admission.
 - **No parallel construction:** one slow `started()` delays the supervisor's
-  other operations (OTP's behaviour). Use the first message for slow work.
+  other operations (OTP's behaviour). Use the post-start continuation for slow work.
 - **No exactly-once start under cancellation:** a dropped `start_child`
   future may still produce a supervised child.
 - **No state or queue carried across a restart** (V4).
