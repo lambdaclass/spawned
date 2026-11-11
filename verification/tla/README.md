@@ -40,7 +40,7 @@ runs real actors through the scenarios below and writes each trace as JSON;
 TLC then checks that each trace is a behavior of `Supervision.tla`.
 
 ```bash
-cargo test -p spawned-concurrency --features lifecycle-trace,failpoints --test supervision_trace --test cohort_trace --test tree_trace --test nested_supervision --test coverage_trace
+cargo test -p spawned-concurrency --features lifecycle-trace,failpoints --test supervision_trace --test cohort_trace --test tree_trace --test nested_supervision --test coverage_trace --test job_trace --test reply_trace
 nix run .#check-tla -- --traces-only target/lifecycle-traces --negative-controls   # or --traces DIR to also model-check
 nix develop -c python3 verification/tla/trace_check.py target/lifecycle-traces
 ```
@@ -104,7 +104,7 @@ the recorded runs never exercise? `trace_coverage.py` reports it per model with
 trace validation (`Supervision`, `Cohorts`, `NestedSupervision`).
 
 ```bash
-cargo test -p spawned-concurrency --features lifecycle-trace,failpoints --test supervision_trace --test cohort_trace --test tree_trace --test nested_supervision --test coverage_trace
+cargo test -p spawned-concurrency --features lifecycle-trace,failpoints --test supervision_trace --test cohort_trace --test tree_trace --test nested_supervision --test coverage_trace --test job_trace --test reply_trace
 nix develop -c python3 verification/tla/trace_coverage.py --traces dedicated=target/lifecycle-traces \
     --model-keys verification/tla/coverage-model.json.gz --baseline verification/tla/coverage-baseline.json
 # every test binary: each finished supervisor dumps its traces
@@ -599,3 +599,24 @@ replaced job's terminal message delivered, an emit after the terminal
 message, a second emit with its credit in flight, a second terminal message
 after the deadline's, a quiet finish without a cancel, and a dispatch after
 the owner's exit.
+
+### Reply trace validation
+
+The reply transport records `DeferredReplies.tla` actions per owner
+instance: `Send` (slot created), `Dispatch` (its turn starts), `Discharge`
+(the slot's one `OPEN` -> terminal transition, recorded in the trace section
+together with the CAS in `Slot::cas`; a reply counts at `WRITING`), `Exit`
+(after the registry commits the turn's drops) and `Death` (the closes that
+death and mailbox disposal perform are that one model step and are not
+logged). `TraceReplies.tla` takes the turn-internal steps that leave no trace
+silently (a `Defer` that takes a credit, `Store`, `DropInTurn`, a turn end
+that answers nothing, the clock); a `Discharge` must be the model action that
+discharges exactly that request with that kind. Linked jobs and the
+downstream actor are not traced (their notifications and job ends are not
+logged). `concurrency/tests/reply_trace.rs` records nine scenarios (reply in
+the turn, stored then answered or dropped from a later non-request turn, an
+unused obligation, `Overloaded` at the bound, deadline expiry by the
+service, the caller giving up, death with a stored token, a panicking turn);
+`negative_checks.py` requires four edited traces to be rejected (`Overloaded`
+below the bound, a reply after death, a second discharge, a drop before the
+turn).

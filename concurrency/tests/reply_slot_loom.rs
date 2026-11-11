@@ -12,6 +12,10 @@ mod sync {
     pub(crate) use loom::sync::{Arc, Condvar, Mutex, MutexGuard};
     pub(crate) use loom::thread::yield_now;
     pub(crate) type SlotOwner = Option<()>;
+    pub(crate) fn section<T>(f: impl FnOnce() -> T) -> T {
+        f()
+    }
+    pub(crate) fn traced_terminal(_: &SlotOwner, _: usize, _: &'static str) {}
 
     /// Loom has no timed wait; tests park only on slots without a deadline.
     pub(crate) fn wait_ticks<'a, T>(

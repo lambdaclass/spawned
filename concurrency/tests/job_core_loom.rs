@@ -17,6 +17,10 @@ mod sync {
     pub(crate) use loom::sync::{Arc, Condvar, Mutex, MutexGuard};
     pub(crate) use loom::thread::yield_now;
     pub(crate) type SlotOwner = Option<()>;
+    pub(crate) fn section<T>(f: impl FnOnce() -> T) -> T {
+        f()
+    }
+    pub(crate) fn traced_terminal(_: &SlotOwner, _: usize, _: &'static str) {}
     pub(crate) use super::model_arc::{JobArc, JobWeak};
 
     /// Loom has no timed wait; the model never parks on a slot.

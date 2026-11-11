@@ -16,7 +16,10 @@
   `lifecycle-trace`, the job core records `DeferredJobs.tla` actions, and
   `tests/job_trace.rs` traces (seven scenarios) are checked by TLC
   (`TraceJobs.tla`, schema `jobs-v1`), with six edited traces as negative
-  controls. `Handler::handle` takes a `PendingReply<'_, R>`
+  controls. Reply slots record `DeferredReplies.tla` actions (send,
+  dispatch, the terminal transition inside the slot CAS, exit, death);
+  `tests/reply_trace.rs` traces (nine scenarios) are checked against
+  `TraceReplies.tla`, with four negative controls. `Handler::handle` takes a `PendingReply<'_, R>`
   and returns `()`; `#[actor]` generates it, and `#[deferred_handler]` methods
   receive the obligation and may `defer()` it into a storable `ReplyTo<R>`
   (bounded by `Actor::MAX_OUTSTANDING`, `Overloaded` at the bound). Dropped

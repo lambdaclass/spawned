@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Check recorded lifecycle traces against Supervision.tla (and, by schema,
-Cohorts.tla, NestedSupervision.tla and DeferredJobs.tla).
+Cohorts.tla, NestedSupervision.tla, DeferredJobs.tla and DeferredReplies.tla).
 
 Each JSON trace (written by concurrency/tests/supervision_trace.rs with the
 `lifecycle-trace` feature) looks like:
@@ -48,12 +48,14 @@ def tla_event(event, cohort=False):
 
 def generate(trace, workdir):
     schema = trace.get("schema", "one-for-one-v1")
-    if schema not in {"one-for-one-v1", "cohort-v1", "tree-v1", "jobs-v1"}:
+    if schema not in {"one-for-one-v1", "cohort-v1", "tree-v1", "jobs-v1", "replies-v1"}:
         raise ValueError(f"unsupported trace schema: {schema}")
     if schema == "tree-v1":
         return generate_tree(trace, workdir)
     if schema == "jobs-v1":
         return generate_jobs(trace, workdir)
+    if schema == "replies-v1":
+        return generate_replies(trace, workdir)
     cohort = schema == "cohort-v1"
     modules = ("Cohorts.tla", "TraceCohorts.tla") if cohort else MODELS
     for model in modules:
@@ -106,6 +108,37 @@ def generate_tree(trace, workdir):
         out.write("INIT TraceInit\nNEXT TraceNext\nCONSTANTS\n"
                   f" NodeCount = {len(nodes)}\n Slots = {max(1,max(int(e['arity']) for e in trace['events']))}\n"
                   " MaxGen = 1000\n Fault = \"None\"\n Trace <- TraceLog\n"
+                  "INVARIANT Safety\nINVARIANT TraceIncomplete\n")
+
+
+def generate_replies(trace, workdir):
+    """One owner instance's reply slots against DeferredReplies.tla."""
+    for model in ("DeferredReplies.tla", "TraceReplies.tla"):
+        shutil.copy(os.path.join(HERE, model), workdir)
+    # A slot address can be reused once freed: each Send starts a request.
+    current, n, records = {}, 0, []
+    for e in trace["events"]:
+        r = int(e["r"])
+        if e["a"] == "Send":
+            n += 1
+            current[r] = n
+        req = current.get(r, 0) if r else 0
+        if r and not req:
+            raise ValueError(f"event for an unsent request: {e}")
+        records.append("[a |-> {}, r |-> {}, x |-> {}]".format(
+            tla_string(e["a"]), req, tla_string(e["x"])))
+    if not n:
+        raise ValueError("a replies trace needs at least one request")
+    # Deadlines are chosen by TLC; the clock only needs room for the trace.
+    clock = 2 + sum(1 for e in trace["events"] if e.get("x") == "timeout")
+    with open(os.path.join(workdir, "TraceRun.tla"), "w") as out:
+        out.write("---- MODULE TraceRun ----\nEXTENDS TraceReplies\nTraceLog == <<\n    "
+                  + ",\n    ".join(records) + "\n>>\n====\n")
+    with open(os.path.join(workdir, "TraceRun.cfg"), "w") as out:
+        out.write("INIT TraceInit\nNEXT TraceNext\nCONSTANTS\n"
+                  f"    N = {n}\n    BoundA = {int(trace['bound'])}\n    BoundB = 1\n"
+                  f"    MaxTime = {clock}\n    MaxWait = {clock}\n    Fault = \"None\"\n"
+                  "    Trace <- TraceLog\n"
                   "INVARIANT Safety\nINVARIANT TraceIncomplete\n")
 
 

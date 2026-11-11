@@ -252,11 +252,16 @@ impl Registry {
         if self.turn.load() == DEAD {
             return;
         }
-        self.exit_began
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .get_or_insert_with(spawned_rt::time::Instant::now);
+        let first = {
+            let mut began = self.exit_began.lock().unwrap_or_else(|p| p.into_inner());
+            let first = began.is_none();
+            began.get_or_insert_with(spawned_rt::time::Instant::now);
+            first
+        };
         Self::commit(self.turn.exiting(), Outcome::Stopped);
+        if first {
+            crate::lifecycle_trace::reply(self.owner.raw(), "Exit", 0, "");
+        }
     }
 
     /// What remains of `timeout`, measured from the start of exit.
@@ -272,6 +277,7 @@ impl Registry {
     /// Death: every open token listed becomes `STOPPED`, wherever it is.
     /// Returns how many were closed.
     pub(crate) fn close(&self) -> usize {
+        crate::lifecycle_trace::reply(self.owner.raw(), "Death", 0, "");
         Self::commit(self.turn.close(), Outcome::Stopped);
         let tokens = std::mem::take(&mut lock(&self.lists).tokens);
         let closed = tokens

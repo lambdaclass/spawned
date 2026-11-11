@@ -149,6 +149,36 @@ DEFERRED_CONTROLS = [
 ]
 
 
+def reply_trace_controls(traces, tlc):
+    """Edits of recorded reply-slot traces that DeferredReplies.tla must
+    reject."""
+    by_name = {t["name"]: t for t in traces if t.get("schema") == "replies-v1"}
+
+    def overload_below_bound(events):
+        next(e for e in events if e["a"] == "Discharge")["x"] = "overloaded"
+    require_rejected(by_name["replies_in_turn"], overload_below_bound,
+                     "Overloaded with a free credit", tlc)
+
+    def reply_after_death(events):
+        held = next(e for e in events if e["a"] == "Send")
+        events.append({"a": "Discharge", "r": held["r"], "x": "ok"})
+    require_rejected(by_name["replies_death"], reply_after_death,
+                     "stored token answered after death", tlc)
+
+    def discharge_twice(events):
+        first = next(i for i, e in enumerate(events) if e["a"] == "Discharge")
+        events.insert(first + 1, dict(events[first], x="ok"))
+    require_rejected(by_name["replies_expired"], discharge_twice,
+                     "second discharge of an expired request", tlc)
+
+    def dropped_before_dispatch(events):
+        dispatch = next(i for i, e in enumerate(events) if e["a"] == "Dispatch")
+        drop = next(i for i, e in enumerate(events) if e.get("x") == "dropped")
+        events.insert(dispatch, events.pop(drop))
+    require_rejected(by_name["replies_unused"], dropped_before_dispatch,
+                     "unused obligation dropped before its turn", tlc)
+
+
 def job_trace_controls(traces, tlc):
     """Edits of recorded pipe-to-self job traces that DeferredJobs.tla must
     reject: each erases or reorders what the job core enforces."""
@@ -247,6 +277,7 @@ def main():
     for module, fault, invariant in DEFERRED_CONTROLS:
         named_fault(module, fault, invariant, args.tlc)
     job_trace_controls(traces, args.tlc)
+    reply_trace_controls(traces, args.tlc)
 
 if __name__ == "__main__":
     main()

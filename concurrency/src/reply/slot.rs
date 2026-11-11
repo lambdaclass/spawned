@@ -77,6 +77,20 @@ pub(crate) enum Terminal {
     Abandoned,
 }
 
+/// The model's name (`DeferredReplies.tla`) of the terminal state a slot
+/// leaves `OPEN` for; `WRITING` is the reply's linearization point.
+fn trace_name(state: u64) -> &'static str {
+    match state {
+        WRITING | REPLIED => "ok",
+        DROPPED => "dropped",
+        OVERLOADED => "overloaded",
+        TIMED_OUT => "timeout",
+        STOPPED => "stopped",
+        ABANDONED => "abandoned",
+        _ => "unknown",
+    }
+}
+
 impl Terminal {
     pub(crate) fn of(state: u64) -> Option<Self> {
         Some(match state {
@@ -283,10 +297,20 @@ impl<R> Slot<R> {
                     }
                 }
             }
-            match self
-                .word
-                .compare_exchange(current, next, Ordering::AcqRel, Ordering::Acquire)
-            {
+            let exchanged = super::sync::section(|| {
+                let exchanged =
+                    self.word
+                        .compare_exchange(current, next, Ordering::AcqRel, Ordering::Acquire);
+                if exchanged.is_ok() && state(current) == OPEN && state(next) != OPEN {
+                    super::sync::traced_terminal(
+                        &self.owner,
+                        self as *const Self as usize,
+                        trace_name(state(next)),
+                    );
+                }
+                exchanged
+            });
+            match exchanged {
                 Ok(_) => return Ok((current, next)),
                 Err(actual) => {
                     if let (Some(pool), true) = (pool, up > 0) {

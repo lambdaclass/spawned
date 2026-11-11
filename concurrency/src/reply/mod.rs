@@ -35,6 +35,23 @@ mod sync {
     pub(crate) use std::thread::yield_now;
     pub(crate) type SlotOwner = Option<Arc<super::registry::Registry>>;
 
+    /// Run a slot transition as one step of the lifecycle-trace
+    /// linearization (the identity without the feature).
+    #[inline(always)]
+    pub(crate) fn section<T>(f: impl FnOnce() -> T) -> T {
+        crate::lifecycle_trace::atomic(f)
+    }
+
+    /// A slot left `OPEN` (`kind` is the model's terminal name).
+    #[inline(always)]
+    #[cfg_attr(not(feature = "lifecycle-trace"), allow(unused_variables))]
+    pub(crate) fn traced_terminal(owner: &SlotOwner, slot: usize, kind: &'static str) {
+        #[cfg(feature = "lifecycle-trace")]
+        if let Some(registry) = owner {
+            crate::lifecycle_trace::reply(registry.owner().raw(), "Discharge", slot as u64, kind);
+        }
+    }
+
     /// Wait on `condvar` for at most `ticks` clock ticks (nanoseconds), or
     /// until notified when `None`.
     pub(crate) fn wait_ticks<'a, T>(
@@ -122,6 +139,10 @@ pub(crate) fn reply_slot<R>(
     owner: Option<&Arc<Registry>>,
 ) -> (SlotHandle<R>, ReplyReceiver<R>) {
     let slot = Arc::new(Slot::with_owner(deadline.ticks(), owner.cloned()));
+    #[cfg(feature = "lifecycle-trace")]
+    if let Some(owner) = owner {
+        crate::lifecycle_trace::reply(owner.owner().raw(), "Send", Arc::as_ptr(&slot) as u64, "");
+    }
     (SlotHandle(Some(slot.clone())), ReplyReceiver::new(slot))
 }
 
@@ -194,6 +215,15 @@ impl<R: Send + 'static> std::fmt::Debug for PendingReply<'_, R> {
 
 impl<'t, R: Send + 'static> PendingReply<'t, R> {
     pub(crate) fn new(slot: Option<Arc<Slot<R>>>, registry: &'t Arc<Registry>) -> Self {
+        #[cfg(feature = "lifecycle-trace")]
+        if let Some(slot) = &slot {
+            crate::lifecycle_trace::reply(
+                registry.owner().raw(),
+                "Dispatch",
+                Arc::as_ptr(slot) as u64,
+                "",
+            );
+        }
         Self {
             slot,
             registry: Some(registry),
