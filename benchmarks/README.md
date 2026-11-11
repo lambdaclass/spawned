@@ -56,12 +56,17 @@ campaigns, and the plotting environment:
 python3 -m venv /tmp/spawned-plots
 /tmp/spawned-plots/bin/pip install -r benchmarks/requirements-plots.txt
 /tmp/spawned-plots/bin/python benchmarks/render_experiments.py \
-  --data legacy/benchmarks/results/designs-2026-11-05 \
+  --data <designs-results-dir> \
   --output /tmp/designs-report
 /tmp/spawned-plots/bin/python benchmarks/render_full_actors.py \
-  --data legacy/benchmarks/results/full-actors-2026-11-05 \
+  --data <full-actors-results-dir> \
   --output /tmp/full-actors-report
 ```
+
+The archived campaign data these renderers were last run on is at
+[`legacy/benchmarks/results`](https://github.com/lambdaclass/spawned/tree/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/benchmarks/results)
+(git history, `efba2434`); check it out at that commit to re-render it.
+The renderers no longer embed the archived findings text.
 
 ## Conclusions
 

@@ -1,4 +1,5 @@
-//! Experimental design driver; see legacy/benchmarks/EXPERIMENTS.md.
+//! Experimental design driver; see the archived study guide:
+//! https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/benchmarks/EXPERIMENTS.md
 #[path = "support/actor_io.rs"]
 mod actor_io;
 #[path = "support/args.rs"]
