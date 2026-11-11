@@ -180,6 +180,7 @@ struct Inner<R> {
 pub(crate) struct Slot<R> {
     /// The receiving instance (production: its registry), whose deadline
     /// heap expires an awaited raw request.
+    #[cfg_attr(not(feature = "async"), allow(dead_code))]
     pub(crate) owner: super::sync::SlotOwner,
     word: AtomicU64,
     deadline: AtomicU64,

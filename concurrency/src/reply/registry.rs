@@ -352,6 +352,32 @@ impl Drop for Registry {
     }
 }
 
+/// Closes the registry and cancels the jobs if the owner's lifecycle is
+/// dropped without completing (for example, its runtime was destroyed).
+/// Idempotent after a normal death.
+#[cfg_attr(not(feature = "async"), allow(dead_code))]
+pub(crate) struct CloseOnDrop {
+    replies: Arc<Registry>,
+    jobs: Arc<super::jobs::JobSet>,
+}
+
+#[cfg_attr(not(feature = "async"), allow(dead_code))]
+impl CloseOnDrop {
+    pub(crate) fn new(replies: Arc<Registry>, jobs: Arc<super::jobs::JobSet>) -> Self {
+        Self { replies, jobs }
+    }
+}
+
+impl Drop for CloseOnDrop {
+    fn drop(&mut self) {
+        if !self.replies.is_dead() {
+            self.replies.exiting();
+            self.jobs.cancel_all();
+            self.replies.close();
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -438,26 +464,3 @@ mod tests {
     }
 }
 
-/// Closes the registry and cancels the jobs if the owner's lifecycle is
-/// dropped without completing (for example, its runtime was destroyed).
-/// Idempotent after a normal death.
-pub(crate) struct CloseOnDrop {
-    replies: Arc<Registry>,
-    jobs: Arc<super::jobs::JobSet>,
-}
-
-impl CloseOnDrop {
-    pub(crate) fn new(replies: Arc<Registry>, jobs: Arc<super::jobs::JobSet>) -> Self {
-        Self { replies, jobs }
-    }
-}
-
-impl Drop for CloseOnDrop {
-    fn drop(&mut self) {
-        if !self.replies.is_dead() {
-            self.replies.exiting();
-            self.jobs.cancel_all();
-            self.replies.close();
-        }
-    }
-}
