@@ -11,6 +11,10 @@ MCCallKind2  == [c \in MCCalls2 |-> IF c = 1 THEN "id" ELSE "expect"]
 MCCalls1     == {1}
 MCCallSlot1  == [c \in MCCalls1 |-> 1]
 MCCallKind1  == [c \in MCCalls1 |-> "slot"]
+\* One terminate_slot call fenced with expect.
+MCCalls1e    == {1}
+MCCallSlot1e == [c \in MCCalls1e |-> 1]
+MCCallKind1e == [c \in MCCalls1e |-> "expect"]
 \* No terminate calls.
 MCCalls0     == {}
 MCCallSlot0  == [c \in MCCalls0 |-> 1]

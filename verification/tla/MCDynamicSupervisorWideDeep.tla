@@ -1,0 +1,3 @@
+---- MODULE MCDynamicSupervisorWideDeep ----
+EXTENDS MCDynamicSupervisor
+====
