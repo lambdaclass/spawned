@@ -130,10 +130,13 @@ def source_fault(module, source, old, new, invariant, tlc):
         work = Path(directory)
         for path in HERE.glob("*.tla"):
             shutil.copy(path, work)
-        text = (work / source).read_text()
+        target = work / source
+        text = target.read_text()
         if text.count(old) != 1:
             raise AssertionError(f"{source}: mutation anchor {old!r} not found exactly once")
-        (work / source).write_text(text.replace(old, new))
+        # Copies from the Nix store are read-only.
+        target.chmod(0o644)
+        target.write_text(text.replace(old, new))
         lines = []
         properties = False
         for line in (HERE / f"{module}.cfg").read_text().splitlines():
