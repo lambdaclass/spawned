@@ -43,6 +43,9 @@ impl Message for Ping {
     type Result = u8;
 }
 
+#[path = "support/drop_subprocess.rs"]
+mod subprocess;
+
 mod tasks_mode {
     use super::*;
     use spawned_concurrency::tasks::{Actor, ActorRef, ActorStart, Context, Handler};
@@ -736,10 +739,10 @@ mod tasks_mode {
 
     // Decision 2 is easy to miss: a skipped stopped() is logged at debug
     // (`event = "stopped_skipped"`), for a kill, an untrapped signal and a
-    // runtime drop. A current-thread runtime keeps the scoped subscriber on
-    // the actors' thread.
+    // runtime drop.
     mod stopped_skipped_log {
         use super::*;
+        use crate::subprocess;
         use std::collections::BTreeMap;
         type Fields = BTreeMap<String, String>;
         #[derive(Clone, Default)]
@@ -794,10 +797,26 @@ mod tasks_mode {
             }
         }
 
+        /// Runs in its own process with `Capture` as the global subscriber:
+        /// a thread-scoped subscriber raced other test threads registering
+        /// the `stopped_skipped` callsite, which could cache its interest as
+        /// "never" and drop the events (a flaky failure under load).
         #[test]
         fn skipped_stopped_is_logged_at_debug() {
+            subprocess::run(
+                "tasks_mode::stopped_skipped_log::child",
+                "skipped stopped() logged",
+            );
+        }
+
+        #[test]
+        #[ignore = "subprocess helper exercised by the enabled parent"]
+        fn child() {
+            if std::env::var_os("SPAWNED_MAILBOX_DROP_CHILD").is_none() {
+                return;
+            }
             let capture = Capture::default();
-            let _subscriber = tracing::subscriber::set_default(capture.clone());
+            tracing::subscriber::set_global_default(capture.clone()).unwrap();
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
@@ -806,10 +825,6 @@ mod tasks_mode {
                 let seen = Seen::default();
                 let killed = Node::new(&seen, true).start();
                 settle(&killed).await;
-                // Another test thread may have been registering the
-                // `stopped_skipped` callsite while `set_default` rebuilt the
-                // interest cache, leaving it cached as "never".
-                tracing::callsite::rebuild_interest_cache();
                 killed.child_handle().kill();
                 assert_eq!(ended(&killed.child_handle()).await, ExitReason::Killed);
                 let signalled = Node::new(&seen, false).start();
@@ -845,6 +860,7 @@ mod tasks_mode {
                 capture.skipped(dropped),
                 vec![("runtime_drop".into(), "killed".into())]
             );
+            println!("skipped stopped() logged");
         }
     }
 
