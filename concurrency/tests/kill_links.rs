@@ -25,7 +25,7 @@ fn native_propagated_kill_is_trappable_but_direct_kill_is_not() {
         fn handle(
             &mut self,
             _: Ping,
-            reply: spawned_concurrency::reply::PendingReply<'_, u8>,
+            reply: spawned_concurrency::PendingReply<'_, u8>,
             _: &Context<Self>,
         ) {
             reply.reply(7);
@@ -86,7 +86,7 @@ async fn async_propagated_kill_is_trappable_but_direct_kill_is_not() {
         async fn handle(
             &mut self,
             _: Ping,
-            reply: spawned_concurrency::reply::PendingReply<'_, u8>,
+            reply: spawned_concurrency::PendingReply<'_, u8>,
             _: &Context<Self>,
         ) {
             reply.reply(7);

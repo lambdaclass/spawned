@@ -197,7 +197,7 @@ impl Handler<Cmd> for Probe {
     async fn handle(
         &mut self,
         cmd: Cmd,
-        reply: spawned_concurrency::reply::PendingReply<'_, u64>,
+        reply: spawned_concurrency::PendingReply<'_, u64>,
         ctx: &Context<Self>,
     ) {
         let __reply_value: u64 = {
@@ -235,7 +235,7 @@ impl Handler<Down> for Probe {
     async fn handle(
         &mut self,
         _: Down,
-        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
         self.counters.downs.fetch_add(1, Ordering::SeqCst);
@@ -251,7 +251,7 @@ impl Handler<bumper::Bump> for Probe {
     async fn handle(
         &mut self,
         _: bumper::Bump,
-        reply: spawned_concurrency::reply::PendingReply<'_, u64>,
+        reply: spawned_concurrency::PendingReply<'_, u64>,
         _: &Context<Self>,
     ) {
         let __reply_value: u64 =

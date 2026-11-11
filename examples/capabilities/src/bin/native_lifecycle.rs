@@ -22,7 +22,7 @@ impl Handler<Down> for Observer {
     fn handle(
         &mut self,
         event: Down,
-        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
         self.counts.1 += 1;
@@ -38,7 +38,7 @@ impl Handler<Counts> for Observer {
     fn handle(
         &mut self,
         _: Counts,
-        reply: spawned_concurrency::reply::PendingReply<'_, (usize, usize)>,
+        reply: spawned_concurrency::PendingReply<'_, (usize, usize)>,
         _: &Context<Self>,
     ) {
         reply.reply(self.counts);

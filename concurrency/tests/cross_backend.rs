@@ -172,7 +172,7 @@ mod tasks_node {
         async fn handle(
             &mut self,
             cmd: Cmd,
-            reply: spawned_concurrency::reply::PendingReply<'_, Reply>,
+            reply: spawned_concurrency::PendingReply<'_, Reply>,
             ctx: &Context<Self>,
         ) {
             let __reply_value: Reply = async {
@@ -241,7 +241,7 @@ mod tasks_node {
         async fn handle(
             &mut self,
             down: Down,
-            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            reply: spawned_concurrency::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
             self.state.log.push(Obs::Down {
@@ -256,7 +256,7 @@ mod tasks_node {
         async fn handle(
             &mut self,
             Tick(n): Tick,
-            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            reply: spawned_concurrency::PendingReply<'_, ()>,
             ctx: &Context<Self>,
         ) {
             self.state.ticks_seen += 1;
@@ -274,7 +274,7 @@ mod tasks_node {
         async fn handle(
             &mut self,
             _: Pulse,
-            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            reply: spawned_concurrency::PendingReply<'_, ()>,
             ctx: &Context<Self>,
         ) {
             let __reply_value: () = async {
@@ -331,7 +331,7 @@ mod threads_node {
         fn handle(
             &mut self,
             cmd: Cmd,
-            reply: spawned_concurrency::reply::PendingReply<'_, Reply>,
+            reply: spawned_concurrency::PendingReply<'_, Reply>,
             ctx: &Context<Self>,
         ) {
             let __reply_value: Reply = (|| {
@@ -407,7 +407,7 @@ mod threads_node {
         fn handle(
             &mut self,
             down: Down,
-            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            reply: spawned_concurrency::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
             self.state.log.push(Obs::Down {
@@ -422,7 +422,7 @@ mod threads_node {
         fn handle(
             &mut self,
             Tick(n): Tick,
-            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            reply: spawned_concurrency::PendingReply<'_, ()>,
             ctx: &Context<Self>,
         ) {
             self.state.ticks_seen += 1;
@@ -440,7 +440,7 @@ mod threads_node {
         fn handle(
             &mut self,
             _: Pulse,
-            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            reply: spawned_concurrency::PendingReply<'_, ()>,
             ctx: &Context<Self>,
         ) {
             let __reply_value: () = (|| {
@@ -1368,7 +1368,7 @@ mod early_stop {
         async fn handle(
             &mut self,
             block: Block,
-            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            reply: spawned_concurrency::PendingReply<'_, ()>,
             _: &spawned_concurrency::tasks::Context<Self>,
         ) {
             // Deliberately blocks the only async worker of the group.

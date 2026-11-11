@@ -49,7 +49,7 @@ mod linux {
         async fn handle(
             &mut self,
             m: Work,
-            reply: spawned_concurrency::reply::PendingReply<'_, (u64, u64, Instant)>,
+            reply: spawned_concurrency::PendingReply<'_, (u64, u64, Instant)>,
             _: &Context<Self>,
         ) {
             let __reply_value: (u64, u64, Instant) = async {
@@ -79,7 +79,7 @@ mod linux {
         async fn handle(
             &mut self,
             _: Audit,
-            reply: spawned_concurrency::reply::PendingReply<'_, (String, u64)>,
+            reply: spawned_concurrency::PendingReply<'_, (String, u64)>,
             _: &Context<Self>,
         ) {
             let __reply_value: (String, u64) = {

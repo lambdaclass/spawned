@@ -59,7 +59,7 @@ impl Handler<Get> for Store {
     async fn handle(
         &mut self,
         _: Get,
-        reply: spawned_concurrency::reply::PendingReply<'_, u64>,
+        reply: spawned_concurrency::PendingReply<'_, u64>,
         _: &Context<Self>,
     ) {
         let __reply_value: u64 = {
@@ -73,7 +73,7 @@ impl Handler<Set> for Store {
     async fn handle(
         &mut self,
         Set(value): Set,
-        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
         self.log.push(Access::Write(value));
@@ -85,7 +85,7 @@ impl Handler<Log> for Store {
     async fn handle(
         &mut self,
         _: Log,
-        reply: spawned_concurrency::reply::PendingReply<'_, Vec<Access>>,
+        reply: spawned_concurrency::PendingReply<'_, Vec<Access>>,
         _: &Context<Self>,
     ) {
         reply.reply(self.log.clone());
@@ -109,7 +109,7 @@ impl Handler<Bump> for Worker {
     async fn handle(
         &mut self,
         _: Bump,
-        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
         for _ in 0..self.noise {

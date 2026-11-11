@@ -64,7 +64,7 @@ impl Handler<Step> for Worker {
     async fn handle(
         &mut self,
         msg: Step,
-        reply: spawned_concurrency::reply::PendingReply<'_, u64>,
+        reply: spawned_concurrency::PendingReply<'_, u64>,
         _: &Context<Self>,
     ) {
         let __reply_value: u64 = {
@@ -96,7 +96,7 @@ impl Handler<Crash> for Worker {
     async fn handle(
         &mut self,
         _: Crash,
-        _reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _reply: spawned_concurrency::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
         panic!("soak injected handler failure");
@@ -115,7 +115,7 @@ impl Handler<Watch> for Watcher {
     async fn handle(
         &mut self,
         msg: Watch,
-        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
         ctx: &Context<Self>,
     ) {
         for (child, panic) in msg.0 {
@@ -128,7 +128,7 @@ impl Handler<Down> for Watcher {
     async fn handle(
         &mut self,
         msg: Down,
-        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
         let panic = self
@@ -151,7 +151,7 @@ impl Handler<Remaining> for Watcher {
     async fn handle(
         &mut self,
         _: Remaining,
-        reply: spawned_concurrency::reply::PendingReply<'_, usize>,
+        reply: spawned_concurrency::PendingReply<'_, usize>,
         _: &Context<Self>,
     ) {
         reply.reply(self.pending.len());

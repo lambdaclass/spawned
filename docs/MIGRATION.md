@@ -48,6 +48,13 @@ every change; this guide covers what you need to edit when upgrading.
 | `SupervisorConfig { strategy: s, max_restarts: n, ..Default::default() }` | `SupervisorConfig::new().strategy(s).max_restarts(n)` (or assign fields of `SupervisorConfig::default()`) |
 | `Backoff { initial: a, jitter: false, seed: Some(7), ..Default::default() }` | `Backoff::new().initial(a).jitter(false).seed(7)` |
 | `metrics::Config { timing_sample_every: n }` | `metrics::Config::new().timing_sample_every(n)` |
+| `#[handler]` on an `#[actor]` method | `#[request_handler]` (answers with the return value) or `#[send_handler]` |
+| `#[send_handler]` method returning a value | `#[request_handler]` (a send handler must return `()`; it used to answer a `request` with the value) |
+| `impl Receiver<M> for MyType` | not possible: `Receiver` is sealed (use `ActorRef`/`Context`, or `spawned_test`'s probe) |
+| `spawned_concurrency::reply::{PendingReply, ReplyTo, ..}` | `spawned_concurrency::{PendingReply, ReplyTo, ..}` (the `reply` module is hidden; jobs types are under `tasks::`/`threads::`) |
+| `actor.__in_turn(f)`, `reply.__discharge_stopped()`, `reply::reply_pair` *(0.8 pre-release, hidden)* | `spawned_test::{tasks, threads}::in_actor`, `spawned_test::reply_pair()`, `spawned_test::detached_reply()` |
+| `spawned_concurrency::lifecycle_trace` without the `lifecycle-trace` feature | only with the feature (test-only, no stability promise) |
+| `spawned_rt::time::{to_ticks, from_ticks, now_ticks, MAX_TICKS}` | still public for spawned-concurrency, `#[doc(hidden)]`, no stability promise |
 
 ### Exit signals, startup and runtime drops as in OTP (ranks 5e, 5f, 5g, targets 0.8, in progress)
 
@@ -769,9 +776,9 @@ The `#[actor]` macro supports three handler attributes:
 |-----------|---------|
 | `#[request_handler]` | Messages that expect a reply (`Response<T>`) |
 | `#[send_handler]` | Fire-and-forget messages (no return or `-> ()`) |
-| `#[handler]` | Generic — works for either kind |
+| `#[handler]` | Generic — works for either kind (removed in 0.8) |
 
-All three generate the same `impl Handler<M>` code. The distinction is semantic: use `#[request_handler]` and `#[send_handler]` to document intent, or `#[handler]` when you don't want to commit to a specific kind.
+In 0.5 to 0.7 all three generate the same `impl Handler<M>` code. Since 0.8, `#[handler]` is removed and a `#[send_handler]` method must return `()` (see the 0.7 to 0.8 table).
 
 Handler signature: `fn name(&mut self, msg: MessageType, ctx: &Context<Self>) -> ReturnType`
 

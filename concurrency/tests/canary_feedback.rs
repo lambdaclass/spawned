@@ -36,7 +36,7 @@ impl Handler<Hold> for Worker {
     async fn handle(
         &mut self,
         hold: Hold,
-        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
         let _ = hold.entered.send(());
@@ -48,7 +48,7 @@ impl Handler<Quit> for Worker {
     async fn handle(
         &mut self,
         quit: Quit,
-        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
         ctx: &Context<Self>,
     ) {
         ctx.stop_with_reason(quit.0);
@@ -408,7 +408,7 @@ async fn panicked_turn_is_cleared_before_stopped_hook() {
         async fn handle(
             &mut self,
             _: Quit,
-            _reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            _reply: spawned_concurrency::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
             panic!("diagnostic turn cleanup regression");

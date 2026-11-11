@@ -57,6 +57,19 @@
   - `SupervisorConfig`, `Backoff` and `metrics::Config` are
     `#[non_exhaustive]` with builders (`new()` plus one setter per field;
     `Backoff::seed(u64)`).
+  - Hidden and sealed surface: `Receiver<M>` is sealed (it gained a
+    required method in 0.8; sealing lets the next one be added freely). The
+    `reply` module is `#[doc(hidden)]` (its types are at the crate root and
+    under `tasks`/`threads`; macros emit root paths). Test hooks
+    (`ActorRef::__in_turn`, `PendingReply::__discharge_stopped`,
+    `reply_pair`, `PendingReply::detached`) move into
+    `#[doc(hidden)] __private`, which spawned-test uses and which carries no
+    semver promise. `lifecycle_trace` is public only with the
+    `lifecycle-trace` feature; `spawned_rt::time`'s tick functions are
+    `#[doc(hidden)]`.
+  - Macros: `#[handler]` is removed (use `#[request_handler]` or
+    `#[send_handler]`), and a `#[send_handler]` method returning a value is
+    a compile error (it used to answer a `request` with it).
 - Deferred replies and jobs, fixes from the 0.8 pre-release review: a job
   deadline still fires while the result waits for scheduled emits, and the
   job keeps its `MAX_OUTSTANDING` credit until its terminal message; a job

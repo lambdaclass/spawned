@@ -21,7 +21,7 @@ impl Handler<Packet> for Sink {
     async fn handle(
         &mut self,
         packet: Packet,
-        reply: spawned_concurrency::reply::PendingReply<'_, usize>,
+        reply: spawned_concurrency::PendingReply<'_, usize>,
         _: &Context<Self>,
     ) {
         let __reply_value: usize = {
@@ -43,7 +43,7 @@ impl Handler<Total> for Sink {
     async fn handle(
         &mut self,
         _: Total,
-        reply: spawned_concurrency::reply::PendingReply<'_, usize>,
+        reply: spawned_concurrency::PendingReply<'_, usize>,
         _: &Context<Self>,
     ) {
         reply.reply(self.0);
@@ -55,7 +55,7 @@ impl Handler<Packet> for Forwarder {
     async fn handle(
         &mut self,
         packet: Packet,
-        reply: spawned_concurrency::reply::PendingReply<'_, usize>,
+        reply: spawned_concurrency::PendingReply<'_, usize>,
         _: &Context<Self>,
     ) {
         reply.reply(self.0.request(packet).await.unwrap());

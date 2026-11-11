@@ -115,7 +115,7 @@ impl spawned_concurrency::tasks::Handler<StoreOp> for AsyncStore {
     async fn handle(
         &mut self,
         op: StoreOp,
-        reply: spawned_concurrency::reply::PendingReply<'_, Option<u64>>,
+        reply: spawned_concurrency::PendingReply<'_, Option<u64>>,
         _: &spawned_concurrency::tasks::Context<Self>,
     ) {
         // Yield inside the turn so concurrent requests really queue up.
@@ -134,7 +134,7 @@ impl spawned_concurrency::threads::Handler<StoreOp> for NativeStore {
     fn handle(
         &mut self,
         op: StoreOp,
-        reply: spawned_concurrency::reply::PendingReply<'_, Option<u64>>,
+        reply: spawned_concurrency::PendingReply<'_, Option<u64>>,
         _: &spawned_concurrency::threads::Context<Self>,
     ) {
         reply.reply(self.0.apply(op));

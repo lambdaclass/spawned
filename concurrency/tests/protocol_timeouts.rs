@@ -61,7 +61,7 @@ mod asynchronous {
         async fn handle(
             &mut self,
             msg: timed_protocol::Work,
-            reply: spawned_concurrency::reply::PendingReply<'_, u64>,
+            reply: spawned_concurrency::PendingReply<'_, u64>,
             _: &Context<Self>,
         ) {
             let __reply_value: u64 = {
@@ -75,7 +75,7 @@ mod asynchronous {
         async fn handle(
             &mut self,
             msg: timed_protocol::Brief,
-            reply: spawned_concurrency::reply::PendingReply<'_, u64>,
+            reply: spawned_concurrency::PendingReply<'_, u64>,
             _: &Context<Self>,
         ) {
             let __reply_value: u64 = {
@@ -89,7 +89,7 @@ mod asynchronous {
         async fn handle(
             &mut self,
             msg: legacy_protocol::Legacy,
-            reply: spawned_concurrency::reply::PendingReply<'_, u64>,
+            reply: spawned_concurrency::PendingReply<'_, u64>,
             _: &Context<Self>,
         ) {
             let __reply_value: u64 = {
@@ -157,7 +157,7 @@ mod synchronous {
         fn handle(
             &mut self,
             msg: timed_protocol::Work,
-            reply: spawned_concurrency::reply::PendingReply<'_, u64>,
+            reply: spawned_concurrency::PendingReply<'_, u64>,
             _: &Context<Self>,
         ) {
             let __reply_value: u64 = {
@@ -171,7 +171,7 @@ mod synchronous {
         fn handle(
             &mut self,
             msg: timed_protocol::Brief,
-            reply: spawned_concurrency::reply::PendingReply<'_, u64>,
+            reply: spawned_concurrency::PendingReply<'_, u64>,
             _: &Context<Self>,
         ) {
             let __reply_value: u64 = {
@@ -210,7 +210,7 @@ mod synchronous {
         fn handle(
             &mut self,
             _: zero_protocol::Zero,
-            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            reply: spawned_concurrency::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
             reply.reply(());
@@ -220,7 +220,7 @@ mod synchronous {
         fn handle(
             &mut self,
             _: naming_protocol::Timeout,
-            reply: spawned_concurrency::reply::PendingReply<'_, u64>,
+            reply: spawned_concurrency::PendingReply<'_, u64>,
             _: &Context<Self>,
         ) {
             reply.reply(31);
@@ -230,7 +230,7 @@ mod synchronous {
         fn handle(
             &mut self,
             _: naming_protocol::ActorRef,
-            reply: spawned_concurrency::reply::PendingReply<'_, u64>,
+            reply: spawned_concurrency::PendingReply<'_, u64>,
             _: &Context<Self>,
         ) {
             reply.reply(32);
@@ -240,7 +240,7 @@ mod synchronous {
         fn handle(
             &mut self,
             _: naming_protocol::TimeoutOverride,
-            reply: spawned_concurrency::reply::PendingReply<'_, u64>,
+            reply: spawned_concurrency::PendingReply<'_, u64>,
             _: &Context<Self>,
         ) {
             reply.reply(33);
@@ -250,7 +250,7 @@ mod synchronous {
         fn handle(
             &mut self,
             _: naming_protocol::Dispatch0,
-            reply: spawned_concurrency::reply::PendingReply<'_, u64>,
+            reply: spawned_concurrency::PendingReply<'_, u64>,
             _: &Context<Self>,
         ) {
             reply.reply(34);
@@ -275,7 +275,7 @@ mod synchronous {
         fn handle(
             &mut self,
             msg: owned_protocol::Owned,
-            reply: spawned_concurrency::reply::PendingReply<'_, u64>,
+            reply: spawned_concurrency::PendingReply<'_, u64>,
             _: &Context<Self>,
         ) {
             reply.reply(msg.__spawned_request_timeout.value);

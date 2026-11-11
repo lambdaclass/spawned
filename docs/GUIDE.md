@@ -412,7 +412,7 @@ When you need to send a specific message type to an actor without knowing its co
 pub type Recipient<M> = Arc<dyn Receiver<M>>;
 ```
 
-`Receiver<M>` is the object-safe trait that provides `send()` and `send_request()` for a single message type (on a `Recipient`, `send_request` takes a `Deadline`: `Deadline::after(d)` or `d.into()`).
+`Receiver<M>` is the object-safe trait that provides `send()` and `send_request()` for a single message type (on a `Recipient`, `send_request` takes a `Deadline`: `Deadline::after(d)` or `d.into()`). It is sealed: `ActorRef` and `Context` implement it, and test doubles come from `spawned_test`.
 
 ### Getting a Recipient
 

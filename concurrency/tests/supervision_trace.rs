@@ -99,7 +99,7 @@ impl Handler<HoldForDrain> for Worker {
     async fn handle(
         &mut self,
         msg: HoldForDrain,
-        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
         msg.0.send(()).unwrap();
@@ -120,7 +120,7 @@ impl Handler<DropBomb> for Worker {
     async fn handle(
         &mut self,
         _: DropBomb,
-        _reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _reply: spawned_concurrency::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
         panic!("discarded message must not be handled");
@@ -218,7 +218,7 @@ impl Handler<Crash> for Worker {
     async fn handle(
         &mut self,
         _: Crash,
-        _reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _reply: spawned_concurrency::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
         panic!("injected child failure");
@@ -228,7 +228,7 @@ impl Handler<Quit> for Worker {
     async fn handle(
         &mut self,
         _: Quit,
-        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
         ctx: &Context<Self>,
     ) {
         ctx.stop();
@@ -239,7 +239,7 @@ impl Handler<ExitWith> for Worker {
     async fn handle(
         &mut self,
         msg: ExitWith,
-        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
         ctx: &Context<Self>,
     ) {
         ctx.stop_with_reason(msg.0);
@@ -624,7 +624,7 @@ impl Handler<Crash> for ExitOnceDuringRestart {
     async fn handle(
         &mut self,
         _: Crash,
-        _reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _reply: spawned_concurrency::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
         panic!("injected child failure");

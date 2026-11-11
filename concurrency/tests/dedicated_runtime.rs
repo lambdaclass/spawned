@@ -95,7 +95,7 @@ impl Handler<Inspect> for Probe {
     async fn handle(
         &mut self,
         operation: Inspect,
-        reply: spawned_concurrency::reply::PendingReply<'_, Observation>,
+        reply: spawned_concurrency::PendingReply<'_, Observation>,
         _: &Context<Self>,
     ) {
         let __reply_value: Observation = {
@@ -158,7 +158,7 @@ impl Handler<Ping> for Child {
     async fn handle(
         &mut self,
         _: Ping,
-        reply: spawned_concurrency::reply::PendingReply<'_, u64>,
+        reply: spawned_concurrency::PendingReply<'_, u64>,
         _: &Context<Self>,
     ) {
         let __reply_value: u64 = {
@@ -176,7 +176,7 @@ impl Handler<Nested> for Probe {
     async fn handle(
         &mut self,
         _: Nested,
-        reply: spawned_concurrency::reply::PendingReply<'_, u64>,
+        reply: spawned_concurrency::PendingReply<'_, u64>,
         _: &Context<Self>,
     ) {
         let __reply_value: u64 = {
@@ -202,7 +202,7 @@ impl Handler<Exchange> for Probe {
     async fn handle(
         &mut self,
         message: Exchange,
-        reply: spawned_concurrency::reply::PendingReply<'_, u64>,
+        reply: spawned_concurrency::PendingReply<'_, u64>,
         _: &Context<Self>,
     ) {
         let __reply_value: u64 = {

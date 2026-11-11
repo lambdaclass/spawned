@@ -42,7 +42,7 @@ impl Handler<metrics_protocol::Query> for Probe {
     async fn handle(
         &mut self,
         _: metrics_protocol::Query,
-        reply: spawned_concurrency::reply::PendingReply<'_, u64>,
+        reply: spawned_concurrency::PendingReply<'_, u64>,
         _: &Context<Self>,
     ) {
         reply.reply(9);
@@ -52,7 +52,7 @@ impl Handler<Ping> for Probe {
     async fn handle(
         &mut self,
         _: Ping,
-        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
         reply.reply(());
@@ -62,7 +62,7 @@ impl Handler<Crash> for Probe {
     async fn handle(
         &mut self,
         _: Crash,
-        _reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _reply: spawned_concurrency::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
         panic!("metric panic regression");
@@ -72,7 +72,7 @@ impl Handler<Hold> for Probe {
     async fn handle(
         &mut self,
         hold: Hold,
-        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
         let _ = hold.entered.send(());
@@ -258,7 +258,7 @@ fn metrics_conserve_work_across_all_lifecycle_paths() {
         fn handle(
             &mut self,
             _: metrics_protocol::Query,
-            reply: spawned_concurrency::reply::PendingReply<'_, u64>,
+            reply: spawned_concurrency::PendingReply<'_, u64>,
             _: &ThreadContext<Self>,
         ) {
             reply.reply(9);
@@ -268,7 +268,7 @@ fn metrics_conserve_work_across_all_lifecycle_paths() {
         fn handle(
             &mut self,
             _: Ping,
-            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            reply: spawned_concurrency::PendingReply<'_, ()>,
             _: &ThreadContext<Self>,
         ) {
             reply.reply(());
@@ -278,7 +278,7 @@ fn metrics_conserve_work_across_all_lifecycle_paths() {
         fn handle(
             &mut self,
             _: Crash,
-            _reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            _reply: spawned_concurrency::PendingReply<'_, ()>,
             _: &ThreadContext<Self>,
         ) {
             panic!("native metric panic");

@@ -48,7 +48,10 @@ mod tasks_mode {
         R: Send + 'static,
         F: FnOnce(&mut Owner, &Context<Owner>) -> R + Send + 'static,
     {
-        actor.__in_turn(f).unwrap().await.unwrap()
+        spawned_concurrency::__private::in_turn(&actor, f)
+            .unwrap()
+            .await
+            .unwrap()
     }
 
     pub struct Owner {

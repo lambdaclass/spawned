@@ -20,7 +20,7 @@ impl Handler<Apply> for Counter {
     async fn handle(
         &mut self,
         msg: Apply,
-        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
         {
@@ -39,7 +39,7 @@ impl Handler<Read> for Counter {
     async fn handle(
         &mut self,
         _: Read,
-        reply: spawned_concurrency::reply::PendingReply<'_, usize>,
+        reply: spawned_concurrency::PendingReply<'_, usize>,
         _: &Context<Self>,
     ) {
         reply.reply(self.0);

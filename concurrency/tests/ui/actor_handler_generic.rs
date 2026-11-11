@@ -10,7 +10,7 @@ pub struct Counter(u64);
 use spawned_concurrency::threads::{Actor, Context, Handler};
 #[actor]
 impl Counter {
-    #[handler]
+    #[send_handler]
     fn any<M: spawned_concurrency::message::Message<Result = ()>>(&mut self, _msg: M, _ctx: &Context<Self>) {}
 }
 fn main() {}

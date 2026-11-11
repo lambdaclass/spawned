@@ -109,7 +109,7 @@ mod native {
         fn handle(
             &mut self,
             watch: Watch,
-            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            reply: spawned_concurrency::PendingReply<'_, ()>,
             ctx: &Context<Self>,
         ) {
             ctx.trap_exit(true);
@@ -122,7 +122,7 @@ mod native {
         fn handle(
             &mut self,
             ping: Ping,
-            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            reply: spawned_concurrency::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
             let _ = self.0.send(Event::Ping(ping.0));
@@ -133,7 +133,7 @@ mod native {
         fn handle(
             &mut self,
             down: Down,
-            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            reply: spawned_concurrency::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
             let _ = self.0.send(Event::Down(down.reason));
@@ -147,7 +147,7 @@ mod native {
         fn handle(
             &mut self,
             burst: Burst<Recipient<Ping>>,
-            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            reply: spawned_concurrency::PendingReply<'_, ()>,
             ctx: &Context<Self>,
         ) {
             for i in 0..burst.count {
@@ -195,7 +195,7 @@ mod native {
         fn handle(
             &mut self,
             _: Boom,
-            _reply: spawned_concurrency::reply::PendingReply<'_, u64>,
+            _reply: spawned_concurrency::PendingReply<'_, u64>,
             _: &Context<Self>,
         ) {
             panic!("request handler panic");
@@ -268,7 +268,7 @@ mod tasks {
         async fn handle(
             &mut self,
             watch: Watch,
-            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            reply: spawned_concurrency::PendingReply<'_, ()>,
             ctx: &Context<Self>,
         ) {
             ctx.trap_exit(true);
@@ -281,7 +281,7 @@ mod tasks {
         async fn handle(
             &mut self,
             ping: Ping,
-            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            reply: spawned_concurrency::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
             let _ = self.0.send(Event::Ping(ping.0));
@@ -292,7 +292,7 @@ mod tasks {
         async fn handle(
             &mut self,
             down: Down,
-            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            reply: spawned_concurrency::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
             let _ = self.0.send(Event::Down(down.reason));
@@ -306,7 +306,7 @@ mod tasks {
         async fn handle(
             &mut self,
             burst: Burst<Recipient<Ping>>,
-            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            reply: spawned_concurrency::PendingReply<'_, ()>,
             ctx: &Context<Self>,
         ) {
             for i in 0..burst.count {
@@ -364,7 +364,7 @@ mod tasks {
         async fn handle(
             &mut self,
             _: Tick,
-            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            reply: spawned_concurrency::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
             let _ = self.0.send(Instant::now());
@@ -454,7 +454,7 @@ mod tasks {
         async fn handle(
             &mut self,
             stamp: Stamp,
-            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            reply: spawned_concurrency::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
             let _ = self.log.send((self.generation, stamp.0));
@@ -465,7 +465,7 @@ mod tasks {
         async fn handle(
             &mut self,
             _: Crash,
-            _reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            _reply: spawned_concurrency::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
             {
@@ -545,7 +545,7 @@ mod tasks {
         async fn handle(
             &mut self,
             _: Boom,
-            _reply: spawned_concurrency::reply::PendingReply<'_, u64>,
+            _reply: spawned_concurrency::PendingReply<'_, u64>,
             _: &Context<Self>,
         ) {
             panic!("request handler panic");

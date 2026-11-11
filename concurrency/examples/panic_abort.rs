@@ -46,7 +46,7 @@ mod native {
         fn handle(
             &mut self,
             _: Boom,
-            _reply: spawned_concurrency::reply::PendingReply<'_, u64>,
+            _reply: spawned_concurrency::PendingReply<'_, u64>,
             _: &Context<Self>,
         ) {
             panic!("{PANIC_TEXT}");
@@ -74,7 +74,7 @@ mod tasks {
         async fn handle(
             &mut self,
             _: Boom,
-            _reply: spawned_concurrency::reply::PendingReply<'_, u64>,
+            _reply: spawned_concurrency::PendingReply<'_, u64>,
             _: &Context<Self>,
         ) {
             panic!("{PANIC_TEXT}");

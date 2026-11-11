@@ -67,10 +67,10 @@ pub use inbox::{Outcome, Received};
 /// driving every turn the reply depends on: a deferred reply answered by a
 /// later message is never answered while the test waits for it first.
 pub fn reply_pair<R: Send + 'static>() -> (
-    spawned_concurrency::reply::PendingReply<'static, R>,
-    spawned_concurrency::reply::ReplyReceiver<R>,
+    spawned_concurrency::PendingReply<'static, R>,
+    spawned_concurrency::ReplyReceiver<R>,
 ) {
-    spawned_concurrency::reply::reply_pair(spawned_concurrency::reply::Deadline::Never)
+    spawned_concurrency::__private::reply_pair(spawned_concurrency::Deadline::Never)
 }
 
 /// The `PendingReply` a handler receives for a sent message (no caller),
@@ -80,5 +80,5 @@ pub fn reply_pair<R: Send + 'static>() -> (
 /// actor.handle(Tick, spawned_test::detached_reply(), &ctx).await;
 /// ```
 pub fn detached_reply<R: Send + 'static>() -> spawned_concurrency::PendingReply<'static, R> {
-    spawned_concurrency::PendingReply::detached()
+    spawned_concurrency::__private::detached_reply()
 }

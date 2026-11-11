@@ -43,7 +43,7 @@ impl Handler<Next> for Counter {
     async fn handle(
         &mut self,
         _: Next,
-        reply: spawned_concurrency::reply::PendingReply<'_, usize>,
+        reply: spawned_concurrency::PendingReply<'_, usize>,
         _: &Context<Self>,
     ) {
         let __reply_value: usize = {
@@ -57,7 +57,7 @@ impl Handler<Crash> for Counter {
     async fn handle(
         &mut self,
         _: Crash,
-        _reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _reply: spawned_concurrency::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
         {
@@ -543,7 +543,7 @@ impl Handler<Crash> for MaybeStop {
     async fn handle(
         &mut self,
         _: Crash,
-        _reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _reply: spawned_concurrency::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
         {

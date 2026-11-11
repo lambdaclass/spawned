@@ -52,7 +52,7 @@ mod linux {
         async fn handle(
             &mut self,
             m: Wire,
-            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            reply: spawned_concurrency::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
             self.next = m.0;
@@ -72,7 +72,7 @@ mod linux {
         async fn handle(
             &mut self,
             mut m: Work,
-            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            reply: spawned_concurrency::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
             {
@@ -100,7 +100,7 @@ mod linux {
         async fn handle(
             &mut self,
             _: Audit,
-            reply: spawned_concurrency::reply::PendingReply<'_, (String, String, u64)>,
+            reply: spawned_concurrency::PendingReply<'_, (String, String, u64)>,
             _: &Context<Self>,
         ) {
             let __reply_value: (String, String, u64) = {

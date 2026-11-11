@@ -26,7 +26,7 @@ impl Handler<Ping> for Worker {
     async fn handle(
         &mut self,
         _: Ping,
-        reply: spawned_concurrency::reply::PendingReply<'_, String>,
+        reply: spawned_concurrency::PendingReply<'_, String>,
         _: &Context<Self>,
     ) {
         reply.reply(
@@ -41,7 +41,7 @@ impl Handler<Down> for Worker {
     async fn handle(
         &mut self,
         _: Down,
-        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
         reply.reply(());
@@ -364,7 +364,7 @@ impl Handler<Queued> for FailedStartup {
     async fn handle(
         &mut self,
         msg: Queued,
-        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
         self.handled.fetch_add(1, Ordering::SeqCst);
@@ -578,7 +578,7 @@ impl Handler<Hold> for SnapshotHeld {
     async fn handle(
         &mut self,
         msg: Hold,
-        _: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _: spawned_concurrency::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
         let _ = msg.0.send(());
@@ -625,7 +625,7 @@ impl Handler<CheckAdmission> for HelperAware {
     async fn handle(
         &mut self,
         _: CheckAdmission,
-        reply: spawned_concurrency::reply::PendingReply<'_, bool>,
+        reply: spawned_concurrency::PendingReply<'_, bool>,
         ctx: &Context<Self>,
     ) {
         reply.reply(ctx.spawn_helper(async {}).is_err());

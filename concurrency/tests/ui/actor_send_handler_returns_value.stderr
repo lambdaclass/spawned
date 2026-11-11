@@ -1,0 +1,13 @@
+error: #[send_handler] methods return `()`; use #[request_handler] to answer a request with a value
+  --> tests/ui/actor_send_handler_returns_value.rs:13:67
+   |
+13 |     async fn ping(&mut self, _msg: Ping, _ctx: &Context<Self>) -> u32 {
+   |                                                                   ^^^
+
+warning: unused imports: `Actor`, `Context`, and `Handler`
+ --> tests/ui/actor_send_handler_returns_value.rs:4:34
+  |
+4 | use spawned_concurrency::tasks::{Actor, Context, Handler};
+  |                                  ^^^^^  ^^^^^^^  ^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default

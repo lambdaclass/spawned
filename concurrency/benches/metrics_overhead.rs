@@ -21,7 +21,7 @@ impl tasks::Handler<Work> for Sink {
     async fn handle(
         &mut self,
         work: Work,
-        reply: spawned_concurrency::reply::PendingReply<'_, u64>,
+        reply: spawned_concurrency::PendingReply<'_, u64>,
         _: &tasks::Context<Self>,
     ) {
         reply.reply(compute(work));
@@ -32,7 +32,7 @@ impl threads::Handler<Work> for Sink {
     fn handle(
         &mut self,
         work: Work,
-        reply: spawned_concurrency::reply::PendingReply<'_, u64>,
+        reply: spawned_concurrency::PendingReply<'_, u64>,
         _: &threads::Context<Self>,
     ) {
         reply.reply(compute(work));

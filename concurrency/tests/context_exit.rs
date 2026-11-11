@@ -23,7 +23,7 @@ fn native_explicit_exit_is_cooperative_and_first_reason_wins() {
         fn handle(
             &mut self,
             exit: Exit,
-            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            reply: spawned_concurrency::PendingReply<'_, ()>,
             ctx: &Context<Self>,
         ) {
             ctx.stop_with_reason(exit.0);
@@ -59,7 +59,7 @@ async fn async_explicit_exit_is_cooperative_and_first_reason_wins() {
         async fn handle(
             &mut self,
             exit: Exit,
-            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            reply: spawned_concurrency::PendingReply<'_, ()>,
             ctx: &Context<Self>,
         ) {
             ctx.stop_with_reason(exit.0);

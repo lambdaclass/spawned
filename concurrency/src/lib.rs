@@ -41,7 +41,7 @@
 //! - No return type — fire-and-forget send
 //!
 //! **Actors** — `#[actor]` on an impl block generates `impl Actor` and `Handler<M>`
-//! impls from annotated methods (`#[request_handler]`, `#[send_handler]`, `#[handler]`).
+//! impls from annotated methods (`#[request_handler]`, `#[send_handler]`, `#[deferred_handler]`).
 //! Lifecycle hooks use `#[started]` and `#[stopped]`.
 //!
 //! **Type-Erased References** — Each protocol generates an `XRef` type alias
@@ -90,12 +90,19 @@ pub mod failpoints;
 
 pub mod child_handle;
 pub mod error;
-#[cfg_attr(not(feature = "async"), allow(dead_code))]
+// Test-only: public (and unstable) with the `lifecycle-trace` feature.
+#[cfg(feature = "lifecycle-trace")]
 pub mod lifecycle_trace;
+#[cfg(not(feature = "lifecycle-trace"))]
+#[allow(dead_code)]
+pub(crate) mod lifecycle_trace;
 pub mod link;
 pub mod message;
 pub mod monitor;
 pub mod registry;
+// Reached through the crate root, `tasks` and `threads`; the module path
+// is not part of the API.
+#[doc(hidden)]
 pub mod reply;
 pub mod response;
 #[cfg(feature = "async")]
@@ -132,6 +139,63 @@ mod native_link_regression_tests;
 
 mod actor_cleanup;
 mod mailbox;
+
+/// Hooks for `spawned-test` and macro-generated code. Not part of the public
+/// API: no semver promise, may change in any release.
+#[doc(hidden)]
+pub mod __private {
+    use crate::reply::{Deadline, PendingReply, ReplyReceiver};
+    use crate::ActorError;
+
+    /// Seals [`Receiver`](crate::tasks::Receiver): implemented by
+    /// `ActorRef`, `Context` and spawned-test's probe only.
+    pub trait Sealed {}
+
+    /// A `PendingReply` not tied to an actor turn, and its receiver
+    /// (`spawned_test::reply_pair`).
+    pub fn reply_pair<R: Send + 'static>(
+        deadline: Deadline,
+    ) -> (PendingReply<'static, R>, ReplyReceiver<R>) {
+        crate::reply::reply_pair(deadline)
+    }
+
+    /// The `PendingReply` of a sent message (`spawned_test::detached_reply`).
+    pub fn detached_reply<R: Send + 'static>() -> PendingReply<'static, R> {
+        PendingReply::detached()
+    }
+
+    /// Answer `ActorStopped` (a test double standing in for an absent actor).
+    pub fn discharge_stopped<R: Send + 'static>(reply: PendingReply<'_, R>) {
+        reply.discharge_stopped()
+    }
+
+    /// Run `f` in one of the actor's turns (`spawned_test::tasks::in_actor`).
+    #[cfg(feature = "async")]
+    pub fn in_turn<A, R, F>(
+        actor: &crate::tasks::ActorRef<A>,
+        f: F,
+    ) -> Result<ReplyReceiver<R>, ActorError>
+    where
+        A: crate::tasks::Actor,
+        R: Send + 'static,
+        F: FnOnce(&mut A, &crate::tasks::Context<A>) -> R + Send + 'static,
+    {
+        actor.in_turn(f)
+    }
+
+    /// Run `f` in one of the actor's turns (`spawned_test::threads::in_actor`).
+    pub fn in_turn_threads<A, R, F>(
+        actor: &crate::threads::ActorRef<A>,
+        f: F,
+    ) -> Result<ReplyReceiver<R>, ActorError>
+    where
+        A: crate::threads::Actor,
+        R: Send + 'static,
+        F: FnOnce(&mut A, &crate::threads::Context<A>) -> R + Send + 'static,
+    {
+        actor.in_turn(f)
+    }
+}
 
 mod instrumentation;
 #[cfg(feature = "metrics")]

@@ -100,7 +100,7 @@ impl Handler<Crash> for Worker {
     async fn handle(
         &mut self,
         _: Crash,
-        _reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _reply: spawned_concurrency::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
         panic!("injected child failure");
@@ -110,7 +110,7 @@ impl Handler<Ping> for Worker {
     async fn handle(
         &mut self,
         _: Ping,
-        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
         reply.reply(());
@@ -672,7 +672,7 @@ impl Handler<LinkTo> for Linker {
     async fn handle(
         &mut self,
         msg: LinkTo,
-        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
         ctx: &Context<Self>,
     ) {
         ctx.link(&msg.0);
@@ -683,7 +683,7 @@ impl Handler<Watch> for Linker {
     async fn handle(
         &mut self,
         msg: Watch,
-        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
         ctx: &Context<Self>,
     ) {
         ctx.monitor(&msg.0);
@@ -694,7 +694,7 @@ impl Handler<Ping> for Linker {
     async fn handle(
         &mut self,
         _: Ping,
-        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
         reply.reply(());
@@ -704,7 +704,7 @@ impl Handler<Down> for Linker {
     async fn handle(
         &mut self,
         msg: Down,
-        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
         let _ = self.downs.send(msg.reason);
@@ -1176,7 +1176,7 @@ mod native {
         fn handle(
             &mut self,
             _: Crash,
-            _reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            _reply: spawned_concurrency::PendingReply<'_, ()>,
             _: &NativeContext<Self>,
         ) {
             panic!("injected native failure");
@@ -1189,7 +1189,7 @@ mod native {
         fn handle(
             &mut self,
             msg: Hold,
-            reply: spawned_concurrency::reply::PendingReply<'_, u32>,
+            reply: spawned_concurrency::PendingReply<'_, u32>,
             _: &NativeContext<Self>,
         ) {
             msg.0.send(reply.defer().unwrap()).unwrap();
@@ -1199,7 +1199,7 @@ mod native {
         fn handle(
             &mut self,
             _: Ping,
-            _: spawned_concurrency::reply::PendingReply<'_, ()>,
+            _: spawned_concurrency::PendingReply<'_, ()>,
             _: &NativeContext<Self>,
         ) {
         }
@@ -1260,7 +1260,7 @@ mod native {
         fn handle(
             &mut self,
             msg: LinkTo,
-            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            reply: spawned_concurrency::PendingReply<'_, ()>,
             ctx: &NativeContext<Self>,
         ) {
             ctx.link(&msg.0);
@@ -1315,7 +1315,7 @@ mod native {
         fn handle(
             &mut self,
             msg: LinkTo,
-            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            reply: spawned_concurrency::PendingReply<'_, ()>,
             ctx: &NativeContext<Self>,
         ) {
             ctx.link(&msg.0);

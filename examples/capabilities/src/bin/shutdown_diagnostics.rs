@@ -19,7 +19,7 @@ impl Handler<Hold> for Worker {
     async fn handle(
         &mut self,
         msg: Hold,
-        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
         let _ = msg.0.send(());
@@ -35,7 +35,7 @@ impl Handler<Unhealthy> for Worker {
     async fn handle(
         &mut self,
         _: Unhealthy,
-        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
         ctx: &Context<Self>,
     ) {
         // Cooperative abnormal exit, without a panic or forced interruption.

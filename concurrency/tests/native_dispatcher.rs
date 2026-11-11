@@ -19,7 +19,7 @@ impl Handler<Ping> for Healthy {
     async fn handle(
         &mut self,
         _: Ping,
-        reply: spawned_concurrency::reply::PendingReply<'_, u64>,
+        reply: spawned_concurrency::PendingReply<'_, u64>,
         _: &Context<Self>,
     ) {
         let __reply_value: u64 = {

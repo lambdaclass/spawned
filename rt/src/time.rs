@@ -32,9 +32,11 @@ pub fn entropy() -> u64 {
     }
 }
 
+#[doc(hidden)] // clock plumbing for spawned-concurrency; no stability promise
 /// Largest tick value an instant maps to; `u64::MAX` is reserved for "never".
 pub const MAX_TICKS: u64 = u64::MAX - 1;
 
+#[doc(hidden)] // clock plumbing for spawned-concurrency; no stability promise
 /// Nanosecond clock ticks of `instant`, for packing deadlines into atomics.
 ///
 /// Ticks count from a process-wide epoch (the first call), or, under
@@ -45,6 +47,7 @@ pub fn to_ticks(instant: Instant) -> u64 {
     nanos.min(MAX_TICKS as u128) as u64
 }
 
+#[doc(hidden)] // clock plumbing for spawned-concurrency; no stability promise
 /// Inverse of [`to_ticks`].
 pub fn from_ticks(ticks: u64) -> Instant {
     let elapsed = std::time::Duration::from_nanos(ticks.min(MAX_TICKS));
@@ -59,6 +62,7 @@ pub fn from_ticks(ticks: u64) -> Instant {
     }
 }
 
+#[doc(hidden)] // clock plumbing for spawned-concurrency; no stability promise
 /// Ticks of [`Instant::now`].
 pub fn now_ticks() -> u64 {
     to_ticks(Instant::now())

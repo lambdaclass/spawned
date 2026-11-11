@@ -22,7 +22,7 @@ mod asynchronous {
         async fn handle(
             &mut self,
             msg: Item,
-            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            reply: spawned_concurrency::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
             self.0 += N * msg.0;
@@ -33,7 +33,7 @@ mod asynchronous {
         async fn handle(
             &mut self,
             _: Total,
-            reply: spawned_concurrency::reply::PendingReply<'_, u64>,
+            reply: spawned_concurrency::PendingReply<'_, u64>,
             _: &Context<Self>,
         ) {
             reply.reply(self.0);
@@ -87,7 +87,7 @@ mod synchronous {
         fn handle(
             &mut self,
             msg: Item,
-            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            reply: spawned_concurrency::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
             self.0 += N * msg.0;
@@ -98,7 +98,7 @@ mod synchronous {
         fn handle(
             &mut self,
             _: Total,
-            reply: spawned_concurrency::reply::PendingReply<'_, u64>,
+            reply: spawned_concurrency::PendingReply<'_, u64>,
             _: &Context<Self>,
         ) {
             reply.reply(self.0);

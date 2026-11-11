@@ -45,7 +45,7 @@ impl Handler<Hold> for Victim {
     async fn handle(
         &mut self,
         msg: Hold,
-        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
         msg.0.send(()).unwrap();
@@ -58,7 +58,7 @@ impl Handler<Bomb> for Victim {
     async fn handle(
         &mut self,
         _: Bomb,
-        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
         self.0.fetch_add(1, Ordering::SeqCst);
@@ -79,7 +79,7 @@ impl Handler<Down> for Observer {
     async fn handle(
         &mut self,
         down: Down,
-        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
         self.0.send((false, down.reason)).unwrap();
@@ -90,7 +90,7 @@ impl Handler<Ping> for Observer {
     async fn handle(
         &mut self,
         _: Ping,
-        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
         reply.reply(());

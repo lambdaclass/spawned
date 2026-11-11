@@ -15,7 +15,7 @@ impl Handler<Check> for Worker {
     async fn handle(
         &mut self,
         _: Check,
-        reply: spawned_concurrency::reply::PendingReply<'_, (usize, u64)>,
+        reply: spawned_concurrency::PendingReply<'_, (usize, u64)>,
         _: &Context<Self>,
     ) {
         let __reply_value: (usize, u64) = {

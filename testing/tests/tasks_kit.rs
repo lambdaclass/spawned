@@ -235,7 +235,7 @@ impl Handler<Bump> for Counter {
     async fn handle(
         &mut self,
         _: Bump,
-        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
         self.0.fetch_add(1, Ordering::SeqCst);
@@ -246,7 +246,7 @@ impl Handler<Get> for Counter {
     async fn handle(
         &mut self,
         _: Get,
-        reply: spawned_concurrency::reply::PendingReply<'_, usize>,
+        reply: spawned_concurrency::PendingReply<'_, usize>,
         _: &Context<Self>,
     ) {
         reply.reply(self.0.load(Ordering::SeqCst));
@@ -352,7 +352,7 @@ impl Handler<Hang> for Stuck {
     async fn handle(
         &mut self,
         _: Hang,
-        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
         self.0.store(true, Ordering::SeqCst);

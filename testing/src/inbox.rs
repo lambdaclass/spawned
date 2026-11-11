@@ -137,7 +137,7 @@ impl Default for AsyncSignal {
 impl Inbox {
     pub(crate) fn store_deferred<M: Message>(
         &self,
-        token: spawned_concurrency::reply::ReplyTo<M::Result>,
+        token: spawned_concurrency::ReplyTo<M::Result>,
     ) {
         self.deferred
             .lock()
@@ -146,9 +146,7 @@ impl Inbox {
             .or_default()
             .push(Box::new(token));
     }
-    pub(crate) fn take_deferred<M: Message>(
-        &self,
-    ) -> Vec<spawned_concurrency::reply::ReplyTo<M::Result>> {
+    pub(crate) fn take_deferred<M: Message>(&self) -> Vec<spawned_concurrency::ReplyTo<M::Result>> {
         let tokens = self
             .deferred
             .lock()

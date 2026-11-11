@@ -13,7 +13,7 @@ impl Handler<Add> for Worker {
     async fn handle(
         &mut self,
         _: Add,
-        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
         self.0 += 1;
@@ -28,7 +28,7 @@ impl Handler<Fence> for Worker {
     async fn handle(
         &mut self,
         _: Fence,
-        reply: spawned_concurrency::reply::PendingReply<'_, usize>,
+        reply: spawned_concurrency::PendingReply<'_, usize>,
         _: &Context<Self>,
     ) {
         reply.reply(self.0);

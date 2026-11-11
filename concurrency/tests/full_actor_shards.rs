@@ -36,7 +36,7 @@ impl Handler<Thread> for Worker {
     async fn handle(
         &mut self,
         _: Thread,
-        reply: spawned_concurrency::reply::PendingReply<'_, String>,
+        reply: spawned_concurrency::PendingReply<'_, String>,
         _: &Context<Self>,
     ) {
         reply.reply(
@@ -58,7 +58,7 @@ impl Handler<Hold> for Worker {
     async fn handle(
         &mut self,
         msg: Hold,
-        reply: spawned_concurrency::reply::PendingReply<'_, u64>,
+        reply: spawned_concurrency::PendingReply<'_, u64>,
         _: &Context<Self>,
     ) {
         let __reply_value: u64 = {
@@ -77,7 +77,7 @@ impl Handler<Nested> for Worker {
     async fn handle(
         &mut self,
         msg: Nested,
-        reply: spawned_concurrency::reply::PendingReply<'_, u64>,
+        reply: spawned_concurrency::PendingReply<'_, u64>,
         _: &Context<Self>,
     ) {
         let __reply_value: u64 = {
@@ -273,7 +273,7 @@ impl Handler<Freeze> for Worker {
     async fn handle(
         &mut self,
         msg: Freeze,
-        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
         let _ = msg.started.send(());
@@ -357,7 +357,7 @@ impl Handler<Tick> for Worker {
     async fn handle(
         &mut self,
         _: Tick,
-        reply: spawned_concurrency::reply::PendingReply<'_, u64>,
+        reply: spawned_concurrency::PendingReply<'_, u64>,
         _: &Context<Self>,
     ) {
         let __reply_value: u64 = {
@@ -375,10 +375,7 @@ impl Handler<SpawnBlockingChild> for Worker {
     async fn handle(
         &mut self,
         _: SpawnBlockingChild,
-        reply: spawned_concurrency::reply::PendingReply<
-            '_,
-            spawned_concurrency::tasks::ActorRef<Worker>,
-        >,
+        reply: spawned_concurrency::PendingReply<'_, spawned_concurrency::tasks::ActorRef<Worker>>,
         _: &Context<Self>,
     ) {
         reply.reply(
@@ -395,7 +392,7 @@ impl Handler<Helper> for Worker {
     async fn handle(
         &mut self,
         msg: Helper,
-        reply: spawned_concurrency::reply::PendingReply<'_, tokio::task::JoinHandle<u64>>,
+        reply: spawned_concurrency::PendingReply<'_, tokio::task::JoinHandle<u64>>,
         _: &Context<Self>,
     ) {
         reply.reply(tokio::spawn(async move {
@@ -444,7 +441,7 @@ impl Handler<InstallMonitor> for Worker {
     async fn handle(
         &mut self,
         msg: InstallMonitor,
-        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
         msg.observer.monitor(&msg.target);
@@ -455,7 +452,7 @@ impl Handler<spawned_concurrency::Down> for Worker {
     async fn handle(
         &mut self,
         _: spawned_concurrency::Down,
-        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
         self.0.lock().unwrap().push("down");
@@ -470,7 +467,7 @@ impl Handler<Events> for Worker {
     async fn handle(
         &mut self,
         _: Events,
-        reply: spawned_concurrency::reply::PendingReply<'_, Vec<&'static str>>,
+        reply: spawned_concurrency::PendingReply<'_, Vec<&'static str>>,
         _: &Context<Self>,
     ) {
         reply.reply(self.0.lock().unwrap().clone());

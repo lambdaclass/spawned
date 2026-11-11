@@ -905,6 +905,9 @@ impl<A: Actor> Context<A> {
     }
 }
 
+impl<A: Actor> crate::__private::Sealed for Context<A> {}
+impl<A: Actor> crate::__private::Sealed for ActorRef<A> {}
+
 // Bridge: Context<A> implements Receiver<M> for any M that A handles
 impl<A, M> Receiver<M> for Context<A>
 where
@@ -931,8 +934,9 @@ where
 /// Object-safe trait for sending a single message type to an actor.
 ///
 /// Implemented automatically by `ActorRef<A>` and `Context<A>` for any
-/// message type that `A` handles.
-pub trait Receiver<M: Message>: Send + Sync {
+/// message type that `A` handles. Sealed: it cannot be implemented outside
+/// spawned (a method can then be added without a breaking change).
+pub trait Receiver<M: Message>: Send + Sync + crate::__private::Sealed {
     fn send(&self, msg: M) -> Result<(), ActorError>;
     /// Send a request without waiting (`gen_server:send_request/3`); its
     /// deadline is fixed now (the slot carries it). On a [`Recipient`],
@@ -1066,9 +1070,9 @@ impl<A: Actor> ActorRef<A> {
     }
 
     /// Run `f` in one of the actor's turns, with its state and `Context`,
-    /// and receive its result. For tests: use `spawned_test::threads::in_actor`.
-    #[doc(hidden)]
-    pub fn __in_turn<R, F>(&self, f: F) -> Result<ReplyReceiver<R>, ActorError>
+    /// and receive its result. For tests: `spawned_test::threads::in_actor` (through
+    /// `__private`).
+    pub(crate) fn in_turn<R, F>(&self, f: F) -> Result<ReplyReceiver<R>, ActorError>
     where
         R: Send + 'static,
         F: FnOnce(&mut A, &Context<A>) -> R + Send + 'static,

@@ -44,7 +44,7 @@ impl Handler<Peer> for Peers {
     async fn handle(
         &mut self,
         msg: Peer,
-        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
         self.peers.push(msg.0);
@@ -55,7 +55,7 @@ impl Handler<Snapshot> for Peers {
     async fn handle(
         &mut self,
         _: Snapshot,
-        reply: spawned_concurrency::reply::PendingReply<'_, Vec<u64>>,
+        reply: spawned_concurrency::PendingReply<'_, Vec<u64>>,
         _: &Context<Self>,
     ) {
         reply.reply(self.peers.clone());
@@ -79,7 +79,7 @@ impl Handler<Import> for Importer {
     async fn handle(
         &mut self,
         msg: Import,
-        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
         self.peers.send(Peer(msg.0)).unwrap();
@@ -90,7 +90,7 @@ impl Handler<Fence> for Importer {
     async fn handle(
         &mut self,
         _: Fence,
-        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
         reply.reply(());

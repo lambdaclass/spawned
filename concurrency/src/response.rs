@@ -48,7 +48,7 @@ enum ResponseState<T> {
 /// Concrete wrapper for protocol request-response methods that works in both
 /// `tasks` (async) and `threads` (blocking) modes.
 ///
-/// - **Tasks mode**: wraps a [`ReplyReceiver`](crate::reply::ReplyReceiver);
+/// - **Tasks mode**: wraps a [`ReplyReceiver`](crate::ReplyReceiver);
 ///   `.await` returns `Result<T, ActorError>`. The request's deadline was fixed
 ///   when it was sent.
 /// - **Threads mode**: wraps a pre-computed result; use `.unwrap()` / `.expect()` directly

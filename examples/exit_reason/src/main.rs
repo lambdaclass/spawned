@@ -97,7 +97,7 @@ fn main() {
             async fn handle(
                 &mut self,
                 _msg: Noop,
-                reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+                reply: spawned_concurrency::PendingReply<'_, ()>,
                 _ctx: &Context<Self>,
             ) {
                 reply.reply(());
@@ -180,7 +180,7 @@ fn main() {
             async fn handle(
                 &mut self,
                 msg: StartMonitor,
-                reply: spawned_concurrency::reply::PendingReply<'_, MonitorRef>,
+                reply: spawned_concurrency::PendingReply<'_, MonitorRef>,
                 ctx: &Context<Self>,
             ) {
                 reply.reply(ctx.monitor(&msg.0));
@@ -190,7 +190,7 @@ fn main() {
             async fn handle(
                 &mut self,
                 msg: StopMonitor,
-                reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+                reply: spawned_concurrency::PendingReply<'_, ()>,
                 ctx: &Context<Self>,
             ) {
                 ctx.demonitor(msg.0);
@@ -201,7 +201,7 @@ fn main() {
             async fn handle(
                 &mut self,
                 msg: Down,
-                reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+                reply: spawned_concurrency::PendingReply<'_, ()>,
                 _ctx: &Context<Self>,
             ) {
                 tracing::info!(
@@ -286,7 +286,7 @@ fn main() {
             async fn handle(
                 &mut self,
                 msg: LinkChild,
-                reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+                reply: spawned_concurrency::PendingReply<'_, ()>,
                 ctx: &Context<Self>,
             ) {
                 ctx.link(&msg.0);

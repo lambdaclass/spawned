@@ -20,7 +20,7 @@ impl Handler<Probe> for Worker {
     async fn handle(
         &mut self,
         _: Probe,
-        reply: spawned_concurrency::reply::PendingReply<'_, u64>,
+        reply: spawned_concurrency::PendingReply<'_, u64>,
         _: &Context<Self>,
     ) {
         let __reply_value: u64 = {
@@ -37,7 +37,7 @@ impl Handler<Nested> for Worker {
     async fn handle(
         &mut self,
         _: Nested,
-        reply: spawned_concurrency::reply::PendingReply<'_, bool>,
+        reply: spawned_concurrency::PendingReply<'_, bool>,
         _: &Context<Self>,
     ) {
         let __reply_value: bool = {
@@ -82,7 +82,7 @@ impl Handler<Network> for Worker {
     async fn handle(
         &mut self,
         _: Network,
-        reply: spawned_concurrency::reply::PendingReply<'_, u64>,
+        reply: spawned_concurrency::PendingReply<'_, u64>,
         _: &Context<Self>,
     ) {
         let __reply_value: u64 = {

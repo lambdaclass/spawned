@@ -25,7 +25,7 @@ impl Handler<Audit> for Probe {
     async fn handle(
         &mut self,
         _: Audit,
-        reply: spawned_concurrency::reply::PendingReply<'_, <Audit as Message>::Result>,
+        reply: spawned_concurrency::PendingReply<'_, <Audit as Message>::Result>,
         _: &Context<Self>,
     ) {
         let __reply_value: <Audit as Message>::Result = {
@@ -46,7 +46,7 @@ impl Handler<StartPeer> for Probe {
     async fn handle(
         &mut self,
         _: StartPeer,
-        reply: spawned_concurrency::reply::PendingReply<'_, <StartPeer as Message>::Result>,
+        reply: spawned_concurrency::PendingReply<'_, <StartPeer as Message>::Result>,
         ctx: &Context<Self>,
     ) {
         let __reply_value: <StartPeer as Message>::Result =
@@ -97,7 +97,7 @@ impl Handler<Block> for Probe {
     async fn handle(
         &mut self,
         msg: Block,
-        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
         tokio::task::block_in_place(|| {
@@ -115,7 +115,7 @@ impl Handler<Crash> for Probe {
     async fn handle(
         &mut self,
         _: Crash,
-        _reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _reply: spawned_concurrency::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
         {
@@ -372,7 +372,7 @@ mod tls_join {
         async fn handle(
             &mut self,
             msg: Install,
-            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            reply: spawned_concurrency::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
             PROBE.with(|p| *p.borrow_mut() = Some(msg.0));

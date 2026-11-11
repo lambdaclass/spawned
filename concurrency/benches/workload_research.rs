@@ -1,4 +1,5 @@
 //! Full actors, explicit DAG placement and independently scheduled offered load.
+use std::future::IntoFuture as _;
 #[path = "support/args.rs"]
 mod cli;
 #[path = "support/profiling.rs"]
@@ -233,7 +234,7 @@ impl Handler<Wire> for Node {
     async fn handle(
         &mut self,
         msg: Wire,
-        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
         if std::env::var("SPAWNED_EXPERIMENT_SCHEDULER").as_deref() == Ok("sharded") {
@@ -257,7 +258,7 @@ impl Handler<Route> for Node {
     async fn handle(
         &mut self,
         msg: Route,
-        reply: spawned_concurrency::reply::PendingReply<'_, Ack>,
+        reply: spawned_concurrency::PendingReply<'_, Ack>,
         _: &Context<Self>,
     ) {
         let __reply_value: Ack = {
@@ -372,7 +373,7 @@ struct Meta {
 }
 struct Pending {
     meta: Meta,
-    reply: tokio::sync::oneshot::Receiver<Ack>,
+    reply: spawned_concurrency::ReplyReceiver<Ack>,
 }
 fn sample(
     p: Meta,
@@ -612,7 +613,8 @@ fn main() {
                         },
                         spawned_concurrency::DEFAULT_REQUEST_TIMEOUT,
                     )
-                    .unwrap(),
+                    .unwrap()
+                    .into_future(),
             )
             .unwrap();
     }
@@ -628,7 +630,7 @@ fn main() {
                 spawned_concurrency::DEFAULT_REQUEST_TIMEOUT,
             )
             .unwrap();
-        runtime.block_on(reply).unwrap();
+        runtime.block_on(reply.into_future()).unwrap();
     }
     let done = Arc::new(AtomicBool::new(false));
     let observed = Arc::new(AtomicU64::new(0));
@@ -822,7 +824,8 @@ fn main() {
                                 if let Some(tx) = &tx {
                                     tx.send(Pending { meta, reply }).unwrap();
                                 } else {
-                                    let ack = futures::executor::block_on(reply).unwrap();
+                                    let ack =
+                                        futures::executor::block_on(reply.into_future()).unwrap();
                                     samples.push(sample(
                                         meta,
                                         Some(ack),
@@ -882,7 +885,8 @@ fn main() {
                             },
                             spawned_concurrency::DEFAULT_REQUEST_TIMEOUT,
                         )
-                        .unwrap(),
+                        .unwrap()
+                        .into_future(),
                     )
                     .unwrap();
             }

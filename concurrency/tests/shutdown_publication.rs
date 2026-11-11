@@ -69,7 +69,7 @@ impl Handler<Command> for Worker {
     async fn handle(
         &mut self,
         msg: Command,
-        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
         match msg {

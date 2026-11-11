@@ -125,7 +125,7 @@ impl tasks::Handler<Work> for Sink {
     async fn handle(
         &mut self,
         work: Work,
-        reply: spawned_concurrency::reply::PendingReply<'_, Ack>,
+        reply: spawned_concurrency::PendingReply<'_, Ack>,
         _: &tasks::Context<Self>,
     ) {
         let __reply_value: Ack = {
@@ -166,7 +166,7 @@ impl threads::Handler<Work> for Sink {
     fn handle(
         &mut self,
         work: Work,
-        reply: spawned_concurrency::reply::PendingReply<'_, Ack>,
+        reply: spawned_concurrency::PendingReply<'_, Ack>,
         _: &threads::Context<Self>,
     ) {
         reply.reply(process(work));
@@ -203,7 +203,7 @@ impl tasks::Handler<Probe> for Sink {
     async fn handle(
         &mut self,
         probe: Probe,
-        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
         _: &tasks::Context<Self>,
     ) {
         {
@@ -216,7 +216,7 @@ impl threads::Handler<Probe> for Sink {
     fn handle(
         &mut self,
         probe: Probe,
-        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
         _: &threads::Context<Self>,
     ) {
         {
@@ -292,6 +292,9 @@ enum Target {
 enum Reply {
     Tasks(tokio::sync::oneshot::Receiver<Ack>),
     Threads(mpsc::Receiver<Ack>),
+    /// A framework request's receiver (its deadline is fixed at send).
+    FrameworkTasks(spawned_concurrency::ReplyReceiver<Ack>),
+    FrameworkThreads(spawned_concurrency::ReplyReceiver<Ack>),
 }
 impl Target {
     fn request(&self, work: Work, kind: &str) -> Reply {
@@ -310,14 +313,14 @@ impl Target {
             return rx;
         }
         match self {
-            Self::Tasks(actor) => Reply::Tasks(
+            Self::Tasks(actor) => Reply::FrameworkTasks(
                 actor
-                    .send_request(work, spawned_concurrency::DEFAULT_REQUEST_TIMEOUT)
+                    .send_request(work, Duration::from_secs(10))
                     .expect("actor stopped"),
             ),
-            Self::Threads(actor) => Reply::Threads(
+            Self::Threads(actor) => Reply::FrameworkThreads(
                 actor
-                    .send_request(work, spawned_concurrency::DEFAULT_REQUEST_TIMEOUT)
+                    .send_request(work, Duration::from_secs(10))
                     .expect("actor stopped"),
             ),
             Self::Tokio(tx) => {
@@ -336,6 +339,11 @@ impl Reply {
             return match self {
                 Self::Tasks(rx) => futures::executor::block_on(rx).expect("reply dropped"),
                 Self::Threads(rx) => rx.recv().expect("reply dropped"),
+                Self::FrameworkTasks(rx) => {
+                    futures::executor::block_on(std::future::IntoFuture::into_future(rx))
+                        .expect("reply failed")
+                }
+                Self::FrameworkThreads(rx) => rx.recv().expect("reply failed"),
             };
         }
         match self {
@@ -348,6 +356,8 @@ impl Reply {
             Self::Threads(rx) => rx
                 .recv_timeout(Duration::from_secs(10))
                 .expect("reply timeout/disconnected"),
+            Self::FrameworkTasks(rx) => rt.block_on(async { rx.await.expect("reply failed") }),
+            Self::FrameworkThreads(rx) => rx.recv().expect("reply failed"),
         }
     }
 }

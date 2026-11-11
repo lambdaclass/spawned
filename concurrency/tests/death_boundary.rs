@@ -181,31 +181,30 @@ mod tasks_mode {
             };
             let (scheduled_tx, scheduled) = mpsc::channel();
             runtime.block_on(async {
-                actor
-                    .__in_turn(move |_, ctx| {
-                        ctx.pipe(
-                            JobOptions::new(),
-                            move |job| async move {
-                                let far = spawned_concurrency::Instant::now() + LIMIT * 10;
-                                if held {
-                                    // The result waits for this emit: held.
-                                    job.emit_at(far, Queued(inert())).await.unwrap();
-                                    scheduled_tx.send(()).unwrap();
-                                    Some(payload)
-                                } else {
-                                    job.emit_at(far, Waiting(payload)).await.unwrap();
-                                    scheduled_tx.send(()).unwrap();
-                                    job.cancelled().await;
-                                    None
-                                }
-                            },
-                            |_| Queued(inert()),
-                        )
-                        .unwrap();
-                    })
-                    .unwrap()
-                    .await
+                spawned_concurrency::__private::in_turn(&actor, move |_, ctx| {
+                    ctx.pipe(
+                        JobOptions::new(),
+                        move |job| async move {
+                            let far = spawned_concurrency::Instant::now() + LIMIT * 10;
+                            if held {
+                                // The result waits for this emit: held.
+                                job.emit_at(far, Queued(inert())).await.unwrap();
+                                scheduled_tx.send(()).unwrap();
+                                Some(payload)
+                            } else {
+                                job.emit_at(far, Waiting(payload)).await.unwrap();
+                                scheduled_tx.send(()).unwrap();
+                                job.cancelled().await;
+                                None
+                            }
+                        },
+                        |_| Queued(inert()),
+                    )
                     .unwrap();
+                })
+                .unwrap()
+                .await
+                .unwrap();
             });
             scheduled.recv_timeout(LIMIT).unwrap();
             let (unblock, blocked) = mpsc::channel();

@@ -61,7 +61,7 @@ mod tasks_mode {
         )>,
         pub panic_in_stopped: bool,
         /// Deferred tokens stored by `Hold`.
-        pub held: Vec<spawned_concurrency::reply::ReplyTo<u8>>,
+        pub held: Vec<spawned_concurrency::ReplyTo<u8>>,
         /// stopped() drops the stored tokens before waiting on `in_stopped`.
         pub drop_held_in_stopped: bool,
     }
@@ -104,7 +104,7 @@ mod tasks_mode {
         async fn handle(
             &mut self,
             _: Ping,
-            reply: spawned_concurrency::reply::PendingReply<'_, u8>,
+            reply: spawned_concurrency::PendingReply<'_, u8>,
             _: &Context<Self>,
         ) {
             reply.reply(7);
@@ -114,7 +114,7 @@ mod tasks_mode {
         async fn handle(
             &mut self,
             down: Down,
-            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            reply: spawned_concurrency::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
             self.seen.downs.lock().unwrap().push(down);
@@ -130,7 +130,7 @@ mod tasks_mode {
         async fn handle(
             &mut self,
             f: Do,
-            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            reply: spawned_concurrency::PendingReply<'_, ()>,
             ctx: &Context<Self>,
         ) {
             (f.0)(ctx);
@@ -146,7 +146,7 @@ mod tasks_mode {
         async fn handle(
             &mut self,
             _: Hold,
-            reply: spawned_concurrency::reply::PendingReply<'_, u8>,
+            reply: spawned_concurrency::PendingReply<'_, u8>,
             _: &Context<Self>,
         ) {
             self.held.push(reply.defer().unwrap());
@@ -161,7 +161,7 @@ mod tasks_mode {
         async fn handle(
             &mut self,
             _: Boom,
-            _reply: spawned_concurrency::reply::PendingReply<'_, u8>,
+            _reply: spawned_concurrency::PendingReply<'_, u8>,
             _: &Context<Self>,
         ) {
             panic!("boom in a request handler");
@@ -176,7 +176,7 @@ mod tasks_mode {
         async fn handle(
             &mut self,
             msg: Block,
-            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            reply: spawned_concurrency::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
             let _ = msg.0.await;
@@ -512,7 +512,7 @@ mod tasks_mode {
         async fn handle(
             &mut self,
             _: Spawn,
-            reply: spawned_concurrency::reply::PendingReply<'_, ChildHandle>,
+            reply: spawned_concurrency::PendingReply<'_, ChildHandle>,
             ctx: &Context<Self>,
         ) {
             let child = Node::new(&self.child_seen, true).start_linked(ctx);
@@ -563,7 +563,7 @@ mod tasks_mode {
             async fn handle(
                 &mut self,
                 _: Ping,
-                reply: spawned_concurrency::reply::PendingReply<'_, u8>,
+                reply: spawned_concurrency::PendingReply<'_, u8>,
                 _: &Context<Self>,
             ) {
                 reply.reply(7);
@@ -633,7 +633,7 @@ mod tasks_mode {
             async fn handle(
                 &mut self,
                 _: Probe,
-                reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+                reply: spawned_concurrency::PendingReply<'_, ()>,
                 ctx: &Context<Self>,
             ) {
                 self.0.lock().unwrap().push(("probe", ctx.exit_pending()));
@@ -649,7 +649,7 @@ mod tasks_mode {
             async fn handle(
                 &mut self,
                 _: AwaitShutdown,
-                reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+                reply: spawned_concurrency::PendingReply<'_, ()>,
                 ctx: &Context<Self>,
             ) {
                 let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
@@ -871,9 +871,7 @@ mod tasks_mode {
         use spawned_concurrency::tasks::ActorRef;
         use spawned_concurrency::ActorError;
 
-        async fn answered<R>(
-            rx: spawned_concurrency::reply::ReplyReceiver<R>,
-        ) -> Result<R, ActorError>
+        async fn answered<R>(rx: spawned_concurrency::ReplyReceiver<R>) -> Result<R, ActorError>
         where
             R: Send + 'static,
         {
@@ -1267,7 +1265,7 @@ mod threads_mode {
         fn handle(
             &mut self,
             _: Ping,
-            reply: spawned_concurrency::reply::PendingReply<'_, u8>,
+            reply: spawned_concurrency::PendingReply<'_, u8>,
             _: &Context<Self>,
         ) {
             reply.reply(7);
@@ -1319,8 +1317,8 @@ mod threads_mode {
     // admission while exiting and NoProc after D.
     mod caller_errors {
         use super::*;
-        use spawned_concurrency::reply::{PendingReply, ReplyReceiver, ReplyTo};
         use spawned_concurrency::ActorError;
+        use spawned_concurrency::{PendingReply, ReplyReceiver, ReplyTo};
         use std::sync::mpsc;
 
         #[derive(Default)]
@@ -1484,7 +1482,7 @@ mod threads_mode {
             fn handle(
                 &mut self,
                 _: Probe,
-                reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+                reply: spawned_concurrency::PendingReply<'_, ()>,
                 ctx: &Context<Self>,
             ) {
                 self.0.lock().unwrap().push(("probe", ctx.exit_pending()));
@@ -1499,7 +1497,7 @@ mod threads_mode {
             fn handle(
                 &mut self,
                 msg: Block,
-                reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+                reply: spawned_concurrency::PendingReply<'_, ()>,
                 ctx: &Context<Self>,
             ) {
                 let _ = msg.0.recv();
@@ -1517,7 +1515,7 @@ mod threads_mode {
             fn handle(
                 &mut self,
                 _: Spawn,
-                reply: spawned_concurrency::reply::PendingReply<'_, ActorRef<Late>>,
+                reply: spawned_concurrency::PendingReply<'_, ActorRef<Late>>,
                 ctx: &Context<Self>,
             ) {
                 reply.reply(Late(self.0.clone()).start_linked(ctx));

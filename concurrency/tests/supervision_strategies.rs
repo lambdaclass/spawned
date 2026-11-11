@@ -73,7 +73,7 @@ impl Handler<Next> for Probe {
     async fn handle(
         &mut self,
         _: Next,
-        reply: spawned_concurrency::reply::PendingReply<'_, usize>,
+        reply: spawned_concurrency::PendingReply<'_, usize>,
         _: &Context<Self>,
     ) {
         let __reply_value: usize = {
@@ -87,7 +87,7 @@ impl Handler<Crash> for Probe {
     async fn handle(
         &mut self,
         _: Crash,
-        _reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _reply: spawned_concurrency::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
         {
@@ -99,7 +99,7 @@ impl Handler<CrashTogether> for Probe {
     async fn handle(
         &mut self,
         msg: CrashTogether,
-        _reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _reply: spawned_concurrency::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
         {
@@ -797,7 +797,7 @@ impl Handler<CrashPlain> for MaybeStop {
     async fn handle(
         &mut self,
         _: CrashPlain,
-        _reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _reply: spawned_concurrency::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
         {

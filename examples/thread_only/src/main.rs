@@ -35,7 +35,7 @@ impl Handler<Down> for Observer {
     fn handle(
         &mut self,
         _: Down,
-        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
         self.0.fetch_add(1, Ordering::SeqCst);
@@ -46,7 +46,7 @@ impl Handler<Tick> for Observer {
     fn handle(
         &mut self,
         _: Tick,
-        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
         self.0.fetch_add(1, Ordering::SeqCst);

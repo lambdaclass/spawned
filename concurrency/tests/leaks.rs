@@ -67,7 +67,7 @@ impl threads::Handler<Ping> for NativeProbe {
     fn handle(
         &mut self,
         _: Ping,
-        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
         _: &threads::Context<Self>,
     ) {
         reply.reply(());
@@ -112,7 +112,7 @@ impl threads::Handler<SetPeer<threads::ActorRef<NativeB>>> for NativeA {
     fn handle(
         &mut self,
         msg: SetPeer<threads::ActorRef<NativeB>>,
-        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
         _: &threads::Context<Self>,
     ) {
         self.peer = Some(msg.0);
@@ -123,7 +123,7 @@ impl threads::Handler<SetPeer<threads::ActorRef<NativeA>>> for NativeB {
     fn handle(
         &mut self,
         msg: SetPeer<threads::ActorRef<NativeA>>,
-        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
         _: &threads::Context<Self>,
     ) {
         self.peer = Some(msg.0);
@@ -221,7 +221,7 @@ mod async_leaks {
         async fn handle(
             &mut self,
             _: Ping,
-            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            reply: spawned_concurrency::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
             reply.reply(());
@@ -235,7 +235,7 @@ mod async_leaks {
         async fn handle(
             &mut self,
             _: Crash,
-            _reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            _reply: spawned_concurrency::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
             {
@@ -247,7 +247,7 @@ mod async_leaks {
         async fn handle(
             &mut self,
             _: Down,
-            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            reply: spawned_concurrency::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
             reply.reply(());
@@ -342,7 +342,7 @@ mod async_leaks {
         async fn handle(
             &mut self,
             _: Ping,
-            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            reply: spawned_concurrency::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
             reply.reply(());
@@ -352,7 +352,7 @@ mod async_leaks {
         async fn handle(
             &mut self,
             _: Ping,
-            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            reply: spawned_concurrency::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
             reply.reply(());
@@ -362,7 +362,7 @@ mod async_leaks {
         async fn handle(
             &mut self,
             msg: SetPeer<(ActorRef<AsyncB>, tasks::Recipient<Ping>)>,
-            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            reply: spawned_concurrency::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
             self.peer = Some(msg.0 .0);
@@ -374,7 +374,7 @@ mod async_leaks {
         async fn handle(
             &mut self,
             msg: SetPeer<(ActorRef<AsyncA>, tasks::Recipient<Ping>)>,
-            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            reply: spawned_concurrency::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
             self.peer = Some(msg.0 .0);
@@ -628,7 +628,7 @@ mod sim_leaks {
         async fn handle(
             &mut self,
             _: Ping,
-            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            reply: spawned_concurrency::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
             reply.reply(());
@@ -638,7 +638,7 @@ mod sim_leaks {
         async fn handle(
             &mut self,
             _: Down,
-            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            reply: spawned_concurrency::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
             reply.reply(());
@@ -661,7 +661,7 @@ mod sim_leaks {
         async fn handle(
             &mut self,
             _: Ping,
-            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            reply: spawned_concurrency::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
             reply.reply(());
@@ -671,7 +671,7 @@ mod sim_leaks {
         async fn handle(
             &mut self,
             _: Ping,
-            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            reply: spawned_concurrency::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
             reply.reply(());
@@ -681,7 +681,7 @@ mod sim_leaks {
         async fn handle(
             &mut self,
             msg: SetPeer<(tasks::ActorRef<B>, tasks::Recipient<Ping>)>,
-            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            reply: spawned_concurrency::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
             self.peer = Some(msg.0);
@@ -692,7 +692,7 @@ mod sim_leaks {
         async fn handle(
             &mut self,
             msg: SetPeer<(tasks::ActorRef<A>, tasks::Recipient<Ping>)>,
-            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            reply: spawned_concurrency::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
             self.peer = Some(msg.0);
@@ -830,7 +830,7 @@ mod sim_leaks {
         async fn handle(
             &mut self,
             _: Crash,
-            _reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            _reply: spawned_concurrency::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
             panic!("injected failure for leak test");
@@ -941,7 +941,7 @@ mod sim_leaks {
         async fn handle(
             &mut self,
             _: Crash,
-            _reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            _reply: spawned_concurrency::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
             panic!("injected failure for leak test");

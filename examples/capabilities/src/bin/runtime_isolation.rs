@@ -14,7 +14,7 @@ impl Handler<Ping> for Critical {
     async fn handle(
         &mut self,
         _: Ping,
-        reply: spawned_concurrency::reply::PendingReply<'_, String>,
+        reply: spawned_concurrency::PendingReply<'_, String>,
         _: &Context<Self>,
     ) {
         reply.reply(std::thread::current().name().unwrap().to_owned());
@@ -26,7 +26,7 @@ impl Handler<Ping> for Router {
     async fn handle(
         &mut self,
         _: Ping,
-        reply: spawned_concurrency::reply::PendingReply<'_, String>,
+        reply: spawned_concurrency::PendingReply<'_, String>,
         _: &Context<Self>,
     ) {
         let __reply_value: String = {

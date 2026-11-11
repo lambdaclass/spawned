@@ -73,23 +73,22 @@ fn deadline_service_child() {
         .unwrap();
     runtime.block_on(async {
         let owner = Owner::default().start();
-        owner
-            .__in_turn(|_, ctx| {
-                let opts = JobOptions::new().deadline(Duration::from_millis(20));
-                ctx.pipe_blocking(
-                    opts,
-                    |job| {
-                        let at = Instant::now() + Duration::from_millis(40);
-                        job.emit_at_blocking(at, Bomb(true)).unwrap();
-                        std::thread::sleep(Duration::from_millis(150));
-                    },
-                    |_: JobOutcome<()>| Done,
-                )
-                .unwrap();
-            })
-            .unwrap()
-            .await
+        spawned_concurrency::__private::in_turn(&owner, |_, ctx| {
+            let opts = JobOptions::new().deadline(Duration::from_millis(20));
+            ctx.pipe_blocking(
+                opts,
+                |job| {
+                    let at = Instant::now() + Duration::from_millis(40);
+                    job.emit_at_blocking(at, Bomb(true)).unwrap();
+                    std::thread::sleep(Duration::from_millis(150));
+                },
+                |_: JobOutcome<()>| Done,
+            )
             .unwrap();
+        })
+        .unwrap()
+        .await
+        .unwrap();
         // The deadline (20 ms) took the notification; the emit is discarded
         // at 40 ms on the service thread and its destructor panics.
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -105,24 +104,23 @@ fn deadline_service_child() {
             Err(_) => panic!("the deadline service stopped: a parked request never expired"),
         }
         // A job deadline still fires too.
-        let fired = other
-            .__in_turn(|_, ctx| {
-                let (tx, rx) = std::sync::mpsc::channel();
-                let opts = JobOptions::new().deadline(Duration::from_millis(20));
-                ctx.pipe_blocking(
-                    opts,
-                    |_| std::thread::sleep(Duration::from_millis(300)),
-                    move |outcome: JobOutcome<()>| {
-                        let _ = tx.send(outcome.is_err());
-                        Done
-                    },
-                )
-                .unwrap();
-                rx
-            })
-            .unwrap()
-            .await
+        let fired = spawned_concurrency::__private::in_turn(&other, |_, ctx| {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let opts = JobOptions::new().deadline(Duration::from_millis(20));
+            ctx.pipe_blocking(
+                opts,
+                |_| std::thread::sleep(Duration::from_millis(300)),
+                move |outcome: JobOutcome<()>| {
+                    let _ = tx.send(outcome.is_err());
+                    Done
+                },
+            )
             .unwrap();
+            rx
+        })
+        .unwrap()
+        .await
+        .unwrap();
         let deadline =
             tokio::task::spawn_blocking(move || fired.recv_timeout(Duration::from_secs(5)))
                 .await

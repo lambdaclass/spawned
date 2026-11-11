@@ -36,7 +36,7 @@ impl spawned_concurrency::tasks::Handler<Queued> for Probe {
     async fn handle(
         &mut self,
         _: Queued,
-        _reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _reply: spawned_concurrency::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
         {

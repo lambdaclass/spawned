@@ -15,7 +15,7 @@ impl Handler<Location> for Worker {
     async fn handle(
         &mut self,
         _: Location,
-        reply: spawned_concurrency::reply::PendingReply<'_, <Location as Message>::Result>,
+        reply: spawned_concurrency::PendingReply<'_, <Location as Message>::Result>,
         _: &Context<Self>,
     ) {
         reply.reply((

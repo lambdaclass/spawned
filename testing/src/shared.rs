@@ -129,9 +129,7 @@ macro_rules! mock_ref_common {
             /// Take the reply tokens of the `M` requests the mock deferred
             /// (`Mock::defer`), oldest first: reply later, drop them
             /// (`ReplyDropped`), or keep them unanswered.
-            pub fn deferred<M: Message>(
-                &self,
-            ) -> Vec<spawned_concurrency::reply::ReplyTo<M::Result>> {
+            pub fn deferred<M: Message>(&self) -> Vec<spawned_concurrency::ReplyTo<M::Result>> {
                 self.inbox.take_deferred::<M>()
             }
 
@@ -175,7 +173,7 @@ macro_rules! probe_common {
                 msg: M,
                 deadline: Deadline,
             ) -> Result<ReplyReceiver<M::Result>, ActorError> {
-                let (reply, rx) = spawned_concurrency::reply::reply_pair(deadline);
+                let (reply, rx) = spawned_concurrency::__private::reply_pair(deadline);
                 match self.request(msg)? {
                     Some((value, record)) => {
                         reply.reply(value);
@@ -184,7 +182,7 @@ macro_rules! probe_common {
                     }
                     // An unexpected request is discharged as `ActorStopped`
                     // (`NoProc`: no actor stands behind a probe).
-                    None => reply.__discharge_stopped(),
+                    None => spawned_concurrency::__private::discharge_stopped(reply),
                 }
                 Ok(rx)
             }

@@ -26,7 +26,7 @@ impl Handler<probe_protocol::Notify> for Worker {
     async fn handle(
         &mut self,
         _: probe_protocol::Notify,
-        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
         reply.reply(());
@@ -36,7 +36,7 @@ impl Handler<probe_protocol::Query> for Worker {
     async fn handle(
         &mut self,
         query: probe_protocol::Query,
-        reply: spawned_concurrency::reply::PendingReply<'_, u64>,
+        reply: spawned_concurrency::PendingReply<'_, u64>,
         _: &Context<Self>,
     ) {
         reply.reply(query.value);

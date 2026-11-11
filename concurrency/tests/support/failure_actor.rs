@@ -159,7 +159,7 @@ impl spawned_concurrency::tasks::Handler<Command> for AsyncWorker {
     async fn handle(
         &mut self,
         command: Command,
-        reply: spawned_concurrency::reply::PendingReply<'_, Reply>,
+        reply: spawned_concurrency::PendingReply<'_, Reply>,
         _: &spawned_concurrency::tasks::Context<Self>,
     ) {
         let __reply_value: Reply = {
@@ -196,7 +196,7 @@ impl spawned_concurrency::tasks::Handler<Down> for AsyncWorker {
     async fn handle(
         &mut self,
         down: Down,
-        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
         _: &spawned_concurrency::tasks::Context<Self>,
     ) {
         if let Some(sender) = &self.0.down {
@@ -223,7 +223,7 @@ impl spawned_concurrency::threads::Handler<Command> for NativeWorker {
     fn handle(
         &mut self,
         command: Command,
-        reply: spawned_concurrency::reply::PendingReply<'_, Reply>,
+        reply: spawned_concurrency::PendingReply<'_, Reply>,
         _: &spawned_concurrency::threads::Context<Self>,
     ) {
         let __reply_value: Reply = {
@@ -259,7 +259,7 @@ impl spawned_concurrency::threads::Handler<Down> for NativeWorker {
     fn handle(
         &mut self,
         down: Down,
-        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
         _: &spawned_concurrency::threads::Context<Self>,
     ) {
         if let Some(sender) = &self.0.down {

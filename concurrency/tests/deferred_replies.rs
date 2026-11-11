@@ -426,7 +426,7 @@ mod tasks_mode {
     /// waits.
     #[spawned_macros::sim_test]
     async fn closed_follows_a_shortened_deadline() {
-        let (reply, _rx) = spawned_concurrency::reply::reply_pair::<u32>(Deadline::Never);
+        let (reply, _rx) = spawned_concurrency::__private::reply_pair::<u32>(Deadline::Never);
         let token = std::sync::Arc::new(reply.defer().unwrap());
         let watcher = {
             let token = token.clone();
@@ -527,9 +527,10 @@ mod tasks_mode {
         let mut parker = Parker::new(seen);
         let actor = Parker::new(Arc::new(Seen::default())).start();
         let ctx = actor.context();
-        let (reply, rx) = spawned_concurrency::reply::reply_pair::<u64>(Deadline::Never);
+        let (reply, rx) = spawned_concurrency::__private::reply_pair::<u64>(Deadline::Never);
         parker.handle(Park(5), reply, &ctx).await;
-        let (release, released) = spawned_concurrency::reply::reply_pair::<usize>(Deadline::Never);
+        let (release, released) =
+            spawned_concurrency::__private::reply_pair::<usize>(Deadline::Never);
         parker.handle(Release(1), release, &ctx).await;
         assert_eq!(released.await.unwrap(), 1);
         assert_eq!(rx.await.unwrap(), 6);

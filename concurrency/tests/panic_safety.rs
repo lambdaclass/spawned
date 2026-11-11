@@ -200,7 +200,7 @@ mod tasks_actors {
         async fn handle(
             &mut self,
             _: Poke,
-            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            reply: spawned_concurrency::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
             self.0.fault(Fault::SendHandler, "injected handler panic");
@@ -211,7 +211,7 @@ mod tasks_actors {
         async fn handle(
             &mut self,
             _: Ask,
-            reply: spawned_concurrency::reply::PendingReply<'_, u64>,
+            reply: spawned_concurrency::PendingReply<'_, u64>,
             _: &Context<Self>,
         ) {
             reply.reply(self.0.ask());
@@ -221,7 +221,7 @@ mod tasks_actors {
         async fn handle(
             &mut self,
             _: Payload,
-            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            reply: spawned_concurrency::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
             reply.reply(());
@@ -231,7 +231,7 @@ mod tasks_actors {
         async fn handle(
             &mut self,
             _: Gift,
-            reply: spawned_concurrency::reply::PendingReply<'_, Bomb>,
+            reply: spawned_concurrency::PendingReply<'_, Bomb>,
             _: &Context<Self>,
         ) {
             reply.reply(self.0.gift());
@@ -241,7 +241,7 @@ mod tasks_actors {
         async fn handle(
             &mut self,
             _: Hold,
-            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            reply: spawned_concurrency::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
             self.0.gate.wait();
@@ -252,7 +252,7 @@ mod tasks_actors {
         async fn handle(
             &mut self,
             setup: Setup,
-            reply: spawned_concurrency::reply::PendingReply<'_, Option<MonitorRef>>,
+            reply: spawned_concurrency::PendingReply<'_, Option<MonitorRef>>,
             ctx: &Context<Self>,
         ) {
             let __reply_value: Option<MonitorRef> = async {
@@ -271,7 +271,7 @@ mod tasks_actors {
         async fn handle(
             &mut self,
             _: Down,
-            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            reply: spawned_concurrency::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
             self.0.fault(Fault::DownHandler, "injected Down panic");
@@ -292,7 +292,7 @@ mod tasks_actors {
         async fn handle(
             &mut self,
             down: Down,
-            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            reply: spawned_concurrency::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
             self.0
@@ -305,7 +305,7 @@ mod tasks_actors {
         async fn handle(
             &mut self,
             setup: Setup,
-            reply: spawned_concurrency::reply::PendingReply<'_, Option<MonitorRef>>,
+            reply: spawned_concurrency::PendingReply<'_, Option<MonitorRef>>,
             ctx: &Context<Self>,
         ) {
             let __reply_value: Option<MonitorRef> = async {
@@ -324,7 +324,7 @@ mod tasks_actors {
         async fn handle(
             &mut self,
             _: Ask,
-            reply: spawned_concurrency::reply::PendingReply<'_, u64>,
+            reply: spawned_concurrency::PendingReply<'_, u64>,
             _: &Context<Self>,
         ) {
             reply.reply(7);
@@ -355,7 +355,7 @@ mod thread_actors {
         fn handle(
             &mut self,
             _: Poke,
-            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            reply: spawned_concurrency::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
             self.0.fault(Fault::SendHandler, "injected handler panic");
@@ -366,7 +366,7 @@ mod thread_actors {
         fn handle(
             &mut self,
             _: Ask,
-            reply: spawned_concurrency::reply::PendingReply<'_, u64>,
+            reply: spawned_concurrency::PendingReply<'_, u64>,
             _: &Context<Self>,
         ) {
             reply.reply(self.0.ask());
@@ -376,7 +376,7 @@ mod thread_actors {
         fn handle(
             &mut self,
             _: Payload,
-            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            reply: spawned_concurrency::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
             reply.reply(());
@@ -386,7 +386,7 @@ mod thread_actors {
         fn handle(
             &mut self,
             _: Gift,
-            reply: spawned_concurrency::reply::PendingReply<'_, Bomb>,
+            reply: spawned_concurrency::PendingReply<'_, Bomb>,
             _: &Context<Self>,
         ) {
             reply.reply(self.0.gift());
@@ -396,7 +396,7 @@ mod thread_actors {
         fn handle(
             &mut self,
             _: Hold,
-            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            reply: spawned_concurrency::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
             self.0.gate.wait();
@@ -407,7 +407,7 @@ mod thread_actors {
         fn handle(
             &mut self,
             setup: Setup,
-            reply: spawned_concurrency::reply::PendingReply<'_, Option<MonitorRef>>,
+            reply: spawned_concurrency::PendingReply<'_, Option<MonitorRef>>,
             ctx: &Context<Self>,
         ) {
             let __reply_value: Option<MonitorRef> = (|| {
@@ -425,7 +425,7 @@ mod thread_actors {
         fn handle(
             &mut self,
             _: Down,
-            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            reply: spawned_concurrency::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
             self.0.fault(Fault::DownHandler, "injected Down panic");
@@ -446,7 +446,7 @@ mod thread_actors {
         fn handle(
             &mut self,
             down: Down,
-            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            reply: spawned_concurrency::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
             self.0
@@ -459,7 +459,7 @@ mod thread_actors {
         fn handle(
             &mut self,
             setup: Setup,
-            reply: spawned_concurrency::reply::PendingReply<'_, Option<MonitorRef>>,
+            reply: spawned_concurrency::PendingReply<'_, Option<MonitorRef>>,
             ctx: &Context<Self>,
         ) {
             let __reply_value: Option<MonitorRef> = (|| {
@@ -477,7 +477,7 @@ mod thread_actors {
         fn handle(
             &mut self,
             _: Ask,
-            reply: spawned_concurrency::reply::PendingReply<'_, u64>,
+            reply: spawned_concurrency::PendingReply<'_, u64>,
             _: &Context<Self>,
         ) {
             reply.reply(7);

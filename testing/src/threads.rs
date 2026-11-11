@@ -6,11 +6,11 @@ use crate::rules::{Fence, Plan, Rules};
 use crate::shared::SETTLE_TIMEOUT;
 use spawned_concurrency::error::ActorError;
 use spawned_concurrency::message::Message;
-use spawned_concurrency::reply::{Deadline, PendingReply, ReplyReceiver};
 use spawned_concurrency::threads::{
     Actor, ActorRef, ActorStart, Context, Handler, Receiver, Recipient,
 };
 use spawned_concurrency::{ChildHandle, ExitReason};
+use spawned_concurrency::{Deadline, PendingReply, ReplyReceiver};
 use std::ops::Deref;
 use std::panic::Location;
 use std::sync::Arc;
@@ -182,7 +182,7 @@ where
     R: Send + 'static,
     F: FnOnce(&mut A, &Context<A>) -> R + Send + 'static,
 {
-    let reply = actor.__in_turn(f).and_then(|rx| rx.recv());
+    let reply = spawned_concurrency::__private::in_turn_threads(actor, f).and_then(|rx| rx.recv());
     reply.unwrap_or_else(|error| {
         panic!(
             "in_actor on {:?} failed: {error}; exit reason {:?}",

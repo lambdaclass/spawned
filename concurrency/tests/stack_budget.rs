@@ -123,7 +123,7 @@ mod tasks_chain {
         async fn handle(
             &mut self,
             msg: relay::Forward,
-            reply: spawned_concurrency::reply::PendingReply<'_, Block>,
+            reply: spawned_concurrency::PendingReply<'_, Block>,
             _: &Context<Self>,
         ) {
             let __reply_value: Block = {
@@ -229,7 +229,7 @@ mod tasks_chain {
         async fn handle(
             &mut self,
             _: Crash,
-            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            reply: spawned_concurrency::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
             if self.generation == 1 {
@@ -242,7 +242,7 @@ mod tasks_chain {
         async fn handle(
             &mut self,
             msg: relay::Forward,
-            reply: spawned_concurrency::reply::PendingReply<'_, Block>,
+            reply: spawned_concurrency::PendingReply<'_, Block>,
             _: &Context<Self>,
         ) {
             reply.reply(msg.block);
@@ -316,7 +316,7 @@ mod threads_chain {
         fn handle(
             &mut self,
             msg: relay::Forward,
-            reply: spawned_concurrency::reply::PendingReply<'_, Block>,
+            reply: spawned_concurrency::PendingReply<'_, Block>,
             _: &Context<Self>,
         ) {
             let __reply_value: Block = {

@@ -43,7 +43,7 @@ impl Handler<Bomb> for Victim {
     fn handle(
         &mut self,
         _: Bomb,
-        _reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _reply: spawned_concurrency::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
         {
@@ -60,7 +60,7 @@ impl Handler<Crash> for Victim {
     fn handle(
         &mut self,
         _: Crash,
-        _reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _reply: spawned_concurrency::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
         {

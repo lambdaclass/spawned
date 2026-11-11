@@ -28,7 +28,7 @@ impl Handler<Generation> for Probe {
     async fn handle(
         &mut self,
         _: Generation,
-        reply: spawned_concurrency::reply::PendingReply<'_, u64>,
+        reply: spawned_concurrency::PendingReply<'_, u64>,
         _: &Context<Self>,
     ) {
         reply.reply(self.0);
@@ -38,7 +38,7 @@ impl Handler<Crash> for Probe {
     async fn handle(
         &mut self,
         _: Crash,
-        _reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _reply: spawned_concurrency::PendingReply<'_, ()>,
         _: &Context<Self>,
     ) {
         {

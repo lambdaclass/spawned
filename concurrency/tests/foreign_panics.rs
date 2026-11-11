@@ -185,7 +185,7 @@ mod task_actors {
         async fn handle(
             &mut self,
             _: Crash,
-            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            reply: spawned_concurrency::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
             self.0.on_crash();
@@ -196,7 +196,7 @@ mod task_actors {
         async fn handle(
             &mut self,
             _: Ping,
-            reply: spawned_concurrency::reply::PendingReply<'_, u64>,
+            reply: spawned_concurrency::PendingReply<'_, u64>,
             _: &Context<Self>,
         ) {
             reply.reply(7);
@@ -206,7 +206,7 @@ mod task_actors {
         async fn handle(
             &mut self,
             _: Gift,
-            reply: spawned_concurrency::reply::PendingReply<'_, Bomb>,
+            reply: spawned_concurrency::PendingReply<'_, Bomb>,
             _: &Context<Self>,
         ) {
             let __reply_value: Bomb = {
@@ -220,7 +220,7 @@ mod task_actors {
         async fn handle(
             &mut self,
             _: Stash,
-            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            reply: spawned_concurrency::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
             self.0.stash.push(Bomb(Some(REPLY_PANIC)));
@@ -245,7 +245,7 @@ mod thread_actors {
         fn handle(
             &mut self,
             _: Crash,
-            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            reply: spawned_concurrency::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
             self.0.on_crash();
@@ -256,7 +256,7 @@ mod thread_actors {
         fn handle(
             &mut self,
             _: Ping,
-            reply: spawned_concurrency::reply::PendingReply<'_, u64>,
+            reply: spawned_concurrency::PendingReply<'_, u64>,
             _: &Context<Self>,
         ) {
             reply.reply(7);
@@ -266,7 +266,7 @@ mod thread_actors {
         fn handle(
             &mut self,
             _: Gift,
-            reply: spawned_concurrency::reply::PendingReply<'_, Bomb>,
+            reply: spawned_concurrency::PendingReply<'_, Bomb>,
             _: &Context<Self>,
         ) {
             let __reply_value: Bomb = {
@@ -280,7 +280,7 @@ mod thread_actors {
         fn handle(
             &mut self,
             _: Stash,
-            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            reply: spawned_concurrency::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
             self.0.stash.push(Bomb(Some(REPLY_PANIC)));

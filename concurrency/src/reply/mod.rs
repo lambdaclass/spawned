@@ -284,9 +284,8 @@ impl<'t, R: Send + 'static> PendingReply<'t, R> {
     }
 
     /// A `PendingReply` for a sent message: there is no caller. For tests
-    /// calling a handler by hand, use `spawned_test::detached_reply()`.
-    #[doc(hidden)]
-    pub fn detached() -> Self {
+    /// calling a handler by hand, `spawned_test::detached_reply()`.
+    pub(crate) fn detached() -> Self {
         Self {
             slot: None,
             registry: None,
@@ -356,8 +355,7 @@ impl<'t, R: Send + 'static> PendingReply<'t, R> {
 
     /// Answer `ActorStopped` (test doubles standing in for an absent actor:
     /// without an owning actor the reason is `NoProc`).
-    #[doc(hidden)]
-    pub fn __discharge_stopped(mut self) {
+    pub(crate) fn discharge_stopped(mut self) {
         if let Some(slot) = self.slot.take() {
             slot.terminate(Terminal::Stopped);
         }
@@ -698,8 +696,7 @@ impl<R: Send + 'static> std::future::Future for ReplyFuture<R> {
 /// A `PendingReply` not tied to an actor turn, and its receiver, for calling
 /// a manual `Handler::handle` directly in tests (`spawned_test::reply_pair`).
 /// Await the receiver only after driving the turns the reply depends on.
-#[doc(hidden)]
-pub fn reply_pair<R: Send + 'static>(
+pub(crate) fn reply_pair<R: Send + 'static>(
     deadline: Deadline,
 ) -> (PendingReply<'static, R>, ReplyReceiver<R>) {
     let (mut handle, receiver) = reply_slot(deadline, None);

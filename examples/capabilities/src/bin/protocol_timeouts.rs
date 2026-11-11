@@ -26,7 +26,7 @@ mod asynchronous {
         async fn handle(
             &mut self,
             _: lookup_protocol::Value,
-            reply: spawned_concurrency::reply::PendingReply<'_, u64>,
+            reply: spawned_concurrency::PendingReply<'_, u64>,
             _: &Context<Self>,
         ) {
             let __reply_value: u64 = {
@@ -40,7 +40,7 @@ mod asynchronous {
         async fn handle(
             &mut self,
             _: lookup_protocol::Quick,
-            reply: spawned_concurrency::reply::PendingReply<'_, u64>,
+            reply: spawned_concurrency::PendingReply<'_, u64>,
             _: &Context<Self>,
         ) {
             let __reply_value: u64 = {
@@ -82,7 +82,7 @@ mod synchronous {
         fn handle(
             &mut self,
             _: lookup_protocol::Value,
-            reply: spawned_concurrency::reply::PendingReply<'_, u64>,
+            reply: spawned_concurrency::PendingReply<'_, u64>,
             _: &Context<Self>,
         ) {
             let __reply_value: u64 = {
@@ -96,7 +96,7 @@ mod synchronous {
         fn handle(
             &mut self,
             _: lookup_protocol::Quick,
-            reply: spawned_concurrency::reply::PendingReply<'_, u64>,
+            reply: spawned_concurrency::PendingReply<'_, u64>,
             _: &Context<Self>,
         ) {
             let __reply_value: u64 = {

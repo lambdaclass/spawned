@@ -18,7 +18,7 @@ impl tasks::Handler<Probe> for Sink {
     async fn handle(
         &mut self,
         msg: Probe,
-        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
         _: &tasks::Context<Self>,
     ) {
         drop(msg.0);
@@ -30,7 +30,7 @@ impl threads::Handler<Probe> for Sink {
     fn handle(
         &mut self,
         msg: Probe,
-        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
         _: &threads::Context<Self>,
     ) {
         drop(msg.0);

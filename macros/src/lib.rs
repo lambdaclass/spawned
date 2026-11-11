@@ -1136,7 +1136,6 @@ fn is_actor_method_attribute(attr: &Attribute) -> bool {
 /// |-----------|---------|
 /// | `#[request_handler]` | Messages that expect a reply (`Response<T>`) |
 /// | `#[send_handler]` | Fire-and-forget messages |
-/// | `#[handler]` | Generic handler (works for either kind) |
 /// | `#[deferred_handler]` | Requests answered through a `PendingReply` (now, or later via `defer()`) |
 ///
 /// Handler signature: `fn name(&mut self, msg: MessageType, ctx: &Context<Self>) -> ReturnType`
@@ -1461,11 +1460,20 @@ pub fn actor(attr: TokenStream, item: TokenStream) -> TokenStream {
 
             if let Some(idx) = handler_idx {
                 let deferred = method.attrs[idx].path().is_ident("deferred_handler");
+                let send = method.attrs[idx].path().is_ident("send_handler");
+                if method.attrs[idx].path().is_ident("handler") {
+                    return syn::Error::new_spanned(
+                        &method.attrs[idx],
+                        "#[handler] was removed in 0.8: use #[send_handler] (returns `()`, no reply) or #[request_handler] (answers with the return value)",
+                    )
+                    .to_compile_error()
+                    .into();
+                }
                 method.attrs.remove(idx);
                 if let Some(extra) = method.attrs.iter().find(|a| is_handler_attribute(a)) {
                     return syn::Error::new_spanned(
                         extra,
-                        "a method can carry only one of #[handler], #[send_handler], #[request_handler] and #[deferred_handler]",
+                        "a method can carry only one of #[send_handler], #[request_handler] and #[deferred_handler]",
                     )
                     .to_compile_error()
                     .into();
@@ -1527,6 +1535,21 @@ pub fn actor(attr: TokenStream, item: TokenStream) -> TokenStream {
                             return syn::Error::new_spanned(
                                 ty,
                                 "#[deferred_handler] answers through its PendingReply; remove the return type",
+                            )
+                            .to_compile_error()
+                            .into();
+                        }
+                    }
+                }
+                // A send handler that returned a value would silently answer a
+                // `request` with it. (`impl Future` returns are checked by the
+                // `Result = ()` bound of the message instead.)
+                if send {
+                    if let ReturnType::Type(_, ty) = &method.sig.output {
+                        if !is_unit_type(ty) && !matches!(**ty, Type::ImplTrait(_)) {
+                            return syn::Error::new_spanned(
+                                ty,
+                                "#[send_handler] methods return `()`; use #[request_handler] to answer a request with a value",
                             )
                             .to_compile_error()
                             .into();

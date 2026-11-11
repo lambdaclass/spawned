@@ -34,6 +34,9 @@ impl Drop for Replying<'_> {
     }
 }
 
+// `Receiver` is sealed; the probe is the one implementor outside spawned.
+impl<M: Message> spawned_concurrency::__private::Sealed for ProbeCore<M> {}
+
 impl<M: Message> ProbeCore<M> {
     pub(crate) fn new(reply: Option<ReplyFn<M>>) -> Self {
         Self {

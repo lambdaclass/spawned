@@ -40,7 +40,7 @@ mod tasks {
         async fn handle(
             &mut self,
             command: Command,
-            reply: spawned_concurrency::reply::PendingReply<'_, Reply>,
+            reply: spawned_concurrency::PendingReply<'_, Reply>,
             ctx: &Context<Self>,
         ) {
             reply.reply(match command {
@@ -65,7 +65,7 @@ mod tasks {
         async fn handle(
             &mut self,
             event: Down,
-            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            reply: spawned_concurrency::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
             let _ = self.0.events.send(event);
@@ -83,7 +83,7 @@ mod threads {
         fn handle(
             &mut self,
             command: Command,
-            reply: spawned_concurrency::reply::PendingReply<'_, Reply>,
+            reply: spawned_concurrency::PendingReply<'_, Reply>,
             ctx: &Context<Self>,
         ) {
             reply.reply(match command {
@@ -108,7 +108,7 @@ mod threads {
         fn handle(
             &mut self,
             event: Down,
-            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            reply: spawned_concurrency::PendingReply<'_, ()>,
             _: &Context<Self>,
         ) {
             let _ = self.0.events.send(event);
