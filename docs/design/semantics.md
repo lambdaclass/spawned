@@ -508,7 +508,8 @@ stopped after `Shutdown`),
 - **Liveness under schedules nobody explored.** Tests run real schedulers;
   models abstract time and handler bodies (see [TESTING](../TESTING.md#how-spawned-is-verified)).
   The base actor lifecycle (links, monitors, requests around shutdown) has no
-  TLA+ model yet ([next model](../../verification/tla/README.md#next-model)).
+  TLA+ model of the v0.7 behaviour; `Lifecycle.tla` models the proposed v0.8
+  contract ([next model](../../verification/tla/README.md#next-model)).
 
 ## 11. Differences from Erlang/OTP
 
@@ -544,6 +545,9 @@ ignored by non-trapping peers (X3), and the Permanent/Transient/Temporary table 
   for a trapping child on supervisor shutdown (changes X1, X3, X4, X5, L3, L4).
 - v0.8, rank 5f: the restart budget counts recovery rounds (changes V5).
 - v0.8, rank 5g: one exit reason for runtime-dropped actors in both modes (changes L4, X6).
+- Design for 5e, the 5f startup rule and 5g, accepted (not implemented):
+  [otp-exit-signals.md](otp-exit-signals.md). Reason-bearing `ActorStopped`
+  and `NoProc` for requests wait for rank 11 (#239).
 
 - Rank 11, deferred typed replies, forwarding and pipe-to-self: a reply may
   leave the handler's turn; adds exactly-one completion on panic and timeout.
