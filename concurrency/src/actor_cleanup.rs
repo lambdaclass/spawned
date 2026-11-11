@@ -15,6 +15,25 @@ pub(crate) fn log_safely(log: impl FnOnce()) {
     }
 }
 
+/// `stopped()` did not run for this exit (decision 2: a kill, an untrapped
+/// exit signal or link notice, or the runtime dropping the actor). Logged at
+/// `debug` for every skip, whether or not the actor overrides `stopped()`
+/// (there is no cheap way to know): an application whose cleanup must run
+/// traps exits (`ctx.trap_exit(true)`) so a parent's shutdown runs it.
+pub(crate) fn log_stopped_skipped(
+    actor: ActorId,
+    actor_type: &'static str,
+    cause: &'static str,
+    reason: Option<&ExitReason>,
+) {
+    let reason = reason.cloned().unwrap_or(ExitReason::Killed);
+    log_safely(|| {
+        tracing::debug!(event = "stopped_skipped", actor = %actor, actor_type, cause,
+            reason = %reason, "stopped() skipped: the exit was not begun by the actor, \
+            an administrative stop or its parent");
+    });
+}
+
 /// Constructed before dispatch, so even a never-polled actor has cleanup.
 /// [`die`](Self::die) is the death point D; dropping it is publication.
 pub(crate) struct ActorCleanup<C: Fn()> {
@@ -117,13 +136,21 @@ impl<C: Fn()> Drop for ActorCleanup<C> {
             Some(reason) => reason,
             None => {
                 let id = self.id.raw();
-                trace::life_section(id, || {
-                    let reason = crate::link::lock_request(&self.cause).runtime_drop();
+                let mut skipped = false;
+                let reason = trace::life_section(id, || {
+                    let mut request = crate::link::lock_request(&self.cause);
+                    skipped = !request.hook_begun();
+                    let reason = request.runtime_drop();
+                    drop(request);
                     trace::life_emit(id, || {
                         trace::LifeEvent::new("Drop", id).x(trace::life_reason(&reason))
                     });
                     self.close(reason)
-                })
+                });
+                if skipped {
+                    log_stopped_skipped(self.id, "", "runtime_drop", Some(&reason));
+                }
+                reason
             }
         };
         if let Some(message) = self.failures.as_ref().and_then(|f| f.first()) {

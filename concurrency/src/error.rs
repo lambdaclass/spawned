@@ -29,8 +29,17 @@ pub enum ExitReason {
 
 impl ExitReason {
     /// Returns `true` for exit reasons that should trigger a restart
-    /// of `Transient` or `Permanent` children.
-    /// `Shutdown` is considered normal (no restart) matching Erlang semantics.
+    /// of `Transient` or `Permanent` children, and that end a non-trapping
+    /// linked actor (OTP: every reason except `normal` and `shutdown`).
+    ///
+    /// | Reason | `is_abnormal()` |
+    /// |---|---|
+    /// | `Normal` | `false` |
+    /// | `Shutdown` | `false` (an ordered stop, as in Erlang) |
+    /// | `Panic(_)` | `true` |
+    /// | `Kill` | `true` |
+    /// | `Killed` | `true` (OTP `killed`: a kill, a supervisor's kill escalation or a runtime drop) |
+    /// | `NoProc` | `true` (OTP `noproc`: the target was already gone) |
     pub fn is_abnormal(&self) -> bool {
         match self {
             ExitReason::Normal | ExitReason::Shutdown => false,
@@ -108,6 +117,53 @@ pub enum ActorError {
     Overloaded,
 }
 
+/// Classification helpers, so callers need not match every variant (the enum
+/// is `#[non_exhaustive]`; a variant added later is classified here).
+///
+/// | Variant | `target_gone` | `is_timeout` | `is_transient` | `exit_reason` |
+/// |---|---|---|---|---|
+/// | `ActorStopped(r)` | `true` | `false` | `false` | `Some(r)` |
+/// | `NoProc` | `true` | `false` | `false` | `None` |
+/// | `RequestTimeout` | `false` | `true` | `true` | `None` |
+/// | `ReplyDropped` | `false` | `false` | `false` | `None` |
+/// | `Overloaded` | `false` | `false` | `true` | `None` |
+impl ActorError {
+    /// The target actor is gone: it died before answering
+    /// (`ActorStopped`) or was already past its death point (`NoProc`).
+    /// Retrying the same `ActorRef` cannot succeed; look the actor up again
+    /// (a supervisor may have restarted it under a new reference).
+    pub fn target_gone(&self) -> bool {
+        matches!(self, ActorError::ActorStopped(_) | ActorError::NoProc)
+    }
+
+    /// The request was not answered within its timeout
+    /// (`RequestTimeout`). The actor may still be running and may still
+    /// handle the request: a timeout does not cancel it.
+    pub fn is_timeout(&self) -> bool {
+        matches!(self, ActorError::RequestTimeout)
+    }
+
+    /// Retrying the same target may succeed: the actor was alive but did
+    /// not answer in time (`RequestTimeout`) or rejected the request at a
+    /// bound (`Overloaded`). `false` for a gone target, and for
+    /// `ReplyDropped`, where the actor is alive but its handler chose not to
+    /// answer (a decision or a bug, not a load condition): a retry would
+    /// usually get the same result.
+    pub fn is_transient(&self) -> bool {
+        matches!(self, ActorError::RequestTimeout | ActorError::Overloaded)
+    }
+
+    /// The final exit reason of an actor that died before answering
+    /// (`ActorStopped`). `None` otherwise, including `NoProc` (the target
+    /// was already gone; its reason is not known to the caller).
+    pub fn exit_reason(&self) -> Option<&ExitReason> {
+        match self {
+            ActorError::ActorStopped(reason) => Some(reason),
+            _ => None,
+        }
+    }
+}
+
 impl<T> From<spawned_rt::threads::mpsc::SendError<T>> for ActorError {
     fn from(_value: spawned_rt::threads::mpsc::SendError<T>) -> Self {
         Self::NoProc
@@ -132,14 +188,93 @@ mod tests {
         assert_eq!(ActorError::NoProc.to_string(), "noproc");
     }
 
+    /// Every `ExitReason`; the exhaustive match (allowed inside the crate)
+    /// makes adding a variant fail to compile until it is listed here.
+    fn all_exit_reasons() -> Vec<ExitReason> {
+        let all = vec![
+            ExitReason::Normal,
+            ExitReason::Shutdown,
+            ExitReason::Panic("boom".into()),
+            ExitReason::Kill,
+            ExitReason::Killed,
+            ExitReason::NoProc,
+        ];
+        for reason in &all {
+            match reason {
+                ExitReason::Normal
+                | ExitReason::Shutdown
+                | ExitReason::Panic(_)
+                | ExitReason::Kill
+                | ExitReason::Killed
+                | ExitReason::NoProc => {}
+            }
+        }
+        all
+    }
+
+    /// Every `ActorError`, with the same compile-time completeness check.
+    fn all_actor_errors() -> Vec<ActorError> {
+        let all = vec![
+            ActorError::ActorStopped(ExitReason::Killed),
+            ActorError::NoProc,
+            ActorError::RequestTimeout,
+            ActorError::ReplyDropped,
+            ActorError::Overloaded,
+        ];
+        for error in &all {
+            match error {
+                ActorError::ActorStopped(_)
+                | ActorError::NoProc
+                | ActorError::RequestTimeout
+                | ActorError::ReplyDropped
+                | ActorError::Overloaded => {}
+            }
+        }
+        all
+    }
+
     #[test]
     fn exit_reason_is_abnormal_classification() {
-        assert!(!ExitReason::Normal.is_abnormal());
-        assert!(!ExitReason::Shutdown.is_abnormal());
-        assert!(ExitReason::Panic("boom".into()).is_abnormal());
-        assert!(ExitReason::Kill.is_abnormal());
-        assert!(ExitReason::Killed.is_abnormal());
-        assert!(ExitReason::NoProc.is_abnormal());
+        for reason in all_exit_reasons() {
+            let expected = match reason {
+                ExitReason::Normal | ExitReason::Shutdown => false,
+                ExitReason::Panic(_)
+                | ExitReason::Kill
+                | ExitReason::Killed
+                | ExitReason::NoProc => true,
+            };
+            assert_eq!(reason.is_abnormal(), expected, "{reason}");
+        }
+    }
+
+    #[test]
+    fn actor_error_classification_covers_every_variant() {
+        for error in all_actor_errors() {
+            // (target_gone, is_timeout, is_transient, exit_reason)
+            let expected = match &error {
+                ActorError::ActorStopped(r) => (true, false, false, Some(r.clone())),
+                ActorError::NoProc => (true, false, false, None),
+                ActorError::RequestTimeout => (false, true, true, None),
+                ActorError::ReplyDropped => (false, false, false, None),
+                ActorError::Overloaded => (false, false, true, None),
+            };
+            let actual = (
+                error.target_gone(),
+                error.is_timeout(),
+                error.is_transient(),
+                error.exit_reason().cloned(),
+            );
+            assert_eq!(actual, expected, "{error:?}");
+        }
+    }
+
+    #[test]
+    fn actor_stopped_carries_every_reason() {
+        for reason in all_exit_reasons() {
+            let error = ActorError::ActorStopped(reason.clone());
+            assert!(error.target_gone() && !error.is_transient() && !error.is_timeout());
+            assert_eq!(error.exit_reason(), Some(&reason));
+        }
     }
 
     #[test]

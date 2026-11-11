@@ -719,6 +719,31 @@ impl<A: Actor> Context<A> {
         link::unregister_link(self.id, &self.links, target.id(), target.links());
     }
 
+    /// Whether this actor's exit has begun or a signal that will end it is
+    /// already pending, for a trapping actor that wants to refuse late work.
+    ///
+    /// `true` once:
+    /// - exit has begun: `ctx.stop()`, an administrative stop
+    ///   ([`ChildHandle::stop`](crate::ChildHandle::stop)), a kill, an untrapped exit
+    ///   signal or link notice, a panic; it stays `true` in `stopped()`;
+    /// - a parent exit is queued for this trapping actor (E3: the
+    ///   supervisor's or system's shutdown, or a signal from its
+    ///   `start_linked` parent). The parent exit is dispatched after the
+    ///   messages queued before it, and handlers of those messages see
+    ///   `true`.
+    ///
+    /// A trapped [`Exit`](crate::Exit) from a linked peer or a non-parent
+    /// `exit` is not a pending exit: `exit_received` decides. Signals that
+    /// arrive while `started()` runs count once `started()` returns, when
+    /// they are resolved. Without trapping, a pending signal has already
+    /// begun the exit, so this is also `true`.
+    ///
+    /// Advisory: a signal can arrive right after it returns `false`. It
+    /// takes the actor's exit-request lock; nothing is added per message.
+    pub fn exit_pending(&self) -> bool {
+        link::lock_request(&self.linked_reason).exit_pending()
+    }
+
     /// Control how exit signals (link notices and `exit` signals) are
     /// handled; read when each signal arrives (OTP `trap_exit`).
     ///
@@ -1269,8 +1294,11 @@ fn run_actor_receiving<A: Actor>(
     ctx.jobs.cancel_all();
     // stopped() is skipped when a kill, an untrapped exit signal or link
     // notice began the exit (decision 2); one that already began finishes.
-    let run_hook = crate::lifecycle_trace::life_section(trace_id, || {
-        let run = link::lock_request(&request).begin_hook();
+    let (run_hook, skipped) = crate::lifecycle_trace::life_section(trace_id, || {
+        let mut req = link::lock_request(&request);
+        let run = req.begin_hook();
+        let skipped = (!run).then(|| (req.skip_cause(), req.reason().cloned()));
+        drop(req);
         crate::lifecycle_trace::life_emit(trace_id, || {
             crate::lifecycle_trace::LifeEvent::new("Hook", trace_id).x(if run {
                 "run"
@@ -1278,8 +1306,16 @@ fn run_actor_receiving<A: Actor>(
                 "skip"
             })
         });
-        run
+        (run, skipped)
     });
+    if let Some((cause, reason)) = skipped {
+        crate::actor_cleanup::log_stopped_skipped(
+            ctx.id,
+            std::any::type_name::<A>(),
+            cause,
+            reason.as_ref(),
+        );
+    }
     if run_hook {
         let stop_result = catch_unwind(AssertUnwindSafe(|| {
             fail_point!("actor.before_stopped");

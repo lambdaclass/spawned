@@ -62,6 +62,11 @@ pub(crate) struct ExitRequest {
     /// Held signal envelopes become `Exit`s (the actor trapped when
     /// `started()` returned); otherwise they are inert.
     held_trapped: bool,
+    /// A parent signal is among the held ones.
+    held_parent: bool,
+    /// A parent exit is queued behind earlier messages of a trapping actor
+    /// (E3): when dispatched it ends the actor whatever its reason.
+    parent_exit_queued: bool,
 }
 
 impl ExitRequest {
@@ -71,6 +76,25 @@ impl ExitRequest {
     }
     pub(crate) fn is_dead(&self) -> bool {
         self.dead
+    }
+    /// `Context::exit_pending`: exit has begun (a reason is requested, which
+    /// includes a kill and the dispatch of a parent exit) or a parent exit
+    /// is queued for a trapping actor. Held phase-0 signals count once they
+    /// are resolved when `started()` returns.
+    pub(crate) fn exit_pending(&self) -> bool {
+        self.reason.is_some() || self.parent_exit_queued
+    }
+    /// What began an exit that skips `stopped()`, for its debug log.
+    pub(crate) fn skip_cause(&self) -> &'static str {
+        if self.killed {
+            "kill"
+        } else {
+            "exit_signal"
+        }
+    }
+    /// `stopped()` has begun (or was skipped by the run loop).
+    pub(crate) fn hook_begun(&self) -> bool {
+        self.hook_begun
     }
     /// A self-exit or an administrative stop: the first requested reason
     /// wins. Returns whether the run loop must be woken.
@@ -148,6 +172,10 @@ impl ExitRequest {
         self.starting = false;
         let held = std::mem::take(&mut self.held);
         self.held_trapped = trapping;
+        if trapping && std::mem::take(&mut self.held_parent) {
+            // The held parent envelope is dispatched as a parent exit.
+            self.parent_exit_queued = true;
+        }
         if !trapping {
             if let Some(reason) = held.into_iter().find(|r| *r != ExitReason::Normal) {
                 return self.untrapped(reason);
@@ -250,11 +278,17 @@ fn apply_signal(
         });
         // Held in arrival order, and as an envelope in its mailbox place.
         request.held.push(exit.reason.clone());
+        request.held_parent |= from_parent;
         let _ = (target.send_held)(exit, from_parent);
         return;
     }
     // The trap flag is read when the signal arrives.
     if target.trap.load(Ordering::Acquire) {
+        if from_parent {
+            // Set before the envelope is queued, under the request lock, so
+            // `exit_pending` reports it to every handler that runs before it.
+            request.parent_exit_queued = true;
+        }
         drop(request);
         let send = if from_parent {
             &target.send_parent_exit
@@ -825,6 +859,47 @@ mod tests {
         assert_eq!(lock_request(&t.request).reason(), None);
         deliver_signal(&t, from, ExitReason::Kill, Origin::Direct, false);
         assert_eq!(lock_request(&t.request).reason(), Some(&ExitReason::Killed));
+    }
+    #[test]
+    fn exit_pending_counts_begun_exits_and_queued_parent_exits() {
+        let seen = Arc::new(AtomicUsize::new(0));
+        let from = ActorId::next();
+        let pending = |t: &SignalTarget| lock_request(&t.request).exit_pending();
+        // Trapping: a peer's Exit is not pending; a parent's signal is.
+        let t = target(&seen);
+        t.trap.store(true, Ordering::Release);
+        deliver_signal(&t, from, ExitReason::Shutdown, Origin::Link, false);
+        assert!(!pending(&t));
+        deliver_signal(&t, from, ExitReason::Normal, Origin::Direct, true);
+        assert!(pending(&t));
+        assert_eq!(lock_request(&t.request).reason(), None);
+        // Non-trapping: an untrapped signal begins exit; Normal is ignored.
+        let t = target(&seen);
+        deliver_signal(&t, from, ExitReason::Normal, Origin::Direct, true);
+        assert!(!pending(&t));
+        deliver_signal(&t, from, ExitReason::Shutdown, Origin::Direct, false);
+        assert!(pending(&t));
+        // Phase 0: held signals count when started() returns.
+        let t = target(&seen);
+        lock_request(&t.request).begin_starting();
+        deliver_signal(&t, from, ExitReason::Normal, Origin::Direct, true);
+        assert!(!pending(&t));
+        lock_request(&t.request).end_starting(true);
+        assert!(pending(&t), "a held parent exit of a trapping actor");
+        let t = target(&seen);
+        lock_request(&t.request).begin_starting();
+        deliver_signal(&t, from, ExitReason::Normal, Origin::Direct, true);
+        deliver_signal(&t, from, ExitReason::Shutdown, Origin::Direct, false);
+        lock_request(&t.request).end_starting(false);
+        assert!(pending(&t), "a held untrapped signal begins exit");
+        let t = target(&seen);
+        lock_request(&t.request).begin_starting();
+        deliver_signal(&t, from, ExitReason::Normal, Origin::Direct, true);
+        lock_request(&t.request).end_starting(false);
+        assert!(
+            !pending(&t),
+            "a held Normal parent signal is ignored untrapped"
+        );
     }
     #[test]
     fn reason_precedence_until_death() {

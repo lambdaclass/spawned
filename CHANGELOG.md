@@ -67,6 +67,14 @@
   (both modes), all accepted, and eleven edited traces (stopped() after a
   kill, `Kill` for `Killed`, publication before D, real reason instead of
   `NoProc`, notices after unlink/demonitor, ...) are rejected.
+  Client feedback (ethrex, ethlambda): `ActorError` classification helpers
+  `target_gone()`, `is_timeout()`, `is_transient()` and `exit_reason()`, so
+  clients need no exhaustive match on the `#[non_exhaustive]` enum; a
+  skipped `stopped()` logs `event = "stopped_skipped"` at `debug` (actor,
+  cause `kill`/`exit_signal`/`runtime_drop`, reason);
+  `Context::exit_pending()` (both modes) tells a trapping actor that its exit
+  began or a parent exit is queued behind the current message, so it can
+  refuse late work (advisory, read-only, no per-message cost).
   Remaining: Loom and simulator coverage, GUIDE and examples.
 
 - **Breaking (0.8), in progress:** deferred replies and pipe-to-self

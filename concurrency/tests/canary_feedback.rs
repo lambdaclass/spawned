@@ -439,6 +439,9 @@ async fn panicked_turn_is_cleared_before_stopped_hook() {
         .unwrap();
     assert_eq!(detail.message_type, None);
     assert_eq!(detail.turn_age, None);
+    // Let the system's kill at grace land before stopped() returns: the
+    // report can be ready just before the kill is sent.
+    spawned_rt::tasks::sleep(Duration::from_millis(100)).await;
     release.send(()).unwrap();
     assert!(report.wait(LIMIT).await.complete);
     // The system's kill at grace reached it inside stopped(), before its

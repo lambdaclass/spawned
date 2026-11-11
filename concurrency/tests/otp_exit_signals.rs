@@ -614,6 +614,250 @@ mod tasks_mode {
         assert!(seen.stopped());
     }
 
+    // Context::exit_pending: a trapping supervised child sees the
+    // supervisor's queued parent exit in the handlers of messages queued
+    // before it; a trapped Exit from a peer is not a pending exit.
+    mod exit_pending {
+        use super::*;
+        use spawned_concurrency::supervision::{ChildSpec, SupervisorConfig};
+        use spawned_concurrency::system::ActorSystem;
+
+        type Log = Arc<Mutex<Vec<(&'static str, bool)>>>;
+        pub struct Late(Log);
+        impl Actor for Late {
+            async fn started(&mut self, ctx: &Context<Self>) {
+                ctx.trap_exit(true);
+                self.0.lock().unwrap().push(("started", ctx.exit_pending()));
+            }
+            async fn exit_received(&mut self, _: Exit, ctx: &Context<Self>) {
+                self.0.lock().unwrap().push(("exit", ctx.exit_pending()));
+            }
+            async fn stopped(&mut self, ctx: &Context<Self>) {
+                self.0.lock().unwrap().push(("stopped", ctx.exit_pending()));
+            }
+        }
+        struct Probe;
+        impl Message for Probe {
+            type Result = ();
+        }
+        impl Handler<Probe> for Late {
+            async fn handle(
+                &mut self,
+                _: Probe,
+                reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+                ctx: &Context<Self>,
+            ) {
+                self.0.lock().unwrap().push(("probe", ctx.exit_pending()));
+                reply.reply(());
+            }
+        }
+        /// Wait (bounded) until a shutdown is pending, then record it.
+        struct AwaitShutdown;
+        impl Message for AwaitShutdown {
+            type Result = ();
+        }
+        impl Handler<AwaitShutdown> for Late {
+            async fn handle(
+                &mut self,
+                _: AwaitShutdown,
+                reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+                ctx: &Context<Self>,
+            ) {
+                let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+                while !ctx.exit_pending() && tokio::time::Instant::now() < deadline {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+                self.0.lock().unwrap().push(("await", ctx.exit_pending()));
+                reply.reply(());
+            }
+        }
+
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn queued_work_sees_the_supervisors_pending_shutdown() {
+            let system = ActorSystem::new().unwrap();
+            let group = system.async_group("pending", 1).unwrap();
+            let log: Log = Arc::default();
+            let mut tree = system.supervisor(SupervisorConfig::default()).unwrap();
+            let l = log.clone();
+            let child = tree
+                .add(
+                    ChildSpec::new("late", &group, move |_| {
+                        let log = l.clone();
+                        async move { Ok::<_, String>(Late(log)) }
+                    })
+                    // No kill escalation while the test waits.
+                    .shutdown_timeout(LIMIT),
+                )
+                .unwrap();
+            let supervisor = tree.start().await.unwrap();
+            let child = child.current().unwrap();
+            // Normal operation, and a trapped Exit from outside: not pending.
+            child.request(Probe).await.unwrap();
+            child.child_handle().exit(ExitReason::Shutdown);
+            child.request(Probe).await.unwrap();
+            // Work queued before the supervisor's shutdown.
+            child.send(AwaitShutdown).unwrap();
+            child.send(Probe).unwrap();
+            child.send(Probe).unwrap();
+            let handle = child.child_handle();
+            assert!(supervisor.shutdown(LIMIT).await.complete);
+            assert_eq!(ended(&handle).await, ExitReason::Shutdown);
+            assert_eq!(
+                *log.lock().unwrap(),
+                vec![
+                    ("started", false),
+                    ("probe", false),
+                    ("exit", false),
+                    ("probe", false),
+                    ("await", true),
+                    ("probe", true),
+                    ("probe", true),
+                    ("stopped", true),
+                ]
+            );
+            assert!(system.shutdown(LIMIT).await.complete);
+        }
+
+        // A non-trapping actor: an untrapped signal begins exit, so the
+        // handler that is running when it arrives sees it pending; ctx.stop()
+        // is pending at once.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn begun_exits_are_pending() {
+            let seen = Seen::default();
+            let actor = Node::new(&seen, false).start();
+            let pending = Arc::new(Mutex::new(Vec::new()));
+            let p = pending.clone();
+            on(&actor, move |ctx| {
+                p.lock().unwrap().push(ctx.exit_pending());
+                ctx.stop();
+                p.lock().unwrap().push(ctx.exit_pending());
+            })
+            .await;
+            assert_eq!(ended(&actor.child_handle()).await, ExitReason::Normal);
+            assert_eq!(*pending.lock().unwrap(), vec![false, true]);
+            let actor = Node::new(&seen, false).start();
+            let handle = actor.child_handle();
+            let p = pending.clone();
+            on(&actor, move |ctx| {
+                handle.exit(ExitReason::Shutdown);
+                p.lock().unwrap().push(ctx.exit_pending());
+            })
+            .await;
+            assert_eq!(ended(&actor.child_handle()).await, ExitReason::Shutdown);
+            assert_eq!(*pending.lock().unwrap(), vec![false, true, true]);
+        }
+    }
+
+    // Decision 2 is easy to miss: a skipped stopped() is logged at debug
+    // (`event = "stopped_skipped"`), for a kill, an untrapped signal and a
+    // runtime drop. A current-thread runtime keeps the scoped subscriber on
+    // the actors' thread.
+    mod stopped_skipped_log {
+        use super::*;
+        use std::collections::BTreeMap;
+        type Fields = BTreeMap<String, String>;
+        #[derive(Clone, Default)]
+        struct Capture(Arc<Mutex<Vec<(tracing::Level, Fields)>>>);
+        impl tracing::Subscriber for Capture {
+            fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+                true
+            }
+            fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+                tracing::span::Id::from_u64(1)
+            }
+            fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+            fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+            fn enter(&self, _: &tracing::span::Id) {}
+            fn exit(&self, _: &tracing::span::Id) {}
+            fn event(&self, event: &tracing::Event<'_>) {
+                struct Visitor(Fields);
+                impl tracing::field::Visit for Visitor {
+                    fn record_debug(
+                        &mut self,
+                        field: &tracing::field::Field,
+                        value: &dyn std::fmt::Debug,
+                    ) {
+                        self.0.insert(field.name().to_owned(), format!("{value:?}"));
+                    }
+                    fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+                        self.0.insert(field.name().to_owned(), value.to_owned());
+                    }
+                }
+                let mut visitor = Visitor(Fields::new());
+                event.record(&mut visitor);
+                self.0
+                    .lock()
+                    .unwrap()
+                    .push((*event.metadata().level(), visitor.0));
+            }
+        }
+        impl Capture {
+            /// (cause, reason) of each `stopped_skipped` event for `actor`.
+            fn skipped(&self, actor: ActorId) -> Vec<(String, String)> {
+                self.0
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|(level, f)| {
+                        *level == tracing::Level::DEBUG
+                            && f.get("event").map(String::as_str) == Some("stopped_skipped")
+                            && f.get("actor") == Some(&actor.to_string())
+                    })
+                    .map(|(_, f)| (f["cause"].clone(), f["reason"].clone()))
+                    .collect()
+            }
+        }
+
+        #[test]
+        fn skipped_stopped_is_logged_at_debug() {
+            let capture = Capture::default();
+            let _subscriber = tracing::subscriber::set_default(capture.clone());
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            let (killed, signalled, trapping) = runtime.block_on(async {
+                let seen = Seen::default();
+                let killed = Node::new(&seen, true).start();
+                settle(&killed).await;
+                killed.child_handle().kill();
+                assert_eq!(ended(&killed.child_handle()).await, ExitReason::Killed);
+                let signalled = Node::new(&seen, false).start();
+                settle(&signalled).await;
+                signalled.child_handle().exit(ExitReason::Shutdown);
+                assert_eq!(ended(&signalled.child_handle()).await, ExitReason::Shutdown);
+                assert!(!seen.stopped());
+                // stopped() runs: nothing logged.
+                let trapping = Node::new(&seen, true).start();
+                settle(&trapping).await;
+                trapping.child_handle().stop();
+                assert_eq!(ended(&trapping.child_handle()).await, ExitReason::Normal);
+                assert!(seen.stopped());
+                (killed.id(), signalled.id(), trapping.id())
+            });
+            assert_eq!(
+                capture.skipped(killed),
+                vec![("kill".into(), "killed".into())]
+            );
+            assert_eq!(
+                capture.skipped(signalled),
+                vec![("exit_signal".into(), "shutdown".into())]
+            );
+            assert!(capture.skipped(trapping).is_empty());
+            // Runtime drop before stopped() began.
+            let dropped = runtime.block_on(async {
+                let actor = Node::new(&Seen::default(), true).start();
+                settle(&actor).await;
+                actor.id()
+            });
+            drop(runtime);
+            assert_eq!(
+                capture.skipped(dropped),
+                vec![("runtime_drop".into(), "killed".into())]
+            );
+        }
+    }
+
     // Rank 11 x 5e ("Required changes to rank 11"): callers, `Down` and
     // `wait_exit` see one reason. Each test pins one rule of the design.
     mod caller_errors {
@@ -1183,6 +1427,101 @@ mod threads_mode {
             assert!(matches!(actor.send(Ping), Err(ActorError::NoProc)));
             assert!(matches!(actor.request(Ping), Err(ActorError::NoProc)));
             assert!(matches!(actor.request_raw(Ping), Err(ActorError::NoProc)));
+        }
+    }
+
+    // Context::exit_pending in threads mode: the start_linked parent's exit
+    // to a trapping child is pending in the handlers of messages queued
+    // before it.
+    mod exit_pending {
+        use super::*;
+        use spawned_concurrency::threads::ActorRef;
+        use std::sync::mpsc;
+
+        type Log = Arc<Mutex<Vec<(&'static str, bool)>>>;
+        pub struct Late(Log);
+        impl Actor for Late {
+            fn started(&mut self, ctx: &Context<Self>) {
+                ctx.trap_exit(true);
+            }
+            fn stopped(&mut self, ctx: &Context<Self>) {
+                self.0.lock().unwrap().push(("stopped", ctx.exit_pending()));
+            }
+        }
+        struct Probe;
+        impl Message for Probe {
+            type Result = ();
+        }
+        impl Handler<Probe> for Late {
+            fn handle(
+                &mut self,
+                _: Probe,
+                reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+                ctx: &Context<Self>,
+            ) {
+                self.0.lock().unwrap().push(("probe", ctx.exit_pending()));
+                reply.reply(());
+            }
+        }
+        struct Block(mpsc::Receiver<()>);
+        impl Message for Block {
+            type Result = ();
+        }
+        impl Handler<Block> for Late {
+            fn handle(
+                &mut self,
+                msg: Block,
+                reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+                ctx: &Context<Self>,
+            ) {
+                let _ = msg.0.recv();
+                self.0.lock().unwrap().push(("block", ctx.exit_pending()));
+                reply.reply(());
+            }
+        }
+        struct Parent(Log);
+        impl Actor for Parent {}
+        struct Spawn;
+        impl Message for Spawn {
+            type Result = ActorRef<Late>;
+        }
+        impl Handler<Spawn> for Parent {
+            fn handle(
+                &mut self,
+                _: Spawn,
+                reply: spawned_concurrency::reply::PendingReply<'_, ActorRef<Late>>,
+                ctx: &Context<Self>,
+            ) {
+                reply.reply(Late(self.0.clone()).start_linked(ctx));
+            }
+        }
+
+        #[test]
+        fn queued_work_sees_the_parents_pending_exit() {
+            let log: Log = Arc::default();
+            let parent = Parent(log.clone()).start();
+            let child = parent.request(Spawn).unwrap();
+            child.request(Probe).unwrap();
+            let (release, gate) = mpsc::channel();
+            child.send(Block(gate)).unwrap();
+            child.send(Probe).unwrap();
+            child.send(Probe).unwrap();
+            parent.child_handle().stop_with_reason(ExitReason::Shutdown);
+            // Link notices are delivered before the parent's exit is
+            // published: the child's parent exit is queued now.
+            assert_eq!(ended(&parent.child_handle()), ExitReason::Shutdown);
+            release.send(()).unwrap();
+            assert_eq!(ended(&child.child_handle()), ExitReason::Shutdown);
+            assert_eq!(
+                *log.lock().unwrap(),
+                vec![
+                    ("probe", false),
+                    ("block", true),
+                    ("probe", true),
+                    ("probe", true),
+                    ("stopped", true),
+                ]
+            );
         }
     }
 }

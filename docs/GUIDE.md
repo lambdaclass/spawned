@@ -38,7 +38,7 @@ Every actor goes through three phases:
 
 1. **`started()`** — called once before the actor begins processing messages. Use this for initialization: starting timers, registering with the registry, etc.
 2. **Message loop** — the actor processes messages one at a time via `Handler<M>` implementations.
-3. **`stopped()`** — called once after the message loop exits. Use this for cleanup.
+3. **`stopped()`** — called once after the message loop exits, unless the exit was a kill or an exit signal (see [When `stopped()` does not run](#when-stopped-does-not-run)). Use this for cleanup.
 
 ```rust
 #[actor(protocol = MyProtocol)]
@@ -78,6 +78,39 @@ Call `ctx.stop()` from inside a handler or lifecycle hook. This cancels the acto
 From outside, use the actor's `ChildHandle` (`actor_ref.child_handle()`): `stop()` exits `Normal`, `shutdown()` exits `Shutdown`, and `stop_with_reason(reason)` picks the reason. All are cooperative: the running handler finishes and `stopped()` runs. They ignore `trap_exit`. `ActorRef` itself has no stop method; an explicit shutdown message in your protocol also works.
 
 Stopping discards messages still queued: once the stop is observed no further message is handled, and queued requests fail with `ActorStopped(reason)`, the actor's final exit reason.
+
+### When `stopped()` does not run
+
+As in OTP (`terminate/2` runs only for exits the process takes itself), `stopped()` runs for `ctx.stop()`, an administrative stop (`ChildHandle::stop`/`shutdown`/`stop_with_reason`), a panic in a handler, and a parent's exit to a **trapping** actor. It is **skipped** when the exit is begun by:
+
+- a kill (`ChildHandle::kill()`, `exit(Kill)`, a supervisor's kill escalation at `shutdown_timeout`), unless `stopped()` already began;
+- an untrapped exit signal or link notice (`ChildHandle::exit(reason)`, a linked peer's abnormal exit);
+- a supervisor's or system's shutdown, or a `start_linked` parent's exit, to an actor that does **not** trap exits: the parent's exit is an exit signal (design E3);
+- the runtime dropping the actor (`Killed`).
+
+Every skip is logged at `debug` with `event = "stopped_skipped"`, the actor id and type, `cause` (`kill`, `exit_signal` or `runtime_drop`) and `reason`. The log is emitted whether or not the actor overrides `stopped()` (there is no cheap way to tell), so filter on the actor type. The lifecycle trace (feature `lifecycle-trace`) records the same decision as `Hook` `skip`.
+
+If cleanup must run on a supervisor's shutdown, trap exits first thing in `started()`; the parent's exit then ends the actor through `stopped()`, after the messages queued before it:
+
+```rust
+async fn started(&mut self, ctx: &Context<Self>) {
+    ctx.trap_exit(true); // shutdown runs stopped(); linked peers' deaths arrive as `Exit`
+}
+```
+
+A trapping actor still handles the messages queued before the parent's exit. To refuse late work, check `ctx.exit_pending()`: it is `true` once the actor's exit has begun (`ctx.stop()`, an administrative stop, a kill, an untrapped signal, a panic; also in `stopped()`) or a parent exit is queued behind the current message. A trapped `Exit` from a linked peer or a non-parent `exit` is not a pending exit. It is advisory: a signal can arrive right after it returns `false`.
+
+```rust
+#[request_handler]
+async fn handle_work(&mut self, msg: Work, ctx: &Context<Self>) -> Result<(), Refused> {
+    if ctx.exit_pending() {
+        return Err(Refused::ShuttingDown);
+    }
+    // ...
+}
+```
+
+State that must be released on every exit, including kills and runtime drops, belongs in `Drop`.
 
 ---
 
@@ -643,6 +676,18 @@ pub enum ActorError {
 - `send()` returns `Err(NoProc)` once the actor is past its death point. While the actor is stopping (after a stop request, including during `stopped()`), `send()` still returns `Ok(())` and the message is dropped without being handled: `Ok` means accepted, not handled.
 - `request()` returns `Err(ActorStopped(reason))` if the actor dies before replying, with the reason `wait_exit()` and monitors report (`Killed`, `Panic(..)`, the exit signal's reason, ...), `Err(NoProc)` if it was already gone, or `Err(RequestTimeout)` if the reply doesn't arrive in time. A request whose handler panicked is answered when the actor dies (after `stopped()`), not at once.
 - `request_with_timeout()` lets you specify a custom timeout.
+
+`ActorError` is `#[non_exhaustive]`. Classify it with the helpers instead of an exhaustive match:
+
+| Variant | `target_gone()` | `is_timeout()` | `is_transient()` | `exit_reason()` |
+|---|---|---|---|---|
+| `ActorStopped(r)` | `true` | `false` | `false` | `Some(&r)` |
+| `NoProc` | `true` | `false` | `false` | `None` |
+| `RequestTimeout` | `false` | `true` | `true` | `None` |
+| `ReplyDropped` | `false` | `false` | `false` | `None` |
+| `Overloaded` | `false` | `false` | `true` | `None` |
+
+`target_gone()`: retrying the same reference cannot succeed (look the actor up again; a supervisor may have restarted it). `is_transient()`: retrying the same target may succeed. `ReplyDropped` is neither: the actor is alive but its handler chose not to answer. `ExitReason::is_abnormal()` is `false` only for `Normal` and `Shutdown` (`Killed` and `NoProc` are abnormal).
 
 ---
 

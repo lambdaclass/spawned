@@ -18,7 +18,13 @@ table is the full list). What to edit:
 - **`stopped()` no longer always runs.** It is skipped when the exit is begun
   by a kill, an untrapped exit signal or link notice (a linked peer's
   abnormal death), or a runtime drop (decision 2, as OTP skips `terminate`).
-  Cleanup that must run on every exit belongs in `Drop`.
+  Cleanup that must run on every exit belongs in `Drop`. **To notice a
+  skip**, enable `debug` logs for `spawned_concurrency`: every skipped
+  `stopped()` logs `event = "stopped_skipped"` with the actor id and type,
+  `cause` (`kill`, `exit_signal`, `runtime_drop`) and `reason`. It is logged
+  for every skip, also for actors that do not override `stopped()`. The
+  remedy for a supervised actor is `ctx.trap_exit(true)` in `started()`
+  (below).
 
 > **Supervised and system-owned actors: `stopped()` is skipped on shutdown
 > unless the actor traps exits.** Supervisor and system shutdown send the
@@ -51,6 +57,12 @@ table is the full list). What to edit:
 > A trapping actor also receives linked peers' deaths as `Exit` messages
 > (`exit_received`) instead of dying with them; trap only where that is
 > intended, or move the cleanup into `Drop`.
+>
+> A trapping actor still handles the messages queued before the shutdown. To
+> refuse that late work, check the new `ctx.exit_pending()` (both modes): it
+> is `true` once the actor's exit has begun or the parent's exit is queued
+> behind the current message (a peer's trapped `Exit` does not count). It is
+> advisory: a signal can arrive right after it returns `false`.
 
 - **Runtime drop** reports `Killed` (was `Kill` in tasks mode,
   `Panic("unexpected framework panic")` in threads mode).
@@ -113,9 +125,15 @@ table is the full list). What to edit:
   while the actor exits, is no longer answered at once: it is answered at the
   death point (after `stopped()`) with the final reason, or by the caller's
   own deadline first. With `metrics`, rejected requests count in the new
-  `requests_noproc_total`. **ethrex**: `peer_handler.rs:1251` matches
-  `ActorError` exhaustively on purpose, so it no longer compiles: add arms
-  for `ActorStopped(_)` and `NoProc`; two tests that construct
+  `requests_noproc_total`. `ActorError` stays `#[non_exhaustive]`; instead
+  of an exhaustive match, classify with `target_gone()` (`ActorStopped(_)`,
+  `NoProc`), `is_timeout()` (`RequestTimeout`), `is_transient()`
+  (`RequestTimeout`, `Overloaded`: retrying the same target may succeed;
+  not `ReplyDropped`) and `exit_reason()` (the reason of `ActorStopped`).
+  A variant added later is classified by these helpers. **ethrex**:
+  `peer_handler.rs:1251` matches `ActorError` exhaustively on purpose, so it
+  no longer compiles: add arms for `ActorStopped(_)` and `NoProc`, or replace
+  the match with the helpers above; two tests that construct
   `ActorError::ActorStopped` must pass a reason (for example
   `ActorStopped(ExitReason::Normal)`). **ethlambda**: one test mock
   constructs `ActorStopped`; pass a reason the same way. A `spawned-test`
