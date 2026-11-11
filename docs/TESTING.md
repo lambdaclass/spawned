@@ -688,8 +688,15 @@ oracle's name, so shrinking can match it):
 | X3, X5 | `Exit` carries the peer's published reason; a trapping, still-linked actor gets it (no more often than links were made); a non-trapping one does not survive a peer's abnormal exit |
 | X7 | No `Note` from a source after its `Down`/`Exit` at the same receiver |
 | X8 | An actor whose only possible stop cause was one driver `stop`, `shutdown` or `stop_with_reason` on it while alive publishes exactly that reason (skipped if a hook or the state destructor panicked) |
+| X3 (reason) | A standalone, non-trapping actor whose only possible stop cause was its link to a peer that exited with `Shutdown`, `Panic` or `Kill` publishes the peer's reason, so the crash keeps propagating |
+| X5 (unlink) | After the driver unlinks two running actors (and does not link them again), neither receives an `Exit` from the other, and a standalone actor whose only stop causes were links to that peer outlives it |
+| T1 (cancel) | A timer cancelled at time `c` delivers at most the ticks due by `c` (`send_after`: at most one, none if cancelled before its period; `send_interval`: one per elapsed period) |
 | L4, M | An actor that panicked exits abnormally; a published reason never changes; an actor nothing could have stopped is still alive |
 | V1, V3, V5 | A Temporary child is built at most once per supervisor instance; no factory runs while an earlier generation of its slot (or subtree) is alive; retries per rolling window never exceed `max_restarts` |
+| V1, V2 (restart decisions) | In a flat root tree, every replacement follows either the slot's own attempt ending in a way its mode restarts (failed or unpublished attempt, any exit for Permanent, an abnormal one for Transient), or an upstream sibling's attempt ending after the previous attempt began (any sibling for OneForAll, an earlier one for RestForOne). An instance nothing but its supervisor could have stopped needs the second |
+| V1, V2, V5 (required restarts) | In a flat root tree the driver never closed and that did not fail, once teardown finds it settled: every published Permanent instance, and every published Transient one that exited abnormally, has a successor, and so does every running, non-Temporary sibling in its cohort (later siblings for RestForOne, all for OneForAll). A missing restart is an exhausted budget that failed to fail the supervisor |
+| V5 (exhaustion) | A "restart budget exhausted" failure happens only when, at some moment between the exhausting child's last attempt and the tree's last grant, the grants in the window plus one reservation per sibling reach `max_restarts` |
+| V6 | OneForOne: the virtual time from the end of an attempt to the next factory call is the backoff bound for the child's failure streak (from zero through it with jitter, plus 10 ms and a quarter of the bound for clock creep); the streak counts restarts and resets after a generation that stayed ready for `stable_after` (an interval when stability is within 1 ms of the threshold) |
 | V4, V9 | `current()` never returns an exited generation; a finished supervisor has every child `Stopped` or `Failed`, no live generation, and runs no factory afterwards; children stop in reverse declaration order |
 | S1-S4 | A complete system shutdown leaves no managed actor running and no coordinator failure; a shut-down system admits nothing; targets stop in reverse admission order |
 | M5, S3, S5 | After teardown: every actor state dropped, no registered name left, and the simulator's task count back to its starting value |
@@ -779,6 +786,7 @@ input and, for random schedules, its tape:
 | V9 order | under the canonical schedule a yielding driver starved a child that was already stopping; quiescing now sleeps (`stopping_child_settles_before_order`) |
 | X3 | `ctx.link` from an exited actor's context is a no-op (`register_link` sees its own table closed), while linking to an exited peer delivers its reason (X5); found by the generated-input test before the campaign. The asymmetry is not stated in the semantics contract. |
 | livelock | a nested subtree that restarts more slowly than its parent's budget refills retries forever; the start is now bounded at 30 s |
+| V5 exhaustion | the oracle measured the window at the end of the exhausting child's last attempt, but a collateral OneForAll child reserves only after its round's cleanup, and a superseding round (a sibling's failed rebuild) makes it reserve again later; the oracle now takes the most grants at any moment up to the tree's last grant (`budget_reserved_after_round`) |
 
 ## Scope
 

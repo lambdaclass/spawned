@@ -20,7 +20,8 @@
 #   V  TLA+ trace validation of the dedicated trace tests' supervisor
 #      lifecycles (needs nix; only a TLC rejection counts)
 #   K  Kani proofs of the supervisor arithmetic (concurrency/src/kani_proofs.rs;
-#      needs cargo-kani 0.68 on PATH; only a failed proof counts)
+#      needs cargo-kani 0.68 on PATH, or KANI_ENV naming a file to source;
+#      only a failed proof counts)
 #
 # Output: OUT/results.tsv (patch, layer, verdict, seconds, detail) and one log
 # per patch and layer. Verdicts: caught, missed, build (the patch does not
@@ -36,7 +37,7 @@ while getopts "l:f:o:" opt; do
         l) layers=$OPTARG ;;
         f) fuzz_secs=$OPTARG ;;
         o) out=$OPTARG ;;
-        *) sed -n '2,28p' "$0"; exit 2 ;;
+        *) sed -n '2,29p' "$0"; exit 2 ;;
     esac
 done
 shift $((OPTIND - 1))
@@ -169,7 +170,8 @@ layer_V() {
 }
 
 layer_K() {
-    timed timeout 3600 bash -c "cd '$root/concurrency' && cargo kani --output-format terse"
+    # KANI_ENV: a file to source first (a private Kani install's PATH, etc.).
+    timed timeout 3600 bash -c "${KANI_ENV:+. '$KANI_ENV' && }cd '$root/concurrency' && cargo kani --output-format terse"
     if grep -q 'VERIFICATION:- FAILED' "$log"; then
         verdict=caught
         detail="$(grep -B30 'VERIFICATION:- FAILED' "$log" | grep -oE 'Checking harness [a-z_:]+' | sed 's/Checking harness //' | sort -u | head -4 | tr '\n' ' ')"
