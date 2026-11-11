@@ -158,14 +158,14 @@ fails only itself.
 | ethrex today | With the dynamic supervisor |
 |---|---|
 | `.start()`, unmanaged, on the caller's runtime | `start_child(args)` on a `DynamicSupervisor<PeerConnectionServer, ConnArgs>`, placed on the `p2p` group |
-| handshake inside `started()` (up to `HANDSHAKE_TIMEOUT`, 10 s) | **required change:** `started()` sends itself a `Handshake` message and returns; the handshake runs as the first handler turn, still under `HANDSHAKE_TIMEOUT`, and a failure ends the actor (a Temporary exit, not a start failure). Otherwise one silent peer would hold the supervisor's control loop, and with it every accept and dial, for the whole `startup_timeout` |
+| handshake inside `started()` (up to `HANDSHAKE_TIMEOUT`, 10 s) | **required change:** the handshake moves to the post-start continuation of the unified-start design (0.9, OTP's `handle_continue`): it runs right after `started()` returns and before any message, still under `HANDSHAKE_TIMEOUT`, and a failure ends the actor (a Temporary exit, not a start failure). Otherwise one silent peer would hold the supervisor's control loop, and with it every accept and dial, for the whole `startup_timeout`. A self-sent first message is not equivalent: a message enqueued by another actor first would run before it |
 | no owner; shutdown does not stop connections | the supervisors are owned by the system, nested under the p2p supervisor (recommended) or as roots admitted after the peer table; connections stop before the table, all at once, each killed after its `shutdown_timeout` |
 | `Semaphore(150)` plus `_admission_permit` in actor state | `max_children = Some(150)` on an inbound supervisor; `Rejected { MaxChildren, args }` returns the `ConnArgs`, so the accept loop can still send an RLPx Disconnect or just drop the stream, as today |
 | outbound uncapped | a second supervisor for dials without `max_children` |
 | `ConnectionId` (process-global counter) | the table's `MonitorRef` (or the connection's `ActorId`, never reused, M4) |
 | `stopped()` sends `remove_peer(node_id, connection_id)` | the peer table monitors the connection when it registers it; `Handler<Down>` removes the entry only if it still holds that monitor. `Down` arrives exactly once whatever ends the actor (X1), including kills and a skipped `stopped()` |
 | timed-out registration undone by an unconditional `remove_peer` | the table's monitor fires for that registration too; a monitor installed after the connection died gets `Down { NoProc }` at once (E4) |
-| connections never restarted | `DynamicChildSpec::temporary(..)`: no restarts, no budget use, args (the `TcpStream`, the `Node`) moved without `Clone` |
+| connections never restarted | `DynamicChildSpec::temporary(..)`, chosen deliberately over the Permanent default: a dropped peer must not be redialled by the supervisor (the TCP stream is gone and discovery decides whom to dial), so the connection is one-shot. No restarts, no budget use, arguments (the `TcpStream`, the `Node`) moved without `Clone` |
 | first-wins on duplicates | unchanged: domain policy in the table (rank 12 may later own it) |
 | `teardown()` and `tx_broadcaster.remove_peer` in `stopped()` | moved to owners that act on the `Down` (below): `stopped()` is skipped for a non-trapping connection on `terminate_child`, on shutdown and after a kill |
 | raw `tokio::spawn` outbound writer holding the socket sink ([server.rs:1530-1557](https://github.com/lambdaclass/ethrex/blob/0dd4c105f65d544b0fb5e92d8634a1699127f826/crates/networking/p2p/rlpx/connection/server.rs#L1530-L1557)) | **required change:** an owned helper (`ctx.spawn_helper`), cancelled at exit and joined within the cleanup deadline, with an explicit policy for frames still queued (drop them; the peer is being disconnected). Until then the writer can outlive the actor and keep the socket open after the supervisor freed the slot, so `max_children` would bound slots, not sockets |
@@ -197,10 +197,10 @@ match inbound.current()?.start_child(ConnArgs::receiver(context.clone(), peer_ad
 }
 
 // Connection actor (server.rs): the handshake leaves started().
-#[started]
-async fn started(&mut self, ctx: &Context<Self>) {
-    let _ = ctx.send(Handshake);          // first turn, OTP's handle_continue
-}
+// Handshake in the post-start continuation (unified start, 0.9): runs
+// after started() returns and before any message.
+#[continue_start]
+async fn handshake(&mut self, ctx: &Context<Self>) -> ContinueResult { /* existing code */ }
 
 // Peer table (peer_table.rs): registration installs the monitor...
 async fn handle_new_connected_peer(&mut self, msg: NewConnectedPeer, ctx: &Context<Self>) -> bool {
@@ -227,17 +227,27 @@ impl Handler<Down> for PeerTableServer {
 ### Skipped teardown: who releases what
 
 `stopped()` does not run for a non-trapping connection that is terminated,
-shut down or killed (v0.8, decision 2). `trap_exit` would bring it back for
-`terminate_child` and shutdown, but not for a kill, so each resource the
-hook releases needs an owner that also hears about the death (Codex 12):
+shut down or killed (v0.8, decision 2), and `trap_exit` does not cover a
+kill. So each resource the hook releases today gets an owner that holds an
+exact registration and releases on the connection's `Down`, as an Erlang
+process that owns a resource monitors its user. Nothing is sent from
+`Drop`: state destruction runs before publication (exit phases 5 and 6),
+so such a message would reach the peer table before the `Down` and could
+pick the dying peer as its own alternate (agy 5), and an enqueued message
+is not a completed release (Codex F9).
 
-| Released in `stopped()` today | Owner after the migration |
-|---|---|
-| peer-table entry and discv5 session (`remove_peer`) | the peer table's `Down` handler, guarded by its monitor |
-| tx-broadcaster index (`tx_broadcaster.remove_peer`) | forwarded by the peer table from the same `Down`, carrying the node id and the monitor reference so a stale forward cannot drop a newer connection's index; or the broadcaster monitors connections itself |
-| in-flight transaction reservations and re-requests to alternates (`teardown()`, [server.rs:449-511](https://github.com/lambdaclass/ethrex/blob/0dd4c105f65d544b0fb5e92d8634a1699127f826/crates/networking/p2p/rlpx/connection/server.rs#L449-L511)) | a guard value in the actor state whose `Drop` clears the hashes in the mempool (runs on every exit, kills included, before the slot frees); the re-request to alternates, which is async, becomes a message to the peer table sent from that `Drop`, guarded by the connection identity |
-| announcement and availability bookkeeping | same guard |
-| disconnect metrics | the `Down` handler (it has the final reason) |
+| Released in `stopped()` today | Registration (identity stored by the owner) | Release on `Down` |
+|---|---|---|
+| peer-table entry and discv5 session | `new_connected_peer` stores the monitor reference in `PeerData` | the peer table removes the entry only if it still holds that monitor |
+| tx-broadcaster index | the broadcaster's `add_peer` records the connection's `ActorId` and monitors it | the broadcaster frees the index only if it is still owned by that `ActorId` |
+| in-flight transaction reservations (`clear_in_flight_txs`) | the mempool records the requesting connection's `ActorId` with each in-flight hash when the request is made | the peer table, after removing the entry, calls `mempool.release_in_flight(actor_id)`: synchronous, exact, removes only hashes still held by that id |
+| re-request to alternates (`retry_on_alternates`) | the same per-hash records | best effort, done by the peer table after the removal, with a local lookup of live peers (no request to itself, so no self-request deadlock); skipped once shutdown began (`Down` reason `Shutdown` from the supervisor's shutdown) so a node stop does not issue ~150 re-requests |
+| cell availability and announced-hash budget (`clear_peer_cell_availability`, `forget_peer_announcements`) | keyed today by node id with a "started session" check; becomes keyed by (node id, connection `ActorId`) | the peer table releases the entries of that `ActorId` only, so a second session of the same node keeps its own |
+| disconnect metrics | | the peer table's `Down` handler (it has the final reason) |
+
+`Drop` keeps only what is local to the actor (dropping its own buffers).
+Releases happen after the connection is gone from the table, so no
+re-request can target it.
 
 ### What disappears
 
@@ -252,8 +262,9 @@ About 45-60 of the ~135 hand-written lines (counted on `main`):
 | inbound semaphore, `try_acquire_owned`, `_admission_permit` field and parameter | ~15 | replaced by `max_children` |
 | "connections are not admitted" comment and unmanaged `.start()` | | connections owned by the system |
 
-Added: the `Handshake` first message (moving existing code), the writer as an
-owned helper, the teardown guard and the broadcaster forward. Net lines are
+Added: the handshake as a post-start continuation (moving existing code),
+the writer as an owned helper, exact owner registrations in the mempool and
+broadcaster, and the release logic in the `Down` handlers. Net lines are
 roughly even; what changes is that every path out of a connection is
 covered. #7435's integration test (171 lines) stays as a regression test,
 now exercising the monitor guard.
