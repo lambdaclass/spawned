@@ -649,8 +649,8 @@ TLC results (TLC 2.19, fede, 4 workers, `nice -n 19`):
 
 | Configuration | Instance | Distinct states | Depth | Time |
 |---|---|---|---|---|
-| `MCDynamicSupervisor` (every PR; safety, action property, liveness) | 3 slots (Permanent, Transient, Temporary), `max_children` 2, budget 1, one window release, exits `Normal`/`Panic`, start failures factory/`Panic` | RESULTS_FAST | | |
-| `MCDynamicSupervisorDeep` (weekly; safety, action property) | 4 slots (P, T, Temp, P), `max_children` 3, budget 2, two releases, one reason per class (the decisions depend only on normal versus abnormal; with every reason the instance passed 12 GB of TLC state without finishing) | RESULTS_DEEP | | |
+| `MCDynamicSupervisor` (every PR; safety, action property, liveness) | 3 slots (Permanent, Transient, Temporary), `max_children` 2, budget 1, one window release, exits `Normal`/`Panic`, start failures factory/`Panic` | 1,601,979 (5,010,572 generated) | 33 | 2m16s |
+| `MCDynamicSupervisorDeep` (weekly; safety, action property) | the same 3 slots and cap with budget 2 and two window releases (up to four restarts); one reason per class, since the decisions depend only on normal versus abnormal. Four slots did not fit: 222M distinct states after 30 min without finishing | 5,617,958 (18,853,746 generated) | 42 | 41 s |
 
 Negative controls (`negative_checks.py`; each checks `TypeOK` and only the
 named property, on `MCDynamicSupervisor`):
