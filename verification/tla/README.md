@@ -107,6 +107,23 @@ child), and a trace edited back to failing the tree is a negative control. Hand-
 before an `Attempt`, a restart after a Transient normal exit, forward shutdown
 order, budget exhaustion with a free retry) are rejected at the edited event.
 
+## Model sync
+
+Models track the code. A PR that changes modelled behaviour updates the model
+in the same PR; the `model-sync` CI job enforces it
+([details](../../docs/TESTING.md#model-sync)):
+
+- `verification/model-map.toml` lists, per model, its files here (model, MC
+  configurations, `*Ind`, coverage and trace modules) and the code it covers.
+  A PR changing covered code without touching any covering model fails,
+  unless the change is comments or `#[cfg(test)]` only, or the PR has the
+  `no-model-change` label and a body line `Model: no change because <reason>`.
+- `scripts/check-model-sync.py events` checks that every trace event the
+  code can emit is an arm of its trace spec (`TraceSupervision`,
+  `TraceCohorts`, `TraceNested`), or is declared translated or rejected in
+  the map. It warns about arms no code emits and model actions no trace spec
+  takes. When adding an event or an action, update the spec and the map.
+
 ## Trace coverage
 
 Trace validation says every recorded run is a behavior of the model. Trace

@@ -114,6 +114,7 @@ Status of each layer. "Planned" items are tracked in the
 | Design, any size | TLAPS or Veil | An invariant that fails only for larger configurations | Planned ([verification tools](research/verification-tools.md)) |
 | Spec and code | Trace validation | The implementation doing something the model forbids | Real OneForOne, cohort and nested traces plus invalid-trace and model-mutation controls |
 | Spec and code coverage | Trace coverage (`verification/tla/trace_coverage.py`) | Model actions, states and transitions no test ever reaches | Report on every PR (actions covered by the dedicated trace tests may not regress); whole test suite weekly. See [trace coverage](#trace-coverage) |
+| Spec and code in sync | `scripts/check-model-sync.py`, `verification/model-map.toml` | A PR changing modelled code without its model; a trace event no trace spec replays | `model-sync` job on every PR. See [model sync](#model-sync) |
 | Primitives | Loom | Atomic and memory-ordering bugs in cancellation, ready gate and wakeups | In CI; expand to reply slots and mailbox publication versus shutdown |
 | Whole runtime, deterministic | Simulation backend for `spawned-rt::tasks` (random, PCT, bounded DFS) | Async races, replayed from a seed with virtual time | In CI (`sim` job, [simulated suites in CI](#simulated-suites-in-ci)) |
 | Resource stability | Soak tests | Memory, file descriptors, threads, tasks and registry entries growing over hours of actor churn and restarts | Planned |
@@ -1124,6 +1125,41 @@ deadlock-free; `==`, which is not, is caught). Run cargo-mutants with the
 feature that compiles a mutated line before treating it as a gap. Code inside
 `macro_rules!` bodies is not mutated at all, so keep lifecycle code out of
 single-use macros.
+
+### Model sync
+
+Models track the code: a PR that changes behaviour a TLA+ model specifies
+updates the model in the same PR, and drift is a bug. The `model-sync` job
+(`.github/workflows/model-sync.yml`) checks two things mechanically.
+
+- **Paths.** `verification/model-map.toml` maps code to the models that
+  cover it (for example `actor_cleanup.rs`, `link.rs`, `monitor.rs` and the
+  actor loops to `Lifecycle`; `supervision.rs` to `Supervision`, `Cohorts`
+  and `NestedSupervision`; `system.rs` to `Coordinator`). If a PR changes a
+  mapped file but none of its models (the model, its MC configurations,
+  inductive or coverage modules, or trace spec), the job fails. Changes to
+  comments only, or only inside a `#[cfg(test)] mod` block, are exempt; when
+  the script cannot tell, it requires the waiver. The waiver is the
+  `no-model-change` label AND a PR body line `Model: no change because
+  <reason>`. In the merge queue the step passes: the PR run enforced it.
+- **Trace events.** Every action name the code can record with the
+  `lifecycle-trace` feature (each string literal passed to `Event::new`,
+  `Event::sup`, `TreeEvent::new` and, with PR #240, `LifeEvent`, `JobEvent`
+  and reply events) must be an `e.a = "..."` arm of its trace spec, or be
+  declared in the map as translated by `trace_check.py` or rejected on
+  purpose (`Unmodelled`). A non-literal action name, an event struct with no
+  map entry, or a cohort event filter that differs from `TraceCohorts.tla`
+  fails. Warnings list spec arms no code emits and model actions no trace
+  spec takes (except those declared unlogged, such as `WindowExpire`). The
+  event names are strings, not an enum, so this is a source scan rather than
+  a compile-time `match`; the mapping it checks lives in TLA+.
+
+```bash
+python3 scripts/check-model-sync.py events
+python3 scripts/check-model-sync.py paths                       # this branch against origin/main
+python3 scripts/check-model-sync.py paths --pr 123              # with that PR's labels and body
+python3 -m unittest scripts/tests/test_model_sync.py            # self-tests and negative controls
+```
 
 ## Planted-bug sensitivity
 
