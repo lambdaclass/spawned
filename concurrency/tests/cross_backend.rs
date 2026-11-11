@@ -806,7 +806,7 @@ fn end(env: &Env, actor: &Ref, ending: Ending) -> ExitReason {
             actor.request(Cmd::Boom),
             Err(ActorError::ActorStopped(ExitReason::Panic(_)))
         )),
-        Ending::Shutdown => child.shutdown(),
+        Ending::Shutdown => child.stop_with_reason(spawned_concurrency::ExitReason::Shutdown),
     }
     env.wait_exit(&child)
 }

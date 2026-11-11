@@ -60,7 +60,7 @@ fn listener_consumes_iterator() {
     }
     .start();
 
-    let ctx = Context::from_ref(&actor);
+    let ctx = actor.context();
     let items = vec![
         Push { value: 1 },
         Push { value: 2 },
@@ -88,7 +88,7 @@ fn listener_stops_on_cancellation() {
     }
     .start();
 
-    let ctx = Context::from_ref(&actor);
+    let ctx = actor.context();
 
     // An iterator that blocks between items, giving us time to cancel
     let iter = (1..=100).map(move |i| {

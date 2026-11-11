@@ -98,7 +98,9 @@ async fn managed_actor_stopped_before_first_poll_runs_no_hooks_but_drops_state()
                 .unwrap()
         })
         .collect();
-    actor.child_handle().shutdown();
+    actor
+        .child_handle()
+        .stop_with_reason(spawned_concurrency::ExitReason::Shutdown);
     release.send(()).unwrap();
     spawned_rt::tasks::timeout(LIMIT, blocker.join())
         .await
@@ -135,7 +137,9 @@ async fn managed_actor_stopped_before_first_poll_runs_no_hooks_but_drops_state()
 async fn legacy_actor_stopped_before_first_poll_keeps_both_hooks() {
     let counts = Arc::new(Counts::default());
     let actor = Probe(counts.clone()).start(); // this runtime has not yielded
-    actor.child_handle().shutdown();
+    actor
+        .child_handle()
+        .stop_with_reason(spawned_concurrency::ExitReason::Shutdown);
     assert_eq!(
         spawned_rt::tasks::timeout(LIMIT, actor.wait_exit())
             .await

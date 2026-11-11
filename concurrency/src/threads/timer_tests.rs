@@ -177,7 +177,7 @@ impl Handler<StopDelayed> for Delayed {
 pub fn test_send_after_and_cancellation() {
     let actor = Delayed::new(0).start();
 
-    let ctx = Context::from_ref(&actor);
+    let ctx = actor.context();
     let _ = send_after(Duration::from_millis(100), ctx, Inc);
 
     let count = wait_for(
@@ -187,7 +187,7 @@ pub fn test_send_after_and_cancellation() {
     .unwrap();
     assert_eq!(1, count);
 
-    let ctx = Context::from_ref(&actor);
+    let ctx = actor.context();
     let timer = send_after(Duration::from_millis(100), ctx, Inc);
 
     timer.cancellation_token.cancel();
@@ -202,7 +202,7 @@ pub fn test_send_after_and_cancellation() {
 pub fn test_send_after_actor_shutdown() {
     let actor = Delayed::new(0).start();
 
-    let ctx = Context::from_ref(&actor);
+    let ctx = actor.context();
     let _ = send_after(Duration::from_millis(100), ctx, Inc);
 
     let count = wait_for(
@@ -212,7 +212,7 @@ pub fn test_send_after_actor_shutdown() {
     .unwrap();
     assert_eq!(1, count);
 
-    let ctx = Context::from_ref(&actor);
+    let ctx = actor.context();
     let _ = send_after(Duration::from_millis(100), ctx, Inc);
 
     let count2 = actor.request(StopDelayed).unwrap();
@@ -283,8 +283,8 @@ pub fn threads_send_after_uses_the_monotonic_clock_over_long_delays() {
     let delay = Duration::from_millis(300);
     let long = Duration::from_millis(1_500);
     let armed = std::time::Instant::now();
-    let _short = send_after(delay, Context::from_ref(&actor), Fired);
-    let cancelled = send_after(long, Context::from_ref(&actor), Fired);
+    let _short = send_after(delay, actor.context(), Fired);
+    let cancelled = send_after(long, actor.context(), Fired);
     assert!(
         wait_for(|| handled.lock().unwrap().len(), |n| *n >= 1) >= 1,
         "timer never fired"
@@ -296,7 +296,7 @@ pub fn threads_send_after_uses_the_monotonic_clock_over_long_delays() {
         fired.duration_since(armed)
     );
     cancelled.cancellation_token.cancel();
-    let _uncancelled = send_after(long, Context::from_ref(&actor), Fired);
+    let _uncancelled = send_after(long, actor.context(), Fired);
     let armed_long = std::time::Instant::now();
     assert!(
         wait_for(|| handled.lock().unwrap().len(), |n| *n >= 2) >= 2,
@@ -328,7 +328,7 @@ pub fn threads_send_interval_is_fixed_delay_while_the_actor_stalls() {
         stall: Some(period * 7 / 2),
     }
     .start();
-    let timer = send_interval(period, Context::from_ref(&actor), Stamp(sends.clone()));
+    let timer = send_interval(period, actor.context(), Stamp(sends.clone()));
     assert!(
         wait_for(|| handled.lock().unwrap().len(), |n| *n >= 10) >= 10,
         "timer never fired"

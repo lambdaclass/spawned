@@ -596,7 +596,9 @@ fn panic_hook_child() {
         let stopped = Arc::new(AtomicBool::new(false));
         let actor = env.start(Victim::new(&stopped, false));
         assert_eq!(actor.ping(&env), 7);
-        actor.child().shutdown();
+        actor
+            .child()
+            .stop_with_reason(spawned_concurrency::ExitReason::Shutdown);
         assert_eq!(env.wait_exit(&actor.child()), ExitReason::Shutdown);
         env.finish();
     }

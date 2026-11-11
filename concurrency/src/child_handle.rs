@@ -65,6 +65,18 @@ pub(crate) type CancelFn = Arc<dyn Fn() + Send + Sync>;
 /// Unlike `ActorRef<A>`, a `ChildHandle` cannot send messages directly — it
 /// only provides supervision-related operations (stop, exit, kill, wait,
 /// check liveness, link/monitor).
+///
+/// Ending an actor, as in OTP:
+///
+/// | Call | Ends with | `stopped()` | Trapping actor | OTP |
+/// |---|---|---|---|---|
+/// | `stop()` | `Normal` | runs | ignores trapping | `gen_server:stop/1` |
+/// | `stop_with_reason(r)` | `r` (also `Kill`) | runs | ignores trapping | `gen_server:stop/3` |
+/// | `exit(r)` | `r`, or nothing for `Normal` | skipped | gets `Exit { from: EXTERNAL, reason: r }` | `exit(Pid, R)` |
+/// | `kill()` = `exit(Kill)` | `Killed` | skipped (unless begun) | cannot trap it | `exit(Pid, kill)` |
+///
+/// So `stop_with_reason(Kill)` ends `Kill` after `stopped()` and links see a
+/// trappable `Kill`, while `kill()` ends `Killed`, untrappable.
 #[derive(Clone)]
 pub struct ChildHandle {
     target: Arc<SignalTarget>,
@@ -161,12 +173,6 @@ impl ChildHandle {
         crate::link::stop_with_reason(self.target.id, &self.target.request, reason, || {
             (self.target.wake)()
         });
-    }
-
-    /// Administrative stop with reason `Shutdown`, as [`stop`](Self::stop).
-    /// The first requested reason wins over later stops.
-    pub fn shutdown(&self) {
-        self.stop_with_reason(ExitReason::Shutdown);
     }
 
     /// Send an exit signal from outside any actor (OTP `exit_signal/2`, the

@@ -621,7 +621,9 @@ async fn kill_stops_a_trapping_target_and_other_signals_are_trapped() {
     faults::exit(&target.child_handle(), ExitReason::Shutdown);
     assert_eq!(settle(&target, Get, WAIT).await, 0);
     assert_eq!(target.child_handle().exit_reason(), None);
-    target.child_handle().shutdown();
+    target
+        .child_handle()
+        .stop_with_reason(spawned_concurrency::ExitReason::Shutdown);
     assert_eq!(join_within(&target, WAIT).await, ExitReason::Shutdown);
 }
 

@@ -650,7 +650,7 @@ impl Driver {
                 let handle = aref.child_handle();
                 match r {
                     Reason::Normal => handle.stop(),
-                    Reason::Shutdown => handle.shutdown(),
+                    Reason::Shutdown => handle.stop_with_reason(ExitReason::Shutdown),
                     r => handle.stop_with_reason(reason(r)),
                 }
             }

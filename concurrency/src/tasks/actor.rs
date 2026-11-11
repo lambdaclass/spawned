@@ -614,9 +614,8 @@ impl<A: Actor> Debug for Context<A> {
 }
 
 impl<A: Actor> Context<A> {
-    /// Create a `Context` from an `ActorRef`. Useful for setting up timers
-    /// or stream listeners from outside the actor.
-    pub fn from_ref(actor_ref: &ActorRef<A>) -> Self {
+    /// The `Context` of `actor_ref`'s actor (public as `ActorRef::context`).
+    pub(crate) fn from_ref(actor_ref: &ActorRef<A>) -> Self {
         Self {
             shared: actor_ref.shared.clone(),
         }
@@ -1341,7 +1340,8 @@ impl<A: Actor> ActorRef<A> {
         Arc::new(self.clone())
     }
 
-    /// Get a `Context<A>` from this ref, for timer setup or stream listeners.
+    /// Get a `Context<A>` from this ref, for timer setup or stream listeners
+    /// from outside the actor.
     pub fn context(&self) -> Context<A> {
         Context::from_ref(self)
     }
@@ -2190,6 +2190,11 @@ pub trait ActorStart: Actor {
     /// reaches `exit_received`), a non-trapping child as any link notice. A
     /// parent already past its death point gives the child a `NoProc` parent
     /// exit.
+    ///
+    /// The child is always an unmanaged `Backend::Async` actor, even when
+    /// the parent is managed: it is outside the parent's execution group and
+    /// its ordered shutdown (`spawn_helper` on it returns `UnmanagedActor`).
+    /// The unified start API (planned for 0.9) will inherit the placement.
     fn start_linked<P: Actor>(self, parent_ctx: &Context<P>) -> ActorRef<Self> {
         ActorRef::spawn(self, Backend::Async, Some(parent_ctx.child_handle()))
     }
@@ -4357,7 +4362,9 @@ mod api_coverage {
             // The Exit is handled by the default `exit_received`, which ignores it.
             assert!(matches!(trapper.request(Ask(3)).await, Ok(3)));
             assert!(trapper.exit_reason().is_none());
-            trapper.child_handle().shutdown();
+            trapper
+                .child_handle()
+                .stop_with_reason(crate::ExitReason::Shutdown);
             assert_eq!(trapper.wait_exit().await, ExitReason::Shutdown);
         });
     }

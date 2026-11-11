@@ -55,6 +55,10 @@ every change; this guide covers what you need to edit when upgrading.
 | `actor.__in_turn(f)`, `reply.__discharge_stopped()`, `reply::reply_pair` *(0.8 pre-release, hidden)* | `spawned_test::{tasks, threads}::in_actor`, `spawned_test::reply_pair()`, `spawned_test::detached_reply()` |
 | `spawned_concurrency::lifecycle_trace` without the `lifecycle-trace` feature | only with the feature (test-only, no stability promise) |
 | `spawned_rt::time::{to_ticks, from_ticks, now_ticks, MAX_TICKS}` | still public for spawned-concurrency, `#[doc(hidden)]`, no stability promise |
+| `Context::from_ref(&actor_ref)` | `actor_ref.context()` |
+| `child_handle.shutdown()` | `child_handle.stop_with_reason(ExitReason::Shutdown)` |
+| tasks: `actor.query().unwrap()` without `.await` (panicked) | off a runtime it now waits for the reply; inside one it still panics: `actor.query().await.unwrap()` |
+| tasks: `response.is_ok()` / `is_err()` on an un-awaited response (answered `false`) | panics: `.await` it, or `response.into_result().is_ok()` off a runtime |
 
 ### Exit signals, startup and runtime drops as in OTP (ranks 5e, 5f, 5g, targets 0.8, in progress)
 

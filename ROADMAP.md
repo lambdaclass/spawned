@@ -66,7 +66,7 @@ Decided 2026-11-11, in this order: **soundness, introspection, determinism, test
 1.0 is a promise, not a feature set: the API is stable, every guarantee is checked, and it has been proven in production. Planned order (each release follows the [Priorities](#priorities)):
 
 - **0.8:** deferred replies and pipe-to-self (rank 11), OTP exit signals, startup and runtime-drop semantics (5e, 5f, 5g), and an API cleanup (smaller job API, `#[non_exhaustive]` and builders, OTP names such as `send_request`).
-- **0.9:** unified start API (`start`, `start_link`, `start_monitor` with `StartOptions`, children inheriting their parent's placement), dynamic supervisor (12a), supervisor alignment with OTP (budget exhaustion exits `Shutdown`, static `terminate_child`), introspection v1 (`process_info`, `get_state`, tree and system snapshots, opt-in stall watchdog), and the determinism fixes found by the audit.
+- **0.9:** unified start API (`start`, `start_link`, `start_monitor` with `StartOptions`, children inheriting their parent's placement; a design item deferred from the 0.8 API review, which only documented `start_linked`'s unmanaged placement), dynamic supervisor (12a), supervisor alignment with OTP (budget exhaustion exits `Shutdown`, static `terminate_child`), introspection v1 (`process_info`, `get_state`, tree and system snapshots, opt-in stall watchdog), and the determinism fixes found by the audit.
 - **0.10:** the admission package designed together: bounded mailboxes (17), byte credits (18), deadlines (19); bounded draining on shutdown (13); the OTP control lane (14); per-actor memory limits (18a).
 - **1.0:** stabilization.
 

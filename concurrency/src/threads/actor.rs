@@ -476,9 +476,8 @@ impl<A: Actor> Debug for Context<A> {
 }
 
 impl<A: Actor> Context<A> {
-    /// Create a `Context` from an `ActorRef`. Useful for setting up timers
-    /// or stream listeners from outside the actor.
-    pub fn from_ref(actor_ref: &ActorRef<A>) -> Self {
+    /// The `Context` of `actor_ref`'s actor (public as `ActorRef::context`).
+    pub(crate) fn from_ref(actor_ref: &ActorRef<A>) -> Self {
         Self {
             id: actor_ref.id,
             sender: actor_ref.sender.clone(),
@@ -1120,7 +1119,8 @@ impl<A: Actor> ActorRef<A> {
         Arc::new(self.clone())
     }
 
-    /// Get a `Context<A>` from this ref, for timer setup or stream listeners.
+    /// Get a `Context<A>` from this ref, for timer setup or stream listeners
+    /// from outside the actor.
     pub fn context(&self) -> Context<A> {
         Context::from_ref(self)
     }
@@ -2922,7 +2922,9 @@ mod api_coverage {
         // The Exit is handled by the default `exit_received`, which ignores it.
         assert!(matches!(trapper.request(Ask(3)), Ok(3)));
         assert!(trapper.exit_reason().is_none());
-        trapper.child_handle().shutdown();
+        trapper
+            .child_handle()
+            .stop_with_reason(crate::ExitReason::Shutdown);
         assert_eq!(trapper.wait_exit(), ExitReason::Shutdown);
     }
 
@@ -2941,7 +2943,9 @@ mod api_coverage {
         assert!(matches!(peer.wait_exit(), ExitReason::Panic(_)));
         assert!(matches!(trapper.request(Ask(1)), Ok(1)));
         assert!(trapper.exit_reason().is_none());
-        trapper.child_handle().shutdown();
+        trapper
+            .child_handle()
+            .stop_with_reason(crate::ExitReason::Shutdown);
         trapper.join();
     }
 
@@ -2977,7 +2981,9 @@ mod api_coverage {
             worker.join().unwrap();
         }
         for actor in [a, b] {
-            actor.child_handle().shutdown();
+            actor
+                .child_handle()
+                .stop_with_reason(crate::ExitReason::Shutdown);
             actor.join();
         }
     }

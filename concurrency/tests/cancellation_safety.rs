@@ -455,7 +455,9 @@ async fn monitor_and_link_setup_requests_are_cancel_safe() {
                         fx.counters.watched.load(Ordering::SeqCst)
                     };
                     assert_eq!(registered, usize::from(n > 0), "{op}: N={n}");
-                    target.child_handle().shutdown();
+                    target
+                        .child_handle()
+                        .stop_with_reason(spawned_concurrency::ExitReason::Shutdown);
                     assert_eq!(
                         spawned_rt::tasks::timeout(LIMIT, target.wait_exit())
                             .await

@@ -70,6 +70,18 @@
   - Macros: `#[handler]` is removed (use `#[request_handler]` or
     `#[send_handler]`), and a `#[send_handler]` method returning a value is
     a compile error (it used to answer a `request` with it).
+  - Duplicates removed: `Context::from_ref` (use `ActorRef::context`) and
+    `ChildHandle::shutdown` (use `stop_with_reason(ExitReason::Shutdown)`).
+  - `Response<T>` in tasks mode: `unwrap`, `expect`, `map` and the new
+    `into_result` on a response that was not awaited wait for the reply
+    when called off an async runtime and panic inside one (they always
+    panicked); `is_ok`/`is_err` panic on it instead of answering `false`.
+  - Docs: an "Experimental in 0.8" list in the GUIDE (job API,
+    `PendingReplies`, `exit_pending`, registry, helpers, placement
+    experiments, `spawned-rt` re-exports), the stop/exit/kill table on
+    `ChildHandle`, and `start_linked`'s unmanaged placement. The
+    `ActorError` classifiers (`target_gone`, `is_timeout`, `is_transient`,
+    `exit_reason`) are kept, defined per variant and tested for every one.
 - Deferred replies and jobs, fixes from the 0.8 pre-release review: a job
   deadline still fires while the result waits for scheduled emits, and the
   job keeps its `MAX_OUTSTANDING` credit until its terminal message; a job

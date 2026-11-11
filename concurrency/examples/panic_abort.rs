@@ -125,7 +125,8 @@ mod tasks {
                 .await
                 .expect("no restart after Kill")
                 .expect("child unavailable after Kill");
-            new.child_handle().shutdown();
+            new.child_handle()
+                .stop_with_reason(spawned_concurrency::ExitReason::Shutdown);
             assert_eq!(new.wait_exit().await, ExitReason::Shutdown);
             let stayed = tokio::time::timeout(LIMIT, child.wait_for_generation(first + 1)).await;
             assert!(

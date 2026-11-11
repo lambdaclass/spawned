@@ -75,7 +75,9 @@ fn main() {
     let observer = Observer(events.clone()).start();
     observer.context().monitor(&counter.child_handle());
     spawned_concurrency::threads::send_after(Duration::from_millis(5), observer.context(), Tick);
-    counter.child_handle().shutdown();
+    counter
+        .child_handle()
+        .stop_with_reason(spawned_concurrency::ExitReason::Shutdown);
     assert_eq!(counter.wait_exit(), ExitReason::Shutdown);
     assert_eq!(
         spawned_rt::threads::block_on(counter.child_handle().wait_exit_async()),
@@ -96,7 +98,9 @@ fn main() {
     let first = Counter(0).start();
     let second = Counter(0).start();
     first.context().link(&second.child_handle());
-    second.child_handle().shutdown();
+    second
+        .child_handle()
+        .stop_with_reason(spawned_concurrency::ExitReason::Shutdown);
     assert_eq!(first.wait_exit(), ExitReason::Shutdown);
     assert_eq!(second.wait_exit(), ExitReason::Shutdown);
     #[cfg(feature = "metrics")]

@@ -182,7 +182,7 @@ pub fn test_send_after_and_cancellation() {
     runtime.block_on(async move {
         let repeater = Delayed::new(0).start();
 
-        let ctx = Context::from_ref(&repeater);
+        let ctx = repeater.context();
         let _ = send_after(Duration::from_millis(100), ctx, Inc);
 
         let count = wait_for_async(
@@ -193,7 +193,7 @@ pub fn test_send_after_and_cancellation() {
         .unwrap();
         assert_eq!(1, count);
 
-        let ctx = Context::from_ref(&repeater);
+        let ctx = repeater.context();
         let timer = send_after(Duration::from_millis(100), ctx, Inc);
 
         timer.cancellation_token.cancel();
@@ -211,7 +211,7 @@ pub fn test_send_after_gen_server_teardown() {
     runtime.block_on(async move {
         let repeater = Delayed::new(0).start();
 
-        let ctx = Context::from_ref(&repeater);
+        let ctx = repeater.context();
         let _ = send_after(Duration::from_millis(100), ctx, Inc);
 
         let count = wait_for_async(
@@ -222,7 +222,7 @@ pub fn test_send_after_gen_server_teardown() {
         .unwrap();
         assert_eq!(1, count);
 
-        let ctx = Context::from_ref(&repeater);
+        let ctx = repeater.context();
         let _ = send_after(Duration::from_millis(100), ctx, Inc);
 
         let count2 = repeater.request(StopDelayed).await.unwrap();

@@ -191,7 +191,9 @@ async fn trace_queued_destructor_failure_after_shutdown_restarts_transient_child
         .unwrap()
         .unwrap();
     actor.send(DropBomb).unwrap();
-    actor.child_handle().shutdown();
+    actor
+        .child_handle()
+        .stop_with_reason(spawned_concurrency::ExitReason::Shutdown);
     release.send(()).unwrap();
     // v0.8: the reason stays Shutdown, but the cleanup failure restarts a
     // Transient child (the supervisor is not closing).
@@ -386,12 +388,18 @@ async fn trace_external_shutdown_of_permanent_child_restarts() {
     let a = tree.add(worker("a", &group).restart(modes[0])).unwrap();
     let b = tree.add(worker("b", &group).restart(modes[1])).unwrap();
     let supervisor = tree.start().await.unwrap();
-    a.current().unwrap().child_handle().shutdown();
+    a.current()
+        .unwrap()
+        .child_handle()
+        .stop_with_reason(spawned_concurrency::ExitReason::Shutdown);
     spawned_rt::tasks::timeout(LIMIT, a.wait_for_generation(1))
         .await
         .unwrap()
         .unwrap();
-    b.current().unwrap().child_handle().shutdown();
+    b.current()
+        .unwrap()
+        .child_handle()
+        .stop_with_reason(spawned_concurrency::ExitReason::Shutdown);
     wait_state(&b, ChildState::Stopped).await;
     assert!(supervisor.shutdown(LIMIT).await.complete);
     write_trace("external_shutdown", supervisor.trace_id(), &modes, 5);
@@ -844,7 +852,9 @@ async fn trace_randomized_lifecycles() {
                     1 => {
                         let _ = actor.send(Quit);
                     }
-                    _ => actor.child_handle().shutdown(),
+                    _ => actor
+                        .child_handle()
+                        .stop_with_reason(spawned_concurrency::ExitReason::Shutdown),
                 }
             }
             spawned_rt::tasks::sleep(Duration::from_millis(rng.next(4))).await;

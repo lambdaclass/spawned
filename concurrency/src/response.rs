@@ -38,7 +38,12 @@ impl<R> RequestOptions<R> {
 // ---------------------------------------------------------------------------
 
 enum ResponseState<T> {
-    /// The deadline is already in the receiver's slot, fixed at send.
+    /// Sent, not yet polled: the deadline is already in the receiver's slot,
+    /// fixed at send. Awaiting arms the runtime timer; off a runtime,
+    /// `unwrap`, `expect`, `map` and `into_result` block on it instead.
+    #[cfg(feature = "async")]
+    Sent(ReplyReceiver<T>),
+    /// Being awaited.
     #[cfg(feature = "async")]
     Receiver(Pin<Box<ReplyFuture<T>>>),
     Ready(Result<T, ActorError>),
@@ -48,10 +53,19 @@ enum ResponseState<T> {
 /// Concrete wrapper for protocol request-response methods that works in both
 /// `tasks` (async) and `threads` (blocking) modes.
 ///
-/// - **Tasks mode**: wraps a [`ReplyReceiver`](crate::ReplyReceiver);
+/// - **Tasks mode**: wraps the request's [receiver](crate::ReplyReceiver);
 ///   `.await` returns `Result<T, ActorError>`. The request's deadline was fixed
 ///   when it was sent.
-/// - **Threads mode**: wraps a pre-computed result; use `.unwrap()` / `.expect()` directly
+/// - **Threads mode**: wraps a pre-computed result; use `.unwrap()`,
+///   `.expect()` or `.into_result()` directly.
+///
+/// A tasks-mode response that has not been awaited is *pending*. `unwrap`,
+/// `expect`, `map` and `into_result` on a pending response block the calling
+/// thread until the reply when called outside an async runtime (from plain
+/// synchronous code), and panic inside one (blocking an executor thread can
+/// deadlock the actor that must answer): there, `.await` it. `is_ok` and
+/// `is_err` cannot wait (they borrow), so on a pending response they panic
+/// rather than answer `false`.
 ///
 /// Protocol methods return `Response<T>`:
 /// ```ignore
@@ -72,6 +86,17 @@ pub struct Response<T>(
 // is; `Future::poll` uses `self.get_mut()`.
 impl<T> Unpin for Response<T> {}
 
+/// Whether the calling thread runs an async runtime, where a pending
+/// response must be awaited, not waited for.
+#[cfg(feature = "async")]
+fn on_async_runtime() -> bool {
+    #[cfg(not(spawned_sim))]
+    return spawned_rt::tasks::Handle::try_current().is_ok();
+    // The simulator runs every task on one thread: blocking would deadlock.
+    #[cfg(spawned_sim)]
+    return true;
+}
+
 impl<T> Response<T> {
     /// Create a `Response` from a pre-computed result.
     ///
@@ -85,63 +110,79 @@ impl<T> Response<T> {
         )
     }
 
-    /// Extract the value, panicking on error.
-    ///
-    /// For ready (pre-computed) responses. Panics on pending responses —
-    /// use `.await.unwrap()` in async contexts instead.
-    pub fn unwrap(self) -> T {
-        match self.0 {
-            ResponseState::Ready(result) => result.unwrap(),
+    /// The result: at once for a ready response; for a pending one, block
+    /// until the reply, the request's deadline or the actor's death (outside
+    /// an async runtime only; inside one this panics: `.await` it).
+    pub fn into_result(self) -> Result<T, ActorError> {
+        self.resolve("into_result")
+    }
+
+    fn resolve(mut self, op: &str) -> Result<T, ActorError> {
+        match std::mem::replace(&mut self.0, ResponseState::Done) {
+            ResponseState::Ready(result) => result,
             #[cfg(feature = "async")]
-            ResponseState::Receiver(_) => {
-                panic!("called unwrap() on a pending Response; use .await in async contexts")
-            }
-            ResponseState::Done => panic!("Response already consumed"),
-        }
-    }
-
-    /// Extract the value, panicking with a custom message on error.
-    pub fn expect(self, msg: &str) -> T {
-        match self.0 {
-            ResponseState::Ready(result) => result.expect(msg),
-            #[cfg(feature = "async")]
-            ResponseState::Receiver(_) => {
-                panic!("{msg}: called expect() on a pending Response; use .await in async contexts")
-            }
-            ResponseState::Done => panic!("{msg}: Response already consumed"),
-        }
-    }
-
-    /// Returns `true` if the response contains `Ok`.
-    /// Only meaningful for ready responses.
-    /// Returns `false` for pending (`Receiver`) or consumed (`Done`) states.
-    pub fn is_ok(&self) -> bool {
-        matches!(&self.0, ResponseState::Ready(Ok(_)))
-    }
-
-    /// Returns `true` if the response contains `Err`.
-    /// Only meaningful for ready responses.
-    /// Returns `false` for pending (`Receiver`) or consumed (`Done`) states.
-    pub fn is_err(&self) -> bool {
-        matches!(&self.0, ResponseState::Ready(Err(_)))
-    }
-
-    /// Maps the inner value if the response is ready and `Ok`.
-    ///
-    /// Panics on pending or consumed responses.
-    pub fn map<U, F: FnOnce(T) -> U>(self, f: F) -> Response<U> {
-        match self.0 {
-            ResponseState::Ready(result) => Response(
-                ResponseState::Ready(result.map(f)),
+            ResponseState::Sent(rx) => {
+                if on_async_runtime() {
+                    panic!(
+                        "called {op}() on a pending Response inside an async runtime; \
+                         .await it instead"
+                    );
+                }
+                let result = rx.recv();
                 #[cfg(feature = "metrics")]
-                None,
-            ),
+                if let Some(observation) = self.1.take() {
+                    observation.finish(&result);
+                }
+                result
+            }
             #[cfg(feature = "async")]
             ResponseState::Receiver(_) => {
-                panic!("called map() on a pending Response; use .await in async contexts")
+                panic!("called {op}() on a Response that is being awaited; .await it")
             }
-            ResponseState::Done => panic!("Response already consumed"),
+            ResponseState::Done => panic!("called {op}() on a Response already consumed"),
         }
+    }
+
+    /// Extract the value, panicking on error. A pending response is waited
+    /// for (see [`Response`]).
+    pub fn unwrap(self) -> T {
+        self.resolve("unwrap").unwrap()
+    }
+
+    /// Extract the value, panicking with a custom message on error. A
+    /// pending response is waited for (see [`Response`]).
+    pub fn expect(self, msg: &str) -> T {
+        self.resolve("expect").expect(msg)
+    }
+
+    /// Returns `true` if the response is ready and `Ok`. Panics on a
+    /// pending response (it cannot wait through a borrow; use
+    /// [`into_result`](Self::into_result) or `.await`).
+    pub fn is_ok(&self) -> bool {
+        self.ready_ref("is_ok").is_ok()
+    }
+
+    /// Returns `true` if the response is ready and `Err`. Panics on a
+    /// pending response (see [`is_ok`](Self::is_ok)).
+    pub fn is_err(&self) -> bool {
+        self.ready_ref("is_err").is_err()
+    }
+
+    fn ready_ref(&self, op: &str) -> &Result<T, ActorError> {
+        match &self.0 {
+            ResponseState::Ready(result) => result,
+            #[cfg(feature = "async")]
+            ResponseState::Sent(_) | ResponseState::Receiver(_) => {
+                panic!("called {op}() on a pending Response; .await it, or use into_result()")
+            }
+            ResponseState::Done => panic!("called {op}() on a Response already consumed"),
+        }
+    }
+
+    /// Maps the inner value. A pending response is waited for (see
+    /// [`Response`]).
+    pub fn map<U, F: FnOnce(T) -> U>(self, f: F) -> Response<U> {
+        Response::ready(self.resolve("map").map(f))
     }
 }
 
@@ -152,7 +193,7 @@ impl<T> From<Result<ReplyReceiver<T>, ActorError>> for Response<T> {
         let observation = crate::instrumentation::RequestObservation::new();
         match result {
             Ok(rx) => Self(
-                ResponseState::Receiver(Box::pin(rx.into_timed_future())),
+                ResponseState::Sent(rx),
                 #[cfg(feature = "metrics")]
                 Some(observation),
             ),
@@ -178,6 +219,12 @@ impl<T: Send + 'static> Future for Response<T> {
         _cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Self::Output> {
         let this = self.get_mut();
+        #[cfg(feature = "async")]
+        if matches!(this.0, ResponseState::Sent(_)) {
+            if let ResponseState::Sent(rx) = std::mem::replace(&mut this.0, ResponseState::Done) {
+                this.0 = ResponseState::Receiver(Box::pin(rx.into_timed_future()));
+            }
+        }
         let result = match &mut this.0 {
             #[cfg(feature = "async")]
             ResponseState::Receiver(rx) => match rx.as_mut().poll(_cx) {
@@ -191,6 +238,8 @@ impl<T: Send + 'static> Future for Response<T> {
                 ResponseState::Ready(result) => std::task::Poll::Ready(result),
                 _ => unreachable!(),
             },
+            #[cfg(feature = "async")]
+            ResponseState::Sent(_) => unreachable!("converted above"),
             ResponseState::Done => panic!("Response polled after completion"),
         };
         #[cfg(feature = "metrics")]
@@ -254,6 +303,51 @@ mod tests {
             drop(reply);
             assert!(matches!(resp.await, Err(ActorError::ReplyDropped)));
         });
+    }
+
+    /// Review footgun (tasks): `actor.query().unwrap()` used to panic on a
+    /// pending response and `is_ok()` answered `false`. Off a runtime it now
+    /// waits for the reply; inside one it panics, and `is_ok` never answers
+    /// `false` for a reply it has not seen.
+    #[test]
+    #[cfg(all(feature = "async", not(spawned_sim)))]
+    fn pending_response_waits_off_a_runtime() {
+        let (reply, rx) = crate::reply::reply_pair::<i32>(Deadline::Never);
+        let answer = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(20));
+            reply.reply(7);
+        });
+        let resp: Response<i32> = Response::from(Ok(rx));
+        assert_eq!(resp.unwrap(), 7);
+        answer.join().unwrap();
+
+        let (reply, rx) = crate::reply::reply_pair::<i32>(Deadline::Never);
+        drop(reply);
+        let resp: Response<i32> = Response::from(Ok(rx));
+        assert!(matches!(resp.into_result(), Err(ActorError::ReplyDropped)));
+
+        let (reply, rx) = crate::reply::reply_pair::<i32>(Deadline::Never);
+        reply.reply(2);
+        assert_eq!(Response::from(Ok(rx)).map(|x| x * 5).unwrap(), 10);
+    }
+
+    #[test]
+    #[cfg(all(feature = "async", not(spawned_sim)))]
+    #[should_panic(expected = "inside an async runtime")]
+    fn pending_response_unwrap_panics_inside_a_runtime() {
+        let rt = spawned_rt::tasks::Runtime::new().unwrap();
+        rt.block_on(async {
+            let (_reply, rx) = crate::reply::reply_pair::<i32>(Deadline::Never);
+            Response::from(Ok(rx)).unwrap();
+        });
+    }
+
+    #[test]
+    #[cfg(feature = "async")]
+    #[should_panic(expected = "pending Response")]
+    fn is_ok_on_a_pending_response_panics_instead_of_answering_false() {
+        let (_reply, rx) = crate::reply::reply_pair::<i32>(Deadline::Never);
+        let _ = Response::from(Ok(rx)).is_ok();
     }
 
     #[test]

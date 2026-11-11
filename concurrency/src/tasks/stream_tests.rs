@@ -87,7 +87,7 @@ pub fn test_sum_numbers_from_stream() {
         let summatory = Summatory::new(0).start();
         let stream = stream::iter(vec![1u16, 2, 3, 4, 5].into_iter().map(Ok::<u16, ()>));
 
-        let ctx = Context::from_ref(&summatory);
+        let ctx = summatory.context();
         spawn_listener(
             ctx,
             stream.filter_map(|result| async move { result.ok().map(StreamMsg::Add) }),
@@ -116,7 +116,7 @@ pub fn test_sum_numbers_from_channel() {
             }
         });
 
-        let ctx = Context::from_ref(&summatory);
+        let ctx = summatory.context();
         spawn_listener(
             ctx,
             ReceiverStream::new(rx)
@@ -146,7 +146,7 @@ pub fn test_sum_numbers_from_broadcast_channel() {
             }
         });
 
-        let ctx = Context::from_ref(&summatory);
+        let ctx = summatory.context();
         spawn_listener(
             ctx,
             BroadcastStream::new(rx)
@@ -181,7 +181,7 @@ pub fn test_stream_cancellation() {
             }
         });
 
-        let ctx = Context::from_ref(&summatory);
+        let ctx = summatory.context();
         let listener_handle = spawn_listener(
             ctx.clone(),
             ReceiverStream::new(rx)
@@ -215,7 +215,7 @@ pub fn test_halting_on_stream_error() {
             }
         });
 
-        let ctx = Context::from_ref(&summatory);
+        let ctx = summatory.context();
         spawn_listener(ctx, msg_stream);
 
         // The error message stops the actor.
@@ -239,7 +239,7 @@ pub fn test_skipping_on_stream_error() {
             }
         });
 
-        let ctx = Context::from_ref(&summatory);
+        let ctx = summatory.context();
         spawn_listener(ctx, msg_stream);
 
         let val = wait_for_async(

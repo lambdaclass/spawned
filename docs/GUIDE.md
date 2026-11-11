@@ -28,6 +28,7 @@ or model that checks each one, are collected in the
 - [Execution groups and supervision](#execution-groups-and-supervision) (v0.7)
 - [Metrics](#metrics)
 - [Testing your actors](#testing-your-actors)
+- [Experimental in 0.8](#experimental-in-08)
 - [Further reading](#further-reading)
 
 ---
@@ -75,7 +76,7 @@ In all cases, `join()` will eventually return and subsequent `send()`/`request()
 
 Call `ctx.stop()` from inside a handler or lifecycle hook. This cancels the actor's internal token, causing the message loop to exit after the current handler finishes.
 
-From outside, use the actor's `ChildHandle` (`actor_ref.child_handle()`): `stop()` exits `Normal`, `shutdown()` exits `Shutdown`, and `stop_with_reason(reason)` picks the reason. All are cooperative: the running handler finishes and `stopped()` runs. They ignore `trap_exit`. `ActorRef` itself has no stop method; an explicit shutdown message in your protocol also works.
+From outside, use the actor's `ChildHandle` (`actor_ref.child_handle()`): `stop()` exits `Normal` and `stop_with_reason(reason)` picks the reason (`stop_with_reason(ExitReason::Shutdown)` for a shutdown). All are cooperative: the running handler finishes and `stopped()` runs. They ignore `trap_exit`. `ActorRef` itself has no stop method; an explicit shutdown message in your protocol also works.
 
 Stopping discards messages still queued: once the stop is observed no further message is handled, and queued requests fail with `ActorStopped(reason)`, the actor's final exit reason.
 
@@ -140,7 +141,7 @@ State that must be released on every exit, including kills and runtime drops, be
 | `ctx.execution_group()` | The `ExecutionGroup` a managed actor runs on (v0.7) |
 | `ctx.mailbox_depth()` | Queued messages (with the `metrics` feature) |
 
-`Context::from_ref(&actor_ref)` creates a context from an `ActorRef`, useful for setting up timers or stream listeners from outside the actor.
+`actor_ref.context()` returns the actor's `Context`, useful for setting up timers or stream listeners from outside the actor.
 
 ### Self-scheduling example
 
@@ -482,18 +483,27 @@ The registry uses `Any`-based downcasting, so `whereis` returns `None` if the st
 
 `Response<T>` is the return type for protocol request methods. It works in both execution modes:
 
-- **Tasks mode** — wraps a oneshot receiver. Use `.await` to get `Result<T, ActorError>`.
-- **Threads mode** — wraps a pre-computed result. Use `.unwrap()` or `.expect()` directly.
+- **Tasks mode** — wraps the request's `ReplyReceiver`. Use `.await` to get `Result<T, ActorError>`.
+- **Threads mode** — wraps a pre-computed result. Use `.unwrap()`, `.expect()` or `.into_result()` directly.
 
-### Methods (sync, for threads mode)
+### Methods (sync)
 
 | Method | Description |
 |--------|-------------|
+| `.into_result()` | The `Result<T, ActorError>` |
 | `.unwrap()` | Extract the value, panic on error |
 | `.expect(msg)` | Extract the value, panic with custom message on error |
-| `.is_ok()` | Returns `true` if the response contains `Ok` |
-| `.is_err()` | Returns `true` if the response contains `Err` |
+| `.is_ok()` | Returns `true` if the response is ready and `Ok` |
+| `.is_err()` | Returns `true` if the response is ready and `Err` |
 | `.map(f)` | Transform the inner value if `Ok` |
+
+A tasks-mode response that was not awaited is *pending*. Off an async
+runtime (plain synchronous code), `into_result`, `unwrap`, `expect` and `map`
+block until the reply, its deadline or the actor's death. Inside a runtime
+they panic, since blocking an executor thread can deadlock the actor that
+must answer: `.await` it. `is_ok` and `is_err` borrow and cannot wait, so on
+a pending response they panic instead of answering `false` (0.7 answered
+`false`, and `unwrap` always panicked).
 
 ### Async usage (tasks mode)
 
@@ -888,7 +898,7 @@ Signals that arrive while `started()` runs take effect when it returns, with
 the trap flag read then, so `ctx.trap_exit(true)` first thing in `started()`
 covers them.
 
-`stop()`, `shutdown()` and `stop_with_reason(r)` (on a `ChildHandle` or the
+`stop()` and `stop_with_reason(r)` (on a `ChildHandle` or the
 `Context`) are not exit signals. They are administrative stops, as
 `gen_server:stop`: untrappable, `stopped()` runs, and the first stop's reason
 wins over later stops. `stop_with_reason(ExitReason::Kill)` is such a stop
@@ -1230,7 +1240,7 @@ Enable an application tracing subscriber to collect them; Spawned installs none.
 
 System/supervisor shutdown suppresses every restart mode. Stopping an individual
 Permanent child while its supervisor is open intentionally restarts it. Use
-supervisor shutdown to close the tree. `ChildHandle::shutdown()` commits Shutdown
+supervisor shutdown to close the tree. `stop_with_reason(Shutdown)` commits Shutdown
 before cooperative cancellation while preserving a previously committed cause;
 actual handler or cleanup panics remain failures. Existing link propagation still
 applies and can affect siblings explicitly linked by the application.
@@ -1748,6 +1758,35 @@ assert_linearizable(&Kv, &recorder.take());
   history with 16 overlapping clients takes seconds in release builds).
 
 ---
+
+## Experimental in 0.8
+
+These items are public and tested but **may change before 1.0** (each is
+waiting on a planned design or on a first user). Everything else follows the
+release's semver promise.
+
+- The job API (`pipe*`, `reserve_*_job`, `JobOptions`, `JobCtx`), pending the
+  compute pool (rank 11b) and helper scopes (rank 15), and the
+  `Actor::MAX_NATIVE_JOBS` default (`min(4, available_parallelism)`).
+- `PendingReplies` and `Context::deferred_outstanding`.
+- `Context::exit_pending` (no OTP counterpart).
+- `ChildSpec::max_outstanding` / `max_native_jobs`.
+- The registry functions (`register`, `whereis`, `register_owned`, ..), which
+  rank 12 moves from process scope to `ActorSystem` scope.
+- Helpers: `spawn_helper`, `spawn_blocking_helper`, `ScopedTask`,
+  `FactoryContext` (rank 15).
+- Placement: `Backend::{Blocking, Thread}`, `pinned_group`, the affinity
+  functions, `thread_group_with_helpers`, `async_group_on`.
+- The `diagnostics` feature and the `*-experiments` features; the
+  `lifecycle-trace` and `failpoints` features are test-only.
+- `spawned_test::linearizability`.
+- `spawned-rt`'s re-exports of Tokio and std types (beyond `run`,
+  `block_on`, `ctrl_c`, `time::Instant` and the simulation entry points).
+
+`start_linked` always starts an unmanaged `Backend::Async` actor, even from
+a managed parent: the child is outside the parent's execution group and
+ordered shutdown (the unified start API, planned for 0.9, will inherit the
+parent's placement).
 
 ## Further reading
 

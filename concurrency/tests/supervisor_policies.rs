@@ -300,7 +300,9 @@ async fn scenario(
                 false
             }
             Action::Shutdown => {
-                actor.child_handle().shutdown();
+                actor
+                    .child_handle()
+                    .stop_with_reason(spawned_concurrency::ExitReason::Shutdown);
                 assert_eq!(actor.wait_exit().await, ExitReason::Shutdown);
                 false
             }

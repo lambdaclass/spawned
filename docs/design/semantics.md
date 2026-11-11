@@ -235,7 +235,7 @@ Checked by: [`startup_admission`][startup_admission],
 (both group kinds). (`ready_gate_loom` checks the benchmark scheduler's gate, not this barrier.)
 
 **L3. Stop is cooperative.** `ctx.stop()`, `ctx.stop_with_reason(r)`,
-`ChildHandle::stop()`, `stop_with_reason(r)` and `shutdown()` are self-exits
+`ChildHandle::stop()` and `stop_with_reason(r)` are self-exits
 or administrative stops: they ignore `trap_exit`, the running handler
 finishes, `stopped()` runs, then the actor exits. Nothing preempts a running
 handler or blocking code, a kill included. The first stop's reason wins over
@@ -255,7 +255,7 @@ Checked by: `Lifecycle!KilledFromKill`, `Lifecycle!LateSignalWins` (TLC);
 | Reason | Arises from |
 |---|---|
 | `Normal` | `ctx.stop()`, `ChildHandle::stop()`, a parent's `Normal` exit to a trapping child |
-| `Shutdown` | `ChildHandle::shutdown()`, `stop_with_reason(Shutdown)`, supervisor or system shutdown, an exit signal or link notice with `Shutdown` (non-trapping) |
+| `Shutdown` | `stop_with_reason(Shutdown)`, supervisor or system shutdown, an exit signal or link notice with `Shutdown` (non-trapping) |
 | `Panic(msg)` | a panic in `started()` (`"panic in started(): .."`), a handler, `exit_received` or `Down` handler (`"panic in handler: .."`), `stopped()` (`"panic in stopped(): .."`); an exit signal or link notice with `Panic` |
 | `Kill` | `stop_with_reason(Kill)` (a stop, not a kill), a `Kill` link notice (non-trapping) |
 | `Killed` | `ChildHandle::kill()`, `exit(Kill)`, a supervisor's or system's kill escalation, a `Killed` link notice; the runtime dropping the actor unless a non-`Normal` reason was requested |

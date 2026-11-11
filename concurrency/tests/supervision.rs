@@ -148,7 +148,9 @@ async fn restart_modes_distinguish_normal_shutdown_and_panic() {
             let generation = child.snapshot().generation;
             match &exit {
                 ExitReason::Normal => old.child_handle().stop(),
-                ExitReason::Shutdown => old.child_handle().shutdown(),
+                ExitReason::Shutdown => old
+                    .child_handle()
+                    .stop_with_reason(spawned_concurrency::ExitReason::Shutdown),
                 _ => assert!(old.request(Crash).await.is_err()),
             }
             // The child really exited with the reason under test.

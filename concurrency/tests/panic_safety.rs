@@ -518,7 +518,7 @@ fn exercise(h: &dyn Harness, fault: Fault, gate: &Gate, events: &Events) -> Exit
             let trigger = h.spawn_trigger();
             h.victim_setup(Setup::Trap);
             h.victim_setup(Setup::Link(trigger.clone()));
-            trigger.shutdown();
+            trigger.stop_with_reason(spawned_concurrency::ExitReason::Shutdown);
         }
         Fault::DownHandler => {
             let trigger = h.spawn_trigger();

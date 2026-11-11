@@ -290,7 +290,9 @@ fn native_nothing_is_logged_after_close_returns() {
 #[test]
 fn native_panic_injection_into_an_exited_target_is_a_no_op() {
     let actor = Idle.start();
-    actor.child_handle().shutdown();
+    actor
+        .child_handle()
+        .stop_with_reason(spawned_concurrency::ExitReason::Shutdown);
     assert_eq!(join_within(&actor, WAIT), ExitReason::Shutdown);
     // A signal to an actor past its death point is dropped.
     faults::exit(&actor.child_handle(), ExitReason::Panic("late".into()));
@@ -426,7 +428,9 @@ fn kill_stops_a_trapping_target_and_other_signals_are_trapped() {
     faults::exit(&target.child_handle(), ExitReason::Shutdown);
     settle(&target, Ping, WAIT);
     assert_eq!(target.child_handle().exit_reason(), None);
-    target.child_handle().shutdown();
+    target
+        .child_handle()
+        .stop_with_reason(spawned_concurrency::ExitReason::Shutdown);
     assert_eq!(join_within(&target, WAIT), ExitReason::Shutdown);
 }
 
