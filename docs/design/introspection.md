@@ -366,7 +366,7 @@ One cache-aligned block per actor, written only by its run loop:
 
 ```text
 word  AtomicU64  turn_id:56 | kill:1 | open:1 | kind:3 | spare:3   (DEAD = kind 7, turn id kept)
-tag   AtomicU32  interned message type, written by message and exit_received turns only
+tag   AtomicU64  turn_id_low:32 | interned message type:32, written by message and exit_received turns only
 since AtomicU64  coarse clock (ms, 0 = clock not started) at activity begin
 poll  AtomicU64  poll_count:23 | in_poll:1 | poll_stamp_ms:40     one store before and after each poll
 trace AtomicU32  0 = off, else the console session id tracing this actor
@@ -417,7 +417,7 @@ takes the interner's mutex and may allocate, on the opted-in dispatch path.
 
 | Step | Operation | Ordering |
 |---|---|---|
-| begin activity N | `fence(Release)`; `tag` (message kinds only), `since`, `poll` stores | Relaxed after the fence |
+| begin activity N | `fence(Release)`; `tag = (N low 32 bits, type)` (message kinds only), `since`, `poll` stores | Relaxed after the fence |
 | | `word.store(N, open, kind)` | Release |
 | each poll (async) | `poll.store(count, in_poll=1, stamp)`; poll; `poll.store(count, 0, stamp)` | Relaxed (one word, never torn) |
 | end activity N (return or panic in `started()`, a handler or `stopped()`; status end) | `old = word.swap(N, closed, kind=Idle)`; `trace.load` | AcqRel; Relaxed |
@@ -438,16 +438,29 @@ t = tag.load(Relaxed); s = since.load(Relaxed); p = poll.load(Relaxed)
 fence(Acquire)
 w2 = word.load(Relaxed)
 accept iff w1 and w2 are equal ignoring the kill bit
+     and t.turn is not ahead of w1.turn (wrapping 32-bit distance, t.turn - w1.turn <= 0)
   open  -> the activity of w1 with t, s, p
-  idle  -> Idle; t is the last message (the same validation applies: a tag
-           written by a newer activity moves the word, so it is rejected)
+  idle  -> Idle; t names the last message turn, t.turn <= w1.turn
   dead  -> Dead (with the last turn id and message)
 retry at most 3 times, then Field::Unavailable(ReadContended)
 ```
 
-The idle and dead cases go through the same validation as the open case
-(revision 3: the round-two reviews found that returning early on an idle word
-could pair turn N's id with turn N+1's tag).
+**Why the tag carries a turn id (revision 3, round three).** An idle read is
+not protected by the word alone. Activity N+1 writes its `tag` before it
+publishes `(N+1, open)`, and between the two the word still reads
+`(N, closed)`, so a reader can see `w1 == w2 == (N, closed)` together with
+N+1's tag (agy, round three). There is no "being written" state to catch it,
+and adding one would cost a second word store per activity. Instead, the tag
+store carries the low 32 bits of its own turn id, in the same relaxed 64-bit
+store, so the cost is unchanged. A tag stamped with a turn ahead of `w1` comes
+from an activity that has not been published yet. The reader then retries,
+and the retry sees the new word. Because only message turns write `tag`, a
+tag behind `w1` is normal (the last message before a status turn or a hook)
+and is accepted. Thirty-two bits are enough: a reader is never 2^31
+activities behind the writer within one read. The open case needed no change,
+because activity N+1's payload stores follow its begin fence, which orders
+them after N's end swap, so `w2` has moved. The dead case needs no change
+either, because no activity begins after DEAD.
 
 `poll` is one atomic word, so a poll's count, flag and stamp are never mixed;
 within one accepted read it belongs to activity N because activity N+1's poll
@@ -499,7 +512,7 @@ events, never in one critical section, so the race stays observable.
 | actor and system tables | console (default) | – | – | – | one shard write lock at spawn and one at publication | shard read locks |
 | console thread | console (default) | – | – | – | one idle OS thread per process while a system or guard exists | per command |
 | activity word | 1 | – | `fence(Release)` + 3 relaxed stores + 1 Release store at begin; 1 swap at end | – | – | seqlock read |
-| message type | 1 | – | virtual call, cache probe, 1 store; a miss locks and may allocate | – | – | interner lookup |
+| message type | 1 | – | virtual call, cache probe, 1 store (64-bit, turn-stamped); a miss locks and may allocate | – | – | interner lookup |
 | coarse clock | 1 | – | 1 relaxed load (in the begin stores above) | 1 load | – | – |
 | poll stamps | 1 | – | – | 2 relaxed stores | – | – |
 | mailbox counters | 1 | 1 relaxed `fetch_add` (per-actor line) | 1 store; 1 store at discard | – | – | 3 loads |
@@ -1188,7 +1201,9 @@ duplicate id in a snapshot; after a committed kill no later handled message.
 
 `activity_slot_loom`: the exact writer and reader protocol with every field a
 separate atomic, two consecutive activities, polls changing within one,
-idle and dead reads, CAS against the end swap, a callback panic end and the
+idle and dead reads (including a reader that sees `(N, closed)` twice while
+activity N+1 has already stored its tag but not yet its word, which must be
+retried, never accepted with N+1's tag), CAS against the end swap, a callback panic end and the
 drop swap; asserts no mixed accepted read (open, idle or dead), no kill bit
 lost, no commit after DEAD. `trace_flag_loom`: console enable, disable and
 disconnect against activity ends.
@@ -1243,6 +1258,7 @@ an exhaustive `match` on `Lifecycle` or `Unavailable` without a wildcard.
 | Blocking write without a deadline | `slow_reader_*` |
 | Unordered shard iteration | `reads_do_not_change_the_tape` |
 | Idle read returned before the second word load | `idle_and_dead_reads_validate_the_tag`, Loom |
+| Tag without its turn stamp (or an idle read not checking it) | `activity_slot_loom` (tag of N+1 before word of N+1) |
 | Trace flag stored with the activity word | `trace_sessions_cannot_overwrite_each_other`, `trace_flag_loom` |
 | Socket bound before the lock is taken | `publication_orders_lock_before_socket` |
 | Cleaner removing without the `fstat == lstat` recheck | `two_cleaners_and_a_starting_server` |
@@ -1443,6 +1459,12 @@ Each finding was treated as a claim and checked against the design and the
 | Codex F12, agy P2-1 | Idle reads skip validation; finite counters can wrap | Accepted | Idle and dead reads use the same second-load validation; DEAD keeps the turn id; turn ids saturate (never reused); D1 identifies a poll by turn, count and stamp; reduced-width tests |
 | agy P2-3 | `check_now` lacks system scope | Accepted | `check_now_for(SystemId)`; observation keyed by `ActorId`, limits and reports per system |
 | Both, on the three revision-2 disagreements | Bounded console `trace` in v1, process tables with system ids, a dedicated console thread | Kept (endorsed by both reviews) | Codex's condition that system ids also scope watchdog state is met by `check_now_for` and per-system limits |
+
+### Round three (confirmation)
+
+| Finding | Claim | Verdict | Resolution |
+|---|---|---|---|
+| agy P1-1 | An idle read can accept `w1 == w2 == (N, closed)` with activity N+1's tag, stored before N+1's word | Accepted | `tag` becomes a 64-bit word stamped with the low 32 bits of its turn id (one relaxed store, unchanged cost); a read whose tag is ahead of `w1` is retried; the exact interleaving is added to `activity_slot_loom` and to the planted bugs. Not modelled in TLA+: the model's steps are atomic and sequentially consistent and reads are not actions, so a torn read cannot be expressed there. The bug is a memory-ordering property of separate atomics, which is what Loom checks against the C11 model |
 
 ## Open questions for reviewers
 
