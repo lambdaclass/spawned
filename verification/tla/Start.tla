@@ -849,7 +849,8 @@ NoLostNotice == \A c \in Kids : ~lost[c]
 
 \* A notice handed on by an abandoned wait reaches P with its kind and reason.
 AbandonedNoticeDelivered ==
-    \A c \in Kids : (handed[c] /\ obN[c] = 0 /\ dlvOk[c]) =>
+    \* Once nothing is pending for c, a P whose mailbox still admits has it.
+    \A c \in Kids : (handed[c] /\ obN[c] = 0 /\ Alive(pst)) =>
         /\ (kind[c] = "link" /\ ptrap) => exitN[c] >= 1 /\ exitR[c] = why[c]
         /\ (kind[c] = "link" /\ ~ptrap /\ why[c] \in NonNormal) => pst # "run"
         /\ kind[c] = "monitor" => downN[c] >= 1 /\ downR[c] = why[c]
