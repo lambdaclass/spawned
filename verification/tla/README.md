@@ -138,7 +138,18 @@ in the same PR; the `model-sync` CI job enforces it
 Trace validation says every recorded run is a behavior of the model. Trace
 coverage asks the converse: which parts of the model's reachable behavior do
 the recorded runs never exercise? `trace_coverage.py` reports it per model with
-trace validation (`Supervision`, `Cohorts`, `NestedSupervision`).
+trace validation (`Supervision`, `Cohorts`, `NestedSupervision`, and by
+action keys only `Lifecycle`, `DeferredJobs`, `DeferredReplies`).
+
+**Action-only models.** For `Lifecycle.tla`, `DeferredJobs.tla` and
+`DeferredReplies.tla` the keys are the log-event arms of their trace spec
+(`TraceLifecycle.tla`, `TraceJobs.tla`, `TraceReplies.tla`; each arm is one
+model action or a named group of them, `A|Send`, `A|Fire`, ...): the model
+side is the set of arms, a trace covers the arms its accepted replay takes,
+and no state space is explored for them. `coverage-baseline.json` and the
+`coverage_floor` of `verification/model-map.toml` hold them like the others.
+Model actions without an arm are listed in the map's `[trace.unlogged]` with
+the reason.
 
 ```bash
 cargo test -p spawned-concurrency --features lifecycle-trace,failpoints --test supervision_trace --test cohort_trace --test tree_trace --test nested_supervision --test coverage_trace --test job_trace --test reply_trace --test lifecycle_trace
@@ -530,7 +541,7 @@ after a kill or after an untrapped signal, `Kill` instead of `Killed`,
 publication before D, a `Normal` signal stopping an actor, a late `Down` or
 link notice with the real reason, a notice after unlink, a `Down` after
 demonitor, a parent exit dispatched as an `Exit`, and a runtime drop ending
-`Normal`: all eleven are rejected. `trace_coverage.py` skips this schema.
+`Normal`: all eleven are rejected. Actor-to-actor messages (`Send`, recorded with their sender) add three controls: a send after the sender's death point, the death notice overtaking the earlier message, a message dispatched as an outside request. `trace_coverage.py` covers this schema by action keys (see [Trace coverage](#trace-coverage)).
 Source: [verification strategy](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/docs/research/verification-strategy.md#acceptance).
 
 `Coordinator.tla` checks coordinator failure ownership independently of the actor
@@ -673,7 +684,10 @@ under the job lock, the enqueue, the fence read), so the log is a
 linearization. `concurrency/tests/job_trace.rs` records seven scenarios (plain
 result, a finished keyed job replaced and fenced, emits with one credit,
 handle cancel, job deadline with the work still running, owner exit with a
-running job, a blocking job emitting); `trace_check.py` checks them (schema
+running job, a blocking job emitting, and delayed emits: a held result
+released by its last fire in both modes, an emit already due, the job
+deadline taking a held result, a cancel dropping a scheduled emit);
+`trace_check.py` checks them (schema
 `jobs-v1`) against `TraceJobs.tla` with one owner instance and one key. The
 permit bound is not checked (`JobBound = J`): the code returns a job's credit
 just before `Finish`, and rejected admissions are not model actions.
@@ -683,7 +697,11 @@ cargo test -p spawned-concurrency --features lifecycle-trace --test job_trace
 python3 verification/tla/trace_check.py target/lifecycle-traces
 ```
 
-`negative_checks.py` requires six edited job traces to be rejected: the
+`negative_checks.py` requires twelve edited job traces to be rejected (six
+for delayed emits: a release before the last fire, a terminal while an emit
+is scheduled, a release by a fire that did not take the result, a delayed
+emit after the deadline took the result, a fire without a schedule, a drop
+while the job still accepts), and the first six: the
 replaced job's terminal message delivered, an emit after the terminal
 message, a second emit with its credit in flight, a second terminal message
 after the deadline's, a quiet finish without a cancel, and a dispatch after

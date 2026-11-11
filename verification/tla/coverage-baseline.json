@@ -91,5 +91,43 @@
   "A|TJoined/leaf",
   "A|TJoined/owner",
   "A|TPropagate"
+ ],
+ "Lifecycle": [
+  "A|Deliver",
+  "A|Demonitor",
+  "A|Die",
+  "A|Dispatch",
+  "A|Drop",
+  "A|Enqueue",
+  "A|Hook",
+  "A|Link",
+  "A|Monitor",
+  "A|Panic",
+  "A|Publish",
+  "A|Request",
+  "A|Send",
+  "A|Signal",
+  "A|Stop",
+  "A|Trap",
+  "A|Unlink"
+ ],
+ "DeferredJobs": [
+  "A|Cancel",
+  "A|Dispatch",
+  "A|Emit",
+  "A|Exit",
+  "A|Finish",
+  "A|Fire",
+  "A|JobDeadline",
+  "A|Release",
+  "A|Schedule",
+  "A|Start"
+ ],
+ "DeferredReplies": [
+  "A|Death",
+  "A|Discharge",
+  "A|Dispatch",
+  "A|Exit",
+  "A|Send"
  ]
 }

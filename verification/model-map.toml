@@ -113,6 +113,7 @@ code = [
     "concurrency/src/mailbox_admission.rs",
     "concurrency/src/lifecycle_trace.rs",
 ]
+coverage_floor = 17   # of 17 trace-spec arms (trace_coverage.py STATIC)
 
 [models.DeferredReplies]
 # Rank 11: reply slots, deadlines, deferral credits, owner exit and death.
@@ -125,6 +126,7 @@ code = [
     "concurrency/src/reply/**",
     "concurrency/src/lifecycle_trace.rs",
 ]
+coverage_floor = 5   # of 5 trace-spec arms (trace_coverage.py STATIC)
 
 [models.DeferredJobs]
 # Rank 11: pipe jobs, keyed replacement, ActorId and cancellation fencing,
@@ -140,6 +142,7 @@ code = [
     "concurrency/src/threads/jobs.rs",
     "concurrency/src/lifecycle_trace.rs",
 ]
+coverage_floor = 10   # of 10 trace-spec arms (trace_coverage.py STATIC)
 
 [models.DynamicSupervisor]
 # Rank 12a design model (PR #245); no code yet.

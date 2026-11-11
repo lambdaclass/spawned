@@ -32,6 +32,13 @@ Usage:
                     [--model-keys CACHE] [--json OUT] [--baseline FILE] [--write-baseline FILE]
                     [--top N]
 
+Lifecycle.tla, DeferredJobs.tla and DeferredReplies.tla are covered by
+action keys only ("static" models): the model side is the set of log
+event arms of their trace spec (TraceLifecycle.tla, TraceJobs.tla,
+TraceReplies.tla; each arm is one model action or a named group of them),
+and a trace covers the arms its accepted replay takes. No state space is
+explored for them, so they add no TLC run to the model side.
+
 Each --traces source is reported cumulatively in the given order (for example
 the dedicated trace tests, then the whole test suite). --baseline FILE fails
 (exit 1) if an action key listed there is no longer covered; coverage
@@ -83,6 +90,26 @@ MODELS = {
         "schemas": {"tree-v1"},
     },
 }
+
+# Models covered by their trace spec's arms (action keys only): name ->
+# (trace spec, schemas). See the module docstring.
+STATIC = {
+    "Lifecycle": ("TraceLifecycle.tla", {"lifecycle-v1"}),
+    "DeferredJobs": ("TraceJobs.tla", {"jobs-v1"}),
+    "DeferredReplies": ("TraceReplies.tla", {"replies-v1"}),
+}
+ALL = list(MODELS) + list(STATIC)
+
+
+def static_model_keys():
+    """The arms (`e.a = "X"`) of each static model's trace spec."""
+    keys = {}
+    for name, (spec, _) in STATIC.items():
+        with open(os.path.join(HERE, spec)) as f:
+            arms = re.findall(r'e\.a = "(\w+)"', f.read())
+        keys[name] = {"A|" + a for a in arms}
+    return keys
+
 
 # Steps the model takes that no trace event can name (fairness devices).
 UNOBSERVABLE = {"Nested": ("A|Deliver", "T|Deliver|")}
@@ -244,7 +271,28 @@ def model_of(trace):
     for name, spec in MODELS.items():
         if schema in spec["schemas"]:
             return name
+    for name, (_, schemas) in STATIC.items():
+        if schema in schemas:
+            return name
     raise ValueError(f"unsupported trace schema: {schema}")
+
+
+def static_trace_keys(trace, model, tlc):
+    """Replay TRACE with trace_check's TraceRun and return the arms its log
+    takes (only if TLC accepts it)."""
+    workdir = tempfile.mkdtemp(prefix="cov-trace-")
+    try:
+        trace_check.generate(trace, workdir)
+        cmd = shlex.split(tlc) + ["-deadlock", "-workers", "1", "-cleanup",
+                                  "-metadir", os.path.join(workdir, "states"), "TraceRun"]
+        run = subprocess.run(cmd, cwd=workdir, env=tlc_env(workdir), capture_output=True, text=True)
+        if "Invariant TraceIncomplete is violated" not in run.stdout + run.stderr:
+            return model, "REJECTED", set()
+        with open(os.path.join(workdir, "TraceRun.tla")) as f:
+            arms = set(re.findall(r'\ba \|-> "(\w+)"', f.read()))
+        return model, "ACCEPTED", {"A|" + a for a in arms}
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
 
 
 COV_TRACE = {"Supervision": "CovTraceSupervision", "Cohorts": "CovTraceCohorts",
@@ -258,6 +306,8 @@ def trace_keys(path, tlc):
     model = model_of(trace)
     if not trace.get("events"):
         return model, "EMPTY", set()
+    if model in STATIC:
+        return static_trace_keys(trace, model, tlc)
     workdir = tempfile.mkdtemp(prefix="cov-trace-")
     try:
         trace_check.generate(trace, workdir)
@@ -288,9 +338,10 @@ def trace_keys(path, tlc):
         shutil.rmtree(workdir, ignore_errors=True)
 
 
-# Trace schemas validated by trace_check.py but without a coverage model
-# (the deferred-replies models and Lifecycle.tla): skipped here.
-UNCOVERED_SCHEMAS = {"jobs-v1", "replies-v1", "lifecycle-v1"}
+# Trace schemas validated by trace_check.py but without a coverage model:
+# skipped here (none now: the deferred-replies models and Lifecycle.tla are
+# STATIC models).
+UNCOVERED_SCHEMAS = set()
 
 
 def covered(path):
@@ -341,6 +392,7 @@ DETAIL = {
     "Supervision": {"Permanent", "Transient", "Temporary", "failed", "0", "mid", "max", "reserved"},
     "Cohorts": {"Permanent", "Transient", "Temporary", "before", "after", "origin", "none"},
     "Nested": set(),
+    **{name: set() for name in STATIC},
 }
 
 
@@ -411,18 +463,19 @@ def main():
     for name, prefixes in UNOBSERVABLE.items():
         model[name] = {k for k in model[name] if not k.startswith(prefixes)}
     model = {name: with_coarse(name, keys) for name, keys in model.items()}
+    model.update(static_model_keys())
 
     sources = []
     for spec in args.traces:
         label, _, path = spec.rpartition("=")
         sources.append((label or path, collect([path])))
 
-    covered = {m: set() for m in MODELS}
+    covered = {m: set() for m in ALL}
     verdicts = []
     rows = []
     with concurrent.futures.ThreadPoolExecutor(args.jobs) as pool:
         for label, files in sources:
-            counts = {m: [0, 0] for m in MODELS}
+            counts = {m: [0, 0] for m in ALL}
             for path, (name, verdict, keys) in zip(files, pool.map(lambda f: trace_keys(f, args.tlc), files)):
                 verdicts.append({"source": label, "trace": os.path.basename(path),
                                  "model": name, "verdict": verdict, "keys": len(keys)})
@@ -432,7 +485,7 @@ def main():
                     covered[name] |= with_coarse(name, keys)
                 elif verdict == "REJECTED":
                     print(f"not counted (rejected by the model): {label}: {os.path.basename(path)}")
-            for name in MODELS:
+            for name in ALL:
                 mk, tk = kinds(model[name]), kinds(covered[name] & model[name])
                 rows.append((label, name, counts[name], {k: (len(tk[k]), len(mk[k])) for k in KINDS}))
 
@@ -446,8 +499,10 @@ def main():
         beyond = covered[name] - model[name]
         print(f"{name}: model {state_counts[name]} states over {len(MODELS[name]['configs'])} configuration(s); "
               f"{len(beyond)} trace keys outside the configured bounds")
+    for name in STATIC:
+        print(f"{name}: action keys are the arms of {STATIC[name][0]}")
 
-    for name in MODELS:
+    for name in ALL:
         # Rank unreached actions and coarse transitions; each coarse key
         # stands for its unreached fine variants (count shown).
         missing = model[name] - covered[name]
@@ -467,12 +522,12 @@ def main():
             json.dump({
                 "model": {m: sorted(v) for m, v in model.items()},
                 "covered": {m: sorted(v) for m, v in covered.items()},
-                "unreached": {m: sorted(model[m] - covered[m], key=lambda k: (-score(m, k), k)) for m in MODELS},
-                "beyond": {m: sorted(covered[m] - model[m]) for m in MODELS},
+                "unreached": {m: sorted(model[m] - covered[m], key=lambda k: (-score(m, k), k)) for m in ALL},
+                "beyond": {m: sorted(covered[m] - model[m]) for m in ALL},
                 "traces": verdicts,
             }, f, indent=1)
 
-    actions = {m: sorted(k for k in covered[m] & model[m] if k.startswith("A|")) for m in MODELS}
+    actions = {m: sorted(k for k in covered[m] & model[m] if k.startswith("A|")) for m in ALL}
     if args.write_baseline:
         with open(args.write_baseline, "w") as f:
             json.dump(actions, f, indent=1)
