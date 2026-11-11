@@ -146,10 +146,10 @@ Round two (revision 3):
 | R5 | ethrex teardown | No message from `Drop`. Each resource's owner monitors the connection and releases on `Down`, as an Erlang owner would |
 | G1 | Post-start work | Depends on the post-start continuation (a `handle_continue` equivalent) of the unified-start design (0.9), not on "the first message", which other messages could overtake |
 | G2 | Restart type for connections | The ethrex mapping and the example use `temporary()` (a dropped peer must not be redialled by the supervisor); the default stays Permanent (OTP) |
-| G3 | `ignore` | Accepted from the factory: nothing is stored, `start_child` returns `Ignored` (OTP `{ok, undefined}`) |
+| G3 | `ignore` | Accepted from the factory and from `Init::ignore()`: nothing is kept once cleaned up, `start_child` returns `Ignored { pending }` (OTP `{ok, undefined}`) |
 | G4 | Start data | Deferred, as in unified start (#259): `gen_server` returns only `{ok, Pid}`; `Started` is `{ actor, child }` |
 | G5 | Introspection | `ChildInfo` and `ChildCounts` are the types introspection v1 exposes for static supervisors too; names agreed across both designs |
-| U1 | Shared shapes with unified start (#259 rev. 2, section 18) | `StartOutcome<Started<A>>` with `Ignored` as an `Ok` outcome; `FailedToStart { cause: ChildStartError, cleanup_stuck }`; `ChildStart<A>`; `StartOptions<A>` through `DynamicChildSpec::options`; the continuation is `Init::continue_with(msg)`, which precedes messages but is no termination barrier |
+| U1 | Shared shapes with unified start (#259 rev. 2-3, section 18) | `StartOutcome<Started<A>>` with `Ignored { pending: Option<ChildHandle> }` as an `Ok` outcome; a failed init never runs `stopped()`; `FailedToStart { cause: ChildStartError, cleanup_stuck }`; `ChildStart<A>`; `StartOptions<A>` through `DynamicChildSpec::options`; the continuation is `Init::continue_with(msg)`, which precedes messages but is no termination barrier |
 | I1 | Fenced termination (introspection #256 rev. 3) | `terminate_slot` takes an optional `expect: ActorId@generation`; a mismatch returns `Stale { current }` and does nothing, checked at the supervisor operation itself, so the console's `terminate --expect` cannot kill a child that moved on |
 
 ## API
@@ -266,8 +266,12 @@ impl<A: Actor, Args> DynamicSupervisor<A, Args> {
 pub enum StartOutcome<T> {
     Started(T),
     /// The factory returned `ChildStart::Ignore`, or `started()` returned
-    /// `Init::ignore()`: nothing is supervised or counted (OTP {ok, undefined}).
-    Ignored,
+    /// `Init::ignore()` (OTP {ok, undefined}). `pending` is `None` once the
+    /// ignoring instance was cleaned up and the slot freed; `Some(handle)`
+    /// when the answer came at the cleanup deadline first: the slot still
+    /// counts (state `Stopping`) until the instance is published and the slot
+    /// finalized, and `handle.wait_exit()` reaches that end (#259 rev. 3).
+    Ignored { pending: Option<ChildHandle> },
 }
 
 pub struct Started<A: Actor> {
@@ -360,15 +364,17 @@ pub struct ChildCounts {
   released: `Init::ignore()` drops the constructed state and joins its owned
   work; a factory ignore has nothing to drop. Then the slot is finalized
   (retained arguments dropped) and only then freed and answered
-  `Ok(StartOutcome::Ignored)`. If that cleanup misses its deadline the start
-  is still answered `Ignored` at the deadline (the outcome was decided when
-  the child ignored) and the slot stays counted until the work ends, as for
-  any stuck retiring child (control `IgnoreFreesEarly`; Codex round 3).
+  `Ok(StartOutcome::Ignored { pending: None })`. If that cleanup misses its
+  deadline the start is answered `Ok(Ignored { pending: Some(handle) })` at
+  the deadline (the outcome was decided when the child ignored) and the slot
+  stays counted, `Stopping`, until the instance is published and the slot
+  finalized, as for any stuck retiring child (control `IgnoreFreesEarly`;
+  Codex round 3; #259 rev. 3).
 - The factory returns `Result<ChildStart<A>, E>` with
   `ChildStart::Actor(a) | ChildStart::Ignore` (`From<A>`), and `started()`
   may return `Init::ignore()`; both are unified start's shapes (#259). An
-  ignore on a first start returns `Ok(StartOutcome::Ignored)` and stores
-  nothing; on a restart it removes the child (OTP drops it), without charge
+  ignore on a first start returns `Ok(StartOutcome::Ignored { .. })` and
+  keeps nothing once cleaned up; on a restart it removes the child (OTP drops it), without charge
   beyond the attempt already stamped.
 - Typed start data (`Started::data`) is deferred, as in #259: `gen_server`
   returns only `{ok, Pid}`.
@@ -564,14 +570,17 @@ This design depends on #259 (0.9).
    commit is the success: from then on `start_child` returns
    `Ok(Started)`, even if shutdown begins before the caller observes it
    (success is historical, like `ActorRef::ready()` and `start()`'s
-   readiness, `supervision.rs` `start_owned`). A factory that returns
-   ignore answers `Ok(Ignored)` and leaves nothing behind. The returned `actor` may
+   readiness, `supervision.rs` `start_owned`). An ignore answers
+   `Ok(Ignored { pending })` after cleanup and finalization (above). The returned `actor` may
    already be dead: if the child crashed between the commit and the caller's
    wake-up, it is handled by the restart table and `child.current()`
    resolves the replacement (Codex 2).
 5. **First-start failure.** Factory error or panic, panic or stop in
-   `started()`, or `startup_timeout`: the generation is stopped and cleaned
-   up, the slot finalized and removed, and
+   `started()`, `Init::error`/`Init::stop`, or `startup_timeout`: the
+   generation is stopped and cleaned up without `stopped()` (a failed init
+   never runs it, as OTP never calls `terminate/2` after a failed `init/1`;
+   #259 rev. 3: `stopped()` runs only after a ready commit), its state is
+   dropped and its owned work joined, the slot finalized and removed, and
    `FailedToStart { cause: ChildStartError, cleanup_stuck: false }` returned. Never retried, never charged (OTP). If the cleanup misses its
    deadlines (E3 rows 3-4), `FailedToStart { .., cleanup_stuck: true }` is
    returned at the deadline; the slot stays counted and its work stays owned
@@ -580,7 +589,8 @@ This design depends on #259 (0.9).
    [Stuck children](#stuck-children).
 6. **Shutdown during construction**: the attempt is cancelled (state dropped
    without hooks if `started()` had not begun, L2; otherwise the parent exit
-   signal); `Aborted` is returned after its cleanup or deadline. The error
+   signal, applied when `started()` returns, and still no `stopped()`, since
+   the child never committed ready); `Aborted` is returned after its cleanup or deadline. The error
    reflects what ended the attempt: a factory failure recorded before
    shutdown stays `FailedToStart` (agy 7).
 7. **Cancellation** of the `start_child` future does not cancel the start
@@ -774,7 +784,7 @@ As for any actor (exit-signals design, phases of an exit, with rank 11):
 | 1 | `start_child` is synchronous and returns the child | `{ok, Pid}` after the start function returns | `Ok(Started { actor, child })` after `started()` | aligned; `child` is an addition (row 9) |
 | 2 | Operations serialised by the supervisor | one process: calls and `'EXIT'` messages handled in mailbox order, one at a time | one control loop over one FIFO queue of starts, terminate calls, exits and retries | aligned (decisions Q1, R1) |
 | 3 | Template plus per-call args | `ExtraArgs` appended (Elixir: fixed `extra_arguments` prepended) | typed `Args` passed to the factory | T |
-| 4 | `ignore` | `{ok, undefined}`, nothing stored; on restart the child is dropped | `Ok(Ignored)`, nothing stored; on restart the child is removed | aligned (decision G3) |
+| 4 | `ignore` | `{ok, undefined}`, nothing stored; on restart the child is dropped | `Ok(Ignored { pending })`, nothing kept after cleanup; on restart the child is removed | aligned (decision G3); `pending` is R (cleanup can outlive the answer) |
 | 5 | Start failure | `{error, Reason}`, not counted, not retried | `FailedToStart`, not counted, not retried, after cleanup or at its deadline | aligned; the deadline release is R (S2) |
 | 6 | Default restart type | `permanent` | `Permanent` | aligned |
 | 7 | Temporary children keep no args | `mapsets` | `temporary()` moves args once, no `Clone` | aligned; R for the separate constructor |
@@ -1260,3 +1270,4 @@ no P0. Each fixed in its own commit.
 | **agy 2**: stale `terminate` ids could not be replayed; `ExpectedChild::generation` vs failed replacements; tickets for directly consumed exits; an unlogged fan-out step | **Accepted.** A call names any generation the caller saw; `ExpectedChild` is the last published child (failed attempts publish nothing); an exit consumed by the waiting start or terminate takes no ticket (`DCleaned` ticket optional); the last signal ends the fan-out. `DClose` only for external or parent shutdown |
 | **agy P2**: the loop must await finalization | **Accepted** (with Codex 1) |
 | **Codex note**: use the canonical shared declarations | **Accepted**: `ChildInfo`/`ChildCounts`/`ChildKey` and `ChildStart` are #256's and #259's; the shapes here show only the fields this design depends on |
+| **Unified start #259 rev. 3** (cross-design): `Ignored { pending }` and a stuck ignore keeping its slot until publication; a failed init never runs `stopped()` | **Adopted.** `start_child` returns `Ok(StartOutcome::Ignored { pending })`; a stuck ignored attempt answers at the deadline with `Some(handle)` and its slot counts (`Stopping`) until publication and finalization, which the model already does (`CleanupStuck` commits the ignore, the slot stays counted until `StuckDone` and `Finalize`). First-start failure and shutdown-during-construction text now say `stopped()` does not run; nothing in this design depended on it |
