@@ -2165,9 +2165,14 @@ mod stop_wakeup_regression {
         let token = CancellationToken::new();
         register_stop_wakeup(&token, tx.clone());
         let (_, completion) = spawned_rt::sync::watch::channel(None);
+        let (id, trap, request) = (
+            ActorId::next(),
+            new_trap_exit_flag(),
+            new_linked_exit_reason(),
+        );
         let ctx = Context {
-            id: ActorId::next(),
-            sender: tx,
+            id,
+            sender: tx.clone(),
             cancellation_token: token.clone(),
             completion,
             monitors: Arc::new(Mutex::new(Some(HashMap::new()))),
