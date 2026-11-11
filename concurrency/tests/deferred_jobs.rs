@@ -264,12 +264,19 @@ mod tasks_mode {
         type Result = ();
     }
     impl Handler<StartOld> for Owner {
-        async fn handle(&mut self, msg: StartOld, reply: PendingReply<'_, ()>, ctx: &Context<Self>) {
+        async fn handle(
+            &mut self,
+            msg: StartOld,
+            reply: PendingReply<'_, ()>,
+            ctx: &Context<Self>,
+        ) {
             let (open, gate) = oneshot::channel::<()>();
             let job = ctx
-                .pipe_keyed("r", async move { gate.await.map(|()| 1).unwrap_or(0) }, |o| {
-                    describe("old", o)
-                })
+                .pipe_keyed(
+                    "r",
+                    async move { gate.await.map(|()| 1).unwrap_or(0) },
+                    |o| describe("old", o),
+                )
                 .unwrap();
             *msg.0.lock().unwrap() = Some((job, open));
             reply.reply(());
@@ -285,7 +292,8 @@ mod tasks_mode {
             while !msg.0.load(std::sync::atomic::Ordering::SeqCst) {
                 std::thread::sleep(Duration::from_millis(1));
             }
-            ctx.pipe_keyed("r", async { 2 }, |o| describe("new", o)).unwrap();
+            ctx.pipe_keyed("r", async { 2 }, |o| describe("new", o))
+                .unwrap();
         }
     }
 
@@ -309,7 +317,10 @@ mod tasks_mode {
         go.store(true, std::sync::atomic::Ordering::SeqCst);
         assert_eq!(entries(&actor, &log, 1).await, ["new:ok:2"]);
         sleep(Duration::from_millis(20)).await;
-        assert!(log.take().is_empty(), "the replaced job's terminal message was dispatched");
+        assert!(
+            log.take().is_empty(),
+            "the replaced job's terminal message was dispatched"
+        );
         stop(actor).await;
     }
 
@@ -319,8 +330,10 @@ mod tasks_mode {
     }
     impl Handler<Bomb> for Owner {
         async fn handle(&mut self, _: Bomb, reply: PendingReply<'_, ()>, ctx: &Context<Self>) {
-            ctx.pipe(async {}, |_: JobOutcome<()>| -> Done { panic!("done boom") })
-                .unwrap();
+            ctx.pipe(async {}, |_: JobOutcome<()>| -> Done {
+                panic!("done boom")
+            })
+            .unwrap();
             reply.reply(());
         }
     }
@@ -330,11 +343,21 @@ mod tasks_mode {
     #[spawned_macros::sim_test]
     async fn a_panicking_done_runs_stopped_and_cancels_jobs() {
         let (actor, log) = start();
-        actor.request(Start::Gated("survivor", None)).await.unwrap().unwrap();
+        actor
+            .request(Start::Gated("survivor", None))
+            .await
+            .unwrap()
+            .unwrap();
         actor.request(Bomb).await.unwrap();
         let reason = actor.wait_exit().await;
-        assert!(matches!(reason, spawned_concurrency::ExitReason::Panic(_)), "{reason:?}");
-        assert!(log.take().contains(&"stopped".to_string()), "stopped() did not run");
+        assert!(
+            matches!(reason, spawned_concurrency::ExitReason::Panic(_)),
+            "{reason:?}"
+        );
+        assert!(
+            log.take().contains(&"stopped".to_string()),
+            "stopped() did not run"
+        );
         actor.join().await;
     }
 

@@ -403,7 +403,14 @@ impl<R> Slot<R> {
             if lower {
                 self.deadline.store(at, Ordering::Release);
             }
-            (lower, if lower { std::mem::take(&mut _inner.watchers) } else { Vec::new() })
+            (
+                lower,
+                if lower {
+                    std::mem::take(&mut _inner.watchers)
+                } else {
+                    Vec::new()
+                },
+            )
         };
         let (lowered, watchers) = lowered;
         // Token-side waiters re-arm their timers for the earlier deadline.

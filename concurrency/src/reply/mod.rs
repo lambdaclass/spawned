@@ -473,7 +473,9 @@ impl<R> ReplyReceiver<R> {
     }
 
     fn slot(&self) -> &Arc<Slot<R>> {
-        self.slot.as_ref().expect("ReplyReceiver used after completion")
+        self.slot
+            .as_ref()
+            .expect("ReplyReceiver used after completion")
     }
 
     /// The deadline fixed at send, or `None` for [`Deadline::Never`].
@@ -484,7 +486,10 @@ impl<R> ReplyReceiver<R> {
     /// Block the calling thread until the reply, the deadline or the owner's
     /// death. Do not call it on an async executor thread.
     pub fn recv(mut self) -> Result<R, ActorError> {
-        let slot = self.slot.take().expect("ReplyReceiver used after completion");
+        let slot = self
+            .slot
+            .take()
+            .expect("ReplyReceiver used after completion");
         slot.recv_blocking(&now_ticks).map_err(terminal_error)
     }
 

@@ -409,4 +409,3 @@ mod tests {
         assert_eq!(registry.outstanding(), 0);
     }
 }
-

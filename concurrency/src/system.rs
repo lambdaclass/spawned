@@ -921,7 +921,10 @@ impl Scope {
             .fetch_min(nanos, std::sync::atomic::Ordering::AcqRel);
     }
     pub(crate) fn cleanup_timeout(&self) -> Duration {
-        Duration::from_nanos(self.cleanup_timeout.load(std::sync::atomic::Ordering::Acquire))
+        Duration::from_nanos(
+            self.cleanup_timeout
+                .load(std::sync::atomic::Ordering::Acquire),
+        )
     }
     pub(crate) fn set_jobs(&self, jobs: std::sync::Weak<crate::reply::jobs::JobSet>) {
         *lock(&self.jobs) = Some(jobs);

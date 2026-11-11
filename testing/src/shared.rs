@@ -128,7 +128,9 @@ macro_rules! mock_ref_common {
             /// Take the reply tokens of the `M` requests the mock deferred
             /// (`Mock::defer`), oldest first: reply later, drop them
             /// (`ReplyDropped`), or keep them unanswered.
-            pub fn deferred<M: Message>(&self) -> Vec<spawned_concurrency::reply::ReplyTo<M::Result>> {
+            pub fn deferred<M: Message>(
+                &self,
+            ) -> Vec<spawned_concurrency::reply::ReplyTo<M::Result>> {
                 self.inbox.take_deferred::<M>()
             }
 

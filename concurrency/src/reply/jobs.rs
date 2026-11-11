@@ -627,7 +627,11 @@ mod tests {
         let registry = Registry::new(ActorId::next(), 1);
         let held = JobCredit::reserve(&registry).expect("first credit");
         assert!(JobCredit::reserve(&registry).is_none());
-        assert_eq!(registry.outstanding(), 1, "a rejected job released a credit");
+        assert_eq!(
+            registry.outstanding(),
+            1,
+            "a rejected job released a credit"
+        );
         drop(held);
         assert_eq!(registry.outstanding(), 0);
     }

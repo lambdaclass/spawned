@@ -330,7 +330,10 @@ mod tasks_mode {
             std::thread::sleep(Duration::from_millis(5));
         }
         let result = caller.join().unwrap();
-        assert!(matches!(result, Err(ActorError::ActorStopped)), "{result:?}");
+        assert!(
+            matches!(result, Err(ActorError::ActorStopped)),
+            "{result:?}"
+        );
         drop(actor);
     }
 

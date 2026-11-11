@@ -134,7 +134,10 @@ fn reply_vs_shortening() {
         match delivery {
             Delivery::Delivered => {
                 assert_eq!(state(slot.word()), slot::REPLIED);
-                assert!(!lowered, "a shortening was applied but not seen by the reply");
+                assert!(
+                    !lowered,
+                    "a shortening was applied but not seen by the reply"
+                );
                 assert_eq!(slot.deadline(), 100);
             }
             Delivery::Expired => {

@@ -35,11 +35,19 @@ impl Outcomes {
     }
     fn one(&self, item: u32, outcome: Outcome) {
         let mut seen = self.0.lock().unwrap();
-        assert!(seen.iter().all(|(i, _)| *i != item), "item {item} answered twice");
+        assert!(
+            seen.iter().all(|(i, _)| *i != item),
+            "item {item} answered twice"
+        );
         seen.push((item, outcome));
     }
     fn of(&self, item: u32) -> Option<Outcome> {
-        self.0.lock().unwrap().iter().find(|(i, _)| *i == item).map(|(_, o)| *o)
+        self.0
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(i, _)| *i == item)
+            .map(|(_, o)| *o)
     }
 }
 
@@ -68,10 +76,18 @@ fn drop_vs_turn_end() {
             dropper.join().unwrap();
             let got = outcomes.of(1).expect("a dropped obligation was lost");
             if committed {
-                let expected = if panicked { Outcome::Stopped } else { Outcome::Dropped };
+                let expected = if panicked {
+                    Outcome::Stopped
+                } else {
+                    Outcome::Dropped
+                };
                 assert_eq!(got, expected);
             } else {
-                assert_eq!(got, Outcome::Dropped, "a drop after the turn answers at once");
+                assert_eq!(
+                    got,
+                    Outcome::Dropped,
+                    "a drop after the turn answers at once"
+                );
             }
         });
     }

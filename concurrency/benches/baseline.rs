@@ -3,8 +3,8 @@
 mod cli;
 use spawned_concurrency::{message::Message, tasks, threads, ChildHandle, Deadline, ReplyReceiver};
 use std::{
-    future::IntoFuture,
     alloc::{GlobalAlloc, Layout, System},
+    future::IntoFuture,
     hint::black_box,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -155,7 +155,9 @@ impl Target {
 impl Reply {
     fn wait(self, rt: &tokio::runtime::Handle) -> Ack {
         match self {
-            Self::Tasks(rx) => rt.block_on(rx.into_future()).expect("reply timeout or dropped"),
+            Self::Tasks(rx) => rt
+                .block_on(rx.into_future())
+                .expect("reply timeout or dropped"),
             Self::Tokio(rx) => rt.block_on(async {
                 tokio::time::timeout(Duration::from_secs(10), rx)
                     .await

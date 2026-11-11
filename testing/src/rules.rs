@@ -45,7 +45,9 @@ pub(crate) enum Plan<R> {
     /// `Mock::defer`: take the reply obligation and store it for the test.
     Defer,
     /// `Mock::discard`: wait `delay`, then drop the reply obligation.
-    Discard { delay: Option<Duration> },
+    Discard {
+        delay: Option<Duration>,
+    },
 }
 
 #[derive(Default)]
