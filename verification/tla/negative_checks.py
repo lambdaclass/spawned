@@ -262,6 +262,8 @@ DYNAMIC_CONTROLS = [
     ("MCDynamicSupervisor", "QueuedTermOk", "TermResultsSound"),
     ("MCDynamicSupervisor", "StuckResultLost", "TermResultsSound"),
     ("MCDynamicSupervisor", "IgnoreExpect", "TermResultsSound"),
+    ("MCDynamicSupervisor", "EarlyFree", "RemovedAfterFinalize"),
+    ("MCDynamicSupervisor", "IgnoreFreesEarly", "RemovedAfterFinalize"),
 ]
 DYNAMIC_TEMPORAL_CONTROLS = [
     # Without startup deadlines, so the deadline cannot mask the missing abort.

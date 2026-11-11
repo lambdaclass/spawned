@@ -353,6 +353,14 @@ pub struct ChildCounts {
 }
 ```
 
+- An ignored attempt is cleaned up like any exit before anything is
+  released: `Init::ignore()` drops the constructed state and joins its owned
+  work; a factory ignore has nothing to drop. Then the slot is finalized
+  (retained arguments dropped) and only then freed and answered
+  `Ok(StartOutcome::Ignored)`. If that cleanup misses its deadline the start
+  is still answered `Ignored` at the deadline (the outcome was decided when
+  the child ignored) and the slot stays counted until the work ends, as for
+  any stuck retiring child (control `IgnoreFreesEarly`; Codex round 3).
 - The factory returns `Result<ChildStart<A>, E>` with
   `ChildStart::Actor(a) | ChildStart::Ignore` (`From<A>`), and `started()`
   may return `Init::ignore()`; both are unified start's shapes (#259). An
@@ -711,8 +719,13 @@ are for the implementation's tests.
   slot (no restart can follow): it drops the retained arguments and then
   releases the native-capacity reservation and the `max_children` slot.
 - Finalization runs as a tracked task on the template's group, never on the
-  control loop and never under a supervisor lock, bounded by
-  `shutdown_timeout`. A panicking destructor is recorded as a finalization
+  control loop's executor and never under a supervisor lock, bounded by
+  `shutdown_timeout`. The loop awaits it (as it awaits factories) before it
+  takes the next operation, so a start queued behind a removal sees the
+  slot freed, not a transient `MaxChildren` (agy round 3). The slot stays
+  counted, and its native-capacity reservation held, until finalization
+  ended (model: state `finalizing`, invariant `RemovedAfterFinalize`,
+  control `EarlyFree`). A panicking destructor is recorded as a finalization
   failure in the report (no restart: the decision was already made). A
   destructor that hangs past the deadline makes the slot stuck as a
   retiring child: it stays counted, it is reported, nothing else is
@@ -1030,7 +1043,7 @@ the generation, and where noted the queue ticket or call id.
 | `DAdmit` (slot, ticket, outcome: admitted / max) | the loop takes a start | `LoopAdmit` |
 | `DReject` (slot) | shutdown answers a queued start | `RejectQueued` |
 | `DReady` (slot, gen) | readiness commits | `Ready` |
-| `DIgnore` (slot, gen) | the factory returned `ChildStart::Ignore` or `started()` returned `Init::ignore()` | `Ignore` |
+| `DIgnore` (slot, gen) | the factory returned `ChildStart::Ignore` or `started()` returned `Init::ignore()` (cleanup follows, as for an exit) | `Ignore` |
 | `DStartFail` (slot, gen, reason) | factory error or panic, stop or panic in `started()` | `StartFail` |
 | `DStartTimeout` (slot, gen) | `startup_timeout` fired | `StartTimeout` |
 | `DAbort` (slot, gen) | shutdown cancelled a construction | `AbortStart` |
@@ -1038,11 +1051,12 @@ the generation, and where noted the queue ticket or call id.
 | `DStopSeen` (slot, gen, reason) | a signalled generation began exiting (Shutdown/Killed) | `StopObserved` |
 | `DCleaned` (slot, gen, cleanup_failure, ticket) | owned cleanup finished; exit notice queued | `CleanupDone` |
 | `DStuck` (slot, gen, kind) | a deadline was missed | `CleanupStuck` |
-| `DStuckDone` (slot) | a stuck child finally ended | `StuckDone` |
-| `DDecide` (slot, ticket?, outcome: removed / backoff / restart / exhausted) | the loop handled an exit | `Decide` |
+| `DStuckDone` (slot) | a stuck child or finalization finally ended | `StuckDone` |
+| `DFinalized` (slot) | slot finalization ended: retained arguments dropped, capacity and the slot released; a pending start answered | `Finalize` |
+| `DDecide` (slot, ticket?, outcome: finalize / backoff / restart / exhausted) | the loop handled an exit; "finalize" starts slot finalization, which `DFinalized` (or `DStuck`) ends | `Decide` |
 | `DRetryQueued` (slot, ticket) | the backoff timer fired | `BackoffFire` |
 | `DRetry` (slot, gen, ticket) | the loop took a retry | `BackoffDone` |
-| `DCancel` (slot) | a pending restart was cancelled and refunded | `CancelBackoff` |
+| `DCancel` (slot) | a pending restart was cancelled and refunded; finalization starts | `CancelBackoff` |
 | `DTermCall` (call, slot, named gen, ticket) | `terminate_child`/`terminate_slot` called | `TermCall` |
 | `DTermLookup` (call, outcome: found / notfound / stuck / stale) | the loop handled the call | `LoopTerm` |
 | `DTermReject` (call) | shutdown answered a queued call | `RejectQueuedTerm` |

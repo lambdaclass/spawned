@@ -70,7 +70,9 @@ Faults   == {"None",
     \* revision 3
     "LaterOp", "MisclassifyStuck", "EarlyRemove", "OverReserve", "LostRestart",
     "TermLost", "NoDeadline", "SkipSignal", "SlotLookup", "QueuedTermOk",
-    "PublishAfterExit", "StuckResultLost", "IgnoreExpect"}
+    "PublishAfterExit", "StuckResultLost", "IgnoreExpect",
+    \* round 3
+    "EarlyFree", "IgnoreFreesEarly"}
 
 ASSUME N \in Nat \ {0} /\ MaxChildren \in Nat /\ MaxRestarts \in Nat /\ MaxExpire \in Nat
 ASSUME ModeSet \subseteq Modes /\ ModeSet # {}
@@ -81,10 +83,13 @@ ASSUME BackoffOn \in BOOLEAN /\ FanoutSteps \in BOOLEAN /\ StartDeadlines \in BO
 ASSUME Fault \in Faults
 
 States   == {"idle", "queued", "starting", "running", "cleanup", "decide",
-             "backoff", "restarting", "stuck", "removed", "rejected", "ignored"}
-Active   == {"starting", "running", "cleanup", "decide", "backoff",
+             "backoff", "restarting", "stuck", "finalizing", "removed", "rejected"}
+\* "finalizing": the loop decided to remove the slot; slot finalization
+\* (dropping retained arguments) runs and the slot stays counted until it
+\* ends (revision 3, Codex round 3).
+Active   == {"starting", "running", "cleanup", "decide", "backoff", "finalizing",
              "restarting", "stuck"}
-Terminal == {"idle", "removed", "rejected", "ignored"}
+Terminal == {"idle", "removed", "rejected"}
 Idle     == [k |-> "idle", s |-> 0, c |-> 0]
 
 VARIABLES
@@ -97,19 +102,19 @@ VARIABLES
     mode, sl, tc,
     \* history (GhostUpdate only)
     lateCommit, latePub, lateGenClose, lateGenTerm, badRestart, badRetire,
-    restarts, outOfOrder
+    restarts, outOfOrder, freedEarly
 
 sup   == <<open, failed, exhausted, sphase, windowed, expired, reserved, stamped,
            q, ticket, served, op>>
 ghost == <<lateCommit, latePub, lateGenClose, lateGenTerm, badRestart, badRetire,
-           restarts, outOfOrder>>
+           restarts, outOfOrder, freedEarly>>
 vars  == <<sup, sl, tc, ghost, mode>>
 
 SlotInit == [cs |-> "idle", gen |-> 0, alive |-> {}, pub |-> 0, lastPub |-> 0,
              reason |-> "none", cfail |-> FALSE, readyGen |-> FALSE,
              everReady |-> FALSE, result |-> "none", cause |-> "none",
              term |-> FALSE, stopSig |-> FALSE, stuck |-> "none",
-             retryQ |-> FALSE]
+             retryQ |-> FALSE, ign |-> FALSE]
 \* terminate call: st \in none, queued, pending, ok, stuck, notfound, stopped;
 \* g = the actor (generation) the caller named.
 CallInit == [st |-> "none", g |-> 0]
@@ -119,7 +124,7 @@ TypeOK ==
     /\ sphase \in {"running", "signal", "waiting", "done"}
     /\ windowed \in Nat /\ expired \in 0..MaxExpire /\ reserved \subseteq Slots
     /\ stamped \in Nat /\ ticket \in Nat /\ served \in Nat
-    /\ op.k \in {"idle", "start", "restart", "term"}
+    /\ op.k \in {"idle", "start", "restart", "term", "final"}
     /\ \A s \in Slots : sl[s].cs \in States /\ sl[s].alive \subseteq Nat
     /\ \A c \in TermCalls :
          tc[c].st \in {"none", "queued", "pending", "ok", "stuck", "notfound", "stopped", "stale"}
@@ -133,7 +138,7 @@ Init ==
     /\ lateCommit = [s \in Slots |-> FALSE] /\ latePub = [s \in Slots |-> FALSE]
     /\ lateGenClose = [s \in Slots |-> FALSE] /\ lateGenTerm = [s \in Slots |-> FALSE]
     /\ badRestart = [s \in Slots |-> FALSE] /\ badRetire = [s \in Slots |-> FALSE]
-    /\ restarts = 0 /\ outOfOrder = FALSE
+    /\ restarts = 0 /\ outOfOrder = FALSE /\ freedEarly = [s \in Slots |-> FALSE]
 
 -----------------------------------------------------------------------------
 (* Helpers *)
@@ -300,12 +305,20 @@ Ready(s) ==
     /\ UNCHANGED <<open, failed, exhausted, sphase, windowed, expired, reserved,
                    stamped, q, ticket, served, tc>>
 
-\* The factory returned ignore: no actor, nothing stored (OTP {ok, undefined}).
+\* The factory returned ChildStart::Ignore or started() returned
+\* Init::ignore(): nothing will be supervised (OTP {ok, undefined}), but the
+\* attempt's state and owned work are cleaned up like any exit, and the slot
+\* is finalized, before the answer and before the slot frees. The outcome is
+\* decided now (cause "ignored"), answered after cleanup or at its deadline.
 Ignore(s) ==
     /\ sl[s].cs \in {"starting", "restarting"}
-    /\ sl' = [sl EXCEPT ![s].cs = "ignored", ![s].alive = {},
-                        ![s].result = IF sl[s].cs = "starting" THEN "ignored" ELSE sl[s].result]
-    /\ op' = IF op.s = s /\ op.k # "term" THEN Idle ELSE op
+    /\ IF Fault = "IgnoreFreesEarly"
+       THEN sl' = [sl EXCEPT ![s].cs = "removed", ![s].alive = {}, ![s].pub = 0,
+                     ![s].result = IF sl[s].cs = "starting" THEN "ignored" ELSE sl[s].result]
+       ELSE sl' = [sl EXCEPT ![s].cs = "cleanup", ![s].reason = "Normal", ![s].pub = 0,
+                     ![s].ign = TRUE,
+                     ![s].cause = IF sl[s].cs = "starting" THEN "ignored" ELSE sl[s].cause]
+    /\ op' = IF Fault = "IgnoreFreesEarly" /\ op.s = s THEN Idle ELSE op
     /\ UNCHANGED <<open, failed, exhausted, sphase, windowed, expired, reserved,
                    stamped, q, ticket, served, tc>>
 
@@ -358,7 +371,8 @@ CleanupDone(s, f) ==
                    stamped, served, tc>>
 
 \* A deadline was missed: signalled but still running after the kill and
-\* the second interval, or owned cleanup past its deadline. The slot stays
+\* the second interval, owned cleanup past its deadline, or slot
+\* finalization past its deadline. The slot stays
 \* counted. Results waiting on it are committed now and stay (historical).
 \* Kind: "restart" only for a child the table would restart, judged from
 \* the exit reason alone (a stall is not a recorded cleanup failure);
@@ -366,7 +380,7 @@ CleanupDone(s, f) ==
 CleanupStuck(s) ==
     /\ Fault # "NoDeadline"
     /\ sl[s].stuck = "none"
-    /\ \/ sl[s].cs = "cleanup"
+    /\ \/ sl[s].cs \in {"cleanup", "finalizing"}
        \/ sl[s].cs = "running" /\ sl[s].stopSig
     /\ LET restartable ==
                /\ sl[s].everReady /\ ~sl[s].term /\ sl[s].cs = "cleanup"
@@ -386,10 +400,24 @@ CleanupStuck(s) ==
     /\ op' = IF op.s = s /\ (op.k # "term" \/ Fault # "StuckResultLost") THEN Idle ELSE op
     /\ UNCHANGED <<exhausted, sphase, windowed, expired, reserved, stamped, q, ticket, served>>
 
+\* A stuck child (or finalization) finally ended; finalization follows.
 StuckDone(s) ==
     /\ sl[s].cs = "stuck"
-    /\ sl' = [sl EXCEPT ![s].cs = "removed", ![s].alive = {}]
+    /\ sl' = [sl EXCEPT ![s].cs = "finalizing", ![s].alive = {}]
     /\ Unchanged1
+
+\* Slot finalization ended: retained arguments dropped, then capacity and
+\* the max_children slot released. A start's answer is given now.
+Finalize(s) ==
+    /\ sl[s].cs = "finalizing"
+    /\ sl' = [sl EXCEPT ![s].cs = "removed",
+                 ![s].result = IF sl[s].result = "pending"
+                               THEN IF Fault = "LateFailedOverwrite" /\ ~open
+                                    THEN "aborted" ELSE sl[s].cause
+                               ELSE sl[s].result]
+    /\ op' = IF op = [k |-> "final", s |-> s, c |-> 0] THEN Idle ELSE op
+    /\ UNCHANGED <<open, failed, exhausted, sphase, windowed, expired, reserved,
+                   stamped, q, ticket, served, tc>>
 
 \* The loop handles an exit: at the head of the queue, or directly when the
 \* operation in progress waits for this child (start or terminate).
@@ -404,16 +432,18 @@ Decide(s) ==
        \/ Fault = "OverlapGeneration" /\ sl[s].cs = "cleanup" /\ LoopIdle
           /\ UNCHANGED <<q, served>>
     /\ LET ownStart == op.s = s /\ op.k = "start"
+           \* removal: finalize; the loop waits for it unless a terminate holds it
+           Remove == /\ sl' = [sl EXCEPT ![s].cs = IF Fault = "EarlyFree" THEN "removed"
+                                                  ELSE "finalizing"]
+                     /\ op' = IF op.k = "term" /\ op.s = s THEN op
+                              ELSE IF Fault = "EarlyFree" THEN Idle
+                              ELSE [k |-> "final", s |-> s, c |-> 0]
        IN IF ~sl[s].everReady /\ Fault # "RetryFirstStart"
-       THEN \* first-start failure: answered after cleanup; never retried
-            /\ sl' = [sl EXCEPT ![s].cs = "removed",
-                       ![s].result = IF Fault = "LateFailedOverwrite" /\ ~open
-                                     THEN "aborted" ELSE sl[s].cause]
-            /\ op' = IF ownStart THEN Idle ELSE op
+       THEN \* first-start failure or ignore: answered after finalization
+            /\ Remove
             /\ UNCHANGED <<open, failed, exhausted, reserved, stamped, windowed>>
-       ELSE IF ~open \/ (sl[s].term /\ Fault # "RestartTerminated")
-       THEN /\ sl' = [sl EXCEPT ![s].cs = "removed"]
-            /\ op' = IF ownStart THEN Idle ELSE op   \* a terminate keeps the loop until TermResolve
+       ELSE IF ~open \/ (sl[s].term /\ Fault # "RestartTerminated") \/ sl[s].ign
+       THEN /\ Remove
             /\ UNCHANGED <<open, failed, exhausted, reserved, stamped, windowed>>
        ELSE IF WouldRestart(s)
        THEN IF Budget < MaxRestarts \/ Fault = "OverReserve"
@@ -435,12 +465,10 @@ Decide(s) ==
                       /\ op' = [k |-> "restart", s |-> s, c |-> 0]
                       /\ UNCHANGED <<open, failed, exhausted, reserved>>
             ELSE /\ exhausted' = TRUE
-                 /\ sl' = [sl EXCEPT ![s].cs = "removed"]
+                 /\ Remove
                  /\ IF Fault = "NoEscalate" THEN UNCHANGED <<open, failed>> ELSE Fail
-                 /\ op' = IF ownStart THEN Idle ELSE op
                  /\ UNCHANGED <<reserved, stamped, windowed>>
-       ELSE /\ sl' = [sl EXCEPT ![s].cs = "removed"]
-            /\ op' = IF ownStart THEN Idle ELSE op
+       ELSE /\ Remove
             /\ UNCHANGED <<open, failed, exhausted, reserved, stamped, windowed>>
     /\ UNCHANGED <<sphase, expired, ticket, tc>>
 
@@ -476,7 +504,7 @@ CancelBackoff(s) ==
     /\ sl[s].cs = "backoff"
     /\ \/ ~open /\ Fault # "StuckBackoff"
        \/ sl[s].term /\ Fault # "RestartTerminated"
-    /\ sl' = [sl EXCEPT ![s].cs = "removed", ![s].retryQ = FALSE]
+    /\ sl' = [sl EXCEPT ![s].cs = "finalizing", ![s].retryQ = FALSE]
     /\ q' = SelectSeq(q, LAMBDA e : ~(e.k = "retry" /\ e.s = s))
     /\ reserved' = IF Fault = "NoRefund" THEN reserved ELSE reserved \ {s}
     /\ UNCHANGED <<open, failed, exhausted, sphase, windowed, expired, stamped,
@@ -521,7 +549,7 @@ Grew(s) == sl'[s].gen > sl[s].gen
 Decided(s) ==
     /\ sl[s].cs = "decide"
     /\ \/ sl'[s].cs \in {"backoff", "restarting"}
-       \/ exhausted' /\ ~exhausted /\ sl'[s].cs = "removed"
+       \/ exhausted' /\ ~exhausted /\ sl'[s].cs \in {"finalizing", "removed"}
 
 GhostUpdate ==
     /\ lateCommit' = [s \in Slots |-> lateCommit[s] \/
@@ -533,10 +561,12 @@ GhostUpdate ==
     /\ badRestart' = [s \in Slots |-> badRestart[s] \/
                         (((Grew(s) /\ sl[s].gen > 0) \/ Decided(s)) /\ ~Allowed(s))]
     /\ badRetire' = [s \in Slots |-> badRetire[s] \/
-                        (sl[s].cs = "decide" /\ sl'[s].cs = "removed" /\ open'
+                        (sl[s].cs = "decide" /\ sl'[s].cs \in {"finalizing", "removed"} /\ open'
                          /\ ~sl[s].term /\ Allowed(s))]
     /\ restarts' = restarts + Cardinality({s \in Slots : Grew(s) /\ sl[s].gen > 0})
     /\ outOfOrder' = (outOfOrder \/ (served' # served /\ served' < served))
+    /\ freedEarly' = [s \in Slots |-> freedEarly[s] \/
+                        (sl'[s].cs = "removed" /\ sl[s].cs \notin {"finalizing", "removed"})]
     /\ UNCHANGED mode
 
 SlotStep(s) ==
@@ -546,7 +576,7 @@ SlotStep(s) ==
     \/ \E r \in SelfExits : SelfExit(s, r)
     \/ \E r \in {"Shutdown", "Killed"} : StopObserved(s, r)
     \/ \E f \in CleanupFails : CleanupDone(s, f)
-    \/ CleanupStuck(s) \/ StuckDone(s)
+    \/ CleanupStuck(s) \/ StuckDone(s) \/ Finalize(s)
     \/ Decide(s) \/ BackoffFire(s) \/ BackoffDone(s) \/ CancelBackoff(s)
 
 CallStep(c) == TermCall(c) \/ RejectQueuedTerm(c) \/ LoopTerm(c) \/ TermResolve(c)
@@ -575,6 +605,7 @@ Fairness ==
          /\ WF_vars((\E r \in {"Shutdown", "Killed"} : StopObserved(s, r)) /\ GhostUpdate)
          /\ WF_vars((\E f \in CleanupFails : CleanupDone(s, f)) /\ GhostUpdate)
          /\ WF_vars((StuckDone(s)) /\ GhostUpdate)
+         /\ WF_vars((Finalize(s)) /\ GhostUpdate)
 
 Spec       == Init /\ [][Next]_vars /\ Fairness
 CallerSpec == Init /\ [][Next]_vars /\ CallerFairness
@@ -637,6 +668,10 @@ StuckIsolated ==
            /\ \/ DesignAllowsRestart(mode[s], sl[s].reason, FALSE)
               \/ ~sl[s].readyGen /\ mode[s] # "Temporary"
 
+\* A slot is freed (removed) only after slot finalization ran: the cap and
+\* capacity cover retained arguments and an ignored attempt's cleanup.
+RemovedAfterFinalize == \A s \in Slots : ~freedEarly[s]
+
 ConcurrentShutdown ==
     sphase \in {"waiting", "done"} => \A s \in Slots : sl[s].cs = "running" => sl[s].stopSig
 
@@ -660,7 +695,7 @@ Safety ==
     /\ NoStartAfterShutdown /\ RestartFollowsPolicy /\ FirstStartNeverRetried
     /\ FailedAfterCleanup /\ FailureCauseKept /\ ChargedRestarts /\ ReservationsMatch
     /\ BudgetBounded /\ ExhaustionCloses /\ StuckIsolated /\ ConcurrentShutdown
-    /\ OkMeansReady /\ TermResultsSound
+    /\ OkMeansReady /\ TermResultsSound /\ RemovedAfterFinalize
 
 NeverReopens == [][open' => open]_vars
 \* A committed terminate result never changes.
@@ -680,5 +715,5 @@ FanoutCompletes == (~open) ~> (sphase \in {"waiting", "done"})
 ClosedLeadsToDone == (~open) ~> (sphase = "done")
 RecoveryProgress == \A s \in Slots :
     (sl[s].cs \in {"decide", "backoff", "restarting"} /\ sl[s].everReady)
-        ~> (sl[s].cs \in {"running", "removed", "stuck", "ignored"})
+        ~> (sl[s].cs \in {"running", "finalizing", "removed", "stuck"})
 =============================================================================
