@@ -103,7 +103,7 @@ jobs:
       - name: Model-check the reply slot's packed-word protocol
         env:
           RUSTFLAGS: --cfg spawned_scheduler_loom
-        run: cargo test --locked --release -p spawned-concurrency --no-default-features --test reply_slot_loom
+        run: cargo test --locked --release -p spawned-concurrency --no-default-features --test reply_slot_loom --test registry_turn_loom
 
   # Data races in the runtime and its dependencies. The crates forbid
   # unsafe code, so ThreadSanitizer is the sanitizer that matters here.

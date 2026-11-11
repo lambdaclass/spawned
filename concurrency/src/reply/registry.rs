@@ -17,17 +17,20 @@
 use super::deadline::{self, DeadlineHeap, Expirable};
 use super::slot::{CreditPool, Slot, Terminal, NEVER};
 use crate::ActorId;
-use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 /// Default `Actor::MAX_OUTSTANDING`: deferred credits per actor instance.
 pub const DEFAULT_MAX_OUTSTANDING: usize = 1024;
 
-const RUNNING: u8 = 0;
-const IN_TURN: u8 = 1;
-const IN_TURN_PENDING: u8 = 2;
-const EXITING: u8 = 3;
-const DEAD: u8 = 4;
+use super::turn::{Outcome, TurnPhase, DEAD, EXITING};
+
+fn terminal(outcome: Outcome) -> Terminal {
+    match outcome {
+        Outcome::Dropped => Terminal::Dropped,
+        Outcome::Stopped => Terminal::Stopped,
+    }
+}
 
 /// A slot seen without its reply type.
 pub(crate) trait Closeable: Send + Sync {
@@ -62,12 +65,8 @@ impl<R: Send> Closeable for Slot<R> {
 struct Lists {
     tokens: Vec<Weak<dyn Closeable>>,
     prune_at: usize,
-    turn_drops: Vec<Arc<dyn Closeable>>,
     deadlines: DeadlineHeap,
 }
-
-#[repr(align(64))]
-struct Phase(AtomicU8);
 
 pub(crate) struct Registry {
     owner: ActorId,
@@ -75,9 +74,8 @@ pub(crate) struct Registry {
     #[cfg_attr(all(spawned_sim, feature = "async"), allow(dead_code))]
     key: u64,
     pool: Arc<CreditPool>,
-    /// On its own cache line: the run loop writes it every turn, while
-    /// callers touch the `Arc` counts and the lists from other threads.
-    phase: Phase,
+    /// Turn phase and in-turn drops (its phase sits on its own cache line).
+    turn: TurnPhase<Arc<dyn Closeable>>,
     lists: Mutex<Lists>,
     /// When exit began: the cleanup deadline is armed from here.
     exit_began: Mutex<Option<spawned_rt::time::Instant>>,
@@ -97,7 +95,7 @@ impl Registry {
             owner,
             key: NEXT_KEY.fetch_add(1, Ordering::Relaxed),
             pool: Arc::new(CreditPool::new(max)),
-            phase: Phase(AtomicU8::new(RUNNING)),
+            turn: TurnPhase::default(),
             lists: Mutex::new(Lists {
                 prune_at: 16,
                 ..Lists::default()
@@ -172,7 +170,7 @@ impl Registry {
     }
 
     pub(crate) fn is_dead(&self) -> bool {
-        self.phase.0.load(Ordering::Acquire) == DEAD
+        self.turn.load() == DEAD
     }
 
     /// Put a deferred token's deadline in the owner's heap, so it expires
@@ -226,89 +224,39 @@ impl Registry {
             return;
         }
         let slot: Arc<dyn Closeable> = slot;
-        loop {
-            match self.phase.0.load(Ordering::Acquire) {
-                RUNNING => {
-                    slot.terminate(Terminal::Dropped);
-                    return;
-                }
-                EXITING => {
-                    slot.terminate(Terminal::Stopped);
-                    return;
-                }
-                DEAD => {
-                    slot.terminate(Terminal::Stopped);
-                    return;
-                }
-                _ => {
-                    let mut lists = lock(&self.lists);
-                    lists.turn_drops.push(slot.clone());
-                    let mut current = self.phase.0.load(Ordering::Acquire);
-                    let recorded = loop {
-                        if current != IN_TURN && current != IN_TURN_PENDING {
-                            break false;
-                        }
-                        match self.phase.0.compare_exchange(
-                            current,
-                            IN_TURN_PENDING,
-                            Ordering::AcqRel,
-                            Ordering::Acquire,
-                        ) {
-                            Ok(_) => break true,
-                            Err(actual) => current = actual,
-                        }
-                    };
-                    if recorded {
-                        return;
-                    }
-                    // The turn ended first: classify by the new phase.
-                    lists.turn_drops.pop();
-                }
-            }
+        if let Some((slot, outcome)) = self.turn.dropped(slot) {
+            slot.terminate(terminal(outcome));
         }
     }
 
-    fn commit(&self, outcome: Terminal) {
-        let drops = std::mem::take(&mut lock(&self.lists).turn_drops);
+    fn commit(drops: Vec<Arc<dyn Closeable>>, outcome: Outcome) {
         for slot in drops {
-            slot.terminate(outcome);
+            slot.terminate(terminal(outcome));
         }
     }
 
     /// The run loop is about to dispatch a handler.
-    ///
-    /// Only the run loop moves the phase out of `RUNNING`/`IN_TURN` (droppers
-    /// only mark `IN_TURN_PENDING`), so a plain store suffices here.
     pub(crate) fn begin_turn(&self) {
-        debug_assert_eq!(self.phase.0.load(Ordering::Relaxed), RUNNING);
-        self.phase.0.store(IN_TURN, Ordering::Release);
+        self.turn.begin_turn();
     }
 
     /// The handler returned (`panicked == false`) or unwound.
     pub(crate) fn end_turn(&self, panicked: bool) {
-        if self.phase.0.swap(RUNNING, Ordering::AcqRel) == IN_TURN_PENDING {
-            self.commit(if panicked {
-                Terminal::Stopped
-            } else {
-                Terminal::Dropped
-            });
-        }
+        let (drops, outcome) = self.turn.end_turn(panicked);
+        Self::commit(drops, outcome);
     }
 
     /// Exit begins: later drops answer `Stopped`, and the current turn's
     /// recorded drops commit as `Stopped`.
     pub(crate) fn exiting(&self) {
-        let previous = self.phase.0.load(Ordering::Acquire);
-        if previous == DEAD {
+        if self.turn.load() == DEAD {
             return;
         }
         self.exit_began
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .get_or_insert_with(spawned_rt::time::Instant::now);
-        if self.phase.0.swap(EXITING, Ordering::AcqRel) == IN_TURN_PENDING {
-            self.commit(Terminal::Stopped);
-        }
+        Self::commit(self.turn.exiting(), Outcome::Stopped);
     }
 
     /// What remains of `timeout`, measured from the start of exit.
@@ -318,15 +266,13 @@ impl Registry {
     }
 
     pub(crate) fn is_exiting(&self) -> bool {
-        self.phase.0.load(Ordering::Acquire) >= EXITING
+        self.turn.load() >= EXITING
     }
 
     /// Death: every open token listed becomes `STOPPED`, wherever it is.
     /// Returns how many were closed.
     pub(crate) fn close(&self) -> usize {
-        if self.phase.0.swap(DEAD, Ordering::AcqRel) == IN_TURN_PENDING {
-            self.commit(Terminal::Stopped);
-        }
+        Self::commit(self.turn.close(), Outcome::Stopped);
         let tokens = std::mem::take(&mut lock(&self.lists).tokens);
         let closed = tokens
             .into_iter()
@@ -346,7 +292,7 @@ impl Registry {
 impl Drop for Registry {
     fn drop(&mut self) {
         // Every handle to the instance is gone; nothing can still answer.
-        if self.phase.0.load(Ordering::Acquire) != DEAD {
+        if self.turn.load() != DEAD {
             self.close();
         }
     }

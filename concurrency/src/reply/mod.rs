@@ -11,6 +11,7 @@ pub mod jobs;
 mod pending;
 pub(crate) mod registry;
 pub(crate) mod slot;
+pub(crate) mod turn;
 
 pub use pending::{InsertError, PendingReplies};
 pub use registry::DEFAULT_MAX_OUTSTANDING;
@@ -28,7 +29,7 @@ use std::time::Duration;
 /// Production synchronization types for [`slot`]; the Loom model supplies its
 /// own (`tests/reply_slot_loom.rs`).
 mod sync {
-    pub(crate) use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+    pub(crate) use std::sync::atomic::{AtomicU64, AtomicU8, AtomicUsize, Ordering};
     pub(crate) use std::sync::{Arc, Condvar, Mutex, MutexGuard};
     pub(crate) use std::thread::yield_now;
     pub(crate) type SlotOwner = Option<Arc<super::registry::Registry>>;
