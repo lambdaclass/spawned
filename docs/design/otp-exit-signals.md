@@ -785,13 +785,14 @@ that ethrex's boot path stops hiding a failed discovery start behind retries.
 
 ## What the model establishes
 
-TLC results on the final model (TLC 2.19, 4 workers): `MCLifecycle` 24,270,350
-distinct states, depth 21, no error, 3m49s; `MCLifecycleLive` 179,720 states,
-no error, 40 s; `MCLifecycleLiveDeep` 5,117,864 states, depth 20, no error,
-34 min; `MCLifecycleFence` 252,878 states, no error, 2 s. All 17 negative-control
-checks produce their counterexample (1-6 s each). `MCLifecycleDeep` (every
-reason for every operation, `unlink`, trap-off) has not been run to completion
-yet. Apalache inductive invariants were not attempted.
+TLC results on the model with the maintainer decisions (TLC 2.19, 4 workers):
+`MCLifecycle` 43,340,533 distinct states, depth 22, no error, 6m55s;
+`MCLifecycleLive` 324,179 states, no error, 1m24s; `MCLifecycleFence` 387,985
+states, no error, 3 s. All 19 negative-control checks produce their
+counterexample (1-6 s each). The weekly configurations `MCLifecycleLiveDeep`
+(5,117,864 states, no error, 34 min, on the model before the decisions) and
+`MCLifecycleDeep` are re-run after the 2026-11-11 canary window, with
+Apalache inductive invariants if tractable.
 
 [`Lifecycle.tla`](../../verification/tla/Lifecycle.tla) models actors, outside
 code (`ChildHandle` holders, a caller) and one supervisor, with the six phases
@@ -805,10 +806,9 @@ above (`Die` is D, `Publish` is publication). Configurations:
   `Normal`, `Shutdown`, `Kill`; administrative `Shutdown`.
 - `MCLifecycleLive` (every PR): the liveness properties with the request,
   the monitor and late registrations, without the actor-to-actor message,
-  outside signals or runtime drop (179,720 states, 40 s on 4 workers).
+  outside signals or runtime drop.
 - `MCLifecycleLiveDeep` (weekly): the same with one outside signal or
-  administrative stop and runtime drop (5,117,864 states, 34 min on 4
-  workers).
+  administrative stop and runtime drop.
 - `MCLifecycleFence` (every PR, safety): two late registrations and
   `unlink`, nothing else; the fence controls run here.
 - `MCLifecycleDeep` (weekly, safety): every reason for every operation (so
