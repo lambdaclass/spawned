@@ -549,20 +549,20 @@ Next == Act /\ GhostUpdate
 \* Loop work and deadlines only: no user cleanup is assumed to finish.
 CallerFairness ==
     /\ \A s \in Slots :
-         /\ WF_vars(GhostUpdate /\ LoopAdmit(s)) /\ WF_vars(GhostUpdate /\ RejectQueued(s)) /\ WF_vars(GhostUpdate /\ StartTimeout(s))
-         /\ WF_vars(GhostUpdate /\ AbortStart(s)) /\ WF_vars(GhostUpdate /\ CleanupStuck(s)) /\ WF_vars(GhostUpdate /\ Decide(s))
-         /\ WF_vars(GhostUpdate /\ BackoffFire(s)) /\ WF_vars(GhostUpdate /\ BackoffDone(s)) /\ WF_vars(GhostUpdate /\ CancelBackoff(s))
-    /\ \A c \in TermCalls : WF_vars(GhostUpdate /\ RejectQueuedTerm(c)) /\ WF_vars(GhostUpdate /\ LoopTerm(c)) /\ WF_vars(GhostUpdate /\ TermResolve(c))
-    /\ WF_vars(GhostUpdate /\ SupSignal) /\ WF_vars(GhostUpdate /\ SupSignalStep) /\ WF_vars(GhostUpdate /\ SupDone)
+         /\ WF_vars((LoopAdmit(s)) /\ GhostUpdate) /\ WF_vars((RejectQueued(s)) /\ GhostUpdate) /\ WF_vars((StartTimeout(s)) /\ GhostUpdate)
+         /\ WF_vars((AbortStart(s)) /\ GhostUpdate) /\ WF_vars((CleanupStuck(s)) /\ GhostUpdate) /\ WF_vars((Decide(s)) /\ GhostUpdate)
+         /\ WF_vars((BackoffFire(s)) /\ GhostUpdate) /\ WF_vars((BackoffDone(s)) /\ GhostUpdate) /\ WF_vars((CancelBackoff(s)) /\ GhostUpdate)
+    /\ \A c \in TermCalls : WF_vars((RejectQueuedTerm(c)) /\ GhostUpdate) /\ WF_vars((LoopTerm(c)) /\ GhostUpdate) /\ WF_vars((TermResolve(c)) /\ GhostUpdate)
+    /\ WF_vars((SupSignal) /\ GhostUpdate) /\ WF_vars((SupSignalStep) /\ GhostUpdate) /\ WF_vars((SupDone) /\ GhostUpdate)
 
 \* Plus progress of children and cleanup.
 Fairness ==
     /\ CallerFairness
     /\ \A s \in Slots :
-         /\ WF_vars(GhostUpdate /\ Ready(s))
-         /\ WF_vars(GhostUpdate /\ \E r \in {"Shutdown", "Killed"} : StopObserved(s, r))
-         /\ WF_vars(GhostUpdate /\ \E f \in CleanupFails : CleanupDone(s, f))
-         /\ WF_vars(GhostUpdate /\ StuckDone(s))
+         /\ WF_vars((Ready(s)) /\ GhostUpdate)
+         /\ WF_vars((\E r \in {"Shutdown", "Killed"} : StopObserved(s, r)) /\ GhostUpdate)
+         /\ WF_vars((\E f \in CleanupFails : CleanupDone(s, f)) /\ GhostUpdate)
+         /\ WF_vars((StuckDone(s)) /\ GhostUpdate)
 
 Spec       == Init /\ [][Next]_vars /\ Fairness
 CallerSpec == Init /\ [][Next]_vars /\ CallerFairness
