@@ -115,7 +115,7 @@ Status of each layer. "Planned" items are tracked in the
 | Spec and code | Trace validation | The implementation doing something the model forbids | Real OneForOne, cohort and nested traces plus invalid-trace and model-mutation controls |
 | Spec and code coverage | Trace coverage (`verification/tla/trace_coverage.py`) | Model actions, states and transitions no test ever reaches | Report on every PR (actions covered by the dedicated trace tests may not regress); whole test suite weekly. See [trace coverage](#trace-coverage) |
 | Primitives | Loom | Atomic and memory-ordering bugs in cancellation, ready gate and wakeups | In CI; expand to reply slots and mailbox publication versus shutdown |
-| Whole runtime, deterministic | Simulation backend for `spawned-rt::tasks` (random, PCT, bounded DFS) | Async races, replayed from a seed with virtual time | In review (PRs #212, #214, #218) |
+| Whole runtime, deterministic | Simulation backend for `spawned-rt::tasks` (random, PCT, bounded DFS) | Async races, replayed from a seed with virtual time | In CI (`sim` job, [simulated suites in CI](#simulated-suites-in-ci)) |
 | Resource stability | Soak tests | Memory, file descriptors, threads, tasks and registry entries growing over hours of actor churn and restarts | Planned |
 | Behaviour drift | Behaviour snapshots | Silent changes to lifecycle traces, shutdown reports and exit reasons in about 30 standard scenarios | Planned |
 | Model-derived tests | Tests generated from the TLA+ models | Interesting model states (a crash during backoff while shutdown starts, a restart racing a deadline) that no hand-written test reaches | Planned, after trace coverage |
@@ -402,6 +402,29 @@ build.
 RUSTFLAGS="--cfg spawned_sim --cfg tokio_unstable" CARGO_TARGET_DIR=target/sim \
   cargo test -p spawned-concurrency --test supervision --test sim
 ```
+
+### Simulated suites in CI
+
+The `sim` job in `.github/workflows/ci.yml` builds with the cfg and runs
+every integration test of `spawned-concurrency` and `spawned-rt`, plus
+`spawned-rt`'s unit tests (the executor itself), through
+`scripts/run-sim-tests.py`: one test per process (`--exact`), four processes
+at a time, each killed after 120 s, so one wedged schedule fails that test
+instead of hanging the binary. Failing seeds leave their decision tapes in the
+`sim-tapes` artifact. The run takes under a minute after the build; the
+seed counts are the defaults (8 per `sim_test`, 200 for the `sim.rs`
+sweeps). Larger sweeps (`SPAWNED_SIM_SEEDS`, `SPAWNED_SIM_ITERATIONS`, the
+ignored `explore_budget_table`) stay manual. Same run locally:
+
+```sh
+RUSTFLAGS="--cfg spawned_sim --cfg tokio_unstable" CARGO_TARGET_DIR=target/sim \
+  python3 scripts/run-sim-tests.py -p spawned-concurrency -p spawned-rt:lib --jobs 4 --timeout 120
+```
+
+`spawned-concurrency`'s own unit tests (`--lib`) are not simulated suites:
+many build real multi-thread runtimes, Blocking or Thread backends, or drop
+runtimes mid-run, which the simulator does not model; their `sim_test`s also
+run in the normal build.
 
 ### Exploration strategies (`sim::explore`)
 
