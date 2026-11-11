@@ -155,7 +155,7 @@ The fuller rationale is archived in the
 
 ```sh
 python3 scripts/check-api.py features
-python3 scripts/check-api.py semver --baseline v0.6.0
+python3 scripts/check-api.py semver   # baseline and release type from verification/api/release.json
 ```
 
 Install cargo-hack 0.6.46 for the first command. CI pins cargo-semver-checks
