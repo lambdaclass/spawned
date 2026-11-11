@@ -383,6 +383,72 @@ mod tasks_mode {
         assert_eq!(dead.child_handle().exit_reason(), Some(ExitReason::Normal));
     }
 
+    // E3 with decision 2: supervisor shutdown is the parent's exit signal.
+    // A non-trapping child ends Shutdown without stopped(); a trapping child
+    // runs stopped(); a child that does not reach its death point within
+    // shutdown_timeout is killed.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn supervisor_shutdown_is_the_parents_exit_signal() {
+        use spawned_concurrency::supervision::{ChildSpec, SupervisorConfig};
+        use spawned_concurrency::system::ActorSystem;
+        let system = ActorSystem::new().unwrap();
+        let group = system.async_group("e3", 1).unwrap();
+        let (plain_seen, trap_seen, stuck_seen) =
+            (Seen::default(), Seen::default(), Seen::default());
+        let (entered_tx, entered) = tokio::sync::oneshot::channel();
+        let (hold, hold_rx) = tokio::sync::oneshot::channel::<()>();
+        let stuck_args = Arc::new(Mutex::new(Some((entered_tx, hold_rx))));
+        let mut tree = system.supervisor(SupervisorConfig::default()).unwrap();
+        let (p, t, k) = (plain_seen.clone(), trap_seen.clone(), stuck_seen.clone());
+        let plain = tree
+            .add(ChildSpec::new("plain", &group, move |_| {
+                let seen = p.clone();
+                async move { Ok::<_, String>(Node::new(&seen, false)) }
+            }))
+            .unwrap();
+        let trapping = tree
+            .add(ChildSpec::new("trapping", &group, move |_| {
+                let seen = t.clone();
+                async move { Ok::<_, String>(Node::new(&seen, true)) }
+            }))
+            .unwrap();
+        let stuck = tree
+            .add(
+                ChildSpec::new("stuck", &group, move |_| {
+                    let seen = k.clone();
+                    let gate = stuck_args.lock().unwrap().take().unwrap();
+                    async move {
+                        let mut node = Node::new(&seen, true);
+                        node.in_stopped = Some(gate);
+                        Ok::<_, String>(node)
+                    }
+                })
+                .shutdown_timeout(Duration::from_millis(50)),
+            )
+            .unwrap();
+        let supervisor = tree.start().await.unwrap();
+        let (plain, trapping, stuck) = (
+            plain.current().unwrap().child_handle(),
+            trapping.current().unwrap().child_handle(),
+            stuck.current().unwrap().child_handle(),
+        );
+        let shutdown = tokio::spawn(async move { supervisor.shutdown(LIMIT).await.complete });
+        entered.await.unwrap();
+        // The stuck stopped() outlives shutdown_timeout (50 ms): the kill
+        // lands while it runs; Rust cannot interrupt it, so release it after.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        drop(hold);
+        assert!(shutdown.await.unwrap());
+        assert_eq!(ended(&plain).await, ExitReason::Shutdown);
+        assert!(!plain_seen.stopped(), "a non-trapping child ran stopped()");
+        assert_eq!(ended(&trapping).await, ExitReason::Shutdown);
+        assert!(trap_seen.stopped());
+        assert!(trap_seen.exits().is_empty(), "the parent exit reached exit_received");
+        assert_eq!(ended(&stuck).await, ExitReason::Killed);
+        assert!(stuck_seen.stopped());
+        assert!(system.shutdown(LIMIT).await.complete);
+    }
+
     pub struct Parent {
         pub child: Option<ActorRef<Node>>,
         pub child_seen: Seen,
