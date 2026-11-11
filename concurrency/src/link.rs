@@ -3,7 +3,7 @@ use crate::error::{ActorError, ExitReason};
 use crate::lifecycle_trace as trace;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Mutex};
 
 // ---------------------------------------------------------------------------
 // Exit message
@@ -307,41 +307,11 @@ fn apply_signal(
     }
 }
 
-/// An entry in an actor's link table, representing one linked peer.
-pub(crate) struct LinkEntry {
-    /// The peer's unique actor ID.
-    pub peer_id: ActorId,
-    /// Edge generation: both records of one link share it; a late record has
-    /// its own. Delivery applies only to a record with this generation.
-    pub gen: u64,
-    /// The peer, to deliver this actor's death notice to it.
-    pub peer: Arc<SignalTarget>,
-    /// Reference to the peer's link table, for receiver-side delivery.
-    pub peer_links: Weak<Mutex<LinkState>>,
-    /// A pending late `NoProc` notice (the peer was past D at `link`).
-    pub late: bool,
+mod sync {
+    pub(crate) use std::sync::{Arc, Mutex, MutexGuard, Weak};
 }
-
-/// An actor's exit table: its link records and its death point.
-#[derive(Default)]
-pub(crate) struct LinkState {
-    entries: Vec<LinkEntry>,
-    // Set at the death point D under the same mutex as registration.
-    exited: Option<ExitReason>,
-}
-pub(crate) type LinkTable = Arc<Mutex<LinkState>>;
-
-impl LinkState {
-    /// Past the death point D.
-    pub(crate) fn is_dead(&self) -> bool {
-        self.exited.is_some()
-    }
-}
-
-/// Create a new empty link table.
-pub(crate) fn new_link_table() -> LinkTable {
-    Arc::new(Mutex::new(LinkState::default()))
-}
+mod table;
+pub(crate) use table::{new_link_table, LinkNotices, LinkOutcome, LinkTable};
 
 /// Create a new trap_exit flag (default: false).
 pub(crate) fn new_trap_exit_flag() -> TrapExitFlag {
@@ -349,35 +319,6 @@ pub(crate) fn new_trap_exit_flag() -> TrapExitFlag {
 }
 
 static NEXT_EDGE: AtomicU64 = AtomicU64::new(1);
-
-/// Mutate both ends in one transaction. Callbacks and removed entries are
-/// handled after releasing both locks. Pointer order is stable while Arcs live.
-fn with_pair<R>(
-    own: &LinkTable,
-    peer: &LinkTable,
-    f: impl FnOnce(&mut LinkState, &mut LinkState) -> R,
-) -> R {
-    if Arc::as_ptr(own) < Arc::as_ptr(peer) {
-        let mut a = own.lock().unwrap_or_else(|p| p.into_inner());
-        let mut b = peer.lock().unwrap_or_else(|p| p.into_inner());
-        f(&mut a, &mut b)
-    } else {
-        let mut b = peer.lock().unwrap_or_else(|p| p.into_inner());
-        let mut a = own.lock().unwrap_or_else(|p| p.into_inner());
-        f(&mut a, &mut b)
-    }
-}
-
-/// The outcome of a link attempt.
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) enum LinkOutcome {
-    Linked,
-    /// Nothing to do: self link, an existing record, or the caller's exit
-    /// began (inert, as `monitor`).
-    Unchanged,
-    /// The peer was past D.
-    NoProc,
-}
 
 /// Link `own` and `peer` (OTP `link/1`). An existing record (live or
 /// pending) makes it a no-op. Past the peer's D, `try_only` returns
@@ -415,38 +356,7 @@ fn link_in_section(
     }
     fail_point!("link.before_install");
     let gen = NEXT_EDGE.fetch_add(1, Ordering::Relaxed);
-    let outcome = with_pair(own_links, peer_links, |a, b| {
-        if a.exited.is_some() || a.entries.iter().any(|e| e.peer_id == peer.id) {
-            return LinkOutcome::Unchanged;
-        }
-        if b.exited.is_some() {
-            if !try_only {
-                a.entries.push(LinkEntry {
-                    peer_id: peer.id,
-                    gen,
-                    peer: peer.clone(),
-                    peer_links: Arc::downgrade(peer_links),
-                    late: true,
-                });
-            }
-            return LinkOutcome::NoProc;
-        }
-        a.entries.push(LinkEntry {
-            peer_id: peer.id,
-            gen,
-            peer: peer.clone(),
-            peer_links: Arc::downgrade(peer_links),
-            late: false,
-        });
-        b.entries.push(LinkEntry {
-            peer_id: own.id,
-            gen,
-            peer: own.clone(),
-            peer_links: Arc::downgrade(own_links),
-            late: false,
-        });
-        LinkOutcome::Linked
-    });
+    let outcome = table::install(own, own_links, peer, peer_links, gen, try_only);
     if outcome != LinkOutcome::Unchanged {
         trace::life_emit(own.id.raw(), || {
             trace::LifeEvent::new("Link", own.id.raw())
@@ -464,14 +374,6 @@ fn link_in_section(
     outcome
 }
 
-fn remove(table: &mut LinkState, id: ActorId) -> Option<LinkEntry> {
-    table
-        .entries
-        .iter()
-        .position(|e| e.peer_id == id)
-        .map(|i| table.entries.swap_remove(i))
-}
-
 /// Unlink removes both records, live or pending: once it returns, no notice
 /// of that edge takes effect (E6). An `Exit` already queued stays.
 pub(crate) fn unregister_link(
@@ -484,7 +386,7 @@ pub(crate) fn unregister_link(
         return;
     }
     let removed = trace::life_section(own_id.raw(), || {
-        let removed = with_pair(own, peer, |a, b| (remove(a, peer_id), remove(b, own_id)));
+        let removed = table::remove_pair(own_id, own, peer_id, peer);
         if removed.0.is_some() || removed.1.is_some() {
             trace::life_emit(own_id.raw(), || {
                 trace::LifeEvent::new("Unlink", own_id.raw()).s(peer_id.raw())
@@ -517,59 +419,33 @@ fn deliver_notice_in_section(
     gen: u64,
     reason: ExitReason,
 ) {
-    let mut table = receiver_links.lock().unwrap_or_else(|p| p.into_inner());
-    let Some(i) = table
-        .entries
-        .iter()
-        .position(|e| e.peer_id == from && e.gen == gen)
-    else {
-        return;
-    };
-    let record = table.entries.swap_remove(i);
-    trace::life_emit(receiver.id.raw(), || {
-        trace::LifeEvent::new("Deliver", receiver.id.raw())
-            .s(from.raw())
-            .x(trace::life_reason(&reason))
-            .k("link")
-            .o(if record.late { "late" } else { "death" })
-    });
-    // One failing internal callback must not prevent other peers from being
-    // notified, or panic again during actor-future destruction.
-    if let Err(payload) = catch_unwind(AssertUnwindSafe(|| {
-        deliver_signal(receiver, from, reason, Origin::Link, false)
-    })) {
-        crate::mailbox::dispose_panic(payload);
-        crate::actor_cleanup::log_safely(|| {
-            tracing::error!("Panic while delivering a linked exit");
+    let record = table::take_record(receiver_links, from, gen, |record| {
+        trace::life_emit(receiver.id.raw(), || {
+            trace::LifeEvent::new("Deliver", receiver.id.raw())
+                .s(from.raw())
+                .x(trace::life_reason(&reason))
+                .k("link")
+                .o(if record.late { "late" } else { "death" })
         });
-    }
-    drop(table);
+        // One failing internal callback must not prevent other peers from
+        // being notified, or panic again during actor-future destruction.
+        if let Err(payload) = catch_unwind(AssertUnwindSafe(|| {
+            deliver_signal(receiver, from, reason, Origin::Link, false)
+        })) {
+            crate::mailbox::dispose_panic(payload);
+            crate::actor_cleanup::log_safely(|| {
+                tracing::error!("Panic while delivering a linked exit");
+            });
+        }
+    });
     drop(record);
-}
-
-/// Death notices taken at D, delivered at publication.
-#[derive(Default)]
-pub(crate) struct LinkNotices {
-    from: Option<ActorId>,
-    reason: Option<ExitReason>,
-    entries: Vec<LinkEntry>,
 }
 
 impl LinkNotices {
     /// Deliver every notice (publication). Each is applied only if the
     /// receiver still holds the record (E6 fence).
     pub(crate) fn deliver(self) {
-        let (Some(from), Some(reason)) = (self.from, self.reason) else {
-            return;
-        };
-        for entry in self.entries {
-            if entry.late {
-                continue;
-            }
-            if let Some(peer_links) = entry.peer_links.upgrade() {
-                deliver_notice(&peer_links, &entry.peer, from, entry.gen, reason.clone());
-            }
-        }
+        self.deliver_with(deliver_notice);
     }
 }
 
@@ -590,17 +466,7 @@ pub(crate) fn close_links_at_death(
     reason: &ExitReason,
     at_death: impl FnOnce(&ExitReason),
 ) -> LinkNotices {
-    let mut state = own.lock().unwrap_or_else(|p| p.into_inner());
-    if state.exited.is_some() {
-        return LinkNotices::default();
-    }
-    at_death(reason);
-    state.exited = Some(reason.clone());
-    LinkNotices {
-        from: Some(own_id),
-        reason: Some(reason.clone()),
-        entries: std::mem::take(&mut state.entries),
-    }
+    table::close(own_id, own, reason, at_death)
 }
 
 /// Close and deliver at once (tests and paths with nothing in between).

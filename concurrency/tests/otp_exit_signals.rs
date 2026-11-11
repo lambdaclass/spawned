@@ -820,6 +820,10 @@ mod tasks_mode {
                 let seen = Seen::default();
                 let killed = Node::new(&seen, true).start();
                 settle(&killed).await;
+                // Another test thread may have been registering the
+                // `stopped_skipped` callsite while `set_default` rebuilt the
+                // interest cache, leaving it cached as "never".
+                tracing::callsite::rebuild_interest_cache();
                 killed.child_handle().kill();
                 assert_eq!(ended(&killed.child_handle()).await, ExitReason::Killed);
                 let signalled = Node::new(&seen, false).start();

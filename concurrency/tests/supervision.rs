@@ -437,6 +437,9 @@ async fn stuck_stopped_hook_triggers_cleanup_deadline_before_terminal_publicatio
     let report = system.shutdown(Duration::from_millis(5)).await;
     assert!(!report.complete);
     assert!(report.unfinished_actors.contains(&old.id()));
+    // Let the system's kill at grace land before releasing stopped(): the
+    // report can return before the kill reaches the actor under load.
+    spawned_rt::tasks::sleep(Duration::from_millis(100)).await;
     release.send(()).unwrap();
     let report = report.wait(LIMIT).await;
     assert!(report.complete);

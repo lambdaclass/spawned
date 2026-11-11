@@ -55,18 +55,20 @@ impl Message for Down {
     type Result = ();
 }
 
+mod sync {
+    pub(crate) use std::sync::{Mutex, MutexGuard};
+}
+pub(crate) mod fence;
+
 /// Each monitor owns a cancellation token that wakes its waiter immediately.
-pub(crate) type MonitorTable = std::sync::Arc<
-    std::sync::Mutex<
-        Option<std::collections::HashMap<MonitorRef, spawned_rt::sync::CancellationToken>>,
-    >,
->;
+pub(crate) type MonitorTable =
+    std::sync::Arc<fence::Entries<MonitorRef, spawned_rt::sync::CancellationToken>>;
 
 /// Release outgoing monitors on every actor exit path, including unwinding.
 pub(crate) struct MonitorCleanup(pub MonitorTable);
 impl Drop for MonitorCleanup {
     fn drop(&mut self) {
-        let monitors = self.0.lock().unwrap_or_else(|p| p.into_inner()).take();
+        let monitors = fence::close(&self.0);
         if let Some(monitors) = monitors {
             // HashMap order is per-process random; under simulation, wake
             // waiters in monitor-creation order so the schedule is seeded.
@@ -84,9 +86,7 @@ impl Drop for MonitorCleanup {
 pub(crate) struct MonitorRegistration(pub MonitorTable, pub MonitorRef);
 impl Drop for MonitorRegistration {
     fn drop(&mut self) {
-        if let Some(entries) = self.0.lock().unwrap_or_else(|p| p.into_inner()).as_mut() {
-            entries.remove(&self.1);
-        }
+        drop(fence::remove(&self.0, &self.1, || {}));
     }
 }
 

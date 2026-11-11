@@ -655,47 +655,42 @@ impl<A: Actor> Context<A> {
 
         let observer = self.shared.id.raw();
         let registered = crate::lifecycle_trace::life_section(observer, || {
-            let mut monitors = self
-                .shared
-                .monitors
-                .lock()
-                .unwrap_or_else(|p| p.into_inner());
-            // The token check makes registration inert once shutdown starts.
-            // The closed table below serializes registration with exit cleanup,
-            // even on paths that unwind before cancelling the owner token.
-            if self.shared.cancellation_token.is_cancelled() {
-                return false;
-            }
-            let Some(monitors) = monitors.as_mut() else {
-                return false;
-            };
             let event = |x| {
                 crate::lifecycle_trace::LifeEvent::new("Monitor", observer)
                     .s(target.id().raw())
                     .m(monitor_ref.raw())
                     .x(x)
             };
-            // Linearised against the target's death point (E4): past it the
-            // only notice is NoProc, delivered under the observer's lock.
-            if target.is_past_death() {
-                crate::lifecycle_trace::life_emit(observer, || event("late"));
-                crate::lifecycle_trace::life_emit(observer, || {
-                    crate::lifecycle_trace::LifeEvent::new("Deliver", observer)
-                        .s(target.id().raw())
-                        .m(monitor_ref.raw())
-                        .x("NoProc")
-                        .k("down")
-                        .o("late")
-                });
-                let _ = self.send(Down {
-                    monitor_ref,
-                    reason: ExitReason::NoProc,
-                });
-                return false;
-            }
-            monitors.insert(monitor_ref, active.clone());
-            crate::lifecycle_trace::life_emit(observer, || event("active"));
-            true
+            crate::monitor::fence::register(
+                &self.shared.monitors,
+                monitor_ref,
+                active.clone(),
+                // The token check makes registration inert once shutdown
+                // starts. The closed table serializes registration with exit
+                // cleanup, even on paths that unwind before cancelling the
+                // owner token.
+                || self.shared.cancellation_token.is_cancelled(),
+                // Linearised against the target's death point (E4): past it
+                // the only notice is NoProc, delivered under the observer's
+                // lock.
+                || target.is_past_death(),
+                || {
+                    crate::lifecycle_trace::life_emit(observer, || event("late"));
+                    crate::lifecycle_trace::life_emit(observer, || {
+                        crate::lifecycle_trace::LifeEvent::new("Deliver", observer)
+                            .s(target.id().raw())
+                            .m(monitor_ref.raw())
+                            .x("NoProc")
+                            .k("down")
+                            .o("late")
+                    });
+                    let _ = self.send(Down {
+                        monitor_ref,
+                        reason: ExitReason::NoProc,
+                    });
+                },
+                || crate::lifecycle_trace::life_emit(observer, || event("active")),
+            ) == crate::monitor::fence::Registration::Active
         });
         if !registered {
             return monitor_ref;
@@ -721,12 +716,7 @@ impl<A: Actor> Context<A> {
             // enqueued in one critical section, so once `demonitor` returns
             // no Down of this monitor is enqueued.
             crate::lifecycle_trace::life_section(observer, || {
-                let mut entries = monitors.lock().unwrap_or_else(|p| p.into_inner());
-                if entries
-                    .as_mut()
-                    .and_then(|entries| entries.remove(&monitor_ref))
-                    .is_some()
-                {
+                crate::monitor::fence::deliver(&monitors, &monitor_ref, || {
                     crate::lifecycle_trace::life_emit(observer, || {
                         crate::lifecycle_trace::LifeEvent::new("Deliver", observer)
                             .s(target.id().raw())
@@ -739,8 +729,7 @@ impl<A: Actor> Context<A> {
                         monitor_ref,
                         reason,
                     });
-                }
-                drop(entries);
+                });
             });
         });
 
@@ -754,20 +743,12 @@ impl<A: Actor> Context<A> {
     pub fn demonitor(&self, monitor_ref: MonitorRef) {
         let observer = self.shared.id.raw();
         let active = crate::lifecycle_trace::life_section(observer, || {
-            let active = self
-                .shared
-                .monitors
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .as_mut()
-                .and_then(|entries| entries.remove(&monitor_ref));
-            if active.is_some() {
+            crate::monitor::fence::remove(&self.shared.monitors, &monitor_ref, || {
                 crate::lifecycle_trace::life_emit(observer, || {
                     crate::lifecycle_trace::LifeEvent::new("Demonitor", observer)
                         .m(monitor_ref.raw())
                 });
-            }
-            active
+            })
         });
         // Waking the waiter must happen after releasing the table lock.
         if let Some(active) = active {
