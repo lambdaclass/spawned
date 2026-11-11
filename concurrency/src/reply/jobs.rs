@@ -448,10 +448,9 @@ impl JobSet {
     /// A job's execution ended.
     pub(crate) fn ended(&self, state: &Arc<JobState>) {
         state.finished();
-        {
-            let mut keys = lock(&self.keys);
-            keys.retain(|_, current| !Arc::ptr_eq(current, state));
-        }
+        // The key keeps its finished job until replaced: a replacement must
+        // still cancel it, so its queued terminal message and emits are
+        // fenced (`NoStaleKeyed`). The map holds one job per key.
         let idle = {
             let mut running = lock(&self.running);
             *running -= 1;
@@ -537,7 +536,8 @@ pub(crate) struct JobCredit(Option<Arc<CreditPool>>);
 impl JobCredit {
     pub(crate) fn reserve(registry: &Registry) -> Option<Self> {
         let pool = registry.pool().clone();
-        pool.reserve(1).then_some(Self(Some(pool)))
+        // `then`, not `then_some`: the guard must exist only when reserved.
+        pool.reserve(1).then(|| Self(Some(pool)))
     }
 }
 

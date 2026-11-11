@@ -58,7 +58,7 @@ where
         // The credit returns at dispatch (or here, when fenced).
         drop(credit);
         if fenced {
-            drop(msg);
+            ctx.shared.sender.failures().discard(msg);
             return Box::pin(async {});
         }
         Box::pin(actor.handle(msg, PendingReply::detached(), ctx))
@@ -91,14 +91,19 @@ where
         ctx: &'a Context<A>,
     ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
         let TerminalEnvelope { job, done, outcome } = *self;
-        if job.is_cancelled() || job.owner() != ctx.id() {
-            // Fenced: `done` and its captures (a linked token) drop in the
-            // turn, by the drop rules.
-            drop((done, outcome));
-            return Box::pin(async {});
-        }
-        let msg = done(outcome);
-        Box::pin(actor.handle(msg, PendingReply::detached(), ctx))
+        // Everything runs inside the returned future, so a panicking `done`
+        // is a handler panic caught by the run loop (`stopped()`, turn end
+        // and job cancellation still run).
+        Box::pin(async move {
+            if job.is_cancelled() || job.owner() != ctx.id() {
+                // Fenced: `done` and its captures (a linked token) are
+                // discarded in the turn, through the mailbox drop path.
+                ctx.shared.sender.failures().discard((done, outcome));
+                return;
+            }
+            let msg = done(outcome);
+            actor.handle(msg, PendingReply::detached(), ctx).await
+        })
     }
 }
 

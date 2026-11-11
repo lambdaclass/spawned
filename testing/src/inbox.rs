@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+use spawned_concurrency::message::Message;
 //! Shared message log behind mocks and probes: blocking and async waiters.
 use std::any::{Any, TypeId};
 use std::panic::Location;
@@ -114,6 +116,8 @@ impl Drop for Pending {
 
 #[derive(Default)]
 pub(crate) struct Inbox {
+    /// Deferred reply tokens by message type (`Mock::defer`).
+    deferred: Mutex<HashMap<std::any::TypeId, Vec<Box<dyn std::any::Any + Send>>>>,
     entries: Mutex<Vec<Entry>>,
     arrived: Condvar,
     #[cfg(feature = "async")]
@@ -130,6 +134,26 @@ impl Default for AsyncSignal {
 }
 
 impl Inbox {
+    pub(crate) fn store_deferred<M: Message>(&self, token: spawned_concurrency::reply::ReplyTo<M::Result>) {
+        self.deferred
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .entry(std::any::TypeId::of::<M>())
+            .or_default()
+            .push(Box::new(token));
+    }
+    pub(crate) fn take_deferred<M: Message>(&self) -> Vec<spawned_concurrency::reply::ReplyTo<M::Result>> {
+        let tokens = self
+            .deferred
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&std::any::TypeId::of::<M>())
+            .unwrap_or_default();
+        tokens
+            .into_iter()
+            .filter_map(|t| t.downcast().ok().map(|t| *t))
+            .collect()
+    }
     fn lock(&self) -> MutexGuard<'_, Vec<Entry>> {
         self.entries.lock().unwrap_or_else(|p| p.into_inner())
     }

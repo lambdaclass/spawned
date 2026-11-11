@@ -49,7 +49,7 @@ where
         // The credit returns at dispatch (or here, when fenced).
         drop(credit);
         if fenced {
-            drop(msg);
+            ctx.sender.failures().discard(msg);
             return;
         }
         actor.handle(msg, PendingReply::detached(), ctx);
@@ -77,7 +77,7 @@ where
         if job.is_cancelled() || job.owner() != ctx.id() {
             // Fenced: `done` and its captures (a linked token) drop in the
             // turn, by the drop rules.
-            drop((done, outcome));
+            ctx.sender.failures().discard((done, outcome));
             return;
         }
         let msg = done(outcome);

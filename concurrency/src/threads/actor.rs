@@ -919,6 +919,8 @@ impl<A: Actor> ActorRef<A> {
             // ActorStopped), dispose the mailbox (queued requests answer
             // ActorStopped; later sends from state destructors fail), then drop
             // the state, all before the exit is published.
+            replies.exiting();
+            jobs.cancel_all();
             replies.close();
             drop(rx);
             let outcome = crate::actor_cleanup::finish_actor_state(actor, primary);
@@ -926,6 +928,8 @@ impl<A: Actor> ActorRef<A> {
                 Ok(reason) => cleanup.complete(reason),
                 Err(reason) => cleanup.complete_secondary(reason),
             }
+            // Publish the exit (monitors and links fire) before the job join.
+            drop(cleanup);
             // Job cleanup (§5 step 4), after death: join the cancelled jobs
             // that signal completion, bounded by the cleanup deadline.
             if jobs.running() > 0 {

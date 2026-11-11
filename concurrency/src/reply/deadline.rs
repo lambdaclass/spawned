@@ -52,10 +52,16 @@ impl Ord for Entry {
 }
 
 impl Entry {
-    fn is_live(&self) -> bool {
-        self.item
-            .upgrade()
-            .is_some_and(|item| item.pending_deadline() == Some(self.at))
+    /// Live: the item exists, is pending, and this is its current deadline.
+    /// The upgraded item is handed to `upgraded`, to be dropped by the caller
+    /// outside every lock (it may be the last strong reference).
+    fn is_live(&self, upgraded: &mut Vec<Arc<dyn Expirable>>) -> bool {
+        let Some(item) = self.item.upgrade() else {
+            return false;
+        };
+        let live = item.pending_deadline() == Some(self.at);
+        upgraded.push(item);
+        live
     }
 }
 
@@ -70,10 +76,17 @@ pub(crate) struct DeadlineHeap {
 }
 
 impl DeadlineHeap {
-    /// Add an entry. Returns whether it is the new earliest deadline.
-    pub(crate) fn push(&mut self, at: u64, item: Weak<dyn Expirable>) -> bool {
+    /// Add an entry. Returns whether it is the new earliest deadline, and
+    /// the items compaction upgraded (drop them outside the lock).
+    #[must_use]
+    pub(crate) fn push(
+        &mut self,
+        at: u64,
+        item: Weak<dyn Expirable>,
+    ) -> (bool, Vec<Arc<dyn Expirable>>) {
+        let mut upgraded = Vec::new();
         if self.heap.len() >= 2 * self.live_at_rebuild + 16 {
-            self.compact();
+            self.compact(&mut upgraded);
         }
         self.seq += 1;
         let earliest = self.earliest().is_none_or(|e| at < e);
@@ -82,7 +95,7 @@ impl DeadlineHeap {
             seq: self.seq,
             item,
         }));
-        earliest
+        (earliest, upgraded)
     }
 
     pub(crate) fn earliest(&self) -> Option<u64> {
@@ -95,11 +108,11 @@ impl DeadlineHeap {
     }
 
     /// Rebuild without stale entries.
-    fn compact(&mut self) {
+    fn compact(&mut self, upgraded: &mut Vec<Arc<dyn Expirable>>) {
         let entries = std::mem::take(&mut self.heap).into_vec();
         self.heap = entries
             .into_iter()
-            .filter(|Reverse(e)| e.is_live())
+            .filter(|Reverse(e)| e.is_live(upgraded))
             .collect();
         self.live_at_rebuild = self.heap.len();
     }
@@ -128,6 +141,12 @@ impl DeadlineHeap {
 // ---------------------------------------------------------------------------
 // Service
 // ---------------------------------------------------------------------------
+
+/// The owner died: the service forgets it (its heap is gone).
+pub(crate) fn forget(_registry: &Registry) {
+    #[cfg(not(all(spawned_sim, feature = "async")))]
+    thread_service::forget(_registry.key());
+}
 
 /// Ask the service to visit `registry` at `at`.
 pub(crate) fn schedule(registry: &Arc<Registry>, at: u64) {
@@ -175,8 +194,19 @@ mod thread_service {
         })
     }
 
+    pub(super) fn forget(key: u64) {
+        let Some(service) = SERVICE_REF.get() else {
+            return;
+        };
+        let forgotten = lock(service).actors.remove(&key);
+        drop(forgotten);
+    }
+
+    static SERVICE_REF: OnceLock<&'static Service> = OnceLock::new();
+
     pub(super) fn schedule(registry: &Arc<Registry>, at: u64) {
         let service = service();
+        let _ = SERVICE_REF.set(service);
         let key = registry.key();
         let mut state = lock(service);
         match state.actors.get(&key) {

@@ -101,6 +101,7 @@ impl<M: Message> Handler<M> for Mock {
         _: &Context<Self>,
     ) -> impl Future<Output = ()> + Send {
         let plan = self.rules.plan(&self.inbox, msg);
+        let inbox = self.inbox.clone();
         async move {
             match plan {
                 Plan::Reply {
@@ -115,6 +116,11 @@ impl<M: Message> Handler<M> for Mock {
                         record.finish();
                     }
                     reply.reply(value);
+                }
+                Plan::Defer => {
+                    if let Ok(token) = reply.defer() {
+                        inbox.store_deferred::<M>(token);
+                    }
                 }
                 Plan::Crash(reason) => panic!("{reason}"),
             }

@@ -8,6 +8,14 @@
 /// Builder methods of `Mock`, except `delay` and `start`.
 macro_rules! mock_builder {
     () => {
+        /// Defer every `M` request: the mock takes its reply obligation
+        /// (`PendingReply::defer`) and stores the token; take it with
+        /// `MockRef::deferred` to reply later, drop it, or never reply.
+        pub fn defer<M: Message>(mut self) -> Self {
+            self.rules.defer::<M>();
+            self
+        }
+
         /// A strict mock: every message type needs a rule.
         ///
         /// The receive log keeps one entry per message for the mock's
@@ -115,6 +123,13 @@ macro_rules! mock_ref_common {
             /// How many `M` were received so far, including expected ones.
             pub fn count<M: Message>(&self) -> usize {
                 self.inbox.count::<M>()
+            }
+
+            /// Take the reply tokens of the `M` requests the mock deferred
+            /// (`Mock::defer`), oldest first: reply later, drop them
+            /// (`ReplyDropped`), or keep them unanswered.
+            pub fn deferred<M: Message>(&self) -> Vec<spawned_concurrency::reply::ReplyTo<M::Result>> {
+                self.inbox.take_deferred::<M>()
             }
 
             /// Take every not-yet-expected `M`, oldest first.

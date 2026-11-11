@@ -128,13 +128,32 @@ impl Registry {
     pub(crate) fn register<R: Send + 'static>(&self, slot: &Arc<Slot<R>>) {
         let weak: Weak<dyn Closeable> = Arc::downgrade(slot) as Weak<dyn Closeable>;
         let mut lists = lock(&self.lists);
-        if lists.tokens.len() >= lists.prune_at {
-            lists
-                .tokens
-                .retain(|t| t.upgrade().is_some_and(|s| !s.is_terminal()));
-            lists.prune_at = (lists.tokens.len() * 2).max(16);
+        if lists.tokens.len() < lists.prune_at {
+            lists.tokens.push(weak);
+            return;
         }
+        // Prune outside the lock: a temporary upgrade can become a slot's
+        // last strong reference, and dropping it drops an unread reply (user
+        // code, which may itself drop a token of this owner).
+        let listed = std::mem::take(&mut lists.tokens);
+        drop(lists);
+        let mut keep = Vec::with_capacity(listed.len());
+        let mut upgraded = Vec::new();
+        for token in listed {
+            if let Some(slot) = token.upgrade() {
+                if !slot.is_terminal() {
+                    keep.push(token);
+                }
+                upgraded.push(slot);
+            }
+        }
+        let mut lists = lock(&self.lists);
+        keep.append(&mut lists.tokens);
+        lists.prune_at = (keep.len() * 2).max(16);
+        lists.tokens = keep;
         lists.tokens.push(weak);
+        drop(lists);
+        drop(upgraded);
     }
 
     #[cfg_attr(all(spawned_sim, feature = "async"), allow(dead_code))]
@@ -164,13 +183,15 @@ impl Registry {
 
     /// Add a heap entry; reschedule the service on a new earliest deadline.
     pub(crate) fn track(self: &Arc<Self>, at: u64, item: Weak<dyn Expirable>) {
-        let earliest = {
+        let (earliest, upgraded) = {
             let mut lists = lock(&self.lists);
             if self.is_dead() {
                 return;
             }
             lists.deadlines.push(at, item)
         };
+        // Compaction's temporary upgrades are dropped outside the lock.
+        drop(upgraded);
         if earliest {
             deadline::schedule(self, at);
         }
@@ -307,8 +328,10 @@ impl Registry {
             .filter_map(|t| t.upgrade())
             .filter(|s| s.close())
             .count();
-        // The heap is dropped after the close (§5 step 3.4).
+        // The heap is dropped after the close (§5 step 3.4), and the service
+        // forgets this owner, so dead actors leave nothing behind.
         lock(&self.lists).deadlines.clear();
+        deadline::forget(self);
         #[cfg(all(spawned_sim, feature = "async"))]
         self.sim.wake();
         closed
@@ -407,5 +430,29 @@ mod tests {
         // Expire them all: the service visit empties the heap of due entries.
         assert_eq!(registry.service_deadlines(u64::MAX - 2), None);
         assert_eq!(registry.outstanding(), 0);
+    }
+}
+
+/// Closes the registry and cancels the jobs if the owner's lifecycle is
+/// dropped without completing (for example, its runtime was destroyed).
+/// Idempotent after a normal death.
+pub(crate) struct CloseOnDrop {
+    replies: Arc<Registry>,
+    jobs: Arc<super::jobs::JobSet>,
+}
+
+impl CloseOnDrop {
+    pub(crate) fn new(replies: Arc<Registry>, jobs: Arc<super::jobs::JobSet>) -> Self {
+        Self { replies, jobs }
+    }
+}
+
+impl Drop for CloseOnDrop {
+    fn drop(&mut self) {
+        if !self.replies.is_dead() {
+            self.replies.exiting();
+            self.jobs.cancel_all();
+            self.replies.close();
+        }
     }
 }

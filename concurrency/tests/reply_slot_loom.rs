@@ -126,12 +126,21 @@ fn reply_vs_shortening() {
             let (slot, clock) = (slot.clone(), clock.clone());
             loom::thread::spawn(move || slot.reply(1, &clock.now()))
         };
-        slot.shorten(3, &clock.now());
+        let lowered = slot.shorten(3, &clock.now());
         let (delivery, _) = replier.join().unwrap();
-        assert_eq!(slot.deadline(), 3);
+        // Linearization at the reply's WRITING CAS: a shortening after it is
+        // a no-op (the deadline stays), one before it is seen by the reply.
         match delivery {
-            Delivery::Delivered => assert_eq!(state(slot.word()), slot::REPLIED),
-            Delivery::Expired => assert_eq!(state(slot.word()), slot::TIMED_OUT),
+            Delivery::Delivered => {
+                assert_eq!(state(slot.word()), slot::REPLIED);
+                assert!(!lowered, "a shortening was applied but not seen by the reply");
+                assert_eq!(slot.deadline(), 100);
+            }
+            Delivery::Expired => {
+                assert_eq!(state(slot.word()), slot::TIMED_OUT);
+                assert!(lowered);
+                assert_eq!(slot.deadline(), 3);
+            }
             other => panic!("unexpected {other:?}"),
         }
         assert_balanced(&pool, &[&slot]);
@@ -416,7 +425,9 @@ fn abandon_vs_shorten_vs_expiry() {
         let slot = deferred(&pool, 100);
         let shortener = {
             let (slot, clock) = (slot.clone(), clock.clone());
-            loom::thread::spawn(move || slot.shorten(5, &clock.now()))
+            loom::thread::spawn(move || {
+                slot.shorten(5, &clock.now());
+            })
         };
         let abandoned = slot.abandon();
         shortener.join().unwrap();

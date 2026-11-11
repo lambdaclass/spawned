@@ -42,12 +42,15 @@ pub(crate) enum Plan<R> {
         record: Option<Pending>,
     },
     Crash(String),
+    /// `Mock::defer`: take the reply obligation and store it for the test.
+    Defer,
 }
 
 #[derive(Default)]
 pub(crate) struct Rules {
     by_type: HashMap<TypeId, Box<dyn Any + Send>>,
     allow_sends: bool,
+    deferred: std::collections::HashSet<TypeId>,
 }
 
 /// `Some(())` as `M::Result` when that type is `()`: lets one generic handler
@@ -81,6 +84,9 @@ impl Rules {
     pub(crate) fn crash_on<M: Message>(&mut self, reason: String) {
         self.rule::<M>().crash = Some(reason);
     }
+    pub(crate) fn defer<M: Message>(&mut self) {
+        self.deferred.insert(TypeId::of::<M>());
+    }
     pub(crate) fn allow_sends(&mut self) {
         self.allow_sends = true;
     }
@@ -100,6 +106,10 @@ impl Rules {
                 value: unit_result::<M>().expect("Fence replies with ()"),
                 record: None,
             };
+        }
+        if self.deferred.contains(&TypeId::of::<M>()) {
+            inbox.push(msg, Outcome::Handled);
+            return Plan::Defer;
         }
         let name = std::any::type_name::<M>();
         let allow_sends = self.allow_sends;

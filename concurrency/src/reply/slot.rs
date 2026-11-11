@@ -168,8 +168,9 @@ struct Inner<R> {
     value: Option<R>,
     /// The caller's receiver.
     waker: Option<Waker>,
-    /// The token holder waiting in `ReplyTo::closed()`.
-    watcher: Option<Waker>,
+    /// Token-side waiters: `ReplyTo::closed()` and caller-gone job
+    /// cancellation. Several may wait at once.
+    watchers: Vec<Waker>,
     /// The owner's pool, set by `defer()` before its CAS installs `TOKEN`.
     pool: Option<Arc<CreditPool>>,
     /// Threads parked in `recv_blocking`.
@@ -192,7 +193,7 @@ struct Wake {
     pool: Option<Arc<CreditPool>>,
     release: u64,
     waker: Option<Waker>,
-    watcher: Option<Waker>,
+    watchers: Vec<Waker>,
     notify: bool,
 }
 
@@ -204,7 +205,7 @@ impl Wake {
         if let Some(waker) = self.waker {
             waker.wake();
         }
-        if let Some(watcher) = self.watcher {
+        for watcher in self.watchers {
             watcher.wake();
         }
         if self.notify {
@@ -222,7 +223,7 @@ impl<R> Slot<R> {
             inner: Mutex::new(Inner {
                 value: None,
                 waker: None,
-                watcher: None,
+                watchers: Vec::new(),
                 pool: None,
                 parked: 0,
             }),
@@ -287,11 +288,16 @@ impl<R> Slot<R> {
                 pool: None,
                 release: 0,
                 waker: None,
-                watcher: None,
+                watchers: Vec::new(),
                 notify: false,
             };
         }
         let mut inner = lock(&self.inner);
+        Self::collect(&mut inner, release, terminal)
+    }
+
+    /// The wake-up work of a transition, taken under the slot lock.
+    fn collect(inner: &mut Inner<R>, release: u64, terminal: bool) -> Wake {
         Wake {
             pool: if release > 0 {
                 inner.pool.clone()
@@ -300,7 +306,11 @@ impl<R> Slot<R> {
             },
             release,
             waker: if terminal { inner.waker.take() } else { None },
-            watcher: if terminal { inner.watcher.take() } else { None },
+            watchers: if terminal {
+                std::mem::take(&mut inner.watchers)
+            } else {
+                Vec::new()
+            },
             notify: terminal && inner.parked > 0,
         }
     }
@@ -358,13 +368,24 @@ impl<R> Slot<R> {
     }
 
     /// `with_deadline(at)`: shorten only, then the `[deadline]` check.
-    pub(crate) fn shorten(&self, at: u64, now: &impl Fn() -> u64) {
-        let _ = self
-            .deadline
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |d| {
-                (at < d).then_some(at)
-            });
+    /// Returns whether the deadline was lowered.
+    ///
+    /// The reply's `WRITING` CAS is the linearization point: the reply reads
+    /// the deadline under the slot lock, and a shortening changes it only
+    /// under that lock and only while the word is `OPEN`. A shortening that
+    /// finds `WRITING` (or later) is a no-op; one that lowers the deadline is
+    /// seen by any reply that has not read it yet.
+    pub(crate) fn shorten(&self, at: u64, now: &impl Fn() -> u64) -> bool {
+        let lowered = {
+            let _inner = lock(&self.inner);
+            let lower = state(self.word()) == OPEN && at < self.deadline();
+            if lower {
+                self.deadline.store(at, Ordering::Release);
+            }
+            lower
+        };
         self.check_deadline(now);
+        lowered
     }
 
     /// `defer()`: `OPEN, TOKEN=0 -> OPEN, TOKEN=1, REG=1`, reserving the
@@ -460,31 +481,22 @@ impl<R> Slot<R> {
             };
             return (delivery, Some(value));
         }
+        // The deadline is read under the lock that shortening takes, so a
+        // shortening either precedes this read or finds `WRITING` and does
+        // nothing.
+        let mut inner = lock(&self.inner);
         let deadline = self.deadline();
-        if deadline != NEVER && now() >= deadline {
-            let (old, new) = self.resolve_writing(TIMED_OUT);
-            self.after(old, new).run(&self.parked);
-            return (Delivery::Expired, Some(value));
-        }
-        let wake = {
-            let mut inner = lock(&self.inner);
+        let (delivery, unsent, to) = if deadline != NEVER && now() >= deadline {
+            (Delivery::Expired, Some(value), TIMED_OUT)
+        } else {
             inner.value = Some(value);
-            let (old, new) = self.resolve_writing(REPLIED);
-            let release = credits(old).saturating_sub(credits(new));
-            Wake {
-                pool: if release > 0 {
-                    inner.pool.clone()
-                } else {
-                    None
-                },
-                release,
-                waker: inner.waker.take(),
-                watcher: inner.watcher.take(),
-                notify: inner.parked > 0,
-            }
+            (Delivery::Delivered, None, REPLIED)
         };
+        let (old, new) = self.resolve_writing(to);
+        let wake = Self::collect(&mut inner, credits(old).saturating_sub(credits(new)), true);
+        drop(inner);
         wake.run(&self.parked);
-        (Delivery::Delivered, None)
+        (delivery, unsent)
     }
 
     /// Receiver side: take the outcome of a terminal word. `Replied` with no
@@ -506,24 +518,30 @@ impl<R> Slot<R> {
     /// reads no clock.
     #[cfg_attr(not(feature = "async"), allow(dead_code))]
     pub(crate) fn poll(&self, waker: &Waker) -> Poll<Result<R, Terminal>> {
+        // `Waker::clone` and dropping a waker run executor code, so neither
+        // happens under the slot lock.
+        let mut fresh: Option<Waker> = None;
         loop {
             if let Some(result) = self.take(state(self.word())) {
                 return Poll::Ready(result);
             }
             let mut inner = lock(&self.inner);
-            let w = self.word();
-            if !live(state(w)) {
-                drop(inner);
+            if !live(state(self.word())) {
                 continue;
             }
-            match &inner.waker {
-                Some(old) if old.will_wake(waker) => {}
-                _ => {
-                    let old = inner.waker.replace(waker.clone());
-                    drop(inner);
-                    drop(old);
-                }
+            if inner.waker.as_ref().is_some_and(|w| w.will_wake(waker)) {
+                drop(inner);
+                drop(fresh);
+                return Poll::Pending;
             }
+            let Some(new) = fresh.take() else {
+                drop(inner);
+                fresh = Some(waker.clone());
+                continue;
+            };
+            let old = inner.waker.replace(new);
+            drop(inner);
+            drop(old);
             return Poll::Pending;
         }
     }
@@ -532,20 +550,40 @@ impl<R> Slot<R> {
     /// which expires it). Registers `waker` as the watcher otherwise.
     #[cfg_attr(not(feature = "async"), allow(dead_code))]
     pub(crate) fn poll_closed(&self, waker: &Waker, now: &impl Fn() -> u64) -> Poll<()> {
-        if !live(state(self.word())) || self.check_deadline(now) {
-            return Poll::Ready(());
+        let mut fresh: Option<Waker> = None;
+        loop {
+            if !live(state(self.word())) || self.check_deadline(now) {
+                return Poll::Ready(());
+            }
+            let mut inner = lock(&self.inner);
+            if !live(state(self.word())) {
+                continue;
+            }
+            if inner.watchers.iter().any(|w| w.will_wake(waker)) {
+                drop(inner);
+                drop(fresh);
+                return Poll::Pending;
+            }
+            let Some(new) = fresh.take() else {
+                drop(inner);
+                fresh = Some(waker.clone());
+                continue;
+            };
+            inner.watchers.push(new);
+            return Poll::Pending;
         }
-        let mut inner = lock(&self.inner);
-        if !live(state(self.word())) {
-            return Poll::Ready(());
-        }
-        let old = match &inner.watcher {
-            Some(old) if old.will_wake(waker) => None,
-            _ => inner.watcher.replace(waker.clone()),
+    }
+
+    /// Stop watching with `waker`, so finished watchers do not accumulate on
+    /// a long-lived token.
+    #[cfg_attr(not(feature = "async"), allow(dead_code))]
+    pub(crate) fn unwatch(&self, waker: &Waker) {
+        let removed = {
+            let mut inner = lock(&self.inner);
+            let index = inner.watchers.iter().position(|w| w.will_wake(waker));
+            index.map(|i| inner.watchers.swap_remove(i))
         };
-        drop(inner);
-        drop(old);
-        Poll::Pending
+        drop(removed);
     }
 
     /// Non-blocking check from the caller's receiver.

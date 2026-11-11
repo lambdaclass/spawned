@@ -336,9 +336,14 @@ impl<R: Send + 'static> ReplyTo<R> {
 
     /// Shorten the deadline to `at` (never extends it).
     pub fn with_deadline(&self, at: Instant) {
-        self.slot()
-            .shorten(spawned_rt::time::to_ticks(at), &now_ticks);
-        self.registry.track_deadline(self.slot());
+        // Only a lowered deadline gets a heap entry, so repeated
+        // `with_deadline` calls with the same or a later instant store nothing.
+        if self
+            .slot()
+            .shorten(spawned_rt::time::to_ticks(at), &now_ticks)
+        {
+            self.registry.track_deadline(self.slot());
+        }
     }
 
     /// Whether the caller can no longer be answered. Checks the deadline

@@ -1161,7 +1161,15 @@ impl<A: Actor> ActorRef<A> {
             crate::actor_cleanup::ActorStartup::new((actor, ctx, rx, cancellation_token), cleanup);
         let job_owner = actor_ref.shared.clone();
         let cleaned_tx = cleaned_tx;
+        // Destruction-safe close: if the runtime drops this future before it
+        // completes, the guard still cancels the jobs and closes the registry,
+        // so no deferred caller waits for an instance that can never answer.
+        let close_guard = crate::reply::registry::CloseOnDrop::new(
+            actor_ref.shared.replies.clone(),
+            actor_ref.shared.jobs.clone(),
+        );
         let inner_future = async move {
+            let _close_guard = close_guard;
             let ((actor, ctx, rx, cancellation_token), mut cleanup) = startup.into_parts();
             #[cfg(feature = "backend-experiments")]
             let _borrowed_runtime = borrowed_runtime;
@@ -1190,6 +1198,8 @@ impl<A: Actor> ActorRef<A> {
                 let actual = crate::system::lock(&scope.cause).clone().unwrap_or(reason);
                 scope.exited(actual);
             }
+            // Publish the exit (monitors and links fire) before the job join.
+            drop(cleanup);
             // Job cleanup (deferred-replies §5 step 4), after death: join the
             // cancelled jobs, bounded by the cleanup deadline; a job still
             // running then does not undo death and is reported unfinished.
@@ -1345,6 +1355,7 @@ async fn run_actor<A: Actor>(
     #[cfg(feature = "backend-experiments")] turn: Option<MessageTurn>,
 ) -> Result<ExitReason, ExitReason> {
     let replies = ctx.shared.replies.clone();
+    let jobs = ctx.shared.jobs.clone();
     let primary = match AssertUnwindSafe(run_actor_lifecycle(
         &mut actor,
         ctx,
@@ -1368,6 +1379,10 @@ async fn run_actor<A: Actor>(
     // Death (deferred-replies §5 step 3), only now that `stopped()` returned:
     // close the registry (every open token answers ActorStopped), dispose
     // the mailbox (queued requests answer ActorStopped), drop the state.
+    // Early returns (startup panic, closed scope) and an unwound lifecycle
+    // also begin exit here, so jobs never outlive their owner.
+    replies.exiting();
+    jobs.cancel_all();
     replies.close();
     drop(rx);
     crate::actor_cleanup::finish_actor_state(actor, primary)
