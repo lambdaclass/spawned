@@ -151,7 +151,14 @@ fn mailbox_drop_child() {
                     victim.send(Hold(entered, gate, handler_panics)).unwrap();
                     tokio::time::timeout(LIMIT, arrival).await.unwrap().unwrap();
                     let replies: Vec<_> = (0..bombs)
-                        .map(|_| victim.request_raw(Bomb(dropped.clone())).unwrap())
+                        .map(|_| {
+                            victim
+                                .send_request(
+                                    Bomb(dropped.clone()),
+                                    spawned_concurrency::DEFAULT_REQUEST_TIMEOUT,
+                                )
+                                .unwrap()
+                        })
                         .collect();
                     victim.context().stop();
                     release.send(()).unwrap();
@@ -265,7 +272,14 @@ fn abandoned_receiver_child() {
                 }
                 let dropped = Arc::new(AtomicUsize::new(0));
                 let replies: Vec<_> = (0..2)
-                    .map(|_| actor.request_raw(Bomb(dropped.clone())).unwrap())
+                    .map(|_| {
+                        actor
+                            .send_request(
+                                Bomb(dropped.clone()),
+                                spawned_concurrency::DEFAULT_REQUEST_TIMEOUT,
+                            )
+                            .unwrap()
+                    })
                     .collect();
                 shutdown.send(()).unwrap();
                 let reason = tokio::time::timeout(LIMIT, actor.wait_exit())

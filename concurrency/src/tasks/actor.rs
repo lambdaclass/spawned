@@ -75,7 +75,7 @@ pub enum Backend {
 pub trait Actor: Send + Sized + 'static {
     /// Deferred-reply credits per instance (live `ReplyTo` tokens plus running
     /// linked jobs). At the bound `defer()` answers the caller `Overloaded`.
-    /// Capped at 65535.
+    /// Default 1024; capped at 65535.
     const MAX_OUTSTANDING: usize = DEFAULT_MAX_OUTSTANDING;
 
     /// Native threads this instance's blocking jobs may run at once
@@ -565,6 +565,8 @@ impl<A: Actor> Context<A> {
 
     /// Deferred-reply credits in use by this instance: live deferred
     /// tokens plus running linked jobs (bounded by `Actor::MAX_OUTSTANDING`).
+    /// Experimental in 0.8 (for tests and diagnostics; the `metrics`
+    /// feature exports the same count): it may change before 1.0.
     pub fn deferred_outstanding(&self) -> usize {
         self.shared.replies.outstanding()
     }
@@ -636,28 +638,21 @@ impl<A: Actor> Context<A> {
         )
     }
 
-    /// Send a request and get its [`ReplyReceiver`], with the default
-    /// deadline ([`DEFAULT_REQUEST_TIMEOUT`] after the send, as
-    /// `gen_server:call/2`).
-    pub fn request_raw<M>(&self, msg: M) -> Result<ReplyReceiver<M::Result>, ActorError>
-    where
-        A: Handler<M>,
-        M: Message,
-    {
-        self.request_raw_until(msg, Deadline::after(DEFAULT_REQUEST_TIMEOUT))
-    }
-
-    /// Send a request whose deadline is `deadline` ([`Deadline::Never`] for
-    /// an unbounded wait).
-    pub fn request_raw_until<M>(
+    /// Send a request without waiting (`gen_server:send_request/3`) and get
+    /// its [`ReplyReceiver`]. The deadline is fixed now: a `Duration` from
+    /// now, an `Instant`, or [`Deadline::Never`] for an unbounded wait
+    /// ([`DEFAULT_REQUEST_TIMEOUT`] is what [`request`](Self::request)
+    /// uses). The handler sees it through `PendingReply::deadline`.
+    pub fn send_request<M>(
         &self,
         msg: M,
-        deadline: Deadline,
+        deadline: impl Into<Deadline>,
     ) -> Result<ReplyReceiver<M::Result>, ActorError>
     where
         A: Handler<M>,
         M: Message,
     {
+        let deadline = deadline.into();
         let (slot, rx) = reply_slot(deadline, Some(&self.shared.replies));
         enqueue(
             &self.shared.sender,
@@ -693,7 +688,7 @@ impl<A: Actor> Context<A> {
         // Bind the receiver before awaiting it: awaiting inside a `match` on
         // the `Result` keeps the scrutinee's storage alive beside the awaited
         // receiver and doubles this future's size.
-        let rx = match self.request_raw_until(msg, Deadline::after(duration)) {
+        let rx = match self.send_request(msg, Deadline::after(duration)) {
             Ok(rx) => rx,
             Err(error) => {
                 let result = Err(error);
@@ -1046,12 +1041,12 @@ where
         Context::send(self, msg)
     }
 
-    fn request_raw_until(
+    fn send_request(
         &self,
         msg: M,
         deadline: Deadline,
     ) -> Result<ReplyReceiver<M::Result>, ActorError> {
-        Context::request_raw_until(self, msg, deadline)
+        Context::send_request(self, msg, deadline)
     }
 }
 
@@ -1065,17 +1060,14 @@ where
 /// message type that `A` handles.
 pub trait Receiver<M: Message>: Send + Sync {
     fn send(&self, msg: M) -> Result<(), ActorError>;
-    /// Send a request whose deadline is fixed now (the slot carries it).
-    fn request_raw_until(
+    /// Send a request without waiting (`gen_server:send_request/3`); its
+    /// deadline is fixed now (the slot carries it). On a [`Recipient`],
+    /// pass a `Deadline` (`Deadline::after(d)`, or `d.into()`).
+    fn send_request(
         &self,
         msg: M,
         deadline: Deadline,
     ) -> Result<ReplyReceiver<M::Result>, ActorError>;
-    /// Send a request with the default deadline
-    /// ([`DEFAULT_REQUEST_TIMEOUT`] after the send).
-    fn request_raw(&self, msg: M) -> Result<ReplyReceiver<M::Result>, ActorError> {
-        self.request_raw_until(msg, Deadline::after(DEFAULT_REQUEST_TIMEOUT))
-    }
 }
 
 /// Type-erased reference for sending a single message type.
@@ -1092,7 +1084,7 @@ pub async fn request<M: Message>(
     let observation = crate::instrumentation::RequestObservation::new();
     // The deadline is computed before enqueueing (send time, as OTP's call).
     // Bind the receiver before awaiting it (see `ActorRef::request_with_timeout`).
-    let rx = match recipient.request_raw_until(msg, Deadline::after(timeout_duration)) {
+    let rx = match recipient.send_request(msg, Deadline::after(timeout_duration)) {
         Ok(rx) => rx,
         Err(error) => {
             let result = Err(error);
@@ -1168,28 +1160,21 @@ impl<A: Actor> ActorRef<A> {
         )
     }
 
-    /// Send a request and get its [`ReplyReceiver`], with the default
-    /// deadline ([`DEFAULT_REQUEST_TIMEOUT`] after the send, as
-    /// `gen_server:call/2`).
-    pub fn request_raw<M>(&self, msg: M) -> Result<ReplyReceiver<M::Result>, ActorError>
-    where
-        A: Handler<M>,
-        M: Message,
-    {
-        self.request_raw_until(msg, Deadline::after(DEFAULT_REQUEST_TIMEOUT))
-    }
-
-    /// Send a request whose deadline is `deadline` ([`Deadline::Never`] for
-    /// an unbounded wait).
-    pub fn request_raw_until<M>(
+    /// Send a request without waiting (`gen_server:send_request/3`) and get
+    /// its [`ReplyReceiver`]. The deadline is fixed now: a `Duration` from
+    /// now, an `Instant`, or [`Deadline::Never`] for an unbounded wait
+    /// ([`DEFAULT_REQUEST_TIMEOUT`] is what [`request`](Self::request)
+    /// uses). The handler sees it through `PendingReply::deadline`.
+    pub fn send_request<M>(
         &self,
         msg: M,
-        deadline: Deadline,
+        deadline: impl Into<Deadline>,
     ) -> Result<ReplyReceiver<M::Result>, ActorError>
     where
         A: Handler<M>,
         M: Message,
     {
+        let deadline = deadline.into();
         let (slot, rx) = reply_slot(deadline, Some(&self.shared.replies));
         enqueue(
             &self.shared.sender,
@@ -1249,7 +1234,7 @@ impl<A: Actor> ActorRef<A> {
         // Bind the receiver before awaiting it: awaiting inside a `match` on
         // the `Result` keeps the scrutinee's storage alive beside the awaited
         // receiver and doubles this future's size.
-        let rx = match self.request_raw_until(msg, Deadline::after(duration)) {
+        let rx = match self.send_request(msg, Deadline::after(duration)) {
             Ok(rx) => rx,
             Err(error) => {
                 let result = Err(error);
@@ -1361,12 +1346,12 @@ where
         ActorRef::send(self, msg)
     }
 
-    fn request_raw_until(
+    fn send_request(
         &self,
         msg: M,
         deadline: Deadline,
     ) -> Result<ReplyReceiver<M::Result>, ActorError> {
-        ActorRef::request_raw_until(self, msg, deadline)
+        ActorRef::send_request(self, msg, deadline)
     }
 }
 
@@ -2449,7 +2434,9 @@ mod tests {
             let counter = Counter { count: 42 }.start();
             let recipient: Recipient<GetCount> = counter.recipient();
 
-            let rx = recipient.request_raw(GetCount).unwrap();
+            let rx = recipient
+                .send_request(GetCount, Deadline::after(DEFAULT_REQUEST_TIMEOUT))
+                .unwrap();
             let result = rx.await.unwrap();
             assert_eq!(result, 42);
 

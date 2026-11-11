@@ -67,10 +67,10 @@ impl Router {
     ) {
         let Ok(token) = reply.defer() else { return };
         // The downstream request inherits the caller's deadline.
-        let deadline = token.deadline().map_or(Deadline::Never, Deadline::At);
+        let deadline = token.deadline();
         let downstream = self
             .backend
-            .request_raw_until(backend_protocol::Lookup { millis: msg.millis }, deadline);
+            .send_request(backend_protocol::Lookup { millis: msg.millis }, deadline);
         let work = async move { downstream?.await };
         if let Err(e) = ctx.pipe_reply(
             JobOptions::new(),
@@ -197,7 +197,8 @@ impl Connection {
         match self.current_requests.insert(msg.id, token) {
             Ok(()) => {} // the request goes out on the socket here
             Err(InsertError::Duplicate(token)) => drop(token), // ReplyDropped; the first caller is kept
-            Err(InsertError::Full(token)) => token.overloaded(),
+            // `Full` (InsertError is non_exhaustive): answer Overloaded.
+            Err(error) => error.into_inner().overloaded(),
         }
     }
 
@@ -361,10 +362,30 @@ async fn main() {
         current_requests: PendingReplies::with_capacity(2),
     }
     .start();
-    let a = conn.request_raw(Outgoing { id: 1 }).unwrap();
-    let dup = conn.request_raw(Outgoing { id: 1 }).unwrap();
-    let b = conn.request_raw(Outgoing { id: 2 }).unwrap();
-    let full = conn.request_raw(Outgoing { id: 3 }).unwrap();
+    let a = conn
+        .send_request(
+            Outgoing { id: 1 },
+            spawned_concurrency::DEFAULT_REQUEST_TIMEOUT,
+        )
+        .unwrap();
+    let dup = conn
+        .send_request(
+            Outgoing { id: 1 },
+            spawned_concurrency::DEFAULT_REQUEST_TIMEOUT,
+        )
+        .unwrap();
+    let b = conn
+        .send_request(
+            Outgoing { id: 2 },
+            spawned_concurrency::DEFAULT_REQUEST_TIMEOUT,
+        )
+        .unwrap();
+    let full = conn
+        .send_request(
+            Outgoing { id: 3 },
+            spawned_concurrency::DEFAULT_REQUEST_TIMEOUT,
+        )
+        .unwrap();
     assert!(matches!(dup.await, Err(ActorError::ReplyDropped)));
     assert!(matches!(full.await, Err(ActorError::Overloaded)));
     drop(b); // the caller gives up: its entry is purged on the next insert
@@ -391,8 +412,12 @@ async fn main() {
         waiters: VecDeque::new(),
     }
     .start();
-    let first = table.request_raw(WaitForPeer).unwrap();
-    let second = table.request_raw(WaitForPeer).unwrap();
+    let first = table
+        .send_request(WaitForPeer, spawned_concurrency::DEFAULT_REQUEST_TIMEOUT)
+        .unwrap();
+    let second = table
+        .send_request(WaitForPeer, spawned_concurrency::DEFAULT_REQUEST_TIMEOUT)
+        .unwrap();
     assert!(matches!(
         table.request(WaitForPeer).await,
         Err(ActorError::Overloaded)
@@ -407,8 +432,8 @@ async fn main() {
         answer_first: 0,
     }
     .start();
-    let one = parker.request_raw_until(Park, Deadline::Never).unwrap();
-    let two = parker.request_raw_until(Park, Deadline::Never).unwrap();
+    let one = parker.send_request(Park, Deadline::Never).unwrap();
+    let two = parker.send_request(Park, Deadline::Never).unwrap();
     parker.request(StopAnswering(1)).await.unwrap();
     assert_eq!(one.await.unwrap(), "answered in stopped()");
     assert!(matches!(

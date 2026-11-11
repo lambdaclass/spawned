@@ -450,7 +450,14 @@ async fn stop_discards_body() {
                     // D3: accepted even after the stop request.
                     actor.send(Queued(Payload(drops.clone()))).unwrap();
                 } else {
-                    replies.push(actor.request_raw(Asked(Payload(drops.clone()))).unwrap());
+                    replies.push(
+                        actor
+                            .send_request(
+                                Asked(Payload(drops.clone())),
+                                spawned_concurrency::DEFAULT_REQUEST_TIMEOUT,
+                            )
+                            .unwrap(),
+                    );
                 }
                 yield_now().await;
             }

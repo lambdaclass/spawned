@@ -413,8 +413,8 @@ impl ActorSystem {
     /// Close admission and request ordered shutdown. At expiry the report owns
     /// pending shutdown state, which can be awaited again. Blocking Rust is not
     /// forcibly killed and runtime destruction never blocks this caller thread.
-    pub async fn shutdown(&self, deadline: Duration) -> ShutdownReport {
-        self.inner.begin_shutdown(deadline);
+    pub async fn shutdown(&self, grace: Duration) -> ShutdownReport {
+        self.inner.begin_shutdown(grace);
         ShutdownReport {
             pending: Some(self.inner.clone()),
             complete: false,
@@ -427,7 +427,7 @@ impl ActorSystem {
             coordinator_failures: Vec::new(),
             unfinished_jobs: Vec::new(),
         }
-        .wait(deadline)
+        .wait(grace)
         .await
     }
 
@@ -699,11 +699,11 @@ pub struct ActorDiagnostic {
     pub turn_age: Option<Duration>,
 }
 impl ShutdownReport {
-    pub async fn wait(mut self, deadline: Duration) -> Self {
+    pub async fn wait(mut self, grace: Duration) -> Self {
         let Some(owner) = self.pending.as_ref() else {
             return self;
         };
-        self.complete = rt::timeout(deadline, wait_true(owner.control.done.clone()))
+        self.complete = rt::timeout(grace, wait_true(owner.control.done.clone()))
             .await
             .unwrap_or(false);
         let state = lock(&owner.state);

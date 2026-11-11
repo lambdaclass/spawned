@@ -376,7 +376,10 @@ mod env {
                     task.abort();
                     let _ = env.bounded(task);
                 }
-                Started::Native(a) => drop(a.request_raw(Gift).unwrap()),
+                Started::Native(a) => drop(
+                    a.send_request(Gift, spawned_concurrency::DEFAULT_REQUEST_TIMEOUT)
+                        .unwrap(),
+                ),
             }
             gate.release();
         }

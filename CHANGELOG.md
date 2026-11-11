@@ -18,6 +18,24 @@
     `Failed` variant carries `error`. `Deadline` implements
     `From<Duration>` and `From<Instant>`. `DEFAULT_EMIT_CREDITS` and
     `default_max_native_jobs` are no longer public.
+  - Requests and deadlines: `request_raw` and `request_raw_until` become
+    `send_request(msg, impl Into<Deadline>)` (OTP's
+    `gen_server:send_request/3`; on `Receiver<M>`, a `Deadline`). 0.7's
+    `request_raw` had no deadline: `Deadline::Never` keeps that.
+    `PendingReply::deadline`, `ReplyTo::deadline` and `ReplyReceiver::deadline`
+    return `Deadline`, so a deadline forwards as is;
+    `ReplyTo::with_deadline` is `shorten_deadline(impl Into<Deadline>)`.
+    Removed: `PendingReply::has_caller` (`defer()` returns `NoCaller`),
+    `PendingReplies::{purge, retained, live}` (now `len`/`is_empty`; purging
+    stays automatic), the public `DEFAULT_MAX_OUTSTANDING` (the default,
+    1024, is documented at `Actor::MAX_OUTSTANDING`).
+    `PendingReply::detached` is hidden (`spawned_test::detached_reply()`).
+    `InsertError<R>` holds `ReplyTo<R>` and is `#[non_exhaustive]`.
+    `DEFAULT_REQUEST_TIMEOUT` is re-exported at the crate root. The
+    `Duration` parameters of `ActorSystem::shutdown`, `Supervisor::shutdown`,
+    `ShutdownReport::wait` and the test kit's waits are named `grace` or
+    `limit` (a deadline is an instant). `PendingReplies` and
+    `Context::deferred_outstanding` are documented as experimental.
 - Deferred replies and jobs, fixes from the 0.8 pre-release review: a job
   deadline still fires while the result waits for scheduled emits, and the
   job keeps its `MAX_OUTSTANDING` credit until its terminal message; a job
@@ -175,8 +193,8 @@
   obligations answer `ReplyDropped` (in a panicking turn or while exiting
   they are answered `ActorStopped` at death); at death every open token
   answers `ActorStopped`. Request
-  deadlines are fixed at send (`Deadline`, `request_raw_until`; `request_raw`
-  gains the 5 s default); a per-actor deadline heap and service expire stored
+  deadlines are fixed at send (`Deadline`, `send_request(msg, deadline)`,
+  formerly `request_raw`); a per-actor deadline heap and service expire stored
   tokens without a polling caller. `PendingReplies<K, R>` is a bounded token
   table. Pipe-to-self jobs: `ctx.pipe`, `pipe_blocking`, `pipe_reply`,
   `pipe_reply_blocking` (threads mode: the blocking forms on owned native
@@ -209,7 +227,7 @@
   `spawned_test::tasks::in_actor` / `threads::in_actor` run a closure in a
   live actor's turn. GUIDE: hard job deadlines and the soft-deadline
   pattern, replies carrying a reason through `R = Result<..>`, the
-  `request_raw` rows.
+  `send_request` rows.
 - ROADMAP: a Path to 1.0 section (0.8, 0.9, 0.10 contents and what 1.0
   requires: stable API rules, a complete semantics contract, production-safe
   defaults, introspection, determinism, release gates, production proof and

@@ -97,7 +97,14 @@ fn native_drop_child() {
             arrival.recv_timeout(LIMIT).unwrap();
             let dropped = Arc::new(AtomicUsize::new(0));
             let replies: Vec<_> = (0..2)
-                .map(|_| actor.request_raw(Bomb(dropped.clone())).unwrap())
+                .map(|_| {
+                    actor
+                        .send_request(
+                            Bomb(dropped.clone()),
+                            spawned_concurrency::DEFAULT_REQUEST_TIMEOUT,
+                        )
+                        .unwrap()
+                })
                 .collect();
             actor.context().stop_with_reason(reason.clone());
             release.send(()).unwrap();

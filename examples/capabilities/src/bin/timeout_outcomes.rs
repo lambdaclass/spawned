@@ -53,7 +53,7 @@ async fn main() {
     let (release_tx, release_rx) = oneshot::channel();
     // The deadline is fixed at send (OTP's call/3): already due here. An
     // expired request is still dispatched, as in OTP; its late reply is dropped.
-    let reply = counter.request_raw_until(
+    let reply = counter.send_request(
         Apply {
             entered: entered_tx,
             release: release_rx,

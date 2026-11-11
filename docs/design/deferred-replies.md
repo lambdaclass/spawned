@@ -133,7 +133,7 @@ Rules:
    Only `REPLIED` publishes the value; a receiver that sees `WRITING` waits.
    A registry close that finds `WRITING` waits for it to resolve. The window
    is a value write; no user code runs in it.
-2. **Shortening.** `with_deadline(at)` is `fetch_min(deadline, at)`, then the
+2. **Shortening.** `shorten_deadline(at)` is `fetch_min(deadline, at)`, then the
    `[deadline]` check. The linearization point is the reply's `WRITING` CAS:
    - a shortening before it is seen by the reply;
    - a shortening after it finds the word not `OPEN` and does nothing.
@@ -172,15 +172,15 @@ There is one timeout reason, as in OTP. `DeadlineExceeded` exists only on
 
 | Today | Proposed |
 |---|---|
-| `request_raw(msg) -> Result<oneshot::Receiver<R>, _>`, no timeout | `request_raw(msg) -> Result<ReplyReceiver<R>, _>`, default 5 s deadline (as `gen_server:call/2`); `request_raw_until(msg, Deadline)` with `Deadline::At(t)` or `Deadline::Never` |
-| `Receiver<M>::request_raw` | `request_raw_until(msg, Deadline)` (required) plus a provided `request_raw` |
-| erased `request(recipient, msg, timeout)` | computes the deadline before enqueueing, then `request_raw_until` |
+| `request_raw(msg) -> Result<oneshot::Receiver<R>, _>`, no timeout | `send_request(msg, impl Into<Deadline>) -> Result<ReplyReceiver<R>, _>` (OTP's `gen_server:send_request/3`): a `Duration`, an `Instant` or `Deadline::Never` |
+| `Receiver<M>::request_raw` | `send_request(msg, Deadline)` (required) |
+| erased `request(recipient, msg, timeout)` | computes the deadline before enqueueing, then `send_request` |
 | `Response::from(Result<oneshot::Receiver<T>, _>)`, `Response::from_with_timeout` | `Response::from(Result<ReplyReceiver<T>, _>)`; `from_with_timeout` removed (the deadline is already in the slot) |
-| `#[protocol]` tasks code: `from_with_timeout(target.request_raw(m), t)` | the timeout is chosen first (per-call override, method, protocol, default), then `Response::from(target.request_raw_until(m, now + t))` |
+| `#[protocol]` tasks code: `from_with_timeout(target.request_raw(m), t)` | the timeout is chosen first (per-call override, method, protocol, default), then `Response::from(target.send_request(m, Deadline::after(t)))` |
 | `#[protocol]` threads code: `Response::ready(target.request_with_timeout(m, t))` | unchanged: threads `Response` stays eager and blocks in the call |
 | `ActorError`, exhaustive | `#[non_exhaustive]`, plus `ReplyDropped` and `Overloaded` |
 | `metrics::Snapshot` request counters | add `requests_reply_dropped_total` and `requests_overloaded_total` (`RequestObservation::finish`) |
-| `spawned-test` `Mock`, `Probe<M>` | `Mock` implements the new `Handler` (below); `Probe` implements `request_raw_until` and discharges unexpected requests as `Stopped`, keeping its contract |
+| `spawned-test` `Mock`, `Probe<M>` | `Mock` implements the new `Handler` (below); `Probe` implements `send_request` and discharges unexpected requests as `Stopped`, keeping its contract |
 
 `ReplyReceiver<R>` is a future in `tasks` mode and has `recv()` in `threads`
 mode. Dropping it is `CAS OPEN -> ABANDONED`, which returns the token's credit
@@ -196,7 +196,7 @@ then expires the slot; there is one deadline, not two timers.
 The behaviour changes in two places, both in the migration notes:
 
 - a `#[protocol]` request's timeout used to start at first poll;
-- `request_raw` used to have no timeout.
+- `request_raw` used to have no timeout (`send_request` takes one explicitly).
 
 We use send time because the deadline is a property of the request, the server
 cannot learn when the caller polls, propagated deadlines (rank 19) need an
@@ -207,10 +207,10 @@ absolute instant, and OTP's `call` starts waiting when it sends.
 - **A polling receiver.** `request`, `request_with_timeout` and
   `Response::from` sleep on the runtime's timer until the slot's deadline
   and then `CAS OPEN -> TIMED_OUT` (so they follow paused Tokio clocks). A
-  raw receiver awaited directly (`request_raw(..)?.await`) instead puts its
+  raw receiver awaited directly (`send_request(..)?.await`) instead puts its
   deadline once in the owner's heap, which expires it on the service's clock
   (real time, or the simulated clock under `spawned_sim`), saving a timer
-  per request. A shortened deadline (`ReplyTo::with_deadline`) wakes the
+  per request. A shortened deadline (`ReplyTo::shorten_deadline`) wakes the
   awaiting or parked receiver, which re-arms for it.
 - **`defer()`, the `pipe_reply` attach and `is_closed()`.** They check the
   deadline first, so an unpolled, expired request reports `Closed`.
@@ -235,7 +235,7 @@ handles a call even after the caller timed out, and the late reply is dropped.
 
 - **Stale entries.** An entry is stale when its slot or job is terminal, or
   when its deadline is later than the current one (superseded by
-  `with_deadline`).
+  `shorten_deadline`).
 - **Compaction.** The heap is rebuilt when stale entries exceed live ones,
   per actor. So storage is at most about 2 × (live deferred tokens + live
   jobs with deadlines + awaited raw receivers); the first two are bounded by
@@ -318,7 +318,7 @@ pub struct PendingReply<'t, R> { .. }
 impl<R> PendingReply<'_, R> {
     pub fn reply(self, value: R) -> Delivery;          // Delivered | CallerGone | Expired
     pub fn defer(self) -> Result<ReplyTo<R>, DeferError>;  // Overloaded | Closed | NoCaller
-    pub fn deadline(&self) -> Option<Instant>;
+    pub fn deadline(&self) -> Deadline;                // Never for sends
     pub fn is_closed(&self) -> bool;                   // checks the deadline first
     pub fn overloaded(self);                            // answer Err(Overloaded)
 }
@@ -327,8 +327,8 @@ impl<R> PendingReply<'_, R> {
 pub struct ReplyTo<R> { .. }                           // Send + 'static, not Clone
 impl<R: Send + 'static> ReplyTo<R> {
     pub fn reply(self, value: R) -> Delivery;          // .. | OwnerExited
-    pub fn deadline(&self) -> Option<Instant>;
-    pub fn with_deadline(&self, at: Instant);          // shorten only
+    pub fn deadline(&self) -> Deadline;
+    pub fn shorten_deadline(&self, d: impl Into<Deadline>); // shorten only
     pub fn is_closed(&self) -> bool;
     pub async fn closed(&self);                        // tasks mode
     pub fn owner(&self) -> ActorId;
@@ -476,7 +476,8 @@ ctx.pipe_reply(JobOptions::new(), token, |_| other.request(msg), |res, token| De
 ```
 
 The downstream request is an ordinary request with the destination's own
-admission and deadline; it should use `token.deadline()`, which rank 19
+admission and deadline; it should pass `token.deadline()` on
+(`other.send_request(msg, token.deadline())`), which rank 19
 automates. The obligation and credit stay in this actor's registry. When the
 linked job ends or is cancelled, its future, and with it the downstream
 `ReplyReceiver`, is dropped. That abandons the downstream slot and returns
@@ -489,12 +490,14 @@ impl<K: Hash + Eq, R> PendingReplies<K, R> {
     pub fn with_capacity(cap: usize) -> Self;
     /// Purges terminal tokens, then inserts; a duplicate key or a full table
     /// hands the new token back.
-    pub fn insert(&mut self, key: K, token: ReplyTo<R>) -> Result<(), InsertError<ReplyTo<R>>>;
+    pub fn insert(&mut self, key: K, token: ReplyTo<R>) -> Result<(), InsertError<R>>;
     pub fn take(&mut self, key: &K) -> Option<ReplyTo<R>>;   // skips (and removes) terminal entries
-    pub fn purge(&mut self) -> usize;
-    pub fn retained(&self) -> usize;                          // entries held, without purging
-    pub fn live(&self) -> usize;                              // non-terminal entries (scan)
+    pub fn len(&self) -> usize;                               // live entries (scan)
+    pub fn is_empty(&self) -> bool;
+    pub fn drain(&mut self) -> impl Iterator<Item = (K, ReplyTo<R>)>;
 }
+#[non_exhaustive]
+pub enum InsertError<R> { Duplicate(ReplyTo<R>), Full(ReplyTo<R>) }   // into_inner()
 ```
 
 Retained entries never exceed `cap`, however fast tokens expire. The handler
@@ -807,16 +810,16 @@ Aligned with OTP, so not differences:
 **Timeouts.**
 
 - The request timeout starts at send, not at first poll.
-- `request_raw` gains a 5 s default; use `request_raw_until(msg,
-  Deadline::Never)` for the old unbounded wait.
+- `request_raw(msg)` becomes `send_request(msg, deadline)`; 0.7's
+  unbounded wait is `send_request(msg, Deadline::Never)`.
 
 **Raw API.**
 
-- `request_raw` returns `ReplyReceiver<R>`, which yields
+- `send_request` returns `ReplyReceiver<R>`, which yields
   `Result<R, ActorError>`.
 - `Response::from_with_timeout` is removed.
 - `Receiver<M>` implementors (including `Probe`) implement
-  `request_raw_until`.
+  `send_request`.
 
 **Lifecycle.**
 
@@ -1064,7 +1067,7 @@ changes).
 | 2.1.1 Read before publish | `WRITING` state; `REPLIED` stored after the value (§1). |
 | 2.1.2 Permit install racing a terminal slot | `TOKEN` bit set by a CAS that requires `OPEN` (§4). |
 | 2.1.3 Undispatched envelope drop | Mailbox disposal discharges `STOPPED` (§5 step 3.2); only a turn's `PendingReply` drop gives `Dropped`. |
-| 2.2.1 `request_raw` gains a timeout | Stated; `Deadline::Never` keeps the unbounded wait (§1, migration). |
+| 2.2.1 `request_raw` gains a timeout | `send_request(msg, deadline)` takes it explicitly; `Deadline::Never` keeps the unbounded wait (§1, migration). |
 | 2.2.2 Stale doc comments in code | Implementation task: `macros/src/lib.rs` "timers start on poll" and `tasks/actor.rs` request docs. |
 | 2.3.1 Unpolled expired requests dispatched | Dispatched by design (OTP); `defer()` on an expired slot returns `Closed`; skipping is opt-in (rank 19). |
 | 2.3.2 Process-wide service on the first runtime | Dedicated service thread for unmanaged actors; per-sim-instance under sim (§2). |
@@ -1082,7 +1085,7 @@ changes).
 | 2.7.2 Emits after the deadline | Emit check and terminal enqueue are serialized under the job lock (§9). |
 | 2.8 `R: From<ActorError>`, local-slot deadlock | Removed; explicit trait migration (§3). |
 | 2.9.1 Threads `Response` stays eager | Stated (§1 API table). |
-| 2.9.2 `Probe<M>` | Implements `request_raw_until`; unexpected requests answer `Stopped` (§1). |
+| 2.9.2 `Probe<M>` | Implements `send_request`; unexpected requests answer `Stopped` (§1). |
 | 2.9.3 `PendingReplies::len(&self)` | Replaced by non-mutating `retained` and `live`; purging is in `&mut` methods (§7). |
 | 2.9.4 Metrics type name | `metrics::Snapshot` and `RequestObservation::finish` (§1). |
 | 3.A model divergences | `HeldA` replaced by `Credits` with two holders; expiry abstraction stated; `pipe_reply` notification is a turn (`JobNotify`); cancellation is opt-in (`JobCancel` any closed slot). |

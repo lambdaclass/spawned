@@ -55,7 +55,11 @@ mod linux {
             let __reply_value: (u64, u64, Instant) = async {
                 self.handled += 1;
                 if let Some(next) = &self.next {
-                    return next.request_raw(m).unwrap().await.unwrap();
+                    return next
+                        .send_request(m, spawned_concurrency::DEFAULT_REQUEST_TIMEOUT)
+                        .unwrap()
+                        .await
+                        .unwrap();
                 }
                 let mut value = m.0;
                 for _ in 0..self.iterations {
@@ -216,7 +220,11 @@ mod linux {
                 barrier.wait().await;
                 let mut n = 0u64;
                 while Instant::now() < *finish.get().unwrap() {
-                    let reply = actor.request_raw(Work(n)).unwrap().await.unwrap();
+                    let reply = actor
+                        .send_request(Work(n), spawned_concurrency::DEFAULT_REQUEST_TIMEOUT)
+                        .unwrap()
+                        .await
+                        .unwrap();
                     check(reply, n, ab, bb);
                     n += 1;
                 }
@@ -236,7 +244,11 @@ mod linux {
             let mut n = 0;
             while Instant::now() < *cfinish.get().unwrap() {
                 let start = Instant::now();
-                let reply = endpoint.request_raw(Work(n)).unwrap().await.unwrap();
+                let reply = endpoint
+                    .send_request(Work(n), spawned_concurrency::DEFAULT_REQUEST_TIMEOUT)
+                    .unwrap()
+                    .await
+                    .unwrap();
                 let end = Instant::now();
                 check(reply, n, ac, bc);
                 latency.push(end.duration_since(start).as_nanos() as u64);

@@ -350,7 +350,7 @@ mod threads_node {
                             .iter()
                             .enumerate()
                             .map(|(i, peer)| {
-                                peer.request_raw_until(
+                                peer.send_request(
                                     Cmd::Echo(v + i as u64),
                                     spawned_concurrency::Deadline::after(LIMIT),
                                 )

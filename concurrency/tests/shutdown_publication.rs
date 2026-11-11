@@ -106,10 +106,13 @@ fn admitted_request_racing_shutdown_drops_its_reply_before_join_completes() {
         let (entered, entered_rx) = tokio::sync::oneshot::channel();
         let (release, gate) = tokio::sync::oneshot::channel();
         let _hold_reply = actor
-            .request_raw(Command::Hold {
-                entered,
-                release: gate,
-            })
+            .send_request(
+                Command::Hold {
+                    entered,
+                    release: gate,
+                },
+                spawned_concurrency::DEFAULT_REQUEST_TIMEOUT,
+            )
             .unwrap();
         tokio::time::timeout(LIMIT, entered_rx)
             .await
@@ -120,7 +123,8 @@ fn admitted_request_racing_shutdown_drops_its_reply_before_join_completes() {
         let producer = std::thread::spawn(move || {
             PRODUCER.with(|p| p.set(true));
             for _ in 0..1024 {
-                let reply = sender.request_raw(Command::Work);
+                let reply = sender
+                    .send_request(Command::Work, spawned_concurrency::DEFAULT_REQUEST_TIMEOUT);
                 if PAUSED.load(Ordering::SeqCst) {
                     return reply;
                 }

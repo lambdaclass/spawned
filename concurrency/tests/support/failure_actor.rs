@@ -336,10 +336,10 @@ impl Handle {
         match self {
             #[cfg(feature = "async")]
             Self::Async(actor) => actor
-                .request_raw_until(command, spawned_concurrency::Deadline::Never)
+                .send_request(command, spawned_concurrency::Deadline::Never)
                 .map(Response::Async),
             Self::Native(actor) => actor
-                .request_raw_until(command, spawned_concurrency::Deadline::Never)
+                .send_request(command, spawned_concurrency::Deadline::Never)
                 .map(Response::Native),
         }
     }

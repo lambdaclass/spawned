@@ -285,22 +285,22 @@ where
     }
 }
 
-/// Wait for `handle` to exit, or panic after `deadline` instead of hanging.
+/// Wait for `handle` to exit, or panic after `limit` instead of hanging.
 /// Works for actors of either mode.
 #[track_caller]
-pub fn exit_within(handle: &ChildHandle, deadline: Duration) -> impl Future<Output = ExitReason> {
-    exit_within_at(handle.clone(), deadline, Location::caller())
+pub fn exit_within(handle: &ChildHandle, limit: Duration) -> impl Future<Output = ExitReason> {
+    exit_within_at(handle.clone(), limit, Location::caller())
 }
 
 async fn exit_within_at(
     handle: ChildHandle,
-    deadline: Duration,
+    limit: Duration,
     at: &'static Location<'static>,
 ) -> ExitReason {
-    match timeout(deadline, handle.wait_exit_async()).await {
+    match timeout(limit, handle.wait_exit_async()).await {
         Ok(reason) => reason,
         Err(_) => panic!(
-            "actor {:?} did not exit within {deadline:?}; a handler may be blocked or the \
+            "actor {:?} did not exit within {limit:?}; a handler may be blocked or the \
              actor was never asked to stop (exit_within called at {at})",
             handle.id()
         ),
@@ -311,9 +311,9 @@ async fn exit_within_at(
 #[track_caller]
 pub fn join_within<A: Actor>(
     actor: &ActorRef<A>,
-    deadline: Duration,
+    limit: Duration,
 ) -> impl Future<Output = ExitReason> {
-    exit_within_at(actor.child_handle(), deadline, Location::caller())
+    exit_within_at(actor.child_handle(), limit, Location::caller())
 }
 
 /// Poll `condition` every millisecond until it holds; panic naming `what` after `timeout`.
@@ -338,16 +338,16 @@ pub fn wait_until<'a>(
 }
 
 /// Wait for a ready generation strictly greater than `after`, or panic with
-/// the child's snapshot after `deadline`.
+/// the child's snapshot after `limit`.
 #[track_caller]
 pub fn wait_for_generation<A: Actor>(
     child: &SupervisedChild<A>,
     after: u64,
-    deadline: Duration,
+    limit: Duration,
 ) -> impl Future<Output = ActorRef<A>> + '_ {
     let at = Location::caller();
     async move {
-        match timeout(deadline, child.wait_for_generation(after)).await {
+        match timeout(limit, child.wait_for_generation(after)).await {
             Ok(Ok(actor)) => actor,
             Ok(Err(unavailable)) => panic!(
                 "supervised child will not reach a generation after {after}: {unavailable}; \
@@ -356,7 +356,7 @@ pub fn wait_for_generation<A: Actor>(
             ),
             Err(_) => panic!(
                 "supervised child did not reach a generation after {after} within \
-                 {deadline:?}; snapshot {:?} (wait_for_generation called at {at})",
+                 {limit:?}; snapshot {:?} (wait_for_generation called at {at})",
                 child.snapshot()
             ),
         }
@@ -365,8 +365,8 @@ pub fn wait_for_generation<A: Actor>(
 
 /// Fault: make the current instance of `child` exit with `reason` (see
 /// [`faults::exit`]) and return its replacement once the supervisor has started
-/// it, or panic after `deadline` (for example when the restart mode does not
-/// restart that reason). `deadline` bounds the whole call: finding a running
+/// it, or panic after `limit` (for example when the restart mode does not
+/// restart that reason). `limit` bounds the whole call: finding a running
 /// instance, injecting the fault and waiting for the replacement.
 ///
 /// The instance targeted and the generation waited past always belong
@@ -380,7 +380,7 @@ pub fn wait_for_generation<A: Actor>(
 pub fn restart_child<A: Actor>(
     child: &SupervisedChild<A>,
     reason: ExitReason,
-    deadline: Duration,
+    limit: Duration,
 ) -> impl Future<Output = ActorRef<A>> + '_ {
     let at = Location::caller();
     async move {
@@ -392,7 +392,7 @@ pub fn restart_child<A: Actor>(
             faulted.set(Some(generation));
             child.wait_for_generation(generation).await
         };
-        let outcome = timeout(deadline, run).await;
+        let outcome = timeout(limit, run).await;
         match (outcome, faulted.get()) {
             (Ok(Ok(actor)), _) => actor,
             (Ok(Err(unavailable)), generation) => panic!(
@@ -401,13 +401,13 @@ pub fn restart_child<A: Actor>(
                 child.snapshot()
             ),
             (Err(_), None) => panic!(
-                "supervised child never had a stable instance to fault within {deadline:?}; \
+                "supervised child never had a stable instance to fault within {limit:?}; \
                  snapshot {:?} (restart_child called at {at})",
                 child.snapshot()
             ),
             (Err(_), Some(generation)) => panic!(
                 "supervised child did not reach a generation after {generation} within \
-                 {deadline:?} (one deadline for the whole call); snapshot {:?} \
+                 {limit:?} (one limit for the whole call); snapshot {:?} \
                  (restart_child called at {at})",
                 child.snapshot()
             ),
@@ -445,24 +445,24 @@ async fn faultable_instance<A: Actor>(child: &SupervisedChild<A>) -> (ActorRef<A
     }
 }
 
-/// Shut a supervisor down within `deadline`, or panic with its report.
-pub async fn shutdown_supervisor(supervisor: &Supervisor, deadline: Duration) -> SupervisorReport {
-    let report = supervisor.shutdown(deadline).await;
+/// Shut a supervisor down within `grace`, or panic with its report.
+pub async fn shutdown_supervisor(supervisor: &Supervisor, grace: Duration) -> SupervisorReport {
+    let report = supervisor.shutdown(grace).await;
     assert!(
         report.complete,
-        "supervisor did not shut down within {deadline:?}: failure {:?}, children {:#?}",
+        "supervisor did not shut down within {grace:?}: failure {:?}, children {:#?}",
         report.failure, report.children
     );
     report
 }
 
-/// Shut an [`ActorSystem`] down within `deadline`, or panic with a report of
+/// Shut an [`ActorSystem`] down within `grace`, or panic with a report of
 /// what is still running instead of hanging the test.
-pub async fn shutdown_system(system: &ActorSystem, deadline: Duration) -> ShutdownReport {
-    let report = system.shutdown(deadline).await;
+pub async fn shutdown_system(system: &ActorSystem, grace: Duration) -> ShutdownReport {
+    let report = system.shutdown(grace).await;
     assert!(
         report.complete,
-        "ActorSystem did not shut down within {deadline:?}\n  unfinished groups: {:?}\n  \
+        "ActorSystem did not shut down within {grace:?}\n  unfinished groups: {:?}\n  \
          unfinished actors: {:?}\n  exits: {:?}\n  supervisor failures: {:?}\n  \
          group failures: {:?}",
         report.unfinished_groups,
@@ -514,9 +514,9 @@ impl TestSystem {
             .expect("start mock on test group")
     }
 
-    /// [`shutdown_system`]: panics with a report if not complete by `deadline`.
-    pub async fn shutdown(self, deadline: Duration) -> ShutdownReport {
-        shutdown_system(&self.system, deadline).await
+    /// [`shutdown_system`]: panics with a report if not complete by `grace`.
+    pub async fn shutdown(self, grace: Duration) -> ShutdownReport {
+        shutdown_system(&self.system, grace).await
     }
 }
 

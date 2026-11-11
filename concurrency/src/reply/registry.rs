@@ -31,7 +31,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 /// Default `Actor::MAX_OUTSTANDING`: deferred credits per actor instance.
-pub const DEFAULT_MAX_OUTSTANDING: usize = 1024;
+pub(crate) const DEFAULT_MAX_OUTSTANDING: usize = 1024;
 
 use super::turn::{Outcome, TurnPhase, DEAD, EXITING};
 

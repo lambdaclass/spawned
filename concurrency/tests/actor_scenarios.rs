@@ -164,8 +164,14 @@ impl Handle {
     fn abandon(&self, cmd: Command) {
         match self {
             #[cfg(feature = "async")]
-            Self::Tasks(a) => drop(a.request_raw(cmd).expect("live actor")),
-            Self::Threads(a) => drop(a.request_raw(cmd).expect("live actor")),
+            Self::Tasks(a) => drop(
+                a.send_request(cmd, spawned_concurrency::DEFAULT_REQUEST_TIMEOUT)
+                    .expect("live actor"),
+            ),
+            Self::Threads(a) => drop(
+                a.send_request(cmd, spawned_concurrency::DEFAULT_REQUEST_TIMEOUT)
+                    .expect("live actor"),
+            ),
         }
     }
 }

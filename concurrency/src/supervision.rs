@@ -1410,9 +1410,9 @@ impl Supervisor {
     pub async fn join(&self) {
         let _ = system::wait_true(self.core.done.subscribe()).await;
     }
-    pub async fn shutdown(&self, deadline: Duration) -> SupervisorReport {
+    pub async fn shutdown(&self, grace: Duration) -> SupervisorReport {
         self.stop();
-        let complete = rt::timeout(deadline, system::wait_true(self.core.done.subscribe()))
+        let complete = rt::timeout(grace, system::wait_true(self.core.done.subscribe()))
             .await
             .unwrap_or(false);
         if !complete {

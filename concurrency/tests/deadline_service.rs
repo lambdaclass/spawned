@@ -97,7 +97,7 @@ fn deadline_service_child() {
         // Another actor's deadlines, serviced by the same thread.
         let other = Owner::default().start();
         let parked = other
-            .request_raw_until(Park, Deadline::after(Duration::from_millis(50)))
+            .send_request(Park, Deadline::after(Duration::from_millis(50)))
             .unwrap();
         match tokio::time::timeout(Duration::from_secs(5), parked).await {
             Ok(Err(ActorError::RequestTimeout)) => {}

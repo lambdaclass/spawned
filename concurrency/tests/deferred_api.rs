@@ -618,7 +618,7 @@ mod threads_mode {
 mod caller_gone_vs_shortening_tasks {
     use spawned_concurrency::message::Message;
     use spawned_concurrency::tasks::{
-        Actor, ActorStart, Context, Handler, Instant, JobError, JobHandle, JobOptions, JobOutcome,
+        Actor, ActorStart, Context, Handler, JobError, JobHandle, JobOptions, JobOutcome,
         PendingReply, ReplyTo,
     };
     use std::time::Duration;
@@ -706,7 +706,7 @@ mod caller_gone_vs_shortening_tasks {
         async fn handle(&mut self, msg: Delegated, _: PendingReply<'_, ()>, _: &Context<Self>) {
             let Delegated(outcome, token) = msg;
             let deadline = matches!(outcome, Err(JobError::DeadlineExceeded));
-            token.with_deadline(Instant::now() + Duration::from_secs(30));
+            token.shorten_deadline(Duration::from_secs(30));
             let cancelled = self.job.as_ref().unwrap().is_cancelled();
             token.reply((deadline, cancelled));
         }
@@ -722,7 +722,9 @@ mod caller_gone_vs_shortening_tasks {
         assert!(deadline, "the job deadline handed the token back");
         assert!(!cancelled, "a shortened deadline cancelled the job");
         // The caller leaving still cancels a blocking linked job.
-        let left = actor.request_raw(Leave).unwrap();
+        let left = actor
+            .send_request(Leave, spawned_concurrency::DEFAULT_REQUEST_TIMEOUT)
+            .unwrap();
         assert!(
             !actor.request(Probe).await.unwrap(),
             "cancelled before the caller left"
@@ -746,7 +748,7 @@ mod caller_gone_vs_shortening_tasks {
 mod caller_gone_vs_shortening_threads {
     use spawned_concurrency::message::Message;
     use spawned_concurrency::threads::{
-        Actor, ActorStart, Context, Handler, Instant, JobError, JobHandle, JobOptions, JobOutcome,
+        Actor, ActorStart, Context, Handler, JobError, JobHandle, JobOptions, JobOutcome,
         PendingReply, ReplyTo,
     };
     use std::time::Duration;
@@ -829,7 +831,7 @@ mod caller_gone_vs_shortening_threads {
         fn handle(&mut self, msg: Delegated, _: PendingReply<'_, ()>, _: &Context<Self>) {
             let Delegated(outcome, token) = msg;
             let deadline = matches!(outcome, Err(JobError::DeadlineExceeded));
-            token.with_deadline(Instant::now() + Duration::from_secs(30));
+            token.shorten_deadline(Duration::from_secs(30));
             let cancelled = self.job.as_ref().unwrap().is_cancelled();
             token.reply((deadline, cancelled));
         }
@@ -844,7 +846,9 @@ mod caller_gone_vs_shortening_threads {
         assert!(deadline, "the job deadline handed the token back");
         assert!(!cancelled, "a shortened deadline cancelled the job");
         // The caller leaving still cancels a blocking linked job.
-        let left = actor.request_raw(Leave).unwrap();
+        let left = actor
+            .send_request(Leave, spawned_concurrency::DEFAULT_REQUEST_TIMEOUT)
+            .unwrap();
         assert!(
             !actor.request(Probe).unwrap(),
             "cancelled before the caller left"

@@ -89,7 +89,14 @@ async fn managed_actor_stopped_before_first_poll_runs_no_hooks_but_drops_state()
     let actor = Probe(counts.clone()).start_on(&group).unwrap();
     let dropped = Arc::new(AtomicUsize::new(0));
     let replies: Vec<_> = (0..2)
-        .map(|_| actor.request_raw(Queued(dropped.clone())).unwrap())
+        .map(|_| {
+            actor
+                .send_request(
+                    Queued(dropped.clone()),
+                    spawned_concurrency::DEFAULT_REQUEST_TIMEOUT,
+                )
+                .unwrap()
+        })
         .collect();
     actor.child_handle().shutdown();
     release.send(()).unwrap();

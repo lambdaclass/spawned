@@ -192,20 +192,20 @@ where
     })
 }
 
-/// Block until `handle` exits, or panic after `deadline` instead of hanging.
+/// Block until `handle` exits, or panic after `limit` instead of hanging.
 ///
 /// Polls every millisecond: `ChildHandle` has no blocking wait with a
 /// timeout, and a waiter thread per call would leak on timeout.
 #[track_caller]
-pub fn exit_within(handle: &ChildHandle, deadline: Duration) -> ExitReason {
-    let end = Instant::now() + deadline;
+pub fn exit_within(handle: &ChildHandle, limit: Duration) -> ExitReason {
+    let end = Instant::now() + limit;
     loop {
         if let Some(reason) = handle.exit_reason() {
             return reason;
         }
         if Instant::now() >= end {
             panic!(
-                "actor {:?} did not exit within {deadline:?}; a handler may be blocked or the \
+                "actor {:?} did not exit within {limit:?}; a handler may be blocked or the \
                  actor was never asked to stop",
                 handle.id()
             );
@@ -216,8 +216,8 @@ pub fn exit_within(handle: &ChildHandle, deadline: Duration) -> ExitReason {
 
 /// [`exit_within`] for a native `ActorRef`.
 #[track_caller]
-pub fn join_within<A: Actor>(actor: &ActorRef<A>, deadline: Duration) -> ExitReason {
-    exit_within(&actor.child_handle(), deadline)
+pub fn join_within<A: Actor>(actor: &ActorRef<A>, limit: Duration) -> ExitReason {
+    exit_within(&actor.child_handle(), limit)
 }
 
 /// Poll `condition` every millisecond until it holds; panic naming `what` after `timeout`.

@@ -232,9 +232,13 @@ async fn kill_answers_queued_request_at_death() {
     let log = Log::default();
     let a1 = Node::new(&log).start();
     let (release, gate) = tokio::sync::oneshot::channel();
-    let blocked = a1.request_raw(Block(gate)).unwrap();
+    let blocked = a1
+        .send_request(Block(gate), spawned_concurrency::DEFAULT_REQUEST_TIMEOUT)
+        .unwrap();
     wait_for(&log, "blocked").await;
-    let queued = a1.request_raw(Sync()).unwrap();
+    let queued = a1
+        .send_request(Sync(), spawned_concurrency::DEFAULT_REQUEST_TIMEOUT)
+        .unwrap();
     a1.child_handle().kill();
     release.send(()).unwrap();
     assert!(blocked.await.is_ok());

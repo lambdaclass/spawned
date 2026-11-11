@@ -419,9 +419,10 @@ async fn settle_within_uses_the_given_bound() {
         .delay::<inventory_protocol::Reserve>(Duration::from_millis(500))
         .start();
     // Occupy the mock; the fence queues behind the slow reply.
-    let _pending = mock
-        .actor_ref()
-        .request_raw(inventory_protocol::Reserve { item: "x".into() });
+    let _pending = mock.actor_ref().send_request(
+        inventory_protocol::Reserve { item: "x".into() },
+        spawned_concurrency::DEFAULT_REQUEST_TIMEOUT,
+    );
     mock.settle_within(Duration::from_millis(20)).await;
 }
 

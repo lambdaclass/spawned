@@ -72,3 +72,13 @@ pub fn reply_pair<R: Send + 'static>() -> (
 ) {
     spawned_concurrency::reply::reply_pair(spawned_concurrency::reply::Deadline::Never)
 }
+
+/// The `PendingReply` a handler receives for a sent message (no caller),
+/// for calling a manual `Handler::handle` directly as a send:
+///
+/// ```ignore
+/// actor.handle(Tick, spawned_test::detached_reply(), &ctx).await;
+/// ```
+pub fn detached_reply<R: Send + 'static>() -> spawned_concurrency::PendingReply<'static, R> {
+    spawned_concurrency::PendingReply::detached()
+}

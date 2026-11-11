@@ -614,7 +614,11 @@ mod threads_mode {
             self.victim.request_with_timeout(Ask, LIMIT).map_err(|_| ())
         }
         fn victim_abandoned_gift(&self) {
-            drop(self.victim.request_raw(Gift).unwrap());
+            drop(
+                self.victim
+                    .send_request(Gift, spawned_concurrency::DEFAULT_REQUEST_TIMEOUT)
+                    .unwrap(),
+            );
         }
         fn victim_setup(&self, setup: Setup) -> Option<MonitorRef> {
             self.victim.request_with_timeout(setup, LIMIT).unwrap()
@@ -788,7 +792,11 @@ mod tasks_mode {
                 .map_err(|_| ())
         }
         fn victim_abandoned_gift(&self) {
-            drop(self.victim.request_raw(Gift).unwrap());
+            drop(
+                self.victim
+                    .send_request(Gift, spawned_concurrency::DEFAULT_REQUEST_TIMEOUT)
+                    .unwrap(),
+            );
         }
         fn victim_setup(&self, setup: Setup) -> Option<MonitorRef> {
             self.env

@@ -481,10 +481,7 @@ mod tasks_mode {
     impl Handler<Route> for Router {
         async fn handle(&mut self, msg: Route, reply: PendingReply<'_, u64>, ctx: &Context<Self>) {
             let Ok(token) = reply.defer() else { return };
-            let downstream = self.backend.request_raw_until(
-                Lookup(msg.0),
-                token.deadline().map_or(Deadline::Never, Deadline::At),
-            );
+            let downstream = self.backend.send_request(Lookup(msg.0), token.deadline());
             let work = async move {
                 match downstream {
                     Ok(rx) => rx.await,
@@ -580,7 +577,9 @@ mod tasks_mode {
             backend: backend.clone(),
         }
         .start();
-        let slow = router.request_raw(Route(200)).unwrap();
+        let slow = router
+            .send_request(Route(200), spawned_concurrency::DEFAULT_REQUEST_TIMEOUT)
+            .unwrap();
         // The router's mailbox is free while the slow request is delegated.
         assert_eq!(router.request(Ping).await.unwrap(), "pong");
         assert_eq!(router.request(Route(1)).await.unwrap(), 10);
@@ -599,7 +598,7 @@ mod tasks_mode {
         }
         .start();
         let holder = Holder(None).start();
-        let rx = holder.request_raw_until(Hold, Deadline::Never).unwrap();
+        let rx = holder.send_request(Hold, Deadline::Never).unwrap();
         let token = holder.request(Give).await.unwrap().unwrap();
         assert!(router.request(Foreign(token)).await.unwrap());
         assert_eq!(
@@ -688,9 +687,7 @@ mod threads_mode {
     fn native_jobs_answer_deferred_requests() {
         let log = Arc::new(Log::default());
         let actor: ActorRef<Owner> = Owner { log: log.clone() }.start();
-        let rx = actor
-            .request_raw_until(Compute(7), Deadline::Never)
-            .unwrap();
+        let rx = actor.send_request(Compute(7), Deadline::Never).unwrap();
         assert_eq!(rx.recv().unwrap(), 49);
         assert!(matches!(
             actor.request(Compute(0)),

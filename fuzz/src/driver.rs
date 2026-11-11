@@ -731,7 +731,7 @@ impl Driver {
                     lane: 0,
                     act,
                 };
-                drop(aref.request_raw(msg));
+                drop(aref.send_request(msg, spawned_concurrency::DEFAULT_REQUEST_TIMEOUT));
             }
             Op::WaitGeneration { sup, child, ms } => self.wait_generation(sup, child, ms).await,
             Op::Fence => {

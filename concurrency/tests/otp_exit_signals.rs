@@ -904,10 +904,14 @@ mod tasks_mode {
         async fn queued_and_stored_requests_get_killed_after_a_kill() {
             let seen = Seen::default();
             let actor = Node::new(&seen, false).start();
-            let stored = actor.request_raw(Hold).unwrap();
+            let stored = actor
+                .send_request(Hold, spawned_concurrency::DEFAULT_REQUEST_TIMEOUT)
+                .unwrap();
             settle(&actor).await;
             let release = block(&actor).await;
-            let queued = actor.request_raw(Ping).unwrap();
+            let queued = actor
+                .send_request(Ping, spawned_concurrency::DEFAULT_REQUEST_TIMEOUT)
+                .unwrap();
             let child = actor.child_handle();
             child.kill();
             release.send(()).unwrap();
@@ -923,7 +927,9 @@ mod tasks_mode {
             let actor = Node::new(&seen, false).start();
             settle(&actor).await;
             let release = block(&actor).await;
-            let queued = actor.request_raw(Ping).unwrap();
+            let queued = actor
+                .send_request(Ping, spawned_concurrency::DEFAULT_REQUEST_TIMEOUT)
+                .unwrap();
             let child = actor.child_handle();
             let reason = ExitReason::Panic("signalled".into());
             child.exit(reason.clone());
@@ -945,7 +951,9 @@ mod tasks_mode {
                 node.in_stopped = Some((entered_tx, release_rx));
                 let actor = node.start();
                 settle(&actor).await;
-                let mut crashed = actor.request_raw(Boom).unwrap();
+                let mut crashed = actor
+                    .send_request(Boom, spawned_concurrency::DEFAULT_REQUEST_TIMEOUT)
+                    .unwrap();
                 entered.await.unwrap();
                 tokio::time::sleep(Duration::from_millis(50)).await;
                 assert!(
@@ -978,7 +986,9 @@ mod tasks_mode {
             node.in_stopped = Some((entered_tx, release_rx));
             node.drop_held_in_stopped = true;
             let actor = node.start();
-            let mut stored = actor.request_raw(Hold).unwrap();
+            let mut stored = actor
+                .send_request(Hold, spawned_concurrency::DEFAULT_REQUEST_TIMEOUT)
+                .unwrap();
             settle(&actor).await;
             let child = actor.child_handle();
             child.stop_with_reason(ExitReason::Shutdown);
@@ -1008,14 +1018,19 @@ mod tasks_mode {
             let child = actor.child_handle();
             child.stop_with_reason(ExitReason::Shutdown);
             entered.await.unwrap();
-            let admitted = actor.request_raw(Ping).expect("admitted while exiting");
+            let admitted = actor
+                .send_request(Ping, spawned_concurrency::DEFAULT_REQUEST_TIMEOUT)
+                .expect("admitted while exiting");
             actor.send(Ping).expect("a send while exiting is admitted");
             release.send(()).unwrap();
             assert_eq!(ended(&child).await, ExitReason::Shutdown);
             stopped_with(answered(admitted).await, &ExitReason::Shutdown);
             assert!(matches!(actor.send(Ping), Err(ActorError::NoProc)));
             assert!(matches!(actor.request(Ping).await, Err(ActorError::NoProc)));
-            assert!(matches!(actor.request_raw(Ping), Err(ActorError::NoProc)));
+            assert!(matches!(
+                actor.send_request(Ping, spawned_concurrency::DEFAULT_REQUEST_TIMEOUT),
+                Err(ActorError::NoProc)
+            ));
             let recipient = actor.recipient::<Ping>();
             assert!(matches!(recipient.send(Ping), Err(ActorError::NoProc)));
         }
@@ -1385,11 +1400,15 @@ mod threads_mode {
         #[test]
         fn queued_and_stored_requests_get_killed_after_a_kill() {
             let actor = Server::default().start();
-            let stored = actor.request_raw(Hold).unwrap();
+            let stored = actor
+                .send_request(Hold, spawned_concurrency::DEFAULT_REQUEST_TIMEOUT)
+                .unwrap();
             assert_eq!(actor.request(Ping).unwrap(), 7);
             let (release, gate) = mpsc::channel();
             actor.send(Block(gate)).unwrap();
-            let queued = actor.request_raw(Ping).unwrap();
+            let queued = actor
+                .send_request(Ping, spawned_concurrency::DEFAULT_REQUEST_TIMEOUT)
+                .unwrap();
             actor.child_handle().kill();
             release.send(()).unwrap();
             assert_eq!(ended(&actor.child_handle()), ExitReason::Killed);
@@ -1401,8 +1420,12 @@ mod threads_mode {
         fn panicked_request_and_dropped_token_wait_for_death() {
             let (server, entered, release) = gated();
             let actor = server.start();
-            let mut stored = actor.request_raw(Hold).unwrap();
-            let mut crashed = actor.request_raw(Boom).unwrap();
+            let mut stored = actor
+                .send_request(Hold, spawned_concurrency::DEFAULT_REQUEST_TIMEOUT)
+                .unwrap();
+            let mut crashed = actor
+                .send_request(Boom, spawned_concurrency::DEFAULT_REQUEST_TIMEOUT)
+                .unwrap();
             entered.recv_timeout(LIMIT).unwrap();
             std::thread::sleep(Duration::from_millis(50));
             assert!(
@@ -1427,14 +1450,19 @@ mod threads_mode {
             assert_eq!(actor.request(Ping).unwrap(), 7);
             actor.child_handle().stop_with_reason(ExitReason::Shutdown);
             entered.recv_timeout(LIMIT).unwrap();
-            let admitted = actor.request_raw(Ping).expect("admitted while exiting");
+            let admitted = actor
+                .send_request(Ping, spawned_concurrency::DEFAULT_REQUEST_TIMEOUT)
+                .expect("admitted while exiting");
             actor.send(Ping).expect("a send while exiting is admitted");
             release.send(()).unwrap();
             assert_eq!(ended(&actor.child_handle()), ExitReason::Shutdown);
             stopped_with(admitted, &ExitReason::Shutdown);
             assert!(matches!(actor.send(Ping), Err(ActorError::NoProc)));
             assert!(matches!(actor.request(Ping), Err(ActorError::NoProc)));
-            assert!(matches!(actor.request_raw(Ping), Err(ActorError::NoProc)));
+            assert!(matches!(
+                actor.send_request(Ping, spawned_concurrency::DEFAULT_REQUEST_TIMEOUT),
+                Err(ActorError::NoProc)
+            ));
         }
     }
 

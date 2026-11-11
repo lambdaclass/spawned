@@ -30,6 +30,18 @@ every change; this guide covers what you need to edit when upgrading.
 | `PipeError { kind: PipeErrorKind::Overloaded }`, `e.kind` *(0.8 pre-release)* | `PipeError::Overloaded`, `e` |
 | `PipeReplyError::Failed { token, kind }` *(0.8 pre-release)* | `PipeReplyError::Failed { token, error }` (`#[non_exhaustive]`) |
 | `DEFAULT_EMIT_CREDITS`, `default_max_native_jobs()` *(0.8 pre-release)* | removed from the public API (the defaults, 16 and `min(4, cores)`, are documented) |
+| `actor.request_raw(msg)` (0.7: no deadline) | `actor.send_request(msg, Deadline::Never)` (or a `Duration` / `Instant`) |
+| `actor.request_raw_until(msg, deadline)` *(0.8 pre-release)* | `actor.send_request(msg, deadline)` |
+| `Response::from_with_timeout(actor.request_raw(msg), t)` | `Response::from(actor.send_request(msg, t))` |
+| `impl Receiver<M>`: `fn request_raw(&self, msg)` | `fn send_request(&self, msg, deadline: Deadline)` |
+| `reply.deadline()` / `token.deadline()` / `rx.deadline()` returning `Option<Instant>` *(0.8 pre-release)* | return `Deadline` (`Deadline::Never` for none); forward with `other.send_request(msg, token.deadline())` |
+| `token.with_deadline(at)` *(0.8 pre-release)* | `token.shorten_deadline(at)` (a `Duration` or `Instant`) |
+| `reply.has_caller()` *(0.8 pre-release)* | removed: `reply.defer()` returns `Err(DeferError::NoCaller)` for a send |
+| `PendingReply::detached()` *(0.8 pre-release)* | `spawned_test::detached_reply()` |
+| `PendingReplies::{purge, retained, live}` *(0.8 pre-release)* | `len()` / `is_empty()` (live tokens); purging is automatic on `insert` |
+| `InsertError<ReplyTo<R>>` *(0.8 pre-release)* | `InsertError<R>` (`#[non_exhaustive]`) |
+| `DEFAULT_MAX_OUTSTANDING` *(0.8 pre-release)* | removed from the public API (`Actor::MAX_OUTSTANDING` defaults to 1024) |
+| `system.shutdown(deadline)`, `supervisor.shutdown(deadline)`, `report.wait(deadline)` | unchanged calls; the `Duration` parameter is named `grace` (a deadline is an instant in 0.8) |
 
 ### Exit signals, startup and runtime drops as in OTP (ranks 5e, 5f, 5g, targets 0.8, in progress)
 
@@ -202,16 +214,18 @@ the actor's death point). Sends reach the same
 a test, use `spawned_test::reply_pair()`.
 
 **Timeouts.** The request timeout starts at send, not at first poll.
-`request_raw` gains the 5 s default; use `request_raw_until(msg,
-Deadline::Never)` for the old unbounded wait.
 
-**Raw API.** `request_raw` returns a `ReplyReceiver<R>` (a future in tasks
+**Raw API.** `request_raw(msg)` is now `send_request(msg, deadline)`
+(OTP's `gen_server:send_request/3`). It takes the deadline explicitly: a
+`Duration` from now, an `Instant`, or `Deadline::Never`. **0.7's
+`request_raw` had no deadline**: `send_request(msg, Deadline::Never)` keeps
+that unbounded wait, and `send_request(msg, DEFAULT_REQUEST_TIMEOUT)` gives
+the 5 s `request` uses. It returns a `ReplyReceiver<R>` (a future in tasks
 mode, `recv()` in threads mode) yielding `Result<R, ActorError>`.
-`Response::from_with_timeout` is removed: build the deadline first,
-`Response::from(actor.request_raw_until(msg, Deadline::after(t)))`.
-`Receiver<M>` implementors implement `request_raw_until` (`request_raw` is
-provided). A `recv_timeout` on the old native receiver has no counterpart:
-the deadline is fixed when the request is sent.
+`Response::from_with_timeout` is removed: `Response::from(actor.send_request(msg, t))`.
+`Receiver<M>` implementors implement `send_request(msg, Deadline)`. A
+`recv_timeout` on the old native receiver has no counterpart: the deadline
+is fixed when the request is sent.
 
 **Metrics.** `metrics::Snapshot` gains `requests_reply_dropped_total` and
 `requests_overloaded_total`, the `deferred_*` and `jobs_*` fields (see the

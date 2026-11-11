@@ -969,7 +969,9 @@ async fn no_reply_succeeds_after_noproc_is_observable() {
     let _scenario = FailScenario::setup();
     let holder = Holder.start();
     let (tokens, token) = std::sync::mpsc::channel();
-    let caller = holder.request_raw(Hold(tokens)).unwrap();
+    let caller = holder
+        .send_request(Hold(tokens), spawned_concurrency::DEFAULT_REQUEST_TIMEOUT)
+        .unwrap();
     let token = token.recv_timeout(LIMIT).unwrap();
     failpoints::configure(
         "actor.at_death",
@@ -1136,7 +1138,9 @@ mod native {
         let _scenario = FailScenario::setup();
         let holder = NativeHolder.start();
         let (tokens, token) = std::sync::mpsc::channel();
-        let caller = holder.request_raw(Hold(tokens)).unwrap();
+        let caller = holder
+            .send_request(Hold(tokens), spawned_concurrency::DEFAULT_REQUEST_TIMEOUT)
+            .unwrap();
         let token = token.recv_timeout(LIMIT).unwrap();
         failpoints::configure(
             "actor.at_death",

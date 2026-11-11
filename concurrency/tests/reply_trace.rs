@@ -179,7 +179,9 @@ async fn reply_in_turn() {
 #[tokio::test]
 async fn stored_token_answered_later() {
     let actor = start();
-    let held = actor.request_raw(Hold).unwrap();
+    let held = actor
+        .send_request(Hold, spawned_concurrency::DEFAULT_REQUEST_TIMEOUT)
+        .unwrap();
     actor.request(Sync).await.unwrap();
     actor.send(Flush::Reply).unwrap();
     let got = held.await;
@@ -190,7 +192,9 @@ async fn stored_token_answered_later() {
 #[tokio::test]
 async fn stored_token_dropped_later() {
     let actor = start();
-    let held = actor.request_raw(Hold).unwrap();
+    let held = actor
+        .send_request(Hold, spawned_concurrency::DEFAULT_REQUEST_TIMEOUT)
+        .unwrap();
     actor.request(Sync).await.unwrap();
     actor.send(Flush::Drop).unwrap();
     let got = held.await;
@@ -209,7 +213,9 @@ async fn unused_obligation_answers_dropped() {
 #[tokio::test]
 async fn defer_at_the_bound_is_overloaded() {
     let actor = start();
-    let first = actor.request_raw(Hold).unwrap();
+    let first = actor
+        .send_request(Hold, spawned_concurrency::DEFAULT_REQUEST_TIMEOUT)
+        .unwrap();
     let got = actor.request(Hold).await;
     assert!(matches!(got, Err(ActorError::Overloaded)), "{got:?}");
     actor.send(Flush::Reply).unwrap();
@@ -222,7 +228,7 @@ async fn defer_at_the_bound_is_overloaded() {
 async fn stored_token_expires_at_its_deadline() {
     let actor = start();
     let deadline = Deadline::At(spawned_rt::time::Instant::now() + Duration::from_millis(30));
-    let held = actor.request_raw_until(Hold, deadline).unwrap();
+    let held = actor.send_request(Hold, deadline).unwrap();
     let got = held.await;
     assert!(matches!(got, Err(ActorError::RequestTimeout)), "{got:?}");
     actor.send(Flush::Reply).unwrap();
@@ -233,7 +239,9 @@ async fn stored_token_expires_at_its_deadline() {
 #[tokio::test]
 async fn caller_gives_up() {
     let actor = start();
-    let held = actor.request_raw(Hold).unwrap();
+    let held = actor
+        .send_request(Hold, spawned_concurrency::DEFAULT_REQUEST_TIMEOUT)
+        .unwrap();
     actor.request(Sync).await.unwrap();
     drop(held);
     actor.send(Flush::Reply).unwrap();
@@ -244,7 +252,9 @@ async fn caller_gives_up() {
 #[tokio::test]
 async fn death_closes_stored_tokens() {
     let actor = start();
-    let held = actor.request_raw(Hold).unwrap();
+    let held = actor
+        .send_request(Hold, spawned_concurrency::DEFAULT_REQUEST_TIMEOUT)
+        .unwrap();
     actor.request(Sync).await.unwrap();
     let owner = id(&actor);
     actor.context().stop();

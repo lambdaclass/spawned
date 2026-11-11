@@ -310,8 +310,16 @@ impl Target {
             return rx;
         }
         match self {
-            Self::Tasks(actor) => Reply::Tasks(actor.request_raw(work).expect("actor stopped")),
-            Self::Threads(actor) => Reply::Threads(actor.request_raw(work).expect("actor stopped")),
+            Self::Tasks(actor) => Reply::Tasks(
+                actor
+                    .send_request(work, spawned_concurrency::DEFAULT_REQUEST_TIMEOUT)
+                    .expect("actor stopped"),
+            ),
+            Self::Threads(actor) => Reply::Threads(
+                actor
+                    .send_request(work, spawned_concurrency::DEFAULT_REQUEST_TIMEOUT)
+                    .expect("actor stopped"),
+            ),
             Self::Tokio(tx) => {
                 let (reply, rx) = tokio::sync::oneshot::channel();
                 tx.send(TokioMessage::Request(work, reply))

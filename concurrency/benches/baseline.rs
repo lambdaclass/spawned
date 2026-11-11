@@ -135,12 +135,12 @@ impl Target {
         match self {
             Self::Tasks(actor) => Reply::Tasks(
                 actor
-                    .request_raw_until(work, Deadline::after(Duration::from_secs(10)))
+                    .send_request(work, Deadline::after(Duration::from_secs(10)))
                     .expect("actor stopped"),
             ),
             Self::Threads(actor) => Reply::Threads(
                 actor
-                    .request_raw_until(work, Deadline::after(Duration::from_secs(10)))
+                    .send_request(work, Deadline::after(Duration::from_secs(10)))
                     .expect("actor stopped"),
             ),
             Self::Tokio(tx) => {

@@ -235,7 +235,9 @@ fn native_expect_no_message_reports_in_flight_messages() {
             q.0
         })
         .start();
-    let _reply = mock.request_raw(Quote(1)).unwrap();
+    let _reply = mock
+        .send_request(Quote(1), spawned_concurrency::DEFAULT_REQUEST_TIMEOUT)
+        .unwrap();
     wait_until(WAIT, "the quote arrived", || mock.count::<Quote>() == 1);
     mock.expect_no_message(Duration::from_millis(5));
 }

@@ -98,7 +98,13 @@ fn metrics_conserve_work_across_all_lifecycle_paths() {
     runtime().block_on(async {
         let (release, gate) = oneshot::channel();
         let actor = Probe { gate: Some(gate) }.start();
-        let replies: Vec<_> = (0..10).map(|_| actor.request_raw(Ping).unwrap()).collect();
+        let replies: Vec<_> = (0..10)
+            .map(|_| {
+                actor
+                    .send_request(Ping, spawned_concurrency::DEFAULT_REQUEST_TIMEOUT)
+                    .unwrap()
+            })
+            .collect();
         assert_eq!(actor.mailbox_depth(), 10);
         assert_eq!(actor.context().mailbox_depth(), 10);
         assert!(matches!(
@@ -107,13 +113,16 @@ fn metrics_conserve_work_across_all_lifecycle_paths() {
         ));
         assert!(matches!(
             Response::from(
-                actor.request_raw_until(Ping, spawned_concurrency::Deadline::after(Duration::ZERO))
+                actor.send_request(Ping, spawned_concurrency::Deadline::after(Duration::ZERO))
             )
             .await,
             Err(ActorError::RequestTimeout)
         ));
         // Dropping either kind of caller wrapper does not cancel actor work.
-        drop(Response::from(actor.request_raw(Ping)));
+        drop(Response::from(actor.send_request(
+            Ping,
+            spawned_concurrency::DEFAULT_REQUEST_TIMEOUT,
+        )));
         let mut cancelled = Box::pin(actor.request(Ping));
         assert!(futures::poll!(cancelled.as_mut()).is_pending());
         drop(cancelled);
@@ -130,8 +139,10 @@ fn metrics_conserve_work_across_all_lifecycle_paths() {
         spawned_concurrency::tasks::request(recipient.as_ref(), Ping, Duration::from_secs(2))
             .await
             .unwrap();
-        Response::from(actor.request_raw(Ping)).await.unwrap();
-        Response::from(actor.request_raw_until(
+        Response::from(actor.send_request(Ping, spawned_concurrency::DEFAULT_REQUEST_TIMEOUT))
+            .await
+            .unwrap();
+        Response::from(actor.send_request(
             Ping,
             spawned_concurrency::Deadline::after(Duration::from_secs(2)),
         ))
@@ -142,7 +153,7 @@ fn metrics_conserve_work_across_all_lifecycle_paths() {
         assert_eq!(actor.mailbox_depth(), 0);
         assert!(actor.send(Ping).is_err());
         assert!(matches!(
-            Response::from(actor.request_raw_until(
+            Response::from(actor.send_request(
                 Ping,
                 spawned_concurrency::Deadline::after(Duration::from_secs(2))
             ))
@@ -152,7 +163,9 @@ fn metrics_conserve_work_across_all_lifecycle_paths() {
 
         let (release, gate) = oneshot::channel();
         let actor = Probe { gate: Some(gate) }.start();
-        let raw = actor.request_raw(Ping).unwrap();
+        let raw = actor
+            .send_request(Ping, spawned_concurrency::DEFAULT_REQUEST_TIMEOUT)
+            .unwrap();
         actor.send(Ping).unwrap();
         let mut pending = Box::pin(actor.request(Ping));
         assert!(futures::poll!(pending.as_mut()).is_pending());

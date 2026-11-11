@@ -124,7 +124,7 @@ State that must be released on every exit, including kills and runtime drops, be
 | `ctx.send(msg)` | Send a fire-and-forget message to this actor (self-send) |
 | `ctx.request(msg)` | Send a request and wait for the reply (tasks: async, threads: blocking) |
 | `ctx.request_with_timeout(msg, duration)` | Send a request with a custom timeout |
-| `ctx.request_raw(msg)` / `ctx.request_raw_until(msg, deadline)` | Send a request and get its `ReplyReceiver<R>` (tasks: a future, threads: `recv()`/`try_recv()`) yielding `Result<R, ActorError>`; the deadline (5 s default, or `Deadline::At`/`Never`) is fixed at send |
+| `ctx.send_request(msg, deadline)` | Send a request without waiting (`gen_server:send_request/3`) and get its `ReplyReceiver<R>` (tasks: a future, threads: `recv()`/`try_recv()`) yielding `Result<R, ActorError>`; the deadline (a `Duration`, an `Instant` or `Deadline::Never`) is fixed at send |
 | `ctx.recipient::<M>()` | Get a type-erased `Recipient<M>` for this actor |
 | `ctx.actor_ref()` | Get an `ActorRef<A>` from the context |
 | `ctx.id()` | This actor's `ActorId` |
@@ -165,7 +165,7 @@ async fn handle_tick(&mut self, _msg: Tick, ctx: &Context<Self>) {
 | `actor_ref.request(msg)` | Request with default 5s timeout. Tasks: `.await`, Threads: blocking |
 | `actor_ref.request_with_timeout(msg, duration)` | Request with custom timeout |
 | `actor_ref.with_request_timeout(duration)` | Clone a configured handle for generated protocol methods (v0.7) |
-| `actor_ref.request_raw(msg)` / `actor_ref.request_raw_until(msg, deadline)` | Returns the request's `ReplyReceiver<R>` (as `ctx.request_raw`) |
+| `actor_ref.send_request(msg, deadline)` | Returns the request's `ReplyReceiver<R>` (as `ctx.send_request`) |
 | `actor_ref.recipient::<M>()` | Get a type-erased `Recipient<M>` |
 | `actor_ref.context()` | Get a `Context<A>` (for timer setup, etc.) |
 | `actor_ref.join()` | Wait until the actor has fully stopped (tasks: `.await`, threads: blocking) |
@@ -412,7 +412,7 @@ When you need to send a specific message type to an actor without knowing its co
 pub type Recipient<M> = Arc<dyn Receiver<M>>;
 ```
 
-`Receiver<M>` is the object-safe trait that provides `send()` and `request_raw()` for a single message type.
+`Receiver<M>` is the object-safe trait that provides `send()` and `send_request()` for a single message type (on a `Recipient`, `send_request` takes a `Deadline`: `Deadline::after(d)` or `d.into()`).
 
 ### Getting a Recipient
 
@@ -661,7 +661,7 @@ async fn on_checked(&mut self, msg: Checked, _ctx: &Context<Self>) {
 
 // Delegation: the obligation and its credit stay here.
 let token = reply.defer()?;
-let downstream = other.request_raw_until(Lookup(key), token.deadline().map_or(Deadline::Never, Deadline::At));
+let downstream = other.send_request(Lookup(key), token.deadline()); // same deadline as our caller
 ctx.pipe_reply(JobOptions::new(), token, |_| async move { downstream?.await }, |res, token| Delegated { res, token })?;
 ```
 
@@ -1500,7 +1500,7 @@ waits retain their existing first-poll timeout behavior. Synchronous protocol
 requests are observed by their blocking request; `Response::ready` does not count
 that result a second time. Manually constructed ready results are not requests.
 
-`request_raw` returns a `ReplyReceiver<R>`; it does not observe how the caller
+`send_request` returns a `ReplyReceiver<R>`; it does not observe how the caller
 waits on it, so it is not a caller-observed request. Its deadline clock is
 part of the contract: awaited directly, a raw receiver is expired by the
 owner's deadline heap on the real clock (the simulated one under

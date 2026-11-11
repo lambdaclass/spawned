@@ -170,7 +170,7 @@ macro_rules! probe_common {
             fn send(&self, msg: M) -> Result<(), ActorError> {
                 ProbeCore::send(self, msg)
             }
-            fn request_raw_until(
+            fn send_request(
                 &self,
                 msg: M,
                 deadline: Deadline,

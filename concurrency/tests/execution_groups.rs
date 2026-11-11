@@ -393,7 +393,12 @@ async fn failed_startup_discards_queued_payloads_and_reply_channels_without_disp
         .await
         .unwrap()
         .unwrap();
-    let reply = actor.request_raw(Queued(Probe(dropped.clone()))).unwrap();
+    let reply = actor
+        .send_request(
+            Queued(Probe(dropped.clone())),
+            spawned_concurrency::DEFAULT_REQUEST_TIMEOUT,
+        )
+        .unwrap();
     actor.send(Queued(Probe(dropped.clone()))).unwrap();
     assert_eq!(handled.load(Ordering::SeqCst), 0);
     release.send(()).unwrap();

@@ -151,13 +151,18 @@ fn stop_finishes_in_flight_handler_and_rejects_queued_work() {
         let (started, rx) = tokio::sync::oneshot::channel();
         let (release, gate) = tokio::sync::oneshot::channel();
         let reply = actor
-            .request_raw(Hold {
-                started,
-                release: gate,
-            })
+            .send_request(
+                Hold {
+                    started,
+                    release: gate,
+                },
+                spawned_concurrency::DEFAULT_REQUEST_TIMEOUT,
+            )
             .unwrap();
         tokio::time::timeout(LIMIT, rx).await.unwrap().unwrap();
-        let queued = actor.request_raw(Thread).unwrap();
+        let queued = actor
+            .send_request(Thread, spawned_concurrency::DEFAULT_REQUEST_TIMEOUT)
+            .unwrap();
         actor.child_handle().stop();
         assert!(actor.exit_reason().is_none());
         release.send(()).unwrap();
@@ -205,10 +210,13 @@ fn suspended_actor_does_not_block_another_actor_on_its_shard() {
         let (started, rx) = tokio::sync::oneshot::channel();
         let (release, gate) = tokio::sync::oneshot::channel();
         let held = actors[a]
-            .request_raw(Hold {
-                started,
-                release: gate,
-            })
+            .send_request(
+                Hold {
+                    started,
+                    release: gate,
+                },
+                spawned_concurrency::DEFAULT_REQUEST_TIMEOUT,
+            )
             .unwrap();
         tokio::time::timeout(LIMIT, rx).await.unwrap().unwrap();
         assert_eq!(
@@ -302,13 +310,18 @@ fn blocking_handler_stalls_its_shard_while_another_shard_progresses() {
         let (started, rx) = tokio::sync::oneshot::channel();
         let (release, gate) = std::sync::mpsc::channel();
         let frozen = actors[a]
-            .request_raw(Freeze {
-                started,
-                release: gate,
-            })
+            .send_request(
+                Freeze {
+                    started,
+                    release: gate,
+                },
+                spawned_concurrency::DEFAULT_REQUEST_TIMEOUT,
+            )
             .unwrap();
         tokio::time::timeout(LIMIT, rx).await.unwrap().unwrap();
-        let mut queued = actors[b].request_raw(Thread).unwrap();
+        let mut queued = actors[b]
+            .send_request(Thread, spawned_concurrency::DEFAULT_REQUEST_TIMEOUT)
+            .unwrap();
         assert!(queued.try_recv().is_none());
         if let Some(other) = (0..actors.len()).find(|&id| names[id] != names[a]) {
             assert_eq!(

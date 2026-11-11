@@ -222,7 +222,7 @@ mod native {
 
         let raw = Panicker.start();
         let receiver = raw
-            .request_raw_until(Boom, spawned_concurrency::Deadline::after(LIMIT))
+            .send_request(Boom, spawned_concurrency::Deadline::after(LIMIT))
             .unwrap();
         assert!(matches!(
             receiver.recv(),
@@ -584,7 +584,9 @@ mod tasks {
         );
 
         let raw = Panicker.start();
-        let receiver = raw.request_raw(Boom).unwrap();
+        let receiver = raw
+            .send_request(Boom, spawned_concurrency::DEFAULT_REQUEST_TIMEOUT)
+            .unwrap();
         assert!(timeout(LIMIT, receiver).await.unwrap().is_err());
         assert!(system.shutdown(LIMIT).await.complete);
     }
@@ -790,7 +792,10 @@ mod native_contract {
             actor.send(Queued(Payload(drops.clone()))).expect("D3");
             replies.push(
                 actor
-                    .request_raw(Asked(Payload(drops.clone())))
+                    .send_request(
+                        Asked(Payload(drops.clone())),
+                        spawned_concurrency::DEFAULT_REQUEST_TIMEOUT,
+                    )
                     .expect("D3"),
             );
         }
@@ -1194,7 +1199,10 @@ mod tasks_contract {
                 actor.send(Queued(Payload(drops.clone()))).expect("D3");
                 replies.push(
                     actor
-                        .request_raw(Asked(Payload(drops.clone())))
+                        .send_request(
+                            Asked(Payload(drops.clone())),
+                            spawned_concurrency::DEFAULT_REQUEST_TIMEOUT,
+                        )
                         .expect("D3"),
                 );
             }
@@ -1627,7 +1635,11 @@ mod tasks_contract {
                 place,
             );
             let replies: Vec<_> = (0..4)
-                .map(|i| actor.request_raw(Work(i)).unwrap())
+                .map(|i| {
+                    actor
+                        .send_request(Work(i), spawned_concurrency::DEFAULT_REQUEST_TIMEOUT)
+                        .unwrap()
+                })
                 .collect();
             tokio::task::yield_now().await;
             assert!(
@@ -2056,7 +2068,10 @@ mod supervision_contract {
         let mut replies = Vec::new();
         for _ in 0..5 {
             old.send(Incr).unwrap();
-            replies.push(old.request_raw(Next).unwrap());
+            replies.push(
+                old.send_request(Next, spawned_concurrency::DEFAULT_REQUEST_TIMEOUT)
+                    .unwrap(),
+            );
         }
         release.send(()).unwrap();
         let new = next_generation(&child, generation).await;

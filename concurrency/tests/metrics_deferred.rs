@@ -177,8 +177,12 @@ async fn deferred_and_job_families_count_each_outcome_once() {
     let actor = Owner::default().start();
 
     // Replied, and Overloaded at the bound.
-    let first = actor.request_raw(Hold).unwrap();
-    let second = actor.request_raw(Hold).unwrap();
+    let first = actor
+        .send_request(Hold, spawned_concurrency::DEFAULT_REQUEST_TIMEOUT)
+        .unwrap();
+    let second = actor
+        .send_request(Hold, spawned_concurrency::DEFAULT_REQUEST_TIMEOUT)
+        .unwrap();
     assert!(matches!(
         actor.request(Hold).await,
         Err(ActorError::Overloaded)
@@ -188,12 +192,16 @@ async fn deferred_and_job_families_count_each_outcome_once() {
     assert!(matches!(second.await, Ok(1)));
     // Expired, dropped, abandoned.
     let deadline = Deadline::At(spawned_rt::time::Instant::now() + Duration::from_millis(20));
-    let expiring = actor.request_raw_until(Hold, deadline).unwrap();
+    let expiring = actor.send_request(Hold, deadline).unwrap();
     assert!(matches!(expiring.await, Err(ActorError::RequestTimeout)));
-    let dropped = actor.request_raw(Hold).unwrap();
+    let dropped = actor
+        .send_request(Hold, spawned_concurrency::DEFAULT_REQUEST_TIMEOUT)
+        .unwrap();
     actor.request(Flush::Drop).await.unwrap();
     assert!(matches!(dropped.await, Err(ActorError::ReplyDropped)));
-    let abandoned = actor.request_raw(Hold).unwrap();
+    let abandoned = actor
+        .send_request(Hold, spawned_concurrency::DEFAULT_REQUEST_TIMEOUT)
+        .unwrap();
     actor.request(Sync).await.unwrap();
     drop(abandoned);
     actor.request(Flush::Reply).await.unwrap();
@@ -213,9 +221,13 @@ async fn deferred_and_job_families_count_each_outcome_once() {
     }
 
     // Stopped: a token still stored at death.
-    let stopped = actor.request_raw(Hold).unwrap();
+    let stopped = actor
+        .send_request(Hold, spawned_concurrency::DEFAULT_REQUEST_TIMEOUT)
+        .unwrap();
     actor.request(Flush::Reply).await.unwrap();
-    let late = actor.request_raw(Hold).unwrap();
+    let late = actor
+        .send_request(Hold, spawned_concurrency::DEFAULT_REQUEST_TIMEOUT)
+        .unwrap();
     sleep(Duration::from_millis(20)).await;
     actor.context().stop();
     assert!(matches!(

@@ -9,15 +9,17 @@ use std::hash::Hash;
 /// the answer (typically `token.overloaded()` or a domain error) and still
 /// owns the token.
 #[derive(Debug)]
-pub enum InsertError<T> {
+#[non_exhaustive]
+pub enum InsertError<R: Send + 'static> {
     /// A live token is already stored under this key; it is kept.
-    Duplicate(T),
+    Duplicate(ReplyTo<R>),
     /// The table holds `cap` live tokens.
-    Full(T),
+    Full(ReplyTo<R>),
 }
 
-impl<T> InsertError<T> {
-    pub fn into_inner(self) -> T {
+impl<R: Send + 'static> InsertError<R> {
+    /// The token handed back.
+    pub fn into_inner(self) -> ReplyTo<R> {
         match self {
             Self::Duplicate(token) | Self::Full(token) => token,
         }
@@ -27,6 +29,9 @@ impl<T> InsertError<T> {
 /// Deferred tokens by key, capped: retained entries never exceed `cap`,
 /// however fast tokens expire. Terminal tokens (answered, expired, abandoned)
 /// are purged on every insert and skipped by `take`.
+///
+/// Experimental in 0.8: a utility shaped by one client (requests by id
+/// answered when a peer responds); it may change before 1.0.
 pub struct PendingReplies<K, R: Send + 'static> {
     cap: usize,
     tokens: HashMap<K, ReplyTo<R>>,
@@ -51,7 +56,7 @@ impl<K: Hash + Eq, R: Send + 'static> PendingReplies<K, R> {
 
     /// Purge terminal tokens, then insert. A duplicate key (with a live
     /// token) or a full table hands the new token back.
-    pub fn insert(&mut self, key: K, token: ReplyTo<R>) -> Result<(), InsertError<ReplyTo<R>>> {
+    pub fn insert(&mut self, key: K, token: ReplyTo<R>) -> Result<(), InsertError<R>> {
         self.purge();
         if self.tokens.contains_key(&key) {
             return Err(InsertError::Duplicate(token));
@@ -70,21 +75,20 @@ impl<K: Hash + Eq, R: Send + 'static> PendingReplies<K, R> {
         (!token.is_closed()).then_some(token)
     }
 
-    /// Remove every terminal token; returns how many were removed.
-    pub fn purge(&mut self) -> usize {
-        let before = self.tokens.len();
+    /// Remove every terminal token.
+    fn purge(&mut self) {
         self.tokens.retain(|_, token| !token.is_closed());
-        before - self.tokens.len()
     }
 
-    /// Entries held, without purging.
-    pub fn retained(&self) -> usize {
-        self.tokens.len()
-    }
-
-    /// Non-terminal entries (a scan).
-    pub fn live(&self) -> usize {
+    /// Live (non-terminal) tokens held: a scan, so a token whose caller
+    /// just left no longer counts.
+    pub fn len(&self) -> usize {
         self.tokens.values().filter(|t| !t.is_closed()).count()
+    }
+
+    /// Whether no live token is held.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 
     /// Take every live token (for example to answer them in `stopped()`).
@@ -123,11 +127,16 @@ mod tests {
         assert!(matches!(rdup.recv(), Err(ActorError::ReplyDropped)));
         // A caller that left frees its entry on the next insert.
         drop(rb);
-        assert_eq!(table.retained(), 2);
-        assert_eq!(table.live(), 1);
+        assert_eq!(
+            table.tokens.len(),
+            2,
+            "terminal tokens stay until an insert"
+        );
+        assert_eq!(table.len(), 1);
         let (d, rd) = token();
         table.insert(4, d).unwrap();
-        assert_eq!(table.retained(), 2);
+        assert_eq!(table.tokens.len(), 2);
+        assert_eq!(table.len(), 2);
         assert!(table.take(&2).is_none());
         table.take(&1).unwrap().reply(10);
         table.take(&4).unwrap().reply(40);

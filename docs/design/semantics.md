@@ -133,8 +133,9 @@ only the caller that sent that request.
 Checked by: [`actor_scenarios::concurrent_producers_preserve_order_and_reply_identity`][actor_scenarios],
 [`sim_ordering::per_sender_fifo_and_reply_identity_{pct,dfs}`][sim_ordering].
 
-**R3. Timeouts.** Default 5 s, as `gen_server:call/2`; `request_raw` has the
-same default and `request_raw_until(msg, Deadline::Never)` waits without one.
+**R3. Timeouts.** Default 5 s, as `gen_server:call/2`; `send_request(msg,
+deadline)` takes its deadline explicitly (`Deadline::Never` waits without
+one).
 Precedence: `with_request_timeout` handle, `#[request_timeout]` method
 attribute, `#[protocol(timeout)]`, 5 s. Send-only methods have no timeout.
 The deadline is fixed when the request is sent (send time plus the timeout)
@@ -146,12 +147,12 @@ a late reply is dropped (`Delivery::Expired`).
 Which clock expires a waiting caller is part of the contract: `request`,
 `request_with_timeout` and `Response::from(rx)` arm the runtime's timer, so
 they follow paused Tokio time; a `ReplyReceiver` awaited directly
-(`request_raw(..)?.await`) puts its deadline in the owner's deadline heap
+(`send_request(..)?.await`) puts its deadline in the owner's deadline heap
 instead, serviced on the real clock (the simulated one under `spawned_sim`),
 not paused Tokio time. The reason is cost: a raw receiver is the building
 block for fan-out and needs no runtime timer per request. Tests that pause
 Tokio time wait through `request` or `Response::from`. Either way a
-shortened deadline (`ReplyTo::with_deadline`) wakes the waiting caller.
+shortened deadline (`ReplyTo::shorten_deadline`) wakes the waiting caller.
 Checked by: [`protocol_timeouts`][protocol_timeouts],
 [`cancellation_safety::protocol_calls_are_cancel_safe_and_send_eagerly`][cancellation_safety],
 [`protocol_timeouts`][ex_protocol_timeouts] example (both modes),

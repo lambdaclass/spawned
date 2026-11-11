@@ -114,7 +114,7 @@ pub use reply::{
     Deadline, DeferError, Delivery, InsertError, PendingReplies, PendingReply, ReplyReceiver,
     ReplyTo,
 };
-pub use response::Response;
+pub use response::{Response, DEFAULT_REQUEST_TIMEOUT};
 pub use spawned_macros::{actor, protocol, send_handler};
 /// The instant type of reply and job deadlines (`Deadline::At`,
 /// `JobOptions::deadline`, `ReplyTo::deadline`, `JobCtx::emit_at`):

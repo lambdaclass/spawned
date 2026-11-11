@@ -12,7 +12,7 @@ pub use crate::reply::jobs::{
 };
 pub use crate::reply::{
     Deadline, DeferError, Delivery, InsertError, PendingReplies, PendingReply, ReplyFuture,
-    ReplyReceiver, ReplyTo, DEFAULT_MAX_OUTSTANDING,
+    ReplyReceiver, ReplyTo,
 };
 pub use crate::response::Response;
 pub use crate::Instant;

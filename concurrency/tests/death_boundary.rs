@@ -213,7 +213,7 @@ mod tasks_mode {
             actor.send(Block(blocked, entered_tx)).unwrap();
             entered.recv_timeout(LIMIT).unwrap();
             let queued = actor
-                .request_raw_until(Queued(inert()), spawned_concurrency::Deadline::Never)
+                .send_request(Queued(inert()), spawned_concurrency::Deadline::Never)
                 .unwrap();
             *caller.lock().unwrap() = Some(queued);
             actor.context().stop();
@@ -261,9 +261,9 @@ mod tasks_mode {
             }
             .start();
             let turn_caller = actor
-                .request_raw_until(Hang(payload, entered_tx), never)
+                .send_request(Hang(payload, entered_tx), never)
                 .unwrap();
-            let queued = actor.request_raw_until(Queued(inert()), never).unwrap();
+            let queued = actor.send_request(Queued(inert()), never).unwrap();
             while entered.try_recv().is_err() {
                 tokio::time::sleep(Duration::from_millis(1)).await;
             }
@@ -326,8 +326,8 @@ mod tasks_mode {
         actor.send(Block(blocked, entered_tx)).unwrap();
         entered.recv_timeout(LIMIT).unwrap();
         let never = spawned_concurrency::Deadline::Never;
-        let first = actor.request_raw_until(Queued(inert()), never).unwrap();
-        let second = actor.request_raw_until(Queued(inert()), never).unwrap();
+        let first = actor.send_request(Queued(inert()), never).unwrap();
+        let second = actor.send_request(Queued(inert()), never).unwrap();
         let waiter = Arc::new(WaitForSecond {
             second: Mutex::new(second),
             answered: AtomicBool::new(false),
@@ -386,7 +386,7 @@ mod tasks_mode {
         .start();
         let (tokens, token) = mpsc::channel();
         let receiver = actor
-            .request_raw_until(HandOut(tokens), spawned_concurrency::Deadline::Never)
+            .send_request(HandOut(tokens), spawned_concurrency::Deadline::Never)
             .unwrap();
         let token = token.recv_timeout(LIMIT).unwrap();
         let exited = Arc::new(AtomicBool::new(false));
@@ -438,8 +438,18 @@ mod tasks_mode {
         actor.send(Block(blocked, entered_tx)).unwrap();
         entered.recv_timeout(LIMIT).unwrap();
         let (payload, destroying, release) = gated();
-        let mut first = actor.request_raw(Queued(payload)).unwrap();
-        let mut second = actor.request_raw(Queued(inert())).unwrap();
+        let mut first = actor
+            .send_request(
+                Queued(payload),
+                spawned_concurrency::DEFAULT_REQUEST_TIMEOUT,
+            )
+            .unwrap();
+        let mut second = actor
+            .send_request(
+                Queued(inert()),
+                spawned_concurrency::DEFAULT_REQUEST_TIMEOUT,
+            )
+            .unwrap();
         actor.context().stop();
         unblock.send(()).unwrap();
         destroying.recv_timeout(LIMIT).unwrap();
@@ -474,7 +484,12 @@ mod tasks_mode {
             }
             .start()
         };
-        let mut queued = actor.request_raw(Queued(inert())).unwrap();
+        let mut queued = actor
+            .send_request(
+                Queued(inert()),
+                spawned_concurrency::DEFAULT_REQUEST_TIMEOUT,
+            )
+            .unwrap();
         let dropper = std::thread::spawn(move || drop(runtime));
         destroying.recv_timeout(LIMIT).unwrap();
         eventually("a queued caller waited for the state destructor", || {
@@ -502,7 +517,9 @@ mod tasks_mode {
                 parked: Vec::new(),
             }
             .start();
-            let parked = actor.request_raw(Park).unwrap();
+            let parked = actor
+                .send_request(Park, spawned_concurrency::DEFAULT_REQUEST_TIMEOUT)
+                .unwrap();
             // Let the actor defer it.
             actor.request(Queued(inert())).await.unwrap();
             (actor, parked)
@@ -578,7 +595,7 @@ mod threads_mode {
         actor.send(Block(blocked, entered_tx)).unwrap();
         entered.recv_timeout(LIMIT).unwrap();
         let queued = actor
-            .request_raw_until(Queued(inert()), spawned_concurrency::Deadline::Never)
+            .send_request(Queued(inert()), spawned_concurrency::Deadline::Never)
             .unwrap();
         *caller.lock().unwrap() = Some(queued);
         actor.context().stop();
@@ -599,8 +616,18 @@ mod threads_mode {
         actor.send(Block(blocked, entered_tx)).unwrap();
         entered.recv_timeout(LIMIT).unwrap();
         let (payload, destroying, release) = gated();
-        let mut first = actor.request_raw(Queued(payload)).unwrap();
-        let mut second = actor.request_raw(Queued(inert())).unwrap();
+        let mut first = actor
+            .send_request(
+                Queued(payload),
+                spawned_concurrency::DEFAULT_REQUEST_TIMEOUT,
+            )
+            .unwrap();
+        let mut second = actor
+            .send_request(
+                Queued(inert()),
+                spawned_concurrency::DEFAULT_REQUEST_TIMEOUT,
+            )
+            .unwrap();
         actor.context().stop();
         unblock.send(()).unwrap();
         destroying.recv_timeout(LIMIT).unwrap();
@@ -703,7 +730,7 @@ mod subscriber_after_discharge {
             Idle.start()
         };
         let queued = actor
-            .request_raw_until(Queued(inert()), spawned_concurrency::Deadline::Never)
+            .send_request(Queued(inert()), spawned_concurrency::Deadline::Never)
             .unwrap();
         *QUEUED.lock().unwrap() = Some(queued);
         drop(runtime);

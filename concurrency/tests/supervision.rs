@@ -435,7 +435,9 @@ async fn stuck_stopped_hook_triggers_cleanup_deadline_before_terminal_publicatio
         .unwrap();
     let supervisor = tree.start().await.unwrap();
     let old = child.current().unwrap();
-    let response = old.request_raw(Crash).unwrap();
+    let response = old
+        .send_request(Crash, spawned_concurrency::DEFAULT_REQUEST_TIMEOUT)
+        .unwrap();
     spawned_rt::tasks::timeout(LIMIT, entered)
         .await
         .unwrap()

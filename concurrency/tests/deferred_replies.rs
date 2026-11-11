@@ -171,8 +171,8 @@ mod tasks_mode {
     #[spawned_macros::sim_test]
     async fn deferred_reply_answers_from_a_later_turn() {
         let (actor, _) = start();
-        let a = actor.request_raw_until(Park(1), Deadline::Never).unwrap();
-        let b = actor.request_raw_until(Park(2), Deadline::Never).unwrap();
+        let a = actor.send_request(Park(1), Deadline::Never).unwrap();
+        let b = actor.send_request(Park(2), Deadline::Never).unwrap();
         assert_eq!(settle(&actor).await, 2);
         // The mailbox kept serving while both requests were parked.
         assert_eq!(actor.request(Release(10)).await.unwrap(), 2);
@@ -186,7 +186,7 @@ mod tasks_mode {
     #[spawned_macros::sim_test]
     async fn dropped_token_between_turns_answers_reply_dropped() {
         let (actor, _) = start();
-        let rx = actor.request_raw_until(Park(1), Deadline::Never).unwrap();
+        let rx = actor.send_request(Park(1), Deadline::Never).unwrap();
         actor.request(DropAll).await.unwrap();
         assert!(matches!(rx.await, Err(ActorError::ReplyDropped)));
         assert_eq!(settle(&actor).await, 0);
@@ -222,8 +222,8 @@ mod tasks_mode {
     #[spawned_macros::sim_test]
     async fn defer_at_the_bound_answers_overloaded() {
         let (actor, seen) = start();
-        let a = actor.request_raw_until(Park(1), Deadline::Never).unwrap();
-        let b = actor.request_raw_until(Park(2), Deadline::Never).unwrap();
+        let a = actor.send_request(Park(1), Deadline::Never).unwrap();
+        let b = actor.send_request(Park(2), Deadline::Never).unwrap();
         // MAX_OUTSTANDING is 2: the third deferral is refused in the same step.
         assert!(matches!(
             actor.request(Park(3)).await,
@@ -242,7 +242,7 @@ mod tasks_mode {
     #[spawned_macros::sim_test]
     async fn abandoned_caller_returns_the_credit_and_drops_the_late_reply() {
         let (actor, seen) = start();
-        let rx = actor.request_raw_until(Park(1), Deadline::Never).unwrap();
+        let rx = actor.send_request(Park(1), Deadline::Never).unwrap();
         assert_eq!(settle(&actor).await, 1);
         drop(rx);
         assert_eq!(
@@ -261,7 +261,7 @@ mod tasks_mode {
         let (actor, seen) = start();
         actor.send(TryDefer).unwrap();
         let expired = actor
-            .request_raw_until(TryDefer, Deadline::after(Duration::ZERO))
+            .send_request(TryDefer, Deadline::after(Duration::ZERO))
             .unwrap();
         assert!(matches!(expired.await, Err(ActorError::RequestTimeout)));
         settle(&actor).await;
@@ -277,7 +277,7 @@ mod tasks_mode {
     async fn late_reply_after_the_deadline_is_expired() {
         let (actor, seen) = start();
         let rx = actor
-            .request_raw_until(Park(1), Deadline::after(Duration::from_millis(50)))
+            .send_request(Park(1), Deadline::after(Duration::from_millis(50)))
             .unwrap();
         assert!(matches!(rx.await, Err(ActorError::RequestTimeout)));
         actor.request(Release(0)).await.unwrap();
@@ -293,7 +293,7 @@ mod tasks_mode {
         // Nobody polls this receiver: only the owner's deadline heap can
         // expire the token and return its credit.
         let rx = actor
-            .request_raw_until(Park(1), Deadline::after(Duration::from_millis(20)))
+            .send_request(Park(1), Deadline::after(Duration::from_millis(20)))
             .unwrap();
         assert_eq!(settle(&actor).await, 1);
         let mut waited = Duration::ZERO;
@@ -321,7 +321,7 @@ mod tasks_mode {
             .unwrap();
         let (actor, rx) = rt.block_on(async {
             let (actor, _) = start();
-            let rx = actor.request_raw_until(Park(1), Deadline::Never).unwrap();
+            let rx = actor.send_request(Park(1), Deadline::Never).unwrap();
             assert_eq!(settle(&actor).await, 1);
             (actor, rx)
         });
@@ -344,7 +344,7 @@ mod tasks_mode {
     #[spawned_macros::sim_test]
     async fn stopped_may_answer_stored_tokens() {
         let (actor, _) = start();
-        let rx = actor.request_raw_until(Park(7), Deadline::Never).unwrap();
+        let rx = actor.send_request(Park(7), Deadline::Never).unwrap();
         actor.request(Stop { answer: true }).await.unwrap();
         assert_eq!(rx.await.unwrap(), 1007);
         actor.join().await;
@@ -353,10 +353,10 @@ mod tasks_mode {
     #[spawned_macros::sim_test]
     async fn death_answers_stored_tokens_actor_stopped() {
         let (actor, _) = start();
-        let rx = actor.request_raw_until(Park(7), Deadline::Never).unwrap();
+        let rx = actor.send_request(Park(7), Deadline::Never).unwrap();
         let queued_behind_stop = {
             actor.request(Stop { answer: false }).await.unwrap();
-            actor.request_raw_until(Park(8), Deadline::Never)
+            actor.send_request(Park(8), Deadline::Never)
         };
         assert!(matches!(
             rx.await,
@@ -414,7 +414,7 @@ mod tasks_mode {
             }
         }
         let actor: ActorRef<Watcher> = Watcher { closed: None }.start();
-        let rx = actor.request_raw_until(Watch, Deadline::Never).unwrap();
+        let rx = actor.send_request(Watch, Deadline::Never).unwrap();
         actor.request(Ping).await.unwrap(); // `Watch` was handled (FIFO)
         drop(rx);
         assert!(actor.request(Done).await.unwrap());
@@ -433,7 +433,7 @@ mod tasks_mode {
             spawned_rt::tasks::spawn(async move { token.closed().await })
         };
         sleep(Duration::from_millis(5)).await;
-        token.with_deadline(spawned_rt::time::Instant::now() + Duration::from_millis(20));
+        token.shorten_deadline(Duration::from_millis(20));
         spawned_rt::tasks::timeout(Duration::from_secs(5), watcher)
             .await
             .expect("closed() missed the shortened deadline")
@@ -458,7 +458,7 @@ mod tasks_mode {
         impl Handler<Shorten> for Shortener {
             async fn handle(&mut self, _: Shorten, reply: PendingReply<'_, ()>, _: &Context<Self>) {
                 let token = reply.defer().unwrap();
-                token.with_deadline(spawned_rt::time::Instant::now() + Duration::from_millis(50));
+                token.shorten_deadline(Duration::from_millis(50));
                 self.0 = Some(token);
             }
         }
@@ -513,7 +513,7 @@ mod tasks_mode {
         let (actor, _) = start();
         // Sent now with a short deadline, polled only after it passed.
         let response = actor
-            .request_raw_until(Park(1), Deadline::after(Duration::from_millis(10)))
+            .send_request(Park(1), Deadline::after(Duration::from_millis(10)))
             .unwrap();
         spawned_rt::tasks::sleep(Duration::from_millis(50)).await;
         assert!(matches!(response.await, Err(ActorError::RequestTimeout)));
@@ -626,12 +626,12 @@ mod threads_mode {
     fn every_discharge_path() {
         // Later turn.
         let (actor, seen) = start();
-        let a = actor.request_raw_until(Park(1), Deadline::Never).unwrap();
+        let a = actor.send_request(Park(1), Deadline::Never).unwrap();
         assert_eq!(actor.request(Outstanding).unwrap(), 1);
         assert_eq!(actor.request(Release(10)).unwrap(), 1);
         assert_eq!(a.recv().unwrap(), 11);
         // Dropped between turns.
-        let b = actor.request_raw_until(Park(1), Deadline::Never).unwrap();
+        let b = actor.send_request(Park(1), Deadline::Never).unwrap();
         actor.request(DropAll).unwrap();
         assert!(matches!(b.recv(), Err(ActorError::ReplyDropped)));
         // Unanswered turn.
@@ -640,8 +640,8 @@ mod threads_mode {
             Err(ActorError::ReplyDropped)
         ));
         // Bound.
-        let c = actor.request_raw_until(Park(1), Deadline::Never).unwrap();
-        let d = actor.request_raw_until(Park(2), Deadline::Never).unwrap();
+        let c = actor.send_request(Park(1), Deadline::Never).unwrap();
+        let d = actor.send_request(Park(2), Deadline::Never).unwrap();
         assert!(matches!(
             actor.request(Park(3)),
             Err(ActorError::Overloaded)
@@ -653,7 +653,7 @@ mod threads_mode {
         assert_eq!(*seen.defer_errors.lock().unwrap(), [DeferError::Overloaded]);
         // Expired deadline: the receiver expires the slot; the late reply is dropped.
         let e = actor
-            .request_raw_until(Park(4), Deadline::after(Duration::from_millis(20)))
+            .send_request(Park(4), Deadline::after(Duration::from_millis(20)))
             .unwrap();
         assert!(matches!(e.recv(), Err(ActorError::RequestTimeout)));
         actor.request(Release(0)).unwrap();
@@ -664,7 +664,7 @@ mod threads_mode {
         );
         assert_eq!(actor.request(Outstanding).unwrap(), 0);
         // stopped() may answer; then death closes the rest.
-        let f = actor.request_raw_until(Park(7), Deadline::Never).unwrap();
+        let f = actor.send_request(Park(7), Deadline::Never).unwrap();
         actor.request(Stop { answer: true }).unwrap();
         assert_eq!(f.recv().unwrap(), 1007);
         actor.join();
@@ -679,7 +679,7 @@ mod threads_mode {
     fn unpolled_deferred_token_expires_by_the_owner_heap() {
         let (actor, seen) = start();
         let rx = actor
-            .request_raw_until(Park(1), Deadline::after(Duration::from_millis(20)))
+            .send_request(Park(1), Deadline::after(Duration::from_millis(20)))
             .unwrap();
         let began = std::time::Instant::now();
         while actor.request(Outstanding).unwrap() != 0 {
@@ -707,7 +707,7 @@ mod threads_mode {
             actor.join();
         }
         let (actor, _) = start();
-        let parked = actor.request_raw_until(Park(1), Deadline::Never).unwrap();
+        let parked = actor.send_request(Park(1), Deadline::Never).unwrap();
         actor.request(Stop { answer: false }).unwrap();
         assert!(matches!(
             parked.recv(),

@@ -15,7 +15,7 @@ pub(crate) mod slot;
 pub(crate) mod turn;
 
 pub use pending::{InsertError, PendingReplies};
-pub use registry::DEFAULT_MAX_OUTSTANDING;
+pub(crate) use registry::DEFAULT_MAX_OUTSTANDING;
 pub use slot::Delivery;
 
 use crate::error::ActorError;
@@ -86,9 +86,11 @@ pub(crate) fn now_ticks() -> u64 {
 /// A request's deadline, fixed when it is sent.
 ///
 /// `gen_server:call/3` takes a timeout or `infinity`; a request takes an
-/// absolute instant or [`Deadline::Never`]. The default for `request` and
-/// `request_raw` is [`DEFAULT_REQUEST_TIMEOUT`](crate::response::DEFAULT_REQUEST_TIMEOUT)
-/// after the send.
+/// absolute instant or [`Deadline::Never`]. `request` uses
+/// [`DEFAULT_REQUEST_TIMEOUT`](crate::response::DEFAULT_REQUEST_TIMEOUT)
+/// after the send; `send_request` takes the deadline. Every call that takes
+/// a deadline takes `impl Into<Deadline>`: a `Duration` (from now), an
+/// `Instant` or a `Deadline`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Deadline {
     /// Expire at this instant (on the `spawned_rt::time` clock).
@@ -113,8 +115,12 @@ impl Deadline {
         }
     }
 
-    fn from_ticks(ticks: u64) -> Option<Instant> {
-        (ticks != NEVER).then(|| spawned_rt::time::from_ticks(ticks))
+    fn of_ticks(ticks: u64) -> Self {
+        if ticks == NEVER {
+            Self::Never
+        } else {
+            Self::At(spawned_rt::time::from_ticks(ticks))
+        }
     }
 }
 
@@ -277,7 +283,9 @@ impl<'t, R: Send + 'static> PendingReply<'t, R> {
         }
     }
 
-    /// A `PendingReply` for a sent message: there is no caller.
+    /// A `PendingReply` for a sent message: there is no caller. For tests
+    /// calling a handler by hand, use `spawned_test::detached_reply()`.
+    #[doc(hidden)]
     pub fn detached() -> Self {
         Self {
             slot: None,
@@ -331,11 +339,13 @@ impl<'t, R: Send + 'static> PendingReply<'t, R> {
         }
     }
 
-    /// The request's deadline, or `None` for [`Deadline::Never`] and sends.
-    pub fn deadline(&self) -> Option<Instant> {
+    /// The request's deadline, fixed at send; [`Deadline::Never`] for an
+    /// unbounded request and for sends. Pass it on to forward the request
+    /// with the same deadline (`other.send_request(msg, reply.deadline())`).
+    pub fn deadline(&self) -> Deadline {
         self.slot
             .as_ref()
-            .and_then(|s| Deadline::from_ticks(s.deadline()))
+            .map_or(Deadline::Never, |s| Deadline::of_ticks(s.deadline()))
     }
 
     /// Whether the caller can no longer be answered (the deadline passed or
@@ -351,11 +361,6 @@ impl<'t, R: Send + 'static> PendingReply<'t, R> {
         if let Some(slot) = self.slot.take() {
             slot.terminate(Terminal::Stopped);
         }
-    }
-
-    /// Whether this is a request (has a caller) rather than a send.
-    pub fn has_caller(&self) -> bool {
-        self.slot.is_some()
     }
 }
 
@@ -427,19 +432,18 @@ impl<R: Send + 'static> ReplyTo<R> {
         }
     }
 
-    /// The request's deadline, or `None` for [`Deadline::Never`].
-    pub fn deadline(&self) -> Option<Instant> {
-        Deadline::from_ticks(self.slot().deadline())
+    /// The request's deadline (as shortened so far).
+    pub fn deadline(&self) -> Deadline {
+        Deadline::of_ticks(self.slot().deadline())
     }
 
-    /// Shorten the deadline to `at` (never extends it).
-    pub fn with_deadline(&self, at: Instant) {
-        // Only a lowered deadline gets a heap entry, so repeated
-        // `with_deadline` calls with the same or a later instant store nothing.
-        if self
-            .slot()
-            .shorten(spawned_rt::time::to_ticks(at), &now_ticks)
-        {
+    /// Shorten the request's deadline to `deadline` (a `Duration` from now
+    /// or an `Instant`); a later deadline, or [`Deadline::Never`], leaves it
+    /// unchanged. The waiting caller is woken to re-arm its timer.
+    pub fn shorten_deadline(&self, deadline: impl Into<Deadline>) {
+        // Only a lowered deadline gets a heap entry, so repeated calls with
+        // the same or a later deadline store nothing.
+        if self.slot().shorten(deadline.into().ticks(), &now_ticks) {
             self.registry.track_deadline(self.slot());
         }
     }
@@ -568,9 +572,9 @@ impl<R> ReplyReceiver<R> {
             .expect("ReplyReceiver used after completion")
     }
 
-    /// The deadline fixed at send, or `None` for [`Deadline::Never`].
-    pub fn deadline(&self) -> Option<Instant> {
-        Deadline::from_ticks(self.slot().deadline())
+    /// The deadline fixed at send (as the owner shortened it so far).
+    pub fn deadline(&self) -> Deadline {
+        Deadline::of_ticks(self.slot().deadline())
     }
 
     /// Block the calling thread until the reply, the deadline or the owner's

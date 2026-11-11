@@ -141,7 +141,10 @@ async fn bump_all(noises: &[u32]) -> Vec<Access> {
         .collect();
     let replies: Vec<_> = workers
         .iter()
-        .map(|w| w.request_raw(Bump).unwrap())
+        .map(|w| {
+            w.send_request(Bump, spawned_concurrency::DEFAULT_REQUEST_TIMEOUT)
+                .unwrap()
+        })
         .collect();
     for reply in replies {
         reply.await.unwrap();

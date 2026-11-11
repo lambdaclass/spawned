@@ -43,7 +43,7 @@ pub use jobs::{BlockingJobPermit, JobCtx};
 pub trait Actor: Send + Sized + 'static {
     /// Deferred-reply credits per instance (live `ReplyTo` tokens plus running
     /// linked jobs). At the bound `defer()` answers the caller `Overloaded`.
-    /// Capped at 65535.
+    /// Default 1024; capped at 65535.
     const MAX_OUTSTANDING: usize = DEFAULT_MAX_OUTSTANDING;
 
     /// Native threads this instance's jobs may run at once. `None`:
@@ -446,6 +446,8 @@ impl<A: Actor> Context<A> {
 
     /// Deferred-reply credits in use by this instance: live deferred
     /// tokens plus running linked jobs (bounded by `Actor::MAX_OUTSTANDING`).
+    /// Experimental in 0.8 (for tests and diagnostics; the `metrics`
+    /// feature exports the same count): it may change before 1.0.
     pub fn deferred_outstanding(&self) -> usize {
         self.replies.outstanding()
     }
@@ -516,27 +518,21 @@ impl<A: Actor> Context<A> {
         )
     }
 
-    /// Send a request and get its [`ReplyReceiver`], with the default
-    /// deadline ([`DEFAULT_REQUEST_TIMEOUT`] after the send).
-    pub fn request_raw<M>(&self, msg: M) -> Result<ReplyReceiver<M::Result>, ActorError>
-    where
-        A: Handler<M>,
-        M: Message,
-    {
-        self.request_raw_until(msg, Deadline::after(DEFAULT_REQUEST_TIMEOUT))
-    }
-
-    /// Send a request whose deadline is `deadline` ([`Deadline::Never`] for
-    /// an unbounded wait).
-    pub fn request_raw_until<M>(
+    /// Send a request without waiting (`gen_server:send_request/3`) and get
+    /// its [`ReplyReceiver`]. The deadline is fixed now: a `Duration` from
+    /// now, an `Instant`, or [`Deadline::Never`] for an unbounded wait
+    /// ([`DEFAULT_REQUEST_TIMEOUT`] is what [`request`](Self::request)
+    /// uses). The handler sees it through `PendingReply::deadline`.
+    pub fn send_request<M>(
         &self,
         msg: M,
-        deadline: Deadline,
+        deadline: impl Into<Deadline>,
     ) -> Result<ReplyReceiver<M::Result>, ActorError>
     where
         A: Handler<M>,
         M: Message,
     {
+        let deadline = deadline.into();
         let (slot, rx) = reply_slot(deadline, Some(&self.replies));
         enqueue(&self.sender, &self.mailbox, &self.replies, msg, slot)?;
         Ok(rx)
@@ -562,7 +558,7 @@ impl<A: Actor> Context<A> {
         M: Message,
     {
         let observation = crate::instrumentation::RequestObservation::new();
-        let result = match self.request_raw_until(msg, Deadline::after(duration)) {
+        let result = match self.send_request(msg, Deadline::after(duration)) {
             Err(error) => Err(error),
             Ok(rx) => rx.recv(),
         };
@@ -845,12 +841,12 @@ where
         Context::send(self, msg)
     }
 
-    fn request_raw_until(
+    fn send_request(
         &self,
         msg: M,
         deadline: Deadline,
     ) -> Result<ReplyReceiver<M::Result>, ActorError> {
-        Context::request_raw_until(self, msg, deadline)
+        Context::send_request(self, msg, deadline)
     }
 }
 
@@ -864,17 +860,14 @@ where
 /// message type that `A` handles.
 pub trait Receiver<M: Message>: Send + Sync {
     fn send(&self, msg: M) -> Result<(), ActorError>;
-    /// Send a request whose deadline is fixed now (the slot carries it).
-    fn request_raw_until(
+    /// Send a request without waiting (`gen_server:send_request/3`); its
+    /// deadline is fixed now (the slot carries it). On a [`Recipient`],
+    /// pass a `Deadline` (`Deadline::after(d)`, or `d.into()`).
+    fn send_request(
         &self,
         msg: M,
         deadline: Deadline,
     ) -> Result<ReplyReceiver<M::Result>, ActorError>;
-    /// Send a request with the default deadline
-    /// ([`DEFAULT_REQUEST_TIMEOUT`] after the send).
-    fn request_raw(&self, msg: M) -> Result<ReplyReceiver<M::Result>, ActorError> {
-        self.request_raw_until(msg, Deadline::after(DEFAULT_REQUEST_TIMEOUT))
-    }
 }
 
 /// Type-erased reference for sending a single message type.
@@ -887,7 +880,7 @@ pub fn request<M: Message>(
     timeout: Duration,
 ) -> Result<M::Result, ActorError> {
     let observation = crate::instrumentation::RequestObservation::new();
-    let result = match recipient.request_raw_until(msg, Deadline::after(timeout)) {
+    let result = match recipient.send_request(msg, Deadline::after(timeout)) {
         Err(error) => Err(error),
         Ok(rx) => rx.recv(),
     };
@@ -969,27 +962,21 @@ impl<A: Actor> ActorRef<A> {
         )
     }
 
-    /// Send a request and get its [`ReplyReceiver`], with the default
-    /// deadline ([`DEFAULT_REQUEST_TIMEOUT`] after the send).
-    pub fn request_raw<M>(&self, msg: M) -> Result<ReplyReceiver<M::Result>, ActorError>
-    where
-        A: Handler<M>,
-        M: Message,
-    {
-        self.request_raw_until(msg, Deadline::after(DEFAULT_REQUEST_TIMEOUT))
-    }
-
-    /// Send a request whose deadline is `deadline` ([`Deadline::Never`] for
-    /// an unbounded wait).
-    pub fn request_raw_until<M>(
+    /// Send a request without waiting (`gen_server:send_request/3`) and get
+    /// its [`ReplyReceiver`]. The deadline is fixed now: a `Duration` from
+    /// now, an `Instant`, or [`Deadline::Never`] for an unbounded wait
+    /// ([`DEFAULT_REQUEST_TIMEOUT`] is what [`request`](Self::request)
+    /// uses). The handler sees it through `PendingReply::deadline`.
+    pub fn send_request<M>(
         &self,
         msg: M,
-        deadline: Deadline,
+        deadline: impl Into<Deadline>,
     ) -> Result<ReplyReceiver<M::Result>, ActorError>
     where
         A: Handler<M>,
         M: Message,
     {
+        let deadline = deadline.into();
         let (slot, rx) = reply_slot(deadline, Some(&self.replies));
         enqueue(&self.sender, &self.mailbox, &self.replies, msg, slot)?;
         Ok(rx)
@@ -1038,7 +1025,7 @@ impl<A: Actor> ActorRef<A> {
         M: Message,
     {
         let observation = crate::instrumentation::RequestObservation::new();
-        let result = match self.request_raw_until(msg, Deadline::after(duration)) {
+        let result = match self.send_request(msg, Deadline::after(duration)) {
             Err(error) => Err(error),
             Ok(rx) => rx.recv(),
         };
@@ -1123,12 +1110,12 @@ where
         ActorRef::send(self, msg)
     }
 
-    fn request_raw_until(
+    fn send_request(
         &self,
         msg: M,
         deadline: Deadline,
     ) -> Result<ReplyReceiver<M::Result>, ActorError> {
-        ActorRef::request_raw_until(self, msg, deadline)
+        ActorRef::send_request(self, msg, deadline)
     }
 }
 
@@ -2613,9 +2600,11 @@ mod stop_wakeup_regression {
             handled: handled.clone(),
         }
         .start();
-        let first = actor.request_raw(Work).unwrap();
+        let first = actor.send_request(Work, DEFAULT_REQUEST_TIMEOUT).unwrap();
         entered.recv_timeout(Duration::from_secs(2)).unwrap();
-        let replies: Vec<_> = (0..256).map(|_| actor.request_raw(Work).unwrap()).collect();
+        let replies: Vec<_> = (0..256)
+            .map(|_| actor.send_request(Work, DEFAULT_REQUEST_TIMEOUT).unwrap())
+            .collect();
         std::thread::scope(|scope| {
             for _ in 0..16 {
                 let child = actor.child_handle();

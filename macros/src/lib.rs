@@ -491,7 +491,7 @@ fn generate_target_impl(
             MethodKind::Request(_) => match mode {
                 // The timeout was chosen before the message was built; the
                 // deadline is fixed now, at send, and travels in the slot.
-                RuntimeMode::Tasks => quote! { spawned_concurrency::Response::from(target.request_raw_until(message, spawned_concurrency::reply::Deadline::after(timeout))) },
+                RuntimeMode::Tasks => quote! { spawned_concurrency::Response::from(target.send_request(message, spawned_concurrency::Deadline::after(timeout))) },
                 RuntimeMode::Threads => quote! { spawned_concurrency::Response::ready(target.request_with_timeout(message, timeout)) },
             },
         };
@@ -1576,7 +1576,7 @@ pub fn actor(attr: TokenStream, item: TokenStream) -> TokenStream {
                 // request's reply obligation and answers it with the method's
                 // result (a deferred handler receives the obligation itself).
                 let reply_ty = quote! {
-                    spawned_concurrency::reply::PendingReply<'_, <#msg_ty as spawned_concurrency::message::Message>::Result>
+                    spawned_concurrency::PendingReply<'_, <#msg_ty as spawned_concurrency::message::Message>::Result>
                 };
                 // The parameter list carries the user's parentheses span.
                 let mut params = proc_macro2::Group::new(
@@ -1736,7 +1736,7 @@ pub fn actor(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// The reply type is named through the `Handler` path when it is qualified
 /// (`impl my_spawned::tasks::Handler<M> for A` uses
 /// `my_spawned::tasks::PendingReply`), so a renamed dependency works.
-/// With a bare `Handler`, it is `spawned_concurrency::reply::PendingReply`;
+/// With a bare `Handler`, it is `spawned_concurrency::PendingReply`;
 /// a crate that renames `spawned-concurrency` names it:
 /// `#[send_handler(crate = my_spawned)]`.
 #[proc_macro_attribute]
@@ -1818,9 +1818,9 @@ pub fn send_handler(attr: TokenStream, item: TokenStream) -> TokenStream {
         })
     });
     let reply_ty = match (krate, handler_module) {
-        (Some(krate), _) => quote! { #krate::reply::PendingReply<'_, ()> },
+        (Some(krate), _) => quote! { #krate::PendingReply<'_, ()> },
         (None, Some(module)) => quote! { #module::PendingReply<'_, ()> },
-        (None, None) => quote! { spawned_concurrency::reply::PendingReply<'_, ()> },
+        (None, None) => quote! { spawned_concurrency::PendingReply<'_, ()> },
     };
     let reply_param: FnArg = syn::parse_quote! {
         #reply: #reply_ty

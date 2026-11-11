@@ -180,7 +180,7 @@ async fn reply_vs_expiry_vs_death_vs_drop(seed: u64) {
     let actor = owner(&log);
     let d = Duration::from_millis(10);
     let receiver = actor
-        .request_raw_until(Hold, Deadline::At(spawned_rt::time::Instant::now() + d))
+        .send_request(Hold, Deadline::At(spawned_rt::time::Instant::now() + d))
         .unwrap();
     actor.request(Sync).await.unwrap();
     let replier = actor.clone();
