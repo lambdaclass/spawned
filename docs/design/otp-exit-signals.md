@@ -742,6 +742,14 @@ that ethrex's boot path stops hiding a failed discovery start behind retries.
 
 ## What the model establishes
 
+TLC results on the final model (TLC 2.19, 4 workers): `MCLifecycle` 24,270,350
+distinct states, depth 21, no error, 3m49s; `MCLifecycleLive` 179,720 states,
+no error, 40 s; `MCLifecycleLiveDeep` 5,117,864 states, depth 20, no error,
+34 min; `MCLifecycleFence` 252,878 states, no error, 2 s. All 17 negative-control
+checks produce their counterexample (1-6 s each). `MCLifecycleDeep` (every
+reason for every operation, `unlink`, trap-off) has not been run to completion
+yet. Apalache inductive invariants were not attempted.
+
 [`Lifecycle.tla`](../../verification/tla/Lifecycle.tla) models actors, outside
 code (`ChildHandle` holders, a caller) and one supervisor, with the six phases
 above (`Die` is D, `Publish` is publication). Configurations:
@@ -752,8 +760,12 @@ above (`Die` is D, `Publish` is publication). Configurations:
   administrative stop, one registration after D, runtime drop. Reasons are
   one per behaviour class: self-exits `Normal`, `Panic`, `Kill`; signals
   `Normal`, `Shutdown`, `Kill`; administrative `Shutdown`.
-- `MCLifecycleLive` (every PR): the liveness properties at the same bounds
-  without the actor-to-actor message.
+- `MCLifecycleLive` (every PR): the liveness properties with the request,
+  the monitor and late registrations, without the actor-to-actor message,
+  outside signals or runtime drop (179,720 states, 40 s on 4 workers).
+- `MCLifecycleLiveDeep` (weekly): the same with one outside signal or
+  administrative stop and runtime drop (5,117,864 states, 34 min on 4
+  workers).
 - `MCLifecycleFence` (every PR, safety): two late registrations and
   `unlink`, nothing else; the fence controls run here.
 - `MCLifecycleDeep` (weekly, safety): every reason for every operation (so
@@ -786,7 +798,7 @@ Invariants:
 | `ExitAfterMessages` | a death notice follows every earlier message from its source |
 | `CancelFenced` | no death notice or late `NoProc` notice takes effect after `unlink`/`demonitor` cancelled it |
 
-Liveness (`MCLifecycleLive`). These are conditional: they assume handlers,
+Liveness (`MCLifecycleLive`, `MCLifecycleLiveDeep`). These are conditional: they assume handlers,
 `stopped()` and destruction return (weak fairness on dispatch, `Die`,
 `Publish`, delivery and enqueue). They do not establish bounded shutdown when
 user code hangs; that is the cleanup-stuck rule, checked by
