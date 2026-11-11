@@ -170,6 +170,7 @@ async fn strategies_select_affected_children_and_reconstruct_in_dependency_order
                 SupervisorStrategy::OneForOne => index == 1,
                 SupervisorStrategy::OneForAll => true,
                 SupervisorStrategy::RestForOne => index >= 1,
+                other => unreachable!("strategy {other:?} not under test"),
             };
             if affected {
                 let next =

@@ -312,7 +312,7 @@ outgoing monitors cancelled before publication.
 ## 5. Links, monitors and trapped exits
 
 **X1. Down exactly once.** `ctx.monitor(&handle)` (requires `Handler<Down>`)
-yields exactly one `Down { monitor_ref, reason }` per monitor that is not
+yields exactly one `Down { monitor_ref, actor, reason }` per monitor that is not
 cancelled: the target's final reason if registered before its death point D,
 `NoProc` (at once) if after it. Each call returns a distinct `MonitorRef`; the
 target is unaffected.

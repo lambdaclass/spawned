@@ -721,6 +721,7 @@ impl<A: Actor> Context<A> {
                         &self.replies,
                         Down {
                             monitor_ref,
+                            actor: target.id(),
                             reason: ExitReason::NoProc,
                         },
                     );
@@ -770,6 +771,7 @@ impl<A: Actor> Context<A> {
                         &actor_ref.replies,
                         Down {
                             monitor_ref,
+                            actor: target.id(),
                             reason,
                         },
                     );

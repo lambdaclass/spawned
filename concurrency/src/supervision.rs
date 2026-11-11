@@ -137,6 +137,7 @@ pub(crate) fn jitter_seed(seed: u64, name: &[u8]) -> u64 {
 
 /// The affected children are fully joined before ordered reconstruction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum SupervisorStrategy {
     #[default]
     OneForOne,
@@ -168,8 +169,40 @@ impl Default for SupervisorConfig {
         }
     }
 }
+impl SupervisorConfig {
+    /// OneForOne, 5 restarts per 30 s, 1024 children, the default backoff.
+    pub fn new() -> Self {
+        Self::default()
+    }
+    /// Set [`strategy`](Self::strategy).
+    pub fn strategy(mut self, strategy: SupervisorStrategy) -> Self {
+        self.strategy = strategy;
+        self
+    }
+    /// Set [`max_restarts`](Self::max_restarts) (OTP's intensity).
+    pub fn max_restarts(mut self, max_restarts: usize) -> Self {
+        self.max_restarts = max_restarts;
+        self
+    }
+    /// Set [`restart_window`](Self::restart_window) (OTP's period).
+    pub fn restart_window(mut self, restart_window: Duration) -> Self {
+        self.restart_window = restart_window;
+        self
+    }
+    /// Set [`max_children`](Self::max_children).
+    pub fn max_children(mut self, max_children: usize) -> Self {
+        self.max_children = max_children;
+        self
+    }
+    /// Set [`backoff`](Self::backoff).
+    pub fn backoff(mut self, backoff: Backoff) -> Self {
+        self.backoff = backoff;
+        self
+    }
+}
 
 #[derive(Debug, Clone, thiserror::Error)]
+#[non_exhaustive]
 pub enum SupervisorError {
     #[error(transparent)]
     System(#[from] SystemError),
@@ -205,6 +238,7 @@ pub enum SupervisorError {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ChildState {
     Waiting,
     Starting,
@@ -216,6 +250,7 @@ pub enum ChildState {
 }
 
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct ChildSnapshot {
     pub name: String,
     pub state: ChildState,
@@ -1381,6 +1416,7 @@ pub struct Supervisor {
     core: Arc<Core>,
 }
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct SupervisorReport {
     pub complete: bool,
     pub failure: Option<String>,

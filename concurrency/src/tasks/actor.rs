@@ -51,6 +51,7 @@ pub use jobs::{BlockingJobPermit, JobCtx, JobPermit};
 ///   account for those threads and reactor descriptors when sizing populations.
 ///   Actor completion does not wait for detached helpers or runtime destruction.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Backend {
     #[default]
     Async,
@@ -846,6 +847,7 @@ impl<A: Actor> Context<A> {
                         &self.shared.replies,
                         Down {
                             monitor_ref,
+                            actor: target.id(),
                             reason: ExitReason::NoProc,
                         },
                     );
@@ -892,6 +894,7 @@ impl<A: Actor> Context<A> {
                         &actor_ref.shared.replies,
                         Down {
                             monitor_ref,
+                            actor: target.id(),
                             reason,
                         },
                     );

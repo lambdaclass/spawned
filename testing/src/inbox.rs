@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 
 /// What a mock or probe did with one message it received.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Outcome {
     /// Received, but its handling has not finished: the reply closure or a
     /// `delay` is still running. `expect` and `take_all` skip it until it is

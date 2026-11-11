@@ -42,6 +42,9 @@ every change; this guide covers what you need to edit when upgrading.
 | `InsertError<ReplyTo<R>>` *(0.8 pre-release)* | `InsertError<R>` (`#[non_exhaustive]`) |
 | `DEFAULT_MAX_OUTSTANDING` *(0.8 pre-release)* | removed from the public API (`Actor::MAX_OUTSTANDING` defaults to 1024) |
 | `system.shutdown(deadline)`, `supervisor.shutdown(deadline)`, `report.wait(deadline)` | unchanged calls; the `Duration` parameter is named `grace` (a deadline is an instant in 0.8) |
+| `Down { monitor_ref, reason }` (pattern) | `Down { monitor_ref, reason, .. }`; `Down` gains `actor: ActorId` (the monitored actor) and, like `Exit`, is `#[non_exhaustive]` |
+| exhaustive `match` on `SupervisorError`, `SystemError`, `HelperError`, `RegistryError`, `SupervisorStrategy`, `ExecutionProfile`, `ChildState`, `Backend`, `spawned_test::Outcome` | add a wildcard arm (all `#[non_exhaustive]`) |
+| struct literal or exhaustive pattern of `ChildSnapshot`, `SupervisorReport`, `ActorExit`, `metrics::Snapshot`, `HistogramSnapshot` | read the fields; patterns need `..` (all `#[non_exhaustive]`) |
 
 ### Exit signals, startup and runtime drops as in OTP (ranks 5e, 5f, 5g, targets 0.8, in progress)
 

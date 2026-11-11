@@ -17,11 +17,20 @@ use std::sync::{Arc, Mutex};
 ///
 /// [`Context::trap_exit(true)`]: crate::threads::Context::trap_exit
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct Exit {
     /// The actor that died.
     pub from: ActorId,
     /// Why it stopped.
     pub reason: ExitReason,
+}
+
+impl Exit {
+    /// An exit notice from `from` (for test doubles and comparisons; the
+    /// framework builds the ones it delivers).
+    pub fn new(from: ActorId, reason: ExitReason) -> Self {
+        Self { from, reason }
+    }
 }
 
 // ---------------------------------------------------------------------------

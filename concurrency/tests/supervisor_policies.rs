@@ -100,6 +100,7 @@ fn apply(
             SupervisorStrategy::OneForOne => index == origin,
             SupervisorStrategy::OneForAll => true,
             SupervisorStrategy::RestForOne => index >= origin,
+            other => unreachable!("strategy {other:?} not modelled"),
         };
         if affected && child.live {
             if modes[index] == RestartMode::Temporary {
@@ -110,7 +111,27 @@ fn apply(
         }
     }
 }
-fn unsettled(actual: &[ChildSnapshot], expected: &[Expected]) -> Vec<usize> {
+/// The snapshot fields the checker reads (`ChildSnapshot` is
+/// `#[non_exhaustive]`, so the negative test below builds these instead).
+#[derive(Debug)]
+struct Seen {
+    name: String,
+    state: ChildState,
+    generation: u64,
+}
+impl From<ChildSnapshot> for Seen {
+    fn from(s: ChildSnapshot) -> Self {
+        Seen {
+            name: s.name,
+            state: s.state,
+            generation: s.generation,
+        }
+    }
+}
+fn seen(children: &[SupervisedChild<Probe>]) -> Vec<Seen> {
+    children.iter().map(|c| c.snapshot().into()).collect()
+}
+fn unsettled(actual: &[Seen], expected: &[Expected]) -> Vec<usize> {
     assert_eq!(actual.len(), expected.len());
     let mut pending = Vec::new();
     // Do not short-circuit: a later child may have been over-reconstructed even
@@ -140,7 +161,7 @@ fn unsettled(actual: &[ChildSnapshot], expected: &[Expected]) -> Vec<usize> {
 async fn observe(children: &[SupervisedChild<Probe>], expected: &[Expected]) {
     let outcome = spawned_rt::tasks::timeout(LIMIT, async {
         loop {
-            let actual: Vec<_> = children.iter().map(SupervisedChild::snapshot).collect();
+            let actual = seen(children);
             let pending = unsettled(&actual, expected);
             if pending.is_empty() {
                 break;
@@ -177,7 +198,7 @@ async fn observe(children: &[SupervisedChild<Probe>], expected: &[Expected]) {
     })
     .await;
     if outcome.is_err() {
-        let actual: Vec<_> = children.iter().map(SupervisedChild::snapshot).collect();
+        let actual = seen(children);
         // Preserve the concrete over-reconstruction diagnosis at the watchdog
         // boundary too, rather than hiding it behind a generic timeout.
         let pending = unsettled(&actual, expected);
@@ -346,13 +367,10 @@ fn retired_temporary_and_transient_slots_stay_retired_across_later_recoveries() 
 #[test]
 #[should_panic(expected = "unexpected extra reconstruction: child-1")]
 fn a_waiting_earlier_child_cannot_hide_a_later_extra_reconstruction() {
-    let snapshot = |name: &str, state, generation| ChildSnapshot {
+    let snapshot = |name: &str, state, generation| Seen {
         name: name.into(),
         state,
         generation,
-        actor_id: None,
-        last_exit: None,
-        last_error: None,
     };
     let actual = [
         snapshot("child-0", ChildState::Backoff, 1),

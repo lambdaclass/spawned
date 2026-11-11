@@ -1001,6 +1001,7 @@ fn affected(strategy: SupervisorStrategy, n: usize, crashed: usize) -> std::ops:
         SupervisorStrategy::OneForOne => crashed..crashed + 1,
         SupervisorStrategy::OneForAll => 0..n,
         SupervisorStrategy::RestForOne => crashed..n,
+        other => unreachable!("strategy {other:?} not under test"),
     }
 }
 fn supervisor_config(strategy: SupervisorStrategy) -> SupervisorConfig {

@@ -47,6 +47,13 @@
     `ShutdownReport::wait` and the test kit's waits are named `grace` or
     `limit` (a deadline is an instant). `PendingReplies` and
     `Context::deferred_outstanding` are documented as experimental.
+  - `#[non_exhaustive]` on the enums that will grow (`SupervisorError`,
+    `SystemError`, `HelperError`, `RegistryError`, `SupervisorStrategy`,
+    `ExecutionProfile`, `ChildState`, `Backend`, `spawned_test::Outcome`)
+    and on the read-only structs (`Down`, `Exit`, `ChildSnapshot`,
+    `SupervisorReport`, `ActorExit`, `metrics::Snapshot`,
+    `HistogramSnapshot`). `Down` gains `actor`, the monitored `ActorId`
+    (OTP's `Object` in `{'DOWN', Ref, process, Object, Info}`).
 - Deferred replies and jobs, fixes from the 0.8 pre-release review: a job
   deadline still fires while the result waits for scheduled emits, and the
   job keeps its `MAX_OUTSTANDING` credit until its terminal message; a job

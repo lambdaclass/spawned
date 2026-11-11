@@ -39,16 +39,33 @@ impl std::fmt::Display for MonitorRef {
 // Down
 // ---------------------------------------------------------------------------
 
-/// Message delivered to a monitoring actor when its target stops.
+/// Message delivered to a monitoring actor when its target stops: OTP's
+/// `{'DOWN', Ref, process, Object, Info}`.
 ///
 /// To monitor another actor, call `ctx.monitor(&child_handle)` and implement
-/// `Handler<Down>` on the monitoring actor.
+/// `Handler<Down>` on the monitoring actor. Non-exhaustive: match it with
+/// `Down { monitor_ref, actor, reason, .. }`.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct Down {
     /// The monitor that triggered this notification.
     pub monitor_ref: MonitorRef,
+    /// The monitored actor (OTP's `Object`).
+    pub actor: crate::ActorId,
     /// Why the monitored actor stopped.
     pub reason: ExitReason,
+}
+
+impl Down {
+    /// A down notice for monitor `monitor_ref` of `actor` (for test doubles
+    /// and comparisons; the framework builds the ones it delivers).
+    pub fn new(monitor_ref: MonitorRef, actor: crate::ActorId, reason: ExitReason) -> Self {
+        Self {
+            monitor_ref,
+            actor,
+            reason,
+        }
+    }
 }
 
 impl Message for Down {

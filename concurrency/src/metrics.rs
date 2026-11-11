@@ -109,6 +109,7 @@ pub const BUCKET_BOUNDS_NS: [u64; 32] = {
     bounds
 };
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct HistogramSnapshot {
     pub buckets: [u64; 32],
     pub count: u64,
@@ -159,6 +160,7 @@ macro_rules! counters {
         /// Process aggregates. Reads are independent atomic samples, not a
         /// transaction. Conservation equations hold after operations quiesce.
         #[derive(Debug, Clone)]
+        #[non_exhaustive]
         pub struct Snapshot { $( pub $name: u64, )* pub queue_wait: HistogramSnapshot, pub handler_duration: HistogramSnapshot, pub request_latency: HistogramSnapshot, pub deferred_reply_latency: HistogramSnapshot }
         pub fn snapshot() -> Snapshot { Snapshot { $( $name: COUNTERS.$name.load(Relaxed), )* queue_wait: QUEUE_WAIT.snapshot(), handler_duration: HANDLER_DURATION.snapshot(), request_latency: REQUEST_LATENCY.snapshot(), deferred_reply_latency: DEFERRED_REPLY_LATENCY.snapshot() } }
         fn render_counters(out: &mut String, s: &Snapshot) {

@@ -30,6 +30,7 @@ use group::GroupInner;
 /// Resource models are opt-in; thread pools reserve one native thread per live
 /// actor, while pinned shards multiplex actors cooperatively on fixed CPUs.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ExecutionProfile {
     AsyncPool {
         workers: usize,
@@ -90,6 +91,7 @@ fn next_admission() -> Result<u64, SystemError> {
 }
 
 #[derive(Debug, Clone, thiserror::Error)]
+#[non_exhaustive]
 pub enum SystemError {
     #[error("no free persistent actor thread; stop/join a scope before admission")]
     Capacity,
@@ -116,6 +118,7 @@ pub enum SystemError {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
 pub enum HelperError {
     #[error("owned helper was cancelled before completion")]
     Cancelled,
@@ -681,6 +684,7 @@ pub struct ShutdownReport {
     pub unfinished_jobs: Vec<(crate::ActorId, usize)>,
 }
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct ActorExit {
     pub id: crate::ActorId,
     pub reason: ExitReason,

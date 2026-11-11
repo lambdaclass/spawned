@@ -929,7 +929,10 @@ impl Watcher {
 }
 ```
 
-The hook is optional and defaults to doing nothing. `Exit`, `Down` and
+The hook is optional and defaults to doing nothing. `Down` carries the
+monitor's `MonitorRef`, the monitored actor's `ActorId` (`actor`, OTP's
+`Object`) and its reason; `Exit` carries `from` and `reason`. Both are
+`#[non_exhaustive]`: match them with `..`. `Exit`, `Down` and
 parent exits are ordinary mailbox messages: they queue behind messages already
 there and never interrupt a running handler. A death notice follows every
 message the dying actor sent earlier to the same receiver. A link notice is

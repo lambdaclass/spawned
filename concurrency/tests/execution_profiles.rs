@@ -288,6 +288,7 @@ async fn each_strategy_recovers_on_a_full_native_pool_without_overlapping_slots(
                 SupervisorStrategy::OneForOne => 4,
                 SupervisorStrategy::OneForAll => 6,
                 SupervisorStrategy::RestForOne => 5,
+                other => unreachable!("strategy {other:?} not under test"),
             }
         );
         assert!(supervisor.shutdown(LIMIT).await.complete);

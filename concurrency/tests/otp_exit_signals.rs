@@ -231,10 +231,7 @@ mod tasks_mode {
         settle(&trapper).await;
         assert_eq!(
             trapper_seen.exits(),
-            vec![Exit {
-                from: t.id(),
-                reason: ExitReason::Killed
-            }]
+            vec![Exit::new(t.id(), ExitReason::Killed)]
         );
         settle(&watcher).await;
         assert_eq!(watcher_seen.downs().len(), 1);
@@ -302,14 +299,8 @@ mod tasks_mode {
         assert_eq!(
             trap_seen.exits(),
             vec![
-                Exit {
-                    from: ActorId::EXTERNAL,
-                    reason: ExitReason::Normal
-                },
-                Exit {
-                    from: ActorId::EXTERNAL,
-                    reason: ExitReason::Shutdown
-                },
+                Exit::new(ActorId::EXTERNAL, ExitReason::Normal),
+                Exit::new(ActorId::EXTERNAL, ExitReason::Shutdown),
             ]
         );
         assert!(trapper.child_handle().is_alive());
@@ -340,10 +331,7 @@ mod tasks_mode {
         settle(&b).await;
         assert_eq!(
             b_seen.exits(),
-            vec![Exit {
-                from: a.id(),
-                reason: ExitReason::Panic("from a".into())
-            }]
+            vec![Exit::new(a.id(), ExitReason::Panic("from a".into()))]
         );
         let bh3 = bh.clone();
         on(&a, move |ctx| ctx.exit(&bh3, ExitReason::Kill)).await;
@@ -378,10 +366,7 @@ mod tasks_mode {
         settle(&trapper).await;
         assert_eq!(
             trap_seen.exits(),
-            vec![Exit {
-                from: d.id(),
-                reason: ExitReason::NoProc
-            }]
+            vec![Exit::new(d.id(), ExitReason::NoProc)]
         );
         let downs = trap_seen.downs();
         assert_eq!(downs.len(), 1);
@@ -589,10 +574,7 @@ mod tasks_mode {
         assert_eq!(actor.request(Ping).await.unwrap(), 7);
         assert_eq!(
             seen.exits(),
-            vec![Exit {
-                from: ActorId::EXTERNAL,
-                reason: ExitReason::Shutdown
-            }]
+            vec![Exit::new(ActorId::EXTERNAL, ExitReason::Shutdown)]
         );
         actor.child_handle().stop();
         ended(&actor.child_handle()).await;
@@ -1300,10 +1282,7 @@ mod threads_mode {
         assert_eq!(peer.request(Ping).unwrap(), 7);
         assert_eq!(
             peer_seen.exits(),
-            vec![Exit {
-                from: target.id(),
-                reason: ExitReason::Killed
-            }]
+            vec![Exit::new(target.id(), ExitReason::Killed)]
         );
         // NoProc for a late link and try_link.
         assert_eq!(peer.context().try_link(&target.child_handle()), Err(NoProc));
