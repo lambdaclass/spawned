@@ -228,7 +228,8 @@ DYNAMIC_CONTROLS = [
     ("MCDynamicSupervisor", "IgnoreExpect", "TermResultsSound"),
 ]
 DYNAMIC_TEMPORAL_CONTROLS = [
-    ("MCDynamicSupervisorCallers", "NoAbort", "StartAnswered"),
+    # Without startup deadlines, so the deadline cannot mask the missing abort.
+    ("MCDynamicSupervisorCallers", "NoAbort", "StartAnswered", {"StartDeadlines": "FALSE"}),
     ("MCDynamicSupervisorCallers", "NoDeadline", "StartAnswered"),
     ("MCDynamicSupervisorCallers", "TermLost", "TerminateAnswered"),
     ("MCDynamicSupervisorCallers", "Sequential", "FanoutCompletes"),
@@ -324,8 +325,8 @@ def main():
         named_temporal("MCLifecycleLive", fault, prop, args.tlc, LIFECYCLE_SMALL)
     for module, fault, invariant, *constants in DYNAMIC_CONTROLS:
         named_fault(module, fault, invariant, args.tlc, *constants)
-    for module, fault, prop in DYNAMIC_TEMPORAL_CONTROLS:
-        named_temporal(module, fault, prop, args.tlc)
+    for module, fault, prop, *constants in DYNAMIC_TEMPORAL_CONTROLS:
+        named_temporal(module, fault, prop, args.tlc, *constants)
 
 
 if __name__ == "__main__":

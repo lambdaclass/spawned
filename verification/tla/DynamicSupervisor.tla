@@ -50,6 +50,9 @@ CONSTANTS
                   \* slot, or by slot fenced on the expected id@generation
     BackoffOn,    \* backoff configured (opt-in)
     FanoutSteps,  \* shutdown fan-out as separate steps (refinement)
+    StartDeadlines, \* startup_timeout exists (TRUE in every configuration;
+                    \* FALSE only for the NoAbort control, so that shutdown's
+                    \* cancellation is the only thing that answers a start)
     Fault
 
 Slots    == 1..N
@@ -74,7 +77,8 @@ ASSUME ModeSet \subseteq Modes /\ ModeSet # {}
 ASSUME SelfExits \subseteq Reasons /\ StartFails \subseteq Reasons
 ASSUME CleanupFails \subseteq BOOLEAN /\ FALSE \in CleanupFails
 ASSUME \A c \in TermCalls : CallSlot[c] \in Slots /\ CallKind[c] \in {"id", "slot", "expect"}
-ASSUME BackoffOn \in BOOLEAN /\ FanoutSteps \in BOOLEAN /\ Fault \in Faults
+ASSUME BackoffOn \in BOOLEAN /\ FanoutSteps \in BOOLEAN /\ StartDeadlines \in BOOLEAN
+ASSUME Fault \in Faults
 
 States   == {"idle", "queued", "starting", "running", "cleanup", "decide",
              "backoff", "restarting", "stuck", "removed", "rejected", "ignored"}
@@ -321,7 +325,7 @@ StartFail(s, r) ==
 
 \* startup_timeout fired (a deadline: fair in both fairness sets).
 StartTimeout(s) ==
-    /\ sl[s].cs \in {"starting", "restarting"}
+    /\ StartDeadlines /\ sl[s].cs \in {"starting", "restarting"}
     /\ FailStart(s, "timeout") /\ Unchanged1
 
 AbortStart(s) ==

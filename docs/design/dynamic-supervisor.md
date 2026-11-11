@@ -980,7 +980,7 @@ property above has at least one; the two action properties do not.
 | `QueuedTermOk` | a call queued at shutdown waits and may return `Ok` | `TermResultsSound` | main |
 | `StuckResultLost` | `CleanupStuck` not committed; later turns into `Ok` | `TermResultsSound` | main |
 | `IgnoreExpect` | a fenced call terminates a child that moved on | `TermResultsSound` | main |
-| `NoAbort` | a start racing shutdown is not cancelled | `StartAnswered` | callers |
+| `NoAbort` | a start racing shutdown is not cancelled | `StartAnswered` | callers, without startup deadlines (with them the deadline answers the start anyway, which masks the mutation) |
 | `NoDeadline` | no cleanup deadline | `StartAnswered` | callers |
 | `TermLost` | a found call never signals the child | `TerminateAnswered` | callers |
 | `Sequential` | the fan-out waits for each signalled child | `FanoutCompletes` | callers |
