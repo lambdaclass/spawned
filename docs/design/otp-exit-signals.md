@@ -47,8 +47,9 @@ independent review; see [Review resolutions](#review-resolutions).
 - **Trapping.** `ctx.trap_exit(true)` (OTP `process_flag(trap_exit, true)`).
   Read when the signal reaches the target. An `Exit` already queued stays a
   message if trapping is turned off later.
-- **Sender lifetime.** `ctx.exit`, `ctx.link`, `ctx.monitor` and sends work
-  until the actor's D, including from `stopped()`. A signal sent before D is
+- **Sender lifetime.** `ctx.exit`, replies and sends work until the actor's
+  D, including from `stopped()`; `ctx.link` and `ctx.monitor` work only while
+  the actor runs and are inert once exit begins (semantics X2). A signal sent before D is
   enqueued before the sender's own death notices (they are delivered at
   publication). After D, `ctx.exit` is inert (it returns without effect, as
   `ctx.monitor` already is after shutdown starts, semantics X2); a helper that
@@ -77,6 +78,15 @@ therefore separates the point at which the actor stops existing for its peers
 (D) from the point at which its resources are released (publication), and
 both from the end of owned background work. Each actor instance goes through:
 
+0. **Starting.** `started()` is the first turn. Exit signals, administrative
+   stops and kills that arrive before it returns take effect when it returns,
+   in arrival order, with the trap flag read then, so `ctx.trap_exit(true)` in
+   `started()` covers them (as OTP code sets the flag first thing in `init`).
+   This includes the `NoProc` parent exit of a `start_linked` child whose
+   parent was already past D. A kill received meanwhile makes the exit
+   `Killed` without `stopped()`. A panic in `started()` goes to D without
+   `stopped()` (semantics L5), with reason `Panic`, or `Killed` if a kill was
+   received. Managed readiness (L2) commits only if no exit was requested.
 1. **Running.** Handlers are dispatched.
 2. **Exit requested.** A self-exit, an untrapped exit signal, a parent exit, an
    administrative stop or a kill begins exit and records a *requested reason*.
@@ -355,7 +365,11 @@ that traps exits receives its parent's death in `exit_received`.
   unmanaged actor). Cleanup stuck keeps its meaning: the slot is stuck, the
   supervisor fails, nothing replaces the child, and "done" (V9) still waits
   for the controller to finish. The kill supersedes the reason and, per open
-  question 2, skips `stopped()` if it has not started.
+  question 2, skips `stopped()` if it has not started. Rows 1-3 apply
+  whenever the supervisor stops a child, also one that had already begun
+  exiting on its own: if it reaches D within the first interval its own
+  reason stands, otherwise it gets the kill. Row 4 applies only when the
+  supervisor is not stopping that child.
 - **Behaviour change.** A trapping child now finishes the messages queued
   before the shutdown before it stops, as in OTP. Today it stops after its
   current handler.
@@ -468,9 +482,12 @@ signal in flight").
 - Each actor has one exit table (link records, monitor watchers, the
   `exited` reason) under one mutex.
 - `link` and `unlink` lock the caller's and the target's tables together in a
-  stable order (address order, as `link.rs` `with_pair` does today), check
-  and update both, release, then deliver any `NoProc` outside the locks. No
-  revalidation step is needed because nothing else is held.
+  stable order (address order, as `link.rs` `with_pair` does today) and check
+  and update both. Installing a live edge needs no revalidation because
+  nothing else is held. A late `NoProc` is not delivered from inside that
+  step: `link` leaves a pending record and then delivers it through the same
+  receiver-side delivery step as any notice (below), so a concurrent `unlink`
+  or `demonitor` still fences it and the record is always removed.
 - `monitor` and `demonitor` likewise lock observer and target tables in the
   same order.
 - D locks only the dying actor's own table: it sets `exited`, takes its link
@@ -547,7 +564,8 @@ then):
 
 - `Supervision.tla`: `Retries(m, r, ready, init)` becomes
   `init /\ (Restarts(m, r) \/ (~ready /\ m # "Temporary"))`;
-  `RestartFollowsPolicy` requires `initial[c]` for every restart and
+  `RestartFollowsPolicy` requires `sready` for every restart (with
+  `ReadyMeansAllStarted` this covers both S1 boundaries) and
   `DesignAllowsRestart("Transient", r)` no longer admits `"none"` or
   `"timeout"` before initial readiness, so the v0.7 retry (a negative control)
   violates it; the deferral of ready-child exits during the initial start is
@@ -889,7 +907,20 @@ Round 1: Codex no-go (one blocker, eight majors), agy go with changes (six
 majors). Both reviewed the design and model without the author's answers to
 the open questions.
 
-### Round 3 (Codex: go with changes, five majors, two minors)
+### Round 3, agy (go with changes, three must-fix)
+
+agy reviewed the working tree, which already held the Codex round-3 changes.
+
+| Finding | Resolution |
+|---|---|
+| 1. `Link` was idempotent only for pending late notices, not pending death notices | `Link` is disabled while any link notice from that peer is pending, matching E4/E6. |
+| 2. Late `NoProc` "delivered outside the locks" bypassed fences and leaked the record | Locking protocol: a late `NoProc` goes through the receiver-side delivery step like any notice. |
+| 3. `start_linked` against a gone parent and signals before `started()` returns | New phase 0 (Starting): signals that arrive during `started()` take effect when it returns, trap flag read then; kill and panic in `started()` specified. |
+| 4. Sender lifetime said `link`/`monitor` work in `stopped()`; `ExitAfterMessages` ignored direct signals | Sender lifetime corrected (X2); `ExitAfterMessages` also orders direct signals. |
+| 5. `RestartFollowsPolicy` should require `sready`, not `initial[c]` | S1 model spec updated. |
+| 6. Rows of the E3 table when the child is already exiting | E3: rows 1-3 apply whenever the supervisor stops a child; model `SupShutdown` also targets an exiting child. |
+
+### Round 3, Codex (go with changes, five majors, two minors)
 
 | Finding | Resolution |
 |---|---|

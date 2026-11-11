@@ -229,9 +229,9 @@ PanicWhileExiting(a) ==
     /\ cause' = [cause EXCEPT ![a] = "self"]
     /\ UNCHANGED <<st, trapAt, dropFrom, killed, trap, mbox, reg, req, budget, afterStop>>
 
-Link(a, b) ==   \* idempotent while a link (or a pending late link) exists
+Link(a, b) ==   \* idempotent while a link or a pending link notice exists
     /\ st[a] = "run" /\ a # b /\ {a, b} \notin links
-    /\ ~\E n \in inflight : n.to = a /\ n.from = b /\ n.k = "link" /\ n.o = "late"
+    /\ ~\E n \in inflight : n.to = a /\ n.from = b /\ n.k = "link"
     /\ IF IsGone(b)
        THEN /\ lates < MaxLate /\ lates' = lates + 1
             /\ IF trap[a]
@@ -395,8 +395,8 @@ AdminStop(a, r) ==    \* ChildHandle::stop / stop_with_reason / shutdown
     /\ Begin(a, r, "admin")
     /\ UNCHANGED <<trap, mbox, reg, req, sends, lates, psent, afterStop>>
 
-SupShutdown(c) ==     \* exit(Child, shutdown) from the parent
-    /\ c \in Children /\ c \notin psent /\ st[c] = "run"
+SupShutdown(c) ==     \* exit(Child, shutdown) from the parent, also to a child
+    /\ c \in Children /\ c \notin psent /\ st[c] \in {"run", "stopping"}   \* already exiting
     /\ psent' = psent \cup {c}
     /\ Signal(c, Sup, "Shutdown", "direct", "parent")
     /\ UNCHANGED <<trap, reg, req, sends, signals, lates, afterStop>>
@@ -500,10 +500,10 @@ NoEdgeToDead ==
     /\ \A l \in links : \A x \in l : st[x] \in {"run", "stopping"}
 
 \* A death notice follows every message its source sent earlier to the same
-\* observer. (Direct signals from a live sender are ordinary per-sender FIFO.)
+\* observer, including direct exit signals it sent before D.
 ExitAfterMessages ==
     \A a \in Actors : \A i, j \in 1..Len(mbox[a]) :
-        (i < j /\ mbox[a][i].o = "death" /\ mbox[a][j].k = "msg")
+        (i < j /\ mbox[a][i].o = "death" /\ (mbox[a][j].k = "msg" \/ mbox[a][j].o = "direct"))
             => mbox[a][j].s # mbox[a][i].s
 
 \* Nothing takes effect after unlink or demonitor cancelled it.
