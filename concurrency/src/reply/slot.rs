@@ -219,6 +219,7 @@ impl Wake {
 
 impl<R> Slot<R> {
     /// A fresh `OPEN` slot whose deadline is `deadline` ticks (`NEVER` for none).
+    #[allow(dead_code)] // the Loom model and unit tests build ownerless slots
     pub(crate) fn new(deadline: u64) -> Self {
         Self::with_owner(deadline, Default::default())
     }
