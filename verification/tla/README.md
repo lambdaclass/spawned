@@ -1,7 +1,7 @@
 # TLA+ models
 
 Formal models of Spawned lifecycle contracts, checked with TLC. See the
-[verification strategy](../../legacy/docs/research/verification-strategy.md) for how
+[verification strategy](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/docs/research/verification-strategy.md) for how
 this fits with Loom, Shuttle, Miri, ThreadSanitizer and mutation testing.
 
 | Model | Covers |
@@ -470,7 +470,7 @@ PR #182 bug (`Fault = "Retain182"`) and the PR #185 bug (`"Dispatch185"`) each
 produce a counterexample (`negative_checks.py`). Still to do with the
 implementation: lifecycle-trace events for exit signals, links, monitors and
 requests so real runs replay against it, as supervision traces do.
-Source: [verification strategy](../../legacy/docs/research/verification-strategy.md#acceptance).
+Source: [verification strategy](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/docs/research/verification-strategy.md#acceptance).
 
 `Coordinator.tla` checks coordinator failure ownership independently of the actor
 policy models: a panic closes admission, records failure, signals remaining

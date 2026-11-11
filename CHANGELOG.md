@@ -7,6 +7,9 @@
   ([docs/research/determinism-audit.md](docs/research/determinism-audit.md)).
   Same-seed reruns found no schedule nondeterminism; traces differ only in
   process-global ids.
+- Removed `legacy/` (archived research, benchmark data and reviews, about 58 MB);
+  it remains in history at [`efba2434`](https://github.com/lambdaclass/spawned/tree/efba24340a01df82f872ec422b9dbaf48f897b04/legacy),
+  and live docs link there.
 - ROADMAP: a Path to 1.0 section (0.8, 0.9, 0.10 contents and what 1.0
   requires: stable API rules, a complete semantics contract, production-safe
   defaults, introspection, determinism, release gates, production proof and

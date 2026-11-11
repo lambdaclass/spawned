@@ -3,7 +3,7 @@
 Research note, 2026-11-09. Informs the [verification rule](../../ROADMAP.md#verification-rule),
 the Kani row of the [database-grade testing program](../../ROADMAP.md#database-grade-testing-program)
 (batch 1) and ranks 1-4 of the [roadmap](../../ROADMAP.md#ranked-backlog). The
-earlier [verification strategy](../../legacy/docs/research/verification-strategy.md)
+earlier [verification strategy](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/docs/research/verification-strategy.md)
 chose TLA+ plus trace validation for lifecycle protocols; this note covers the
 tools that check Rust code itself, and where each fits next to TLA+, plus the
 tools that prove the TLA+-level protocol invariants for unbounded configurations

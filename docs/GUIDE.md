@@ -205,8 +205,8 @@ Archived backend benchmarks found these limits:
   profile measured about one busy core per worker with no traffic (eight
   busy-core equivalents on eight workers). The public pinned groups park instead.
 
-Sources: [design findings](../legacy/benchmarks/DESIGN-FINDINGS.md) and the
-[backend study findings](../legacy/research/backend-experiments/2026-11-06-fede/FINDINGS.md);
+Sources: [design findings](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/benchmarks/DESIGN-FINDINGS.md) and the
+[backend study findings](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/research/backend-experiments/2026-11-06-fede/FINDINGS.md);
 throughput conclusions are in the [benchmarks README](../benchmarks/README.md#conclusions).
 
 `Backend::Thread` drives lifecycle hooks and handlers on its dedicated root
@@ -224,7 +224,7 @@ destruction. `spawned_rt::threads::block_on` uses the same one-worker runtime.
 The runtime is deliberately not `current_thread`: there, async helpers only
 progress while the root thread polls them, so a handler that synchronously waits
 for a local async helper would deadlock, and `block_in_place` would panic. See
-the [dedicated-runtime review](../legacy/docs/reviews/dedicated-runtime.md).
+the [dedicated-runtime review](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/docs/reviews/dedicated-runtime.md).
 
 ### Actors on different runtimes
 
@@ -240,8 +240,8 @@ Public owned parked pinned shards and bounded native pools are described under
 feature still contains private research selectors (pinned
 and spinning shards, alternative schedulers). They are not stable configuration
 APIs, and Tokio stays the default. Their measurements and reproduction guides are
-archived in [the backend notes](../legacy/docs/BACKENDS.md) and the
-[backend research index](../legacy/research/backend-experiments/README.md).
+archived in [the backend notes](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/docs/BACKENDS.md) and the
+[backend research index](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/research/backend-experiments/README.md).
 
 ---
 
@@ -651,7 +651,7 @@ exit-signal rules for the attempt. Repeated live links are no-ops. Unlink preven
 future propagation through the relationship but does not retract an exit already
 in flight. Links are a supervision primitive. Managed OneForOne/OneForAll/RestForOne recovery is described in
 [execution groups and supervision](#execution-groups-and-supervision).
-Transparent reference rebinding remains separate work. The [review and regression evidence](../legacy/docs/reviews/pr-166-links.md) is archived.
+Transparent reference rebinding remains separate work. The [review and regression evidence](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/docs/reviews/pr-166-links.md) is archived.
 
 ---
 
@@ -1173,7 +1173,7 @@ metrics and without inserting exporter work into handlers.
 
 Use application measurements before choosing a sampling rate; shared atomic
 counters themselves can contend under high actor/producer concurrency. The
-original [overhead measurements](../legacy/research/framework-metrics/2026-11-06/README.md)
+original [overhead measurements](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/research/framework-metrics/2026-11-06/README.md)
 are archived.
 
 ---
@@ -1372,4 +1372,4 @@ assert_linearizable(&Kv, &recorder.take());
 - [Execution groups and supervision design contract](design/execution-groups-supervision.md): the fuller boundaries of the v0.7 APIs.
 - [Testing](TESTING.md): scenario tests, failure windows, the TLA+ model and trace validation.
 - [Roadmap](../ROADMAP.md): what is planned and why.
-- [Legacy](../legacy/README.md): archived backend research, benchmark reports, reviews and earlier designs.
+- [Archived `legacy/` directory](https://github.com/lambdaclass/spawned/tree/efba24340a01df82f872ec422b9dbaf48f897b04/legacy) (removed; git history at `efba2434`): archived backend research, benchmark reports, reviews and earlier designs.

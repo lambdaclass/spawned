@@ -1,8 +1,0 @@
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.03s
-     Running tests/payload_stress.rs (/tmp/spawned-pr-security-review/system-target/debug/deps/payload_stress-2035a5f32a5db0ba)
-
-running 1 test
-test many_producers_preserve_fifo_or_discard_every_owned_payload_before_completion ... ok
-
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
-

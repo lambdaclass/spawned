@@ -31,7 +31,7 @@ are unbounded. Scheduling, affinity, frequency scaling and other machine load ar
 uncontrolled. The summary reports the median and min/max of per-process values;
 a median of per-run p99 values is not a pooled p99. Full case and measurement
 column definitions are in the archived
-[baseline methodology](../legacy/benchmarks/BASELINE-METHODOLOGY.md).
+[baseline methodology](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/benchmarks/BASELINE-METHODOLOGY.md).
 
 Runner self-tests (descendant cleanup and diagnostic retention):
 
@@ -56,12 +56,17 @@ campaigns, and the plotting environment:
 python3 -m venv /tmp/spawned-plots
 /tmp/spawned-plots/bin/pip install -r benchmarks/requirements-plots.txt
 /tmp/spawned-plots/bin/python benchmarks/render_experiments.py \
-  --data legacy/benchmarks/results/designs-2026-11-05 \
+  --data <designs-results-dir> \
   --output /tmp/designs-report
 /tmp/spawned-plots/bin/python benchmarks/render_full_actors.py \
-  --data legacy/benchmarks/results/full-actors-2026-11-05 \
+  --data <full-actors-results-dir> \
   --output /tmp/full-actors-report
 ```
+
+The archived campaign data these renderers were last run on is at
+[`legacy/benchmarks/results`](https://github.com/lambdaclass/spawned/tree/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/benchmarks/results)
+(git history, `efba2434`); check it out at that commit to re-render it.
+The renderers no longer embed the archived findings text.
 
 ## Conclusions
 
@@ -83,21 +88,21 @@ specific hosts; do not transfer the ratios to a client.
   a 4,096 descriptor limit at 1,024 actors; see the
   [guide](../docs/GUIDE.md#execution-modes-and-backends).
 
-Sources: [backend study findings](../legacy/research/backend-experiments/2026-11-06-fede/FINDINGS.md)
-and [design findings](../legacy/benchmarks/DESIGN-FINDINGS.md).
+Sources: [backend study findings](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/research/backend-experiments/2026-11-06-fede/FINDINGS.md)
+and [design findings](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/benchmarks/DESIGN-FINDINGS.md).
 
 ## Archived reports and protocols
 
 Measurement definitions, protocols, findings, validation notes, reviews, rendered
 reports and raw results from earlier campaigns are archived (not maintained):
 
-- [Initial baseline report](../legacy/benchmarks/REPORT-2026-11-05.md)
-- [Backend design report](../legacy/benchmarks/reports/designs-2026-11-05/REPORT.md),
-  [findings](../legacy/benchmarks/DESIGN-FINDINGS.md) and
-  [implementation/test guide](../legacy/benchmarks/EXPERIMENTS.md)
-- [Full-actor report](../legacy/benchmarks/reports/full-actors-2026-11-05/REPORT.md) and
-  [findings](../legacy/benchmarks/FINDINGS-FULL-ACTORS.md)
-- [Native Linux graph, overload and profiling report](../legacy/benchmarks/reports/fede-research-2026-11-06/REPORT.md)
-  and [protocol](../legacy/benchmarks/RESEARCH-FEDE-PROTOCOL.md)
-- [Backend research index](../legacy/research/backend-experiments/README.md)
-- [Everything else in legacy](../legacy/README.md)
+- [Initial baseline report](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/benchmarks/REPORT-2026-11-05.md)
+- [Backend design report](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/benchmarks/reports/designs-2026-11-05/REPORT.md),
+  [findings](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/benchmarks/DESIGN-FINDINGS.md) and
+  [implementation/test guide](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/benchmarks/EXPERIMENTS.md)
+- [Full-actor report](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/benchmarks/reports/full-actors-2026-11-05/REPORT.md) and
+  [findings](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/benchmarks/FINDINGS-FULL-ACTORS.md)
+- [Native Linux graph, overload and profiling report](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/benchmarks/reports/fede-research-2026-11-06/REPORT.md)
+  and [protocol](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/benchmarks/RESEARCH-FEDE-PROTOCOL.md)
+- [Backend research index](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/research/backend-experiments/README.md)
+- [Everything else in the archived `legacy/` directory](https://github.com/lambdaclass/spawned/tree/efba24340a01df82f872ec422b9dbaf48f897b04/legacy)

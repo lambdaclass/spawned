@@ -1,4 +1,0 @@
-From /tmp/spawned-fede-research-25dGGmPA/controller/runtime-isolation-source-final.bundle
- * branch              HEAD       -> FETCH_HEAD
-Previous HEAD position was 5f8d0a60 bench: stop isolation actors through their child handles
-HEAD is now at a3cb5eb1 bench: let the completed driver own its endpoint lifetime

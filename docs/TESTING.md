@@ -149,7 +149,7 @@ Status of each layer. "Planned" items are tracked in the
 | Distribution | turmoil, Jepsen-style histories | Loss, delay, partitions and reordering between nodes | Only with a remote transport ([roadmap](../ROADMAP.md) rank 22a) |
 
 The fuller rationale is archived in the
-[verification strategy note](../legacy/docs/research/verification-strategy.md).
+[verification strategy note](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/docs/research/verification-strategy.md).
 
 ### API and feature checks
 
@@ -368,7 +368,7 @@ Use an available CPU set appropriate to the machine. The benchmark phase records
 closed-loop requests, actor-to-actor graphs, concentrated offered load and actor
 churn/idle soaks. Benchmarks describe their generator as well as actor work; high
 producer counts do not imply that many actor workers. See the
-[recorded campaign](../legacy/research/reliability/2026-11-06/README.md) for results,
+[recorded campaign](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/research/reliability/2026-11-06/README.md) for results,
 excluded preflights and reproducibility details. No throughput threshold is
 enforced in shared CI. Nightly CI retains failure coverage and stress logs.
 
@@ -854,8 +854,8 @@ is asserted; allocator retention can differ between platforms.
    `repeated_stop_during_a_handler_discards_queued_requests`). The #168 tests are
    in `concurrency/src/threads/actor.rs`.
 
-Reviews and evidence: [PR #166](../legacy/docs/reviews/pr-166-links.md) and
-[PR #168](../legacy/docs/reviews/pr-168-security.md).
+Reviews and evidence: [PR #166](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/docs/reviews/pr-166-links.md) and
+[PR #168](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/docs/reviews/pr-168-security.md).
 
 Thread actor completion now uses a watch notification, so async exit waits can
 be cancelled without leaving a blocking-pool worker waiting for target exit.
@@ -987,7 +987,7 @@ Matching layout is a regression check, not proof that Ethrex's RPC tests pass
 at a 2 MiB debug stack; rerun them (`RUST_MIN_STACK` bisection of
 `cargo test -p ethrex-test --test ethrex_tests rpc::`) when handles or request
 futures change. Earlier probes comparing fc35abaf, 35bea650 and the compact
-sender are in the [round-2 evidence](../legacy/verification/evidence/v071-review-round2/README.md).
+sender are in the [round-2 evidence](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/verification/evidence/v071-review-round2/README.md).
 
 ## Stack-depth budgets
 
@@ -1044,7 +1044,7 @@ exercise retry-window boundaries and reproducible capped backoff/jitter.
 These are controlled failure tests, not a deterministic executor or a claim that
 all OS schedules were explored. CI also runs both asserted capability examples.
 
-The [implementation review](../legacy/docs/reviews/execution-groups-supervision-implementation.md)
+The [implementation review](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/docs/reviews/execution-groups-supervision-implementation.md)
 archives 33 focused integration tests, full workspace/default/all-feature gates,
 strict Clippy, eight examples and 20 fresh-process repetitions of the 32-iteration
 crash/producer/shutdown race (640 iterations). These explore ordinary OS/Tokio

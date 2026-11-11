@@ -1,8 +1,0 @@
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.03s
-     Running tests/actor_scenarios.rs (/tmp/spawned-fede-repro-50cQ1RW4/target/debug/deps/actor_scenarios-9d640d529cb99534)
-
-running 1 test
-test generated_actor_scenarios ... ok
-
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 108.53s
-

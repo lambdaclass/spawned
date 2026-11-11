@@ -1,2 +1,0 @@
-layout,path,load,elapsed_s,critical_completed,critical_per_s,critical_p50_ns,critical_p99_ns,bg_completed,bg_per_s,cpu_s,started,stopped,dropped
-split,relay,busy,0.102088,8,78.363,7540356,30552858,3968,38868.252,0.180,18,18,18

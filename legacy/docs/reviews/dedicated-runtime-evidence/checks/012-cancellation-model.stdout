@@ -1,7 +1,0 @@
-
-running 2 tests
-test callbacks_can_register_callbacks_without_deadlocking ... ok
-test registration_racing_repeated_cancel_fires_once ... ok
-
-test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.09s
-

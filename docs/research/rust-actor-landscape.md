@@ -2,8 +2,8 @@
 
 Research note, 2026-11-09. Background for ranks 6, 12a, 20, 26, 30 and 44 of the
 [roadmap](../../ROADMAP.md#ranked-backlog). The v0.5-era comparison
-([framework comparison](../../legacy/docs/design/FRAMEWORK_COMPARISON.md)) and the
-API alternatives it informed ([API alternatives](../../legacy/docs/design/API_ALTERNATIVES_SUMMARY.md))
+([framework comparison](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/docs/design/FRAMEWORK_COMPARISON.md)) and the
+API alternatives it informed ([API alternatives](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/docs/design/API_ALTERNATIVES_SUMMARY.md))
 are archived; this note updates the Rust part for v0.7.0 and corrects it where
 it was wrong (see [What it means for Spawned](#what-it-means-for-spawned)).
 Supervision semantics across Erlang, Akka and these crates are compared in

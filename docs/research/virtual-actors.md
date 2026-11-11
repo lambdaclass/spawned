@@ -3,7 +3,7 @@
 Research note, 2026-11-09. Informs ranks 12, 26, 44 and 49-51 of the
 [roadmap](../../ROADMAP.md#ranked-backlog). The earlier design sketch for
 in-process per-key entities (state strategies, handoff guarantees) is in
-[framework ideas](../../legacy/docs/research/framework-ideas.md#design-notes-per-key-entities-and-state);
+[framework ideas](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/docs/research/framework-ideas.md#design-notes-per-key-entities-and-state);
 this note does not repeat it.
 
 ## What it is

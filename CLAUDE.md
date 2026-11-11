@@ -24,8 +24,7 @@ spawned/
 ├── examples/        # Usage examples (name_server, bank, ping_pong, capabilities, etc.)
 ├── docs/            # GUIDE.md, MIGRATION.md, TESTING.md, design/ (active contract), research/
 ├── benchmarks/      # Benchmark harness and render scripts
-├── verification/    # TLA+ models/trace checks and explicit API compatibility policy
-└── legacy/          # Archived research, reviews, reports, raw data (not maintained)
+└── verification/    # TLA+ models/trace checks and explicit API compatibility policy
 ```
 
 ## Documentation Map
@@ -45,7 +44,7 @@ spawned/
 | `benchmarks/README.md` | How to run the benchmark harness |
 | `verification/tla/README.md` | Running the model and trace validation |
 
-Do not add new top-level docs; extend these. Maintained research goes in `docs/research/`; put historical material in `legacy/`.
+Do not add new top-level docs; extend these. Maintained research goes in `docs/research/`; historical material is deleted, git history is the archive. The old `legacy/` directory (archived research, benchmark data, reviews) was removed; it is preserved at commit `efba24340a01df82f872ec422b9dbaf48f897b04`: https://github.com/lambdaclass/spawned/tree/efba24340a01df82f872ec422b9dbaf48f897b04/legacy
 
 ## Two Execution Modes
 

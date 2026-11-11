@@ -3,7 +3,7 @@
 Research note, 2026-11-09. Informs the [verification rule](../../ROADMAP.md#verification-rule),
 the [`spawned-test` crate](../../ROADMAP.md#testing-crate-spawned-test), the
 [testing to add](../../ROADMAP.md#testing-to-add) table and ranks 5c, 20-22 and
-22a. The earlier [verification strategy](../../legacy/docs/research/verification-strategy.md)
+22a. The earlier [verification strategy](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/docs/research/verification-strategy.md)
 chose TLA+ plus trace validation and split Shuttle (framework internals) from
 actor-level exploration (users); this note surveys the wider field and adds a
 production arm.
