@@ -1839,9 +1839,16 @@ mod supervision_contract {
             .collect();
         let supervisor = tree.start().await.unwrap();
         let generations: Vec<u64> = children.iter().map(|c| c.snapshot().generation).collect();
-        for child in &children {
-            child.current().unwrap().send(Crash).unwrap();
+        // Take every generation before crashing any: on a multi-threaded
+        // runtime the first crash's round can already be stopping the others,
+        // so `current()` after a crash may report `Stopping`. A crash that
+        // reaches a sibling the round already stopped is absorbed by it; the
+        // check below holds either way.
+        let actors: Vec<_> = children.iter().map(|c| c.current().unwrap()).collect();
+        for actor in &actors {
+            let _ = actor.send(Crash);
         }
+        drop(actors);
         for (child, generation) in children.iter().zip(&generations) {
             next_generation(child, *generation).await;
         }
