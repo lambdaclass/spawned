@@ -322,8 +322,11 @@ Models track the code. A PR that changes modelled behaviour updates the model
 in the same PR; drift is a bug. The `model-sync` CI check enforces it: code
 mapped to a model in `verification/model-map.toml` may not change without
 that model (or the `no-model-change` label and a `Model: no change because
-<reason>` line), and every lifecycle trace event must be replayed by its
-trace spec ([model sync](docs/TESTING.md#model-sync)).
+<reason>` line), every lifecycle trace event must be replayed by its
+trace spec, every model must be trace-validated against real runs or
+allowlisted with a tracking item (TLC-only today: Coordinator, Lifecycle,
+DeferredReplies, DeferredJobs), and per-model trace coverage may only grow
+([model sync](docs/TESTING.md#model-sync)).
 
 **Production arm (rank 5c).** Trace validation checks test runs. After the
 Ethlambda canary, the same invariants (`AtMostOneGeneration`,

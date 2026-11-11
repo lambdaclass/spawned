@@ -3,6 +3,7 @@ repository's own trace event mapping."""
 import contextlib
 import importlib.util
 import io
+import json
 import os
 import shutil
 import subprocess
@@ -26,11 +27,7 @@ def run(*argv, env=None):
     return code, out.getvalue()
 
 
-class TraceEvents(unittest.TestCase):
-    def test_repository_events_are_mapped(self):
-        code, out = run("--root", str(ROOT), "events")
-        self.assertEqual(code, 0, out)
-
+class RepoCopy(unittest.TestCase):
     def copy(self):
         tmp = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, tmp)
@@ -39,6 +36,12 @@ class TraceEvents(unittest.TestCase):
         shutil.copy(ROOT / "concurrency" / "tests" / "cohort_trace.rs", tmp / "concurrency" / "tests")
         shutil.copytree(ROOT / "verification", tmp / "verification")
         return tmp
+
+
+class TraceEvents(RepoCopy):
+    def test_repository_events_are_mapped(self):
+        code, out = run("--root", str(ROOT), "events")
+        self.assertEqual(code, 0, out)
 
     def inject(self, tmp, code):
         path = tmp / "concurrency" / "src" / "supervision.rs"
@@ -94,6 +97,58 @@ class TraceEvents(unittest.TestCase):
         code, out = run("--root", str(tmp), "events")
         self.assertEqual(code, 0, out)
         self.assertIn("replays `TGhost`, which no code emits", out)
+
+
+class ModelInventory(RepoCopy):
+    def test_repository_models_pass(self):
+        code, out = run("--root", str(ROOT), "models")
+        self.assertEqual(code, 0, out)
+        self.assertIn("TLC-only models", out)
+
+    def edit_map(self, tmp, old, new):
+        path = tmp / "verification" / "model-map.toml"
+        text = path.read_text()
+        self.assertIn(old, text)
+        path.write_text(text.replace(old, new, 1))
+
+    def test_unmapped_model_fails(self):
+        tmp = self.copy()
+        (tmp / "verification" / "tla" / "Brand.tla").write_text("---- MODULE Brand ----\n====\n")
+        code, out = run("--root", str(tmp), "models")
+        self.assertEqual(code, 1, out)
+        self.assertIn("model Brand has no [models.Brand] entry", out)
+
+    def test_tlc_only_model_without_allowlist_fails(self):
+        tmp = self.copy()
+        self.edit_map(tmp, "[models.Coordinator.tlc_only]", "[models.Coordinator.not_allowlisted]")
+        code, out = run("--root", str(tmp), "models")
+        self.assertEqual(code, 1, out)
+        self.assertIn("Coordinator has no trace validation", out)
+
+    def test_allowlist_needs_tracking(self):
+        tmp = self.copy()
+        self.edit_map(tmp, 'tracking = "work item to be filed', 'untracked = "work item to be filed')
+        code, out = run("--root", str(tmp), "models")
+        self.assertEqual(code, 1, out)
+        self.assertIn("needs both `reason` and `tracking`", out)
+
+    def test_unrun_trace_spec_is_not_validation(self):
+        tmp = self.copy()
+        path = tmp / "verification" / "tla" / "trace_check.py"
+        path.write_text(path.read_text().replace("TraceNested.tla", "TraceTree.tla"))
+        code, out = run("--root", str(tmp), "models")
+        self.assertEqual(code, 1, out)
+        self.assertIn("NestedSupervision has no trace validation", out)
+
+    def test_coverage_below_floor_fails(self):
+        tmp = self.copy()
+        path = tmp / "verification" / "tla" / "coverage-baseline.json"
+        data = json.loads(path.read_text())
+        data["Supervision"] = data["Supervision"][1:]
+        path.write_text(json.dumps(data))
+        code, out = run("--root", str(tmp), "models")
+        self.assertEqual(code, 1, out)
+        self.assertIn("below the floor 36", out)
 
 
 ACTOR_CLEANUP = """//! Shared terminal publication.

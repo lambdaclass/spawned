@@ -8,6 +8,14 @@
 # or only inside a `#[cfg(test)] mod` block, are exempt. Globs: `*` stays
 # within a path segment, `**` crosses segments. Paths that do not exist yet
 # (code still on an open PR) are harmless.
+#
+# Every model in verification/tla needs an entry here, and either trace
+# validation (a Trace*.tla spec that trace_check.py runs against events the
+# code records) or a `tlc_only` allowlist entry with a reason and a tracking
+# item: a model no real run is checked against can drift from the code.
+# `coverage_floor` is the number of action keys (`A|...`) the dedicated trace
+# tests cover in verification/tla/coverage-baseline.json (key
+# `coverage_key`, default the model name); it may only go up.
 
 [models.Supervision]
 # OneForOne: run_supervisor/run_child, restart table, budget, ordered start,
@@ -25,6 +33,7 @@ code = [
     "concurrency/src/supervision.rs",
     "concurrency/src/lifecycle_trace.rs",
 ]
+coverage_floor = 36   # of 40 action keys
 
 [models.Cohorts]
 # OneForAll/RestForOne rounds (selection, stop, cleanup, join barrier,
@@ -42,6 +51,7 @@ code = [
     "concurrency/src/supervision.rs",
     "concurrency/src/lifecycle_trace.rs",
 ]
+coverage_floor = 40   # of 46 action keys
 
 [models.NestedSupervision]
 # Subtree ownership, attachment, parent join after descendants, shutdown
@@ -60,6 +70,8 @@ code = [
     "concurrency/src/supervision/**",
     "concurrency/src/lifecycle_trace.rs",
 ]
+coverage_key = "Nested"
+coverage_floor = 11   # of 11 observable action keys (Deliver has no event)
 
 [models.Coordinator]
 # ActorSystem::begin_shutdown: ordered stop of admitted roots, emergency
@@ -73,6 +85,9 @@ files = [
 code = [
     "concurrency/src/system.rs",
 ]
+[models.Coordinator.tlc_only]
+reason = "abstract fault model of begin_shutdown; no coordinator events are recorded, so no real run is replayed against it"
+tracking = "work item to be filed from the model-sync inventory (PR #260)"
 
 [models.Lifecycle]
 # Base actor lifecycle: phases and the death point, request admission and
@@ -95,6 +110,9 @@ code = [
     "concurrency/src/mailbox_admission.rs",
     "concurrency/src/lifecycle_trace.rs",
 ]
+[models.Lifecycle.tlc_only]
+reason = "models the proposed v0.8 exit-signal contract; the code on main is v0.7, so there are no lifecycle trace events yet"
+tracking = "PR #240 adds LifeEvent and TraceLifecycle.tla; remove this entry once it merges"
 
 [models.DeferredReplies]
 # Rank 11: reply slots, deadlines, deferral credits, owner exit and death.
@@ -107,6 +125,9 @@ code = [
     "concurrency/src/reply/**",
     "concurrency/src/lifecycle_trace.rs",
 ]
+[models.DeferredReplies.tlc_only]
+reason = "rank 11 design model; the implementation is not on main yet"
+tracking = "PR #240 adds reply events and TraceReplies.tla; remove this entry once it merges"
 
 [models.DeferredJobs]
 # Rank 11: pipe jobs, keyed replacement, ActorId and cancellation fencing,
@@ -122,6 +143,21 @@ code = [
     "concurrency/src/threads/jobs.rs",
     "concurrency/src/lifecycle_trace.rs",
 ]
+[models.DeferredJobs.tlc_only]
+reason = "rank 11 design model; the implementation is not on main yet"
+tracking = "PR #240 adds JobEvent and TraceJobs.tla; remove this entry once it merges"
+
+[models.DynamicSupervisor]
+# Rank 12a design model (PR #245); no code yet.
+files = [
+    "verification/tla/DynamicSupervisor*.tla",
+    "verification/tla/MCDynamicSupervisor*",
+    "verification/tla/TraceDynamicSupervisor.tla",
+]
+code = []
+[models.DynamicSupervisor.tlc_only]
+reason = "rank 12a design model; the dynamic supervisor is not implemented"
+tracking = "trace validation is part of implementing rank 12a (design: PR #245)"
 
 # Trace events. Each [[trace]] table names one event struct of
 # concurrency/src/lifecycle_trace.rs, the calls that create one (a regex

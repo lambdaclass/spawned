@@ -3,7 +3,8 @@
 
     check-model-sync.py paths [--base REF] [--head REF] [--files PATH...]
                               [--labels L,...] [--body TEXT] [--pr N]
-    check-model-sync.py events [--root DIR]
+    check-model-sync.py events
+    check-model-sync.py models
 
 `paths`: fails if the PR changes a code file a model covers without changing
 any of that file's models (model, MC configurations, inductive/coverage
@@ -19,6 +20,12 @@ be replayed by a trace spec arm (or be declared translated/rejected in the
 map); unmapped events, non-literal action names and unconfigured event
 structs fail. Spec arms no code emits and model actions no trace reaches are
 printed as warnings.
+
+`models`: every model in verification/tla must be in the map and have trace
+validation (a Trace*.tla spec that trace_check.py runs and recorded events
+reach), unless it has a `tlc_only` allowlist entry with a reason and a
+tracking item; and each model's covered action keys in
+coverage-baseline.json may not drop below its `coverage_floor`.
 
 Standard library only; Python 3.9+ (a TOML subset parser is used when
 `tomllib` is unavailable).
@@ -543,6 +550,119 @@ def check_events(args, root):
     return 0
 
 
+# --------------------------------------------------------------------------
+# models
+
+BASELINE = "verification/tla/coverage-baseline.json"
+
+
+def base_models(root):
+    """Models proper: verification/tla/*.tla minus MC*, Trace*, Cov*, *Ind and
+    *Coverage helper modules."""
+    names = []
+    for path in sorted((root / "verification/tla").glob("*.tla")):
+        name = path.stem
+        if re.match(r"(MC|Trace|Cov)[A-Z]", name) or name.endswith(("Ind", "Coverage")):
+            continue
+        names.append(name)
+    return names
+
+
+def trace_validation(root, config, model):
+    """(spec, mapped event kinds) of a trace spec that replays recorded Rust
+    events against `model`, or (None, reason)."""
+    check_py = (root / "verification/tla/trace_check.py").read_text()
+    trace_rs = (root / "concurrency/src/lifecycle_trace.rs").read_text()
+    structs = set(re.findall(r"pub struct (\w*Event)\b", trace_rs))
+    sources = None
+    for spec_path in sorted((root / "verification/tla").glob("Trace*.tla")):
+        text = spec_path.read_text()
+        ext = re.search(r"EXTENDS\s+([\w, ]+)", text)
+        if not ext or model not in [m.strip() for m in ext.group(1).split(",")]:
+            continue
+        rel = spec_path.relative_to(root).as_posix()
+        if spec_path.name not in check_py:
+            return None, f"{rel} exists but trace_check.py never runs it"
+        arms = spec_arms(text)
+        for t in config.get("trace", []):
+            if rel not in t["specs"] or t["struct"] not in structs:
+                continue
+            if sources is None:
+                sources = {p: rust_mask(p.read_text()) for p in (root / "concurrency/src").rglob("*.rs")}
+            emitted = set()
+            for masked, strings in sources.values():
+                for e in t["emitters"]:
+                    for m in re.finditer(e["call"], masked):
+                        span = call_argument(masked, m.end() - 1, e["arg"])
+                        emitted.update(v for k, v in strings.items() if span and span[0] <= k < span[1])
+            for how in t.get("translated", {}).values():
+                if isinstance(how, dict):
+                    emitted.update(how.get("into", []))
+            mapped = emitted & arms
+            if mapped:
+                return rel, mapped
+        return None, f"{rel} exists but no recorded event reaches it"
+    return None, "no trace spec"
+
+
+def check_models(args, root):
+    config = load_map(root)
+    models = config["models"]
+    baseline_path = root / BASELINE
+    baseline = json.loads(baseline_path.read_text()) if baseline_path.exists() else {}
+    errors, warnings, rows = [], [], []
+    for model in base_models(root):
+        entry = models.get(model)
+        if entry is None:
+            errors.append(f"model {model} has no [models.{model}] entry in {MAP} (which code does it cover?)")
+            continue
+        spec, detail = trace_validation(root, config, model)
+        allow = entry.get("tlc_only")
+        if spec:
+            status = f"trace-validated by {spec} ({len(detail)} event kinds)"
+            if allow:
+                warnings.append(f"{model} has trace validation now; remove its `tlc_only` allowlist entry")
+        elif allow:
+            if not allow.get("reason") or not allow.get("tracking"):
+                errors.append(f"{model}: a `tlc_only` entry needs both `reason` and `tracking`")
+            status = f"TLC ONLY (allowlisted: {allow.get('reason', '?')}; tracking: {allow.get('tracking', '?')})"
+        else:
+            errors.append(f"{model} has no trace validation ({detail}): a model no real run is checked against can drift "
+                          f"from the code. Add a trace spec and recorded traces, or a [models.{model}.tlc_only] "
+                          f"entry with `reason` and `tracking`")
+            status = f"TLC ONLY, not allowlisted ({detail})"
+        floor = entry.get("coverage_floor")
+        key = entry.get("coverage_key", model)
+        if floor is not None:
+            covered = len(baseline.get(key, []))
+            status += f"; covered action keys {covered} (floor {floor})"
+            if covered < floor:
+                errors.append(f"{model}: {BASELINE} covers {covered} action keys of {key}, below the floor {floor}. "
+                              f"Trace coverage may only grow: restore the lost tests, or lower `coverage_floor` "
+                              f"in {MAP} with a reason in the PR")
+            elif covered > floor:
+                warnings.append(f"{model}: coverage grew to {covered} action keys; raise `coverage_floor` to {covered}")
+        elif spec and key in baseline:
+            errors.append(f"{model}: trace-validated with a coverage baseline but no `coverage_floor` in {MAP}")
+        rows.append(f"{model:18} {status}")
+    for r in rows:
+        print(r)
+    for w in warnings:
+        print(f"WARNING {w}")
+        if os.environ.get("GITHUB_ACTIONS"):
+            print(f"::warning title=model-sync models::{w}")
+    for e in errors:
+        print(f"ERROR   {e}")
+    allowlisted = [m for m in base_models(root) if models.get(m, {}).get("tlc_only")]
+    if allowlisted:
+        print(f"\nTLC-only models (no trace validation; these can drift from the code): {', '.join(allowlisted)}")
+    if errors:
+        print(f"\nmodel-sync models: {len(errors)} error(s)")
+        return 1
+    print("model-sync models: every model is trace-validated or allowlisted, and no coverage floor is broken")
+    return 0
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="command", required=True)
@@ -553,11 +673,14 @@ def main(argv=None):
     paths.add_argument("--labels", help="comma-separated PR labels")
     paths.add_argument("--body", help="PR body")
     paths.add_argument("--pr", type=int, help="read labels and body with gh")
-    events = sub.add_parser("events")
+    sub.add_parser("events")
+    sub.add_parser("models")
     parser.add_argument("--root", type=Path, default=ROOT)
     args = parser.parse_args(argv)
     if args.command == "paths":
         return check_paths(args, args.root)
+    if args.command == "models":
+        return check_models(args, args.root)
     return check_events(args, args.root)
 
 
