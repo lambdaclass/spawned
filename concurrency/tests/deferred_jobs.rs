@@ -257,36 +257,51 @@ mod tasks_mode {
         stop(actor).await;
     }
 
-    struct ReplaceAfterFinish;
-    impl Message for ReplaceAfterFinish {
+    /// Starts keyed job `old`, publishing its handle.
+    struct StartOld(Arc<Mutex<Option<spawned_concurrency::tasks::JobHandle>>>);
+    impl Message for StartOld {
         type Result = ();
     }
-    impl Handler<ReplaceAfterFinish> for Owner {
-        async fn handle(&mut self, _: ReplaceAfterFinish, reply: PendingReply<'_, ()>, ctx: &Context<Self>) {
-            // The old job finishes (its terminal message queued behind this
-            // turn) before the replacement takes the key.
-            let old = ctx
-                .pipe_keyed("r", async { 1 }, |o| describe("old", o))
-                .unwrap();
-            while old.is_running() {
-                std::thread::sleep(Duration::from_millis(1));
-            }
-            ctx.pipe_keyed("r", async { 2 }, |o| describe("new", o))
-                .unwrap();
+    impl Handler<StartOld> for Owner {
+        async fn handle(&mut self, msg: StartOld, reply: PendingReply<'_, ()>, ctx: &Context<Self>) {
+            let job = ctx.pipe_keyed("r", async { 1 }, |o| describe("old", o)).unwrap();
+            *msg.0.lock().unwrap() = Some(job);
             reply.reply(());
         }
     }
+    /// Busy until `go`, then replaces the key.
+    struct ReplaceWhen(Arc<std::sync::atomic::AtomicBool>);
+    impl Message for ReplaceWhen {
+        type Result = ();
+    }
+    impl Handler<ReplaceWhen> for Owner {
+        async fn handle(&mut self, msg: ReplaceWhen, _: PendingReply<'_, ()>, ctx: &Context<Self>) {
+            while !msg.0.load(std::sync::atomic::Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            ctx.pipe_keyed("r", async { 2 }, |o| describe("new", o)).unwrap();
+        }
+    }
 
-    /// Review P1 (`NoStaleKeyed`): a finished keyed job's queued terminal
-    /// message is fenced by its replacement.
+    /// Review P1 (`NoStaleKeyed`): the old keyed job finishes and queues its
+    /// terminal message while the owner is busy; the replacement made in that
+    /// busy turn fences it.
     #[cfg(not(spawned_sim))]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn replacement_fences_a_finished_keyed_job() {
         let (actor, log) = start();
-        actor.request(ReplaceAfterFinish).await.unwrap();
+        let handle = Arc::new(Mutex::new(None));
+        actor.request(StartOld(handle.clone())).await.unwrap();
+        let go = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        actor.send(ReplaceWhen(go.clone())).unwrap();
+        let old = handle.lock().unwrap().take().unwrap();
+        while old.is_running() {
+            sleep(Duration::from_millis(1)).await;
+        }
+        go.store(true, std::sync::atomic::Ordering::SeqCst);
         assert_eq!(entries(&actor, &log, 1).await, ["new:ok:2"]);
         sleep(Duration::from_millis(20)).await;
-        assert!(log.take().is_empty());
+        assert!(log.take().is_empty(), "the replaced job's terminal message was dispatched");
         stop(actor).await;
     }
 
