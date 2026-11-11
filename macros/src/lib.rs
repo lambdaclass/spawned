@@ -1732,16 +1732,39 @@ pub fn actor(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// `Ok(())`, not `ReplyDropped`, and a panic in the body answers
 /// `ActorStopped` as for any handler. The message's `Result` must be `()`.
 /// Works for `tasks` (`async fn`) and `threads` (`fn`) handlers.
+///
+/// The reply type is named through the `Handler` path when it is qualified
+/// (`impl my_spawned::tasks::Handler<M> for A` uses
+/// `my_spawned::tasks::PendingReply`), so a renamed dependency works.
+/// With a bare `Handler`, it is `spawned_concurrency::reply::PendingReply`;
+/// a crate that renames `spawned-concurrency` names it:
+/// `#[send_handler(crate = my_spawned)]`.
 #[proc_macro_attribute]
 pub fn send_handler(attr: TokenStream, item: TokenStream) -> TokenStream {
-    if !attr.is_empty() {
-        return syn::Error::new(
-            proc_macro2::Span::call_site(),
-            "#[send_handler] takes no arguments",
-        )
-        .to_compile_error()
-        .into();
-    }
+    let krate: Option<syn::Path> = if attr.is_empty() {
+        None
+    } else {
+        let parser = |input: syn::parse::ParseStream| {
+            input.parse::<syn::Token![crate]>()?;
+            input.parse::<syn::Token![=]>()?;
+            let path: syn::Path = input.parse()?;
+            if !input.is_empty() {
+                return Err(input.error("expected only `crate = path`"));
+            }
+            Ok(path)
+        };
+        match syn::parse::Parser::parse(parser, attr) {
+            Ok(path) => Some(path),
+            Err(error) => {
+                return syn::Error::new(
+                    error.span(),
+                    format!("#[send_handler] takes no arguments or `crate = path`: {error}"),
+                )
+                .to_compile_error()
+                .into()
+            }
+        }
+    };
     let mut impl_block = parse_macro_input!(item as ItemImpl);
     let is_handler = impl_block
         .trait_
@@ -1784,8 +1807,23 @@ pub fn send_handler(attr: TokenStream, item: TokenStream) -> TokenStream {
         }
     }
     let reply = format_ident!("__spawned_reply");
+    // The `Handler` path's module (`tasks`/`threads`) re-exports
+    // `PendingReply`; a bare `Handler` falls back to the crate path.
+    let handler_module = impl_block.trait_.as_ref().and_then(|(_, path, _)| {
+        (path.segments.len() > 1).then(|| {
+            let mut module = path.clone();
+            module.segments.pop();
+            module.segments.pop_punct();
+            module
+        })
+    });
+    let reply_ty = match (krate, handler_module) {
+        (Some(krate), _) => quote! { #krate::reply::PendingReply<'_, ()> },
+        (None, Some(module)) => quote! { #module::PendingReply<'_, ()> },
+        (None, None) => quote! { spawned_concurrency::reply::PendingReply<'_, ()> },
+    };
     let reply_param: FnArg = syn::parse_quote! {
-        #reply: spawned_concurrency::reply::PendingReply<'_, ()>
+        #reply: #reply_ty
     };
     method.sig.inputs.insert(2, reply_param);
     method.sig.output = ReturnType::Default;
