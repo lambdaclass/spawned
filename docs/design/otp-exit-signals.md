@@ -11,7 +11,8 @@
 - Model: [`Lifecycle.tla`](../../verification/tla/Lifecycle.tla), the "base
   actor lifecycle" model the [verification rule](../../ROADMAP.md#verification-rule)
   calls for. See [What the model establishes](#what-the-model-establishes).
-- Interplay with rank 11 (deferred replies, PR #221, still open): [§8](#8-interplay-with-rank-11).
+- Interplay with rank 11 ([deferred-replies.md](deferred-replies.md), design
+  merged in PR #221, not implemented): [§8](#8-interplay-with-rank-11).
 - Illustrative API shapes are not copyable code.
 
 **Project rule.** Match Erlang/OTP. Deviate only where:
@@ -337,8 +338,7 @@ Tested in both modes.
 
 ## 8. Interplay with rank 11
 
-Rank 11 ([PR #221](https://github.com/lambdaclass/spawned/pull/221),
-`deferred-replies.md` §5) defines the death boundary: exit begins (registry
+Rank 11 ([deferred-replies.md §5](deferred-replies.md#5-owner-lifecycle)) defines the death boundary: exit begins (registry
 `Exiting`, dispatch stops, jobs cancelled), `stopped()` runs and may still
 answer tokens, then death closes the registry, disposes the mailbox, drops the
 state and publishes the exit. It leaves 5e to "only add the reason".
@@ -436,13 +436,17 @@ that ethrex's boot path stops hiding a failed discovery start behind retries.
 
 ## What the model establishes
 
-[`Lifecycle.tla`](../../verification/tla/Lifecycle.tla) models three actors
-(one `start_linked` pair, one supervised child), one outside caller, one
-supervisor, one request, one monitor, bounded sends, signals and late
-registrations, with `trap_exit` toggling at any turn. Handlers are atomic and
-nondeterministic (reply, panic, ignore or act on a trapped exit). Death is one
-atomic step (E6). It models the proposed contract; the v0.7 behaviours are
-negative controls.
+[`Lifecycle.tla`](../../verification/tla/Lifecycle.tla) models actors, one
+outside caller (`ChildHandle` holder and request sender) and one supervisor.
+`MCLifecycle` (every PR, safety and liveness) has two actors: `a1` is
+supervised and started `a2` with `start_linked`; one request, one monitor, one
+actor-to-actor message, one outside signal or administrative stop and one
+registration against a dead actor. `MCLifecycleDeep` (weekly, safety) adds an
+unrelated third actor and `unlink`. Any actor may turn `trap_exit` on at any
+turn (turning it off adds no rule). Handlers are atomic and nondeterministic
+(reply, panic, ignore or act on a trapped exit); a panic in any turn is a
+self-exit. Death is one atomic step (E6). It models the proposed contract; the
+v0.7 behaviours are negative controls.
 
 Invariants (TLC, `MCLifecycle.cfg`):
 

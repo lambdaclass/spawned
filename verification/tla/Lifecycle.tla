@@ -33,6 +33,7 @@ CONSTANTS
     MaxSends,      \* bound on actor-to-actor messages
     MaxSignals,    \* bound on exit signals and administrative stops from outside
     MaxLate,       \* bound on registrations against dead actors
+    UnlinkEnabled, \* include Unlink (deep configuration only)
     Fault          \* "None" or a negative control, see below
 
 None == "none"
@@ -142,9 +143,9 @@ Fire(a, r) ==
 ----------------------------------------------------------------------------
 (* Turns of a running actor. *)
 
-SetTrap(a, b) ==
-    /\ st[a] = "run" /\ trap[a] # b
-    /\ trap' = [trap EXCEPT ![a] = b]
+SetTrap(a) ==   \* ctx.trap_exit(true); turning it off adds no rule to check
+    /\ st[a] = "run" /\ ~trap[a]
+    /\ trap' = [trap EXCEPT ![a] = TRUE]
     /\ UNCHANGED <<life, mbox, reg, req, budget, afterStop>>
 
 Send(a, b) ==   \* also from stopped(): st[a] = "stopping"
@@ -153,8 +154,8 @@ Send(a, b) ==   \* also from stopped(): st[a] = "stopping"
     /\ Push(b, Item("msg", a, None, 0, 0, FALSE))
     /\ UNCHANGED <<life, trap, reg, req, signals, lates, psent, afterStop>>
 
-SelfExit(a, r) ==   \* ctx.stop(), ctx.stop_with_reason(r), a panic outside a handler body
-    /\ st[a] = "run" /\ r \in {"Normal", "Shutdown", "Panic", "Kill"}
+SelfExit(a, r) ==   \* ctx.stop(), ctx.stop_with_reason(Kill), a panic in any turn
+    /\ st[a] = "run" /\ r \in {"Normal", "Panic", "Kill"}
     /\ Begin(a, r, "self")
     /\ UNCHANGED <<trap, mbox, reg, req, budget, afterStop>>
 
@@ -217,10 +218,8 @@ Dispatch(a) ==
             [] h.k = "pexit" ->  \* parent exit: normal termination (gen_server)
                  /\ Begin(a, h.r, "parent")
                  /\ UNCHANGED req
-            [] OTHER ->          \* msg or down
-                 /\ \/ UNCHANGED life
-                    \/ Begin(a, "Panic", "self")
-                 /\ UNCHANGED req
+            [] OTHER ->          \* msg or down (a panic here is SelfExit)
+                 UNCHANGED <<life, req>>
     /\ UNCHANGED <<trap, reg, budget>>
 
 (* stopped() returned: death. *)
@@ -278,7 +277,7 @@ Enqueue(r) ==
 
 ExitSignal(a, r) ==   \* ChildHandle::exit(r); r = Kill is ChildHandle::kill()
     /\ signals < MaxSignals /\ signals' = signals + 1
-    /\ r \in {"Normal", "Shutdown", "Panic", "Kill"}
+    /\ r \in {"Normal", "Shutdown", "Kill"}
     /\ IF r = "Kill"
        THEN /\ Begin(a, KilledReason, "kill") /\ UNCHANGED mbox
        ELSE IF Fault = "DirectStop"
@@ -288,7 +287,7 @@ ExitSignal(a, r) ==   \* ChildHandle::exit(r); r = Kill is ChildHandle::kill()
 
 AdminStop(a, r) ==    \* ChildHandle::stop / stop_with_reason: untrappable, cooperative
     /\ signals < MaxSignals /\ signals' = signals + 1
-    /\ r \in {"Normal", "Shutdown", "Panic"}
+    /\ r = "Shutdown"
     /\ Begin(a, r, "admin")
     /\ UNCHANGED <<trap, mbox, reg, req, sends, lates, psent, afterStop>>
 
@@ -305,8 +304,8 @@ SupKill(c) ==         \* shutdown_timeout passed: exit(Child, kill)
 
 Next ==
     \/ \E a \in Actors :
-         \/ \E b \in BOOLEAN : SetTrap(a, b)
-         \/ \E b \in Actors : Send(a, b) \/ Link(a, b) \/ Unlink(a, b)
+         \/ SetTrap(a)
+         \/ \E b \in Actors : Send(a, b) \/ Link(a, b) \/ (UnlinkEnabled /\ Unlink(a, b))
          \/ \E b \in Actors, m \in MonIds : Monitor(a, b, m)
          \/ \E m \in MonIds : Demonitor(a, m)
          \/ \E r \in Reasons : SelfExit(a, r) \/ ExitSignal(a, r) \/ AdminStop(a, r)
@@ -372,12 +371,13 @@ TrapRespected ==
 NormalSignalIgnored ==
     \A a \in Actors : cause[a] \in {"link", "signal"} => why[a] # "Normal"
 
-\* An outside kill exits Killed, and only kills and their propagation (or a
-\* trapping actor choosing to exit with a trapped reason) produce Killed.
+\* An outside kill exits Killed, and only kills and their propagation produce
+\* Killed: over a link, through a parent exit (a trapping child ends with its
+\* parent's reason), or a trapping actor choosing to exit with it.
 KilledFromKill ==
     \A a \in Actors :
         /\ cause[a] = "kill" => why[a] = "Killed"
-        /\ why[a] = "Killed" => cause[a] \in {"kill", "link", "self"}
+        /\ why[a] = "Killed" => cause[a] \in {"kill", "link", "parent", "self"}
 
 \* Registration is atomic with the death point: no live edge to a dead actor.
 NoEdgeToDead ==

@@ -123,6 +123,20 @@ def named_fault(module, fault, invariant, tlc):
 
 
 # Rank 11 design models: (module, fault, invariant it must violate).
+# Base actor lifecycle (docs/design/otp-exit-signals.md): the v0.7 exit-signal
+# behaviours and the PR #182/#185 bugs, each against the invariant it breaks.
+LIFECYCLE_CONTROLS = [
+    ("MCLifecycle", "DirectStop", "TrapRespected"),
+    ("MCLifecycle", "DirectStop", "NormalSignalIgnored"),
+    ("MCLifecycle", "KillAsKill", "KilledFromKill"),
+    ("MCLifecycle", "LateRealReason", "NoProcIffLate"),
+    ("MCLifecycle", "Retain182", "NoOrphanRequest"),
+    ("MCLifecycle", "Dispatch185", "NoDispatchAfterStop"),
+    ("MCLifecycle", "DropQueued", "NoOrphanRequest"),
+    ("MCLifecycle", "EarlyNotify", "ExitAfterMessages"),
+    ("MCLifecycle", "SplitDeathPoint", "NoEdgeToDead"),
+]
+
 DEFERRED_CONTROLS = [
     ("MCDeferredReplies", "NoAutoReply", "NoOrphan"),
     ("MCDeferredReplies", "NoAtomicExpiry", "AtMostOneDischarge"),
@@ -205,16 +219,8 @@ def main():
     model_fault("MCNested", "Propagation", args.tlc, temporal=True)
     for module, fault, invariant in DEFERRED_CONTROLS:
         named_fault(module, fault, invariant, args.tlc)
-    # Base actor lifecycle (docs/design/otp-exit-signals.md): v0.7 exit-signal
-    # behaviours and the PR #182/#185 bugs must each produce a counterexample.
-    model_fault("MCLifecycle", "DirectStop", args.tlc, invariant="TrapRespected")
-    model_fault("MCLifecycle", "KillAsKill", args.tlc, invariant="KilledFromKill")
-    model_fault("MCLifecycle", "LateRealReason", args.tlc, invariant="NoProcIffLate")
-    model_fault("MCLifecycle", "Retain182", args.tlc, invariant="NoOrphanRequest")
-    model_fault("MCLifecycle", "Dispatch185", args.tlc, invariant="NoDispatchAfterStop")
-    model_fault("MCLifecycle", "DropQueued", args.tlc, invariant="NoOrphanRequest")
-    model_fault("MCLifecycle", "EarlyNotify", args.tlc, invariant="ExitAfterMessages")
-    model_fault("MCLifecycle", "SplitDeathPoint", args.tlc, invariant="NoEdgeToDead")
+    for module, fault, invariant in LIFECYCLE_CONTROLS:
+        named_fault(module, fault, invariant, args.tlc)
     model_fault("MCLifecycle", "ParentAsExit", args.tlc, temporal=True)
 
 
