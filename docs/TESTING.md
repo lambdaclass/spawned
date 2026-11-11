@@ -1337,8 +1337,8 @@ requests that time out, are dropped mid-flight or hit a stopped actor;
 finite and endless stream listeners; a whole `ActorSystem` with running
 actors and a supervisor shut down; and bursts of 1,000 to 21,000 messages
 drained or discarded at stop. The seed fixes each lane's scenario sequence and
-parameters; thread interleavings are not reproducible. A 3-minute run on fede
-starts about 700,000 actors, so a 4-hour run executes every path millions of
+parameters; thread interleavings are not reproducible. A 10-minute run on fede
+starts about 1.7 million actors, so a 4-hour run executes every path millions of
 times.
 
 **Measurements**, one CSV row (`samples.csv`) per sample interval, plus a
