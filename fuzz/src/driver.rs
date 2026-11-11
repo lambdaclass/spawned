@@ -27,6 +27,8 @@ use std::{
 /// Generous deadline: every hook and handler sleep is bounded far below it,
 /// so a shutdown or fence that misses it is a liveness failure.
 const LONG: Duration = Duration::from_secs(600);
+/// Virtual time a supervisor's initial start may take before it is cancelled.
+const START_LIMIT: Duration = Duration::from_secs(30);
 const MAX_ACTORS: usize = 16;
 const MAX_ROOTS: usize = 4;
 const MAX_SYSTEMS: usize = 3;
@@ -774,7 +776,13 @@ impl Driver {
         }
         self.units.push((sys, Unit::Root(root)));
         trace(|| format!("supervisor r{root}: start"));
-        let sup = builder.start().await.ok();
+        // A tree whose subtree restarts slower than its budget refills
+        // retries forever (a legal configuration); cancelling the start
+        // future rolls it back (V7) and keeps the run bounded.
+        let sup = match rt::timeout(START_LIMIT, builder.start()).await {
+            Ok(result) => result.ok(),
+            Err(_) => None,
+        };
         trace(|| format!("supervisor r{root}: started {}", sup.is_some()));
         self.roots.push(Root {
             sup,
