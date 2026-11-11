@@ -1686,7 +1686,14 @@ impl Driver {
                     format!("w{instance} {exit:?}"),
                 );
             }
-            if panicked && !exit.is_abnormal() {
+            // A panic sets the reason, but until the death point an
+            // untrapped exit signal or link notice still replaces it
+            // (semantics.md L4, `Lifecycle!LateSignalWins`; OTP: a signal
+            // during `terminate` kills with its own reason). The only
+            // non-abnormal reason a signal can carry is `Shutdown`.
+            let trapping = self.traps.get(&id).is_some_and(|t| t.0);
+            let late_shutdown = exit == ExitReason::Shutdown && !trapping;
+            if panicked && !exit.is_abnormal() && !late_shutdown {
                 self.violate(
                     "L4: an actor that panicked exited with a non-abnormal reason",
                     format!("w{instance} {exit:?}"),
