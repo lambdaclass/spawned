@@ -605,6 +605,10 @@ ignored by non-trapping peers (X3), and the Permanent/Transient/Temporary table 
 - Rank 18, byte credits, and rank 18a, per-actor memory limits.
 - Rank 19, propagated deadlines: queued work can expire before dispatch (R4).
 
+- 0.9, introspection (design in review, [introspection.md](introspection.md)):
+  a new section 13 (I1-I13: out-of-band reads, status between turns, fenced
+  watchdog kill, listings, console). L3 is unchanged: nothing preempts a turn.
+
 See the [ranked backlog](../../ROADMAP.md#ranked-backlog).
 
 [actor_scenarios]: ../../concurrency/tests/actor_scenarios.rs

@@ -37,8 +37,12 @@
   [`docs/design/introspection.md`](docs/design/introspection.md). Per-actor
   `process_info`, `sys:get_state`/`get_status` answered between turns,
   supervision-tree and system snapshots, an opt-in stall watchdog (rank 8) and
-  the data model for `spawned-top` (rank 30), with a cost table per field,
-  consistency guarantees and a test plan. Design only; no code change.
+  the data model for `spawned-top` (rank 30), an attachable remote console on
+  a local Unix socket (`spawned-ctl`, on by default, read-only by default, no
+  TCP, no eval), with a cost table per field, consistency guarantees and a
+  test plan. TLA+ model `Introspection.tla` (fenced watchdog kill, status
+  between turns and at death) with six negative controls. Design only; no
+  library code change.
 
 - Tests: coverage follow-ups. `restart_modes_distinguish_normal_shutdown_and_panic`
   now sends a real `Normal` exit; a per-PR `MCSupervisionTemporary` TLC
