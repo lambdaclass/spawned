@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- ROADMAP: a Path to 1.0 section (0.8, 0.9, 0.10 contents and what 1.0
+  requires: stable API rules, a complete semantics contract, production-safe
+  defaults, introspection, determinism, release gates, production proof and
+  documentation).
 - Tests: coverage follow-ups. `restart_modes_distinguish_normal_shutdown_and_panic`
   now sends a real `Normal` exit; a per-PR `MCSupervisionTemporary` TLC
   configuration makes `TemporaryStartsOnce` non-vacuous, with a negative
