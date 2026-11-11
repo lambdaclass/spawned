@@ -519,7 +519,7 @@ GhostUpdate ==
     /\ lateGenClose' = [s \in Slots |-> lateGenClose[s] \/ (Grew(s) /\ ~open)]
     /\ lateGenTerm' = [s \in Slots |-> lateGenTerm[s] \/ (Grew(s) /\ sl[s].term)]
     /\ badRestart' = [s \in Slots |-> badRestart[s] \/
-                        ((Grew(s) /\ sl[s].gen > 0 \/ Decided(s)) /\ ~Allowed(s))]
+                        (((Grew(s) /\ sl[s].gen > 0) \/ Decided(s)) /\ ~Allowed(s))]
     /\ badRetire' = [s \in Slots |-> badRetire[s] \/
                         (sl[s].cs = "decide" /\ sl'[s].cs = "removed" /\ open'
                          /\ ~sl[s].term /\ Allowed(s))]
