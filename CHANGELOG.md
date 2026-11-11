@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- ROADMAP: a Priorities section (soundness, including a smaller stable API and
+  soak tests; introspection; determinism; testing; client-driven features;
+  performance behind a regression gate), and the runtime direction. Keep Tokio; rank 37 becomes the main
+  performance track (generated dispatch, reusable reply slots, a single-wakeup
+  mailbox, batched draining), after profiling; rank 22a becomes actor-owned
+  I/O (`spawned::net`, Erlang ports) with a simulated network so whole client
+  nodes run deterministically; rank 52 (io_uring) reopens only as a
+  `spawned::net` backend.
 - README: centred on why Spawned exists. A "Why Spawned" section first (guarantees
   verified once and inherited by every application; deterministic, replayable
   tests), both points leading the feature list, and a "Testing your own actors
