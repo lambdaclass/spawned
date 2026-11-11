@@ -37,13 +37,14 @@ protocol/forwarding compatibility when designing an explicit erased dispatch API
 
 ## Priorities
 
-Decided 2026-11-11. Work is picked in this order; a lower tier waits unless a client needs it.
+Decided 2026-11-11, in this order: **soundness, introspection, determinism, testing, features, performance.** The first four are the product: Spawned's value is guarantees verified once and inherited by every application, failures you can see, and failures that replay exactly. A lower tier waits unless a client needs it.
 
-1. **Soundness.** Spawned's value is that its guarantees hold, so a bug in what it promises outranks any feature or speedup. Ship 0.8 only after every review fix and a re-review; close the remaining semantics-coverage gaps; planted-bug sensitivity; long-running soak tests (memory, threads, tasks, file descriptors and registry entries flat over hours of churn; run by hand on fede before each release, no schedule); Apalache for the new models; longer fuzzer campaigns run by hand. Includes **a smaller, stable API**: review the public surface before 0.8 is published (merge overlapping functions, hide what only the clients needed, mark the rest experimental), then a 1.0 with a written stability promise.
-2. **Introspection.** Operators must be able to answer "which actor is stuck, on what message, with how much queued" the way Erlang's `observer`, `sys:get_state`, `process_info` and `recon` do: per-actor info (lifecycle state, mailbox length, current message type and turn age, restarts, links and monitors), supervision-tree and system snapshots, `spawned-top` (rank 30), the stall watchdog (8) and the flight recorder (9). Cheap counters and opt-in tracing, under the no-cost rule.
-3. **Testing for applications.** `#[spawned_concurrency::sim_test]`, the `spawned-test` kit, then whole-node simulation through actor-owned I/O (rank 22a).
-4. **Features a client needs.** Dynamic supervisor (12a), bounded mailboxes (17).
-5. **Performance, behind a regression gate.** A small benchmark set on every hot-path PR that flags slowdowns past a threshold, so "no cost on the default path" is enforced, not remembered. Then profiling, rank 37 and the [runtime direction](#runtime-direction).
+1. **Soundness.** A bug in what Spawned promises outranks any feature or speedup. Ship 0.8 only after every review fix and a re-review; close the remaining semantics-coverage gaps; planted-bug sensitivity; long-running soak tests (memory, threads, tasks, file descriptors and registry entries flat over hours of churn; run by hand on fede before each release, no schedule); Apalache for the new models; longer fuzzer campaigns run by hand. Includes **a smaller, stable API**: review the public surface before 0.8 is published (merge overlapping functions, hide what only the clients needed, mark the rest experimental), then a 1.0 with a written stability promise.
+2. **Introspection.** Operators must be able to answer "which actor is stuck, on what message, with how much queued" the way Erlang's `observer`, `sys:get_state`, `process_info` and `recon` do: per-actor info (lifecycle state, mailbox length, current message type and turn age, restarts, links and monitors), supervision-tree and system snapshots, `spawned-top` (rank 30), the stall watchdog (8), the flight recorder (9) and causal tracing (28). Cheap counters and opt-in tracing, under the no-cost rule.
+3. **Determinism.** Every run that can be made deterministic should be: a failure that replays exactly can be debugged, shrunk and kept as a regression test. Widen what the simulator controls: code that calls `tokio::spawn` or `tokio::time` directly (route it through `spawned-rt`, or catch it in the simulator); network I/O through actor-owned I/O and a simulated network (rank 22a); threads-mode actors (research: run native actors as simulator tasks); same-seed reruns producing identical traces (S2); and record in production, replay in simulation (ranks 21-22). Determinism also has to hold across releases: a saved tape keeps replaying.
+4. **Testing.** For Spawned and for applications: `#[spawned_concurrency::sim_test]`, the `spawned-test` kit, model-derived tests, whole-node simulation of Ethrex and Ethlambda on top of tier 3, behaviour snapshots and the remaining planned layers in [TESTING.md](docs/TESTING.md).
+5. **Features a client needs.** Dynamic supervisor (12a), bounded mailboxes (17).
+6. **Performance, behind a regression gate.** A small benchmark set on every hot-path PR that flags slowdowns past a threshold, so "no cost on the default path" is enforced, not remembered. Then profiling, rank 37 and the [runtime direction](#runtime-direction).
 
 ## North star
 
@@ -616,7 +617,7 @@ the first start (semantics §11; found reviewing #233). Behaviour change: extend
 
 ### Runtime direction
 
-Decided 2026-11-11, with Ethrex and Ethlambda open to rewrites. This is priority tier 5 (rank 22a's simulated network is tier 3): it waits for soundness and introspection ([Priorities](#priorities)).
+Decided 2026-11-11, with Ethrex and Ethlambda open to rewrites. This is priority tier 6 (rank 22a's simulated network is tier 3, determinism): it waits for soundness and introspection ([Priorities](#priorities)).
 
 1. **Keep Tokio as the runtime.** Each actor is already one Tokio task with its own receive loop, which is what a purpose-built actor executor would converge to; Tokio's work stealing gives the load balancing the BEAM gets from process migration. `spawned-rt` stays the single seam (Tokio, OS threads, simulator).
 2. **Make each message cheaper (rank 37)**, after profiling where a message's time goes. This is expected to be the largest performance gain and changes no semantics.

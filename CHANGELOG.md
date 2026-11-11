@@ -2,9 +2,9 @@
 
 ## Unreleased
 
-- ROADMAP: a Priorities section (soundness including a smaller stable API and
-  soak tests, then introspection, testing for applications, client-driven
-  features, and performance behind a regression gate), and the runtime direction. Keep Tokio; rank 37 becomes the main
+- ROADMAP: a Priorities section (soundness, including a smaller stable API and
+  soak tests; introspection; determinism; testing; client-driven features;
+  performance behind a regression gate), and the runtime direction. Keep Tokio; rank 37 becomes the main
   performance track (generated dispatch, reusable reply slots, a single-wakeup
   mailbox, batched draining), after profiling; rank 22a becomes actor-owned
   I/O (`spawned::net`, Erlang ports) with a simulated network so whole client
