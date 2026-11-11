@@ -563,8 +563,17 @@ cargo test --release --test name
 one test replays the shrunk tape strictly (or, once a fix changed the task
 structure so the tape diverges, follows it permissively) and requires the
 scenario to pass, and a `#[sim_test(seeds = 32)]` runs the same operations
-over other seeds. `SPAWNED_FUZZ_TRACE=1` prints each operation with virtual
-time and poll count; `SPAWNED_FUZZ_VERBOSE=1` keeps panic output.
+over other seeds. `--emit` also keeps a passing input (a fixed bug or a
+fixed harness false positive) with its own tape; `fuzz/tests/` holds them.
+`SPAWNED_FUZZ_TRACE=1` prints each operation with virtual time and poll
+count; `SPAWNED_FUZZ_VERBOSE=1` keeps panic output.
+
+TLA+ trace validation of a sample: with the `lifecycle-trace` feature the
+harness writes the lifecycle trace of every finished flat tree (OneForOne
+for `Supervision.tla`, OneForAll and RestForOne, cohort actions only, for
+`Cohorts.tla`; nested trees are not exported), and
+`fuzz/tla-sample.sh CORPUS [MAX] [OUT]` replays a corpus and runs
+`trace_check.py` on them (`nix develop -c fuzz/tla-sample.sh ...`).
 
 CI (`fuzz.yml`) runs the corpus test and a 60 s single-process smoke run on
 pull requests that touch `rt`, `concurrency`, `macros` or `fuzz`; longer
