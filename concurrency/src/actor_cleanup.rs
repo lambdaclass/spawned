@@ -1,4 +1,5 @@
 //! Shared terminal publication for actor futures and native threads.
+use crate::lifecycle_trace as trace;
 use crate::{
     child_handle::ActorId,
     error::ExitReason,
@@ -77,8 +78,14 @@ impl<C: Fn()> ActorCleanup<C> {
         if let Some(reason) = &self.reason {
             return reason.clone();
         }
-        let reason = crate::link::lock_request(&self.cause).die();
-        self.close(reason)
+        let id = self.id.raw();
+        trace::life_section(id, || {
+            let reason = crate::link::lock_request(&self.cause).die();
+            trace::life_emit(id, || {
+                trace::LifeEvent::new("Die", id).x(trace::life_reason(&reason))
+            });
+            self.close(reason)
+        })
     }
     fn close(&mut self, reason: ExitReason) -> ExitReason {
         let replies = self.replies.as_deref();
@@ -109,8 +116,14 @@ impl<C: Fn()> Drop for ActorCleanup<C> {
         let reason = match self.reason.clone() {
             Some(reason) => reason,
             None => {
-                let reason = crate::link::lock_request(&self.cause).runtime_drop();
-                self.close(reason)
+                let id = self.id.raw();
+                trace::life_section(id, || {
+                    let reason = crate::link::lock_request(&self.cause).runtime_drop();
+                    trace::life_emit(id, || {
+                        trace::LifeEvent::new("Drop", id).x(trace::life_reason(&reason))
+                    });
+                    self.close(reason)
+                })
             }
         };
         if let Some(message) = self.failures.as_ref().and_then(|f| f.first()) {
@@ -127,6 +140,12 @@ impl<C: Fn()> Drop for ActorCleanup<C> {
         // wait_exit, join and monitors observe the final reason. Delivering
         // first keeps v0.7's guarantee that once `wait_exit` returns, every
         // linked peer's `Exit` is already queued (or its exit requested).
+        // The trace's `Publish` is this point: destruction is over and the
+        // notices are delivered after it.
+        let id = self.id.raw();
+        trace::life_section(id, || {
+            trace::life_emit(id, || trace::LifeEvent::new("Publish", id));
+        });
         if let Some(notices) = self.notices.take() {
             notices.deliver();
         }

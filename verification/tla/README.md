@@ -41,7 +41,7 @@ runs real actors through the scenarios below and writes each trace as JSON;
 TLC then checks that each trace is a behavior of `Supervision.tla`.
 
 ```bash
-cargo test -p spawned-concurrency --features lifecycle-trace,failpoints --test supervision_trace --test cohort_trace --test tree_trace --test nested_supervision --test coverage_trace --test job_trace --test reply_trace
+cargo test -p spawned-concurrency --features lifecycle-trace,failpoints --test supervision_trace --test cohort_trace --test tree_trace --test nested_supervision --test coverage_trace --test job_trace --test reply_trace --test lifecycle_trace
 nix run .#check-tla -- --traces-only target/lifecycle-traces --negative-controls   # or --traces DIR to also model-check
 nix develop -c python3 verification/tla/trace_check.py target/lifecycle-traces
 ```
@@ -108,7 +108,7 @@ the recorded runs never exercise? `trace_coverage.py` reports it per model with
 trace validation (`Supervision`, `Cohorts`, `NestedSupervision`).
 
 ```bash
-cargo test -p spawned-concurrency --features lifecycle-trace,failpoints --test supervision_trace --test cohort_trace --test tree_trace --test nested_supervision --test coverage_trace --test job_trace --test reply_trace
+cargo test -p spawned-concurrency --features lifecycle-trace,failpoints --test supervision_trace --test cohort_trace --test tree_trace --test nested_supervision --test coverage_trace --test job_trace --test reply_trace --test lifecycle_trace
 nix develop -c python3 verification/tla/trace_coverage.py --traces dedicated=target/lifecycle-traces \
     --model-keys verification/tla/coverage-model.json.gz --baseline verification/tla/coverage-baseline.json
 # every test binary: each finished supervisor dumps its traces
@@ -460,9 +460,41 @@ message is dispatched after stop; each monitor's `Down` is delivered at most
 once and, unless its observer died, exactly once; linked non-trapping peers of
 an abnormal exit stop; and the exit-signal rules of rank 5e. Reintroducing the
 PR #182 bug (`Fault = "Retain182"`) and the PR #185 bug (`"Dispatch185"`) each
-produce a counterexample (`negative_checks.py`). Still to do with the
-implementation: lifecycle-trace events for exit signals, links, monitors and
-requests so real runs replay against it, as supervision traces do.
+produce a counterexample (`negative_checks.py`).
+
+**Lifecycle trace validation.** With `lifecycle-trace`, the runtime records
+one `LifeEvent` per `Lifecycle.tla` action for the actors spawned while
+`lifecycle_trace::record_lifecycle()` is on (both `tasks` and `threads`):
+`Trap`, `Send` (a request from `Ext`, admitted or `NoProc`), `Dispatch` (with
+the mailbox item kind), `Panic`, `Stop`, `Signal` (also a supervisor's
+Shutdown or kill), `Link`/`Unlink`/`Monitor`/`Demonitor`, `Deliver` (a link
+notice or `Down` applied by its receiver), `Hook` (`stopped()` runs or is
+skipped), `Die` (D, final reason), `Drop` (runtime drop) and `Publish`. Each
+is recorded in the critical section of the change it describes: the
+dispatch with the run loop's stop check, the stop with its cancel, the
+admission check with the push, D with the exit-table close. A
+recorded actor's sections take the process-wide trace section first, so the
+log is a linearization. `TraceLifecycle.tla` replays it with no unlogged
+steps; its header lists the mapping (actors `a1`, `a2` in spawn order,
+`start_linked` parents as `LinkParent`, every send a request from `Ext`,
+folded request panics, the late `NoProc` notice of a non-trapping caller,
+and `Hook` "skip" accepted after a kill that arrived before `stopped()`
+began, which the model's `Kill` leaves out). Phase 0 (signals held during
+`started()`), managed scopes' own stops and actor-to-actor sends are not
+mapped: they reject. `concurrency/tests/lifecycle_trace.rs` records 14
+scenarios (`lifecycle_*.json`, schema `lifecycle-v1`): kill with a queued
+request answered `Killed` and a later `NoProc`, kill during `stopped()`,
+untrapped and `Normal` signals, trapped exits (also from an actor, then a
+kill), late link/try_link/monitor (`NoProc`), a late link ending a
+non-trapping caller, the unlink and demonitor fences between D and
+publication, a monitor's `Down`, a `start_linked` parent exit to a trapping
+child, a link notice ending a non-trapping peer, runtime drop (`Killed`), and
+one threads-mode run. Controls (`lifecycle_trace_controls`): `stopped()`
+after a kill or after an untrapped signal, `Kill` instead of `Killed`,
+publication before D, a `Normal` signal stopping an actor, a late `Down` or
+link notice with the real reason, a notice after unlink, a `Down` after
+demonitor, a parent exit dispatched as an `Exit`, and a runtime drop ending
+`Normal`: all eleven are rejected. `trace_coverage.py` skips this schema.
 Source: [verification strategy](../../legacy/docs/research/verification-strategy.md#acceptance).
 
 `Coordinator.tla` checks coordinator failure ownership independently of the actor

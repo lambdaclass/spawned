@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Check recorded lifecycle traces against Supervision.tla (and, by schema,
-Cohorts.tla, NestedSupervision.tla, DeferredJobs.tla and DeferredReplies.tla).
+Cohorts.tla, NestedSupervision.tla, DeferredJobs.tla, DeferredReplies.tla and
+Lifecycle.tla).
 
 Each JSON trace (written by concurrency/tests/supervision_trace.rs with the
 `lifecycle-trace` feature) looks like:
@@ -48,7 +49,8 @@ def tla_event(event, cohort=False):
 
 def generate(trace, workdir):
     schema = trace.get("schema", "one-for-one-v1")
-    if schema not in {"one-for-one-v1", "cohort-v1", "tree-v1", "jobs-v1", "replies-v1"}:
+    if schema not in {"one-for-one-v1", "cohort-v1", "tree-v1", "jobs-v1", "replies-v1",
+                      "lifecycle-v1"}:
         raise ValueError(f"unsupported trace schema: {schema}")
     if schema == "tree-v1":
         return generate_tree(trace, workdir)
@@ -56,6 +58,8 @@ def generate(trace, workdir):
         return generate_jobs(trace, workdir)
     if schema == "replies-v1":
         return generate_replies(trace, workdir)
+    if schema == "lifecycle-v1":
+        return generate_lifecycle(trace, workdir)
     cohort = schema == "cohort-v1"
     modules = ("Cohorts.tla", "TraceCohorts.tla") if cohort else MODELS
     for model in modules:
@@ -139,6 +143,128 @@ def generate_replies(trace, workdir):
                   f"    N = {n}\n    BoundA = {int(trace['bound'])}\n    BoundB = 1\n"
                   f"    MaxTime = {clock}\n    MaxWait = {clock}\n    Fault = \"None\"\n"
                   "    Trace <- TraceLog\n"
+                  "INVARIANT Safety\nINVARIANT TraceIncomplete\n")
+
+
+OWN_ACTIONS = {"Trap", "Stop", "Link", "Unlink", "Monitor", "Demonitor"}
+
+
+def lifecycle_records(trace):
+    """Normalize a lifecycle-v1 trace: actor and monitor numbers, Send split
+    into Request and Enqueue, and request turns that panicked folded into
+    their Dispatch (TraceLifecycle.tla). Returns (records, constants)."""
+    events = trace["events"]
+    actors, parents = {}, {}
+    for e in events:
+        if e["a"] == "Spawn":
+            actors[int(e["t"])] = f"a{len(actors) + 1}"
+            if int(e["s"]):
+                parents[int(e["t"])] = int(e["s"])
+    if not actors:
+        raise ValueError("a lifecycle trace needs at least one spawned actor")
+    for child, parent in parents.items():
+        if parent not in actors:
+            raise ValueError(f"start_linked parent {parent} is not recorded")
+
+    def actor(raw):
+        if int(raw) not in actors:
+            raise ValueError(f"event for an unrecorded actor {raw}")
+        return actors[int(raw)]
+
+    # Request turns that panicked with nothing of the actor's own in between.
+    folded = set()
+    turn = {}
+    for i, e in enumerate(events):
+        t = int(e["t"])
+        if e["a"] == "Dispatch":
+            turn[t] = i if e["k"] == "req" else None
+        elif e["a"] in OWN_ACTIONS:
+            turn[t] = None
+        elif e["a"] == "Panic" and e["x"] == "turn" and turn.get(t) is not None:
+            folded |= {turn[t], i}
+            turn[t] = None
+
+    monitors, requests, children = {}, 0, set()
+    signals = late = 0
+    records = []
+
+    def record(a, t="none", s="none", x="", m=0, q=0, k="", o="", p=False):
+        records.append("[a |-> {}, t |-> {}, s |-> {}, x |-> {}, m |-> {}, q |-> {}, k |-> {}, o |-> {}, p |-> {}]".format(
+            tla_string(a), tla_string(t), tla_string(s), tla_string(x), m, q,
+            tla_string(k), tla_string(o), "TRUE" if p else "FALSE"))
+
+    for i, e in enumerate(events):
+        a = e["a"]
+        if a == "Spawn":
+            continue
+        t = actor(e["t"])
+        if a == "Send":
+            requests += 1
+            record("Request", t=t, q=requests)
+            record("Enqueue", t=t, q=requests, x=e["x"])
+            continue
+        m = 0
+        if int(e.get("m", 0)):
+            m = monitors.setdefault(int(e["m"]), len(monitors) + 1)
+        if a == "Signal":
+            if e["o"] == "sup":
+                source = "sup"
+                children.add(t)
+            else:
+                source = actors.get(int(e["s"]), "ext")
+                signals += 1
+            record(a, t=t, s=source, x=e["x"])
+            continue
+        if a == "Stop":
+            signals += 1
+        if a in {"Link", "Monitor"} and e["x"] in {"noproc", "try", "late"}:
+            late += 1
+        source = actor(e["s"]) if a in {"Link", "Unlink", "Monitor", "Deliver"} else "none"
+        record(a, t=t, s=source, x=e["x"], m=m, k=e["k"], o=e["o"], p=i in folded)
+    constants = {
+        "actors": [actors[k] for k in actors],
+        "parents": {actors[c]: actors[p] for c, p in parents.items()},
+        "children": sorted(children),
+        "requests": requests,
+        "monitors": len(monitors),
+        "signals": signals,
+        "late": late,
+    }
+    return records, constants
+
+
+def generate_lifecycle(trace, workdir):
+    """A group of actors' exit signals, links, monitors and requests against
+    Lifecycle.tla."""
+    for model in ("Lifecycle.tla", "TraceLifecycle.tla"):
+        shutil.copy(os.path.join(HERE, model), workdir)
+    records, c = lifecycle_records(trace)
+
+    def tla_set(values):
+        return "{" + ", ".join(tla_string(v) for v in values) + "}"
+    if c["parents"]:
+        parent = "CASE " + " [] ".join(f"a = {tla_string(ch)} -> {tla_string(p)}"
+                                       for ch, p in c["parents"].items()) + ' [] OTHER -> "none"'
+    else:
+        parent = '"none"'
+    with open(os.path.join(workdir, "TraceRun.tla"), "w") as out:
+        out.write("---- MODULE TraceRun ----\nEXTENDS TraceLifecycle\n"
+                  f"TraceActors == {tla_set(c['actors'])}\n"
+                  f"TraceChildren == {tla_set(c['children'])}\n"
+                  f"TraceLinkParent == [a \\in TraceActors |-> {parent}]\n"
+                  f"TraceReqs == 1..{c['requests']}\n"
+                  f"TraceMonIds == 1..{c['monitors']}\n"
+                  "TraceLog == <<\n    " + ",\n    ".join(records) + "\n>>\n====\n")
+    with open(os.path.join(workdir, "TraceRun.cfg"), "w") as out:
+        out.write("INIT TraceInit\nNEXT TraceNext\nCONSTANTS\n"
+                  "    Actors <- TraceActors\n    Children <- TraceChildren\n"
+                  "    LinkParent <- TraceLinkParent\n    Reqs <- TraceReqs\n"
+                  "    MonIds <- TraceMonIds\n    MaxSends = 0\n"
+                  f"    MaxSignals = {c['signals']}\n    MaxLate = {c['late']}\n"
+                  "    UnlinkEnabled = TRUE\n    TrapCanClear = TRUE\n"
+                  "    SelfReasons <- Reasons\n    SignalReasons <- Reasons\n"
+                  "    AdminReasons <- Reasons\n    DropEnabled = TRUE\n"
+                  "    Fault = \"None\"\n    Trace <- TraceLog\n"
                   "INVARIANT Safety\nINVARIANT TraceIncomplete\n")
 
 

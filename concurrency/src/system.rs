@@ -989,7 +989,7 @@ impl Scope {
                 state.ended_at = Some(Instant::now());
             }
         }
-        link::stop_with_reason(&self.cause, reason, || self.token.cancel());
+        link::request_stop(&self.cause, reason, || self.token.cancel());
     }
     pub(crate) fn close_admission(&self) {
         lock(&self.state).open = false;

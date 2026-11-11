@@ -1,5 +1,6 @@
 use crate::child_handle::ActorId;
 use crate::error::{ActorError, ExitReason};
+use crate::lifecycle_trace as trace;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
@@ -210,6 +211,26 @@ pub(crate) fn deliver_signal(
     origin: Origin,
     from_parent: bool,
 ) {
+    trace::life_section(target.id.raw(), || {
+        if origin == Origin::Direct {
+            trace::life_emit(target.id.raw(), || {
+                trace::LifeEvent::new("Signal", target.id.raw())
+                    .s(from.raw())
+                    .x(trace::life_reason(&reason))
+                    .o(if from_parent { "sup" } else { "" })
+            });
+        }
+        apply_signal(target, from, reason, origin, from_parent)
+    })
+}
+
+fn apply_signal(
+    target: &SignalTarget,
+    from: ActorId,
+    reason: ExitReason,
+    origin: Origin,
+    from_parent: bool,
+) {
     if origin == Origin::Direct && reason == ExitReason::Kill {
         if lock_request(&target.request).kill() {
             (target.wake)();
@@ -223,6 +244,10 @@ pub(crate) fn deliver_signal(
     }
     let exit = Exit { from, reason };
     if request.starting {
+        // Phase 0 is not in the lifecycle trace mapping (TraceLifecycle.tla).
+        trace::life_emit(target.id.raw(), || {
+            trace::LifeEvent::new("Held", target.id.raw()).s(from.raw())
+        });
         // Held in arrival order, and as an envelope in its mailbox place.
         request.held.push(exit.reason.clone());
         let _ = (target.send_held)(exit, from_parent);
@@ -335,6 +360,18 @@ pub(crate) fn register_link(
     if own.id == peer.id || Arc::ptr_eq(own_links, peer_links) {
         return LinkOutcome::Unchanged;
     }
+    trace::life_section(own.id.raw(), || {
+        link_in_section(own, own_links, peer, peer_links, try_only)
+    })
+}
+
+fn link_in_section(
+    own: &Arc<SignalTarget>,
+    own_links: &LinkTable,
+    peer: &Arc<SignalTarget>,
+    peer_links: &LinkTable,
+    try_only: bool,
+) -> LinkOutcome {
     // Sender lifetime (design Terms, semantics X2): `link` works only while
     // the caller runs. Once its exit began (or past its D, checked again
     // under the table lock below) the call is inert: no record, no notice,
@@ -376,6 +413,17 @@ pub(crate) fn register_link(
         });
         LinkOutcome::Linked
     });
+    if outcome != LinkOutcome::Unchanged {
+        trace::life_emit(own.id.raw(), || {
+            trace::LifeEvent::new("Link", own.id.raw())
+                .s(peer.id.raw())
+                .x(match (&outcome, try_only) {
+                    (LinkOutcome::Linked, _) => "linked",
+                    (_, false) => "noproc",
+                    (_, true) => "try",
+                })
+        });
+    }
     if outcome == LinkOutcome::NoProc && !try_only {
         deliver_notice(own_links, own, peer.id, gen, ExitReason::NoProc);
     }
@@ -401,7 +449,15 @@ pub(crate) fn unregister_link(
     if own_id == peer_id || Arc::ptr_eq(own, peer) {
         return;
     }
-    let removed = with_pair(own, peer, |a, b| (remove(a, peer_id), remove(b, own_id)));
+    let removed = trace::life_section(own_id.raw(), || {
+        let removed = with_pair(own, peer, |a, b| (remove(a, peer_id), remove(b, own_id)));
+        if removed.0.is_some() || removed.1.is_some() {
+            trace::life_emit(own_id.raw(), || {
+                trace::LifeEvent::new("Unlink", own_id.raw()).s(peer_id.raw())
+            });
+        }
+        removed
+    });
     drop(removed);
 }
 
@@ -409,6 +465,18 @@ pub(crate) fn unregister_link(
 /// only if the record with that peer and generation is still present, and
 /// remove it. `unlink` removes records under the same lock (the fence).
 fn deliver_notice(
+    receiver_links: &LinkTable,
+    receiver: &SignalTarget,
+    from: ActorId,
+    gen: u64,
+    reason: ExitReason,
+) {
+    trace::life_section(receiver.id.raw(), || {
+        deliver_notice_in_section(receiver_links, receiver, from, gen, reason)
+    })
+}
+
+fn deliver_notice_in_section(
     receiver_links: &LinkTable,
     receiver: &SignalTarget,
     from: ActorId,
@@ -424,6 +492,13 @@ fn deliver_notice(
         return;
     };
     let record = table.entries.swap_remove(i);
+    trace::life_emit(receiver.id.raw(), || {
+        trace::LifeEvent::new("Deliver", receiver.id.raw())
+            .s(from.raw())
+            .x(trace::life_reason(&reason))
+            .k("link")
+            .o(if record.late { "late" } else { "death" })
+    });
     // One failing internal callback must not prevent other peers from being
     // notified, or panic again during actor-future destruction.
     if let Err(payload) = catch_unwind(AssertUnwindSafe(|| {
@@ -503,15 +578,28 @@ pub(crate) fn propagate_exit(own_id: ActorId, own: &LinkTable, reason: &ExitReas
 /// A self-exit or administrative stop commits its cause before waking. The
 /// first requested reason wins over later self-exits and stops; a later
 /// untrapped signal or kill can still replace it until D.
-pub(crate) fn normal_stop(reason: &LinkedExitReason, cancel: impl FnOnce()) {
-    stop_with_reason(reason, ExitReason::Normal, cancel);
+pub(crate) fn normal_stop(id: ActorId, reason: &LinkedExitReason, cancel: impl FnOnce()) {
+    stop_with_reason(id, reason, ExitReason::Normal, cancel);
 }
 
+/// A self-exit or administrative stop of actor `id` (recorded as `Stop`).
 pub(crate) fn stop_with_reason(
+    id: ActorId,
     reason: &LinkedExitReason,
     cause: ExitReason,
     cancel: impl FnOnce(),
 ) {
+    trace::life_section(id.raw(), || {
+        trace::life_emit(id.raw(), || {
+            trace::LifeEvent::new("Stop", id.raw()).x(trace::life_reason(&cause))
+        });
+        request_stop(reason, cause, cancel);
+    });
+}
+
+/// As [`stop_with_reason`], unrecorded: a parent exit being dispatched (part
+/// of the model's `Dispatch`) or a managed scope's stop.
+pub(crate) fn request_stop(reason: &LinkedExitReason, cause: ExitReason, cancel: impl FnOnce()) {
     if lock_request(reason).request(cause) {
         cancel();
     }

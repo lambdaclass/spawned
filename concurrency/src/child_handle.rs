@@ -88,7 +88,9 @@ impl ChildHandle {
     pub(crate) fn new(target: Arc<SignalTarget>, completion: Completion, links: LinkTable) -> Self {
         let stop = target.clone();
         Self {
-            cancel: Arc::new(move || crate::link::normal_stop(&stop.request, || (stop.wake)())),
+            cancel: Arc::new(move || {
+                crate::link::normal_stop(stop.id, &stop.request, || (stop.wake)())
+            }),
             target,
             completion,
             links,
@@ -156,7 +158,9 @@ impl ChildHandle {
     /// runs. `stop_with_reason(Kill)` ends `Kill`; use [`kill`](Self::kill)
     /// for the untrappable kill signal that ends `Killed`.
     pub fn stop_with_reason(&self, reason: ExitReason) {
-        crate::link::stop_with_reason(&self.target.request, reason, || (self.target.wake)());
+        crate::link::stop_with_reason(self.target.id, &self.target.request, reason, || {
+            (self.target.wake)()
+        });
     }
 
     /// Administrative stop with reason `Shutdown`, as [`stop`](Self::stop).

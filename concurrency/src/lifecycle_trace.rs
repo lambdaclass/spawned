@@ -1,9 +1,13 @@
-//! Supervisor lifecycle trace recording for TLA+ trace validation.
+//! Lifecycle trace recording for TLA+ trace validation.
 //!
 //! With the `lifecycle-trace` feature, `run_supervisor`/`run_child` record one
 //! event per action of `verification/tla/Supervision.tla`, tagged with the
-//! supervisor's trace id. `verification/tla/trace_check.py` then checks that
-//! each recorded trace is a behavior of the model.
+//! supervisor's trace id; the reply and job cores record `DeferredReplies.tla`
+//! and `DeferredJobs.tla` actions; and the actor runtime records
+//! `Lifecycle.tla` actions (`LifeEvent`, see `TraceLifecycle.tla`) for the
+//! actors spawned while `record_lifecycle` is on.
+//! `verification/tla/trace_check.py` then checks that each recorded trace is
+//! a behavior of its model.
 //!
 //! The model's actions are atomic; the code's are not. Every event is
 //! recorded inside a process-wide *section*, and code that reads the
@@ -164,6 +168,85 @@ impl ReplyEvent {
     }
 }
 
+/// One base-lifecycle action of `verification/tla/Lifecycle.tla`, recorded
+/// for the actors spawned while `record_lifecycle` is on. `t` is the actor
+/// the action belongs to (the target of a signal or message, the caller of
+/// link/monitor, the receiver of a notice), `s` the other actor or the
+/// sender (`ActorId` numbers, normalized by the checker; 0 for outside code),
+/// `x` the reason, flag, kind or outcome, `m` the monitor, `o` the notice
+/// origin (`death`, `late`) or `sup` for a supervisor's signal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LifeEvent {
+    pub action: &'static str,
+    pub t: u64,
+    pub s: u64,
+    pub x: &'static str,
+    pub m: u64,
+    pub k: &'static str,
+    pub o: &'static str,
+}
+
+impl LifeEvent {
+    #[allow(dead_code)] // recording is compiled out without the feature
+    pub(crate) fn new(action: &'static str, t: u64) -> Self {
+        Self {
+            action,
+            t,
+            s: 0,
+            x: "",
+            m: 0,
+            k: "",
+            o: "",
+        }
+    }
+    #[allow(dead_code)]
+    pub(crate) fn s(mut self, s: u64) -> Self {
+        self.s = s;
+        self
+    }
+    #[allow(dead_code)]
+    pub(crate) fn x(mut self, x: &'static str) -> Self {
+        self.x = x;
+        self
+    }
+    #[allow(dead_code)]
+    pub(crate) fn m(mut self, m: u64) -> Self {
+        self.m = m;
+        self
+    }
+    #[allow(dead_code)]
+    pub(crate) fn k(mut self, k: &'static str) -> Self {
+        self.k = k;
+        self
+    }
+    #[allow(dead_code)]
+    pub(crate) fn o(mut self, o: &'static str) -> Self {
+        self.o = o;
+        self
+    }
+    /// JSON object understood by `verification/tla/trace_check.py`.
+    pub fn to_json(&self) -> String {
+        format!(
+            r#"{{"a":"{}","t":{},"s":{},"x":"{}","m":{},"k":"{}","o":"{}"}}"#,
+            self.action, self.t, self.s, self.x, self.m, self.k, self.o
+        )
+    }
+}
+
+/// Model name of an exit reason (`Lifecycle.tla` `Reasons`).
+#[allow(dead_code)] // recording is compiled out without the feature
+pub(crate) fn life_reason(reason: &crate::ExitReason) -> &'static str {
+    use crate::ExitReason;
+    match reason {
+        ExitReason::Normal => "Normal",
+        ExitReason::Shutdown => "Shutdown",
+        ExitReason::Panic(_) => "Panic",
+        ExitReason::Kill => "Kill",
+        ExitReason::Killed => "Killed",
+        ExitReason::NoProc => "NoProc",
+    }
+}
+
 pub(crate) fn flag(value: bool) -> &'static str {
     if value {
         "true"
@@ -197,7 +280,7 @@ mod imp {
         cell::Cell,
         collections::BTreeMap,
         sync::{
-            atomic::{AtomicU64, Ordering},
+            atomic::{AtomicBool, AtomicU64, Ordering},
             Mutex, MutexGuard,
         },
     };
@@ -283,6 +366,90 @@ mod imp {
     pub fn take_jobs(owner: u64) -> Vec<super::JobEvent> {
         lock(&WATCHED).remove(&owner);
         lock(&JOBS).remove(&owner).unwrap_or_default()
+    }
+
+    // Base lifecycle (`Lifecycle.tla`): one process-wide recording at a time.
+    static LIFE_ON: AtomicBool = AtomicBool::new(false);
+    static MEMBERS: Mutex<std::collections::BTreeSet<u64>> =
+        Mutex::new(std::collections::BTreeSet::new());
+    static LIFE: Mutex<Vec<super::LifeEvent>> = Mutex::new(Vec::new());
+
+    /// Start recording the base-lifecycle events of every actor spawned from
+    /// now on until [`take_lifecycle`]. Tests that record must not run
+    /// concurrently with each other.
+    pub fn record_lifecycle() {
+        atomic(|| {
+            lock(&MEMBERS).clear();
+            lock(&LIFE).clear();
+            LIFE_ON.store(true, Ordering::Release);
+        });
+    }
+
+    /// Stop recording and return the events in their recorded order (a
+    /// linearization: each event is recorded in the critical section of the
+    /// state change it describes).
+    pub fn take_lifecycle() -> Vec<super::LifeEvent> {
+        atomic(|| {
+            LIFE_ON.store(false, Ordering::Release);
+            lock(&MEMBERS).clear();
+            std::mem::take(&mut *lock(&LIFE))
+        })
+    }
+
+    /// Whether actor `id` is recorded.
+    pub(crate) fn life_traced(id: u64) -> bool {
+        LIFE_ON.load(Ordering::Acquire) && lock(&MEMBERS).contains(&id)
+    }
+
+    /// Run `f` as one atomic step of the recorded linearization if actor
+    /// `id` is recorded (and as is otherwise). Every lifecycle section is
+    /// keyed by the actor whose locks it takes first, and nested sections use
+    /// the same key, so the section is always the outermost lock.
+    pub(crate) fn life_section<R>(id: u64, f: impl FnOnce() -> R) -> R {
+        if life_traced(id) {
+            atomic(f)
+        } else {
+            f()
+        }
+    }
+
+    /// Record an event of actor `t` (inside its section).
+    pub(crate) fn life_emit(t: u64, event: impl FnOnce() -> super::LifeEvent) {
+        if life_traced(t) {
+            lock(&LIFE).push(event());
+        }
+    }
+
+    /// A new actor instance (after its `start_linked` link, before
+    /// `started()`): recorded from now on.
+    pub(crate) fn life_spawn(id: u64, parent: u64) {
+        if !LIFE_ON.load(Ordering::Acquire) {
+            return;
+        }
+        atomic(|| {
+            lock(&MEMBERS).insert(id);
+            lock(&LIFE).push(super::LifeEvent::new("Spawn", id).s(parent));
+        });
+    }
+
+    /// The model's mailbox item kind of a message of type `M`.
+    pub(crate) fn life_kind<M: 'static>() -> &'static str {
+        if std::any::TypeId::of::<M>() == std::any::TypeId::of::<crate::monitor::Down>() {
+            "down"
+        } else {
+            "req"
+        }
+    }
+
+    /// A send or request to `owner` was admitted or refused (`NoProc`). A
+    /// `Down` is recorded by its monitor as a notice delivery instead.
+    pub(crate) fn life_send<M: 'static>(owner: u64, admitted: bool) {
+        if life_kind::<M>() == "down" {
+            return;
+        }
+        life_emit(owner, || {
+            super::LifeEvent::new("Send", owner).x(if admitted { "queued" } else { "noproc" })
+        });
     }
     thread_local! {
         static DEPTH: Cell<usize> = const { Cell::new(0) };
@@ -572,7 +739,24 @@ mod imp {
     #[allow(dead_code)] // recording is compiled out without the feature
     #[inline(always)]
     pub(crate) fn job(_: u64, _: impl FnOnce() -> super::JobEvent) {}
+    #[allow(dead_code)]
+    #[inline(always)]
+    pub(crate) fn life_section<R>(_: u64, f: impl FnOnce() -> R) -> R {
+        f()
+    }
+    #[allow(dead_code)]
+    #[inline(always)]
+    pub(crate) fn life_emit(_: u64, _: impl FnOnce() -> super::LifeEvent) {}
+    #[allow(dead_code)]
+    #[inline(always)]
+    pub(crate) fn life_spawn(_: u64, _: u64) {}
+    #[allow(dead_code)]
+    #[inline(always)]
+    pub(crate) fn life_send<M: 'static>(_: u64, _: bool) {}
 }
 
 #[cfg(feature = "lifecycle-trace")]
-pub use imp::{recorded, take, take_jobs, take_replies, take_tree, watch_deferred};
+pub use imp::{
+    record_lifecycle, recorded, take, take_jobs, take_lifecycle, take_replies, take_tree,
+    watch_deferred,
+};

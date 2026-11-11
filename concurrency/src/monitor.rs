@@ -23,6 +23,10 @@ impl MonitorRef {
     pub(crate) fn next() -> Self {
         Self(NEXT_MONITOR_ID.fetch_add(1, Ordering::Relaxed))
     }
+    #[allow(dead_code)] // used by lifecycle tracing only
+    pub(crate) fn raw(self) -> u64 {
+        self.0
+    }
 }
 
 impl std::fmt::Display for MonitorRef {

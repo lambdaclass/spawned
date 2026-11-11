@@ -261,8 +261,8 @@ def trace_keys(path, tlc):
 
 
 # Trace schemas validated by trace_check.py but without a coverage model
-# (the deferred-replies models): skipped here.
-UNCOVERED_SCHEMAS = {"jobs-v1", "replies-v1"}
+# (the deferred-replies models and Lifecycle.tla): skipped here.
+UNCOVERED_SCHEMAS = {"jobs-v1", "replies-v1", "lifecycle-v1"}
 
 
 def covered(path):

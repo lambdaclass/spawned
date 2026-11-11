@@ -79,6 +79,11 @@ pub trait Handler<M: Message>: Actor {
 // ---------------------------------------------------------------------------
 
 trait Envelope<A: Actor>: Send {
+    /// The model's mailbox item kind (`Lifecycle.tla`), for the trace.
+    #[cfg(feature = "lifecycle-trace")]
+    fn trace_kind(&self) -> &'static str {
+        "other"
+    }
     #[cfg(feature = "metrics")]
     fn observation(&mut self) -> Option<crate::instrumentation::MessageObservation> {
         None
@@ -101,6 +106,11 @@ where
     A: Actor + Handler<M>,
     M: Message,
 {
+    /// The model's mailbox item kind (`Lifecycle.tla`), for the trace.
+    #[cfg(feature = "lifecycle-trace")]
+    fn trace_kind(&self) -> &'static str {
+        crate::lifecycle_trace::life_kind::<M>()
+    }
     #[cfg(feature = "metrics")]
     fn observation(&mut self) -> Option<crate::instrumentation::MessageObservation> {
         self.observation.take()
@@ -139,27 +149,34 @@ where
         #[cfg(feature = "metrics")]
         observation: Some(_mailbox.enqueued()),
     });
-    if replies.refuses_admission() {
-        #[cfg(feature = "metrics")]
-        envelope.reject();
-        return Err(ActorError::NoProc);
-    }
-    match sender.send(MailboxItem::Message(envelope)) {
-        Ok(()) => {
+    // Admission and its trace event are one step of the lifecycle trace.
+    let owner = replies.owner().raw();
+    crate::lifecycle_trace::life_section(owner, || {
+        if replies.refuses_admission() {
             #[cfg(feature = "metrics")]
-            crate::instrumentation::accepted();
-            Ok(())
+            envelope.reject();
+            crate::lifecycle_trace::life_send::<M>(owner, false);
+            return Err(ActorError::NoProc);
         }
-        Err(_error) => {
-            #[cfg(feature = "metrics")]
-            {
-                if let MailboxItem::Message(envelope) = _error.0 {
-                    envelope.reject();
-                }
+        match sender.send(MailboxItem::Message(envelope)) {
+            Ok(()) => {
+                #[cfg(feature = "metrics")]
+                crate::instrumentation::accepted();
+                crate::lifecycle_trace::life_send::<M>(owner, true);
+                Ok(())
             }
-            Err(ActorError::NoProc)
+            Err(_error) => {
+                #[cfg(feature = "metrics")]
+                {
+                    if let MailboxItem::Message(envelope) = _error.0 {
+                        envelope.reject();
+                    }
+                }
+                crate::lifecycle_trace::life_send::<M>(owner, false);
+                Err(ActorError::NoProc)
+            }
         }
-    }
+    })
 }
 
 /// System envelope that dispatches an `Exit` notification to the actor's
@@ -169,6 +186,11 @@ struct ExitEnvelope {
 }
 
 impl<A: Actor> Envelope<A> for ExitEnvelope {
+    /// The model's mailbox item kind (`Lifecycle.tla`), for the trace.
+    #[cfg(feature = "lifecycle-trace")]
+    fn trace_kind(&self) -> &'static str {
+        "exit"
+    }
     fn handle(self: Box<Self>, actor: &mut A, ctx: &Context<A>) {
         actor.exit_received(self.exit, ctx);
     }
@@ -181,8 +203,13 @@ struct ParentExitEnvelope {
 }
 
 impl<A: Actor> Envelope<A> for ParentExitEnvelope {
+    /// The model's mailbox item kind (`Lifecycle.tla`), for the trace.
+    #[cfg(feature = "lifecycle-trace")]
+    fn trace_kind(&self) -> &'static str {
+        "pexit"
+    }
     fn handle(self: Box<Self>, _actor: &mut A, ctx: &Context<A>) {
-        ctx.stop_with_reason(self.exit.reason);
+        ctx.parent_exit(self.exit.reason);
     }
 }
 
@@ -195,12 +222,17 @@ struct HeldEnvelope {
 }
 
 impl<A: Actor> Envelope<A> for HeldEnvelope {
+    /// The model's mailbox item kind (`Lifecycle.tla`), for the trace.
+    #[cfg(feature = "lifecycle-trace")]
+    fn trace_kind(&self) -> &'static str {
+        "held"
+    }
     fn handle(self: Box<Self>, actor: &mut A, ctx: &Context<A>) {
         if !link::lock_request(&ctx.linked_reason).held_trapped() {
             return;
         }
         if self.parent {
-            ctx.stop_with_reason(self.exit.reason);
+            ctx.parent_exit(self.exit.reason);
         } else {
             actor.exit_received(self.exit, ctx);
         }
@@ -367,7 +399,15 @@ impl<A: Actor> Context<A> {
     /// a panic (in the handler or `stopped()`) with `Panic`. `Kill` stays
     /// `Kill` and propagates over links as `Kill` (trappable).
     pub fn stop_with_reason(&self, reason: ExitReason) {
-        link::stop_with_reason(&self.linked_reason, reason, || {
+        link::stop_with_reason(self.id, &self.linked_reason, reason, || {
+            self.cancellation_token.cancel()
+        });
+    }
+
+    /// A parent exit being dispatched: normal termination with its reason
+    /// (part of the model's `Dispatch`, so not recorded as a stop).
+    fn parent_exit(&self, reason: ExitReason) {
+        link::request_stop(&self.linked_reason, reason, || {
             self.cancellation_token.cancel()
         });
     }
@@ -512,27 +552,48 @@ impl<A: Actor> Context<A> {
         let monitor_ref = MonitorRef::next();
         let active = spawned_rt::sync::CancellationToken::new();
 
-        {
+        let observer = self.id.raw();
+        let registered = crate::lifecycle_trace::life_section(observer, || {
             let mut monitors = self.monitors.lock().unwrap_or_else(|p| p.into_inner());
             // The token check makes registration inert once shutdown starts.
             // The closed table below serializes registration with exit cleanup,
             // even on paths that unwind before cancelling the owner token.
             if self.cancellation_token.is_cancelled() {
-                return monitor_ref;
+                return false;
             }
             let Some(monitors) = monitors.as_mut() else {
-                return monitor_ref;
+                return false;
+            };
+            let event = |x| {
+                crate::lifecycle_trace::LifeEvent::new("Monitor", observer)
+                    .s(target.id().raw())
+                    .m(monitor_ref.raw())
+                    .x(x)
             };
             // Linearised against the target's death point (E4): past it the
             // only notice is NoProc, delivered under the observer's lock.
             if target.is_past_death() {
+                crate::lifecycle_trace::life_emit(observer, || event("late"));
+                crate::lifecycle_trace::life_emit(observer, || {
+                    crate::lifecycle_trace::LifeEvent::new("Deliver", observer)
+                        .s(target.id().raw())
+                        .m(monitor_ref.raw())
+                        .x("NoProc")
+                        .k("down")
+                        .o("late")
+                });
                 let _ = self.send(Down {
                     monitor_ref,
                     reason: ExitReason::NoProc,
                 });
-                return monitor_ref;
+                return false;
             }
             monitors.insert(monitor_ref, active.clone());
+            crate::lifecycle_trace::life_emit(observer, || event("active"));
+            true
+        });
+        if !registered {
+            return monitor_ref;
         }
 
         let target = target.clone();
@@ -557,18 +618,28 @@ impl<A: Actor> Context<A> {
             // Receiver-side fence (E6): the entry is removed and the Down
             // enqueued in one critical section, so once `demonitor` returns
             // no Down of this monitor is enqueued.
-            let mut entries = monitors.lock().unwrap_or_else(|p| p.into_inner());
-            if entries
-                .as_mut()
-                .and_then(|entries| entries.remove(&monitor_ref))
-                .is_some()
-            {
-                let _ = actor_ref.send(Down {
-                    monitor_ref,
-                    reason,
-                });
-            }
-            drop(entries);
+            crate::lifecycle_trace::life_section(observer, || {
+                let mut entries = monitors.lock().unwrap_or_else(|p| p.into_inner());
+                if entries
+                    .as_mut()
+                    .and_then(|entries| entries.remove(&monitor_ref))
+                    .is_some()
+                {
+                    crate::lifecycle_trace::life_emit(observer, || {
+                        crate::lifecycle_trace::LifeEvent::new("Deliver", observer)
+                            .s(target.id().raw())
+                            .m(monitor_ref.raw())
+                            .x(crate::lifecycle_trace::life_reason(&reason))
+                            .k("down")
+                            .o("death")
+                    });
+                    let _ = actor_ref.send(Down {
+                        monitor_ref,
+                        reason,
+                    });
+                }
+                drop(entries);
+            });
         });
 
         monitor_ref
@@ -579,12 +650,22 @@ impl<A: Actor> Context<A> {
     /// A fence (OTP `demonitor/1`): once it returns, no `Down` of this
     /// monitor is enqueued; one already queued stays.
     pub fn demonitor(&self, monitor_ref: MonitorRef) {
-        let active = self
-            .monitors
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .as_mut()
-            .and_then(|entries| entries.remove(&monitor_ref));
+        let observer = self.id.raw();
+        let active = crate::lifecycle_trace::life_section(observer, || {
+            let active = self
+                .monitors
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .as_mut()
+                .and_then(|entries| entries.remove(&monitor_ref));
+            if active.is_some() {
+                crate::lifecycle_trace::life_emit(observer, || {
+                    crate::lifecycle_trace::LifeEvent::new("Demonitor", observer)
+                        .m(monitor_ref.raw())
+                });
+            }
+            active
+        });
         // Waking the waiter must happen after releasing the table lock.
         if let Some(active) = active {
             active.cancel();
@@ -650,7 +731,16 @@ impl<A: Actor> Context<A> {
     /// trapping actor normally, through `stopped()`. Signals that arrive while
     /// `started()` runs are resolved when it returns.
     pub fn trap_exit(&self, enabled: bool) {
-        self.trap_exit.store(enabled, Ordering::Release);
+        let id = self.id.raw();
+        crate::lifecycle_trace::life_section(id, || {
+            // Recorded only when it changes (the model's SetTrap).
+            if self.trap_exit.swap(enabled, Ordering::AcqRel) != enabled {
+                crate::lifecycle_trace::life_emit(id, || {
+                    crate::lifecycle_trace::LifeEvent::new("Trap", id)
+                        .x(crate::lifecycle_trace::flag(enabled))
+                });
+            }
+        });
     }
 
     pub(crate) fn cancellation_token(&self) -> CancellationToken {
@@ -993,9 +1083,12 @@ impl<A: Actor> ActorRef<A> {
             cleaned: actor_ref.cleaned.clone(),
         };
 
+        let parent_id = parent.as_ref().map_or(0, |p| p.id().raw());
         if let Some(parent) = parent {
             actor_ref.context().link(&parent);
         }
+        // Recorded from here: the start_linked link is the model's initial one.
+        crate::lifecycle_trace::life_spawn(id.raw(), parent_id);
 
         let cleanup_token = cancellation_token.clone();
         let cleanup = crate::actor_cleanup::ActorCleanup::new(
@@ -1079,6 +1172,7 @@ fn run_actor_receiving<A: Actor>(
 ) {
     let mut discarded = None;
     let request = ctx.linked_reason.clone();
+    let trace_id = ctx.id.raw();
     let _monitor_cleanup = MonitorCleanup(ctx.monitors.clone());
     let start_result = catch_unwind(AssertUnwindSafe(|| {
         fail_point!("actor.before_started");
@@ -1090,7 +1184,13 @@ fn run_actor_receiving<A: Actor>(
             tracing::error!("Panic in started() callback: {msg}");
         });
         // No stopped() after a failed start (L5).
-        link::lock_request(&request).panic(ExitReason::Panic(format!("panic in started(): {msg}")));
+        crate::lifecycle_trace::life_section(trace_id, || {
+            crate::lifecycle_trace::life_emit(trace_id, || {
+                crate::lifecycle_trace::LifeEvent::new("Panic", trace_id).x("started")
+            });
+            link::lock_request(&request)
+                .panic(ExitReason::Panic(format!("panic in started(): {msg}")));
+        });
         cancellation_token.cancel();
         return;
     }
@@ -1114,7 +1214,19 @@ fn run_actor_receiving<A: Actor>(
 
                 // A stop observed after receive wins over dispatch, whether
                 // the channel waited or was buffered. Defer the message drop.
-                if cancellation_token.is_cancelled() {
+                // The check and the trace event are one lifecycle-trace step.
+                let stopped = crate::lifecycle_trace::life_section(trace_id, || {
+                    if cancellation_token.is_cancelled() {
+                        return true;
+                    }
+                    #[cfg(feature = "lifecycle-trace")]
+                    crate::lifecycle_trace::life_emit(trace_id, || {
+                        crate::lifecycle_trace::LifeEvent::new("Dispatch", trace_id)
+                            .k(envelope.trace_kind())
+                    });
+                    false
+                });
+                if stopped {
                     discarded = Some(envelope);
                     break;
                 }
@@ -1138,8 +1250,13 @@ fn run_actor_receiving<A: Actor>(
                     });
                     // A panic begins exit, or replaces the requested reason
                     // unless a kill was received.
-                    link::lock_request(&request)
-                        .panic(ExitReason::Panic(format!("panic in handler: {msg}")));
+                    crate::lifecycle_trace::life_section(trace_id, || {
+                        crate::lifecycle_trace::life_emit(trace_id, || {
+                            crate::lifecycle_trace::LifeEvent::new("Panic", trace_id).x("turn")
+                        });
+                        link::lock_request(&request)
+                            .panic(ExitReason::Panic(format!("panic in handler: {msg}")));
+                    });
                     break;
                 }
             }
@@ -1152,7 +1269,18 @@ fn run_actor_receiving<A: Actor>(
     ctx.jobs.cancel_all();
     // stopped() is skipped when a kill, an untrapped exit signal or link
     // notice began the exit (decision 2); one that already began finishes.
-    if link::lock_request(&request).begin_hook() {
+    let run_hook = crate::lifecycle_trace::life_section(trace_id, || {
+        let run = link::lock_request(&request).begin_hook();
+        crate::lifecycle_trace::life_emit(trace_id, || {
+            crate::lifecycle_trace::LifeEvent::new("Hook", trace_id).x(if run {
+                "run"
+            } else {
+                "skip"
+            })
+        });
+        run
+    });
+    if run_hook {
         let stop_result = catch_unwind(AssertUnwindSafe(|| {
             fail_point!("actor.before_stopped");
             actor.stopped(&ctx);
@@ -1162,8 +1290,13 @@ fn run_actor_receiving<A: Actor>(
             crate::actor_cleanup::log_safely(|| {
                 tracing::error!("Panic in stopped() callback: {msg}");
             });
-            link::lock_request(&request)
-                .panic(ExitReason::Panic(format!("panic in stopped(): {msg}")));
+            crate::lifecycle_trace::life_section(trace_id, || {
+                crate::lifecycle_trace::life_emit(trace_id, || {
+                    crate::lifecycle_trace::LifeEvent::new("Panic", trace_id).x("stopped")
+                });
+                link::lock_request(&request)
+                    .panic(ExitReason::Panic(format!("panic in stopped(): {msg}")));
+            });
         }
     }
 

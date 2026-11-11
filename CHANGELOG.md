@@ -59,8 +59,15 @@
   `DeferredReplies.tla` models it (`pendA`, invariant `StoppedAtDeath`,
   control `EarlyStopped`; one more reply trace control); metrics
   `requests_noproc_total`.
-  Remaining: lifecycle-trace mapping to `Lifecycle.tla`, Loom and simulator
-  coverage, GUIDE and examples.
+  Trace validation against `Lifecycle.tla`: with `lifecycle-trace`, the
+  runtime records exit signals, stops, links, monitors, sends, dispatch,
+  panics, `stopped()` run or skip, the death point, runtime drop,
+  publication and notice delivery (schema `lifecycle-v1`,
+  `TraceLifecycle.tla`); `tests/lifecycle_trace.rs` records 14 scenarios
+  (both modes), all accepted, and eleven edited traces (stopped() after a
+  kill, `Kill` for `Killed`, publication before D, real reason instead of
+  `NoProc`, notices after unlink/demonitor, ...) are rejected.
+  Remaining: Loom and simulator coverage, GUIDE and examples.
 
 - **Breaking (0.8), in progress:** deferred replies and pipe-to-self
   (ROADMAP rank 11), implementing

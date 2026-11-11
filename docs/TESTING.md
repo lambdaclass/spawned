@@ -109,7 +109,7 @@ Status of each layer. "Planned" items are tracked in the
 | Design | TLA+ and TLC | Holes in lifecycle, restart and shutdown rules | `Supervision`, `Cohorts`, `NestedSupervision` and `Coordinator` models in `verification/tla`, run in CI |
 | Design, unbounded depth | Apalache inductive invariants | An invariant that a state TLC never reached would break | Safety invariants of all four models proven inductive at fixed sizes, with negative controls; `tla-apalache` CI job |
 | Design, any size | TLAPS or Veil | An invariant that fails only for larger configurations | Planned ([verification tools](research/verification-tools.md)) |
-| Spec and code | Trace validation | The implementation doing something the model forbids | Real OneForOne, cohort and nested traces plus invalid-trace and model-mutation controls |
+| Spec and code | Trace validation | The implementation doing something the model forbids | Real OneForOne, cohort, nested, deferred-reply, job and base-lifecycle (exit signals, links, monitors, D, publication) traces plus invalid-trace and model-mutation controls |
 | Spec and code coverage | Trace coverage (`verification/tla/trace_coverage.py`) | Model actions, states and transitions no test ever reaches | Report on every PR (actions covered by the dedicated trace tests may not regress); whole test suite weekly. See [trace coverage](#trace-coverage) |
 | Primitives | Loom | Atomic and memory-ordering bugs in cancellation, ready gate and wakeups | In CI; expand to reply slots and mailbox publication versus shutdown |
 | Whole runtime, deterministic | Simulation backend for `spawned-rt::tasks` (random, PCT, bounded DFS) | Async races, replayed from a seed with virtual time | In review (PRs #212, #214, #218) |
@@ -801,6 +801,10 @@ seeded random runs, and TLC checks every recorded trace is a behavior of the
 model. Hand-edited traces are rejected at the edited event. Trace validation
 found one model gap (a running child may exit with `Shutdown` while the
 supervisor is open, via `ChildHandle::shutdown`); no implementation deviation.
+`lifecycle_trace` does the same for the base actor lifecycle against
+`Lifecycle.tla` (exit signals, stops, links, monitors, requests, `stopped()`
+run or skip, the death point, runtime drop and publication, in both modes;
+eleven edited traces must be rejected).
 
 Apalache checks that the safety invariants of `Supervision`, `Cohorts`,
 `NestedSupervision` and `Coordinator` are inductive (`Init => IndInv`,
@@ -812,7 +816,7 @@ controls must break induction. See [the model README](../verification/tla/README
 ```bash
 nix run .#check-tla                                   # model check (TLC via the flake)
 nix run .#check-apalache -- --negative-controls       # inductive invariants (Apalache)
-cargo test -p spawned-concurrency --features lifecycle-trace --test supervision_trace
+cargo test -p spawned-concurrency --features lifecycle-trace --test supervision_trace --test lifecycle_trace
 nix run .#check-tla -- --traces target/lifecycle-traces
 ```
 

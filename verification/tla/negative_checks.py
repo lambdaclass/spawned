@@ -291,6 +291,88 @@ def reply_trace_controls(traces, tlc):
                      "exit error answered Stopped before the death point", tlc)
 
 
+def lifecycle_trace_controls(traces, tlc):
+    """Edits of recorded base-lifecycle traces that Lifecycle.tla must
+    reject: each reintroduces a v0.7 behaviour or breaks a rank 5e/5g rule."""
+    by_name = {t["name"]: t for t in traces if t.get("schema") == "lifecycle-v1"}
+
+    def spawned(events, n):
+        return [e["t"] for e in events if e["a"] == "Spawn"][n - 1]
+
+    def index(events, action, x=None, after=0):
+        return next(i for i, e in enumerate(events)
+                    if i >= after and e["a"] == action and (x is None or e["x"] == x))
+
+    def hook_after_kill(events):
+        events[index(events, "Hook", "skip")]["x"] = "run"
+    require_rejected(by_name["lifecycle_kill_queued_request"], hook_after_kill,
+                     "stopped() runs after a kill", tlc)
+
+    def killed_as_kill(events):
+        events[index(events, "Die", "Killed")]["x"] = "Kill"
+    require_rejected(by_name["lifecycle_kill_queued_request"], killed_as_kill,
+                     "a kill ends Kill instead of Killed (v0.7)", tlc)
+
+    def publish_before_death(events):
+        events.insert(index(events, "Die"), events.pop(index(events, "Publish")))
+    require_rejected(by_name["lifecycle_kill_queued_request"], publish_before_death,
+                     "publication before the death point", tlc)
+
+    def untrapped_runs_hook(events):
+        events[index(events, "Hook", "skip")]["x"] = "run"
+    require_rejected(by_name["lifecycle_untrapped_signal"], untrapped_runs_hook,
+                     "stopped() runs after an untrapped exit signal (v0.7)", tlc)
+
+    def normal_signal_stops(events):
+        # v0.7: a Normal signal stopped a non-trapping actor.
+        at = index(events, "Signal", "Normal")
+        events[at + 1:at + 1] = [
+            {"a": "Hook", "t": events[at]["t"], "s": 0, "x": "skip", "m": 0, "k": "", "o": ""}]
+    require_rejected(by_name["lifecycle_untrapped_signal"], normal_signal_stops,
+                     "a Normal exit signal stops a non-trapping actor (v0.7)", tlc)
+
+    def down_with_real_reason(events):
+        down = next(e for e in events if e["a"] == "Deliver" and e["k"] == "down")
+        down["x"] = "Normal"
+    require_rejected(by_name["lifecycle_late_registrations"], down_with_real_reason,
+                     "late monitor's Down carries the real reason, not NoProc (v0.7)", tlc)
+
+    def late_link_with_real_reason(events):
+        notice = next(e for e in events if e["a"] == "Deliver" and e["k"] == "link")
+        notice["x"] = "Normal"
+    require_rejected(by_name["lifecycle_late_registrations"], late_link_with_real_reason,
+                     "late link's notice carries the real reason, not NoProc (v0.7)", tlc)
+
+    def notice_after_unlink(events):
+        a1, a2 = spawned(events, 1), spawned(events, 2)
+        at = next(i for i, e in enumerate(events) if e["a"] == "Publish" and e["t"] == a2)
+        events.insert(at + 1, {"a": "Deliver", "t": a1, "s": a2, "x": "Shutdown",
+                               "m": 0, "k": "link", "o": "death"})
+    require_rejected(by_name["lifecycle_unlink_fence"], notice_after_unlink,
+                     "death notice delivered after unlink (v0.7 fence)", tlc)
+
+    def down_after_demonitor(events):
+        a1, a2 = spawned(events, 1), spawned(events, 2)
+        m = next(e["m"] for e in events if e["a"] == "Monitor")
+        at = next(i for i, e in enumerate(events) if e["a"] == "Publish" and e["t"] == a2)
+        events.insert(at + 1, {"a": "Deliver", "t": a1, "s": a2, "x": "Normal",
+                               "m": m, "k": "down", "o": "death"})
+    require_rejected(by_name["lifecycle_demonitor_fence"], down_after_demonitor,
+                     "Down delivered after demonitor (v0.7 fence)", tlc)
+
+    def parent_exit_as_exit(events):
+        a2 = spawned(events, 2)
+        next(e for e in events if e["a"] == "Dispatch" and e["t"] == a2
+             and e["k"] == "pexit")["k"] = "exit"
+    require_rejected(by_name["lifecycle_parent_exit"], parent_exit_as_exit,
+                     "parent Shutdown reaches exit_received", tlc)
+
+    def drop_keeps_normal(events):
+        events[index(events, "Drop")]["x"] = "Normal"
+    require_rejected(by_name["lifecycle_runtime_drop"], drop_keeps_normal,
+                     "runtime drop ends Normal instead of Killed (v0.7)", tlc)
+
+
 def job_trace_controls(traces, tlc):
     """Edits of recorded pipe-to-self job traces that DeferredJobs.tla must
     reject: each erases or reorders what the job core enforces."""
@@ -409,6 +491,7 @@ def main():
         named_fault(module, fault, invariant, args.tlc)
     job_trace_controls(traces, args.tlc)
     reply_trace_controls(traces, args.tlc)
+    lifecycle_trace_controls(traces, args.tlc)
     for module, fault, invariant in LIFECYCLE_CONTROLS:
         named_fault(module, fault, invariant, args.tlc)
     for fault, prop in LIFECYCLE_TEMPORAL_CONTROLS:
