@@ -217,18 +217,23 @@ pub(crate) struct Wake {
 }
 
 impl Wake {
-    fn run(self, slot_parked: &Condvar) {
-        if let Some(pool) = self.pool {
+    /// Wake the slot's parked blocking receivers (no user code). Done first,
+    /// so a parked `recv()` never waits behind an arbitrary waker.
+    fn notify_parked(&mut self, slot_parked: &Condvar) {
+        if std::mem::take(&mut self.notify) {
+            slot_parked.notify_all();
+        }
+    }
+    fn run(mut self, slot_parked: &Condvar) {
+        if let Some(pool) = self.pool.take() {
             pool.release(self.release);
         }
+        self.notify_parked(slot_parked);
         if let Some(waker) = self.waker {
             waker.wake();
         }
         for watcher in self.watchers {
             watcher.wake();
-        }
-        if self.notify {
-            slot_parked.notify_all();
         }
     }
 }
@@ -444,6 +449,12 @@ impl<R> Slot<R> {
         wake.run(&self.parked);
     }
 
+    /// The parked-receiver part of `wake`, run ahead of every waker of a
+    /// batch (see `Registry::end_discharge`).
+    pub(crate) fn notify_parked(&self, wake: &mut Wake) {
+        wake.notify_parked(&self.parked);
+    }
+
     /// `[deadline]`: expire the slot if `now >= deadline`. Returns whether the
     /// deadline has passed (whoever won the transition).
     pub(crate) fn check_deadline(&self, now: &impl Fn() -> u64) -> bool {
@@ -491,14 +502,14 @@ impl<R> Slot<R> {
         // Both sides re-arm their timers for the earlier deadline: the
         // token's waiters, the caller's receiver and parked `recv_blocking`
         // threads (which recompute their wait).
+        if parked {
+            self.parked.notify_all();
+        }
         for watcher in watchers {
             watcher.wake();
         }
         if let Some(waker) = waker {
             waker.wake();
-        }
-        if parked {
-            self.parked.notify_all();
         }
         self.check_deadline(now);
         lowered
@@ -740,6 +751,7 @@ impl<R> Slot<R> {
                 continue;
             }
             inner.parked += 1;
+            super::sync::parked();
             let mut inner = wait_ticks(&self.parked, inner, remaining);
             inner.parked -= 1;
         }

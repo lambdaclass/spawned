@@ -402,8 +402,9 @@ current turn's slot) and a job set. The order is:
    Steps 1 to 4 run no user code: steps 3 and 4 only make terminal
    transitions, and every slot they meet stays referenced (an unread
    reply's value is user code when destroyed) until step 5. After the last
-   answer, and before step 5, run in this order: the callers' wake-ups
-   (executor or user code), a runtime drop's "stopped()
+   answer, and before step 5, run in this order: the parked blocking
+   receivers are notified (no user code, so none waits behind a waker), the
+   callers' wakers (executor or user code), a runtime drop's "stopped()
    skipped" log, and the callbacks the jobs' cancellation owes (`cancelled()`
    waiters, blocked emitters). Cancellation in step 1 only sets the jobs'
    flag: the payloads it releases (held results, scheduled emits) are

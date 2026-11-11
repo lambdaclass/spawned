@@ -40,6 +40,7 @@ pub(crate) trait Closeable: Send + Sync {
     /// Close without waking; the returned work runs with `run_wake`.
     fn close_collect(&self) -> Option<Wake>;
     fn run_wake(&self, wake: Wake);
+    fn notify_parked(&self, wake: &mut Wake);
     fn terminate(&self, to: Terminal) -> bool;
     fn is_terminal(&self) -> bool;
 }
@@ -66,6 +67,9 @@ impl<R: Send> Closeable for Slot<R> {
     }
     fn run_wake(&self, wake: Wake) {
         Slot::run_wake(self, wake)
+    }
+    fn notify_parked(&self, wake: &mut Wake) {
+        Slot::notify_parked(self, wake)
     }
     fn terminate(&self, to: Terminal) -> bool {
         Slot::terminate(self, to)
@@ -398,10 +402,11 @@ impl Registry {
     }
 
     /// Every obligation of the death point is answered (deferred slots and
-    /// the queued mailbox): run the collected wake-ups (executor or user
-    /// code) outside every lock, then release the retained slots (an unread
-    /// reply's destructor is user code). Later closes wake at once.
-    /// Idempotent.
+    /// the queued mailbox): run the collected wake-ups outside every lock,
+    /// parked blocking receivers first, so none waits behind an arbitrary
+    /// waker; then the wakers (executor or user code); then release the
+    /// retained slots (an unread reply's destructor is user code). Later
+    /// closes wake at once. Idempotent.
     pub(crate) fn end_discharge(&self) {
         let mut batch = self
             .discharge
@@ -409,6 +414,11 @@ impl Registry {
             .unwrap_or_else(|p| p.into_inner())
             .take()
             .unwrap_or_default();
+        for (slot, wake) in &mut batch {
+            if let Some(wake) = wake {
+                slot.notify_parked(wake);
+            }
+        }
         for (slot, wake) in &mut batch {
             if let Some(wake) = wake.take() {
                 slot.run_wake(wake);

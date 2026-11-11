@@ -73,6 +73,13 @@ mod sync {
         }
     }
 
+    /// A blocking receiver is about to wait on its slot (under the slot's
+    /// lock): the failpoint site `reply.recv_parked`, a handshake for tests.
+    #[inline(always)]
+    pub(crate) fn parked() {
+        fail_point!("reply.recv_parked");
+    }
+
     /// Wait on `condvar` for at most `ticks` clock ticks (nanoseconds), or
     /// until notified when `None`.
     pub(crate) fn wait_ticks<'a, T>(

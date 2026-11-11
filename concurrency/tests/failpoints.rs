@@ -1285,6 +1285,62 @@ async fn an_unread_reply_is_destroyed_after_every_caller_is_answered() {
     );
 }
 
+/// Final review (Codex P1 3): the discharge batch wakes parked blocking
+/// receivers before any arbitrary waker. Caller A's waker waits for caller
+/// B, parked in `recv()`, to return; B used to be notified only after A's
+/// waker, so neither proceeded.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn parked_receivers_wake_before_any_waker() {
+    use std::task::{Wake, Waker};
+    struct WaitForB(Arc<AtomicUsize>, Arc<AtomicUsize>);
+    impl Wake for WaitForB {
+        fn wake(self: Arc<Self>) {
+            let began = Instant::now();
+            while began.elapsed() < Duration::from_secs(3) {
+                if self.0.load(Ordering::SeqCst) == 1 {
+                    self.1.store(1, Ordering::SeqCst);
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
+    }
+    let _scenario = FailScenario::setup();
+    let actor = Discharger.start();
+    let (release, gate) = std::sync::mpsc::channel();
+    let (entered_tx, entered) = std::sync::mpsc::channel();
+    actor.send(Gate(gate, entered_tx)).unwrap();
+    entered.recv_timeout(LIMIT).unwrap();
+    let never = spawned_concurrency::Deadline::Never;
+    let a = actor.send_request(Answer, never).unwrap();
+    let b = actor.send_request(Answer, never).unwrap();
+    let (b_returned, a_saw_b) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+    let waker = Waker::from(Arc::new(WaitForB(b_returned.clone(), a_saw_b.clone())));
+    let mut a = Box::pin(std::future::IntoFuture::into_future(a));
+    assert!(
+        std::future::Future::poll(a.as_mut(), &mut std::task::Context::from_waker(&waker))
+            .is_pending()
+    );
+    failpoints::configure("reply.recv_parked", FailPoint::new(Action::Off)).unwrap();
+    let parked = {
+        let b_returned = b_returned.clone();
+        std::thread::spawn(move || {
+            let _ = b.recv();
+            b_returned.store(1, Ordering::SeqCst);
+        })
+    };
+    reached("reply.recv_parked", 1).await; // B is parked in recv()
+    actor.context().stop();
+    release.send(()).unwrap();
+    tokio::time::timeout(LIMIT * 2, actor.join()).await.unwrap();
+    parked.join().unwrap();
+    assert_eq!(
+        a_saw_b.load(Ordering::SeqCst),
+        1,
+        "a parked blocking receiver was woken only after another caller's waker"
+    );
+}
+
 mod native {
     use super::*;
     use spawned_concurrency::threads::{
@@ -1649,6 +1705,59 @@ mod native {
             answered.load(Ordering::SeqCst),
             1,
             "an unread reply was destroyed before every caller was answered"
+        );
+    }
+
+    /// Threads mode of `parked_receivers_wake_before_any_waker`.
+    #[test]
+    fn parked_receivers_wake_before_any_waker() {
+        use std::task::{Wake, Waker};
+        struct WaitForB(Arc<AtomicUsize>, Arc<AtomicUsize>);
+        impl Wake for WaitForB {
+            fn wake(self: Arc<Self>) {
+                let began = Instant::now();
+                while began.elapsed() < Duration::from_secs(3) {
+                    if self.0.load(Ordering::SeqCst) == 1 {
+                        self.1.store(1, Ordering::SeqCst);
+                        return;
+                    }
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+            }
+        }
+        let _scenario = FailScenario::setup();
+        let actor = NativeDischarger.start();
+        let (release, gate) = std::sync::mpsc::channel();
+        let (entered_tx, entered) = std::sync::mpsc::channel();
+        actor.send(Gate(gate, entered_tx)).unwrap();
+        entered.recv_timeout(LIMIT).unwrap();
+        let never = spawned_concurrency::Deadline::Never;
+        let a = actor.send_request(Answer, never).unwrap();
+        let b = actor.send_request(Answer, never).unwrap();
+        let (b_returned, a_saw_b) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+        let waker = Waker::from(Arc::new(WaitForB(b_returned.clone(), a_saw_b.clone())));
+        let mut a = Box::pin(std::future::IntoFuture::into_future(a));
+        assert!(
+            std::future::Future::poll(a.as_mut(), &mut std::task::Context::from_waker(&waker))
+                .is_pending()
+        );
+        failpoints::configure("reply.recv_parked", FailPoint::new(Action::Off)).unwrap();
+        let parked = {
+            let b_returned = b_returned.clone();
+            std::thread::spawn(move || {
+                let _ = b.recv();
+                b_returned.store(1, Ordering::SeqCst);
+            })
+        };
+        wait_hits("reply.recv_parked");
+        actor.context().stop();
+        release.send(()).unwrap();
+        actor.join();
+        parked.join().unwrap();
+        assert_eq!(
+            a_saw_b.load(Ordering::SeqCst),
+            1,
+            "a parked blocking receiver was woken only after another caller's waker"
         );
     }
 }

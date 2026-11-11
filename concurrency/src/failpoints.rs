@@ -80,6 +80,13 @@ pub const SITES: &[Site] = &[
                       answered (tasks and threads).",
     },
     Site {
+        name: "reply.recv_parked",
+        has_error: false,
+        description: "A blocking `ReplyReceiver::recv` is about to wait (under its slot's \
+                      lock). A handshake: once hit, the receiver is parked and only a \
+                      notification wakes it.",
+    },
+    Site {
         name: "monitor.down_before_dispatch",
         has_error: false,
         description: "A monitor's `Down` dequeued by its observer (tasks and threads), \
