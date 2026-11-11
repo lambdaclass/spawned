@@ -169,6 +169,29 @@ where
     }
 }
 
+/// Run `f` inside one of `actor`'s turns, with its state and `Context`, and
+/// return its result: a test reaches `ctx` (to start a job, defer a reply,
+/// arm a timer) or inspects state without an ad hoc message or a
+/// `cfg(test)` bypass. Messages sent to `actor` earlier are handled first.
+/// Panics if the actor is gone or `f` panicked (which crashes the actor, as
+/// any handler panic does).
+#[track_caller]
+pub fn in_actor<A, R, F>(actor: &ActorRef<A>, f: F) -> R
+where
+    A: Actor,
+    R: Send + 'static,
+    F: FnOnce(&mut A, &Context<A>) -> R + Send + 'static,
+{
+    let reply = actor.__in_turn(f).and_then(|rx| rx.recv());
+    reply.unwrap_or_else(|error| {
+        panic!(
+            "in_actor on {:?} failed: {error}; exit reason {:?}",
+            actor.id(),
+            actor.exit_reason()
+        )
+    })
+}
+
 /// Block until `handle` exits, or panic after `deadline` instead of hanging.
 ///
 /// Polls every millisecond: `ChildHandle` has no blocking wait with a

@@ -30,17 +30,43 @@ pub(crate) enum Notification {
     Suppressed,
 }
 
+/// A terminal notification held back until the job's scheduled emits have
+/// fired (`JobCtx::emit_at`); run outside the lock.
+pub(crate) type HeldTerminal = Box<dyn FnOnce() + Send>;
+
 struct Inner {
     cancelled: bool,
     notification: Notification,
     running: bool,
     emit_credits: u16,
+    /// Delayed emits (`emit_at`) holding a credit, not yet fired.
+    scheduled: u16,
+    /// The work's result, waiting for `scheduled` to reach 0 so the terminal
+    /// message stays last.
+    held: Option<HeldTerminal>,
 }
 
 impl Inner {
+    /// The terminal notification can still be taken.
     fn open(&self) -> bool {
         !self.cancelled && self.notification == Notification::Pending
     }
+    /// New emits are accepted: open, and the work has not handed in its
+    /// result (a held terminal).
+    fn accepting(&self) -> bool {
+        self.open() && self.held.is_none()
+    }
+}
+
+/// What [`JobCore::finish`] did with the work's result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Finish {
+    /// Notified now (the enqueue ran).
+    Taken,
+    /// Held until the scheduled emits fire.
+    Held,
+    /// Cancelled or already notified (deadline): nothing to deliver.
+    Refused,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -62,6 +88,8 @@ impl JobCore {
                 notification: Notification::Pending,
                 running: true,
                 emit_credits,
+                scheduled: 0,
+                held: None,
             }),
             emitters: Condvar::new(),
             cancelled_fast: AtomicBool::new(false),
@@ -76,7 +104,7 @@ impl JobCore {
     /// wakes blocked emitters. Never undoes effects. Returns whether this
     /// call set the flag. The caller wakes async emitters afterwards.
     pub(crate) fn cancel(&self) -> bool {
-        let newly = {
+        let (newly, held) = {
             let mut inner = lock(&self.inner);
             let newly = !inner.cancelled;
             inner.cancelled = true;
@@ -86,8 +114,10 @@ impl JobCore {
             // Set under the lock, so a dispatch that sees an enqueued
             // message's job as not cancelled ran before this cancel.
             self.cancelled_fast.store(true, Ordering::Release);
-            newly
+            (newly, inner.held.take())
         };
+        // A held result is suppressed; it drops outside the lock.
+        drop(held);
         self.emitters.notify_all();
         newly
     }
@@ -99,16 +129,45 @@ impl JobCore {
     /// caller after the lock is released. When taken, the caller wakes async
     /// emitters.
     pub(crate) fn notify<X>(&self, enqueue: impl FnOnce() -> Option<X>) -> (bool, Option<X>) {
-        let unsent = {
+        let (unsent, held) = {
             let mut inner = lock(&self.inner);
             if !inner.open() {
                 return (false, None);
             }
             inner.notification = Notification::Notified;
-            enqueue()
+            // A deadline overtaking a held result: the result is dropped.
+            (enqueue(), inner.held.take())
         };
+        drop(held);
         self.emitters.notify_all();
         (true, unsent)
+    }
+
+    /// The work's result: take the notification as [`notify`](Self::notify)
+    /// does, unless scheduled emits are still pending; then store `later`
+    /// (which calls `notify` again) for the last of them to run, so the
+    /// terminal message stays last.
+    pub(crate) fn finish<X>(
+        &self,
+        enqueue: impl FnOnce() -> Option<X>,
+        later: impl FnOnce() -> HeldTerminal,
+    ) -> (Finish, Option<X>) {
+        {
+            let mut inner = lock(&self.inner);
+            if !inner.open() {
+                return (Finish::Refused, None);
+            }
+            if inner.scheduled > 0 {
+                inner.held = Some(later());
+                return (Finish::Held, None);
+            }
+        }
+        // Nothing scheduled, and only the work schedules: `notify` takes it
+        // unless a cancel or the deadline came in between.
+        match self.notify(enqueue) {
+            (true, unsent) => (Finish::Taken, unsent),
+            (false, _) => (Finish::Refused, None),
+        }
     }
 
     /// Whether the terminal notification can still be taken (the job
@@ -141,7 +200,7 @@ impl JobCore {
     pub(crate) fn acquire_blocking(&self) -> Result<(), JobGone> {
         let mut inner = lock(&self.inner);
         loop {
-            if !inner.open() {
+            if !inner.accepting() {
                 return Err(JobGone);
             }
             if inner.emit_credits > 0 {
@@ -159,7 +218,7 @@ impl JobCore {
     #[cfg_attr(not(feature = "async"), allow(dead_code))]
     pub(crate) fn try_acquire(&self, register: impl FnOnce()) -> Option<Result<(), JobGone>> {
         let mut inner = lock(&self.inner);
-        if !inner.open() {
+        if !inner.accepting() {
             return Some(Err(JobGone));
         }
         if inner.emit_credits > 0 {
@@ -179,13 +238,56 @@ impl JobCore {
         enqueue: impl FnOnce() -> Result<(), X>,
     ) -> Result<(), (JobGone, Option<X>)> {
         let mut inner = lock(&self.inner);
-        if !inner.open() {
+        if !inner.accepting() {
             inner.emit_credits += 1;
             drop(inner);
             self.emitters.notify_all();
             return Err((JobGone, None));
         }
         enqueue().map_err(|unsent| (JobGone, Some(unsent)))
+    }
+
+    /// Delayed emit, step 2 at the call: with a credit taken, register a
+    /// scheduled emit unless the job is cancelled, notified or finished.
+    /// The caller's credit guard returns the credit on failure.
+    pub(crate) fn schedule(&self) -> Result<(), JobGone> {
+        let mut inner = lock(&self.inner);
+        if !inner.accepting() {
+            return Err(JobGone);
+        }
+        inner.scheduled += 1;
+        Ok(())
+    }
+
+    /// Delayed emit, step 2 at its deadline, or when dropped unfired
+    /// (`enqueue` is `None`): under the job's lock, enqueue if the
+    /// notification is still pending. A message not enqueued returns its
+    /// credit through its guard, after the lock. The last scheduled emit
+    /// hands back a held terminal, to run outside the lock.
+    pub(crate) fn fire<X>(
+        &self,
+        enqueue: Option<impl FnOnce() -> Result<(), X>>,
+    ) -> (Result<(), (JobGone, Option<X>)>, Option<HeldTerminal>) {
+        let mut inner = lock(&self.inner);
+        debug_assert!(inner.scheduled > 0, "scheduled emit underflow");
+        inner.scheduled = inner.scheduled.saturating_sub(1);
+        let result = match enqueue {
+            Some(enqueue) if inner.open() => enqueue().map_err(|unsent| (JobGone, Some(unsent))),
+            _ => Err((JobGone, None)),
+        };
+        let held = if inner.scheduled == 0 {
+            inner.held.take()
+        } else {
+            None
+        };
+        drop(inner);
+        self.emitters.notify_all();
+        (result, held)
+    }
+
+    #[allow(dead_code)] // used by the Loom model
+    pub(crate) fn scheduled(&self) -> u16 {
+        lock(&self.inner).scheduled
     }
 
     /// Emit step 3: a credit comes back when its message is dispatched,
@@ -201,6 +303,11 @@ pub(crate) trait Job {
     fn cancel(&self);
     fn is_running(&self) -> bool;
     fn finished(&self);
+    /// Kept in the job list at compaction (so `cancel_all` reaches it):
+    /// running, or with work left such as scheduled emits.
+    fn is_live(&self) -> bool {
+        self.is_running()
+    }
 }
 
 /// Compact the weak job list when it reaches this length (and every power of
@@ -263,7 +370,7 @@ impl<J: Job + 'static, K: Hash + Eq> JobSetCore<J, K> {
             if jobs.len() >= COMPACT_AT && jobs.len().is_power_of_two() {
                 jobs.retain(|job| match job.upgrade() {
                     Some(job) => {
-                        let keep = job.is_running();
+                        let keep = job.is_live();
                         upgraded.push(job);
                         keep
                     }

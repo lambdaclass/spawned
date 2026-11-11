@@ -115,7 +115,13 @@ pub use reply::{
     ReplyTo,
 };
 pub use response::Response;
-pub use spawned_macros::{actor, protocol};
+pub use spawned_macros::{actor, protocol, send_handler};
+/// The instant type of reply and job deadlines (`Deadline::At`,
+/// `JobOptions::deadline`, `ReplyTo::deadline`, `JobCtx::emit_at`):
+/// `std::time::Instant`, or the simulated clock's instant under
+/// `--cfg spawned_sim`. Re-exported so callers need not depend on
+/// `spawned-rt`.
+pub use spawned_rt::time::Instant;
 
 #[cfg(all(kani, feature = "async"))]
 mod kani_proofs;

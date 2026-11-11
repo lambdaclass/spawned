@@ -1116,6 +1116,18 @@ fn is_actor_method_attribute(attr: &Attribute) -> bool {
 /// impl ChatUser { /* ... */ }
 /// ```
 ///
+/// # Deferred-reply bounds
+///
+/// `max_outstanding = N` sets `Actor::MAX_OUTSTANDING` (deferred credits per
+/// instance) and `max_native_jobs = N` sets `Actor::MAX_NATIVE_JOBS` (blocking
+/// jobs running at once). Both take any constant expression and combine with
+/// `protocol`; a supervised child can still override them per `ChildSpec`:
+///
+/// ```ignore
+/// #[actor(protocol = P2PProtocol, max_native_jobs = 64, max_outstanding = 4096)]
+/// impl P2PServer { /* ... */ }
+/// ```
+///
 /// # Handler Attributes
 ///
 /// | Attribute | Use for |
@@ -1215,7 +1227,10 @@ pub fn actor(attr: TokenStream, item: TokenStream) -> TokenStream {
     let self_ty = &impl_block.self_ty;
     let (impl_generics, _, where_clause) = impl_block.generics.split_for_impl();
 
-    // --- Parse named parameters from #[actor(protocol = X)] or #[actor(protocol(X, Y))] ---
+    // --- Parse named parameters: #[actor(protocol = X)], #[actor(protocol(X, Y))],
+    // and the deferred-reply bounds `max_outstanding = N`, `max_native_jobs = N` ---
+    let mut max_outstanding: Option<syn::Expr> = None;
+    let mut max_native_jobs: Option<syn::Expr> = None;
     let bridge_traits: Vec<Ident> = if attr.is_empty() {
         Vec::new()
     } else {
@@ -1235,13 +1250,23 @@ pub fn actor(attr: TokenStream, item: TokenStream) -> TokenStream {
             let mut protocols = Vec::new();
             while !input.is_empty() {
                 let key: Ident = input.parse()?;
-                if key != "protocol" {
+                if key == "max_outstanding" || key == "max_native_jobs" {
+                    let _: syn::Token![=] = input.parse()?;
+                    let value: syn::Expr = input.parse()?;
+                    let slot = if key == "max_outstanding" {
+                        &mut max_outstanding
+                    } else {
+                        &mut max_native_jobs
+                    };
+                    if slot.replace(value).is_some() {
+                        return Err(syn::Error::new(key.span(), format!("`{key}` given twice")));
+                    }
+                } else if key != "protocol" {
                     return Err(syn::Error::new(
                         key.span(),
-                        "unknown parameter, expected `protocol`",
+                        "unknown parameter, expected `protocol`, `max_outstanding` or `max_native_jobs`",
                     ));
-                }
-                if input.peek(syn::Token![=]) {
+                } else if input.peek(syn::Token![=]) {
                     // protocol = TraitName
                     let _: syn::Token![=] = input.parse()?;
                     protocols.push(protocol_name(input)?);
@@ -1638,9 +1663,17 @@ pub fn actor(attr: TokenStream, item: TokenStream) -> TokenStream {
         quote! { #[doc = #doc_body] }
     };
 
+    let bound_consts = {
+        let outstanding = max_outstanding.map(|n| quote! { const MAX_OUTSTANDING: usize = #n; });
+        let native = max_native_jobs
+            .map(|n| quote! { const MAX_NATIVE_JOBS: ::core::option::Option<usize> = ::core::option::Option::Some(#n); });
+        quote! { #outstanding #native }
+    };
+
     let actor_impl = quote! {
         #protocol_doc
         impl #impl_generics Actor for #self_ty #where_clause {
+            #bound_consts
             #(#lifecycle_methods)*
         }
     };
@@ -1677,6 +1710,95 @@ pub fn actor(attr: TokenStream, item: TokenStream) -> TokenStream {
 }
 
 // --- #[sim_test] ---
+
+/// Send-only form of a manual `Handler` impl: write `handle` without the
+/// reply parameter, and the impl answers `()` once `handle` returns.
+///
+/// ```ignore
+/// #[send_handler]
+/// impl Handler<Tick> for Poller {
+///     async fn handle(&mut self, _msg: Tick, ctx: &Context<Self>) {
+///         self.poll().await;
+///     }
+/// }
+/// ```
+///
+/// expands to the full `handle(&mut self, msg, reply: PendingReply<'_, ()>,
+/// ctx)` whose body runs yours and then calls `reply.reply(())`, also after
+/// an early `return`. The automatic `()` is a real reply, as with
+/// `#[send_handler]` methods in an `#[actor]` block: a `request` gets
+/// `Ok(())`, not `ReplyDropped`, and a panic in the body answers
+/// `ActorStopped` as for any handler. The message's `Result` must be `()`.
+/// Works for `tasks` (`async fn`) and `threads` (`fn`) handlers.
+#[proc_macro_attribute]
+pub fn send_handler(attr: TokenStream, item: TokenStream) -> TokenStream {
+    if !attr.is_empty() {
+        return syn::Error::new(
+            proc_macro2::Span::call_site(),
+            "#[send_handler] takes no arguments",
+        )
+        .to_compile_error()
+        .into();
+    }
+    let mut impl_block = parse_macro_input!(item as ItemImpl);
+    let is_handler = impl_block
+        .trait_
+        .as_ref()
+        .and_then(|(_, path, _)| path.segments.last())
+        .is_some_and(|segment| segment.ident == "Handler");
+    if !is_handler {
+        return syn::Error::new_spanned(
+            &impl_block.self_ty,
+            "#[send_handler] on an item applies to an `impl Handler<M> for Actor` block; \
+             inside an #[actor] block, put it on the handler method instead",
+        )
+        .to_compile_error()
+        .into();
+    }
+    let Some(method) = impl_block.items.iter_mut().find_map(|item| match item {
+        ImplItem::Fn(method) if method.sig.ident == "handle" => Some(method),
+        _ => None,
+    }) else {
+        return syn::Error::new_spanned(
+            &impl_block.self_ty,
+            "#[send_handler] impl must define `handle`",
+        )
+        .to_compile_error()
+        .into();
+    };
+    if method.sig.inputs.len() != 3 {
+        return syn::Error::new_spanned(
+            &method.sig,
+            "#[send_handler] `handle` takes (&mut self, msg: M, ctx: &Context<Self>), without the reply parameter",
+        )
+        .to_compile_error()
+        .into();
+    }
+    if let ReturnType::Type(_, ty) = &method.sig.output {
+        if !is_unit_type(ty) {
+            return syn::Error::new_spanned(ty, "#[send_handler] `handle` returns nothing")
+                .to_compile_error()
+                .into();
+        }
+    }
+    let reply = format_ident!("__spawned_reply");
+    let reply_param: FnArg = syn::parse_quote! {
+        #reply: spawned_concurrency::reply::PendingReply<'_, ()>
+    };
+    method.sig.inputs.insert(2, reply_param);
+    method.sig.output = ReturnType::Default;
+    let body = &method.block;
+    let run = if method.sig.asyncness.is_some() {
+        quote! { async move #body.await }
+    } else {
+        quote! { (move || #body)() }
+    };
+    method.block = syn::parse_quote! {{
+        let () = #run;
+        let _ = #reply.reply(());
+    }};
+    quote! { #impl_block }.into()
+}
 
 /// Seeded async test: on Tokio in normal builds, over a seed range on the
 /// deterministic simulator under `--cfg spawned_sim` (see

@@ -538,7 +538,9 @@ abandon, close, defer at the bound, linked jobs, parked receivers);
 `registry_turn_loom` the in-turn drop commit against turn end, exit and death;
 `job_core_loom` job admission and rollback at the credit and native bounds,
 keyed replacement of a completed job, emits against the terminal notification
-and cancel, native completion against the owner's cleanup join, and a job's
+and cancel, a delayed emit (`emit_at`) firing against the work's finish (the
+terminal held until it fires) and a cancel, native completion against the
+owner's cleanup join, and a job's
 final destruction after a `Weak` upgrade (modelled `Arc`/`Weak`; the
 destruction takes the job set's locks, so running it under one is a Loom
 deadlock). Each model was checked against a planted bug.

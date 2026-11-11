@@ -609,3 +609,31 @@ async fn direct_kill_and_shutdown_stop_trapping_targets_without_killing_trapping
         assert_eq!(join_within(&observer, WAIT).await, ExitReason::Normal);
     }
 }
+
+/// `in_actor` runs a closure in one of the actor's turns, after the messages
+/// sent before it, with the state and the `Context`.
+#[tokio::test]
+async fn in_actor_runs_a_closure_in_a_turn() {
+    struct Tally(u32);
+    #[actor]
+    impl Tally {
+        #[send_handler]
+        async fn add(&mut self, msg: AddOne, _: &Context<Self>) {
+            self.0 += msg.0;
+        }
+    }
+    struct AddOne(u32);
+    impl Message for AddOne {
+        type Result = ();
+    }
+    let tally = Tally(0).start();
+    tally.send(AddOne(2)).unwrap();
+    let (seen, own) = spawned_test::tasks::in_actor(&tally, |state, ctx| {
+        state.0 += 1;
+        (state.0, ctx.id())
+    })
+    .await;
+    assert_eq!((seen, own), (3, tally.id()));
+    tally.context().stop();
+    tally.join().await;
+}

@@ -142,10 +142,12 @@ impl Verifier {
 
     #[send_handler]
     async fn verdict(&mut self, msg: Verdict, _: &Context<Self>) {
-        self.verdicts.push(match msg.res {
-            JobOutcome::Ok(valid) => format!("{}: valid={valid}", msg.id),
-            JobOutcome::Err(JobError::DeadlineExceeded) => format!("{}: timed out", msg.id),
-            JobOutcome::Err(JobError::Panicked(m)) => format!("{}: panicked {m}", msg.id),
+        // `JobOutcome` and `JobError` are `#[non_exhaustive]`.
+        self.verdicts.push(match msg.res.into_result() {
+            Ok(valid) => format!("{}: valid={valid}", msg.id),
+            Err(JobError::DeadlineExceeded) => format!("{}: timed out", msg.id),
+            Err(JobError::Panicked(m)) => format!("{}: panicked {m}", msg.id),
+            Err(other) => format!("{}: {other}", msg.id),
         });
     }
 

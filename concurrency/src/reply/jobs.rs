@@ -34,6 +34,28 @@ pub fn default_max_native_jobs() -> usize {
         .min(4)
 }
 
+/// Per-instance overrides of `Actor::MAX_OUTSTANDING` and
+/// `Actor::MAX_NATIVE_JOBS` (set per `ChildSpec`); `None` keeps the actor's
+/// constant.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct Bounds {
+    pub(crate) max_outstanding: Option<usize>,
+    pub(crate) max_native_jobs: Option<usize>,
+}
+
+impl Bounds {
+    /// The effective `(max_outstanding, max_native_jobs)` for an actor whose
+    /// constants are `outstanding` and `native`.
+    pub(crate) fn resolve(self, outstanding: usize, native: Option<usize>) -> (usize, usize) {
+        (
+            self.max_outstanding.unwrap_or(outstanding),
+            self.max_native_jobs
+                .or(native)
+                .unwrap_or_else(default_max_native_jobs),
+        )
+    }
+}
+
 /// A key for cancel-previous jobs (`pipe_keyed`, `JobOptions::key`).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct JobKey(std::borrow::Cow<'static, str>);
@@ -69,6 +91,22 @@ pub struct JobOptions {
     pub emit_credits: u16,
 }
 
+impl JobOptions {
+    /// Set [`deadline`](Self::deadline) to `timeout` from now, on the
+    /// runtime's clock (the simulated one under `spawned_sim`):
+    /// `JobOptions::default().deadline_after(Duration::from_secs(2))`.
+    ///
+    /// The deadline is hard: when it passes, `done` receives
+    /// `JobError::DeadlineExceeded`, the job's later emits fail with
+    /// [`JobGone`], and its eventual result is dropped. For a soft deadline
+    /// (stop starting new work, finish what is in hand), check the time
+    /// inside the work instead.
+    pub fn deadline_after(mut self, timeout: std::time::Duration) -> Self {
+        self.deadline = Some(spawned_rt::time::Instant::now() + timeout);
+        self
+    }
+}
+
 impl Default for JobOptions {
     fn default() -> Self {
         Self {
@@ -82,6 +120,7 @@ impl Default for JobOptions {
 
 /// How a job ended, delivered to `done` in the owner's turn.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum JobOutcome<T> {
     Ok(T),
     Err(JobError),
@@ -98,17 +137,21 @@ impl<T> JobOutcome<T> {
 
 /// Why a job produced no value.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
 pub enum JobError {
     /// The work panicked; caught at the job boundary.
     #[error("job panicked: {0}")]
     Panicked(String),
-    /// `JobOptions::deadline` passed first. The work may still be running.
+    /// `JobOptions::deadline` passed first. The deadline is hard: the job's
+    /// later emits fail and its eventual result is dropped. The work may
+    /// still be running (cooperative cancellation).
     #[error("job deadline exceeded")]
     DeadlineExceeded,
 }
 
 /// Why a job was not spawned.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum PipeErrorKind {
     /// The owner's `MAX_OUTSTANDING` credits are in use.
     #[error("deferred credits at the bound")]
@@ -154,7 +197,7 @@ impl<R: Send + 'static> PipeReplyError<R> {
 }
 
 pub use super::job_core::JobGone;
-use super::job_core::{Job, JobCore, JobSetCore};
+use super::job_core::{Finish, HeldTerminal, Job, JobCore, JobSetCore};
 use crate::lifecycle_trace as trace;
 
 /// One job's shared state: the core protocol plus the async wake-ups.
@@ -170,6 +213,9 @@ pub(crate) struct JobState {
     /// Wakers of async emitters waiting for a credit.
     #[cfg(feature = "async")]
     emit_wakers: Mutex<Vec<std::task::Waker>>,
+    /// Delayed emits (`JobCtx::emit_at`) not yet fired: their strong
+    /// references (the deadline heap holds `Weak`s). Cleared at cancellation.
+    scheduled: Mutex<Vec<Arc<ScheduledEmit>>>,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -187,6 +233,7 @@ impl JobState {
             cancel: spawned_rt::tasks::CancellationToken::new(),
             #[cfg(feature = "async")]
             emit_wakers: Mutex::new(Vec::new()),
+            scheduled: Mutex::new(Vec::new()),
         })
     }
 
@@ -220,6 +267,12 @@ impl JobState {
         self.wake_cancelled();
     }
 
+    /// A permit used after the owner began exiting: the job never runs.
+    pub(crate) fn never_started(&self) {
+        self.core.cancel();
+        self.core.finished();
+    }
+
     fn cancel_quietly(&self) {
         if self.core.cancel() {
             self.count_cancel();
@@ -235,6 +288,12 @@ impl JobState {
     }
 
     fn wake_cancelled(&self) {
+        // Scheduled emits will never be delivered: drop them now (their
+        // messages and credits), outside every lock.
+        let scheduled = std::mem::take(&mut *lock(&self.scheduled));
+        for emit in scheduled {
+            emit.discard(self);
+        }
         #[cfg(feature = "async")]
         {
             self.cancel.cancel();
@@ -279,6 +338,79 @@ impl JobState {
             self.wake_emitters();
         }
         (taken, unsent)
+    }
+
+    /// The work's result (see [`JobCore::finish`]): taken now, or held
+    /// until the job's scheduled emits have fired (`later` then runs
+    /// `notify`). Returns the refused envelope, to drop outside locks.
+    pub(crate) fn finish<X>(
+        &self,
+        end: &'static str,
+        enqueue: impl FnOnce() -> Option<X>,
+        later: impl FnOnce() -> HeldTerminal,
+    ) -> Option<X> {
+        let mut enqueue = Some(enqueue);
+        let (finish, unsent) = trace::atomic(|| {
+            let (finish, unsent) = self
+                .core
+                .finish(|| enqueue.take().and_then(|enqueue| enqueue()), later);
+            match finish {
+                Finish::Taken => {
+                    crate::instrumentation::hooks::job_notified(end);
+                    self.record(|job| trace::JobEvent {
+                        x: "notified",
+                        ..trace::JobEvent::new("Finish", job)
+                    });
+                }
+                Finish::Refused => self.record(|job| trace::JobEvent {
+                    x: "quiet",
+                    ..trace::JobEvent::new("Finish", job)
+                }),
+                Finish::Held => {}
+            }
+            (finish, unsent)
+        });
+        #[cfg(feature = "async")]
+        if finish == Finish::Taken {
+            self.wake_emitters();
+        }
+        #[cfg(not(feature = "async"))]
+        let _ = finish;
+        unsent
+    }
+
+    /// Register a delayed emit at `at` (ticks): `send` enqueues its envelope
+    /// when the deadline fires, fenced like any emit, and the job's terminal
+    /// message waits for it. `track` arms the owner's deadline heap. On
+    /// `Err` the caller's credit guard (inside `send`) returns the credit.
+    pub(crate) fn schedule_emit(
+        self: &Arc<Self>,
+        at: u64,
+        send: SendScheduled,
+        track: impl FnOnce(u64, std::sync::Weak<dyn Expirable>),
+    ) -> Result<(), JobGone> {
+        self.core.schedule()?;
+        let emit = Arc::new(ScheduledEmit {
+            at,
+            job: Arc::downgrade(self),
+            send: Mutex::new(Some(send)),
+        });
+        lock(&self.scheduled).push(emit.clone());
+        if self.is_cancelled() {
+            // Cancelled between the check and the registration: the cancel
+            // may have missed it.
+            for emit in std::mem::take(&mut *lock(&self.scheduled)) {
+                emit.discard(self);
+            }
+            return Ok(());
+        }
+        if at <= super::now_ticks() {
+            emit.expire(at);
+        } else {
+            let weak: std::sync::Weak<dyn Expirable> = Arc::downgrade(&emit) as _;
+            track(at, weak);
+        }
+        Ok(())
     }
 
     pub(crate) fn is_running(&self) -> bool {
@@ -366,6 +498,10 @@ impl Job for JobState {
     }
     fn is_running(&self) -> bool {
         self.core.is_running()
+    }
+    fn is_live(&self) -> bool {
+        // Scheduled emits keep a finished job reachable for `cancel_all`.
+        self.core.is_running() || self.core.scheduled() > 0
     }
     fn finished(&self) {
         self.core.finished();
@@ -580,6 +716,66 @@ impl Expirable for JobDeadline {
         let notify = lock(&self.notify).take();
         if let Some(notify) = notify {
             notify();
+        }
+    }
+}
+
+/// Enqueues a delayed emit's envelope; a refused envelope comes back erased,
+/// to be dropped outside locks.
+pub(crate) type SendScheduled = Box<dyn FnOnce() -> Result<(), Box<dyn Send>> + Send>;
+
+/// One delayed emit (`JobCtx::emit_at`), serviced by the owner's deadline
+/// heap. Holds its message and emit credit until it fires or is discarded.
+pub(crate) struct ScheduledEmit {
+    at: u64,
+    job: std::sync::Weak<JobState>,
+    send: Mutex<Option<SendScheduled>>,
+}
+
+impl ScheduledEmit {
+    /// Fire (`deliver`) or discard: step 2 of the emit protocol under the
+    /// job's lock, then remove it from the job, then run a held terminal.
+    fn settle(&self, job: &JobState, deliver: bool) {
+        let Some(send) = lock(&self.send).take() else {
+            return;
+        };
+        // A discarded message (and its credit guard) drops at the end,
+        // outside the trace section and every lock.
+        let (deliver, _discarded) = if deliver {
+            (Some(send), None)
+        } else {
+            (None, Some(send))
+        };
+        let (result, held) = trace::atomic(|| {
+            let (result, held) = job.core.fire(deliver);
+            if result.is_ok() {
+                crate::instrumentation::hooks::job_emitted();
+                job.record(|id| trace::JobEvent::new("Emit", id));
+            }
+            (result, held)
+        });
+        // A refused envelope (and its credit guard) drops here, unlocked.
+        drop(result);
+        lock(&job.scheduled).retain(|emit| !std::ptr::eq(Arc::as_ptr(emit), self));
+        if let Some(held) = held {
+            held();
+        }
+        #[cfg(feature = "async")]
+        job.wake_emitters();
+    }
+
+    fn discard(&self, job: &JobState) {
+        self.settle(job, false);
+    }
+}
+
+impl Expirable for ScheduledEmit {
+    fn pending_deadline(&self) -> Option<u64> {
+        lock(&self.send).is_some().then_some(self.at)
+    }
+    fn expire(&self, _now: u64) {
+        if let Some(job) = self.job.upgrade() {
+            self.settle(&job, true);
         }
     }
 }

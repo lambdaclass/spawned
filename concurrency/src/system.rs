@@ -870,6 +870,7 @@ impl ExecutionGroup {
                 crate::tasks::DEFAULT_STOP_DEADLINE.as_nanos() as u64,
             ),
             jobs: Mutex::new(None),
+            bounds: Mutex::new(Default::default()),
         });
         state.scopes.insert(id, scope.clone());
         Ok((scope.clone(), Lease { scope, root: true }))
@@ -912,8 +913,17 @@ pub(crate) struct Scope {
     cleanup_timeout: std::sync::atomic::AtomicU64,
     /// The actor's job set, for unfinished-job reporting.
     jobs: Mutex<Option<std::sync::Weak<crate::reply::jobs::JobSet>>>,
+    /// Per-`ChildSpec` overrides of `Actor::MAX_OUTSTANDING` and
+    /// `Actor::MAX_NATIVE_JOBS`, read when the actor instance is created.
+    bounds: Mutex<crate::reply::jobs::Bounds>,
 }
 impl Scope {
+    pub(crate) fn set_bounds(&self, bounds: crate::reply::jobs::Bounds) {
+        *lock(&self.bounds) = bounds;
+    }
+    pub(crate) fn bounds(&self) -> crate::reply::jobs::Bounds {
+        *lock(&self.bounds)
+    }
     /// Shorten the cleanup deadline that bounds the actor's job join.
     pub(crate) fn set_cleanup_timeout(&self, timeout: Duration) {
         let nanos = u64::try_from(timeout.as_nanos()).unwrap_or(u64::MAX);

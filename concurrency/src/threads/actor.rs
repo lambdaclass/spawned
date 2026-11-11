@@ -28,7 +28,7 @@ pub const DEFAULT_STOP_DEADLINE: Duration = Duration::from_secs(5);
 
 #[path = "jobs.rs"]
 mod jobs;
-pub use jobs::JobCtx;
+pub use jobs::{BlockingJobPermit, JobCtx};
 
 // ---------------------------------------------------------------------------
 // Actor trait
@@ -149,6 +149,22 @@ where
             }
             Err(ActorError::ActorStopped)
         }
+    }
+}
+
+/// A closure run in one of the actor's turns (`spawned_test::threads::in_actor`).
+type InTurn<A, R> = Box<dyn FnOnce(&mut A, &Context<A>) -> R + Send>;
+struct InTurnEnvelope<A: Actor, R: Send + 'static> {
+    f: InTurn<A, R>,
+    slot: SlotHandle<R>,
+}
+
+impl<A: Actor, R: Send + 'static> Envelope<A> for InTurnEnvelope<A, R> {
+    fn handle(self: Box<Self>, actor: &mut A, ctx: &Context<A>) {
+        let InTurnEnvelope { f, mut slot } = *self;
+        let reply = PendingReply::new(slot.take(), &ctx.replies);
+        let value = f(actor, ctx);
+        let _ = reply.reply(value);
     }
 }
 
@@ -712,6 +728,25 @@ impl<A: Actor> ActorRef<A> {
         M: Message,
     {
         self.request_with_timeout(msg, DEFAULT_REQUEST_TIMEOUT)
+    }
+
+    /// Run `f` in one of the actor's turns, with its state and `Context`,
+    /// and receive its result. For tests: use `spawned_test::threads::in_actor`.
+    #[doc(hidden)]
+    pub fn __in_turn<R, F>(&self, f: F) -> Result<ReplyReceiver<R>, ActorError>
+    where
+        R: Send + 'static,
+        F: FnOnce(&mut A, &Context<A>) -> R + Send + 'static,
+    {
+        let (slot, rx) = reply_slot(Deadline::Never, None);
+        let envelope: Box<dyn Envelope<A> + Send> = Box::new(InTurnEnvelope {
+            f: Box::new(f),
+            slot,
+        });
+        self.sender
+            .send(MailboxItem::Message(envelope))
+            .map_err(|_| ActorError::ActorStopped)?;
+        Ok(rx)
     }
 
     /// Send a request and block until the reply arrives, with a custom timeout.

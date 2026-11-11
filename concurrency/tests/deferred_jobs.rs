@@ -78,10 +78,11 @@ mod tasks_mode {
     }
 
     fn describe<T: std::fmt::Debug>(name: &str, outcome: JobOutcome<T>) -> Done {
-        Done(match outcome {
-            JobOutcome::Ok(v) => format!("{name}:ok:{v:?}"),
-            JobOutcome::Err(JobError::Panicked(m)) => format!("{name}:panicked:{m}"),
-            JobOutcome::Err(JobError::DeadlineExceeded) => format!("{name}:deadline"),
+        Done(match outcome.into_result() {
+            Ok(v) => format!("{name}:ok:{v:?}"),
+            Err(JobError::Panicked(m)) => format!("{name}:panicked:{m}"),
+            Err(JobError::DeadlineExceeded) => format!("{name}:deadline"),
+            Err(other) => format!("{name}:{other}"),
         })
     }
 
@@ -648,15 +649,15 @@ mod threads_mode {
     }
     impl Handler<Computed> for Owner {
         fn handle(&mut self, msg: Computed, _: PendingReply<'_, ()>, _: &Context<Self>) {
-            match msg.res {
-                JobOutcome::Ok(v) => {
+            match msg.res.into_result() {
+                Ok(v) => {
                     msg.token.reply(v);
                 }
-                JobOutcome::Err(JobError::Panicked(m)) => {
+                Err(JobError::Panicked(m)) => {
                     self.log.push(format!("panicked {m}"));
                     msg.token.overloaded();
                 }
-                JobOutcome::Err(JobError::DeadlineExceeded) => msg.token.overloaded(),
+                Err(_) => msg.token.overloaded(),
             }
         }
     }
