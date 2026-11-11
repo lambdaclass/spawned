@@ -1106,6 +1106,131 @@ mod native {
             panic!("injected native failure");
         }
     }
+    /// Holds deferred tokens for an outside replier (threads mode).
+    struct NativeHolder;
+    impl NativeActor for NativeHolder {}
+    impl NativeHandler<Hold> for NativeHolder {
+        fn handle(
+            &mut self,
+            msg: Hold,
+            reply: spawned_concurrency::reply::PendingReply<'_, u32>,
+            _: &NativeContext<Self>,
+        ) {
+            msg.0.send(reply.defer().unwrap()).unwrap();
+        }
+    }
+    impl NativeHandler<Ping> for NativeHolder {
+        fn handle(
+            &mut self,
+            _: Ping,
+            _: spawned_concurrency::reply::PendingReply<'_, ()>,
+            _: &NativeContext<Self>,
+        ) {
+        }
+    }
+
+    /// Review P1 (Codex 4), threads mode: no external reply succeeds once
+    /// `NoProc` is observable.
+    #[test]
+    fn no_reply_succeeds_after_noproc_is_observable() {
+        let _scenario = FailScenario::setup();
+        let holder = NativeHolder.start();
+        let (tokens, token) = std::sync::mpsc::channel();
+        let caller = holder.request_raw(Hold(tokens)).unwrap();
+        let token = token.recv_timeout(LIMIT).unwrap();
+        failpoints::configure(
+            "actor.at_death",
+            FailPoint::new(Action::Delay(Duration::from_millis(300))).times(1),
+        )
+        .unwrap();
+        holder.context().stop();
+        let began = Instant::now();
+        while holder.send(Ping).is_ok() {
+            assert!(began.elapsed() < LIMIT, "the owner never died");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_ne!(
+            token.reply(7),
+            spawned_concurrency::Delivery::Delivered,
+            "a reply succeeded after NoProc was observable"
+        );
+        assert!(
+            matches!(
+                caller.recv(),
+                Err(spawned_concurrency::ActorError::ActorStopped(
+                    ExitReason::Normal
+                ))
+            ),
+            "the caller did not get the final reason"
+        );
+        holder.join();
+    }
+
+    /// Traps exits and records them (threads mode).
+    struct NativeRecorder(Arc<Mutex<Vec<ExitReason>>>);
+    impl NativeActor for NativeRecorder {
+        fn started(&mut self, ctx: &NativeContext<Self>) {
+            ctx.trap_exit(true);
+        }
+        fn exit_received(&mut self, exit: spawned_concurrency::Exit, _: &NativeContext<Self>) {
+            self.0.lock().unwrap().push(exit.reason);
+        }
+    }
+    struct NativeSender;
+    impl NativeActor for NativeSender {}
+    impl NativeHandler<LinkTo> for NativeSender {
+        fn handle(
+            &mut self,
+            msg: LinkTo,
+            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            ctx: &NativeContext<Self>,
+        ) {
+            ctx.link(&msg.0);
+            reply.reply(());
+        }
+    }
+
+    /// Review P1 (Codex 10), threads mode: a cloned context's signal sent
+    /// before its actor's death reaches the target before the death notice.
+    #[test]
+    fn an_exit_signal_is_not_overtaken_by_its_senders_death_notice() {
+        let _scenario = FailScenario::setup();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let recorder = NativeRecorder(seen.clone()).start();
+        let sender = NativeSender.start();
+        sender.request(LinkTo(recorder.child_handle())).unwrap();
+        failpoints::configure(
+            "actor.exit_before_deliver",
+            FailPoint::new(Action::Delay(Duration::from_millis(300))).times(1),
+        )
+        .unwrap();
+        let ctx = sender.context();
+        let target = recorder.child_handle();
+        let helper = std::thread::spawn(move || ctx.exit(&target, ExitReason::Shutdown));
+        let began = Instant::now();
+        while failpoints::stats("actor.exit_before_deliver").hits < 1 {
+            assert!(began.elapsed() < LIMIT);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        sender.context().stop();
+        while seen.lock().unwrap().len() < 2 {
+            assert!(
+                began.elapsed() < LIMIT,
+                "exits seen: {:?}",
+                seen.lock().unwrap()
+            );
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        helper.join().unwrap();
+        assert_eq!(
+            *seen.lock().unwrap(),
+            [ExitReason::Shutdown, ExitReason::Normal],
+            "the death notice overtook the sender's own signal"
+        );
+        recorder.context().stop();
+        recorder.join();
+    }
+
     struct Peer;
     impl NativeActor for Peer {}
     impl NativeHandler<LinkTo> for Peer {

@@ -306,6 +306,34 @@ mod tasks_mode {
         actor.join().await;
     }
 
+    /// Review P1 (Codex 8), tasks-mode blocking job: the deadline overtakes
+    /// a result held for a scheduled emit.
+    #[cfg(not(spawned_sim))] // native jobs are not simulated
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_deadline_overtakes_a_blocking_jobs_held_result() {
+        let (actor, log) = start();
+        in_actor(&actor, |_, ctx| {
+            let opts = JobOptions::default().deadline_after(Duration::from_millis(40));
+            ctx.pipe_blocking_with(
+                opts,
+                |job| {
+                    let at = Instant::now() + Duration::from_millis(400);
+                    job.emit_at_blocking(at, Note("late".into())).unwrap();
+                    7
+                },
+                |o| describe("job", o),
+            )
+            .unwrap();
+        })
+        .await;
+        assert_eq!(wait_for(&log, 1).await, ["job:deadline"]);
+        // Past the emit's instant: it was dropped (the job is over).
+        spawned_rt::tasks::sleep(Duration::from_millis(500)).await;
+        assert_eq!(log.snapshot(), ["job:deadline"]);
+        actor.context().stop();
+        actor.join().await;
+    }
+
     /// Review P1 (agy 5): a result held for scheduled emits keeps the job's
     /// `MAX_OUTSTANDING` credit until its terminal message is enqueued. It
     /// used to return the credit when the work returned, so held jobs (and
@@ -313,7 +341,7 @@ mod tasks_mode {
     #[spawned_macros::sim_test]
     async fn a_held_result_keeps_its_credit_until_the_terminal_message() {
         let (actor, log) = start();
-        in_actor(&actor, |_, ctx| {
+        let job = in_actor(&actor, |_, ctx| {
             ctx.pipe_with_ctx(
                 JobOptions::default(),
                 |job| async move {
@@ -323,10 +351,13 @@ mod tasks_mode {
                 },
                 |o| describe("job", o),
             )
-            .unwrap();
+            .unwrap()
         })
         .await;
-        spawned_rt::tasks::sleep(Duration::from_millis(50)).await;
+        // Handshake: the work has returned (its result is now held).
+        while job.is_running() {
+            spawned_rt::tasks::sleep(Duration::from_millis(1)).await;
+        }
         assert!(log.snapshot().is_empty());
         let outstanding = in_actor(&actor, |_, ctx| ctx.deferred_outstanding()).await;
         assert_eq!(outstanding, 1, "a held result returned its credit early");
@@ -514,7 +545,7 @@ mod threads_mode {
     fn a_held_result_keeps_its_credit_until_the_terminal_message() {
         let log = Arc::new(Log::default());
         let actor = Owner { log: log.clone() }.start();
-        in_actor(&actor, |_, ctx| {
+        let job = in_actor(&actor, |_, ctx| {
             ctx.pipe_blocking_with(
                 JobOptions::default(),
                 |job| {
@@ -523,9 +554,12 @@ mod threads_mode {
                 },
                 |o| label("job", o),
             )
-            .unwrap();
+            .unwrap()
         });
-        std::thread::sleep(Duration::from_millis(50));
+        // Handshake: the work has returned (its result is now held).
+        while job.is_running() {
+            std::thread::sleep(Duration::from_millis(1));
+        }
         assert!(log.snapshot().is_empty());
         assert_eq!(
             in_actor(&actor, |_, ctx| ctx.deferred_outstanding()),
