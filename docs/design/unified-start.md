@@ -10,8 +10,8 @@ the listed changes"). What changed and why is in
 [Review resolutions](#20-review-resolutions).
 
 - **Model:** [`verification/tla/Start.tla`](../../verification/tla/Start.tla),
-  with configurations `MCStart`, `MCStartTimeout`, `MCStartContinue`,
-  `MCStartScope`, `MCStartLive` and `MCStartDeep`.
+  with configurations `MCStart`, `MCStartCap`, `MCStartTimeout`,
+  `MCStartContinue`, `MCStartScope`, `MCStartLive` and `MCStartDeep`.
 - **Client mapping:** [unified-start-client-mapping.md](unified-start-client-mapping.md).
 - **Agreed shapes with other designs:**
   - the dynamic supervisor (#245, revision 3) and introspection v1 (#256);
@@ -889,17 +889,50 @@ run one at a time):
 
 | Configuration | Run | Instance | Distinct states | Depth | Time |
 |---|---|---|---|---|---|
-| `MCStart` | per PR | two named children, link/monitor, managed parent, Cap 3 (two children and P at once), closure, abandonment, retry | RESULT_MCStart |
-| `MCStartTimeout` | per PR | one child of each waiting variant, managed or unmanaged parent, the init timer | RESULT_MCStartTimeout |
-| `MCStartContinue` | per PR | one child of every variant with every explicit placement, two messages, trapping | RESULT_MCStartContinue |
-| `MCStartScope` | per PR | managed parent, two linked children (owned or not), trapping, unlink, scope deadline; liveness `OwnedScopeFinishes` | RESULT_MCStartScope |
-| `MCStartLive` | per PR | one child of each waiting variant, trapping; liveness `ParentExitReachesChild`, `StartAnswered` | RESULT_MCStartLive |
-| `MCStartDeep` | weekly | two named children, every variant and explicit placement, trapping, unlink, scope, timer | RESULT_MCStartDeep |
+| `MCStart` | per PR | two named children, link/monitor, managed parent, Cap 3 (two children and P at once), closure, abandonment, retry | 10,115,028 | 22 | 80 s |
+| `MCStartCap` | per PR | three children spawned into P's group of three: capacity binds, is held until publication, a retry after a published failure gets the slot | 102,526 | 23 | 4 s |
+| `MCStartTimeout` | per PR | one child of each waiting variant, managed or unmanaged parent, the init timer | 23,664 | 12 | 2 s |
+| `MCStartContinue` | per PR | one child of every variant with every explicit placement, two messages, trapping | 546,846 | 14 | 6 s |
+| `MCStartScope` | per PR | managed parent, one linked child (owned or not), trapping, unlink, scope deadline; liveness `OwnedScopeFinishes` | 13,848 | 14 | 2 s |
+| `MCStartLive` | per PR | one child of each waiting variant, trapping; liveness `ParentExitReachesChild`, `StartAnswered` | 8,387 | 11 | 2 s |
+| `MCStartDeep` | weekly | `MCStart` plus the init timer and an unmanaged parent | RESULT_DEEP |
 
 **Negative controls** (`negative_checks.py`, each with `TypeOK` and only the
 named property, run one at a time):
 
-CONTROLS_TABLE
+Every control produced its counterexample in 1-5 s:
+
+| Configuration | Fault | Reintroduces | Fails |
+|---|---|---|---|
+| `MCStart` | `NoInherit` | 0.8 `start_linked` placement | `InheritedPlacement` |
+| `MCStart` | `LinkAfterStarted` | the edge set once `started()` runs | `LinkBeforeStarted` |
+| `MCStart` | `DoubleRegister` | check-then-insert names | `NameUnique` |
+| `MCStart` | `LateUnregister` | the name released after the notices | `NameFreeBeforeObservation` |
+| `MCStart` | `UnregisterAtDeath` | revision 1: the name released at D, before destruction | `NoOverlapOnReuse` |
+| `MCStart` | `SplitCommit` | revision 1: the name published before the rest of stage 1 | `AbortInvisible` |
+| `MCStart` | `EarlyFailAck` | revision 1: the error answered at D | `FailureAfterPublication` |
+| `MCStart` | `AckBeforeStarted` | `Ok` before the commit | `ResultMatchesCommit` |
+| `MCStart` | `ErrorAsOk` | `ignore` answered as started | `ResultMatchesCommit` |
+| `MCStart` | `DivertAfterReady` | revision 1 (P0-1): readiness keeps the start marks | `ReadyIsFinal` |
+| `MCStart` | `ReadyAfterClose` | readiness committed after the group closed | `ReadyOnlyWhileOpen` |
+| `MCStart` | `NoMonitorFlush` | a failed `start_monitor` also delivers `Down` | `FailureFlushed` |
+| `MCStart` | `NoLinkFlush` | a failed `start_link` also delivers `Exit` | `FailureFlushed` |
+| `MCStart` | `LinkCheckLate` | the commit ignores the parent's state | `NoEdgeToDeadParent` |
+| `MCStart` | `AbandonDropsNotice` | an abandoned wait loses the diverted notice | `AbandonedNoticeDelivered` |
+| `MCStart` | `DoubleNotice` | a notice both delivered and diverted | `NoticeOnce` |
+| `MCStartCap` | `AdmitClosed` | a closed group admits | `AdmittedOnlyOpen` |
+| `MCStartCap` | `IgnoreCap` | a full group admits | `CapacityRespected` |
+| `MCStartTimeout` | `TimerIgnoresCommit` | revision 1 (P0-2): the timer kills without checking the cell | `TimeoutNeverKillsReady` |
+| `MCStartTimeout` | `KillBeforeUnlink` | the timeout's `Killed` reaches a waiting parent | `TimeoutContained` |
+| `MCStartContinue` | `ContinueQueued` | the continuation queued behind earlier entries | `ContinueFirst` |
+| `MCStartScope` | `EarlyGenDone` | P's generation ends before its owned children | `GenDoneMeansOwnedDone` |
+| `MCStartLive` | `DropHeld` (liveness) | a held parent exit dropped | `ParentExitReachesChild` |
+| `MCStartLive` | `NoAnswerIgnore` (liveness) | an ignored start never answered | `StartAnswered` |
+| `MCStartScope` | `NoScopeKill` (liveness) | the scope deadline spares unlinked children | `OwnedScopeFinishes` |
+
+A first `IgnoreCap` run on `MCStart` found no counterexample: two children
+and P never exceed Cap 3, which agy P1-8 had pointed out. That led to
+`MCStartCap`, where capacity binds.
 
 **Not modelled:**
 

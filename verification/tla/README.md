@@ -656,7 +656,7 @@ and `OwnedScopeFinishes` (`MCStartScope`).
 | `MCStartContinue` | per PR | one child of every variant with every explicit placement, two messages, trapping |
 | `MCStartScope` | per PR | a managed parent and one linked child (owned or not), trapping, unlink, the scope deadline; liveness |
 | `MCStartLive` | per PR | one child of each waiting variant, trapping; liveness |
-| `MCStartDeep` | weekly | two named children, every variant and explicit placement, trapping, unlink, the scope, the timer |
+| `MCStartDeep` | weekly | `MCStart` plus the init timer and an unmanaged parent |
 
 **Negative controls** (`START_CONTROLS` and `START_TEMPORAL_CONTROLS` in
 `negative_checks.py`; each checks `TypeOK` and only the named property):
