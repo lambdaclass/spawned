@@ -27,9 +27,18 @@ TLC is a Java program. The repository flake provides it (with its own JDK), so
 nothing needs to be installed globally:
 
 ```bash
-nix run .#check-tla            # model-check every MC*.cfg
+nix run .#check-tla            # model-check every MC*.cfg except *Deep.cfg
+nix run .#check-tla -- --only 'MCLifecycle*'           # a subset (comma-separated globs)
+nix run .#check-tla -- --deep --only MCLifecycleDeep   # one deep configuration
 nix develop -c tlc MCSupervision -workers auto   # ad hoc, from verification/tla
 ```
+
+**CI.** On every PR (`.github/workflows/verification.yml`) the per-PR
+configurations run as parallel `tla-models` legs (`supervision`, `lifecycle`,
+`deferred`, and `other` for every configuration no leg names), next to
+`tla-traces` (trace validation, negative controls, trace coverage). Weekly and
+on dispatch, `tla-deep` checks each `*Deep.cfg` on its own runner. The
+required check `tla` passes only if all of them passed.
 
 ## Trace validation
 
@@ -139,7 +148,10 @@ and an always-true action constraint prints every key of every reachable step
 plus a Permanent/Temporary instance at the same bounds (6.1 million states),
 the four `MCCohorts*` (174,000) and `MCNested` (47,000). This takes about 5
 minutes, so the keys are cached in `coverage-model.json.gz` with a hash of the
-specs; a stale cache is recomputed and rewritten (commit the new one).
+files they come from (the modules above, their configurations and what they
+extend; other models such as `Lifecycle.tla` do not invalidate it); a stale
+cache is recomputed and rewritten (commit the new one, or CI recomputes it on
+every run).
 `Deliver` in `NestedSupervision` is a fairness device with no trace event, so
 its keys are left out.
 

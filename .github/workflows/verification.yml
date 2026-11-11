@@ -16,11 +16,40 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # TLA+ model of the supervisor plus trace validation of real runs
-  # (verification/tla). TLC comes from the flake.
-  tla:
+  # TLA+ models (verification/tla), checked with TLC from the flake. The
+  # per-PR configurations are split into parallel legs; `tla` below is the
+  # required check and passes only if every leg (and, weekly, every deep
+  # configuration) passed. Every configuration not named by a leg runs in
+  # `other`, so a new MC*.cfg is checked without editing this list.
+  tla-models:
+    name: tla-models (${{ matrix.leg }})
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - leg: supervision
+            select: --only MCSupervision
+          - leg: lifecycle
+            select: --only 'MCLifecycle*'
+          - leg: deferred
+            select: --only 'MCDeferred*'
+          - leg: other
+            select: --exclude 'MCSupervision,MCLifecycle*,MCDeferred*'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/nix-installer-action@v16
+      - uses: DeterminateSystems/magic-nix-cache-action@v8
+      - name: Model-check
+        run: nix run .#check-tla -- ${{ matrix.select }}
+
+  # Supervisor lifecycle traces recorded from real runs, validated against the
+  # models, plus the negative controls (invalid traces and model mutations
+  # that must fail) and trace coverage.
+  tla-traces:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: DeterminateSystems/nix-installer-action@v16
@@ -31,22 +60,20 @@ jobs:
         env:
           LIFECYCLE_TRACE_DIR: ${{ github.workspace }}/lifecycle-traces
         run: cargo test --locked -p spawned-concurrency --features lifecycle-trace,failpoints --test supervision_trace --test cohort_trace --test tree_trace --test nested_supervision --test coverage_trace
-      - name: Model-check (fast configuration) and validate traces
-        run: nix run .#check-tla -- --traces lifecycle-traces --negative-controls
+      - name: Validate traces and negative controls
+        run: nix run .#check-tla -- --traces-only lifecycle-traces --negative-controls
       # Which model actions, projected states and transitions the recorded
       # traces reach (verification/tla/README.md#trace-coverage). Report only,
       # except that an action covered in coverage-baseline.json must stay
       # covered. The model side comes from coverage-model.json.gz unless the
-      # models changed, in which case it is recomputed (several minutes).
+      # Supervision, Cohorts or Nested specs changed, in which case it is
+      # recomputed (several minutes; commit the rewritten cache).
       - name: Trace coverage of the models
         run: >
           nix develop -c python3 verification/tla/trace_coverage.py
           --traces dedicated=lifecycle-traces
           --model-keys verification/tla/coverage-model.json.gz
           --baseline verification/tla/coverage-baseline.json
-      - name: Model-check (deep configuration)
-        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-        run: nix run .#check-tla -- --deep
       # Weekly: every test binary of spawned-concurrency dumps each finished
       # supervisor's traces (LIFECYCLE_TRACE_ALL); report the combined coverage.
       - name: Record traces from the whole test suite
@@ -67,6 +94,48 @@ jobs:
         with:
           name: trace-coverage
           path: trace-coverage.json
+
+  # Weekly and on dispatch: the deep configurations (*Deep.cfg), one runner
+  # each. MCLifecycleWideDeep is the former per-PR MCLifecycle (43M states).
+  tla-deep:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    name: tla-deep (${{ matrix.config }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        config:
+          - MCSupervisionDeep
+          - MCDeferredRepliesDeep
+          - MCDeferredJobsDeep
+          - MCLifecycleWideDeep
+          - MCLifecycleLiveDeep
+          - MCLifecycleDeep
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/nix-installer-action@v16
+      - uses: DeterminateSystems/magic-nix-cache-action@v8
+      - name: Model-check ${{ matrix.config }}
+        run: nix run .#check-tla -- --deep --only ${{ matrix.config }}
+
+  # The required check: green only if every TLA+ job above passed (tla-deep
+  # is skipped outside schedule/dispatch).
+  tla:
+    if: always()
+    needs: [tla-models, tla-traces, tla-deep]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Every TLA+ job passed
+        env:
+          MODELS: ${{ needs.tla-models.result }}
+          TRACES: ${{ needs.tla-traces.result }}
+          DEEP: ${{ needs.tla-deep.result }}
+        run: |
+          echo "tla-models: $MODELS, tla-traces: $TRACES, tla-deep: $DEEP"
+          [[ "$MODELS" == success && "$TRACES" == success ]]
+          [[ "$DEEP" == success || "$DEEP" == skipped ]]
 
   # Inductive invariants of the same models with Apalache (verification/tla/
   # apalache.sh): Init => IndInv, IndInv /\ Next => IndInv' over every state
