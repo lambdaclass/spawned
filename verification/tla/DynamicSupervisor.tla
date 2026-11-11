@@ -46,6 +46,11 @@
 (*   Sequential           (ConcurrentShutdown)  children stopped one at a *)
 (*                                              time, as a static         *)
 (*                                              supervisor does           *)
+(* and two liveness controls (named_temporal):                            *)
+(*   NoAbort              (StartAnswered)       a start racing shutdown   *)
+(*                                              is not cancelled          *)
+(*   StuckBackoff         (ClosedLeadsToDone)   a pending restart is not  *)
+(*                                              cancelled by shutdown     *)
 (***************************************************************************)
 EXTENDS Naturals, FiniteSets
 
@@ -72,7 +77,8 @@ ASSUME \A s \in Slots : Mode[s] \in Modes
 ASSUME SelfExits \subseteq Reasons /\ StartFails \subseteq Reasons
 ASSUME Fault \in {"None", "IgnoreMax", "UncountedRestart", "RestartTemporary",
                   "RestartTerminated", "AcceptDuringShutdown", "RestartAfterClose",
-                  "NoEscalate", "EarlyDone", "Sequential"}
+                  "NoEscalate", "EarlyDone", "Sequential", "NoAbort",
+                  "StuckBackoff"}
 
 \* Slot states. "idle": start_child not called yet. "starting": the first
 \* generation is being constructed (the caller waits). "restarting": a
@@ -236,7 +242,7 @@ StartFail(s, r) ==
 \* attempt is cancelled and cleaned up; it never publishes.
 AbortStart(s) ==
     /\ cs[s] \in {"starting", "restarting"}
-    /\ ~open \/ term[s]
+    /\ (~open /\ Fault # "NoAbort") \/ term[s]
     /\ cs' = Set(cs, s, "cleanup") /\ reason' = Set(reason, s, "Shutdown")
     /\ UNCHANGED <<sup, gen, alive, pub, readyGen, everReady, result, term, stopSig, ghost>>
 
@@ -297,6 +303,7 @@ Decide(s) ==
 \* without one the supervisor fails and escalates.
 BackoffDone(s) ==
     /\ cs[s] = "backoff"
+    /\ open \/ term[s] \/ Fault # "StuckBackoff"
     /\ IF (~open /\ Fault # "RestartAfterClose") \/ (term[s] /\ Fault # "RestartTerminated")
        THEN /\ cs' = Set(cs, s, "removed")
             /\ UNCHANGED <<open, failed, budget, gen, alive, reason, readyGen, closeGen, exhausted>>

@@ -180,6 +180,24 @@ LIFECYCLE_TEMPORAL_CONTROLS = [
 ]
 LIFECYCLE_SMALL = {"Reqs": "{}", "MaxSignals": "0", "DropEnabled": "FALSE"}
 
+# Rank 12a design model (docs/design/dynamic-supervisor.md): each mutation
+# against the invariant it must break, on the per-PR configuration.
+DYNAMIC_CONTROLS = [
+    ("MCDynamicSupervisor", "IgnoreMax", "MaxChildrenBound"),
+    ("MCDynamicSupervisor", "UncountedRestart", "MaxChildrenBound"),
+    ("MCDynamicSupervisor", "RestartTemporary", "TemporaryNeverRestarted"),
+    ("MCDynamicSupervisor", "RestartTerminated", "TerminatedNeverRestarted"),
+    ("MCDynamicSupervisor", "AcceptDuringShutdown", "NoStartAfterShutdown"),
+    ("MCDynamicSupervisor", "RestartAfterClose", "NoGenerationAfterClose"),
+    ("MCDynamicSupervisor", "NoEscalate", "ExhaustionCloses"),
+    ("MCDynamicSupervisor", "EarlyDone", "NoChildOutlivesSupervisor"),
+    ("MCDynamicSupervisor", "Sequential", "ConcurrentShutdown"),
+]
+DYNAMIC_TEMPORAL_CONTROLS = [
+    ("NoAbort", "StartAnswered"),
+    ("StuckBackoff", "ClosedLeadsToDone"),
+]
+
 DEFERRED_CONTROLS = [
     ("MCDeferredReplies", "NoAutoReply", "NoOrphan"),
     ("MCDeferredReplies", "NoAtomicExpiry", "AtMostOneDischarge"),
@@ -266,6 +284,10 @@ def main():
         named_fault(module, fault, invariant, args.tlc)
     for fault, prop in LIFECYCLE_TEMPORAL_CONTROLS:
         named_temporal("MCLifecycleLive", fault, prop, args.tlc, LIFECYCLE_SMALL)
+    for module, fault, invariant in DYNAMIC_CONTROLS:
+        named_fault(module, fault, invariant, args.tlc)
+    for fault, prop in DYNAMIC_TEMPORAL_CONTROLS:
+        named_temporal("MCDynamicSupervisor", fault, prop, args.tlc)
 
 
 if __name__ == "__main__":
