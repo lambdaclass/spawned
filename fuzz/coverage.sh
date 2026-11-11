@@ -18,8 +18,8 @@ cargo +"$nightly" fuzz coverage scenario "$corpus" >/dev/null
 sysroot=$(rustc +"$nightly" --print sysroot)
 host=$(rustc +"$nightly" -vV | sed -n 's/^host: //p')
 llvm_cov="$sysroot/lib/rustlib/$host/bin/llvm-cov"
-target_dir=${CARGO_TARGET_DIR:-$here/target}
-binary="$target_dir/$host/coverage/$host/release/scenario"
+# cargo fuzz coverage builds under fuzz/target whatever CARGO_TARGET_DIR says.
+binary="$here/target/$host/coverage/$host/release/scenario"
 "$llvm_cov" report "$binary" \
     -instr-profile="$here/coverage/scenario/coverage.profdata" \
     -ignore-filename-regex='(\.cargo/registry|/rustc/|/fuzz/)' \
