@@ -265,7 +265,10 @@ async fn an_unused_permit_does_not_hold_the_scope(borrowed: bool) {
     // Reserved through a cloned context and kept outside the actor, unused.
     let permit: BlockingJobPermit<Owner> = actor.context().reserve_blocking_job().unwrap();
     actor.context().stop();
-    assert_eq!(actor.wait_exit().await, spawned_concurrency::ExitReason::Normal);
+    assert_eq!(
+        actor.wait_exit().await,
+        spawned_concurrency::ExitReason::Normal
+    );
     let report = system.shutdown(Duration::from_secs(2)).await;
     assert!(
         report.complete,
