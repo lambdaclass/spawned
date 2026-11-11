@@ -240,9 +240,12 @@ fn slot_name(sup: &SupInst, j: usize) -> String {
 }
 
 /// V5: a supervisor fails for its restart budget only when the window was
-/// full. At the end of the exhausting child's last attempt, the grants in
-/// the window plus the reservations siblings can hold (at most one each)
-/// reach `max_restarts`.
+/// full. The exhausting reservation was refused at some moment between the
+/// end of that child's last attempt and the supervisor's last factory call
+/// (a collateral child reserves only after its round's cleanup, and a
+/// superseding round can make it reserve again): at one of those moments the
+/// grants in the window plus the reservations siblings can hold (at most one
+/// each) reach `max_restarts`.
 fn budget_exhaustion(
     s: &State,
     sup: &SupInst,
@@ -264,17 +267,28 @@ fn budget_exhaustion(
         return;
     };
     let mut first = std::collections::HashSet::new();
-    let grants = calls
+    let grants: Vec<Duration> = calls
         .iter()
         .filter(|(_, c)| !first.insert(c.index))
-        .filter(|(_, c)| c.at <= end + Duration::from_millis(10) && end < c.at + sup.window)
-        .count();
+        .map(|(_, c)| c.at)
+        .collect();
+    let in_window = |t: Duration| {
+        grants
+            .iter()
+            .filter(|g| **g <= t && t < **g + sup.window)
+            .count()
+    };
+    let most = std::iter::once(end)
+        .chain(grants.iter().copied().filter(|g| *g >= end))
+        .map(in_window)
+        .max()
+        .unwrap_or(0);
     let siblings = sup.children.saturating_sub(1);
-    if grants + siblings < sup.max_restarts {
+    if most + siblings < sup.max_restarts {
         found.push((
             "V5: the restart budget was reported exhausted before the window was full",
             format!(
-                "{name}: {grants} grants + {siblings} siblings < {} in {:?}",
+                "{name}: at most {most} grants + {siblings} siblings < {} in {:?}",
                 sup.max_restarts, sup.window
             ),
         ));
