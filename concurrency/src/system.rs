@@ -524,16 +524,19 @@ impl SystemInner {
                             }
                         }
                         ShutdownTarget::Scope(scope) => {
+                            // The system is a standalone actor's parent: its
+                            // Shutdown is a parent exit signal (E3).
                             scope.set_cleanup_timeout(remaining);
-                            scope.stop(ExitReason::Shutdown);
+                            scope.signal_parent(ExitReason::Shutdown);
                             let _ = rt::timeout(remaining, scope.joined()).await;
                         }
                     }
                 }
-                // At grace expiry, no nested child may remain unsignalled behind
-                // a stuck sibling's longer per-child cleanup timeout.
+                // At grace expiry every remaining actor gets the kill (E3), so
+                // no nested child remains unsignalled behind a stuck sibling's
+                // longer per-child cleanup timeout.
                 for scope in scopes.iter().rev() {
-                    scope.stop(ExitReason::Shutdown);
+                    scope.kill();
                 }
                 // Runtime teardown still requires actual completion, independently
                 // of the ordering grace and the caller's report timeout.
@@ -982,6 +985,40 @@ impl Scope {
     }
     pub(crate) fn close_admission(&self) {
         lock(&self.state).open = false;
+    }
+    /// The parent's exit signal to this scope's actor (design E3): the
+    /// supervisor or system is the parent. Admission closes for the managed
+    /// tree at once (B), but nothing is committed for the actor: a
+    /// non-trapping actor begins exit with `reason` without `stopped()`
+    /// (`Normal` is ignored), a trapping one gets a parent exit queued behind
+    /// its messages, which ends it through `stopped()`. Before the actor is
+    /// attached this is an ordinary stop.
+    pub(crate) fn signal_parent(&self, reason: ExitReason) {
+        let child = {
+            let mut state = lock(&self.state);
+            state.open = false;
+            if state.ended_at.is_none() {
+                state.ended_at = Some(Instant::now());
+            }
+            state.actor.clone()
+        };
+        match child {
+            Some(child) => child.exit_from(crate::ActorId::EXTERNAL, reason, true),
+            None => self.stop(reason),
+        }
+    }
+    /// The parent's kill (E3 escalation at `shutdown_timeout` or grace): the
+    /// actor ends `Killed`, skipping a `stopped()` that has not begun.
+    pub(crate) fn kill(&self) {
+        let child = {
+            let mut state = lock(&self.state);
+            state.open = false;
+            state.actor.clone()
+        };
+        match child {
+            Some(child) => child.exit_from(crate::ActorId::EXTERNAL, ExitReason::Kill, true),
+            None => self.stop(ExitReason::Killed),
+        }
     }
     pub(crate) fn register(
         &self,
