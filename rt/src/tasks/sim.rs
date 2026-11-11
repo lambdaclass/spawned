@@ -42,7 +42,10 @@
 //!   clock read with it) aborts the process with a message naming the task
 //!   and seed: a loop with no await point cannot be interrupted on one
 //!   thread. It is wall-clock based, so a debugger pause or a badly
-//!   overloaded machine can trip it; it never changes a schedule.
+//!   overloaded machine can trip it; it never changes a schedule. An actor
+//!   turn that runs longer than `SPAWNED_SIM_TURN_BUDGET` wall-clock
+//!   milliseconds inside one poll (default 250, 0 disables) fails the run,
+//!   naming the actor and message type (see the `turn` module).
 //!
 //! Channels, `watch`, `CancellationToken` and the stream wrappers stay Tokio's:
 //! they only use wakers, so they are deterministic under this executor.
@@ -931,9 +934,7 @@ impl Shared {
             Some(label) => state.turns.insert(id, label),
             None => state.turns.remove(&id),
         };
-        if let (Some(overrun), None, Some(budget)) =
-            (overrun, &state.overrun, state.turn_budget)
-        {
+        if let (Some(overrun), None, Some(budget)) = (overrun, &state.overrun, state.turn_budget) {
             let turn::Overrun { label, took } = overrun;
             // The measured time goes to stderr, not into the failure: the
             // shrinker matches failures by their text.
@@ -2275,7 +2276,10 @@ mod turn_budget_tests {
         let default = Some(Duration::from_millis(DEFAULT_TURN_BUDGET_MS));
         assert_eq!(parse_turn_budget(None), default);
         assert_eq!(parse_turn_budget(Some("not a number")), default);
-        assert_eq!(parse_turn_budget(Some(" 40 ")), Some(Duration::from_millis(40)));
+        assert_eq!(
+            parse_turn_budget(Some(" 40 ")),
+            Some(Duration::from_millis(40))
+        );
         assert_eq!(parse_turn_budget(Some("0")), None);
     }
 }

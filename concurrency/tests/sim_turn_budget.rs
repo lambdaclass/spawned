@@ -179,7 +179,13 @@ fn env_var_tunes_and_disables_the_check() {
     assert!(stderr.contains("replay tape:"), "{stderr}");
 
     let (passed, stderr) = child(Some("0"));
-    assert!(passed, "SPAWNED_SIM_TURN_BUDGET=0 must disable the check:\n{stderr}");
+    assert!(
+        passed,
+        "SPAWNED_SIM_TURN_BUDGET=0 must disable the check:\n{stderr}"
+    );
     let (passed, stderr) = child(Some("5000"));
-    assert!(passed, "a 5 s budget must let a 500 ms turn pass:\n{stderr}");
+    assert!(
+        passed,
+        "a 5 s budget must let a 500 ms turn pass:\n{stderr}"
+    );
 }

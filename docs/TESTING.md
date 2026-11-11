@@ -420,8 +420,9 @@ build with `spawned_sim` alone fails with a `compile_error!`.
 Tests written with `#[spawned_macros::sim_test]` (or
 `spawned_rt::tasks::sim_test`) run once on Tokio in normal builds and over
 seeds `0..SPAWNED_SIM_SEEDS` (default 8) under the cfg. A failure prints the
-seed, a `SPAWNED_SIM_SEED=n` replay command (carrying `SPAWNED_SIM_SPIN` and
-`SPAWNED_SIM_MAX_STEPS` if they were set), and the path of a decision tape
+seed, a `SPAWNED_SIM_SEED=n` replay command (carrying `SPAWNED_SIM_SPIN`,
+`SPAWNED_SIM_MAX_STEPS`, `SPAWNED_SIM_FAIR_AFTER` and
+`SPAWNED_SIM_TURN_BUDGET` if they were set), and the path of a decision tape
 with a `SPAWNED_SIM_TAPE=path` replay command. The tape records the seed, the
 spin limit and every pick and clock jump. Tapes replay by task id, so they
 survive changes in random-number consumption. Replay is strict: clock jumps
@@ -436,6 +437,48 @@ guides candidates permissively but keeps one only if its recorded tape fails
 the same way under strict replay. Library time (restart windows, backoff
 jitter seeding, shutdown deadlines, metrics) reads `spawned_rt::time`, which is
 virtual under the cfg.
+
+**Actor turn budget (rank 8b).** Under the cfg, a run fails when one actor
+turn runs longer than `SPAWNED_SIM_TURN_BUDGET` milliseconds of wall-clock
+time inside a single poll (default 250; `0` disables the check;
+`sim::set_turn_budget` / `Runtime::set_turn_budget` set it per run). That is
+a handler that blocks the thread (`std::thread::sleep`, a blocking lock or
+I/O call) or computes in a loop with no `.await`: on Tokio it holds a worker
+and every actor queued behind it; on the BEAM the scheduler would have
+preempted it. The failure names the actor and the message type, prints the
+measured time on stderr, and carries the usual seed and tape replay lines:
+
+```text
+spawned_sim: turn over budget: actor `sim_turn_budget::Worker` handling
+`sim_turn_budget::Nap` ran for more than 250 ms in one poll without yielding
+(a blocking call or a loop with no .await stalls every actor on its worker;
+SPAWNED_SIM_TURN_BUDGET=ms sets the budget, 0 disables it)
+```
+
+The actor dispatch loop marks each turn (a `#[cfg(spawned_sim)]` guard in
+`tasks/actor.rs`); the executor times only the stretches of a poll that run
+inside a turn and keeps the turn of a task suspended at an `.await`, so a
+poll that handles several messages charges each turn separately and the
+budget applies to each stretch between awaits, not to the whole turn. A
+handler that awaits (including long virtual sleeps) never trips it. Only
+`Handler::handle` turns are timed, not `started`/`stopped` or plain tasks.
+
+Why wall-clock time, given that the rest of the simulator is deterministic:
+one thread cannot preempt a poll, so a blocking or spinning section can only
+be measured after it returns, and nothing a poll does is countable without
+instrumenting user code (the BEAM counts reductions; Rust has no equivalent).
+The deterministic alternatives miss the problem: counting polls of a turn
+that keeps waking itself (it yields every time, so it starves no one beyond
+what the seeded scheduler already explores; the spin limit and
+`SPAWNED_SIM_MAX_STEPS` already bound it), or counting how many scheduling
+steps other ready tasks wait (each step is one poll, so a blocking poll is a
+single step). Timing never changes a schedule: it only decides whether the
+run fails. What it measures is a property of the code, so the default is
+generous (thousands of times Tokio's guidance of 10 to 100 µs between
+awaits, 25 times the 10 ms debug-build `WarnOnBlocking` warning) and a failing seed or tape
+reproduces it; an overloaded machine or a debugger pause can still trip it,
+in which case raise the budget. A production-side watchdog for the same
+handlers is rank 8, cooperative budgets rank 8a.
 
 Other `#[test]`s in a simulated binary that build a runtime with
 `spawned_rt::tasks::Runtime::new()` run on the simulator too, but only with
@@ -459,7 +502,8 @@ these limits:
 - One thread: Thread, Blocking, native and pinned placements, dedicated
   runtimes and `spawn_blocking` do not run. A poll with no await point that
   never returns trips a wall-clock watchdog (`SPAWNED_SIM_POLL_TIMEOUT`,
-  default 60 s) that aborts the process.
+  default 60 s) that aborts the process; one that returns after more than
+  `SPAWNED_SIM_TURN_BUDGET` (250 ms) inside an actor turn fails the run.
 - Direct `std::time`/`SystemTime` reads, `std::thread`, Tokio I/O and
   direct Tokio timers are outside its control.
 - Remaining nondeterminism between runs in one process: actor, monitor and
@@ -470,7 +514,8 @@ these limits:
   with no live simulation falls back to wall-clock time. The poll watchdog is
   wall-clock based: a debugger pause or an overloaded machine can trip it
   (it only ever aborts, never changes a schedule); `SPAWNED_SIM_POLL_TIMEOUT=0`
-  disables it. `registry::registered()` returns names sorted, so its order
+  disables it. The actor turn budget is wall-clock based too and can fail a
+  run on such a machine; `SPAWNED_SIM_TURN_BUDGET=0` disables it. `registry::registered()` returns names sorted, so its order
   does not depend on the hash map's random state. Also wall-clock based:
   the experimental time slice of `backend-experiments` actors
   (`std::time::Instant`) and `FailScenario::setup()` without
