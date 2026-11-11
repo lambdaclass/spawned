@@ -260,6 +260,7 @@ INTROSPECTION_CONTROLS = [
     ("MCIntrospection", "DoubleAnswer", "StatusAtMostOnce"),
     ("MCIntrospection", "CallbackAfterGiveUp", "NoCallbackAfterGiveUp"),
     ("MCIntrospection", "CallbackPanicStops", "CallbackPanicContained"),
+    ("MCIntrospection", "AnswerPanicStops", "CallbackPanicContained"),
 ]
 
 

@@ -27,7 +27,7 @@
 (*   HookPanicOverKill, StartPanicOverKill, DropLosesKill, NoInvalidateAtD,*)
 (*   KillRunsStopped, LostBitRunsStopped, DispatchAfterStop, StatusInTurn, *)
 (*   StatusLost, DoubleAnswer, StaleStatusReason, CallbackAfterGiveUp,     *)
-(*   CallbackPanicStops                                                    *)
+(*   CallbackPanicStops, AnswerPanicStops                                  *)
 (***************************************************************************)
 EXTENDS Naturals, Sequences, FiniteSets
 
@@ -210,9 +210,12 @@ StatusAnswer ==
     /\ \E fail \in BOOLEAN :
         /\ stFailed' = fail
         /\ st' = IF st = "waiting" THEN (IF fail THEN "failed" ELSE "ok") ELSE st
+        \* AnswerPanicStops: the caught panic is turned into a handler panic
+        \* while the callback runs, before the turn ends.
+        /\ panicked' = (panicked \/ (fail /\ Fault = "AnswerPanicStops"))
     /\ answers' = answers + 1
     /\ stDone' = TRUE
-    /\ UNCHANGED <<ph, kind, seq, open, kbit, susp, killed, stopReq, panicked,
+    /\ UNCHANGED <<ph, kind, seq, open, kbit, susp, killed, stopReq,
                    reason, dropReason, mbox, sent, stReason, stSkip, stGaveUp, wdPhase,
                    obs, wdTarget, endedClean>>
 
@@ -414,7 +417,9 @@ Ghosts ==
                                  /\ ~(ph = "turn" /\ kind = "status")))
     /\ cbAfterGiveUp' = (cbAfterGiveUp \/ (stGaveUp /\ answers' > answers
                                            /\ ph = "turn" /\ kind = "status"))
-    /\ cbStopped' = (cbStopped \/ (kind = "status" /\ kind' = None /\ ph' = "idle"
+    \* Over the whole status turn (answer and end): no step taken while it is
+    \* open records a panic.
+    /\ cbStopped' = (cbStopped \/ (ph = "turn" /\ kind = "status"
                                    /\ ~panicked /\ panicked'))
 
 Next == Core /\ Ghosts
@@ -471,7 +476,7 @@ StatusAtMostOnce == answers <= 1
 \* No callback answers after its caller gave up before dispatch.
 NoCallbackAfterGiveUp == ~cbAfterGiveUp
 
-\* The end of a status turn never begins exit.
+\* No step of a status turn begins exit.
 CallbackPanicContained == ~cbStopped
 
 Safety ==

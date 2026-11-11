@@ -991,7 +991,9 @@ links and monitors, which v1 does not touch.
 
 Revision 3 changes, from the round-two reviews: `Committed == commitPreD`
 (a later `Observe` can no longer reset it); every ghost is derived in `Next`
-from the state change of the step, never from the `Fault` selector;
+from the state change of the step, never from the `Fault` selector
+(`CallbackPanicContained` holds over every step taken while a status turn is
+open, not only its end);
 commitment validity is checked at the CAS itself (`CommitOnOpen`) and a
 target that has ended clean is charged from the moment of commitment
 (`NoChargeFinishedTurn`); `stopped()` may not be decided after a commitment
@@ -1031,7 +1033,8 @@ invariant, run alone (`negative_checks.py`, `INTROSPECTION_CONTROLS`):
 | `StaleStatusReason` | status answered at D with a reason computed before the kill | `StatusReasonIsFinal` |
 | `DoubleAnswer` | status answered twice | `StatusAtMostOnce` |
 | `CallbackAfterGiveUp` | callback run after its caller timed out before dispatch | `NoCallbackAfterGiveUp` |
-| `CallbackPanicStops` | a caught callback panic begins exit | `CallbackPanicContained` |
+| `CallbackPanicStops` | a caught callback panic begins exit at the status turn's end | `CallbackPanicContained` |
+| `AnswerPanicStops` | the panic is recorded while the callback runs, before the end | `CallbackPanicContained` |
 
 No liveness property: with L3 unchanged, an actor whose activity never
 resumes legitimately never dies.
@@ -1469,6 +1472,7 @@ Each finding was treated as a claim and checked against the design and the
 |---|---|---|---|
 | agy P1-1 | An idle read can accept `w1 == w2 == (N, closed)` with activity N+1's tag, stored before N+1's word | Accepted | `tag` becomes a 64-bit word stamped with the low 32 bits of its turn id (one relaxed store, unchanged cost); a read whose tag is ahead of `w1` is retried; the exact interleaving is added to `activity_slot_loom` and to the planted bugs. Not modelled in TLA+: the model's steps are atomic and sequentially consistent and reads are not actions, so a torn read cannot be expressed there. The bug is a memory-ordering property of separate atomics, which is what Loom checks against the C11 model |
 | Codex r3 #1 | Idle validation still accepts a mixed activity (writer paused after payload writes, before open publication) | Accepted, same fix as agy P1-1 | In that schedule N+1's tag carries turn N+1, which is ahead of `w1 = (N, closed)`, so the read is retried, not accepted. Idle reads return only the turn-stamped tag, never `since` or `poll`, so no unstamped mutable field reaches an idle result. The Loom case pauses the writer after all payload stores and before the open store |
+| Codex r3 #3 | Panic containment is checked only at the status turn's end; a panic recorded while the callback runs passes | Accepted | The ghost now fires on any step taken while a status turn is open that records a panic. New control `AnswerPanicStops` records it at the answer, and `CallbackPanicStops` is kept at the end; both fail `CallbackPanicContained` (re-run on fede) |
 | Codex r3 #2 | Cancelled console `state` requests can accumulate in a wedged actor's mailbox | Accepted | Console status permits, at most 2 per target actor, 32 per process and 1 per connection, held by the envelope until it is dequeued or discarded at D, never released on timeout or disconnect; `busy` otherwise; `wedged_actor_state_requests_are_bounded` and a planted bug. Application `get_status` calls are ordinary requests and are not limited, as `request` is not |
 
 ## Open questions for reviewers
