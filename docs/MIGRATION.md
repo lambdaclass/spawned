@@ -46,7 +46,9 @@ provided). A `recv_timeout` on the old native receiver has no counterpart:
 the deadline is fixed when the request is sent.
 
 **Metrics.** `metrics::Snapshot` gains `requests_reply_dropped_total` and
-`requests_overloaded_total`.
+`requests_overloaded_total`, the `deferred_*` and `jobs_*` fields (see the
+GUIDE's Metrics section) and the `deferred_reply_latency` histogram. Code
+that builds a `Snapshot` with a struct literal must add them.
 
 **Lifecycle.** At death the registry closes (open deferred tokens answer
 `ActorStopped`), then the mailbox is disposed, then actor state is dropped:

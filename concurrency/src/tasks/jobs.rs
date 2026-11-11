@@ -131,8 +131,12 @@ where
 {
     /// Take the terminal notification and enqueue `(done, outcome)`.
     fn notify(&self, outcome: JobOutcome<T>) {
-        let deadline = matches!(outcome, JobOutcome::Err(JobError::DeadlineExceeded));
-        let (_, unsent) = self.state.notify(deadline, || {
+        let end = match &outcome {
+            JobOutcome::Ok(_) => "ok",
+            JobOutcome::Err(JobError::Panicked(_)) => "panicked",
+            JobOutcome::Err(JobError::DeadlineExceeded) => "deadline",
+        };
+        let (_, unsent) = self.state.notify(end, || {
             let done = self.done.lock().unwrap_or_else(|p| p.into_inner()).take()?;
             let envelope: Box<dyn Envelope<A> + Send> = Box::new(TerminalEnvelope {
                 job: self.state.clone(),

@@ -15,7 +15,7 @@ mod sync {
     pub(crate) fn section<T>(f: impl FnOnce() -> T) -> T {
         f()
     }
-    pub(crate) fn traced_terminal(_: &SlotOwner, _: usize, _: &'static str) {}
+    pub(crate) fn left_open(_: &SlotOwner, _: usize, _: &'static str, _: bool) {}
 
     /// Loom has no timed wait; tests park only on slots without a deadline.
     pub(crate) fn wait_ticks<'a, T>(

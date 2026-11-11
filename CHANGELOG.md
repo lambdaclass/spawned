@@ -19,7 +19,13 @@
   controls. Reply slots record `DeferredReplies.tla` actions (send,
   dispatch, the terminal transition inside the slot CAS, exit, death);
   `tests/reply_trace.rs` traces (nine scenarios) are checked against
-  `TraceReplies.tla`, with four negative controls. `Handler::handle` takes a `PendingReply<'_, R>`
+  `TraceReplies.tla`, with four negative controls. With `metrics`, the
+  `spawned_deferred_*` family (tokens, pending, replied/expired/dropped/
+  stopped/abandoned, overloaded, sampled defer-to-reply latency) and the
+  `spawned_jobs_*` family (started, running, completed/panicked/deadline
+  exceeded, cancelled while running, fenced, rejected at a bound, emits,
+  unfinished at stop); `tests/metrics_deferred.rs` checks each is counted
+  once. `Handler::handle` takes a `PendingReply<'_, R>`
   and returns `()`; `#[actor]` generates it, and `#[deferred_handler]` methods
   receive the obligation and may `defer()` it into a storable `ReplyTo<R>`
   (bounded by `Actor::MAX_OUTSTANDING`, `Overloaded` at the bound). Dropped

@@ -302,10 +302,11 @@ impl<R> Slot<R> {
                     self.word
                         .compare_exchange(current, next, Ordering::AcqRel, Ordering::Acquire);
                 if exchanged.is_ok() && state(current) == OPEN && state(next) != OPEN {
-                    super::sync::traced_terminal(
+                    super::sync::left_open(
                         &self.owner,
                         self as *const Self as usize,
                         trace_name(state(next)),
+                        current & TOKEN != 0,
                     );
                 }
                 exchanged

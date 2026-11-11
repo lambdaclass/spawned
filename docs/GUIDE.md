@@ -1183,6 +1183,8 @@ counters and histograms still aggregate the whole process.
 | Request outcomes | Started, active, replied, timed out, actor stopped, and caller cancelled. Transport replies are successful even if the application result itself contains an error. |
 | Lifecycle | Actor instances admitted, active, and exited by Normal/Shutdown/Panic/Kill; handler starts, active handlers, completions, panics and interrupted futures. |
 | Delivery accounting | Enqueue acceptance/rejection, discarded queued messages, replies sent to channels, and reply receivers already dropped. Enqueue success does not promise handling or durable delivery. |
+| Deferred replies (`spawned_deferred_*`) | `deferred_tokens_total` (successful `defer()`), `deferred_pending` (open slots with a live token, all actors), how each deferred slot ended: `replied`, `expired` (its deadline), `dropped`, `stopped` (owner exit or death), `abandoned` (caller gave up), each `_total`; `deferred_overloaded_total` (every `Overloaded` answer, at `defer()` or `ReplyTo::overloaded`); `deferred_reply_latency_seconds`, a sampled histogram from `defer()` to a delivered reply. |
+| Jobs (`spawned_jobs_*`) | `jobs_started_total` (admitted), `jobs_running` (executing, cancelled or timed-out work included), terminal notifications `jobs_completed_total`, `jobs_panicked_total`, `jobs_deadline_exceeded_total`; `jobs_cancelled_total` (cancelled while still running: handle, key replacement, owner exit, caller give-up); `jobs_fenced_total` (job messages dropped at dispatch); `jobs_rejected_total` (at the credit bound or the native budget); `jobs_emits_total`; `jobs_unfinished_at_stop_total` (still running at the owner's cleanup deadline). |
 
 Counters end in `_total`. Duration histograms use fixed nanosecond buckets
 internally and seconds in Prometheus export; their count/sum/max describe sampled
@@ -1203,6 +1205,11 @@ conservation relationships apply after operations quiesce:
 - handled = completed handlers + panicked handlers + aborted handlers + active;
 - observed requests = replied + timed out + actor stopped + cancelled + active;
 - spawned actor instances = exited + active.
+- deferred tokens = replied + expired + dropped + stopped + abandoned +
+  pending (an `Overloaded` defer takes no token);
+- started jobs = running + jobs whose execution ended (a job's terminal
+  notification is completed, panicked, deadline exceeded, or none when it was
+  cancelled first).
 
 An actor is active from creation of its lifecycle guard until terminal cleanup,
 including waiting for a blocking-pool slot, `started()` and `stopped()`. A runtime

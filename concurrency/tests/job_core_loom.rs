@@ -20,7 +20,7 @@ mod sync {
     pub(crate) fn section<T>(f: impl FnOnce() -> T) -> T {
         f()
     }
-    pub(crate) fn traced_terminal(_: &SlotOwner, _: usize, _: &'static str) {}
+    pub(crate) fn left_open(_: &SlotOwner, _: usize, _: &'static str, _: bool) {}
     pub(crate) use super::model_arc::{JobArc, JobWeak};
 
     /// Loom has no timed wait; the model never parks on a slot.

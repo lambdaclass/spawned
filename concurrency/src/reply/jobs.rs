@@ -213,6 +213,7 @@ impl JobState {
     pub(crate) fn cancel(&self) {
         trace::atomic(|| {
             if self.core.cancel() {
+                self.count_cancel();
                 self.record(|job| trace::JobEvent::new("Cancel", job));
             }
         });
@@ -220,8 +221,17 @@ impl JobState {
     }
 
     fn cancel_quietly(&self) {
-        self.core.cancel();
+        if self.core.cancel() {
+            self.count_cancel();
+        }
         self.wake_cancelled();
+    }
+
+    /// `spawned_jobs_cancelled_total` counts jobs cancelled while running.
+    fn count_cancel(&self) {
+        if self.core.is_running() {
+            crate::instrumentation::hooks::job_cancelled();
+        }
     }
 
     fn wake_cancelled(&self) {
@@ -241,15 +251,19 @@ impl JobState {
     }
 
     /// Take the terminal notification and run `enqueue` under the job's
-    /// lock (see [`JobCore::notify`]). `deadline` tells the job deadline from
-    /// the end of execution (the model's `JobDeadline` and `Finish`).
+    /// lock (see [`JobCore::notify`]). `end` is `ok`, `panicked` (the end
+    /// of execution, the model's `Finish`) or `deadline` (`JobDeadline`).
     pub(crate) fn notify<X>(
         &self,
-        deadline: bool,
+        end: &'static str,
         enqueue: impl FnOnce() -> Option<X>,
     ) -> (bool, Option<X>) {
+        let deadline = end == "deadline";
         let (taken, unsent) = trace::atomic(|| {
             let (taken, unsent) = self.core.notify(enqueue);
+            if taken {
+                crate::instrumentation::hooks::job_notified(end);
+            }
             if !deadline {
                 self.record(|job| trace::JobEvent {
                     x: if taken { "notified" } else { "quiet" },
@@ -287,6 +301,9 @@ impl JobState {
     pub(crate) fn fenced(&self, at: ActorId, kind: &'static str) -> bool {
         trace::atomic(|| {
             let fenced = self.is_cancelled() || self.owner != at;
+            if fenced {
+                crate::instrumentation::hooks::job_fenced();
+            }
             self.record(|job| trace::JobEvent {
                 x: kind,
                 fenced,
@@ -327,6 +344,7 @@ impl JobState {
         trace::atomic(|| {
             let result = self.core.enqueue_emit(enqueue);
             if result.is_ok() {
+                crate::instrumentation::hooks::job_emitted();
                 self.record(|job| trace::JobEvent::new("Emit", job));
             }
             result
@@ -422,7 +440,11 @@ impl JobSet {
 
     /// Reserve a native slot (`MAX_NATIVE_JOBS`), rejecting at the bound.
     pub(crate) fn reserve_native(&self) -> bool {
-        self.core.reserve_native()
+        let reserved = self.core.reserve_native();
+        if !reserved {
+            crate::instrumentation::hooks::job_rejected();
+        }
+        reserved
     }
 
     pub(crate) fn release_native(&self) {
@@ -435,6 +457,7 @@ impl JobSet {
         trace::atomic(|| {
             let keyed = key.is_some();
             self.core.admit(state, key);
+            crate::instrumentation::hooks::job_started();
             state.record(|job| trace::JobEvent {
                 keyed,
                 deadline,
@@ -445,6 +468,7 @@ impl JobSet {
 
     /// A job's execution ended.
     pub(crate) fn ended(&self, state: &Arc<JobState>) {
+        crate::instrumentation::hooks::job_ended();
         if self.core.ended(state) {
             #[cfg(feature = "async")]
             for waker in std::mem::take(&mut *lock(&self.idle_async)) {
@@ -504,6 +528,7 @@ impl JobSet {
 /// Report jobs still running when the owner's cleanup deadline passed.
 pub(crate) fn report_unfinished(owner: ActorId, unfinished: usize) {
     if unfinished > 0 {
+        crate::instrumentation::hooks::jobs_unfinished(unfinished);
         tracing::warn!(
             event = "unfinished_at_stop",
             actor = %owner,
@@ -524,7 +549,11 @@ impl JobCredit {
     pub(crate) fn reserve(registry: &Registry) -> Option<Self> {
         let pool = registry.pool().clone();
         // `then`, not `then_some`: the guard must exist only when reserved.
-        pool.reserve(1).then(|| Self(Some(pool)))
+        let credit = pool.reserve(1).then(|| Self(Some(pool)));
+        if credit.is_none() {
+            crate::instrumentation::hooks::job_rejected();
+        }
+        credit
     }
 }
 

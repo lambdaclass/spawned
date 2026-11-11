@@ -42,10 +42,12 @@ mod sync {
         crate::lifecycle_trace::atomic(f)
     }
 
-    /// A slot left `OPEN` (`kind` is the model's terminal name).
+    /// A slot left `OPEN` (`kind` is the model's terminal name; `token`
+    /// whether a deferred token was live): metrics and lifecycle traces.
     #[inline(always)]
     #[cfg_attr(not(feature = "lifecycle-trace"), allow(unused_variables))]
-    pub(crate) fn traced_terminal(owner: &SlotOwner, slot: usize, kind: &'static str) {
+    pub(crate) fn left_open(owner: &SlotOwner, slot: usize, kind: &'static str, token: bool) {
+        crate::instrumentation::hooks::left_open(kind, token);
         #[cfg(feature = "lifecycle-trace")]
         if let Some(registry) = owner {
             crate::lifecycle_trace::reply(registry.owner().raw(), "Discharge", slot as u64, kind);
@@ -277,6 +279,7 @@ impl<'t, R: Send + 'static> PendingReply<'t, R> {
                 Ok(ReplyTo {
                     slot: Some(slot),
                     registry: registry.clone(),
+                    stamp: crate::instrumentation::hooks::deferred(),
                 })
             }
             Err(slot::Refused::Closed) => Err(DeferError::Closed),
@@ -338,6 +341,8 @@ impl<R: Send + 'static> Drop for PendingReply<'_, R> {
 pub struct ReplyTo<R: Send + 'static> {
     slot: Option<Arc<Slot<R>>>,
     registry: Arc<Registry>,
+    /// When it was deferred (sampled; zero-sized without `metrics`).
+    stamp: crate::instrumentation::hooks::DeferStamp,
 }
 
 impl<R: Send + 'static> std::fmt::Debug for ReplyTo<R> {
@@ -358,6 +363,9 @@ impl<R: Send + 'static> ReplyTo<R> {
         let (delivery, unsent) = slot.reply(value, &now_ticks);
         drop(unsent);
         record(delivery);
+        if delivery == Delivery::Delivered {
+            crate::instrumentation::hooks::deferred_replied(&self.stamp);
+        }
         delivery
     }
 
