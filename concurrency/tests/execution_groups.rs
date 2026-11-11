@@ -556,16 +556,27 @@ async fn readiness_reports_actual_panic_after_startup_stop_instead_of_early_norm
     assert!(system.shutdown(LIMIT).await.complete);
 }
 
+/// Held in a handler until released. A kill and the parent's exit both wait
+/// for the current handler (E1, E3), so the actor stays unfinished at any
+/// deadline. (A hold in a trapping actor's `stopped()` is skipped when the
+/// zero-grace kill lands before the parent's exit is dispatched: E1,
+/// decision 2.)
 struct SnapshotHeld {
     release: Option<tokio::sync::oneshot::Receiver<()>>,
 }
-impl Actor for SnapshotHeld {
-    async fn started(&mut self, ctx: &Context<Self>) {
-        // v0.8: stopped() runs on the system's shutdown only for a
-        // trapping actor (E3, decision 2).
-        ctx.trap_exit(true);
-    }
-    async fn stopped(&mut self, _: &Context<Self>) {
+impl Actor for SnapshotHeld {}
+struct Hold(tokio::sync::oneshot::Sender<()>);
+impl Message for Hold {
+    type Result = ();
+}
+impl Handler<Hold> for SnapshotHeld {
+    async fn handle(
+        &mut self,
+        msg: Hold,
+        _: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
+        let _ = msg.0.send(());
         let _ = self.release.take().unwrap().await;
     }
 }
@@ -580,6 +591,9 @@ async fn concurrent_zero_deadline_reports_include_scopes_during_shutdown_initial
     .start_on(&group)
     .unwrap();
     actor.ready().await.unwrap();
+    let (entered, entered_rx) = tokio::sync::oneshot::channel();
+    actor.send(Hold(entered)).unwrap();
+    entered_rx.await.unwrap();
     let mut reporters = Vec::new();
     for _ in 0..64 {
         let owner = system.clone();

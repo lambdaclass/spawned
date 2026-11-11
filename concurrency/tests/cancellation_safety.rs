@@ -808,15 +808,18 @@ async fn system_shutdown_is_cancel_safe() {
                 probe.stop_gate = Some(gate.clone());
                 let actor = fx.spawn(probe);
                 actor.ready().await.unwrap();
-                let report = fx.system.as_ref().unwrap().shutdown(Duration::ZERO).await;
+                // A short grace, not zero: the trapping probe must dispatch the
+                // parent's exit and enter stopped() before the kill at grace
+                // (E3). With zero grace the kill can land first and skip
+                // stopped() (E1, decision 2), leaving nothing stuck to wait for.
+                let report = fx.system.as_ref().unwrap().shutdown(PARK).await;
                 assert!(!report.complete);
                 let outcome = attempt(report.wait(LIMIT), n, PARK).await;
                 assert!(
                     !matches!(outcome, Attempt::Done(ref r) if r.complete),
                     "{op}"
                 );
-                // Zero grace: the system kills at once after its ordered pass
-                // (E3); let the kill land while stopped() still runs (E1).
+                // The kill at grace landed while stopped() still runs (E1).
                 spawned_rt::tasks::sleep(Duration::from_millis(50)).await;
                 gate.notify_one();
                 assert_eq!(
