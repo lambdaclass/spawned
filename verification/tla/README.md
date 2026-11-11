@@ -17,7 +17,7 @@ this fits with Loom, Shuttle, Miri, ThreadSanitizer and mutation testing.
 | `DeferredReplies.tla`, `MCDeferredReplies*.tla/.cfg` | Rank 11 design model (not implemented), part 1: reply slots, send-time deadlines with shortening, deferral credits shared by a token and its first linked job, the exiting phase with unwind-local drops, a stuck phase (cleanup deadline passed while `stopped()` runs: nothing closed early, death later or never), death, and downstream request cleanup. Thirteen named negative controls. |
 | `DeferredJobs.tla`, `MCDeferredJobs*.tla/.cfg` | Rank 11 design model, part 2: pipe jobs with separate execution, cancellation and notification states; keyed replacement including notified jobs; optional job deadlines; a FIFO mailbox with emit credits and the terminal message last; `ActorId` fencing. `MCDeferredJobsEmits` is the fast configuration with emits. Nine named negative controls. |
 | `Lifecycle.tla`, `MCLifecycle{,Live,Fence,Deep,LiveDeep,WideDeep}.tla/.cfg` | Base actor lifecycle as proposed for v0.8 ([design](../../docs/design/otp-exit-signals.md)): links, monitors, `trap_exit`, exit signals (`Killed`, ignored `Normal`, `NoProc`, parent exits), administrative stops, requests around death, `Exit`/`Down` ordering. Seventeen negative-control faults (17 safety checks, 2 liveness checks): the v0.7 exit-signal behaviours (direct stops ignoring `trap_exit`, kills ending `Kill`, unfenced `unlink`/`demonitor`, real reasons for late registrations, `stopped()` after kills and untrapped signals, late signals ignored during exit), the PR #182/#185 bugs, early exit errors, kill and panic precedence, runtime-drop reasons, early notification, a split death point and a parent exit reaching `exit_received`. Per PR: `MCLifecycle` (7.5M states, fewer reasons, where the safety controls run), `MCLifecycleFence`, `MCLifecycleLive`; weekly: `MCLifecycleWideDeep` (the former 43M-state per-PR instance), `MCLifecycleDeep`, `MCLifecycleLiveDeep`. |
-| `Start.tla`, `MCStart{,Names,Cap,Timeout,Continue,Scope,Live,Deep}.tla/.cfg` | Unified start API, 0.9 design revision 3 ([design](../../docs/design/unified-start.md), not implemented; TLC-only in `model-map.toml` until trace validation lands with the implementation): `spawn`, `start`, `start_link`, `start_monitor`; placement inheritance; an atomic stage-1 commit with the owner gate; an immutable startup commitment and a waiter; death as D, release, then publication, for the child and the parent; the final reason fixed at D; fallible init with held-signal precedence; the continuation; S8 scope ownership with the polite Shutdown and the scope deadline. 37 negative controls (34 safety, 3 liveness); see [Unified start](#unified-start-09-design). Per PR: `MCStart`, `MCStartNames`, `MCStartCap`, `MCStartTimeout`, `MCStartContinue`, `MCStartScope`, `MCStartLive` (CI leg `start`); weekly: `MCStartDeep`. |
+| `Start.tla`, `MCStart{,Names,Cap,Timeout,Continue,Scope,Live,Deep}.tla/.cfg` | Unified start API, 0.9 design (approved after three review rounds) ([design](../../docs/design/unified-start.md), not implemented; TLC-only in `model-map.toml` until trace validation lands with the implementation): `spawn`, `start`, `start_link`, `start_monitor`; placement inheritance; an atomic stage-1 commit with the owner gate; an immutable startup commitment and a waiter; death as D, release, then publication, for the child and the parent; the final reason fixed at D; fallible init with held-signal precedence; the continuation; S8 scope ownership with the polite Shutdown and the scope deadline. 40 negative controls (37 safety, 3 liveness); see [Unified start](#unified-start-09-design). Per PR: `MCStart`, `MCStartNames`, `MCStartCap`, `MCStartTimeout`, `MCStartContinue`, `MCStartScope`, `MCStartLive` (CI leg `start`); weekly: `MCStartDeep`. |
 | `TraceCohorts.tla`, `TraceNested.tla` | Policy and ownership projections of real cohort/nested Rust executions. |
 | `trace_check.py`, `negative_checks.py` | Replay recorded traces; deliberately wrong selections, premature resume/join and broken propagation must be rejected or produce counterexamples. |
 | `SupervisionInd.tla`, `CohortsInd.tla`, `NestedSupervisionInd.tla`, `CoordinatorInd.tla`, `MC*Ind.tla`, `apalache.sh` | Inductive invariants (`IndInv`) checked with Apalache; see [Inductive invariants](#inductive-invariants-apalache). |
@@ -608,7 +608,7 @@ All 22 named controls find their counterexample, each in a few seconds.
 ## Unified start (0.9 design)
 
 `Start.tla` backs the [unified start design](../../docs/design/unified-start.md)
-(revision 3). It was written before the implementation, as the
+(approved after three review rounds). It was written before the implementation, as the
 deferred-replies models were. Design section 15 lists what it covers, its
 invariants and what it leaves out. It is TLC-only in
 `verification/model-map.toml` until the implementation adds trace
@@ -654,15 +654,18 @@ validation (design section 16.2).
 | `MCStartTimeout` | `TimerIgnoresCommit` | `TimeoutNeverKillsReady` |
 | `MCStartTimeout` | `KillBeforeUnlink` | `TimeoutContained` |
 | `MCStartTimeout` | `ReadyAfterClose` | `ReadyOnlyWhileOpen` |
-| `MCStartTimeout` | `FrozenReason` | `ReportedReasonFinal` |
+| `MCStartTimeout` | `SkipEscalation` | `KillBeforeDIsKilled` |
+| `MCStartTimeout` | `SplitResolutionD` | `IgnoredExitsNormal` |
 | `MCStartCap` | `AdmitClosed` | `AdmittedOnlyOpen` |
 | `MCStartCap` | `IgnoreCap` | `CapacityRespected` |
 | `MCStartCap` | `EarlySlotRelease` | `SlotHeldUntilReleased` |
 | `MCStartContinue` | `ContinueQueued` | `ContinueFirst` |
 | `MCStartScope` | `EarlyGenDone` | `GenDoneMeansOwnedDone` |
 | `MCStartScope` | `GenDoneAtParentD` | `GenDoneMeansOwnedDone` |
+| `MCStartScope` | `GenDoneIgnoresWork` | `GenDoneMeansOwnedDone` |
 | `MCStartScope` | `NoScopeKill` | `DeadlineKillsAllOwned` |
 | `MCStartScope` | `OwnerUnchecked` | `OwnedOnlyWhileOwnerOpen` |
+| `MCStartScope` | `ParentExitClosesOwner` | `OwnerRefusalOnlyOnShutdown` |
 | `MCStartScope` | `ParentSlotAtD` | `ParentSlotHeld` |
 | `MCStartLive` (liveness) | `DropHeld` | `ParentExitReachesChild` |
 | `MCStartLive` (liveness) | `NoAnswerIgnore` | `StartAnswered` |

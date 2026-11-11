@@ -1090,9 +1090,11 @@ lines from section 16.
   change. The waiter answers (`AckOk`, `AckFail` after publication or after
   an explicit `CleanupDeadline`) or abandons. The init timer is
   framework-owned.
-- **The child's death** is `Die` (D, reason final), `Release` (name and
-  slot), then `Publish` (notices disposed of; the model flags any illegitimate
-  drop as lost).
+- **The child's death** is D (reason final; for a non-ready resolution, D
+  is part of the resolution step), `ReleaseName`, `ReleaseSlot`, `Publish`
+  (notices disposed of; the model flags any illegitimate drop as lost), and
+  `Deliver` (one step per notice reaching P). Owned work finishes after
+  publication (`WorkDoneP`, `WorkDoneC`).
 - **After readiness:** continuations, messages from others, a trapping
   child's queued parent exit, unlinking.
 - **S8:** owned children, the owner gate, the polite `Shutdown` at P's
@@ -1115,13 +1117,15 @@ lines from section 16.
 | `ResultMatchesCommit`, `ReadyIsFinal` | answers match the first commitment; ready is never answered as an error |
 | `TimeoutNeverKillsReady`, `ReadyOnlyWhileOpen` | the timer loses to readiness; readiness only while admission (group and owner) is open |
 | `FailureAfterPublication`, `ReportedReasonFinal`, `PendingOnlyAfterDeadline` | a final answer comes after publication, with the final reason; a pending one only after the cleanup deadline |
+| `KillBeforeDIsKilled`, `IgnoredExitsNormal` | a kill that arrived before D makes the final reason `Killed`; an ignored start always ends `Normal` (its resolution and D are one step; round 3) |
+| `OwnerRefusalOnlyOnShutdown` | an owned child's readiness is refused by the owner gate only after an ancestor's or the system's shutdown, never because P is exiting (round 3) |
 | `FailureFlushed`, `FailureEndsNonTrappingParent`, `NormalFailureSparesParent` | a failed start's notice is consumed, yet a non-`Normal` one still ends a non-trapping P, and a `Normal` one never does |
 | `TimeoutContained` | an init timeout reaches P only after an abandoned wait |
 | `AdmittedOnlyOpen`, `OwnedOnlyWhileOwnerOpen` | admission by the target group and the owner gate |
 | `CapacityRespected`, `SlotHeldUntilReleased`, `ParentSlotHeld` | slots (P's included) are held until release (P's until its publication) |
 | `NoticeOnce`, `NoLostNotice`, `AbandonedNoticeDelivered` | at most one of each notice; none dropped illegitimately; an abandoned wait hands it on with its kind and reason, ending a non-trapping P |
 | `ContinueFirst` | no mailbox entry before the continuation |
-| `GenDoneMeansOwnedDone`, `DeadlineKillsAllOwned` | the generation ends after P's and every member's publication; the scope deadline kills every live member, exiting ones included |
+| `GenDoneMeansOwnedDone`, `DeadlineKillsAllOwned` | the generation ends after P's and every member's publication and owned work; the scope deadline kills every live member, exiting ones included |
 
 **Liveness** (weak fairness on the child's own steps, its death, release and
 publication, the waiter's answer, and P's D and publication; strong
@@ -1152,7 +1156,7 @@ error has been found"):
 **Negative controls** (`negative_checks.py`, each with `TypeOK` and only the
 named property, run one at a time):
 
-Every control produced its counterexample in 1-12 s:
+Every control produced its counterexample (round 3 rerun):
 
 | Configuration | Fault | Reintroduces | Fails |
 |---|---|---|---|
@@ -1180,15 +1184,18 @@ Every control produced its counterexample in 1-12 s:
 | `MCStartTimeout` | `TimerIgnoresCommit` | the timer kills without checking the commitment | `TimeoutNeverKillsReady` |
 | `MCStartTimeout` | `KillBeforeUnlink` | the timeout's `Killed` reaches a waiting parent | `TimeoutContained` |
 | `MCStartTimeout` | `ReadyAfterClose` | readiness after admission closed | `ReadyOnlyWhileOpen` |
-| `MCStartTimeout` | `FrozenReason` | the answer reports the requested reason after publication | `ReportedReasonFinal` |
+| `MCStartTimeout` | `SkipEscalation` | a kill that arrives before D does not make the reason `Killed` (round 3) | `KillBeforeDIsKilled` |
+| `MCStartTimeout` | `SplitResolutionD` | revision 3: a window between a non-ready resolution and D, so a kill turns `Ignored` into `Killed` (round 3) | `IgnoredExitsNormal` |
 | `MCStartCap` | `AdmitClosed` | a closed group admits | `AdmittedOnlyOpen` |
 | `MCStartCap` | `IgnoreCap` | a full group admits | `CapacityRespected` |
 | `MCStartCap` | `EarlySlotRelease` | the slot released at D | `SlotHeldUntilReleased` |
 | `MCStartContinue` | `ContinueQueued` | the continuation queued behind earlier entries | `ContinueFirst` |
 | `MCStartScope` | `EarlyGenDone` | the generation ends before its members | `GenDoneMeansOwnedDone` |
 | `MCStartScope` | `GenDoneAtParentD` | the generation ends at P's D | `GenDoneMeansOwnedDone` |
+| `MCStartScope` | `GenDoneIgnoresWork` | the generation ends while owned work runs (round 3) | `GenDoneMeansOwnedDone` |
 | `MCStartScope` | `NoScopeKill` | the scope deadline spares exiting members | `DeadlineKillsAllOwned` |
 | `MCStartScope` | `OwnerUnchecked` | the commit ignores the owner's gate | `OwnedOnlyWhileOwnerOpen` |
+| `MCStartScope` | `ParentExitClosesOwner` | P's own exit closes its scope gate, refusing a child OTP lets finish init (round 3) | `OwnerRefusalOnlyOnShutdown` |
 | `MCStartScope` | `ParentSlotAtD` | P's slot released at its D | `ParentSlotHeld` |
 | `MCStartLive` | `DropHeld` (liveness) | a held parent exit dropped | `ParentExitReachesChild` |
 | `MCStartLive` | `NoAnswerIgnore` (liveness) | an ignored start never answered | `StartAnswered` |
@@ -1487,4 +1494,19 @@ model and the 0.8 code.
 | agy F6 (P2): ignored controller in cohort rounds | **True** | **Accepted.** The parked controller answers the stop and clean barriers at once and waits for resume (9) |
 | agy F7 (P2): model gaps | **True** | **Accepted.** `stop(Normal)` and `stop(Shutdown)` outcomes; `NormalFailureSparesParent`; `NoOverlapOnReuse` over all live phases; `commit0` |
 | agy F8 (P2): `SExit` vs `SResolve` | **True** | **Accepted.** Pre-readiness exits are recorded only as `SResolve` (16.2) |
+
+### Round 3 (confirmation; approved for implementation after these changes)
+
+Both reviews: approve after the listed changes, no P0. Codex confirmed the
+`stopped()` change against OTP 27.1 `gen_server.erl` and the partial
+acceptance of agy P1-5. The rejection of agy P1-10 stands. Each fix is its
+own commit.
+
+| Finding | Claim checked | Resolution |
+|---|---|---|
+| Codex 1 = agy F1: a pre-D kill after a non-ready resolution corrupts the outcome; a recorded pre-D kill need not affect the reason | **True.** Revision 3 had a window between a non-ready resolution and D. A kill there turned `Ok(Ignored)` or `InitFailed` into `Killed` and could kill a non-trapping parent. Separately, `KillExiting` was optional, so a pre-D kill could be skipped | **Accepted, one rule.** A non-ready resolution and D are one critical section: the decision wins, its reason is final, and a later kill finds the actor past D. A ready child's pre-D kill escalates atomically on arrival. New: `IgnoredExitsNormal` (control `SplitResolutionD`), `KillBeforeDIsKilled` (control `SkipEscalation`). `FrozenReason` became vacuous (the reason is final at the decision) and is retired |
+| Codex 2: no valid release linearization point; repeated lookups; disposition vs delivery | **True** | **Accepted.** `ReleaseName` (registry lock) and `ReleaseSlot` (group lock) are separate model actions and trace events. Lookups repeat as stuttering steps. Delivery is its own `Deliver` step (`PNotice`), with a refinement rule and new trace controls (5.2, 16.2) |
+| Codex 3: generation completion checks publication alone | **True** | **Accepted.** Owned work is modelled (`WorkDoneP`, `WorkDoneC`); `GenDone` and `GenDoneMeansOwnedDone` require it (control `GenDoneIgnoresWork`) |
+| agy F2: P's exit closes its scope gate, so a trapping owned child cannot commit ready (OTP lets it) | **True:** the design text contradicted the model and OTP | **Accepted, OTP semantics.** P's own exit refuses new starts (`ParentExited`, under P's exit-request lock) but does not close its scope gate. A child in `started()` finishes init and then gets P's exit; only an ancestor's or the system's shutdown closes the gate. New: `OwnerRefusalOnlyOnShutdown` (control `ParentExitClosesOwner`) |
+| Codex, agy: the `stopped()` change is missing from section 12 | **True** | **Accepted.** Migration row: move initialization cleanup into `started()` or RAII |
 

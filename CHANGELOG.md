@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Design (0.9, in review, revision 3): a unified start API
+- Design (0.9, approved for implementation after round 3): a unified start API
   (`docs/design/unified-start.md`, rank 5h). OTP's `start`, `start_link` and
   `start_monitor` wait for `started()`, and `spawn` does not. All four take one
   typed `StartOptions`. `started()` may fail, ignore or continue (`Init`), and a
@@ -14,7 +14,7 @@
   with a polite Shutdown at the parent's publication and absolute,
   composing deadlines. It replaces `start_on`, `start_with_backend`,
   `ExecutionGroup::start` and `start_linked`. A new TLA+ model, `Start.tla`,
-  has eight configurations and 37 negative controls, and a client mapping
+  has eight configurations and 40 negative controls, and a client mapping
   covers 51 sites.
 - ROADMAP: a ranked determinism backlog (D1-D10) under priority tier 3, from
   an audit of what escapes the simulator in Spawned, Ethrex and Ethlambda
