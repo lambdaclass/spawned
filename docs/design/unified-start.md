@@ -10,8 +10,10 @@ reviews (Codex and agy, both "approve after the listed changes", no P0). What
 changed and why is in [Review resolutions](#20-review-resolutions).
 
 - **Model:** [`verification/tla/Start.tla`](../../verification/tla/Start.tla),
-  with configurations `MCStart`, `MCStartCap`, `MCStartTimeout`,
-  `MCStartContinue`, `MCStartScope`, `MCStartLive` and `MCStartDeep`.
+  with configurations `MCStart`, `MCStartNames`, `MCStartCap`,
+  `MCStartTimeout`, `MCStartContinue`, `MCStartScope`, `MCStartLive` and
+  `MCStartDeep`. It is TLC-only in `verification/model-map.toml` until the
+  implementation adds trace validation.
 - **Client mapping:** [unified-start-client-mapping.md](unified-start-client-mapping.md).
 - **Agreed shapes with other designs:**
   - the dynamic supervisor (#245, revision 3) and introspection v1 (#256);
@@ -1017,119 +1019,87 @@ lines from section 16.
 
 ## 15. The model
 
-[`Start.tla`](../../verification/tla/Start.tla), revision 2:
+[`Start.tla`](../../verification/tla/Start.tla), revision 3:
 
-- **Parent.** One parent P: managed in group `G` or unmanaged, trapping or
-  not, able to exit.
-- **Children.** Started with `spawn`, `start`, `start_link` or
-  `start_monitor`, with a default or explicit placement and possibly the
-  shared name.
-- **Stage 1.** Prepare failure, then the atomic `Commit`; a `Lookup`
-  observer resolves the name at any time.
-- **End of `started()`.** One step with every `Init` outcome, a trap flag,
-  held parent exits and kills, resolved by the 2.3 precedence.
-- **The startup cell.** The commitment and the waiter state, with `AckOk`,
-  `AckFail` (after publication, or at the bounded wait with `pend`),
-  `Abandon`, and the init `Timeout`.
-- **Death.** `Die` (D) and `Publish`, with destruction between them; group
-  capacity is released at publication.
-- **After readiness.** Ready children may exit, be killed or unlink; a
-  continuation and messages from others; a trapping child's queued parent
-  exit.
-- **S8.** Owned children, the scope deadline, and the generation end.
-- **Notices.** Counted per child (`exitN`, `downN`) with their reason, so a
-  duplicate delivery is visible.
+- **The parent** P is managed in group `G` or unmanaged, trapping or not. It
+  may exit, then reach its D (`PDie`) and its publication (`PPublish`). Its
+  scope's admission gate may close.
+- **Children** are started with `spawn`, `start`, `start_link` or
+  `start_monitor`. Each has a default or explicit placement (`G`, `G2`
+  another group of P's system, unmanaged, `same`) and possibly the shared
+  name.
+- **Stage 1** is a preparation failure or one atomic `Commit`, with a
+  `Lookup` observer and a record of which holders a competitor's refusal
+  blamed.
+- **`started()`** resolves every `Init` outcome, with a trap flag, held
+  parent exits, outside kills and administrative stops, by the 2.3
+  precedence. A kill before D can escalate the reason (`KillExiting`).
+- **The startup result** has a first commitment `commit0` that must never
+  change. The waiter answers (`AckOk`, `AckFail` after publication or after
+  an explicit `CleanupDeadline`) or abandons. The init timer is
+  framework-owned.
+- **The child's death** is `Die` (D, reason final), `Release` (name and
+  slot), then `Publish` (notices disposed of; the model flags any illegitimate
+  drop as lost).
+- **After readiness:** continuations, messages from others, a trapping
+  child's queued parent exit, unlinking.
+- **S8:** owned children, the owner gate, the polite `Shutdown` at P's
+  publication, the scope deadline (not assumed to fire), and the generation
+  end.
+- **Notices** are counted per child, with their reason.
 
 **Safety invariants:**
 
 | Invariant | Meaning |
 |---|---|
 | `InheritedPlacement` | explicit wins; link/monitor take the parent's; otherwise unmanaged |
-| `LinkBeforeStarted` | the edge was really created (at the commit) before `started()` began |
-| `NameUnique` | at most one holder |
-| `NameHeldUntilPublished` | a holder is between its commit and its publication |
-| `NoOverlapOnReuse` | no holder while another named child is between D and publication |
-| `NameFreeBeforeObservation` | no notice or final error while the child still holds the name |
-| `AbortInvisible` | a refused start: no edge, name, lookup, slot, hook or notice |
-| `ResultMatchesCommit` | the answer is the committed outcome |
-| `ReadyIsFinal` | a ready commit is never answered as a start error |
-| `TimeoutNeverKillsReady` | the init timer never kills a ready child |
-| `ReadyOnlyWhileOpen` | managed readiness commits only while admission is open |
-| `FailureAfterPublication` | an error without `pending` comes after publication |
-| `FailureFlushed` | a failed start delivers no `Down`, and no `Exit` to a trapping parent |
+| `LinkBeforeStarted` | the edge was really created at the commit, before `started()` |
+| `EdgeOnlyToRunningParent`, `NoEdgeToDeadParent` | edges are committed only while P runs, and none outlives P's D |
+| `NameUnique`, `NameHeldUntilReleased`, `NameKeptWhileLive` | one holder; held exactly from the commit to the release |
+| `NoOverlapOnReuse` | no new holder while another named child is still live |
+| `NameFreeBeforeObservation` | no notice, parent exit or final answer while the child holds the name |
+| `AbortInvisible` | a refused start: no edge, name, slot, lookup, competitor blame, hook or notice |
+| `CommitImmutable` | the commitment never changes |
+| `ResultMatchesCommit`, `ReadyIsFinal` | answers match the first commitment; ready is never answered as an error |
+| `TimeoutNeverKillsReady`, `ReadyOnlyWhileOpen` | the timer loses to readiness; readiness only while admission (group and owner) is open |
+| `FailureAfterPublication`, `ReportedReasonFinal`, `PendingOnlyAfterDeadline` | a final answer comes after publication, with the final reason; a pending one only after the cleanup deadline |
+| `FailureFlushed`, `FailureEndsNonTrappingParent`, `NormalFailureSparesParent` | a failed start's notice is consumed, yet a non-`Normal` one still ends a non-trapping P, and a `Normal` one never does |
 | `TimeoutContained` | an init timeout reaches P only after an abandoned wait |
-| `NoEdgeToDeadParent` | no edge outlives P's D |
-| `AdmittedOnlyOpen`, `CapacityRespected` | admission; slots held until publication |
-| `NoticeOnce` | at most one `Exit` and one `Down` per child (counters) |
-| `AbandonedNoticeDelivered` | an abandoned wait hands the diverted notice to P with its kind and reason |
+| `AdmittedOnlyOpen`, `OwnedOnlyWhileOwnerOpen` | admission by the target group and the owner gate |
+| `CapacityRespected`, `SlotHeldUntilReleased`, `ParentSlotHeld` | slots (P's included) are held until release (P's until its publication) |
+| `NoticeOnce`, `NoLostNotice`, `AbandonedNoticeDelivered` | at most one of each notice; none dropped illegitimately; an abandoned wait hands it on with its kind and reason, ending a non-trapping P |
 | `ContinueFirst` | no mailbox entry before the continuation |
-| `GenDoneMeansOwnedDone` | P's generation ends only after its owned children |
+| `GenDoneMeansOwnedDone`, `DeadlineKillsAllOwned` | the generation ends after P's and every member's publication; the scope deadline kills every live member, exiting ones included |
 
-**Liveness** (weak fairness on the child's own steps, publication, P's D and
-the scope deadline; strong fairness on the answer):
+**Liveness** (weak fairness on the child's own steps, its death, release and
+publication, the waiter's answer, and P's D and publication; strong
+fairness on the error answer; the scope deadline and the cleanup deadline
+are not assumed to fire):
 
 | Property | Meaning |
 |---|---|
 | `ParentExitReachesChild` | a non-`Normal` parent exit ends a linked child, also when held during `started()` |
 | `StartAnswered` | every waiting start is answered or abandoned |
-| `OwnedScopeFinishes` | a managed parent's generation ends after it dies |
+| `OwnedScopeFinishes` | once P is published, its generation ends through the polite `Shutdown` alone |
 
-**Configurations and results** (TLC 2.19, fede, 4 workers, `nice -n 19`,
-run one at a time):
+**Configurations and results** (TLC 2.19, fede, 4 workers, `nice -n 19`, run
+one at a time; every number is from a run that ended with TLC's own "No
+error has been found"):
 
-| Configuration | Run | Instance | Distinct states | Depth | Time |
-|---|---|---|---|---|---|
-| `MCStart` | per PR | two named children, link/monitor, managed parent, Cap 3 (two children and P at once), closure, abandonment, retry | 10,115,028 | 22 | 80 s |
-| `MCStartCap` | per PR | three children spawned into P's group of three: capacity binds, is held until publication, a retry after a published failure gets the slot | 102,526 | 23 | 4 s |
-| `MCStartTimeout` | per PR | one child of each waiting variant, managed or unmanaged parent, the init timer | 23,664 | 12 | 2 s |
-| `MCStartContinue` | per PR | one child of every variant with every explicit placement, two messages, trapping | 546,846 | 14 | 6 s |
-| `MCStartScope` | per PR | managed parent, one linked child (owned or not), trapping, unlink, scope deadline; liveness `OwnedScopeFinishes` | 13,848 | 14 | 2 s |
-| `MCStartLive` | per PR | one child of each waiting variant, trapping; liveness `ParentExitReachesChild`, `StartAnswered` | 8,387 | 11 | 2 s |
-| `MCStartDeep` | weekly | `MCStart` plus the init timer and an unmanaged parent | 55,814,368 | 22 | 7 min 17 s |
+RESULTS_TABLE
 
 **Negative controls** (`negative_checks.py`, each with `TypeOK` and only the
 named property, run one at a time):
 
-Every control produced its counterexample in 1-5 s:
-
-| Configuration | Fault | Reintroduces | Fails |
-|---|---|---|---|
-| `MCStart` | `NoInherit` | 0.8 `start_linked` placement | `InheritedPlacement` |
-| `MCStart` | `LinkAfterStarted` | the edge set once `started()` runs | `LinkBeforeStarted` |
-| `MCStart` | `DoubleRegister` | check-then-insert names | `NameUnique` |
-| `MCStart` | `LateUnregister` | the name released after the notices | `NameFreeBeforeObservation` |
-| `MCStart` | `UnregisterAtDeath` | revision 1: the name released at D, before destruction | `NoOverlapOnReuse` |
-| `MCStart` | `SplitCommit` | revision 1: the name published before the rest of stage 1 | `AbortInvisible` |
-| `MCStart` | `EarlyFailAck` | revision 1: the error answered at D | `FailureAfterPublication` |
-| `MCStart` | `AckBeforeStarted` | `Ok` before the commit | `ResultMatchesCommit` |
-| `MCStart` | `ErrorAsOk` | `ignore` answered as started | `ResultMatchesCommit` |
-| `MCStart` | `DivertAfterReady` | revision 1 (P0-1): readiness keeps the start marks | `ReadyIsFinal` |
-| `MCStart` | `ReadyAfterClose` | readiness committed after the group closed | `ReadyOnlyWhileOpen` |
-| `MCStart` | `NoMonitorFlush` | a failed `start_monitor` also delivers `Down` | `FailureFlushed` |
-| `MCStart` | `NoLinkFlush` | a failed `start_link` also delivers `Exit` | `FailureFlushed` |
-| `MCStart` | `LinkCheckLate` | the commit ignores the parent's state | `NoEdgeToDeadParent` |
-| `MCStart` | `AbandonDropsNotice` | an abandoned wait loses the diverted notice | `AbandonedNoticeDelivered` |
-| `MCStart` | `DoubleNotice` | a notice both delivered and diverted | `NoticeOnce` |
-| `MCStartCap` | `AdmitClosed` | a closed group admits | `AdmittedOnlyOpen` |
-| `MCStartCap` | `IgnoreCap` | a full group admits | `CapacityRespected` |
-| `MCStartTimeout` | `TimerIgnoresCommit` | revision 1 (P0-2): the timer kills without checking the cell | `TimeoutNeverKillsReady` |
-| `MCStartTimeout` | `KillBeforeUnlink` | the timeout's `Killed` reaches a waiting parent | `TimeoutContained` |
-| `MCStartContinue` | `ContinueQueued` | the continuation queued behind earlier entries | `ContinueFirst` |
-| `MCStartScope` | `EarlyGenDone` | P's generation ends before its owned children | `GenDoneMeansOwnedDone` |
-| `MCStartLive` | `DropHeld` (liveness) | a held parent exit dropped | `ParentExitReachesChild` |
-| `MCStartLive` | `NoAnswerIgnore` (liveness) | an ignored start never answered | `StartAnswered` |
-| `MCStartScope` | `NoScopeKill` (liveness) | the scope deadline spares unlinked children | `OwnedScopeFinishes` |
-
-A first `IgnoreCap` run on `MCStart` found no counterexample: two children
-and P never exceed Cap 3, which agy P1-8 had pointed out. That led to
-`MCStartCap`, where capacity binds.
+CONTROLS_TABLE
 
 **Not modelled:**
 
-- the lock implementation, which is covered by the Loom test in section 16;
-- more than one parent;
-- time (the bounded wait is a nondeterministic choice);
-- destruction as a separate step (it lies between `Die` and `Publish`);
+- the lock implementation (Loom tests, section 16);
+- a parent-child-grandchild chain (transitive membership is one member set;
+  the integration and sim tests use three levels);
+- time (deadlines are nondeterministic steps);
+- destruction as its own step (it lies between `Die` and `Release`);
 - the supervisor's `ignore` and `startup_timeout` rules, which change
   `Supervision.tla` and `Cohorts.tla` in the implementation PR (section 9).
 
