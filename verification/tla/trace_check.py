@@ -140,7 +140,8 @@ def generate_replies(trace, workdir):
                   + ",\n    ".join(records) + "\n>>\n====\n")
     with open(os.path.join(workdir, "TraceRun.cfg"), "w") as out:
         out.write("INIT TraceInit\nNEXT TraceNext\nCONSTANTS\n"
-                  f"    N = {n}\n    BoundA = {int(trace['bound'])}\n    BoundB = 1\n"
+                  f"    N = {n}\n    BoundA = {int(trace['bound'])}\n"
+                  f"    BoundB = {int(trace.get('bound_b', 1))}\n"
                   f"    MaxTime = {clock}\n    MaxWait = {clock}\n    Fault = \"None\"\n"
                   "    Trace <- TraceLog\n"
                   "INVARIANT Safety\nINVARIANT TraceIncomplete\n")

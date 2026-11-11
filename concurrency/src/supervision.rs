@@ -2319,6 +2319,15 @@ async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, core: Arc<C
                                     Ok(reason) => reason,
                                     Err(_) => {
                                         stuck = true;
+                                        // Reply traces: the cleanup deadline
+                                        // passed before the child's death
+                                        // point (DeferredReplies `CleanupDeadline`).
+                                        crate::lifecycle_trace::reply(
+                                            child.id().raw(),
+                                            "Stuck",
+                                            0,
+                                            "",
+                                        );
                                         core.fail_cleanup_for(
                                             view.snapshot(),
                                             format!("actor cleanup stuck for {}", spec.name),
@@ -2336,6 +2345,7 @@ async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, core: Arc<C
                                     });
                                 }
                                 stuck = true;
+                                crate::lifecycle_trace::reply(child.id().raw(), "Stuck", 0, "");
                                 core.fail_cleanup_for(
                                     view.snapshot(),
                                     format!("actor cleanup stuck for {}", spec.name),

@@ -334,6 +334,69 @@ def reply_trace_controls(traces, tlc):
     require_rejected(by_name["replies_panic"], stopped_before_death,
                      "exit error answered Stopped before the death point", tlc)
 
+    def at(events, action, x=None, start=0):
+        return next(i for i, e in enumerate(events)
+                    if i >= start and e["a"] == action and (x is None or e["x"] == x))
+
+    def move(events, src, dst):
+        events.insert(dst, events.pop(src))
+
+    def shorten_closed(events):
+        # Shorten a slot that was already answered.
+        i = at(events, "Shorten")
+        r = events[i]["r"]
+        answered = next(j for j, e in enumerate(events)
+                        if e["a"] == "Discharge" and e["r"] == r)
+        move(events, i, answered)
+    require_rejected(by_name["replies_shorten"], shorten_closed,
+                     "deadline shortened after the reply", tlc)
+
+    def second_job_shares(events):
+        # A second job for a request whose first job still runs, with no
+        # free credit (BOUND = 1): ShareRunning.
+        events[at(events, "PipeReply", "refused")]["x"] = "linked"
+    require_rejected(by_name["replies_job_deadline"], second_job_shares,
+                     "second linked job without a credit", tlc)
+
+    def notified_twice(events):
+        i = at(events, "JobNotify")
+        events.insert(i + 1, dict(events[i]))
+    require_rejected(by_name["replies_job_done"], notified_twice,
+                     "job notification taken twice", tlc)
+
+    def end_before_notify(events):
+        # The job's work ends while its deadline notification is pending.
+        move(events, at(events, "JobEnd"), at(events, "JobNotify"))
+    require_rejected(by_name["replies_job_deadline"], end_before_notify,
+                     "job ended before its notification was taken", tlc)
+
+    def cancel_while_waiting(events):
+        # Cancelled while its caller still waits (no give-up, no exit).
+        move(events, at(events, "JobCancel"), at(events, "Discharge", "abandoned"))
+    require_rejected(by_name["replies_job_cancelled"], cancel_while_waiting,
+                     "linked job cancelled while its caller waits", tlc)
+
+    def call_before_job(events):
+        move(events, at(events, "CallB"), at(events, "PipeReply"))
+    require_rejected(by_name["replies_downstream_now"], call_before_job,
+                     "downstream request with no running job", tlc)
+
+    def dispatch_without_call(events):
+        events.pop(at(events, "CallB"))
+    require_rejected(by_name["replies_downstream_now"], dispatch_without_call,
+                     "B dispatches a request no job made", tlc)
+
+    def reply_before_defer(events):
+        move(events, at(events, "BReply"), at(events, "BDispatch"))
+    require_rejected(by_name["replies_downstream_later"], reply_before_defer,
+                     "B answers a request it has not deferred", tlc)
+
+    def stuck_while_running(events):
+        # The cleanup deadline before exit began.
+        move(events, at(events, "Stuck"), at(events, "Exit"))
+    require_rejected(by_name["replies_stuck"], stuck_while_running,
+                     "cleanup deadline before exit", tlc)
+
 
 def lifecycle_trace_controls(traces, tlc):
     """Edits of recorded base-lifecycle traces that Lifecycle.tla must

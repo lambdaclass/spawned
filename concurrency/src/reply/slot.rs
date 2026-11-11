@@ -475,6 +475,7 @@ impl<R> Slot<R> {
             let lower = state(self.word()) == OPEN && at < self.deadline();
             if lower {
                 self.deadline.store(at, Ordering::Release);
+                super::sync::shortened(&self.owner, self as *const Self as usize);
                 // Moved out, not cloned: no executor code under the lock. A
                 // woken receiver re-registers when it polls again.
                 (

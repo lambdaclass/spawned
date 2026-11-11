@@ -49,8 +49,27 @@ mod sync {
     pub(crate) fn left_open(owner: &SlotOwner, slot: usize, kind: &'static str, token: bool) {
         crate::instrumentation::hooks::left_open(kind, token);
         #[cfg(feature = "lifecycle-trace")]
+        {
+            if let Some(registry) = owner {
+                crate::lifecycle_trace::reply(
+                    registry.owner().raw(),
+                    "Discharge",
+                    slot as u64,
+                    kind,
+                );
+            }
+            crate::lifecycle_trace::downstream_closed(slot as u64, kind);
+        }
+    }
+
+    /// A deferred token's deadline was lowered (`slot`'s lock held):
+    /// lifecycle traces (the model's `Shorten`).
+    #[inline(always)]
+    #[cfg_attr(not(feature = "lifecycle-trace"), allow(unused_variables))]
+    pub(crate) fn shortened(owner: &SlotOwner, slot: usize) {
+        #[cfg(feature = "lifecycle-trace")]
         if let Some(registry) = owner {
-            crate::lifecycle_trace::reply(registry.owner().raw(), "Discharge", slot as u64, kind);
+            crate::lifecycle_trace::reply(registry.owner().raw(), "Shorten", slot as u64, "");
         }
     }
 
@@ -178,6 +197,7 @@ pub(crate) fn reply_slot<R: Send + 'static>(
     #[cfg(feature = "lifecycle-trace")]
     if let Some(owner) = owner {
         crate::lifecycle_trace::reply(owner.owner().raw(), "Send", Arc::as_ptr(&slot) as u64, "");
+        crate::lifecycle_trace::downstream_sent(owner.owner().raw(), Arc::as_ptr(&slot) as u64);
     }
     (SlotHandle(Some(slot.clone())), ReplyReceiver::new(slot))
 }
@@ -330,6 +350,8 @@ impl<'t, R: Send + 'static> PendingReply<'t, R> {
         let registry = self.registry.take().ok_or(DeferError::NoCaller)?;
         match slot.defer(registry.pool(), &now_ticks) {
             Ok(()) => {
+                #[cfg(feature = "lifecycle-trace")]
+                crate::lifecycle_trace::downstream_deferred(Arc::as_ptr(&slot) as u64);
                 registry.register(&slot);
                 registry.track_deadline(&slot);
                 Ok(ReplyTo {

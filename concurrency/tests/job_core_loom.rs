@@ -21,6 +21,7 @@ mod sync {
         f()
     }
     pub(crate) fn left_open(_: &SlotOwner, _: usize, _: &'static str, _: bool) {}
+    pub(crate) fn shortened(_: &SlotOwner, _: usize) {}
     pub(crate) use super::model_arc::{JobArc, JobWeak};
 
     /// Loom has no timed wait; the model never parks on a slot.

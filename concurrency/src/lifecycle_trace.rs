@@ -353,6 +353,12 @@ mod imp {
             if action == "Death" && !lock(&DEAD).insert(owner) {
                 return;
             }
+            // A cleanup deadline after the death point (a slow destructor
+            // before publication) is not a step of the reply registry, which
+            // is sealed: the model's `CleanupDeadline` precedes death.
+            if action == "Stuck" && lock(&DEAD).contains(&owner) {
+                return;
+            }
             lock(&REPLIES)
                 .entry(owner)
                 .or_default()
@@ -365,6 +371,78 @@ mod imp {
         lock(&WATCHED).remove(&owner);
         lock(&DEAD).remove(&owner);
         lock(&REPLIES).remove(&owner).unwrap_or_default()
+    }
+
+    // Linked jobs and their downstream requests (DeferredReplies.tla
+    // `JobCallB`, `BDispatch`, `BReply`): while a `pipe_reply*` job's work
+    // runs, the thread carries its link (owner instance, request slot); a
+    // request it makes to another actor B is recorded on the owner's trace,
+    // and B's decisions on that request are recorded there too.
+    thread_local! {
+        static LINK: Cell<Option<(u64, u64)>> = const { Cell::new(None) };
+    }
+    /// B's slots requested from a linked job: slot -> (owner, request, deferred).
+    static DOWNSTREAM: Mutex<BTreeMap<u64, (u64, u64, bool)>> = Mutex::new(BTreeMap::new());
+
+    /// Run `f` (a linked job's work, or one poll of it) with its link set.
+    pub(crate) fn in_link<R>(link: Option<(u64, u64)>, f: impl FnOnce() -> R) -> R {
+        struct Restore(Option<(u64, u64)>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                LINK.with(|l| l.set(self.0));
+            }
+        }
+        let _restore = Restore(LINK.with(|l| l.replace(link)));
+        f()
+    }
+
+    /// A request slot `slot` was created at instance `owner`: if the current
+    /// thread runs a linked job of a watched instance, it is that request's
+    /// downstream call (`CallB`).
+    pub(crate) fn downstream_sent(owner: u64, slot: u64) {
+        let Some((a, request)) = LINK.with(Cell::get) else {
+            return;
+        };
+        if a == owner {
+            return;
+        }
+        atomic(|| {
+            if watched(a) {
+                lock(&DOWNSTREAM).insert(slot, (a, request, false));
+                crate::lifecycle_trace::reply(a, "CallB", request, "");
+            }
+        });
+    }
+
+    /// B deferred a downstream request (`BDispatch` to `stateB`).
+    pub(crate) fn downstream_deferred(slot: u64) {
+        atomic(|| {
+            let found = lock(&DOWNSTREAM).get_mut(&slot).map(|entry| {
+                entry.2 = true;
+                (entry.0, entry.1)
+            });
+            if let Some((a, request)) = found {
+                crate::lifecycle_trace::reply(a, "BDispatch", request, "stateB");
+            }
+        });
+    }
+
+    /// A downstream request's slot left OPEN with `kind` (inside the slot's
+    /// trace section): B's answer in its turn (`BDispatch` to `done`) or a
+    /// later one (`BReply`). The caller's side (abandoned, timeout) is not
+    /// B's step: the model folds it into the job's end (`EndDown`).
+    pub(crate) fn downstream_closed(slot: u64, kind: &'static str) {
+        let Some((a, request, deferred)) = lock(&DOWNSTREAM).remove(&slot) else {
+            return;
+        };
+        if matches!(kind, "abandoned" | "timeout") {
+            return;
+        }
+        if deferred {
+            crate::lifecycle_trace::reply(a, "BReply", request, kind);
+        } else {
+            crate::lifecycle_trace::reply(a, "BDispatch", request, "done");
+        }
     }
 
     /// Remove and return the job events recorded for an owner instance.
@@ -799,6 +877,11 @@ mod imp {
     #[allow(dead_code)] // recording is compiled out without the feature
     #[inline(always)]
     pub(crate) fn job(_: u64, _: impl FnOnce() -> super::JobEvent) {}
+    #[allow(dead_code)]
+    #[inline(always)]
+    pub(crate) fn in_link<R>(_: Option<(u64, u64)>, f: impl FnOnce() -> R) -> R {
+        f()
+    }
     #[allow(dead_code)]
     #[inline(always)]
     pub(crate) fn life_section<R>(_: u64, f: impl FnOnce() -> R) -> R {

@@ -16,6 +16,7 @@ mod sync {
         f()
     }
     pub(crate) fn left_open(_: &SlotOwner, _: usize, _: &'static str, _: bool) {}
+    pub(crate) fn shortened(_: &SlotOwner, _: usize) {}
 
     /// Loom has no timed wait; tests park only on slots without a deadline.
     pub(crate) fn wait_ticks<'a, T>(

@@ -890,6 +890,8 @@ impl<A: Actor> Context<A> {
     {
         let (state, slot, token) = self.link_reply(&opts, token)?;
         let watch = opts.cancel_on_caller_gone.then(|| slot.clone());
+        #[cfg(feature = "lifecycle-trace")]
+        let link = (self.id().raw(), Arc::as_ptr(&slot) as u64);
         let hold = Hold::Linked(LinkedJob(slot));
         let job = JobCtx {
             state: state.clone(),
@@ -898,6 +900,15 @@ impl<A: Actor> Context<A> {
         // User code; a panic here drops the hold, which detaches the
         // linked job from the slot.
         let work = work(job);
+        // Reply traces: requests the work makes are this request's
+        // downstream calls.
+        #[cfg(feature = "lifecycle-trace")]
+        let work = {
+            let mut work = Box::pin(work);
+            std::future::poll_fn(move |cx| {
+                crate::lifecycle_trace::in_link(Some(link), || work.as_mut().poll(cx))
+            })
+        };
         if !self.admit_job(&state, &opts) {
             // Dropping the hold detaches the linked job from the slot.
             drop((hold, watch, work));
@@ -906,6 +917,8 @@ impl<A: Actor> Context<A> {
                 error: PipeError::OwnerStopping,
             });
         }
+        #[cfg(feature = "lifecycle-trace")]
+        state.linked(link.1);
         Ok(self.launch_async(opts, state, hold, work, linked_done(token, done), watch))
     }
 
@@ -946,6 +959,12 @@ impl<A: Actor> Context<A> {
         if opts.cancel_on_caller_gone {
             crate::reply::jobs::cancel_when_closed(&slot, &state);
         }
+        #[cfg(feature = "lifecycle-trace")]
+        let work = {
+            let link = (self.id().raw(), Arc::as_ptr(&slot) as u64);
+            state.linked(link.1);
+            move |job| crate::lifecycle_trace::in_link(Some(link), || work(job))
+        };
         Ok(self.launch_blocking(opts, state, hold, native, work, linked_done(token, done)))
     }
 
@@ -968,7 +987,19 @@ impl<A: Actor> Context<A> {
             });
         };
         let slot = token.slot_arc().clone();
-        match slot.attach(&now_ticks) {
+        let attached = slot.attach(&now_ticks);
+        // The slot refused the job (reply traces: `PipeReply` handing the
+        // token back).
+        #[cfg(feature = "lifecycle-trace")]
+        if attached.is_err() {
+            crate::lifecycle_trace::reply(
+                self.id().raw(),
+                "PipeReply",
+                Arc::as_ptr(&slot) as u64,
+                "refused",
+            );
+        }
+        match attached {
             Ok(()) => Ok((state, slot, token)),
             Err(Refused::Closed) => Err(PipeReplyError::Closed(token)),
             Err(Refused::Overloaded) => Err(PipeReplyError::Failed {

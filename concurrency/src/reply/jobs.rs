@@ -226,6 +226,13 @@ pub(crate) struct JobState {
     /// The job's number in lifecycle traces.
     #[cfg(feature = "lifecycle-trace")]
     trace: u64,
+    /// A `pipe_reply*` job: its request's slot in reply traces, and whether
+    /// its notification was taken (DeferredReplies.tla `JobNotify`, `JobEnds`,
+    /// `JobCancel`).
+    #[cfg(feature = "lifecycle-trace")]
+    link: std::sync::OnceLock<u64>,
+    #[cfg(feature = "lifecycle-trace")]
+    notified: std::sync::atomic::AtomicBool,
     /// Async cancellation for `tasks` jobs (drops the work future).
     #[cfg(feature = "async")]
     cancel: spawned_rt::tasks::CancellationToken,
@@ -255,6 +262,10 @@ impl JobState {
             core: JobCore::new(emit_credits),
             #[cfg(feature = "lifecycle-trace")]
             trace: crate::lifecycle_trace::next_job(),
+            #[cfg(feature = "lifecycle-trace")]
+            link: std::sync::OnceLock::new(),
+            #[cfg(feature = "lifecycle-trace")]
+            notified: std::sync::atomic::AtomicBool::new(false),
             #[cfg(feature = "async")]
             cancel: spawned_rt::tasks::CancellationToken::new(),
             #[cfg(feature = "async")]
@@ -273,6 +284,54 @@ impl JobState {
         &self.cancel
     }
 
+    /// A `pipe_reply*` job was launched for the request in `slot` (reply
+    /// traces: the model's `PipeReply`).
+    #[cfg(feature = "lifecycle-trace")]
+    pub(crate) fn linked(&self, slot: u64) {
+        trace::atomic(|| {
+            let _ = self.link.set(slot);
+            trace::reply(self.owner.raw(), "PipeReply", slot, "linked");
+        });
+    }
+
+    // DeferredReplies.tla linked-job actions of a `pipe_reply*` job, recorded
+    // on its owner's reply trace inside the trace section.
+
+    /// Its notification was taken: the token travels with it from now on.
+    fn link_notified(&self) {
+        #[cfg(feature = "lifecycle-trace")]
+        self.notified
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// `JobNotify`: its done or deadline message is dispatched to the owner.
+    #[cfg_attr(not(feature = "lifecycle-trace"), allow(unused_variables))]
+    fn link_notify(&self, kind: &'static str) {
+        #[cfg(feature = "lifecycle-trace")]
+        if let Some(slot) = self.link.get() {
+            trace::reply(self.owner.raw(), "JobNotify", *slot, kind);
+        }
+    }
+
+    /// `JobEnds`: execution ended without taking the notification.
+    fn link_end(&self) {
+        #[cfg(feature = "lifecycle-trace")]
+        if let Some(slot) = self.link.get() {
+            trace::reply(self.owner.raw(), "JobEnd", *slot, "");
+        }
+    }
+
+    /// `JobCancel`: cancelled while the token is still with the job (not
+    /// once its notification was taken).
+    fn link_cancel(&self) {
+        #[cfg(feature = "lifecycle-trace")]
+        if let Some(slot) = self.link.get() {
+            if !self.notified.load(std::sync::atomic::Ordering::Relaxed) {
+                trace::reply(self.owner.raw(), "JobCancel", *slot, "");
+            }
+        }
+    }
+
     /// Record a `DeferredJobs.tla` action of this job (lifecycle traces).
     #[cfg_attr(not(feature = "lifecycle-trace"), allow(unused_variables))]
     fn record(&self, event: impl FnOnce(u64) -> trace::JobEvent) {
@@ -289,6 +348,7 @@ impl JobState {
             if self.core.cancel() {
                 self.count_cancel();
                 self.record(|job| trace::JobEvent::new("Cancel", job));
+                self.link_cancel();
             }
         });
         self.wake_cancelled();
@@ -349,6 +409,9 @@ impl JobState {
             let (taken, unsent) = self.core.notify(enqueue);
             if taken {
                 crate::instrumentation::hooks::job_notified(end);
+                self.link_notified();
+            } else if !deadline {
+                self.link_end();
             }
             if !deadline {
                 // Only a held result's terminal notifies without the
@@ -387,15 +450,19 @@ impl JobState {
             match finish {
                 Finish::Taken => {
                     crate::instrumentation::hooks::job_notified(end);
+                    self.link_notified();
                     self.record(|job| trace::JobEvent {
                         x: "notified",
                         ..trace::JobEvent::new("Finish", job)
                     });
                 }
-                Finish::Refused => self.record(|job| trace::JobEvent {
-                    x: "quiet",
-                    ..trace::JobEvent::new("Finish", job)
-                }),
+                Finish::Refused => {
+                    self.record(|job| trace::JobEvent {
+                        x: "quiet",
+                        ..trace::JobEvent::new("Finish", job)
+                    });
+                    self.link_end();
+                }
                 Finish::Held => self.record(|job| trace::JobEvent {
                     x: "held",
                     ..trace::JobEvent::new("Finish", job)
@@ -479,9 +546,12 @@ impl JobState {
     /// model's `Finish` when the notification was suppressed).
     #[cfg(feature = "async")]
     pub(crate) fn ended_cancelled(&self) {
-        self.record(|job| trace::JobEvent {
-            x: "quiet",
-            ..trace::JobEvent::new("Finish", job)
+        trace::atomic(|| {
+            self.record(|job| trace::JobEvent {
+                x: "quiet",
+                ..trace::JobEvent::new("Finish", job)
+            });
+            self.link_end();
         });
     }
 
@@ -499,6 +569,9 @@ impl JobState {
                 fenced,
                 ..trace::JobEvent::new("Dispatch", job)
             });
+            if !fenced && matches!(kind, "done" | "deadline") {
+                self.link_notify(kind);
+            }
             fenced
         })
     }
@@ -562,6 +635,7 @@ impl Job for JobState {
         let (newly, held) = self.core.cancel_keeping_held();
         if newly {
             self.count_cancel();
+            self.link_cancel();
         }
         let scheduled = std::mem::take(&mut *lock(&self.scheduled));
         *lock(&self.exit_released) = Some((held, scheduled));
