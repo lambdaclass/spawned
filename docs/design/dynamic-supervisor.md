@@ -957,7 +957,7 @@ stuck children, for `ClosedLeadsToDone` and `RecoveryProgress`.
 | `OkMeansReady` | `Ok` only for a child that became ready |
 | `QueuedTermStopped` | a terminate call still queued when shutdown began is answered `Stopped` and stays so |
 | `RemovedAfterFinalize` | a slot is freed only after slot finalization (and an ignored attempt's cleanup) |
-| `TermResultsSound` | `Ok` only after removal and never for a stuck child; a pending call holds the loop; an id call or a fenced slot call reaches only the generation it named |
+| `TermResultsSound` | `Ok` only after removal; a call in progress when its child got stuck reports `CleanupStuck`; a pending call holds the loop; an id call or a fenced slot call reaches only the generation it named |
 
 Action properties: `NeverReopens`, `TermResultStable` (a committed terminate
 result never changes). Liveness: `StartAnswered`, `TerminateAnswered`,

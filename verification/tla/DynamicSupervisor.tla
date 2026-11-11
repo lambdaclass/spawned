@@ -102,12 +102,12 @@ VARIABLES
     mode, sl, tc,
     \* history (GhostUpdate only)
     lateCommit, latePub, lateGenClose, lateGenTerm, badRestart, badRetire,
-    restarts, outOfOrder, freedEarly, queuedAtClose
+    restarts, outOfOrder, freedEarly, queuedAtClose, pendAtStuck
 
 sup   == <<open, failed, exhausted, sphase, windowed, expired, reserved, stamped,
            q, ticket, served, op>>
 ghost == <<lateCommit, latePub, lateGenClose, lateGenTerm, badRestart, badRetire,
-           restarts, outOfOrder, freedEarly, queuedAtClose>>
+           restarts, outOfOrder, freedEarly, queuedAtClose, pendAtStuck>>
 vars  == <<sup, sl, tc, ghost, mode>>
 
 SlotInit == [cs |-> "idle", gen |-> 0, alive |-> {}, pub |-> 0, lastPub |-> 0,
@@ -140,6 +140,7 @@ Init ==
     /\ badRestart = [s \in Slots |-> FALSE] /\ badRetire = [s \in Slots |-> FALSE]
     /\ restarts = 0 /\ outOfOrder = FALSE /\ freedEarly = [s \in Slots |-> FALSE]
     /\ queuedAtClose = [c \in TermCalls |-> FALSE]
+    /\ pendAtStuck = [c \in TermCalls |-> FALSE]
 
 -----------------------------------------------------------------------------
 (* Helpers *)
@@ -589,6 +590,10 @@ GhostUpdate ==
     \* terminate calls still queued at the moment admission closed
     /\ queuedAtClose' = [c \in TermCalls |-> queuedAtClose[c] \/
                            (open /\ ~open' /\ tc[c].st = "queued")]
+    \* terminate calls in progress at the moment their child got stuck
+    /\ pendAtStuck' = [c \in TermCalls |-> pendAtStuck[c] \/
+                         (tc[c].st = "pending" /\ sl[CallSlot[c]].stuck = "none"
+                          /\ sl'[CallSlot[c]].stuck # "none")]
     /\ freedEarly' = [s \in Slots |-> freedEarly[s] \/
                         (sl'[s].cs = "removed" /\ sl[s].cs \notin {"finalizing", "removed"})]
     /\ UNCHANGED mode
@@ -706,14 +711,15 @@ ConcurrentShutdown ==
 
 OkMeansReady == \A s \in Slots : sl[s].result = "ok" => sl[s].everReady
 
-\* terminate results: Ok only after removal; Stuck stays Stuck; a call
-\* still queued at shutdown is Stopped, never Ok; an id call or a fenced
+\* terminate results: Ok only after removal; a call whose child got stuck
+\* while it waited is Stuck (and stays so); an id call or a fenced
 \* (expect) slot call never reaches a generation other than the one named.
 TermResultsSound ==
     \A c \in TermCalls :
         LET s == CallSlot[c] IN
-        /\ tc[c].st = "ok" =>
-               sl[s].cs = "removed" /\ sl[s].alive = {} /\ sl[s].stuck = "none"
+        /\ tc[c].st = "ok" => sl[s].cs = "removed" /\ sl[s].alive = {}
+        \* a call in progress when its child got stuck reports CleanupStuck
+        /\ pendAtStuck[c] => tc[c].st = "stuck"
         /\ tc[c].st = "pending" => op = [k |-> "term", s |-> s, c |-> c]
         /\ tc[c].st = "pending" /\ CallKind[c] \in {"id", "expect"} => sl[s].lastPub = tc[c].g
 
