@@ -639,11 +639,10 @@ impl Job for JobState {
         }
         let scheduled = std::mem::take(&mut *lock(&self.scheduled));
         *lock(&self.exit_released) = Some((held, scheduled));
-        #[cfg(feature = "async")]
-        {
-            self.cancel.cancel();
-            self.wake_emitters();
-        }
+        // The cancellation flag is set (`is_cancelled`, `emit` refuse from
+        // here); the callbacks it owes (the `cancelled()` waiters' wakers
+        // and blocked emitters, arbitrary code) run in `dispose_cancelled`,
+        // after the owner's callers are answered.
     }
     fn is_running(&self) -> bool {
         self.core.is_running()
@@ -809,11 +808,18 @@ impl JobSet {
         });
     }
 
-    /// After the owner's death point answered and woke every caller: destroy
-    /// what the exit's cancellation released (held results, scheduled
-    /// emits; contained through each job's failure sink). Idempotent.
+    /// After the owner's death point answered and woke every caller: run
+    /// the callbacks the exit's cancellation owes (wake `cancelled()`
+    /// waiters and blocked emitters), then destroy what it released (held
+    /// results, scheduled emits; contained through each job's failure
+    /// sink). Idempotent.
     pub(crate) fn dispose_cancelled(&self) {
         let cancelled = std::mem::take(&mut *lock(&self.exit_cancelled));
+        #[cfg(feature = "async")]
+        for job in &cancelled {
+            job.cancel.cancel();
+            job.wake_emitters();
+        }
         for job in &cancelled {
             let released = lock(&job.exit_released).take();
             if let Some((held, scheduled)) = released {

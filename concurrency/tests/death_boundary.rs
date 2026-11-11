@@ -406,6 +406,119 @@ mod tasks_mode {
         );
     }
 
+    /// Pipes a job that hands its `JobCtx` to a helper and never ends.
+    struct ExportJob(mpsc::Sender<spawned_concurrency::tasks::JobCtx<Owner>>);
+    impl Message for ExportJob {
+        type Result = ();
+    }
+    struct JobDone;
+    impl Message for JobDone {
+        type Result = ();
+    }
+    impl Handler<ExportJob> for Owner {
+        async fn handle(
+            &mut self,
+            msg: ExportJob,
+            reply: PendingReply<'_, ()>,
+            ctx: &Context<Self>,
+        ) {
+            let export = msg.0;
+            ctx.pipe(
+                spawned_concurrency::tasks::JobOptions::new(),
+                move |job| {
+                    export.send(job).unwrap();
+                    std::future::pending::<()>()
+                },
+                |_| JobDone,
+            )
+            .unwrap();
+            reply.reply(());
+        }
+    }
+    impl Handler<JobDone> for Owner {
+        async fn handle(&mut self, _: JobDone, _: PendingReply<'_, ()>, _: &Context<Self>) {}
+    }
+
+    /// Final review (Codex P1 2): the owner's exit cancels its jobs, but the
+    /// cancellation's callbacks (a `cancelled()` waiter's waker, arbitrary
+    /// code) run only after every caller is answered. Here a helper polls
+    /// `job.cancelled()` with a waker that waits for a queued caller's
+    /// answer; the exit used to run it inside cancellation, before that
+    /// caller could be answered.
+    #[test]
+    fn job_cancellation_wakes_after_every_caller_is_answered() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Mutex;
+        use std::task::{Wake, Waker};
+        struct WaitForCaller {
+            caller: Mutex<spawned_concurrency::ReplyReceiver<()>>,
+            answered: AtomicBool,
+        }
+        impl Wake for WaitForCaller {
+            fn wake(self: Arc<Self>) {
+                let began = Instant::now();
+                while began.elapsed() < Duration::from_secs(3) {
+                    if self.caller.lock().unwrap().try_recv().is_some() {
+                        self.answered.store(true, Ordering::SeqCst);
+                        return;
+                    }
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+            }
+        }
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        let _guard = runtime.enter();
+        let actor = Owner {
+            _state: inert(),
+            parked: Vec::new(),
+        }
+        .start();
+        let (export, exported) = mpsc::channel();
+        runtime.block_on(actor.request(ExportJob(export))).unwrap();
+        let job = exported.recv_timeout(LIMIT).unwrap();
+        let (unblock, blocked) = mpsc::channel();
+        let (entered_tx, entered) = mpsc::channel();
+        actor.send(Block(blocked, entered_tx)).unwrap();
+        entered.recv_timeout(LIMIT).unwrap();
+        let caller = actor
+            .send_request(Queued(inert()), spawned_concurrency::Deadline::Never)
+            .unwrap();
+        let waiter = Arc::new(WaitForCaller {
+            caller: Mutex::new(caller),
+            answered: AtomicBool::new(false),
+        });
+        // Handshake: the helper's cancelled() is registered with the waker.
+        let (polled_tx, polled) = mpsc::channel();
+        let (done_tx, done) = mpsc::channel::<()>();
+        let helper = {
+            let waiter = waiter.clone();
+            std::thread::spawn(move || {
+                let waker = Waker::from(waiter);
+                let mut cancelled = Box::pin(job.cancelled());
+                assert!(cancelled
+                    .as_mut()
+                    .poll(&mut std::task::Context::from_waker(&waker))
+                    .is_pending());
+                polled_tx.send(()).unwrap();
+                let _ = done.recv_timeout(LIMIT * 2);
+            })
+        };
+        polled.recv_timeout(LIMIT).unwrap();
+        actor.context().stop();
+        unblock.send(()).unwrap();
+        runtime.block_on(actor.join());
+        assert!(
+            waiter.answered.load(Ordering::SeqCst),
+            "a job cancellation waker ran before every caller was answered"
+        );
+        done_tx.send(()).unwrap();
+        helper.join().unwrap();
+    }
+
     fn stopped<R>(result: Option<Result<R, ActorError>>, reason: &ExitReason) -> Option<()> {
         match result? {
             Err(ActorError::ActorStopped(r)) if r == *reason => Some(()),
