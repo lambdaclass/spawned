@@ -1448,6 +1448,21 @@ unfixed code before pushing, and name it in the PR (the
 [Bugs reproduced by these regressions](#bugs-reproduced-by-these-regressions)
 follows this rule.
 
+### Bounded waits
+
+A test that awaits an outcome a bug can suppress (a supervisor's `start()`
+that never fails, a `join()` or `wait_exit()` whose exit is never published, a
+generation that never comes, a reply that never arrives) hangs instead of
+failing, and CI then reports a job timeout rather than a test name. Integration
+tests wrap those awaits in `within!(..)` (`concurrency/tests/support/deadline.rs`),
+which fails with the awaited expression, file and line after 120 s: virtual
+time on the simulator, and only reached by a bug on Tokio, since every such wait
+is a handshake, never a fixed sleep. Tests on paused Tokio time
+(`protocol_timeouts`, `semantics_gaps`) are left alone: paused time
+auto-advances while work runs outside Tokio, which could fire the bound early.
+Unit tests inside `concurrency/src` do not use it yet (see "Planted-bug
+sensitivity" for the ones that still hang under a planted bug).
+
 ### Single-CPU runs
 
 The `single-cpu` job in `ci.yml` builds the tests normally, then runs
