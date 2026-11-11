@@ -41,6 +41,11 @@ fn main() {
     let run = execute(&scenario, None);
     let Some(failure) = run.failure else {
         println!("PASS ({} polls)", run.polls);
+        // A once-failing input (a fixed bug, or a harness false positive)
+        // can still be kept as a regression, with the run's own tape.
+        if let Some(name) = emit {
+            emit_regression(&name, &bytes, &scenario, run.tape.as_ref(), "none (passing input)");
+        }
         return;
     };
     println!("FAIL: {failure}");
@@ -72,6 +77,16 @@ fn main() {
         println!("minimized tape: {}", path.display());
         return;
     };
+    emit_regression(&name, &bytes, &scenario, Some(&small), &failure);
+}
+
+fn emit_regression(
+    name: &str,
+    bytes: &[u8],
+    scenario: &spawned_fuzz::Scenario,
+    tape: Option<&sim::Tape>,
+    failure: &str,
+) {
     assert!(
         name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'),
         "--emit takes an identifier"
@@ -79,10 +94,10 @@ fn main() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     std::fs::create_dir_all(root.join("regressions")).unwrap();
     std::fs::create_dir_all(root.join("tests")).unwrap();
-    std::fs::write(root.join(format!("regressions/{name}.input")), &bytes).unwrap();
-    small
-        .save(&root.join(format!("regressions/{name}.tape")))
-        .unwrap();
+    std::fs::write(root.join(format!("regressions/{name}.input")), bytes).unwrap();
+    if let Some(tape) = tape {
+        tape.save(&root.join(format!("regressions/{name}.tape"))).unwrap();
+    }
     let scenario_doc: String = format!("{scenario:#?}")
         .lines()
         .map(|l| format!("//! {l}\n"))
@@ -98,12 +113,12 @@ fn main() {
 #![cfg(spawned_sim)]
 
 const INPUT: &[u8] = include_bytes!("../regressions/{name}.input");
-const TAPE: &str = include_str!("../regressions/{name}.tape");
+{tape_const}
 
-/// The input under its own schedule and under the minimized failing tape.
+/// The input under its own schedule and under its recorded tape.
 #[test]
 fn {name}_tape() {{
-    spawned_fuzz::assert_passes(INPUT, Some(TAPE));
+    spawned_fuzz::assert_passes(INPUT, {tape_arg});
 }}
 
 /// The same operations under other simulator schedules.
@@ -113,6 +128,12 @@ async fn {name}_seeds(seed: u64) {{
     spawned_fuzz::run_body(spawned_fuzz::decode(INPUT).unwrap(), seed).await;
 }}
 "#,
+        tape_const = if tape.is_some() {
+            format!("const TAPE: &str = include_str!(\"../regressions/{name}.tape\");")
+        } else {
+            String::new()
+        },
+        tape_arg = if tape.is_some() { "Some(TAPE)" } else { "None" },
         strategy = strategy(scenario.sched),
         seed = scenario.seed,
     );
