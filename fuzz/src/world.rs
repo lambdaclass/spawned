@@ -67,6 +67,9 @@ pub struct SupInst {
     pub root: usize,
     pub max_restarts: usize,
     pub window: Duration,
+    /// OneForAll or RestForOne: a recovery round rebuilds several children
+    /// on one restart grant (0.8, V5).
+    pub cohort: bool,
 }
 
 /// One factory invocation (worker factory or nested `configure` callback).
@@ -322,7 +325,13 @@ impl Worker {
 }
 
 impl Handler<Do> for Worker {
-    async fn handle(&mut self, msg: Do, ctx: &Context<Self>) -> u64 {
+    async fn handle(
+        &mut self,
+        msg: Do,
+        __reply: spawned_concurrency::PendingReply<'_, u64>,
+        ctx: &Context<Self>,
+    ) {
+        let __value: u64 = async {
         {
             let mut s = self.world.lock();
             self.turn(&mut s, "Do");
@@ -393,6 +402,9 @@ impl Handler<Do> for Worker {
             }
         }
         msg.nonce
+            }
+        .await;
+        __reply.reply(__value);
     }
 }
 
@@ -409,7 +421,13 @@ impl Worker {
 }
 
 impl Handler<Down> for Worker {
-    async fn handle(&mut self, down: Down, ctx: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        down: Down,
+        __reply: spawned_concurrency::PendingReply<'_, ()>,
+        ctx: &Context<Self>,
+    ) {
+        let __value: () = async {
         let mut s = self.world.lock();
         self.turn(&mut s, "Down");
         let me = ctx.id();
@@ -437,17 +455,29 @@ impl Handler<Down> for Worker {
         if duplicate {
             s.violate("X1: Down delivered twice", format!("w{}", self.instance));
         }
+            }
+        .await;
+        __reply.reply(__value);
     }
 }
 
 impl Handler<Note> for Worker {
-    async fn handle(&mut self, note: Note, _ctx: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        note: Note,
+        __reply: spawned_concurrency::PendingReply<'_, ()>,
+        _ctx: &Context<Self>,
+    ) {
+        let __value: () = async {
         let mut s = self.world.lock();
         self.turn(&mut s, "Note");
         if s.insts[self.instance].ended.contains(&note.from) {
             let detail = format!("from {} at w{}", s.name(note.from), self.instance);
             s.violate("X7: a message arrived after the sender's Down/Exit", detail);
         }
+            }
+        .await;
+        __reply.reply(__value);
     }
 }
 

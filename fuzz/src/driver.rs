@@ -279,6 +279,7 @@ fn new_sup_inst(world: &World, root: usize, cfg: &SupervisorConfig) -> usize {
         root,
         max_restarts: cfg.max_restarts,
         window: cfg.restart_window,
+        cohort: !matches!(cfg.strategy, SupervisorStrategy::OneForOne),
     });
     s.sups.len() - 1
 }
@@ -493,7 +494,8 @@ impl Driver {
                     );
                 }
             }
-            Err(ActorError::ActorStopped) => {}
+            // Answered at the death point, or sent after it (0.8: NoProc).
+            Err(ActorError::ActorStopped(_) | ActorError::NoProc) => {}
             #[allow(unreachable_patterns)]
             Err(other) => self.violate("R1: unexpected request error", format!("{other}")),
         }
@@ -1433,7 +1435,7 @@ impl Driver {
                 }
                 true
             }
-            Err(ActorError::ActorStopped) => {
+            Err(ActorError::ActorStopped(_) | ActorError::NoProc) => {
                 if rt::timeout(LONG, aref.wait_exit()).await.is_err() {
                     self.violate(
                         "L7: a stopping actor never published its exit",
@@ -1536,7 +1538,9 @@ impl Driver {
                     .collect()
             };
             for r in received(self) {
-                if r != published {
+                // 0.8 (X1): a monitor installed after the target's death
+                // point gets `NoProc`; one installed before, its reason.
+                if r != published && r != ExitReason::NoProc {
                     self.violate(
                         "X1: Down carried a different reason than the target published",
                         format!("{r:?} vs {published:?}"),
@@ -1781,14 +1785,31 @@ fn budget_checks(world: &World) {
         let SupInst {
             max_restarts,
             window,
+            cohort,
             ..
         } = s.sups[inst].clone();
+        // V5 charges restart actions: a OneForOne retry is one, a cohort
+        // round is one however many children it rebuilds (at most all of
+        // them), so the factory log bounds a cohort supervisor's rebuilds by
+        // `max_restarts` times its children.
+        let children = calls
+            .iter()
+            .filter(|c| c.inst == inst)
+            .map(|c| &c.slot)
+            .collect::<std::collections::HashSet<_>>()
+            .len()
+            .max(1);
+        let bound = if cohort {
+            max_restarts * children
+        } else {
+            max_restarts
+        };
         for (i, t) in times.iter().enumerate() {
             let in_window = times[..=i].iter().filter(|u| *t - **u < window).count();
-            if in_window > max_restarts {
+            if in_window > bound {
                 found.push((
                     "V5: more restarts than the budget within one window",
-                    format!("instance {inst}: {in_window} > {max_restarts} in {window:?}"),
+                    format!("instance {inst}: {in_window} > {bound} in {window:?}"),
                 ));
                 break;
             }
