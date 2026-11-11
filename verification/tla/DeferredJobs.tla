@@ -38,6 +38,11 @@
 (*                     when the work ends                                  *)
 (*   HeldDeadlineLost  (DeadlineArmedWhileHeld)  the deadline cannot take  *)
 (*                     a held result's notification                        *)
+(*   ExitKeepsHeld     (ExitCancelsJobs)  owner exit cancels running jobs  *)
+(*                     only, not held results or scheduled emits           *)
+(*   NoAdmissionFence  (ExitCancelsJobs)  a job is admitted after the exit *)
+(*                     cancelled the job set (admission and cancel_all are *)
+(*                     not serialized under the jobs lock)                 *)
 (*                                                                         *)
 (* Delayed emits (emit_at) and held results: a running job may schedule an *)
 (* emit (it takes an emit credit at once and is enqueued, fenced like any  *)
@@ -55,7 +60,7 @@ CONSTANTS J, Keyed, JobBound, MaxGen, MaxEmit, Credits, Fault
 ASSUME Fault \in {"None", "NoInstanceCheck", "NoCancelFence", "DoubleTerminal",
                   "ReleaseOnTimeout", "KeyNoCancel", "ReplacePendingOnly",
                   "EmitAfterTerminal", "NoEmitCredit", "EarlyCredit",
-                  "HeldDeadlineLost"}
+                  "HeldDeadlineLost", "ExitKeepsHeld", "NoAdmissionFence"}
 
 Jobs == 1..J
 ASSUME Keyed \subseteq Jobs
@@ -114,8 +119,11 @@ CreditAfterCancel(S) ==
     [j \in Jobs |-> IF j \in S /\ exec[j] = "finished" THEN FALSE ELSE credit[j]]
 CancelSet(S) == CancelCore(S) /\ credit' = CreditAfterCancel(S)
 
+\* Admission and the exit's cancel_all are serialized (one jobs lock and
+\* its closed flag): no job is admitted once the exit cancelled the set.
 Start(j) ==
-    /\ alive /\ exec[j] = "none" /\ Cardinality(Permits) < JobBound
+    /\ alive \/ Fault = "NoAdmissionFence"
+    /\ exec[j] = "none" /\ Cardinality(Permits) < JobBound
     /\ exec' = [exec EXCEPT ![j] = "running"] /\ owner' = [owner EXCEPT ![j] = inst]
     /\ \E d \in BOOLEAN : hasDl' = [hasDl EXCEPT ![j] = d]
     /\ IF j \in Keyed /\ Fault # "KeyNoCancel"
@@ -219,7 +227,8 @@ Cancel(j) ==
 Exit ==
     /\ alive /\ alive' = FALSE
     /\ CancelSet({j \in Jobs : owner[j] = inst
-                               /\ (exec[j] = "running" \/ sched[j] > 0 \/ held[j])})
+                               /\ (exec[j] = "running"
+                                   \/ ((sched[j] > 0 \/ held[j]) /\ Fault # "ExitKeepsHeld"))})
     /\ UNCHANGED <<inst, exec, owner, hasDl, emitted, inflight, started, mbox, termSent, seen>>
 
 Restart ==
@@ -285,11 +294,18 @@ TerminalLast ==
     \A a, b \in 1..Len(mbox) :
         (a < b /\ mbox[a].j = mbox[b].j /\ IsTerm(mbox[a])) => FALSE
 EmitCreditsBounded == \A j \in Jobs : inflight[j] + sched[j] <= Credits
+\* After the owner's exit nothing of its instance is live: running work,
+\* scheduled emits and held results are all cancelled (their notification
+\* suppressed, held results dropped).
+ExitCancelsJobs ==
+    ~alive => \A j \in Jobs :
+        (owner[j] = inst /\ (exec[j] = "running" \/ sched[j] > 0 \/ held[j])) => cancelled[j]
 
 Safety ==
     /\ TypeOK /\ NoLateResult /\ NoStaleAfterCancel /\ NoStaleKeyed
     /\ AtMostOneTerminal /\ PermitsBounded /\ OneLivePerKey
     /\ TerminalLast /\ EmitCreditsBounded /\ HeldCounted /\ DeadlineArmedWhileHeld
+    /\ ExitCancelsJobs
 
 \* A job started with a deadline and never cancelled is reported to its
 \* live owner instance even if its work never finishes.
