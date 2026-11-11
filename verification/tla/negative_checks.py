@@ -241,6 +241,35 @@ DEFERRED_CONTROLS = [
     ("MCDeferredJobsEmits", "NoEmitCredit", "EmitCreditsBounded"),
 ]
 
+# Unified start (docs/design/unified-start.md): each mutation of the start
+# protocol against the invariant it breaks.
+START_CONTROLS = [
+    ("MCStart", "NoInherit", "InheritedPlacement"),
+    ("MCStart", "LinkAfterStarted", "LinkBeforeStarted"),
+    ("MCStart", "DoubleRegister", "NameUnique"),
+    ("MCStart", "LateUnregister", "NameReleasedAtDeath"),
+    ("MCStart", "AbortLeaksLink", "AbortInvisible"),
+    ("MCStart", "EarlyFailAck", "FailureAfterDeath"),
+    ("MCStart", "AckBeforeStarted", "AckMeansStarted"),
+    ("MCStart", "NoMonitorFlush", "FailureFlushed"),
+    ("MCStart", "NoLinkFlush", "FailureFlushed"),
+    ("MCStart", "KillBeforeUnlink", "TimeoutContained"),
+    ("MCStart", "LinkCheckLate", "NoEdgeToDeadParent"),
+    ("MCStart", "AdmitClosed", "AdmittedOnlyOpen"),
+    ("MCStart", "IgnoreCap", "CapacityRespected"),
+    ("MCStartContinue", "ContinueQueued", "ContinueFirst"),
+]
+START_TEMPORAL_CONTROLS = [
+    ("DropHeld", "ParentExitReachesChild"),
+]
+
+
+def start_controls(tlc):
+    for module, fault, invariant in START_CONTROLS:
+        named_fault(module, fault, invariant, tlc)
+    for fault, prop in START_TEMPORAL_CONTROLS:
+        named_temporal("MCStartLive", fault, prop, tlc)
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -307,6 +336,7 @@ def main():
         named_fault(module, fault, invariant, args.tlc)
     for fault, prop in LIFECYCLE_TEMPORAL_CONTROLS:
         named_temporal("MCLifecycleLive", fault, prop, args.tlc, LIFECYCLE_SMALL)
+    start_controls(args.tlc)
 
 
 if __name__ == "__main__":
