@@ -951,6 +951,15 @@ attributes and options, duplicate and colliding methods, non-trait/non-impl
 items, handler and lifecycle-hook signatures, async/sync mismatches, missing
 protocol handlers and attribute parameters.
 
+The `#[actor]` lints (ROADMAP rank 6b) are warnings, so their cases set
+`#![deny(warnings)]`: `ui/actor_lint_shared_state.rs` must fail with one error
+per shared-state pattern, and `ui-pass/actor_lint_allow_shared_state.rs` and
+`ui-pass/actor_lint_ordinary_fields.rs` must compile with none (opt-out,
+ordinary fields, `Arc` of immutable data). Test builds always unwind, so the
+`panic = "abort"` warning is checked by the `panic-abort` CI job instead: it
+builds the two-actor `chat_room` example under the `panic-abort` profile and
+expects exactly one warning.
+
 Snapshots depend on the exact compiler, so the test compares `rustc --version`
 with the version in `.tool-versions` (the one every CI job pins) and, on any
 other compiler, prints a notice and passes without running the cases.
