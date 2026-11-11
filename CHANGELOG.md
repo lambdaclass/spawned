@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Tests: coverage follow-ups. `restart_modes_distinguish_normal_shutdown_and_panic`
+  now sends a real `Normal` exit; a per-PR `MCSupervisionTemporary` TLC
+  configuration makes `TemporaryStartsOnce` non-vacuous, with a negative
+  control that restarts a Temporary child; threads-mode clock tests for
+  `send_after`, `send_interval` and the restart window on a `thread_group` (T4).
 - ROADMAP: a Priorities section (soundness, including a smaller stable API and
   soak tests; introspection; determinism; testing; client-driven features;
   performance behind a regression gate), and the runtime direction. Keep Tokio; rank 37 becomes the main
@@ -26,6 +31,7 @@
   M1, M4, M5, L2, L5, R3, T3 and S6 on every placement and V2, V4, V6, V9,
   S1 and S3 on the simulator. No bugs found; several contract citations
   corrected.
+||||||| parent of d6cdc158 (test: real Normal exit in restart-mode test, Temporary TLC config, threads clock tests (T4))
 - Lockfile: `rustix` 1.1.2 -> 1.1.6 for RUSTSEC-2026-0486 (pulled in by the
   examples' `native-tls` dependency; spawned's crates are unaffected).
 - CI: a `sim` job runs the simulated test suites (`--cfg spawned_sim`) on
