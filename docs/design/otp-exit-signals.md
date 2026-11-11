@@ -1,6 +1,6 @@
 # Exit signals, startup and runtime-drop semantics as in OTP: design contract
 
-**Status: design in progress, not implemented.** Revised after one round of
+**Status: design in progress, not implemented.** Revised after two rounds of
 independent review; see [Review resolutions](#review-resolutions).
 
 - Covers ROADMAP rank 5e (exit signals), the startup part of rank 5f, rank 5g
@@ -61,10 +61,13 @@ independent review; see [Review resolutions](#review-resolutions).
 
 ## Phases of an exit
 
-OTP has two states: a process exists or it does not. Rust adds destructors that
-run after the actor's last hook and may hang, so Spawned needs two points
-after the last hook: one at which the actor stops existing for its peers, and
-one at which its resources are released. Each actor instance goes through:
+This is Spawned's observable contract, not a description of the BEAM (which
+has its own exiting state and resource-release order). The Rust-specific
+constraint is that the actor state, queued payloads and owned helpers have
+destructors that run after the last hook and may hang or panic. Spawned
+therefore separates the point at which the actor stops existing for its peers
+(D) from the point at which its resources are released (publication), and
+both from the end of owned background work. Each actor instance goes through:
 
 1. **Running.** Handlers are dispatched.
 2. **Exit requested.** A self-exit, an untrapped exit signal, a parent exit, an
@@ -72,9 +75,14 @@ one at which its resources are released. Each actor instance goes through:
    Dispatch stops after the current handler; queued messages are not
    dispatched (semantics D4). Sends and requests are still admitted (D3) and
    are answered at D. Rank 11 step 1 (registry `Exiting`, jobs cancelled).
-   The first requested reason wins, except that a **kill supersedes any
-   requested reason until D** (E1). Turning `trap_exit` on or off no longer
-   matters.
+   Later events can still change the reason until D, by the
+   [precedence rules](#reason-precedence-until-d). Turning `trap_exit` on or
+   off no longer matters. **Exit errors wait for D:** a request whose handler
+   panicked, or a deferred token dropped while the actor exits, is not
+   answered at once; its slot stays registered and is answered at D with the
+   final reason (or by the caller's own deadline first). An explicit reply,
+   including one from `stopped()`, completes at once. As in OTP, where a
+   caller learns of a crash through its monitor when the server is gone.
 3. **`stopped()` runs** (unless skipped, open question 2). It may still answer
    deferred tokens and send messages. A stuck `stopped()` keeps the actor in
    this phase: nothing is closed, callers are bounded by their own deadlines
@@ -91,29 +99,68 @@ one at which its resources are released. Each actor instance goes through:
    After D, `send`, `request`, `link` and `monitor` report `NoProc`; nothing
    can change the final reason.
 5. **Destruction.** Queued envelopes (already answered) and the actor state
-   are dropped, owned registrations and the deadline heap are released, jobs
-   are joined (rank 11 steps 3-4). A destructor panic here does not change the
-   final reason; it is recorded as a **cleanup failure**
-   (`ChildHandle::cleanup_failure()`, generalising today's
-   `mailbox_cleanup_failure()`), and a supervisor treats a cleanup failure like
-   an abnormal exit when it decides whether to restart (semantics L6, V1). A
-   hanging destructor keeps the actor in this phase: callers are answered,
-   newcomers get `NoProc`, but nothing is published, no `Down` or `Exit` is
-   delivered and no replacement starts (V3).
+   are dropped, owned registrations and the deadline heap are released (rank
+   11 step 3). A destructor panic here does not change the final reason; it is
+   recorded as a **cleanup failure** (`ChildHandle::cleanup_failure()`, for the
+   state and queued envelopes; `mailbox_cleanup_failure()` stays as a
+   deprecated alias). A hanging destructor keeps the actor in this phase:
+   callers are answered, newcomers get `NoProc`, but nothing is published, no
+   `Down` or `Exit` is delivered and no replacement starts (V3).
 6. **Publication.** The final reason is published: `wait_exit`, `join`,
    `exit_reason()` and `is_alive()` observe it, and the notices taken at D are
-   delivered (`Exit`, `Down`, link stops). Supervisors observe this point.
+   delivered (`Exit`, `Down`, link stops).
+7. **Owned cleanup.** Cancelled jobs and registered helpers are joined,
+   bounded by the cleanup deadline (rank 11 step 4, unchanged: death is
+   published first, and a job still running at the deadline is reported as
+   unfinished, not undone). The supervisor's replacement barrier (V3) and a
+   scope's "done" wait for this milestone, not only for publication.
+
+A supervisor decides a restart from the final reason and the cleanup failure:
+a Transient child restarts if the reason is abnormal **or** a cleanup failure
+was recorded; `is_abnormal()` alone no longer predicts the decision.
+`ChildSnapshot::last_exit` holds the final reason and `last_error` the cleanup
+failure; the lifecycle trace records both, and the trace mapping feeds the
+model's restart decision the abnormal class when a cleanup failure is set, so
+`Supervision!RestartFollowsPolicy` stays valid.
 
 So an observer that receives `Down` or `Exit` knows every caller of the
-instance was answered and its state was dropped (semantics L7, rank 11).
+instance was answered and its state was dropped (semantics L7, rank 11); it
+does not know that owned jobs finished (milestone 7).
 Between D and publication, `exit_reason()` still returns `None` while requests
 already report `NoProc`; code that needs the reason waits on `wait_exit`.
 
 Compared with rank 11 §5: its steps 1-2 (registry close, mailbox disposal) and
 the closing of the link and monitor table now form one critical section, and
 its step 5 ("the exit reason is published, and monitors and links fire")
-becomes publication. The final reason is fixed at D instead of after the state
-drop, so callers, `Down` and `wait_exit` always agree.
+becomes publication; its step 4 (job join after death) is milestone 7. The
+final reason is fixed at D instead of after the state drop, and exit errors
+discharged earlier wait for D, so callers, `Down` and `wait_exit` always
+agree. Rank 11's drop classification changes accordingly: a token dropped in
+a panicking turn or while `Exiting` moves its slot to "exit pending", answered
+at D.
+
+**If 5e lands before rank 11.** Today a queued request's reply sender lives
+inside its envelope with the payload. D must then discharge every queued
+reply sender with the final reason (pop the envelopes, answer each, keep the
+payloads) before any payload or the state is dropped in phase 5.
+
+### Reason precedence until D
+
+| Event, while exiting and before D | Requested reason | Final reason |
+|---|---|---|
+| kill (signal, supervisor escalation) | any | `Killed`; nothing later replaces it |
+| panic in the current handler or in `stopped()` | anything but `Killed` | `Panic` (OTP: a crash in `terminate` replaces the reason) |
+| a second self-exit or administrative stop | any | unchanged (first wins) |
+| a non-kill exit signal or abnormal link notice, non-trapping actor | any | unchanged, or replaced (open question 9) |
+| the same, trapping actor | any | unchanged; the `Exit` is queued and never dispatched |
+| runtime drop | `None` or `Normal` | `Killed` |
+| runtime drop | anything else | unchanged |
+| after D: destructor panic | final | unchanged; cleanup failure recorded |
+
+Before exit begins, the first of these events begins it (E2). Semantics L3
+and L5 change accordingly: a panic in `stopped()` after an abnormal reason now
+replaces it with `Panic` (today it keeps the earlier abnormal reason), except
+after a kill.
 
 ## Rules
 
@@ -269,16 +316,26 @@ that traps exits receives its parent's death in `exit_received`.
   a trapping child working through its backlog cannot start new helpers,
   timers or registrations. This is B: admission closure bounds the work a
   shutting-down tree can start.
-- **Deadlines.** From the parent's Shutdown, the child has `shutdown_timeout`
-  to reach publication. At that deadline the parent sends `kill` (E1), which
-  supersedes the reason and, per open question 2, skips `stopped()` if it has
-  not started. The kill gets a second `shutdown_timeout`; if the child has
-  still not published, today's cleanup-stuck rule applies (V3, V9): the slot
-  is stuck, the supervisor fails, nothing replaces the child. A supervisor
-  `shutdown(deadline)` still signals every remaining sibling at its report
-  deadline; escalation per child happens at the earlier of its own
-  `shutdown_timeout` and that deadline. "Done" keeps its V9 meaning (no live
-  generation, every controller finished).
+- **Deadlines.** Every interval is measured from the moment that actor was
+  signalled, never shortened by another deadline:
+
+  | Trigger | First interval | At its end | Second interval, then |
+  |---|---|---|---|
+  | supervisor shutdown of a child (V9, reverse order) | `shutdown_timeout` from that child's Shutdown | `kill` | `shutdown_timeout`, then cleanup stuck |
+  | OneForAll/RestForOne collateral stop (V2) | same | `kill` | same |
+  | rollback of a failed start (S1, S2) | same | `kill` | same |
+  | a child ends on its own, by an administrative stop or by a kill | `shutdown_timeout` from exit begin | cleanup stuck (V3, unchanged) | none: it is already exiting, and a kill would relabel its reason |
+  | `ActorSystem::shutdown(grace)` / group shutdown, standalone actor | until its turn ends or `grace` expires (S2, reverse order, parent Shutdown) | `kill` to every remaining actor at `grace` | report incomplete; pending work stays owned by the system (S3, unchanged) |
+  | unmanaged `.start()` actor | none | none | none |
+
+  A supervisor `shutdown(deadline)` keeps `deadline` as the report deadline
+  only: at it, siblings not yet signalled get their Shutdown and the report is
+  returned; their own intervals start then. Rank 11's job cleanup deadline is
+  armed at exit begin with the first interval of the matching row (5 s for an
+  unmanaged actor). Cleanup stuck keeps its meaning: the slot is stuck, the
+  supervisor fails, nothing replaces the child, and "done" (V9) still waits
+  for the controller to finish. The kill supersedes the reason and, per open
+  question 2, skips `stopped()` if it has not started.
 - **Behaviour change.** A trapping child now finishes the messages queued
   before the shutdown before it stops, as in OTP. Today it stops after its
   current handler.
@@ -317,9 +374,13 @@ under X3 ([link.rs](../../concurrency/src/link.rs)); `monitor` waits on
 - Before D, including while `h` runs `stopped()`, links and monitors register
   and fire with the final reason, as OTP's exiting process answers.
 
-Registration takes the target's exit-table lock, which D also holds, so each
-registration is linearised either before D (fires at publication) or after it
-(NoProc). Model: `NoProcIffLate`, `NoEdgeToDead`, `DownDelivered`; controls
+`link` checks the target's exit table first, under the target's lock, which D
+also holds: past D it reports `NoProc` and leaves the caller's own table
+untouched (it neither adds an edge nor removes a pending one for that peer);
+before D it installs the edge in both tables with a fresh generation unless
+one is live. `monitor` does the same with a fresh monitor reference. Each
+registration is therefore linearised either before D (fires at publication)
+or after it (NoProc). Model: `NoProcIffLate`, `NoEdgeToDead`, `DownDelivered`; controls
 `LateRealReason`, `SplitDeathPoint`.
 
 ### E5. ExitReason
@@ -353,19 +414,32 @@ monitor, will be placed in the caller message queue in the future"
 ([unlink/1](https://www.erlang.org/doc/apps/erts/erlang.html#unlink/1),
 [demonitor/1](https://www.erlang.org/doc/apps/erts/erlang.html#demonitor/1)).
 
-**Today.** A `Down` is enqueued only if the observer's monitor entry is still
-present, so `demonitor` already fences tasks-mode delivery
-([tasks/actor.rs `Context::monitor`](../../concurrency/src/tasks/actor.rs)). A
-link notice taken by `propagate_exit` is delivered even if the peer unlinks in
-between (semantics X5: "`unlink` stops future propagation but does not retract
-a signal in flight").
+**Today.** Neither is a fence. The monitor waiter removes its entry from the
+observer's table, releases the lock and only then sends `Down`
+([tasks/actor.rs and threads/actor.rs `Context::monitor`](../../concurrency/src/tasks/actor.rs)),
+so `demonitor` can return before that `Down` is enqueued. A link notice taken
+by `propagate_exit` is delivered even if the peer unlinks in between
+(semantics X5: "`unlink` stops future propagation but does not retract a
+signal in flight").
 
-**Proposed.** Both are fences at the receiver. A notice taken at D is applied
-(enqueued as `Exit`/`Down`, or a stop for a non-trapping peer) only if the
-receiver's edge record still exists, checked under the receiver's lock at
-delivery; `unlink` and `demonitor` remove the record under that lock. A link
-record carries a generation so a relink after unlink is not mistaken for the
-old edge. A message already queued stays. Model: `CancelFenced`; control
+**Proposed.** Both become fences at the receiver:
+
+- Each receiver-side edge record (link peer and generation, or monitor
+  reference) is *live*, then *pending* once the target passed D and took its
+  notice, then removed.
+- Delivery takes the receiver's lock, checks that the record is still
+  pending, removes it, and enqueues the `Exit`/`Down` (or, for a
+  non-trapping receiver, requests its exit) **inside that critical section**.
+- `unlink` and `demonitor` remove the record under the same lock, live or
+  pending. After they return nothing of that edge takes effect; a message
+  already queued stays.
+- A late `monitor` creates a pending record for its `NoProc` `Down`, so
+  `demonitor` cancels it. A late `link` creates no edge; its `NoProc` notice is
+  not caused by a link and `unlink` does not cancel it (as OTP's `noproc`
+  signal after `link` to a dead pid).
+- A `link` between the target's D and its publication reports `NoProc`
+  without touching the pending record (E4), so the earlier notice still
+  arrives. Direct exit signals have no record and are unaffected by `unlink`. Model: `CancelFenced`; control
 `NoFence`.
 
 ### E7. Ordering
@@ -419,11 +493,23 @@ RestForOne ("ready child exited during initial tree startup").
   rollback. A replacement started by that processing is a restart, not a
   first start.
 
+Only the restart *decision* is deferred: a ready child's cleanup and its
+cleanup deadline run as usual, and a cleanup that gets stuck during the
+initial start fails the start.
+
 `ignore` is out of scope (a factory cannot return it today). Model work for
-the implementation: in `Supervision.tla`, `Retries(m, r, ready, init)` becomes
-`init /\ (Restarts(m, r) \/ (~ready /\ m # "Temporary"))`, plus the deferral of
-ready-child exits during the initial start, with the v0.7 retry as a negative
-control and matching `Cohorts.tla` and trace changes.
+the implementation PR (the v0.7 models describe the v0.7 code and stay until
+then):
+
+- `Supervision.tla`: `Retries(m, r, ready, init)` becomes
+  `init /\ (Restarts(m, r) \/ (~ready /\ m # "Temporary"))`;
+  `RestartFollowsPolicy` requires `initial[c]` for every restart and
+  `DesignAllowsRestart("Transient", r)` no longer admits `"none"` or
+  `"timeout"` before initial readiness, so the v0.7 retry (a negative control)
+  violates it; the deferral of ready-child exits during the initial start is
+  a new action.
+- `Cohorts.tla`: `CBegin` admits round 0 only once per child (`r = 0 => n = 1`).
+- Traces: new events for the deferred exit and its later processing.
 
 ### S2. `start()` returns its error after rollback
 
@@ -442,9 +528,11 @@ asserted the child state and failed 5 of 15 runs).
 
 **Proposed.** Awaiting `start()` returns `Err` only after every child is
 terminal (`Failed` or `Stopped`) and the rollback finished: every started
-generation published, or its E3 deadlines passed (then it is `Failed` with
-"cleanup stuck" and the pending cleanup stays owned by the system and appears
-in its shutdown report). The error names the child whose first start failed
+generation published, or its E3 deadlines passed. At that second deadline the
+child's snapshot moves from `Stopping` to `Failed` ("cleanup stuck"), which
+releases the `start()` waiter, while its controller keeps awaiting the real
+join; the pending cleanup stays owned by the system and appears in its
+shutdown report, and V9 "done" still waits for it. The error names the child whose first start failed
 and its cause, as `failed_to_start_child`, and lists any cleanup failures
 separately. Dropping the `start()` future before it resolves still starts the
 rollback asynchronously (semantics V7, `StartupGuard`); only awaiting waits.
@@ -471,8 +559,9 @@ without a say, which is what `Killed` means (E1). If a non-`Normal` reason was
 already requested it wins (today's rule). The drop goes through D (callers
 answered, table closed) and publication; `stopped()` does not run. Links
 receive `Killed` (trappable), monitors `Down { Killed }`, supervisors restart
-Permanent/Transient children. `wait_exit` on a closed completion channel
-returns `Killed`. Tested in both modes. Model: `RuntimeDrop`, `KilledFromKill`.
+Permanent/Transient children (when the final reason is `Killed`).
+`wait_exit` on a closed completion channel returns `Killed`. Tested in both
+modes. Model: `RuntimeDrop`, `RuntimeDropReason`; control `DropKeepsNormal`.
 
 ## Interplay with rank 11
 
@@ -486,7 +575,8 @@ leaves 5e to "only add the reason". With the phases above:
 - **Parent exit to a trapping actor (E3):** runs phases 2-6 when dispatched,
   so `stopped()` can still answer stored tokens.
 - **Kill:** supersedes the requested reason until D. Every token still open
-  at D is answered with `Killed`.
+  at D, and every exit error held since a panicking turn, is answered with
+  `Killed`.
 - **Callers get the final reason.** A request queued or deferred at D is
   answered with the final reason (OTP `{Reason, {gen_server, call, ..}}`); a
   request sent after D reports `NoProc`; a request sent while the actor is
@@ -533,8 +623,12 @@ leaves 5e to "only add the reason". With the phases above:
 | trapping `start_linked` child, parent exits | `exit_received` | stops with the parent's reason, `Normal` included |
 | supervisor whose child fails its first start | retried (Permanent/Transient) | `start()` fails; make the factory tolerate the condition or retry `start()` |
 | a ready child exits during the initial start | OneForOne restarts at once; OneForAll/RestForOne fail the start | processed after the initial start, under the strategy |
-| `start()` returning `Err` | may return before the child is `Failed` | returns after rollback; can take up to two `shutdown_timeout`s per started child |
-| state destructor panic after a `Normal` exit | exit becomes `Panic` | exit stays `Normal`; `cleanup_failure()` reports it; the supervisor restarts as for an abnormal exit |
+| `start()` returning `Err` | may return before the child is `Failed` | returns after rollback; can take up to two `shutdown_timeout`s per started child; owned work may still be running (reported) |
+| supervisor `shutdown(deadline)` | children past the deadline are signalled and abandoned to the stuck rule | same report deadline; each child still gets its kill and second interval |
+| state or queued-message destructor panic after a `Normal`/`Shutdown` exit | exit becomes `Panic` | exit stays as requested; `cleanup_failure()` (or the deprecated `mailbox_cleanup_failure()`) reports it; a Transient child restarts as for an abnormal exit, unless the supervisor is closing |
+| panic in `stopped()` after an abnormal reason | keeps the earlier reason | becomes `Panic` (except after a kill) |
+| a request whose handler panicked | `ActorStopped` at once | answered at D with the final reason |
+| restart decision | `is_abnormal()` of the reason | reason abnormal or a cleanup failure |
 | runtime-dropped threads actor | `Panic("unexpected framework panic")` | `Killed` |
 | `stopped()` on kill and untrapped signals | always runs | per open question 2 |
 | request errors | `ActorStopped` | per open question 4 |
@@ -586,6 +680,8 @@ above (`Die` is D, `Publish` is publication). Configurations:
   `Normal`, `Shutdown`, `Kill`; administrative `Shutdown`.
 - `MCLifecycleLive` (every PR): the liveness properties at the same bounds
   without the actor-to-actor message.
+- `MCLifecycleFence` (every PR, safety): two late registrations and
+  `unlink`, nothing else; the fence controls run here.
 - `MCLifecycleDeep` (weekly, safety): every reason for every operation (so
   `Killed` and `NoProc` are also sent explicitly), `unlink`, and turning
   `trap_exit` off.
@@ -595,7 +691,9 @@ is out of reach for TLC at these bounds; transitive propagation is the same
 `Signal` step applied twice and is covered by tests (semantics X3).
 
 Handlers are atomic and nondeterministic (reply, panic, ignore or act on a
-trapped exit); a panic in any turn is a self-exit.
+trapped exit); a panic in any turn is a self-exit, and a panic while exiting
+is `PanicWhileExiting`. Late notices carry a generation number so a second
+registration is not mistaken for a cancelled one.
 
 Invariants:
 
@@ -607,10 +705,12 @@ Invariants:
 | `NoProcIffLate` | `NoProc` exactly for registrations after D; a death notice carries the source's final reason; a caller ends `NoProc` from `link` only with reason `NoProc` |
 | `TrapRespected` | a trapping actor ends only by a self-exit, a kill, a runtime drop, a parent exit or an administrative stop |
 | `NormalSignalIgnored` | a `Normal` exit signal or link notice never stops a non-trapping actor |
-| `KilledFromKill` | a kill ends the target `Killed`, also when it arrives before D during exit; a runtime drop ends `Killed` |
+| `KilledFromKill` | a kill ends the target `Killed`, also when it arrives before D during exit, and nothing replaces it |
+| `RuntimeDropReason` | a runtime drop ends `Killed` unless a non-`Normal` reason was already requested (checked against the reason recorded before the drop) |
+| `StoppedAtDeath` | an exit error reaches a caller only at D, carrying the final reason; a request whose handler panicked is held until then |
 | `NoEdgeToDead` | no live link or monitor points at an actor past D |
 | `ExitAfterMessages` | a death notice follows every earlier message from its source |
-| `CancelFenced` | no notice takes effect after `unlink`/`demonitor` cancelled it |
+| `CancelFenced` | no death notice (or late `Down`) takes effect after `unlink`/`demonitor` cancelled it |
 
 Liveness (`MCLifecycleLive`). These are conditional: they assume handlers,
 `stopped()` and destruction return (weak fairness on dispatch, `Die`,
@@ -634,7 +734,11 @@ the two liveness controls run on a smaller instance, `LIFECYCLE_SMALL`):
 | `DirectStop` | v0.7: exit signals ignore `trap_exit`, `Normal` stops too | `TrapRespected`; `NormalSignalIgnored` |
 | `KillAsKill` | v0.7: a kill ends `Kill` | `KilledFromKill` |
 | `KillNoSupersede` | a kill during exit keeps the requested reason | `KilledFromKill` |
-| `NoFence` | v0.7: `unlink`/`demonitor` do not cancel a notice in flight | `CancelFenced` |
+| `PanicOverKill` | a panic during exit replaces `Killed` | `KilledFromKill` |
+| `DropKeepsNormal` | a runtime drop keeps a requested `Normal` | `RuntimeDropReason` |
+| `EarlyStopped` | a panicking request is answered at once with `Panic` | `StoppedAtDeath` |
+| `NoUnlinkFence` | v0.7: `unlink` does not cancel a link notice in flight (`MCLifecycleFence`) | `CancelFenced` |
+| `NoDemonitorFence` | v0.7: `demonitor` does not cancel a `Down` in flight (`MCLifecycleFence`) | `CancelFenced` |
 | `LateRealReason` | v0.7: link/monitor to a gone actor report its real reason | `NoProcIffLate` |
 | `Retain182` | PR #182: a request published after D is kept without a reply | `NoOrphanRequest` |
 | `Dispatch185` | PR #185: work dispatched after stop was observed | `NoDispatchAfterStop` |
@@ -667,6 +771,8 @@ the verification rule requires.
 | Shutdown admission | a shutting-down supervisor does not restrict what children start | the whole managed tree closes admission at once | B: bounds work started during shutdown |
 | `noconnection` | `Down`/`Exit` reason for a lost node | absent | single process (no distribution) |
 | Runtime drop | no counterpart | `Killed` | R: an async runtime can drop a future |
+| Owned work after a failed start | `start_link`'s error means the partial tree is gone | `start()` can return while a stuck child's cleanup or its jobs still run; they are reported and stay owned | R: Rust cannot terminate that code; B: the reporting bound |
+| Restart after a destructor failure | none | a Transient child with a `Normal` reason restarts if its cleanup failed | R: destructors exist; restarting keeps the v0.7 effect without relabelling the reason |
 
 Already aligned: per-sender FIFO, at-most-once delivery, stop discarding the
 mailbox, `Normal` link notices ignored by non-trapping peers, transitive
@@ -735,6 +841,25 @@ table, first-start abort and deferred startup exits.
 Round 1: Codex no-go (one blocker, eight majors), agy go with changes (six
 majors). Both reviewed the design and model without the author's answers to
 the open questions.
+
+### Round 2 (Codex: no-go, one blocker, five majors; agy: go with changes, six majors)
+
+| Finding | Resolution |
+|---|---|
+| Codex 1 (blocker). Exit errors discharged before D (panicking turn, token dropped while exiting) can report a reason a later kill or panic replaces | Phases step 2: those slots are held "exit pending" and answered at D with the final reason; explicit replies complete at once; rank 11's drop classification adjusted. Model: requests carry the answered reason, a panicking request is held (`exiting`) until D, invariant `StoppedAtDeath`, control `EarlyStopped`. |
+| Codex 2. Panic precedence before D | New [precedence table](#reason-precedence-until-d): kill sticky, panics replace anything but `Killed` (OTP `terminate` crash), signals per open question 9, post-D failures are cleanup failures; L3/L5 changes stated. Model: `PanicWhileExiting`, control `PanicOverKill`. |
+| Codex 3. Jobs moved before publication | Restored rank 11's order: milestone 7 (owned cleanup) after publication; V3 replacement and scope "done" wait for it. |
+| Codex 4, agy 3. E6 protocol incomplete (late notices, pending records, lock scope; "Today" claim wrong for monitors; relink between D and publication) | E6 rewritten: live/pending records, delivery and enqueue in one receiver-side critical section, late `Down` cancellable, late link `NoProc` not (as OTP), relink after D reports `NoProc` without touching the pending record; "Today" corrected. E4 states `link` checks the target first. |
+| Codex 5, agy 3.3-3.4. Model lacks generations; `NoFence` never exercised `unlink`; `unlink` cancelled late notices | Late notices carry a generation; `unlink` cancels only death notices; new `MCLifecycleFence` (two late registrations, `unlink`) with separate `NoUnlinkFence` and `NoDemonitorFence` controls. |
+| Codex 6, agy 1, agy 2. Deadline contract incomplete (spontaneous exits, standalone actors, cohort stops, report deadline giving zero grace) | E3 deadline table by trigger; intervals start when that actor is signalled; the supervisor report deadline no longer shortens them; cohort stops and rollback use the kill protocol; standalone actors get the kill at `grace`; S1 deferral defers only the restart decision. |
+| Codex 7, agy 4. Runtime-drop invariant restated its own assignment | Ghost `dropFrom` records the reason before the drop; `RuntimeDropReason` checks the full rule; control `DropKeepsNormal`. |
+| Codex 8. Migration omissions | Rows for queued-message destructor failures, the restart predicate, alias policy, held exit errors, `stopped()` panics, report deadline. |
+| Codex 9. OTP phases described too literally | Phases intro rephrased as Spawned's contract and the Rust constraint. |
+| agy 5. S2 "terminal" vs `Stopping` while stuck | S2: the snapshot becomes `Failed` at the second deadline and releases `start()`; the controller keeps joining; V9 "done" unchanged. |
+| agy 6. S1 model change would not fail any `Supervision.tla` invariant; cleanup failure vs traces | S1 lists the exact `Supervision.tla`/`Cohorts.tla` changes (`RestartFollowsPolicy` requires `initial`, `DesignAllowsRestart` narrowed, `CBegin` once per child); phases describe how `cleanup_failure` reaches snapshots, traces and the restart decision. |
+| agy 7. Before rank 11, reply senders live in envelopes | Note in Phases: D discharges queued reply senders before any payload or state drop. |
+| agy 8. Working tree vs diff; `LinkedPeersStop` reason | The `DownDelivered` fix was committed after the round-2 snapshot; `LinkedPeersStop` now also matches the reason. |
+| agy 9. README control count | Updated. |
 
 ### Round 1, Codex
 
