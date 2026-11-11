@@ -91,12 +91,47 @@ trait Envelope<A: Actor>: Send {
     #[cfg(feature = "metrics")]
     fn reject(self: Box<Self>) {}
 
+    /// The owner reached its death point with this envelope undispatched:
+    /// answer its request now (the final reason), before any payload of the
+    /// mailbox is destroyed. No user code runs.
+    fn discharge(&mut self) {}
+
     fn handle(self: Box<Self>, actor: &mut A, ctx: &Context<A>);
 }
 
+/// Answer every request queued in a dead owner's mailbox (and `extra`, an
+/// envelope received after the stop), then destroy the queued payloads (a
+/// destructor panic is a cleanup failure). Admission is closed first
+/// (waiting for in-flight sends), so nothing is queued after.
+fn discharge_mailbox<A: Actor>(
+    rx: &mut mpsc::Receiver<MailboxItem<A>>,
+    extra: Option<Box<dyn Envelope<A> + Send>>,
+) {
+    let mut queued = rx.drain();
+    queued.extend(extra.map(MailboxItem::Message));
+    for item in &mut queued {
+        if let MailboxItem::Message(envelope) = item {
+            envelope.discharge();
+        }
+    }
+    rx.discard_all(queued);
+}
+
+/// A never-polled actor's startup payload (its thread was never started).
+type StartupPayload<A> = (
+    A,
+    Context<A>,
+    mpsc::Receiver<MailboxItem<A>>,
+    CancellationToken,
+);
+fn discharge_startup<A: Actor>(payload: &mut StartupPayload<A>) {
+    discharge_mailbox(&mut payload.2, None);
+}
+
 struct MessageEnvelope<M: Message> {
-    msg: M,
+    // Before the message: a plain drop also answers the request first.
     slot: SlotHandle<M::Result>,
+    msg: M,
     #[cfg(feature = "metrics")]
     observation: Option<crate::instrumentation::MessageObservation>,
 }
@@ -120,6 +155,9 @@ where
         if let Some(observation) = self.observation.take() {
             observation.reject();
         }
+    }
+    fn discharge(&mut self) {
+        drop(std::mem::replace(&mut self.slot, SlotHandle::detached()));
     }
     fn handle(self: Box<Self>, actor: &mut A, ctx: &Context<A>) {
         let mut this = *self;
@@ -182,11 +220,14 @@ where
 /// A closure run in one of the actor's turns (`spawned_test::threads::in_actor`).
 type InTurn<A, R> = Box<dyn FnOnce(&mut A, &Context<A>) -> R + Send>;
 struct InTurnEnvelope<A: Actor, R: Send + 'static> {
-    f: InTurn<A, R>,
     slot: SlotHandle<R>,
+    f: InTurn<A, R>,
 }
 
 impl<A: Actor, R: Send + 'static> Envelope<A> for InTurnEnvelope<A, R> {
+    fn discharge(&mut self) {
+        drop(std::mem::replace(&mut self.slot, SlotHandle::detached()));
+    }
     fn handle(self: Box<Self>, actor: &mut A, ctx: &Context<A>) {
         let InTurnEnvelope { f, mut slot } = *self;
         let reply = PendingReply::new(slot.take(), &ctx.replies);
@@ -435,9 +476,16 @@ impl<A: Actor> Context<A> {
     /// Works until this actor's death point, including from `stopped()`;
     /// inert after it.
     pub fn exit(&self, target: &ChildHandle, reason: ExitReason) {
+        // Held until delivered: the death point waits for it, so a signal
+        // sent before death precedes the death notices (and none is sent
+        // after it).
+        let Some(_sending) = self.replies.signal_permit() else {
+            return;
+        };
         if link::lock_request(&self.linked_reason).is_dead() {
             return;
         }
+        fail_point!("actor.exit_before_deliver");
         target.exit_from(self.id, reason, false);
     }
 
@@ -1150,9 +1198,13 @@ impl<A: Actor> ActorRef<A> {
             move || cleanup_token.cancel(),
         )
         .with_mailbox_failures(actor_ref.sender.failures())
-        .with_replies(actor_ref.replies.clone());
-        let startup =
-            crate::actor_cleanup::ActorStartup::new((actor, ctx, rx, cancellation_token), cleanup);
+        .with_replies(actor_ref.replies.clone())
+        .with_jobs(actor_ref.jobs.clone());
+        let startup = crate::actor_cleanup::ActorStartup::new(
+            (actor, ctx, rx, cancellation_token),
+            cleanup,
+            discharge_startup::<A>,
+        );
         let replies = actor_ref.replies.clone();
         let jobs = actor_ref.jobs.clone();
         let cleaned = crate::reply::jobs::CleanedGuard(actor_ref.cleaned.clone());
@@ -1160,23 +1212,27 @@ impl<A: Actor> ActorRef<A> {
             let _cleaned = cleaned;
             let ((mut actor, ctx, mut rx, cancellation_token), mut cleanup) = startup.into_parts();
             let request = ctx.linked_reason.clone();
-            if let Err(payload) = catch_unwind(AssertUnwindSafe(|| {
+            let discarded = match catch_unwind(AssertUnwindSafe(|| {
                 run_actor(&mut actor, ctx, &mut rx, cancellation_token)
             })) {
-                let message = panic_message(&*payload);
-                crate::mailbox::dispose_panic(payload);
-                link::lock_request(&request).panic(ExitReason::Panic(format!(
-                    "actor lifecycle unwound: {message}"
-                )));
-            }
+                Ok(discarded) => discarded,
+                Err(payload) => {
+                    let message = panic_message(&*payload);
+                    crate::mailbox::dispose_panic(payload);
+                    link::lock_request(&request).panic(ExitReason::Panic(format!(
+                        "actor lifecycle unwound: {message}"
+                    )));
+                    None
+                }
+            };
             // The death point D, only now that `stopped()` returned (or was
-            // skipped): the reason becomes final, the link table closes, the
-            // registry closes (every open token is answered) and the mailbox
-            // refuses admission (queued requests are answered).
-            replies.exiting();
-            jobs.cancel_all();
+            // skipped): the reason becomes final, the link table closes, job
+            // admission and the registry close (every open token is
+            // answered), then the mailbox refuses admission and its queued
+            // requests (and one received after the stop) are answered, all
+            // before any destructor.
             cleanup.die();
-            replies.close();
+            discharge_mailbox(&mut rx, discarded);
             drop(rx);
             // Destruction: a destructor panic is a cleanup failure only.
             if let Some(failure) = crate::actor_cleanup::finish_actor_state(actor) {
@@ -1197,12 +1253,14 @@ impl<A: Actor> ActorRef<A> {
     }
 }
 
+/// Returns an envelope received after the stop (undispatched; answered at
+/// the death point).
 fn run_actor<A: Actor>(
     actor: &mut A,
     ctx: Context<A>,
     rx: &mut mpsc::Receiver<MailboxItem<A>>,
     cancellation_token: CancellationToken,
-) {
+) -> Option<Box<dyn Envelope<A> + Send>> {
     run_actor_receiving(
         actor,
         ctx,
@@ -1219,7 +1277,7 @@ fn run_actor_receiving<A: Actor>(
     ctx: Context<A>,
     mut receive: impl FnMut() -> Result<MailboxItem<A>, std::sync::mpsc::RecvTimeoutError>,
     cancellation_token: CancellationToken,
-) {
+) -> Option<Box<dyn Envelope<A> + Send>> {
     let mut discarded = None;
     let request = ctx.linked_reason.clone();
     let trace_id = ctx.id.raw();
@@ -1242,7 +1300,7 @@ fn run_actor_receiving<A: Actor>(
                 .panic(ExitReason::Panic(format!("panic in started(): {msg}")));
         });
         cancellation_token.cancel();
-        return;
+        return None;
     }
     // Phase 0 ends: resolve signals held during started() with the trap
     // flag read now.
@@ -1362,9 +1420,11 @@ fn run_actor_receiving<A: Actor>(
     }
 
     // Message destructors and reply cancellation may re-enter monitor state.
-    // Preserve stopped() -> monitor cleanup -> undelivered-message drop.
+    // Preserve stopped() -> monitor cleanup -> undelivered-message drop (the
+    // envelope received after the stop is answered at the death point, then
+    // dropped with the mailbox).
     drop(_monitor_cleanup);
-    ctx.sender.failures().discard(discarded);
+    discarded
 }
 
 // ---------------------------------------------------------------------------
@@ -2275,8 +2335,11 @@ mod idle_stop_regression {
         let trace = events.clone();
         let actor = std::thread::spawn(move || {
             let mut first = true;
-            run_actor_receiving(
-                &mut Counter(seen, trace),
+            let mut counter = Counter(seen, trace);
+            // The envelope received after the stop comes back undispatched;
+            // the death point answers it and destroys it before the state.
+            let discarded = run_actor_receiving(
+                &mut counter,
                 ctx,
                 move || {
                     // Pause the real receive boundary after the started/cancel
@@ -2289,7 +2352,9 @@ mod idle_stop_regression {
                     rx.recv_timeout(Duration::from_secs(5))
                 },
                 cancel,
-            )
+            );
+            drop(discarded);
+            drop(counter);
         });
         entered.wait();
         let (slot, response) = reply_slot(crate::reply::Deadline::Never, None);

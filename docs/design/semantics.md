@@ -152,11 +152,18 @@ takes one of the instance's `MAX_OUTSTANDING` credits (or answers
 from a later turn, a job or `stopped()`; dropping it answers `ReplyDropped`
 between turns, is committed at the turn's end inside a turn, and while the
 owner exits is held until its death point. At the owner's death every open
-token becomes `ActorStopped` with the final reason, wherever it is held. The owner's deadline heap expires
+token becomes `ActorStopped` with the final reason, wherever it is held; a
+reply made once `NoProc` is observable for the owner is refused
+(`Delivery::OwnerExited`) and the caller gets that reason. Queued requests
+and deferred tokens are answered at the death point before any queued
+payload or state destructor runs, also when the runtime drops the actor
+(G1). The owner's deadline heap expires
 deferred tokens (returning their credits) even when no caller polls. Callers
 and protocols cannot tell a deferred reply from an immediate one.
 Checked by: `reply_slot_loom` (every concurrent pair of the slot word),
-[`deferred_replies`][deferred_replies], `reply::registry::tests`.
+[`deferred_replies`][deferred_replies], `reply::registry::tests`,
+`death_boundary` (blocking destructors; both modes; runtime drop),
+`failpoints::no_reply_succeeds_after_noproc_is_observable`.
 
 **R7. Pipe-to-self jobs.** `ctx.pipe*` runs work owned by the instance and
 delivers `done(outcome)` as one message in a later turn; a panic arrives as
@@ -297,11 +304,16 @@ read when it arrives:
 
 Propagation is transitive through non-trapping actors. Links work across
 modes. Signals arriving during `started()` take effect when it returns, with
-the trap flag read then.
+the trap flag read then. `ctx.exit` works until the sender's death point,
+also from a cloned context on another thread: the death point waits for a
+signal in flight, so a signal sent before it reaches its target before the
+sender's death notice (`Lifecycle!ExitAfterMessages`); one sent after it is
+inert.
 Checked by: `Lifecycle!TrapRespected`, `Lifecycle!NormalSignalIgnored`, `Lifecycle!KilledFromKill`,
 `Lifecycle!SkipHook`, `Lifecycle!LinkedPeersStop`, `Lifecycle!ShutdownEndsChild` (TLC);
 [`otp_exit_signals`][otp_exit_signals]`::tasks_mode::{exit_signals_follow_exit_signal_2, kill_is_untrappable_and_propagates_killed, ctx_exit_sends_from_the_calling_actor, parent_exit_ends_a_trapping_child_normally, signals_during_started_are_resolved_with_the_flag_set_in_started}`,
 `threads_mode::kill_exit_and_noproc_in_threads_mode`;
+`failpoints::an_exit_signal_is_not_overtaken_by_its_senders_death_notice`;
 `src/link.rs::tests::signal_rules_follow_exit_signal_2`;
 `src/tasks/actor.rs::link_propagates_panic_to_non_trapping_peer`,
 `link_delivers_exit_to_trapping_peer`, `link_normal_exit_not_propagated_to_non_trapping_peer`,

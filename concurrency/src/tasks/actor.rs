@@ -156,6 +156,11 @@ trait Envelope<A: Actor>: Send {
     #[cfg(feature = "metrics")]
     fn reject(self: Box<Self>) {}
 
+    /// The owner reached its death point with this envelope undispatched:
+    /// answer its request now (the final reason), before any payload of the
+    /// mailbox is destroyed. No user code runs.
+    fn discharge(&mut self) {}
+
     fn handle<'a>(
         self: Box<Self>,
         actor: &'a mut A,
@@ -163,9 +168,32 @@ trait Envelope<A: Actor>: Send {
     ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
 }
 
+/// Answer every request queued in a dead owner's mailbox, then destroy the
+/// queued payloads (a destructor panic is a cleanup failure). Admission is
+/// closed first, so nothing is queued after.
+fn discharge_mailbox<A: Actor>(rx: &mut mpsc::Receiver<Box<dyn Envelope<A> + Send>>) {
+    let mut queued = rx.drain();
+    for envelope in &mut queued {
+        envelope.discharge();
+    }
+    rx.discard_all(queued);
+}
+
+/// A never-polled actor's startup payload, dropped with its runtime.
+type StartupPayload<A> = (
+    A,
+    Context<A>,
+    mpsc::Receiver<Box<dyn Envelope<A> + Send>>,
+    CancellationToken,
+);
+fn discharge_startup<A: Actor>(payload: &mut StartupPayload<A>) {
+    discharge_mailbox(&mut payload.2);
+}
+
 struct MessageEnvelope<M: Message> {
-    msg: M,
+    // Before the message: a plain drop also answers the request first.
     slot: SlotHandle<M::Result>,
+    msg: M,
     #[cfg(feature = "metrics")]
     observation: Option<crate::instrumentation::MessageObservation>,
 }
@@ -193,6 +221,9 @@ where
         if let Some(observation) = self.observation.take() {
             observation.reject();
         }
+    }
+    fn discharge(&mut self) {
+        drop(std::mem::replace(&mut self.slot, SlotHandle::detached()));
     }
     fn handle<'a>(
         self: Box<Self>,
@@ -257,14 +288,17 @@ where
 /// A closure run in one of the actor's turns (`spawned_test::tasks::in_actor`).
 type InTurn<A, R> = Box<dyn FnOnce(&mut A, &Context<A>) -> R + Send>;
 struct InTurnEnvelope<A: Actor, R: Send + 'static> {
-    f: InTurn<A, R>,
     slot: SlotHandle<R>,
+    f: InTurn<A, R>,
 }
 
 impl<A: Actor, R: Send + 'static> Envelope<A> for InTurnEnvelope<A, R> {
     #[cfg(feature = "diagnostics")]
     fn message_type(&self) -> &'static str {
         "InTurn"
+    }
+    fn discharge(&mut self) {
+        drop(std::mem::replace(&mut self.slot, SlotHandle::detached()));
     }
     fn handle<'a>(
         self: Box<Self>,
@@ -547,9 +581,16 @@ impl<A: Actor> Context<A> {
     /// inert after it. A signal to this actor's own handle is a signal, not a
     /// self-exit: a non-trapping actor ignores `Normal`.
     pub fn exit(&self, target: &ChildHandle, reason: ExitReason) {
+        // Held until delivered: the death point waits for it, so a signal
+        // sent before death precedes the death notices (and none is sent
+        // after it).
+        let Some(_sending) = self.shared.replies.signal_permit() else {
+            return;
+        };
         if link::lock_request(&self.shared.linked_reason).is_dead() {
             return;
         }
+        fail_point!("actor.exit_before_deliver");
         target.exit_from(self.shared.id, reason, false);
     }
 
@@ -1436,20 +1477,20 @@ impl<A: Actor> ActorRef<A> {
             move || cleanup_token.cancel(),
         )
         .with_mailbox_failures(actor_ref.shared.sender.failures())
-        .with_replies(actor_ref.shared.replies.clone());
-        let startup =
-            crate::actor_cleanup::ActorStartup::new((actor, ctx, rx, cancellation_token), cleanup);
+        .with_replies(actor_ref.shared.replies.clone())
+        .with_jobs(actor_ref.shared.jobs.clone());
+        let startup = crate::actor_cleanup::ActorStartup::new(
+            (actor, ctx, rx, cancellation_token),
+            cleanup,
+            discharge_startup::<A>,
+        );
         let job_owner = actor_ref.shared.clone();
         let cleaned_tx = cleaned_tx;
-        // Destruction-safe close: if the runtime drops this future before it
-        // completes, the guard still cancels the jobs and closes the registry,
-        // so no deferred caller waits for an instance that can never answer.
-        let close_guard = crate::reply::registry::CloseOnDrop::new(
-            actor_ref.shared.replies.clone(),
-            actor_ref.shared.jobs.clone(),
-        );
+        // Destruction-safe: if the runtime drops this future before it
+        // completes, `ActorStartup` (never polled) or `ExitOnDrop` (polled)
+        // still reach D before destroying anything, so no caller waits for an
+        // instance that can never answer.
         let inner_future = async move {
-            let _close_guard = close_guard;
             let ((actor, ctx, rx, cancellation_token), mut cleanup) = startup.into_parts();
             #[cfg(feature = "backend-experiments")]
             let _borrowed_runtime = borrowed_runtime;
@@ -1619,43 +1660,59 @@ impl MessageTurn {
     }
 }
 
-/// The actor's state while its lifecycle runs. If the lifecycle future is
-/// dropped mid-way (its runtime was destroyed), exit begins before the state
-/// is dropped, so tokens held in it answer `ActorStopped`, not `ReplyDropped`.
-struct ExitOnDrop<A> {
+/// The actor's state and mailbox while its lifecycle runs. They are
+/// destroyed only after the death point D: normally at the end of
+/// [`run_actor`]; if the lifecycle future is dropped mid-way (its runtime was
+/// destroyed), here, which reaches D first (`Killed` unless a reason was
+/// requested), so tokens and queued requests answer `ActorStopped` before
+/// any destructor runs.
+struct ExitOnDrop<'c, A: Actor, C: Fn()> {
     actor: Option<A>,
-    replies: Arc<Registry>,
-    jobs: Arc<crate::reply::jobs::JobSet>,
+    rx: mpsc::Receiver<Box<dyn Envelope<A> + Send>>,
+    cleanup: &'c mut crate::actor_cleanup::ActorCleanup<C>,
 }
-impl<A> Drop for ExitOnDrop<A> {
-    fn drop(&mut self) {
-        if self.actor.is_some() {
-            self.replies.exiting();
-            self.jobs.cancel_all();
+impl<A: Actor, C: Fn()> ExitOnDrop<'_, A, C> {
+    /// D, then the queued requests, then destruction (mailbox, then state).
+    fn finish(&mut self, dropped: bool) {
+        let Some(actor) = self.actor.take() else {
+            return;
+        };
+        if dropped {
+            self.cleanup.die_dropped();
+        } else {
+            self.cleanup.die();
         }
+        discharge_mailbox(&mut self.rx);
+        // Destruction: a destructor panic is a cleanup failure, never the reason.
+        if let Some(failure) = crate::actor_cleanup::finish_actor_state(actor) {
+            self.cleanup.cleanup_failed(failure);
+        }
+    }
+}
+impl<A: Actor, C: Fn()> Drop for ExitOnDrop<'_, A, C> {
+    fn drop(&mut self) {
+        self.finish(true);
     }
 }
 
 async fn run_actor<A: Actor, C: Fn()>(
     actor: A,
     ctx: Context<A>,
-    mut rx: mpsc::Receiver<Box<dyn Envelope<A> + Send>>,
+    rx: mpsc::Receiver<Box<dyn Envelope<A> + Send>>,
     cancellation_token: CancellationToken,
     cleanup: &mut crate::actor_cleanup::ActorCleanup<C>,
     #[cfg(feature = "backend-experiments")] turn: Option<MessageTurn>,
 ) {
-    let replies = ctx.shared.replies.clone();
-    let jobs = ctx.shared.jobs.clone();
     let request = ctx.shared.linked_reason.clone();
     let mut owned = ExitOnDrop {
         actor: Some(actor),
-        replies: replies.clone(),
-        jobs: jobs.clone(),
+        rx,
+        cleanup,
     };
     if let Err(payload) = AssertUnwindSafe(run_actor_lifecycle(
         owned.actor.as_mut().expect("the state lives until death"),
         ctx,
-        &mut rx,
+        &mut owned.rx,
         cancellation_token,
         #[cfg(feature = "backend-experiments")]
         turn,
@@ -1670,21 +1727,13 @@ async fn run_actor<A: Actor, C: Fn()>(
         )));
     }
     // The death point D, only now that `stopped()` returned (or was
-    // skipped): the reason becomes final, the link table closes, the
-    // registry closes (every open token is answered) and the mailbox refuses
-    // admission (queued requests are answered). Early returns (startup
-    // panic, closed scope) and an unwound lifecycle also come here, so jobs
-    // never outlive their owner.
-    replies.exiting();
-    jobs.cancel_all();
-    cleanup.die();
-    replies.close();
-    drop(rx);
-    // Destruction: a destructor panic is a cleanup failure, never the reason.
-    let actor = owned.actor.take().expect("the state lives until death");
-    if let Some(failure) = crate::actor_cleanup::finish_actor_state(actor) {
-        cleanup.cleanup_failed(failure);
-    }
+    // skipped): the reason becomes final, the link table closes, job
+    // admission and the registry close (every open token is answered), then
+    // the mailbox refuses admission and its queued requests are answered,
+    // all before any destructor. Early returns (startup panic, closed scope)
+    // and an unwound lifecycle also come here, so jobs never outlive their
+    // owner.
+    owned.finish(false);
 }
 
 async fn run_actor_lifecycle<A: Actor>(

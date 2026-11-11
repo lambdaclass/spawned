@@ -991,6 +991,8 @@ and prints the seed when a test fails. Configuration is process-global.
 | `system.reserve` | yes | Placement failure (`SystemError::Capacity`) |
 | `registry.before_register` | yes | Shutdown racing managed name registration |
 | `registry.before_unregister` | no | Slow removal of an owned name before a replacement starts |
+| `actor.at_death` | no | An external reply racing the death point after `NoProc` is observable (tasks and threads) |
+| `actor.exit_before_deliver` | no | A cloned context's exit signal racing its sender's death (tasks and threads) |
 | `link.before_install` | no | Peer exiting while a link is installed (tasks and threads) |
 | `monitor.before_install` | no | Target exiting while a monitor is installed (tasks and threads) |
 

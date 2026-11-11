@@ -85,6 +85,14 @@ pub(crate) struct Registry {
     /// The owner's final exit reason, set once at its death point. Set means
     /// the mailbox refuses admission (`NoProc`).
     final_reason: OnceLock<ExitReason>,
+    /// Reply admission for deferred tokens answered off the owner's turn:
+    /// closed at the death point, before the final reason is visible, so no
+    /// reply succeeds once `NoProc` is observable.
+    replies: crate::mailbox::SendGate,
+    /// Exit-signal admission for this owner's contexts (`ctx.exit`): closed
+    /// at the death point, before the death notices are taken, so a signal
+    /// sent before death is delivered before them.
+    signals: crate::mailbox::SendGate,
     #[cfg(all(spawned_sim, feature = "async"))]
     sim: deadline::SimService,
 }
@@ -108,6 +116,8 @@ impl Registry {
             }),
             exit_began: Mutex::new(None),
             final_reason: OnceLock::new(),
+            replies: crate::mailbox::SendGate::default(),
+            signals: crate::mailbox::SendGate::default(),
             #[cfg(all(spawned_sim, feature = "async"))]
             sim: deadline::SimService::default(),
         })
@@ -284,6 +294,28 @@ impl Registry {
         }
     }
 
+    /// Admit a deferred reply's linearization (its `OPEN -> WRITING` CAS),
+    /// or `None` once the owner reached its death point: the slot then stays
+    /// listed and the registry's close answers it with the final reason.
+    pub(crate) fn reply_permit(&self) -> Option<crate::mailbox::SendPermit<'_>> {
+        self.replies.enter()
+    }
+
+    /// Admit an exit signal sent by this owner, held until it is delivered;
+    /// `None` once the owner reached its death point (the signal is inert).
+    pub(crate) fn signal_permit(&self) -> Option<crate::mailbox::SendPermit<'_>> {
+        self.signals.enter()
+    }
+
+    /// The death point's fences, before the final reason is visible: refuse
+    /// later replies and exit signals, and wait for those in flight (a CAS,
+    /// or one signal delivery: no user code). Never call it inside a
+    /// lifecycle-trace section: an in-flight delivery may need one.
+    pub(crate) fn fence(&self) {
+        self.replies.close();
+        self.signals.close();
+    }
+
     /// The death point D (called inside the owner's exit-table critical
     /// section): fix the final reason callers will see and refuse admission.
     /// Idempotent: the first reason stays.
@@ -387,32 +419,6 @@ impl Drop for Registry {
         // Every handle to the instance is gone; nothing can still answer.
         if self.turn.load() != DEAD {
             self.close();
-        }
-    }
-}
-
-/// Closes the registry and cancels the jobs if the owner's lifecycle is
-/// dropped without completing (for example, its runtime was destroyed).
-/// Idempotent after a normal death.
-#[cfg_attr(not(feature = "async"), allow(dead_code))]
-pub(crate) struct CloseOnDrop {
-    replies: Arc<Registry>,
-    jobs: Arc<super::jobs::JobSet>,
-}
-
-#[cfg_attr(not(feature = "async"), allow(dead_code))]
-impl CloseOnDrop {
-    pub(crate) fn new(replies: Arc<Registry>, jobs: Arc<super::jobs::JobSet>) -> Self {
-        Self { replies, jobs }
-    }
-}
-
-impl Drop for CloseOnDrop {
-    fn drop(&mut self) {
-        if !self.replies.is_dead() {
-            self.replies.exiting();
-            self.jobs.cancel_all();
-            self.replies.close();
         }
     }
 }

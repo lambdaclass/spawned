@@ -382,14 +382,27 @@ current turn's slot) and a job set. The order is:
    answered.
 3. **Death.** This happens only when `stopped()` has returned. Rust cannot
    preempt `stopped(&mut self)` or a hanging destructor, and it cannot
-   destroy state that is still borrowed. In this order:
-   1. the registry closes, and every open token it lists becomes `STOPPED`,
+   destroy state that is still borrowed. In this order, whether the run
+   loop or the runtime dropping the actor drives it:
+   1. job admission closes and every job is cancelled; outgoing replies of
+      deferred tokens and exit signals sent through the actor's contexts
+      are fenced (those in flight finish, later ones are refused: a reply
+      returns `OwnerExited`, a signal is inert);
+   2. the final reason is fixed, the link table closes and admission is
+      sealed (`NoProc`);
+   3. the registry closes, and every open token it lists becomes `STOPPED`,
       wherever the token is (state, job, helper, leaked);
-   2. the mailbox is disposed: queued envelopes are dropped as `STOPPED`, and
-      emit credits return;
-   3. actor state is dropped;
-   4. the deadline heap is dropped;
-   5. the exit reason is published, and monitors and links fire.
+   4. the mailbox closes and every queued request is answered `STOPPED`;
+   5. only then are payloads destroyed: queued envelopes (emit credits
+      return), then actor state;
+   6. the deadline heap is dropped;
+   7. the exit reason is published, and monitors and links fire.
+
+   Steps 1 to 4 run no user code. Steps 3 and 4 follow the seal instead of
+   being one atomic step with it, but nothing between them depends on the
+   requests they answer (no destructor, notice or publication), so the
+   models' atomic death is a sound abstraction of them (they commute left
+   to the seal).
 
    `ActorStopped` keeps one meaning, "the actor is gone". An observer that
    sees `Down` knows every caller of the instance has been answered.

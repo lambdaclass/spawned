@@ -381,7 +381,10 @@ impl<R: Send + 'static> ReplyTo<R> {
             .slot
             .take()
             .expect("ReplyTo holds its slot until consumed");
-        let (delivery, unsent) = slot.reply(value, &now_ticks);
+        // Admitted by the owner's death-point fence: once `NoProc` is
+        // observable no reply succeeds (the owner's close answers the slot).
+        let (delivery, unsent) =
+            slot.reply_admitted(value, &now_ticks, || self.registry.reply_permit());
         drop(unsent);
         record(delivery);
         if delivery == Delivery::Delivered {
@@ -391,9 +394,12 @@ impl<R: Send + 'static> ReplyTo<R> {
     }
 
     /// Answer the caller `Err(Overloaded)`, e.g. on `InsertError::Full`.
+    /// Past the owner's death point the caller gets its final reason.
     pub fn overloaded(mut self) {
         if let Some(slot) = self.slot.take() {
-            slot.terminate(Terminal::Overloaded);
+            if let Some(_permit) = self.registry.reply_permit() {
+                slot.terminate(Terminal::Overloaded);
+            }
         }
     }
 

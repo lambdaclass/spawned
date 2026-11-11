@@ -534,13 +534,32 @@ impl<R> Slot<R> {
     /// otherwise write the value and `WRITING -> REPLIED`. A value that was
     /// not published is returned so the caller drops it outside every lock.
     pub(crate) fn reply(&self, value: R, now: &impl Fn() -> u64) -> (Delivery, Option<R>) {
-        if let Err(Some(s)) = self.cas(None, |w| {
+        self.reply_admitted(value, now, || Some(()))
+    }
+
+    /// [`reply`](Self::reply) admitted by the owner: `admit` returns a
+    /// permit held across the linearizing `OPEN -> WRITING` CAS (and
+    /// released before the value is written), or `None` once the owner is
+    /// past its death point. Refused, the slot is left to the owner's close
+    /// (`OwnerExited`).
+    pub(crate) fn reply_admitted<P>(
+        &self,
+        value: R,
+        now: &impl Fn() -> u64,
+        admit: impl FnOnce() -> Option<P>,
+    ) -> (Delivery, Option<R>) {
+        let Some(permit) = admit() else {
+            return (Delivery::OwnerExited, Some(value));
+        };
+        let linearized = self.cas(None, |w| {
             if state(w) == OPEN {
                 Ok(with_state(w, WRITING))
             } else {
                 Err(state(w))
             }
-        }) {
+        });
+        drop(permit);
+        if let Err(Some(s)) = linearized {
             let delivery = match s {
                 TIMED_OUT => Delivery::Expired,
                 STOPPED => Delivery::OwnerExited,

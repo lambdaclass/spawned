@@ -142,6 +142,23 @@ pub const SITES: &[Site] = &[
                       checks that a replacement only starts after the old name is gone.",
     },
     Site {
+        name: "actor.at_death",
+        has_error: false,
+        description: "Right after the death point D (the final reason is fixed, admission \
+                      refuses with `NoProc`), before the open deferred replies are closed \
+                      (tasks and threads). Delay widens the window in which an external \
+                      `ReplyTo::reply` races the death: it must not succeed once `NoProc` \
+                      was observed.",
+    },
+    Site {
+        name: "actor.exit_before_deliver",
+        has_error: false,
+        description: "`ctx.exit(target, reason)` after its sender-lifetime check, before the \
+                      signal is delivered (tasks and threads). Delay lets the sender reach \
+                      its death point meanwhile: its death notice must not overtake the \
+                      signal.",
+    },
+    Site {
         name: "link.before_install",
         has_error: false,
         description: "`ctx.link(..)` before both link tables are updated (tasks and \

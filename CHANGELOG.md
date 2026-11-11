@@ -13,6 +13,16 @@
   exhausted budget fails the supervisor when the round would be selected,
   naming the round's origin child. `max_restarts` documentation, semantics
   V5, the guide and the migration notes follow.
+- The death point is one boundary, however the actor dies (run loop or
+  runtime drop): job admission closes, outgoing replies and `ctx.exit`
+  signals are fenced, the reason is sealed, and every deferred token and
+  queued request is answered `ActorStopped(final reason)` before any queued
+  payload or state destructor runs and before death is published. A
+  `ReplyTo::reply` once `NoProc` is observable returns
+  `Delivery::OwnerExited` (the caller gets the final reason); a signal a
+  cloned context sends before its actor's death reaches the target before
+  the death notice. Previously a blocking payload destructor, or a runtime
+  dropping the actor, could leave callers unanswered while it ran.
 - **Breaking (0.8), in progress:** exit signals, startup and runtime-drop
   semantics as in OTP (ROADMAP ranks 5e, 5f, 5g), implementing
   [the design](docs/design/otp-exit-signals.md) (#240, stacked on rank 11).

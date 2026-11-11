@@ -44,7 +44,8 @@ pub(crate) fn dispose_panic(payload: Box<dyn std::any::Any + Send>) {
 
 #[path = "mailbox_admission.rs"]
 mod admission;
-use admission::SendGate;
+/// Also the death point's fences (reply and exit-signal admission).
+pub(crate) use admission::{SendGate, SendPermit};
 #[derive(Default)]
 struct Admission {
     gate: SendGate,
@@ -105,17 +106,34 @@ pub(crate) mod tasks {
             &mut self.inner
         }
     }
-    impl<T> Drop for Receiver<T> {
-        fn drop(&mut self) {
+    impl<T> Receiver<T> {
+        /// Close admission and take everything accepted, without dropping
+        /// it: the death point answers queued requests before any payload
+        /// destructor runs ([`discard_all`](Self::discard_all) then).
+        pub(crate) fn drain(&mut self) -> Vec<T> {
             self.inner.close();
+            let mut items = Vec::new();
             // Sends remain synchronous and unbounded. EOF waits only for raw
             // reservations to publish, never for this runtime thread to run work.
             // Suppress Tokio's coop deferral while the owning task is destroyed.
             block_on_drop(spawned_rt::tasks::unconstrained(async {
                 while let Some(value) = self.inner.recv().await {
-                    self.failures.discard(value);
+                    items.push(value);
                 }
             }));
+            items
+        }
+        /// Destroy drained items; a destructor panic is a cleanup failure.
+        pub(crate) fn discard_all(&self, items: Vec<T>) {
+            for item in items {
+                self.failures.discard(item);
+            }
+        }
+    }
+    impl<T> Drop for Receiver<T> {
+        fn drop(&mut self) {
+            let items = self.drain();
+            self.discard_all(items);
         }
     }
     pub(crate) fn channel<T>() -> (Sender<T>, Receiver<T>) {
@@ -177,12 +195,28 @@ pub(crate) mod threads {
             &self.inner
         }
     }
+    impl<T> Receiver<T> {
+        /// Close admission (waiting for in-flight sends) and take everything
+        /// accepted, without dropping it (see the async receiver).
+        pub(crate) fn drain(&mut self) -> Vec<T> {
+            self.admission.close();
+            let mut items = Vec::new();
+            while let Ok(value) = self.inner.try_recv() {
+                items.push(value);
+            }
+            items
+        }
+        /// Destroy drained items; a destructor panic is a cleanup failure.
+        pub(crate) fn discard_all(&self, items: Vec<T>) {
+            for item in items {
+                self.admission.failures.discard(item);
+            }
+        }
+    }
     impl<T> Drop for Receiver<T> {
         fn drop(&mut self) {
-            self.admission.close();
-            while let Ok(value) = self.inner.try_recv() {
-                self.admission.failures.discard(value);
-            }
+            let items = self.drain();
+            self.discard_all(items);
         }
     }
     pub(crate) fn channel<T>() -> (Sender<T>, Receiver<T>) {

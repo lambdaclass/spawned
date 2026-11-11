@@ -218,6 +218,11 @@ Fire(a, r) ==
 
 (* The death point D of a with final reason r: admission closes, queued    *)
 (* requests are answered, the table closes. Shared by Die and RuntimeDrop. *)
+(* The code fences outgoing exit signals and replies first, then seals and *)
+(* closes the table, then answers deferred and queued requests, and only   *)
+(* then destroys payloads and state (actor_cleanup.rs). The answers follow *)
+(* the seal but run no user code and nothing in between depends on them,  *)
+(* so they commute left to it: this atomic step is a sound abstraction.    *)
 Death(a, r) ==
     /\ st' = [st EXCEPT ![a] = "gone"]
     /\ mbox' = [mbox EXCEPT ![a] = <<>>]

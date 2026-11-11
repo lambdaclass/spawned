@@ -36,6 +36,14 @@ pub(crate) fn log_stopped_skipped(
 
 /// Constructed before dispatch, so even a never-polled actor has cleanup.
 /// [`die`](Self::die) is the death point D; dropping it is publication.
+///
+/// D is one boundary, whatever drives it (the run loop, or the runtime
+/// dropping the actor): exit pending for dropped replies, job admission
+/// closed and every job cancelled, outgoing replies and exit signals fenced,
+/// the final reason fixed with the link table closed and admission sealed,
+/// and every open deferred reply answered. The caller then answers its
+/// queued requests (the mode's mailbox discharge) and only then destroys
+/// payloads and state; publication comes last, when this is dropped.
 pub(crate) struct ActorCleanup<C: Fn()> {
     id: ActorId,
     metrics: crate::instrumentation::ActorObservation,
@@ -49,6 +57,8 @@ pub(crate) struct ActorCleanup<C: Fn()> {
     failures: Option<std::sync::Arc<crate::mailbox::DropFailures>>,
     /// The reply registry, sealed with the final reason at D.
     replies: Option<std::sync::Arc<crate::reply::registry::Registry>>,
+    /// The owner's jobs: admission closes and they are cancelled at D.
+    jobs: Option<std::sync::Arc<crate::reply::jobs::JobSet>>,
 }
 impl<C: Fn()> ActorCleanup<C> {
     pub(crate) fn new(
@@ -71,6 +81,7 @@ impl<C: Fn()> ActorCleanup<C> {
             cancel,
             failures: None,
             replies: None,
+            jobs: None,
         }
     }
     /// Seal `replies` with the final reason at D, inside the exit-table
@@ -81,6 +92,10 @@ impl<C: Fn()> ActorCleanup<C> {
         replies: std::sync::Arc<crate::reply::registry::Registry>,
     ) -> Self {
         self.replies = Some(replies);
+        self
+    }
+    pub(crate) fn with_jobs(mut self, jobs: std::sync::Arc<crate::reply::jobs::JobSet>) -> Self {
+        self.jobs = Some(jobs);
         self
     }
     pub(crate) fn with_mailbox_failures(
@@ -94,17 +109,61 @@ impl<C: Fn()> ActorCleanup<C> {
     /// table closes, taking one notice per link (delivered at publication).
     /// Idempotent; returns the final reason.
     pub(crate) fn die(&mut self) -> ExitReason {
+        self.reach_death(false)
+    }
+
+    /// D reached because the runtime dropped the actor before it got there
+    /// (G1): `Killed` unless a non-`Normal` reason was already requested.
+    pub(crate) fn die_dropped(&mut self) -> ExitReason {
+        self.reach_death(true)
+    }
+
+    fn reach_death(&mut self, dropped: bool) -> ExitReason {
         if let Some(reason) = &self.reason {
             return reason.clone();
         }
+        // Exit pending: dropped replies wait for D; jobs stop being admitted
+        // and are cancelled (the job join comes after publication).
+        if let Some(replies) = &self.replies {
+            replies.exiting();
+        }
+        if let Some(jobs) = &self.jobs {
+            jobs.cancel_all();
+        }
+        // Fence outgoing replies and exit signals before the final reason is
+        // visible (outside any trace section: an in-flight signal may need
+        // one). Later ones are refused; those in flight finish first, so a
+        // signal sent before death precedes the death notices.
+        if let Some(replies) = &self.replies {
+            replies.fence();
+        }
         let id = self.id.raw();
-        trace::life_section(id, || {
-            let reason = crate::link::lock_request(&self.cause).die();
+        let mut skipped = false;
+        let reason = trace::life_section(id, || {
+            let mut request = crate::link::lock_request(&self.cause);
+            let reason = if dropped {
+                skipped = !request.hook_begun();
+                request.runtime_drop()
+            } else {
+                request.die()
+            };
+            drop(request);
             trace::life_emit(id, || {
-                trace::LifeEvent::new("Die", id).x(trace::life_reason(&reason))
+                trace::LifeEvent::new(if dropped { "Drop" } else { "Die" }, id)
+                    .x(trace::life_reason(&reason))
             });
             self.close(reason)
-        })
+        });
+        if skipped {
+            log_stopped_skipped(self.id, "", "runtime_drop", Some(&reason));
+        }
+        fail_point!("actor.at_death");
+        // Every open deferred reply (and every exit-pending one) is answered
+        // with the final reason, before any destructor runs.
+        if let Some(replies) = &self.replies {
+            replies.close();
+        }
+        reason
     }
     fn close(&mut self, reason: ExitReason) -> ExitReason {
         let replies = self.replies.as_deref();
@@ -131,28 +190,9 @@ impl<C: Fn()> ActorCleanup<C> {
 }
 impl<C: Fn()> Drop for ActorCleanup<C> {
     fn drop(&mut self) {
-        // Never reached D: the runtime dropped the actor (G1).
-        let reason = match self.reason.clone() {
-            Some(reason) => reason,
-            None => {
-                let id = self.id.raw();
-                let mut skipped = false;
-                let reason = trace::life_section(id, || {
-                    let mut request = crate::link::lock_request(&self.cause);
-                    skipped = !request.hook_begun();
-                    let reason = request.runtime_drop();
-                    drop(request);
-                    trace::life_emit(id, || {
-                        trace::LifeEvent::new("Drop", id).x(trace::life_reason(&reason))
-                    });
-                    self.close(reason)
-                });
-                if skipped {
-                    log_stopped_skipped(self.id, "", "runtime_drop", Some(&reason));
-                }
-                reason
-            }
-        };
+        // Normally D was reached already; otherwise the runtime dropped the
+        // actor (G1) and nothing of it is left to destroy.
+        let reason = self.die_dropped();
         if let Some(message) = self.failures.as_ref().and_then(|f| f.first()) {
             // Subscriber code must not unwind through a receiver/actor teardown.
             log_safely(|| {
@@ -196,18 +236,21 @@ pub(crate) fn finish_actor_state<A>(actor: A) -> Option<String> {
     Some(format!("actor state destructor: {message}"))
 }
 
-/// Captured as one value by the dispatch closure. Declaration order makes
-/// never-polled payload destruction precede completion publication, without
-/// relying on the compiler's order for disjoint closure captures.
+/// Captured as one value by the dispatch closure, so a never-polled actor
+/// dropped with its runtime still reaches D, then answers its queued
+/// requests (`discharge`), then destroys its payload, then publishes,
+/// without relying on the compiler's order for disjoint closure captures.
 pub(crate) struct ActorStartup<P, C: Fn()> {
     payload: Option<P>,
     cleanup: Option<ActorCleanup<C>>,
+    discharge: fn(&mut P),
 }
 impl<P, C: Fn()> ActorStartup<P, C> {
-    pub(crate) fn new(payload: P, cleanup: ActorCleanup<C>) -> Self {
+    pub(crate) fn new(payload: P, cleanup: ActorCleanup<C>, discharge: fn(&mut P)) -> Self {
         Self {
             payload: Some(payload),
             cleanup: Some(cleanup),
+            discharge,
         }
     }
     pub(crate) fn into_parts(mut self) -> (P, ActorCleanup<C>) {
@@ -216,7 +259,11 @@ impl<P, C: Fn()> ActorStartup<P, C> {
 }
 impl<P, C: Fn()> Drop for ActorStartup<P, C> {
     fn drop(&mut self) {
-        if let Some(payload) = self.payload.take() {
+        if let Some(cleanup) = &mut self.cleanup {
+            cleanup.die_dropped();
+        }
+        if let Some(mut payload) = self.payload.take() {
+            (self.discharge)(&mut payload);
             if let Err(panic) =
                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(payload)))
             {

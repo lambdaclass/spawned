@@ -930,6 +930,164 @@ async fn system_shutdown_coordinator_panic_is_reported_and_contained() {
 
 // ------------------------------------------------------------ actor.* (threads)
 
+// ------------------------------------------------- actor.at_death (D fence)
+
+/// Holds deferred tokens for an outside replier.
+#[derive(Default)]
+struct Holder;
+struct Hold(std::sync::mpsc::Sender<spawned_concurrency::ReplyTo<u32>>);
+impl Message for Hold {
+    type Result = u32;
+}
+impl Actor for Holder {}
+impl Handler<Hold> for Holder {
+    async fn handle(
+        &mut self,
+        msg: Hold,
+        reply: spawned_concurrency::PendingReply<'_, u32>,
+        _: &Context<Self>,
+    ) {
+        msg.0.send(reply.defer().unwrap()).unwrap();
+    }
+}
+impl Handler<Ping> for Holder {
+    async fn handle(
+        &mut self,
+        _: Ping,
+        _: spawned_concurrency::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
+    }
+}
+
+/// Review P1 (Codex 4): once `NoProc` is observable (a send to the dead
+/// owner fails), an external `ReplyTo::reply` must not succeed: the caller
+/// gets the owner's final reason. Replies were admitted until the registry
+/// closed the slot, after D: a reply could land after `NoProc`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn no_reply_succeeds_after_noproc_is_observable() {
+    let _scenario = FailScenario::setup();
+    let holder = Holder.start();
+    let (tokens, token) = std::sync::mpsc::channel();
+    let caller = holder.request_raw(Hold(tokens)).unwrap();
+    let token = token.recv_timeout(LIMIT).unwrap();
+    failpoints::configure(
+        "actor.at_death",
+        FailPoint::new(Action::Delay(Duration::from_millis(300))).times(1),
+    )
+    .unwrap();
+    holder.context().stop();
+    let began = Instant::now();
+    while holder.send(Ping).is_ok() {
+        assert!(began.elapsed() < LIMIT, "the owner never died");
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    // `NoProc` is observable: the death point passed.
+    let delivery = token.reply(7);
+    assert_ne!(
+        delivery,
+        spawned_concurrency::Delivery::Delivered,
+        "a reply succeeded after NoProc was observable"
+    );
+    assert!(
+        matches!(
+            caller.await,
+            Err(spawned_concurrency::ActorError::ActorStopped(
+                ExitReason::Normal
+            ))
+        ),
+        "the caller did not get the final reason"
+    );
+    holder.join().await;
+}
+
+// ---------------------------------------- actor.exit_before_deliver (fence)
+
+/// Traps exits and records them in arrival order.
+struct Recorder(Arc<Mutex<Vec<(spawned_concurrency::ActorId, ExitReason)>>>);
+impl Actor for Recorder {
+    async fn started(&mut self, ctx: &Context<Self>) {
+        ctx.trap_exit(true);
+    }
+    async fn exit_received(&mut self, exit: spawned_concurrency::Exit, _: &Context<Self>) {
+        self.0.lock().unwrap().push((exit.from, exit.reason));
+    }
+}
+impl Handler<Ping> for Recorder {
+    async fn handle(
+        &mut self,
+        _: Ping,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
+        reply.reply(());
+    }
+}
+struct SignalSender;
+impl Actor for SignalSender {}
+impl Handler<LinkTo> for SignalSender {
+    async fn handle(
+        &mut self,
+        msg: LinkTo,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
+        ctx: &Context<Self>,
+    ) {
+        ctx.link(&msg.0);
+        reply.reply(());
+    }
+}
+
+/// Review P1 (Codex 10): a signal a cloned context sends before its
+/// sender's death reaches the target before the sender's death notice
+/// (`ExitAfterMessages`, OTP's per-pair signal order). A helper passed the
+/// sender-lifetime check, paused, and delivered after the death notice.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_exit_signal_is_not_overtaken_by_its_senders_death_notice() {
+    let _scenario = FailScenario::setup();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let recorder = Recorder(seen.clone()).start();
+    recorder.request(Ping).await.unwrap(); // trapping now
+    let sender = SignalSender.start();
+    sender
+        .request(LinkTo(recorder.child_handle()))
+        .await
+        .unwrap();
+    failpoints::configure(
+        "actor.exit_before_deliver",
+        FailPoint::new(Action::Delay(Duration::from_millis(300))).times(1),
+    )
+    .unwrap();
+    let ctx = sender.context();
+    let target = recorder.child_handle();
+    let helper = std::thread::spawn(move || ctx.exit(&target, ExitReason::Shutdown));
+    reached("actor.exit_before_deliver", 1).await;
+    // The sender dies while its helper's signal is in flight.
+    sender.context().stop();
+    let began = Instant::now();
+    while seen.lock().unwrap().len() < 2 {
+        assert!(
+            began.elapsed() < LIMIT,
+            "exits seen: {:?}",
+            seen.lock().unwrap()
+        );
+        tokio::time::sleep(Duration::from_millis(2)).await;
+    }
+    helper.join().unwrap();
+    let reasons: Vec<_> = seen
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(_, r)| r.clone())
+        .collect();
+    assert_eq!(
+        reasons,
+        [ExitReason::Shutdown, ExitReason::Normal],
+        "the death notice overtook the sender's own signal"
+    );
+    recorder.context().stop();
+    recorder.join().await;
+}
+
 mod native {
     use super::*;
     use spawned_concurrency::threads::{
