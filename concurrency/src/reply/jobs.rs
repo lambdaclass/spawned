@@ -218,7 +218,14 @@ pub(crate) struct JobState {
     /// Delayed emits (`JobCtx::emit_at`) not yet fired: their strong
     /// references (the deadline heap holds `Weak`s). Cleared at cancellation.
     scheduled: Mutex<Vec<Arc<ScheduledEmit>>>,
+    /// What the owner's exit released (a held result, scheduled emits):
+    /// user payload, destroyed by [`JobSet::dispose_cancelled`] once the
+    /// owner's death point answered and woke every caller.
+    exit_released: Mutex<Option<ExitReleased>>,
 }
+
+/// Payloads an owner's exit took from a job, destroyed after its death point.
+type ExitReleased = (Option<HeldTerminal>, Vec<Arc<ScheduledEmit>>);
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|p| p.into_inner())
@@ -236,6 +243,7 @@ impl JobState {
             #[cfg(feature = "async")]
             emit_wakers: Mutex::new(Vec::new()),
             scheduled: Mutex::new(Vec::new()),
+            exit_released: Mutex::new(None),
         })
     }
 
@@ -517,6 +525,23 @@ impl Job for JobState {
     fn cancel(&self) {
         self.cancel_quietly();
     }
+    /// Mark the job cancelled (fences its messages, wakes its emitters,
+    /// stops its async work) without destroying anything: the suppressed
+    /// held result and the scheduled emits are kept for
+    /// [`JobSet::dispose_cancelled`].
+    fn cancel_for_exit(&self) {
+        let (newly, held) = self.core.cancel_keeping_held();
+        if newly {
+            self.count_cancel();
+        }
+        let scheduled = std::mem::take(&mut *lock(&self.scheduled));
+        *lock(&self.exit_released) = Some((held, scheduled));
+        #[cfg(feature = "async")]
+        {
+            self.cancel.cancel();
+            self.wake_emitters();
+        }
+    }
     fn is_running(&self) -> bool {
         self.core.is_running()
     }
@@ -575,6 +600,9 @@ pub(crate) struct JobSet {
     /// Whether the owner's exit was recorded (lifecycle traces).
     #[cfg(feature = "lifecycle-trace")]
     exited: std::sync::atomic::AtomicBool,
+    /// Jobs the owner's exit cancelled, whose released payloads wait for
+    /// [`dispose_cancelled`](Self::dispose_cancelled).
+    exit_cancelled: Mutex<Vec<Arc<JobState>>>,
     /// The first `NativeBudget` refusal was logged (only refusals touch it).
     native_refusal_logged: std::sync::atomic::AtomicBool,
     #[cfg(feature = "async")]
@@ -588,6 +616,7 @@ impl JobSet {
             core: JobSetCore::new(max_native),
             #[cfg(feature = "lifecycle-trace")]
             exited: std::sync::atomic::AtomicBool::new(false),
+            exit_cancelled: Mutex::new(Vec::new()),
             native_refusal_logged: std::sync::atomic::AtomicBool::new(false),
             #[cfg(feature = "async")]
             idle_async: Mutex::new(Vec::new()),
@@ -663,15 +692,35 @@ impl JobSet {
         self.core.running()
     }
 
-    /// Owner exit: cancel every job (flag set, blocked emitters woken).
+    /// Owner exit: close admission and cancel every job (flag set, blocked
+    /// emitters woken). Nothing is destroyed here: what the jobs release
+    /// waits for [`dispose_cancelled`](Self::dispose_cancelled).
     pub(crate) fn cancel_all(&self) {
         trace::atomic(|| {
-            self.core.cancel_all();
+            let cancelled = self.core.cancel_all();
+            lock(&self.exit_cancelled).extend(cancelled);
             #[cfg(feature = "lifecycle-trace")]
             if !self.exited.swap(true, std::sync::atomic::Ordering::AcqRel) {
                 trace::job(self.owner.raw(), || trace::JobEvent::new("Exit", 0));
             }
         });
+    }
+
+    /// After the owner's death point answered and woke every caller: destroy
+    /// what the exit's cancellation released (held results, scheduled
+    /// emits; contained through each job's failure sink). Idempotent.
+    pub(crate) fn dispose_cancelled(&self) {
+        let cancelled = std::mem::take(&mut *lock(&self.exit_cancelled));
+        for job in &cancelled {
+            let released = lock(&job.exit_released).take();
+            if let Some((held, scheduled)) = released {
+                drop(held);
+                for emit in scheduled {
+                    emit.discard(job);
+                }
+            }
+        }
+        drop(cancelled);
     }
 
     /// Join the cancelled jobs, bounded by `deadline`; returns how many are

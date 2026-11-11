@@ -179,8 +179,9 @@ impl<C: Fn()> ActorCleanup<C> {
 
     /// Every obligation of the death point is answered (the mode answered
     /// its queued requests after [`die`](Self::die)): now run the deferred
-    /// wake-ups, then log a skipped `stopped()`. Call it before destroying
-    /// any payload or state. Idempotent.
+    /// wake-ups, then log a skipped `stopped()`, then destroy what the jobs'
+    /// cancellation released. Call it before destroying the mailbox's
+    /// payloads and the state. Idempotent.
     pub(crate) fn discharged(&mut self) {
         if std::mem::replace(&mut self.discharged, true) {
             return;
@@ -190,6 +191,10 @@ impl<C: Fn()> ActorCleanup<C> {
         }
         if let Some(reason) = self.skip_log.take() {
             log_stopped_skipped(self.id, "", "runtime_drop", Some(&reason));
+        }
+        // Payloads the exit's job cancellation released: destroyed only now.
+        if let Some(jobs) = &self.jobs {
+            jobs.dispose_cancelled();
         }
     }
     fn close(&mut self, reason: ExitReason) -> ExitReason {

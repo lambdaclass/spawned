@@ -399,11 +399,15 @@ current turn's slot) and a job set. The order is:
    6. the deadline heap is dropped;
    7. the exit reason is published, and monitors and links fire.
 
-   Steps 1 to 4 run no user code. Steps 3 and 4 follow the seal instead of
-   being one atomic step with it, but nothing between them depends on the
-   requests they answer (no destructor, notice or publication), so the
-   models' atomic death is a sound abstraction of them (they commute left
-   to the seal).
+   Steps 1 to 4 run no user code: steps 3 and 4 only make terminal
+   transitions; the callers' wake-ups (wakers are executor or user code),
+   and a runtime drop's "stopped() skipped" log, run after the last answer
+   and before step 5. Cancellation in step 1 only marks the jobs: the
+   payloads it releases (held results, scheduled emits) are destroyed in
+   step 5. Steps 3 and 4 follow the seal instead of being one atomic step
+   with it, but nothing between them depends on the requests they answer,
+   so the models' atomic death is a sound abstraction of them (they commute
+   left to the seal).
 
    `ActorStopped` keeps one meaning, "the actor is gone". An observer that
    sees `Down` knows every caller of the instance has been answered.

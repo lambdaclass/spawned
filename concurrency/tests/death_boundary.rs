@@ -56,6 +56,36 @@ impl Message for Block {
     type Result = ();
 }
 
+/// A payload whose destructor waits (at most 3 s) for a queued caller's
+/// answer, and records whether it arrived: destroyed before the death point
+/// answers that caller, it waits in vain.
+struct WaitsForAnswer {
+    caller: std::sync::Arc<std::sync::Mutex<Option<spawned_concurrency::ReplyReceiver<()>>>>,
+    answered: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+impl Drop for WaitsForAnswer {
+    fn drop(&mut self) {
+        let began = Instant::now();
+        while began.elapsed() < Duration::from_secs(3) {
+            let mut caller = self.caller.lock().unwrap();
+            if let Some(receiver) = caller.as_mut() {
+                if receiver.try_recv().is_some() {
+                    self.answered
+                        .store(true, std::sync::atomic::Ordering::SeqCst);
+                    return;
+                }
+            }
+            drop(caller);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+}
+/// A job's message carrying such a payload.
+struct Waiting(#[allow(dead_code)] WaitsForAnswer);
+impl Message for Waiting {
+    type Result = ();
+}
+
 /// Wait until `poll` yields, at most `LIMIT`.
 fn eventually<T>(what: &str, mut poll: impl FnMut() -> Option<T>) -> T {
     let began = Instant::now();
@@ -113,6 +143,85 @@ mod tasks_mode {
     impl Handler<HandOut> for Owner {
         async fn handle(&mut self, msg: HandOut, reply: PendingReply<'_, ()>, _: &Context<Self>) {
             msg.0.send(reply.defer().unwrap()).unwrap();
+        }
+    }
+
+    impl Handler<Waiting> for Owner {
+        async fn handle(&mut self, _: Waiting, _: PendingReply<'_, ()>, _: &Context<Self>) {}
+    }
+
+    /// Review round 2 (Codex 1): the owner's exit cancels its jobs without
+    /// destroying their payloads; a scheduled emit's message and a held
+    /// result are destroyed after the death point answered every caller.
+    /// Cancellation used to destroy them first: a destructor waiting for a
+    /// queued caller's answer waited for an answer that could not come.
+    #[test]
+    fn job_payloads_are_destroyed_after_every_caller_is_answered() {
+        use spawned_concurrency::tasks::JobOptions;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Mutex;
+        for held in [false, true] {
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .enable_all()
+                .build()
+                .unwrap();
+            let _guard = runtime.enter();
+            let actor = Owner {
+                _state: inert(),
+                parked: Vec::new(),
+            }
+            .start();
+            let caller = Arc::new(Mutex::new(None));
+            let answered = Arc::new(AtomicBool::new(false));
+            let payload = WaitsForAnswer {
+                caller: caller.clone(),
+                answered: answered.clone(),
+            };
+            let (scheduled_tx, scheduled) = mpsc::channel();
+            runtime.block_on(async {
+                actor
+                    .__in_turn(move |_, ctx| {
+                        ctx.pipe_with_ctx(
+                            JobOptions::default(),
+                            move |job| async move {
+                                let far = spawned_concurrency::Instant::now() + LIMIT * 10;
+                                if held {
+                                    // The result waits for this emit: held.
+                                    job.emit_at(far, Queued(inert())).await.unwrap();
+                                    scheduled_tx.send(()).unwrap();
+                                    Some(payload)
+                                } else {
+                                    job.emit_at(far, Waiting(payload)).await.unwrap();
+                                    scheduled_tx.send(()).unwrap();
+                                    job.cancelled().await;
+                                    None
+                                }
+                            },
+                            |_| Queued(inert()),
+                        )
+                        .unwrap();
+                    })
+                    .unwrap()
+                    .await
+                    .unwrap();
+            });
+            scheduled.recv_timeout(LIMIT).unwrap();
+            let (unblock, blocked) = mpsc::channel();
+            let (entered_tx, entered) = mpsc::channel();
+            actor.send(Block(blocked, entered_tx)).unwrap();
+            entered.recv_timeout(LIMIT).unwrap();
+            let queued = actor
+                .request_raw_until(Queued(inert()), spawned_concurrency::Deadline::Never)
+                .unwrap();
+            *caller.lock().unwrap() = Some(queued);
+            actor.context().stop();
+            unblock.send(()).unwrap();
+            runtime.block_on(actor.join());
+            assert!(
+                answered.load(Ordering::SeqCst),
+                "a job payload (held: {held}) was destroyed before the queued caller was answered"
+            );
         }
     }
 
@@ -368,6 +477,58 @@ mod threads_mode {
             let _ = msg.0.recv_timeout(LIMIT);
             reply.reply(());
         }
+    }
+
+    impl Handler<Waiting> for Owner {
+        fn handle(&mut self, _: Waiting, _: PendingReply<'_, ()>, _: &Context<Self>) {}
+    }
+
+    /// Review round 2 (Codex 1), threads mode: a scheduled emit's message
+    /// is destroyed after the death point answered every caller.
+    #[test]
+    fn job_payloads_are_destroyed_after_every_caller_is_answered() {
+        use spawned_concurrency::threads::JobOptions;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::{Arc, Mutex};
+        let actor = Owner.start();
+        let caller = Arc::new(Mutex::new(None));
+        let answered = Arc::new(AtomicBool::new(false));
+        let payload = WaitsForAnswer {
+            caller: caller.clone(),
+            answered: answered.clone(),
+        };
+        let (scheduled_tx, scheduled) = mpsc::channel();
+        spawned_test::threads::in_actor(&actor, move |_, ctx| {
+            ctx.pipe_blocking_with(
+                JobOptions::default(),
+                move |job| {
+                    let far = spawned_concurrency::Instant::now() + LIMIT * 10;
+                    job.emit_at_blocking(far, Waiting(payload)).unwrap();
+                    scheduled_tx.send(()).unwrap();
+                    while !job.is_cancelled() {
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
+                },
+                |_| Queued(inert()),
+            )
+            .unwrap();
+        });
+        scheduled.recv_timeout(LIMIT).unwrap();
+        let (unblock, blocked) = mpsc::channel();
+        let (entered_tx, entered) = mpsc::channel();
+        actor.send(Block(blocked, entered_tx)).unwrap();
+        entered.recv_timeout(LIMIT).unwrap();
+        let queued = actor
+            .request_raw_until(Queued(inert()), spawned_concurrency::Deadline::Never)
+            .unwrap();
+        *caller.lock().unwrap() = Some(queued);
+        actor.context().stop();
+        unblock.send(()).unwrap();
+        actor.join();
+        assert!(
+            answered.load(Ordering::SeqCst),
+            "a job payload was destroyed before the queued caller was answered"
+        );
     }
 
     /// Review P0 (Codex 1), threads mode.

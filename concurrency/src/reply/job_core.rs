@@ -108,6 +108,16 @@ impl JobCore {
     /// wakes blocked emitters. Never undoes effects. Returns whether this
     /// call set the flag. The caller wakes async emitters afterwards.
     pub(crate) fn cancel(&self) -> bool {
+        let (newly, held) = self.cancel_keeping_held();
+        // A held result is suppressed; it drops outside the lock.
+        drop(held);
+        newly
+    }
+
+    /// [`cancel`](Self::cancel) that hands the suppressed held result back
+    /// instead of dropping it (user payload): the owner's exit destroys it
+    /// only after its death point answered every caller.
+    pub(crate) fn cancel_keeping_held(&self) -> (bool, Option<HeldTerminal>) {
         let (newly, held) = {
             let mut inner = lock(&self.inner);
             let newly = !inner.cancelled;
@@ -120,10 +130,8 @@ impl JobCore {
             self.cancelled_fast.store(true, Ordering::Release);
             (newly, inner.held.take())
         };
-        // A held result is suppressed; it drops outside the lock.
-        drop(held);
         self.emitters.notify_all();
-        newly
+        (newly, held)
     }
 
     /// Take the terminal notification and run `enqueue` under the job's
@@ -310,6 +318,12 @@ impl JobCore {
 /// What the job set needs from a job.
 pub(crate) trait Job {
     fn cancel(&self);
+    /// The owner's exit cancels the job: like [`cancel`](Self::cancel), but
+    /// the payloads it releases are kept for the owner to destroy after its
+    /// death point.
+    fn cancel_for_exit(&self) {
+        self.cancel();
+    }
     fn is_running(&self) -> bool;
     fn finished(&self);
     /// Kept in the job list at compaction (so `cancel_all` reaches it):
@@ -443,9 +457,10 @@ impl<J: Job + 'static, K: Hash + Eq> JobSetCore<J, K> {
     }
 
     /// Owner exit: close admission and cancel every job (flag set, blocked
-    /// emitters woken). The key map's references and the upgraded jobs drop
-    /// outside the locks.
-    pub(crate) fn cancel_all(&self) {
+    /// emitters woken; [`Job::cancel_for_exit`]). Returns the cancelled jobs
+    /// (the caller drops them, outside the locks); the key map's references
+    /// drop outside the locks.
+    pub(crate) fn cancel_all(&self) -> Vec<Arc<J>> {
         let (jobs, keys) = {
             let mut list = lock(&self.jobs);
             list.closed = true;
@@ -454,10 +469,12 @@ impl<J: Job + 'static, K: Hash + Eq> JobSetCore<J, K> {
                 std::mem::take(&mut *lock(&self.keys)),
             )
         };
-        for job in jobs.iter().filter_map(Weak::upgrade) {
-            job.cancel();
+        let cancelled: Vec<Arc<J>> = jobs.iter().filter_map(Weak::upgrade).collect();
+        for job in &cancelled {
+            job.cancel_for_exit();
         }
         drop(keys);
+        cancelled
     }
 
     /// Wait until no job is running. `wait` parks on the idle condition
