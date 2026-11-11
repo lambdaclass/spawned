@@ -44,14 +44,29 @@ impl Message for Crash {
 struct Counter(usize);
 impl Actor for Counter {}
 impl Handler<Next> for Counter {
-    async fn handle(&mut self, _: Next, _: &Context<Self>) -> usize {
-        self.0 += 1;
-        self.0
+    async fn handle(
+        &mut self,
+        _: Next,
+        reply: spawned_concurrency::reply::PendingReply<'_, usize>,
+        _: &Context<Self>,
+    ) {
+        let __reply_value: usize = {
+            self.0 += 1;
+            self.0
+        };
+        reply.reply(__reply_value);
     }
 }
 impl Handler<Crash> for Counter {
-    async fn handle(&mut self, _: Crash, _: &Context<Self>) {
-        panic!("nested leaf failed");
+    async fn handle(
+        &mut self,
+        _: Crash,
+        _reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
+        {
+            panic!("nested leaf failed");
+        }
     }
 }
 type Published = Arc<Mutex<Option<SupervisedChild<Counter>>>>;
@@ -517,8 +532,15 @@ impl Actor for MaybeStop {
     }
 }
 impl Handler<Crash> for MaybeStop {
-    async fn handle(&mut self, _: Crash, _: &Context<Self>) {
-        panic!("nested leaf failed");
+    async fn handle(
+        &mut self,
+        _: Crash,
+        _reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
+        {
+            panic!("nested leaf failed");
+        }
     }
 }
 

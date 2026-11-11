@@ -3,6 +3,58 @@
 Upgrade notes per release, newest first. The [CHANGELOG](../CHANGELOG.md) lists
 every change; this guide covers what you need to edit when upgrading.
 
+## Unreleased
+
+### Deferred replies (rank 11, targets 0.8, in progress)
+
+This is a breaking release. The notes below grow with the implementation:
+
+- `ActorError` is `#[non_exhaustive]` and gains `ReplyDropped` and
+  `Overloaded`; add a wildcard arm to exhaustive matches.
+
+**Handlers.** `#[actor]` code is unchanged. A manual `impl Handler<M>` now
+takes the request's reply obligation and returns `()`:
+
+```rust
+// before
+impl Handler<GetCount> for Counter {
+    async fn handle(&mut self, _: GetCount, _: &Context<Self>) -> u64 { self.count }
+}
+// after
+impl Handler<GetCount> for Counter {
+    async fn handle(&mut self, _: GetCount, reply: PendingReply<'_, u64>, _: &Context<Self>) {
+        reply.reply(self.count);
+    }
+}
+```
+
+A handler that returns without answering a request now gives the caller
+`ReplyDropped` (a panic still gives `ActorStopped`). Sends reach the same
+`handle` with a detached `PendingReply`. To call a manual handler directly in
+a test, use `spawned_test::reply_pair()`.
+
+**Timeouts.** The request timeout starts at send, not at first poll.
+`request_raw` gains the 5 s default; use `request_raw_until(msg,
+Deadline::Never)` for the old unbounded wait.
+
+**Raw API.** `request_raw` returns a `ReplyReceiver<R>` (a future in tasks
+mode, `recv()` in threads mode) yielding `Result<R, ActorError>`.
+`Response::from_with_timeout` is removed: build the deadline first,
+`Response::from(actor.request_raw_until(msg, Deadline::after(t)))`.
+`Receiver<M>` implementors implement `request_raw_until` (`request_raw` is
+provided). A `recv_timeout` on the old native receiver has no counterpart:
+the deadline is fixed when the request is sent.
+
+**Metrics.** `metrics::Snapshot` gains `requests_reply_dropped_total` and
+`requests_overloaded_total`, the `deferred_*` and `jobs_*` fields (see the
+GUIDE's Metrics section) and the `deferred_reply_latency` histogram. Code
+that builds a `Snapshot` with a struct literal must add them.
+
+**Lifecycle.** At death the registry closes (open deferred tokens answer
+`ActorStopped`), then the mailbox is disposed, then actor state is dropped:
+a state destructor that sends to its own actor now fails with `ActorStopped`
+instead of enqueueing into a mailbox about to be dropped.
+
 ## 0.7.3
 
 **Behaviour change (supervision).** A Transient child's replacement (any generation after the child was first

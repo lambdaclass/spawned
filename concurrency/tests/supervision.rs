@@ -40,14 +40,29 @@ impl Message for Crash {
 struct Counter(usize);
 impl Actor for Counter {}
 impl Handler<Next> for Counter {
-    async fn handle(&mut self, _: Next, _: &Context<Self>) -> usize {
-        self.0 += 1;
-        self.0
+    async fn handle(
+        &mut self,
+        _: Next,
+        reply: spawned_concurrency::reply::PendingReply<'_, usize>,
+        _: &Context<Self>,
+    ) {
+        let __reply_value: usize = {
+            self.0 += 1;
+            self.0
+        };
+        reply.reply(__reply_value);
     }
 }
 impl Handler<Crash> for Counter {
-    async fn handle(&mut self, _: Crash, _: &Context<Self>) {
-        panic!("injected child failure");
+    async fn handle(
+        &mut self,
+        _: Crash,
+        _reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
+        {
+            panic!("injected child failure");
+        }
     }
 }
 
@@ -275,8 +290,15 @@ impl Actor for SlowHelper {
     }
 }
 impl Handler<Crash> for SlowHelper {
-    async fn handle(&mut self, _: Crash, _: &Context<Self>) {
-        panic!("injected failure with active helper");
+    async fn handle(
+        &mut self,
+        _: Crash,
+        _reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
+        {
+            panic!("injected failure with active helper");
+        }
     }
 }
 // Not simulated: a helper blocks an OS worker on purpose.
@@ -342,8 +364,15 @@ impl Actor for SlowStop {
     }
 }
 impl Handler<Crash> for SlowStop {
-    async fn handle(&mut self, _: Crash, _: &Context<Self>) {
-        panic!("failure before stuck stopped hook");
+    async fn handle(
+        &mut self,
+        _: Crash,
+        _reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
+        {
+            panic!("failure before stuck stopped hook");
+        }
     }
 }
 // Not simulated: a helper blocks an OS worker on purpose.
@@ -527,14 +556,29 @@ impl Drop for RaceActor {
 }
 impl Actor for RaceActor {}
 impl Handler<Crash> for RaceActor {
-    async fn handle(&mut self, _: Crash, _: &Context<Self>) {
-        panic!("racing child failure");
+    async fn handle(
+        &mut self,
+        _: Crash,
+        _reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
+        {
+            panic!("racing child failure");
+        }
     }
 }
 impl Handler<Next> for RaceActor {
-    async fn handle(&mut self, _: Next, _: &Context<Self>) -> usize {
-        self.count += 1;
-        self.count
+    async fn handle(
+        &mut self,
+        _: Next,
+        reply: spawned_concurrency::reply::PendingReply<'_, usize>,
+        _: &Context<Self>,
+    ) {
+        let __reply_value: usize = {
+            self.count += 1;
+            self.count
+        };
+        reply.reply(__reply_value);
     }
 }
 #[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
@@ -817,8 +861,15 @@ impl Actor for ExitOnceDuringRestart {
     }
 }
 impl Handler<Crash> for ExitOnceDuringRestart {
-    async fn handle(&mut self, _: Crash, _: &Context<Self>) {
-        panic!("injected child failure");
+    async fn handle(
+        &mut self,
+        _: Crash,
+        _reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
+        {
+            panic!("injected child failure");
+        }
     }
 }
 
@@ -1286,8 +1337,15 @@ impl Actor for Named {
     }
 }
 impl Handler<Crash> for Named {
-    async fn handle(&mut self, _: Crash, _: &Context<Self>) {
-        panic!("crash a registered child");
+    async fn handle(
+        &mut self,
+        _: Crash,
+        _reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
+        {
+            panic!("crash a registered child");
+        }
     }
 }
 

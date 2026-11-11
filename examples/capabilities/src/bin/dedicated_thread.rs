@@ -12,21 +12,29 @@ impl Message for Check {
     type Result = (usize, u64);
 }
 impl Handler<Check> for Worker {
-    async fn handle(&mut self, _: Check, _: &Context<Self>) -> (usize, u64) {
-        let root = thread::current().id();
-        let workers = tokio::runtime::Handle::current().metrics().num_workers();
-        let (tx, rx) = mpsc::channel();
-        let helper = tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(1)).await;
-            assert_ne!(root, thread::current().id());
-            tx.send(42).unwrap();
-        });
-        // This would stall a current-thread executor. The isolated runtime's
-        // one async worker can drive the helper independently of this root.
-        let answer = rx.recv_timeout(Duration::from_secs(5)).unwrap();
-        helper.await.unwrap();
-        assert_eq!(root, thread::current().id());
-        (workers, answer)
+    async fn handle(
+        &mut self,
+        _: Check,
+        reply: spawned_concurrency::reply::PendingReply<'_, (usize, u64)>,
+        _: &Context<Self>,
+    ) {
+        let __reply_value: (usize, u64) = {
+            let root = thread::current().id();
+            let workers = tokio::runtime::Handle::current().metrics().num_workers();
+            let (tx, rx) = mpsc::channel();
+            let helper = tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+                assert_ne!(root, thread::current().id());
+                tx.send(42).unwrap();
+            });
+            // This would stall a current-thread executor. The isolated runtime's
+            // one async worker can drive the helper independently of this root.
+            let answer = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            helper.await.unwrap();
+            assert_eq!(root, thread::current().id());
+            (workers, answer)
+        };
+        reply.reply(__reply_value);
     }
 }
 

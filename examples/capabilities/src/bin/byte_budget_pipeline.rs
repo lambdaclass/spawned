@@ -18,13 +18,21 @@ impl Message for Packet {
 struct Sink(usize);
 impl Actor for Sink {}
 impl Handler<Packet> for Sink {
-    async fn handle(&mut self, packet: Packet, _: &Context<Self>) -> usize {
-        let Packet { bytes, credit } = packet;
-        let size = bytes.len();
-        self.0 += size;
-        drop(bytes);
-        drop(credit); // Capacity returns after the payload is released.
-        size
+    async fn handle(
+        &mut self,
+        packet: Packet,
+        reply: spawned_concurrency::reply::PendingReply<'_, usize>,
+        _: &Context<Self>,
+    ) {
+        let __reply_value: usize = {
+            let Packet { bytes, credit } = packet;
+            let size = bytes.len();
+            self.0 += size;
+            drop(bytes);
+            drop(credit); // Capacity returns after the payload is released.
+            size
+        };
+        reply.reply(__reply_value);
     }
 }
 struct Total;
@@ -32,15 +40,25 @@ impl Message for Total {
     type Result = usize;
 }
 impl Handler<Total> for Sink {
-    async fn handle(&mut self, _: Total, _: &Context<Self>) -> usize {
-        self.0
+    async fn handle(
+        &mut self,
+        _: Total,
+        reply: spawned_concurrency::reply::PendingReply<'_, usize>,
+        _: &Context<Self>,
+    ) {
+        reply.reply(self.0);
     }
 }
 struct Forwarder(ActorRef<Sink>);
 impl Actor for Forwarder {}
 impl Handler<Packet> for Forwarder {
-    async fn handle(&mut self, packet: Packet, _: &Context<Self>) -> usize {
-        self.0.request(packet).await.unwrap()
+    async fn handle(
+        &mut self,
+        packet: Packet,
+        reply: spawned_concurrency::reply::PendingReply<'_, usize>,
+        _: &Context<Self>,
+    ) {
+        reply.reply(self.0.request(packet).await.unwrap());
     }
 }
 

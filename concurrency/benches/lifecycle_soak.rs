@@ -61,23 +61,31 @@ impl Message for Step {
     type Result = u64;
 }
 impl Handler<Step> for Worker {
-    async fn handle(&mut self, msg: Step, _: &Context<Self>) -> u64 {
-        assert_eq!(self.state, msg.expected);
-        assert_eq!(self.bytes[0], 13);
-        if msg.helper {
-            assert_eq!(
-                tokio::spawn(async {
-                    tokio::time::sleep(Duration::from_millis(1)).await;
+    async fn handle(
+        &mut self,
+        msg: Step,
+        reply: spawned_concurrency::reply::PendingReply<'_, u64>,
+        _: &Context<Self>,
+    ) {
+        let __reply_value: u64 = {
+            assert_eq!(self.state, msg.expected);
+            assert_eq!(self.bytes[0], 13);
+            if msg.helper {
+                assert_eq!(
+                    tokio::spawn(async {
+                        tokio::time::sleep(Duration::from_millis(1)).await;
+                        42
+                    })
+                    .await
+                    .unwrap(),
                     42
-                })
-                .await
-                .unwrap(),
-                42
-            );
-        }
-        self.state += 1;
-        self.counts.requests.fetch_add(1, Ordering::Relaxed);
-        self.state
+                );
+            }
+            self.state += 1;
+            self.counts.requests.fetch_add(1, Ordering::Relaxed);
+            self.state
+        };
+        reply.reply(__reply_value);
     }
 }
 struct Crash;
@@ -85,7 +93,12 @@ impl Message for Crash {
     type Result = ();
 }
 impl Handler<Crash> for Worker {
-    async fn handle(&mut self, _: Crash, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        _: Crash,
+        _reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
         panic!("soak injected handler failure");
     }
 }
@@ -99,14 +112,25 @@ impl Message for Watch {
     type Result = ();
 }
 impl Handler<Watch> for Watcher {
-    async fn handle(&mut self, msg: Watch, ctx: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        msg: Watch,
+        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        ctx: &Context<Self>,
+    ) {
         for (child, panic) in msg.0 {
             assert!(self.pending.insert(ctx.monitor(&child), panic).is_none());
         }
+        reply.reply(());
     }
 }
 impl Handler<Down> for Watcher {
-    async fn handle(&mut self, msg: Down, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        msg: Down,
+        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
         let panic = self
             .pending
             .remove(&msg.monitor_ref)
@@ -116,6 +140,7 @@ impl Handler<Down> for Watcher {
             assert_eq!(msg.reason, ExitReason::Normal);
         }
         self.counts.down.fetch_add(1, Ordering::Release);
+        reply.reply(());
     }
 }
 struct Remaining;
@@ -123,8 +148,13 @@ impl Message for Remaining {
     type Result = usize;
 }
 impl Handler<Remaining> for Watcher {
-    async fn handle(&mut self, _: Remaining, _: &Context<Self>) -> usize {
-        self.pending.len()
+    async fn handle(
+        &mut self,
+        _: Remaining,
+        reply: spawned_concurrency::reply::PendingReply<'_, usize>,
+        _: &Context<Self>,
+    ) {
+        reply.reply(self.pending.len());
     }
 }
 fn pin(cpus: &str) {

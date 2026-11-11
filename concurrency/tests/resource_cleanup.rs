@@ -15,14 +15,26 @@ struct Sink;
 impl tasks::Actor for Sink {}
 #[cfg(feature = "async")]
 impl tasks::Handler<Probe> for Sink {
-    async fn handle(&mut self, msg: Probe, _: &tasks::Context<Self>) {
+    async fn handle(
+        &mut self,
+        msg: Probe,
+        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _: &tasks::Context<Self>,
+    ) {
         drop(msg.0);
+        reply.reply(());
     }
 }
 impl threads::Actor for Sink {}
 impl threads::Handler<Probe> for Sink {
-    fn handle(&mut self, msg: Probe, _: &threads::Context<Self>) {
+    fn handle(
+        &mut self,
+        msg: Probe,
+        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _: &threads::Context<Self>,
+    ) {
         drop(msg.0);
+        reply.reply(());
     }
 }
 fn released(weak: &Weak<()>) {

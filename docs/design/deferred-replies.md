@@ -1,6 +1,6 @@
 # Deferred replies and pipe-to-self: design contract
 
-**Status: design in progress, not implemented.**
+**Status: implementation in review (PR #239); see [Implementation notes](#implementation-notes).**
 
 - Covers ROADMAP rank 11 and the rank 11a decisions. The rank 11b compute pool
   is deferred to 11b.
@@ -921,6 +921,38 @@ ordering and `EmitCreditsBounded` checks in-flight emit credits.
   versus abandonment).
 
 **Trace validation:** against both models.
+
+## Implementation notes
+
+Mechanism choices made by the implementation (PR #239). None changes the
+semantics above.
+
+- **Value cell.** The crates are `#![forbid(unsafe_code)]`, so the slot's value
+  and the caller's waker live under one uncontended `Mutex` instead of an
+  `UnsafeCell` plus `AtomicWaker`. The packed word, its CAS rules and every
+  credit delta are as specified; the reply reads the deadline under the same
+  lock that a shortening takes, which makes a shortening after the `WRITING`
+  CAS a no-op (Loom: `reply_vs_shortening`).
+- **Receiver and timer.** `ReplyReceiver<R>` is one pointer and implements
+  `IntoFuture`; the deadline timer lives in the awaiting `ReplyFuture`. When
+  the runtime's timer fires the receiver expires the slot, so paused Tokio
+  clocks keep working.
+- **Deadline service.** Unmanaged and managed actors share one process-wide
+  service thread (not a task on the `ActorSystem` control runtime); a dead
+  owner is forgotten at its registry close. Under `spawned_sim` each owner's
+  heap is served by a task of the simulated runtime, so clock domains never
+  mix.
+- **Cleanup deadline.** Armed when exit begins: the supervisor's
+  `shutdown_timeout` for a supervised child, the remaining system grace
+  during `ActorSystem::shutdown`, otherwise `DEFAULT_STOP_DEADLINE` (5 s).
+  Jobs still running then appear in `ShutdownReport::unfinished_jobs` and as
+  an `unfinished_at_stop` event.
+- **Async emits.** `ctx.pipe_with_ctx(opts, |job| async move { .. }, done)`
+  hands async work its `JobCtx` (`emit`, `cancelled`); `pipe(work, done)`
+  keeps taking a plain future, as in the delegation example.
+- **Destruction.** If an owner's lifecycle future is dropped (its runtime
+  destroyed), exit begins before its state is dropped and the registry
+  closes, so open tokens answer `ActorStopped`.
 
 ## Open questions
 

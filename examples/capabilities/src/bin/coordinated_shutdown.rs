@@ -36,13 +36,24 @@ impl Actor for Peers {
     }
 }
 impl Handler<Peer> for Peers {
-    async fn handle(&mut self, msg: Peer, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        msg: Peer,
+        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
         self.peers.push(msg.0);
+        reply.reply(());
     }
 }
 impl Handler<Snapshot> for Peers {
-    async fn handle(&mut self, _: Snapshot, _: &Context<Self>) -> Vec<u64> {
-        self.peers.clone()
+    async fn handle(
+        &mut self,
+        _: Snapshot,
+        reply: spawned_concurrency::reply::PendingReply<'_, Vec<u64>>,
+        _: &Context<Self>,
+    ) {
+        reply.reply(self.peers.clone());
     }
 }
 struct Importer {
@@ -55,12 +66,25 @@ impl Actor for Importer {
     }
 }
 impl Handler<Import> for Importer {
-    async fn handle(&mut self, msg: Import, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        msg: Import,
+        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
         self.peers.send(Peer(msg.0)).unwrap();
+        reply.reply(());
     }
 }
 impl Handler<Fence> for Importer {
-    async fn handle(&mut self, _: Fence, _: &Context<Self>) {}
+    async fn handle(
+        &mut self,
+        _: Fence,
+        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
+        reply.reply(());
+    }
 }
 #[tokio::main(flavor = "current_thread")]
 async fn main() {

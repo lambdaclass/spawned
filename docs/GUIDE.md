@@ -20,6 +20,7 @@ or model that checks each one, are collected in the
 - [Type Erasure: Recipient and Receiver](#type-erasure-recipient-and-receiver)
 - [Registry](#registry)
 - [Response\<T\>](#responset)
+- [Deferred replies and pipe-to-self](#deferred-replies-and-pipe-to-self) (v0.8)
 - [Message Trait](#message-trait)
 - [Error Handling](#error-handling)
 - [spawned-rt](#spawned-rt)
@@ -508,14 +509,94 @@ before message arguments move. Send-only methods have no timeout, and a
 `request_timeout` attribute on one is a compile error. Manual message calls use
 `request_with_timeout(msg, limit)`.
 
-Enqueue still happens when the generated method is called. In async mode the
-response timer starts when its future is first polled. In native mode the
-protocol call blocks immediately. Timeout/drop does not cancel accepted work or
+Enqueue still happens when the generated method is called. The deadline is
+fixed then, at send (send time plus the timeout, as OTP's `call`), and travels
+with the request; in async mode the response future waits until that deadline
+when polled. In native mode the protocol call blocks immediately. Timeout/drop does not cancel accepted work or
 roll back side effects; decide retry safety in application code. These settings
 do not propagate deadlines to downstream requests.
 
 Run the [asserted example](../examples/capabilities/src/bin/protocol_timeouts.rs)
 in both modes, or follow the [0.7 client migration guide](MIGRATION.md#preparing-for-07).
+
+## Deferred replies and pipe-to-self
+
+A handler that would await downstream work blocks its whole mailbox. Instead,
+take the request's reply obligation out of the turn and answer it later; the
+caller and the protocol do not change.
+
+Every `Handler::handle` receives a `PendingReply<'_, R>`. `#[request_handler]`
+methods answer it for you with their return value. A `#[deferred_handler]`
+receives it:
+
+```rust
+#[actor(protocol = PeerTableProtocol)]
+impl PeerTable {
+    #[deferred_handler]
+    async fn wait_for_peer(&mut self, msg: WaitForPeer, reply: PendingReply<'_, Lease>,
+                           _ctx: &Context<Self>) {
+        if let Some(lease) = self.take_lease(&msg.caps) {
+            reply.reply(lease);
+            return;
+        }
+        match reply.defer() {
+            Ok(token) => self.waiters.push_back((msg.caps, token)), // a ReplyTo<Lease>
+            Err(DeferError::Overloaded) => {} // the caller was already answered Overloaded
+            Err(DeferError::Closed) => {}     // the caller timed out or left
+            Err(DeferError::NoCaller) => {}   // reached by `send`
+        }
+    }
+}
+```
+
+Rules (the [design](design/deferred-replies.md) has the full contract):
+
+- `defer()` takes one of the instance's `Actor::MAX_OUTSTANDING` credits
+  (default 1024). At the bound the caller gets `Err(Overloaded)` at once.
+- A `ReplyTo<R>` is `Send + 'static` and answers exactly once:
+  `token.reply(v)` returns a `Delivery` (`Delivered`, `CallerGone`, `Expired`,
+  `OwnerExited`); `token.overloaded()` answers `Err(Overloaded)`.
+- Dropping an unanswered token answers `ReplyDropped` (or `ActorStopped` if the
+  turn panicked or the actor is exiting). `stopped()` may still answer stored
+  tokens; at the actor's death every open token answers `ActorStopped`.
+- The deadline is the caller's, fixed at send. `token.is_closed()` tells you
+  the caller can no longer be answered; the actor's deadline heap expires
+  stored tokens on time and returns their credits.
+- `PendingReplies<K, R>` is a bounded table of tokens by key (purges terminal
+  entries on insert; `InsertError::{Duplicate, Full}` hands the token back).
+
+**Pipe-to-self jobs** run work owned by the actor and deliver the result as a
+message in a later turn (OTP's `Task.Supervisor.async_nolink` plus
+`handle_info`):
+
+```rust
+// CPU offload on an owned native thread, with a deadline:
+let opts = JobOptions { deadline: Some(Instant::now() + VERDICT_DEADLINE), ..Default::default() };
+ctx.pipe_blocking_with(opts, move |_job| check(&object), move |res| Verdict { id, res })?;
+
+// Delegation: the obligation and its credit stay here.
+let token = reply.defer()?;
+let downstream = other.request_raw_until(Lookup(key), token.deadline().map_or(Deadline::Never, Deadline::At));
+ctx.pipe_reply(token, async move { downstream?.await }, |res, token| Delegated { res, token })?;
+```
+
+- `done(outcome)` runs in the owner's turn; `JobOutcome::Err` carries
+  `JobError::Panicked` or `JobError::DeadlineExceeded` (the work keeps running
+  and keeps its credit).
+- `pipe_keyed` / `JobOptions::key` cancel the previous job with that key and
+  fence its queued messages; `JobHandle::cancel` fences one job.
+- `JobCtx::emit_blocking` (and `emit` for async jobs) sends fenced messages,
+  bounded by `JobOptions::emit_credits`; the terminal message is always last.
+- Each unlinked job holds one credit; native jobs also count against
+  `Actor::MAX_NATIVE_JOBS`. Every bound rejects at once (`PipeError`), never
+  waits. `pipe_reply*` errors hand the token back.
+- Owner exit cancels every job; after death the jobs are joined, bounded by
+  `DEFAULT_STOP_DEADLINE`, and stragglers are reported (`unfinished_at_stop`).
+- `threads` mode offers `pipe_blocking_with` and `pipe_reply_blocking_with`
+  (one owned native thread per job).
+
+Test a manual handler directly with `spawned_test::reply_pair()`. Run the
+[deferred replies example](../examples/capabilities/src/bin/deferred_replies.rs).
 
 ## Message Trait
 
@@ -1102,6 +1183,8 @@ counters and histograms still aggregate the whole process.
 | Request outcomes | Started, active, replied, timed out, actor stopped, and caller cancelled. Transport replies are successful even if the application result itself contains an error. |
 | Lifecycle | Actor instances admitted, active, and exited by Normal/Shutdown/Panic/Kill; handler starts, active handlers, completions, panics and interrupted futures. |
 | Delivery accounting | Enqueue acceptance/rejection, discarded queued messages, replies sent to channels, and reply receivers already dropped. Enqueue success does not promise handling or durable delivery. |
+| Deferred replies (`spawned_deferred_*`) | `deferred_tokens_total` (successful `defer()`), `deferred_pending` (open slots with a live token, all actors), how each deferred slot ended: `replied`, `expired` (its deadline), `dropped`, `stopped` (owner exit or death), `abandoned` (caller gave up), each `_total`; `deferred_overloaded_total` (every `Overloaded` answer, at `defer()` or `ReplyTo::overloaded`); `deferred_reply_latency_seconds`, a sampled histogram from `defer()` to a delivered reply. |
+| Jobs (`spawned_jobs_*`) | `jobs_started_total` (admitted), `jobs_running` (executing, cancelled or timed-out work included), terminal notifications `jobs_completed_total`, `jobs_panicked_total`, `jobs_deadline_exceeded_total`; `jobs_cancelled_total` (cancelled while still running: handle, key replacement, owner exit, caller give-up); `jobs_fenced_total` (job messages dropped at dispatch); `jobs_rejected_total` (at the credit bound or the native budget); `jobs_emits_total`; `jobs_unfinished_at_stop_total` (still running at the owner's cleanup deadline). |
 
 Counters end in `_total`. Duration histograms use fixed nanosecond buckets
 internally and seconds in Prometheus export; their count/sum/max describe sampled
@@ -1122,6 +1205,11 @@ conservation relationships apply after operations quiesce:
 - handled = completed handlers + panicked handlers + aborted handlers + active;
 - observed requests = replied + timed out + actor stopped + cancelled + active;
 - spawned actor instances = exited + active.
+- deferred tokens = replied + expired + dropped + stopped + abandoned +
+  pending (an `Overloaded` defer takes no token);
+- started jobs = running + jobs whose execution ended (a job's terminal
+  notification is completed, panicked, deadline exceeded, or none when it was
+  cancelled first).
 
 An actor is active from creation of its lifecycle guard until terminal cleanup,
 including waiting for a blocking-pool slot, `started()` and `stopped()`. A runtime

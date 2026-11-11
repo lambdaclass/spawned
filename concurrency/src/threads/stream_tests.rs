@@ -28,15 +28,26 @@ impl Message for GetItems {
 impl Actor for Collector {}
 
 impl Handler<Push> for Collector {
-    fn handle(&mut self, msg: Push, _ctx: &Context<Self>) {
+    fn handle(
+        &mut self,
+        msg: Push,
+        reply: crate::reply::PendingReply<'_, ()>,
+        _ctx: &Context<Self>,
+    ) {
         self.items.push(msg.value);
         self.done.fetch_add(1, Ordering::SeqCst);
+        reply.reply(());
     }
 }
 
 impl Handler<GetItems> for Collector {
-    fn handle(&mut self, _msg: GetItems, _ctx: &Context<Self>) -> Vec<i32> {
-        self.items.clone()
+    fn handle(
+        &mut self,
+        _msg: GetItems,
+        reply: crate::reply::PendingReply<'_, Vec<i32>>,
+        _ctx: &Context<Self>,
+    ) {
+        reply.reply(self.items.clone());
     }
 }
 

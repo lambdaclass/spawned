@@ -25,13 +25,25 @@ impl Message for Crash {
 struct Probe(u64);
 impl Actor for Probe {}
 impl Handler<Generation> for Probe {
-    async fn handle(&mut self, _: Generation, _: &Context<Self>) -> u64 {
-        self.0
+    async fn handle(
+        &mut self,
+        _: Generation,
+        reply: spawned_concurrency::reply::PendingReply<'_, u64>,
+        _: &Context<Self>,
+    ) {
+        reply.reply(self.0);
     }
 }
 impl Handler<Crash> for Probe {
-    async fn handle(&mut self, _: Crash, _: &Context<Self>) {
-        panic!("generated supervisor failure");
+    async fn handle(
+        &mut self,
+        _: Crash,
+        _reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
+        {
+            panic!("generated supervisor failure");
+        }
     }
 }
 #[derive(Clone, Debug)]

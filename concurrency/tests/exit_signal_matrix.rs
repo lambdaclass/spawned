@@ -28,7 +28,9 @@ macro_rules! actors {
         struct Idle;
         impl Actor for Idle {}
         impl Handler<Ping> for Idle {
-            $($asynchronous)? fn handle(&mut self, _: Ping, _: &Context<Self>) {}
+            $($asynchronous)? fn handle(&mut self, _: Ping, reply: spawned_concurrency::reply::PendingReply<'_, ()>, _: &Context<Self>) {
+                reply.reply(());
+            }
         }
         struct Observer(mpsc::Sender<Notice>);
         impl Actor for Observer {
@@ -37,11 +39,15 @@ macro_rules! actors {
             }
         }
         impl Handler<Ping> for Observer {
-            $($asynchronous)? fn handle(&mut self, _: Ping, _: &Context<Self>) {}
+            $($asynchronous)? fn handle(&mut self, _: Ping, reply: spawned_concurrency::reply::PendingReply<'_, ()>, _: &Context<Self>) {
+                reply.reply(());
+            }
         }
         impl Handler<Down> for Observer {
-            $($asynchronous)? fn handle(&mut self, down: Down, _: &Context<Self>) {
+            $($asynchronous)? fn handle(&mut self, down: Down, reply: spawned_concurrency::reply::PendingReply<'_, ()>, _: &Context<Self>) {
+
                 self.0.send(Notice::Down(down.reason)).unwrap();
+reply.reply(());
             }
         }
     };

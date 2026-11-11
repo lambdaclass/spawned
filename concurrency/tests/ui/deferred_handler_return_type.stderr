@@ -1,0 +1,5 @@
+error: #[deferred_handler] answers through its PendingReply; remove the return type
+  --> tests/ui/deferred_handler_return_type.rs:13:91
+   |
+13 |     fn read(&mut self, _msg: Read, reply: PendingReply<'_, u64>, _ctx: &Context<Self>) -> u64 {
+   |                                                                                           ^^^

@@ -43,23 +43,40 @@ impl Summatory {
 impl Actor for Summatory {}
 
 impl Handler<StreamMsg> for Summatory {
-    async fn handle(&mut self, msg: StreamMsg, ctx: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        msg: StreamMsg,
+        reply: crate::reply::PendingReply<'_, ()>,
+        ctx: &Context<Self>,
+    ) {
         match msg {
             StreamMsg::Add(val) => self.count += val,
             StreamMsg::Error => ctx.stop(),
         }
+        reply.reply(());
     }
 }
 
 impl Handler<StopSum> for Summatory {
-    async fn handle(&mut self, _msg: StopSum, ctx: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        _msg: StopSum,
+        reply: crate::reply::PendingReply<'_, ()>,
+        ctx: &Context<Self>,
+    ) {
         ctx.stop();
+        reply.reply(());
     }
 }
 
 impl Handler<GetValue> for Summatory {
-    async fn handle(&mut self, _msg: GetValue, _ctx: &Context<Self>) -> u16 {
-        self.count
+    async fn handle(
+        &mut self,
+        _msg: GetValue,
+        reply: crate::reply::PendingReply<'_, u16>,
+        _ctx: &Context<Self>,
+    ) {
+        reply.reply(self.count);
     }
 }
 

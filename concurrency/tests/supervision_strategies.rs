@@ -70,20 +70,42 @@ impl Drop for Probe {
     }
 }
 impl Handler<Next> for Probe {
-    async fn handle(&mut self, _: Next, _: &Context<Self>) -> usize {
-        self.value += 1;
-        self.value
+    async fn handle(
+        &mut self,
+        _: Next,
+        reply: spawned_concurrency::reply::PendingReply<'_, usize>,
+        _: &Context<Self>,
+    ) {
+        let __reply_value: usize = {
+            self.value += 1;
+            self.value
+        };
+        reply.reply(__reply_value);
     }
 }
 impl Handler<Crash> for Probe {
-    async fn handle(&mut self, _: Crash, _: &Context<Self>) {
-        panic!("injected cohort failure");
+    async fn handle(
+        &mut self,
+        _: Crash,
+        _reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
+        {
+            panic!("injected cohort failure");
+        }
     }
 }
 impl Handler<CrashTogether> for Probe {
-    async fn handle(&mut self, msg: CrashTogether, _: &Context<Self>) {
-        msg.0.wait().await;
-        panic!("simultaneous cohort failure");
+    async fn handle(
+        &mut self,
+        msg: CrashTogether,
+        _reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
+        {
+            msg.0.wait().await;
+            panic!("simultaneous cohort failure");
+        }
     }
 }
 
@@ -705,7 +727,14 @@ impl Actor for MaybeStop {
     }
 }
 impl Handler<CrashPlain> for MaybeStop {
-    async fn handle(&mut self, _: CrashPlain, _: &Context<Self>) {
-        panic!("injected cohort failure");
+    async fn handle(
+        &mut self,
+        _: CrashPlain,
+        _reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
+        {
+            panic!("injected cohort failure");
+        }
     }
 }

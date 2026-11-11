@@ -7,10 +7,12 @@ use crate::link::{
 use crate::mailbox::tasks as mpsc;
 use crate::message::Message;
 use crate::monitor::{Down, MonitorCleanup, MonitorRef, MonitorTable};
+use crate::reply::{registry::Registry, reply_slot, SlotHandle};
+use crate::reply::{Deadline, PendingReply, ReplyReceiver, DEFAULT_MAX_OUTSTANDING};
 use core::pin::pin;
 use futures::future::{self, FutureExt as _};
 use spawned_rt::{
-    tasks::{self as rt, oneshot, timeout, watch, CancellationToken, JoinHandle},
+    tasks::{self as rt, watch, CancellationToken, JoinHandle},
     threads,
 };
 use std::sync::atomic::Ordering;
@@ -25,6 +27,14 @@ use std::{
 };
 
 pub use crate::response::DEFAULT_REQUEST_TIMEOUT;
+
+/// Cleanup deadline for actors without a supervisor or system grace: the
+/// bound on joining an exiting actor's cancelled jobs.
+pub const DEFAULT_STOP_DEADLINE: Duration = Duration::from_secs(5);
+
+#[path = "jobs.rs"]
+mod jobs;
+pub use jobs::JobCtx;
 
 // ---------------------------------------------------------------------------
 // Backend
@@ -61,6 +71,15 @@ pub enum Backend {
 ///
 /// Actors must be `Send + Sized + 'static` so they can be moved to a spawned task.
 pub trait Actor: Send + Sized + 'static {
+    /// Deferred-reply credits per instance (live `ReplyTo` tokens plus running
+    /// linked jobs). At the bound `defer()` answers the caller `Overloaded`.
+    /// Capped at 65535.
+    const MAX_OUTSTANDING: usize = DEFAULT_MAX_OUTSTANDING;
+
+    /// Native threads this instance's blocking jobs may run at once
+    /// (`pipe_blocking*`). `None`: `min(4, available_parallelism)`.
+    const MAX_NATIVE_JOBS: Option<usize> = None;
+
     fn started(&mut self, _ctx: &Context<Self>) -> impl Future<Output = ()> + Send {
         async {}
     }
@@ -86,10 +105,32 @@ pub trait Actor: Send + Sized + 'static {
 
 /// Per-message handler trait. Implement once for each message type the actor handles.
 ///
+/// `handle` is the envelope dispatch for both `send` and `request`. Answer
+/// through `reply`: [`PendingReply::reply`] now, or [`PendingReply::defer`] to
+/// answer from a later turn, a job or `stopped()`. A request whose
+/// `PendingReply` is dropped unanswered gets `ReplyDropped`. A sent message
+/// has a detached `PendingReply` (no caller).
+///
+/// `#[actor]` generates this from `#[request_handler]`, `#[send_handler]` and
+/// `#[deferred_handler]` methods. Manual impls:
+///
+/// ```ignore
+/// impl Handler<GetCount> for Counter {
+///     async fn handle(&mut self, _: GetCount, reply: PendingReply<'_, u64>, _: &Context<Self>) {
+///         reply.reply(self.count);
+///     }
+/// }
+/// ```
+///
 /// Uses RPITIT (return-position `impl Trait` in traits), which means this trait
 /// is **not** object-safe. For type-erased references, use [`Receiver<M>`] / [`Recipient<M>`].
 pub trait Handler<M: Message>: Actor {
-    fn handle(&mut self, msg: M, ctx: &Context<Self>) -> impl Future<Output = M::Result> + Send;
+    fn handle(
+        &mut self,
+        msg: M,
+        reply: PendingReply<'_, M::Result>,
+        ctx: &Context<Self>,
+    ) -> impl Future<Output = ()> + Send;
 }
 
 // ---------------------------------------------------------------------------
@@ -117,7 +158,7 @@ trait Envelope<A: Actor>: Send {
 
 struct MessageEnvelope<M: Message> {
     msg: M,
-    tx: Option<oneshot::Sender<M::Result>>,
+    slot: SlotHandle<M::Result>,
     #[cfg(feature = "metrics")]
     observation: Option<crate::instrumentation::MessageObservation>,
 }
@@ -146,16 +187,9 @@ where
         actor: &'a mut A,
         ctx: &'a Context<A>,
     ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
-        Box::pin(async move {
-            let result = actor.handle(self.msg, ctx).await;
-            if let Some(tx) = self.tx {
-                let delivered = tx.send(result).is_ok();
-                #[cfg(feature = "metrics")]
-                crate::instrumentation::reply(delivered);
-                #[cfg(not(feature = "metrics"))]
-                let _ = delivered;
-            }
-        })
+        let mut this = *self;
+        let reply = PendingReply::new(this.slot.take(), &ctx.shared.replies);
+        Box::pin(actor.handle(this.msg, reply, ctx))
     }
 }
 
@@ -163,7 +197,7 @@ fn enqueue<A, M>(
     sender: &mpsc::Sender<Box<dyn Envelope<A> + Send>>,
     _mailbox: &crate::instrumentation::Mailbox,
     msg: M,
-    tx: Option<oneshot::Sender<M::Result>>,
+    slot: SlotHandle<M::Result>,
 ) -> Result<(), ActorError>
 where
     A: Actor + Handler<M>,
@@ -171,7 +205,7 @@ where
 {
     let envelope: Box<dyn Envelope<A> + Send> = Box::new(MessageEnvelope {
         msg,
-        tx,
+        slot,
         #[cfg(feature = "metrics")]
         observation: Some(_mailbox.enqueued()),
     });
@@ -266,6 +300,13 @@ struct ActorShared<A: Actor> {
     linked_reason: LinkedExitReason,
     mailbox: crate::instrumentation::Mailbox,
     managed: Option<Arc<crate::system::Scope>>,
+    /// This instance's reply registry: deferred tokens, credits, turn phase.
+    replies: Arc<Registry>,
+    /// This instance's pipe-to-self jobs.
+    jobs: Arc<crate::reply::jobs::JobSet>,
+    /// Becomes `true` when cleanup completes (death plus the bounded job
+    /// join); closed if the actor task is dropped. `join()` waits for it.
+    cleaned: watch::Receiver<bool>,
 }
 
 impl<A: Actor> Clone for Context<A> {
@@ -299,6 +340,12 @@ impl<A: Actor> Context<A> {
         self.shared.mailbox.depth()
     }
 
+    /// Deferred-reply credits in use by this instance: live deferred
+    /// tokens plus running linked jobs (bounded by `Actor::MAX_OUTSTANDING`).
+    pub fn deferred_outstanding(&self) -> usize {
+        self.shared.replies.outstanding()
+    }
+
     /// The actor's unique identity.
     pub fn id(&self) -> ActorId {
         self.shared.id
@@ -328,17 +375,38 @@ impl<A: Actor> Context<A> {
         A: Handler<M>,
         M: Message,
     {
-        enqueue(&self.shared.sender, &self.shared.mailbox, msg, None)
+        enqueue(
+            &self.shared.sender,
+            &self.shared.mailbox,
+            msg,
+            SlotHandle::detached(),
+        )
     }
 
-    /// Send a request and get a raw oneshot receiver for the reply.
-    pub fn request_raw<M>(&self, msg: M) -> Result<oneshot::Receiver<M::Result>, ActorError>
+    /// Send a request and get its [`ReplyReceiver`], with the default
+    /// deadline ([`DEFAULT_REQUEST_TIMEOUT`] after the send, as
+    /// `gen_server:call/2`).
+    pub fn request_raw<M>(&self, msg: M) -> Result<ReplyReceiver<M::Result>, ActorError>
     where
         A: Handler<M>,
         M: Message,
     {
-        let (tx, rx) = oneshot::channel();
-        enqueue(&self.shared.sender, &self.shared.mailbox, msg, Some(tx))?;
+        self.request_raw_until(msg, Deadline::after(DEFAULT_REQUEST_TIMEOUT))
+    }
+
+    /// Send a request whose deadline is `deadline` ([`Deadline::Never`] for
+    /// an unbounded wait).
+    pub fn request_raw_until<M>(
+        &self,
+        msg: M,
+        deadline: Deadline,
+    ) -> Result<ReplyReceiver<M::Result>, ActorError>
+    where
+        A: Handler<M>,
+        M: Message,
+    {
+        let (slot, rx) = reply_slot(deadline, Some(&self.shared.replies));
+        enqueue(&self.shared.sender, &self.shared.mailbox, msg, slot)?;
         Ok(rx)
     }
 
@@ -363,14 +431,18 @@ impl<A: Actor> Context<A> {
         M: Message,
     {
         let observation = crate::instrumentation::RequestObservation::new();
-        let result = match self.request_raw(msg) {
-            Err(error) => Err(error),
-            Ok(rx) => match timeout(duration, rx).await {
-                Ok(Ok(result)) => Ok(result),
-                Ok(Err(_)) => Err(ActorError::ActorStopped),
-                Err(_) => Err(ActorError::RequestTimeout),
-            },
+        // Bind the receiver before awaiting it: awaiting inside a `match` on
+        // the `Result` keeps the scrutinee's storage alive beside the awaited
+        // receiver and doubles this future's size.
+        let rx = match self.request_raw_until(msg, Deadline::after(duration)) {
+            Ok(rx) => rx,
+            Err(error) => {
+                let result = Err(error);
+                observation.finish(&result);
+                return result;
+            }
         };
+        let result = rx.into_timed_future().await;
         observation.finish(&result);
         result
     }
@@ -653,8 +725,12 @@ where
         Context::send(self, msg)
     }
 
-    fn request_raw(&self, msg: M) -> Result<oneshot::Receiver<M::Result>, ActorError> {
-        Context::request_raw(self, msg)
+    fn request_raw_until(
+        &self,
+        msg: M,
+        deadline: Deadline,
+    ) -> Result<ReplyReceiver<M::Result>, ActorError> {
+        Context::request_raw_until(self, msg, deadline)
     }
 }
 
@@ -668,7 +744,17 @@ where
 /// message type that `A` handles.
 pub trait Receiver<M: Message>: Send + Sync {
     fn send(&self, msg: M) -> Result<(), ActorError>;
-    fn request_raw(&self, msg: M) -> Result<oneshot::Receiver<M::Result>, ActorError>;
+    /// Send a request whose deadline is fixed now (the slot carries it).
+    fn request_raw_until(
+        &self,
+        msg: M,
+        deadline: Deadline,
+    ) -> Result<ReplyReceiver<M::Result>, ActorError>;
+    /// Send a request with the default deadline
+    /// ([`DEFAULT_REQUEST_TIMEOUT`] after the send).
+    fn request_raw(&self, msg: M) -> Result<ReplyReceiver<M::Result>, ActorError> {
+        self.request_raw_until(msg, Deadline::after(DEFAULT_REQUEST_TIMEOUT))
+    }
 }
 
 /// Type-erased reference for sending a single message type.
@@ -683,14 +769,17 @@ pub async fn request<M: Message>(
     timeout_duration: Duration,
 ) -> Result<M::Result, ActorError> {
     let observation = crate::instrumentation::RequestObservation::new();
-    let result = match recipient.request_raw(msg) {
-        Err(error) => Err(error),
-        Ok(rx) => match timeout(timeout_duration, rx).await {
-            Ok(Ok(result)) => Ok(result),
-            Ok(Err(_)) => Err(ActorError::ActorStopped),
-            Err(_) => Err(ActorError::RequestTimeout),
-        },
+    // The deadline is computed before enqueueing (send time, as OTP's call).
+    // Bind the receiver before awaiting it (see `ActorRef::request_with_timeout`).
+    let rx = match recipient.request_raw_until(msg, Deadline::after(timeout_duration)) {
+        Ok(rx) => rx,
+        Err(error) => {
+            let result = Err(error);
+            observation.finish(&result);
+            return result;
+        }
     };
+    let result = rx.into_timed_future().await;
     observation.finish(&result);
     result
 }
@@ -749,17 +838,38 @@ impl<A: Actor> ActorRef<A> {
         A: Handler<M>,
         M: Message,
     {
-        enqueue(&self.shared.sender, &self.shared.mailbox, msg, None)
+        enqueue(
+            &self.shared.sender,
+            &self.shared.mailbox,
+            msg,
+            SlotHandle::detached(),
+        )
     }
 
-    /// Send a request and get a raw oneshot receiver for the reply.
-    pub fn request_raw<M>(&self, msg: M) -> Result<oneshot::Receiver<M::Result>, ActorError>
+    /// Send a request and get its [`ReplyReceiver`], with the default
+    /// deadline ([`DEFAULT_REQUEST_TIMEOUT`] after the send, as
+    /// `gen_server:call/2`).
+    pub fn request_raw<M>(&self, msg: M) -> Result<ReplyReceiver<M::Result>, ActorError>
     where
         A: Handler<M>,
         M: Message,
     {
-        let (tx, rx) = oneshot::channel();
-        enqueue(&self.shared.sender, &self.shared.mailbox, msg, Some(tx))?;
+        self.request_raw_until(msg, Deadline::after(DEFAULT_REQUEST_TIMEOUT))
+    }
+
+    /// Send a request whose deadline is `deadline` ([`Deadline::Never`] for
+    /// an unbounded wait).
+    pub fn request_raw_until<M>(
+        &self,
+        msg: M,
+        deadline: Deadline,
+    ) -> Result<ReplyReceiver<M::Result>, ActorError>
+    where
+        A: Handler<M>,
+        M: Message,
+    {
+        let (slot, rx) = reply_slot(deadline, Some(&self.shared.replies));
+        enqueue(&self.shared.sender, &self.shared.mailbox, msg, slot)?;
         Ok(rx)
     }
 
@@ -784,14 +894,18 @@ impl<A: Actor> ActorRef<A> {
         M: Message,
     {
         let observation = crate::instrumentation::RequestObservation::new();
-        let result = match self.request_raw(msg) {
-            Err(error) => Err(error),
-            Ok(rx) => match timeout(duration, rx).await {
-                Ok(Ok(result)) => Ok(result),
-                Ok(Err(_)) => Err(ActorError::ActorStopped),
-                Err(_) => Err(ActorError::RequestTimeout),
-            },
+        // Bind the receiver before awaiting it: awaiting inside a `match` on
+        // the `Result` keeps the scrutinee's storage alive beside the awaited
+        // receiver and doubles this future's size.
+        let rx = match self.request_raw_until(msg, Deadline::after(duration)) {
+            Ok(rx) => rx,
+            Err(error) => {
+                let result = Err(error);
+                observation.finish(&result);
+                return result;
+            }
         };
+        let result = rx.into_timed_future().await;
         observation.finish(&result);
         result
     }
@@ -811,8 +925,23 @@ impl<A: Actor> ActorRef<A> {
     }
 
     /// Wait until the actor has fully stopped (including `stopped()` callback).
+    ///
+    /// Returns when cleanup completes: the actor died and its cancelled jobs
+    /// were joined (bounded by the cleanup deadline; jobs still running then
+    /// are reported, not awaited). A `stopped()` or state destructor that
+    /// never returns keeps it waiting; bound it with a timeout, or use
+    /// [`wait_exit`](Self::wait_exit) to observe death alone.
     pub async fn join(&self) {
         let _ = self.wait_exit().await;
+        let mut cleaned = self.shared.cleaned.clone();
+        loop {
+            if *cleaned.borrow_and_update() {
+                return;
+            }
+            if cleaned.changed().await.is_err() {
+                return;
+            }
+        }
     }
 
     /// Poll the exit reason. Returns `None` if the actor is still running.
@@ -901,8 +1030,12 @@ where
         ActorRef::send(self, msg)
     }
 
-    fn request_raw(&self, msg: M) -> Result<oneshot::Receiver<M::Result>, ActorError> {
-        ActorRef::request_raw(self, msg)
+    fn request_raw_until(
+        &self,
+        msg: M,
+        deadline: Deadline,
+    ) -> Result<ReplyReceiver<M::Result>, ActorError> {
+        ActorRef::request_raw_until(self, msg, deadline)
     }
 }
 
@@ -948,9 +1081,17 @@ impl<A: Actor> ActorRef<A> {
             .map(|s| s.cause.clone())
             .unwrap_or_else(new_linked_exit_reason);
 
+        let id = ActorId::next();
+        let (cleaned_tx, cleaned_rx) = watch::channel(false);
         let actor_ref = ActorRef {
             shared: Arc::new(ActorShared {
-                id: ActorId::next(),
+                id,
+                replies: Registry::new(id, A::MAX_OUTSTANDING),
+                jobs: Arc::new(crate::reply::jobs::JobSet::new(
+                    id,
+                    A::MAX_NATIVE_JOBS.unwrap_or_else(crate::reply::jobs::default_max_native_jobs),
+                )),
+                cleaned: cleaned_rx,
                 sender: tx,
                 cancellation_token: cancellation_token.clone(),
                 completion_rx,
@@ -966,6 +1107,7 @@ impl<A: Actor> ActorRef<A> {
 
         if let Some(scope) = &managed {
             scope.attach::<A>(actor_ref.child_handle());
+            scope.set_jobs(Arc::downgrade(&actor_ref.shared.jobs));
         }
 
         if let Some(parent) = parent {
@@ -1017,7 +1159,17 @@ impl<A: Actor> ActorRef<A> {
         .with_mailbox_failures(actor_ref.shared.sender.failures());
         let startup =
             crate::actor_cleanup::ActorStartup::new((actor, ctx, rx, cancellation_token), cleanup);
+        let job_owner = actor_ref.shared.clone();
+        let cleaned_tx = cleaned_tx;
+        // Destruction-safe close: if the runtime drops this future before it
+        // completes, the guard still cancels the jobs and closes the registry,
+        // so no deferred caller waits for an instance that can never answer.
+        let close_guard = crate::reply::registry::CloseOnDrop::new(
+            actor_ref.shared.replies.clone(),
+            actor_ref.shared.jobs.clone(),
+        );
         let inner_future = async move {
+            let _close_guard = close_guard;
             let ((actor, ctx, rx, cancellation_token), mut cleanup) = startup.into_parts();
             #[cfg(feature = "backend-experiments")]
             let _borrowed_runtime = borrowed_runtime;
@@ -1046,6 +1198,22 @@ impl<A: Actor> ActorRef<A> {
                 let actual = crate::system::lock(&scope.cause).clone().unwrap_or(reason);
                 scope.exited(actual);
             }
+            // Publish the exit (monitors and links fire) before the job join.
+            drop(cleanup);
+            // Job cleanup (deferred-replies §5 step 4), after death: join the
+            // cancelled jobs, bounded by the cleanup deadline; a job still
+            // running then does not undo death and is reported unfinished.
+            if job_owner.jobs.running() > 0 {
+                let timeout = job_owner
+                    .managed
+                    .as_ref()
+                    .map_or(DEFAULT_STOP_DEADLINE, |scope| scope.cleanup_timeout());
+                let remaining = job_owner.replies.cleanup_remaining(timeout);
+                let unfinished = job_owner.jobs.join(remaining).await;
+                crate::reply::jobs::report_unfinished(job_owner.id, unfinished);
+            }
+            drop(job_owner);
+            let _ = cleaned_tx.send(true);
         };
 
         if let Some(lease) = lease {
@@ -1179,15 +1347,39 @@ impl MessageTurn {
     }
 }
 
+/// The actor's state while its lifecycle runs. If the lifecycle future is
+/// dropped mid-way (its runtime was destroyed), exit begins before the state
+/// is dropped, so tokens held in it answer `ActorStopped`, not `ReplyDropped`.
+struct ExitOnDrop<A> {
+    actor: Option<A>,
+    replies: Arc<Registry>,
+    jobs: Arc<crate::reply::jobs::JobSet>,
+}
+impl<A> Drop for ExitOnDrop<A> {
+    fn drop(&mut self) {
+        if self.actor.is_some() {
+            self.replies.exiting();
+            self.jobs.cancel_all();
+        }
+    }
+}
+
 async fn run_actor<A: Actor>(
-    mut actor: A,
+    actor: A,
     ctx: Context<A>,
     mut rx: mpsc::Receiver<Box<dyn Envelope<A> + Send>>,
     cancellation_token: CancellationToken,
     #[cfg(feature = "backend-experiments")] turn: Option<MessageTurn>,
 ) -> Result<ExitReason, ExitReason> {
+    let replies = ctx.shared.replies.clone();
+    let jobs = ctx.shared.jobs.clone();
+    let mut owned = ExitOnDrop {
+        actor: Some(actor),
+        replies: replies.clone(),
+        jobs: jobs.clone(),
+    };
     let primary = match AssertUnwindSafe(run_actor_lifecycle(
-        &mut actor,
+        owned.actor.as_mut().expect("the state lives until death"),
         ctx,
         &mut rx,
         cancellation_token,
@@ -1206,6 +1398,16 @@ async fn run_actor<A: Actor>(
             )))
         }
     };
+    // Death (deferred-replies §5 step 3), only now that `stopped()` returned:
+    // close the registry (every open token answers ActorStopped), dispose
+    // the mailbox (queued requests answer ActorStopped), drop the state.
+    // Early returns (startup panic, closed scope) and an unwound lifecycle
+    // also begin exit here, so jobs never outlive their owner.
+    replies.exiting();
+    jobs.cancel_all();
+    replies.close();
+    drop(rx);
+    let actor = owned.actor.take().expect("the state lives until death");
     crate::actor_cleanup::finish_actor_state(actor, primary)
 }
 
@@ -1249,6 +1451,8 @@ async fn run_actor_lifecycle<A: Actor>(
         if let Some(scope) = &ctx.shared.managed {
             scope.end_running();
         }
+        ctx.shared.replies.exiting();
+        ctx.shared.jobs.cancel_all();
         if let Err(panic) = AssertUnwindSafe(async {
             fail_point!("actor.before_stopped", async);
             actor.stopped(&ctx).await
@@ -1308,9 +1512,11 @@ async fn run_actor_lifecycle<A: Actor>(
                 let observation = envelope
                     .observation()
                     .map(|observation| observation.begin());
+                ctx.shared.replies.begin_turn();
                 let result = AssertUnwindSafe(envelope.handle(actor, &ctx))
                     .catch_unwind()
                     .await;
+                ctx.shared.replies.end_turn(result.is_err());
                 #[cfg(feature = "diagnostics")]
                 drop(_turn);
                 #[cfg(feature = "metrics")]
@@ -1343,6 +1549,8 @@ async fn run_actor_lifecycle<A: Actor>(
         scope.end_running();
     }
     cancellation_token.cancel();
+    ctx.shared.replies.exiting();
+    ctx.shared.jobs.cancel_all();
     let stop_result = AssertUnwindSafe(async {
         fail_point!("actor.before_stopped", async);
         actor.stopped(&ctx).await
@@ -1513,22 +1721,43 @@ mod tests {
     impl Actor for Counter {}
 
     impl Handler<GetCount> for Counter {
-        async fn handle(&mut self, _msg: GetCount, _ctx: &Context<Self>) -> u64 {
-            self.count
+        async fn handle(
+            &mut self,
+            _msg: GetCount,
+            reply: crate::reply::PendingReply<'_, u64>,
+            _ctx: &Context<Self>,
+        ) {
+            reply.reply(self.count);
         }
     }
 
     impl Handler<Increment> for Counter {
-        async fn handle(&mut self, _msg: Increment, _ctx: &Context<Self>) -> u64 {
-            self.count += 1;
-            self.count
+        async fn handle(
+            &mut self,
+            _msg: Increment,
+            reply: crate::reply::PendingReply<'_, u64>,
+            _ctx: &Context<Self>,
+        ) {
+            let __reply_value: u64 = {
+                self.count += 1;
+                self.count
+            };
+            reply.reply(__reply_value);
         }
     }
 
     impl Handler<StopCounter> for Counter {
-        async fn handle(&mut self, _msg: StopCounter, ctx: &Context<Self>) -> u64 {
-            ctx.stop();
-            self.count
+        async fn handle(
+            &mut self,
+            _msg: StopCounter,
+            reply: crate::reply::PendingReply<'_, u64>,
+            ctx: &Context<Self>,
+        ) {
+            let __reply_value: u64 = {
+                ctx.stop();
+                self.count
+            };
+            reply.reply(__reply_value);
         }
     }
 
@@ -1669,10 +1898,16 @@ mod tests {
             }
             impl Actor for SlowActor {}
             impl Handler<SlowOp> for SlowActor {
-                async fn handle(&mut self, _msg: SlowOp, _ctx: &Context<Self>) {
+                async fn handle(
+                    &mut self,
+                    _msg: SlowOp,
+                    reply: crate::reply::PendingReply<'_, ()>,
+                    _ctx: &Context<Self>,
+                ) {
                     // Never replies, so the timeout is the only possible outcome
                     // however late the runtime polls it.
                     std::future::pending::<()>().await;
+                    reply.reply(());
                 }
             }
 
@@ -1719,8 +1954,14 @@ mod tests {
     }
 
     impl Handler<StopSlow> for SlowShutdownActor {
-        async fn handle(&mut self, _msg: StopSlow, ctx: &Context<Self>) {
+        async fn handle(
+            &mut self,
+            _msg: StopSlow,
+            reply: crate::reply::PendingReply<'_, ()>,
+            ctx: &Context<Self>,
+        ) {
             ctx.stop();
+            reply.reply(());
         }
     }
 
@@ -1759,15 +2000,27 @@ mod tests {
     }
 
     impl Handler<StopSlow> for HeldThread {
-        async fn handle(&mut self, _msg: StopSlow, ctx: &Context<Self>) {
+        async fn handle(
+            &mut self,
+            _msg: StopSlow,
+            reply: crate::reply::PendingReply<'_, ()>,
+            ctx: &Context<Self>,
+        ) {
             ctx.stop();
+            reply.reply(());
         }
     }
 
     impl Handler<DoBlock> for HeldThread {
-        async fn handle(&mut self, _msg: DoBlock, ctx: &Context<Self>) {
+        async fn handle(
+            &mut self,
+            _msg: DoBlock,
+            reply: crate::reply::PendingReply<'_, ()>,
+            ctx: &Context<Self>,
+        ) {
             self.hold();
             ctx.stop();
+            reply.reply(());
         }
     }
 
@@ -1840,10 +2093,16 @@ mod tests {
     impl Actor for BadlyBehavedTask {}
 
     impl Handler<DoBlock> for BadlyBehavedTask {
-        async fn handle(&mut self, _msg: DoBlock, ctx: &Context<Self>) {
+        async fn handle(
+            &mut self,
+            _msg: DoBlock,
+            reply: crate::reply::PendingReply<'_, ()>,
+            ctx: &Context<Self>,
+        ) {
             rt::sleep(Duration::from_millis(20)).await;
             thread::sleep(Duration::from_secs(2));
             ctx.stop();
+            reply.reply(());
         }
     }
 
@@ -1859,23 +2118,42 @@ mod tests {
     impl Actor for WellBehavedTask {}
 
     impl Handler<GetCount> for WellBehavedTask {
-        async fn handle(&mut self, _msg: GetCount, _ctx: &Context<Self>) -> u64 {
-            self.count
+        async fn handle(
+            &mut self,
+            _msg: GetCount,
+            reply: crate::reply::PendingReply<'_, u64>,
+            _ctx: &Context<Self>,
+        ) {
+            reply.reply(self.count);
         }
     }
 
     impl Handler<StopCounter> for WellBehavedTask {
-        async fn handle(&mut self, _msg: StopCounter, ctx: &Context<Self>) -> u64 {
-            ctx.stop();
-            self.count
+        async fn handle(
+            &mut self,
+            _msg: StopCounter,
+            reply: crate::reply::PendingReply<'_, u64>,
+            ctx: &Context<Self>,
+        ) {
+            let __reply_value: u64 = {
+                ctx.stop();
+                self.count
+            };
+            reply.reply(__reply_value);
         }
     }
 
     impl Handler<IncrementWell> for WellBehavedTask {
-        async fn handle(&mut self, _msg: IncrementWell, ctx: &Context<Self>) {
+        async fn handle(
+            &mut self,
+            _msg: IncrementWell,
+            reply: crate::reply::PendingReply<'_, ()>,
+            ctx: &Context<Self>,
+        ) {
             self.count += 1;
             use crate::tasks::send_after;
             send_after(Duration::from_millis(100), ctx.clone(), IncrementWell);
+            reply.reply(());
         }
     }
 
@@ -1965,7 +2243,14 @@ mod tests {
                 }
             }
             impl Handler<Ping> for PanicOnStart {
-                async fn handle(&mut self, _msg: Ping, _ctx: &Context<Self>) {}
+                async fn handle(
+                    &mut self,
+                    _msg: Ping,
+                    reply: crate::reply::PendingReply<'_, ()>,
+                    _ctx: &Context<Self>,
+                ) {
+                    reply.reply(());
+                }
             }
 
             let actor = PanicOnStart.start();
@@ -1990,13 +2275,25 @@ mod tests {
             }
             impl Actor for PanicOnMsg {}
             impl Handler<Explode> for PanicOnMsg {
-                async fn handle(&mut self, _msg: Explode, _ctx: &Context<Self>) {
-                    panic!("boom in handler");
+                async fn handle(
+                    &mut self,
+                    _msg: Explode,
+                    _reply: crate::reply::PendingReply<'_, ()>,
+                    _ctx: &Context<Self>,
+                ) {
+                    {
+                        panic!("boom in handler");
+                    }
                 }
             }
             impl Handler<Check> for PanicOnMsg {
-                async fn handle(&mut self, _msg: Check, _ctx: &Context<Self>) -> u32 {
-                    42
+                async fn handle(
+                    &mut self,
+                    _msg: Check,
+                    reply: crate::reply::PendingReply<'_, u32>,
+                    _ctx: &Context<Self>,
+                ) {
+                    reply.reply(42);
                 }
             }
 
@@ -2023,8 +2320,14 @@ mod tests {
                 }
             }
             impl Handler<StopMe> for PanicOnStop {
-                async fn handle(&mut self, _msg: StopMe, ctx: &Context<Self>) {
+                async fn handle(
+                    &mut self,
+                    _msg: StopMe,
+                    reply: crate::reply::PendingReply<'_, ()>,
+                    ctx: &Context<Self>,
+                ) {
                     ctx.stop();
+                    reply.reply(());
                 }
             }
 
@@ -2091,7 +2394,14 @@ mod tests {
             }
         }
         impl Handler<Ping> for PanicStart {
-            async fn handle(&mut self, _msg: Ping, _ctx: &Context<Self>) {}
+            async fn handle(
+                &mut self,
+                _msg: Ping,
+                reply: crate::reply::PendingReply<'_, ()>,
+                _ctx: &Context<Self>,
+            ) {
+                reply.reply(());
+            }
         }
 
         let runtime = rt::Runtime::new().unwrap();
@@ -2113,8 +2423,15 @@ mod tests {
         }
         impl Actor for PanicHandler {}
         impl Handler<Explode> for PanicHandler {
-            async fn handle(&mut self, _msg: Explode, _ctx: &Context<Self>) {
-                panic!("boom in handler");
+            async fn handle(
+                &mut self,
+                _msg: Explode,
+                _reply: crate::reply::PendingReply<'_, ()>,
+                _ctx: &Context<Self>,
+            ) {
+                {
+                    panic!("boom in handler");
+                }
             }
         }
 
@@ -2169,21 +2486,34 @@ mod tests {
         async fn handle(
             &mut self,
             msg: StartMonitor,
+            reply: crate::reply::PendingReply<'_, crate::monitor::MonitorRef>,
             ctx: &Context<Self>,
-        ) -> crate::monitor::MonitorRef {
-            ctx.monitor(&msg.0)
+        ) {
+            reply.reply(ctx.monitor(&msg.0));
         }
     }
 
     impl Handler<CallDemonitor> for Watcher {
-        async fn handle(&mut self, msg: CallDemonitor, ctx: &Context<Self>) {
+        async fn handle(
+            &mut self,
+            msg: CallDemonitor,
+            reply: crate::reply::PendingReply<'_, ()>,
+            ctx: &Context<Self>,
+        ) {
             ctx.demonitor(msg.0);
+            reply.reply(());
         }
     }
 
     impl Handler<crate::monitor::Down> for Watcher {
-        async fn handle(&mut self, msg: crate::monitor::Down, _ctx: &Context<Self>) {
+        async fn handle(
+            &mut self,
+            msg: crate::monitor::Down,
+            reply: crate::reply::PendingReply<'_, ()>,
+            _ctx: &Context<Self>,
+        ) {
             self.downs.lock().unwrap().push(msg);
+            reply.reply(());
         }
     }
 
@@ -2191,9 +2521,10 @@ mod tests {
         async fn handle(
             &mut self,
             _msg: GetDowns,
+            reply: crate::reply::PendingReply<'_, Vec<crate::monitor::Down>>,
             _ctx: &Context<Self>,
-        ) -> Vec<crate::monitor::Down> {
-            self.downs.lock().unwrap().clone()
+        ) {
+            reply.reply(self.downs.lock().unwrap().clone());
         }
     }
 
@@ -2321,13 +2652,20 @@ mod tests {
             type Result = usize;
         }
         impl Handler<Inspect> for Watcher {
-            async fn handle(&mut self, _msg: Inspect, ctx: &Context<Self>) -> usize {
-                ctx.shared
-                    .monitors
-                    .lock()
-                    .unwrap()
-                    .as_ref()
-                    .map_or(0, HashMap::len)
+            async fn handle(
+                &mut self,
+                _msg: Inspect,
+                reply: crate::reply::PendingReply<'_, usize>,
+                ctx: &Context<Self>,
+            ) {
+                reply.reply(
+                    ctx.shared
+                        .monitors
+                        .lock()
+                        .unwrap()
+                        .as_ref()
+                        .map_or(0, HashMap::len),
+                );
             }
         }
 
@@ -2369,8 +2707,15 @@ mod tests {
         struct PanicMe;
         impl Actor for PanicMe {}
         impl Handler<PanicMsg> for PanicMe {
-            async fn handle(&mut self, _msg: PanicMsg, _ctx: &Context<Self>) {
-                panic!("intentional panic");
+            async fn handle(
+                &mut self,
+                _msg: PanicMsg,
+                _reply: crate::reply::PendingReply<'_, ()>,
+                _ctx: &Context<Self>,
+            ) {
+                {
+                    panic!("intentional panic");
+                }
             }
         }
 
@@ -2457,14 +2802,25 @@ mod tests {
     }
 
     impl Handler<LinkTo> for TrapActor {
-        async fn handle(&mut self, msg: LinkTo, ctx: &Context<Self>) {
+        async fn handle(
+            &mut self,
+            msg: LinkTo,
+            reply: crate::reply::PendingReply<'_, ()>,
+            ctx: &Context<Self>,
+        ) {
             ctx.link(&msg.0);
+            reply.reply(());
         }
     }
 
     impl Handler<GetExits> for TrapActor {
-        async fn handle(&mut self, _msg: GetExits, _ctx: &Context<Self>) -> Vec<Exit> {
-            self.exits.lock().unwrap().clone()
+        async fn handle(
+            &mut self,
+            _msg: GetExits,
+            reply: crate::reply::PendingReply<'_, Vec<Exit>>,
+            _ctx: &Context<Self>,
+        ) {
+            reply.reply(self.exits.lock().unwrap().clone());
         }
     }
 
@@ -2492,8 +2848,15 @@ mod tests {
                 type Result = ();
             }
             impl Handler<Boom> for TrapActor {
-                async fn handle(&mut self, _msg: Boom, _ctx: &Context<Self>) {
-                    panic!("boom");
+                async fn handle(
+                    &mut self,
+                    _msg: Boom,
+                    _reply: crate::reply::PendingReply<'_, ()>,
+                    _ctx: &Context<Self>,
+                ) {
+                    {
+                        panic!("boom");
+                    }
                 }
             }
 
@@ -2520,8 +2883,15 @@ mod tests {
                 type Result = ();
             }
             impl Handler<Boom2> for TrapActor {
-                async fn handle(&mut self, _msg: Boom2, _ctx: &Context<Self>) {
-                    panic!("boom2");
+                async fn handle(
+                    &mut self,
+                    _msg: Boom2,
+                    _reply: crate::reply::PendingReply<'_, ()>,
+                    _ctx: &Context<Self>,
+                ) {
+                    {
+                        panic!("boom2");
+                    }
                 }
             }
 
@@ -2579,8 +2949,15 @@ mod tests {
                 type Result = ();
             }
             impl Handler<Boom3> for TrapActor {
-                async fn handle(&mut self, _msg: Boom3, _ctx: &Context<Self>) {
-                    panic!("boom3");
+                async fn handle(
+                    &mut self,
+                    _msg: Boom3,
+                    _reply: crate::reply::PendingReply<'_, ()>,
+                    _ctx: &Context<Self>,
+                ) {
+                    {
+                        panic!("boom3");
+                    }
                 }
             }
             let target = make_trapper(false);
@@ -2623,8 +3000,14 @@ mod tests {
                 type Result = ();
             }
             impl Handler<UnlinkFrom> for TrapActor {
-                async fn handle(&mut self, msg: UnlinkFrom, ctx: &Context<Self>) {
+                async fn handle(
+                    &mut self,
+                    msg: UnlinkFrom,
+                    reply: crate::reply::PendingReply<'_, ()>,
+                    ctx: &Context<Self>,
+                ) {
                     ctx.unlink(&msg.0);
+                    reply.reply(());
                 }
             }
             b.request(UnlinkFrom(a.child_handle())).await.unwrap();
@@ -2635,7 +3018,12 @@ mod tests {
                 type Result = u64;
             }
             impl Handler<Boom4> for Counter {
-                async fn handle(&mut self, _msg: Boom4, _ctx: &Context<Self>) -> u64 {
+                async fn handle(
+                    &mut self,
+                    _msg: Boom4,
+                    _reply: crate::reply::PendingReply<'_, u64>,
+                    _ctx: &Context<Self>,
+                ) {
                     panic!("boom4");
                 }
             }
@@ -2668,7 +3056,12 @@ mod tests {
                 type Result = u64;
             }
             impl Handler<Boom5> for Counter {
-                async fn handle(&mut self, _msg: Boom5, _ctx: &Context<Self>) -> u64 {
+                async fn handle(
+                    &mut self,
+                    _msg: Boom5,
+                    _reply: crate::reply::PendingReply<'_, u64>,
+                    _ctx: &Context<Self>,
+                ) {
                     panic!("boom5");
                 }
             }
@@ -2711,8 +3104,15 @@ mod tests {
                 type Result = ();
             }
             impl Handler<Boom6> for TrapActor {
-                async fn handle(&mut self, _msg: Boom6, _ctx: &Context<Self>) {
-                    panic!("boom6");
+                async fn handle(
+                    &mut self,
+                    _msg: Boom6,
+                    _reply: crate::reply::PendingReply<'_, ()>,
+                    _ctx: &Context<Self>,
+                ) {
+                    {
+                        panic!("boom6");
+                    }
                 }
             }
             let _ = a.send(Boom6);
@@ -2744,8 +3144,15 @@ mod tests {
             type Result = ();
         }
         impl Handler<Boom7> for TrapActor {
-            async fn handle(&mut self, _msg: Boom7, _ctx: &Context<Self>) {
-                panic!("boom7");
+            async fn handle(
+                &mut self,
+                _msg: Boom7,
+                _reply: crate::reply::PendingReply<'_, ()>,
+                _ctx: &Context<Self>,
+            ) {
+                {
+                    panic!("boom7");
+                }
             }
         }
 
@@ -2792,8 +3199,15 @@ mod tests {
         }
         impl Actor for Parent {}
         impl Handler<PanicParent> for Parent {
-            async fn handle(&mut self, _msg: PanicParent, _ctx: &Context<Self>) {
-                panic!("parent boom");
+            async fn handle(
+                &mut self,
+                _msg: PanicParent,
+                _reply: crate::reply::PendingReply<'_, ()>,
+                _ctx: &Context<Self>,
+            ) {
+                {
+                    panic!("parent boom");
+                }
             }
         }
 
@@ -2822,7 +3236,14 @@ mod monitor_cleanup_regressions {
     struct Idle;
     impl Actor for Idle {}
     impl Handler<Down> for Idle {
-        async fn handle(&mut self, _: Down, _: &Context<Self>) {}
+        async fn handle(
+            &mut self,
+            _: Down,
+            reply: crate::reply::PendingReply<'_, ()>,
+            _: &Context<Self>,
+        ) {
+            reply.reply(());
+        }
     }
     #[test]
     fn closed_monitor_table_rejects_late_registration() {
@@ -2963,8 +3384,14 @@ mod turn_regressions {
             type Result = ();
         }
         impl Handler<Inc> for Count {
-            async fn handle(&mut self, _: Inc, _: &Context<Self>) {
+            async fn handle(
+                &mut self,
+                _: Inc,
+                reply: crate::reply::PendingReply<'_, ()>,
+                _: &Context<Self>,
+            ) {
                 self.0.fetch_add(1, Ordering::SeqCst);
+                reply.reply(());
             }
         }
         rt::Runtime::new().unwrap().block_on(async {
@@ -2983,6 +3410,9 @@ mod turn_regressions {
                     linked_reason: new_linked_exit_reason(),
                     mailbox: crate::instrumentation::Mailbox::default(),
                     managed: None,
+                    replies: Registry::new(ActorId::next(), DEFAULT_MAX_OUTSTANDING),
+                    jobs: Arc::new(crate::reply::jobs::JobSet::new(ActorId::next(), 1)),
+                    cleaned: watch::channel(false).1,
                 }),
             };
             let count = Arc::new(AtomicUsize::new(0));
@@ -3029,8 +3459,14 @@ mod idle_stop_regression {
         type Result = ();
     }
     impl Handler<Increment> for Counter {
-        async fn handle(&mut self, _: Increment, _: &Context<Self>) {
+        async fn handle(
+            &mut self,
+            _: Increment,
+            reply: crate::reply::PendingReply<'_, ()>,
+            _: &Context<Self>,
+        ) {
             self.0.fetch_add(1, Ordering::SeqCst);
+            reply.reply(());
         }
     }
     #[test]
@@ -3051,6 +3487,9 @@ mod idle_stop_regression {
                     linked_reason: new_linked_exit_reason(),
                     mailbox: crate::instrumentation::Mailbox::default(),
                     managed: None,
+                    replies: Registry::new(ActorId::next(), DEFAULT_MAX_OUTSTANDING),
+                    jobs: Arc::new(crate::reply::jobs::JobSet::new(ActorId::next(), 1)),
+                    cleaned: watch::channel(false).1,
                 }),
             };
             let count = Arc::new(AtomicUsize::new(0));
@@ -3065,10 +3504,10 @@ mod idle_stop_regression {
             // Start and park the actual actor loop, without allowing another
             // executor task to run it between admission and stop below.
             assert!(futures::poll!(actor.as_mut()).is_pending());
-            let (reply, response) = oneshot::channel();
+            let (slot, response) = reply_slot(crate::reply::Deadline::Never, None);
             tx.send(Box::new(MessageEnvelope {
                 msg: Increment,
-                tx: Some(reply),
+                slot,
                 #[cfg(feature = "metrics")]
                 observation: None,
             }) as Box<dyn Envelope<Counter> + Send>)
@@ -3112,28 +3551,47 @@ mod api_coverage {
     }
     impl Actor for Echo {}
     impl Handler<Ask> for Echo {
-        async fn handle(&mut self, msg: Ask, _: &Context<Self>) -> u32 {
-            msg.0
+        async fn handle(
+            &mut self,
+            msg: Ask,
+            reply: crate::reply::PendingReply<'_, u32>,
+            _: &Context<Self>,
+        ) {
+            reply.reply(msg.0);
         }
     }
     impl Handler<StopAfter> for Echo {
-        async fn handle(&mut self, msg: StopAfter, ctx: &Context<Self>) {
+        async fn handle(
+            &mut self,
+            msg: StopAfter,
+            reply: crate::reply::PendingReply<'_, ()>,
+            ctx: &Context<Self>,
+        ) {
             let _ = msg.0.await;
             ctx.stop();
+            reply.reply(());
         }
     }
     impl Handler<OwnRecipient> for Echo {
         async fn handle(
             &mut self,
             _: OwnRecipient,
+            reply: crate::reply::PendingReply<'_, (Recipient<Ask>, ActorId)>,
             ctx: &Context<Self>,
-        ) -> (Recipient<Ask>, ActorId) {
-            (ctx.recipient::<Ask>(), ctx.id())
+        ) {
+            reply.reply((ctx.recipient::<Ask>(), ctx.id()));
         }
     }
     impl Handler<Boom> for Echo {
-        async fn handle(&mut self, _: Boom, _: &Context<Self>) {
-            panic!("boom");
+        async fn handle(
+            &mut self,
+            _: Boom,
+            _reply: crate::reply::PendingReply<'_, ()>,
+            _: &Context<Self>,
+        ) {
+            {
+                panic!("boom");
+            }
         }
     }
 
@@ -3214,8 +3672,13 @@ mod api_coverage {
             }
         }
         impl Handler<Ask> for Trapper {
-            async fn handle(&mut self, msg: Ask, _: &Context<Self>) -> u32 {
-                msg.0
+            async fn handle(
+                &mut self,
+                msg: Ask,
+                reply: crate::reply::PendingReply<'_, u32>,
+                _: &Context<Self>,
+            ) {
+                reply.reply(msg.0);
             }
         }
         rt::Runtime::new().unwrap().block_on(async {
@@ -3266,7 +3729,14 @@ mod shared_state_release {
     struct Plain;
     impl Actor for Plain {}
     impl Handler<Down> for Plain {
-        async fn handle(&mut self, _: Down, _: &Context<Self>) {}
+        async fn handle(
+            &mut self,
+            _: Down,
+            reply: crate::reply::PendingReply<'_, ()>,
+            _: &Context<Self>,
+        ) {
+            reply.reply(());
+        }
     }
 
     /// Keeps a clone of its own `Context` in its state.

@@ -1,12 +1,19 @@
-error[E0053]: method `handle` has an incompatible type for trait
-  --> tests/ui/actor_handler_missing_return.rs:14:57
+error[E0308]: mismatched types
+  --> tests/ui/actor_handler_missing_return.rs:14:12
+   |
+11 | #[actor]
+   | -------- arguments to this method are incorrect
+...
+14 |     fn read(&mut self, _msg: Read, _ctx: &Context<Self>) {}
+   |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `u64`, found `()`
+   |
+note: method `read` modifies its receiver in-place
+  --> tests/ui/actor_handler_missing_return.rs:14:8
    |
 14 |     fn read(&mut self, _msg: Read, _ctx: &Context<Self>) {}
-   |                                                         ^ expected `u64`, found `()`
+   |        ^^^^ this call modifies `self` in-place
+note: method defined here
+  --> src/reply/mod.rs
    |
-   = note: expected signature `fn(&mut Counter, counter_protocol::Read, &spawned_concurrency::threads::Context<Counter>) -> u64`
-              found signature `fn(&mut Counter, counter_protocol::Read, &spawned_concurrency::threads::Context<Counter>) -> ()`
-help: change the output type to match the trait
-   |
-14 |     fn read(&mut self, _msg: Read, _ctx: &Context<Self>) -> u64 {}
-   |                                                          ++++++
+   |     pub fn reply(mut self, value: R) -> Delivery {
+   |            ^^^^^

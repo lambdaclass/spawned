@@ -15,6 +15,10 @@ static NEXT_ACTOR_ID: AtomicU64 = AtomicU64::new(1);
 pub struct ActorId(u64);
 
 impl ActorId {
+    #[cfg_attr(not(feature = "lifecycle-trace"), allow(dead_code))]
+    pub(crate) fn raw(self) -> u64 {
+        self.0
+    }
     pub(crate) fn next() -> Self {
         Self(NEXT_ACTOR_ID.fetch_add(1, Ordering::Relaxed))
     }
@@ -472,8 +476,14 @@ mod tests {
         }
         impl Actor for Worker {}
         impl Handler<Stop> for Worker {
-            fn handle(&mut self, _msg: Stop, ctx: &Context<Self>) {
+            fn handle(
+                &mut self,
+                _msg: Stop,
+                reply: crate::reply::PendingReply<'_, ()>,
+                ctx: &Context<Self>,
+            ) {
                 ctx.stop();
+                reply.reply(());
             }
         }
 
@@ -503,8 +513,14 @@ mod tests {
         }
         impl Actor for Worker {}
         impl Handler<Stop> for Worker {
-            async fn handle(&mut self, _msg: Stop, ctx: &Context<Self>) {
+            async fn handle(
+                &mut self,
+                _msg: Stop,
+                reply: crate::reply::PendingReply<'_, ()>,
+                ctx: &Context<Self>,
+            ) {
                 ctx.stop();
+                reply.reply(());
             }
         }
 
@@ -620,8 +636,15 @@ mod tests {
         }
         impl Actor for Boomer {}
         impl Handler<Boom> for Boomer {
-            fn handle(&mut self, _msg: Boom, _ctx: &Context<Self>) {
-                panic!("intentional panic in handler");
+            fn handle(
+                &mut self,
+                _msg: Boom,
+                _reply: crate::reply::PendingReply<'_, ()>,
+                _ctx: &Context<Self>,
+            ) {
+                {
+                    panic!("intentional panic in handler");
+                }
             }
         }
 
@@ -652,8 +675,15 @@ mod tests {
         }
         impl Actor for Boomer {}
         impl Handler<Boom> for Boomer {
-            async fn handle(&mut self, _msg: Boom, _ctx: &Context<Self>) {
-                panic!("intentional panic in handler");
+            async fn handle(
+                &mut self,
+                _msg: Boom,
+                _reply: crate::reply::PendingReply<'_, ()>,
+                _ctx: &Context<Self>,
+            ) {
+                {
+                    panic!("intentional panic in handler");
+                }
             }
         }
 

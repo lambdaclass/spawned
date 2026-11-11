@@ -19,8 +19,15 @@ impl Message for Fail {
     type Result = ();
 }
 impl Handler<Fail> for Worker {
-    async fn handle(&mut self, _: Fail, _: &Context<Self>) {
-        panic!("example failure");
+    async fn handle(
+        &mut self,
+        _: Fail,
+        _reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
+        {
+            panic!("example failure");
+        }
     }
 }
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]

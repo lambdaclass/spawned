@@ -15,7 +15,12 @@ impl Message for Crash {
 struct Worker;
 impl Actor for Worker {}
 impl Handler<Crash> for Worker {
-    async fn handle(&mut self, _: Crash, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        _: Crash,
+        _reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
         panic!("trace cohort failure");
     }
 }
@@ -268,7 +273,12 @@ impl Actor for MaybeStop {
     }
 }
 impl Handler<Crash> for MaybeStop {
-    async fn handle(&mut self, _: Crash, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        _: Crash,
+        _reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
         panic!("trace cohort failure");
     }
 }

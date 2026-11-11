@@ -23,15 +23,29 @@ impl Message for Ping {
 struct Worker;
 impl Actor for Worker {}
 impl Handler<Ping> for Worker {
-    async fn handle(&mut self, _: Ping, _: &Context<Self>) -> String {
-        std::thread::current()
-            .name()
-            .unwrap_or_default()
-            .to_string()
+    async fn handle(
+        &mut self,
+        _: Ping,
+        reply: spawned_concurrency::reply::PendingReply<'_, String>,
+        _: &Context<Self>,
+    ) {
+        reply.reply(
+            std::thread::current()
+                .name()
+                .unwrap_or_default()
+                .to_string(),
+        );
     }
 }
 impl Handler<Down> for Worker {
-    async fn handle(&mut self, _: Down, _: &Context<Self>) {}
+    async fn handle(
+        &mut self,
+        _: Down,
+        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
+        reply.reply(());
+    }
 }
 
 // Not simulated: asserts OS worker thread names.
@@ -338,9 +352,15 @@ impl Actor for FailedStartup {
     }
 }
 impl Handler<Queued> for FailedStartup {
-    async fn handle(&mut self, msg: Queued, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        msg: Queued,
+        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
         self.handled.fetch_add(1, Ordering::SeqCst);
         drop(msg.0);
+        reply.reply(());
     }
 }
 #[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
@@ -562,8 +582,13 @@ impl Message for CheckAdmission {
 struct HelperAware;
 impl Actor for HelperAware {}
 impl Handler<CheckAdmission> for HelperAware {
-    async fn handle(&mut self, _: CheckAdmission, ctx: &Context<Self>) -> bool {
-        ctx.spawn_helper(async {}).is_err()
+    async fn handle(
+        &mut self,
+        _: CheckAdmission,
+        reply: spawned_concurrency::reply::PendingReply<'_, bool>,
+        ctx: &Context<Self>,
+    ) {
+        reply.reply(ctx.spawn_helper(async {}).is_err());
     }
 }
 struct Dependent {

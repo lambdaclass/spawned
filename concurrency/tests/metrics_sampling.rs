@@ -12,7 +12,14 @@ impl Message for Ping {
 }
 impl Actor for Probe {}
 impl Handler<Ping> for Probe {
-    async fn handle(&mut self, _: Ping, _: &Context<Self>) {}
+    async fn handle(
+        &mut self,
+        _: Ping,
+        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
+        reply.reply(());
+    }
 }
 #[test]
 fn sampling_retains_every_counter_and_scales_only_timing_observations() {

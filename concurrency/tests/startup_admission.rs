@@ -33,8 +33,15 @@ impl Drop for Queued {
     }
 }
 impl spawned_concurrency::tasks::Handler<Queued> for Probe {
-    async fn handle(&mut self, _: Queued, _: &Context<Self>) {
-        panic!("unstarted handler ran");
+    async fn handle(
+        &mut self,
+        _: Queued,
+        _reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
+        {
+            panic!("unstarted handler ran");
+        }
     }
 }
 impl Actor for Probe {

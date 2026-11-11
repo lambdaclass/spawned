@@ -19,13 +19,24 @@ mod asynchronous {
     use spawned_concurrency::tasks::{self, Actor, ActorStart, Context, Handler, Recipient};
     impl<const N: u64> Actor for Counter<N> {}
     impl<const N: u64> Handler<Item> for Counter<N> {
-        async fn handle(&mut self, msg: Item, _: &Context<Self>) {
+        async fn handle(
+            &mut self,
+            msg: Item,
+            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            _: &Context<Self>,
+        ) {
             self.0 += N * msg.0;
+            reply.reply(());
         }
     }
     impl<const N: u64> Handler<Total> for Counter<N> {
-        async fn handle(&mut self, _: Total, _: &Context<Self>) -> u64 {
-            self.0
+        async fn handle(
+            &mut self,
+            _: Total,
+            reply: spawned_concurrency::reply::PendingReply<'_, u64>,
+            _: &Context<Self>,
+        ) {
+            reply.reply(self.0);
         }
     }
     pub async fn run() {
@@ -73,13 +84,24 @@ mod synchronous {
     use spawned_concurrency::threads::{self, Actor, ActorStart, Context, Handler, Recipient};
     impl<const N: u64> Actor for Counter<N> {}
     impl<const N: u64> Handler<Item> for Counter<N> {
-        fn handle(&mut self, msg: Item, _: &Context<Self>) {
+        fn handle(
+            &mut self,
+            msg: Item,
+            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            _: &Context<Self>,
+        ) {
             self.0 += N * msg.0;
+            reply.reply(());
         }
     }
     impl<const N: u64> Handler<Total> for Counter<N> {
-        fn handle(&mut self, _: Total, _: &Context<Self>) -> u64 {
-            self.0
+        fn handle(
+            &mut self,
+            _: Total,
+            reply: spawned_concurrency::reply::PendingReply<'_, u64>,
+            _: &Context<Self>,
+        ) {
+            reply.reply(self.0);
         }
     }
     struct Source {

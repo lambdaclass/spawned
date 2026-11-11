@@ -225,13 +225,24 @@ impl Message for Get {
 }
 impl Actor for Counter {}
 impl Handler<Bump> for Counter {
-    async fn handle(&mut self, _: Bump, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        _: Bump,
+        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
         self.0.fetch_add(1, Ordering::SeqCst);
+        reply.reply(());
     }
 }
 impl Handler<Get> for Counter {
-    async fn handle(&mut self, _: Get, _: &Context<Self>) -> usize {
-        self.0.load(Ordering::SeqCst)
+    async fn handle(
+        &mut self,
+        _: Get,
+        reply: spawned_concurrency::reply::PendingReply<'_, usize>,
+        _: &Context<Self>,
+    ) {
+        reply.reply(self.0.load(Ordering::SeqCst));
     }
 }
 
@@ -330,10 +341,16 @@ impl Message for Hang {
 }
 impl Actor for Stuck {}
 impl Handler<Hang> for Stuck {
-    async fn handle(&mut self, _: Hang, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        _: Hang,
+        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
         self.0.store(true, Ordering::SeqCst);
         // Blocking code is never preempted, so shutdown cannot finish in time.
         std::thread::sleep(Duration::from_millis(500));
+        reply.reply(());
     }
 }
 

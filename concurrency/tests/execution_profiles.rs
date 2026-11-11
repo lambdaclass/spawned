@@ -22,12 +22,20 @@ impl Message for Audit {
     type Result = (String, Option<usize>);
 }
 impl Handler<Audit> for Probe {
-    async fn handle(&mut self, _: Audit, _: &Context<Self>) -> <Audit as Message>::Result {
-        spawned_rt::tasks::sleep(Duration::from_millis(1)).await;
-        (
-            std::thread::current().name().unwrap_or_default().into(),
-            spawned_rt::tasks::affinity::current_cpu().ok(),
-        )
+    async fn handle(
+        &mut self,
+        _: Audit,
+        reply: spawned_concurrency::reply::PendingReply<'_, <Audit as Message>::Result>,
+        _: &Context<Self>,
+    ) {
+        let __reply_value: <Audit as Message>::Result = {
+            spawned_rt::tasks::sleep(Duration::from_millis(1)).await;
+            (
+                std::thread::current().name().unwrap_or_default().into(),
+                spawned_rt::tasks::affinity::current_cpu().ok(),
+            )
+        };
+        reply.reply(__reply_value);
     }
 }
 struct StartPeer;
@@ -38,9 +46,12 @@ impl Handler<StartPeer> for Probe {
     async fn handle(
         &mut self,
         _: StartPeer,
+        reply: spawned_concurrency::reply::PendingReply<'_, <StartPeer as Message>::Result>,
         ctx: &Context<Self>,
-    ) -> <StartPeer as Message>::Result {
-        ctx.execution_group().unwrap().start(Probe)
+    ) {
+        let __reply_value: <StartPeer as Message>::Result =
+            { ctx.execution_group().unwrap().start(Probe) };
+        reply.reply(__reply_value);
     }
 }
 // Not simulated: native execution groups need OS threads.
@@ -83,11 +94,17 @@ impl Message for Block {
     type Result = ();
 }
 impl Handler<Block> for Probe {
-    async fn handle(&mut self, msg: Block, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        msg: Block,
+        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
         tokio::task::block_in_place(|| {
             let _ = msg.entered.send(());
             msg.release.recv_timeout(LIMIT).unwrap();
         });
+        reply.reply(());
     }
 }
 struct Crash;
@@ -95,8 +112,15 @@ impl Message for Crash {
     type Result = ();
 }
 impl Handler<Crash> for Probe {
-    async fn handle(&mut self, _: Crash, _: &Context<Self>) {
-        panic!("profile recovery injection");
+    async fn handle(
+        &mut self,
+        _: Crash,
+        _reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
+        {
+            panic!("profile recovery injection");
+        }
     }
 }
 // Not simulated: native execution groups need OS threads.
@@ -344,8 +368,14 @@ mod tls_join {
         type Result = ();
     }
     impl Handler<Install> for Probe {
-        async fn handle(&mut self, msg: Install, _: &Context<Self>) {
+        async fn handle(
+            &mut self,
+            msg: Install,
+            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            _: &Context<Self>,
+        ) {
             PROBE.with(|p| *p.borrow_mut() = Some(msg.0));
+            reply.reply(());
         }
     }
     #[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]

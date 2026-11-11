@@ -260,6 +260,16 @@ def trace_keys(path, tlc):
         shutil.rmtree(workdir, ignore_errors=True)
 
 
+# Trace schemas validated by trace_check.py but without a coverage model
+# (the deferred-replies models): skipped here.
+UNCOVERED_SCHEMAS = {"jobs-v1", "replies-v1"}
+
+
+def covered(path):
+    with open(path) as f:
+        return json.load(f).get("schema") not in UNCOVERED_SCHEMAS
+
+
 def collect(paths):
     files = []
     for p in paths:
@@ -267,7 +277,7 @@ def collect(paths):
             files += sorted(os.path.join(p, f) for f in os.listdir(p) if f.endswith(".json"))
         elif os.path.exists(p):
             files.append(p)
-    return files
+    return [f for f in files if covered(f)]
 
 
 # ---------------------------------------------------------------------------

@@ -53,3 +53,22 @@ pub mod tasks;
 pub mod threads;
 
 pub use inbox::{Outcome, Received};
+
+/// A `PendingReply` and its receiver for calling a manual
+/// `Handler::handle` directly in a test, without an actor:
+///
+/// ```ignore
+/// let (reply, rx) = spawned_test::reply_pair::<u64>();
+/// actor.handle(GetCount, reply, &ctx).await;
+/// assert_eq!(rx.await.unwrap(), 3);
+/// ```
+///
+/// The reply has no deadline. Await (or `recv`) the receiver only after
+/// driving every turn the reply depends on: a deferred reply answered by a
+/// later message is never answered while the test waits for it first.
+pub fn reply_pair<R: Send + 'static>() -> (
+    spawned_concurrency::reply::PendingReply<'static, R>,
+    spawned_concurrency::reply::ReplyReceiver<R>,
+) {
+    spawned_concurrency::reply::reply_pair(spawned_concurrency::reply::Deadline::Never)
+}

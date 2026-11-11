@@ -1,0 +1,17 @@
+error[E0521]: borrowed data escapes outside of method
+  --> tests/ui/pending_reply_stored.rs:18:9
+   |
+17 |     fn read(&mut self, _msg: Read, reply: PendingReply<'_, u64>, _ctx: &Context<Self>) {
+   |                                    -----
+   |                                    |
+   |                                    `reply` is a reference that is only valid in the method body
+   |                                    has type `PendingReply<'1, u64>`
+18 |         self.held.push(reply);
+   |         ^^^^^^^^^^^^^^^^^^^^^
+   |         |
+   |         `reply` escapes the method body here
+   |         argument requires that `'1` must outlive `'static`
+   |
+   = note: requirement occurs because of a mutable reference to `Vec<PendingReply<'_, u64>>`
+   = note: mutable references are invariant over their type parameter
+   = help: see <https://doc.rust-lang.org/nomicon/subtyping.html> for more information about variance

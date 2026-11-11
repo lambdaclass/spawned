@@ -33,14 +33,26 @@ impl Message for Quit {
 struct Worker;
 impl Actor for Worker {}
 impl Handler<Hold> for Worker {
-    async fn handle(&mut self, hold: Hold, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        hold: Hold,
+        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
         let _ = hold.entered.send(());
         let _ = hold.release.await;
+        reply.reply(());
     }
 }
 impl Handler<Quit> for Worker {
-    async fn handle(&mut self, quit: Quit, ctx: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        quit: Quit,
+        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        ctx: &Context<Self>,
+    ) {
         ctx.stop_with_reason(quit.0);
+        reply.reply(());
     }
 }
 
@@ -394,7 +406,12 @@ async fn panicked_turn_is_cleared_before_stopped_hook() {
         }
     }
     impl Handler<Quit> for Panicking {
-        async fn handle(&mut self, _: Quit, _: &Context<Self>) {
+        async fn handle(
+            &mut self,
+            _: Quit,
+            _reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            _: &Context<Self>,
+        ) {
             panic!("diagnostic turn cleanup regression");
         }
     }

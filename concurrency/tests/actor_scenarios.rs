@@ -37,8 +37,13 @@ mod tasks {
     pub struct TestActor(pub Worker);
     impl Actor for TestActor {}
     impl Handler<Command> for TestActor {
-        async fn handle(&mut self, command: Command, ctx: &Context<Self>) -> Reply {
-            match command {
+        async fn handle(
+            &mut self,
+            command: Command,
+            reply: spawned_concurrency::reply::PendingReply<'_, Reply>,
+            ctx: &Context<Self>,
+        ) {
+            reply.reply(match command {
                 Command::Work(id) => {
                     self.0
                         .processed
@@ -53,12 +58,18 @@ mod tasks {
                     Reply::Unwatched
                 }
                 Command::Boom => panic!("scenario injected panic"),
-            }
+            });
         }
     }
     impl Handler<Down> for TestActor {
-        async fn handle(&mut self, event: Down, _: &Context<Self>) {
+        async fn handle(
+            &mut self,
+            event: Down,
+            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            _: &Context<Self>,
+        ) {
             let _ = self.0.events.send(event);
+            reply.reply(());
         }
     }
 }
@@ -69,8 +80,13 @@ mod threads {
     pub struct TestActor(pub Worker);
     impl Actor for TestActor {}
     impl Handler<Command> for TestActor {
-        fn handle(&mut self, command: Command, ctx: &Context<Self>) -> Reply {
-            match command {
+        fn handle(
+            &mut self,
+            command: Command,
+            reply: spawned_concurrency::reply::PendingReply<'_, Reply>,
+            ctx: &Context<Self>,
+        ) {
+            reply.reply(match command {
                 Command::Work(id) => {
                     self.0
                         .processed
@@ -85,12 +101,18 @@ mod threads {
                     Reply::Unwatched
                 }
                 Command::Boom => panic!("scenario injected panic"),
-            }
+            });
         }
     }
     impl Handler<Down> for TestActor {
-        fn handle(&mut self, event: Down, _: &Context<Self>) {
+        fn handle(
+            &mut self,
+            event: Down,
+            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            _: &Context<Self>,
+        ) {
             let _ = self.0.events.send(event);
+            reply.reply(());
         }
     }
 }

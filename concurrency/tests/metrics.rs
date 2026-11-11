@@ -39,22 +39,45 @@ impl Actor for Probe {
     }
 }
 impl Handler<metrics_protocol::Query> for Probe {
-    async fn handle(&mut self, _: metrics_protocol::Query, _: &Context<Self>) -> u64 {
-        9
+    async fn handle(
+        &mut self,
+        _: metrics_protocol::Query,
+        reply: spawned_concurrency::reply::PendingReply<'_, u64>,
+        _: &Context<Self>,
+    ) {
+        reply.reply(9);
     }
 }
 impl Handler<Ping> for Probe {
-    async fn handle(&mut self, _: Ping, _: &Context<Self>) {}
+    async fn handle(
+        &mut self,
+        _: Ping,
+        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
+        reply.reply(());
+    }
 }
 impl Handler<Crash> for Probe {
-    async fn handle(&mut self, _: Crash, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        _: Crash,
+        _reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
         panic!("metric panic regression");
     }
 }
 impl Handler<Hold> for Probe {
-    async fn handle(&mut self, hold: Hold, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        hold: Hold,
+        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
         let _ = hold.entered.send(());
         let _ = hold.release.await;
+        reply.reply(());
     }
 }
 fn runtime() -> tokio::runtime::Runtime {
@@ -83,7 +106,10 @@ fn metrics_conserve_work_across_all_lifecycle_paths() {
             Err(ActorError::RequestTimeout)
         ));
         assert!(matches!(
-            Response::from_with_timeout(actor.request_raw(Ping), Duration::ZERO).await,
+            Response::from(
+                actor.request_raw_until(Ping, spawned_concurrency::Deadline::after(Duration::ZERO))
+            )
+            .await,
             Err(ActorError::RequestTimeout)
         ));
         // Dropping either kind of caller wrapper does not cancel actor work.
@@ -105,15 +131,22 @@ fn metrics_conserve_work_across_all_lifecycle_paths() {
             .await
             .unwrap();
         Response::from(actor.request_raw(Ping)).await.unwrap();
-        Response::from_with_timeout(actor.request_raw(Ping), Duration::from_secs(2))
-            .await
-            .unwrap();
+        Response::from(actor.request_raw_until(
+            Ping,
+            spawned_concurrency::Deadline::after(Duration::from_secs(2)),
+        ))
+        .await
+        .unwrap();
         actor.context().stop();
         assert_eq!(actor.wait_exit().await, ExitReason::Normal);
         assert_eq!(actor.mailbox_depth(), 0);
         assert!(actor.send(Ping).is_err());
         assert!(matches!(
-            Response::from_with_timeout(actor.request_raw(Ping), Duration::from_secs(2)).await,
+            Response::from(actor.request_raw_until(
+                Ping,
+                spawned_concurrency::Deadline::after(Duration::from_secs(2))
+            ))
+            .await,
             Err(ActorError::ActorStopped)
         ));
 
@@ -209,15 +242,32 @@ fn metrics_conserve_work_across_all_lifecycle_paths() {
     struct Native;
     impl ThreadActor for Native {}
     impl ThreadHandler<metrics_protocol::Query> for Native {
-        fn handle(&mut self, _: metrics_protocol::Query, _: &ThreadContext<Self>) -> u64 {
-            9
+        fn handle(
+            &mut self,
+            _: metrics_protocol::Query,
+            reply: spawned_concurrency::reply::PendingReply<'_, u64>,
+            _: &ThreadContext<Self>,
+        ) {
+            reply.reply(9);
         }
     }
     impl ThreadHandler<Ping> for Native {
-        fn handle(&mut self, _: Ping, _: &ThreadContext<Self>) {}
+        fn handle(
+            &mut self,
+            _: Ping,
+            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            _: &ThreadContext<Self>,
+        ) {
+            reply.reply(());
+        }
     }
     impl ThreadHandler<Crash> for Native {
-        fn handle(&mut self, _: Crash, _: &ThreadContext<Self>) {
+        fn handle(
+            &mut self,
+            _: Crash,
+            _reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            _: &ThreadContext<Self>,
+        ) {
             panic!("native metric panic");
         }
     }

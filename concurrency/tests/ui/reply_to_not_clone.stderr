@@ -1,0 +1,15 @@
+error[E0308]: mismatched types
+ --> tests/ui/reply_to_not_clone.rs:4:5
+  |
+3 | fn duplicate(token: &ReplyTo<u64>) -> ReplyTo<u64> {
+  |                                       ------------ expected `ReplyTo<u64>` because of return type
+4 |     token.clone()
+  |     ^^^^^^^^^^^^^ expected `ReplyTo<u64>`, found `&ReplyTo<u64>`
+  |
+  = note: expected struct `ReplyTo<u64>`
+          found reference `&ReplyTo<u64>`
+note: `ReplyTo<u64>` does not implement `Clone`, so `&ReplyTo<u64>` was cloned instead
+ --> tests/ui/reply_to_not_clone.rs:4:5
+  |
+4 |     token.clone()
+  |     ^^^^^

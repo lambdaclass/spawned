@@ -98,9 +98,15 @@ impl Message for HoldForDrain {
     type Result = ();
 }
 impl Handler<HoldForDrain> for Worker {
-    async fn handle(&mut self, msg: HoldForDrain, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        msg: HoldForDrain,
+        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
         msg.0.send(()).unwrap();
         let _ = msg.1.await;
+        reply.reply(());
     }
 }
 struct DropBomb;
@@ -113,7 +119,12 @@ impl Drop for DropBomb {
     }
 }
 impl Handler<DropBomb> for Worker {
-    async fn handle(&mut self, _: DropBomb, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        _: DropBomb,
+        _reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
         panic!("discarded message must not be handled");
     }
 }
@@ -197,18 +208,35 @@ async fn trace_queued_destructor_failure_preserves_shutdown() {
     assert!(system.shutdown(LIMIT).await.complete);
 }
 impl Handler<Crash> for Worker {
-    async fn handle(&mut self, _: Crash, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        _: Crash,
+        _reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
         panic!("injected child failure");
     }
 }
 impl Handler<Quit> for Worker {
-    async fn handle(&mut self, _: Quit, ctx: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        _: Quit,
+        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        ctx: &Context<Self>,
+    ) {
         ctx.stop();
+        reply.reply(());
     }
 }
 impl Handler<ExitWith> for Worker {
-    async fn handle(&mut self, msg: ExitWith, ctx: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        msg: ExitWith,
+        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        ctx: &Context<Self>,
+    ) {
         ctx.stop_with_reason(msg.0);
+        reply.reply(());
     }
 }
 
@@ -498,7 +526,12 @@ impl Actor for ExitOnceDuringRestart {
     }
 }
 impl Handler<Crash> for ExitOnceDuringRestart {
-    async fn handle(&mut self, _: Crash, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        _: Crash,
+        _reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
         panic!("injected child failure");
     }
 }

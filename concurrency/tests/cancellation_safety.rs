@@ -189,38 +189,52 @@ impl Message for Cmd {
     type Result = u64;
 }
 impl Handler<Cmd> for Probe {
-    async fn handle(&mut self, cmd: Cmd, ctx: &Context<Self>) -> u64 {
-        let c = &self.counters;
-        match cmd {
-            Cmd::Bump => c.effects.fetch_add(1, Ordering::SeqCst) as u64 + 1,
-            Cmd::Read => c.effects.load(Ordering::SeqCst) as u64,
-            Cmd::Watch(target) => {
-                ctx.monitor(&target);
-                c.watched.fetch_add(1, Ordering::SeqCst) as u64
+    async fn handle(
+        &mut self,
+        cmd: Cmd,
+        reply: spawned_concurrency::reply::PendingReply<'_, u64>,
+        ctx: &Context<Self>,
+    ) {
+        let __reply_value: u64 = {
+            let c = &self.counters;
+            match cmd {
+                Cmd::Bump => c.effects.fetch_add(1, Ordering::SeqCst) as u64 + 1,
+                Cmd::Read => c.effects.load(Ordering::SeqCst) as u64,
+                Cmd::Watch(target) => {
+                    ctx.monitor(&target);
+                    c.watched.fetch_add(1, Ordering::SeqCst) as u64
+                }
+                Cmd::Link(target) => {
+                    ctx.link(&target);
+                    c.linked.fetch_add(1, Ordering::SeqCst) as u64
+                }
+                Cmd::Trap => {
+                    ctx.trap_exit(true);
+                    0
+                }
+                Cmd::Boom => panic!("cancellation fixture crash"),
+                Cmd::Helper(gate) => {
+                    let task = ctx
+                        .spawn_helper(async move { gate.notified().await })
+                        .unwrap();
+                    // Drop the ScopedTask: the helper stays owned by the actor scope.
+                    drop(task);
+                    0
+                }
             }
-            Cmd::Link(target) => {
-                ctx.link(&target);
-                c.linked.fetch_add(1, Ordering::SeqCst) as u64
-            }
-            Cmd::Trap => {
-                ctx.trap_exit(true);
-                0
-            }
-            Cmd::Boom => panic!("cancellation fixture crash"),
-            Cmd::Helper(gate) => {
-                let task = ctx
-                    .spawn_helper(async move { gate.notified().await })
-                    .unwrap();
-                // Drop the ScopedTask: the helper stays owned by the actor scope.
-                drop(task);
-                0
-            }
-        }
+        };
+        reply.reply(__reply_value);
     }
 }
 impl Handler<Down> for Probe {
-    async fn handle(&mut self, _: Down, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        _: Down,
+        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
         self.counters.downs.fetch_add(1, Ordering::SeqCst);
+        reply.reply(());
     }
 }
 
@@ -229,8 +243,15 @@ pub trait Bumper: Send + Sync {
     fn bump(&self) -> Response<u64>;
 }
 impl Handler<bumper::Bump> for Probe {
-    async fn handle(&mut self, _: bumper::Bump, _: &Context<Self>) -> u64 {
-        self.counters.effects.fetch_add(1, Ordering::SeqCst) as u64 + 1
+    async fn handle(
+        &mut self,
+        _: bumper::Bump,
+        reply: spawned_concurrency::reply::PendingReply<'_, u64>,
+        _: &Context<Self>,
+    ) {
+        let __reply_value: u64 =
+            { self.counters.effects.fetch_add(1, Ordering::SeqCst) as u64 + 1 };
+        reply.reply(__reply_value);
     }
 }
 

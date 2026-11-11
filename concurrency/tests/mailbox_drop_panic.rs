@@ -42,15 +42,27 @@ impl Drop for Victim {
 }
 impl Actor for Victim {}
 impl Handler<Hold> for Victim {
-    async fn handle(&mut self, msg: Hold, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        msg: Hold,
+        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
         msg.0.send(()).unwrap();
         let _ = msg.1.await;
         assert!(!msg.2, "original handler failure");
+        reply.reply(());
     }
 }
 impl Handler<Bomb> for Victim {
-    async fn handle(&mut self, _: Bomb, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        _: Bomb,
+        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
         self.0.fetch_add(1, Ordering::SeqCst);
+        reply.reply(());
     }
 }
 struct Ping;
@@ -64,12 +76,25 @@ impl Actor for Observer {
     }
 }
 impl Handler<Down> for Observer {
-    async fn handle(&mut self, down: Down, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        down: Down,
+        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
         self.0.send((false, down.reason)).unwrap();
+        reply.reply(());
     }
 }
 impl Handler<Ping> for Observer {
-    async fn handle(&mut self, _: Ping, _: &Context<Self>) {}
+    async fn handle(
+        &mut self,
+        _: Ping,
+        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
+        reply.reply(());
+    }
 }
 
 // Not simulated: builds its own multi-thread Tokio runtime.

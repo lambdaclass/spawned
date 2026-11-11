@@ -182,24 +182,49 @@ mod task_actors {
         }
     }
     impl Handler<Crash> for TaskVictim {
-        async fn handle(&mut self, _: Crash, _: &Context<Self>) {
+        async fn handle(
+            &mut self,
+            _: Crash,
+            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            _: &Context<Self>,
+        ) {
             self.0.on_crash();
+            reply.reply(());
         }
     }
     impl Handler<Ping> for TaskVictim {
-        async fn handle(&mut self, _: Ping, _: &Context<Self>) -> u64 {
-            7
+        async fn handle(
+            &mut self,
+            _: Ping,
+            reply: spawned_concurrency::reply::PendingReply<'_, u64>,
+            _: &Context<Self>,
+        ) {
+            reply.reply(7);
         }
     }
     impl Handler<Gift> for TaskVictim {
-        async fn handle(&mut self, _: Gift, _: &Context<Self>) -> Bomb {
-            self.0.gate.wait();
-            Bomb(Some(REPLY_PANIC))
+        async fn handle(
+            &mut self,
+            _: Gift,
+            reply: spawned_concurrency::reply::PendingReply<'_, Bomb>,
+            _: &Context<Self>,
+        ) {
+            let __reply_value: Bomb = {
+                self.0.gate.wait();
+                Bomb(Some(REPLY_PANIC))
+            };
+            reply.reply(__reply_value);
         }
     }
     impl Handler<Stash> for TaskVictim {
-        async fn handle(&mut self, _: Stash, _: &Context<Self>) {
+        async fn handle(
+            &mut self,
+            _: Stash,
+            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            _: &Context<Self>,
+        ) {
             self.0.stash.push(Bomb(Some(REPLY_PANIC)));
+            reply.reply(());
         }
     }
 }
@@ -217,24 +242,49 @@ mod thread_actors {
         }
     }
     impl Handler<Crash> for ThreadVictim {
-        fn handle(&mut self, _: Crash, _: &Context<Self>) {
+        fn handle(
+            &mut self,
+            _: Crash,
+            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            _: &Context<Self>,
+        ) {
             self.0.on_crash();
+            reply.reply(());
         }
     }
     impl Handler<Ping> for ThreadVictim {
-        fn handle(&mut self, _: Ping, _: &Context<Self>) -> u64 {
-            7
+        fn handle(
+            &mut self,
+            _: Ping,
+            reply: spawned_concurrency::reply::PendingReply<'_, u64>,
+            _: &Context<Self>,
+        ) {
+            reply.reply(7);
         }
     }
     impl Handler<Gift> for ThreadVictim {
-        fn handle(&mut self, _: Gift, _: &Context<Self>) -> Bomb {
-            self.0.gate.wait();
-            Bomb(Some(REPLY_PANIC))
+        fn handle(
+            &mut self,
+            _: Gift,
+            reply: spawned_concurrency::reply::PendingReply<'_, Bomb>,
+            _: &Context<Self>,
+        ) {
+            let __reply_value: Bomb = {
+                self.0.gate.wait();
+                Bomb(Some(REPLY_PANIC))
+            };
+            reply.reply(__reply_value);
         }
     }
     impl Handler<Stash> for ThreadVictim {
-        fn handle(&mut self, _: Stash, _: &Context<Self>) {
+        fn handle(
+            &mut self,
+            _: Stash,
+            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            _: &Context<Self>,
+        ) {
             self.0.stash.push(Bomb(Some(REPLY_PANIC)));
+            reply.reply(());
         }
     }
 }

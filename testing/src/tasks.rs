@@ -15,13 +15,14 @@ use crate::rules::{Fence, Plan, Rules};
 use crate::shared::SETTLE_TIMEOUT;
 use spawned_concurrency::error::ActorError;
 use spawned_concurrency::message::Message;
+use spawned_concurrency::reply::{Deadline, PendingReply, ReplyReceiver};
 use spawned_concurrency::supervision::{ChildState, SupervisedChild, Supervisor, SupervisorReport};
 use spawned_concurrency::system::{ActorSystem, ExecutionGroup, ShutdownReport, SystemError};
 use spawned_concurrency::tasks::{
     Actor, ActorRef, ActorStart, Context, Handler, Receiver, Recipient,
 };
 use spawned_concurrency::{ChildHandle, ExitReason};
-use spawned_rt::tasks::{oneshot, sleep, timeout};
+use spawned_rt::tasks::{sleep, timeout};
 use std::future::Future;
 use std::ops::Deref;
 use std::panic::Location;
@@ -93,8 +94,14 @@ impl Mock {
 impl Actor for Mock {}
 
 impl<M: Message> Handler<M> for Mock {
-    fn handle(&mut self, msg: M, _: &Context<Self>) -> impl Future<Output = M::Result> + Send {
+    fn handle(
+        &mut self,
+        msg: M,
+        reply: PendingReply<'_, M::Result>,
+        _: &Context<Self>,
+    ) -> impl Future<Output = ()> + Send {
         let plan = self.rules.plan(&self.inbox, msg);
+        let inbox = self.inbox.clone();
         async move {
             match plan {
                 Plan::Reply {
@@ -108,7 +115,18 @@ impl<M: Message> Handler<M> for Mock {
                     if let Some(record) = record {
                         record.finish();
                     }
-                    value
+                    reply.reply(value);
+                }
+                Plan::Discard { delay } => {
+                    if let Some(delay) = delay {
+                        sleep(delay).await;
+                    }
+                    drop(reply);
+                }
+                Plan::Defer => {
+                    if let Ok(token) = reply.defer() {
+                        inbox.store_deferred::<M>(token);
+                    }
                 }
                 Plan::Crash(reason) => panic!("{reason}"),
             }

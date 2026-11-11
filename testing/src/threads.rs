@@ -6,11 +6,11 @@ use crate::rules::{Fence, Plan, Rules};
 use crate::shared::SETTLE_TIMEOUT;
 use spawned_concurrency::error::ActorError;
 use spawned_concurrency::message::Message;
+use spawned_concurrency::reply::{Deadline, PendingReply, ReplyReceiver};
 use spawned_concurrency::threads::{
     Actor, ActorRef, ActorStart, Context, Handler, Receiver, Recipient,
 };
 use spawned_concurrency::{ChildHandle, ExitReason};
-use spawned_rt::threads::oneshot;
 use std::ops::Deref;
 use std::panic::Location;
 use std::sync::Arc;
@@ -52,7 +52,7 @@ impl Mock {
 impl Actor for Mock {}
 
 impl<M: Message> Handler<M> for Mock {
-    fn handle(&mut self, msg: M, _: &Context<Self>) -> M::Result {
+    fn handle(&mut self, msg: M, reply: PendingReply<'_, M::Result>, _: &Context<Self>) {
         match self.rules.plan(&self.inbox, msg) {
             Plan::Reply {
                 delay,
@@ -65,7 +65,18 @@ impl<M: Message> Handler<M> for Mock {
                 if let Some(record) = record {
                     record.finish();
                 }
-                value
+                reply.reply(value);
+            }
+            Plan::Discard { delay } => {
+                if let Some(delay) = delay {
+                    std::thread::sleep(delay);
+                }
+                drop(reply);
+            }
+            Plan::Defer => {
+                if let Ok(token) = reply.defer() {
+                    self.inbox.store_deferred::<M>(token);
+                }
             }
             Plan::Crash(reason) => panic!("{reason}"),
         }

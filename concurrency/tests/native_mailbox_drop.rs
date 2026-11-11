@@ -40,8 +40,15 @@ impl Drop for Victim {
     }
 }
 impl Handler<Bomb> for Victim {
-    fn handle(&mut self, _: Bomb, _: &Context<Self>) {
-        panic!("queued handler ran");
+    fn handle(
+        &mut self,
+        _: Bomb,
+        _reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
+        {
+            panic!("queued handler ran");
+        }
     }
 }
 
@@ -50,8 +57,15 @@ impl Message for Crash {
     type Result = ();
 }
 impl Handler<Crash> for Victim {
-    fn handle(&mut self, _: Crash, _: &Context<Self>) {
-        panic!("native handler failure");
+    fn handle(
+        &mut self,
+        _: Crash,
+        _reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
+        {
+            panic!("native handler failure");
+        }
     }
 }
 
@@ -111,7 +125,7 @@ fn native_drop_child() {
             );
             assert_eq!(dropped.load(Ordering::SeqCst), 2);
             for reply in replies {
-                assert!(reply.recv_timeout(LIMIT).is_err());
+                assert!(reply.recv().is_err());
             }
             // Keep ActorRef alive through all assertions: cleanup cannot depend
             // on whoever eventually drops its last sender.

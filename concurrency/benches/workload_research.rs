@@ -230,7 +230,12 @@ struct Node {
 }
 impl Actor for Node {}
 impl Handler<Wire> for Node {
-    async fn handle(&mut self, msg: Wire, _: &Context<Self>) {
+    async fn handle(
+        &mut self,
+        msg: Wire,
+        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
         if std::env::var("SPAWNED_EXPERIMENT_SCHEDULER").as_deref() == Ok("sharded") {
             assert_eq!(
                 std::thread::current().name().unwrap(),
@@ -238,6 +243,7 @@ impl Handler<Wire> for Node {
             );
         }
         self.children = msg.children;
+        reply.reply(());
     }
 }
 #[inline(never)]
@@ -248,41 +254,49 @@ fn cpu_work(mut value: u64, iterations: u32) -> u64 {
     value
 }
 impl Handler<Route> for Node {
-    async fn handle(&mut self, msg: Route, _: &Context<Self>) -> Ack {
-        let started = Instant::now();
-        if msg.measured {
-            self.meter.started.fetch_add(1, Ordering::Relaxed);
-        }
-        let value = cpu_work(msg.id ^ (self.id as u64), msg.iterations);
-        // Start all fan-out requests before awaiting any; chains have one child.
-        let replies: Vec<_> = self
-            .children
-            .iter()
-            .map(|c| c.request_raw(msg.clone()).unwrap())
-            .collect();
-        let mut nodes = 1;
-        let mut tag = self.id as u64 + 1;
-        let mut checksum = value;
-        for reply in futures::future::join_all(replies).await {
-            let ack = reply.unwrap();
-            assert_eq!(ack.id, msg.id);
-            nodes += ack.nodes;
-            tag += ack.tag;
-            checksum ^= ack.checksum;
-        }
-        let completed = Instant::now();
-        if msg.measured {
-            self.meter.completed.fetch_add(1, Ordering::Relaxed);
-        }
-        Ack {
-            id: msg.id,
-            nodes,
-            tag,
-            checksum,
-            completed,
-            queue_ns: started.duration_since(msg.enqueued).as_nanos() as u64,
-            service_ns: completed.duration_since(started).as_nanos() as u64,
-        }
+    async fn handle(
+        &mut self,
+        msg: Route,
+        reply: spawned_concurrency::reply::PendingReply<'_, Ack>,
+        _: &Context<Self>,
+    ) {
+        let __reply_value: Ack = {
+            let started = Instant::now();
+            if msg.measured {
+                self.meter.started.fetch_add(1, Ordering::Relaxed);
+            }
+            let value = cpu_work(msg.id ^ (self.id as u64), msg.iterations);
+            // Start all fan-out requests before awaiting any; chains have one child.
+            let replies: Vec<_> = self
+                .children
+                .iter()
+                .map(|c| c.request_raw(msg.clone()).unwrap())
+                .collect();
+            let mut nodes = 1;
+            let mut tag = self.id as u64 + 1;
+            let mut checksum = value;
+            for reply in futures::future::join_all(replies).await {
+                let ack = reply.unwrap();
+                assert_eq!(ack.id, msg.id);
+                nodes += ack.nodes;
+                tag += ack.tag;
+                checksum ^= ack.checksum;
+            }
+            let completed = Instant::now();
+            if msg.measured {
+                self.meter.completed.fetch_add(1, Ordering::Relaxed);
+            }
+            Ack {
+                id: msg.id,
+                nodes,
+                tag,
+                checksum,
+                completed,
+                queue_ns: started.duration_since(msg.enqueued).as_nanos() as u64,
+                service_ns: completed.duration_since(started).as_nanos() as u64,
+            }
+        };
+        reply.reply(__reply_value);
     }
 }
 fn layout(c: &Config) -> (Vec<usize>, Vec<usize>) {

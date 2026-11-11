@@ -11,7 +11,14 @@ impl Message for Ping {
 }
 impl Actor for Worker {}
 impl Handler<Ping> for Worker {
-    async fn handle(&mut self, _: Ping, _: &Context<Self>) {}
+    async fn handle(
+        &mut self,
+        _: Ping,
+        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
+        reply.reply(());
+    }
 }
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() {

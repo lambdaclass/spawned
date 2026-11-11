@@ -23,11 +23,23 @@ trait ProbeProtocol: Send + Sync {
 struct Worker;
 impl Actor for Worker {}
 impl Handler<probe_protocol::Notify> for Worker {
-    async fn handle(&mut self, _: probe_protocol::Notify, _: &Context<Self>) {}
+    async fn handle(
+        &mut self,
+        _: probe_protocol::Notify,
+        reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
+        reply.reply(());
+    }
 }
 impl Handler<probe_protocol::Query> for Worker {
-    async fn handle(&mut self, query: probe_protocol::Query, _: &Context<Self>) -> u64 {
-        query.value
+    async fn handle(
+        &mut self,
+        query: probe_protocol::Query,
+        reply: spawned_concurrency::reply::PendingReply<'_, u64>,
+        _: &Context<Self>,
+    ) {
+        reply.reply(query.value);
     }
 }
 const BASELINE_WORDS: usize = 1;

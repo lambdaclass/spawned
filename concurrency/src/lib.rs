@@ -90,12 +90,13 @@ pub mod failpoints;
 
 pub mod child_handle;
 pub mod error;
-#[cfg(feature = "async")]
+#[cfg_attr(not(feature = "async"), allow(dead_code))]
 pub mod lifecycle_trace;
 pub mod link;
 pub mod message;
 pub mod monitor;
 pub mod registry;
+pub mod reply;
 pub mod response;
 #[cfg(feature = "async")]
 pub mod supervision;
@@ -109,6 +110,10 @@ pub use child_handle::{ActorId, ChildHandle};
 pub use error::{ActorError, ExitReason};
 pub use link::Exit;
 pub use monitor::{Down, MonitorRef};
+pub use reply::{
+    Deadline, DeferError, Delivery, InsertError, PendingReplies, PendingReply, ReplyReceiver,
+    ReplyTo,
+};
 pub use response::Response;
 pub use spawned_macros::{actor, protocol};
 
