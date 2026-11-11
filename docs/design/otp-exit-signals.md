@@ -1,7 +1,8 @@
 # Exit signals, startup and runtime-drop semantics as in OTP: design contract
 
-**Status: design in progress, not implemented.** Revised after three rounds of
-independent review; see [Review resolutions](#review-resolutions).
+**Status: design accepted, not implemented.** Revised after four rounds of
+independent review (see [Review resolutions](#review-resolutions)); the
+maintainer settled every open question (see [Decisions](#decisions)).
 
 - Covers ROADMAP rank 5e (exit signals), the startup part of rank 5f, rank 5g
   (runtime-dropped actors) and the supervisor `start()` ordering found by the
@@ -99,14 +100,17 @@ both from the end of owned background work. Each actor instance goes through:
    dispatched (semantics D4). Sends and requests are still admitted (D3) and
    are answered at D. Rank 11 step 1 (registry `Exiting`, jobs cancelled).
    Later events can still change the reason until D, by the
-   [precedence rules](#reason-precedence-until-d). Turning `trap_exit` on or
-   off no longer matters. **Exit errors wait for D:** a request whose handler
+   [precedence rules](#reason-precedence-until-d). The trap flag is read when
+   each signal arrives, as always. **Exit errors wait for D:** a request whose handler
    panicked, or a deferred token dropped while the actor exits, is not
    answered at once; its slot stays registered and is answered at D with the
    final reason (or by the caller's own deadline first). An explicit reply,
    including one from `stopped()`, completes at once. As in OTP, where a
    caller learns of a crash through its monitor when the server is gone.
-3. **`stopped()` runs** (unless skipped, open question 2). It may still answer
+3. **`stopped()` runs**, unless the exit was begun by a kill, an untrapped exit
+   signal or link notice, or a runtime drop (decision 2, as OTP skips
+   `terminate`); a skipped `stopped()` never starts, and its tokens are
+   answered at D. When it runs, it may still answer
    deferred tokens and send messages. A stuck `stopped()` keeps the actor in
    this phase: nothing is closed, callers are bounded by their own deadlines
    (rank 11 "cleanup incomplete").
@@ -171,12 +175,34 @@ dropped, which callers see as payload-free `ActorStopped`. Before rank 11:
   state is dropped, and a panicking turn keeps its sender until D;
 - callers see `ActorStopped` without a reason, and a send after D cannot be
   told apart from one before (no `NoProc` for requests);
-- reason-bearing errors (open question 4) need rank 11's reply slot, which
-  is therefore a prerequisite for that part.
+- reason-bearing errors (decision 4) need rank 11's reply slot
+  ([#239](https://github.com/lambdaclass/spawned/pull/239), open), which is
+  therefore a prerequisite for that part.
 
-Rank 11's model then needs one change: `DeferredReplies.tla` discharges a
-token dropped in a panicking turn or while exiting before death; under this
-design it holds the slot until death.
+#### Required changes to rank 11 (#221 design, #239 implementation)
+
+- **Exit order.** The death point comes right after `stopped()` returns (or at
+  once when `stopped()` is skipped): the reply registry, mailbox admission and
+  the link/monitor table close in one critical section with the final reason.
+  State destruction follows; publication (`wait_exit`, `Down`, links) comes
+  after destruction; the job join stays after publication (rank 11 step 4).
+  Callers, `Down` and `wait_exit` therefore share one reason.
+- **Held exit errors.** A token dropped in a panicking turn or while the owner
+  is `Exiting` moves its slot to "exit pending"; it is answered at the death
+  point with the final reason (or by the caller's deadline first). Only an
+  explicit reply completes earlier.
+- **Skipped `stopped()`.** After a kill or an untrapped signal no `stopped()`
+  runs, so stored tokens are answered at the death point with the final
+  reason (`Killed`, the signal's reason, ...).
+- **Error shape.** `ActorStopped` carries the final `ExitReason`; a send or
+  request after the death point reports `NoProc` (decision 4).
+- **`DeferredReplies.tla`.** Its drop-classification actions discharge
+  `Stopped` before death for a token dropped in a panicking turn or while
+  exiting. Change them to move the slot to an "exit pending" state that the
+  death action discharges with the owner's final reason, and add an invariant
+  that a `Stopped` discharge happens only at death and carries the final
+  reason, with the current early discharge as a negative control (the same
+  property `Lifecycle.tla` checks as `StoppedAtDeath`, control `EarlyStopped`).
 
 ### Reason precedence until D
 
@@ -185,13 +211,14 @@ design it holds the slot until death.
 | kill (signal, supervisor escalation) | any | `Killed`; nothing later replaces it |
 | panic in the current handler or in `stopped()` | any, unless a kill was received | `Panic` (OTP: a crash in `terminate` replaces the reason, including one passed to `gen_server:stop`; an administrative `stop_with_reason(Killed)` is not a kill) |
 | a second self-exit or administrative stop | any | unchanged (first wins) |
-| a non-kill exit signal or abnormal link notice, non-trapping actor | any | unchanged, or replaced (open question 9) |
+| a non-kill exit signal or abnormal link notice, non-trapping actor | any, unless a kill was received | replaced by the signal's reason (decision 8; OTP: a process in `terminate` dies with it) |
 | the same, trapping actor | any | unchanged; the `Exit` is queued and never dispatched |
 | runtime drop | `None` or `Normal` | `Killed` |
 | runtime drop | anything else | unchanged |
 | after D: destructor panic | final | unchanged; cleanup failure recorded |
 
-Before exit begins, the first of these events begins it (E2). Semantics L3
+Before exit begins, the first of these events begins it (E2). A late signal
+does not start a skipped `stopped()` or stop a running one (R). Semantics L3
 and L5 change accordingly: a panic in `stopped()` after an abnormal reason now
 replaces it with `Panic` (today it keeps the earlier abnormal reason), except
 after a kill. "A kill was received" is provenance, not the current reason
@@ -223,16 +250,18 @@ delivers it to peers as `Kill`, trappable (semantics X4).
   it is already exiting but before D (current handler, queued behind its
   backlog, inside `stopped()`), `Killed` replaces the requested reason. After
   D a kill does nothing.
-- What still runs: the current handler finishes and `stopped()` either runs or
-  is skipped per open question 2; if `stopped()` is already running it runs to
-  the end (R: Rust cannot interrupt it). A panic in that code does not replace
+- What still runs: the current handler finishes; `stopped()` is skipped if it
+  has not begun (decision 2, as OTP skips `terminate`); if it is already
+  running it runs to the end (R: Rust cannot interrupt it). A panic in that code does not replace
   `Killed`.
 - Links receive `Killed`: a non-trapping peer ends `Killed` and propagates
   `Killed`; a trapping peer gets `Exit { reason: Killed }`. Monitors get
   `Down { reason: Killed }`.
 - A self-exit with `Kill` (`ctx.stop_with_reason(Kill)`) stays `Kill`, and
   links receive `Kill` (trappable; a non-trapping peer ends `Kill`), as OTP's
-  `exit(kill)`. An administrative `stop_with_reason(Kill)` is open question 5.
+  `exit(kill)`. An administrative `stop_with_reason(Kill)` stays an
+  administrative stop ending `Kill` (decision 5); `kill()` is the untrappable
+  signal.
 - `Killed` is abnormal: Permanent and Transient children restart.
 
 Model: `KilledFromKill`; controls `KillAsKill`, `KillNoSupersede`.
@@ -273,15 +302,16 @@ notices consult the flag ([link.rs `make_signal`](../../concurrency/src/link.rs)
    |---|---|---|
    | `Kill` (a signal, not a link notice) | ends `Killed` (E1) | ends `Killed` (E1) |
    | `Normal` | ignored | `Exit { from, reason: Normal }` queued |
-   | anything else | begins exit with that reason after its current handler; queue discarded | `Exit { from, reason }` queued |
+   | anything else | begins exit with that reason after its current handler, without `stopped()`; queue discarded | `Exit { from, reason }` queued |
    | any but `Kill`, from the target's parent | as above | parent exit queued (E3) |
 
    A `Kill` from the parent is still a kill: the target ends `Killed`.
 
    Any `ExitReason` may be sent, including `Killed` and `NoProc`; they behave
    as ordinary reasons. Only a `Kill` *signal* produces `Killed`. A non-kill
-   signal to an actor that already began exiting does nothing (open question
-   9); a signal to an actor past D is dropped, as in OTP. Queuing a trapped
+   signal to a non-trapping actor that already began exiting replaces its
+   reason unless a kill was received (decision 8); a signal to an actor past D
+   is dropped, as in OTP. Queuing a trapped
    `Exit` commits no reason, cancels nothing and closes no admission.
 2. **Administrative stops stay.** `ChildHandle::stop()`, `stop_with_reason(r)`
    and `shutdown()` keep their v0.7 meaning: an untrappable stop after the
@@ -371,8 +401,8 @@ that traps exits receives its parent's death in `exit_received`.
   armed at exit begin with the first interval of the matching row (5 s for an
   unmanaged actor). Cleanup stuck keeps its meaning: the slot is stuck, the
   supervisor fails, nothing replaces the child, and "done" (V9) still waits
-  for the controller to finish. The kill supersedes the reason and, per open
-  question 2, skips `stopped()` if it has not started. Rows 1-3 apply
+  for the controller to finish. The kill supersedes the reason and skips
+  `stopped()` if it has not started (decision 2). Rows 1-3 apply
   whenever the supervisor stops a child, also one that had already begun
   exiting on its own: if it reaches D within the first interval its own
   reason stands, otherwise it gets the kill. Row 4 applies only when the
@@ -409,8 +439,13 @@ under X3 ([link.rs](../../concurrency/src/link.rs)); `monitor` waits on
 - `ctx.monitor(&h)` after D: exactly one `Down { reason: NoProc }`. Before D:
   exactly one `Down` with the final reason, delivered at publication.
 - `ctx.link(&h)` after D, caller trapping: one `Exit { from: h, reason: NoProc }`;
-  the pending record is removed when it is delivered (or by `unlink`). Caller not trapping: open question 1.
-- `send`/`request` after D: `NoProc` (shape per open question 4). Before D they
+  the pending record is removed when it is delivered (or by `unlink`). Caller
+  not trapping: it receives that `NoProc` exit signal and exits `NoProc`
+  without `stopped()` (decision 1, OTP's signal semantics). `ctx.try_link(&h)
+  -> Result<(), NoProc>` is the explicit variant: it returns `Err(NoProc)` and
+  keeps no record, whether or not the caller traps.
+- `send`/`request` after D: `NoProc`, once rank 11 (#239) provides the
+  reason-bearing reply slot (decision 4). Before D they
   are admitted and answered with the final reason at D if not handled.
 - Before D, including while `h` runs `stopped()`, links and monitors register
   and fire with the final reason, as OTP's exiting process answers.
@@ -419,8 +454,9 @@ under X3 ([link.rs](../../concurrency/src/link.rs)); `monitor` waits on
 pending, including a pending late `NoProc`), it does nothing. Otherwise it
 creates a record with a fresh generation and checks the target: before D the
 target gets the reverse edge; past D the caller's record becomes pending with
-a `NoProc` notice (trapping caller) or `link` fails (non-trapping caller,
-open question 1, and then no record is kept). `monitor` does the same with a
+a `NoProc` notice, delivered as an `Exit` to a trapping caller and as an exit
+signal (the caller exits) to a non-trapping one; `try_link` instead returns
+`Err(NoProc)` and keeps no record. `monitor` does the same with a
 fresh monitor reference. Each registration is linearised either before D
 (fires at publication) or after it (NoProc); see the
 [locking protocol](#locking-protocol). Model: `NoProcIffLate`, `NoEdgeToDead`, `DownDelivered`; controls
@@ -647,14 +683,16 @@ leaves 5e to "only add the reason". With the phases above:
   that is a self-exit and runs phases 2-6.
 - **Parent exit to a trapping actor (E3):** runs phases 2-6 when dispatched,
   so `stopped()` can still answer stored tokens.
-- **Kill:** supersedes the requested reason until D. Every token still open
-  at D, and every exit error held since a panicking turn, is answered with
-  `Killed`.
+- **Kill:** supersedes the requested reason until D and skips a `stopped()`
+  that has not begun. Every token still open at D, and every exit error held
+  since a panicking turn, is answered with `Killed`.
+- **Untrapped exit signal or link notice:** no `stopped()`; open tokens are
+  answered at D with that reason.
 - **Callers get the final reason.** A request queued or deferred at D is
   answered with the final reason (OTP `{Reason, {gen_server, call, ..}}`); a
   request sent after D reports `NoProc`; a request sent while the actor is
-  exiting is admitted (D3) and answered at D. The error's shape is open
-  question 4.
+  exiting is admitted (D3) and answered at D. `ActorStopped` carries the
+  reason and a request after D reports `NoProc` once #239 lands (decision 4).
 - **Death boundary.** Rank 11's "nothing is closed early" holds: nothing closes
   before `stopped()` returns. Its step order changes as described in
   [Phases](#phases-of-an-exit): admission, registry and exit table close
@@ -667,8 +705,9 @@ leaves 5e to "only add the reason". With the phases above:
 |---|---|
 | `ExitReason` exhaustive, four variants | `#[non_exhaustive]`, plus `Killed`, `NoProc` |
 | no exit-signal API | `Context::exit(&self, &ChildHandle, ExitReason)`, `ChildHandle::exit(ExitReason)`, `ChildHandle::kill()`, `ActorId::EXTERNAL` |
-| `ChildHandle::stop`/`stop_with_reason`/`shutdown` | unchanged behaviour, documented as administrative stops; `stop_with_reason(Kill)` per open question 5 |
-| `Context::link(&ChildHandle)` | unchanged signature or `-> Result<(), NoProc>` per open question 1; `NoProc` after D |
+| `ChildHandle::stop`/`stop_with_reason`/`shutdown` | unchanged behaviour, documented as administrative stops; `stop_with_reason(Kill)` ends `Kill`, `shutdown()` stays administrative (decisions 5, 6) |
+| `Context::link(&ChildHandle)` | unchanged signature; after D a `NoProc` exit signal (trapping: `Exit`; otherwise the caller exits) |
+| (new) `Context::try_link(&ChildHandle) -> Result<(), NoProc>` | `Err(NoProc)` after D, no record kept (decision 1) |
 | `Context::monitor` | `Down { reason: NoProc }` after D |
 | `Context::unlink`, `demonitor` | fence notices already taken but not yet delivered |
 | `Context::trap_exit` docs | "only a kill is untrappable; a parent's exit ends the actor normally" |
@@ -677,7 +716,8 @@ leaves 5e to "only add the reason". With the phases above:
 | `SupervisorBuilder::start` | `Err` on any first-start failure, returned after rollback; ready children's exits during startup processed afterwards |
 | `ChildHandle::mailbox_cleanup_failure()` | generalised to `cleanup_failure()` (state and queued destructors after D) |
 | runtime drop | `Killed` in both modes |
-| `ActorError` | with rank 11: `#[non_exhaustive]`; reason on stop errors per open question 4 |
+| `ActorError` | with rank 11 (#239): `#[non_exhaustive]`; `ActorStopped` carries the final `ExitReason`; `NoProc` for sends and requests after D (decision 4) |
+| `stopped()` | skipped after a kill, an untrapped exit signal or link notice, or a runtime drop (decision 2) |
 | `spawned-test` `faults::exit` | uses `ChildHandle::exit`/`kill` instead of a linked helper and `stop_with_reason(Kill)`, so injected exits are exact (ROADMAP rank 6 asks for this) |
 | lifecycle trace | events for exit signals, parent exits, D, publication, fences and NoProc, so `Lifecycle.tla` can replay real runs |
 
@@ -686,7 +726,7 @@ leaves 5e to "only add the reason". With the phases above:
 | Operation | v0.7 | v0.8 |
 |---|---|---|
 | `match` on `ExitReason` | exhaustive | add a wildcard arm |
-| `ChildHandle::stop_with_reason(Kill)` | ends `Kill` | per open question 5 |
+| `ChildHandle::stop_with_reason(Kill)` | ends `Kill` | unchanged (administrative stop) |
 | new `ChildHandle::kill()` | | ends `Killed`; links and monitors see `Killed` |
 | `ctx.stop_with_reason(Kill)` | `Kill` | unchanged |
 | `ChildHandle::stop`, `shutdown` | untrappable stop | unchanged |
@@ -704,8 +744,11 @@ leaves 5e to "only add the reason". With the phases above:
 | a request whose handler panicked | `ActorStopped` at once | answered at D with the final reason |
 | restart decision | `is_abnormal()` of the reason | reason abnormal or a cleanup failure |
 | runtime-dropped threads actor | `Panic("unexpected framework panic")` | `Killed` |
-| `stopped()` on kill and untrapped signals | always runs | per open question 2 |
-| request errors | `ActorStopped` | per open question 4 |
+| `stopped()` on kill and untrapped signals or link notices | always runs | skipped if it has not begun; cleanup that must run on every exit belongs in `Drop`, or the actor traps exits |
+| request errors | `ActorStopped` | `ActorStopped(reason)`; `NoProc` after D (with #239) |
+| non-trapping `ctx.link` to an actor past D | the peer's real reason, under X3 (stops the caller unless `Normal`) | `NoProc` exit signal, the caller exits `NoProc`; use `try_link` to get `Err(NoProc)` instead |
+| a non-kill signal or link notice arriving while a non-trapping actor exits | ignored (first reason wins, L3) | replaces the reason unless a kill was received; the regression test `late_link_failure_cannot_relabel_an_already_requested_normal_stop` is inverted |
+| first-start failure of a supervised child | retried (Permanent/Transient) | fails `start()`; no opt-in retry (decision 7): retry `start()` or tolerate the condition in the factory |
 | `Display` | | adds `killed`, `noproc` |
 
 ## Client mapping
@@ -776,8 +819,9 @@ A third actor (transitive propagation through a non-trapping middle actor)
 is out of reach for TLC at these bounds; transitive propagation is the same
 `Signal` step applied twice and is covered by tests (semantics X3).
 
-Handlers are atomic and nondeterministic (reply, panic, ignore or act on a
-trapped exit); a panic in any turn is a self-exit, and a panic while exiting
+`TryLink` models `try_link` against a gone actor (no effect but the
+`Err`). Handlers are atomic and nondeterministic (reply, panic, ignore or act
+on a trapped exit); a panic in any turn is a self-exit, and a panic while exiting
 is `PanicWhileExiting`. Late notices carry a generation number so a second
 registration is not mistaken for a cancelled one.
 
@@ -793,6 +837,8 @@ Invariants:
 | `NormalSignalIgnored` | a `Normal` exit signal or link notice never stops a non-trapping actor |
 | `KilledFromKill` | a kill ends the target `Killed`, also when it arrives before D during exit, and nothing replaces it |
 | `RuntimeDropReason` | a runtime drop ends `Killed` unless a non-`Normal` reason was already requested (checked against the reason recorded before the drop) |
+| `SkipHook` | `stopped()` runs only for self-exits, administrative stops and parent exits handled by a trapping actor; kills, untrapped signals and link notices skip it (the model lets only a running `stopped()` send) |
+| `LateSignalWins` | a late non-kill signal applied during exit is the final reason unless a later panic or kill replaced it |
 | `StoppedAtDeath` | an exit error reaches a caller only at D, carrying the final reason; a request whose handler panicked is held until then |
 | `NoEdgeToDead` | no live link or monitor points at an actor past D |
 | `ExitAfterMessages` | a death notice follows every earlier message from its source |
@@ -822,6 +868,8 @@ the two liveness controls run on a smaller instance, `LIFECYCLE_SMALL`):
 | `KillNoSupersede` | a kill during exit keeps the requested reason | `KilledFromKill` |
 | `PanicOverKill` | a panic during exit replaces `Killed` | `KilledFromKill` |
 | `DropKeepsNormal` | a runtime drop keeps a requested `Normal` | `RuntimeDropReason` |
+| `AlwaysHook` | v0.7: `stopped()` runs after a kill or untrapped signal | `SkipHook` |
+| `LateSignalIgnored` | v0.7: a late signal during exit keeps the first reason | `LateSignalWins` |
 | `EarlyStopped` | a panicking request is answered at once with `Panic` | `StoppedAtDeath` |
 | `NoUnlinkFence` | v0.7: `unlink` does not cancel a link notice in flight (`MCLifecycleFence`) | `CancelFenced` |
 | `NoDemonitorFence` | v0.7: `demonitor` does not cancel a `Down` in flight (`MCLifecycleFence`) | `CancelFenced` |
@@ -849,18 +897,18 @@ the verification rule requires.
 | Two points after the last hook (D and publication) | none: a process has no destructors | `NoProc` for requests and registrations can precede `exit_reason()`; a hanging destructor delays publication, not D | R: state destructors run after the last hook and may hang |
 | Destructor panics | none | recorded as cleanup failure, not as the exit reason | R: as above |
 | Administrative stop | `gen_server:stop` is synchronous and waits for the backlog (system message in order) | `ChildHandle::stop`/`stop_with_reason`/`shutdown` return at once, stop after the current handler and discard the queue; untrappable | B: stop latency is one handler, independent of an unbounded backlog (it does not bound a hanging handler); draining is opt-in (rank 13) |
-| `stopped()` on kills and untrapped signals | skipped (`terminate` does not run) | open question 2 | depends on the decision |
-| A non-kill signal while exiting | a non-trapping process in `terminate` dies with it | open question 9 | depends on the decision |
+| A late signal while `stopped()` runs | the process in `terminate` dies at once with the new reason | the reason is replaced, but the running `stopped()` finishes | R: Rust cannot interrupt it |
 | Exit reasons | any term (`{shutdown, Term}`, custom atoms) | a closed, non-exhaustive enum | T: typed reasons; `Panic(String)` carries free text |
 | Signal sender from outside an actor | always a pid | `ActorId::EXTERNAL` for `ChildHandle::exit` called outside an actor | R: non-actor Rust code has no identity |
-| `link` to a gone local actor when not trapping | raises a `noproc` exception | open question 1 | T if a `Result`; none if an exit signal |
+| `link` to a gone local actor when not trapping | raises a `noproc` exception (the documentation calls the exit signal the expected behaviour; remote links get it) | `link` delivers the `NoProc` exit signal; `try_link` returns `Err(NoProc)` | R: Rust has no catchable exceptions, so the signal (OTP's documented semantics) is the default and `try_link` is the typed counterpart of catching it (T) |
 | Shutdown admission | a shutting-down supervisor does not restrict what children start | the whole managed tree closes admission at once | B: bounds work started during shutdown |
 | `noconnection` | `Down`/`Exit` reason for a lost node | absent | single process (no distribution) |
 | Runtime drop | no counterpart | `Killed` | R: an async runtime can drop a future |
 | Owned work after a failed start | `start_link`'s error means the partial tree is gone | `start()` can return while a stuck child's cleanup or its jobs still run; they are reported and stay owned | R: Rust cannot terminate that code; B: the reporting bound |
 | Restart after a destructor failure | none | a Transient child whose reason is `Normal` or `Shutdown` restarts if its cleanup failed; traces keep the raw reason and the failure, the model projection uses the abnormal class | R: destructors exist; a failed cleanup is treated as a crash without relabelling the reason |
 
-Already aligned: per-sender FIFO, at-most-once delivery, stop discarding the
+Already aligned: `stopped()` skipped on kills and untrapped signals, late
+signals replacing the reason, per-sender FIFO, at-most-once delivery, stop discarding the
 mailbox, `Normal` link notices ignored by non-trapping peers, transitive
 propagation, ordering of death notices, unlink/demonitor fences, the restart
 table, first-start abort and deferred startup exits.
@@ -883,8 +931,9 @@ table, first-start abort and deferred startup exits.
    dropped, so callers would see a reason before `Down` does, and a destructor
    panic could make them disagree.
 5. **Retry initial startup for some causes (startup timeout).** Rejected for
-   OTP alignment; offered as an opt-in only if open question 8 says so.
-6. **A new `ExitReason::Dropped` for runtime drops.** Kept as open question 3.
+   OTP alignment; no opt-in (decision 7).
+6. **A new `ExitReason::Dropped` for runtime drops.** Rejected (decision 3):
+   `Killed` already means "terminated from outside without a say".
 7. **NoProc only for monitors, real reason for links.** Rejected: OTP gives
    `noproc` for both, and one death point serves both.
 8. **Deliver a parent's Shutdown to `exit_received` and let the actor decide.**
@@ -892,35 +941,30 @@ table, first-start abort and deferred startup exits.
    the kill; gen_server never lets user code see the parent's exit. Control
    `ParentAsExit`.
 
-## Open questions
+## Decisions
 
-1. A non-trapping actor calls `link` on an actor past D: should `link` return
-   an error (`Result<(), NoProc>`, the counterpart of OTP's local `noproc`
-   exception), or should the caller receive a `NoProc` exit signal and exit
-   (OTP's documented signal semantics, what a remote link does)? The model
-   allows both.
-2. Should an actor run `stopped()` when it is killed before `stopped()`
-   began, or when a non-trapping actor exits because of an exit signal or link
-   notice? OTP skips `terminate` in both cases; v0.7 always runs `stopped()`.
-3. Runtime-dropped actors: `Killed`, or a distinct `ExitReason` variant?
-4. Error shape for callers: replace `ActorError::ActorStopped` by a variant
-   carrying `ExitReason` (with `NoProc` for not admitted), or keep
-   `ActorStopped` and add an accessor? Decide with rank 11, which already makes
-   `ActorError` non-exhaustive. ethrex's deliberately exhaustive match breaks
-   either way.
-5. `ChildHandle::stop_with_reason(Kill)`: an alias of `kill()` (ends `Killed`,
-   supersedes), or an administrative stop with reason `Kill` as today?
-6. Should `ChildHandle::shutdown()` stay an administrative stop, or become
-   `exit(Shutdown)` (trappable), the signal a supervisor sends?
-7. (Resolved in round 1: folded into S1.)
-8. Should there be an opt-in to retry a child's first start (ethrex's
-   discovery boot path relies on it implicitly), or is application-level retry
-   enough?
-9. A non-trapping actor that already began exiting receives a non-kill exit
-   signal or abnormal link notice (for example a linked peer panics while it
-   runs `stopped()` after a `Normal` stop): keep the first requested reason
-   (today's L3, which a regression test pins), or replace it as OTP does for a
-   process still in `terminate`?
+The open questions, as settled by the maintainer after round 4:
+
+1. **Late link from a non-trapping actor:** `link` to an actor past D sends
+   the caller a `NoProc` exit signal and the caller exits, as Erlang's signal
+   semantics; `try_link` returns `Result<(), NoProc>` for explicit handling.
+2. **`stopped()`** is skipped on a kill and on untrapped exit signals and
+   link notices (and runtime drops), as OTP skips `terminate`. A `stopped()`
+   that already runs finishes.
+3. **Runtime-dropped actors** end `Killed` in both modes.
+4. **Caller errors:** `ActorStopped` carries the final exit reason, and sends
+   and requests after D report `NoProc`. Implemented once rank 11
+   ([#239](https://github.com/lambdaclass/spawned/pull/239)) lands; until
+   then callers see a reason-free `ActorStopped`.
+5. **`stop_with_reason(Kill)`** stays an administrative stop ending `Kill`.
+6. **`shutdown()`** stays an administrative stop.
+7. **No opt-in retry** for a child's first start; retry at application level
+   (ethrex: make the discovery bootnode ping best-effort).
+8. **A late non-kill signal during exit** replaces the reason of a
+   non-trapping actor, as in OTP, unless a kill was received.
+
+(The former question 7, startup exits of ready children, was folded into S1
+in round 1.)
 
 ## Review resolutions
 

@@ -163,6 +163,8 @@ LIFECYCLE_CONTROLS = [
     ("MCLifecycle", "EarlyStopped", "StoppedAtDeath"),
     ("MCLifecycle", "PanicOverKill", "KilledFromKill"),
     ("MCLifecycle", "DropKeepsNormal", "RuntimeDropReason"),
+    ("MCLifecycle", "AlwaysHook", "SkipHook"),
+    ("MCLifecycle", "LateSignalIgnored", "LateSignalWins"),
     ("MCLifecycle", "LateRealReason", "NoProcIffLate"),
     ("MCLifecycle", "Retain182", "NoOrphanRequest"),
     ("MCLifecycle", "Dispatch185", "NoDispatchAfterStop"),

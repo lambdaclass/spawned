@@ -71,6 +71,8 @@ Past(a, s) == s \in {"gone", "dead"}
 (*  EarlyStopped    a panicking request is answered before D               *)
 (*  PanicOverKill   a panic during exit replaces Killed                    *)
 (*  DropKeepsNormal a runtime drop keeps a requested Normal                *)
+(*  AlwaysHook      v0.7: stopped() runs after a kill or untrapped signal  *)
+(*  LateSignalIgnored v0.7: a late signal during exit keeps the reason    *)
 KilledReason == IF Fault = "KillAsKill" THEN "Kill" ELSE "Killed"
 
 VARIABLES
@@ -91,14 +93,17 @@ VARIABLES
     req,       \* [Reqs -> [t, s, why]]
     dropFrom,  \* [Actors -> requested reason when the runtime dropped it] (ghost)
     killed,    \* [Actors -> BOOLEAN]: an effective kill arrived before D (ghost)
+    hook,      \* [Actors -> BOOLEAN]: stopped() runs (ghost)
+    began,     \* [Actors -> causes]: what began the exit (ghost)
+    lateSig,   \* [Actors -> reason of the last late signal applied, or None] (ghost)
     sends, signals, lates,
     psent,     \* children that received the supervisor's Shutdown
     afterStop  \* a message was dispatched after stop was observed (ghost)
 
 vars == <<st, trap, why, cause, trapAt, mbox, links, mon, mstate, downs,
-          inflight, fired, cancelled, afterCancel, req, dropFrom, killed, sends, signals,
+          inflight, fired, cancelled, afterCancel, req, dropFrom, killed, hook, began, lateSig, sends, signals,
           lates, psent, afterStop>>
-life == <<st, why, cause, trapAt, dropFrom, killed>>
+life == <<st, why, cause, trapAt, dropFrom, killed, hook, began, lateSig>>
 reg == <<links, mon, mstate, downs, inflight, fired, cancelled, afterCancel>>
 budget == <<sends, signals, lates, psent>>
 
@@ -134,6 +139,9 @@ Init ==
     /\ req = [r \in Reqs |-> [t |-> None, s |-> "idle", why |-> None]]
     /\ dropFrom = [a \in Actors |-> "nodrop"]
     /\ killed = [a \in Actors |-> FALSE]
+    /\ hook = [a \in Actors |-> FALSE]
+    /\ began = [a \in Actors |-> None]
+    /\ lateSig = [a \in Actors |-> None]
     /\ sends = 0 /\ signals = 0 /\ lates = 0 /\ psent = {}
     /\ afterStop = FALSE
 
@@ -144,7 +152,13 @@ Begin(a, r, c) ==
          /\ why' = [why EXCEPT ![a] = r]
          /\ cause' = [cause EXCEPT ![a] = c]
          /\ trapAt' = [trapAt EXCEPT ![a] = trap[a]]
-         /\ UNCHANGED <<dropFrom, killed>>
+         \* stopped() runs for self-exits, administrative stops and parent
+         \* exits dispatched to a trapping actor; it is skipped when an
+         \* untrapped exit signal, link notice or kill ends the actor (OTP
+         \* skips terminate).
+         /\ hook' = [hook EXCEPT ![a] = c \in {"self", "admin", "parent"} \/ Fault = "AlwaysHook"]
+         /\ began' = [began EXCEPT ![a] = c]
+         /\ UNCHANGED <<dropFrom, killed, lateSig>>
     ELSE UNCHANGED life
 
 (* An untrappable kill: begins exit, or replaces the requested reason of an *)
@@ -156,18 +170,30 @@ Kill(a) ==
          /\ cause' = [cause EXCEPT ![a] = "kill"]
          /\ trapAt' = [trapAt EXCEPT ![a] = trap[a]]
          /\ killed' = [killed EXCEPT ![a] = TRUE]
-         /\ UNCHANGED dropFrom
+         /\ hook' = [hook EXCEPT ![a] = Fault = "AlwaysHook"]
+         /\ began' = [began EXCEPT ![a] = "kill"]
+         /\ UNCHANGED <<dropFrom, lateSig>>
     ELSE IF st[a] = "stopping"
     THEN /\ why' = IF Fault = "KillNoSupersede" THEN why ELSE [why EXCEPT ![a] = KilledReason]
          /\ cause' = [cause EXCEPT ![a] = "kill"]
          /\ killed' = [killed EXCEPT ![a] = TRUE]
-         /\ UNCHANGED <<st, trapAt, dropFrom>>
+         /\ lateSig' = [lateSig EXCEPT ![a] = None]
+         \* a stopped() that already began runs to its end (R)
+         /\ UNCHANGED <<st, trapAt, dropFrom, hook, began>>
     ELSE UNCHANGED life
 
 (* An exit signal from s with reason r and origin o arrives at a. c is the *)
 (* cause recorded if it ends a non-trapping actor.                         *)
 Signal(a, s, r, o, c) ==
-    IF st[a] # "run" THEN UNCHANGED <<life, mbox>>
+    \* A late non-kill signal to a non-trapping actor still before D replaces
+    \* its requested reason (OTP: a process in terminate dies with it), unless
+    \* a kill was received. A trapping actor queues an Exit it never handles.
+    IF st[a] = "stopping" /\ ~trap[a] /\ r # "Normal" /\ ~killed[a]
+    THEN /\ why' = IF Fault = "LateSignalIgnored" THEN why ELSE [why EXCEPT ![a] = r]
+         /\ cause' = IF Fault = "LateSignalIgnored" THEN cause ELSE [cause EXCEPT ![a] = c]
+         /\ lateSig' = [lateSig EXCEPT ![a] = r]
+         /\ UNCHANGED <<st, trapAt, dropFrom, killed, hook, began, mbox>>
+    ELSE IF st[a] # "run" THEN UNCHANGED <<life, mbox>>
     ELSE IF trap[a]
     THEN /\ Push(a, Item(IF IsParent(a, s) /\ Fault # "ParentAsExit" THEN "pexit" ELSE "exit",
                          s, r, 0, 0, o))
@@ -208,8 +234,9 @@ SetTrap(a, b) ==
     /\ trap' = [trap EXCEPT ![a] = b]
     /\ UNCHANGED <<life, mbox, reg, req, budget, afterStop>>
 
-Send(a, b) ==   \* also from stopped(): st[a] = "stopping"
-    /\ st[a] \in {"run", "stopping"} /\ a # b /\ st[b] \in {"run", "stopping"}
+Send(a, b) ==   \* also from stopped(), when it runs
+    /\ st[a] = "run" \/ (st[a] = "stopping" /\ hook[a])
+    /\ a # b /\ st[b] \in {"run", "stopping"}
     /\ sends < MaxSends /\ sends' = sends + 1
     /\ Push(b, Item("msg", a, None, 0, 0, "none"))
     /\ UNCHANGED <<life, trap, reg, req, signals, lates, psent, afterStop>>
@@ -227,7 +254,8 @@ PanicWhileExiting(a) ==
     /\ ~killed[a] \/ Fault = "PanicOverKill"
     /\ why' = [why EXCEPT ![a] = "Panic"]
     /\ cause' = [cause EXCEPT ![a] = "self"]
-    /\ UNCHANGED <<st, trapAt, dropFrom, killed, trap, mbox, reg, req, budget, afterStop>>
+    /\ lateSig' = [lateSig EXCEPT ![a] = None]
+    /\ UNCHANGED <<st, trapAt, dropFrom, killed, hook, began, trap, mbox, reg, req, budget, afterStop>>
 
 Link(a, b) ==   \* idempotent while a link or a pending link notice exists
     /\ st[a] = "run" /\ a # b /\ {a, b} \notin links
@@ -238,11 +266,9 @@ Link(a, b) ==   \* idempotent while a link or a pending link notice exists
                THEN /\ inflight' = inflight \cup
                         {Note(a, b, "link", IF Fault = "LateRealReason" THEN why[b] ELSE "NoProc", 0, "late", lates')}
                     /\ UNCHANGED <<life, links>>
-               \* Not trapping: the design leaves open whether link returns an
-               \* error (OTP's local noproc exception) or the caller exits
-               \* NoProc (OTP's signal semantics). Both are allowed here.
-               ELSE /\ \/ UNCHANGED life
-                       \/ Begin(a, IF Fault = "LateRealReason" THEN why[b] ELSE "NoProc", "noproc")
+               \* Not trapping: the caller receives a NoProc exit signal and
+               \* exits (decided; try_link is the Result-returning variant).
+               ELSE /\ Begin(a, IF Fault = "LateRealReason" THEN why[b] ELSE "NoProc", "noproc")
                     /\ UNCHANGED <<inflight, links>>
        ELSE /\ links' = links \cup {{a, b}}
             /\ UNCHANGED <<life, inflight, lates>>
@@ -253,6 +279,12 @@ Link(a, b) ==   \* idempotent while a link or a pending link notice exists
 (* b's death but not yet delivered (OTP: once unlink returns, the link has  *)
 (* no further effect), including a late NoProc notice (OTP keeps the link  *)
 (* record while that response is pending). A queued Exit stays.            *)
+(* try_link: against a gone actor it returns Err(NoProc) and keeps nothing. *)
+TryLink(a, b) ==
+    /\ st[a] = "run" /\ a # b /\ IsGone(b) /\ lates < MaxLate
+    /\ lates' = lates + 1
+    /\ UNCHANGED <<life, trap, mbox, reg, req, sends, signals, psent, afterStop>>
+
 Unlink(a, b) ==
     LET pending == {n \in inflight : n.to = a /\ n.from = b /\ n.k = "link"}
     IN /\ UnlinkEnabled /\ st[a] = "run"
@@ -316,7 +348,7 @@ Dispatch(a) ==
 Die(a) ==
     /\ st[a] = "stopping"
     /\ Death(a, why[a])
-    /\ UNCHANGED <<why, cause, trapAt, dropFrom, killed, trap, mon, downs, cancelled, afterCancel,
+    /\ UNCHANGED <<why, cause, trapAt, dropFrom, killed, hook, began, lateSig, trap, mon, downs, cancelled, afterCancel,
                    budget, afterStop>>
 
 (* The runtime drops the actor (tasks: the future is dropped; threads: the  *)
@@ -331,7 +363,7 @@ RuntimeDrop(a) ==
        /\ cause' = [cause EXCEPT ![a] = IF why[a] \in {None, "Normal"} THEN "drop" ELSE cause[a]]
        /\ trapAt' = [trapAt EXCEPT ![a] = IF st[a] = "run" THEN trap[a] ELSE trapAt[a]]
        /\ Death(a, r)
-    /\ UNCHANGED <<killed, trap, mon, downs, cancelled, afterCancel, budget, afterStop>>
+    /\ UNCHANGED <<killed, hook, began, lateSig, trap, mon, downs, cancelled, afterCancel, budget, afterStop>>
 
 EarlyFire(a) ==   \* Fault EarlyNotify only
     /\ Fault = "EarlyNotify" /\ st[a] = "stopping" /\ a \notin fired
@@ -342,7 +374,7 @@ EarlyFire(a) ==   \* Fault EarlyNotify only
 Publish(a) ==
     /\ st[a] = "gone"
     /\ st' = [st EXCEPT ![a] = "dead"]
-    /\ UNCHANGED <<why, cause, trapAt, dropFrom, killed, trap, mbox, reg, req, budget, afterStop>>
+    /\ UNCHANGED <<why, cause, trapAt, dropFrom, killed, hook, began, lateSig, trap, mbox, reg, req, budget, afterStop>>
 
 (* A notice taken at D is delivered after publication; late notices at once. *)
 Deliver(n) ==
@@ -398,7 +430,7 @@ AdminStop(a, r) ==    \* ChildHandle::stop / stop_with_reason / shutdown
 SupShutdown(c) ==     \* exit(Child, shutdown) from the parent, also to a child
     /\ c \in Children /\ c \notin psent /\ st[c] \in {"run", "stopping"}   \* already exiting
     /\ psent' = psent \cup {c}
-    /\ Signal(c, Sup, "Shutdown", "direct", "parent")
+    /\ Signal(c, Sup, "Shutdown", "direct", "psignal")
     /\ UNCHANGED <<trap, reg, req, sends, signals, lates, afterStop>>
 
 SupKill(c) ==         \* shutdown_timeout passed: exit(Child, kill)
@@ -409,7 +441,7 @@ SupKill(c) ==         \* shutdown_timeout passed: exit(Child, kill)
 Next ==
     \/ \E a \in Actors :
          \/ \E b \in BOOLEAN : SetTrap(a, b)
-         \/ \E b \in Actors : Send(a, b) \/ Link(a, b) \/ Unlink(a, b)
+         \/ \E b \in Actors : Send(a, b) \/ Link(a, b) \/ TryLink(a, b) \/ Unlink(a, b)
          \/ \E b \in Actors, m \in MonIds : Monitor(a, b, m)
          \/ \E m \in MonIds : Demonitor(a, m)
          \/ PanicWhileExiting(a)
@@ -432,7 +464,7 @@ FairSpec == Spec /\ Fairness
 ----------------------------------------------------------------------------
 (* Safety *)
 
-Causes == {None, "self", "kill", "link", "parent", "signal", "admin", "noproc", "drop"}
+Causes == {None, "self", "kill", "link", "parent", "psignal", "signal", "admin", "noproc", "drop"}
 TypeOK ==
     /\ st \in [Actors -> {"run", "stopping", "gone", "dead"}]
     /\ trap \in [Actors -> BOOLEAN]
@@ -482,7 +514,7 @@ TrapRespected ==
 
 \* A Normal exit signal or link notice never stops a non-trapping actor.
 NormalSignalIgnored ==
-    \A a \in Actors : cause[a] \in {"link", "signal"} => why[a] # "Normal"
+    \A a \in Actors : cause[a] \in {"link", "signal", "psignal"} => why[a] # "Normal"
 
 \* An effective kill (before D) ends the target Killed, also when it
 \* arrives during exit, and nothing replaces it (kill provenance, recorded
@@ -506,6 +538,14 @@ ExitAfterMessages ==
         (i < j /\ mbox[a][i].o = "death" /\ (mbox[a][j].k = "msg" \/ mbox[a][j].o = "direct"))
             => mbox[a][j].s # mbox[a][i].s
 
+\* stopped() runs only for self-exits, administrative stops and parent exits
+\* handled by a trapping actor; kills and untrapped signals skip it.
+SkipHook == \A a \in Actors : hook[a] => began[a] \in {"self", "admin", "parent"}
+
+\* A late non-kill signal applied during exit is the reason, unless a later
+\* panic or kill replaced it (both clear lateSig).
+LateSignalWins == \A a \in Actors : lateSig[a] # None => why[a] = lateSig[a]
+
 \* Nothing takes effect after unlink or demonitor cancelled it.
 CancelFenced == ~afterCancel
 
@@ -513,7 +553,7 @@ Safety ==
     /\ TypeOK /\ NoOrphanRequest /\ NoDispatchAfterStop /\ DownAtMostOnce
     /\ NoProcIffLate /\ TrapRespected /\ NormalSignalIgnored /\ KilledFromKill
     /\ NoEdgeToDead /\ ExitAfterMessages /\ CancelFenced /\ StoppedAtDeath
-    /\ RuntimeDropReason
+    /\ RuntimeDropReason /\ SkipHook /\ LateSignalWins
 
 ----------------------------------------------------------------------------
 (* Liveness (under FairSpec: handlers, stopped() and destruction return) *)
