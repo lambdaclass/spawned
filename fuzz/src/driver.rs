@@ -1628,7 +1628,9 @@ impl Driver {
                     .unwrap_or_default()
             };
             for r in exits(self) {
-                if r != published {
+                // 0.8 (X3): a link made after the peer's death point is a
+                // late link, whose notice is `NoProc`.
+                if r != published && r != ExitReason::NoProc {
                     self.violate(
                         "X3: Exit carried a different reason than the peer published",
                         format!("{r:?} vs {published:?}"),
