@@ -224,10 +224,57 @@ enum Hold<R: Send + 'static> {
 }
 
 /// Native slot (`MAX_NATIVE_JOBS`) held by a blocking job.
-struct NativeSlot<A: Actor>(Context<A>);
+struct NativeSlot<A: Actor> {
+    ctx: Context<A>,
+    /// Where the job will run, reserved with the slot (`None` once used).
+    runner: Option<NativeRunner>,
+}
 impl<A: Actor> Drop for NativeSlot<A> {
     fn drop(&mut self) {
-        self.0.shared.jobs.release_native();
+        self.ctx.shared.jobs.release_native();
+    }
+}
+
+/// Where a blocking job's body runs, fixed when its native slot is reserved
+/// so that launching it cannot fail (threads mode reserves its thread the
+/// same way).
+struct NativeRunner {
+    /// A managed actor's scope lease, held until the body physically ends:
+    /// the actor's cleanup is not complete (no supervisor replacement, no
+    /// complete system shutdown) while its native work still runs.
+    lease: Option<crate::system::Lease>,
+    pool: RunnerPool,
+}
+
+enum RunnerPool {
+    /// Tokio's blocking pool: the managed actor's group runtime, or the
+    /// current one.
+    #[cfg(not(spawned_sim))]
+    Tokio(spawned_rt::tasks::Handle),
+    /// Outside a Tokio runtime, and under the simulator: an owned thread,
+    /// spawned at reservation and parked until the job starts (dropping the
+    /// sender unused lets it exit).
+    Thread(std::sync::mpsc::Sender<Box<dyn FnOnce() + Send>>),
+}
+
+impl NativeRunner {
+    /// Run `task`, then release the lease (after the body, and everything
+    /// it drops, ended).
+    fn run(self, task: impl FnOnce() + Send + 'static) {
+        let NativeRunner { lease, pool } = self;
+        let task = move || {
+            task();
+            drop(lease);
+        };
+        match pool {
+            #[cfg(not(spawned_sim))]
+            RunnerPool::Tokio(handle) => drop(handle.spawn_blocking(task)),
+            // The thread is parked on `recv` until this send (or the
+            // sender's drop); it cannot have exited.
+            RunnerPool::Thread(start) => {
+                let _ = start.send(Box::new(task));
+            }
+        }
     }
 }
 
@@ -530,11 +577,53 @@ impl<A: Actor> Context<A> {
         })
     }
 
+    /// Reserve a native slot (`MAX_NATIVE_JOBS`) and where the job will run:
+    /// the blocking pool, or an owned thread spawned now (`SpawnFailed`
+    /// here, never at launch), plus a managed actor's scope lease
+    /// (`OwnerStopping` once its scope is closing). A failure releases the
+    /// slot.
     fn reserve_native(&self) -> Result<NativeSlot<A>, PipeErrorKind> {
         if !self.shared.jobs.reserve_native() {
             return Err(PipeErrorKind::NativeBudget);
         }
-        Ok(NativeSlot(self.clone()))
+        let mut slot = NativeSlot {
+            ctx: self.clone(),
+            runner: None,
+        };
+        let lease = match &self.shared.managed {
+            Some(scope) => Some(
+                scope
+                    .job_lease()
+                    .map_err(|_| PipeErrorKind::OwnerStopping)?,
+            ),
+            None => None,
+        };
+        #[cfg(not(spawned_sim))]
+        let handle = match &self.shared.managed {
+            Some(scope) => Some(scope.handle.clone()),
+            None => spawned_rt::tasks::Handle::try_current().ok(),
+        };
+        #[cfg(spawned_sim)]
+        let handle: Option<()> = None;
+        let pool = match handle {
+            #[cfg(not(spawned_sim))]
+            Some(handle) => RunnerPool::Tokio(handle),
+            #[allow(unreachable_patterns)]
+            _ => {
+                let (start, started) = std::sync::mpsc::channel::<Box<dyn FnOnce() + Send>>();
+                std::thread::Builder::new()
+                    .name("spawned-job".into())
+                    .spawn(move || {
+                        if let Ok(task) = started.recv() {
+                            task();
+                        }
+                    })
+                    .map_err(PipeErrorKind::SpawnFailed)?;
+                RunnerPool::Thread(start)
+            }
+        };
+        slot.runner = Some(NativeRunner { lease, pool });
+        Ok(slot)
     }
 
     /// Reserve an unlinked job's admission (the owner is running, one
@@ -654,37 +743,12 @@ impl<A: Actor> Context<A> {
         handle
     }
 
-    /// Run a blocking job's body on Tokio's blocking pool (the managed
-    /// actor's group runtime, or the current one). Outside a Tokio runtime,
-    /// and under the simulator, on an owned thread.
-    fn spawn_native(&self, task: impl FnOnce() + Send + 'static) {
-        #[cfg(not(spawned_sim))]
-        {
-            let handle = match &self.shared.managed {
-                Some(scope) => Some(scope.handle.clone()),
-                None => spawned_rt::tasks::Handle::try_current().ok(),
-            };
-            if let Some(handle) = handle {
-                drop(handle.spawn_blocking(task));
-                return;
-            }
-        }
-        if let Err(error) = std::thread::Builder::new()
-            .name("spawned-job".into())
-            .spawn(task)
-        {
-            // The task (its native slot, credit and `done`) dropped with the
-            // failed spawn: the job ends without a terminal message.
-            tracing::error!(%error, actor = %self.id(), "could not spawn a native job thread");
-        }
-    }
-
     fn launch_blocking<T, M, R, W>(
         &self,
         opts: JobOptions,
         state: Arc<JobState>,
         hold: Hold<R>,
-        native: NativeSlot<A>,
+        mut native: NativeSlot<A>,
         work: W,
         done: Done<T, M>,
     ) -> JobHandle
@@ -711,7 +775,8 @@ impl<A: Actor> Context<A> {
             state: state.clone(),
             ctx: self.clone(),
         };
-        self.spawn_native(move || {
+        let runner = native.runner.take().expect("a native slot is reserved with its runner");
+        runner.run(move || {
             let _ended = ended;
             let result = std::panic::catch_unwind(AssertUnwindSafe(|| work(&job)));
             // Execution ended: release the native slot now; the run returns

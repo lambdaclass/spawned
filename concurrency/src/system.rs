@@ -1175,6 +1175,11 @@ impl Scope {
     pub(crate) fn actor_lease(self: &Arc<Self>) -> Result<Lease, SystemError> {
         self.lease(true)
     }
+    /// A blocking job's lease, held until its native body ends: the scope
+    /// is not joined (cleanup incomplete) while the work still runs.
+    pub(crate) fn job_lease(self: &Arc<Self>) -> Result<Lease, SystemError> {
+        self.lease(false)
+    }
     /// Dispatch the actor root to its reserved worker or runtime shard.
     pub(crate) fn dispatch_actor<F>(&self, future: F) -> Result<(), SystemError>
     where
