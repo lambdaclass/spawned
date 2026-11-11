@@ -443,7 +443,10 @@ mod tasks_mode {
         assert!(!plain_seen.stopped(), "a non-trapping child ran stopped()");
         assert_eq!(ended(&trapping).await, ExitReason::Shutdown);
         assert!(trap_seen.stopped());
-        assert!(trap_seen.exits().is_empty(), "the parent exit reached exit_received");
+        assert!(
+            trap_seen.exits().is_empty(),
+            "the parent exit reached exit_received"
+        );
         assert_eq!(ended(&stuck).await, ExitReason::Killed);
         assert!(stuck_seen.stopped());
         assert!(system.shutdown(LIMIT).await.complete);
