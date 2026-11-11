@@ -114,6 +114,7 @@ Status of each layer. "Planned" items are tracked in the
 | Design, any size | TLAPS or Veil | An invariant that fails only for larger configurations | Planned ([verification tools](research/verification-tools.md)) |
 | Spec and code | Trace validation | The implementation doing something the model forbids | Real OneForOne, cohort, nested, deferred-reply, job and base-lifecycle (exit signals, links, monitors, D, publication) traces plus invalid-trace and model-mutation controls |
 | Spec and code coverage | Trace coverage (`verification/tla/trace_coverage.py`) | Model actions, states and transitions no test ever reaches | Report on every PR (actions covered by the dedicated trace tests may not regress); whole test suite weekly. See [trace coverage](#trace-coverage) |
+| Spec and code in sync | `scripts/check-model-sync.py`, `verification/model-map.toml` | A PR changing modelled code without its model; a trace event no trace spec replays; a model no real run is checked against; trace coverage going down | `model-sync` job on every PR. See [model sync](#model-sync) |
 | Primitives | Loom | Atomic and memory-ordering bugs in cancellation, ready gate and wakeups | In CI; expand to reply slots and mailbox publication versus shutdown |
 | Whole runtime, deterministic | Simulation backend for `spawned-rt::tasks` (random, PCT, bounded DFS) | Async races, replayed from a seed with virtual time | In CI (`sim` job, [simulated suites in CI](#simulated-suites-in-ci)) |
 | Resource stability | Soak tests | Memory, file descriptors, threads, tasks and registry entries growing over hours of actor churn and restarts | Planned |
@@ -1207,6 +1208,59 @@ deadlock-free; `==`, which is not, is caught). Run cargo-mutants with the
 feature that compiles a mutated line before treating it as a gap. Code inside
 `macro_rules!` bodies is not mutated at all, so keep lifecycle code out of
 single-use macros.
+
+### Model sync
+
+Models track the code: a PR that changes behaviour a TLA+ model specifies
+updates the model in the same PR, and drift is a bug. The `model-sync` job
+(`.github/workflows/model-sync.yml`) checks four things mechanically.
+
+- **Paths.** `verification/model-map.toml` maps code to the models that
+  cover it (for example `actor_cleanup.rs`, `link.rs`, `monitor.rs` and the
+  actor loops to `Lifecycle`; `supervision.rs` to `Supervision`, `Cohorts`
+  and `NestedSupervision`; `system.rs` to `Coordinator`). If a PR changes a
+  mapped file but none of its models (the model, its MC configurations,
+  inductive or coverage modules, or trace spec; a comment-only model edit
+  does not count, and one covering model is enough), the job fails. Changes to
+  comments only, or only inside a `#[cfg(test)] mod` block, are exempt (the
+  file's code outside test modules must be unchanged, so removing
+  `#[cfg(test)]` is not exempt); when the script cannot tell, it requires
+  the waiver. The waiver is the
+  `no-model-change` label AND a PR body line `Model: no change because
+  <reason>`. In the merge queue the step passes, which is sound because
+  `model-sync` is a required check on the PR.
+- **Trace events.** Every action name the code can record with the
+  `lifecycle-trace` feature (the string literal, or the literals of an
+  `if .. else` chain, passed to each emitter listed in the map, such as
+  `Event::new`, `Event::sup` and `TreeEvent::new`) must be an `e.a = "..."` arm of its trace spec, or be
+  declared in the map as translated by `trace_check.py` or rejected on
+  purpose (`Unmodelled`). A non-literal action name, an event struct with no
+  map entry, or a cohort event filter that differs from `TraceCohorts.tla`
+  fails. Warnings list spec arms no code emits and model actions no trace
+  spec takes (except those declared unlogged, such as `WindowExpire`). The
+  event names are strings, not an enum, so this is a source scan rather than
+  a compile-time `match`; the mapping it checks lives in TLA+.
+- **Models with trace validation.** Every model in `verification/tla` needs
+  a map entry and trace validation, checked statically: a `Trace*.tla` that
+  extends the model, is named in `trace_check.py`, and has arms that events
+  the code emits reach (the `tla-traces` job replays the recorded traces). A
+  model checked by TLC alone can drift from the code unnoticed, so it fails
+  unless it has a `tlc_only` allowlist entry with a reason and a tracking
+  item. `check-model-sync.py models` prints the current list.
+- **Coverage floors.** Each trace-validated model has a `coverage_floor`: the
+  action keys the dedicated trace tests cover in
+  `verification/tla/coverage-baseline.json` (Supervision 36 of 40, Cohorts
+  40 of 46, Nested 11 of 11). The `tla` job already fails when a baseline key
+  stops being covered; this check fails when the baseline shrinks below the
+  floor, so coverage only grows. Raise the floor when coverage grows.
+
+```bash
+python3 scripts/check-model-sync.py events
+python3 scripts/check-model-sync.py models                      # inventory: trace validation and coverage floors
+python3 scripts/check-model-sync.py paths                       # this branch against origin/main
+python3 scripts/check-model-sync.py paths --pr 123              # with that PR's labels and body
+python3 -m unittest scripts/tests/test_model_sync.py            # self-tests and negative controls
+```
 
 ## Planted-bug sensitivity
 

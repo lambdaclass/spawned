@@ -1,0 +1,43 @@
+name: Model sync
+
+# Models track the code: a PR that changes code a TLA+ model covers
+# (verification/model-map.toml) updates the model in the same PR, and every
+# lifecycle trace event the code records is replayed by its trace spec, and
+# every model is checked against real runs (or explicitly allowlisted).
+# See docs/TESTING.md (verification layers) and verification/tla/README.md.
+on:
+  pull_request:
+    branches: ["main"]
+    # labeled/unlabeled/edited: adding `no-model-change` or the
+    # `Model: no change because ...` line re-runs the check.
+    types: [opened, synchronize, reopened, labeled, unlabeled, edited, ready_for_review]
+  merge_group:
+  push:
+    branches: ["main"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: model-sync-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  model-sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Self-tests
+        run: python3 -m unittest scripts/tests/test_model_sync.py
+      - name: Every trace event is mapped
+        run: python3 scripts/check-model-sync.py events
+      - name: Every model is trace-validated (or allowlisted), coverage floors hold
+        run: python3 scripts/check-model-sync.py models
+      # On merge_group and push the script passes: the pull_request run
+      # already enforced it (labels are not visible in the merge queue).
+      - name: Modelled code changes update their model
+        if: github.event_name != 'push'
+        run: python3 scripts/check-model-sync.py paths
