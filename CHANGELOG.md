@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- README: centred on why Spawned exists. A "Why Spawned" section first (guarantees
+  verified once and inherited by every application; deterministic, replayable
+  tests), both points leading the feature list, and a "Testing your own actors
+  deterministically" section showing `#[spawned_macros::sim_test]`.
 - Lockfile: `rustix` 1.1.2 -> 1.1.6 for RUSTSEC-2026-0486 (pulled in by the
   examples' `native-tls` dependency; spawned's crates are unaffected).
 - CI: a `sim` job runs the simulated test suites (`--cfg spawned_sim`)
