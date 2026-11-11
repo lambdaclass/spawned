@@ -83,6 +83,15 @@
   oracles: a Temporary nested subtree is never rebuilt, fuzzer oracle X8 (a
   stopped actor publishes the reason it was stopped with), and unit tests that
   kill cargo-mutants survivors in `supervision/nested.rs` and `supervision.rs`.
+- `#[actor]` lints (ROADMAP rank 6b), compile time only, no runtime cost:
+  a warning when the `#[actor]` impl block builds or accepts shared mutable
+  state (`Arc<Mutex<_>>`, `Arc<RwLock<_>>`, `Arc<Atomic*>`, `Rc<RefCell<_>>`,
+  std, tokio or parking_lot paths), silenced with
+  `#[actor(allow_shared_state)]`; and a warning, once per crate, when the
+  crate is built with `panic = "abort"`, under which a handler panic ends the
+  process instead of one actor, silenced with `#[actor(allow_panic_abort)]`.
+  Both use the stable `#[deprecated]` technique, so `-D warnings` turns them
+  into errors.
 - Lockfile: `rustix` 1.1.2 -> 1.1.6 for RUSTSEC-2026-0486 (pulled in by the
   examples' `native-tls` dependency; spawned's crates are unaffected).
 - CI: a `sim` job runs the simulated test suites (`--cfg spawned_sim`) on
