@@ -440,7 +440,7 @@ attempt: a generation that stops before readiness after the child was first
 ready is retried whatever its exit reason (OTP retries a failed restart).
 Supervisor or system shutdown
 suppresses every restart. Stopping a Permanent child from outside restarts it.
-Checked by: `Supervision!RestartFollowsPolicy`, `Supervision!TemporaryStartsOnce`,
+Checked by: `Supervision!RestartFollowsPolicy`, `Supervision!TemporaryStartsOnce` (`MCSupervisionTemporary`),
 `Cohorts!TemporaryStartsOnce`; [`supervision::restart_modes_distinguish_normal_shutdown_and_panic`][supervision],
 [`supervisor_policies`][supervisor_policies] (generated scripts), [`supervision_trace`][supervision_trace].
 
@@ -672,7 +672,9 @@ owner's deadline heap on the real clock (the simulated clock under
 `spawned_sim`), not by paused Tokio time.
 Checked by: the paused-time tests (`semantics_gaps::tasks::send_after_fires_once_no_earlier_than_its_delay`,
 `send_interval_is_fixed_delay_and_never_catches_up`, `default_request_timeout_is_five_seconds_from_first_poll`)
-and the simulator's virtual clock for tasks; threads by construction only.
+and the simulator's virtual clock for tasks; `src/threads/timer_tests.rs::threads_send_after_uses_the_monotonic_clock_over_long_delays`,
+`threads_send_interval_is_fixed_delay_while_the_actor_stalls` and
+[`supervision::native_restart_window_expires_on_the_monotonic_clock`][supervision] (`thread_group`) for threads.
 
 ## 9. Panics
 

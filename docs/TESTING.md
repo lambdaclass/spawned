@@ -242,7 +242,8 @@ Fz the scenario fuzzer's oracles (simulator, Async and async groups only),
 Model TLA+/Apalache/Kani.
 
 Totals: 50 guarantees. Before this audit 31 covered, 18 partial, 1 unchecked
-(D5, only a nightly `#[ignore]` stress test). After: 46 covered, 4 partial.
+(D5, only a nightly `#[ignore]` stress test). After: 46 covered, 4 partial;
+with the follow-up PR #255 (T4 threads clocks), 47 covered, 3 partial.
 Mutation checks on the new tests: removing the run loop's stop-before-receive
 check fails `sim_ordering::stop_discards_*` and `tasks_contract::stop_window_*`;
 giving collateral children their own backoff fails
@@ -271,15 +272,15 @@ giving collateral children their own backoff fails
 | L4 | `exit_signal_matrix`, `context_exit`, `panic_safety` | A B T N G TG | covered | owned by #240 |
 | L5 | `foreign_panics` (strict); `tasks_contract::panics_in_hooks_*` | A B T N G TG | covered (B, T unchecked) → covered | |
 | L6 | `mailbox_drop_panic` (5 placements x 1/2/256), `native_mailbox_drop`, lifecycle traces | A B T N G TG | covered | not simulated (subprocesses) |
-| L7 | `shutdown_publication`; `*_contract::stop_window_*`; `sim_ordering::stop_discards_*` | A B T N G TG, Sim | partial | outgoing monitors cancelled before publication |
+| L7 | `shutdown_publication`; `*_contract::stop_window_*`; `sim_ordering::stop_discards_*` | A B T N G TG, Sim | partial | outgoing monitors cancelled before publication (after #240) |
 | X1 | `actor_scenarios` monitor races; `exit_signal_matrix`; Fz | A B T N, Sim | covered | owned by #240 |
 | X2 | unit `demonitor_*`, `closed_monitor_table_*`; `leaks` | A N | covered | demonitor checks use a bounded window |
-| X3 | unit link tests; `exit_signal_matrix`; Fz | A N, Sim | covered | owned by #240; threads lacks the Normal and chain variants |
+| X3 | unit link tests; `exit_signal_matrix`; Fz | A N, Sim | covered | owned by #240; threads lacks the Normal and chain variants (after #240) |
 | X4 | `kill_links` | A N | covered | owned by #240 |
 | X5 | unit link tests; `link_regression_tests` | A N | covered | owned by #240 |
 | X6 | `link_regression_tests` | A | covered | owned by #240 |
 | X7 | `semantics_gaps::*::exit_and_down_follow_*`; `sim_ordering::exit_and_down_follow_the_last_message_*`; Fz | A B T N, Sim (PCT, DFS) | partial | a non-trapping linked stop after the current handler (exit signals, #240) |
-| V1 | `supervisor_policies` oracle; `Supervision!RestartFollowsPolicy` | G, Sim, Model | covered | `restart_modes_*` never sends a `Normal` exit (`supervisor_policies` does) |
+| V1 | `supervisor_policies` oracle; `supervision::restart_modes_*` (real `Normal`, `Shutdown` and panic exits); `Supervision!RestartFollowsPolicy`, `TemporaryStartsOnce` (`MCSupervisionTemporary`) | G, Sim, Model | covered | |
 | V2 | Cohorts invariants; `supervision_strategies`; `cohort_trace`; `supervision_contract::concurrent_failures_coalesce_*` | G, Sim, Model | covered | reverse stop order only via trace conformance |
 | V3 | `*!AtMostOneGeneration`; factory asserts no live generation; Fz | G TG, Sim, Model | covered | |
 | V4 | `*!PublishedIsLive`; `supervision_contract::queued_messages_are_not_replayed_*`; Fz | G, Sim, Model | partial → covered | |
@@ -297,7 +298,7 @@ giving collateral children their own backoff fails
 | T1 | `semantics_gaps::tasks::send_after_fires_once_*` (paused time); `resource_cleanup`; `cross_backend::timers_match` | A B T N G TG P | covered | |
 | T2 | `semantics_gaps::tasks::send_interval_is_fixed_delay_*` (paused time) | A | covered | threads by construction |
 | T3 | `semantics_gaps::tasks::timers_are_not_carried_*`; `tasks_contract::managed_timers_run_on_the_group_*` | G | partial → covered | `send_message_on` in threads |
-| T4 | paused-time tests and the simulator clock | A, Sim | partial | threads by construction |
+| T4 | paused-time tests and the simulator clock; `src/threads/timer_tests.rs::threads_send_*`; `supervision::native_restart_window_expires_on_the_monotonic_clock` | A N TG, Sim | partial → covered | |
 | P1 | `panic_safety`; `foreign_panics`; `mailbox_drop_panic`; failpoints | A B T N G TG | covered | not simulated |
 | P2 | `panic-abort` CI job; `foreign_panics::panicking_panic_hook_*` | A N | covered | no observer for `Down`/`Exit` |
 
@@ -311,10 +312,14 @@ benchmark scheduler's gate rather than readiness; L1 cited `cross_backend`,
 which records `stopped()` only for shutdown order; S1 cited a supervisor
 `max_children` test for `thread_group` capacity; the `Coordinator!*Step`
 properties live in `CoordinatorInd.tla` (Apalache); T1 named a threads-only
-test for tasks. `supervision::restart_modes_distinguish_normal_shutdown_and_panic`
-uses `shutdown()` for its "normal" branch; `Supervision!TemporaryStartsOnce`
-is vacuous in the per-PR `MCSupervision.cfg` (no Temporary child) and checked
-by the weekly deep configuration and `Cohorts`.
+test for tasks. Fixed in PR #255:
+`supervision::restart_modes_distinguish_normal_shutdown_and_panic` used
+`shutdown()` for its "normal" branch (it now stops with `Normal`, and fails
+if a Transient child restarts after `Normal`); `Supervision!TemporaryStartsOnce`
+was vacuous in the per-PR `MCSupervision.cfg` (no Temporary child), so the
+per-PR `MCSupervisionTemporary.cfg` (a Temporary and a Permanent child) now
+checks it, with a `negative_checks.py` mutation that restarts a Temporary
+child after a panic and must violate it.
 
 ```sh
 cargo test --locked -p spawned-concurrency --test semantics_gaps --test sim_ordering
@@ -421,8 +426,9 @@ build with `spawned_sim` alone fails with a `compile_error!`.
 Tests written with `#[spawned_macros::sim_test]` (or
 `spawned_rt::tasks::sim_test`) run once on Tokio in normal builds and over
 seeds `0..SPAWNED_SIM_SEEDS` (default 8) under the cfg. A failure prints the
-seed, a `SPAWNED_SIM_SEED=n` replay command (carrying `SPAWNED_SIM_SPIN` and
-`SPAWNED_SIM_MAX_STEPS` if they were set), and the path of a decision tape
+seed, a `SPAWNED_SIM_SEED=n` replay command (carrying `SPAWNED_SIM_SPIN`,
+`SPAWNED_SIM_MAX_STEPS`, `SPAWNED_SIM_FAIR_AFTER` and
+`SPAWNED_SIM_TURN_BUDGET` if they were set), and the path of a decision tape
 with a `SPAWNED_SIM_TAPE=path` replay command. The tape records the seed, the
 spin limit and every pick and clock jump. Tapes replay by task id, so they
 survive changes in random-number consumption. Replay is strict: clock jumps
@@ -437,6 +443,48 @@ guides candidates permissively but keeps one only if its recorded tape fails
 the same way under strict replay. Library time (restart windows, backoff
 jitter seeding, shutdown deadlines, metrics) reads `spawned_rt::time`, which is
 virtual under the cfg.
+
+**Actor turn budget (rank 8b).** Under the cfg, a run fails when one actor
+turn runs longer than `SPAWNED_SIM_TURN_BUDGET` milliseconds of wall-clock
+time inside a single poll (default 250; `0` disables the check;
+`sim::set_turn_budget` / `Runtime::set_turn_budget` set it per run). That is
+a handler that blocks the thread (`std::thread::sleep`, a blocking lock or
+I/O call) or computes in a loop with no `.await`: on Tokio it holds a worker
+and every actor queued behind it; on the BEAM the scheduler would have
+preempted it. The failure names the actor and the message type, prints the
+measured time on stderr, and carries the usual seed and tape replay lines:
+
+```text
+spawned_sim: turn over budget: actor `sim_turn_budget::Worker` handling
+`sim_turn_budget::Nap` ran for more than 250 ms in one poll without yielding
+(a blocking call or a loop with no .await stalls every actor on its worker;
+SPAWNED_SIM_TURN_BUDGET=ms sets the budget, 0 disables it)
+```
+
+The actor dispatch loop marks each turn (a `#[cfg(spawned_sim)]` guard in
+`tasks/actor.rs`); the executor times only the stretches of a poll that run
+inside a turn and keeps the turn of a task suspended at an `.await`, so a
+poll that handles several messages charges each turn separately and the
+budget applies to each stretch between awaits, not to the whole turn. A
+handler that awaits (including long virtual sleeps) never trips it. Only
+`Handler::handle` turns are timed, not `started`/`stopped` or plain tasks.
+
+Why wall-clock time, given that the rest of the simulator is deterministic:
+one thread cannot preempt a poll, so a blocking or spinning section can only
+be measured after it returns, and nothing a poll does is countable without
+instrumenting user code (the BEAM counts reductions; Rust has no equivalent).
+The deterministic alternatives miss the problem: counting polls of a turn
+that keeps waking itself (it yields every time, so it starves no one beyond
+what the seeded scheduler already explores; the spin limit and
+`SPAWNED_SIM_MAX_STEPS` already bound it), or counting how many scheduling
+steps other ready tasks wait (each step is one poll, so a blocking poll is a
+single step). Timing never changes a schedule: it only decides whether the
+run fails. What it measures is a property of the code, so the default is
+generous (thousands of times Tokio's guidance of 10 to 100 µs between
+awaits, 25 times the 10 ms debug-build `WarnOnBlocking` warning) and a failing seed or tape
+reproduces it; an overloaded machine or a debugger pause can still trip it,
+in which case raise the budget. A production-side watchdog for the same
+handlers is rank 8, cooperative budgets rank 8a.
 
 Other `#[test]`s in a simulated binary that build a runtime with
 `spawned_rt::tasks::Runtime::new()` run on the simulator too, but only with
@@ -460,7 +508,8 @@ these limits:
 - One thread: Thread, Blocking, native and pinned placements, dedicated
   runtimes and `spawn_blocking` do not run. A poll with no await point that
   never returns trips a wall-clock watchdog (`SPAWNED_SIM_POLL_TIMEOUT`,
-  default 60 s) that aborts the process.
+  default 60 s) that aborts the process; one that returns after more than
+  `SPAWNED_SIM_TURN_BUDGET` (250 ms) inside an actor turn fails the run.
 - Direct `std::time`/`SystemTime` reads, `std::thread`, Tokio I/O and
   direct Tokio timers are outside its control.
 - Remaining nondeterminism between runs in one process: actor, monitor and
@@ -471,7 +520,8 @@ these limits:
   with no live simulation falls back to wall-clock time. The poll watchdog is
   wall-clock based: a debugger pause or an overloaded machine can trip it
   (it only ever aborts, never changes a schedule); `SPAWNED_SIM_POLL_TIMEOUT=0`
-  disables it. `registry::registered()` returns names sorted, so its order
+  disables it. The actor turn budget is wall-clock based too and can fail a
+  run on such a machine; `SPAWNED_SIM_TURN_BUDGET=0` disables it. `registry::registered()` returns names sorted, so its order
   does not depend on the hash map's random state. Also wall-clock based:
   the experimental time slice of `backend-experiments` actors
   (`std::time::Instant`) and `FailScenario::setup()` without

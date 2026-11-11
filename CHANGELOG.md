@@ -197,6 +197,11 @@
   `#[non_exhaustive]`. GUIDE: hard job deadlines and the soft-deadline
   pattern, replies carrying a reason through `R = Result<..>`, the
   `request_raw` rows.
+- Tests: coverage follow-ups. `restart_modes_distinguish_normal_shutdown_and_panic`
+  now sends a real `Normal` exit; a per-PR `MCSupervisionTemporary` TLC
+  configuration makes `TemporaryStartsOnce` non-vacuous, with a negative
+  control that restarts a Temporary child; threads-mode clock tests for
+  `send_after`, `send_interval` and the restart window on a `thread_group` (T4).
 - ROADMAP: a Priorities section (soundness, including a smaller stable API and
   soak tests; introspection; determinism; testing; client-driven features;
   performance behind a regression gate), and the runtime direction. Keep Tokio; rank 37 becomes the main
@@ -221,6 +226,12 @@
   M1, M4, M5, L2, L5, R3, T3 and S6 on every placement and V2, V4, V6, V9,
   S1 and S3 on the simulator. No bugs found; several contract citations
   corrected.
+- Simulator (rank 8b): under `--cfg spawned_sim`, a test fails when one actor
+  turn runs longer than a wall-clock budget inside a single poll (a blocking
+  call or a loop with no `.await`), naming the actor and the message type,
+  with the usual seed and tape replay lines. Default 250 ms;
+  `SPAWNED_SIM_TURN_BUDGET=ms` tunes it and `0` disables it. Compiled only
+  under the cfg: no cost in normal builds.
 - Lockfile: `rustix` 1.1.2 -> 1.1.6 for RUSTSEC-2026-0486 (pulled in by the
   examples' `native-tls` dependency; spawned's crates are unaffected).
 - CI: a `sim` job runs the simulated test suites (`--cfg spawned_sim`) on

@@ -42,7 +42,10 @@
 //!   clock read with it) aborts the process with a message naming the task
 //!   and seed: a loop with no await point cannot be interrupted on one
 //!   thread. It is wall-clock based, so a debugger pause or a badly
-//!   overloaded machine can trip it; it never changes a schedule.
+//!   overloaded machine can trip it; it never changes a schedule. An actor
+//!   turn that runs longer than `SPAWNED_SIM_TURN_BUDGET` wall-clock
+//!   milliseconds inside one poll (default 250, 0 disables) fails the run,
+//!   naming the actor and message type (see the `turn` module).
 //!
 //! Channels, `watch`, `CancellationToken` and the stream wrappers stay Tokio's:
 //! they only use wakers, so they are deterministic under this executor.
@@ -102,6 +105,9 @@ const SPIN_QUANTUM: Duration = Duration::from_millis(1);
 const CREEPS_PER_HALVING: u64 = 100;
 /// Wall-clock seconds one poll may run before the watchdog aborts the process.
 const DEFAULT_POLL_TIMEOUT_SECS: u64 = 60;
+/// Wall-clock milliseconds one actor turn may run inside a single poll
+/// before the run fails (`SPAWNED_SIM_TURN_BUDGET`, 0 disables).
+const DEFAULT_TURN_BUDGET_MS: u64 = 250;
 
 pub mod explore;
 
@@ -227,6 +233,137 @@ mod watchdog {
     }
 }
 
+/// Actor turn budget: fails a run when one actor turn runs longer than the
+/// budget inside a single poll (a blocking call or a loop with no `.await`).
+///
+/// The actor dispatch loop marks each turn with `sim::turn`; the
+/// executor keeps the label of a turn suspended at an `.await` per task and
+/// times only the stretches of a poll that run inside a turn, so a poll that
+/// handles several messages charges each turn separately and time between
+/// turns (the mailbox, the test body) is never charged.
+///
+/// Wall-clock, like the poll watchdog: it can only see a stretch after it
+/// returns (one thread cannot preempt it), and its timing is not
+/// deterministic. What it measures is still a property of the code, so the
+/// default is generous and a failure replays with the same seed or tape.
+mod turn {
+    use std::cell::RefCell;
+    use std::time::{Duration, Instant};
+
+    /// The actor and message type of a turn.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(super) struct Label {
+        pub actor: &'static str,
+        pub message: &'static str,
+    }
+
+    /// The first stretch of a turn that ran past the budget.
+    #[derive(Debug, Clone, Copy)]
+    pub(super) struct Overrun {
+        pub label: Label,
+        pub took: Duration,
+    }
+
+    /// Timing of the poll in progress on this thread.
+    pub(super) struct Poll {
+        budget: Duration,
+        turn: Option<Label>,
+        since: Instant,
+        overrun: Option<Overrun>,
+    }
+
+    thread_local! {
+        /// `None` outside a timed poll: then [`begin`] does nothing (no
+        /// clock read), for example with the budget disabled.
+        static POLL: RefCell<Option<Poll>> = const { RefCell::new(None) };
+    }
+
+    impl Poll {
+        /// Charge the stretch since the last boundary to the current turn.
+        fn close(&mut self) {
+            let now = Instant::now();
+            if let Some(label) = self.turn {
+                let took = now.duration_since(self.since);
+                if took > self.budget && self.overrun.is_none() {
+                    self.overrun = Some(Overrun { label, took });
+                }
+            }
+            self.since = now;
+        }
+    }
+
+    /// Start timing a poll that resumes `turn` (a turn suspended at an
+    /// `.await`, or `None`). Returns the enclosing poll's timing (another
+    /// world polled from inside this one), which [`leave`] restores.
+    pub(super) fn enter(budget: Duration, turn: Option<Label>) -> Option<Poll> {
+        let poll = Poll {
+            budget,
+            turn,
+            since: Instant::now(),
+            overrun: None,
+        };
+        POLL.with(|p| p.borrow_mut().replace(poll))
+    }
+
+    /// Stop timing the poll: returns the turn still open (suspended at an
+    /// `.await`) and the first overrun, if any.
+    pub(super) fn leave(outer: Option<Poll>) -> (Option<Label>, Option<Overrun>) {
+        let poll = POLL.with(|p| std::mem::replace(&mut *p.borrow_mut(), outer));
+        match poll {
+            Some(mut poll) => {
+                poll.close();
+                (poll.turn, poll.overrun)
+            }
+            None => (None, None),
+        }
+    }
+
+    /// Mark the start (`Some`) or end (`None`) of a turn.
+    pub(super) fn mark(turn: Option<Label>) -> bool {
+        POLL.with(|p| match p.borrow_mut().as_mut() {
+            Some(poll) => {
+                poll.close();
+                poll.turn = turn;
+                true
+            }
+            None => false,
+        })
+    }
+}
+
+/// Marks one actor turn for the turn budget (`SPAWNED_SIM_TURN_BUDGET`):
+/// hold it while the handler for one message runs. A no-op outside a
+/// simulated poll or with the budget disabled.
+#[doc(hidden)]
+#[must_use = "the turn ends when the guard is dropped"]
+pub fn turn(actor: &'static str, message: &'static str) -> TurnGuard {
+    TurnGuard(turn::mark(Some(turn::Label { actor, message })))
+}
+
+/// Ends the turn started by [`turn`] when dropped.
+#[doc(hidden)]
+pub struct TurnGuard(bool);
+impl Drop for TurnGuard {
+    fn drop(&mut self) {
+        if self.0 {
+            turn::mark(None);
+        }
+    }
+}
+
+fn turn_budget() -> Option<Duration> {
+    parse_turn_budget(std::env::var("SPAWNED_SIM_TURN_BUDGET").ok().as_deref())
+}
+
+/// `SPAWNED_SIM_TURN_BUDGET` in milliseconds: unset or unparsable is the
+/// default, 0 disables the check.
+fn parse_turn_budget(value: Option<&str>) -> Option<Duration> {
+    let ms = value
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(DEFAULT_TURN_BUDGET_MS);
+    (ms > 0).then(|| Duration::from_millis(ms))
+}
+
 struct State {
     seed: u64,
     rng: u64,
@@ -254,6 +391,13 @@ struct State {
     runtimes: usize,
     /// Seed of the per-world Tokio runtime's RNG (`select!`, `watch`).
     tokio_seed: u64,
+    /// Wall-clock budget of one actor turn inside a poll
+    /// (`SPAWNED_SIM_TURN_BUDGET`); `None` disables the check.
+    turn_budget: Option<Duration>,
+    /// Actor turns suspended at an `.await`, by task.
+    turns: BTreeMap<u64, turn::Label>,
+    /// The first turn that ran past the budget; fails the run.
+    overrun: Option<String>,
 }
 
 /// One scheduling decision of a simulation run.
@@ -484,6 +628,9 @@ impl Shared {
                 running: false,
                 runtimes: 0,
                 tokio_seed: seed,
+                turn_budget: turn_budget(),
+                turns: BTreeMap::new(),
+                overrun: None,
             }),
         })
     }
@@ -641,6 +788,7 @@ impl Shared {
     fn next(&self) -> Option<u64> {
         loop {
             self.check_leaks();
+            self.check_turns();
             let mut state = lock(&self.state);
             let strict = matches!(&state.script, Some(s) if s.mode == ReplayMode::Strict);
             let action = if strict {
@@ -731,8 +879,12 @@ impl Shared {
     }
 
     fn poll_task(self: &Arc<Self>, id: u64) {
-        let Some(slot) = lock(&self.state).tasks.get(&id).cloned() else {
-            return;
+        let (slot, budget, resumed) = {
+            let state = lock(&self.state);
+            let Some(slot) = state.tasks.get(&id).cloned() else {
+                return;
+            };
+            (slot, state.turn_budget, state.turns.get(&id).copied())
         };
         let Some(mut task) = lock(&slot).take() else {
             return;
@@ -741,11 +893,30 @@ impl Shared {
             id,
             shared: Arc::downgrade(self),
         }));
+        // Ends the turn timing even if the poll unwinds.
+        struct Timed<'a> {
+            shared: &'a Shared,
+            id: u64,
+            outer: Option<Option<turn::Poll>>,
+        }
+        impl Drop for Timed<'_> {
+            fn drop(&mut self) {
+                if let Some(outer) = self.outer.take() {
+                    self.shared.end_turn_timing(self.id, outer);
+                }
+            }
+        }
+        let timed = Timed {
+            shared: self,
+            id,
+            outer: budget.map(|budget| turn::enter(budget, resumed)),
+        };
         let done = self.run_poll(id, || {
             task.as_mut()
                 .poll(&mut Context::from_waker(&waker))
                 .is_ready()
         });
+        drop(timed);
         if done {
             self.retire(id);
             drop(task);
@@ -754,11 +925,51 @@ impl Shared {
         }
     }
 
+    /// Record the turn task `id` left suspended at an `.await` and the
+    /// first turn of this poll that ran past the budget.
+    fn end_turn_timing(&self, id: u64, outer: Option<turn::Poll>) {
+        let (open, overrun) = turn::leave(outer);
+        let mut state = lock(&self.state);
+        match open {
+            Some(label) => state.turns.insert(id, label),
+            None => state.turns.remove(&id),
+        };
+        if let (Some(overrun), None, Some(budget)) = (overrun, &state.overrun, state.turn_budget) {
+            let turn::Overrun { label, took } = overrun;
+            // The measured time goes to stderr, not into the failure: the
+            // shrinker matches failures by their text.
+            eprintln!(
+                "spawned_sim: actor `{}` handling `{}` ran {} ms in one poll (task {id}, seed {})",
+                label.actor,
+                label.message,
+                took.as_millis(),
+                state.seed
+            );
+            state.overrun = Some(format!(
+                "turn over budget: actor `{}` handling `{}` ran for more than {} ms in one \
+                 poll without yielding (a blocking call or a loop with no .await stalls every \
+                 actor on its worker; SPAWNED_SIM_TURN_BUDGET=ms sets the budget, 0 disables it)",
+                label.actor,
+                label.message,
+                budget.as_millis()
+            ));
+        }
+    }
+
+    /// Fail the run if an actor turn ran past the budget.
+    fn check_turns(&self) {
+        let overrun = lock(&self.state).overrun.take();
+        if let Some(overrun) = overrun {
+            panic!("spawned_sim: {overrun}");
+        }
+    }
+
     /// Forget a finished task, including a wakeup it gave itself during its
     /// final poll (otherwise a dead id stays in the ready list).
     fn retire(&self, id: u64) {
         let mut state = lock(&self.state);
         state.tasks.remove(&id);
+        state.turns.remove(&id);
         if state.queued.remove(&id) {
             state.ready.retain(|ready| *ready != id);
         }
@@ -850,6 +1061,7 @@ impl Shared {
         state.ready.clear();
         state.queued.clear();
         state.timers.clear();
+        state.turns.clear();
     }
 }
 
@@ -1089,6 +1301,11 @@ impl Runtime {
     pub fn set_spin_limit(&self, polls: u64) {
         lock(&self.handle.shared.state).spin_limit = polls.max(1);
     }
+    /// Wall-clock budget of one actor turn inside a poll
+    /// (`SPAWNED_SIM_TURN_BUDGET`, default 250 ms); `None` disables the check.
+    pub fn set_turn_budget(&self, budget: Option<Duration>) {
+        lock(&self.handle.shared.state).turn_budget = budget.filter(|b| !b.is_zero());
+    }
     pub fn stats(&self) -> Stats {
         self.handle.shared.stats()
     }
@@ -1158,6 +1375,12 @@ pub fn ambient_handle() -> Handle {
 /// fuzzer reads the task count from it to check for leaked tasks.
 pub fn stats() -> Stats {
     current_or_ambient().stats()
+}
+
+/// [`Runtime::set_turn_budget`] for the running simulation, for bodies that
+/// do not own the `Runtime` (those run by [`run_once`] or [`explore`]).
+pub fn set_turn_budget(budget: Option<Duration>) {
+    lock(&current_or_ambient().state).turn_budget = budget.filter(|b| !b.is_zero());
 }
 
 /// Virtual time elapsed in this thread's simulation.
@@ -2048,5 +2271,22 @@ pub fn entropy() -> u64 {
             let mut x = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             splitmix(&mut x)
         }
+    }
+}
+
+#[cfg(test)]
+mod turn_budget_tests {
+    use super::{parse_turn_budget, Duration, DEFAULT_TURN_BUDGET_MS};
+
+    #[test]
+    fn turn_budget_env_values() {
+        let default = Some(Duration::from_millis(DEFAULT_TURN_BUDGET_MS));
+        assert_eq!(parse_turn_budget(None), default);
+        assert_eq!(parse_turn_budget(Some("not a number")), default);
+        assert_eq!(
+            parse_turn_budget(Some(" 40 ")),
+            Some(Duration::from_millis(40))
+        );
+        assert_eq!(parse_turn_budget(Some("0")), None);
     }
 }
