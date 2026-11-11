@@ -223,7 +223,7 @@ which reopens the window) and `KillBeforeDIsKilled` (control
 | 6 | `Init::stop(r)` | `r` | no | failed → `InitExited` |
 | 7 | `Err(e)` / `Init::error(e)` | `Normal` | no | failed → `InitFailed { cause: e }` |
 | 8 | `Init::ignore()` | `Normal` | no | ignored → `Ok(Ignored)` |
-| 9 | `Init::ready()` / `continue_with(m)`, but the child's admission closed: its group, or for an owned child its owner's scope | `Shutdown` | no | failed → `InitExited` |
+| 9 | `Init::ready()` / `continue_with(m)`, but the child's admission closed: its group, or for an owned child its owner's scope gate, which only an ancestor's or the system's shutdown closes (S1), never the parent's own exit (4.1) | `Shutdown` | no | failed → `InitExited` |
 | 10 | `Init::ready()` / `continue_with(m)` | runs | later | **ready** → `Ok(Started(..))` |
 
 - **Held signals in rows 9-10.** A held `Normal` signal to a non-trapping
@@ -484,9 +484,15 @@ admitted to a group of the parent's `ActorSystem`.
 
 **When the parent exits** (Codex R2, agy F3):
 
-1. **At P's exit begin:** P's scope closes for new owned children (they are
-   refused as `ParentExited` or `Closed`), and the scope deadline is armed
-   (below).
+1. **At P's exit begin:** new starts through P are refused as
+   `ParentExited`. The check is under P's exit-request lock (rank 3), not P's
+   scope gate. The scope deadline is armed (below). P's scope admission gate
+   stays open (round 3, agy F2). A child already inside `started()` finishes
+   init as OTP's does, and may commit ready; it then gets P's exit at P's
+   publication (E3). A trapping child runs its continuation first. The gate
+   closes only when an ancestor supervisor or the system begins shutdown
+   (S1). That refuses new owned children (`Closed`) and makes the readiness
+   commit of a child still in `started()` fail with row 9.
 2. **At P's D:** P's edges close, and the link notices to its linked children
    are taken.
 3. **At P's publication** (after P's destruction): the parent exits reach
@@ -541,6 +547,10 @@ polite `Shutdown`, a scope deadline armed from P's exit begin that reaches
 exiting members, and the generation end. Properties and controls:
 
 - `OwnedOnlyWhileOwnerOpen`, control `OwnerUnchecked`;
+- `OwnerRefusalOnlyOnShutdown`: a readiness refusal by the owner gate
+  happens only after an ancestor's or the system's shutdown. Control
+  `ParentExitClosesOwner` closes the gate at P's own exit begin, which would
+  refuse a child that OTP lets finish init;
 - `GenDoneMeansOwnedDone`: P published, every member published, and their
   owned work (helpers, jobs) finished. Controls: `EarlyGenDone` (members
   not published), `GenDoneAtParentD` (P only at its D) and
@@ -583,7 +593,8 @@ the result, so `ready()` never depends on a waiter.
 applies. It takes, in the order of section 3:
 
 1. the child's admission gate (its group's, and for an owned child, its
-   owner's);
+   owner's scope gate, closed only by an ancestor's or the system's
+   shutdown; the parent's own exit does not close it, 4.1);
 2. the cell lock.
 
 Under both, it checks that admission is open, then:
