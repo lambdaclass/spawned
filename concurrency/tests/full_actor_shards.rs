@@ -309,10 +309,7 @@ fn blocking_handler_stalls_its_shard_while_another_shard_progresses() {
             .unwrap();
         tokio::time::timeout(LIMIT, rx).await.unwrap().unwrap();
         let mut queued = actors[b].request_raw(Thread).unwrap();
-        assert!(matches!(
-            queued.try_recv(),
-            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
-        ));
+        assert!(queued.try_recv().is_none());
         if let Some(other) = (0..actors.len()).find(|&id| names[id] != names[a]) {
             assert_eq!(
                 actors[other]
