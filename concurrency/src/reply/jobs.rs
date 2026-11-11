@@ -609,18 +609,24 @@ impl JobSet {
     }
 
     /// Admit a job: replace (cancel) the previous one with the same key and
-    /// count it as running (the model's `Start`).
-    pub(crate) fn admit(&self, state: &Arc<JobState>, key: Option<JobKey>, deadline: bool) {
+    /// count it as running (the model's `Start`). Refused (`false`, nothing
+    /// recorded) once the owner's exit closed admission: the caller must not
+    /// run it.
+    #[must_use]
+    pub(crate) fn admit(&self, state: &Arc<JobState>, key: Option<JobKey>, deadline: bool) -> bool {
         trace::atomic(|| {
             let keyed = key.is_some();
-            self.core.admit(state, key);
+            if !self.core.admit(state, key) {
+                return false;
+            }
             crate::instrumentation::hooks::job_started();
             state.record(|job| trace::JobEvent {
                 keyed,
                 deadline,
                 ..trace::JobEvent::new("Start", job)
             });
-        });
+            true
+        })
     }
 
     /// A job's execution ended.
@@ -990,10 +996,10 @@ mod tests {
     fn replacement_cancels_a_finished_keyed_job() {
         let set = JobSet::new(ActorId::next(), 1);
         let old = JobState::new(set.owner(), 1);
-        set.admit(&old, Some(JobKey::new("k")), false);
+        assert!(set.admit(&old, Some(JobKey::new("k")), false));
         set.ended(&old);
         let new = JobState::new(set.owner(), 1);
-        set.admit(&new, Some(JobKey::new("k")), false);
+        assert!(set.admit(&new, Some(JobKey::new("k")), false));
         assert!(old.is_cancelled(), "the finished job escaped replacement");
         assert!(!new.is_cancelled());
     }

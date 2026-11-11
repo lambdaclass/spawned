@@ -370,13 +370,14 @@ impl<A: Actor> BlockingJobPermit<A> {
             credit,
             worker,
         } = self;
-        if ctx.replies.is_exiting() {
-            drop((work, done, worker));
-            let state = JobState::new(ctx.id(), opts.emit_credits);
+        let state = JobState::new(ctx.id(), opts.emit_credits);
+        // Refused once the owner began exiting, in one step with the exit's
+        // close of admission (see `admit_job`).
+        if ctx.replies.is_exiting() || !ctx.admit_job(&state, &opts) {
+            drop((work, done, worker, credit));
             state.never_started();
             return JobHandle::new(state);
         }
-        let state = JobState::new(ctx.id(), opts.emit_credits);
         ctx.launch_blocking::<T, M, (), W>(
             opts,
             state,
@@ -389,6 +390,16 @@ impl<A: Actor> BlockingJobPermit<A> {
 }
 
 impl<A: Actor> Context<A> {
+    /// Admit `state` into the owner's job set (the model's `Start`), after
+    /// every reversible reservation and before anything that cannot be
+    /// undone: refused once the owner's exit closed admission, in one step
+    /// with that close, so an admitted job is always cancelled (and joined)
+    /// by the owner's exit.
+    fn admit_job(&self, state: &Arc<JobState>, opts: &JobOptions) -> bool {
+        self.jobs
+            .admit(state, opts.key.clone(), opts.deadline.is_some())
+    }
+
     fn reserve_credit(&self) -> Result<JobCredit, PipeErrorKind> {
         if self.replies.is_exiting() {
             return Err(PipeErrorKind::OwnerStopping);
@@ -481,8 +492,6 @@ impl<A: Actor> Context<A> {
         R: Send + 'static,
         W: FnOnce(&JobCtx<A>) -> T + Send + 'static,
     {
-        self.jobs
-            .admit(&state, opts.key.clone(), opts.deadline.is_some());
         let run = Arc::new(Run {
             state: state.clone(),
             ctx: self.clone(),
@@ -566,6 +575,13 @@ impl<A: Actor> Context<A> {
                 return Err(PipeReplyError::Failed { token, kind });
             }
         };
+        if !self.admit_job(&state, &opts) {
+            drop((hold, worker));
+            return Err(PipeReplyError::Failed {
+                token,
+                kind: PipeErrorKind::OwnerStopping,
+            });
+        }
         if opts.cancel_on_caller_gone {
             crate::reply::jobs::cancel_when_closed(&slot, &state);
         }

@@ -323,9 +323,18 @@ pub(crate) trait Job {
 /// two above it).
 const COMPACT_AT: usize = 32;
 
+/// The job list and the admission gate, under one lock: admission checks
+/// the gate and lists the job in one step, so an admitted job is always in
+/// the list the owner's exit takes and cancels.
+struct JobList<J: 'static> {
+    jobs: Vec<Weak<J>>,
+    /// The owner's exit closed admission (`cancel_all`).
+    closed: bool,
+}
+
 /// An owner instance's jobs: key map, running count, native budget.
 pub(crate) struct JobSetCore<J: 'static, K> {
-    jobs: Mutex<Vec<Weak<J>>>,
+    jobs: Mutex<JobList<J>>,
     keys: Mutex<HashMap<K, Arc<J>>>,
     running: Mutex<usize>,
     idle: Condvar,
@@ -336,7 +345,10 @@ pub(crate) struct JobSetCore<J: 'static, K> {
 impl<J: Job + 'static, K: Hash + Eq> JobSetCore<J, K> {
     pub(crate) fn new(max_native: usize) -> Self {
         Self {
-            jobs: Mutex::new(Vec::new()),
+            jobs: Mutex::new(JobList {
+                jobs: Vec::new(),
+                closed: false,
+            }),
             keys: Mutex::new(HashMap::new()),
             running: Mutex::new(0),
             idle: Condvar::new(),
@@ -364,18 +376,24 @@ impl<J: Job + 'static, K: Hash + Eq> JobSetCore<J, K> {
         self.native.load(Ordering::Acquire)
     }
 
-    /// Admit a job: replace (cancel) the previous one with the same key,
-    /// whatever its notification state, and count it as running. The
-    /// replaced job and the references compaction upgraded are dropped after
-    /// the locks are released.
-    pub(crate) fn admit(&self, state: &Arc<J>, key: Option<K>) {
-        let previous = key.and_then(|key| lock(&self.keys).insert(key, state.clone()));
-        if let Some(previous) = &previous {
-            previous.cancel();
-        }
+    /// Admit a job: refused (`false`) once the owner's exit closed
+    /// admission. Otherwise list it, count it as running and replace
+    /// (cancel) the previous job with the same key, whatever its
+    /// notification state. The check, the listing and the count are one
+    /// step under the list's lock, the same lock `cancel_all` closes and
+    /// drains under, so no admitted job escapes the owner's cancellation and
+    /// the owner's join counts it. The replaced job and the references
+    /// compaction upgraded are cancelled and dropped after the locks are
+    /// released.
+    pub(crate) fn admit(&self, state: &Arc<J>, key: Option<K>) -> bool {
         let mut upgraded: Vec<Arc<J>> = Vec::new();
-        {
-            let mut jobs = lock(&self.jobs);
+        let previous = {
+            let mut list = lock(&self.jobs);
+            if list.closed {
+                return false;
+            }
+            let previous = key.and_then(|key| lock(&self.keys).insert(key, state.clone()));
+            let jobs = &mut list.jobs;
             if jobs.len() >= COMPACT_AT && jobs.len().is_power_of_two() {
                 jobs.retain(|job| match job.upgrade() {
                     Some(job) => {
@@ -387,10 +405,15 @@ impl<J: Job + 'static, K: Hash + Eq> JobSetCore<J, K> {
                 });
             }
             jobs.push(Arc::downgrade(state));
+            *lock(&self.running) += 1;
+            previous
+        };
+        if let Some(previous) = &previous {
+            previous.cancel();
         }
-        *lock(&self.running) += 1;
         drop(upgraded);
         drop(previous);
+        true
     }
 
     /// A job's execution ended. Returns whether the set became idle (the
@@ -415,11 +438,18 @@ impl<J: Job + 'static, K: Hash + Eq> JobSetCore<J, K> {
         *lock(&self.running)
     }
 
-    /// Owner exit: cancel every job (flag set, blocked emitters woken). The
-    /// key map's references and the upgraded jobs drop outside the locks.
+    /// Owner exit: close admission and cancel every job (flag set, blocked
+    /// emitters woken). The key map's references and the upgraded jobs drop
+    /// outside the locks.
     pub(crate) fn cancel_all(&self) {
-        let jobs = std::mem::take(&mut *lock(&self.jobs));
-        let keys = std::mem::take(&mut *lock(&self.keys));
+        let (jobs, keys) = {
+            let mut list = lock(&self.jobs);
+            list.closed = true;
+            (
+                std::mem::take(&mut list.jobs),
+                std::mem::take(&mut *lock(&self.keys)),
+            )
+        };
         for job in jobs.iter().filter_map(Weak::upgrade) {
             job.cancel();
         }

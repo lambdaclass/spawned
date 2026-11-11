@@ -219,7 +219,7 @@ fn admission_rollback_vs_job_end() {
         // A running job holds the credit and the native slot.
         assert!(pool.reserve(1) && set.reserve_native());
         let running = TestJob::new(0, 1, None, &destroyed);
-        set.admit(&running, None);
+        assert!(set.admit(&running, None));
         holding.fetch_add(1, Ordering::AcqRel);
 
         let ender = {
@@ -259,7 +259,7 @@ fn admission_rollback_vs_job_end() {
                     "native bound exceeded"
                 );
                 let job = TestJob::new(1, 1, None, &destroyed);
-                set.admit(&job, None);
+                assert!(set.admit(&job, None));
                 second = Some(job);
             } else {
                 pool.release(1);
@@ -289,7 +289,7 @@ fn completed_key_replacement() {
         let mailbox = Arc::new(Mailbox::default());
         let destroyed = Arc::new(AtomicUsize::new(0));
         let old = TestJob::new(0, 1, None, &destroyed);
-        set.admit(&old, Some(7));
+        assert!(set.admit(&old, Some(7)));
         let worker = {
             let (set, mailbox, old) = (set.clone(), mailbox.clone(), old.clone());
             loom::thread::spawn(move || {
@@ -301,7 +301,7 @@ fn completed_key_replacement() {
             })
         };
         let new = TestJob::new(1, 1, None, &destroyed);
-        set.admit(&new, Some(7));
+        assert!(set.admit(&new, Some(7)));
         assert!(
             old.core.is_cancelled(),
             "the replaced job was not cancelled"
@@ -318,6 +318,37 @@ fn completed_key_replacement() {
         }
         assert_ne!(old.core.notification(), Notification::Pending);
         set.cancel_all();
+    });
+}
+
+/// Admission races the owner's exit (review P1, Codex 6): `admit` checks
+/// the gate and lists the job in the step `cancel_all` closes and drains
+/// under, so a job is either refused or listed in time to be cancelled, and
+/// the running count the owner's join waits for includes it.
+#[test]
+fn admission_vs_owner_exit() {
+    model(|| {
+        let set = Arc::new(Set::new(1));
+        let destroyed = Arc::new(AtomicUsize::new(0));
+        let job = TestJob::new(0, 1, None, &destroyed);
+        let admitter = {
+            let (set, job) = (set.clone(), job.clone());
+            loom::thread::spawn(move || set.admit(&job, Some(1)))
+        };
+        set.cancel_all();
+        if admitter.join().unwrap() {
+            assert!(
+                job.core.is_cancelled(),
+                "an admitted job escaped the owner's exit"
+            );
+            assert_eq!(set.running(), 1, "the owner's join misses the job");
+            set.ended(&job);
+        } else {
+            assert_eq!(set.running(), 0);
+        }
+        let late = TestJob::new(1, 1, None, &destroyed);
+        assert!(!set.admit(&late, None), "admission reopened after exit");
+        assert_eq!(set.running(), 0);
     });
 }
 

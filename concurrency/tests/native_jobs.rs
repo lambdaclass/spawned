@@ -192,6 +192,53 @@ async fn a_supervisor_does_not_replace_a_child_whose_blocking_job_still_runs() {
     let _ = system.shutdown(Duration::from_secs(5)).await;
 }
 
+/// Review P1 (Codex 6): job admission is one step with the owner's exit.
+/// `pipe_with_ctx` builds the work (user code) between its exit check and
+/// the admission; an owner that exits meanwhile refuses the job, so it
+/// never runs. It used to be admitted into the job set the exit had already
+/// drained: uncancelled work outliving its owner.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_job_admitted_after_its_owner_exited_never_runs() {
+    use spawned_concurrency::tasks::ActorStart;
+    struct Owner;
+    impl Actor for Owner {}
+    impl Handler<Done> for Owner {
+        async fn handle(&mut self, _: Done, _: PendingReply<'_, ()>, _: &Context<Self>) {}
+    }
+    let actor = Owner.start();
+    let ctx = actor.context();
+    let owner = actor.clone();
+    let ran = Arc::new(AtomicBool::new(false));
+    let work_ran = ran.clone();
+    let handle = tokio::task::spawn_blocking(move || {
+        ctx.pipe_with_ctx(
+            JobOptions::default(),
+            |job| {
+                // While the work is built, the owner exits and dies.
+                owner.context().stop();
+                while owner.exit_reason().is_none() {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                async move {
+                    work_ran.store(true, Ordering::SeqCst);
+                    job.cancelled().await;
+                }
+            },
+            |_: JobOutcome<()>| Done,
+        )
+        .unwrap()
+    })
+    .await
+    .unwrap();
+    assert!(
+        handle.is_cancelled(),
+        "a job admitted after its owner's exit escaped the exit's cancellation"
+    );
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(!ran.load(Ordering::SeqCst), "a refused job ran");
+    actor.join().await;
+}
+
 /// Review P1 (Codex 12, agy 6): outside a Tokio runtime a tasks actor's
 /// blocking job runs on an owned thread. Its creation is part of the
 /// reservation, so a failure is `SpawnFailed` (and `pipe_reply*` hands the
