@@ -85,7 +85,6 @@
 
 const INPUT: &[u8] = include_bytes!("../regressions/dropped_system_slow_cleanup.input");
 
-
 /// The input under its own schedule (canonical: no tape is recorded).
 #[test]
 fn dropped_system_slow_cleanup_tape() {

@@ -79,7 +79,6 @@
 
 const INPUT: &[u8] = include_bytes!("../regressions/stopping_child_settles_before_order.input");
 
-
 /// The input under its own schedule (canonical: no tape is recorded).
 #[test]
 fn stopping_child_settles_before_order_tape() {

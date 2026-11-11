@@ -75,7 +75,6 @@
 
 const INPUT: &[u8] = include_bytes!("../regressions/short_shutdown_then_ordered.input");
 
-
 /// The input under its own schedule (canonical: no tape is recorded).
 #[test]
 fn short_shutdown_then_ordered_tape() {

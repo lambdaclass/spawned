@@ -128,7 +128,6 @@ fn emit_regression(
 
 const INPUT: &[u8] = include_bytes!("../regressions/{name}.input");
 {tape_const}
-
 /// The input under its own schedule and under its recorded tape.
 #[test]
 fn {name}_tape() {{
@@ -143,7 +142,7 @@ async fn {name}_seeds(seed: u64) {{
 }}
 "#,
         tape_const = if tape.is_some() {
-            format!("const TAPE: &str = include_str!(\"../regressions/{name}.tape\");")
+            format!("const TAPE: &str = include_str!(\"../regressions/{name}.tape\");\n")
         } else {
             String::new()
         },
