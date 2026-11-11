@@ -1090,6 +1090,82 @@ async fn an_exit_signal_is_not_overtaken_by_its_senders_death_notice() {
     recorder.join().await;
 }
 
+// ---------------------------------- monitor.down_before_dispatch (flush)
+
+struct WatchDown(ChildHandle);
+impl Message for WatchDown {
+    type Result = spawned_concurrency::MonitorRef;
+}
+
+/// Monitors on request and counts the `Down`s its handler runs.
+struct Observer(Arc<AtomicUsize>);
+impl Actor for Observer {}
+impl Handler<WatchDown> for Observer {
+    async fn handle(
+        &mut self,
+        msg: WatchDown,
+        reply: spawned_concurrency::PendingReply<'_, spawned_concurrency::MonitorRef>,
+        ctx: &Context<Self>,
+    ) {
+        reply.reply(ctx.monitor(&msg.0));
+    }
+}
+impl Handler<Down> for Observer {
+    async fn handle(
+        &mut self,
+        _: Down,
+        _: spawned_concurrency::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
+        self.0.fetch_add(1, Ordering::SeqCst);
+    }
+}
+impl Handler<Ping> for Observer {
+    async fn handle(
+        &mut self,
+        _: Ping,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
+        reply.reply(());
+    }
+}
+struct Quiet;
+impl Actor for Quiet {}
+
+/// OTP `demonitor(Ref, [flush])`: a `demonitor` on another thread returns
+/// while the observer is dispatching the monitor's `Down` (paused before the
+/// flush check); the `Down` never reaches `Handler<Down>`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn demonitor_flushes_a_down_in_dispatch() {
+    let _scenario = FailScenario::setup();
+    let handled = Arc::new(AtomicUsize::new(0));
+    let observer = Observer(handled.clone()).start();
+    let target = Quiet.start();
+    let monitor = observer
+        .request(WatchDown(target.child_handle()))
+        .await
+        .unwrap();
+    failpoints::configure(
+        "monitor.down_before_dispatch",
+        FailPoint::new(Action::Delay(Duration::from_millis(300))).times(1),
+    )
+    .unwrap();
+    target.context().stop();
+    target.join().await;
+    reached("monitor.down_before_dispatch", 1).await;
+    observer.context().demonitor(monitor);
+    // FIFO, one turn at a time: the Down's dispatch finished before this.
+    observer.request(Ping).await.unwrap();
+    assert_eq!(
+        handled.load(Ordering::SeqCst),
+        0,
+        "a Down was handled after demonitor returned"
+    );
+    observer.context().stop();
+    observer.join().await;
+}
+
 mod native {
     use super::*;
     use spawned_concurrency::threads::{
@@ -1304,5 +1380,72 @@ mod native {
             assert!(began.elapsed() < LIMIT, "linked peer did not stop");
             std::thread::sleep(Duration::from_millis(2));
         }
+    }
+
+    struct NativeObserver(Arc<AtomicUsize>);
+    impl NativeActor for NativeObserver {}
+    impl NativeHandler<WatchDown> for NativeObserver {
+        fn handle(
+            &mut self,
+            msg: WatchDown,
+            reply: spawned_concurrency::reply::PendingReply<'_, spawned_concurrency::MonitorRef>,
+            ctx: &NativeContext<Self>,
+        ) {
+            reply.reply(ctx.monitor(&msg.0));
+        }
+    }
+    impl NativeHandler<Down> for NativeObserver {
+        fn handle(
+            &mut self,
+            _: Down,
+            _: spawned_concurrency::reply::PendingReply<'_, ()>,
+            _: &NativeContext<Self>,
+        ) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+    impl NativeHandler<Ping> for NativeObserver {
+        fn handle(
+            &mut self,
+            _: Ping,
+            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            _: &NativeContext<Self>,
+        ) {
+            reply.reply(());
+        }
+    }
+    struct NativeQuiet;
+    impl NativeActor for NativeQuiet {}
+
+    /// Threads mode: a `demonitor` on another thread returns while the
+    /// observer dispatches the monitor's `Down`; it is never handled.
+    #[test]
+    fn demonitor_flushes_a_down_in_dispatch() {
+        let _scenario = FailScenario::setup();
+        let handled = Arc::new(AtomicUsize::new(0));
+        let observer = NativeObserver(handled.clone()).start();
+        let target = NativeQuiet.start();
+        let monitor = observer.request(WatchDown(target.child_handle())).unwrap();
+        failpoints::configure(
+            "monitor.down_before_dispatch",
+            FailPoint::new(Action::Delay(Duration::from_millis(300))).times(1),
+        )
+        .unwrap();
+        target.context().stop();
+        target.join();
+        let began = Instant::now();
+        while failpoints::stats("monitor.down_before_dispatch").hits < 1 {
+            assert!(began.elapsed() < LIMIT, "the Down was not dispatched");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        observer.context().demonitor(monitor);
+        observer.request(Ping).unwrap();
+        assert_eq!(
+            handled.load(Ordering::SeqCst),
+            0,
+            "a Down was handled after demonitor returned"
+        );
+        observer.context().stop();
+        observer.join();
     }
 }

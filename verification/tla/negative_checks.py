@@ -240,6 +240,7 @@ LIFECYCLE_CONTROLS = [
     ("MCLifecycle", "KillNoSupersede", "KilledFromKill"),
     ("MCLifecycleFence", "NoUnlinkFence", "CancelFenced"),
     ("MCLifecycleFence", "NoDemonitorFence", "CancelFenced"),
+    ("MCLifecycleFence", "NoDemonitorFlush", "CancelFenced"),
     ("MCLifecycle", "EarlyStopped", "StoppedAtDeath"),
     ("MCLifecycle", "PanicOverKill", "KilledFromKill"),
     ("MCLifecycle", "DropKeepsNormal", "RuntimeDropReason"),

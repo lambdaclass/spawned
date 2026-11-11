@@ -18,14 +18,10 @@ use spawned_rt::{
     threads,
 };
 use std::sync::atomic::Ordering;
+#[cfg(test)]
+use std::{collections::HashMap, sync::Mutex};
 use std::{
-    collections::HashMap,
-    fmt::Debug,
-    future::Future,
-    panic::AssertUnwindSafe,
-    pin::Pin,
-    sync::{Arc, Mutex},
-    time::Duration,
+    fmt::Debug, future::Future, panic::AssertUnwindSafe, pin::Pin, sync::Arc, time::Duration,
 };
 
 pub use crate::response::DEFAULT_REQUEST_TIMEOUT;
@@ -260,6 +256,41 @@ where
     }
 }
 
+impl<A: Actor + Handler<Down>> Envelope<A> for DownEnvelope {
+    #[cfg(feature = "lifecycle-trace")]
+    fn trace_kind(&self) -> &'static str {
+        "down"
+    }
+    #[cfg(any(feature = "diagnostics", spawned_sim))]
+    fn message_type(&self) -> &'static str {
+        std::any::type_name::<Down>()
+    }
+    #[cfg(feature = "metrics")]
+    fn observation(&mut self) -> Option<crate::instrumentation::MessageObservation> {
+        self.observation.take()
+    }
+    #[cfg(feature = "metrics")]
+    fn reject(mut self: Box<Self>) {
+        if let Some(observation) = self.observation.take() {
+            observation.reject();
+        }
+    }
+    fn handle<'a>(
+        self: Box<Self>,
+        actor: &'a mut A,
+        ctx: &'a Context<A>,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+        let down = self.down;
+        Box::pin(async move {
+            fail_point!("monitor.down_before_dispatch", async);
+            if crate::monitor::fence::take_queued(&ctx.shared.monitors, &down.monitor_ref) {
+                let reply = PendingReply::new(None, &ctx.shared.replies);
+                actor.handle(down, reply, ctx).await;
+            }
+        })
+    }
+}
+
 /// Admit a message. Past the death point (the registry is sealed, or the
 /// mailbox is gone) it reports `NoProc`; before it, including while the
 /// actor exits, it is queued, and a request is answered at the death point
@@ -281,6 +312,41 @@ where
         #[cfg(feature = "metrics")]
         observation: Some(_mailbox.enqueued()),
     });
+    admit::<A, M>(sender, replies, envelope)
+}
+
+/// A monitor's `Down`, enqueued by the framework (the waiter at the target's
+/// publication, or `monitor` past the target's death point). Its dispatch
+/// runs `Handler<Down>` only while the monitor's table entry is still
+/// queued: a `demonitor` that returned first flushed it (OTP
+/// `demonitor(Ref, [flush])`). A `Down` user code sends is an ordinary
+/// message.
+struct DownEnvelope {
+    down: Down,
+    #[cfg(feature = "metrics")]
+    observation: Option<crate::instrumentation::MessageObservation>,
+}
+
+fn enqueue_down<A: Actor + Handler<Down>>(
+    sender: &mpsc::Sender<Box<dyn Envelope<A> + Send>>,
+    _mailbox: &crate::instrumentation::Mailbox,
+    replies: &Registry,
+    down: Down,
+) -> Result<(), ActorError> {
+    let envelope: Box<dyn Envelope<A> + Send> = Box::new(DownEnvelope {
+        down,
+        #[cfg(feature = "metrics")]
+        observation: Some(_mailbox.enqueued()),
+    });
+    admit::<A, Down>(sender, replies, envelope)
+}
+
+/// Admission of a built envelope (`M` names its kind for the trace).
+fn admit<A: Actor, M: 'static>(
+    sender: &mpsc::Sender<Box<dyn Envelope<A> + Send>>,
+    replies: &Registry,
+    envelope: Box<dyn Envelope<A> + Send>,
+) -> Result<(), ActorError> {
     // Admission and its trace event are one step of the lifecycle trace.
     let owner = replies.owner().raw();
     crate::lifecycle_trace::life_section(owner, || {
@@ -774,10 +840,15 @@ impl<A: Actor> Context<A> {
                             .k("down")
                             .o("late")
                     });
-                    let _ = self.send(Down {
-                        monitor_ref,
-                        reason: ExitReason::NoProc,
-                    });
+                    let _ = enqueue_down(
+                        &self.shared.sender,
+                        &self.shared.mailbox,
+                        &self.shared.replies,
+                        Down {
+                            monitor_ref,
+                            reason: ExitReason::NoProc,
+                        },
+                    );
                 },
                 || crate::lifecycle_trace::life_emit(observer, || event("active")),
             ) == crate::monitor::fence::Registration::Active
@@ -815,10 +886,15 @@ impl<A: Actor> Context<A> {
                             .k("down")
                             .o("death")
                     });
-                    let _ = actor_ref.send(Down {
-                        monitor_ref,
-                        reason,
-                    });
+                    let _ = enqueue_down(
+                        &actor_ref.shared.sender,
+                        &actor_ref.shared.mailbox,
+                        &actor_ref.shared.replies,
+                        Down {
+                            monitor_ref,
+                            reason,
+                        },
+                    );
                 });
             });
         });
@@ -828,12 +904,14 @@ impl<A: Actor> Context<A> {
 
     /// Cancel a previously-set monitor.
     ///
-    /// A fence (OTP `demonitor/1`): once it returns, no `Down` of this
-    /// monitor is enqueued; one already queued stays.
+    /// A fence with OTP's `flush` (`demonitor(Ref, [flush])`): once it
+    /// returns, no `Down` of this monitor is enqueued or handled; one already
+    /// in the mailbox is skipped. Demonitoring an unknown, delivered or
+    /// already cancelled monitor does nothing.
     pub fn demonitor(&self, monitor_ref: MonitorRef) {
         let observer = self.shared.id.raw();
         let active = crate::lifecycle_trace::life_section(observer, || {
-            crate::monitor::fence::remove(&self.shared.monitors, &monitor_ref, || {
+            crate::monitor::fence::demonitor(&self.shared.monitors, &monitor_ref, || {
                 crate::lifecycle_trace::life_emit(observer, || {
                     crate::lifecycle_trace::LifeEvent::new("Demonitor", observer)
                         .m(monitor_ref.raw())
@@ -1389,7 +1467,7 @@ impl<A: Actor> ActorRef<A> {
             .map(|s| s.token.clone())
             .unwrap_or_default();
         let (completion_tx, completion_rx) = watch::channel(None);
-        let monitors: MonitorTable = Arc::new(Mutex::new(Some(HashMap::new())));
+        let monitors: MonitorTable = Arc::new(crate::monitor::fence::open());
         let trap_exit = new_trap_exit_flag();
         let links = new_link_table();
         let linked_reason = managed
@@ -2048,7 +2126,7 @@ fn test_context<A: Actor>(
     let trap = new_trap_exit_flag();
     let links = new_link_table();
     let request = new_linked_exit_reason();
-    let monitors: MonitorTable = Arc::new(Mutex::new(Some(HashMap::new())));
+    let monitors: MonitorTable = Arc::new(crate::monitor::fence::open());
     let signal = signal_target::<A>(id, None, tx, trap.clone(), request.clone(), token.clone());
     let ctx = Context {
         shared: Arc::new(ActorShared {
@@ -3041,6 +3119,11 @@ mod tests {
     impl Message for CallDemonitor {
         type Result = ();
     }
+    /// Monitor, then demonitor in the same turn.
+    struct MonitorThenDemonitor(crate::ChildHandle);
+    impl Message for MonitorThenDemonitor {
+        type Result = ();
+    }
 
     impl Actor for Watcher {}
 
@@ -3052,6 +3135,19 @@ mod tests {
             ctx: &Context<Self>,
         ) {
             reply.reply(ctx.monitor(&msg.0));
+        }
+    }
+
+    impl Handler<MonitorThenDemonitor> for Watcher {
+        async fn handle(
+            &mut self,
+            msg: MonitorThenDemonitor,
+            reply: crate::reply::PendingReply<'_, ()>,
+            ctx: &Context<Self>,
+        ) {
+            let monitor = ctx.monitor(&msg.0);
+            ctx.demonitor(monitor);
+            reply.reply(());
         }
     }
 
@@ -3117,6 +3213,30 @@ mod tests {
             assert_eq!(downs.len(), 1);
             assert_eq!(downs[0].monitor_ref, monitor_ref);
             assert!(matches!(downs[0].reason, ExitReason::Normal));
+        });
+    }
+
+    /// OTP `demonitor(Ref, [flush])`: a `Down` already in the mailbox
+    /// (here the `NoProc` a monitor of a dead target queues at once) is
+    /// never handled once `demonitor` returned.
+    #[test]
+    pub fn demonitor_flushes_a_queued_down() {
+        let runtime = rt::Runtime::new().unwrap();
+        runtime.block_on(async move {
+            let target = Counter { count: 0 }.start();
+            target.request(StopCounter).await.unwrap();
+            target.join().await;
+            let watcher = Watcher {
+                downs: Arc::new(Mutex::new(Vec::new())),
+            }
+            .start();
+            watcher
+                .request(MonitorThenDemonitor(target.child_handle()))
+                .await
+                .unwrap();
+            // FIFO: the queued Down is dispatched before this request.
+            let downs = watcher.request(GetDowns).await.unwrap();
+            assert!(downs.is_empty(), "a flushed Down was handled: {downs:?}");
         });
     }
 

@@ -129,7 +129,7 @@ State that must be released on every exit, including kills and runtime drops, be
 | `ctx.actor_ref()` | Get an `ActorRef<A>` from the context |
 | `ctx.id()` | This actor's `ActorId` |
 | `ctx.monitor(&child_handle)` | Receive a `Down` message when the target exits; returns a `MonitorRef` |
-| `ctx.demonitor(monitor_ref)` | Cancel a monitor (a fence: no later `Down`) |
+| `ctx.demonitor(monitor_ref)` | Cancel a monitor (a fence with OTP's `flush`: no `Down` afterwards, not even one already queued) |
 | `ctx.link(&child_handle)` / `ctx.unlink(&child_handle)` | Bidirectional exit propagation (see [Links, monitors and exit signals](#links-monitors-and-exit-signals)) |
 | `ctx.try_link(&child_handle)` | Link, or `Err(NoProc)` if the target is already gone |
 | `ctx.exit(&child_handle, reason)` | Send an exit signal from this actor (OTP `exit/2`) |
@@ -976,9 +976,10 @@ death point.
 ### Unlink and demonitor are fences
 
 Once `ctx.unlink(&h)` returns, that link has no further effect on the caller;
-once `ctx.demonitor(r)` returns, no `Down` of that monitor is queued. An
-`Exit` or `Down` already in the mailbox stays. Linking again creates a new
-link that gets its own notice.
+once `ctx.demonitor(r)` returns, no `Down` of that monitor is queued or
+handled: one already in the mailbox is dropped unhandled, as OTP's
+`demonitor(Ref, [flush])`. An `Exit` already in the mailbox stays. Linking
+again creates a new link that gets its own notice.
 
 ### Runtime drop
 

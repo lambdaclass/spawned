@@ -73,6 +73,7 @@ Past(a, s) == s \in {"gone", "dead"}
 (*  SplitDeathPoint registration checks publication instead of D           *)
 (*  NoUnlinkFence   unlink does not cancel a link notice in flight         *)
 (*  NoDemonitorFence demonitor does not cancel a Down in flight           *)
+(*  NoDemonitorFlush a Down already queued runs after demonitor (v0.7)    *)
 (*  EarlyStopped    a panicking request is answered before D               *)
 (*  PanicOverKill   a panic during exit replaces Killed                    *)
 (*  DropKeepsNormal a runtime drop keeps a requested Normal                *)
@@ -338,10 +339,14 @@ Monitor(a, b, m) ==
                    req, sends, signals, psent, afterStop, sigAfterD>>
 
 (* Demonitor: no Down is enqueued after it returns; one already queued stays. *)
+(* With OTP's flush (demonitor(Ref, [flush])), also while the monitor's Down *)
+(* is queued in the observer's mailbox: its dispatch then has no effect.    *)
 Demonitor(a, m) ==
     LET pending == {n \in inflight : n.k = "down" /\ n.m = m}
+        queued == \E i \in 1..Len(mbox[a]) : mbox[a][i].k = "down" /\ mbox[a][i].m = m
     IN /\ st[a] = "run" /\ mon[m].o = a
-       /\ mstate[m] \in {"active", "fired", "late"} /\ (mstate[m] = "active" \/ pending # {})
+       /\ mstate[m] \in {"active", "fired", "late"}
+       /\ (mstate[m] = "active" \/ pending # {} \/ queued)
        /\ mstate' = [mstate EXCEPT ![m] = "cancelled"]
        /\ cancelled' = cancelled \cup pending
        /\ inflight' = IF Fault = "NoDemonitorFence" THEN inflight ELSE inflight \ pending
@@ -371,7 +376,12 @@ Dispatch(a) ==
                  /\ UNCHANGED req
             [] OTHER ->          \* msg or down (a panic here is SelfExit)
                  UNCHANGED <<life, req>>
-    /\ UNCHANGED <<trap, reg, budget>>
+    \* A flushed Down (its monitor cancelled by demonitor) is skipped: its
+    \* handler takes no effect. NoDemonitorFlush runs it anyway.
+    /\ LET h == Head(mbox[a]) IN
+       afterCancel' = (afterCancel \/ (h.k = "down" /\ Fault = "NoDemonitorFlush"
+                                         /\ mstate[h.m] = "cancelled"))
+    /\ UNCHANGED <<trap, links, mon, mstate, downs, inflight, fired, cancelled, budget>>
 
 (* stopped() returned: the death point D. *)
 Die(a) ==

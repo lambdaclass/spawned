@@ -50,6 +50,11 @@ table is the full list). What to edit:
 
 - **`match` on `ExitReason`**: add a wildcard arm (`#[non_exhaustive]`, new
   `Killed` and `NoProc`).
+- **`demonitor` flushes** (OTP `demonitor(Ref, [flush])`): a `Down` of that
+  monitor already in the mailbox is no longer handled. Code that demonitored
+  and then expected a racing `Down` (or tolerated one) needs no change; code
+  that relied on a queued `Down` arriving after `demonitor` must stop
+  demonitoring, or read `ChildHandle::exit_reason()`.
 - **`max_restarts` with OneForAll/RestForOne counts rounds** (rank 5f): one
   recovery round takes one grant, however many children it rebuilds (v0.7
   charged each rebuilt child). A cohort supervisor now tolerates more

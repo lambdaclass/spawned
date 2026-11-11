@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Behaviour (0.8)**: `demonitor` flushes, as OTP's `demonitor(Ref, [flush])`:
+  once it returns, in both modes, no `Down` of that monitor is enqueued or
+  handled, including one already in the mailbox. Framework `Down`s travel in
+  a private envelope that checks the monitor table at dispatch, so ordinary
+  messages pay nothing and a `Down` user code sends is unaffected. New
+  failpoint site `monitor.down_before_dispatch` (#247).
 - Fix: `PendingReplies::drain` yields live tokens in insertion order. It
   walked a `HashMap` with a per-process `RandomState`, so deferred replies
   were answered in a different order in each process, and a same-seed

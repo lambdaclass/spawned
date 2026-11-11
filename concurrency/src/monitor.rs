@@ -68,14 +68,11 @@ pub(crate) type MonitorTable =
 pub(crate) struct MonitorCleanup(pub MonitorTable);
 impl Drop for MonitorCleanup {
     fn drop(&mut self) {
-        let monitors = fence::close(&self.0);
-        if let Some(monitors) = monitors {
-            // HashMap order is per-process random; under simulation, wake
-            // waiters in monitor-creation order so the schedule is seeded.
-            #[cfg(spawned_sim)]
-            let monitors: std::collections::BTreeMap<u64, _> =
-                monitors.into_iter().map(|(r, t)| (r.0, t)).collect();
-            for token in monitors.into_values() {
+        if let Some(mut monitors) = fence::close(&self.0) {
+            // HashMap order is per-process random: wake waiters in
+            // monitor-creation order, so a simulated schedule is seeded.
+            monitors.sort_unstable_by_key(|(r, _)| r.0);
+            for (_, token) in monitors {
                 token.cancel();
             }
         }
@@ -108,14 +105,39 @@ mod tests {
         let table: MonitorTable = Default::default();
         let (mine, other) = (MonitorRef::next(), MonitorRef::next());
         let mut entries = std::collections::HashMap::new();
-        entries.insert(mine, spawned_rt::sync::CancellationToken::new());
-        entries.insert(other, spawned_rt::sync::CancellationToken::new());
+        let token = spawned_rt::sync::CancellationToken::new;
+        entries.insert(mine, fence::Entry::Active(token()));
+        entries.insert(other, fence::Entry::Active(token()));
         *table.lock().unwrap() = Some(entries);
         drop(MonitorRegistration(table.clone(), mine));
         let entries = table.lock().unwrap();
         let entries = entries.as_ref().unwrap();
         assert!(!entries.contains_key(&mine));
         assert!(entries.contains_key(&other));
+    }
+
+    /// A finished waiter's registration drop leaves its queued `Down` for
+    /// dispatch; `demonitor` flushes it, and dispatch then skips it.
+    #[test]
+    fn demonitor_flushes_a_queued_down() {
+        let table: MonitorTable = std::sync::Arc::new(fence::open());
+        for flush in [false, true] {
+            let monitor = MonitorRef::next();
+            let token = spawned_rt::sync::CancellationToken::new();
+            assert_eq!(
+                fence::register(&table, monitor, token, || false, || false, || {}, || {}),
+                fence::Registration::Active
+            );
+            let mut enqueued = false;
+            assert!(fence::deliver(&table, &monitor, || enqueued = true));
+            assert!(enqueued);
+            drop(MonitorRegistration(table.clone(), monitor));
+            if flush {
+                assert!(fence::demonitor(&table, &monitor, || {}).is_none());
+            }
+            assert_eq!(fence::take_queued(&table, &monitor), !flush);
+            assert!(!fence::take_queued(&table, &monitor), "taken once");
+        }
     }
 
     #[test]

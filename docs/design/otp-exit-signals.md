@@ -37,7 +37,7 @@ maintainer settled every open question (see [Decisions](#decisions)).
 | E3 | a trapping gen_server that gets `'EXIT'` from its parent runs `terminate(Reason)` | supervisor shutdown cancels a trapping child directly; a `start_linked` parent's exit reaches `exit_received` | a signal from the actor's parent is queued and, when dispatched, runs normal termination; it never reaches `exit_received` |
 | E4 | `link`/`monitor` on a process that no longer exists give `noproc` | the target's real exit reason | `NoProc` after D |
 | E5 | exit reasons are any term | closed four-variant enum | `#[non_exhaustive]`, adds `Killed` and `NoProc` |
-| E6 | `unlink`/`demonitor` stop every later effect of the edge | a notice already taken for delivery still arrives | fenced at the receiver; only a message already queued stays |
+| E6 | `unlink`/`demonitor` stop every later effect of the edge (`demonitor(Ref, [flush])` also removes a queued `'DOWN'`) | a notice already taken for delivery still arrives | fenced at the receiver; an `Exit` already queued stays, a queued `Down` is flushed |
 | E7 | signals between a pair of processes keep their order | death notices follow earlier messages | unchanged for death notices; direct signals are per-sender FIFO with messages |
 | S1 | `start_link` aborts on any child start error; exits of started children wait until `init` returns | Permanent/Transient children retry a failed first start; a ready child's exit during startup is handled at once | any first-start failure aborts; ready children's exits are processed after the initial start completes |
 | S2 | `start_link` returns its error after the failed child exited and started children were terminated | `start()` can return `Err` before the failed child is `Failed` | `start()` returns `Err` after rollback (or its deadlines) |
@@ -514,8 +514,13 @@ signal in flight").
   pending, removes it, and enqueues the `Exit`/`Down` (or, for a
   non-trapping receiver, requests its exit) **inside that critical section**.
 - `unlink` and `demonitor` remove the record under the same lock, live or
-  pending. After they return nothing of that edge takes effect; a message
+  pending. After they return nothing of that edge takes effect; an `Exit`
   already queued stays.
+- **Flush (0.8).** A monitor's record outlives its delivery: delivery marks
+  it *queued*, and the `Down`'s dispatch takes it (a private envelope, so no
+  user-sent `Down` is affected). `demonitor` removes a queued record too, so
+  the dispatch then skips the `Down`, as `demonitor(Ref, [flush])`. Ordinary
+  messages pay nothing; a `Down` pays one table lock at dispatch.
 - A late `monitor` or late `link` leaves a pending record for its `NoProc`
   notice, so `demonitor` or `unlink` cancels it, as OTP keeps the caller's
   link record while the `noproc` response is pending.

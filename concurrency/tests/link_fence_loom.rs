@@ -429,7 +429,8 @@ impl Observer {
 }
 
 /// `demonitor` racing the target's death and the waiter: once it returns no
-/// `Down` is enqueued; if it found no entry, the `Down` was delivered.
+/// `Down` is enqueued; if it found an active entry none was, otherwise the
+/// `Down` was delivered and is flushed (OTP `demonitor(Ref, [flush])`).
 #[test]
 fn demonitor_fences_the_down() {
     model("demonitor_fences_the_down", || {
@@ -440,7 +441,7 @@ fn demonitor_fences_the_down() {
             let target = target.clone();
             spawn(move || target.die())
         };
-        let removed = fence::remove(&observer.monitors, &1, || {});
+        let removed = fence::demonitor(&observer.monitors, &1, || {});
         observer.fenced.store(true, Ordering::Release);
         if removed.is_some() {
             observer.cancelled.store(true, Ordering::Release);
@@ -454,6 +455,38 @@ fn demonitor_fences_the_down() {
             vec![ExitReason::Panic]
         };
         assert_eq!(observer.downs(), expected);
+        assert!(
+            !fence::take_queued(&observer.monitors, &1),
+            "a queued Down survived demonitor"
+        );
+    });
+}
+
+/// The observer's dispatch of a delivered `Down` racing `demonitor` on
+/// another thread (a cloned context): a dispatch that begins after
+/// `demonitor` returned never takes the `Down`; one that took it first
+/// handles it (it was received before the flush).
+#[test]
+fn demonitor_flushes_a_down_in_dispatch() {
+    model("demonitor_flushes_a_down_in_dispatch", || {
+        let (observer, target) = (Observer::new(), Target::new());
+        assert_eq!(observer.register(&target), fence::Registration::Active);
+        target.die();
+        let waiter = observer.waiter(&target);
+        assert!(waiter.join().unwrap(), "the Down was delivered");
+        let dispatcher = {
+            let observer = observer.clone();
+            spawn(move || {
+                let fenced = observer.fenced.load(Ordering::Acquire);
+                let took = fence::take_queued(&observer.monitors, &1);
+                assert!(!(fenced && took), "a Down handled after demonitor returned");
+            })
+        };
+        assert!(fence::demonitor(&observer.monitors, &1, || {}).is_none());
+        observer.fenced.store(true, Ordering::Release);
+        dispatcher.join().unwrap();
+        // Either the dispatch took it first, or the flush removed it.
+        assert!(!fence::take_queued(&observer.monitors, &1));
     });
 }
 

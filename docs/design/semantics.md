@@ -325,15 +325,28 @@ Checked by: `Lifecycle!DownAtMostOnce`, `Lifecycle!NoProcIffLate`, `Lifecycle!Do
 [`otp_exit_signals::tasks_mode::registrations_after_death_report_noproc`][otp_exit_signals],
 [`cancellation_safety::monitor_and_link_setup_requests_are_cancel_safe`][cancellation_safety].
 
-**X2. Demonitor and late registration.** `demonitor` before the target exits
-suppresses `Down`; a `Down` already queued may still arrive. A monitor
+**X2. Demonitor and late registration.** `demonitor` flushes, as OTP's
+`demonitor(Ref, [flush])`: once it returns, in both modes, no `Down` of that
+monitor is enqueued or handled, including one already in the mailbox (the
+late `NoProc` included); a `Down` whose dispatch began before it returned
+was already received and is handled. A `Down` that user code sends itself is
+an ordinary message. A monitor
 registered by an actor that is already stopping is inert (no waiter, no `Down`).
 Likewise `ctx.link`/`ctx.try_link` called through a `Context` whose actor's
 exit already began, or which is past its death point (for example from a
 helper that outlives the actor), is inert: no record, no notice, no `NoProc`,
 and `try_link` returns `Ok(())` (a dead process cannot call `link` in OTP;
 design otp-exit-signals.md, "Sender lifetime").
-Checked by: `src/*/actor.rs::demonitor_before_target_dies_suppresses_down`,
+Checked by: `Lifecycle!CancelFenced` (TLC, `MCLifecycleFence`; the
+`NoDemonitorFlush` control runs a flushed `Down`);
+`src/*/actor.rs::{demonitor_before_target_dies_suppresses_down, demonitor_flushes_a_queued_down}`,
+`src/monitor.rs::tests::demonitor_flushes_a_queued_down`;
+[`link_fence_loom`][link_fence_loom]`::demonitor_flushes_a_down_in_dispatch`
+(a dispatch racing `demonitor` on another thread);
+[`failpoints`][failpoints]`::{demonitor_flushes_a_down_in_dispatch, native::demonitor_flushes_a_down_in_dispatch}`
+(site `monitor.down_before_dispatch`: `demonitor` returns while the `Down`
+is in dispatch; the window is cross-thread, so a failpoint, not the
+simulator, reaches it);
 `link::tests::link_from_an_exiting_or_dead_caller_is_inert`,
 [`otp_exit_signals::tasks_mode::link_from_a_dead_actor_is_inert`][otp_exit_signals],
 `closed_monitor_table_rejects_late_registration`, [`leaks::monitor_waiters_released_on_demonitor_owner_exit_and_target_exit`][leaks].
@@ -388,7 +401,8 @@ relationship and delivers one `NoProc` notice: a trapping caller gets
 gets exactly one notice, the real reason or `NoProc`. Repeating a link
 (including one whose notice is pending) and linking to oneself are no-ops.
 `unlink` and `demonitor` are fences: once they return, no notice of that edge
-takes effect; one already queued stays. Each edge has a generation, so a stale
+takes effect; an `Exit` already queued stays, a `Down` already queued is
+flushed (X2). Each edge has a generation, so a stale
 notice never applies to a later link. `start_linked` registers the link
 before the child's `started()`.
 Checked by: `Lifecycle!NoProcIffLate`, `Lifecycle!NoEdgeToDead`, `Lifecycle!CancelFenced` (TLC, `MCLifecycleFence`);

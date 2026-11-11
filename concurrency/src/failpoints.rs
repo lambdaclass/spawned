@@ -72,6 +72,14 @@ pub const SITES: &[Site] = &[
                       failing `stopped()`.",
     },
     Site {
+        name: "monitor.down_before_dispatch",
+        has_error: false,
+        description: "A monitor's `Down` dequeued by its observer (tasks and threads), \
+                      before the flush check. Delay lets a `demonitor` on another thread \
+                      return while the `Down` is in dispatch: it must not reach \
+                      `Handler<Down>` (OTP `demonitor(Ref, [flush])`).",
+    },
+    Site {
         name: "child.factory",
         has_error: true,
         description: "Supervised child construction, before the user factory runs, inside \

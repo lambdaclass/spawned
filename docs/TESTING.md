@@ -825,8 +825,8 @@ input and, for random schedules, its tape:
 This is generated, model-checked scenario testing on real runtimes, not an
 exhaustive scheduler; the coverage-guided fuzzer above runs on the simulator
 only. It does not cover bounded mailboxes or supervisor restart policies.
-Demonitor races permit an already-queued notification; tests use bounded
-observation windows and do not claim exhaustive delivery verification.
+Demonitor flushes a queued `Down` (X2); these campaigns still observe it
+through bounded windows and do not claim exhaustive delivery verification.
 Do not interpret a passing campaign as proof of race freedom.
 
 ## Additional checks
@@ -1296,6 +1296,7 @@ and prints the seed when a test fails. Configuration is process-global.
 | `actor.exit_before_deliver` | no | A cloned context's exit signal racing its sender's death (tasks and threads) |
 | `link.before_install` | no | Peer exiting while a link is installed (tasks and threads) |
 | `monitor.before_install` | no | Target exiting while a monitor is installed (tasks and threads) |
+| `monitor.down_before_dispatch` | no | `demonitor` on another thread returning while the monitor's `Down` is in dispatch: it is flushed (tasks and threads) |
 
 `tests/failpoints.rs` drives every site and checks invariants through public
 APIs: restarts follow the budget (generation count equals injected failures
