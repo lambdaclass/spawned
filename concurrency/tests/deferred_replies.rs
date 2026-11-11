@@ -1,7 +1,9 @@
 //! Deferred replies (docs/design/deferred-replies.md): every discharge path of
 //! a request's reply slot, in `tasks` mode (also under `spawned_sim`) and in
 //! `threads` mode.
-use spawned_concurrency::{message::Message, ActorError, Deadline, DeferError, Delivery, ReplyTo};
+use spawned_concurrency::{
+    message::Message, ActorError, Deadline, DeferError, Delivery, ExitReason, ReplyTo,
+};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -208,8 +210,9 @@ mod tasks_mode {
         for defer_first in [false, true] {
             let (actor, _) = start();
             let result = actor.request(Explode { defer_first }).await;
+            // v0.8: answered at the death point with the final reason.
             assert!(
-                matches!(result, Err(ActorError::ActorStopped)),
+                matches!(result, Err(ActorError::ActorStopped(ExitReason::Panic(_)))),
                 "{result:?}"
             );
             actor.join().await;
@@ -330,8 +333,9 @@ mod tasks_mode {
             std::thread::sleep(Duration::from_millis(5));
         }
         let result = caller.join().unwrap();
+        // A runtime-dropped actor ends Killed (G1); its callers see it.
         assert!(
-            matches!(result, Err(ActorError::ActorStopped)),
+            matches!(result, Err(ActorError::ActorStopped(ExitReason::Killed))),
             "{result:?}"
         );
         drop(actor);
@@ -354,9 +358,18 @@ mod tasks_mode {
             actor.request(Stop { answer: false }).await.unwrap();
             actor.request_raw_until(Park(8), Deadline::Never)
         };
-        assert!(matches!(rx.await, Err(ActorError::ActorStopped)));
-        if let Ok(queued) = queued_behind_stop {
-            assert!(matches!(queued.await, Err(ActorError::ActorStopped)));
+        assert!(matches!(
+            rx.await,
+            Err(ActorError::ActorStopped(ExitReason::Normal))
+        ));
+        // Sent while exiting it is admitted and answered at D; sent after D
+        // it reports NoProc.
+        match queued_behind_stop {
+            Ok(queued) => assert!(matches!(
+                queued.await,
+                Err(ActorError::ActorStopped(ExitReason::Normal))
+            )),
+            Err(error) => assert!(matches!(error, ActorError::NoProc), "{error:?}"),
         }
         actor.join().await;
     }
@@ -588,9 +601,10 @@ mod threads_mode {
         actor.request(Stop { answer: true }).unwrap();
         assert_eq!(f.recv().unwrap(), 1007);
         actor.join();
+        // Past the death point: NoProc (v0.8, decision 4).
         assert!(matches!(
             actor.request(Outstanding),
-            Err(ActorError::ActorStopped)
+            Err(ActorError::NoProc)
         ));
     }
 
@@ -621,14 +635,17 @@ mod threads_mode {
             let (actor, _) = start();
             assert!(matches!(
                 actor.request(Explode { defer_first }),
-                Err(ActorError::ActorStopped)
+                Err(ActorError::ActorStopped(ExitReason::Panic(_)))
             ));
             actor.join();
         }
         let (actor, _) = start();
         let parked = actor.request_raw_until(Park(1), Deadline::Never).unwrap();
         actor.request(Stop { answer: false }).unwrap();
-        assert!(matches!(parked.recv(), Err(ActorError::ActorStopped)));
+        assert!(matches!(
+            parked.recv(),
+            Err(ActorError::ActorStopped(ExitReason::Normal))
+        ));
         actor.join();
     }
 }

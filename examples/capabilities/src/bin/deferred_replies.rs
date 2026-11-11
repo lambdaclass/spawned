@@ -402,9 +402,14 @@ async fn main() {
     let two = parker.request_raw_until(Park, Deadline::Never).unwrap();
     parker.request(StopAnswering(1)).await.unwrap();
     assert_eq!(one.await.unwrap(), "answered in stopped()");
-    assert!(matches!(two.await, Err(ActorError::ActorStopped)));
+    assert!(matches!(
+        two.await,
+        Err(ActorError::ActorStopped(
+            spawned_concurrency::ExitReason::Normal
+        ))
+    ));
     parker.join().await;
-    println!("5. stopped() answered a stored token; death answered the rest ActorStopped");
+    println!("5. stopped() answered a stored token; death answered the rest ActorStopped(normal)");
 
     for actor in [
         router.child_handle(),

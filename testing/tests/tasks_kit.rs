@@ -112,7 +112,10 @@ async fn protocol_methods_run_directly_on_the_mock() {
 async fn unconfigured_request_fails_loudly() {
     let mock = Mock::new().allow_sends().start();
     let error = mock.reserve("x".into()).await.unwrap_err();
-    assert!(matches!(error, ActorError::ActorStopped));
+    assert!(matches!(
+        error,
+        ActorError::ActorStopped(ExitReason::Panic(_))
+    ));
     let ExitReason::Panic(reason) = join_within(&mock, WAIT).await else {
         panic!("mock should panic on an unconfigured request");
     };
@@ -207,7 +210,11 @@ async fn replying_probe_answers_and_closed_probe_rejects() {
     let error = tasks::request(&*silent.recipient(), Quote(1), WAIT)
         .await
         .unwrap_err();
-    assert!(matches!(error, ActorError::ActorStopped));
+    // No actor stands behind a probe: its reason is NoProc.
+    assert!(matches!(
+        error,
+        ActorError::ActorStopped(ExitReason::NoProc)
+    ));
     assert_eq!(silent.received()[0].outcome, Outcome::Unexpected);
 
     probe.close();

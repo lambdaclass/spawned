@@ -278,10 +278,11 @@ handler panic. The fixed regression case exercises every termination mode.
 
 - A request fence observes every earlier message from the same sender in order,
   exactly once. Dropping a reply receiver does not cancel queued work.
-- A request racing shutdown either returns its matching reply or ActorStopped.
+- A request racing shutdown returns its matching reply, `ActorStopped` or
+  `NoProc`.
   Accepted sends alone do not guarantee execution across termination.
 - Termination resolves within a five-second test watchdog. Post-exit requests
-  return ActorStopped.
+  return `NoProc`.
 - Each uncancelled monitor observes the matching exit reason, including when
   registration races termination. Unknown or duplicate observed notifications
   fail the test. Clean shutdown and injected handler panic remain distinct.

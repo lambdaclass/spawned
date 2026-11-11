@@ -303,7 +303,9 @@ fn scenario(backend: u8, count: usize, operations: &[(u8, u8)], endings: &[u8]) 
                 assert_eq!(reply, Reply::Work(race_id));
                 assert!(logs[i].lock().unwrap().contains(&race_id));
             }
-            Err(ActorError::ActorStopped) => {}
+            Err(ActorError::ActorStopped(_)) => {}
+            // Sent after the death point (v0.8, decision 4).
+            Err(ActorError::NoProc) => {}
             Err(other) => panic!("request failed to resolve during shutdown: {other:?}"),
         }
         let actual = logs[i].lock().unwrap();
@@ -313,7 +315,7 @@ fn scenario(backend: u8, count: usize, operations: &[(u8, u8)], endings: &[u8]) 
         );
         assert!(matches!(
             actor.request(&rt, Command::Work(u64::MAX)),
-            Err(ActorError::ActorStopped)
+            Err(ActorError::NoProc)
         ));
         expected_down.push((monitor, reason));
     }

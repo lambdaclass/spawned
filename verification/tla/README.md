@@ -13,7 +13,7 @@ this fits with Loom, Shuttle, Miri, ThreadSanitizer and mutation testing.
 | `Cohorts.tla`, `MCCohorts*.tla/.cfg` | OneForAll/RestForOne range selection, reverse cleanup, whole-cohort join barrier, ordered resume, stale notifications, superseding rounds and retired slots. Three-child mixed-mode and two-round configurations. |
 | `Coordinator.tla`, `MCCoordinator.tla/.cfg` | System shutdown coordinator: ordered stop of admitted roots, panic fallback that signals all remaining roots, records failure and retains runtime ownership until joins; ordered-shutdown invariants, cooperative cleanup liveness and four negative mutations. |
 | `NestedSupervision.tla`, `MCNested.tla/.cfg` | Dynamic subtree ownership and shutdown delivery; parent scope completion waits for descendant completion. Bounded three-node/two-generation model with fair cleanup. |
-| `DeferredReplies.tla`, `MCDeferredReplies*.tla/.cfg` | Rank 11 design model (not implemented), part 1: reply slots, send-time deadlines with shortening, deferral credits shared by a token and its first linked job, the exiting phase with unwind-local drops, a stuck phase (cleanup deadline passed while `stopped()` runs: nothing closed early, death later or never), death, and downstream request cleanup. Thirteen named negative controls. |
+| `DeferredReplies.tla`, `MCDeferredReplies*.tla/.cfg` | Rank 11 design model (not implemented), part 1: reply slots, send-time deadlines with shortening, deferral credits shared by a token and its first linked job, the exiting phase with exit-pending drops (unwound or dropped while exiting, answered at death with the final reason), a stuck phase (cleanup deadline passed while `stopped()` runs: nothing closed early, death later or never), death, and downstream request cleanup. Fourteen named negative controls. |
 | `DeferredJobs.tla`, `MCDeferredJobs*.tla/.cfg` | Rank 11 design model, part 2: pipe jobs with separate execution, cancellation and notification states; keyed replacement including notified jobs; optional job deadlines; a FIFO mailbox with emit credits and the terminal message last; `ActorId` fencing. `MCDeferredJobsEmits` is the fast configuration with emits. Nine named negative controls. |
 | `Lifecycle.tla`, `MCLifecycle{,Live,Fence,Deep,LiveDeep}.tla/.cfg` | Base actor lifecycle as proposed for v0.8 ([design](../../docs/design/otp-exit-signals.md)): links, monitors, `trap_exit`, exit signals (`Killed`, ignored `Normal`, `NoProc`, parent exits), administrative stops, requests around death, `Exit`/`Down` ordering. Seventeen negative-control faults (17 safety checks, 2 liveness checks): the v0.7 exit-signal behaviours (direct stops ignoring `trap_exit`, kills ending `Kill`, unfenced `unlink`/`demonitor`, real reasons for late registrations, `stopped()` after kills and untrapped signals, late signals ignored during exit), the PR #182/#185 bugs, early exit errors, kill and panic precedence, runtime-drop reasons, early notification, a split death point and a parent exit reaching `exit_received`. |
 | `TraceCohorts.tla`, `TraceNested.tla` | Policy and ownership projections of real cohort/nested Rust executions. |
@@ -498,8 +498,11 @@ turns, a running-linked-job count per request, and downstream actor B.
   open and no other job of that request runs.
 - **Job notifications** hand the token back to a turn; after a job deadline
   the work keeps running.
-- **Exit.** While exiting, stored tokens can still be answered and drops
-  answer `Stopped`. At the cleanup deadline, a still-running `stopped()`
+- **Exit.** While exiting, stored tokens can still be answered. A token
+  dropped while exiting, or unwound by a panicking turn, is *exit pending*
+  (`pendA`): it stays open and death answers it `Stopped` with the final
+  reason (rank 5e, [otp-exit-signals.md](../../docs/design/otp-exit-signals.md#required-changes-to-rank-11-221-design-239-implementation)),
+  unless the caller's deadline or abandonment comes first. At the cleanup deadline, a still-running `stopped()`
   makes A stuck: nothing is closed early, `stopped()` may still reply, and
   callers are bounded by their own deadlines. Only death closes the registry
   and discards the mailbox.
@@ -511,7 +514,10 @@ Invariants:
 - `AtMostOneDischarge`, `NoOrphan`, `NoSuccessAfterDeadline`, `TimelyExpiry`,
   `DeadlineWithinCaller`;
 - `BoundedA` (combined credits) and `BoundedB`;
-- `PanicStopped`, `NoEarlyClose`, `DownstreamOwned`, `CallerConsistent`.
+- `PanicStopped`, `StoppedAtDeath` (a `Stopped` discharge happens only in
+  the death step, where the reason is final; the model has no reasons, so
+  this is how it shows callers get the final one), `NoEarlyClose`,
+  `DownstreamOwned`, `CallerConsistent`.
 
 Liveness is `EveryAcceptedDischarged` and `CallerNeverHangs`, with fairness
 only on the clock and the deadline service.
@@ -555,6 +561,7 @@ exactly the property it targets:
 | `DeferredReplies` | `AttachClosed` | `BoundedA` |
 | `DeferredReplies` | `LeakDownstream` | `DownstreamOwned` |
 | `DeferredReplies` | `EarlyClose` (closes the registry at the cleanup deadline) | `NoEarlyClose` |
+| `DeferredReplies` | `EarlyStopped` (rank 11 before 5e: a token dropped while exiting or unwound answers `Stopped` at once) | `StoppedAtDeath` |
 | `DeferredJobs` | `NoInstanceCheck` | `NoLateResult` |
 | `DeferredJobs` | `NoCancelFence` | `NoStaleAfterCancel` |
 | `DeferredJobs` | `DoubleTerminal` | `AtMostOneTerminal` |
@@ -565,12 +572,13 @@ exactly the property it targets:
 | `DeferredJobs` (`MCDeferredJobsEmits`) | `EmitAfterTerminal` | `TerminalLast` |
 | `DeferredJobs` (`MCDeferredJobsEmits`) | `NoEmitCredit` | `EmitCreditsBounded` |
 
-Measured 2026-11-10 (TLC 2.19, fede):
+Measured 2026-11-10 (TLC 2.19, fede; the two `MCDeferredReplies` rows on
+2026-11-11, after the exit-pending change):
 
 | Configuration | Distinct states | Generated | Depth | Time |
 |---|---|---|---|---|
-| `MCDeferredReplies` (fast: 2 requests, `BoundA` 2, `BoundB` 1, clock 2; safety and liveness) | 2,932,280 | 16,385,809 | 33 | 56 s, 10 workers |
-| `MCDeferredRepliesDeep` (clock 3; safety) | 8,172,070 | 45,538,582 | 34 | 21 s, 10 workers |
+| `MCDeferredReplies` (fast: 2 requests, `BoundA` 2, `BoundB` 1, clock 2; safety and liveness) | 4,035,345 | 21,287,403 | 33 | 2 min 19 s, 4 workers |
+| `MCDeferredRepliesDeep` (clock 3; safety) | 11,016,668 | 58,096,711 | 34 | 55 s, 4 workers |
 | `MCDeferredJobs` (fast: 3 jobs, 2 keyed, 2 permits, 2 instances, no emits; safety and liveness) | 229,070 | 487,283 | 17 | 5 s, 8 workers |
 | `MCDeferredJobsEmits` (fast: 2 keyed jobs, 1 instance, 2 emits each, 1 credit; safety and liveness) | 20,422 | 37,220 | 18 | 1 s, 8 workers |
 | `MCDeferredJobsDeep` (3 jobs, 2 instances, 1 emit each; safety) | 5,876,658 | 12,792,039 | 23 | 25 s, 12 workers |
@@ -615,13 +623,15 @@ together with the CAS in `Slot::cas`; a reply counts at `WRITING`), `Exit`
 death and mailbox disposal perform are that one model step and are not
 logged). `TraceReplies.tla` takes the turn-internal steps that leave no trace
 silently (a `Defer` that takes a credit, `Store`, `DropInTurn`, a turn end
-that answers nothing, the clock); a `Discharge` must be the model action that
+that answers nothing, a drop while exiting that makes the slot exit pending,
+the clock); a `Discharge` must be the model action that
 discharges exactly that request with that kind. Linked jobs and the
 downstream actor are not traced (their notifications and job ends are not
 logged). `concurrency/tests/reply_trace.rs` records nine scenarios (reply in
 the turn, stored then answered or dropped from a later non-request turn, an
 unused obligation, `Overloaded` at the bound, deadline expiry by the
 service, the caller giving up, death with a stored token, a panicking turn);
-`negative_checks.py` requires four edited traces to be rejected (`Overloaded`
+`negative_checks.py` requires five edited traces to be rejected (`Overloaded`
 below the bound, a reply after death, a second discharge, a drop before the
-turn).
+turn, and a `Stopped` discharge of the panicking turn's token before its
+`Exit`, the rank 11 behaviour before 5e).

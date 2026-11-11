@@ -75,7 +75,8 @@ macro_rules! mock_builder {
         }
 
         /// Fault: panic with `reason` on each `M`. The mock exits with
-        /// `ExitReason::Panic` and pending callers see `ActorStopped`.
+        /// `ExitReason::Panic` and pending callers see `ActorStopped` with that
+        /// `Panic` reason.
         pub fn crash_on<M: Message>(mut self, reason: impl Into<String>) -> Self {
             self.rules.crash_on::<M>(reason.into());
             self
@@ -181,7 +182,8 @@ macro_rules! probe_common {
                         // Logged `Handled` only once the reply is in the slot.
                         record.finish();
                     }
-                    // An unexpected request is discharged as `ActorStopped`.
+                    // An unexpected request is discharged as `ActorStopped`
+                    // (`NoProc`: no actor stands behind a probe).
                     None => reply.__discharge_stopped(),
                 }
                 Ok(rx)
@@ -234,8 +236,8 @@ macro_rules! probe_common {
                 self.core.inbox.take_all::<M>()
             }
 
-            /// Fault: behave like a stopped actor; later sends and requests
-            /// return `ActorStopped`.
+            /// Fault: behave like an actor past its death point; later sends
+            /// and requests return `NoProc`.
             pub fn close(&self) {
                 self.core.close();
             }

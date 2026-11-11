@@ -5,7 +5,11 @@
 //! |---|---|
 //! | `InTurn` | recorded; committed at turn end: `Dropped` if the handler returned, `Stopped` if it panicked |
 //! | `Running` | `Dropped` at once |
-//! | `Exiting` / `Dead` | `Stopped` at once |
+//! | `Exiting` / `Dead` | `Stopped` |
+//!
+//! `Stopped` means "answered with the owner's final reason": the registry
+//! holds such a slot open (exit pending) until the death point, or closes it
+//! at once when the owner is already dead.
 //!
 //! Shared with the Loom model (`tests/registry_turn_loom.rs`), which supplies
 //! the synchronization types through `super::sync`. The protocol never runs

@@ -52,7 +52,7 @@ fn controlled_failures_reach_every_required_window_on_every_backend() {
             assert_eq!(actor.wait(&rt), ExitReason::Normal);
             assert!(matches!(
                 queued.wait(&rt, LIMIT),
-                Err(ActorError::ActorStopped)
+                Err(ActorError::ActorStopped(ExitReason::Normal))
             ));
             assert!(effects.lock().unwrap().is_empty());
             reached.insert(REQUIRED[0]);
@@ -111,7 +111,7 @@ fn controlled_failures_reach_every_required_window_on_every_backend() {
             control.release();
             assert!(matches!(
                 response.wait(&rt, LIMIT),
-                Err(ActorError::ActorStopped)
+                Err(ActorError::ActorStopped(ExitReason::Panic(_)))
             ));
             assert!(matches!(actor.wait(&rt), ExitReason::Panic(_)));
             assert_eq!(*effects.lock().unwrap(), vec![9]);

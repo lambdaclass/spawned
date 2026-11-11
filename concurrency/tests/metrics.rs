@@ -147,7 +147,7 @@ fn metrics_conserve_work_across_all_lifecycle_paths() {
                 spawned_concurrency::Deadline::after(Duration::from_secs(2))
             ))
             .await,
-            Err(ActorError::ActorStopped)
+            Err(ActorError::NoProc)
         ));
 
         let (release, gate) = oneshot::channel();
@@ -158,7 +158,10 @@ fn metrics_conserve_work_across_all_lifecycle_paths() {
         assert!(futures::poll!(pending.as_mut()).is_pending());
         actor.context().stop();
         release.send(()).unwrap();
-        assert!(matches!(pending.await, Err(ActorError::ActorStopped)));
+        assert!(matches!(
+            pending.await,
+            Err(ActorError::ActorStopped(ExitReason::Normal))
+        ));
         assert!(raw.await.is_err());
         actor.join().await;
         assert_eq!(actor.mailbox_depth(), 0);
@@ -166,7 +169,7 @@ fn metrics_conserve_work_across_all_lifecycle_paths() {
         let actor = Probe { gate: None }.start();
         assert!(matches!(
             actor.request(Crash).await,
-            Err(ActorError::ActorStopped)
+            Err(ActorError::ActorStopped(ExitReason::Panic(_)))
         ));
         assert!(matches!(actor.wait_exit().await, ExitReason::Panic(_)));
         // Managed restart/shutdown must conserve the same aggregate accounting.
@@ -314,6 +317,8 @@ fn metrics_conserve_work_across_all_lifecycle_paths() {
         s.requests_replied_total
             + s.requests_timed_out_total
             + s.requests_actor_stopped_total
+            // Requests to an actor past its death point (rank 11 x 5e).
+            + s.requests_noproc_total
             + s.requests_cancelled_total
     );
     assert!(s.actors_exited_shutdown_total >= 1);

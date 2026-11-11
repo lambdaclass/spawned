@@ -345,6 +345,13 @@ No rule uses `thread::panicking()`. A drop that lands on the turn list from
 another task while a turn runs is committed at that turn's end. The delay is
 at most one turn, and the outcome only depends on whether that turn panicked.
 
+**Refined by rank 5e** ([otp-exit-signals.md](otp-exit-signals.md#required-changes-to-rank-11-221-design-239-implementation),
+implemented in #240): a `Stopped` outcome is no longer answered at once. The
+slot becomes *exit pending*: it stays open in the registry and the death
+point answers it `ActorStopped` with the owner's final exit reason (or the
+caller's deadline comes first). An undispatched queued request is held the
+same way, and a send or request after the death point reports `NoProc`.
+
 ## 5. Owner lifecycle
 
 Each actor instance has a reply registry (its open deferred tokens and the
@@ -424,6 +431,12 @@ the actor's job set; it is not detached.
   ..}}`), for example `ActorError::Exited(ExitReason)` on the now
   non-exhaustive enum;
 - a request to an actor that has already died reports `NoProc`.
+
+Both are implemented in #240 as `ActorError::ActorStopped(ExitReason)` and
+`ActorError::NoProc`, with the death boundary of
+[otp-exit-signals.md](otp-exit-signals.md#phases-of-an-exit): the registry is
+sealed with the final reason at the death point, and exit errors wait for
+it.
 
 The slot's terminal kinds are defined so that rank 5e only adds the reason.
 

@@ -466,11 +466,26 @@ impl LinkNotices {
 
 /// Close the exit table at D: set the final reason and take one notice per
 /// link. Takes only this actor's own lock. Terminal closure is idempotent.
+#[cfg(test)]
 pub(crate) fn close_links(own_id: ActorId, own: &LinkTable, reason: &ExitReason) -> LinkNotices {
+    close_links_at_death(own_id, own, reason, |_| {})
+}
+
+/// The exit-table part of the death point D. `at_death` runs inside the same
+/// critical section (it must not run user code): the reply registry seals
+/// the final reason there, so a registration that finds the table closed
+/// (`NoProc`) and a send that finds the registry sealed (`NoProc`) agree.
+pub(crate) fn close_links_at_death(
+    own_id: ActorId,
+    own: &LinkTable,
+    reason: &ExitReason,
+    at_death: impl FnOnce(&ExitReason),
+) -> LinkNotices {
     let mut state = own.lock().unwrap_or_else(|p| p.into_inner());
     if state.exited.is_some() {
         return LinkNotices::default();
     }
+    at_death(reason);
     state.exited = Some(reason.clone());
     LinkNotices {
         from: Some(own_id),

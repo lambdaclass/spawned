@@ -267,7 +267,7 @@ async fn scenario(
             Action::Panic => {
                 assert!(matches!(
                     actor.request_with_timeout(Crash, LIMIT).await,
-                    Err(ActorError::ActorStopped)
+                    Err(ActorError::ActorStopped(ExitReason::Panic(_)))
                 ));
                 let reason = actor.wait_exit().await;
                 assert!(matches!(reason, ExitReason::Panic(_)));

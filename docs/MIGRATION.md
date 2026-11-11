@@ -98,6 +98,29 @@ table is the full list). What to edit:
   `start()` and `init_network` panics on `.expect("Network starts")`. Fix in
   ethrex: make the bootnode ping best-effort (log and continue) so the
   factory does not fail on it, or retry `start()` at application level.
+- **Caller errors carry the reason (with rank 11, decision 4).**
+  `ActorError::ActorStopped` is now `ActorStopped(ExitReason)`: the actor's
+  final exit reason, the one `wait_exit`, `Down` and linked actors see
+  (`Killed` after `kill()`, the signal's reason after an untrapped exit
+  signal, `Panic(..)` after a crash, `Normal`/`Shutdown` after a stop). A
+  `send` or `request` to an actor past its death point returns the new
+  `ActorError::NoProc` instead; one sent while the actor is still exiting
+  (for example during its `stopped()`) is admitted and answered at the death
+  point. Patterns change from `Err(ActorError::ActorStopped)` to
+  `Err(ActorError::ActorStopped(_))` (or a specific reason); code that
+  treated `ActorStopped` as "the actor is gone" for sends should also handle
+  `NoProc`. A request whose handler panicked, or a deferred token dropped
+  while the actor exits, is no longer answered at once: it is answered at the
+  death point (after `stopped()`) with the final reason, or by the caller's
+  own deadline first. With `metrics`, rejected requests count in the new
+  `requests_noproc_total`. **ethrex**: `peer_handler.rs:1251` matches
+  `ActorError` exhaustively on purpose, so it no longer compiles: add arms
+  for `ActorStopped(_)` and `NoProc`; two tests that construct
+  `ActorError::ActorStopped` must pass a reason (for example
+  `ActorStopped(ExitReason::Normal)`). **ethlambda**: one test mock
+  constructs `ActorStopped`; pass a reason the same way. A `spawned-test`
+  `Probe` closed with `close()` now returns `NoProc`, and a probe without a
+  reply answers `ActorStopped(NoProc)`.
 
 ### Deferred replies (rank 11, targets 0.8, in progress)
 
@@ -123,7 +146,8 @@ impl Handler<GetCount> for Counter {
 ```
 
 A handler that returns without answering a request now gives the caller
-`ReplyDropped` (a panic still gives `ActorStopped`). Sends reach the same
+`ReplyDropped` (a panic still gives `ActorStopped`, with the final reason at
+the actor's death point). Sends reach the same
 `handle` with a detached `PendingReply`. To call a manual handler directly in
 a test, use `spawned_test::reply_pair()`.
 
@@ -146,8 +170,9 @@ that builds a `Snapshot` with a struct literal must add them.
 
 **Lifecycle.** At death the registry closes (open deferred tokens answer
 `ActorStopped`), then the mailbox is disposed, then actor state is dropped:
-a state destructor that sends to its own actor now fails with `ActorStopped`
-instead of enqueueing into a mailbox about to be dropped.
+a state destructor that sends to its own actor now fails (with `NoProc`
+once the exit-signals change above is in) instead of enqueueing into a
+mailbox about to be dropped.
 
 ## 0.7.3
 

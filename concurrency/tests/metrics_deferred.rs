@@ -10,7 +10,7 @@ use spawned_concurrency::{
         Actor, ActorRef, ActorStart, Context, Deadline, Handler, JobCtx, JobOptions, JobOutcome,
         PendingReply, ReplyTo,
     },
-    ActorError,
+    ActorError, ExitReason,
 };
 use spawned_rt::tasks::{oneshot, sleep};
 use std::time::Duration;
@@ -212,7 +212,10 @@ async fn deferred_and_job_families_count_each_outcome_once() {
     let late = actor.request_raw(Hold).unwrap();
     sleep(Duration::from_millis(20)).await;
     actor.context().stop();
-    assert!(matches!(late.await, Err(ActorError::ActorStopped)));
+    assert!(matches!(
+        late.await,
+        Err(ActorError::ActorStopped(ExitReason::Normal))
+    ));
     assert!(matches!(stopped.await, Ok(1)));
     actor.join().await;
 

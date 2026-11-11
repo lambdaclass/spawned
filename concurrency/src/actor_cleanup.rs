@@ -27,6 +27,8 @@ pub(crate) struct ActorCleanup<C: Fn()> {
     notices: Option<LinkNotices>,
     cancel: C,
     failures: Option<std::sync::Arc<crate::mailbox::DropFailures>>,
+    /// The reply registry, sealed with the final reason at D.
+    replies: Option<std::sync::Arc<crate::reply::registry::Registry>>,
 }
 impl<C: Fn()> ActorCleanup<C> {
     pub(crate) fn new(
@@ -48,7 +50,18 @@ impl<C: Fn()> ActorCleanup<C> {
             notices: None,
             cancel,
             failures: None,
+            replies: None,
         }
+    }
+    /// Seal `replies` with the final reason at D, inside the exit-table
+    /// critical section: callers then get `ActorStopped(final reason)` and
+    /// later sends `NoProc`.
+    pub(crate) fn with_replies(
+        mut self,
+        replies: std::sync::Arc<crate::reply::registry::Registry>,
+    ) -> Self {
+        self.replies = Some(replies);
+        self
     }
     pub(crate) fn with_mailbox_failures(
         mut self,
@@ -68,7 +81,17 @@ impl<C: Fn()> ActorCleanup<C> {
         self.close(reason)
     }
     fn close(&mut self, reason: ExitReason) -> ExitReason {
-        self.notices = Some(crate::link::close_links(self.id, &self.links, &reason));
+        let replies = self.replies.as_deref();
+        self.notices = Some(crate::link::close_links_at_death(
+            self.id,
+            &self.links,
+            &reason,
+            |reason| {
+                if let Some(replies) = replies {
+                    replies.seal(reason);
+                }
+            },
+        ));
         self.reason = Some(reason.clone());
         reason
     }

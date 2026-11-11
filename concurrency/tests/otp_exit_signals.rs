@@ -53,6 +53,10 @@ mod tasks_mode {
             tokio::sync::oneshot::Receiver<()>,
         )>,
         pub panic_in_stopped: bool,
+        /// Deferred tokens stored by `Hold`.
+        pub held: Vec<spawned_concurrency::reply::ReplyTo<u8>>,
+        /// stopped() drops the stored tokens before waiting on `in_stopped`.
+        pub drop_held_in_stopped: bool,
     }
     impl Node {
         pub fn new(seen: &Seen, trap: bool) -> Self {
@@ -61,6 +65,8 @@ mod tasks_mode {
                 trap,
                 in_stopped: None,
                 panic_in_stopped: false,
+                held: Vec::new(),
+                drop_held_in_stopped: false,
             }
         }
     }
@@ -72,6 +78,9 @@ mod tasks_mode {
         }
         async fn stopped(&mut self, _: &Context<Self>) {
             self.seen.stopped.store(true, Ordering::SeqCst);
+            if self.drop_held_in_stopped {
+                self.held.clear();
+            }
             if let Some((entered, release)) = self.in_stopped.take() {
                 let _ = entered.send(());
                 let _ = release.await;
@@ -118,6 +127,52 @@ mod tasks_mode {
             ctx: &Context<Self>,
         ) {
             (f.0)(ctx);
+            reply.reply(());
+        }
+    }
+    /// Defer the request and store its token.
+    struct Hold;
+    impl Message for Hold {
+        type Result = u8;
+    }
+    impl Handler<Hold> for Node {
+        async fn handle(
+            &mut self,
+            _: Hold,
+            reply: spawned_concurrency::reply::PendingReply<'_, u8>,
+            _: &Context<Self>,
+        ) {
+            self.held.push(reply.defer().unwrap());
+        }
+    }
+    /// Panic in a request handler (the request's obligation unwinds).
+    struct Boom;
+    impl Message for Boom {
+        type Result = u8;
+    }
+    impl Handler<Boom> for Node {
+        async fn handle(
+            &mut self,
+            _: Boom,
+            _reply: spawned_concurrency::reply::PendingReply<'_, u8>,
+            _: &Context<Self>,
+        ) {
+            panic!("boom in a request handler");
+        }
+    }
+    /// Block the actor in a handler until released.
+    struct Block(tokio::sync::oneshot::Receiver<()>);
+    impl Message for Block {
+        type Result = ();
+    }
+    impl Handler<Block> for Node {
+        async fn handle(
+            &mut self,
+            msg: Block,
+            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            _: &Context<Self>,
+        ) {
+            let _ = msg.0.await;
             reply.reply(());
         }
     }
@@ -559,6 +614,161 @@ mod tasks_mode {
         assert!(seen.stopped());
     }
 
+    // Rank 11 x 5e ("Required changes to rank 11"): callers, `Down` and
+    // `wait_exit` see one reason. Each test pins one rule of the design.
+    mod caller_errors {
+        use super::*;
+        use spawned_concurrency::tasks::ActorRef;
+        use spawned_concurrency::ActorError;
+
+        async fn answered<R>(
+            rx: spawned_concurrency::reply::ReplyReceiver<R>,
+        ) -> Result<R, ActorError>
+        where
+            R: Send + 'static,
+        {
+            tokio::time::timeout(LIMIT, rx)
+                .await
+                .expect("the request was never answered")
+        }
+
+        /// Block `actor` in a handler; returns the release.
+        async fn block(actor: &ActorRef<Node>) -> tokio::sync::oneshot::Sender<()> {
+            let (release, gate) = tokio::sync::oneshot::channel();
+            actor.send(Block(gate)).unwrap();
+            release
+        }
+
+        fn stopped_with(result: Result<impl std::fmt::Debug, ActorError>, reason: &ExitReason) {
+            match result {
+                Err(ActorError::ActorStopped(got)) => assert_eq!(&got, reason),
+                other => panic!("expected ActorStopped({reason:?}), got {other:?}"),
+            }
+        }
+
+        // A request queued, or a token stored, at D is answered with the
+        // final reason: Killed after a kill (stopped() skipped).
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn queued_and_stored_requests_get_killed_after_a_kill() {
+            let seen = Seen::default();
+            let actor = Node::new(&seen, false).start();
+            let stored = actor.request_raw(Hold).unwrap();
+            settle(&actor).await;
+            let release = block(&actor).await;
+            let queued = actor.request_raw(Ping).unwrap();
+            let child = actor.child_handle();
+            child.kill();
+            release.send(()).unwrap();
+            assert_eq!(ended(&child).await, ExitReason::Killed);
+            stopped_with(answered(queued).await, &ExitReason::Killed);
+            stopped_with(answered(stored).await, &ExitReason::Killed);
+        }
+
+        // An untrapped exit signal: queued requests get the signal's reason.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn queued_request_gets_the_untrapped_signals_reason() {
+            let seen = Seen::default();
+            let actor = Node::new(&seen, false).start();
+            settle(&actor).await;
+            let release = block(&actor).await;
+            let queued = actor.request_raw(Ping).unwrap();
+            let child = actor.child_handle();
+            let reason = ExitReason::Panic("signalled".into());
+            child.exit(reason.clone());
+            release.send(()).unwrap();
+            assert_eq!(ended(&child).await, reason);
+            stopped_with(answered(queued).await, &reason);
+        }
+
+        // A request whose handler panicked is not answered at once: it waits
+        // for D (stopped() runs first) and gets the final reason. A kill
+        // during stopped() makes that reason Killed for the caller too.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn panicked_request_is_answered_at_death_with_the_final_reason() {
+            for kill in [false, true] {
+                let seen = Seen::default();
+                let (entered_tx, entered) = tokio::sync::oneshot::channel();
+                let (release, release_rx) = tokio::sync::oneshot::channel();
+                let mut node = Node::new(&seen, false);
+                node.in_stopped = Some((entered_tx, release_rx));
+                let actor = node.start();
+                settle(&actor).await;
+                let mut crashed = actor.request_raw(Boom).unwrap();
+                entered.await.unwrap();
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                assert!(
+                    crashed.try_recv().is_none(),
+                    "the panicked request was answered before D"
+                );
+                let child = actor.child_handle();
+                if kill {
+                    child.kill();
+                }
+                release.send(()).unwrap();
+                let reason = ended(&child).await;
+                if kill {
+                    assert_eq!(reason, ExitReason::Killed);
+                } else {
+                    assert!(matches!(reason, ExitReason::Panic(_)), "{reason:?}");
+                }
+                stopped_with(answered(crashed).await, &reason);
+            }
+        }
+
+        // A token dropped while the owner exits is held until D, then
+        // answered with the final reason.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn token_dropped_while_exiting_is_held_until_death() {
+            let seen = Seen::default();
+            let (entered_tx, entered) = tokio::sync::oneshot::channel();
+            let (release, release_rx) = tokio::sync::oneshot::channel();
+            let mut node = Node::new(&seen, false);
+            node.in_stopped = Some((entered_tx, release_rx));
+            node.drop_held_in_stopped = true;
+            let actor = node.start();
+            let mut stored = actor.request_raw(Hold).unwrap();
+            settle(&actor).await;
+            let child = actor.child_handle();
+            child.stop_with_reason(ExitReason::Shutdown);
+            entered.await.unwrap();
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            assert!(
+                stored.try_recv().is_none(),
+                "a token dropped in stopped() was answered before D"
+            );
+            release.send(()).unwrap();
+            assert_eq!(ended(&child).await, ExitReason::Shutdown);
+            stopped_with(answered(stored).await, &ExitReason::Shutdown);
+        }
+
+        // A request sent while the actor exits (a slow stopped() of a
+        // trapping actor) is admitted and answered at D; after D, send and
+        // request report NoProc.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn admitted_while_exiting_noproc_after_death() {
+            let seen = Seen::default();
+            let (entered_tx, entered) = tokio::sync::oneshot::channel();
+            let (release, release_rx) = tokio::sync::oneshot::channel();
+            let mut node = Node::new(&seen, true);
+            node.in_stopped = Some((entered_tx, release_rx));
+            let actor = node.start();
+            settle(&actor).await;
+            let child = actor.child_handle();
+            child.stop_with_reason(ExitReason::Shutdown);
+            entered.await.unwrap();
+            let admitted = actor.request_raw(Ping).expect("admitted while exiting");
+            actor.send(Ping).expect("a send while exiting is admitted");
+            release.send(()).unwrap();
+            assert_eq!(ended(&child).await, ExitReason::Shutdown);
+            stopped_with(answered(admitted).await, &ExitReason::Shutdown);
+            assert!(matches!(actor.send(Ping), Err(ActorError::NoProc)));
+            assert!(matches!(actor.request(Ping).await, Err(ActorError::NoProc)));
+            assert!(matches!(actor.request_raw(Ping), Err(ActorError::NoProc)));
+            let recipient = actor.recipient::<Ping>();
+            assert!(matches!(recipient.send(Ping), Err(ActorError::NoProc)));
+        }
+    }
+
     mod startup {
         use super::*;
         use spawned_concurrency::supervision::{
@@ -844,5 +1054,135 @@ mod threads_mode {
         assert!(!plain_seen.stopped());
         peer.child_handle().stop();
         assert_eq!(ended(&peer.child_handle()), ExitReason::Normal);
+    }
+
+    // Rank 11 x 5e in threads mode: the final reason at D, held exit errors,
+    // admission while exiting and NoProc after D.
+    mod caller_errors {
+        use super::*;
+        use spawned_concurrency::reply::{PendingReply, ReplyReceiver, ReplyTo};
+        use spawned_concurrency::ActorError;
+        use std::sync::mpsc;
+
+        #[derive(Default)]
+        struct Server {
+            held: Vec<ReplyTo<u8>>,
+            /// stopped() drops the held tokens, reports entry, then waits.
+            in_stopped: Option<(mpsc::Sender<()>, mpsc::Receiver<()>)>,
+        }
+        impl Actor for Server {
+            fn stopped(&mut self, _: &Context<Self>) {
+                self.held.clear();
+                if let Some((entered, release)) = self.in_stopped.take() {
+                    entered.send(()).unwrap();
+                    let _ = release.recv();
+                }
+            }
+        }
+        impl Handler<Ping> for Server {
+            fn handle(&mut self, _: Ping, reply: PendingReply<'_, u8>, _: &Context<Self>) {
+                reply.reply(7);
+            }
+        }
+        struct Hold;
+        impl Message for Hold {
+            type Result = u8;
+        }
+        impl Handler<Hold> for Server {
+            fn handle(&mut self, _: Hold, reply: PendingReply<'_, u8>, _: &Context<Self>) {
+                self.held.push(reply.defer().unwrap());
+            }
+        }
+        struct Boom;
+        impl Message for Boom {
+            type Result = u8;
+        }
+        impl Handler<Boom> for Server {
+            fn handle(&mut self, _: Boom, _reply: PendingReply<'_, u8>, _: &Context<Self>) {
+                panic!("boom in a request handler");
+            }
+        }
+        struct Block(mpsc::Receiver<()>);
+        impl Message for Block {
+            type Result = ();
+        }
+        impl Handler<Block> for Server {
+            fn handle(&mut self, msg: Block, reply: PendingReply<'_, ()>, _: &Context<Self>) {
+                let _ = msg.0.recv();
+                reply.reply(());
+            }
+        }
+
+        fn stopped_with<R: std::fmt::Debug>(rx: ReplyReceiver<R>, reason: &ExitReason) {
+            match rx.recv() {
+                Err(ActorError::ActorStopped(got)) => assert_eq!(&got, reason),
+                other => panic!("expected ActorStopped({reason:?}), got {other:?}"),
+            }
+        }
+
+        fn gated() -> (Server, mpsc::Receiver<()>, mpsc::Sender<()>) {
+            let (entered_tx, entered) = mpsc::channel();
+            let (release, release_rx) = mpsc::channel();
+            let server = Server {
+                in_stopped: Some((entered_tx, release_rx)),
+                ..Server::default()
+            };
+            (server, entered, release)
+        }
+
+        #[test]
+        fn queued_and_stored_requests_get_killed_after_a_kill() {
+            let actor = Server::default().start();
+            let stored = actor.request_raw(Hold).unwrap();
+            assert_eq!(actor.request(Ping).unwrap(), 7);
+            let (release, gate) = mpsc::channel();
+            actor.send(Block(gate)).unwrap();
+            let queued = actor.request_raw(Ping).unwrap();
+            actor.child_handle().kill();
+            release.send(()).unwrap();
+            assert_eq!(ended(&actor.child_handle()), ExitReason::Killed);
+            stopped_with(queued, &ExitReason::Killed);
+            stopped_with(stored, &ExitReason::Killed);
+        }
+
+        #[test]
+        fn panicked_request_and_dropped_token_wait_for_death() {
+            let (server, entered, release) = gated();
+            let actor = server.start();
+            let mut stored = actor.request_raw(Hold).unwrap();
+            let mut crashed = actor.request_raw(Boom).unwrap();
+            entered.recv_timeout(LIMIT).unwrap();
+            std::thread::sleep(Duration::from_millis(50));
+            assert!(
+                crashed.try_recv().is_none(),
+                "panicked request answered before D"
+            );
+            assert!(
+                stored.try_recv().is_none(),
+                "dropped token answered before D"
+            );
+            release.send(()).unwrap();
+            let reason = ended(&actor.child_handle());
+            assert!(matches!(reason, ExitReason::Panic(_)), "{reason:?}");
+            stopped_with(crashed, &reason);
+            stopped_with(stored, &reason);
+        }
+
+        #[test]
+        fn admitted_while_exiting_noproc_after_death() {
+            let (server, entered, release) = gated();
+            let actor = server.start();
+            assert_eq!(actor.request(Ping).unwrap(), 7);
+            actor.child_handle().stop_with_reason(ExitReason::Shutdown);
+            entered.recv_timeout(LIMIT).unwrap();
+            let admitted = actor.request_raw(Ping).expect("admitted while exiting");
+            actor.send(Ping).expect("a send while exiting is admitted");
+            release.send(()).unwrap();
+            assert_eq!(ended(&actor.child_handle()), ExitReason::Shutdown);
+            stopped_with(admitted, &ExitReason::Shutdown);
+            assert!(matches!(actor.send(Ping), Err(ActorError::NoProc)));
+            assert!(matches!(actor.request(Ping), Err(ActorError::NoProc)));
+            assert!(matches!(actor.request_raw(Ping), Err(ActorError::NoProc)));
+        }
     }
 }

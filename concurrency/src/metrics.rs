@@ -195,6 +195,7 @@ counters!(
     requests_replied_total,
     requests_timed_out_total,
     requests_actor_stopped_total,
+    requests_noproc_total,
     requests_reply_dropped_total,
     requests_overloaded_total,
     requests_cancelled_total,
@@ -499,7 +500,8 @@ impl RequestObservation {
         match result {
             Ok(_) => &COUNTERS.requests_replied_total,
             Err(ActorError::RequestTimeout) => &COUNTERS.requests_timed_out_total,
-            Err(ActorError::ActorStopped) => &COUNTERS.requests_actor_stopped_total,
+            Err(ActorError::ActorStopped(_)) => &COUNTERS.requests_actor_stopped_total,
+            Err(ActorError::NoProc) => &COUNTERS.requests_noproc_total,
             Err(ActorError::ReplyDropped) => &COUNTERS.requests_reply_dropped_total,
             Err(ActorError::Overloaded) => &COUNTERS.requests_overloaded_total,
         }

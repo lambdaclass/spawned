@@ -123,12 +123,25 @@ fn record(_delivery: Delivery) {
     crate::instrumentation::reply(_delivery == Delivery::Delivered);
 }
 
-fn terminal_error(terminal: Terminal) -> ActorError {
+/// The caller's error for a terminal slot. `Stopped` carries the owner's
+/// final reason, which its registry stores at the death point before any of
+/// its slots becomes `STOPPED`.
+///
+/// A slot without an owner (a test double's `reply_pair`) has no actor whose
+/// reason it could carry: it reports `NoProc`, as OTP's call to a process
+/// that does not exist. `Abandoned` and an already taken `Replied` cannot
+/// reach a caller (the receiver is gone, or consumed); they map the same way.
+fn terminal_error<R>(terminal: Terminal, slot: &Slot<R>) -> ActorError {
     match terminal {
         Terminal::Dropped => ActorError::ReplyDropped,
         Terminal::Overloaded => ActorError::Overloaded,
         Terminal::TimedOut => ActorError::RequestTimeout,
-        Terminal::Stopped | Terminal::Abandoned | Terminal::Replied => ActorError::ActorStopped,
+        Terminal::Stopped | Terminal::Abandoned | Terminal::Replied => ActorError::ActorStopped(
+            slot.owner
+                .as_ref()
+                .and_then(|owner| owner.final_reason().cloned())
+                .unwrap_or(crate::error::ExitReason::NoProc),
+        ),
     }
 }
 
@@ -136,7 +149,7 @@ fn terminal_error(terminal: Terminal) -> ActorError {
 ///
 /// `owner` is the receiving instance's registry: an awaited raw receiver
 /// puts its deadline in that owner's heap instead of arming its own timer.
-pub(crate) fn reply_slot<R>(
+pub(crate) fn reply_slot<R: Send + 'static>(
     deadline: Deadline,
     owner: Option<&Arc<Registry>>,
 ) -> (SlotHandle<R>, ReplyReceiver<R>) {
@@ -153,10 +166,11 @@ pub(crate) fn reply_slot<R>(
 // ---------------------------------------------------------------------------
 
 /// The envelope's hold on its request's slot. Dropped undispatched (mailbox
-/// disposal at death, a rejected enqueue), it answers `ActorStopped`.
-pub(crate) struct SlotHandle<R>(Option<Arc<Slot<R>>>);
+/// disposal at death, a rejected enqueue), its request is answered
+/// `ActorStopped` with the owner's final reason at the death point.
+pub(crate) struct SlotHandle<R: Send + 'static>(Option<Arc<Slot<R>>>);
 
-impl<R> SlotHandle<R> {
+impl<R: Send + 'static> SlotHandle<R> {
     /// No caller: the message was sent, not requested.
     pub(crate) fn detached() -> Self {
         Self(None)
@@ -166,10 +180,15 @@ impl<R> SlotHandle<R> {
     }
 }
 
-impl<R> Drop for SlotHandle<R> {
+impl<R: Send + 'static> Drop for SlotHandle<R> {
     fn drop(&mut self) {
         if let Some(slot) = self.0.take() {
-            slot.close();
+            match slot.owner.clone() {
+                Some(owner) => owner.dispose(slot),
+                None => {
+                    slot.close();
+                }
+            }
         }
     }
 }
@@ -197,8 +216,8 @@ pub enum DeferError {
 ///
 /// Answer it with [`reply`](Self::reply), hand it out of the turn with
 /// [`defer`](Self::defer), or drop it: a request whose `PendingReply` is
-/// dropped is answered `ReplyDropped` when the turn returns, or
-/// `ActorStopped` when it panics. A message reached by `send` has a detached
+/// dropped is answered `ReplyDropped` when the turn returns, or, when it
+/// panics, `ActorStopped` with the final reason at the actor's death point. A message reached by `send` has a detached
 /// `PendingReply`: `reply` drops the value and `defer` returns
 /// [`DeferError::NoCaller`].
 pub struct PendingReply<'t, R: Send + 'static> {
@@ -300,7 +319,8 @@ impl<'t, R: Send + 'static> PendingReply<'t, R> {
         self.slot.as_ref().is_none_or(|s| s.is_closed(&now_ticks))
     }
 
-    /// Answer `ActorStopped` (test doubles standing in for an absent actor).
+    /// Answer `ActorStopped` (test doubles standing in for an absent actor:
+    /// without an owning actor the reason is `NoProc`).
     #[doc(hidden)]
     pub fn __discharge_stopped(mut self) {
         if let Some(slot) = self.slot.take() {
@@ -334,10 +354,11 @@ impl<R: Send + 'static> Drop for PendingReply<'_, R> {
 /// A deferred reply obligation: answer it from a later turn, a job, or
 /// `stopped()`. Not `Clone`; `Send + 'static`.
 ///
-/// Dropping it answers the caller `ReplyDropped` (or `ActorStopped` while the
-/// owner is exiting). The owner's death answers every open token
-/// `ActorStopped`, wherever it is.
-#[must_use = "dropping a ReplyTo answers ReplyDropped (or ActorStopped while the owner exits)"]
+/// Dropping it answers the caller `ReplyDropped`; while the owner is exiting
+/// it is held instead and answered at the death point. The owner's death
+/// answers every open token `ActorStopped` with the final exit reason,
+/// wherever it is.
+#[must_use = "dropping a ReplyTo answers ReplyDropped (or ActorStopped at death while the owner exits)"]
 pub struct ReplyTo<R: Send + 'static> {
     slot: Option<Arc<Slot<R>>>,
     registry: Arc<Registry>,
@@ -465,8 +486,8 @@ impl<R: Send + 'static> Drop for ReplyTo<R> {
 /// The caller's side of a request: `.await` it in `tasks` mode (it is
 /// [`IntoFuture`](std::future::IntoFuture)), or call [`recv`](Self::recv) in
 /// `threads` mode. Yields `Ok(reply)`, or `RequestTimeout` at the deadline
-/// fixed at send, `ReplyDropped`, `Overloaded`, or `ActorStopped` when the
-/// owner died.
+/// fixed at send, `ReplyDropped`, `Overloaded`, or `ActorStopped(reason)`
+/// with the owner's final exit reason when it died first.
 ///
 /// One pointer wide: the deadline timer lives in the awaiting future
 /// ([`ReplyFuture`]), not in the receiver, so receivers are cheap to store
@@ -529,12 +550,16 @@ impl<R> ReplyReceiver<R> {
             .slot
             .take()
             .expect("ReplyReceiver used after completion");
-        slot.recv_blocking(&now_ticks).map_err(terminal_error)
+        slot.recv_blocking(&now_ticks)
+            .map_err(|terminal| terminal_error(terminal, &slot))
     }
 
     /// Non-blocking check: `None` while the request is still open.
     pub fn try_recv(&mut self) -> Option<Result<R, ActorError>> {
-        let result = self.slot().try_take(&now_ticks)?.map_err(terminal_error);
+        let slot = self.slot();
+        let result = slot
+            .try_take(&now_ticks)?
+            .map_err(|terminal| terminal_error(terminal, slot));
         self.slot = None;
         Some(result)
     }
@@ -591,8 +616,9 @@ impl<R: Send + 'static> std::future::Future for ReplyFuture<R> {
         loop {
             let slot = this.rx.slot();
             if let Poll::Ready(result) = slot.poll(cx.waker()) {
+                let result = result.map_err(|terminal| terminal_error(terminal, slot));
                 this.rx.slot = None;
-                return Poll::Ready(result.map_err(terminal_error));
+                return Poll::Ready(result);
             }
             let deadline = slot.deadline();
             if deadline == NEVER {

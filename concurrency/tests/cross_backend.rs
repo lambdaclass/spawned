@@ -804,7 +804,7 @@ fn end(env: &Env, actor: &Ref, ending: Ending) -> ExitReason {
         Ending::Stop => assert_eq!(actor.request(Cmd::Stop).unwrap(), Reply::Unit),
         Ending::Panic => assert!(matches!(
             actor.request(Cmd::Boom),
-            Err(ActorError::ActorStopped)
+            Err(ActorError::ActorStopped(ExitReason::Panic(_)))
         )),
         Ending::Shutdown => child.shutdown(),
     }

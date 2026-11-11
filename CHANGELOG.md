@@ -45,8 +45,22 @@
   `Supervision.tla` (no restart before the tree is ready, deferral actions
   `DeferExit`/`Undefer`, traced) and `Cohorts.tla` (round 0 once per child,
   `FirstStartOnce`) follow, with the v0.7 behaviours as negative controls.
-  Remaining: rank 11 reason-bearing `ActorStopped`/`NoProc` errors,
-  lifecycle-trace mapping to `Lifecycle.tla`, Loom and simulator coverage.
+  Caller errors (rank 11 x 5e, decision 4): `ActorError::ActorStopped`
+  carries the actor's final `ExitReason`, the same one `wait_exit`, `Down`
+  and links see (`Killed` after a kill, the signal's reason after an
+  untrapped exit signal, `Panic(..)` after a crash); new
+  `ActorError::NoProc` for a `send` or `request` after the death point (the
+  registry is sealed with the final reason inside the death point's
+  exit-table critical section); a send or request made while the actor exits
+  is admitted and answered at the death point. Exit errors wait for the
+  death point: a request whose handler panicked, a token dropped while the
+  owner exits and an undispatched queued request stay open ("exit pending")
+  and are answered with the final reason, or by the caller's deadline first.
+  `DeferredReplies.tla` models it (`pendA`, invariant `StoppedAtDeath`,
+  control `EarlyStopped`; one more reply trace control); metrics
+  `requests_noproc_total`.
+  Remaining: lifecycle-trace mapping to `Lifecycle.tla`, Loom and simulator
+  coverage, GUIDE and examples.
 
 - **Breaking (0.8), in progress:** deferred replies and pipe-to-self
   (ROADMAP rank 11), implementing
@@ -77,8 +91,9 @@
   and returns `()`; `#[actor]` generates it, and `#[deferred_handler]` methods
   receive the obligation and may `defer()` it into a storable `ReplyTo<R>`
   (bounded by `Actor::MAX_OUTSTANDING`, `Overloaded` at the bound). Dropped
-  obligations answer `ReplyDropped` (`ActorStopped` in a panicking turn or
-  while exiting); at death every open token answers `ActorStopped`. Request
+  obligations answer `ReplyDropped` (in a panicking turn or while exiting
+  they are answered `ActorStopped` at death); at death every open token
+  answers `ActorStopped`. Request
   deadlines are fixed at send (`Deadline`, `request_raw_until`; `request_raw`
   gains the 5 s default); a per-actor deadline heap and service expire stored
   tokens without a polling caller. `PendingReplies<K, R>` is a bounded token

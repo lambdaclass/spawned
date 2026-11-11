@@ -5,10 +5,20 @@
 //!
 //! | phase | a dropped reply obligation |
 //! |---|---|
-//! | `InTurn` | recorded on the turn; committed at turn end: `Dropped` if the handler returned, `Stopped` if it panicked |
+//! | `InTurn` | recorded on the turn; committed at turn end: `Dropped` if the handler returned, exit pending if it panicked |
 //! | `Running` | `Dropped` at once |
-//! | `Exiting` | `Stopped` at once |
-//! | `Dead` | no-op: the close already answered it |
+//! | `Exiting` | exit pending |
+//! | `Dead` | answered `Stopped` at once (the final reason is known) |
+//!
+//! **Exit pending** (docs/design/otp-exit-signals.md, "Required changes to
+//! rank 11"): the slot stays `OPEN` and listed, and the death point answers
+//! it with the owner's final reason, so callers, `Down` and `wait_exit` see
+//! one reason. Only the caller's own deadline (or abandonment) completes it
+//! earlier; nobody holds a token that could still reply.
+//!
+//! The final reason is stored once, at the death point ([`Registry::seal`]),
+//! before any slot of this owner becomes `STOPPED`; a caller that reads a
+//! `STOPPED` slot reads it from here ([`Registry::final_reason`]).
 //!
 //! No rule uses `thread::panicking()`. The phase is one atomic so a turn costs
 //! two uncontended atomic stores; the turn list is locked only when a drop
@@ -16,7 +26,7 @@
 
 use super::deadline::{self, DeadlineHeap, Expirable};
 use super::slot::{CreditPool, Slot, Terminal, NEVER};
-use crate::ActorId;
+use crate::{ActorId, ExitReason};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
@@ -24,13 +34,6 @@ use std::sync::{Arc, Mutex, OnceLock, Weak};
 pub const DEFAULT_MAX_OUTSTANDING: usize = 1024;
 
 use super::turn::{Outcome, TurnPhase, DEAD, EXITING};
-
-fn terminal(outcome: Outcome) -> Terminal {
-    match outcome {
-        Outcome::Dropped => Terminal::Dropped,
-        Outcome::Stopped => Terminal::Stopped,
-    }
-}
 
 /// A slot seen without its reply type.
 pub(crate) trait Closeable: Send + Sync {
@@ -79,6 +82,9 @@ pub(crate) struct Registry {
     lists: Mutex<Lists>,
     /// When exit began: the cleanup deadline is armed from here.
     exit_began: Mutex<Option<spawned_rt::time::Instant>>,
+    /// The owner's final exit reason, set once at its death point. Set means
+    /// the mailbox refuses admission (`NoProc`).
+    final_reason: OnceLock<ExitReason>,
     #[cfg(all(spawned_sim, feature = "async"))]
     sim: deadline::SimService,
 }
@@ -101,6 +107,7 @@ impl Registry {
                 ..Lists::default()
             }),
             exit_began: Mutex::new(None),
+            final_reason: OnceLock::new(),
             #[cfg(all(spawned_sim, feature = "async"))]
             sim: deadline::SimService::default(),
         })
@@ -225,14 +232,65 @@ impl Registry {
         }
         let slot: Arc<dyn Closeable> = slot;
         if let Some((slot, outcome)) = self.turn.dropped(slot) {
-            slot.terminate(terminal(outcome));
+            self.commit(vec![slot], outcome);
         }
     }
 
-    fn commit(drops: Vec<Arc<dyn Closeable>>, outcome: Outcome) {
+    /// Answer `drops`: `Dropped` at once, or (`Stopped`) exit pending until
+    /// the death point.
+    fn commit(&self, drops: Vec<Arc<dyn Closeable>>, outcome: Outcome) {
         for slot in drops {
-            slot.terminate(terminal(outcome));
+            match outcome {
+                Outcome::Dropped => {
+                    slot.terminate(Terminal::Dropped);
+                }
+                Outcome::Stopped => self.hold(slot),
+            }
         }
+    }
+
+    /// Exit pending: keep `slot` open and listed so the death point answers
+    /// it with the final reason. Past the death point, answer it now.
+    fn hold(&self, slot: Arc<dyn Closeable>) {
+        let mut lists = lock(&self.lists);
+        // `close` sets `DEAD` before it takes the list under this lock, so a
+        // slot listed here is either taken by that close or closed below.
+        if self.is_dead() {
+            drop(lists);
+            slot.close();
+        } else {
+            lists.tokens.push(Arc::downgrade(&slot));
+            drop(lists);
+        }
+        // The caller's receiver may have been the other strong reference:
+        // dropping the last one runs no user code (the slot holds no value).
+        drop(slot);
+    }
+
+    /// An undispatched envelope dropped its request (mailbox disposal, a
+    /// rejected enqueue): answered at the death point with the final reason.
+    pub(crate) fn dispose<R: Send + 'static>(&self, slot: Arc<Slot<R>>) {
+        if !slot.is_terminal() {
+            self.hold(slot);
+        }
+    }
+
+    /// The death point D (called inside the owner's exit-table critical
+    /// section): fix the final reason callers will see and refuse admission.
+    /// Idempotent: the first reason stays.
+    pub(crate) fn seal(&self, reason: &ExitReason) {
+        let _ = self.final_reason.set(reason.clone());
+    }
+
+    /// The owner's final reason, once it reached its death point.
+    pub(crate) fn final_reason(&self) -> Option<&ExitReason> {
+        self.final_reason.get()
+    }
+
+    /// Whether the owner is past its death point: sends and requests report
+    /// `NoProc`.
+    pub(crate) fn refuses_admission(&self) -> bool {
+        self.final_reason.get().is_some()
     }
 
     /// The run loop is about to dispatch a handler.
@@ -243,11 +301,11 @@ impl Registry {
     /// The handler returned (`panicked == false`) or unwound.
     pub(crate) fn end_turn(&self, panicked: bool) {
         let (drops, outcome) = self.turn.end_turn(panicked);
-        Self::commit(drops, outcome);
+        self.commit(drops, outcome);
     }
 
-    /// Exit begins: later drops answer `Stopped`, and the current turn's
-    /// recorded drops commit as `Stopped`.
+    /// Exit begins: later drops, and the current turn's recorded drops, are
+    /// exit pending until the death point.
     pub(crate) fn exiting(&self) {
         if self.turn.load() == DEAD {
             return;
@@ -258,7 +316,7 @@ impl Registry {
             began.get_or_insert_with(spawned_rt::time::Instant::now);
             first
         };
-        Self::commit(self.turn.exiting(), Outcome::Stopped);
+        self.commit(self.turn.exiting(), Outcome::Stopped);
         if first {
             crate::lifecycle_trace::reply(self.owner.raw(), "Exit", 0, "");
         }
@@ -274,11 +332,19 @@ impl Registry {
         self.turn.load() >= EXITING
     }
 
-    /// Death: every open token listed becomes `STOPPED`, wherever it is.
-    /// Returns how many were closed.
+    /// Death: every open token listed, and every exit-pending slot, becomes
+    /// `STOPPED` with the final reason, wherever it is. Returns how many were
+    /// closed.
+    ///
+    /// The run loops [`seal`](Self::seal) the reason at the death point
+    /// first. A registry closed without it (its lifecycle was dropped by the
+    /// runtime before the death point, G1) answers `Killed`.
     pub(crate) fn close(&self) -> usize {
+        self.seal(&ExitReason::Killed);
         crate::lifecycle_trace::reply(self.owner.raw(), "Death", 0, "");
-        Self::commit(self.turn.close(), Outcome::Stopped);
+        for slot in self.turn.close() {
+            slot.close();
+        }
         let tokens = std::mem::take(&mut lock(&self.lists).tokens);
         let closed = tokens
             .into_iter()
@@ -343,38 +409,57 @@ mod tests {
         slot
     }
 
+    fn terminal_of<R>(slot: &Slot<R>) -> Option<Terminal> {
+        Terminal::of(crate::reply::slot::state(slot.word()))
+    }
+
     #[test]
-    fn turn_drops_commit_dropped_or_stopped() {
+    fn turn_drops_commit_dropped_or_wait_for_death() {
         let registry = Registry::new(ActorId::next(), 8);
-        for (panicked, expected) in [(false, Terminal::Dropped), (true, Terminal::Stopped)] {
-            let slot = deferred(&registry, NEVER);
-            registry.begin_turn();
-            registry.dropped(slot.clone());
-            assert!(
-                !slot.is_terminal(),
-                "an in-turn drop waits for the turn end"
-            );
-            registry.end_turn(panicked);
-            assert_eq!(
-                Terminal::of(crate::reply::slot::state(slot.word())),
-                Some(expected)
-            );
-        }
-        // Between turns a drop answers at once; while exiting, Stopped.
+        // A turn that returns answers its drops `Dropped`.
+        let slot = deferred(&registry, NEVER);
+        registry.begin_turn();
+        registry.dropped(slot.clone());
+        assert!(
+            !slot.is_terminal(),
+            "an in-turn drop waits for the turn end"
+        );
+        registry.end_turn(false);
+        assert_eq!(terminal_of(&slot), Some(Terminal::Dropped));
+        // Between turns a drop answers at once.
         let slot = deferred(&registry, NEVER);
         registry.dropped(slot.clone());
-        assert_eq!(
-            Terminal::of(crate::reply::slot::state(slot.word())),
-            Some(Terminal::Dropped)
-        );
+        assert_eq!(terminal_of(&slot), Some(Terminal::Dropped));
+        // A panicking turn's drops, and drops while exiting, are exit
+        // pending: open until the death point answers them with the final
+        // reason.
+        let unwound = deferred(&registry, NEVER);
+        registry.begin_turn();
+        registry.dropped(unwound.clone());
+        registry.end_turn(true);
         registry.exiting();
-        let slot = deferred(&registry, NEVER);
-        registry.dropped(slot.clone());
-        assert_eq!(
-            Terminal::of(crate::reply::slot::state(slot.word())),
-            Some(Terminal::Stopped)
-        );
+        let exiting = deferred(&registry, NEVER);
+        registry.dropped(exiting.clone());
+        assert!(!unwound.is_terminal() && !exiting.is_terminal());
+        registry.seal(&ExitReason::Shutdown);
+        assert_eq!(registry.close(), 2);
+        assert_eq!(terminal_of(&unwound), Some(Terminal::Stopped));
+        assert_eq!(terminal_of(&exiting), Some(Terminal::Stopped));
+        assert_eq!(registry.final_reason(), Some(&ExitReason::Shutdown));
+        // Past the death point a drop answers at once.
+        let late = Arc::new(Slot::<u32>::new(NEVER));
+        registry.dropped(late.clone());
+        assert_eq!(terminal_of(&late), Some(Terminal::Stopped));
         assert_eq!(registry.outstanding(), 0);
+    }
+
+    #[test]
+    fn unsealed_close_answers_killed() {
+        let registry = Registry::new(ActorId::next(), 8);
+        let open = deferred(&registry, NEVER);
+        assert_eq!(registry.close(), 1);
+        assert_eq!(terminal_of(&open), Some(Terminal::Stopped));
+        assert_eq!(registry.final_reason(), Some(&ExitReason::Killed));
     }
 
     #[test]

@@ -118,9 +118,14 @@ where
     }
 }
 
+/// Admit a message. Past the death point (the registry is sealed, or the
+/// mailbox is gone) it reports `NoProc`; before it, including while the
+/// actor exits, it is queued, and a request is answered at the death point
+/// if it is not handled.
 fn enqueue<A, M>(
     sender: &mpsc::Sender<MailboxItem<A>>,
     _mailbox: &crate::instrumentation::Mailbox,
+    replies: &Registry,
     msg: M,
     slot: SlotHandle<M::Result>,
 ) -> Result<(), ActorError>
@@ -134,6 +139,11 @@ where
         #[cfg(feature = "metrics")]
         observation: Some(_mailbox.enqueued()),
     });
+    if replies.refuses_admission() {
+        #[cfg(feature = "metrics")]
+        envelope.reject();
+        return Err(ActorError::NoProc);
+    }
     match sender.send(MailboxItem::Message(envelope)) {
         Ok(()) => {
             #[cfg(feature = "metrics")]
@@ -147,7 +157,7 @@ where
                     envelope.reject();
                 }
             }
-            Err(ActorError::ActorStopped)
+            Err(ActorError::NoProc)
         }
     }
 }
@@ -213,19 +223,19 @@ fn signal_target<A: Actor>(
         let envelope: Box<dyn Envelope<A> + Send> = Box::new(ExitEnvelope { exit });
         exit_tx
             .send(MailboxItem::Message(envelope))
-            .map_err(|_| ActorError::ActorStopped)
+            .map_err(|_| ActorError::NoProc)
     });
     let send_parent_exit: SendExitFn = Arc::new(move |exit: Exit| {
         let envelope: Box<dyn Envelope<A> + Send> = Box::new(ParentExitEnvelope { exit });
         parent_tx
             .send(MailboxItem::Message(envelope))
-            .map_err(|_| ActorError::ActorStopped)
+            .map_err(|_| ActorError::NoProc)
     });
     let send_held: SendHeldFn = Arc::new(move |exit: Exit, parent: bool| {
         let envelope: Box<dyn Envelope<A> + Send> = Box::new(HeldEnvelope { exit, parent });
         held_tx
             .send(MailboxItem::Message(envelope))
-            .map_err(|_| ActorError::ActorStopped)
+            .map_err(|_| ActorError::NoProc)
     });
     Arc::new(SignalTarget {
         id,
@@ -381,7 +391,13 @@ impl<A: Actor> Context<A> {
         A: Handler<M>,
         M: Message,
     {
-        enqueue(&self.sender, &self.mailbox, msg, SlotHandle::detached())
+        enqueue(
+            &self.sender,
+            &self.mailbox,
+            &self.replies,
+            msg,
+            SlotHandle::detached(),
+        )
     }
 
     /// Send a request and get its [`ReplyReceiver`], with the default
@@ -405,8 +421,8 @@ impl<A: Actor> Context<A> {
         A: Handler<M>,
         M: Message,
     {
-        let (slot, rx) = reply_slot(deadline, None);
-        enqueue(&self.sender, &self.mailbox, msg, slot)?;
+        let (slot, rx) = reply_slot(deadline, Some(&self.replies));
+        enqueue(&self.sender, &self.mailbox, &self.replies, msg, slot)?;
         Ok(rx)
     }
 
@@ -767,7 +783,13 @@ impl<A: Actor> ActorRef<A> {
         A: Handler<M>,
         M: Message,
     {
-        enqueue(&self.sender, &self.mailbox, msg, SlotHandle::detached())
+        enqueue(
+            &self.sender,
+            &self.mailbox,
+            &self.replies,
+            msg,
+            SlotHandle::detached(),
+        )
     }
 
     /// Send a request and get its [`ReplyReceiver`], with the default
@@ -791,8 +813,8 @@ impl<A: Actor> ActorRef<A> {
         A: Handler<M>,
         M: Message,
     {
-        let (slot, rx) = reply_slot(deadline, None);
-        enqueue(&self.sender, &self.mailbox, msg, slot)?;
+        let (slot, rx) = reply_slot(deadline, Some(&self.replies));
+        enqueue(&self.sender, &self.mailbox, &self.replies, msg, slot)?;
         Ok(rx)
     }
 
@@ -984,7 +1006,8 @@ impl<A: Actor> ActorRef<A> {
             completion_tx,
             move || cleanup_token.cancel(),
         )
-        .with_mailbox_failures(actor_ref.sender.failures());
+        .with_mailbox_failures(actor_ref.sender.failures())
+        .with_replies(actor_ref.replies.clone());
         let startup =
             crate::actor_cleanup::ActorStartup::new((actor, ctx, rx, cancellation_token), cleanup);
         let replies = actor_ref.replies.clone();
@@ -2331,7 +2354,10 @@ mod stop_wakeup_regression {
         release.send(()).unwrap();
         first.recv().unwrap();
         for reply in replies {
-            assert!(matches!(reply.recv(), Err(ActorError::ActorStopped)));
+            assert!(matches!(
+                reply.recv(),
+                Err(ActorError::ActorStopped(ExitReason::Normal))
+            ));
         }
         assert_eq!(actor.wait_exit(), ExitReason::Normal);
         assert_eq!(handled.load(Ordering::SeqCst), 1);
@@ -2423,10 +2449,8 @@ mod api_coverage {
         recipient.send(Ask(1)).unwrap();
         actor.child_handle().stop();
         actor.join();
-        assert!(matches!(
-            recipient.send(Ask(1)),
-            Err(ActorError::ActorStopped)
-        ));
+        // Past the death point: NoProc (v0.8, decision 4 of otp-exit-signals).
+        assert!(matches!(recipient.send(Ask(1)), Err(ActorError::NoProc)));
     }
 
     #[test]
@@ -2435,13 +2459,14 @@ mod api_coverage {
         let recipient = actor.recipient::<Ask>();
         actor.child_handle().stop();
         actor.join();
+        // Past the death point: NoProc (v0.8, decision 4 of otp-exit-signals).
         assert!(matches!(
             actor.request_with_timeout(Ask(1), WAIT),
-            Err(ActorError::ActorStopped)
+            Err(ActorError::NoProc)
         ));
         assert!(matches!(
             request(&*recipient, Ask(1), WAIT),
-            Err(ActorError::ActorStopped)
+            Err(ActorError::NoProc)
         ));
     }
 
@@ -2450,13 +2475,13 @@ mod api_coverage {
         let actor = Echo.start();
         assert!(matches!(
             actor.request_with_timeout(Boom, WAIT),
-            Err(ActorError::ActorStopped)
+            Err(ActorError::ActorStopped(ExitReason::Panic(_)))
         ));
         let other = Echo.start();
         let recipient = other.recipient::<Boom>();
         assert!(matches!(
             request(&*recipient, Boom, WAIT),
-            Err(ActorError::ActorStopped)
+            Err(ActorError::ActorStopped(ExitReason::Panic(_)))
         ));
     }
 

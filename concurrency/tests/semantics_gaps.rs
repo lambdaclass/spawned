@@ -202,7 +202,7 @@ mod native {
         let actor = Panicker.start();
         let result = actor.request_with_timeout(Boom, LIMIT);
         assert!(
-            matches!(result, Err(ActorError::ActorStopped)),
+            matches!(result, Err(ActorError::ActorStopped(ExitReason::Panic(_)))),
             "{result:?}"
         );
         assert!(matches!(actor.wait_exit(), ExitReason::Panic(_)));
@@ -211,7 +211,7 @@ mod native {
         let recipient: Recipient<Boom> = erased.recipient();
         let result = request(&*recipient, Boom, LIMIT);
         assert!(
-            matches!(result, Err(ActorError::ActorStopped)),
+            matches!(result, Err(ActorError::ActorStopped(ExitReason::Panic(_)))),
             "{result:?}"
         );
 
@@ -219,7 +219,10 @@ mod native {
         let receiver = raw
             .request_raw_until(Boom, spawned_concurrency::Deadline::after(LIMIT))
             .unwrap();
-        assert!(matches!(receiver.recv(), Err(ActorError::ActorStopped)));
+        assert!(matches!(
+            receiver.recv(),
+            Err(ActorError::ActorStopped(ExitReason::Panic(_)))
+        ));
     }
 }
 
@@ -560,7 +563,7 @@ mod tasks {
         for actor in actors {
             let result = actor.request_with_timeout(Boom, LIMIT).await;
             assert!(
-                matches!(result, Err(ActorError::ActorStopped)),
+                matches!(result, Err(ActorError::ActorStopped(ExitReason::Panic(_)))),
                 "{result:?}"
             );
             let reason = timeout(LIMIT, actor.wait_exit()).await.unwrap();
@@ -571,7 +574,7 @@ mod tasks {
         let recipient: Recipient<Boom> = erased.recipient();
         let result = request(&*recipient, Boom, LIMIT).await;
         assert!(
-            matches!(result, Err(ActorError::ActorStopped)),
+            matches!(result, Err(ActorError::ActorStopped(ExitReason::Panic(_)))),
             "{result:?}"
         );
 

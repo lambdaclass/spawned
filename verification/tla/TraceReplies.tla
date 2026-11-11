@@ -13,7 +13,8 @@
 (*                                                                         *)
 (* Turn-internal steps leave no trace and are taken silently: Defer that   *)
 (* takes a credit (or finds the slot closed), Store, DropInTurn, a turn    *)
-(* end that answers nothing, and the clock. A Discharge is the model       *)
+(* end that answers nothing, a drop while exiting (the slot becomes exit   *)
+(* pending and is answered by Death), and the clock. A Discharge is the model       *)
 (* action that discharges exactly that request with that kind. The model's *)
 (* turns are request turns: later replies run between them (from          *)
 (* non-request turns, or stopped()).                                       *)
@@ -51,7 +52,7 @@ Step(e) ==
 \* Steps that leave no trace: they answer no request.
 Silent ==
     /\ \/ Tick \/ EndTurn
-       \/ \E r \in Req : Defer(r) \/ Store(r) \/ DropInTurn(r)
+       \/ \E r \in Req : Defer(r) \/ Store(r) \/ DropInTurn(r) \/ LaterDrop(r)
     /\ UNCHANGED slot
 
 TraceNext ==

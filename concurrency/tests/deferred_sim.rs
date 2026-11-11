@@ -217,7 +217,7 @@ async fn reply_vs_expiry_vs_death_vs_drop(seed: u64) {
         Some(Err(e)) => {
             assert!(!delivered, "{e:?} after a delivery");
             assert!(
-                matches!(e, ActorError::RequestTimeout | ActorError::ActorStopped),
+                matches!(e, ActorError::RequestTimeout | ActorError::ActorStopped(_)),
                 "{e:?}"
             );
         }

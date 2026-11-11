@@ -239,6 +239,7 @@ DEFERRED_CONTROLS = [
     ("MCDeferredReplies", "AttachClosed", "BoundedA"),
     ("MCDeferredReplies", "LeakDownstream", "DownstreamOwned"),
     ("MCDeferredReplies", "EarlyClose", "NoEarlyClose"),
+    ("MCDeferredReplies", "EarlyStopped", "StoppedAtDeath"),
     ("MCDeferredJobs", "NoInstanceCheck", "NoLateResult"),
     ("MCDeferredJobs", "NoCancelFence", "NoStaleAfterCancel"),
     ("MCDeferredJobs", "DoubleTerminal", "AtMostOneTerminal"),
@@ -279,6 +280,15 @@ def reply_trace_controls(traces, tlc):
         events.insert(dispatch, events.pop(drop))
     require_rejected(by_name["replies_unused"], dropped_before_dispatch,
                      "unused obligation dropped before its turn", tlc)
+
+    def stopped_before_death(events):
+        # Rank 11 before 5e: the token unwound by the panicking turn was
+        # answered Stopped at once, before the death point fixed the reason.
+        held = next(e for e in events if e["a"] == "Send")
+        exit_at = next(i for i, e in enumerate(events) if e["a"] == "Exit")
+        events.insert(exit_at, {"a": "Discharge", "r": held["r"], "x": "stopped"})
+    require_rejected(by_name["replies_panic"], stopped_before_death,
+                     "exit error answered Stopped before the death point", tlc)
 
 
 def job_trace_controls(traces, tlc):

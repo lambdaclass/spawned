@@ -73,16 +73,25 @@ pub(crate) fn panic_message(panic: &(dyn std::any::Any + Send)) -> String {
 
 /// Errors that can occur when communicating with an actor.
 ///
-/// Non-exhaustive: later releases add reasons (for example the exit reason of
-/// a dead actor, ROADMAP rank 5e). Match with a wildcard arm.
+/// Non-exhaustive: later releases may add errors. Match with a wildcard arm.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum ActorError {
-    /// The actor has stopped or its mailbox channel is closed.
+    /// The actor died before answering, with its final exit reason (OTP:
+    /// `gen_server:call` exits with `{Reason, {gen_server, call, ..}}`).
     ///
-    /// Returned by `send()` and `request()` when the actor is no longer running.
-    #[error("Actor stopped")]
-    ActorStopped,
+    /// A request that was queued, deferred or being handled when the actor
+    /// died is answered at its death point with the reason that `wait_exit`,
+    /// `Down` and linked actors see: `Killed` after a kill, the signal's
+    /// reason after an untrapped exit signal, `Panic(..)` after a crash.
+    #[error("Actor stopped: {0}")]
+    ActorStopped(ExitReason),
+    /// The actor no longer existed when the message or request was sent: it
+    /// was past its death point (OTP `noproc`). A send or request made while
+    /// the actor is still exiting is admitted instead, and a request is then
+    /// answered `ActorStopped(reason)` at its death.
+    #[error("noproc")]
+    NoProc,
     /// A request exceeded the timeout duration (default: 5 seconds).
     ///
     /// Returned by `request()` and `request_with_timeout()` when the actor
@@ -101,14 +110,14 @@ pub enum ActorError {
 
 impl<T> From<spawned_rt::threads::mpsc::SendError<T>> for ActorError {
     fn from(_value: spawned_rt::threads::mpsc::SendError<T>) -> Self {
-        Self::ActorStopped
+        Self::NoProc
     }
 }
 
 #[cfg(feature = "async")]
 impl<T> From<spawned_rt::tasks::mpsc::SendError<T>> for ActorError {
     fn from(_value: spawned_rt::tasks::mpsc::SendError<T>) -> Self {
-        Self::ActorStopped
+        Self::NoProc
     }
 }
 
@@ -118,8 +127,9 @@ mod tests {
 
     #[test]
     fn test_error_into_std_error() {
-        let error: &dyn std::error::Error = &ActorError::ActorStopped;
-        assert_eq!(error.to_string(), "Actor stopped");
+        let error: &dyn std::error::Error = &ActorError::ActorStopped(ExitReason::Killed);
+        assert_eq!(error.to_string(), "Actor stopped: killed");
+        assert_eq!(ActorError::NoProc.to_string(), "noproc");
     }
 
     #[test]

@@ -9,7 +9,7 @@ use spawned_concurrency::{
     lifecycle_trace,
     message::Message,
     tasks::{Actor, ActorRef, ActorStart, Context, Deadline, Handler, PendingReply, ReplyTo},
-    ActorError,
+    ActorError, ExitReason,
 };
 use spawned_rt::tasks::sleep;
 use std::{path::PathBuf, time::Duration};
@@ -66,7 +66,8 @@ impl Handler<Ignore> for Owner {
     async fn handle(&mut self, _: Ignore, _reply: PendingReply<'_, u32>, _: &Context<Self>) {}
 }
 
-/// Deferred, then the turn panics: the token answers `ActorStopped`.
+/// Deferred, then the turn panics: the token is held until the death point,
+/// which answers it `ActorStopped(Panic(..))`.
 struct Boom;
 impl Message for Boom {
     type Result = u32;
@@ -248,7 +249,10 @@ async fn death_closes_stored_tokens() {
     let owner = id(&actor);
     actor.context().stop();
     let got = held.await;
-    assert!(matches!(got, Err(ActorError::ActorStopped)), "{got:?}");
+    assert!(
+        matches!(got, Err(ActorError::ActorStopped(ExitReason::Normal))),
+        "{got:?}"
+    );
     actor.join().await;
     let events = write("death", owner);
     assert!(
@@ -260,8 +264,13 @@ async fn death_closes_stored_tokens() {
 #[tokio::test]
 async fn panic_in_turn_answers_stopped() {
     let actor = start();
+    // The token unwound by the panic is exit pending: answered at the death
+    // point with the final reason, not by a discharge of its own.
     let got = actor.request(Boom).await;
-    assert!(matches!(got, Err(ActorError::ActorStopped)), "{got:?}");
+    assert!(
+        matches!(got, Err(ActorError::ActorStopped(ExitReason::Panic(_)))),
+        "{got:?}"
+    );
     actor.join().await;
     sleep(Duration::from_millis(10)).await;
     write("panic", id(&actor));

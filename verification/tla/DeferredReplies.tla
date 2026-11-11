@@ -16,7 +16,7 @@
 (* Overloaded at BoundA, or nothing if the slot is already closed) into a *)
 (* local token, then stores it, pipes it into a linked job, or drops it;  *)
 (* drops in a turn commit when the turn ends: Dropped if it returns,      *)
-(* Stopped if it panics. A linked job shares its token's credit while the *)
+(* exit pending if it panics. A linked job shares its token's credit while the *)
 (* token is open and no other job of that request runs; otherwise it      *)
 (* needs a fresh credit. A job's notification hands the token back to a   *)
 (* turn (completion or job deadline; after a deadline the work keeps      *)
@@ -26,9 +26,16 @@
 (*                                                                         *)
 (* Exit: A enters "exiting" (stop between turns, or a panic in a turn).   *)
 (* While exiting (stopped(), OTP terminate) stored tokens can still be    *)
-(* answered, drops answer Stopped, nothing is dispatched and jobs are     *)
-(* cancelled. Death closes the registry (every token A holds, wherever it *)
-(* is) and discards the mailbox. If stopped() (or a destructor) is still  *)
+(* answered, nothing is dispatched and jobs are cancelled. A token        *)
+(* dropped while exiting, or unwound by the panicking turn, is "exit      *)
+(* pending" (pendA): the registry keeps it open and death answers it with *)
+(* the final reason (docs/design/otp-exit-signals.md, "Required changes   *)
+(* to rank 11"); only the caller's deadline or abandonment comes first.   *)
+(* Death closes the registry (every token A holds, wherever it is, and    *)
+(* every exit-pending slot) and discards the mailbox. The model has no    *)
+(* reasons: the reason is fixed at death (Lifecycle.tla), so StoppedAtDeath*)
+(* (Stopped only in the death step) is what makes callers see it.         *)
+(* If stopped() (or a destructor) is still                                 *)
 (* running at the cleanup deadline, A becomes "stuck": nothing is closed   *)
 (* early (ActorStopped means the actor is gone); stopped() may still       *)
 (* reply; callers are bounded by their own deadlines; death may never come.*)
@@ -49,19 +56,23 @@
 (*   LeakDownstream  (DownstreamOwned)     B's request outlives its job    *)
 (*   EarlyClose      (NoEarlyClose)        the cleanup deadline closes the  *)
 (*                                         registry before death            *)
+(*   EarlyStopped    (StoppedAtDeath)      exit errors answered Stopped at  *)
+(*                                         once (rank 11 before 5e)         *)
 (***************************************************************************)
 EXTENDS Naturals, FiniteSets
 CONSTANTS N, BoundA, BoundB, MaxTime, MaxWait, Fault
 ASSUME Fault \in {"None", "NoAutoReply", "NoAtomicExpiry", "LateSuccess",
                   "LoopDeadline", "Lengthen", "Unbounded", "NoDestAdmission",
                   "ExitStateOnly", "UnwindDropped", "ShareRunning",
-                  "AttachClosed", "LeakDownstream", "EarlyClose"}
+                  "AttachClosed", "LeakDownstream", "EarlyClose",
+                  "EarlyStopped"}
 
 Req == 1..N
 \* qA queued; turnA PendingReply in a turn; localA ReplyTo in a turn;
 \* dropA dropped in a turn (commits at turn end); stateA stored;
-\* doneA captured by a linked job's done; gone no longer held.
-Holders == {"none", "qA", "turnA", "localA", "dropA", "stateA", "doneA", "gone"}
+\* doneA captured by a linked job's done; pendA exit pending (dropped while
+\* exiting or unwound; the registry answers it at death); gone no longer held.
+Holders == {"none", "qA", "turnA", "localA", "dropA", "stateA", "doneA", "pendA", "gone"}
 Terminal == {"ok", "timeout", "overloaded", "stopped", "dropped", "abandoned"}
 
 VARIABLES now, caller, sent, dl, slot, holder, discharges, okAt,
@@ -87,6 +98,8 @@ Open(r) == slot[r] = "open"
 TokenHeld(r) == Open(r) /\ holder[r] \in {"localA", "dropA", "stateA", "doneA"}
 \* Credits: a request's token and its first job share one credit; every
 \* further running job, and every job whose token has closed, needs its own.
+\* An exit-pending token keeps its credit until death in the implementation;
+\* nothing takes a credit once exit has begun, so it is not counted here.
 CreditOf(r) == IF jobs[r] > 0 THEN jobs[r] ELSE IF TokenHeld(r) THEN 1 ELSE 0
 Credits == Cardinality({<<r, k>> \in Req \X {1, 2} : k <= CreditOf(r)})
 HeldB == {r \in Req : down[r] = "stateB"}
@@ -111,10 +124,14 @@ TryReply(r) ==
               /\ UNCHANGED <<slot, caller>>
          ELSE Keep
 
-\* A drop outside a turn: Dropped while running, Stopped while exiting.
+\* A drop outside a turn: Dropped while running; exit pending while exiting
+\* (answered at death with the final reason).
 DropNow(r) ==
-    IF ~Open(r) \/ Fault = "NoAutoReply" THEN Keep
-    ELSE Discharge(r, IF phase = "run" THEN "dropped" ELSE "stopped")
+    IF ~Open(r) \/ Fault = "NoAutoReply" THEN holder' = [holder EXCEPT ![r] = "gone"] /\ Keep
+    ELSE IF phase = "run" THEN holder' = [holder EXCEPT ![r] = "gone"] /\ Discharge(r, "dropped")
+    ELSE IF Fault = "EarlyStopped"
+         THEN holder' = [holder EXCEPT ![r] = "gone"] /\ Discharge(r, "stopped")
+    ELSE holder' = [holder EXCEPT ![r] = "pendA"] /\ Keep
 
 U(v) == UNCHANGED v
 
@@ -201,18 +218,21 @@ EndTurn ==
     /\ turnA' = 0
     /\ U(<<now, sent, dl, jobs, down, phase, panicked>>)
 
-\* Panic in a turn: the turn's tokens are dropped while unwinding and
-\* answer Stopped; exit begins.
+\* Panic in a turn: the turn's tokens are dropped while unwinding and are
+\* exit pending (answered at death with the final reason); exit begins.
 Panic ==
     /\ phase = "run" /\ turnA # 0
     /\ LET r == turnA IN
        /\ panicked' = panicked \cup (IF holder[r] \in {"turnA", "localA", "dropA"} /\ Open(r)
                                      THEN {r} ELSE {})
-       /\ IF holder[r] \in {"turnA", "localA", "dropA"}
-          THEN holder' = [holder EXCEPT ![r] = "gone"]
-               /\ IF Open(r) THEN Discharge(r, IF Fault = "UnwindDropped" THEN "dropped"
-                                               ELSE "stopped")
-                  ELSE Keep
+       /\ IF holder[r] \in {"turnA", "localA", "dropA"} /\ Open(r)
+          THEN (CASE Fault = "UnwindDropped" ->
+                       holder' = [holder EXCEPT ![r] = "gone"] /\ Discharge(r, "dropped")
+                  [] Fault = "EarlyStopped" ->
+                       holder' = [holder EXCEPT ![r] = "gone"] /\ Discharge(r, "stopped")
+                  [] OTHER -> holder' = [holder EXCEPT ![r] = "pendA"] /\ Keep)
+          ELSE IF holder[r] \in {"turnA", "localA", "dropA"}
+          THEN holder' = [holder EXCEPT ![r] = "gone"] /\ Keep
           ELSE U(holder) /\ Keep
     /\ phase' = "exiting" /\ turnA' = 0
     /\ U(<<now, sent, dl, jobs, down>>)
@@ -225,14 +245,15 @@ LaterReply(r) ==
 
 LaterDrop(r) ==
     /\ phase \in {"run", "exiting", "stuck"} /\ turnA = 0 /\ holder[r] = "stateA"
-    /\ holder' = [holder EXCEPT ![r] = "gone"] /\ DropNow(r)
+    /\ DropNow(r)
     /\ U(<<now, sent, dl, jobs, down, phase, turnA, panicked>>)
 
 ExitBegin ==
     /\ phase = "run" /\ turnA = 0 /\ phase' = "exiting"
     /\ U(<<now, caller, sent, dl, slot, holder, discharges, okAt, jobs, down, turnA, panicked>>)
 
-\* Death: the registry closes every token A holds; the mailbox is discarded.
+\* Death: the registry closes every token A holds and every exit-pending
+\* slot, with the final reason; the mailbox is discarded.
 \* Cleanup deadline while stopped() still runs: the instance is reported
 \* stuck; nothing is closed early, since ActorStopped means "gone".
 CleanupDeadline ==
@@ -246,8 +267,8 @@ CleanupDeadline ==
 Death ==
     /\ phase \in {"exiting", "stuck"} /\ phase' = "dead"
     /\ DischargeSet(OpenOf({r \in Req : holder[r] \in
-                     (IF Fault = "ExitStateOnly" THEN {"qA", "stateA"}
-                      ELSE {"qA", "stateA", "doneA"})}), "stopped")
+                     (IF Fault = "ExitStateOnly" THEN {"qA", "stateA", "pendA"}
+                      ELSE {"qA", "stateA", "doneA", "pendA"})}), "stopped")
     /\ U(<<now, sent, dl, holder, jobs, down, turnA, panicked>>)
 
 ------------------------------------------------------------------------------
@@ -279,7 +300,7 @@ JobEnds(r) ==
 JobCancel(r) ==
     /\ holder[r] = "doneA"
     /\ (~Open(r) \/ phase = "exiting")
-    /\ holder' = [holder EXCEPT ![r] = "gone"] /\ DropNow(r)
+    /\ DropNow(r)
     /\ U(<<now, sent, dl, jobs, down, phase, turnA, panicked>>)
 
 JobCallB(r) ==
@@ -350,13 +371,19 @@ AtMostOneDischarge == \A r \in Req : discharges[r] <= 1
 NoOrphan ==
     \A r \in Req : Open(r) =>
         /\ phase # "dead"
-        /\ holder[r] \in {"qA", "turnA", "localA", "dropA", "stateA", "doneA"}
+        /\ holder[r] \in {"qA", "turnA", "localA", "dropA", "stateA", "doneA", "pendA"}
 NoSuccessAfterDeadline == \A r \in Req : slot[r] = "ok" => okAt[r] < dl[r]
 TimelyExpiry == \A r \in Req : Open(r) => now <= dl[r]
 DeadlineWithinCaller == \A r \in Req : slot[r] # "none" => dl[r] <= sent[r]
 BoundedA == Credits <= BoundA
 BoundedB == Cardinality(HeldB) <= BoundB
-PanicStopped == \A r \in panicked : slot[r] = "stopped"
+\* A request open in a panicking turn is never answered Dropped (or a value):
+\* it waits for death (Stopped), unless its deadline or caller comes first.
+PanicStopped == \A r \in panicked : slot[r] \in {"open", "stopped", "timeout", "abandoned"}
+\* Exit errors wait for death: a Stopped discharge happens only in the death
+\* step, where the reason is final (otp-exit-signals.md; the same property
+\* Lifecycle.tla checks as StoppedAtDeath).
+StoppedAtDeath == \A r \in Req : slot[r] = "stopped" => phase = "dead"
 \* The registry closes only at actual death: no token is answered Stopped
 \* by a close while the instance (its stopped()) is still alive.
 NoEarlyClose == earlyClosed = {}
@@ -368,7 +395,8 @@ CallerConsistent ==
 Safety ==
     /\ TypeOK /\ AtMostOneDischarge /\ NoOrphan /\ NoSuccessAfterDeadline
     /\ TimelyExpiry /\ DeadlineWithinCaller /\ BoundedA /\ BoundedB
-    /\ PanicStopped /\ NoEarlyClose /\ DownstreamOwned /\ CallerConsistent
+    /\ PanicStopped /\ StoppedAtDeath /\ NoEarlyClose /\ DownstreamOwned
+    /\ CallerConsistent
 
 EveryAcceptedDischarged == \A r \in Req : (slot[r] = "open") ~> (slot[r] \in Terminal)
 CallerNeverHangs == \A r \in Req : (caller[r] = "waiting") ~> (caller[r] # "waiting")

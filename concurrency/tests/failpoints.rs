@@ -219,11 +219,6 @@ async fn factory_panic_is_a_failed_start_not_a_controller_failure() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn seeded_probabilistic_factory_failures_match_generation_count() {
     let _scenario = FailScenario::setup();
-    failpoints::configure(
-        "child.factory",
-        FailPoint::new(Action::Error).probability(0.5),
-    )
-    .unwrap();
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("fp-probability", 1).unwrap();
     let started = Started::default();
@@ -237,6 +232,13 @@ async fn seeded_probabilistic_factory_failures_match_generation_count() {
         .unwrap();
     let tree = tree.start().await.unwrap();
     let mut actor = child.wait_ready().await.unwrap();
+    // Armed after the initial start: since S1 any failed first start fails
+    // `start()`, so only replacements may fail (and are retried).
+    failpoints::configure(
+        "child.factory",
+        FailPoint::new(Action::Error).probability(0.5),
+    )
+    .unwrap();
     for _ in 0..8 {
         let generation = child.snapshot().generation;
         actor.send(Crash).unwrap();

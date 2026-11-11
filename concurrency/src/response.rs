@@ -217,14 +217,18 @@ mod tests {
 
     #[test]
     fn ready_err_is_err() {
-        let r: Response<i32> = Response::ready(Err(ActorError::ActorStopped));
+        let r: Response<i32> = Response::ready(Err(ActorError::ActorStopped(
+            crate::error::ExitReason::Normal,
+        )));
         assert!(r.is_err());
     }
 
     #[test]
     #[should_panic(expected = "ActorStopped")]
     fn ready_err_unwrap_panics() {
-        let r: Response<i32> = Response::ready(Err(ActorError::ActorStopped));
+        let r: Response<i32> = Response::ready(Err(ActorError::ActorStopped(
+            crate::error::ExitReason::Normal,
+        )));
         r.unwrap();
     }
 

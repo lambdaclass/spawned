@@ -69,7 +69,7 @@ mod asynchronous {
             .expect("async listener panicked");
         assert!(matches!(
             recipients[0].send(Item(1)),
-            Err(ActorError::ActorStopped)
+            Err(ActorError::NoProc)
         ));
         recipients[1].send(Item(1)).unwrap();
         assert_eq!(second.request(Total).await.unwrap(), 4);
@@ -162,7 +162,7 @@ mod synchronous {
             .expect("native counter did not stop");
         assert!(matches!(
             recipients[0].send(Item(1)),
-            Err(ActorError::ActorStopped)
+            Err(ActorError::NoProc)
         ));
         recipients[1].send(Item(1)).unwrap();
         assert_eq!(second.request(Total).unwrap(), 4);

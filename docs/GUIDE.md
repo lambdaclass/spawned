@@ -69,7 +69,7 @@ All three phases are wrapped in `catch_unwind`:
 - **Panic in a handler** — the current message is lost. The actor stops and `stopped()` is called.
 - **Panic in `stopped()`** — the panic is logged and `join()` still returns, but the exit reason becomes `Panic("panic in stopped(): ...")` unless it was already abnormal.
 
-In all cases, `join()` will eventually return and subsequent `send()`/`request()` calls return `Err(ActorStopped)`.
+In all cases, `join()` will eventually return and subsequent `send()`/`request()` calls return `Err(NoProc)`.
 
 ### Stopping an Actor
 
@@ -77,7 +77,7 @@ Call `ctx.stop()` from inside a handler or lifecycle hook. This cancels the acto
 
 From outside, use the actor's `ChildHandle` (`actor_ref.child_handle()`): `stop()` exits `Normal`, `shutdown()` exits `Shutdown`, and `stop_with_reason(reason)` picks the reason. All are cooperative: the running handler finishes and `stopped()` runs. They ignore `trap_exit`. `ActorRef` itself has no stop method; an explicit shutdown message in your protocol also works.
 
-Stopping discards messages still queued: once the stop is observed no further message is handled, and queued requests fail with `ActorStopped`.
+Stopping discards messages still queued: once the stop is observed no further message is handled, and queued requests fail with `ActorStopped(reason)`, the actor's final exit reason.
 
 ---
 
@@ -556,9 +556,10 @@ Rules (the [design](design/deferred-replies.md) has the full contract):
 - A `ReplyTo<R>` is `Send + 'static` and answers exactly once:
   `token.reply(v)` returns a `Delivery` (`Delivered`, `CallerGone`, `Expired`,
   `OwnerExited`); `token.overloaded()` answers `Err(Overloaded)`.
-- Dropping an unanswered token answers `ReplyDropped` (or `ActorStopped` if the
-  turn panicked or the actor is exiting). `stopped()` may still answer stored
-  tokens; at the actor's death every open token answers `ActorStopped`.
+- Dropping an unanswered token answers `ReplyDropped`. If the turn panicked or
+  the actor is exiting, it is held instead and answered at the actor's death
+  with its final reason. `stopped()` may still answer stored tokens; at the
+  actor's death every open token answers `ActorStopped(reason)`.
 - The deadline is the caller's, fixed at send. `token.is_closed()` tells you
   the caller can no longer be answered; the actor's deadline heap expires
   stored tokens on time and returns their credits.
@@ -629,14 +630,18 @@ impl Message for GetCount {
 All actor communication can fail with `ActorError`:
 
 ```rust
+#[non_exhaustive]
 pub enum ActorError {
-    ActorStopped,    // The actor has stopped or its mailbox is closed
-    RequestTimeout,  // A request exceeded the timeout (default 5s)
+    ActorStopped(ExitReason), // The actor died before replying, with this final reason
+    NoProc,                   // The actor was already gone when sent to (OTP noproc)
+    RequestTimeout,           // A request exceeded its deadline (default 5s)
+    ReplyDropped,             // The handler dropped the request unanswered
+    Overloaded,               // The actor rejected the request at a bound
 }
 ```
 
-- `send()` returns `Err(ActorStopped)` once the actor's mailbox has closed. While the actor is stopping (after a stop request, including during `stopped()`), `send()` still returns `Ok(())` and the message is dropped without being handled: `Ok` means accepted, not handled.
-- `request()` returns `Err(ActorStopped)` if the actor stops before replying, or `Err(RequestTimeout)` if the reply doesn't arrive in time.
+- `send()` returns `Err(NoProc)` once the actor is past its death point. While the actor is stopping (after a stop request, including during `stopped()`), `send()` still returns `Ok(())` and the message is dropped without being handled: `Ok` means accepted, not handled.
+- `request()` returns `Err(ActorStopped(reason))` if the actor dies before replying, with the reason `wait_exit()` and monitors report (`Killed`, `Panic(..)`, the exit signal's reason, ...), `Err(NoProc)` if it was already gone, or `Err(RequestTimeout)` if the reply doesn't arrive in time. A request whose handler panicked is answered when the actor dies (after `stopped()`), not at once.
 - `request_with_timeout()` lets you specify a custom timeout.
 
 ---
@@ -1311,7 +1316,7 @@ out.expect_no_message(Duration::from_millis(20)).await;
   reply types still fail loudly. `allow_send::<M>()` acknowledges one type
   only.
 - A message without a rule makes the mock panic with the type name and the
-  rule to add. The caller sees `ActorStopped`; `received()` lists it as
+  rule to add. The caller sees `ActorStopped(Panic(..))`; `received()` lists it as
   `Outcome::Unexpected` and `assert_no_unexpected()` fails the test.
 - `expect::<M>(timeout)` returns the oldest not-yet-expected `M` (other types
   stay queued); `expect_no_message(window)`, `count::<M>()`, `take_all::<M>()`,

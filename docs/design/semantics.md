@@ -64,10 +64,12 @@ duplicated or retried. While the actor keeps running it is handled exactly once.
 Checked by: [`actor_scenarios`][actor_scenarios], [`payload_stress`][payload_stress]
 (FIFO delivery or complete destruction), [`request_histories`][request_histories].
 
-**D3. Accepted is not handled.** `send` returns `Err(ActorStopped)` only once
-the mailbox is closed; the rejected message is dropped. `Ok(())` means
-accepted: between a stop request and mailbox closure (including during
-`stopped()`), sends still succeed and the message is then discarded.
+**D3. Accepted is not handled.** `send` returns `Err(NoProc)` only once the
+actor is past its death point (the mailbox refuses admission); the rejected
+message is dropped. `Ok(())` means accepted: between a stop request and the
+death point (including during `stopped()`), sends still succeed and the
+message is then discarded (a request is answered `ActorStopped` with the
+final reason).
 Checked by: [`actor_scenarios`][actor_scenarios] ("accepted sends alone do not
 guarantee execution across termination"), [`mailbox_admission_loom`][mailbox_admission_loom]
 (threads send gate: publish before drain or fail).
@@ -75,8 +77,8 @@ guarantee execution across termination"), [`mailbox_admission_loom`][mailbox_adm
 **D4. Stop discards the queue.** The run loop checks for stop before every
 receive. Once a stop is observed no further message is dispatched, including
 messages already queued. Queued messages are dropped one by one and every
-queued reply sender is released (callers get `ActorStopped`) before the exit is
-published.
+queued request is answered (callers get `ActorStopped` with the final reason)
+before the exit is published.
 Checked by: `src/tasks/actor.rs::stop_while_idle_does_not_dispatch_a_queued_request_on_resume`,
 `src/threads/actor.rs::repeated_stop_during_a_handler_discards_queued_requests`,
 `src/threads/actor.rs::stop_while_receiving_does_not_dispatch_a_later_request`,
@@ -93,15 +95,17 @@ planned (rank 17).
 ([deferred replies](deferred-replies.md) §1) that is discharged exactly once.
 `request`, `request_with_timeout`, protocol calls and
 `spawned::tasks::request` end in exactly one of `Ok(reply)`,
-`Err(ActorStopped)` (not accepted, the handler panicked, the request was still
-queued at the owner's death, or a deferred token was open at death),
+`Err(ActorStopped(reason))` (the handler panicked, the request was still
+queued at the owner's death, or a deferred token was open at death; always
+the owner's final exit reason, the one `wait_exit` and `Down` report),
+`Err(NoProc)` (sent after the owner's death point),
 `Err(RequestTimeout)` (the deadline fixed at send passed),
 `Err(ReplyDropped)` (the handler dropped the reply obligation unanswered) or
 `Err(Overloaded)` (`defer()` at `MAX_OUTSTANDING`, or the handler answered
-`overloaded()`). A request racing shutdown gets its reply or `ActorStopped`;
-a slow teardown can still produce a timeout first. `ActorStopped` from a
-deferred token is reported only at the owner's actual death, never while
-`stopped()` still runs.
+`overloaded()`). A request racing shutdown gets its reply, `ActorStopped` or
+`NoProc`; a slow teardown can still produce a timeout first. `ActorStopped` is
+reported only at the owner's actual death, never while `stopped()` still
+runs (otp-exit-signals.md, "Exit errors wait for D").
 Checked by: [`actor_scenarios`][actor_scenarios], `src/tasks/actor.rs::request_timeout`,
 [`timeout_outcomes`][ex_timeout_outcomes] example.
 
@@ -130,22 +134,25 @@ Checked by: [`cancellation_safety::request_family_is_cancel_safe`][cancellation_
 [`request_histories`][request_histories] (timed-out operations are "pending").
 
 **R5. Handler panic.** A panic while handling a request drops its reply
-obligation in the panicking turn: the drop is committed at the turn's end as
-`ActorStopped` (a turn that returns without answering gives `ReplyDropped`),
-and the actor exits with `Panic`.
+obligation in the panicking turn: at the turn's end it becomes exit pending
+(a turn that returns without answering gives `ReplyDropped`), the actor exits
+and the request is answered at its death point with the final reason,
+`ActorStopped(Panic(..))` (or `ActorStopped(Killed)` if a kill arrived
+before death), or by the caller's deadline first.
 Checked by: [`deferred_replies`][deferred_replies]
 `::{tasks_mode::panicking_turn_answers_actor_stopped, threads_mode::panic_and_death_answer_actor_stopped}`,
 [`semantics_gaps`][semantics_gaps]`::{native,tasks}::panicking_request_handler_gives_the_caller_actor_stopped`
-(exactly `ActorStopped`, every backend, a managed group, `Recipient` and raw
-receivers), [`panic_safety`][panic_safety].
+(exactly `ActorStopped(Panic(_))`, every backend, a managed group,
+`Recipient` and raw receivers), [`otp_exit_signals`][otp_exit_signals]`::*::caller_errors`
+(answered only at death), [`panic_safety`][panic_safety].
 
 **R6. Deferred replies.** A handler may answer later: `PendingReply::defer()`
 takes one of the instance's `MAX_OUTSTANDING` credits (or answers
 `Overloaded` at once) and returns a storable `ReplyTo`. The token is answered
 from a later turn, a job or `stopped()`; dropping it answers `ReplyDropped`
-between turns, is committed at the turn's end inside a turn, and answers
-`ActorStopped` while the owner exits. At the owner's death every open token
-becomes `ActorStopped`, wherever it is held. The owner's deadline heap expires
+between turns, is committed at the turn's end inside a turn, and while the
+owner exits is held until its death point. At the owner's death every open
+token becomes `ActorStopped` with the final reason, wherever it is held. The owner's deadline heap expires
 deferred tokens (returning their credits) even when no caller polls. Callers
 and protocols cannot tell a deferred reply from an immediate one.
 Checked by: `reply_slot_loom` (every concurrent pair of the slot word),
@@ -222,8 +229,8 @@ destructors), [`panic_safety`][panic_safety], [`native_mailbox_drop`][native_mai
 **L7. Exit publication is last.** The exit reason is published after
 `stopped()`, after queued messages and reply senders are released, after links
 have been signalled and outgoing monitors cancelled. `join()`, `wait_exit()`
-and `ChildHandle` waits return only then; afterwards `send`/`request` return
-`ActorStopped`.
+and `ChildHandle` waits return only then; `send`/`request` return `NoProc`
+from the death point on, which comes before publication.
 Checked by: [`shutdown_publication`][shutdown_publication],
 `src/link_regression_tests.rs::never_polled_completion_waits_for_actor_payload_destruction`,
 [`actor_scenarios`][actor_scenarios] (post-exit requests).
@@ -347,7 +354,8 @@ Checked by: `Supervision!AtMostOneGeneration`, `Cohorts!AtMostOneGeneration`,
 slot's generation. `SupervisedChild::current()` returns only the latest live,
 ready generation; `wait_for_generation(n)` waits for a ready generation newer
 than `n`. Old `ActorRef`s stay bound to the old instance and fail with
-`ActorStopped`; queued messages are discarded, never replayed.
+`NoProc` (queued requests got `ActorStopped` with its final reason); queued
+messages are discarded, never replayed.
 Checked by: `Supervision!PublishedIsLive`, `Cohorts!PublishedIsLive`;
 [`supervisor_policies`][supervisor_policies] (request fences),
 [`supervision_recovery`][ex_supervision_recovery] example.
@@ -596,7 +604,8 @@ ignored by non-trapping peers (X3), and the Permanent/Transient/Temporary table 
 - v0.8, rank 5g: one exit reason for runtime-dropped actors in both modes (changes L4, X6).
 - Design for 5e, the 5f startup rule and 5g, accepted (not implemented):
   [otp-exit-signals.md](otp-exit-signals.md). Reason-bearing `ActorStopped`
-  and `NoProc` for requests wait for rank 11 (#239).
+  and `NoProc` for sends and requests are implemented on the exit-signals
+  branch (#240, on top of rank 11's #239).
 
 - Rank 11, deferred typed replies, forwarding and pipe-to-self: a reply may
   leave the handler's turn; adds exactly-one completion on panic and timeout.
