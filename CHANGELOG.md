@@ -11,8 +11,11 @@
 - Test: coverage-guided scenario fuzzing on the deterministic simulator
   (`fuzz/`, cargo-fuzz + `arbitrary`): generated operation sequences over
   actors, links, monitors, timers, supervisors and systems, checked against
-  the semantics contract, with seed/strategy-fixed inputs, decision tapes and
-  generated `sim_test` regressions. Work in progress.
+  the semantics contract, with seed/strategy-fixed inputs, decision tapes,
+  `cargo fuzz tmin` -> `repro --emit` regressions, coverage and TLA+ trace
+  sample scripts, and a 60 s CI smoke run on pull requests (no scheduled
+  runs). A first 3-hour campaign found no framework bug. Adds
+  `spawned_rt::tasks::sim::stats()` (simulation builds only).
 
 ## 0.7.3 — 2026-11-10
 

@@ -575,9 +575,39 @@ for `Supervision.tla`, OneForAll and RestForOne, cohort actions only, for
 `fuzz/tla-sample.sh CORPUS [MAX] [OUT]` replays a corpus and runs
 `trace_check.py` on them (`nix develop -c fuzz/tla-sample.sh ...`).
 
-CI (`fuzz.yml`) runs the corpus test and a 60 s single-process smoke run on
-pull requests that touch `rt`, `concurrency`, `macros` or `fuzz`; longer
+CI (`fuzz.yml`) runs rustfmt, clippy and the harness tests (seeds,
+regressions, generated inputs) and a 60 s single-process smoke run on pull
+requests that touch `rt`, `concurrency`, `macros` or `fuzz`; longer
 campaigns are `workflow_dispatch` only. There is no scheduled run.
+
+**First campaign** (2026-11-11, a shared 30-core Linux server, libFuzzer fork
+mode with 4 then 2 workers at `nice 19`, `-s none`): about 3 h 10 min and
+20 million executions over eight segments; each segment restarted from the
+previous corpus after a harness fix. Throughput was 300-2,400 executions per
+second (median about 700) depending on machine load; a single process on
+an idle GitHub runner does about 1,100. Edge coverage (libFuzzer `cov`) grew
+from 7,900 after one minute to 9,400 after the first hour and 9,965 at the
+end (feature count 59,300, corpus 4,700 inputs), still rising slowly.
+`fuzz/coverage.sh` on the final corpus: lines covered in
+`supervision.rs` 83%, `tasks/actor.rs` 79%, `system.rs` 73%,
+`supervision/nested.rs` 75%, `link.rs` 91%, `monitor.rs` 77%, `tasks/time.rs`
+100%; threads mode, streams and protocol `Response` are not reachable from
+the harness. TLA+ trace validation accepted every exported lifecycle (see
+the PR for the sample size).
+
+Every failure was a harness false positive; no framework bug and no
+simulator fidelity problem was found. Each is kept in `fuzz/tests/` with the
+input and, for random schedules, its tape:
+
+| Oracle | Cause (harness) |
+|---|---|
+| liveness (fence) | a 1 ms `send_interval` of a 4 s sleep queued hours of work (`interval_sleep_fence`) |
+| S2 order | a later unit's abnormal exit stopped an earlier, linked unit through the link before the coordinator reached the units in between (`link_skips_shutdown_order`) |
+| V9 order | a `shutdown(0 ms)` that timed out signals every remaining child at once, by design (`short_shutdown_then_ordered`) |
+| M5/S3 leak | a dropped system's background shutdown released state after 3.4 s of virtual time, past a 3 s wait (`dropped_system_slow_cleanup`) |
+| V9 order | under the canonical schedule a yielding driver starved a child that was already stopping; quiescing now sleeps (`stopping_child_settles_before_order`) |
+| X3 | `ctx.link` from an exited actor's context is a no-op (`register_link` sees its own table closed), while linking to an exited peer delivers its reason (X5); found by the generated-input test before the campaign. The asymmetry is not stated in the semantics contract. |
+| livelock | a nested subtree that restarts more slowly than its parent's budget refills retries forever; the start is now bounded at 30 s |
 
 ## Scope
 
