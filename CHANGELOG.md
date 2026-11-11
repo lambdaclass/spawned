@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Design (not implementation) for rank 11, deferred typed replies and
+  pipe-to-self, revised over four passes after independent reviews:
+  `docs/design/deferred-replies.md`, client mapping for ethrex and ethlambda,
+  and the `DeferredReplies` (reply slots) and `DeferredJobs` (pipe jobs) TLA+
+  models with 22 negative controls, each checked against its named
+  invariant.
 - Test: coverage-guided scenario fuzzing on the deterministic simulator
   (`fuzz/`, cargo-fuzz + `arbitrary`): generated operation sequences over
   actors, links, monitors, timers, supervisors and systems, checked against
