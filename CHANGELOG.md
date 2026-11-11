@@ -23,6 +23,11 @@
   sample scripts, and a 60 s CI smoke run on pull requests (no scheduled
   runs). A first 3-hour campaign found no framework bug. Adds
   `spawned_rt::tasks::sim::stats()` (simulation builds only).
+- CI: keep the per-PR `tla` job fast again. The 43M-state `MCLifecycle`
+  configuration moves to the weekly/dispatch deep run and pull requests check
+  a smaller Lifecycle configuration on which every Lifecycle negative control
+  still fails on its named invariant; the trace-coverage cache is keyed on the
+  specs it depends on only and regenerated, so CI no longer recomputes it.
 
 ## 0.7.3 — 2026-11-10
 
