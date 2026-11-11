@@ -152,6 +152,9 @@ async fn expired_shutdown_retains_closed_runtime_until_startup_cleanup_finishes(
     assert_eq!(report.unfinished_groups, ["slow-start"]);
     assert!(group.is_closed());
     assert!(Worker.start_on(&group).is_err());
+    // The system kills what remains at grace (E3); let the kill land before
+    // started() returns, so the outcome does not race it.
+    spawned_rt::tasks::sleep(Duration::from_millis(100)).await;
     release.send(()).unwrap();
     assert!(report.wait(LIMIT).await.complete);
     assert!(actor.ready().await.is_err());
