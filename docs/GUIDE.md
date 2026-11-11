@@ -684,7 +684,11 @@ ctx.pipe_reply(token, async move { downstream?.await }, |res, token| Delegated {
   job's turn or a newer instance, it is dropped if the job is cancelled or
   replaced first, and the job's terminal message waits for it. An `at`
   already reached, or in the past, is an immediate emit (enqueued at the
-  call, ahead of later emits): no need to branch to `emit` yourself.
+  call, ahead of later emits): no need to branch to `emit` yourself. An
+  `at` past `JobOptions::deadline` is accepted, not an error: if the
+  deadline passes first it takes the notification and the emit is dropped
+  at its instant (if the job finishes first, the emit and then the result
+  arrive as usual).
 - **Job deadlines are hard.** When `JobOptions::deadline` (or
   `deadline_after(d)`) passes, `done` gets `DeadlineExceeded` at once, later
   emits fail with `JobGone` and the work's eventual result is dropped. The
@@ -1491,7 +1495,12 @@ requests are observed by their blocking request; `Response::ready` does not coun
 that result a second time. Manually constructed ready results are not requests.
 
 `request_raw` returns a `ReplyReceiver<R>`; it does not observe how the caller
-waits on it, so it is not a caller-observed request. Such requests
+waits on it, so it is not a caller-observed request. Its deadline clock is
+part of the contract: awaited directly, a raw receiver is expired by the
+owner's deadline heap on the real clock (the simulated one under
+`spawned_sim`), not by a runtime timer, so it does not follow paused Tokio
+time; that saves a timer per request on fan-out paths. Wrap it in
+`Response::from(rx)`, or use `request`, when a test pauses Tokio time. Such requests
 still contribute message, handler, queue and reply-delivery metrics, but only a
 framework request/Response wrapper contributes caller-outcome/latency metrics.
 Reply delivery means the reply was stored in the request's slot, not proof the

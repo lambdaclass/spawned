@@ -143,6 +143,15 @@ a server one. tasks: `request`-family futures enqueue on first poll and
 protocol methods enqueue when called; either way the deadline starts at the
 enqueue. threads: the call blocks. Expired requests are still dispatched (OTP);
 a late reply is dropped (`Delivery::Expired`).
+Which clock expires a waiting caller is part of the contract: `request`,
+`request_with_timeout` and `Response::from(rx)` arm the runtime's timer, so
+they follow paused Tokio time; a `ReplyReceiver` awaited directly
+(`request_raw(..)?.await`) puts its deadline in the owner's deadline heap
+instead, serviced on the real clock (the simulated one under `spawned_sim`),
+not paused Tokio time. The reason is cost: a raw receiver is the building
+block for fan-out and needs no runtime timer per request. Tests that pause
+Tokio time wait through `request` or `Response::from`. Either way a
+shortened deadline (`ReplyTo::with_deadline`) wakes the waiting caller.
 Checked by: [`protocol_timeouts`][protocol_timeouts],
 [`cancellation_safety::protocol_calls_are_cancel_safe_and_send_eagerly`][cancellation_safety],
 [`protocol_timeouts`][ex_protocol_timeouts] example (both modes),
@@ -194,6 +203,13 @@ work keeps its credit. Messages of cancelled or replaced (keyed) jobs are
 fenced at dispatch; a job's emits stay FIFO with the terminal message last.
 Owner exit cancels every job; they are joined after death, bounded by the
 cleanup deadline, and reported as `unfinished_at_stop`.
+`JobCtx::emit_at(at, ..)` with `at` past `JobOptions::deadline` is accepted:
+the hard deadline takes the terminal notification when it passes and fences
+everything after it, so the emit is dropped at its instant (its credit
+returns then). It is not an error at the call: whether the deadline wins is
+decided when it passes (the job may finish first, delivering the emit and
+then its result), and a job checks one rule, the deadline, rather than two.
+An `at` already reached is an immediate emit.
 Checked by: [`deferred_jobs`][deferred_jobs].
 
 ## 4. Lifecycle
