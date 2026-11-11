@@ -11,8 +11,13 @@
   that never yield), 8c (per-group stack size) and 44a (execution groups in a
   separate OS process); rank 18a's tracking allocator is opt-in.
 - Tests: semantics-contract coverage audit. `docs/TESTING.md` has a
-  guarantee-by-guarantee matrix (checks, modes and backends, whether a check
-  fails when the guarantee breaks); new tests fill the gaps it found.
+  guarantee-by-guarantee matrix (checks, modes and placements, whether a
+  check fails when the guarantee breaks): 31 of 50 guarantees were fully
+  covered, now 46. New `sim_ordering` checks D1, R2, M1, L1, D3/D4/L7 and X7
+  under PCT and bounded DFS; `semantics_gaps` checks the stop window, D5,
+  M1, M4, M5, L2, L5, R3, T3 and S6 on every placement and V2, V4, V6, V9,
+  S1 and S3 on the simulator. No bugs found; several contract citations
+  corrected.
 - Lockfile: `rustix` 1.1.2 -> 1.1.6 for RUSTSEC-2026-0486 (pulled in by the
   examples' `native-tls` dependency; spawned's crates are unaffected).
 - CI: a `sim` job runs the simulated test suites (`--cfg spawned_sim`) on

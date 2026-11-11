@@ -3,6 +3,11 @@
 //! (`send_after` and fixed-delay `send_interval` under paused Tokio time), T3
 //! (timers stay with their instance across a supervised restart) and R5 (a
 //! panicking request handler gives its caller exactly `ActorStopped`).
+//!
+//! The `*_contract` modules close the gaps found by the coverage audit in
+//! `docs/TESTING.md` ("Semantics coverage"): D3/D4/L7 (the stop window), D5,
+//! M1/L1, M4, M5, L2, L5, R3, T3 and S6 on every placement, and V2, V4, V6,
+//! V9, S1 and S3 on the simulator.
 //! Every wait is event-driven and bounded; no sleep is used to synchronize.
 use spawned_concurrency::{message::Message, ActorError, ChildHandle, Down, Exit, ExitReason};
 use std::time::Duration;
