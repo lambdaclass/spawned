@@ -572,8 +572,8 @@ Decided(s) ==
 GhostUpdate ==
     \* a start outcome committed after close: Ok, or the ignore decision
     /\ lateCommit' = [s \in Slots |-> lateCommit[s] \/
-                        ((sl'[s].result = "ok" /\ sl[s].result # "ok"
-                          \/ sl'[s].cause = "ignored" /\ sl[s].cause # "ignored") /\ ~open)]
+                        (((sl'[s].result = "ok" /\ sl[s].result # "ok")
+                          \/ (sl'[s].cause = "ignored" /\ sl[s].cause # "ignored")) /\ ~open)]
     /\ latePub' = [s \in Slots |-> latePub[s] \/
                         (sl'[s].pub # sl[s].pub /\ sl'[s].pub # 0 /\ (~open \/ sl[s].term))]
     /\ lateGenClose' = [s \in Slots |-> lateGenClose[s] \/ (Grew(s) /\ ~open)]
@@ -585,7 +585,7 @@ GhostUpdate ==
                          /\ ~sl[s].term /\ Allowed(s))]
     /\ restarts' = restarts + Cardinality({s \in Slots : Grew(s) /\ sl[s].gen > 0})
     \* the loop selected an operation: it must be the head at selection
-    /\ outOfOrder' = (outOfOrder \/ (served' # served /\ (Len(q) = 0 \/ served' # q[1].t)))
+    /\ outOfOrder' = (outOfOrder \/ ((served' # served) /\ ((Len(q) = 0) \/ (served' # q[1].t))))
     \* terminate calls still queued at the moment admission closed
     /\ queuedAtClose' = [c \in TermCalls |-> queuedAtClose[c] \/
                            (open /\ ~open' /\ tc[c].st = "queued")]
