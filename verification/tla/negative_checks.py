@@ -242,12 +242,19 @@ DEFERRED_CONTROLS = [
 ]
 
 INTROSPECTION_CONTROLS = [
-    ("MCIntrospection", "CheckThenAct", "FencedKill"),
-    ("MCIntrospection", "KillBitIgnored", "FencedKill"),
-    ("MCIntrospection", "StatusInTurn", "StatusBetweenTurns"),
-    ("MCIntrospection", "StatusLost", "StatusDischarged"),
+    ("MCIntrospection", "CheckThenAct", "NoChargeFinishedTurn"),
+    ("MCIntrospection", "FailedCasKills", "NoChargeFinishedTurn"),
+    ("MCIntrospection", "KillBitIgnored", "NoDispatchAfterStop"),
+    ("MCIntrospection", "PanicOverKill", "KillDominates"),
+    ("MCIntrospection", "DropLosesKill", "KillDominates"),
+    ("MCIntrospection", "NoInvalidateAtD", "NoCommitAfterD"),
     ("MCIntrospection", "KillRunsStopped", "KillSkipsStopped"),
     ("MCIntrospection", "DispatchAfterStop", "NoDispatchAfterStop"),
+    ("MCIntrospection", "StatusInTurn", "StatusBetweenTurns"),
+    ("MCIntrospection", "StatusLost", "StatusDischarged"),
+    ("MCIntrospection", "DoubleAnswer", "StatusAtMostOnce"),
+    ("MCIntrospection", "CallbackAfterGiveUp", "NoCallbackAfterGiveUp"),
+    ("MCIntrospection", "CallbackPanicStops", "CallbackPanicContained"),
 ]
 
 
