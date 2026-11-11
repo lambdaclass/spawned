@@ -1,13 +1,13 @@
 # Unified start API (0.9): design contract
 
-Status: design in review, revision 2, not implemented. Target release 0.9.
+Status: design in review, revision 3, not implemented. Target release 0.9.
 The implementation follows after two independent reviews. It is designed
 against the 0.8 API as #240 ships it: exit signals, `try_link`, `NoProc`, and
 the 0.8 API-review cleanups (`send_request`, `#[non_exhaustive]` builders).
 
-Revision 2 answers both round-one reviews (Codex and agy, both "approve after
-the listed changes"). What changed and why is in
-[Review resolutions](#20-review-resolutions).
+Revision 2 answered both round-one reviews. Revision 3 answers both round-two
+reviews (Codex and agy, both "approve after the listed changes", no P0). What
+changed and why is in [Review resolutions](#20-review-resolutions).
 
 - **Model:** [`verification/tla/Start.tla`](../../verification/tla/Start.tla),
   with configurations `MCStart`, `MCStartCap`, `MCStartTimeout`,
@@ -105,8 +105,10 @@ impl<A: Actor, T> Starting<A, T> {
 }
 
 /// OTP {ok, Pid} | ignore. Shared with the dynamic supervisor (section 18).
+/// `pending` is Some when the ignoring instance was not yet published at
+/// the cleanup deadline (section 5.5): it still holds its name and slot.
 #[must_use]
-pub enum StartOutcome<T> { Started(T), Ignored }
+pub enum StartOutcome<T> { Started(T), Ignored { pending: Option<ChildHandle> } }
 impl<T> StartOutcome<T> {
     pub fn started(self) -> Option<T>;
     pub fn is_ignored(&self) -> bool;
@@ -169,38 +171,51 @@ returned.
 links should see, as `{stop, R}`.
 
 **Resolution when `started()` returns.** Signals received during `started()`
-are held (0.8 phase 0, otp-exit-signals E2/E3). They are resolved with the
-trap flag that `started()` leaves, in this precedence. The first matching row
-decides both the starter's result and the final exit reason.
+are held (0.8 phase 0, otp-exit-signals E2/E3) and resolved with the trap flag
+that `started()` leaves. The first matching row below decides the **startup
+decision**: the immutable commitment (section 5.1) and the result's kind and
+diagnostic. It also sets the **requested exit reason**.
 
-| # | Condition | Exit reason | `stopped()` | Startup cell |
+The **final exit reason** is fixed only at D, by 0.8's precedence rules
+(otp-exit-signals "Reason precedence until D", L3). A kill, for example the
+scope deadline or `ChildHandle::kill()`, that arrives between the resolution
+and D still makes it `Killed`. An answer given after publication reports the
+final reason. An answer given at the cleanup deadline, before D, reports the
+requested reason as provisional (`pending: Some`).
+
+No failed row runs `stopped()`. OTP never calls `terminate/2` when `init/1`
+did not return `{ok, ..}`, and cleanup before readiness belongs in
+`started()` (agy F2, option A). A failed start therefore reaches D without a
+`stopped()` phase. Its reason can still be escalated by a kill before D.
+
+| # | Condition | Requested reason | `stopped()` | Startup decision |
 |---|---|---|---|---|
 | 1 | the init timer committed `timedout` (section 6) | `Killed` | no | `timedout` → `InitTimeout` |
-| 2 | a kill arrived (`kill()`, `exit(Kill)`, the S8 scope deadline) | `Killed` | no | failed → `InitExited { Killed }` |
-| 3 | the child does not trap, and a held non-`Normal` signal (parent exit, link notice, exit signal) arrived; the first in arrival order wins | that reason | no | failed → `InitExited { r }` |
-| 4 | `started()` panicked | `Panic("panic in started(): ..")` | no | failed → `InitExited { Panic }` |
-| 5 | `ctx.stop*(r)` was called in `started()` | `r` | yes (a self-exit, L1) | failed → `InitExited { r }` |
-| 6 | `Init::stop(r)` | `r` | no | failed → `InitExited { r }` |
+| 2 | a kill arrived (`kill()`, `exit(Kill)`, the S8 scope deadline) | `Killed` | no | failed → `InitExited` |
+| 3 | an administrative stop (`ChildHandle::stop*`, `shutdown`) arrived, or the child does not trap and a held non-`Normal` signal (parent exit, link notice, exit signal) arrived; the first of these in arrival order wins | its reason | no | failed → `InitExited` |
+| 4 | `started()` panicked | `Panic("panic in started(): ..")` | no | failed → `InitExited` |
+| 5 | `ctx.stop*(r)` was called in `started()` | `r` | **no** (as `{stop, r}`) | failed → `InitExited` |
+| 6 | `Init::stop(r)` | `r` | no | failed → `InitExited` |
 | 7 | `Err(e)` / `Init::error(e)` | `Normal` | no | failed → `InitFailed { cause: e }` |
 | 8 | `Init::ignore()` | `Normal` | no | ignored → `Ok(Ignored)` |
-| 9 | `Init::ready()` / `continue_with(m)`, but a managed scope's admission closed | `Shutdown` | no | failed → `InitExited { Shutdown }` |
+| 9 | `Init::ready()` / `continue_with(m)`, but the child's admission closed: its group, or for an owned child its owner's scope | `Shutdown` | no | failed → `InitExited` |
 | 10 | `Init::ready()` / `continue_with(m)` | runs | later | **ready** → `Ok(Started(..))` |
 
 - **Held signals in rows 9-10.** A held `Normal` signal to a non-trapping
-  child is dropped (E2). For a child that traps, every held non-kill signal is
-  queued as a mailbox entry in arrival order. That includes a parent exit,
+  child is dropped (E2). For a child that traps, every held trappable signal
+  is queued as a mailbox entry in arrival order. That includes a parent exit,
   even a `Normal` one (E3: it ends the child when handled). The child
-  commits ready, runs its continuation first, then handles the queued entries.
-  This is OTP's behaviour for an `init/1` that sets `trap_exit` and returns
-  `{continue, C}`.
+  commits ready, runs its continuation first, then handles the queued
+  entries. This is OTP's behaviour for an `init/1` that sets `trap_exit` and
+  returns `{continue, C}`. Administrative stops and kills are untrappable
+  (rows 2-3).
 - **A superseded diagnostic.** When a higher row wins over a returned
-  `Init::error(e)`, `e` is logged at debug level with the actor id. The
-  result is the winning row's.
-- **Cooperative deviation.** OTP applies a signal when it arrives, so a
-  signal before `process_flag(trap_exit, true)` kills a non-trapping process
-  immediately. Spawned reads the flag when `started()` returns. This is
-  0.8's documented Rust deviation (phase 0, R: no preemption). Section 11
-  labels it as such.
+  `Init::error(e)`, `e` is logged at debug level with the actor id.
+- **Cooperative deviation.** OTP applies a signal when it arrives; Spawned
+  reads the trap flag when `started()` returns. This is 0.8's documented
+  phase-0 deviation (R: no preemption).
+- **Behaviour change from 0.8.** A `ctx.stop()` inside `started()` no longer
+  runs `stopped()`.
 
 ### 2.4 `StartOptions<A>`
 
@@ -246,6 +261,21 @@ returns `InvalidOptions`:
 
 These rules are the same in both modes.
 
+**Names** (restored from revision 1; Codex R10):
+
+```rust
+pub struct Name<A: Actor> { /* the key; PhantomData<fn() -> A> */ }
+impl<A: Actor> Name<A> {
+    pub const fn new(key: &'static str) -> Self;   // usable in a static
+    pub fn from_string(key: String) -> Self;
+    pub fn key(&self) -> &str;
+    pub fn whereis(&self) -> Option<ActorRef<A>>;  // None if free or held by another type
+}
+impl<A: Actor> From<&'static str> for Name<A>;
+impl<A: Actor> From<String> for Name<A>;
+impl<A: Actor> Clone for Name<A>;                // no A: Clone bound
+```
+
 **Typing.** `StartOptions<A>` is typed by the actor, and `name` takes a
 `Name<A>`. Passing a `Name<B>` to an `A` start is a compile error (trybuild
 `name_type_must_match_actor`). `Name<A>` and `StartOptions<A>` are `Clone`
@@ -281,9 +311,15 @@ pub enum StartError {
 
 - **`pending`.** It is `None` when the child was published before the
   answer: dead, state dropped, notices sent, name and slot free. It is
-  `Some(handle)` when the bounded wait for publication expired first
-  (section 6). The handle is instance-bound: `wait_exit` reaches the real
-  end, and the name and slot stay held until then.
+  `Some(handle)` when the cleanup deadline expired first (section 5.5). The
+  handle is instance-bound: `wait_exit` reaches the real end, and the name
+  and slot stay held until then.
+- **`reason`.** With `pending: None` it is the final exit reason, the one
+  `wait_exit`, `Down` and `Exit` report. With `pending: Some` it is the
+  requested reason, and the final one comes from `pending.wait_exit()`
+  (Codex R3).
+- **A stuck `ignore`** answers `Ok(Ignored { pending: Some(handle) })` (Codex
+  R4).
 - **`ignore`** is the `Ok(StartOutcome::Ignored)` outcome, not an error, as
   OTP returns `ignore` beside `{ok, Pid}` (Codex 9).
 - **Removed:** `SystemError::StartupFailed`. `ready()` returns these
@@ -291,56 +327,90 @@ pub enum StartError {
 
 ## 3. Stage 1: one commit
 
-Stage 1 runs inside the call, before any `.await`, in two parts.
+Stage 1 runs inside the call, before any `.await`, in two parts. The atomic
+protocol continues through readiness (section 5.1) under the same global lock
+order (Codex R1, agy F4).
 
-1. **Prepare (invisible).** Validate the options; build the actor's shared
-   state, mailbox, startup cell and edges in private memory; and acquire the
-   executor resources. For `Backend::Thread` and threads mode, spawn the
-   thread parked on a start latch. For an async placement, reserve the task
-   slot. A failure returns `System` or `InvalidOptions`, and the state is
-   dropped outside every framework lock. Nothing was visible.
-2. **Commit (atomic).** Take, in this order:
-   1. the target group's admission lock;
-   2. the parent's exit-request lock, the one an exit begin takes;
-   3. the parent's link or monitor table lock;
-   4. the registry lock.
+1. **Prepare (invisible).**
+   - Validate the options.
+   - Build the actor's shared state in private memory: mailbox, startup
+     result, waiter cell, and the child's own link or monitor table with the
+     record of its parent edge. The child's tables are still unreachable, so
+     no shared lock is taken (agy F4.1).
+   - Acquire executor resources. For `Backend::Thread` and threads mode, spawn
+     the thread parked on a start latch. For an async placement, reserve the
+     task slot.
 
-   Under all of them, check in any order:
-   - the group is open and below capacity (`Closed`, `Capacity`);
+   A failure returns `System` or `InvalidOptions`. The prepared state is
+   dropped outside every framework lock, so nothing was ever visible.
+2. **Commit (atomic).** Take the locks in the global order below:
+   1. the owner's admission gate (owned children only, 4.1), and the
+      system's admission gate for any managed child;
+   2. the target group's admission lock;
+   3. the parent's exit-request lock;
+   4. the parent's link or monitor table;
+   5. the registry.
+
+   Under all of them, check:
+   - the owner's scope admits (`Closed`);
+   - the target group is open (`Closed`) and has a free slot (`Capacity`);
    - the parent's exit has not begun (`ParentExited`);
-   - the name is free (`AlreadyStarted`).
+   - the name is free (`AlreadyStarted`);
+   - for a supervised attempt, its absolute deadline has not passed (section
+     9).
 
-   On success, apply everything before releasing:
-   - the admission slot;
-   - the parent's edge, created with the startup cell's mark;
+   On success, apply, still under the locks:
+   - the slot;
+   - the attachment to the owner's scope (membership, section 4.1);
+   - the parent's half of the edge;
    - the name;
    - the actor's entry in introspection's actor table.
 
-   Release in reverse order, then open the start latch, which cannot fail.
-   On a refusal nothing was applied: release the locks, drop the prepared
-   state and stop the parked thread.
+   Release the locks in reverse order, then open the start latch, which
+   cannot fail. On a refusal nothing was applied: release the locks, drop the
+   prepared state, and stop the parked thread.
 
-**Guarantees.** A refused start is never observable: no `whereis` can return
-it, no `Capacity` refusal is caused by it, and no edge, notice or hook
+**The global lock order** (each path takes a subsequence, outer first):
+
+| # | Lock | Taken by |
+|---|---|---|
+| 1 | owner scope admission gate (`Admission`), then the system's | commit; the readiness commit (5.1); scope or system shutdown closing admission |
+| 2 | one group's admission state, and never two group locks at once | commit (the target group); release at publication |
+| 3 | an actor's exit-request lock | commit (the parent); exit begin; D |
+| 4 | link and monitor tables: one, or two in `Arc::as_ptr` order (`link.rs` `with_pair`) | commit (the parent's table only, since the child's is private); ordinary `link`, `unlink`, `monitor`; D |
+| 5 | the registry | commit; release at publication; `whereis` |
+| 6 | a startup cell | the readiness commit; the timer; publication's disposition; the waiter; abandonment |
+
+Rules:
+
+- **Scope state.** A `Scope`'s own state lock is never held while a group,
+  exit-request, table or registry lock is taken (0.8's `Scope` methods take
+  the group first; they stay leaves).
+- **Delivery outside the locks.** A notice, a signal or a kill decided under a
+  lock is delivered after the lock is released. Delivery takes the target's
+  mailbox and exit-request locks, which are rank 3. Nothing decides under
+  rank 3 or 4 and then takes rank 1 or 2.
+- **Cross-group starts.** An actor in `G_p` starting a child in `G_c`, while
+  an actor in `G_c` starts one in `G_p`, holds its owner gate and then one
+  group lock. Gates are per scope, and at most one group lock is held at a
+  time, so no cycle exists.
+- **Loom.** The test covers: a commit racing the parent's exit begin; two
+  commits of one name; a readiness commit racing scope closure; the timer
+  racing the readiness commit; and two cross-group commits.
+
+**Guarantees.** A refused start is never observable: no `whereis` returns it,
+no competing start is refused because of it, and no edge, notice or hook
 exists. Every admission becomes visible at one instant. This is the
-`spawn_opt([link, monitor])` atomicity. Model: `AbortInvisible`, with a
-`Lookup` observer; control `SplitCommit`, which registers the name before the
-rest of the commit.
+`spawn_opt([link, monitor])` atomicity. Model: `AbortInvisible`, which checks
+lookups and competitors' refusals (control `SplitCommit`), and
+`OwnedOnlyWhileOwnerOpen` (control `OwnerUnchecked`).
 
-**Lock-order obligations for the implementation.** The order above is global.
-No 0.8 path takes a registry lock and then a link-table, exit-request or
-group lock, and the implementation keeps it so. A Loom test covers a commit
-racing the parent's exit begin and a concurrent commit of the same name.
-
-**Bare `spawn()`** is infallible in its signature. An executor construction
-failure in the prepare step panics with the `SystemError`, as
-`std::thread::spawn` does. `with_options(..).spawn()` returns it instead.
+**Bare `spawn()`** panics with the `SystemError` if executor construction
+fails in the prepare step, as `std::thread::spawn` does.
+`with_options(..).spawn()` returns it instead.
 
 **Forgotten `.await`.** Stage 1 is eager, so `x.start();` without `.await`
-still starts the actor, and the dropped `Starting` abandons the wait
-(section 5.4). In the migration a 0.8 statement `x.start();` therefore keeps
-working. It also warns under `#[must_use]`, which the clients' clippy
-`-D warnings` gate turns into an error.
+still starts the actor, and the dropped `Starting` abandons the wait (5.4).
 
 ## 4. Placement and inheritance
 
@@ -371,127 +441,196 @@ and would silently move 20 ethrex call sites into groups.
 
 ### 4.1 S8: linked children owned by the parent's scope
 
-Ownership is decided separately from inheritance, by this rule:
+**Ownership** is decided separately from inheritance. A `start_link` child is
+owned by its parent's scope when the parent is managed and the child is
+admitted to a group of the parent's `ActorSystem`.
 
-- **Owned.** A `start_link` child is owned by its parent's scope when the
-  parent is managed and the child is admitted to a group of the parent's
-  `ActorSystem`. That covers an inherited group, an explicit group of the same
-  system, and a pinned shard.
-- **Not owned.** A `start_monitor` child, a child placed unmanaged, and a
-  child in another system. It is linked only, as in OTP, and is owned by its
-  own placement: the other system's shutdown, or nobody (S6).
+- **Owned:** an inherited group, an explicit group of the same system, or a
+  pinned shard.
+- **Not owned:** a `start_monitor` child, a child placed unmanaged, or a
+  child in another system. These are linked only, as in OTP.
+- **When ownership is attached:** in the commit, under the owner's admission
+  gate (section 3), so a closed owner refuses (`Closed`).
+- **Nested ownership.** An owned child that starts its own linked children
+  owns them in turn. Its scope is a member of its parent's scope, so
+  ownership is transitive.
 
-**What ownership means.**
+**When the parent exits** (Codex R2, agy F3):
 
-- **System shutdown.** It reaches an owned child through its parent. The
-  parent's turn in the reverse admission order (S2) ends when the parent and
-  its owned descendants are published, or at the grace deadline.
-- **Supervised parents.** The generation counts as finished (V3) only when
-  its owned descendants are published too. A replacement never overlaps
-  them.
-- **Unlink.** Ownership persists after `unlink`. That is not OTP link
-  semantics; it is scope ownership, justified by Rust resource lifetimes. A
-  descendant may hold resources (sockets, files, a native slot) that the
-  parent's replacement or the system's shutdown report must see released, as
-  for 0.8's registered helpers.
+1. **At P's exit begin:** P's scope closes for new owned children (they are
+   refused as `ParentExited` or `Closed`), and the scope deadline is armed
+   (below).
+2. **At P's D:** P's edges close, and the link notices to its linked children
+   are taken.
+3. **At P's publication** (after P's destruction): the parent exits reach
+   the linked children (E3). The scope also sends every live owned member
+   that is not already exiting a polite parent `Shutdown` signal, which ends
+   it through E3. That covers unlinked members, and linked ones that a
+   `Normal` parent exit would leave running. Releasing P's slot comes at this
+   point too, not at D.
+4. **P's generation is done** (V3, the scope's join) only when P and every
+   owned member are published and their owned work has finished. That is
+   0.8's scope completion: helpers and jobs joined, as for any scope.
 
-**Deadlines.** One interval, the parent's row in the E3 deadline table,
-covers the whole scope:
+The polite `Shutdown` is not OTP link semantics; a gen_server's linked worker
+survives a `normal` parent exit. It is the consequence of scope ownership, as
+a supervisor's shutdown of its children is. Its justification is Rust's
+resource lifetimes: a member may hold resources (sockets, files, a native
+slot) that the parent's replacement or the system's report must see released.
 
-- `shutdown_timeout` from the parent's signal when the supervisor or system
-  stops it;
-- `shutdown_timeout` from the exit begin when the parent exits on its own
-  (5 s unmanaged default).
+**Deadlines** (Codex R7). All deadlines are absolute instants, and composing
+two deadlines takes the earlier. Anchors:
 
-At its expiry the scope deadline sends a kill to every still-alive member,
-the parent and each owned descendant, linked or not. Each member is killed
-directly; nothing waits for the parent's D. One more interval later, the
-scope is stuck, with the existing V3/E3 consequences.
+| Event | Deadline armed | At expiry |
+|---|---|---|
+| P's exit begins: by a supervisor or system stop, a signal, or on its own | P's **scope deadline** = the anchor of P's E3 row + P's `shutdown_timeout` (5 s unmanaged default) | every live member of P's scope, transitively, is killed directly, exiting ones included (agy F3). P itself follows its own E3 row: killed if the supervisor or system stopped it, never if it exited on its own (no relabel) |
+| the scope deadline expires | the **stuck deadline** = the scope deadline + the same interval | the scope is stuck (V3, E3) |
+| a member's own exit begins on its own | its E3 row 4 cleanup interval; for a member, the earlier of that and its owner's scope deadline | stuck (row 4), or killed by the owner's scope deadline if that comes first |
+| a nested owned scope's parent exits | its own scope deadline = the earlier of its own anchor + interval and every ancestor's scope deadline | as above |
 
-A parent that never reaches D does not delay the descendants' kill. System
-grace expiry likewise kills every remaining actor of every scope directly
-(S2, S3). A descendant still linked normally ends earlier, by its parent
-exit at the parent's D (E3).
+No later transition extends a deadline: a deadline only moves earlier. The
+reason stays final after D, and a kill after D does nothing. P stuck before
+its D does not delay anything, since the scope deadline is anchored at P's
+exit begin. A member that is never told to stop (P stuck in `stopped()`, so
+no publication) is still killed at the scope deadline. System grace expiry
+kills every remaining actor of every scope directly (S2, S3).
 
-Model: `MCStartScope`, with invariant `GenDoneMeansOwnedDone` (control
-`EarlyGenDone`) and liveness `OwnedScopeFinishes` (control `NoScopeKill`: the
-deadline spares unlinked descendants).
+**Revised E3 table rows**, written into `otp-exit-signals.md` and
+`semantics.md` by the implementation PR:
+
+- **row 1 (supervisor shutdown):** unchanged for the child, and applies to
+  the child's whole scope;
+- **row 4 (exits on its own):** stuck after one interval, unchanged for the
+  actor itself; its owned members are killed at that same instant (the scope
+  deadline), then the scope is stuck one interval later.
+
+**Model** (`MCStartScope`). One linked child of a managed parent, owned
+(group `G` or `G2`) or not (unmanaged), trapping or not, which may unlink.
+P's scope may close. The model covers P's D and its publication with the
+polite `Shutdown`, a scope deadline armed from P's exit begin that reaches
+exiting members, and the generation end. Properties and controls:
+
+- `OwnedOnlyWhileOwnerOpen`, control `OwnerUnchecked`;
+- `GenDoneMeansOwnedDone` (P published and every member published),
+  controls `EarlyGenDone` and `GenDoneAtParentD`;
+- `DeadlineKillsAllOwned`, control `NoScopeKill`, which spares exiting
+  members;
+- `ParentSlotHeld`, control `ParentSlotAtD`;
+- liveness `OwnedScopeFinishes` without assuming the scope deadline, control
+  `NoPoliteStop`.
+
+The parent-child-grandchild case is not modelled. Transitive membership
+means the root scope's deadline acts on one member set, and the integration
+and sim tests in 16.1 use three levels.
 
 ## 5. The startup cell and `start_link`/`start_monitor`
 
 ### 5.1 The cell
 
-Each start that has a waiter (`start`, `start_link`, `start_monitor`), and
-each start with an init timer, gets one cell. Its two parts:
+**Storage for every start** (Codex R5). Every actor's shared state, on every
+verb including plain `spawn`, holds a `StartupResult`:
 
-```text
-commitment: Pending -> Ready | Failed(cause, reason) | Ignored | TimedOut   (exactly once)
-waiter:     Waiting -> Consumed | Abandoned                                  (exactly once)
-```
+- an atomic state word: `Pending`, `Ready`, `Failed`, `Ignored` or
+  `TimedOut`;
+- a `OnceLock` with the diagnostic (`InitFailed` cause) and the requested
+  reason;
+- the commitment instant, which anchors the cleanup deadline.
 
-The cell has one lock. The edges created at the commit carry the cell's mark.
+It is written once and never changes. It costs one word and one uninitialised
+`OnceLock` in the `Arc` that `spawn` already allocates. The run loop only
+writes it once at the end of `started()`, so nothing is added on send or
+dispatch (benchmark gate, 16.1).
 
-**Ready.** The child commits it at the end of `started()` under the cell
-lock, when row 10 of 2.3 applies and (for managed actors) admission is still
-open. The same critical section:
+**The waiter cell** exists only for a waiting start
+(`start`/`start_link`/`start_monitor`) or a timed one. It holds the waiter
+state (`Waiting`, then `Consumed` or `Abandoned`), the diverted notice slot,
+the init timer, and the start marks the edges refer to. It is separate from
+the result, so `ready()` never depends on a waiter.
 
-1. commits `Ready`;
-2. disarms the init timer;
-3. clears the start marks on the edges;
+**The readiness commit** runs at the end of `started()` when row 10 of 2.3
+applies. It takes, in the order of section 3:
+
+1. the child's admission gate (its group's, and for an owned child, its
+   owner's);
+2. the cell lock.
+
+Under both, it checks that admission is open, then:
+
+1. CASes `Pending → Ready` (the timer's CAS cannot win after this);
+2. disarms the timer;
+3. sets the waiter cell to "ready", which makes every later notice of this
+   instance ordinary (the edges' start marks are read through the cell);
 4. publishes the result to the waiter and to `ready()`.
 
-Only then does the child run its continuation or dispatch. Readiness is
-final: a later death of the child is an ordinary death with an ordinary
-`Exit`/`Down`, whether or not the waiter has polled yet (agy P0-1, Codex 1).
-OTP sends `init_ack` before entering the loop (`gen_server.erl:2185-2201`).
-Model: `ReadyIsFinal` (control `DivertAfterReady`), `ResultMatchesCommit`,
+Only after releasing does the child run its continuation or dispatch. Scope
+or group closure takes the same admission gate, so it either precedes the
+commit (row 9) or follows it (the child is ready and is stopped later). Model:
 `ReadyOnlyWhileOpen` (control `ReadyAfterClose`).
 
-**Failed / Ignored.** The child commits it at the end of `started()` (rows
-2-9), or at a kill before `started()` began.
+**Readiness is final** (agy P0-1, Codex 1). A later death of the child is an
+ordinary death with an ordinary `Exit`/`Down`, whether or not the waiter has
+polled. OTP sends `init_ack` before entering the loop
+(`gen_server.erl:2185-2201`). Model:
 
-**TimedOut.** The framework-owned init timer commits it (section 6).
+- `CommitImmutable`: a first-commit history `commit0` that no action may
+  change (control `RewriteCommit`);
+- `ReadyIsFinal` (control `AnswerReadyAsFailure`);
+- `NoLostNotice` (control `MarkKeptAfterReady`: readiness leaves the marks,
+  so a post-ready notice is diverted and lost).
 
-Exactly one of these wins the `Pending` state. In particular, the timer can
-win only while the cell is `Pending`, and the child's readiness commit can
-win only while the timer has not committed (`TimeoutNeverKillsReady`, control
-`TimerIgnoresCommit`; agy P0-2, Codex 2).
+**Failed / Ignored** are committed by the child at the end of `started()`
+(rows 2-9), or at a kill before `started()` began. **TimedOut** is committed
+by the framework-owned init timer (section 6). Exactly one CAS wins `Pending`:
+`TimeoutNeverKillsReady` (control `TimerIgnoresCommit`).
 
 ### 5.2 Edges, death and publication
 
-The child's death has three steps, as in otp-exit-signals:
+The child's death has four steps (otp-exit-signals phases 4-6, with
+publication split for the trace mapping; Codex R8):
 
-1. **D.** The edges close and their notices are taken.
+1. **D.** The final exit reason is fixed. The edges close and their notices
+   are taken.
 2. **Destruction.** Queued messages and the state `A` are dropped, outside
    framework locks.
-3. **Publication**, in this order:
-   1. release the name;
-   2. release the admission slot;
-   3. dispose of each taken notice through the cell;
-   4. publish `wait_exit`;
-   5. answer the waiter.
+3. **Release.** The name is released (registry lock), then the admission
+   slot (group lock).
+4. **Publication.** Under the cell lock, each taken notice is disposed of by
+   the commitment and the waiter state (table below). Deliveries happen
+   after the lock is released. Then `wait_exit` is published, and answers
+   become available.
 
-The waiter answers only from publication (agy P0-3, Codex 5), so a retry never
-overlaps the old instance's `Drop`. This is OTP's completed-failure boundary,
-since `sync_start` awaits the `'DOWN'`. Model: `FailureAfterPublication`
-(control `EarlyFailAck`), `NoOverlapOnReuse` (control `UnregisterAtDeath`),
-`NameFreeBeforeObservation` (control `LateUnregister`).
+The waiter answers only from publication, so a retry never overlaps the old
+instance's `Drop` and the reported reason is final. Model:
 
-**Disposition of a taken notice** under the cell lock at publication:
+- `FailureAfterPublication` (control `EarlyFailAck`);
+- `ReportedReasonFinal` (control `FrozenReason`);
+- `NameKeptWhileLive` and `NoOverlapOnReuse` (control `UnregisterAtDeath`);
+- `NameFreeBeforeObservation` (control `LateUnregister`);
+- `SlotHeldUntilReleased` (control `EarlySlotRelease`).
 
-| Cell | Waiter | Trapping parent (`Exit`) | Non-trapping parent | Monitor (`Down`) |
+**Disposition of a taken notice at publication** (agy F1 fixes the
+`TimedOut` rows):
+
+| Commitment | Waiter | Trapping parent (`Exit`) | Non-trapping parent | Monitor (`Down`) |
 |---|---|---|---|---|
-| `Ready` (any waiter) | any | delivered | applied if non-`Normal` (X3) | delivered |
-| `Failed`/`Ignored` | `Waiting` | diverted to the cell, consumed by the error | **applied if non-`Normal`**: the parent exits after its current handler (OTP: the link kills the caller) | diverted, consumed |
-| `Failed`/`Ignored` | `Consumed` (bounded wait expired) | dropped | applied if non-`Normal` | dropped |
-| `TimedOut` | `Waiting` / `Consumed` | dropped | **not applied** | dropped |
-| any non-`Ready` | `Abandoned` | delivered | applied if non-`Normal` | delivered |
+| `Ready` | any | delivered | applied if non-`Normal` (X3) | delivered |
+| `Failed`/`Ignored` | `Waiting` | diverted to the cell; the error consumes it, abandonment hands it on | **applied if non-`Normal`**: the parent exits after its current handler (OTP: the link kills the caller); `Normal` ignored | diverted (as for `Exit`) |
+| `TimedOut` | `Waiting` | diverted; `InitTimeout` consumes it, abandonment hands it on | **diverted**: `InitTimeout` consumes it, so P is not killed (`kill_flush_EXIT`); abandonment hands it on, so a non-trapping P then dies `Killed` | diverted |
+| `Failed`/`Ignored`/`TimedOut` | `Consumed` (answered at the cleanup deadline) | dropped | `Failed` non-`Normal`: applied; otherwise dropped | dropped |
+| any non-`Ready` | `Abandoned` or none | delivered | applied if non-`Normal` | delivered |
 
-The timeout rows are OTP's `kill_flush_EXIT`, which unlinks before the kill.
-Spawned keeps the edge and suppresses its notice instead, which is the same
-observably, and the waiter decides at publication. Model: `FailureFlushed`
-(controls `NoLinkFlush`, `NoMonitorFlush`), `TimeoutContained` (control
-`KillBeforeUnlink`), `NoticeOnce` (control `DoubleNotice`).
+A notice is never lost: every taken notice is delivered, diverted, applied,
+or suppressed by a consumed failure. Model: `NoLostNotice` (the model
+records any other drop), `FailureFlushed` (controls `NoLinkFlush`,
+`NoMonitorFlush`), `FailureEndsNonTrappingParent` (control
+`NoParentKillOnFailure`), `NormalFailureSparesParent` (control
+`KillOnNormalFailure`), `TimeoutContained` (control `KillBeforeUnlink`),
+and `NoticeOnce` (control `DoubleNotice`).
+
+**The parent's own death** follows the same steps (Codex R2): its link
+notices to children are taken at P's D, delivered at P's publication, and
+P's slot is released at P's publication. Model: `ParentSlotHeld` (control
+`ParentSlotAtD`), `ParentExitReachesChild`.
 
 ### 5.3 Parent state
 
@@ -514,42 +653,61 @@ observably, and the waiter decides at publication. Model: `FailureFlushed`
 ### 5.4 Abandoning the wait
 
 Dropping the `Starting` sets the waiter to `Abandoned` under the cell lock. An
-abandoned wait never consumes anything:
+abandoned wait never consumes anything.
 
-- **Already diverted.** A notice already diverted to the cell is handed to
-  the parent as an ordinary notice, exactly once (`AbandonedNoticeDelivered`,
-  which checks the kind and the reason; control `AbandonDropsNotice`).
-- **Later.** A later notice is ordinary (table above).
-- **Timer.** The init timer is unaffected (section 6).
+- **Already diverted.** A diverted notice is handed to the parent as an
+  ordinary notice, exactly once, after the lock is released. This applies to
+  every commitment and both trap settings, including a `TimedOut` notice to a
+  non-trapping parent, which then dies `Killed`.
+- **Later.** A later notice is ordinary (5.2).
+- **The timer and the result** are unaffected.
 
-An abandoned `start` is `spawn`.
+Model: `AbandonedNoticeDelivered`, which checks the kind, the reason and the
+parent's exit for a non-trapping parent (control `AbandonDropsNotice`), and
+`NoLostNotice`. An abandoned `start` is `spawn`.
 
 ### 5.5 Answering
 
-| Committed | Waiter answers |
-|---|---|
-| `Ready` | at once: `Ok(Started(..))` |
-| `Ignored` | after publication: `Ok(Ignored)` |
-| `Failed` | after publication: `InitFailed`/`InitExited { pending: None }` |
-| `TimedOut` | after publication: `InitTimeout { pending: None }` |
-| any failure, publication not reached by the bounded wait | at the bound: `pending: Some(handle)` |
+| Committed | Waiter answers | `ready()` answers |
+|---|---|---|
+| `Ready` | at once: `Ok(Started(..))` | `Ok(Started(()))` |
+| `Ignored` | after publication: `Ok(Ignored { pending: None })`; at the cleanup deadline: `Ok(Ignored { pending: Some(h) })` | the same |
+| `Failed` | after publication: `InitFailed`/`InitExited { reason: final, pending: None }`; at the cleanup deadline: `{ reason: requested, pending: Some(h) }` | the same |
+| `TimedOut` | after publication: `InitTimeout { pending: None }`; at the cleanup deadline: `{ pending: Some(h) }` | the same |
 
-The bounded wait is the placement's cleanup deadline: 5 s unmanaged, or the
-group's or spec's otherwise. `ready()` reads the same cell and answers the
-same value, at any time and any number of times (agy P1-6). Model:
-`StartAnswered` (liveness; control `NoAnswerIgnore`).
+**The cleanup deadline** is one absolute instant per instance (Codex R5,
+R6): the commitment instant plus the placement's cleanup interval (5 s
+unmanaged; otherwise the group's or the spec's). Every observer shares it.
+Before it, an observer of a failed, ignored or timed-out instance waits for
+publication. After it, an observer answers with `pending: Some` if
+publication has not happened, and `pending: None` once it has.
+
+**Repeated observations** sample the cleanup status: the commitment kind and
+the diagnostic never change. A `ready()` after publication answers
+`pending: None` even if an earlier observer got `Some`. Only the waiter
+consumes its notice.
+
+Model:
+
+- `PendingOnlyAfterDeadline`, with an explicit `CleanupDeadline` step that
+  is not assumed to fire (control `EarlyPending`);
+- `ResultMatchesCommit` against `commit0` (controls `AckBeforeStarted`,
+  `ErrorAsOk`);
+- `StartAnswered` (liveness, control `NoAnswerIgnore`).
 
 ## 6. Init timeout
 
 `init_timeout(d)` arms a framework-owned timer at the commit, only when the
-option is set. The waiter does not own it, so it runs whether or not anyone
+option is set. The timer is stored in the waiter cell, or for a timed
+`spawn`, in a cell created for it. The waiter does not own it, so it runs whether or not anyone
 polls, and abandonment does not change it (Codex 2).
 
 At expiry, under the cell lock:
 
-- **Cell `Pending`:** commit `TimedOut`, then send a kill. The start edges
-  stay. Their notice is disposed of at publication by the waiter: suppressed
-  while waiting or consumed, ordinary if abandoned (5.2).
+- **Commitment `Pending`:** commit `TimedOut`, then send a kill. The start
+  edges stay. Their notice is disposed of at publication by the waiter:
+  diverted while waiting (consumed by `InitTimeout`, handed on if the wait is
+  later abandoned), dropped once consumed, ordinary if abandoned first (5.2).
 - **Already committed:** nothing happens (`TimeoutNeverKillsReady`).
 
 **Stuck policy (explicit, agy P1-5).** The kill is applied cooperatively,
