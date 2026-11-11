@@ -2,55 +2,41 @@
 (***************************************************************************)
 (* Rank 12a design model (not implemented): a dynamic supervisor, OTP's   *)
 (* simple_one_for_one / Elixir's DynamicSupervisor. Design contract:      *)
-(* docs/design/dynamic-supervisor.md.                                     *)
+(* docs/design/dynamic-supervisor.md (revision 2, after review).          *)
 (*                                                                         *)
 (* Slots 1..N are potential start_child calls; each is made at most once, *)
-(* at any time, so starts race crashes, restarts, terminate_child,        *)
-(* max_children and shutdown. A slot that is admitted owns one child:     *)
-(* its first generation, then restarts with fresh generations (fresh      *)
-(* ActorIds) until the child is removed. Restart types are per slot so    *)
-(* one instance covers all three (a simple_one_for_one template has one   *)
-(* type; mixing them is the heterogeneous case and loses nothing).         *)
+(* at any time, and each started child can get one terminate_child call.  *)
+(* As in OTP, one control loop (`op`) serialises the supervisor's         *)
+(* operations: admitting a start and constructing its first generation,   *)
+(* a restart decision and the restart attempt, and a terminate_child,     *)
+(* each runs to completion before the next. Children run, exit and clean  *)
+(* up concurrently. Shutdown (Close) and failure close admission at once  *)
+(* and cancel the operation in progress (B: tree-wide admission closure). *)
 (*                                                                         *)
-(* Abstractions, as in Supervision.tla:                                   *)
-(*  - The admission gate and the supervisor's cancel are one boolean      *)
-(*    `open`; shutdown (Close) and failure (Fail) both close it.          *)
-(*  - Time is abstract. The rolling restart window is a counter released  *)
-(*    by WindowExpire, at most MaxExpire times, which also bounds the     *)
-(*    number of generations (no state constraint is needed).              *)
+(* Restart types are per slot so one instance covers all three (a         *)
+(* simple_one_for_one template has one type; mixing them loses nothing).  *)
+(*                                                                         *)
+(* Abstractions:                                                           *)
+(*  - `open` is the admission gate and the supervisor's cancel together.  *)
+(*  - Time is abstract. The rolling window is `windowed` (stamped grants  *)
+(*    still in the window), released by WindowExpire at most MaxExpire    *)
+(*    times, which also bounds the generations. Backoff is the "backoff"  *)
+(*    state (zero-length when backoff is disabled, the default).          *)
 (*  - The shutdown_timeout -> kill escalation is the nondeterministic     *)
 (*    reason of StopObserved (Shutdown, or Killed after the kill). A      *)
-(*    cleanup that misses its second interval is CleanupStuck: the        *)
-(*    supervisor fails, the generation stays alive until it really ends.  *)
-(*  - Backoff is the "backoff" state; its sleep is not modelled.          *)
-(*  - The budget is charged when a restart attempt is admitted; the       *)
-(*    implementation's reserve-then-stamp protocol is checked in          *)
-(*    Supervision.tla and shared code.                                    *)
+(*    child that misses its deadlines, before its death point (signalled  *)
+(*    but still running) or after it (owned cleanup), is CleanupStuck.    *)
+(*  - The shutdown fan-out is one step (the implementation sends every    *)
+(*    signal without awaiting between sends; each child's intervals run  *)
+(*    from its own signal, design E3).                                    *)
+(*                                                                         *)
+(* Invariants that name an event (a late commit, a late generation, a     *)
+(* policy violation) read history variables that GhostUpdate computes     *)
+(* from every step's state change, independently of the actions, so a     *)
+(* mutated action cannot hide its own violation.                          *)
 (*                                                                         *)
 (* Fault selects a negative control; negative_checks.py requires each to  *)
-(* violate its named invariant:                                           *)
-(*   IgnoreMax            (MaxChildrenBound)    admission ignores the cap *)
-(*   UncountedRestart     (MaxChildrenBound)    a crashed child frees its *)
-(*                                              slot until it restarts    *)
-(*   RestartTemporary     (TemporaryNeverRestarted)                       *)
-(*   RestartTerminated    (TerminatedNeverRestarted) terminate_child      *)
-(*                                              does not cancel restart   *)
-(*   AcceptDuringShutdown (NoStartAfterShutdown) start_child admitted and *)
-(*                                              committed after close     *)
-(*   RestartAfterClose    (NoGenerationAfterClose) a pending restart      *)
-(*                                              proceeds after close      *)
-(*   NoEscalate           (ExhaustionCloses)    budget exhaustion drops   *)
-(*                                              only that child           *)
-(*   EarlyDone            (NoChildOutlivesSupervisor) done before every   *)
-(*                                              child finished            *)
-(*   Sequential           (ConcurrentShutdown)  children stopped one at a *)
-(*                                              time, as a static         *)
-(*                                              supervisor does           *)
-(* and two liveness controls (named_temporal):                            *)
-(*   NoAbort              (StartAnswered)       a start racing shutdown   *)
-(*                                              is not cancelled          *)
-(*   StuckBackoff         (ClosedLeadsToDone)   a pending restart is not  *)
-(*                                              cancelled by shutdown     *)
+(* violate its named property (see DYNAMIC_CONTROLS there).               *)
 (***************************************************************************)
 EXTENDS Naturals, FiniteSets
 
@@ -58,385 +44,525 @@ CONSTANTS
     N,            \* number of start_child calls (slots 1..N)
     Mode,         \* Mode[s] \in {"Permanent", "Transient", "Temporary"}
     MaxChildren,  \* max_children
-    MaxRestarts,  \* restart intensity (max_restarts per window)
-    MaxExpire,    \* how often the rolling window may release an entry
+    MaxRestarts,  \* restart intensity (grants per window)
+    MaxExpire,    \* how often the rolling window may release a grant
     SelfExits,    \* reasons a ready child may exit with on its own
     StartFails,   \* outcomes of a failed construction or readiness
+    CleanupFails, \* {FALSE} or {FALSE, TRUE}: cleanup may record a failure
     Fault
 
-Slots  == 1..N
-Modes  == {"Permanent", "Transient", "Temporary"}
+Slots    == 1..N
+Modes    == {"Permanent", "Transient", "Temporary"}
 \* "none": factory error or panic (no actor reason); "timeout": startup
 \* deadline; otherwise the actor's exit reason (v0.8 reasons, design E5).
 Reasons  == {"none", "timeout", "Normal", "Shutdown", "Panic", "Kill", "Killed"}
 Abnormal == {"none", "timeout", "Panic", "Kill", "Killed"}
+Faults   == {"None",
+    \* revision 1 controls
+    "IgnoreMax", "UncountedRestart", "RestartTemporary", "RestartTerminated",
+    "AcceptDuringShutdown", "RestartAfterClose", "NoEscalate", "EarlyDone",
+    "Sequential", "NoAbort", "StuckBackoff",
+    \* revision 2 controls (review findings)
+    "ConcurrentStart", "StuckFailsAll", "PublishAfterClose", "OverlapGeneration",
+    "PublishBeforeReady", "PrematureOk", "UnchargedRetry", "ChargeFirstStart",
+    "TransientNormalRestart", "PermanentRetires", "RetryFirstStart",
+    "EarlyFailedReply", "NoRefund", "ExpireReserved", "TermReplyEarly",
+    "LateFailedOverwrite"}
 
-ASSUME N \in Nat \ {0} /\ MaxChildren \in Nat \ {0}
+ASSUME N \in Nat \ {0} /\ MaxChildren \in Nat
 ASSUME MaxRestarts \in Nat /\ MaxExpire \in Nat
 ASSUME \A s \in Slots : Mode[s] \in Modes
 ASSUME SelfExits \subseteq Reasons /\ StartFails \subseteq Reasons
-ASSUME Fault \in {"None", "IgnoreMax", "UncountedRestart", "RestartTemporary",
-                  "RestartTerminated", "AcceptDuringShutdown", "RestartAfterClose",
-                  "NoEscalate", "EarlyDone", "Sequential", "NoAbort",
-                  "StuckBackoff"}
+ASSUME CleanupFails \subseteq BOOLEAN /\ FALSE \in CleanupFails
+ASSUME Fault \in Faults
 
-\* Slot states. "idle": start_child not called yet. "starting": the first
-\* generation is being constructed (the caller waits). "restarting": a
-\* replacement is being constructed. "cleanup": the generation is exiting
-\* and its owned cleanup has not finished. "decide": cleanup finished,
-\* restart decision pending. "backoff": a restart is pending.
-\* "removed" and "rejected" are terminal.
-States   == {"idle", "starting", "running", "cleanup", "decide", "backoff",
-             "restarting", "removed", "rejected"}
-Active   == {"starting", "running", "cleanup", "decide", "backoff", "restarting"}
+\* Slot states. "idle": start_child not called. "queued": the call waits
+\* for the control loop. "starting": the first generation is constructed.
+\* "restarting": a replacement is constructed. "cleanup": the generation is
+\* exiting or its owned cleanup has not finished. "decide": cleanup done,
+\* the loop has not handled the exit yet. "backoff": a restart is pending,
+\* holding a budget reservation. "stuck": cleanup missed its deadline; the
+\* slot stays counted until it really ends. "removed"/"rejected": terminal.
+States   == {"idle", "queued", "starting", "running", "cleanup", "decide",
+             "backoff", "restarting", "stuck", "removed", "rejected"}
+Active   == {"starting", "running", "cleanup", "decide", "backoff",
+             "restarting", "stuck"}
 Terminal == {"idle", "removed", "rejected"}
-\* What start_child returned. "pending" while the caller waits.
-Results  == {"none", "pending", "ok", "failed", "max", "shutdown"}
+\* start_child: "stopped" and "max" are pre-admission rejections (the
+\* arguments are returned); "aborted" is shutdown during construction;
+\* "failed" is FailedToStart.
+Results  == {"none", "pending", "ok", "failed", "aborted", "max", "stopped"}
+\* terminate_child: "queued" waits for the loop, "pending" for removal.
+TermResults == {"none", "queued", "pending", "ok", "stuck", "notfound", "stopped"}
+
+Idle == [k |-> "idle", s |-> 0]
 
 VARIABLES
     open,       \* admission open: neither shut down nor failed
-    failed,     \* the supervisor failed (budget exhausted or cleanup stuck)
+    failed,     \* the supervisor failed
+    exhausted,  \* a restart was refused for lack of budget
     sphase,     \* "running", "signal" (Sequential only), "waiting", "done"
-    budget,     \* restart grants in the current window
+    windowed,   \* stamped grants still in the window
     expired,    \* window releases used (bounds the model)
-    cs,         \* slot state
-    gen,        \* generations started in this slot
-    alive,      \* live (not yet cleaned up) generations
-    pub,        \* generation current() returns, 0 if none
-    reason,     \* exit reason of the latest generation
-    readyGen,   \* the latest generation became ready
-    everReady,  \* the slot's first start succeeded
-    result,     \* start_child's outcome
-    term,       \* terminate_child was called for this child
-    stopSig,    \* the supervisor's stop signal reached this slot
-    \* Ghosts for the invariants.
-    termGen,    \* gen when terminate_child was called
-    closeGen,   \* gen of each slot when admission closed (meaningful once closed)
-    lateOk,     \* a start_child returned ok after admission closed
-    exhausted   \* a restart was refused for lack of budget
+    reserved,   \* slots holding a reservation (pending restarts)
+    stamped,    \* grants ever stamped (charged restart attempts)
+    op,         \* the control loop's current operation [k, s]
+    sl,         \* per-slot record, see SlotInit
+    \* History, written only by GhostUpdate.
+    lateCommit, latePub, lateGenClose, lateGenTerm, badRestart, badRetire,
+    restarts
 
-sup   == <<open, failed, sphase, budget, expired>>
-slot  == <<cs, gen, alive, pub, reason, readyGen, everReady, result, term, stopSig>>
-ghost == <<termGen, closeGen, lateOk, exhausted>>
-vars  == <<sup, slot, ghost>>
+sup   == <<open, failed, exhausted, sphase, windowed, expired, reserved, stamped, op>>
+ghost == <<lateCommit, latePub, lateGenClose, lateGenTerm, badRestart, badRetire, restarts>>
+vars  == <<sup, sl, ghost>>
+
+SlotInit == [cs |-> "idle", gen |-> 0, alive |-> {}, pub |-> 0,
+             reason |-> "none", cfail |-> FALSE, readyGen |-> FALSE,
+             everReady |-> FALSE, result |-> "none", cause |-> "none",
+             term |-> FALSE, termRes |-> "none", stopSig |-> FALSE,
+             stuck |-> "none"]
 
 TypeOK ==
-    /\ open \in BOOLEAN /\ failed \in BOOLEAN
+    /\ open \in BOOLEAN /\ failed \in BOOLEAN /\ exhausted \in BOOLEAN
     /\ sphase \in {"running", "signal", "waiting", "done"}
-    /\ budget \in 0..MaxRestarts /\ expired \in 0..MaxExpire
-    /\ cs \in [Slots -> States]
-    /\ gen \in [Slots -> Nat]
-    /\ alive \in [Slots -> SUBSET Nat]
-    /\ pub \in [Slots -> Nat]
-    /\ reason \in [Slots -> Reasons]
-    /\ readyGen \in [Slots -> BOOLEAN] /\ everReady \in [Slots -> BOOLEAN]
-    /\ result \in [Slots -> Results]
-    /\ term \in [Slots -> BOOLEAN] /\ stopSig \in [Slots -> BOOLEAN]
-    /\ termGen \in [Slots -> Nat]
-    /\ closeGen \in [Slots -> Nat]
-    /\ lateOk \in [Slots -> BOOLEAN]
-    /\ exhausted \in BOOLEAN
+    /\ windowed \in Nat /\ expired \in 0..MaxExpire
+    /\ reserved \subseteq Slots /\ stamped \in Nat
+    /\ op.k \in {"idle", "start", "restart", "term"} /\ op.s \in 0..N
+    /\ \A s \in Slots :
+        /\ sl[s].cs \in States /\ sl[s].gen \in Nat /\ sl[s].alive \subseteq Nat
+        /\ sl[s].pub \in Nat /\ sl[s].reason \in Reasons
+        /\ sl[s].result \in Results /\ sl[s].termRes \in TermResults
+        /\ sl[s].cause \in {"none", "failed", "aborted"}
+        /\ sl[s].stuck \in {"none", "retire", "restart", "closing"}
 
 Init ==
-    /\ open = TRUE /\ failed = FALSE /\ sphase = "running"
-    /\ budget = 0 /\ expired = 0
-    /\ cs = [s \in Slots |-> "idle"]
-    /\ gen = [s \in Slots |-> 0]
-    /\ alive = [s \in Slots |-> {}]
-    /\ pub = [s \in Slots |-> 0]
-    /\ reason = [s \in Slots |-> "none"]
-    /\ readyGen = [s \in Slots |-> FALSE]
-    /\ everReady = [s \in Slots |-> FALSE]
-    /\ result = [s \in Slots |-> "none"]
-    /\ term = [s \in Slots |-> FALSE]
-    /\ stopSig = [s \in Slots |-> FALSE]
-    /\ termGen = [s \in Slots |-> 0]
-    /\ closeGen = [s \in Slots |-> 0]
-    /\ lateOk = [s \in Slots |-> FALSE]
-    /\ exhausted = FALSE
+    /\ open = TRUE /\ failed = FALSE /\ exhausted = FALSE /\ sphase = "running"
+    /\ windowed = 0 /\ expired = 0 /\ reserved = {} /\ stamped = 0 /\ op = Idle
+    /\ sl = [s \in Slots |-> SlotInit]
+    /\ lateCommit = [s \in Slots |-> FALSE] /\ latePub = [s \in Slots |-> FALSE]
+    /\ lateGenClose = [s \in Slots |-> FALSE] /\ lateGenTerm = [s \in Slots |-> FALSE]
+    /\ badRestart = [s \in Slots |-> FALSE] /\ badRetire = [s \in Slots |-> FALSE]
+    /\ restarts = 0
 
-\* Slots that count against max_children: every admitted child that was not
-\* removed, including one that is restarting (in backoff or constructing its
-\* replacement) or still cleaning up. The control counts only live,
-\* published children.
+\* Children held: counted against max_children.
 Counted ==
     IF Fault = "UncountedRestart"
-    THEN {s \in Slots : cs[s] \in {"starting", "running"}}
-    ELSE {s \in Slots : cs[s] \in Active}
+    THEN {s \in Slots : sl[s].cs \in {"starting", "running"}}
+    ELSE {s \in Slots : sl[s].cs \in Active}
 
-\* Close admission (shutdown or failure) and record each slot's generation.
-CloseGate ==
-    /\ open' = FALSE
-    /\ closeGen' = IF open THEN gen ELSE closeGen
+LoopFree(s) == op.k = "idle" \/ op.s = s \/ Fault = "ConcurrentStart"
+Release(s)  == op' = IF op.s = s THEN Idle ELSE op
+Take(k, s)  == op' = IF Fault = "ConcurrentStart" /\ k # "term" THEN op ELSE [k |-> k, s |-> s]
+Budget      == windowed + Cardinality(reserved)
 
-Fail == failed' = TRUE /\ CloseGate
+\* The design's restart table, stated independently of the actions.
+DesignAllowsRestart(m, r, cf) ==
+    CASE m = "Temporary" -> FALSE
+      [] m = "Permanent" -> TRUE
+      [] m = "Transient" -> r \in {"Panic", "Kill", "Killed"} \/ cf
+\* A restart of slot s is allowed now: a ready-then-exited generation under
+\* the table, or a failed replacement (never ready) of a restartable child.
+Allowed(s) ==
+    /\ sl[s].everReady
+    /\ \/ DesignAllowsRestart(Mode[s], sl[s].reason, sl[s].cfail)
+       \/ ~sl[s].readyGen /\ Mode[s] # "Temporary"
 
-Set(f, s, v) == [f EXCEPT ![s] = v]
+\* What the supervisor decides (with the policy faults).
+WouldRestart(s, cf) ==
+    /\ sl[s].everReady \/ Fault = "RetryFirstStart"
+    /\ \/ Mode[s] = "Permanent" /\ Fault # "PermanentRetires"
+       \/ Mode[s] = "Transient"
+          /\ (sl[s].reason \in Abnormal \/ cf \/ Fault = "TransientNormalRestart")
+       \/ Mode[s] # "Temporary" /\ ~sl[s].readyGen
+       \/ Mode[s] = "Temporary" /\ Fault = "RestartTemporary"
+
+CloseGate == open' = FALSE
+Fail      == failed' = TRUE /\ CloseGate
 
 -----------------------------------------------------------------------------
 (* Callers and environment *)
 
-\* start_child(args). Admission is atomic with the count and the gate.
+\* start_child(args): queued for the loop, or rejected at once if closed.
 Request(s) ==
-    /\ cs[s] = "idle"
-    /\ IF ~open /\ Fault # "AcceptDuringShutdown"
-       THEN /\ cs' = Set(cs, s, "rejected") /\ result' = Set(result, s, "shutdown")
-            /\ UNCHANGED <<gen, alive, reason, readyGen>>
-       ELSE IF Cardinality(Counted) >= MaxChildren /\ Fault # "IgnoreMax"
-       THEN /\ cs' = Set(cs, s, "rejected") /\ result' = Set(result, s, "max")
-            /\ UNCHANGED <<gen, alive, reason, readyGen>>
-       ELSE /\ cs' = Set(cs, s, "starting") /\ result' = Set(result, s, "pending")
-            /\ gen' = Set(gen, s, 1) /\ alive' = Set(alive, s, {1})
-            /\ reason' = Set(reason, s, "none") /\ readyGen' = Set(readyGen, s, FALSE)
-    /\ UNCHANGED <<sup, pub, everReady, term, stopSig, ghost>>
+    /\ sl[s].cs = "idle"
+    /\ sl' = IF ~open
+             THEN [sl EXCEPT ![s].cs = "rejected", ![s].result = "stopped"]
+             ELSE [sl EXCEPT ![s].cs = "queued", ![s].result = "pending"]
+    /\ UNCHANGED sup
+
+\* The loop admits a queued start: cap check, then the first generation.
+LoopAdmit(s) ==
+    /\ sl[s].cs = "queued" /\ LoopFree(s)
+    /\ open \/ Fault = "AcceptDuringShutdown"
+    /\ IF Cardinality(Counted) >= MaxChildren /\ Fault # "IgnoreMax"
+       THEN /\ sl' = [sl EXCEPT ![s].cs = "rejected", ![s].result = "max"]
+            /\ UNCHANGED <<op, stamped, windowed>>
+       ELSE /\ sl' = [sl EXCEPT ![s].cs = "starting", ![s].gen = 1, ![s].alive = {1},
+                                ![s].result = IF Fault = "PrematureOk" THEN "ok" ELSE "pending"]
+            /\ Take("start", s)
+            /\ IF Fault = "ChargeFirstStart"
+               THEN stamped' = stamped + 1 /\ windowed' = windowed + 1
+               ELSE UNCHANGED <<stamped, windowed>>
+    /\ UNCHANGED <<open, failed, exhausted, sphase, expired, reserved>>
+
+\* Shutdown rejects queued starts before admission (arguments returned).
+RejectQueued(s) ==
+    /\ sl[s].cs = "queued" /\ ~open
+    /\ sl' = [sl EXCEPT ![s].cs = "rejected", ![s].result = "stopped"]
+    /\ UNCHANGED sup
 
 \* Supervisor::stop / shutdown, system shutdown, or the parent stopping it.
 Close ==
-    /\ open
-    /\ CloseGate
-    /\ UNCHANGED <<failed, sphase, budget, expired, slot, termGen, lateOk, exhausted>>
+    /\ open /\ CloseGate
+    /\ UNCHANGED <<failed, exhausted, sphase, windowed, expired, reserved, stamped, op, sl>>
 
-\* terminate_child(id) on a child whose start returned. It never restarts
-\* afterwards, whatever its restart type. After close it is a no-op (the
-\* supervisor already stops every child), so it is only modelled while open.
-TerminateChild(s) ==
-    /\ open /\ everReady[s] /\ ~term[s]
-    /\ cs[s] \in {"running", "cleanup", "decide", "backoff", "restarting"}
-    /\ term' = Set(term, s, TRUE)
-    /\ stopSig' = Set(stopSig, s, TRUE)
-    /\ termGen' = Set(termGen, s, gen[s])
-    /\ UNCHANGED <<sup, cs, gen, alive, pub, reason, readyGen, everReady, result,
-                   closeGen, lateOk, exhausted>>
-
-\* The rolling window forgets its oldest grant.
+\* The rolling window forgets its oldest stamped grant; reservations stay.
 WindowExpire ==
-    /\ budget > 0 /\ expired < MaxExpire
-    /\ budget' = budget - 1 /\ expired' = expired + 1
-    /\ UNCHANGED <<open, failed, sphase, slot, ghost>>
+    /\ expired < MaxExpire
+    /\ IF windowed > 0
+       THEN windowed' = windowed - 1 /\ UNCHANGED reserved
+       ELSE /\ Fault = "ExpireReserved" /\ reserved # {}
+            /\ \E r \in reserved : reserved' = reserved \ {r}
+            /\ UNCHANGED windowed
+    /\ expired' = expired + 1
+    /\ UNCHANGED <<open, failed, exhausted, sphase, stamped, op, sl>>
+
+\* terminate_child(id) by a caller holding the child's last published id.
+TerminateRequest(s) ==
+    /\ sl[s].termRes = "none" /\ sl[s].everReady
+    /\ sl' = [sl EXCEPT ![s].termRes = IF open THEN "queued" ELSE "stopped"]
+    /\ UNCHANGED sup
+
+\* The loop handles it: mark terminated, signal, and hold the loop until
+\* the child is removed (OTP terminate_child blocks the supervisor).
+LoopTerm(s) ==
+    /\ sl[s].termRes = "queued" /\ op.k = "idle" /\ open
+    /\ IF sl[s].cs = "removed"
+       THEN sl' = [sl EXCEPT ![s].termRes = "notfound"] /\ UNCHANGED op
+       ELSE IF sl[s].cs = "stuck"
+       THEN sl' = [sl EXCEPT ![s].termRes = "stuck"] /\ UNCHANGED op
+       ELSE /\ sl' = [sl EXCEPT ![s].term = TRUE, ![s].stopSig = TRUE,
+                                ![s].termRes = "pending"]
+            /\ op' = [k |-> "term", s |-> s]
+    /\ UNCHANGED <<open, failed, exhausted, sphase, windowed, expired, reserved, stamped>>
+
+\* A terminate queued when shutdown began resolves with the removal.
+TermQueuedClosed(s) ==
+    /\ sl[s].termRes = "queued" /\ ~open
+    /\ sl' = [sl EXCEPT ![s].termRes = "pending"]
+    /\ UNCHANGED sup
+
+TermResolve(s) ==
+    /\ sl[s].termRes = "pending"
+    /\ sl[s].cs \in {"removed", "stuck"} \/ Fault = "TermReplyEarly"
+    /\ sl' = [sl EXCEPT ![s].termRes = IF sl[s].cs = "stuck" THEN "stuck" ELSE "ok"]
+    /\ IF op = [k |-> "term", s |-> s] THEN op' = Idle ELSE UNCHANGED op
+    /\ UNCHANGED <<open, failed, exhausted, sphase, windowed, expired, reserved, stamped>>
 
 -----------------------------------------------------------------------------
 (* One child slot *)
 
-\* started() returned while admission is open: readiness commits, and for
-\* a first start start_child returns Ok(ref).
+\* started() returned while admission is open: readiness commits; for a
+\* first start the caller's Ok is committed (historical from now on).
 Ready(s) ==
-    /\ cs[s] \in {"starting", "restarting"}
-    /\ open \/ Fault = "AcceptDuringShutdown"
-    /\ ~(term[s] /\ cs[s] = "restarting")
-    /\ cs' = Set(cs, s, "running")
-    /\ pub' = Set(pub, s, gen[s])
-    /\ readyGen' = Set(readyGen, s, TRUE)
-    /\ everReady' = Set(everReady, s, TRUE)
-    /\ result' = IF cs[s] = "starting" THEN Set(result, s, "ok") ELSE result
-    /\ lateOk' = IF cs[s] = "starting" /\ ~open THEN Set(lateOk, s, TRUE) ELSE lateOk
-    /\ UNCHANGED <<sup, gen, alive, reason, term, stopSig, termGen, closeGen, exhausted>>
+    /\ sl[s].cs \in {"starting", "restarting"}
+    /\ \/ open
+       \/ Fault = "AcceptDuringShutdown" /\ sl[s].cs = "starting"
+       \/ Fault = "PublishAfterClose" /\ sl[s].cs = "restarting"
+    /\ sl' = [sl EXCEPT ![s].cs = "running", ![s].pub = sl[s].gen,
+                        ![s].readyGen = TRUE, ![s].everReady = TRUE,
+                        ![s].result = IF sl[s].cs = "starting" THEN "ok" ELSE sl[s].result]
+    /\ Release(s)
+    /\ UNCHANGED <<open, failed, exhausted, sphase, windowed, expired, reserved, stamped>>
 
 \* Factory error or panic, panic or stop in started(), startup timeout.
 StartFail(s, r) ==
-    /\ cs[s] \in {"starting", "restarting"}
-    /\ r \in StartFails
-    /\ cs' = Set(cs, s, "cleanup") /\ reason' = Set(reason, s, r)
-    /\ UNCHANGED <<sup, gen, alive, pub, readyGen, everReady, result, term, stopSig, ghost>>
+    /\ sl[s].cs \in {"starting", "restarting"} /\ r \in StartFails
+    /\ sl' = [sl EXCEPT ![s].cs = "cleanup", ![s].reason = r, ![s].pub = 0,
+                        ![s].cause = IF sl[s].cs = "starting" THEN "failed" ELSE sl[s].cause,
+                        ![s].result = IF Fault = "EarlyFailedReply" /\ sl[s].cs = "starting"
+                                      THEN "failed" ELSE sl[s].result]
+    /\ UNCHANGED sup
 
-\* Admission closed (or the child was terminated) during construction: the
-\* attempt is cancelled and cleaned up; it never publishes.
+\* Admission closed during construction: the attempt is cancelled.
 AbortStart(s) ==
-    /\ cs[s] \in {"starting", "restarting"}
-    /\ (~open /\ Fault # "NoAbort") \/ term[s]
-    /\ cs' = Set(cs, s, "cleanup") /\ reason' = Set(reason, s, "Shutdown")
-    /\ UNCHANGED <<sup, gen, alive, pub, readyGen, everReady, result, term, stopSig, ghost>>
+    /\ sl[s].cs \in {"starting", "restarting"} /\ ~open /\ Fault # "NoAbort"
+    /\ sl' = [sl EXCEPT ![s].cs = "cleanup", ![s].reason = "Shutdown", ![s].pub = 0,
+                        ![s].cause = IF sl[s].cs = "starting" THEN "aborted" ELSE sl[s].cause]
+    /\ UNCHANGED sup
 
-\* A ready child exits on its own.
 SelfExit(s, r) ==
-    /\ cs[s] = "running" /\ r \in SelfExits
-    /\ cs' = Set(cs, s, "cleanup") /\ reason' = Set(reason, s, r)
-    /\ pub' = Set(pub, s, 0)
-    /\ UNCHANGED <<sup, gen, alive, readyGen, everReady, result, term, stopSig, ghost>>
+    /\ sl[s].cs = "running" /\ r \in SelfExits
+    /\ sl' = [sl EXCEPT ![s].cs = "cleanup", ![s].reason = r, ![s].pub = 0]
+    /\ UNCHANGED sup
 
-\* The supervisor's parent exit signal (Shutdown) reached the child, from
-\* terminate_child or supervisor shutdown. It ends Shutdown, or Killed if
-\* it missed shutdown_timeout and was killed (design E3).
+\* The parent exit signal (terminate_child or shutdown) reached the child:
+\* it ends Shutdown, or Killed after missing shutdown_timeout (design E3).
 StopObserved(s, r) ==
-    /\ cs[s] = "running" /\ stopSig[s]
-    /\ r \in {"Shutdown", "Killed"}
-    /\ cs' = Set(cs, s, "cleanup") /\ reason' = Set(reason, s, r)
-    /\ pub' = Set(pub, s, 0)
-    /\ UNCHANGED <<sup, gen, alive, readyGen, everReady, result, term, stopSig, ghost>>
+    /\ sl[s].cs = "running" /\ sl[s].stopSig /\ r \in {"Shutdown", "Killed"}
+    /\ sl' = [sl EXCEPT ![s].cs = "cleanup", ![s].reason = r, ![s].pub = 0]
+    /\ UNCHANGED sup
 
-\* The generation reached publication and its owned cleanup joined.
-CleanupDone(s) ==
-    /\ cs[s] = "cleanup"
-    /\ alive' = Set(alive, s, {})
-    /\ cs' = Set(cs, s, "decide")
-    /\ UNCHANGED <<sup, gen, pub, reason, readyGen, everReady, result, term, stopSig, ghost>>
+\* Publication and owned cleanup finished; a destructor or helper failure
+\* may be recorded (a Transient child then restarts).
+CleanupDone(s, f) ==
+    /\ sl[s].cs = "cleanup" /\ f \in CleanupFails
+    /\ sl' = [sl EXCEPT ![s].cs = "decide", ![s].cfail = f,
+                        ![s].alive = sl[s].alive \ {sl[s].gen}]
+    /\ UNCHANGED sup
 
-\* Cleanup missed its deadline: the supervisor fails (and so stops every
-\* other child); the generation stays alive until CleanupDone.
+\* The child missed its deadlines: still running after its stop signal and
+\* the kill, or its cleanup is stuck. The slot stays counted and alive.
+\* It fails the supervisor only when the child would have been restarted
+\* (V3: no replacement while the old generation lives) or while closing;
+\* a child that was retiring anyway fails only itself.
 CleanupStuck(s) ==
-    /\ cs[s] = "cleanup" /\ ~failed
-    /\ Fail
-    /\ UNCHANGED <<sphase, budget, expired, slot, termGen, lateOk, exhausted>>
+    /\ sl[s].stuck = "none"
+    /\ \/ sl[s].cs = "cleanup"
+       \/ sl[s].cs = "running" /\ sl[s].stopSig
+    /\ LET kind == IF ~open THEN "closing"
+                   ELSE IF ~sl[s].term /\ sl[s].cs = "cleanup" /\ WouldRestart(s, TRUE)
+                        THEN "restart" ELSE "retire"
+       IN /\ sl' = [sl EXCEPT ![s].cs = "stuck", ![s].stuck = kind, ![s].pub = 0,
+                              ![s].result = IF sl[s].result = "pending"
+                                            THEN sl[s].cause ELSE sl[s].result]
+          /\ IF kind # "retire" \/ Fault = "StuckFailsAll"
+             THEN Fail ELSE UNCHANGED <<open, failed>>
+    /\ IF op.s = s /\ op.k # "term" THEN op' = Idle ELSE UNCHANGED op
+    /\ UNCHANGED <<exhausted, sphase, windowed, expired, reserved, stamped>>
 
-\* OTP's restart table, plus: a replacement that fails before readiness is a
-\* failed restart attempt and is retried unless Temporary (V1).
-Restarts(s) ==
-    \/ Mode[s] = "Permanent"
-    \/ Mode[s] = "Transient" /\ reason[s] \in Abnormal
-    \/ Mode[s] # "Temporary" /\ ~readyGen[s]
-    \/ Mode[s] = "Temporary" /\ Fault = "RestartTemporary"
+\* A stuck child finally ends (assumed for liveness only).
+StuckDone(s) ==
+    /\ sl[s].cs = "stuck"
+    /\ sl' = [sl EXCEPT ![s].cs = "removed", ![s].alive = {}]
+    /\ UNCHANGED sup
 
+\* The loop handles the exit: first-start failure, removal, or a restart
+\* that reserves budget first (failing at once if none is left).
 Decide(s) ==
-    /\ cs[s] = "decide"
-    /\ IF ~everReady[s]
-       \* First start failed: start_child returns the error; never restarted
-       \* and never charged to the budget (OTP start_child).
-       THEN /\ cs' = Set(cs, s, "removed")
-            /\ result' = Set(result, s, IF open THEN "failed" ELSE "shutdown")
-       ELSE IF ~open \/ (term[s] /\ Fault # "RestartTerminated")
-       THEN cs' = Set(cs, s, "removed") /\ UNCHANGED result
-       ELSE IF Restarts(s)
-       THEN cs' = Set(cs, s, "backoff") /\ UNCHANGED result
-       ELSE cs' = Set(cs, s, "removed") /\ UNCHANGED result
-    /\ UNCHANGED <<sup, gen, alive, pub, reason, readyGen, everReady, term, stopSig, ghost>>
+    /\ \/ sl[s].cs = "decide"
+       \/ Fault = "OverlapGeneration" /\ sl[s].cs = "cleanup"
+    /\ LoopFree(s)
+    /\ IF ~sl[s].everReady /\ Fault # "RetryFirstStart"
+       THEN /\ sl' = [sl EXCEPT ![s].cs = "removed",
+                       ![s].result = IF Fault = "LateFailedOverwrite" /\ ~open
+                                     THEN "aborted" ELSE sl[s].cause]
+            /\ UNCHANGED <<open, failed, exhausted, reserved>>
+       ELSE IF ~open \/ (sl[s].term /\ Fault # "RestartTerminated")
+       THEN /\ sl' = [sl EXCEPT ![s].cs = "removed"]
+            /\ UNCHANGED <<open, failed, exhausted, reserved>>
+       ELSE IF WouldRestart(s, sl[s].cfail)
+       THEN IF Budget < MaxRestarts
+            THEN /\ sl' = [sl EXCEPT ![s].cs = "backoff"]
+                 /\ reserved' = reserved \cup {s}
+                 /\ UNCHANGED <<open, failed, exhausted>>
+            ELSE /\ exhausted' = TRUE
+                 /\ sl' = [sl EXCEPT ![s].cs = "removed"]
+                 /\ IF Fault = "NoEscalate" THEN UNCHANGED <<open, failed>> ELSE Fail
+                 /\ UNCHANGED reserved
+       ELSE /\ sl' = [sl EXCEPT ![s].cs = "removed"]
+            /\ UNCHANGED <<open, failed, exhausted, reserved>>
+    /\ Release(s)
+    /\ UNCHANGED <<sphase, windowed, expired, stamped>>
 
-\* Backoff elapsed (or was cancelled). A restart needs a budget grant;
-\* without one the supervisor fails and escalates.
+\* Backoff elapsed: stamp the reservation and construct the replacement.
 BackoffDone(s) ==
-    /\ cs[s] = "backoff"
-    /\ open \/ term[s] \/ Fault # "StuckBackoff"
-    /\ IF (~open /\ Fault # "RestartAfterClose") \/ (term[s] /\ Fault # "RestartTerminated")
-       THEN /\ cs' = Set(cs, s, "removed")
-            /\ UNCHANGED <<open, failed, budget, gen, alive, reason, readyGen, closeGen, exhausted>>
-       ELSE IF budget < MaxRestarts
-       THEN /\ budget' = budget + 1
-            /\ cs' = Set(cs, s, "restarting")
-            /\ gen' = Set(gen, s, gen[s] + 1)
-            /\ alive' = Set(alive, s, {gen[s] + 1})
-            /\ reason' = Set(reason, s, "none")
-            /\ readyGen' = Set(readyGen, s, FALSE)
-            /\ UNCHANGED <<open, failed, closeGen, exhausted>>
-       ELSE /\ exhausted' = TRUE
-            /\ cs' = Set(cs, s, "removed")
-            /\ IF Fault = "NoEscalate" THEN UNCHANGED <<open, failed, closeGen>> ELSE Fail
-            /\ UNCHANGED <<budget, gen, alive, reason, readyGen>>
-    /\ UNCHANGED <<sphase, expired, pub, everReady, result, term, stopSig, termGen, lateOk>>
+    /\ sl[s].cs = "backoff" /\ LoopFree(s)
+    /\ open \/ Fault = "RestartAfterClose"
+    /\ ~sl[s].term \/ Fault = "RestartTerminated"
+    /\ LET g == sl[s].gen + 1
+           charge == ~(Fault = "UnchargedRetry" /\ ~sl[s].readyGen)
+       IN /\ sl' = [sl EXCEPT ![s].cs = "restarting", ![s].gen = g,
+                              ![s].alive = sl[s].alive \cup {g},
+                              ![s].pub = IF Fault = "PublishBeforeReady" THEN g ELSE 0,
+                              ![s].reason = "none", ![s].cfail = FALSE,
+                              ![s].readyGen = FALSE]
+          /\ reserved' = reserved \ {s}
+          /\ IF charge THEN stamped' = stamped + 1 /\ windowed' = windowed + 1
+             ELSE UNCHANGED <<stamped, windowed>>
+    /\ Take("restart", s)
+    /\ UNCHANGED <<open, failed, exhausted, sphase, expired>>
+
+\* Shutdown or terminate_child cancels a pending restart and refunds it.
+CancelBackoff(s) ==
+    /\ sl[s].cs = "backoff"
+    /\ \/ ~open /\ Fault # "StuckBackoff"
+       \/ sl[s].term /\ Fault # "RestartTerminated"
+    /\ sl' = [sl EXCEPT ![s].cs = "removed"]
+    /\ reserved' = IF Fault = "NoRefund" THEN reserved ELSE reserved \ {s}
+    /\ UNCHANGED <<open, failed, exhausted, sphase, windowed, expired, stamped, op>>
 
 -----------------------------------------------------------------------------
-(* Supervisor shutdown: every child is signalled at once *)
+(* Supervisor shutdown: every child is signalled without awaiting another *)
 
 SupSignal ==
     /\ sphase = "running" /\ ~open /\ Fault # "Sequential"
-    /\ stopSig' = [s \in Slots |-> TRUE]
+    /\ sl' = [s \in Slots |-> [sl[s] EXCEPT !.stopSig = TRUE]]
     /\ sphase' = "waiting"
-    /\ UNCHANGED <<open, failed, budget, expired, cs, gen, alive, pub, reason,
-                   readyGen, everReady, result, term, ghost>>
+    /\ UNCHANGED <<open, failed, exhausted, windowed, expired, reserved, stamped, op>>
 
-\* Control: one child at a time, the next only after the previous finished.
+\* Control: one child at a time, the next only after the previous ended.
 SupSignalOne ==
     /\ sphase \in {"running", "signal"} /\ ~open /\ Fault = "Sequential"
-    /\ \A s \in Slots : stopSig[s] => cs[s] \in Terminal
-    /\ LET todo == {s \in Slots : ~stopSig[s] /\ cs[s] \notin Terminal}
+    /\ \A s \in Slots : sl[s].stopSig => sl[s].cs \in Terminal \cup {"stuck"}
+    /\ LET todo == {s \in Slots : ~sl[s].stopSig /\ sl[s].cs \notin Terminal}
        IN IF todo = {}
-          THEN sphase' = "waiting" /\ UNCHANGED stopSig
-          ELSE \E s \in todo : stopSig' = Set(stopSig, s, TRUE) /\ sphase' = "signal"
-    /\ UNCHANGED <<open, failed, budget, expired, cs, gen, alive, pub, reason,
-                   readyGen, everReady, result, term, ghost>>
+          THEN sphase' = "waiting" /\ UNCHANGED sl
+          ELSE \E s \in todo : sl' = [sl EXCEPT ![s].stopSig = TRUE] /\ sphase' = "signal"
+    /\ UNCHANGED <<open, failed, exhausted, windowed, expired, reserved, stamped, op>>
 
-\* Done once every child finished (removed, rejected or never requested).
 SupDone ==
     /\ sphase = "waiting"
-    /\ (\A s \in Slots : cs[s] \in Terminal) \/ Fault = "EarlyDone"
+    /\ (\A s \in Slots : sl[s].cs \in Terminal) \/ Fault = "EarlyDone"
     /\ sphase' = "done"
-    /\ UNCHANGED <<open, failed, budget, expired, slot, ghost>>
+    /\ UNCHANGED <<open, failed, exhausted, windowed, expired, reserved, stamped, op, sl>>
 
 -----------------------------------------------------------------------------
 
+Grew(s) == sl'[s].gen > sl[s].gen
+
+\* History, computed from each step's effect, not from the action taken.
+GhostUpdate ==
+    /\ lateCommit' = [s \in Slots |-> lateCommit[s] \/
+                        (sl'[s].result = "ok" /\ sl[s].result # "ok" /\ ~open)]
+    /\ latePub' = [s \in Slots |-> latePub[s] \/
+                        (sl'[s].pub # 0 /\ sl[s].pub = 0 /\ (~open \/ sl[s].term))]
+    /\ lateGenClose' = [s \in Slots |-> lateGenClose[s] \/ (Grew(s) /\ ~open)]
+    /\ lateGenTerm' = [s \in Slots |-> lateGenTerm[s] \/ (Grew(s) /\ sl[s].term)]
+    /\ badRestart' = [s \in Slots |-> badRestart[s] \/
+                        (Grew(s) /\ sl[s].gen > 0 /\ ~Allowed(s))]
+    /\ badRetire' = [s \in Slots |-> badRetire[s] \/
+                        (sl[s].cs = "decide" /\ sl'[s].cs = "removed" /\ open'
+                         /\ ~sl[s].term /\ Allowed(s))]
+    /\ restarts' = restarts + Cardinality({s \in Slots : Grew(s) /\ sl[s].gen > 0})
+
 SlotStep(s) ==
-    \/ Request(s) \/ TerminateChild(s) \/ Ready(s)
-    \/ \E r \in StartFails : StartFail(s, r)
-    \/ AbortStart(s)
+    \/ Request(s) \/ LoopAdmit(s) \/ RejectQueued(s)
+    \/ TerminateRequest(s) \/ LoopTerm(s) \/ TermQueuedClosed(s) \/ TermResolve(s)
+    \/ Ready(s) \/ \E r \in StartFails : StartFail(s, r) \/ AbortStart(s)
     \/ \E r \in SelfExits : SelfExit(s, r)
     \/ \E r \in {"Shutdown", "Killed"} : StopObserved(s, r)
-    \/ CleanupDone(s) \/ CleanupStuck(s) \/ Decide(s) \/ BackoffDone(s)
+    \/ \E f \in CleanupFails : CleanupDone(s, f)
+    \/ CleanupStuck(s) \/ StuckDone(s)
+    \/ Decide(s) \/ BackoffDone(s) \/ CancelBackoff(s)
 
-Next ==
-    \/ Close \/ WindowExpire
-    \/ SupSignal \/ SupSignalOne \/ SupDone
+Act ==
+    \/ Close \/ WindowExpire \/ SupSignal \/ SupSignalOne \/ SupDone
     \/ \E s \in Slots : SlotStep(s)
 
-\* Progress: construction resolves, signalled children stop, cleanup ends
-\* (CleanupStuck and crashes are not fair), the supervisor moves on.
+Next == Act /\ GhostUpdate
+
+\* Progress: the loop, construction, stops, cleanup and stuck children
+\* eventually move (crashes, start failures and getting stuck are not fair).
 Fairness ==
     /\ \A s \in Slots :
-         /\ WF_vars(Ready(s)) /\ WF_vars(AbortStart(s))
-         /\ WF_vars(\E r \in {"Shutdown", "Killed"} : StopObserved(s, r))
-         /\ WF_vars(CleanupDone(s)) /\ WF_vars(Decide(s)) /\ WF_vars(BackoffDone(s))
-    /\ WF_vars(SupSignal) /\ WF_vars(SupSignalOne) /\ WF_vars(SupDone)
+         /\ WF_vars(LoopAdmit(s) /\ GhostUpdate) /\ WF_vars(RejectQueued(s) /\ GhostUpdate)
+         /\ WF_vars(LoopTerm(s) /\ GhostUpdate) /\ WF_vars(TermQueuedClosed(s) /\ GhostUpdate)
+         /\ WF_vars(TermResolve(s) /\ GhostUpdate)
+         /\ WF_vars(Ready(s) /\ GhostUpdate) /\ WF_vars(AbortStart(s) /\ GhostUpdate)
+         /\ WF_vars((\E r \in {"Shutdown", "Killed"} : StopObserved(s, r)) /\ GhostUpdate)
+         /\ WF_vars((\E f \in CleanupFails : CleanupDone(s, f)) /\ GhostUpdate)
+         /\ WF_vars(StuckDone(s) /\ GhostUpdate)
+         /\ WF_vars(Decide(s) /\ GhostUpdate) /\ WF_vars(BackoffDone(s) /\ GhostUpdate)
+         /\ WF_vars(CancelBackoff(s) /\ GhostUpdate)
+    /\ WF_vars(SupSignal /\ GhostUpdate) /\ WF_vars(SupSignalOne /\ GhostUpdate)
+    /\ WF_vars(SupDone /\ GhostUpdate)
 
 Spec == Init /\ [][Next]_vars /\ Fairness
 
 -----------------------------------------------------------------------------
 (* Safety *)
 
-\* A slot never has two live generations (V3).
-AtMostOneGeneration == \A s \in Slots : Cardinality(alive[s]) <= 1
+\* A slot never has two live generations (V3); alive accumulates and only
+\* the generation whose cleanup finished is removed.
+AtMostOneGeneration == \A s \in Slots : Cardinality(sl[s].alive) <= 1
 
-\* current() returns only the live, latest generation (V4).
+\* current() returns only the live, latest, ready generation (V4).
 PublishedIsLive ==
-    \A s \in Slots : pub[s] # 0 => pub[s] = gen[s] /\ pub[s] \in alive[s]
+    \A s \in Slots : sl[s].pub # 0 =>
+        sl[s].pub = sl[s].gen /\ sl[s].pub \in sl[s].alive /\ sl[s].readyGen
 
-\* No child outlives the supervisor: done means every child finished.
 NoChildOutlivesSupervisor ==
-    sphase = "done" => \A s \in Slots : alive[s] = {} /\ cs[s] \in Terminal
+    sphase = "done" => \A s \in Slots : sl[s].alive = {} /\ sl[s].cs \in Terminal
 
-\* The live count, restarting children included, never exceeds the cap.
-MaxChildrenBound ==
-    Cardinality({s \in Slots : cs[s] \in Active}) <= MaxChildren
+\* Children held, restarting and stuck ones included, never exceed the cap.
+MaxChildrenBound == Cardinality({s \in Slots : sl[s].cs \in Active}) <= MaxChildren
 
-TemporaryNeverRestarted ==
-    \A s \in Slots : Mode[s] = "Temporary" => gen[s] <= 1
+\* The control loop constructs one generation at a time (OTP).
+SerialConstruction ==
+    Cardinality({s \in Slots : sl[s].cs \in {"starting", "restarting"}}) <= 1
 
-TerminatedNeverRestarted ==
-    \A s \in Slots : term[s] => gen[s] = termGen[s]
+TemporaryNeverRestarted == \A s \in Slots : Mode[s] = "Temporary" => sl[s].gen <= 1
 
-\* No start_child succeeds after shutdown begins.
-NoStartAfterShutdown == \A s \in Slots : ~lateOk[s]
+\* No generation begins after terminate_child, or after admission closed.
+TerminatedNeverRestarted == \A s \in Slots : ~lateGenTerm[s]
+NoGenerationAfterClose == \A s \in Slots : ~lateGenClose[s]
 
-\* No generation (first start or restart) begins after admission closed.
-NoGenerationAfterClose ==
-    ~open => \A s \in Slots : gen[s] <= closeGen[s]
+\* No generation is published after terminate_child or close.
+NoPublishAfterStop == \A s \in Slots : ~latePub[s]
 
-\* Budget exhaustion fails the supervisor, which closes it (and so stops
-\* every child: ClosedLeadsToDone).
+\* A start_child success is committed only while admission is open.
+NoStartAfterShutdown == \A s \in Slots : ~lateCommit[s]
+
+\* Restarts follow the table; a restartable exit is never retired while open.
+RestartFollowsPolicy == \A s \in Slots : ~badRestart[s] /\ ~badRetire[s]
+
+\* A failed first start is never retried.
+FirstStartNeverRetried == \A s \in Slots : sl[s].gen > 1 => sl[s].everReady
+
+\* FailedToStart / aborted is returned only after cleanup, or at the stuck
+\* deadline (the slot then stays counted).
+FailedAfterCleanup ==
+    \A s \in Slots : sl[s].result \in {"failed", "aborted"} =>
+        sl[s].cs \in {"removed", "stuck"}
+
+\* The error names what happened to the attempt, not the gate afterwards.
+FailureCauseKept ==
+    \A s \in Slots : sl[s].result \in {"failed", "aborted"} => sl[s].result = sl[s].cause
+
+\* Every restart attempt is charged exactly once; first starts never.
+ChargedRestarts == restarts = stamped
+
+\* Reservations are exactly the pending restarts.
+ReservationsMatch == reserved = {s \in Slots : sl[s].cs = "backoff"}
+
+BudgetBounded == Budget <= MaxRestarts
+
 ExhaustionCloses == exhausted => failed /\ ~open
 
-BudgetBounded == budget <= MaxRestarts
+\* A child stuck while retiring fails only itself.
+StuckIsolated ==
+    failed => exhausted \/ \E s \in Slots : sl[s].stuck \in {"restart", "closing"}
 
-\* Shutdown is concurrent: once the supervisor started stopping, every
-\* running child has its stop signal; none waits for a sibling.
 ConcurrentShutdown ==
-    sphase # "running" => \A s \in Slots : cs[s] = "running" => stopSig[s]
+    sphase # "running" => \A s \in Slots : sl[s].cs = "running" => sl[s].stopSig
 
-\* start_child returned Ok only for a child that became ready.
-OkMeansReady == \A s \in Slots : result[s] = "ok" => everReady[s]
+OkMeansReady == \A s \in Slots : sl[s].result = "ok" => sl[s].everReady
+
+\* terminate_child returns Ok only once the child was removed.
+TermOkMeansRemoved ==
+    \A s \in Slots : sl[s].termRes = "ok" => sl[s].cs = "removed" /\ sl[s].alive = {}
 
 Safety ==
-    /\ TypeOK /\ AtMostOneGeneration /\ PublishedIsLive
-    /\ NoChildOutlivesSupervisor /\ MaxChildrenBound
-    /\ TemporaryNeverRestarted /\ TerminatedNeverRestarted
-    /\ NoStartAfterShutdown /\ NoGenerationAfterClose
-    /\ ExhaustionCloses /\ BudgetBounded /\ ConcurrentShutdown /\ OkMeansReady
+    /\ TypeOK /\ AtMostOneGeneration /\ PublishedIsLive /\ NoChildOutlivesSupervisor
+    /\ MaxChildrenBound /\ SerialConstruction /\ TemporaryNeverRestarted
+    /\ TerminatedNeverRestarted /\ NoGenerationAfterClose /\ NoPublishAfterStop
+    /\ NoStartAfterShutdown /\ RestartFollowsPolicy /\ FirstStartNeverRetried
+    /\ FailedAfterCleanup /\ FailureCauseKept /\ ChargedRestarts /\ ReservationsMatch
+    /\ BudgetBounded /\ ExhaustionCloses /\ StuckIsolated /\ ConcurrentShutdown
+    /\ OkMeansReady /\ TermOkMeansRemoved
 
 NeverReopens == [][open' => open]_vars
 
-(* Liveness, assuming cleanup ends (CleanupStuck is not fair) *)
-
-\* Shutdown or failure ends with every child stopped.
+(* Liveness (assumes stuck children eventually end) *)
 ClosedLeadsToDone == (~open) ~> (sphase = "done")
-
-\* Every start_child call gets an answer.
-StartAnswered == \A s \in Slots : (result[s] = "pending") ~> (result[s] # "pending")
-
-\* terminate_child completes: the child is removed.
-TerminateCompletes == \A s \in Slots : term[s] ~> (cs[s] = "removed")
+StartAnswered == \A s \in Slots :
+    (sl[s].result = "pending") ~> (sl[s].result # "pending")
+TerminateAnswered == \A s \in Slots :
+    (sl[s].termRes \in {"queued", "pending"}) ~> (sl[s].termRes \notin {"queued", "pending"})
+\* A restartable exit is restarted, or superseded by terminate, shutdown,
+\* exhaustion or a stuck cleanup.
+RecoveryProgress == \A s \in Slots :
+    (sl[s].cs \in {"decide", "backoff", "restarting"} /\ sl[s].everReady)
+        ~> (sl[s].cs \in {"running", "removed", "stuck"})
 =============================================================================
