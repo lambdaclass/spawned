@@ -117,11 +117,12 @@ impl<T> TurnPhase<T> {
             if current >= EXITING {
                 return Vec::new();
             }
-            match self
-                .phase
-                .0
-                .compare_exchange(current, EXITING, Ordering::AcqRel, Ordering::Acquire)
-            {
+            match self.phase.0.compare_exchange(
+                current,
+                EXITING,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
                 Ok(previous) if previous == IN_TURN_PENDING => return take(&self.drops),
                 Ok(_) => return Vec::new(),
                 Err(actual) => current = actual,

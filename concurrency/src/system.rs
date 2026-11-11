@@ -931,8 +931,10 @@ impl Scope {
     }
     /// Jobs still running after the actor's death (job cleanup incomplete).
     fn unfinished_jobs(&self) -> usize {
-        lock(&self.jobs)
-            .as_ref()
+        // Upgrade outside the lock: the upgraded set may be the last
+        // reference, and its destruction must not run under it.
+        let jobs = lock(&self.jobs).clone();
+        jobs.as_ref()
             .and_then(std::sync::Weak::upgrade)
             .map_or(0, |jobs| jobs.running())
     }

@@ -21,9 +21,7 @@ use super::deadline::Expirable;
 use super::registry::Registry;
 use super::slot::CreditPool;
 use crate::ActorId;
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 
 /// Default emit credits per job (`JobOptions::emit_credits`).
 pub const DEFAULT_EMIT_CREDITS: u16 = 16;
@@ -155,31 +153,13 @@ impl<R: Send + 'static> PipeReplyError<R> {
     }
 }
 
-/// The job is cancelled or already notified: an emit was not enqueued.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-#[error("the job is gone (cancelled, replaced or past its terminal notification)")]
-pub struct JobGone;
+pub use super::job_core::JobGone;
+use super::job_core::{Job, JobCore, JobSetCore};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Notification {
-    Pending,
-    Notified,
-    Suppressed,
-}
-
-struct Inner {
-    cancelled: bool,
-    notification: Notification,
-    running: bool,
-    emit_credits: u16,
-}
-
-/// One job's shared state.
+/// One job's shared state: the core protocol plus the async wake-ups.
 pub(crate) struct JobState {
     owner: ActorId,
-    inner: Mutex<Inner>,
-    emitters: Condvar,
-    cancelled_fast: AtomicBool,
+    core: JobCore,
     /// Async cancellation for `tasks` jobs (drops the work future).
     #[cfg(feature = "async")]
     cancel: spawned_rt::tasks::CancellationToken,
@@ -196,14 +176,7 @@ impl JobState {
     pub(crate) fn new(owner: ActorId, emit_credits: u16) -> Arc<Self> {
         Arc::new(Self {
             owner,
-            inner: Mutex::new(Inner {
-                cancelled: false,
-                notification: Notification::Pending,
-                running: true,
-                emit_credits,
-            }),
-            emitters: Condvar::new(),
-            cancelled_fast: AtomicBool::new(false),
+            core: JobCore::new(emit_credits),
             #[cfg(feature = "async")]
             cancel: spawned_rt::tasks::CancellationToken::new(),
             #[cfg(feature = "async")]
@@ -216,7 +189,7 @@ impl JobState {
     }
 
     pub(crate) fn is_cancelled(&self) -> bool {
-        self.cancelled_fast.load(Ordering::Acquire)
+        self.core.is_cancelled()
     }
 
     #[cfg(feature = "async")]
@@ -227,15 +200,7 @@ impl JobState {
     /// Set the cancellation flag: suppresses a pending notification and
     /// wakes blocked emitters. Never undoes effects.
     pub(crate) fn cancel(&self) {
-        {
-            let mut inner = lock(&self.inner);
-            inner.cancelled = true;
-            if inner.notification == Notification::Pending {
-                inner.notification = Notification::Suppressed;
-            }
-        }
-        self.cancelled_fast.store(true, Ordering::Release);
-        self.emitters.notify_all();
+        self.core.cancel();
         #[cfg(feature = "async")]
         {
             self.cancel.cancel();
@@ -252,48 +217,23 @@ impl JobState {
     }
 
     /// Take the terminal notification and run `enqueue` under the job's
-    /// lock. Returns whether it was taken; `enqueue` is not called when the
-    /// job was cancelled or already notified. Whatever `enqueue` hands back
-    /// (an envelope the mailbox refused) is returned to be dropped by the
-    /// caller after the lock is released.
+    /// lock (see [`JobCore::notify`]).
     pub(crate) fn notify<X>(&self, enqueue: impl FnOnce() -> Option<X>) -> (bool, Option<X>) {
-        let unsent = {
-            let mut inner = lock(&self.inner);
-            if inner.cancelled || inner.notification != Notification::Pending {
-                return (false, None);
-            }
-            inner.notification = Notification::Notified;
-            enqueue()
-        };
-        self.emitters.notify_all();
+        let (taken, unsent) = self.core.notify(enqueue);
         #[cfg(feature = "async")]
-        self.wake_emitters();
-        (true, unsent)
-    }
-
-    /// Execution ended (physically).
-    pub(crate) fn finished(&self) {
-        lock(&self.inner).running = false;
+        if taken {
+            self.wake_emitters();
+        }
+        (taken, unsent)
     }
 
     pub(crate) fn is_running(&self) -> bool {
-        lock(&self.inner).running
+        self.core.is_running()
     }
 
-    /// Emit step 1 (blocking): take an emit credit, waiting while all are in
-    /// flight. Fails with `JobGone` once the job is cancelled or notified.
+    /// Emit step 1 (blocking).
     pub(crate) fn acquire_blocking(&self) -> Result<(), JobGone> {
-        let mut inner = lock(&self.inner);
-        loop {
-            if inner.cancelled || inner.notification != Notification::Pending {
-                return Err(JobGone);
-            }
-            if inner.emit_credits > 0 {
-                inner.emit_credits -= 1;
-                return Ok(());
-            }
-            inner = self.emitters.wait(inner).unwrap_or_else(|p| p.into_inner());
-        }
+        self.core.acquire_blocking()
     }
 
     /// Emit step 1 (async).
@@ -302,43 +242,44 @@ impl JobState {
         &self,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Result<(), JobGone>> {
-        let mut inner = lock(&self.inner);
-        if inner.cancelled || inner.notification != Notification::Pending {
-            return std::task::Poll::Ready(Err(JobGone));
+        let acquired = self.core.try_acquire(|| {
+            let mut wakers = lock(&self.emit_wakers);
+            if !wakers.iter().any(|w| w.will_wake(cx.waker())) {
+                wakers.push(cx.waker().clone());
+            }
+        });
+        match acquired {
+            Some(result) => std::task::Poll::Ready(result),
+            None => std::task::Poll::Pending,
         }
-        if inner.emit_credits > 0 {
-            inner.emit_credits -= 1;
-            return std::task::Poll::Ready(Ok(()));
-        }
-        lock(&self.emit_wakers).push(cx.waker().clone());
-        std::task::Poll::Pending
     }
 
-    /// Emit step 2: under the job's lock, enqueue unless the job is
-    /// cancelled or notified (then the credit returns here). An envelope the
-    /// mailbox refused comes back to be dropped after the lock is released;
-    /// its credit guard returns the credit then.
+    /// Emit step 2 (see [`JobCore::enqueue_emit`]).
     pub(crate) fn enqueue_emit<X>(
         &self,
         enqueue: impl FnOnce() -> Result<(), X>,
     ) -> Result<(), (JobGone, Option<X>)> {
-        let mut inner = lock(&self.inner);
-        if inner.cancelled || inner.notification != Notification::Pending {
-            inner.emit_credits += 1;
-            drop(inner);
-            self.emitters.notify_all();
-            return Err((JobGone, None));
-        }
-        enqueue().map_err(|unsent| (JobGone, Some(unsent)))
+        self.core.enqueue_emit(enqueue)
     }
 
     /// Emit step 3: a credit comes back when its message is dispatched,
     /// fenced or dropped with the mailbox.
     pub(crate) fn return_emit_credit(&self) {
-        lock(&self.inner).emit_credits += 1;
-        self.emitters.notify_all();
+        self.core.return_emit_credit();
         #[cfg(feature = "async")]
         self.wake_emitters();
+    }
+}
+
+impl Job for JobState {
+    fn cancel(&self) {
+        JobState::cancel(self);
+    }
+    fn is_running(&self) -> bool {
+        self.core.is_running()
+    }
+    fn finished(&self) {
+        self.core.finished();
     }
 }
 
@@ -384,12 +325,7 @@ impl JobHandle {
 /// An owner instance's jobs: key map, running count, native budget.
 pub(crate) struct JobSet {
     owner: ActorId,
-    jobs: Mutex<Vec<Weak<JobState>>>,
-    keys: Mutex<HashMap<JobKey, Arc<JobState>>>,
-    running: Mutex<usize>,
-    idle: Condvar,
-    native: AtomicUsize,
-    max_native: usize,
+    core: JobSetCore<JobState, JobKey>,
     #[cfg(feature = "async")]
     idle_async: Mutex<Vec<std::task::Waker>>,
 }
@@ -398,12 +334,7 @@ impl JobSet {
     pub(crate) fn new(owner: ActorId, max_native: usize) -> Self {
         Self {
             owner,
-            jobs: Mutex::new(Vec::new()),
-            keys: Mutex::new(HashMap::new()),
-            running: Mutex::new(0),
-            idle: Condvar::new(),
-            native: AtomicUsize::new(0),
-            max_native,
+            core: JobSetCore::new(max_native),
             #[cfg(feature = "async")]
             idle_async: Mutex::new(Vec::new()),
         }
@@ -415,49 +346,22 @@ impl JobSet {
 
     /// Reserve a native slot (`MAX_NATIVE_JOBS`), rejecting at the bound.
     pub(crate) fn reserve_native(&self) -> bool {
-        self.native
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
-                (n < self.max_native).then_some(n + 1)
-            })
-            .is_ok()
+        self.core.reserve_native()
     }
 
     pub(crate) fn release_native(&self) {
-        self.native.fetch_sub(1, Ordering::AcqRel);
+        self.core.release_native();
     }
 
     /// Admit a job: replace (cancel) the previous one with the same key and
     /// count it as running.
     pub(crate) fn admit(&self, state: &Arc<JobState>, key: Option<JobKey>) {
-        if let Some(key) = key {
-            let previous = lock(&self.keys).insert(key, state.clone());
-            if let Some(previous) = previous {
-                previous.cancel();
-            }
-        }
-        {
-            let mut jobs = lock(&self.jobs);
-            if jobs.len() >= 32 && jobs.len().is_power_of_two() {
-                jobs.retain(|j| j.upgrade().is_some_and(|j| j.is_running()));
-            }
-            jobs.push(Arc::downgrade(state));
-        }
-        *lock(&self.running) += 1;
+        self.core.admit(state, key);
     }
 
     /// A job's execution ended.
     pub(crate) fn ended(&self, state: &Arc<JobState>) {
-        state.finished();
-        // The key keeps its finished job until replaced: a replacement must
-        // still cancel it, so its queued terminal message and emits are
-        // fenced (`NoStaleKeyed`). The map holds one job per key.
-        let idle = {
-            let mut running = lock(&self.running);
-            *running -= 1;
-            *running == 0
-        };
-        if idle {
-            self.idle.notify_all();
+        if self.core.ended(state) {
             #[cfg(feature = "async")]
             for waker in std::mem::take(&mut *lock(&self.idle_async)) {
                 waker.wake();
@@ -466,34 +370,27 @@ impl JobSet {
     }
 
     pub(crate) fn running(&self) -> usize {
-        *lock(&self.running)
+        self.core.running()
     }
 
     /// Owner exit: cancel every job (flag set, blocked emitters woken).
     pub(crate) fn cancel_all(&self) {
-        let jobs = std::mem::take(&mut *lock(&self.jobs));
-        lock(&self.keys).clear();
-        for job in jobs.iter().filter_map(Weak::upgrade) {
-            job.cancel();
-        }
+        self.core.cancel_all();
     }
 
     /// Join the cancelled jobs, bounded by `deadline`; returns how many are
     /// still running (unfinished at stop).
     pub(crate) fn join_blocking(&self, deadline: std::time::Instant) -> usize {
-        let mut running = lock(&self.running);
-        while *running > 0 {
+        self.core.join_with(|idle, running| {
             let now = std::time::Instant::now();
             if now >= deadline {
-                break;
+                return Err(running);
             }
-            running = self
-                .idle
+            Ok(idle
                 .wait_timeout(running, deadline - now)
                 .unwrap_or_else(|p| p.into_inner())
-                .0;
-        }
-        *running
+                .0)
+        })
     }
 
     /// Async join, bounded by `timeout` on the runtime's clock.
@@ -558,11 +455,7 @@ pub(crate) struct JobDeadline {
 
 impl Expirable for JobDeadline {
     fn pending_deadline(&self) -> Option<u64> {
-        let pending = {
-            let inner = lock(&self.state.inner);
-            !inner.cancelled && inner.notification == Notification::Pending
-        };
-        pending.then_some(self.at)
+        self.state.core.is_pending().then_some(self.at)
     }
     fn expire(&self, _now: u64) {
         let notify = lock(&self.notify).take();

@@ -7,6 +7,7 @@
 //! gets exactly one terminal discharge.
 
 pub(crate) mod deadline;
+pub(crate) mod job_core;
 pub mod jobs;
 mod pending;
 pub(crate) mod registry;
@@ -29,8 +30,8 @@ use std::time::Duration;
 /// Production synchronization types for [`slot`]; the Loom model supplies its
 /// own (`tests/reply_slot_loom.rs`).
 mod sync {
-    pub(crate) use std::sync::atomic::{AtomicU64, AtomicU8, AtomicUsize, Ordering};
-    pub(crate) use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+    pub(crate) use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, AtomicUsize, Ordering};
+    pub(crate) use std::sync::{Arc, Arc as JobArc, Condvar, Mutex, MutexGuard, Weak as JobWeak};
     pub(crate) use std::thread::yield_now;
     pub(crate) type SlotOwner = Option<Arc<super::registry::Registry>>;
 

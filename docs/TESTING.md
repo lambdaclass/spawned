@@ -511,6 +511,24 @@ The custom cfg isolates instrumentation from Tokio's own Loom configuration.
 These models cover registration/cancellation races and reentrant callbacks,
 not the entire actor runtime. Do not run ordinary actor tests with this cfg.
 
+The reply and job cores of deferred replies share their source with Loom
+models that inject Loom's synchronization types (`super::sync`):
+
+```sh
+RUSTFLAGS="--cfg spawned_scheduler_loom" cargo test --release -p spawned-concurrency \
+  --no-default-features --test reply_slot_loom --test registry_turn_loom --test job_core_loom
+```
+
+`reply_slot_loom` covers the packed slot word (reply, expiry, shortening,
+abandon, close, defer at the bound, linked jobs, parked receivers);
+`registry_turn_loom` the in-turn drop commit against turn end, exit and death;
+`job_core_loom` job admission and rollback at the credit and native bounds,
+keyed replacement of a completed job, emits against the terminal notification
+and cancel, native completion against the owner's cleanup join, and a job's
+final destruction after a `Weak` upgrade (modelled `Arc`/`Weak`; the
+destruction takes the job set's locks, so running it under one is a Loom
+deadlock). Each model was checked against a planted bug.
+
 Run sustained actor creation, traffic, monitoring, and shutdown:
 
 ```sh

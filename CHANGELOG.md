@@ -6,8 +6,13 @@
   (ROADMAP rank 11), implementing
   [the design](docs/design/deferred-replies.md). Every request now has a reply
   slot: one packed atomic word (state, token, registry and running-job count)
-  whose transitions are checked with Loom (`reply_slot_loom`, 15 concurrent
-  pairs, 5 mutation controls). `Handler::handle` takes a `PendingReply<'_, R>`
+  whose transitions are checked with Loom (`reply_slot_loom`, 16 models), as
+  are the owner's turn-phase drop commit (`registry_turn_loom`) and the job
+  core (`job_core_loom`: admission rollback, completed-key replacement, emit
+  versus terminal notification and cancel, native completion versus cleanup
+  join, final destruction after a `Weak` upgrade), each with planted-bug
+  controls. The job model found two destructions under the job set's locks
+  (key-map clear at owner exit, weak-list compaction), now fixed. `Handler::handle` takes a `PendingReply<'_, R>`
   and returns `()`; `#[actor]` generates it, and `#[deferred_handler]` methods
   receive the obligation and may `defer()` it into a storable `ReplyTo<R>`
   (bounded by `Actor::MAX_OUTSTANDING`, `Overloaded` at the bound). Dropped
