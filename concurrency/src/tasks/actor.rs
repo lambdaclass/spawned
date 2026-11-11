@@ -1792,7 +1792,11 @@ async fn run_actor_lifecycle<A: Actor>(
                     .observation()
                     .map(|observation| observation.begin());
                 ctx.shared.replies.begin_turn();
-                let result = AssertUnwindSafe(envelope.handle(actor, &ctx))
+                // The handler's future is built inside the guarded future: a
+                // manual `Handler` may panic before it returns one, and that
+                // is a handler panic like any other (threads mode catches the
+                // same call).
+                let result = AssertUnwindSafe(async { envelope.handle(actor, &ctx).await })
                     .catch_unwind()
                     .await;
                 ctx.shared.replies.end_turn(result.is_err());
@@ -2659,6 +2663,58 @@ mod tests {
             actor.join().await;
             let result = actor.request(Check).await;
             assert!(result.is_err());
+        });
+    }
+
+    /// Review P1 (Codex 9): a manual `Handler` may be a plain `fn` that
+    /// panics before it returns its future. That is a handler panic like
+    /// any other: the turn ends, `stopped()` runs, and the caller and
+    /// `wait_exit` see the handler-panic reason. The future used to be built
+    /// outside the turn's `catch_unwind`, so the panic unwound the whole
+    /// lifecycle (no `stopped()`, an "actor lifecycle unwound" reason).
+    #[test]
+    pub fn panic_building_the_handler_future_is_a_handler_panic() {
+        let runtime = rt::Runtime::new().unwrap();
+        runtime.block_on(async move {
+            struct Eager(Arc<atomic::AtomicBool>);
+            struct Explode;
+            impl Message for Explode {
+                type Result = ();
+            }
+            impl Actor for Eager {
+                async fn stopped(&mut self, _ctx: &Context<Self>) {
+                    self.0.store(true, Ordering::SeqCst);
+                }
+            }
+            impl Handler<Explode> for Eager {
+                #[allow(unreachable_code, clippy::diverging_sub_expression)]
+                fn handle(
+                    &mut self,
+                    _msg: Explode,
+                    _reply: crate::reply::PendingReply<'_, ()>,
+                    _ctx: &Context<Self>,
+                ) -> impl Future<Output = ()> + Send {
+                    panic!("boom building the handler future");
+                    async {}
+                }
+            }
+
+            let stopped = Arc::new(atomic::AtomicBool::new(false));
+            let actor = Eager(stopped.clone()).start();
+            let reply = actor.request(Explode).await;
+            let reason = actor.wait_exit().await;
+            let ExitReason::Panic(message) = &reason else {
+                panic!("unexpected reason {reason:?}");
+            };
+            assert!(
+                message.starts_with("panic in handler: boom building"),
+                "not a handler panic: {message}"
+            );
+            assert!(
+                matches!(&reply, Err(ActorError::ActorStopped(r)) if *r == reason),
+                "caller saw {reply:?}"
+            );
+            assert!(stopped.load(Ordering::SeqCst), "stopped() was skipped");
         });
     }
 
