@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- CI: the core workflows (`ci`, `verification`, `failpoints`) also run on
+  `merge_group`, so pull requests can go through GitHub's merge queue.
+
 - Design (not implementation) for rank 11, deferred typed replies and
   pipe-to-self, revised over four passes after independent reviews:
   `docs/design/deferred-replies.md`, client mapping for ethrex and ethlambda,
