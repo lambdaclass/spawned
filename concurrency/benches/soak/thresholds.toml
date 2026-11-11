@@ -1,0 +1,62 @@
+# Soak harness pass/fail thresholds (concurrency/benches/soak, docs/TESTING.md).
+# Flat dotted keys; every value is a number. Delete a key to skip that check.
+
+# Warm-up: the first `fraction` of the run, capped at `max_secs`, is excluded
+# from trend fits (allocator pools, runtime slabs and registry capacity grow
+# to their working size). `--warmup` overrides both.
+warmup.fraction = 0.25
+warmup.max_secs = 1800
+
+# Trend: least-squares slope per hour after warm-up. rss_mb is fitted on
+# every sample; the other series on their floor (the minimum of each of about
+# 20 consecutive windows), because they swing with the workload and a leak
+# raises the floor. A series fails when its slope exceeds the limit AND is at least
+# `sigmas` standard errors above zero, so noise in short runs does not fail
+# but a steady leak does. rss_mb and heap_mb are MiB per hour; the rest are
+# counts per hour. For scale: ethrex's mailbox leak was about 62 MiB/h.
+trend.sigmas = 3
+trend.rss_mb = 16
+trend.heap_mb = 4
+trend.threads = 2
+trend.fds = 2
+trend.tokio_tasks = 10
+trend.registry = 2
+trend.actors_live = 10
+trend.actors_active = 10
+trend.mailbox_depth = 100
+trend.handlers_active = 10
+trend.requests_active = 10
+
+# Minimum growth: a trend also needs slope x steady-window hours above this
+# many units (MiB for rss_mb and heap_mb) to fail. Bounded pools (Tokio's
+# blocking pool, group workers) add a few threads or tasks in steps that a
+# 10-minute run extrapolates to tens per hour; over a 4-hour run (3 steady
+# hours) these floors keep the per-hour limits above as the binding check
+# for steady leaks, and the quiesce check below catches anything left over.
+growth.rss_mb = 4
+growth.heap_mb = 1
+growth.threads = 8
+growth.fds = 4
+growth.tokio_tasks = 5
+growth.registry = 0
+growth.actors_live = 5
+growth.actors_active = 5
+growth.mailbox_depth = 50
+growth.handlers_active = 3
+growth.requests_active = 3
+
+# Quiesce: after the workload stops and the long-lived ActorSystem shuts
+# down, each series must return to within `slack` of its baseline (sampled
+# after one priming pass of every scenario) before `timeout_secs`. RSS has no
+# quiesce check: the allocator keeps freed pages.
+quiesce.timeout_secs = 60
+quiesce.heap_mb = 8
+quiesce.threads = 0
+quiesce.fds = 0
+quiesce.tokio_tasks = 0
+quiesce.registry = 0
+quiesce.actors_live = 0
+quiesce.actors_active = 0
+quiesce.mailbox_depth = 0
+quiesce.handlers_active = 0
+quiesce.requests_active = 0
