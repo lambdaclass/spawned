@@ -82,6 +82,15 @@
   it is computed from, so unrelated models no longer invalidate it, and is
   regenerated (same keys and state counts). `check.sh` gains `--only` and
   `--exclude`.
+- Tests: a long-running soak harness (`concurrency/benches/soak`, run by hand,
+  not in CI). It churns actors in both modes and every backend, managed
+  groups, supervisors with every strategy, links, monitors, `trap_exit`,
+  timers, the registry, timed-out requests, stream listeners, `ActorSystem`
+  cycles and mailbox bursts from a seed, samples RSS, live heap, OS threads,
+  file descriptors, Tokio tasks, registry size, live actors and the `metrics`
+  gauges into a CSV, fails on growth per hour after warm-up or on any count
+  not returning to its baseline after quiesce, and has a `--inject-leak`
+  negative control. Run it before each release (`docs/TESTING.md`).
 
 ## 0.7.3 — 2026-11-10
 
