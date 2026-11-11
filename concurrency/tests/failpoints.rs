@@ -723,7 +723,7 @@ async fn peer_exit_during_link_install_still_propagates() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn target_exit_during_monitor_install_still_delivers_down() {
+async fn target_exit_during_monitor_install_delivers_noproc() {
     let _scenario = FailScenario::setup();
     failpoints::configure(
         "monitor.before_install",
@@ -737,11 +737,13 @@ async fn target_exit_during_monitor_install_still_delivers_down() {
     reached("monitor.before_install", 1).await;
     target.send(Crash).unwrap();
     target.wait_exit().await;
+    // The registration completes after the target's death point: exactly
+    // one Down, carrying NoProc (E4).
     let reason = tokio::time::timeout(LIMIT, received.recv())
         .await
         .unwrap()
         .unwrap();
-    assert!(matches!(reason, ExitReason::Panic(_)));
+    assert_eq!(reason, ExitReason::NoProc);
     watcher.context().stop();
     watcher.join().await;
 }
@@ -768,11 +770,16 @@ async fn injected_started_panic_is_an_abnormal_exit_seen_by_monitors() {
         other => panic!("expected panic exit, got {other:?}"),
     }
     assert!(started.handles().is_empty());
+    // The monitor races the target's death point: before it, the Down
+    // carries the panic; after it, NoProc.
     let reason = tokio::time::timeout(LIMIT, received.recv())
         .await
         .unwrap()
         .unwrap();
-    assert!(matches!(reason, ExitReason::Panic(_)));
+    assert!(
+        matches!(reason, ExitReason::Panic(_) | ExitReason::NoProc),
+        "got {reason:?}"
+    );
     watcher.context().stop();
     watcher.join().await;
 }

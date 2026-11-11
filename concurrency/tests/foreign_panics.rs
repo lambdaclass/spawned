@@ -550,7 +550,14 @@ fn subscriber_child() {
             println!(
                 "{place:?} panic_in_stopped={panic_in_stopped} reason={reason:?} stopped_ran={ran}"
             );
-            if reason != handler_panic() || !ran {
+            // v0.8: a panic in stopped() replaces an earlier abnormal reason
+            // (as a crash in OTP's terminate), unless a kill was received.
+            let expected = if panic_in_stopped {
+                ExitReason::Panic("panic in stopped(): injected stopped panic".into())
+            } else {
+                handler_panic()
+            };
+            if reason != expected || !ran {
                 callback_gaps.push(format!(
                     "{place:?} stopped_panic={panic_in_stopped}: {reason:?}, stopped() ran: {ran}"
                 ));
@@ -648,9 +655,8 @@ fn reply_drop_child() {
                 "{place:?}: stopped() skipped"
             );
         }
-        // A held reply whose Drop panics while state is destroyed: a normal
-        // stop escalates to a destructor panic, an unwinding actor keeps its
-        // handler panic as the reason.
+        // A held reply whose Drop panics while state is destroyed (after the
+        // death point): a cleanup failure, never the reason.
         for unwinding in [false, true] {
             let stopped = Arc::new(AtomicBool::new(false));
             let mut victim = Victim::new(&stopped, false);
@@ -666,9 +672,14 @@ fn reply_drop_child() {
             let expected = if unwinding {
                 handler_panic()
             } else {
-                ExitReason::Panic(format!("actor state destructor: {REPLY_PANIC}"))
+                ExitReason::Normal
             };
             assert_eq!(reason, expected, "{place:?} unwinding={unwinding}");
+            assert_eq!(
+                actor.child().cleanup_failure(),
+                Some(format!("actor state destructor: {REPLY_PANIC}")),
+                "{place:?} unwinding={unwinding}"
+            );
         }
         // The process and the remaining actors stay healthy.
         let stopped = Arc::new(AtomicBool::new(false));
