@@ -10,6 +10,7 @@ rather than repeat it.
 | Note | Roadmap items |
 |---|---|
 | [Virtual actors](virtual-actors.md) | Ranks 12, 26, 44, 49-51 |
+| [Erlang/OTP, Elixir and Gleam compared](otp-elixir-gleam.md) | The OTP, Elixir and Gleam gaps table in the roadmap (G1-G23), 0.9 designs, non-goals |
 | [Systematic testing, simulation and runtime monitoring](systematic-testing.md) | Verification rule, testing to add, ranks 5c, 20-22a |
 | [How the Ethereum ecosystem tests clients](ethereum-testing.md) | Ranks 5, 5c, 20-22 |
 | [Request semantics references](request-semantics-references.md) | Ranks 11, 11a, 47, 47a; rank 11 and 11a decisions in the [deferred replies design](../design/deferred-replies.md) |
