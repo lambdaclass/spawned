@@ -34,6 +34,9 @@
 //! aarch64-linux glibc's 128 KiB thread minimum hides every scenario, so the
 //! larger x86_64 budgets apply there and to other targets. `--features
 //! metrics` measures the same debug minimums on macOS.
+// Measures real OS thread stacks in child processes; the simulator runs
+// every task on one thread, so the budgets do not apply there.
+#![cfg(not(spawned_sim))]
 #[path = "support/drop_subprocess.rs"]
 mod subprocess;
 
