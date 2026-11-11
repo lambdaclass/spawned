@@ -737,10 +737,11 @@ FailureEndsNonTrappingParent ==
     \A c \in Kids :
         (kind[c] = "link" /\ ~ptrap /\ commit0[c] = "failed" /\ why[c] \in NonNormal
          /\ phase[c] = "published" /\ lnote[c] /\ pubAlive[c]) => pst # "run"
-\* ... and a Normal one (error, ignore, stop(Normal)) never does.
+\* ... and one whose final reason is Normal (error, ignore, stop(Normal),
+\* not escalated by a kill before D) never does.
 NormalFailureSparesParent ==
     \A c \in Kids :
-        (kind[c] = "link" /\ (commit0[c] = "ignored" \/ (commit0[c] = "failed" /\ why[c] = "Normal")))
+        (kind[c] = "link" /\ commit0[c] \in {"failed", "ignored"} /\ why[c] = "Normal")
             => pcause # c
 
 TimeoutContained ==
