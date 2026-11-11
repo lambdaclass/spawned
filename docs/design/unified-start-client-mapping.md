@@ -65,7 +65,7 @@ an actor's handler, come from the source.
 | 19 | `crates/networking/p2p/rlpx/connection/server.rs:292` | `PeerConnection::unestablished` (sync) | `connection.start()` | `connection.spawn()` | |
 | 20 | `crates/networking/p2p/rlpx/connection/server.rs:4024` | test helper `connection()` | `server.start()` | `server.spawn()` | test |
 | 21 | `crates/networking/p2p/rlpx/initiator.rs:50` | `RLPxInitiator::spawn_on` (sync) | `..new(context).start_on(group)?` | `..new(context).with_options(group).spawn()?` | E |
-| 22 | `crates/networking/p2p/rlpx/initiator.rs:66` | `RLPxInitiator::spawn_with_backend` (sync, returns `ActorRef`) | `state.start_with_backend(b)` | `state.with_options(b).spawn().expect("a backend alone cannot be refused")` | it fails only on options |
+| 22 | `crates/networking/p2p/rlpx/initiator.rs:66` | `RLPxInitiator::spawn_with_backend` (sync, returns `ActorRef`) | `state.start_with_backend(b)` | `state.with_options(b).spawn().expect("executor construction failed")` | it fails on invalid options or an executor construction failure (for example, a thread that cannot be spawned), which bare 0.8 `start_with_backend` also panicked on |
 | 23 | `crates/networking/p2p/rlpx/initiator.rs:67` | same | `state.start()` | `state.spawn()` | |
 | 24 | `crates/networking/p2p/peer_table.rs:616` | `PeerTableServer::spawn_with_filter` (sync) | `..start()` | `..spawn()` | |
 | 25 | `crates/networking/p2p/peer_table.rs:635` | `PeerTableServer::spawn_on` (sync) | `.start_on(group)` | `.with_options(group).spawn()` | E |
@@ -126,8 +126,12 @@ Unchanged:
 - **ethrex.** Site #18 is the per-connection actor that the dynamic
   supervisor design (#245) moves under a `DynamicSupervisor`. With unified
   start, its RLPx handshake becomes `Init::continue_with(Handshake)`, so no
-  peer-table message or `terminate_child` can run before it (gap report
-  3.2.1).
+  peer-table message is handled before it (gap report 3.2.1). This is not a
+  barrier against termination: readiness commits before the continuation
+  runs, so a `terminate_child`, a kill or supervisor shutdown can end the
+  connection before or during the handshake (design section 8). The
+  connection's resource owners must therefore handle a peer that never
+  finished its handshake, as they do for one that fails it.
 - **ethlambda.** Site #2 is the chain actor on its own one-worker
   `thread_group` (0.8 replaced `Backend::Thread` with it). Unified start
   keeps that placement, and a `start_link` from the chain actor would
