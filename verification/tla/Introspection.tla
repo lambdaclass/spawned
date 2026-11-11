@@ -1,6 +1,6 @@
 --------------------------- MODULE Introspection ---------------------------
 (***************************************************************************)
-(* Introspection v1 design model, revision 2 (docs/design/introspection.md, *)
+(* Introspection v1 design model, revision 3 (docs/design/introspection.md, *)
 (* not implemented). One actor and its activity word, an in-band status    *)
 (* request (sys:get_status) and the stall watchdog's fenced kill.          *)
 (*                                                                         *)
@@ -9,27 +9,25 @@
 (* stopped(). The run loop closes it with a swap that reads the kill bit;  *)
 (* the watchdog commits a kill with one CAS on (observed id, open). A      *)
 (* failed CAS has no effect. Every way an activity ends consumes the kill  *)
-(* bit: normal end, handler panic, status callback panic, hook end and     *)
-(* runtime drop. The death point D closes the word for good.               *)
+(* bit: return, panic (in started(), a handler or stopped()), the status   *)
+(* turn's end, and the runtime drop's swap. D closes the word for good.    *)
 (*                                                                         *)
-(* Out-of-band reads (process_info, listings, the watchdog's sampling) are *)
-(* not actions: they change nothing.                                       *)
+(* Each action is one linearization point of the implementation, so a     *)
+(* recorded trace event maps to exactly one action (design, "Trace events  *)
+(* and their mapping"): the exit decision and the hook's begin are         *)
+(* separate, the status answer and the status turn's end are separate, and *)
+(* the drop swap and D are separate (an ordinary kill can come between).   *)
+(*                                                                         *)
+(* Ghost variables are derived from state changes in Next, never from the *)
+(* Fault constant. Out-of-band reads are not actions: they change nothing. *)
 (*                                                                         *)
 (* Fault = "None" or a negative control that must fail (negative_checks.py *)
 (* INTROSPECTION_CONTROLS, each on its named invariant):                   *)
-(*   CheckThenAct        watchdog checks the turn, kills in a later step   *)
-(*   FailedCasKills      a failed CAS still records a kill                 *)
-(*   KillBitIgnored      normal turn end drops the kill bit                *)
-(*   PanicOverKill       a handler panic ignores the kill bit              *)
-(*   DropLosesKill       runtime drop ignores the kill bit                 *)
-(*   NoInvalidateAtD     runtime drop leaves the word open after D         *)
-(*   KillRunsStopped     stopped() begins after a kill                     *)
-(*   DispatchAfterStop   the run loop dispatches after a stop or kill      *)
-(*   StatusInTurn        status answered while a turn is suspended         *)
-(*   StatusLost          a waiting status request is not answered at D     *)
-(*   DoubleAnswer        a status request answered twice                   *)
-(*   CallbackAfterGiveUp the callback runs after its caller timed out      *)
-(*   CallbackPanicStops  a caught callback panic ends the actor            *)
+(*   CheckThenAct, FailedCasKills, LooseCas, KillBitIgnored, PanicOverKill,*)
+(*   HookPanicOverKill, StartPanicOverKill, DropLosesKill, NoInvalidateAtD,*)
+(*   KillRunsStopped, LostBitRunsStopped, DispatchAfterStop, StatusInTurn, *)
+(*   StatusLost, DoubleAnswer, StaleStatusReason, CallbackAfterGiveUp,     *)
+(*   CallbackPanicStops                                                    *)
 (***************************************************************************)
 EXTENDS Naturals, Sequences, FiniteSets
 
@@ -41,142 +39,160 @@ None == "none"
 MaxSeq == MaxTurns + 3   \* started(), one status turn, stopped()
 
 VARIABLES
-    ph,        \* "start", "idle", "turn", "hook", "exiting", "dead" (past D), "gone" (published)
+    ph,        \* "start", "idle", "turn", "hookwait", "hook",
+               \* "exiting", "dropping", "dead" (past D), "gone" (published)
     kind,      \* open activity: "start", "msg", "status", "hook", or None
     seq,       \* activity word: turn id of the current or last activity
     open,      \* activity word: an activity is open
     kbit,      \* activity word: kill bit (set only by the watchdog's CAS)
-    susp,      \* a message turn is suspended at an await (may never resume)
-    killed,    \* a kill is recorded in the exit request
-    stopReq,   \* an administrative stop (Shutdown) is recorded
-    panicked,  \* a handler panic is recorded
+    susp,      \* the open activity is suspended at an await (may never resume)
+    killed, stopReq, panicked,
     reason,    \* final reason, fixed at D
-    mbox,      \* queued items: "msg" or "status"
-    sent,
-    st,        \* the status caller: "unsent", "waiting", "ok", "failed", "timeout", "stopped", "noproc"
-    answers,   \* answers produced for the status request (by its turn or at D)
+    dropReason,\* reason fixed by the drop swap's cleanup, read at D
+    mbox, sent,
+    st,        \* status caller: "unsent", "waiting", "ok", "failed", "timeout", "stopped", "noproc"
+    stReason,  \* the reason carried by an ActorStopped status answer
+    answers,   \* answers produced for the status request
     stSkip,    \* the open status turn's caller had given up at dispatch
-    wdPhase,   \* watchdog: "idle", "committed" (CAS succeeded), "decided" (bug paths), "done"
-    obs,       \* watchdog: observed open turn id, or 0
-    wdTarget,  \* watchdog: turn id its kill targets
-    \* ghosts
+    stDone,    \* the open status turn has answered (or skipped)
+    stFailed,  \* the open status turn's callback panicked
+    stGaveUp,  \* the open status turn's caller had timed out before dispatch
+    wdPhase, obs, wdTarget,
+    \* ghosts, all derived in Next from state changes
     endedClean,     \* turn ids whose activity ended with no kill bit set
-    charged,        \* a watchdog kill was recorded for a turn that had ended clean
+    charged,        \* a watchdog kill targeted an activity that had ended clean
     commitPreD,     \* a CAS succeeded before D
     commitPostD,    \* a CAS succeeded after D
-    lateDispatch,   \* something dispatched after a stop, a kill or a committed CAS
-    hookAfterKill,  \* stopped() began although a kill was recorded
-    stInTurn,       \* status answered while another turn was open
-    cbAfterGiveUp,  \* a status callback ran after its caller timed out
-    cbStopped       \* a caught status callback panic began exit
+    commitClosed,   \* a CAS succeeded on a word that was not open on its target
+    lateDispatch,   \* a turn began after a stop, a kill or a commitment
+    hookAfterKill,  \* stopped() was decided after a kill or a commitment
+    stInTurn,       \* the status answer happened outside its own open turn
+    cbAfterGiveUp,  \* a status callback answered after its caller timed out
+    cbStopped       \* the status turn's end began exit
 
 vars == <<ph, kind, seq, open, kbit, susp, killed, stopReq, panicked, reason,
-          mbox, sent, st, answers, stSkip, wdPhase, obs, wdTarget, endedClean,
-          charged, commitPreD, commitPostD, lateDispatch, hookAfterKill,
-          stInTurn, cbAfterGiveUp, cbStopped>>
+          dropReason, mbox, sent, st, stReason, answers, stSkip, stDone,
+          stFailed, stGaveUp, wdPhase, obs, wdTarget, endedClean, charged, commitPreD,
+          commitPostD, commitClosed, lateDispatch, hookAfterKill, stInTurn,
+          cbAfterGiveUp, cbStopped>>
 
-actorVars == <<ph, kind, seq, open, kbit, susp, killed, stopReq, panicked, reason>>
-ghostVars == <<endedClean, charged, commitPreD, commitPostD, lateDispatch,
-               hookAfterKill, stInTurn, cbAfterGiveUp, cbStopped>>
-wdVars    == <<wdPhase, obs, wdTarget>>
-stVars    == <<st, answers, stSkip>>
+\* Variables an action of the core leaves alone unless it names them.
+core == <<ph, kind, seq, open, kbit, susp, killed, stopReq, panicked, reason,
+          dropReason, mbox, sent, st, stReason, answers, stSkip, stDone,
+          stFailed, stGaveUp, wdPhase, obs, wdTarget, endedClean>>
+ghosts == <<charged, commitPreD, commitPostD, commitClosed, lateDispatch,
+            hookAfterKill, stInTurn, cbAfterGiveUp, cbStopped>>
 
 Init ==
     /\ ph = "start" /\ kind = "start" /\ seq = 1 /\ open = TRUE /\ kbit = FALSE
     /\ susp = FALSE /\ killed = FALSE /\ stopReq = FALSE /\ panicked = FALSE
-    /\ reason = None /\ mbox = <<>> /\ sent = 0
-    /\ st = "unsent" /\ answers = 0 /\ stSkip = FALSE
+    /\ reason = None /\ dropReason = None /\ mbox = <<>> /\ sent = 0
+    /\ st = "unsent" /\ stReason = None /\ answers = 0
+    /\ stSkip = FALSE /\ stDone = FALSE /\ stFailed = FALSE /\ stGaveUp = FALSE
     /\ wdPhase = "idle" /\ obs = 0 /\ wdTarget = 0
     /\ endedClean = {} /\ charged = FALSE /\ commitPreD = FALSE
-    /\ commitPostD = FALSE /\ lateDispatch = FALSE /\ hookAfterKill = FALSE
-    /\ stInTurn = FALSE /\ cbAfterGiveUp = FALSE /\ cbStopped = FALSE
+    /\ commitPostD = FALSE /\ commitClosed = FALSE /\ lateDispatch = FALSE
+    /\ hookAfterKill = FALSE /\ stInTurn = FALSE /\ cbAfterGiveUp = FALSE
+    /\ cbStopped = FALSE
 
 Exiting == killed \/ stopReq \/ panicked
 Past == ph \in {"dead", "gone"}
-Committed == wdPhase = "committed" \/ (wdPhase = "done" /\ commitPreD)
+Committed == commitPreD
 
 \* Closing the activity word: the swap reads the kill bit.
 Close(consume) ==
-    /\ open' = FALSE /\ kbit' = FALSE /\ kind' = None
+    /\ open' = FALSE /\ kbit' = FALSE /\ kind' = None /\ susp' = FALSE
     /\ killed' = (killed \/ (kbit /\ consume))
     /\ endedClean' = IF kbit THEN endedClean ELSE endedClean \cup {seq}
 
-FinalReason(k) ==
-    IF k THEN "Killed" ELSE IF panicked THEN "Panic"
+FinalReason(k, p) ==
+    IF k THEN "Killed" ELSE IF p THEN "Panic"
     ELSE IF stopReq THEN "Shutdown" ELSE "Normal"
-
-\* At D every waiting status request is answered with the final reason.
-AnswerAtDeath(queued) ==
-    /\ st' = IF st = "waiting" /\ Fault # "StatusLost" THEN "stopped" ELSE st
-    /\ answers' = answers + (IF (queued /\ Fault # "StatusLost") \/ Fault = "DoubleAnswer"
-                             THEN 1 ELSE 0)
 
 -----------------------------------------------------------------------------
 \* The actor
 
 StartedEnd ==
-    /\ ph = "start"
+    /\ ph = "start" /\ ~susp
     /\ ph' = "idle"
     /\ Close(TRUE)
-    /\ UNCHANGED <<seq, susp, stopReq, panicked, reason, mbox, sent, stVars,
-                   wdVars, charged, commitPreD, commitPostD, lateDispatch,
-                   hookAfterKill, stInTurn, cbAfterGiveUp, cbStopped>>
+    /\ UNCHANGED <<seq, stopReq, panicked, reason, dropReason, mbox, sent, st,
+                   stReason, answers, stSkip, stDone, stFailed, stGaveUp, wdPhase, obs, wdTarget>>
+
+\* A panic in started(): no stopped() (L5); a committed kill still wins.
+StartPanic ==
+    /\ ph = "start" /\ ~susp
+    /\ ph' = "exiting"
+    /\ panicked' = TRUE
+    /\ Close(Fault # "StartPanicOverKill")
+    /\ UNCHANGED <<seq, stopReq, reason, dropReason, mbox, sent, st, stReason,
+                   answers, stSkip, stDone, stFailed, stGaveUp, wdPhase, obs, wdTarget>>
 
 Send ==
     /\ sent < MaxTurns
     /\ sent' = sent + 1
     /\ mbox' = IF Past THEN mbox ELSE Append(mbox, "msg")
-    /\ UNCHANGED <<actorVars, stVars, wdVars, ghostVars>>
+    /\ UNCHANGED <<ph, kind, seq, open, kbit, susp, killed, stopReq, panicked,
+                   reason, dropReason, st, stReason, answers, stSkip, stDone,
+                   stFailed, stGaveUp, wdPhase, obs, wdTarget, endedClean>>
 
 SendStatus ==
     /\ st = "unsent"
     /\ IF Past THEN /\ st' = "noproc" /\ mbox' = mbox
                ELSE /\ st' = "waiting" /\ mbox' = Append(mbox, "status")
-    /\ UNCHANGED <<actorVars, sent, answers, stSkip, wdVars, ghostVars>>
+    /\ UNCHANGED <<ph, kind, seq, open, kbit, susp, killed, stopReq, panicked,
+                   reason, dropReason, sent, stReason, answers, stSkip, stDone,
+                   stFailed, stGaveUp, wdPhase, obs, wdTarget, endedClean>>
 
-\* The caller's deadline passes: it sees RequestTimeout; a later answer is
-\* dropped (the slot is closed).
+\* The caller's deadline passes (the slot closes; a later answer is dropped).
 StatusTimeout ==
     /\ st = "waiting"
     /\ st' = "timeout"
-    /\ UNCHANGED <<actorVars, mbox, sent, answers, stSkip, wdVars, ghostVars>>
+    /\ UNCHANGED <<ph, kind, seq, open, kbit, susp, killed, stopReq, panicked,
+                   reason, dropReason, mbox, sent, stReason, answers, stSkip,
+                   stDone, stFailed, stGaveUp, wdPhase, obs, wdTarget, endedClean>>
 
-\* The run loop checks for exit before every receive (D4). Every dispatch,
-\* status included, opens a new turn id.
+\* Dispatch checks for exit before every receive (D4). Every turn, status
+\* included, opens a new turn id. The status callback's admission is
+\* decided here against the slot: a closed slot means skip.
 Dispatch ==
-    /\ ph = "idle"
-    /\ open = FALSE
+    /\ ph = "idle" /\ ~open
     /\ ~Exiting \/ Fault = "DispatchAfterStop"
     /\ mbox # <<>>
     /\ mbox' = Tail(mbox)
     /\ ph' = "turn" /\ seq' = seq + 1 /\ open' = TRUE /\ susp' = FALSE
     /\ kind' = Head(mbox)
-    /\ stSkip' = (Head(mbox) = "status" /\ st = "timeout")
-    /\ lateDispatch' = (lateDispatch \/ Exiting \/ Committed)
-    /\ UNCHANGED <<kbit, killed, stopReq, panicked, reason, sent, st, answers,
-                   wdVars, endedClean, charged, commitPreD, commitPostD,
-                   hookAfterKill, stInTurn, cbAfterGiveUp, cbStopped>>
+    /\ stSkip' = (Head(mbox) = "status" /\ st = "timeout"
+                  /\ Fault # "CallbackAfterGiveUp")
+    /\ stDone' = (Head(mbox) = "status" /\ st = "timeout"
+                  /\ Fault # "CallbackAfterGiveUp")
+    /\ stFailed' = FALSE
+    /\ stGaveUp' = (Head(mbox) = "status" /\ st = "timeout")
+    /\ UNCHANGED <<kbit, killed, stopReq, panicked, reason, dropReason, sent,
+                   st, stReason, answers, wdPhase, obs, wdTarget, endedClean>>
 
+\* Activities may suspend at an await and never resume (no fairness); a
+\* status callback is synchronous and never suspends.
 Suspend ==
-    /\ ph = "turn" /\ kind = "msg" /\ ~susp
+    /\ ph \in {"start", "turn", "hook"} /\ kind \in {"start", "msg", "hook"} /\ ~susp
     /\ susp' = TRUE
     /\ UNCHANGED <<ph, kind, seq, open, kbit, killed, stopReq, panicked, reason,
-                   mbox, sent, stVars, wdVars, ghostVars>>
+                   dropReason, mbox, sent, st, stReason, answers, stSkip, stDone,
+                   stFailed, stGaveUp, wdPhase, obs, wdTarget, endedClean>>
 
 Resume ==
-    /\ ph = "turn" /\ susp
+    /\ susp
     /\ susp' = FALSE
     /\ UNCHANGED <<ph, kind, seq, open, kbit, killed, stopReq, panicked, reason,
-                   mbox, sent, stVars, wdVars, ghostVars>>
+                   dropReason, mbox, sent, st, stReason, answers, stSkip, stDone,
+                   stFailed, stGaveUp, wdPhase, obs, wdTarget, endedClean>>
 
-\* A message turn returns.
 MsgEnd ==
     /\ ph = "turn" /\ kind = "msg" /\ ~susp
     /\ ph' = "idle"
-    /\ Close(Fault # "KillBitIgnored")
-    /\ UNCHANGED <<seq, susp, stopReq, panicked, reason, mbox, sent, stVars,
-                   wdVars, charged, commitPreD, commitPostD, lateDispatch,
-                   hookAfterKill, stInTurn, cbAfterGiveUp, cbStopped>>
+    /\ Close(Fault # "KillBitIgnored" /\ Fault # "LostBitRunsStopped")
+    /\ UNCHANGED <<seq, stopReq, panicked, reason, dropReason, mbox, sent, st,
+                   stReason, answers, stSkip, stDone, stFailed, stGaveUp, wdPhase, obs, wdTarget>>
 
 \* A handler panics: the turn ends and exit begins; a committed kill wins.
 MsgPanic ==
@@ -184,106 +200,122 @@ MsgPanic ==
     /\ ph' = "idle"
     /\ panicked' = TRUE
     /\ Close(Fault # "PanicOverKill")
-    /\ UNCHANGED <<seq, susp, stopReq, reason, mbox, sent, stVars, wdVars,
-                   charged, commitPreD, commitPostD, lateDispatch,
-                   hookAfterKill, stInTurn, cbAfterGiveUp, cbStopped>>
+    /\ UNCHANGED <<seq, stopReq, reason, dropReason, mbox, sent, st, stReason,
+                   answers, stSkip, stDone, stFailed, stGaveUp, wdPhase, obs, wdTarget>>
 
-\* The status turn: the callback runs unless the caller already gave up.
-StatusEnd ==
-    /\ ph = "turn" /\ kind = "status"
-    /\ ph' = "idle"
-    /\ \/ /\ stSkip /\ Fault # "CallbackAfterGiveUp"
-          /\ UNCHANGED <<st, answers, cbAfterGiveUp>>
-       \/ /\ ~stSkip \/ Fault = "CallbackAfterGiveUp"
-          /\ cbAfterGiveUp' = (cbAfterGiveUp \/ stSkip)
-          /\ answers' = answers + 1
-          /\ st' = IF st = "waiting" THEN "ok" ELSE st
-    /\ Close(TRUE)
-    /\ UNCHANGED <<seq, susp, stopReq, panicked, reason, mbox, sent, stSkip,
-                   wdVars, charged, commitPreD, commitPostD, lateDispatch,
-                   hookAfterKill, stInTurn, cbStopped>>
-
-\* The callback panics: caught, answered CallbackFailed, the actor goes on.
-StatusPanic ==
-    /\ ph = "turn" /\ kind = "status" /\ ~stSkip
-    /\ ph' = "idle"
+\* The status answer, at the reply slot's discharge (its own linearization
+\* point, before the end swap). The callback either returns or panics.
+StatusAnswer ==
+    /\ ph = "turn" /\ kind = "status" /\ ~stDone
+    /\ \E fail \in BOOLEAN :
+        /\ stFailed' = fail
+        /\ st' = IF st = "waiting" THEN (IF fail THEN "failed" ELSE "ok") ELSE st
     /\ answers' = answers + 1
-    /\ st' = IF st = "waiting" THEN "failed" ELSE st
-    /\ panicked' = (Fault = "CallbackPanicStops")
-    /\ cbStopped' = (Fault = "CallbackPanicStops")
-    /\ Close(TRUE)
-    /\ UNCHANGED <<seq, susp, stopReq, reason, mbox, sent, stSkip, wdVars,
-                   charged, commitPreD, commitPostD, lateDispatch,
-                   hookAfterKill, stInTurn, cbAfterGiveUp>>
+    /\ stDone' = TRUE
+    /\ UNCHANGED <<ph, kind, seq, open, kbit, susp, killed, stopReq, panicked,
+                   reason, dropReason, mbox, sent, stReason, stSkip, stGaveUp, wdPhase,
+                   obs, wdTarget, endedClean>>
 
-\* The bug: answering the status request from inside a suspended turn.
+\* The bug: answering the status request from inside a suspended message turn.
 StatusFromTurn ==
     /\ Fault = "StatusInTurn"
-    /\ ph = "turn" /\ susp /\ st = "waiting"
+    /\ ph = "turn" /\ kind = "msg" /\ susp /\ st = "waiting"
     /\ \E i \in 1..Len(mbox) : mbox[i] = "status"
     /\ LET i == CHOOSE j \in 1..Len(mbox) : mbox[j] = "status"
        IN mbox' = SubSeq(mbox, 1, i - 1) \o SubSeq(mbox, i + 1, Len(mbox))
-    /\ st' = "ok" /\ answers' = answers + 1 /\ stInTurn' = TRUE
-    /\ UNCHANGED <<actorVars, sent, stSkip, wdVars, endedClean, charged,
-                   commitPreD, commitPostD, lateDispatch, hookAfterKill,
-                   cbAfterGiveUp, cbStopped>>
+    /\ st' = "ok" /\ answers' = answers + 1
+    /\ UNCHANGED <<ph, kind, seq, open, kbit, susp, killed, stopReq, panicked,
+                   reason, dropReason, sent, stReason, stSkip, stDone, stFailed, stGaveUp,
+                   wdPhase, obs, wdTarget, endedClean>>
 
-\* Exit begins between turns. stopped() opens a turn of its own, unless a
-\* kill is recorded (L5); a kill during stopped() makes the reason Killed
-\* and the hook finishes (L3).
-BeginExit ==
-    /\ ph = "idle" /\ open = FALSE /\ Exiting
-    /\ IF killed /\ Fault # "KillRunsStopped"
-       THEN /\ ph' = "exiting"
-            /\ UNCHANGED <<kind, seq, open, hookAfterKill>>
-       ELSE /\ ph' = "hook" /\ kind' = "hook" /\ seq' = seq + 1 /\ open' = TRUE
-            /\ hookAfterKill' = (hookAfterKill \/ killed)
-    /\ UNCHANGED <<kbit, susp, killed, stopReq, panicked, reason, mbox, sent,
-                   stVars, wdVars, endedClean, charged, commitPreD, commitPostD,
-                   lateDispatch, stInTurn, cbAfterGiveUp, cbStopped>>
+\* The status turn ends (the end swap). A caught callback panic is not a
+\* handler panic.
+StatusEnd ==
+    /\ ph = "turn" /\ kind = "status" /\ stDone
+    /\ ph' = "idle"
+    /\ panicked' = (panicked \/ (stFailed /\ Fault = "CallbackPanicStops"))
+    /\ Close(TRUE)
+    /\ UNCHANGED <<seq, stopReq, reason, dropReason, mbox, sent, st, stReason,
+                   answers, stSkip, stDone, stFailed, stGaveUp, wdPhase, obs, wdTarget>>
 
+\* Exit begins between turns: the exit request decides whether stopped()
+\* runs (0.8 begin_hook, under its lock); it is skipped after a kill (L5).
+ExitDecide ==
+    /\ ph = "idle" /\ ~open /\ Exiting
+    /\ ph' = IF killed /\ Fault # "KillRunsStopped" THEN "exiting" ELSE "hookwait"
+    /\ UNCHANGED <<kind, seq, open, kbit, susp, killed, stopReq, panicked,
+                   reason, dropReason, mbox, sent, st, stReason, answers,
+                   stSkip, stDone, stFailed, stGaveUp, wdPhase, obs, wdTarget, endedClean>>
+
+\* stopped() begins: its activity opens (word.store(open)).
+HookBegin ==
+    /\ ph = "hookwait"
+    /\ ph' = "hook" /\ kind' = "hook" /\ seq' = seq + 1 /\ open' = TRUE
+    /\ UNCHANGED <<kbit, susp, killed, stopReq, panicked, reason, dropReason,
+                   mbox, sent, st, stReason, answers, stSkip, stDone, stFailed, stGaveUp,
+                   wdPhase, obs, wdTarget, endedClean>>
+
+\* stopped() returns; a kill during it makes the reason Killed (L3).
 HookEnd ==
-    /\ ph = "hook"
+    /\ ph = "hook" /\ ~susp
     /\ ph' = "exiting"
     /\ Close(TRUE)
-    /\ UNCHANGED <<seq, susp, stopReq, panicked, reason, mbox, sent, stVars,
-                   wdVars, charged, commitPreD, commitPostD, lateDispatch,
-                   hookAfterKill, stInTurn, cbAfterGiveUp, cbStopped>>
+    /\ UNCHANGED <<seq, stopReq, panicked, reason, dropReason, mbox, sent, st,
+                   stReason, answers, stSkip, stDone, stFailed, stGaveUp, wdPhase, obs, wdTarget>>
 
-\* The death point D: the reason is fixed, queued requests are answered.
-Die ==
-    /\ ph = "exiting"
-    /\ ph' = "dead"
-    /\ reason' = FinalReason(killed)
-    /\ mbox' = <<>>
-    /\ AnswerAtDeath(\E i \in 1..Len(mbox) : mbox[i] = "status")
-    /\ UNCHANGED <<kind, seq, open, kbit, susp, killed, stopReq, panicked,
-                   sent, stSkip, wdVars, ghostVars>>
+\* stopped() panics: Panic unless a kill was received.
+HookPanic ==
+    /\ ph = "hook" /\ ~susp
+    /\ ph' = "exiting"
+    /\ panicked' = TRUE
+    /\ Close(Fault # "HookPanicOverKill")
+    /\ UNCHANGED <<seq, stopReq, reason, dropReason, mbox, sent, st, stReason,
+                   answers, stSkip, stDone, stFailed, stGaveUp, wdPhase, obs, wdTarget>>
 
-\* The runtime drops the actor at any point before D (tasks mode): cleanup
-\* closes the word, consumes the kill bit, then reaches D. The reason is
-\* Killed unless a non-Normal reason was requested (0.8 L4); a committed
-\* kill dominates.
-RuntimeDrop ==
-    /\ ph \in {"start", "idle", "turn", "hook", "exiting"}
-    /\ ph' = "dead"
-    /\ LET k == killed \/ (kbit /\ Fault # "DropLosesKill")
-       IN /\ killed' = k
-          /\ reason' = IF k \/ ~(panicked \/ stopReq) THEN "Killed" ELSE FinalReason(FALSE)
+\* The runtime drops the actor before D (tasks mode): cleanup swaps the word
+\* to DEAD, consuming the kill bit. The reason is decided at D.
+DropSwap ==
+    /\ ph \in {"start", "idle", "turn", "hookwait", "hook", "exiting"}
+    /\ ph' = "dropping"
+    /\ killed' = (killed \/ (kbit /\ Fault # "DropLosesKill"))
     /\ open' = (open /\ Fault = "NoInvalidateAtD")
     /\ kbit' = (kbit /\ Fault = "NoInvalidateAtD")
-    /\ kind' = None
-    /\ mbox' = <<>>
-    /\ AnswerAtDeath((\E i \in 1..Len(mbox) : mbox[i] = "status")
-                     \/ (kind = "status" /\ ~stSkip))
-    /\ UNCHANGED <<seq, susp, stopReq, panicked, sent, stSkip, wdVars, ghostVars>>
+    /\ kind' = IF Fault = "NoInvalidateAtD" THEN kind ELSE None
+    /\ susp' = FALSE
+    /\ endedClean' = IF kbit \/ ~open THEN endedClean ELSE endedClean \cup {seq}
+    /\ UNCHANGED <<seq, stopReq, panicked, reason, dropReason, mbox, sent, st,
+                   stReason, answers, stSkip, stDone, stFailed, stGaveUp, wdPhase, obs, wdTarget>>
 
-\* Publication: may never happen (a destructor that never returns).
+\* The death point D. After a drop the reason is Killed unless a non-Normal
+\* reason was requested (0.8 L4); a recorded kill dominates. Every waiting
+\* status request is answered with the final reason.
+Die ==
+    /\ ph \in {"exiting", "dropping"}
+    /\ ph' = "dead"
+    /\ LET r == IF ph = "dropping" /\ ~killed /\ ~panicked /\ ~stopReq
+                THEN "Killed" ELSE FinalReason(killed, panicked)
+       IN /\ reason' = r
+          /\ stReason' = IF st = "waiting" /\ Fault # "StatusLost"
+                         THEN (IF Fault = "StaleStatusReason"
+                               THEN FinalReason(FALSE, panicked) ELSE r)
+                         ELSE stReason
+    /\ st' = IF st = "waiting" /\ Fault # "StatusLost" THEN "stopped" ELSE st
+    /\ answers' = answers + (IF (st \in {"waiting", "timeout"} /\ ~stDone
+                                 /\ ("status" \in {mbox[i] : i \in 1..Len(mbox)}
+                                     \/ kind = "status"))
+                                \/ Fault = "DoubleAnswer" THEN 1 ELSE 0)
+    /\ mbox' = <<>>
+    /\ open' = (open /\ Fault = "NoInvalidateAtD")
+    /\ UNCHANGED <<kind, seq, kbit, susp, killed, stopReq, panicked,
+                   dropReason, sent, stSkip, stDone, stFailed, stGaveUp, wdPhase, obs,
+                   wdTarget, endedClean>>
+
 Publish ==
     /\ ph = "dead"
     /\ ph' = "gone"
     /\ UNCHANGED <<kind, seq, open, kbit, susp, killed, stopReq, panicked,
-                   reason, mbox, sent, stVars, wdVars, ghostVars>>
+                   reason, dropReason, mbox, sent, st, stReason, answers,
+                   stSkip, stDone, stFailed, stGaveUp, wdPhase, obs, wdTarget, endedClean>>
 
 -----------------------------------------------------------------------------
 \* Environment
@@ -292,13 +324,15 @@ Stop ==
     /\ ~stopReq /\ ~Past
     /\ stopReq' = TRUE
     /\ UNCHANGED <<ph, kind, seq, open, kbit, susp, killed, panicked, reason,
-                   mbox, sent, stVars, wdVars, ghostVars>>
+                   dropReason, mbox, sent, st, stReason, answers, stSkip,
+                   stDone, stFailed, stGaveUp, wdPhase, obs, wdTarget, endedClean>>
 
-ExternalKill ==   \* ChildHandle::kill: unfenced
+ExternalKill ==   \* ChildHandle::kill: unfenced; possible until D
     /\ ~killed /\ ~Past
     /\ killed' = TRUE
     /\ UNCHANGED <<ph, kind, seq, open, kbit, susp, stopReq, panicked, reason,
-                   mbox, sent, stVars, wdVars, ghostVars>>
+                   dropReason, mbox, sent, st, stReason, answers, stSkip,
+                   stDone, stFailed, stGaveUp, wdPhase, obs, wdTarget, endedClean>>
 
 -----------------------------------------------------------------------------
 \* The watchdog (its own thread). It reads only the activity word.
@@ -307,30 +341,33 @@ Observe ==
     /\ wdPhase \in {"idle", "done"}
     /\ wdPhase' = "idle"
     /\ obs' = IF open THEN seq ELSE 0
-    /\ UNCHANGED <<actorVars, mbox, sent, stVars, wdTarget, ghostVars>>
+    /\ UNCHANGED <<ph, kind, seq, open, kbit, susp, killed, stopReq, panicked,
+                   reason, dropReason, mbox, sent, st, stReason, answers,
+                   stSkip, stDone, stFailed, stGaveUp, wdTarget, endedClean>>
 
-\* Correct: one CAS from (obs, open, no kill) to (obs, open, kill).
+\* One CAS from (obs, open, no kill) to (obs, open, kill). LooseCas compares
+\* the turn id only.
 KillCas ==
-    /\ Fault \notin {"CheckThenAct"}
+    /\ Fault # "CheckThenAct"
     /\ wdPhase = "idle" /\ obs # 0
-    /\ open /\ seq = obs /\ ~kbit
+    /\ seq = obs /\ ~kbit /\ (open \/ Fault = "LooseCas")
     /\ kbit' = TRUE
     /\ wdTarget' = obs /\ wdPhase' = "committed"
-    /\ commitPreD' = (commitPreD \/ ~Past)
-    /\ commitPostD' = (commitPostD \/ Past)
     /\ UNCHANGED <<ph, kind, seq, open, susp, killed, stopReq, panicked, reason,
-                   mbox, sent, stVars, obs, endedClean, charged, lateDispatch,
-                   hookAfterKill, stInTurn, cbAfterGiveUp, cbStopped>>
+                   dropReason, mbox, sent, st, stReason, answers, stSkip,
+                   stDone, stFailed, stGaveUp, obs, endedClean>>
 
-\* The CAS fails: the observed turn is no longer open. No effect.
+\* The CAS fails: no effect (FailedCasKills: it records a kill anyway).
 KillCasFail ==
     /\ wdPhase = "idle" /\ obs # 0
-    /\ ~(open /\ seq = obs)
+    /\ ~(seq = obs /\ ~kbit /\ (open \/ Fault = "LooseCas"))
     /\ obs' = 0
     /\ IF Fault = "FailedCasKills"
        THEN /\ wdPhase' = "decided" /\ wdTarget' = obs
        ELSE UNCHANGED <<wdPhase, wdTarget>>
-    /\ UNCHANGED <<actorVars, mbox, sent, stVars, ghostVars>>
+    /\ UNCHANGED <<ph, kind, seq, open, kbit, susp, killed, stopReq, panicked,
+                   reason, dropReason, mbox, sent, st, stReason, answers,
+                   stSkip, stDone, stFailed, stGaveUp, endedClean>>
 
 \* The bug: check now, kill later.
 KillDecide ==
@@ -338,28 +375,49 @@ KillDecide ==
     /\ wdPhase = "idle" /\ obs # 0
     /\ open /\ seq = obs
     /\ wdTarget' = obs /\ wdPhase' = "decided"
-    /\ UNCHANGED <<actorVars, mbox, sent, stVars, obs, ghostVars>>
+    /\ UNCHANGED <<ph, kind, seq, open, kbit, susp, killed, stopReq, panicked,
+                   reason, dropReason, mbox, sent, st, stReason, answers,
+                   stSkip, stDone, stFailed, stGaveUp, obs, endedClean>>
 
-\* After a successful CAS the watchdog also records the kill through the
-\* ordinary path (idempotent; inert past D).
+\* After its CAS the watchdog records the kill through the ordinary path
+\* (idempotent; inert past D).
 KillRecord ==
     /\ wdPhase \in {"committed", "decided"}
     /\ killed' = (killed \/ ~Past)
-    /\ charged' = (charged \/ wdTarget \in endedClean)
     /\ wdPhase' = "done" /\ obs' = 0
     /\ UNCHANGED <<ph, kind, seq, open, kbit, susp, stopReq, panicked, reason,
-                   mbox, sent, stVars, wdTarget, endedClean, commitPreD,
-                   commitPostD, lateDispatch, hookAfterKill, stInTurn,
-                   cbAfterGiveUp, cbStopped>>
+                   dropReason, mbox, sent, st, stReason, answers, stSkip,
+                   stDone, stFailed, stGaveUp, wdTarget, endedClean>>
 
 -----------------------------------------------------------------------------
 
-Next ==
-    \/ StartedEnd \/ Send \/ SendStatus \/ StatusTimeout \/ Dispatch
-    \/ Suspend \/ Resume \/ MsgEnd \/ MsgPanic \/ StatusEnd \/ StatusPanic
-    \/ StatusFromTurn \/ BeginExit \/ HookEnd \/ Die \/ RuntimeDrop \/ Publish
-    \/ Stop \/ ExternalKill
+Core ==
+    \/ StartedEnd \/ StartPanic \/ Send \/ SendStatus \/ StatusTimeout
+    \/ Dispatch \/ Suspend \/ Resume \/ MsgEnd \/ MsgPanic
+    \/ StatusAnswer \/ StatusFromTurn \/ StatusEnd
+    \/ ExitDecide \/ HookBegin \/ HookEnd \/ HookPanic
+    \/ DropSwap \/ Die \/ Publish \/ Stop \/ ExternalKill
     \/ Observe \/ KillCas \/ KillCasFail \/ KillDecide \/ KillRecord
+
+\* Ghosts, from the state change of each step.
+Ghosts ==
+    /\ charged' = (charged \/ (wdPhase' \in {"committed", "decided", "done"}
+                              /\ wdTarget' \in endedClean'))
+    /\ commitPreD' = (commitPreD \/ (kbit' /\ ~kbit /\ ~Past))
+    /\ commitPostD' = (commitPostD \/ (kbit' /\ ~kbit /\ Past))
+    /\ commitClosed' = (commitClosed \/ (kbit' /\ ~kbit /\ ~open))
+    /\ lateDispatch' = (lateDispatch \/ (open' /\ seq' # seq /\ kind' \in {"msg", "status"}
+                                         /\ (Exiting \/ Committed)))
+    /\ hookAfterKill' = (hookAfterKill \/ (ph = "idle" /\ ph' = "hookwait"
+                                           /\ (killed \/ Committed)))
+    /\ stInTurn' = (stInTurn \/ (st = "waiting" /\ st' \in {"ok", "failed"}
+                                 /\ ~(ph = "turn" /\ kind = "status")))
+    /\ cbAfterGiveUp' = (cbAfterGiveUp \/ (stGaveUp /\ answers' > answers
+                                           /\ ph = "turn" /\ kind = "status"))
+    /\ cbStopped' = (cbStopped \/ (kind = "status" /\ kind' = None /\ ph' = "idle"
+                                   /\ ~panicked /\ panicked'))
+
+Next == Core /\ Ghosts
 
 Spec == Init /\ [][Next]_vars
 
@@ -367,12 +425,14 @@ Spec == Init /\ [][Next]_vars
 \* Invariants
 
 TypeOK ==
-    /\ ph \in {"start", "idle", "turn", "hook", "exiting", "dead", "gone"}
+    /\ ph \in {"start", "idle", "turn", "hookwait", "hook",
+               "exiting", "dropping", "dead", "gone"}
     /\ kind \in {"start", "msg", "status", "hook", None}
     /\ seq \in 1..MaxSeq
     /\ open \in BOOLEAN /\ kbit \in BOOLEAN /\ susp \in BOOLEAN
     /\ killed \in BOOLEAN /\ stopReq \in BOOLEAN /\ panicked \in BOOLEAN
     /\ reason \in {None, "Normal", "Shutdown", "Panic", "Killed"}
+    /\ stReason \in {None, "Normal", "Shutdown", "Panic", "Killed"}
     /\ mbox \in Seq({"msg", "status"})
     /\ st \in {"unsent", "waiting", "ok", "failed", "timeout", "stopped", "noproc"}
     /\ answers \in 0..3
@@ -380,40 +440,43 @@ TypeOK ==
     /\ obs \in 0..MaxSeq /\ wdTarget \in 0..MaxSeq
     /\ endedClean \subseteq 1..MaxSeq
 
-\* A watchdog kill is never charged to an activity that had already ended.
+\* A watchdog kill never targets an activity that had already ended, checked
+\* from the moment of the commitment (or decision) on.
 NoChargeFinishedTurn == ~charged
 
-\* After a stop, a kill or a committed CAS, nothing is dispatched (D4, I9).
+\* A commitment is only ever made on the open target activity.
+CommitOnOpen == ~commitClosed
+
+\* After a stop, a kill or a commitment, no message or status turn begins.
 NoDispatchAfterStop == ~lateDispatch
 
-\* A CAS committed before D makes the final reason Killed, however the
-\* activity ends: return, panic, hook end or runtime drop.
+\* A commitment before D makes the final reason Killed, however the
+\* activity ends (return, panic in started(), a handler or stopped(), drop).
 KillDominates == (Past /\ commitPreD) => reason = "Killed"
 
-\* No CAS succeeds once D has passed (the word is closed at D).
 NoCommitAfterD == ~commitPostD
 
-\* stopped() never begins after a kill (L5).
+\* stopped() is never decided after a kill or a commitment (L5).
 KillSkipsStopped == ~hookAfterKill
 
-\* The status request is answered only between turns (M1).
+\* The status answer happens only inside its own turn (M1).
 StatusBetweenTurns == ~stInTurn
 
-\* A status request waiting at D is answered there (R1).
+\* A waiting status request is answered at D, with the final reason (R1).
 StatusDischarged == Past => st # "waiting"
+StatusReasonIsFinal == (Past /\ st = "stopped") => stReason = reason
 
-\* At most one answer per status request.
 StatusAtMostOnce == answers <= 1
 
-\* The callback is skipped once its caller has given up.
+\* No callback answers after its caller gave up before dispatch.
 NoCallbackAfterGiveUp == ~cbAfterGiveUp
 
-\* A caught callback panic does not end the actor.
+\* The end of a status turn never begins exit.
 CallbackPanicContained == ~cbStopped
 
 Safety ==
-    /\ TypeOK /\ NoChargeFinishedTurn /\ NoDispatchAfterStop /\ KillDominates
-    /\ NoCommitAfterD /\ KillSkipsStopped /\ StatusBetweenTurns
-    /\ StatusDischarged /\ StatusAtMostOnce /\ NoCallbackAfterGiveUp
-    /\ CallbackPanicContained
+    /\ TypeOK /\ NoChargeFinishedTurn /\ CommitOnOpen /\ NoDispatchAfterStop
+    /\ KillDominates /\ NoCommitAfterD /\ KillSkipsStopped
+    /\ StatusBetweenTurns /\ StatusDischarged /\ StatusReasonIsFinal
+    /\ StatusAtMostOnce /\ NoCallbackAfterGiveUp /\ CallbackPanicContained
 =============================================================================
