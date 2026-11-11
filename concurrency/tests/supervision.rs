@@ -1338,12 +1338,15 @@ async fn system_deadline_signals_remaining_supervised_siblings() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(
-        spawned_rt::tasks::timeout(Duration::from_secs(1), actor.wait_exit())
-            .await
-            .expect("earlier sibling was not stopped after the system deadline"),
-        ExitReason::Killed,
-        "signalled at the system's grace expiry: the kill (E3)"
+    let reason = spawned_rt::tasks::timeout(Duration::from_secs(1), actor.wait_exit())
+        .await
+        .expect("earlier sibling was not stopped after the system deadline");
+    // Signalled after the system deadline: by the supervisor's `Shutdown`
+    // or by the grace-expiry kill (E3), whichever reaches it first (on one
+    // CPU the shutdown can).
+    assert!(
+        matches!(reason, ExitReason::Killed | ExitReason::Shutdown),
+        "{reason:?}"
     );
     release.send(()).unwrap();
     assert!(report.wait(LIMIT).await.complete);
