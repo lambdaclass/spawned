@@ -178,17 +178,40 @@ that `started()` leaves. The first matching row below decides the **startup
 decision**: the immutable commitment (section 5.1) and the result's kind and
 diagnostic. It also sets the **requested exit reason**.
 
-The **final exit reason** is fixed only at D, by 0.8's precedence rules
-(otp-exit-signals "Reason precedence until D", L3). A kill, for example the
-scope deadline or `ChildHandle::kill()`, that arrives between the resolution
-and D still makes it `Killed`. An answer given after publication reports the
-final reason. An answer given at the cleanup deadline, before D, reports the
-requested reason as provisional (`pending: Some`).
-
 No failed row runs `stopped()`. OTP never calls `terminate/2` when `init/1`
 did not return `{ok, ..}`, and cleanup before readiness belongs in
-`started()` (agy F2, option A). A failed start therefore reaches D without a
-`stopped()` phase. Its reason can still be escalated by a kill before D.
+`started()` (round 2: agy F2, option A).
+
+**One rule for kills and the startup decision** (round 3: Codex 1, agy F1).
+A non-ready resolution and D happen in **one critical section**. Under the
+child's exit-request lock (rank 3 of the lock order), the resolution:
+
+1. reads the held signals and the returned outcome;
+2. commits the decision;
+3. fixes the reason;
+4. runs D: the edges close and their notices are taken.
+
+Nothing runs in between, so no signal can arrive there:
+
+- **A kill that arrives before the resolution** is row 2. The decision is
+  then failed `InitExited { Killed }`, never `Ignored` or `InitFailed`.
+- **A kill that arrives after the resolution** finds the actor past D and
+  does nothing (D3, X5).
+
+The startup decision therefore wins, and its requested reason **is** the
+final reason. The starter's answer, `wait_exit`, and every linked parent's
+`Exit` or `Down` all carry the same reason:
+
+- `Ok(Ignored)` and `InitFailed` always mean the child ended `Normal`;
+- a non-trapping linked parent is never killed by an ignored or `Normal`
+  failed start.
+
+A **ready** child keeps 0.8's rule: its exit (with `stopped()`) runs until D,
+and a kill that arrives before D makes the reason `Killed` at once (L3).
+
+The model checks this with `IgnoredExitsNormal` (control `SplitResolutionD`,
+which reopens the window) and `KillBeforeDIsKilled` (control
+`SkipEscalation`, a pre-D kill that does not escalate).
 
 | # | Condition | Requested reason | `stopped()` | Startup decision |
 |---|---|---|---|---|
@@ -316,10 +339,12 @@ pub enum StartError {
   `Some(handle)` when the cleanup deadline expired first (section 5.5). The
   handle is instance-bound: `wait_exit` reaches the real end, and the name
   and slot stay held until then.
-- **`reason`.** With `pending: None` it is the final exit reason, the one
-  `wait_exit`, `Down` and `Exit` report. With `pending: Some` it is the
-  requested reason, and the final one comes from `pending.wait_exit()`
-  (Codex R3).
+- **`reason`.** It is always the final exit reason, the one `wait_exit`,
+  `Down` and `Exit` report. A non-ready resolution and D are one step
+  (section 2.3), so the reason is fixed when the decision is. With
+  `pending: Some`, only destruction and publication are still outstanding.
+  A timed-out child still inside `started()` reports `Killed`, the kill it
+  was sent.
 - **A stuck `ignore`** answers `Ok(Ignored { pending: Some(handle) })` (Codex
   R4).
 - **`ignore`** is the `Ok(StartOutcome::Ignored)` outcome, not an error, as
@@ -591,7 +616,9 @@ The child's death has four steps (otp-exit-signals phases 4-6, with
 publication split for the trace mapping; Codex R8):
 
 1. **D.** The final exit reason is fixed. The edges close and their notices
-   are taken.
+   are taken. For a non-ready resolution, D is part of the resolution's
+   critical section (2.3); for a ready child it follows `stopped()`, as in
+   0.8.
 2. **Destruction.** Queued messages and the state `A` are dropped, outside
    framework locks.
 3. **Release.** The name is released (registry lock), then the admission

@@ -286,6 +286,27 @@ Exit(c, r) ==
     /\ phase' = [phase EXCEPT ![c] = "exiting"]
     /\ why' = [why EXCEPT ![c] = r]
 
+\* A ready child's own exit: a kill that already arrived wins (L3).
+ExitK(c, r) == Exit(c, IF killed[c] \/ skill[c] \/ xkill[c] THEN "Killed" ELSE r)
+
+\* A non-ready resolution and D are one critical section (design 2.3): no
+\* stopped() runs, so no signal can arrive in between and the requested
+\* reason is final. SplitResolutionD (negative control) reopens the window.
+DieEffects(c) ==
+    /\ lnote' = [lnote EXCEPT ![c] = edge[c] /\ Alive(pst)]
+    /\ mnote' = [mnote EXCEPT ![c] = mon[c] /\ Alive(pst)]
+    /\ edge' = [edge EXCEPT ![c] = FALSE]
+    /\ mon' = [mon EXCEPT ![c] = FALSE]
+    /\ reg' = IF Fault = "UnregisterAtDeath" THEN reg \ {c} ELSE reg
+    /\ slots' = IF Fault = "EarlySlotRelease" THEN slots \ {c} ELSE slots
+ResolveD(c, r) ==
+    /\ why' = [why EXCEPT ![c] = r]
+    /\ IF Fault = "SplitResolutionD"
+       THEN /\ phase' = [phase EXCEPT ![c] = "exiting"]
+            /\ UNCHANGED <<lnote, mnote, edge, mon, reg, slots>>
+       ELSE /\ phase' = [phase EXCEPT ![c] = "dead"]
+            /\ DieEffects(c)
+
 StartedBegin(c) ==
     /\ phase[c] = "starting" /\ ~began[c] /\ ~killed[c] /\ ~skill[c] /\ ~xkill[c]
     /\ began' = [began EXCEPT ![c] = TRUE]
@@ -304,8 +325,11 @@ LateLink(c) ==
 OutsideKill(c) ==
     /\ KillEnabled /\ ~xkill[c] /\ phase[c] \in {"starting", "ready", "exiting"}
     /\ xkill' = [xkill EXCEPT ![c] = TRUE]
+    \* Before D a kill makes the reason Killed at once (L3).
+    /\ why' = IF phase[c] = "exiting" /\ Fault # "SkipEscalation"
+              THEN [why EXCEPT ![c] = "Killed"] ELSE why
     /\ UNCHANGED <<pV, oV, sV, eV, began, killed, skill, astop, pex, qpex, pexAbn, ctrap,
-                   cV, nV, mV, rV, dV>>
+                   commit, commit0, initR, wait, res, resR, pend, dl, nV, mV, rV, dV>>
 AdminStop(c) ==
     /\ AdminStopEnabled /\ ~astop[c] /\ phase[c] = "starting"
     /\ astop' = [astop EXCEPT ![c] = TRUE]
@@ -316,11 +340,12 @@ AnyKill(c) == killed[c] \/ skill[c] \/ xkill[c]
 
 KilledEarly(c) ==
     /\ phase[c] = "starting" /\ ~began[c] /\ AnyKill(c)
-    /\ Exit(c, "Killed")
+    /\ ResolveD(c, "Killed")
     /\ initR' = [initR EXCEPT ![c] = "Killed"]
     /\ IF commit[c] = None THEN SetCommit(c, "failed") ELSE UNCHANGED <<commit, commit0>>
     /\ UNCHANGED <<pV, oV, place, admOpen, owned, ownOpenAt, readyOpen, edgeWhenRun,
-                   eV, xV, wait, res, resR, pend, dl, nV, mV, rV, dV>>
+                   linkEver, monEver, xV, wait, res, resR, pend, dl,
+                   pubAlive, div, divEver, handed, lost, mV, seen, blamed, dV>>
 
 \* started() returns; design 2.3 precedence. No failed row runs stopped().
 StartedEnd(c) ==
@@ -331,7 +356,7 @@ StartedEnd(c) ==
            row3 == astop[c] \/ sig
            r3 == IF astop[c] /\ (~sig \/ first = "admin") THEN "Shutdown" ELSE pex[c]
            closed == (place[c] = "G" /\ ~gopen) \/ (owned[c] /\ ~ownerOpen)
-           failWith(r) == /\ Exit(c, r)
+           failWith(r) == /\ ResolveD(c, r)
                           /\ initR' = [initR EXCEPT ![c] = r]
                           /\ IF commit[c] = None THEN SetCommit(c, "failed")
                              ELSE UNCHANGED <<commit, commit0>>
@@ -344,7 +369,7 @@ StartedEnd(c) ==
              ELSE IF o = "stopS" THEN failWith("Shutdown")
              ELSE IF o \in {"stopN", "error"} THEN failWith("Normal")
              ELSE IF o = "ignore"
-             THEN /\ Exit(c, "Normal")
+             THEN /\ ResolveD(c, "Normal")
                   /\ initR' = [initR EXCEPT ![c] = "Normal"]
                   /\ SetCommit(c, "ignored")
                   /\ UNCHANGED <<cont, readyOpen, qpex>>
@@ -355,10 +380,11 @@ StartedEnd(c) ==
                   /\ readyOpen' = [readyOpen EXCEPT ![c] = ~closed]
                   /\ cont' = [cont EXCEPT ![c] = o = "continue"]
                   /\ qpex' = [qpex EXCEPT ![c] = IF t THEN pex[c] ELSE None]
-                  /\ UNCHANGED <<why, initR>>
-    /\ UNCHANGED <<pV, oV, place, admOpen, owned, ownOpenAt, edgeWhenRun, eV,
+                  /\ UNCHANGED <<why, initR, lnote, mnote, edge, mon, reg, slots>>
+    /\ UNCHANGED <<pV, oV, place, admOpen, owned, ownOpenAt, edgeWhenRun, linkEver, monEver,
                    began, killed, skill, xkill, astop, pexAbn,
-                   wait, res, resR, pend, dl, nV, msgs, early, rV, dV>>
+                   wait, res, resR, pend, dl, pubAlive, div, divEver, handed, lost,
+                   msgs, early, seen, blamed, dV>>
 
 Send(c) ==
     /\ phase[c] \in {"starting", "ready"} /\ msgs[c] < MaxMsgs
@@ -382,7 +408,7 @@ HandleQueuedExit(c) ==
     /\ ~cont[c] \/ Fault = "ContinueQueued"
     /\ early' = [early EXCEPT ![c] = early[c] \/ cont[c]]
     /\ qpex' = [qpex EXCEPT ![c] = None]
-    /\ Exit(c, qpex[c])
+    /\ ExitK(c, qpex[c])
     /\ UNCHANGED <<pV, oV, place, admOpen, owned, ownOpenAt, readyOpen, edgeWhenRun, eV,
                    began, killed, skill, xkill, astop, pex, pexAbn, ctrap,
                    commit, commit0, initR, wait, res, resR, pend, dl, nV, cont, msgs, rV, dV>>
@@ -390,14 +416,14 @@ HandleQueuedExit(c) ==
 ApplyParentExit(c) ==
     /\ phase[c] = "ready" /\ pex[c] # None
     /\ pex' = [pex EXCEPT ![c] = None]
-    /\ IF pex[c] \in NonNormal THEN Exit(c, pex[c]) ELSE UNCHANGED <<phase, why>>
+    /\ IF pex[c] \in NonNormal THEN ExitK(c, pex[c]) ELSE UNCHANGED <<phase, why>>
     /\ UNCHANGED <<pV, oV, place, admOpen, owned, ownOpenAt, readyOpen, edgeWhenRun, eV,
                    began, killed, skill, xkill, astop, qpex, pexAbn, ctrap,
                    commit, commit0, initR, wait, res, resR, pend, dl, nV, mV, rV, dV>>
 
 ReadyExit(c) ==
     /\ phase[c] = "ready"
-    /\ \E r \in {"Normal", "Panic"} : Exit(c, r)
+    /\ \E r \in {"Normal", "Panic"} : ExitK(c, r)
     /\ UNCHANGED <<pV, oV, place, admOpen, owned, ownOpenAt, readyOpen, edgeWhenRun, eV,
                    xV, commit, commit0, initR, wait, res, resR, pend, dl, nV, mV, rV, dV>>
 
@@ -406,13 +432,6 @@ KillReady(c) ==
     /\ Exit(c, "Killed")
     /\ UNCHANGED <<pV, oV, place, admOpen, owned, ownOpenAt, readyOpen, edgeWhenRun, eV,
                    xV, commit, commit0, initR, wait, res, resR, pend, dl, nV, mV, rV, dV>>
-
-\* Before D the reason can still change: a kill makes it Killed (L3).
-KillExiting(c) ==
-    /\ phase[c] = "exiting" /\ AnyKill(c) /\ why[c] # "Killed"
-    /\ why' = [why EXCEPT ![c] = "Killed"]
-    /\ UNCHANGED <<pV, oV, sV, eV, xV, commit, commit0, initR, wait, res, resR, pend, dl,
-                   nV, mV, rV, dV>>
 
 ChildUnlink(c) ==
     /\ UnlinkEnabled /\ phase[c] = "ready" /\ edge[c]
@@ -423,12 +442,7 @@ ChildUnlink(c) ==
 Die(c) ==
     /\ phase[c] = "exiting"
     /\ phase' = [phase EXCEPT ![c] = "dead"]
-    /\ lnote' = [lnote EXCEPT ![c] = edge[c] /\ Alive(pst)]
-    /\ mnote' = [mnote EXCEPT ![c] = mon[c] /\ Alive(pst)]
-    /\ edge' = [edge EXCEPT ![c] = FALSE]
-    /\ mon' = [mon EXCEPT ![c] = FALSE]
-    /\ reg' = IF Fault = "UnregisterAtDeath" THEN reg \ {c} ELSE reg
-    /\ slots' = IF Fault = "EarlySlotRelease" THEN slots \ {c} ELSE slots
+    /\ DieEffects(c)
     /\ UNCHANGED <<pV, oV, place, admOpen, owned, ownOpenAt, readyOpen, edgeWhenRun,
                    linkEver, monEver, xV, cV, pubAlive, div, divEver, handed, lost, mV,
                    seen, blamed, dV>>
@@ -537,8 +551,7 @@ AckFail(c) ==
             ELSE \/ phase[c] = "published"
                  \/ Fault = "EarlyFailAck" /\ phase[c] = "dead"
          /\ pend' = [pend EXCEPT ![c] = late]
-         /\ resR' = [resR EXCEPT ![c] =
-                       IF ~late /\ Fault # "FrozenReason" THEN why[c] ELSE initR[c]]
+         /\ resR' = [resR EXCEPT ![c] = IF why[c] = None THEN "Killed" ELSE why[c]]
     /\ res' = [res EXCEPT ![c] = CASE commit0[c] = "ignored" -> "ignored"
                                    [] commit0[c] = "timedout" -> "timeout"
                                    [] OTHER -> "failed"]
@@ -619,9 +632,11 @@ ScopeDeadline ==
     /\ skill' = [c \in Kids |-> skill[c] \/ (owned[c]
                     /\ phase[c] \in (IF Fault = "NoScopeKill" THEN {"starting", "ready"}
                                      ELSE {"starting", "ready", "exiting"}))]
+    /\ why' = [c \in Kids |-> IF owned[c] /\ phase[c] = "exiting" /\ Fault \notin {"NoScopeKill", "SkipEscalation"}
+                             THEN "Killed" ELSE why[c]]
     /\ UNCHANGED <<pst, pplace, ptrap, pwhy, pcause, gopen, ownerOpen, gdone, pn,
                    oV, sV, eV, began, killed, xkill, astop, pex, qpex, pexAbn, ctrap,
-                   cV, nV, mV, rV, dV>>
+                   commit, commit0, initR, wait, res, resR, pend, dl, nV, mV, rV, dV>>
 
 \* P's generation is done: P published and every owned child published.
 GenDone ==
@@ -644,7 +659,7 @@ ChildStep(c) ==
     \/ StartedBegin(c) \/ LateLink(c) \/ OutsideKill(c) \/ AdminStop(c)
     \/ KilledEarly(c) \/ StartedEnd(c)
     \/ Send(c) \/ RunContinue(c) \/ Handle(c) \/ HandleQueuedExit(c)
-    \/ ApplyParentExit(c) \/ ReadyExit(c) \/ KillReady(c) \/ KillExiting(c)
+    \/ ApplyParentExit(c) \/ ReadyExit(c) \/ KillReady(c)
     \/ ChildUnlink(c) \/ Die(c) \/ Release(c) \/ Publish(c) \/ LateRelease(c)
     \/ Timeout(c) \/ CleanupDeadline(c) \/ AckOk(c) \/ AckFail(c) \/ Abandon(c)
 
@@ -727,6 +742,16 @@ FailureAfterPublication ==
 ReportedReasonFinal ==
     \A c \in Kids : (res[c] = "failed" /\ ~pend[c]) => resR[c] = why[c]
 PendingOnlyAfterDeadline == \A c \in Kids : pend[c] => dl[c]
+
+\* A kill that arrived before D makes the final reason Killed.
+KillBeforeDIsKilled ==
+    \A c \in Kids : ((killed[c] \/ skill[c] \/ xkill[c]) /\ phase[c] \in {"dead", "released", "published"})
+        => why[c] = "Killed"
+\* An ignored start ends Normal: no later signal can change it (the
+\* resolution and D are one step).
+IgnoredExitsNormal ==
+    \A c \in Kids : (commit0[c] = "ignored" /\ phase[c] \in {"dead", "released", "published"})
+        => why[c] = "Normal"
 
 \* A failed start's notice is consumed: no Down; no Exit to a trapping P.
 FailureFlushed ==
