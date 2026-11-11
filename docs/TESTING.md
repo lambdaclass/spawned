@@ -1496,6 +1496,7 @@ and prints the seed when a test fails. Configuration is process-global.
 | `actor.exit_before_deliver` | no | A cloned context's exit signal racing its sender's death (tasks and threads) |
 | `link.before_install` | no | Peer exiting while a link is installed (tasks and threads) |
 | `monitor.before_install` | no | Target exiting while a monitor is installed (tasks and threads) |
+| `reply.close_upgraded` | no | The death point's close holding an already-answered slot while its caller drops the receiver: the unread reply is destroyed only after every caller is answered (tasks and threads) |
 | `monitor.down_before_dispatch` | no | `demonitor` on another thread returning while the monitor's `Down` is in dispatch: it is flushed (tasks and threads) |
 
 `tests/failpoints.rs` drives every site and checks invariants through public

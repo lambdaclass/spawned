@@ -45,7 +45,10 @@ pub(crate) trait Closeable: Send + Sync {
 }
 
 /// A closed slot and its deferred wake-up.
-type PendingWake = (Arc<dyn Closeable>, Wake);
+/// A slot met by the death point's discharge, retained (whatever its state:
+/// an unread reply's value is destroyed only after every caller is answered)
+/// with the wake-up its close collected, if it closed it.
+type PendingWake = (Arc<dyn Closeable>, Option<Wake>);
 
 impl<R: Send> Expirable for Slot<R> {
     fn pending_deadline(&self) -> Option<u64> {
@@ -394,18 +397,24 @@ impl Registry {
         batch.get_or_insert_with(Vec::new);
     }
 
-    /// Every obligation of the death point is answered: run the collected
-    /// wake-ups (executor or user code), outside every lock. Later closes
-    /// wake at once. Idempotent.
+    /// Every obligation of the death point is answered (deferred slots and
+    /// the queued mailbox): run the collected wake-ups (executor or user
+    /// code) outside every lock, then release the retained slots (an unread
+    /// reply's destructor is user code). Later closes wake at once.
+    /// Idempotent.
     pub(crate) fn end_discharge(&self) {
-        let batch = self
+        let mut batch = self
             .discharge
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .take();
-        for (slot, wake) in batch.into_iter().flatten() {
-            slot.run_wake(wake);
+            .take()
+            .unwrap_or_default();
+        for (slot, wake) in &mut batch {
+            if let Some(wake) = wake.take() {
+                slot.run_wake(wake);
+            }
         }
+        drop(batch);
     }
 
     /// A turn destroyed unfinished (its runtime dropped the actor): its
@@ -416,19 +425,24 @@ impl Registry {
     }
 
     /// Close one slot as `STOPPED`, deferring its wake-up while discharging.
+    /// While discharging, the slot itself is retained too, closed here or
+    /// already terminal: this may be the last strong reference to an unread
+    /// reply, whose destructor must not run before every caller is answered.
     fn close_slot(&self, slot: Arc<dyn Closeable>) -> bool {
-        let Some(wake) = slot.close_collect() else {
-            return false;
-        };
+        let wake = slot.close_collect();
+        let closed = wake.is_some();
         let mut batch = self.discharge.lock().unwrap_or_else(|p| p.into_inner());
         match batch.as_mut() {
             Some(batch) => batch.push((slot, wake)),
             None => {
                 drop(batch);
-                slot.run_wake(wake);
+                if let Some(wake) = wake {
+                    slot.run_wake(wake);
+                }
+                drop(slot);
             }
         }
-        true
+        closed
     }
 
     /// Death: every open token listed, and every exit-pending slot, becomes
@@ -448,7 +462,10 @@ impl Registry {
         let closed = tokens
             .into_iter()
             .filter_map(|t| t.upgrade())
-            .filter(|s| self.close_slot(s.clone()))
+            .filter(|s| {
+                fail_point!("reply.close_upgraded");
+                self.close_slot(s.clone())
+            })
             .count();
         // The heap is dropped after the close (§5 step 3.4), and the service
         // forgets this owner, so dead actors leave nothing behind.

@@ -1164,6 +1164,127 @@ async fn demonitor_flushes_a_down_in_dispatch() {
     observer.join().await;
 }
 
+// ------------------------------------- death-boundary discharge (final review)
+
+type SharedReceiver = Arc<Mutex<Option<spawned_concurrency::ReplyReceiver<()>>>>;
+
+/// An unread reply whose destructor waits (at most 3 s) for a queued
+/// caller's answer and records whether it came.
+struct WaitsForCaller {
+    caller: SharedReceiver,
+    answered: Arc<AtomicUsize>,
+}
+impl Drop for WaitsForCaller {
+    fn drop(&mut self) {
+        let began = Instant::now();
+        while began.elapsed() < Duration::from_secs(3) {
+            if let Some(receiver) = self.caller.lock().unwrap().as_mut() {
+                if receiver.try_recv().is_some() {
+                    self.answered.store(1, Ordering::SeqCst);
+                    return;
+                }
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+}
+/// Deferred, then answered at once with a `WaitsForCaller` nobody reads.
+struct AnswerLater(WaitsForCaller);
+impl Message for AnswerLater {
+    type Result = WaitsForCaller;
+}
+/// Blocks the actor until released; reports entry.
+struct Gate(std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>);
+impl Message for Gate {
+    type Result = ();
+}
+struct Answer;
+impl Message for Answer {
+    type Result = ();
+}
+struct Discharger;
+impl Actor for Discharger {}
+impl Handler<AnswerLater> for Discharger {
+    async fn handle(
+        &mut self,
+        msg: AnswerLater,
+        reply: spawned_concurrency::PendingReply<'_, WaitsForCaller>,
+        _: &Context<Self>,
+    ) {
+        reply.defer().unwrap().reply(msg.0);
+    }
+}
+impl Handler<Gate> for Discharger {
+    async fn handle(
+        &mut self,
+        msg: Gate,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
+        let _ = msg.1.send(());
+        let _ = msg.0.recv_timeout(LIMIT);
+        reply.reply(());
+    }
+}
+impl Handler<Answer> for Discharger {
+    async fn handle(
+        &mut self,
+        _: Answer,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
+        reply.reply(());
+    }
+}
+
+/// Final review (Codex P1 1): the death point's close holds an upgraded,
+/// already-answered deferred slot while its caller drops the receiver. The
+/// close's reference was then the last: the unread reply's destructor ran
+/// inside the close, before the queued caller was answered (and here waited
+/// for that answer). Every slot the discharge meets is now retained until
+/// every caller is answered.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_unread_reply_is_destroyed_after_every_caller_is_answered() {
+    let _scenario = FailScenario::setup();
+    let actor = Discharger.start();
+    let caller: SharedReceiver = Arc::default();
+    let answered = Arc::new(AtomicUsize::new(0));
+    let unread = actor
+        .send_request(
+            AnswerLater(WaitsForCaller {
+                caller: caller.clone(),
+                answered: answered.clone(),
+            }),
+            spawned_concurrency::Deadline::Never,
+        )
+        .unwrap();
+    let (release, gate) = std::sync::mpsc::channel();
+    let (entered_tx, entered) = std::sync::mpsc::channel();
+    actor.send(Gate(gate, entered_tx)).unwrap();
+    entered.recv_timeout(LIMIT).unwrap(); // AnswerLater was handled
+    *caller.lock().unwrap() = Some(
+        actor
+            .send_request(Answer, spawned_concurrency::Deadline::Never)
+            .unwrap(),
+    );
+    failpoints::configure(
+        "reply.close_upgraded",
+        FailPoint::new(Action::Delay(Duration::from_millis(300))).times(1),
+    )
+    .unwrap();
+    actor.context().stop();
+    release.send(()).unwrap();
+    reached("reply.close_upgraded", 1).await;
+    // The caller gives up on its unread reply while the close holds it.
+    drop(unread);
+    tokio::time::timeout(LIMIT * 2, actor.join()).await.unwrap();
+    assert_eq!(
+        answered.load(Ordering::SeqCst),
+        1,
+        "an unread reply was destroyed before every caller was answered"
+    );
+}
+
 mod native {
     use super::*;
     use spawned_concurrency::threads::{
@@ -1445,5 +1566,89 @@ mod native {
         );
         observer.context().stop();
         observer.join();
+    }
+
+    struct NativeDischarger;
+    impl NativeActor for NativeDischarger {}
+    impl NativeHandler<AnswerLater> for NativeDischarger {
+        fn handle(
+            &mut self,
+            msg: AnswerLater,
+            reply: spawned_concurrency::reply::PendingReply<'_, WaitsForCaller>,
+            _: &NativeContext<Self>,
+        ) {
+            reply.defer().unwrap().reply(msg.0);
+        }
+    }
+    impl NativeHandler<Gate> for NativeDischarger {
+        fn handle(
+            &mut self,
+            msg: Gate,
+            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            _: &NativeContext<Self>,
+        ) {
+            let _ = msg.1.send(());
+            let _ = msg.0.recv_timeout(LIMIT);
+            reply.reply(());
+        }
+    }
+    impl NativeHandler<Answer> for NativeDischarger {
+        fn handle(
+            &mut self,
+            _: Answer,
+            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            _: &NativeContext<Self>,
+        ) {
+            reply.reply(());
+        }
+    }
+    fn wait_hits(site: &str) {
+        let began = Instant::now();
+        while failpoints::stats(site).hits < 1 {
+            assert!(began.elapsed() < LIMIT, "site {site} not reached");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+
+    /// Threads mode of `an_unread_reply_is_destroyed_after_every_caller_is_answered`.
+    #[test]
+    fn an_unread_reply_is_destroyed_after_every_caller_is_answered() {
+        let _scenario = FailScenario::setup();
+        let actor = NativeDischarger.start();
+        let caller: SharedReceiver = Arc::default();
+        let answered = Arc::new(AtomicUsize::new(0));
+        let unread = actor
+            .send_request(
+                AnswerLater(WaitsForCaller {
+                    caller: caller.clone(),
+                    answered: answered.clone(),
+                }),
+                spawned_concurrency::Deadline::Never,
+            )
+            .unwrap();
+        let (release, gate) = std::sync::mpsc::channel();
+        let (entered_tx, entered) = std::sync::mpsc::channel();
+        actor.send(Gate(gate, entered_tx)).unwrap();
+        entered.recv_timeout(LIMIT).unwrap();
+        *caller.lock().unwrap() = Some(
+            actor
+                .send_request(Answer, spawned_concurrency::Deadline::Never)
+                .unwrap(),
+        );
+        failpoints::configure(
+            "reply.close_upgraded",
+            FailPoint::new(Action::Delay(Duration::from_millis(300))).times(1),
+        )
+        .unwrap();
+        actor.context().stop();
+        release.send(()).unwrap();
+        wait_hits("reply.close_upgraded");
+        drop(unread);
+        actor.join();
+        assert_eq!(
+            answered.load(Ordering::SeqCst),
+            1,
+            "an unread reply was destroyed before every caller was answered"
+        );
     }
 }

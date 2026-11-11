@@ -72,6 +72,14 @@ pub const SITES: &[Site] = &[
                       failing `stopped()`.",
     },
     Site {
+        name: "reply.close_upgraded",
+        has_error: false,
+        description: "The death point's close holds an upgraded deferred slot, before \
+                      closing it. Delay lets the caller drop its receiver meanwhile: an \
+                      unread reply must still be destroyed only after every caller is \
+                      answered (tasks and threads).",
+    },
+    Site {
         name: "monitor.down_before_dispatch",
         has_error: false,
         description: "A monitor's `Down` dequeued by its observer (tasks and threads), \

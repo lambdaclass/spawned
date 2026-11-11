@@ -400,11 +400,14 @@ current turn's slot) and a job set. The order is:
    7. the exit reason is published, and monitors and links fire.
 
    Steps 1 to 4 run no user code: steps 3 and 4 only make terminal
-   transitions; the callers' wake-ups (wakers are executor or user code),
-   and a runtime drop's "stopped() skipped" log, run after the last answer
-   and before step 5. Cancellation in step 1 only marks the jobs: the
-   payloads it releases (held results, scheduled emits) are destroyed in
-   step 5. Steps 3 and 4 follow the seal instead of being one atomic step
+   transitions, and every slot they meet stays referenced (an unread
+   reply's value is user code when destroyed) until step 5. After the last
+   answer, and before step 5, run in this order: the callers' wake-ups
+   (executor or user code), a runtime drop's "stopped()
+   skipped" log, and the callbacks the jobs' cancellation owes (`cancelled()`
+   waiters, blocked emitters). Cancellation in step 1 only sets the jobs'
+   flag: the payloads it releases (held results, scheduled emits) are
+   destroyed in step 5. Steps 3 and 4 follow the seal instead of being one atomic step
    with it, but nothing between them depends on the requests they answer,
    so the models' atomic death is a sound abstraction of them (they commute
    left to the seal).
