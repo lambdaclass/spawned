@@ -385,7 +385,8 @@ simulated at all): tests that need OS threads or a real Tokio runtime, in
 `cancellation_safety`, `cross_backend` (non-async placements and the fan-out
 and monitor workloads), `dedicated_runtime`, `delivery_simulation`,
 `execution_groups`, `execution_profiles`, `failure_windows`, `leaks`,
-`mailbox_drop_panic`, `nested_supervision`, `panic_safety`,
+`mailbox_drop_panic`, `nested_supervision`, `otp_exit_signals` (whole file;
+`exit_signals_sim` explores its orderings), `panic_safety`,
 `process_failures`, `protocol_compile`, `request_histories`,
 `resource_cleanup`, `semantics_gaps` (its async module), `shutdown_publication`, `startup_admission`,
 `supervision_strategies` and `supervision`. `leaks` replaces its excluded

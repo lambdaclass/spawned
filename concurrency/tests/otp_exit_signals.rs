@@ -3,6 +3,10 @@
 //! design rule it pins; every one fails on v0.7 (the API or the outcome
 //! differs there).
 #![cfg(feature = "async")]
+// Real Tokio runtimes and OS threads (plain `#[tokio::test]`, threads mode):
+// not run under the simulator. `exit_signals_sim.rs` explores the same
+// orderings under `spawned_sim`.
+#![cfg(not(spawned_sim))]
 use spawned_concurrency::{message::Message, ActorId, Down, Exit, ExitReason, NoProc};
 use std::{
     sync::{
