@@ -241,6 +241,15 @@ DEFERRED_CONTROLS = [
     ("MCDeferredJobsEmits", "NoEmitCredit", "EmitCreditsBounded"),
 ]
 
+INTROSPECTION_CONTROLS = [
+    ("MCIntrospection", "CheckThenAct", "FencedKill"),
+    ("MCIntrospection", "KillBitIgnored", "FencedKill"),
+    ("MCIntrospection", "StatusInTurn", "StatusBetweenTurns"),
+    ("MCIntrospection", "StatusLost", "StatusDischarged"),
+    ("MCIntrospection", "KillRunsStopped", "KillSkipsStopped"),
+    ("MCIntrospection", "DispatchAfterStop", "NoDispatchAfterStop"),
+]
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -304,6 +313,8 @@ def main():
     for module, fault, invariant in DEFERRED_CONTROLS:
         named_fault(module, fault, invariant, args.tlc)
     for module, fault, invariant in LIFECYCLE_CONTROLS:
+        named_fault(module, fault, invariant, args.tlc)
+    for module, fault, invariant in INTROSPECTION_CONTROLS:
         named_fault(module, fault, invariant, args.tlc)
     for fault, prop in LIFECYCLE_TEMPORAL_CONTROLS:
         named_temporal("MCLifecycleLive", fault, prop, args.tlc, LIFECYCLE_SMALL)
