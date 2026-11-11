@@ -97,7 +97,7 @@ pub trait Handler<M: Message>: Actor {
 // ---------------------------------------------------------------------------
 
 trait Envelope<A: Actor>: Send {
-    #[cfg(feature = "diagnostics")]
+    #[cfg(any(feature = "diagnostics", spawned_sim))]
     fn message_type(&self) -> &'static str {
         std::any::type_name::<Self>()
     }
@@ -127,7 +127,7 @@ where
     A: Actor + Handler<M>,
     M: Message,
 {
-    #[cfg(feature = "diagnostics")]
+    #[cfg(any(feature = "diagnostics", spawned_sim))]
     fn message_type(&self) -> &'static str {
         std::any::type_name::<M>()
     }
@@ -1295,6 +1295,9 @@ async fn run_actor_lifecycle<A: Actor>(
         };
         match msg {
             Some(envelope) => {
+                // Simulator turn budget (rank 8b); compiled only under the cfg.
+                #[cfg(spawned_sim)]
+                let _sim_turn = rt::sim::turn(std::any::type_name::<A>(), envelope.message_type());
                 #[cfg(feature = "diagnostics")]
                 let _turn = ctx
                     .shared
