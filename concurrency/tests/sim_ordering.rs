@@ -14,6 +14,9 @@
 //! ```
 #![cfg(feature = "async")]
 
+#[macro_use]
+#[path = "support/deadline.rs"]
+mod deadline;
 use spawned_concurrency::{
     message::Message,
     tasks::{Actor, ActorRef, ActorStart, Context, Handler, Recipient},
@@ -145,7 +148,7 @@ async fn per_sender_fifo_body() {
         );
     }
     sink.child_handle().stop();
-    sink.join().await;
+    within!(sink.join()).await;
 }
 
 #[spawned_macros::sim_test(explore = "pct:d=3", iterations = 1_000)]
@@ -235,7 +238,7 @@ async fn turns_body() {
         outcomes.extend(task.await.unwrap());
     }
     stopper.await.unwrap();
-    actor.join().await;
+    within!(actor.join()).await;
 
     // L7: join() returned, so stopped() has completed and new work is refused.
     let events = snapshot(&events);
@@ -416,7 +419,7 @@ async fn stop_discards_body() {
     stopper.await.unwrap();
     // The stop was requested while Hold was running: nothing queued may run.
     release_tx.send(()).unwrap();
-    actor.join().await;
+    within!(actor.join()).await;
 
     // L7: by the time join() returns every queued payload has been dropped
     // and every queued reply sender released.
@@ -436,7 +439,7 @@ async fn stop_discards_body() {
         vec![Seen::Hold, Seen::Stopped],
         "D4: a queued message was dispatched after the stop"
     );
-    assert_eq!(actor.wait_exit().await, ExitReason::Normal);
+    assert_eq!(within!(actor.wait_exit()).await, ExitReason::Normal);
     assert!(
         matches!(
             actor.send(Queued(Payload(drops.clone()))),
@@ -584,7 +587,7 @@ async fn exit_after_last_message_body(end: End) {
         source.child_handle().stop();
     }
     noise.await.unwrap();
-    let reason = source.wait_exit().await;
+    let reason = within!(source.wait_exit()).await;
     for _ in 0..2 {
         timeout(LIMIT, notified.recv())
             .await
@@ -622,7 +625,7 @@ async fn exit_after_last_message_body(end: End) {
         End::External => assert_eq!(reason, ExitReason::Normal),
     }
     observer.child_handle().stop();
-    observer.join().await;
+    within!(observer.join()).await;
 }
 
 async fn exit_after_last_message_all() {

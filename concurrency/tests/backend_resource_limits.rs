@@ -2,6 +2,9 @@
 //! Deterministic characterization of executor capacity; no machine-wide tuning.
 // Tests that need OS threads are compiled out under spawned_sim.
 #![cfg_attr(spawned_sim, allow(unused_imports, dead_code))]
+#[macro_use]
+#[path = "support/deadline.rs"]
+mod deadline;
 use spawned_concurrency::{
     message::Message,
     tasks::{Actor, ActorStart, Backend, Context, Handler},
@@ -211,7 +214,7 @@ fn descriptor_limit_child() {
             cleanup.0.push(recovered.child_handle());
             recovered.request(Ping).await.unwrap();
             recovered.child_handle().stop();
-            recovered.join().await;
+            within!(recovered.join()).await;
         }
     });
     if mode.starts_with("sharded") {

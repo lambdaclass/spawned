@@ -2,6 +2,9 @@
 //! Integration test: verifies that #[cfg]-gated protocol methods compile and work
 //! correctly, including blanket impls and type-erased references.
 
+#[macro_use]
+#[path = "support/deadline.rs"]
+mod deadline;
 use spawned_concurrency::tasks::{Actor, ActorStart as _, Context, Handler};
 use spawned_concurrency::{protocol, Response};
 use spawned_rt::tasks as rt;
@@ -59,7 +62,7 @@ fn cfg_gated_method_works_via_blanket_impl() {
         let configured = actor.with_request_timeout(std::time::Duration::from_secs(1));
         assert_eq!(configured.test_only_increment().await.unwrap(), 12);
         actor.context().stop();
-        actor.join().await;
+        within!(actor.join()).await;
     });
 }
 
@@ -81,6 +84,6 @@ fn cfg_gated_method_works_via_protocol_ref() {
             .to_mixed_ref();
         assert_eq!(configured.test_only_increment().await.unwrap(), 2);
         actor.context().stop();
-        actor.join().await;
+        within!(actor.join()).await;
     });
 }

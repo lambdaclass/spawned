@@ -4,7 +4,9 @@
 //! so a run is a function of the input, the seed and the strategy.
 
 use crate::scenario::*;
-use crate::world::{factory_call, now, Act, Do, SupInst, Worker, World};
+use crate::world::{
+    factory_call, factory_outcome, now, Act, Do, Outcome, SupInst, TimerRec, Worker, World,
+};
 use spawned_concurrency::{
     registry,
     supervision::{
@@ -66,6 +68,8 @@ enum Slot {
 
 struct Root {
     sup: Option<Supervisor>,
+    /// Its supervisor instance in [`crate::world::State::sups`].
+    inst: usize,
     sys: usize,
     /// Declared child paths, with the declared child count of nested slots.
     paths: Vec<(String, usize)>,
@@ -111,7 +115,8 @@ struct Driver {
     actors: Vec<Standalone>,
     roots: Vec<Root>,
     units: Vec<(usize, Unit)>,
-    timers: Vec<TimerHandle>,
+    /// Live timers with their index in [`crate::world::State::timers`].
+    timers: Vec<(TimerHandle, usize)>,
     pending: Vec<JoinHandle<Reply>>,
     links: Vec<LinkRec>,
     /// Trap flag set by the driver and the op index of its last change.
@@ -122,6 +127,16 @@ struct Driver {
     requested: HashMap<ActorId, ExitReason>,
     /// Total handler sleep ever sent: a fence may wait behind all of it.
     queued_sleep: Duration,
+    /// Driver unlinks, for the X5 unlink oracle.
+    unlinks: Vec<UnlinkRec>,
+}
+
+/// `a.unlink(b)` by the driver while both were running.
+struct UnlinkRec {
+    a: ActorRef<Worker>,
+    b: ActorRef<Worker>,
+    /// Op index (a later `LinkRec` for the pair re-links it).
+    at: u64,
 }
 
 /// Run one scenario in the current simulated world; panics with the first
@@ -157,8 +172,18 @@ pub async fn run_body(scenario: Scenario, seed: u64) {
     driver.teardown().await;
     trace(|| "leak checks".into());
     drop(driver);
+    // Published exit reasons, then release the handles before leak checks.
+    {
+        let mut s = world.lock();
+        for inst in &mut s.insts {
+            if let Some(handle) = inst.handle.take() {
+                inst.reason = handle.exit_reason();
+            }
+        }
+    }
     leaks(&world, baseline).await;
     budget_checks(&world);
+    crate::oracles::check(&world);
     let violations = std::mem::take(&mut world.lock().violations);
     if let Some(first) = violations.first() {
         LAST_DETAILS.with(|d| {
@@ -281,6 +306,13 @@ fn new_sup_inst(world: &World, root: usize, cfg: &SupervisorConfig) -> usize {
         root,
         max_restarts: cfg.max_restarts,
         window: cfg.restart_window,
+        strategy: cfg.strategy,
+        backoff: cfg.backoff.clone(),
+        flat: false,
+        children: 0,
+        closed_at: None,
+        settled: None,
+        failure: None,
     });
     s.sups.len() - 1
 }
@@ -292,18 +324,20 @@ fn worker_spec(
     def: WorkerDef,
     group: &ExecutionGroup,
 ) -> ChildSpec<Worker> {
-    let temporary = def.restart % 3 == 2;
+    let mode = restart_mode(def.restart);
     let name = path.clone();
     ChildSpec::new(name, group, move |fctx: FactoryContext| {
         let world = world.clone();
         let path = path.clone();
         async move {
-            factory_call(&world, inst, &path, temporary);
+            let call = factory_call(&world, inst, &path, mode);
             let bit = 1u8 << (fctx.generation() % 8);
             if def.fail_mask & bit != 0 {
+                factory_outcome(&world, call, Outcome::Error);
                 return Err("fuzz: injected factory error".to_string());
             }
             if def.panic_mask & bit != 0 {
+                factory_outcome(&world, call, Outcome::Panic);
                 panic!("fuzz: injected factory panic");
             }
             let hooks = if def.hook_mask & bit != 0 {
@@ -313,10 +347,11 @@ fn worker_spec(
             };
             let worker = Worker::new(&world, Some(path), hooks);
             Worker::arm(&world, worker.instance());
+            factory_outcome(&world, call, Outcome::Instance(worker.instance()));
             Ok(worker)
         }
     })
-    .restart(restart_mode(def.restart))
+    .restart(mode)
     .startup_timeout(Duration::from_millis(limit_ms(def.startup_timeout)))
     .shutdown_timeout(Duration::from_millis(limit_ms(def.shutdown_timeout)))
 }
@@ -346,6 +381,7 @@ impl Driver {
             first_exit: HashMap::new(),
             requested: HashMap::new(),
             queued_sleep: Duration::ZERO,
+            unlinks: Vec::new(),
         };
         driver.new_system();
         driver
@@ -406,7 +442,34 @@ impl Driver {
                 .entry(a.id())
                 .or_insert_with(|| a.child_handle());
         }
+        self.mark_published(&out);
         out
+    }
+
+    /// Generations `current()` returned were published, so ready (V4).
+    fn mark_published(&self, refs: &[ActorRef<Worker>]) {
+        let mut s = self.world.lock();
+        for a in refs {
+            if let Some(i) = s.instance_of(a.id()) {
+                if s.insts[i].slot.is_some() {
+                    s.insts[i].published = true;
+                }
+            }
+        }
+    }
+
+    fn cancel_timer(&mut self, i: usize) {
+        let (timer, id) = self.timers.remove(i);
+        timer.cancellation_token.cancel();
+        let mut s = self.world.lock();
+        let rec = &mut s.timers[id];
+        rec.cancelled.get_or_insert(now());
+    }
+
+    /// The driver closed root `root` (stop, shutdown or its system's).
+    fn closing(&self, root: usize) {
+        let inst = self.roots[root].inst;
+        self.world.lock().sups[inst].closed_at.get_or_insert(now());
     }
 
     fn pick(&mut self, index: u8) -> Option<ActorRef<Worker>> {
@@ -525,6 +588,7 @@ impl Driver {
                 let msg = Do {
                     nonce: self.next_nonce(),
                     lane: 0,
+                    timer: 0,
                     act,
                 };
                 let _ = if via_recipient {
@@ -549,7 +613,12 @@ impl Driver {
                     0
                 };
                 let ms = timeout.map_or(5_000, |t| t as u64);
-                let msg = Do { nonce, lane, act };
+                let msg = Do {
+                    nonce,
+                    lane,
+                    timer: 0,
+                    act,
+                };
                 let request = async move {
                     let start = now();
                     let reply = match timeout {
@@ -596,6 +665,23 @@ impl Driver {
                 let (Some(pa), Some(pb)) = (self.pick(a), self.pick(b)) else {
                     return;
                 };
+                // Both running and not yet stopping: no Exit between them can
+                // be in flight, so none may arrive after this (X5).
+                let running = |d: &Self, r: &ActorRef<Worker>| {
+                    let s = d.world.lock();
+                    r.child_handle().is_alive()
+                        && s.instance_of(r.id()).is_some_and(|i| {
+                            let x = &s.insts[i];
+                            x.started_end.is_some() && x.stopped_begin.is_none()
+                        })
+                };
+                if pa.id() != pb.id() && running(self, &pa) && running(self, &pb) {
+                    self.unlinks.push(UnlinkRec {
+                        a: pa.clone(),
+                        b: pb.clone(),
+                        at: self.op,
+                    });
+                }
                 pa.context().unlink(&pb.child_handle());
                 for l in &mut self.links {
                     let ids = (l.a.id(), l.b.id());
@@ -684,23 +770,35 @@ impl Driver {
                     cmd => cmd,
                 };
                 let act = self.act(cmd, &aref);
+                let period = Duration::from_millis(1 + ms as u64 % 5_000);
+                let id = {
+                    let mut s = self.world.lock();
+                    s.timers.push(TimerRec {
+                        created: now(),
+                        period,
+                        interval,
+                        cancelled: None,
+                        handled: 0,
+                    });
+                    s.timers.len() - 1
+                };
                 let msg = Do {
                     nonce: 0,
                     lane: 0,
+                    timer: 1 + id,
                     act,
                 };
-                let period = Duration::from_millis(1 + ms as u64 % 5_000);
                 let timer = if interval {
                     send_interval(period, aref.context(), msg)
                 } else {
                     send_after(period, aref.context(), msg)
                 };
-                self.timers.push(timer);
+                self.timers.push((timer, id));
             }
             Op::CancelTimer { which } => {
                 if !self.timers.is_empty() {
                     let i = which as usize % self.timers.len();
-                    self.timers[i].cancellation_token.cancel();
+                    self.cancel_timer(i);
                 }
             }
             Op::Advance { ms } => rt::sleep(Duration::from_millis(ms as u64 % 5_000)).await,
@@ -729,6 +827,7 @@ impl Driver {
                 let msg = Do {
                     nonce: self.next_nonce(),
                     lane: 0,
+                    timer: 0,
                     act,
                 };
                 drop(aref.request_raw(msg));
@@ -868,7 +967,7 @@ impl Driver {
                         root,
                         inst,
                         path.clone(),
-                        *restart % 3 == 2,
+                        restart_mode(*restart),
                         children,
                         groups.clone(),
                         nested_cfg.clone(),
@@ -900,8 +999,14 @@ impl Driver {
             Err(_) => None,
         };
         trace(|| format!("supervisor r{root}: started {}", sup.is_some()));
+        {
+            let mut s = self.world.lock();
+            s.sups[inst].flat = model.is_some() && sup.is_some();
+            s.sups[inst].children = paths.len();
+        }
         self.roots.push(Root {
             sup,
+            inst,
             sys,
             paths,
             slots,
@@ -953,18 +1058,23 @@ impl Driver {
         let Ok(aref) = workers[i].current() else {
             return;
         };
+        self.mark_published(std::slice::from_ref(&aref));
         if !aref.child_handle().is_alive() {
             self.violate(
                 "V4: current() returned a generation that already exited",
                 format!("{:?}", workers[i].snapshot().state),
             );
         }
+        // The restart oracles tell a child's own exit from its supervisor's
+        // stop by these causes.
+        self.may_stop(aref.id());
         match how {
             ChildCrash::Panic => {
                 let nonce = self.next_nonce();
                 let _ = aref.send(Do {
                     nonce,
                     lane: 0,
+                    timer: 0,
                     act: Act::Panic,
                 });
             }
@@ -1133,6 +1243,7 @@ impl Driver {
             return;
         };
         let was_closing = std::mem::replace(&mut self.roots[root].closing, true);
+        self.closing(root);
         match mode % 3 {
             0 => s.stop(),
             1 => {
@@ -1162,6 +1273,11 @@ impl Driver {
 
     /// Mark a system's actors as stoppable: its shutdown began.
     fn system_stopping(&mut self, sys: usize) {
+        for root in 0..self.roots.len() {
+            if self.roots[root].sys == sys {
+                self.closing(root);
+            }
+        }
         let ids: Vec<ActorId> = self
             .actors
             .iter()
@@ -1424,6 +1540,7 @@ impl Driver {
         let msg = Do {
             nonce,
             lane: 0,
+            timer: 0,
             act: Act::Noop,
         };
         match aref
@@ -1495,8 +1612,8 @@ impl Driver {
     /// until nothing is in flight. False if supervisors did not settle.
     async fn quiesce(&mut self) -> bool {
         trace(|| "quiesce".into());
-        for t in self.timers.drain(..) {
-            t.cancellation_token.cancel();
+        while !self.timers.is_empty() {
+            self.cancel_timer(0);
         }
         self.collect_pending().await;
         for _ in 0..2 {
@@ -1642,6 +1759,9 @@ impl Driver {
                 rt::sleep(Duration::from_millis(10)).await;
             }
             if !alive {
+                if !trap && published != ExitReason::Normal {
+                    self.linked_reason(wid, &published);
+                }
                 continue;
             }
             if trap {
@@ -1664,6 +1784,8 @@ impl Driver {
                 );
             }
         }
+
+        self.unlink_checks();
 
         let standalone: Vec<(ActorId, usize, Option<ExitReason>)> = self
             .actors
@@ -1715,8 +1837,103 @@ impl Driver {
         }
     }
 
+    /// A standalone actor whose only possible stop cause was its link to a
+    /// peer that exited abnormally publishes the peer's reason (X3: "exits
+    /// with the same reason ... propagates further").
+    fn linked_reason(&self, id: ActorId, peer: &ExitReason) {
+        let Some(a) = self.actors.iter().find(|a| a.aref.id() == id) else {
+            return;
+        };
+        let Some(exit) = a.aref.child_handle().exit_reason() else {
+            return;
+        };
+        let s = self.world.lock();
+        let x = &s.insts[a.instance];
+        if s.causes.get(&id) == Some(&1) && !x.panicked && !x.drop_panicked && exit != *peer {
+            let detail = format!("w{} published {exit:?}, peer {peer:?}", a.instance);
+            drop(s);
+            self.violate(
+                "X3: an actor stopped through a link published another reason than its peer",
+                detail,
+            );
+        }
+    }
+
+    /// After `a.unlink(b)` between two running actors (and no later link of
+    /// the pair), neither may hear of the other's exit (X5: unlink removes
+    /// the link on both sides).
+    fn unlink_checks(&self) {
+        for u in &self.unlinks {
+            let (aid, bid) = (u.a.id(), u.b.id());
+            let pair = |l: &LinkRec| {
+                (l.a.id(), l.b.id()) == (aid, bid) || (l.a.id(), l.b.id()) == (bid, aid)
+            };
+            if self.links.iter().any(|l| pair(l) && l.at > u.at) {
+                continue;
+            }
+            {
+                let s = self.world.lock();
+                if s.uncertain.contains(&aid) || s.uncertain.contains(&bid) {
+                    continue;
+                }
+            }
+            for (me, other) in [(&u.a, &u.b), (&u.b, &u.a)] {
+                let (mid, oid) = (me.id(), other.id());
+                if other.child_handle().exit_reason().is_none() {
+                    continue;
+                }
+                let s = self.world.lock();
+                let Some(i) = s.instance_of(mid) else { continue };
+                if s.insts[i].exits.iter().any(|(from, _)| *from == oid) {
+                    let detail = format!("w{i} from {}", s.name(oid));
+                    drop(s);
+                    self.violate("X5: an Exit arrived from a peer after unlink", detail);
+                    continue;
+                }
+                // A standalone actor whose only stop causes were its links to
+                // this peer must outlive the peer.
+                let links = self
+                    .links
+                    .iter()
+                    .filter(|l| l.a.id() == mid || l.b.id() == mid)
+                    .collect::<Vec<_>>();
+                let only_peer = links.iter().all(|l| pair(l));
+                let standalone = self.actors.iter().any(|a| a.aref.id() == mid);
+                let x = &s.insts[i];
+                if standalone
+                    && only_peer
+                    && s.causes.get(&mid).copied().unwrap_or(0) as usize == links.len()
+                    && !x.panicked
+                    && !x.drop_panicked
+                    && me.child_handle().exit_reason().is_some()
+                {
+                    let detail = format!(
+                        "w{i} {:?} after {} {:?}",
+                        me.child_handle().exit_reason(),
+                        s.name(oid),
+                        other.child_handle().exit_reason()
+                    );
+                    drop(s);
+                    self.violate("X5: an actor died through a link it had removed", detail);
+                }
+            }
+        }
+    }
+
     async fn teardown(&mut self) {
         if self.quiesce().await {
+            // Every tree the driver never closed is settled: a restart the
+            // contract requires has happened by now (V1, V2, V5 oracles).
+            let tick = self.world.lock().tick();
+            for root in &self.roots {
+                let failure = root.sup.as_ref().and_then(|s| s.failure());
+                let mut s = self.world.lock();
+                let sup = &mut s.sups[root.inst];
+                if sup.closed_at.is_none() {
+                    sup.settled = Some(tick);
+                    sup.failure = failure;
+                }
+            }
             self.eventual().await;
         }
         for root in 0..self.roots.len() {
@@ -1788,7 +2005,7 @@ fn budget_checks(world: &World) {
         let n = seen.entry((c.inst, c.slot.clone())).or_default();
         *n += 1;
         if *n > 1 {
-            if c.temporary {
+            if c.mode == RestartMode::Temporary {
                 found.push((
                     "V1: a Temporary child was constructed twice",
                     c.slot.clone(),
@@ -1828,13 +2045,13 @@ fn nested_configure(
     root: usize,
     parent_inst: usize,
     path: String,
-    temporary: bool,
+    mode: RestartMode,
     children: Vec<WorkerDef>,
     groups: Vec<ExecutionGroup>,
     cfg: SupervisorConfig,
 ) -> impl Fn(&mut SupervisorBuilder) -> Result<(), SupervisorError> + Send + Sync + 'static {
     move |builder: &mut SupervisorBuilder| {
-        factory_call(&world, parent_inst, &path, temporary);
+        factory_call(&world, parent_inst, &path, mode);
         let inst = new_sup_inst(&world, root, &cfg);
         for (j, w) in children.iter().enumerate() {
             let p = format!("{path}/c{j}");

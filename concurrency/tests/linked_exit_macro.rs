@@ -1,4 +1,7 @@
 //! Public #[actor] lifecycle wiring for trapped exits in both modes.
+#[macro_use]
+#[path = "support/deadline.rs"]
+mod deadline;
 use spawned_concurrency::{actor, Exit, ExitReason};
 
 #[cfg(feature = "async")]
@@ -41,8 +44,8 @@ mod asynchronous {
                 .unwrap();
             assert_eq!(event.from, child.id());
             assert!(matches!(event.reason, ExitReason::Panic(_)));
-            child.wait_exit().await;
-            assert_eq!(observer.wait_exit().await, ExitReason::Normal);
+            within!(child.wait_exit()).await;
+            assert_eq!(within!(observer.wait_exit()).await, ExitReason::Normal);
         });
     }
 }
