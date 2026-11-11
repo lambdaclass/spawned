@@ -134,6 +134,12 @@ impl<C: Fn()> ActorCleanup<C> {
         if let Some(replies) = &self.replies {
             replies.exiting();
         }
+        // From here until every caller is answered, the payloads framework
+        // code drops for this owner (a scheduled emit expiring, a job's
+        // refused outcome) are held, on whatever thread drops them.
+        if let Some(failures) = &self.failures {
+            failures.hold();
+        }
         if let Some(jobs) = &self.jobs {
             jobs.cancel_all();
         }
@@ -207,6 +213,9 @@ impl<C: Fn()> ActorCleanup<C> {
         // Payloads the exit's job cancellation released: destroyed only now.
         if let Some(jobs) = &self.jobs {
             jobs.dispose_cancelled();
+        }
+        if let Some(failures) = &self.failures {
+            failures.release();
         }
     }
     fn close(&mut self, reason: ExitReason) -> ExitReason {

@@ -2094,6 +2094,8 @@ async fn run_actor_lifecycle<A: Actor, C: Fn()>(
     }
     cancellation_token.cancel();
     ctx.shared.replies.exiting();
+    // Payload drops are held until every caller is answered (DropFailures).
+    ctx.shared.sender.failures().hold();
     ctx.shared.jobs.cancel_all();
     // stopped() is skipped when a kill, an untrapped exit signal or link
     // notice began the exit (decision 2); one that already began finishes.

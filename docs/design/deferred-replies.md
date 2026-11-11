@@ -408,7 +408,10 @@ current turn's slot) and a job set. The order is:
    skipped" log, and the callbacks the jobs' cancellation owes (`cancelled()`
    waiters, blocked emitters). Cancellation in step 1 only sets the jobs'
    flag: the payloads it releases (held results, scheduled emits) are
-   destroyed in step 5. Steps 3 and 4 follow the seal instead of being one atomic step
+   destroyed in step 5. From the start of the exit (the jobs' cancellation)
+   to the end of discharge, every payload the framework drops for the owner
+   on any thread (a scheduled emit coming due, a job's refused outcome) is
+   held by the owner's drop sink and destroyed then too. Steps 3 and 4 follow the seal instead of being one atomic step
    with it, but nothing between them depends on the requests they answer,
    so the models' atomic death is a sound abstraction of them (they commute
    left to the seal).

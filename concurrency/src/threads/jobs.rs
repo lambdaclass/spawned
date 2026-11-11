@@ -95,7 +95,7 @@ where
 // ---------------------------------------------------------------------------
 
 /// The parts shared by a job's completion path and its deadline.
-struct Run<A: Actor, T, M> {
+struct Run<A: Actor, T: 'static, M: 'static> {
     state: Arc<JobState>,
     ctx: Context<A>,
     done: Mutex<Option<Done<T, M>>>,
@@ -182,7 +182,7 @@ where
     }
 }
 
-impl<A: Actor, T, M> Drop for Run<A, T, M> {
+impl<A: Actor, T: 'static, M: 'static> Drop for Run<A, T, M> {
     /// The last reference may go on the deadline service thread (a deadline
     /// or a held result firing): `done` and its captures drop contained.
     fn drop(&mut self) {

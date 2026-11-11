@@ -1341,6 +1341,147 @@ async fn parked_receivers_wake_before_any_waker() {
     );
 }
 
+// ------------------------------- job.emit_due (exit holds payload drops)
+
+/// A message whose destructor records, when it starts, whether a queued
+/// caller was already answered.
+struct Probe {
+    caller: SharedReceiver,
+    answered: Arc<AtomicUsize>,
+    started: std::sync::mpsc::Sender<()>,
+}
+impl Drop for Probe {
+    fn drop(&mut self) {
+        if let Some(receiver) = self.caller.lock().unwrap().as_mut() {
+            if receiver.try_recv().is_some() {
+                self.answered.store(1, Ordering::SeqCst);
+            }
+        }
+        let _ = self.started.send(());
+    }
+}
+struct Probed(#[allow(dead_code)] Probe);
+impl Message for Probed {
+    type Result = ();
+}
+/// Its `stopped()` waits for the test's release.
+struct SlowStop(std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>);
+struct ScheduleProbe(Probe, std::sync::mpsc::Sender<()>);
+impl Message for ScheduleProbe {
+    type Result = ();
+}
+impl Actor for SlowStop {
+    async fn stopped(&mut self, _: &Context<Self>) {
+        let _ = self.1.send(());
+        let _ = self.0.recv_timeout(LIMIT);
+    }
+}
+impl Handler<ScheduleProbe> for SlowStop {
+    async fn handle(
+        &mut self,
+        msg: ScheduleProbe,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
+        ctx: &Context<Self>,
+    ) {
+        let ScheduleProbe(probe, scheduled) = msg;
+        ctx.pipe(
+            spawned_concurrency::tasks::JobOptions::new(),
+            move |job| async move {
+                let at = spawned_concurrency::Instant::now() + Duration::from_millis(100);
+                job.emit_at(at, Probed(probe)).await.unwrap();
+                let _ = scheduled.send(());
+                job.cancelled().await;
+            },
+            |_| Answer,
+        )
+        .unwrap();
+        reply.reply(());
+    }
+}
+impl Handler<Gate> for SlowStop {
+    async fn handle(
+        &mut self,
+        msg: Gate,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
+        let _ = msg.1.send(());
+        let _ = msg.0.recv_timeout(LIMIT);
+        reply.reply(());
+    }
+}
+impl Handler<Answer> for SlowStop {
+    async fn handle(
+        &mut self,
+        _: Answer,
+        reply: spawned_concurrency::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
+        reply.reply(());
+    }
+}
+impl Handler<Probed> for SlowStop {
+    async fn handle(
+        &mut self,
+        _: Probed,
+        _: spawned_concurrency::PendingReply<'_, ()>,
+        _: &Context<Self>,
+    ) {
+    }
+}
+
+/// Final review (agy P1 1): a scheduled `emit_at` that comes due while the
+/// owner runs `stopped()` (its jobs already cancelled) is refused, and its
+/// payload used to be destroyed right there on the deadline service, before
+/// the queued caller was answered. The owner's payload drops are now held
+/// from the start of its exit until every caller is answered.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn emit_due_during_exit_is_destroyed_after_every_caller_is_answered() {
+    let _scenario = FailScenario::setup();
+    let (stop_release, stop_gate) = std::sync::mpsc::channel();
+    let (stopping_tx, stopping) = std::sync::mpsc::channel();
+    let actor = SlowStop(stop_gate, stopping_tx).start();
+    let caller: SharedReceiver = Arc::default();
+    let answered = Arc::new(AtomicUsize::new(0));
+    let (started_tx, started) = std::sync::mpsc::channel();
+    let (scheduled_tx, scheduled) = std::sync::mpsc::channel();
+    let probe = Probe {
+        caller: caller.clone(),
+        answered: answered.clone(),
+        started: started_tx,
+    };
+    actor
+        .request(ScheduleProbe(probe, scheduled_tx))
+        .await
+        .unwrap();
+    scheduled.recv_timeout(LIMIT).unwrap(); // the emit is armed
+    let (release, gate) = std::sync::mpsc::channel();
+    let (entered_tx, entered) = std::sync::mpsc::channel();
+    actor.send(Gate(gate, entered_tx)).unwrap();
+    entered.recv_timeout(LIMIT).unwrap();
+    *caller.lock().unwrap() = Some(
+        actor
+            .send_request(Answer, spawned_concurrency::Deadline::Never)
+            .unwrap(),
+    );
+    failpoints::configure("job.emit_due", FailPoint::new(Action::Off)).unwrap();
+    actor.context().stop();
+    release.send(()).unwrap();
+    stopping.recv_timeout(LIMIT).unwrap(); // in stopped(), jobs cancelled
+                                           // The emit came due during stopped(). Its payload must not be destroyed
+                                           // now: give a wrong implementation the chance to, then let stopped()
+                                           // return.
+    reached("job.emit_due", 1).await;
+    let _ = started.recv_timeout(Duration::from_millis(500));
+    stop_release.send(()).unwrap();
+    tokio::time::timeout(LIMIT * 2, actor.join()).await.unwrap();
+    assert_eq!(
+        answered.load(Ordering::SeqCst),
+        1,
+        "a scheduled emit's payload was destroyed before every caller was answered"
+    );
+}
+
 mod native {
     use super::*;
     use spawned_concurrency::threads::{
@@ -1791,5 +1932,110 @@ mod native {
         drop(again);
         ctx.stop();
         owner.join();
+    }
+
+    struct NativeSlowStop(std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>);
+    impl NativeActor for NativeSlowStop {
+        fn stopped(&mut self, _: &NativeContext<Self>) {
+            let _ = self.1.send(());
+            let _ = self.0.recv_timeout(LIMIT);
+        }
+    }
+    impl NativeHandler<ScheduleProbe> for NativeSlowStop {
+        fn handle(
+            &mut self,
+            msg: ScheduleProbe,
+            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            ctx: &NativeContext<Self>,
+        ) {
+            let ScheduleProbe(probe, scheduled) = msg;
+            ctx.pipe_blocking(
+                spawned_concurrency::threads::JobOptions::new(),
+                move |job| {
+                    let at = spawned_concurrency::Instant::now() + Duration::from_millis(100);
+                    job.emit_at_blocking(at, Probed(probe)).unwrap();
+                    let _ = scheduled.send(());
+                    while !job.is_cancelled() {
+                        std::thread::sleep(Duration::from_millis(2));
+                    }
+                },
+                |_| Answer,
+            )
+            .unwrap();
+            reply.reply(());
+        }
+    }
+    impl NativeHandler<Gate> for NativeSlowStop {
+        fn handle(
+            &mut self,
+            msg: Gate,
+            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            _: &NativeContext<Self>,
+        ) {
+            let _ = msg.1.send(());
+            let _ = msg.0.recv_timeout(LIMIT);
+            reply.reply(());
+        }
+    }
+    impl NativeHandler<Answer> for NativeSlowStop {
+        fn handle(
+            &mut self,
+            _: Answer,
+            reply: spawned_concurrency::reply::PendingReply<'_, ()>,
+            _: &NativeContext<Self>,
+        ) {
+            reply.reply(());
+        }
+    }
+    impl NativeHandler<Probed> for NativeSlowStop {
+        fn handle(
+            &mut self,
+            _: Probed,
+            _: spawned_concurrency::reply::PendingReply<'_, ()>,
+            _: &NativeContext<Self>,
+        ) {
+        }
+    }
+
+    /// Threads mode of `emit_due_during_exit_is_destroyed_after_every_caller_is_answered`.
+    #[test]
+    fn emit_due_during_exit_is_destroyed_after_every_caller_is_answered() {
+        let _scenario = FailScenario::setup();
+        let (stop_release, stop_gate) = std::sync::mpsc::channel();
+        let (stopping_tx, stopping) = std::sync::mpsc::channel();
+        let actor = NativeSlowStop(stop_gate, stopping_tx).start();
+        let caller: SharedReceiver = Arc::default();
+        let answered = Arc::new(AtomicUsize::new(0));
+        let (started_tx, started) = std::sync::mpsc::channel();
+        let (scheduled_tx, scheduled) = std::sync::mpsc::channel();
+        let probe = Probe {
+            caller: caller.clone(),
+            answered: answered.clone(),
+            started: started_tx,
+        };
+        actor.request(ScheduleProbe(probe, scheduled_tx)).unwrap();
+        scheduled.recv_timeout(LIMIT).unwrap();
+        let (release, gate) = std::sync::mpsc::channel();
+        let (entered_tx, entered) = std::sync::mpsc::channel();
+        actor.send(Gate(gate, entered_tx)).unwrap();
+        entered.recv_timeout(LIMIT).unwrap();
+        *caller.lock().unwrap() = Some(
+            actor
+                .send_request(Answer, spawned_concurrency::Deadline::Never)
+                .unwrap(),
+        );
+        failpoints::configure("job.emit_due", FailPoint::new(Action::Off)).unwrap();
+        actor.context().stop();
+        release.send(()).unwrap();
+        stopping.recv_timeout(LIMIT).unwrap();
+        wait_hits("job.emit_due");
+        let _ = started.recv_timeout(Duration::from_millis(500));
+        stop_release.send(()).unwrap();
+        actor.join();
+        assert_eq!(
+            answered.load(Ordering::SeqCst),
+            1,
+            "a scheduled emit's payload was destroyed before every caller was answered"
+        );
     }
 }

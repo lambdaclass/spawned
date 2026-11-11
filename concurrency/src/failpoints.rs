@@ -72,6 +72,14 @@ pub const SITES: &[Site] = &[
                       failing `stopped()`.",
     },
     Site {
+        name: "job.emit_due",
+        has_error: false,
+        description: "A scheduled `emit_at` comes due on the deadline service. A \
+                      handshake: one coming due during the owner's exit (`stopped()`) is \
+                      refused, and its payload is destroyed only after every caller is \
+                      answered (tasks and threads).",
+    },
+    Site {
         name: "job.native_worker_unused",
         has_error: false,
         description: "Threads mode: the parked thread of a dropped, unused blocking-job \

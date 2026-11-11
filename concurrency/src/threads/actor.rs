@@ -1467,6 +1467,8 @@ fn run_actor_receiving<A: Actor>(
 
     cancellation_token.cancel();
     ctx.replies.exiting();
+    // Payload drops are held until every caller is answered (DropFailures).
+    ctx.sender.failures().hold();
     ctx.jobs.cancel_all();
     // stopped() is skipped when a kill, an untrapped exit signal or link
     // notice began the exit (decision 2); one that already began finishes.

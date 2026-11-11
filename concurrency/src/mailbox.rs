@@ -7,26 +7,61 @@ use std::{
     },
 };
 
+/// An owner's sink for the user payloads its framework code drops (refused
+/// or undelivered messages, job outcomes, scheduled emits): each drop is
+/// contained, its first failure recorded. From the start of the owner's
+/// exit until its death point has answered every caller, drops are held
+/// instead ([`hold`](Self::hold), [`release`](Self::release)): no user
+/// destructor runs before the last answer, on whatever thread drops it.
 #[derive(Default)]
-pub(crate) struct DropFailures(Mutex<Option<String>>);
+pub(crate) struct DropFailures {
+    first: Mutex<Option<String>>,
+    held: Mutex<Option<Vec<Box<dyn Send>>>>,
+}
 impl DropFailures {
     pub(crate) fn first(&self) -> Option<String> {
-        self.0.lock().unwrap_or_else(|p| p.into_inner()).clone()
+        self.first.lock().unwrap_or_else(|p| p.into_inner()).clone()
     }
     /// Record a cleanup failure; the first one is kept.
     pub(crate) fn record(&self, message: String) {
-        self.0
+        self.first
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .get_or_insert(message);
     }
-    pub(crate) fn discard<T>(&self, value: T) {
+    /// The owner's exit began: hold every later drop until `release`.
+    pub(crate) fn hold(&self) {
+        self.held
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get_or_insert_with(Vec::new);
+    }
+    /// Every caller was answered: drop what was held (contained), and drop
+    /// at once from now on. Idempotent.
+    pub(crate) fn release(&self) {
+        let held = self.held.lock().unwrap_or_else(|p| p.into_inner()).take();
+        for value in held.into_iter().flatten() {
+            self.drop_contained(value);
+        }
+    }
+    pub(crate) fn discard<T: Send + 'static>(&self, value: T) {
+        let mut held = self.held.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(held) = held.as_mut() {
+            // Moved, not dropped: no user code under the lock.
+            held.push(Box::new(value));
+            return;
+        }
+        drop(held);
+        self.drop_contained(value);
+    }
+    /// Drop at once (contained): the mailbox's own items, destroyed after
+    /// the death point's discharge.
+    pub(crate) fn discard_now<T>(&self, value: T) {
+        self.drop_contained(value);
+    }
+    fn drop_contained<T>(&self, value: T) {
         if let Err(payload) = catch_unwind(AssertUnwindSafe(|| drop(value))) {
-            let message = crate::error::panic_message(&*payload);
-            self.0
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .get_or_insert(message);
+            self.record(crate::error::panic_message(&*payload));
             dispose_panic(payload);
         }
     }
@@ -126,7 +161,7 @@ pub(crate) mod tasks {
         /// Destroy drained items; a destructor panic is a cleanup failure.
         pub(crate) fn discard_all(&self, items: Vec<T>) {
             for item in items {
-                self.failures.discard(item);
+                self.failures.discard_now(item);
             }
         }
     }
@@ -209,7 +244,7 @@ pub(crate) mod threads {
         /// Destroy drained items; a destructor panic is a cleanup failure.
         pub(crate) fn discard_all(&self, items: Vec<T>) {
             for item in items {
-                self.admission.failures.discard(item);
+                self.admission.failures.discard_now(item);
             }
         }
     }

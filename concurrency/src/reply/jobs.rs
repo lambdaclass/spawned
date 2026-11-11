@@ -926,12 +926,12 @@ impl Expirable for JobDeadline {
 
 /// A value (user payload) whose drop is contained by the owner's failure
 /// sink: it may be dropped on the deadline service thread.
-pub(crate) struct Contained<T> {
+pub(crate) struct Contained<T: Send + 'static> {
     value: Option<T>,
     failures: Arc<crate::mailbox::DropFailures>,
 }
 
-impl<T> Contained<T> {
+impl<T: Send + 'static> Contained<T> {
     pub(crate) fn new(value: T, failures: Arc<crate::mailbox::DropFailures>) -> Self {
         Self {
             value: Some(value),
@@ -943,7 +943,7 @@ impl<T> Contained<T> {
     }
 }
 
-impl<T> Drop for Contained<T> {
+impl<T: Send + 'static> Drop for Contained<T> {
     fn drop(&mut self) {
         if let Some(value) = self.value.take() {
             self.failures.discard(value);
@@ -1033,6 +1033,7 @@ impl Expirable for ScheduledEmit {
         lock(&self.send).is_some().then_some(self.at)
     }
     fn expire(&self, _now: u64) {
+        fail_point!("job.emit_due");
         if let Some(job) = self.job.upgrade() {
             self.settle(&job, true);
         }
