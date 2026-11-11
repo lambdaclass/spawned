@@ -28,6 +28,9 @@ fn trace_dir() -> PathBuf {
         })
 }
 
+/// The gated old keyed job and its gate, handed from the turn to the test.
+type OldJob = Arc<Mutex<Option<(JobHandle, oneshot::Sender<()>)>>>;
+
 #[derive(Default)]
 struct Log(Mutex<Vec<String>>);
 impl Log {
@@ -44,7 +47,7 @@ struct Owner {
     handles: Vec<JobHandle>,
     gates: Vec<oneshot::Sender<()>>,
     /// The gated old keyed job, handed to the test.
-    old: Arc<Mutex<Option<(JobHandle, oneshot::Sender<()>)>>>,
+    old: OldJob,
 }
 
 impl Actor for Owner {}
@@ -211,9 +214,7 @@ fn start() -> (ActorRef<Owner>, Arc<Log>) {
     start_with(Arc::default())
 }
 
-fn start_with(
-    old: Arc<Mutex<Option<(JobHandle, oneshot::Sender<()>)>>>,
-) -> (ActorRef<Owner>, Arc<Log>) {
+fn start_with(old: OldJob) -> (ActorRef<Owner>, Arc<Log>) {
     let log = Arc::new(Log::default());
     let actor = Owner {
         old,
