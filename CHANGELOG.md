@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Lockfile: `rustix` 1.1.2 -> 1.1.6 for RUSTSEC-2026-0486 (pulled in by the
+  examples' `native-tls` dependency; spawned's crates are unaffected).
 - CI: the core workflows (`ci`, `verification`, `failpoints`) also run on
   `merge_group`, so pull requests can go through GitHub's merge queue.
 
