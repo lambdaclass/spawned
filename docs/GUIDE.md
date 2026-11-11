@@ -159,7 +159,7 @@ State that must be released on every exit, including kills and runtime drops, be
 | `ctx.send(msg)` | Send a fire-and-forget message to this actor (self-send) |
 | `ctx.request(msg)` | Send a request and wait for the reply (tasks: async, threads: blocking) |
 | `ctx.request_with_timeout(msg, duration)` | Send a request with a custom timeout |
-| `ctx.send_request(msg, deadline)` | Send a request without waiting (`gen_server:send_request/3`) and get its `ReplyReceiver<R>` (tasks: a future, threads: `recv()`/`try_recv()`) yielding `Result<R, ActorError>`; the deadline (a `Duration`, an `Instant` or `Deadline::Never`) is fixed at send |
+| `ctx.send_request(msg, deadline)` | Send a request without waiting (`gen_server:send_request/2` with an explicit deadline) and get its `ReplyReceiver<R>` (tasks: a future, threads: `recv()`/`try_recv()`) yielding `Result<R, ActorError>`; the deadline (a `Duration`, an `Instant` or `Deadline::Never`) is fixed at send |
 | `ctx.recipient::<M>()` | Get a type-erased `Recipient<M>` for this actor |
 | `ctx.actor_ref()` | Get an `ActorRef<A>` from the context |
 | `ctx.id()` | This actor's `ActorId` |

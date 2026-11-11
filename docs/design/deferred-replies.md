@@ -172,7 +172,7 @@ There is one timeout reason, as in OTP. `DeadlineExceeded` exists only on
 
 | Today | Proposed |
 |---|---|
-| `request_raw(msg) -> Result<oneshot::Receiver<R>, _>`, no timeout | `send_request(msg, impl Into<Deadline>) -> Result<ReplyReceiver<R>, _>` (OTP's `gen_server:send_request/3`): a `Duration`, an `Instant` or `Deadline::Never` |
+| `request_raw(msg) -> Result<oneshot::Receiver<R>, _>`, no timeout | `send_request(msg, impl Into<Deadline>) -> Result<ReplyReceiver<R>, _>` (OTP's `gen_server:send_request/2` with an explicit deadline): a `Duration`, an `Instant` or `Deadline::Never` |
 | `Receiver<M>::request_raw` | `send_request(msg, Deadline)` (required) |
 | erased `request(recipient, msg, timeout)` | computes the deadline before enqueueing, then `send_request` |
 | `Response::from(Result<oneshot::Receiver<T>, _>)`, `Response::from_with_timeout` | `Response::from(Result<ReplyReceiver<T>, _>)`; `from_with_timeout` removed (the deadline is already in the slot) |

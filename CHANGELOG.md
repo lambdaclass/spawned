@@ -31,7 +31,7 @@
     `default_max_native_jobs` are no longer public.
   - Requests and deadlines: `request_raw` and `request_raw_until` become
     `send_request(msg, impl Into<Deadline>)` (OTP's
-    `gen_server:send_request/3`; on `Receiver<M>`, a `Deadline`). 0.7's
+    `gen_server:send_request/2` with an explicit deadline; on `Receiver<M>`, a `Deadline`). 0.7's
     `request_raw` had no deadline: `Deadline::Never` keeps that.
     `PendingReply::deadline`, `ReplyTo::deadline` and `ReplyReceiver::deadline`
     return `Deadline`, so a deadline forwards as is;

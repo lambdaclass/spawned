@@ -589,7 +589,7 @@ impl<A: Actor> Context<A> {
         )
     }
 
-    /// Send a request without waiting (`gen_server:send_request/3`) and get
+    /// Send a request without waiting (`gen_server:send_request/2` with an explicit deadline) and get
     /// its [`ReplyReceiver`]. The deadline is fixed now: a `Duration` from
     /// now, an `Instant`, or [`Deadline::Never`] for an unbounded wait
     /// ([`DEFAULT_REQUEST_TIMEOUT`] is what [`request`](Self::request)
@@ -949,7 +949,7 @@ where
 /// spawned (a method can then be added without a breaking change).
 pub trait Receiver<M: Message>: Send + Sync + crate::__private::Sealed {
     fn send(&self, msg: M) -> Result<(), ActorError>;
-    /// Send a request without waiting (`gen_server:send_request/3`); its
+    /// Send a request without waiting (`gen_server:send_request/2` with an explicit deadline); its
     /// deadline is fixed now (the slot carries it). On a [`Recipient`],
     /// pass a `Deadline` (`Deadline::after(d)`, or `d.into()`).
     fn send_request(
@@ -1051,7 +1051,7 @@ impl<A: Actor> ActorRef<A> {
         )
     }
 
-    /// Send a request without waiting (`gen_server:send_request/3`) and get
+    /// Send a request without waiting (`gen_server:send_request/2` with an explicit deadline) and get
     /// its [`ReplyReceiver`]. The deadline is fixed now: a `Duration` from
     /// now, an `Instant`, or [`Deadline::Never`] for an unbounded wait
     /// ([`DEFAULT_REQUEST_TIMEOUT`] is what [`request`](Self::request)

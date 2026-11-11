@@ -33,7 +33,7 @@ every change; this guide covers what you need to edit when upgrading.
 | `actor.request_raw(msg)` (0.7: no deadline) | `actor.send_request(msg, Deadline::Never)` (or a `Duration` / `Instant`) |
 | `actor.request_raw_until(msg, deadline)` *(0.8 pre-release)* | `actor.send_request(msg, deadline)` |
 | `Response::from_with_timeout(actor.request_raw(msg), t)` | `Response::from(actor.send_request(msg, t))` |
-| `impl Receiver<M>`: `fn request_raw(&self, msg)` | `fn send_request(&self, msg, deadline: Deadline)` |
+| a `Recipient<M>` call `recipient.request_raw(msg)` | `recipient.send_request(msg, deadline)` (`Deadline`); implementing `Receiver<M>` is no longer possible (sealed, see below) |
 | `reply.deadline()` / `token.deadline()` / `rx.deadline()` returning `Option<Instant>` *(0.8 pre-release)* | return `Deadline` (`Deadline::Never` for none); forward with `other.send_request(msg, token.deadline())` |
 | `token.with_deadline(at)` *(0.8 pre-release)* | `token.shorten_deadline(at)` (a `Duration` or `Instant`) |
 | `reply.has_caller()` *(0.8 pre-release)* | removed: `reply.defer()` returns `Err(DeferError::NoCaller)` for a send |
@@ -238,21 +238,26 @@ a test, use `spawned_test::reply_pair()`.
 **Timeouts.** The request timeout starts at send, not at first poll.
 
 **Raw API.** `request_raw(msg)` is now `send_request(msg, deadline)`
-(OTP's `gen_server:send_request/3`). It takes the deadline explicitly: a
+(OTP's `gen_server:send_request/2`, plus an explicit deadline; OTP's
+`/4` form takes a label and a request-id collection instead). It takes the deadline explicitly: a
 `Duration` from now, an `Instant`, or `Deadline::Never`. **0.7's
 `request_raw` had no deadline**: `send_request(msg, Deadline::Never)` keeps
 that unbounded wait, and `send_request(msg, DEFAULT_REQUEST_TIMEOUT)` gives
 the 5 s `request` uses. It returns a `ReplyReceiver<R>` (a future in tasks
 mode, `recv()` in threads mode) yielding `Result<R, ActorError>`.
 `Response::from_with_timeout` is removed: `Response::from(actor.send_request(msg, t))`.
-`Receiver<M>` implementors implement `send_request(msg, Deadline)`. A
-`recv_timeout` on the old native receiver has no counterpart: the deadline
-is fixed when the request is sent.
+`Receiver<M>` is sealed: call `send_request(msg, Deadline)` through a
+`Recipient<M>`; a type of your own cannot implement it (wrap an `ActorRef`
+or use `spawned_test`'s probe instead). A `recv_timeout` on the old native
+receiver has no counterpart: the deadline is fixed when the request is
+sent.
 
 **Metrics.** `metrics::Snapshot` gains `requests_reply_dropped_total` and
 `requests_overloaded_total`, the `deferred_*` and `jobs_*` fields (see the
-GUIDE's Metrics section) and the `deferred_reply_latency` histogram. Code
-that builds a `Snapshot` with a struct literal must add them.
+GUIDE's Metrics section) and the `deferred_reply_latency` histogram. It is
+`#[non_exhaustive]` and read-only: take one from `metrics::snapshot()` and
+read its fields; a struct literal or an exhaustive pattern no longer
+compiles (patterns need `..`).
 
 **Jobs (API refinements).**
 
