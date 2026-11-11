@@ -99,7 +99,6 @@ jobs:
   # each. MCLifecycleWideDeep is the former per-PR MCLifecycle (43M states).
   tla-deep:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    name: tla-deep (${{ matrix.config }})
     runs-on: ubuntu-latest
     timeout-minutes: 350
     strategy:
