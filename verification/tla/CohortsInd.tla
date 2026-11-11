@@ -20,7 +20,7 @@ TypeInd ==
         ack: SUBSET Children, terminal: SUBSET Children,
         gen: [Children -> 0..MaxGen], live: [Children -> SUBSET (1..MaxGen)],
         published: [Children -> 0..MaxGen],
-        begun: SUBSET Children,
+        begun: SUBSET Children, charged: 0..(MaxRounds * N),
         badBarrier: BOOLEAN, badClosed: BOOLEAN, badTerminal: BOOLEAN,
         badRetry: BOOLEAN]
 

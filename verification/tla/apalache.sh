@@ -161,7 +161,7 @@ for model in $models; do
     Cohorts|Nested)
       module="MC${model}Ind"
       if [[ "$model" == Cohorts ]]; then
-        probes=NoMidRoundState faults="Selection Cleanup Retirement Closed InPlaceRetry FirstStartRetry"
+        probes=NoMidRoundState faults="Selection Cleanup Retirement Closed InPlaceRetry FirstStartRetry PerChildCharge"
       else
         probes=NoFinishedSubtree faults="Join Closed"
       fi

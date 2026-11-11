@@ -190,7 +190,11 @@ LoopTop(c) ==
     /\ UNCHANGED <<sup, gen, alive, pub, initial, exitR, readyGen, stopTurn, cdone>>
 
 \* Reserve capacity before waiting. Cancellation/supersession refunds it;
-\* only a committed grant enters the rolling time window.
+\* only a committed grant enters the rolling time window. One grant per
+\* recovery round (rank 5f, supervision.rs charge_round): under OneForOne a
+\* round restarts one child, so it is one grant per restart; the cohort
+\* strategies' charge (one per round, none per rebuilt child) is
+\* Cohorts.tla's RoundCharged.
 RetryReserve(c) ==
     /\ pc[c] = "backoff" /\ open /\ c \notin reserved /\ budget < MaxRestarts
     /\ reserved' = reserved \cup {c} /\ budget' = budget + 1

@@ -1,6 +1,12 @@
 ----------------------------- MODULE Cohorts -----------------------------
-(* Coordinator policy and actual generation ownership. Backoff durations, *)
-(* handlers and retry budgets are abstracted; Supervision covers policy.   *)
+(* Coordinator policy and actual generation ownership. Backoff durations  *)
+(* and handlers are abstracted; Supervision covers the per-child policy.   *)
+(* The restart budget is modelled as its charge (rank 5f): a OneForAll or  *)
+(* RestForOne round takes one grant when the coordinator selects it, its   *)
+(* rebuilds take none, and a failed rebuild asks for a new round, charged  *)
+(* again when selected (supervision.rs charge_round). Exhaustion itself is *)
+(* Supervision's (BudgetBounded); here RoundCharged pins the charge to the *)
+(* rounds. Fault "PerChildCharge" restores v0.7's charge per rebuilt child.*)
 EXTENDS Naturals, FiniteSets, Sequences, TLC
 (* `@type:` comments are Apalache annotations (CohortsInd.tla); TLC       *)
 (* ignores them. Integer ranges with a state-dependent bound are written   *)
@@ -32,7 +38,7 @@ ASSUME Mode \in [Children -> {"Permanent", "Transient", "Temporary"}]
 \*   scanned: Set(Int), affected: Set(Int), stopped: Set(Int),
 \*   clean: Set(Int), resumed: Set(Int), ack: Set(Int), terminal: Set(Int),
 \*   gen: Int -> Int, live: Int -> Set(Int), published: Int -> Int,
-\*   begun: Set(Int),
+\*   begun: Set(Int), charged: Int,
 \*   badBarrier: Bool, badClosed: Bool, badTerminal: Bool, badRetry: Bool };
 CohortTypeAliases == TRUE
 VARIABLE
@@ -48,7 +54,7 @@ Init ==
       affected |-> {}, stopped |-> {}, clean |-> {}, resumed |-> {},
       ack |-> {}, terminal |-> {}, gen |-> [c \in Children |-> 0],
       live |-> [c \in Children |-> {}], published |-> [c \in Children |-> 0],
-      begun |-> {},
+      begun |-> {}, charged |-> 0,
       badBarrier |-> FALSE, badClosed |-> FALSE, badTerminal |-> FALSE,
       badRetry |-> FALSE]
 Range == {j \in 0..N : s.start <= j}   \* = s.start..N, since start \in 0..N
@@ -64,6 +70,8 @@ CSelect(c,r,n) ==
  /\ r = s.epoch + 1 /\ r <= MaxRounds
  /\ n = IF Fault = "Selection" THEN c ELSE ExpectedStart(c)
  /\ s' = [s EXCEPT !.epoch = r, !.origin = c, !.start = n,
+          \* One restart grant for the whole round, taken at selection.
+          !.charged = IF Fault = "PerChildCharge" THEN @ ELSE @ + 1,
           !.covered = [j \in Children |-> IF j >= n THEN r ELSE s.covered[j]],
           !.pending = {j \in s.pending : j < n},
           !.scanned = {}, !.affected = {}, !.stopped = {}, !.clean = {},
@@ -112,6 +120,7 @@ CBegin(c,r,n) ==
  /\ Mode[c] # "Temporary" \/ s.gen[c] = 0
  /\ s' = [s EXCEPT !.gen[c] = n, !.live[c] = @ \cup {n},
           !.begun = IF r > 0 THEN @ \cup {c} ELSE @,
+          !.charged = IF Fault = "PerChildCharge" /\ r > 0 THEN @ + 1 ELSE @,
           !.badBarrier = @ \/ (r > 0 /\ s.clean # s.affected),
           !.badClosed = @ \/ ~s.open,
           !.badRetry = @ \/ (r > 0 /\ c \in s.begun)]
@@ -159,6 +168,7 @@ TypeOK ==
  /\ s.gen \in [Children -> 0..MaxGen]
  /\ s.live \in [Children -> SUBSET (1..MaxGen)]
  /\ s.published \in [Children -> 0..MaxGen]
+ /\ s.charged \in 0..(MaxRounds * N)
 AtMostOneGeneration == \A c \in Children : Cardinality(s.live[c]) <= 1
 PublishedIsLive == \A c \in Children : s.published[c] # 0 => s.published[c] \in s.live[c]
 StrategySelection == s.epoch = 0 \/ s.start = ExpectedStart(s.origin)
@@ -170,10 +180,13 @@ TemporaryStartsOnce == \A c \in Children : Mode[c] = "Temporary" => s.gen[c] <= 
 \* S1: a child that never completed its first start had one attempt.
 FirstStartOnce == \A c \in Children : c \notin s.initial => s.gen[c] <= 1
 DoneMeansQuiescent == s.phase = "Done" => \A c \in Children : s.live[c] = {}
+\* Rank 5f: one restart grant per selected round (superseded ones included),
+\* none per rebuilt child.
+RoundCharged == s.charged = s.epoch
 Safety == TypeOK /\ AtMostOneGeneration /\ PublishedIsLive /\ StrategySelection
           /\ WholeCohortBarrier /\ NoStartAfterClose /\ NoRetiredParticipant
           /\ TemporaryStartsOnce /\ DoneMeansQuiescent /\ OneStartPerRound
-          /\ FirstStartOnce
+          /\ FirstStartOnce /\ RoundCharged
 Next ==
  \/ \E c \in Children, r \in Epochs, x \in {"true","false"} : CRequest(c,r,x)
  \/ \E c \in Children, r \in Epochs, n \in Children : CSelect(c,r,n)
