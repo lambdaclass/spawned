@@ -227,6 +227,32 @@ OneForOne, OneForAll/RestForOne and nested supervision did. Release is blocked
 until they pass. Everything also keeps ordinary tests, an example, clippy and
 ThreadSanitizer.
 
+**Design-review rule (every new feature, before code).** A design doc in
+`docs/design/`, reviewed by two independent reviewers (Codex and agy, run
+without each other's findings), containing:
+
+1. **Semantics:** the guarantees it adds or changes in `semantics.md`, its
+   non-guarantees, and an Erlang/OTP alignment table with a Rust-forced reason
+   for every deviation.
+2. **A TLA+ model** with a negative control (a deliberately broken variant)
+   for every invariant, each shown to fail on its named property, and a per-PR
+   configuration that runs in about two minutes.
+3. **Trace validation:** the trace events the implementation must emit, how
+   they map to model actions, and the expected action coverage. A model not
+   checked against real code runs does not count. **Models track the code:** a
+   PR that changes modelled behaviour updates the model in the same PR.
+4. **A test plan:** for every guarantee, the check that fails if it breaks:
+   integration tests in both modes and every backend, deterministic simulator
+   tests for each race, scenario-fuzzer operations, trybuild cases for
+   compile-time guarantees, and new rows in the semantics coverage matrix.
+5. **Planted bugs:** three or four realistic implementation bugs the test plan
+   must catch, added to the planted-bug matrix.
+6. **Introspection:** how the feature shows up in `process_info`, the tree
+   snapshot, the stall watchdog and the attachable console.
+7. **Cost:** nothing on the default send, dispatch or turn path, proven by a
+   benchmark against main; anything costly is opt-in.
+8. **A client mapping:** the Ethrex and Ethlambda call sites it changes.
+
 **Production arm (rank 5c).** Trace validation checks test runs. After the
 Ethlambda canary, the same invariants (`AtMostOneGeneration`,
 `PublishedIsLive`, `BudgetBounded`, `ReverseShutdown`, and, once the base
