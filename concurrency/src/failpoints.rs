@@ -72,6 +72,13 @@ pub const SITES: &[Site] = &[
                       failing `stopped()`.",
     },
     Site {
+        name: "job.native_worker_unused",
+        has_error: false,
+        description: "Threads mode: the parked thread of a dropped, unused blocking-job \
+                      permit, before it exits. Delay shows the native slot is returned \
+                      by the drop itself, not when this thread ends.",
+    },
+    Site {
         name: "reply.close_upgraded",
         has_error: false,
         description: "The death point's close holds an upgraded deferred slot, before \

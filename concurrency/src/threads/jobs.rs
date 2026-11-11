@@ -426,6 +426,10 @@ impl<A: Actor> Context<A> {
             .spawn(move || {
                 if let Ok(task) = started.recv() {
                     task();
+                } else {
+                    // An unused permit was dropped: this thread only exits
+                    // (the slot was already returned on the dropping thread).
+                    fail_point!("job.native_worker_unused");
                 }
             })
             .map_err(PipeError::SpawnFailed)?;

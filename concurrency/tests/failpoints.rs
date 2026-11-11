@@ -1760,4 +1760,36 @@ mod native {
             "a parked blocking receiver was woken only after another caller's waker"
         );
     }
+
+    /// Final review (Codex P2 4): dropping an unused blocking-job permit
+    /// returns its native slot on the dropping thread. With the parked
+    /// thread held at its exit (`job.native_worker_unused`), the next
+    /// reservation at `MAX_NATIVE_JOBS = 1` must still succeed; the slot
+    /// used to be released only when that thread ended.
+    #[test]
+    fn an_unused_permit_returns_its_slot_without_its_thread() {
+        struct One;
+        impl NativeActor for One {
+            const MAX_NATIVE_JOBS: Option<usize> = Some(1);
+        }
+        let _scenario = FailScenario::setup();
+        failpoints::configure(
+            "job.native_worker_unused",
+            FailPoint::new(Action::Delay(Duration::from_millis(500))).times(1),
+        )
+        .unwrap();
+        let owner = One.start();
+        let ctx = owner.context();
+        let opts = spawned_concurrency::threads::JobOptions::new;
+        drop(ctx.reserve_blocking_job(opts()).unwrap());
+        wait_hits("job.native_worker_unused"); // the old thread is held
+        let again = ctx.reserve_blocking_job(opts());
+        assert!(
+            again.is_ok(),
+            "the slot waited for the unused permit's thread: {again:?}"
+        );
+        drop(again);
+        ctx.stop();
+        owner.join();
+    }
 }

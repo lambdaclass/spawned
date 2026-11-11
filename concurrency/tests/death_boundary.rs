@@ -180,33 +180,45 @@ mod tasks_mode {
                 answered: answered.clone(),
             };
             let (scheduled_tx, scheduled) = mpsc::channel();
+            let (handle_tx, handle) = mpsc::channel();
             runtime.block_on(async {
                 spawned_concurrency::__private::in_turn(&actor, move |_, ctx| {
-                    ctx.pipe(
-                        JobOptions::new(),
-                        move |job| async move {
-                            let far = spawned_concurrency::Instant::now() + LIMIT * 10;
-                            if held {
-                                // The result waits for this emit: held.
-                                job.emit_at(far, Queued(inert())).await.unwrap();
-                                scheduled_tx.send(()).unwrap();
-                                Some(payload)
-                            } else {
-                                job.emit_at(far, Waiting(payload)).await.unwrap();
-                                scheduled_tx.send(()).unwrap();
-                                job.cancelled().await;
-                                None
-                            }
-                        },
-                        |_| Queued(inert()),
-                    )
-                    .unwrap();
+                    let job = ctx
+                        .pipe(
+                            JobOptions::new(),
+                            move |job| async move {
+                                let far = spawned_concurrency::Instant::now() + LIMIT * 10;
+                                if held {
+                                    // The result waits for this emit: held.
+                                    job.emit_at(far, Queued(inert())).await.unwrap();
+                                    scheduled_tx.send(()).unwrap();
+                                    Some(payload)
+                                } else {
+                                    job.emit_at(far, Waiting(payload)).await.unwrap();
+                                    scheduled_tx.send(()).unwrap();
+                                    job.cancelled().await;
+                                    None
+                                }
+                            },
+                            |_| Queued(inert()),
+                        )
+                        .unwrap();
+                    handle_tx.send(job).unwrap();
                 })
                 .unwrap()
                 .await
                 .unwrap();
             });
             scheduled.recv_timeout(LIMIT).unwrap();
+            if held {
+                // Handshake: the work returned with its emit still
+                // scheduled, so its result is held (`JobCore::finish` stores
+                // it before execution is marked over).
+                let job = handle.recv_timeout(LIMIT).unwrap();
+                eventually("the held job finished executing", || {
+                    (!job.is_running()).then_some(())
+                });
+            }
             let (unblock, blocked) = mpsc::channel();
             let (entered_tx, entered) = mpsc::channel();
             actor.send(Block(blocked, entered_tx)).unwrap();
