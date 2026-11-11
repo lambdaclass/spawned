@@ -592,8 +592,9 @@ end (feature count 59,300, corpus 4,700 inputs), still rising slowly.
 `supervision.rs` 83%, `tasks/actor.rs` 79%, `system.rs` 73%,
 `supervision/nested.rs` 75%, `link.rs` 91%, `monitor.rs` 77%, `tasks/time.rs`
 100%; threads mode, streams and protocol `Response` are not reachable from
-the harness. TLA+ trace validation accepted every exported lifecycle (see
-the PR for the sample size).
+the harness. `fuzz/tla-sample.sh` on the minimized corpus exported 238 lifecycles of
+finished flat trees (62 OneForOne, 176 OneForAll/RestForOne) and TLC
+accepted all 238.
 
 Every failure was a harness false positive; no framework bug and no
 simulator fidelity problem was found. Each is kept in `fuzz/tests/` with the
