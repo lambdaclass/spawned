@@ -150,44 +150,56 @@ discovery. In supervision terms every connection is **Temporary**.
 
 ## Mapping
 
+Revision 2 of the design changes three things for ethrex: the supervisor
+serialises starts like OTP (so the RLPx handshake must leave `started()`),
+rejections return the arguments, and a connection whose cleanup gets stuck
+fails only itself.
+
 | ethrex today | With the dynamic supervisor |
 |---|---|
 | `.start()`, unmanaged, on the caller's runtime | `start_child(args)` on a `DynamicSupervisor<PeerConnectionServer, ConnArgs>`, placed on the `p2p` group |
-| no owner; shutdown does not stop connections | the supervisor is a shutdown unit of the existing `ActorSystem`; admitted after the peer table, so in reverse admission order connections stop before the table, all at once, each killed after its `shutdown_timeout` |
-| `Semaphore(150)` plus `_admission_permit` in actor state | `max_children = Some(150)` on an inbound supervisor; `Err(MaxChildren)` instead of `try_acquire_owned()` failing. The slot is freed after the actor's cleanup, as the permit is freed when the state drops |
-| outbound uncapped | a second supervisor for dials without `max_children` (or one supervisor if a shared cap is wanted; that would change behaviour) |
-| `ConnectionId` (process-global counter) | the connection's `ActorId` (never reused, M4) or the table's `MonitorRef` |
-| `stopped()` sends `remove_peer(node_id, connection_id)` | the peer table monitors the connection when it registers it; `Handler<Down>` removes the entry whose monitor matches. `Down` arrives exactly once whatever ends the actor (X1), including kills and skipped `stopped()` |
-| `handle_remove_peer` guard | the monitor match in `Handler<Down>` |
+| handshake inside `started()` (up to `HANDSHAKE_TIMEOUT`, 10 s) | **required change:** `started()` sends itself a `Handshake` message and returns; the handshake runs as the first handler turn, still under `HANDSHAKE_TIMEOUT`, and a failure ends the actor (a Temporary exit, not a start failure). Otherwise one silent peer would hold the supervisor's control loop, and with it every accept and dial, for the whole `startup_timeout` |
+| no owner; shutdown does not stop connections | the supervisors are owned by the system, nested under the p2p supervisor (recommended) or as roots admitted after the peer table; connections stop before the table, all at once, each killed after its `shutdown_timeout` |
+| `Semaphore(150)` plus `_admission_permit` in actor state | `max_children = Some(150)` on an inbound supervisor; `Rejected { MaxChildren, args }` returns the `ConnArgs`, so the accept loop can still send an RLPx Disconnect or just drop the stream, as today |
+| outbound uncapped | a second supervisor for dials without `max_children` |
+| `ConnectionId` (process-global counter) | the table's `MonitorRef` (or the connection's `ActorId`, never reused, M4) |
+| `stopped()` sends `remove_peer(node_id, connection_id)` | the peer table monitors the connection when it registers it; `Handler<Down>` removes the entry only if it still holds that monitor. `Down` arrives exactly once whatever ends the actor (X1), including kills and a skipped `stopped()` |
 | timed-out registration undone by an unconditional `remove_peer` | the table's monitor fires for that registration too; a monitor installed after the connection died gets `Down { NoProc }` at once (E4) |
 | connections never restarted | `DynamicChildSpec::temporary(..)`: no restarts, no budget use, args (the `TcpStream`, the `Node`) moved without `Clone` |
-| first-wins on duplicates (`new_connected_peer` returns `false`) | unchanged: domain policy in the table (rank 12 may later own it) |
-| `teardown()` mempool cleanup, `tx_broadcaster.remove_peer` | unchanged code, but see the note on `stopped()` below |
+| first-wins on duplicates | unchanged: domain policy in the table (rank 12 may later own it) |
+| `teardown()` and `tx_broadcaster.remove_peer` in `stopped()` | moved to owners that act on the `Down` (below): `stopped()` is skipped for a non-trapping connection on `terminate_child`, on shutdown and after a kill |
+| raw `tokio::spawn` outbound writer holding the socket sink ([server.rs:1530-1557](https://github.com/lambdaclass/ethrex/blob/0dd4c105f65d544b0fb5e92d8634a1699127f826/crates/networking/p2p/rlpx/connection/server.rs#L1530-L1557)) | **required change:** an owned helper (`ctx.spawn_helper`), cancelled at exit and joined within the cleanup deadline, with an explicit policy for frames still queued (drop them; the peer is being disconnected). Until then the writer can outlive the actor and keep the socket open after the supervisor freed the slot, so `max_children` would bound slots, not sockets |
 
 ### After (sketch)
 
 ```rust
-// Wiring (initializers.rs), after the peer table so connections stop first.
-let inbound = system
-    .dynamic_supervisor(
-        DynamicSupervisorConfig { max_children: Some(MAX_INBOUND_CONNECTIONS), ..Default::default() },
-        DynamicChildSpec::temporary("rlpx-inbound", &p2p_group, |_ctx, args: ConnArgs| async move {
-            Ok::<_, Infallible>(PeerConnectionServer::new(args))
-        })
-        .shutdown_timeout(Duration::from_secs(2)),
-    )?
-    .start()
-    .await?;
-let outbound = system
-    .dynamic_supervisor(DynamicSupervisorConfig::default(), /* same template */)?
-    .start()
-    .await?;
+// Wiring (initializers.rs): nested under the p2p supervisor, so a failure
+// of the connection supervisor is restarted instead of disabling accepts.
+let inbound = p2p_tree.add_dynamic_supervisor(DynamicSupervisorSpec::new(
+    "rlpx-inbound",
+    DynamicSupervisorConfig { max_children: Some(MAX_INBOUND_CONNECTIONS), ..Default::default() },
+    DynamicChildSpec::temporary("rlpx-inbound", &p2p_group, |_ctx, args: ConnArgs| async move {
+        Ok::<_, Infallible>(PeerConnectionServer::new(args))
+    })
+    .shutdown_timeout(Duration::from_secs(2)),
+))?;
+// `outbound` likewise, without max_children.
 
 // Accept loop (network.rs): the semaphore and the permit plumbing go away.
-match context.inbound.start_child(ConnArgs::receiver(context.clone(), peer_addr, stream)).await {
+// start_child resolves as soon as started() returns, which is now immediate.
+match inbound.current()?.start_child(ConnArgs::receiver(context.clone(), peer_addr, stream)).await {
     Ok(_) => {}
-    Err(StartChildError::MaxChildren) => debug!(peer = %peer_addr, "Inbound connection cap reached"),
-    Err(e) => debug!(peer = %peer_addr, "Inbound connection not started: {e}"),
+    Err(StartChildError::Rejected { reason: RejectReason::MaxChildren, args }) => {
+        debug!(peer = %peer_addr, "Inbound connection cap reached");
+        drop(args); // closes the stream, as today
+    }
+    Err(e) => debug!(peer = %peer_addr, "Inbound connection not started: {}", e.without_args()),
+}
+
+// Connection actor (server.rs): the handshake leaves started().
+#[started]
+async fn started(&mut self, ctx: &Context<Self>) {
+    let _ = ctx.send(Handshake);          // first turn, OTP's handle_continue
 }
 
 // Peer table (peer_table.rs): registration installs the monitor...
@@ -199,31 +211,33 @@ async fn handle_new_connected_peer(&mut self, msg: NewConnectedPeer, ctx: &Conte
     self.peers.insert(id, PeerData::new(/* … */).with_monitor(monitor));
     true
 }
-// ...and removal is the Down, matched by monitor, not reported by the peer.
+// ...and removal is the Down, guarded by the entry's own monitor (agy 8):
 impl Handler<Down> for PeerTableServer {
     async fn handle(&mut self, down: Down, _ctx: &Context<Self>) {
-        if let Some(id) = self.by_monitor.remove(&down.monitor_ref) {
+        let Some(id) = self.by_monitor.remove(&down.monitor_ref) else { return };
+        if self.peers.get(&id).is_some_and(|p| p.monitor == down.monitor_ref) {
             self.peers.swap_remove(&id);
             self.sessions.remove(&id);
+            self.on_connection_gone(id, down.monitor_ref); // see "Skipped teardown"
         }
     }
 }
 ```
 
-`start_child` resolves when the connection's `started()` returns. ethrex's
-`started()` runs the whole RLPx handshake today, under its own
-`HANDSHAKE_TIMEOUT`, and calls `ctx.stop()` when it fails
-([server.rs:537-620](https://github.com/lambdaclass/ethrex/blob/0dd4c105f65d544b0fb5e92d8634a1699127f826/crates/networking/p2p/rlpx/connection/server.rs#L537-L620)).
-Under the dynamic supervisor that is a first-start failure: `start_child`
-returns `FailedToStart`, the slot is freed, nothing is restarted or charged,
-which is the behaviour ethrex wants. Two consequences: the accept loop would
-wait for the handshake, and `startup_timeout` (default 5 s) must exceed
-`HANDSHAKE_TIMEOUT` (10 s) or the supervisor cuts handshakes short. Either the
-accept loop spawns the `start_child` future (it does not need the result),
-or the handshake moves from `started()` into a first self-sent message, the
-Spawned counterpart of OTP's `handle_continue`. The second is better:
-`startup_timeout` then bounds only construction, and a slow peer never holds
-a start; a failed handshake then becomes an ordinary Temporary exit.
+### Skipped teardown: who releases what
+
+`stopped()` does not run for a non-trapping connection that is terminated,
+shut down or killed (v0.8, decision 2). `trap_exit` would bring it back for
+`terminate_child` and shutdown, but not for a kill, so each resource the
+hook releases needs an owner that also hears about the death (Codex 12):
+
+| Released in `stopped()` today | Owner after the migration |
+|---|---|
+| peer-table entry and discv5 session (`remove_peer`) | the peer table's `Down` handler, guarded by its monitor |
+| tx-broadcaster index (`tx_broadcaster.remove_peer`) | forwarded by the peer table from the same `Down`, carrying the node id and the monitor reference so a stale forward cannot drop a newer connection's index; or the broadcaster monitors connections itself |
+| in-flight transaction reservations and re-requests to alternates (`teardown()`, [server.rs:449-511](https://github.com/lambdaclass/ethrex/blob/0dd4c105f65d544b0fb5e92d8634a1699127f826/crates/networking/p2p/rlpx/connection/server.rs#L449-L511)) | a guard value in the actor state whose `Drop` clears the hashes in the mempool (runs on every exit, kills included, before the slot frees); the re-request to alternates, which is async, becomes a message to the peer table sent from that `Drop`, guarded by the connection identity |
+| announcement and availability bookkeeping | same guard |
+| disconnect metrics | the `Down` handler (it has the final reason) |
 
 ### What disappears
 
@@ -233,47 +247,46 @@ About 45-60 of the ~135 hand-written lines (counted on `main`):
 |---|---|---|
 | `ConnectionId` type and `next()` ([server.rs:176-188](https://github.com/lambdaclass/ethrex/blob/0dd4c105f65d544b0fb5e92d8634a1699127f826/crates/networking/p2p/rlpx/connection/server.rs#L176-L188)) | 13 | removed |
 | `connection_id` in `Established`, `PeerData` and the handshake ([server.rs:432-437](https://github.com/lambdaclass/ethrex/blob/0dd4c105f65d544b0fb5e92d8634a1699127f826/crates/networking/p2p/rlpx/connection/server.rs#L432-L437), [handshake.rs:177](https://github.com/lambdaclass/ethrex/blob/0dd4c105f65d544b0fb5e92d8634a1699127f826/crates/networking/p2p/rlpx/connection/handshake.rs#L177), [M peer_table.rs:324-326](https://github.com/lambdaclass/ethrex/blob/fd5c57ddada097952660f6b749c739119e4de852/crates/networking/p2p/peer_table.rs#L324-L326)) | ~8 | removed (replaced by the monitor) |
-| `remove_peer` protocol method and `handle_remove_peer` with its guard ([V peer_table.rs:693-711](https://github.com/lambdaclass/ethrex/blob/0dd4c105f65d544b0fb5e92d8634a1699127f826/crates/networking/p2p/peer_table.rs#L693-L711)) | ~22 | replaced by a ~10-line `Handler<Down>` |
+| `remove_peer` protocol method and `handle_remove_peer` with its guard ([V peer_table.rs:693-711](https://github.com/lambdaclass/ethrex/blob/0dd4c105f65d544b0fb5e92d8634a1699127f826/crates/networking/p2p/peer_table.rs#L693-L711)) | ~22 | replaced by a ~12-line `Handler<Down>` |
 | `remove_peer` send in `stopped()` | ~6 | removed |
 | inbound semaphore, `try_acquire_owned`, `_admission_permit` field and parameter | ~15 | replaced by `max_children` |
 | "connections are not admitted" comment and unmanaged `.start()` | | connections owned by the system |
 
-What stays: first-wins registration (domain policy), `teardown()`'s mempool
-cleanup, the tx-broadcaster index, `target_peers`. #7435's integration test
-(171 lines) stays as a regression test, now exercising the monitor match.
+Added: the `Handshake` first message (moving existing code), the writer as an
+owned helper, the teardown guard and the broadcaster forward. Net lines are
+roughly even; what changes is that every path out of a connection is
+covered. #7435's integration test (171 lines) stays as a regression test,
+now exercising the monitor guard.
 
 ### Bugs and gaps it closes
 
 - **Stale entries when `stopped()` does not run** (panic in `started()`
-  today; kills and supervisor shutdown under v0.8): the `Down` still comes.
-- **The #7435 class** (an old connection's cleanup removing a new entry):
-  impossible by construction, because removal is keyed by the monitor of the
-  registered connection, not by node id.
-- **Unowned connections at shutdown**: they are stopped, within the system
-  deadline, before the peer table, instead of dying with the process.
-- **Placement**: connections run on the `p2p` group instead of whichever
-  runtime started them.
+  today; kills, `terminate_child` and shutdown under v0.8): the `Down` still
+  comes.
+- **The #7435 class**: removal is keyed by the registered connection's
+  monitor and re-checked against the entry, not by node id.
+- **Unowned connections at shutdown**: stopped within the system deadline,
+  before the peer table, instead of dying with the process.
+- **Unowned writer tasks**: joined before the slot frees.
+- **Placement**: connections run on the `p2p` group.
 
 ### Things to watch in a migration
 
-- **`stopped()` is skipped on supervisor shutdown under v0.8** for a
-  non-trapping actor. `teardown()` and `tx_broadcaster.remove_peer` live in
-  `stopped()`; at node shutdown that is harmless (everything is going away),
-  but on a `kill` during normal operation (a connection stuck past its
-  `shutdown_timeout`) the broadcaster index would leak. Fix: the broadcaster
-  also monitors connections, or the peer table forwards removal from its
-  `Down` handler. Same reasoning as the exit-signals migration note.
-- **Caps change meaning slightly**: the semaphore counted live actor states;
-  `max_children` counts slots until owned cleanup ends (helpers included).
-  For these actors (no helpers) that is the same.
-- **Rejected arguments are dropped**: on `MaxChildren` the `TcpStream` inside
-  `ConnArgs` is dropped, closing the socket without an RLPx Disconnect,
-  exactly as today. Returning the arguments with the error is open question
-  7 of the design.
-- **Budget**: Temporary children never consume it, so the supervisor fails
-  only on a stuck cleanup or a closed group. A connection whose cleanup
-  hangs past twice its `shutdown_timeout` would fail the whole connection
-  supervisor; set `shutdown_timeout` with that in mind.
+- **Serialised starts.** Anything slow left in `started()` holds every
+  accept and dial. Keep `started()` to state setup and the self-send.
+- **Stuck cleanup.** A connection's own exit gets one `shutdown_timeout`
+  for its owned cleanup (E3 row 4, no kill); a terminated or shut-down one
+  gets the signal, the kill after `shutdown_timeout` and a second interval.
+  A connection that misses them is stuck: its slot stays counted until its
+  code returns, it is reported, and **nothing else is affected**, since
+  connections are Temporary (design: stuck children). Only budget
+  exhaustion (impossible for Temporary children) or a closed group fails
+  the supervisor; nesting it under the p2p supervisor still restarts it in
+  that case instead of leaving accepts disabled (agy P0).
+- **Caps count slots until owned cleanup ends**, writer helper included,
+  so a slow socket close keeps its slot a little longer than the permit did.
+- **Rejected arguments come back**, so the accept loop decides what to do
+  with the stream.
 
 ## ethlambda
 
