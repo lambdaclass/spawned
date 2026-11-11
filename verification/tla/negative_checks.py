@@ -249,6 +249,8 @@ DEFERRED_CONTROLS = [
     ("MCDeferredJobsEmits", "NoCancelFence", "NoStaleAfterCancel"),
     ("MCDeferredJobsEmits", "EmitAfterTerminal", "TerminalLast"),
     ("MCDeferredJobsEmits", "NoEmitCredit", "EmitCreditsBounded"),
+    ("MCDeferredJobsHeld", "EarlyCredit", "HeldCounted"),
+    ("MCDeferredJobsHeld", "HeldDeadlineLost", "DeadlineArmedWhileHeld"),
 ]
 
 

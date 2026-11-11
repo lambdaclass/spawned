@@ -647,8 +647,11 @@ any emit. To keep the terminal message last, the work's result is **held**
 while scheduled emits remain: the last one to fire enqueues it. Cancellation
 drops the scheduled emits and a held result; a job deadline takes the
 notification as usual (deadlines are hard), and later scheduled emits are
-then dropped at their instant. Not modelled in `DeferredJobs.tla`; Loom
-model `scheduled_emit_vs_finish_and_cancel`.
+then dropped at their instant. Modelled in `DeferredJobs.tla`
+(`MCDeferredJobsHeld`: scheduled emits, the held result, the deadline taking
+it and the job's credit kept until the terminal message; controls
+`EarlyCredit` and `HeldDeadlineLost`); Loom model
+`scheduled_emit_vs_finish_and_cancel`.
 
 **Fencing at dispatch.** Every job message carries the job's `JobState` and
 the owner's `ActorId`. The run loop drops it before the handler runs if:

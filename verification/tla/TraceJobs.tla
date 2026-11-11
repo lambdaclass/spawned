@@ -21,10 +21,11 @@
 (*   Dispatch(j)     the mailbox head, of kind x, fenced or delivered      *)
 (*                                                                         *)
 (* One trace is one owner instance (MaxGen = 1) and at most one key. The   *)
-(* model's permit bound is not checked (JobBound = J): the code releases   *)
-(* a job's credit just before Finish, and rejected admissions are not      *)
-(* model actions. The trace is accepted iff some behavior consumes the     *)
-(* whole log (TLC reports TraceIncomplete violated).                       *)
+(* model's permit bound is not checked (JobBound = J): rejected            *)
+(* admissions are not model actions. Delayed emits (emit_at) are not       *)
+(* recorded; the recorded scenarios use none (MCDeferredJobsHeld checks    *)
+(* them). The trace is accepted iff some behavior consumes the whole log   *)
+(* (TLC reports TraceIncomplete violated).                                 *)
 (***************************************************************************)
 EXTENDS DeferredJobs, TLC
 

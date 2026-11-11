@@ -14,7 +14,7 @@ this fits with Loom, Shuttle, Miri, ThreadSanitizer and mutation testing.
 | `Coordinator.tla`, `MCCoordinator.tla/.cfg` | System shutdown coordinator: ordered stop of admitted roots, panic fallback that signals all remaining roots, records failure and retains runtime ownership until joins; ordered-shutdown invariants, cooperative cleanup liveness and four negative mutations. |
 | `NestedSupervision.tla`, `MCNested.tla/.cfg` | Dynamic subtree ownership and shutdown delivery; parent scope completion waits for descendant completion. Bounded three-node/two-generation model with fair cleanup. |
 | `DeferredReplies.tla`, `MCDeferredReplies*.tla/.cfg` | Rank 11 design model (not implemented), part 1: reply slots, send-time deadlines with shortening, deferral credits shared by a token and its first linked job, the exiting phase with exit-pending drops (unwound or dropped while exiting, answered at death with the final reason), a stuck phase (cleanup deadline passed while `stopped()` runs: nothing closed early, death later or never), death, and downstream request cleanup. Fourteen named negative controls. |
-| `DeferredJobs.tla`, `MCDeferredJobs*.tla/.cfg` | Rank 11 design model, part 2: pipe jobs with separate execution, cancellation and notification states; keyed replacement including notified jobs; optional job deadlines; a FIFO mailbox with emit credits and the terminal message last; `ActorId` fencing. `MCDeferredJobsEmits` is the fast configuration with emits. Nine named negative controls. |
+| `DeferredJobs.tla`, `MCDeferredJobs*.tla/.cfg` | Rank 11 design model, part 2: pipe jobs with separate execution, cancellation and notification states; keyed replacement including notified jobs; optional job deadlines; a FIFO mailbox with emit credits and the terminal message last; `ActorId` fencing. `MCDeferredJobsEmits` is the fast configuration with emits; `MCDeferredJobsHeld` the one with delayed emits (`emit_at`) and held results (completion, held notification, scheduled emits and credit ownership as separate steps). Eleven named negative controls. |
 | `Lifecycle.tla`, `MCLifecycle{,Live,Fence,Deep,LiveDeep,WideDeep}.tla/.cfg` | Base actor lifecycle as proposed for v0.8 ([design](../../docs/design/otp-exit-signals.md)): links, monitors, `trap_exit`, exit signals (`Killed`, ignored `Normal`, `NoProc`, parent exits), administrative stops, requests around death, `Exit`/`Down` ordering. Seventeen negative-control faults (17 safety checks, 2 liveness checks): the v0.7 exit-signal behaviours (direct stops ignoring `trap_exit`, kills ending `Kill`, unfenced `unlink`/`demonitor`, real reasons for late registrations, `stopped()` after kills and untrapped signals, late signals ignored during exit), the PR #182/#185 bugs, early exit errors, kill and panic precedence, runtime-drop reasons, early notification, a split death point and a parent exit reaching `exit_received`. Per PR: `MCLifecycle` (7.5M states, fewer reasons, where the safety controls run), `MCLifecycleFence`, `MCLifecycleLive`; weekly: `MCLifecycleWideDeep` (the former 43M-state per-PR instance), `MCLifecycleDeep`, `MCLifecycleLiveDeep`. |
 | `TraceCohorts.tla`, `TraceNested.tla` | Policy and ownership projections of real cohort/nested Rust executions. |
 | `trace_check.py`, `negative_checks.py` | Replay recorded traces; deliberately wrong selections, premature resume/join and broken propagation must be rejected or produce counterexamples. |
@@ -615,6 +615,8 @@ exactly the property it targets:
 | `DeferredJobs` (`MCDeferredJobsEmits`) | `NoCancelFence` | `NoStaleAfterCancel` |
 | `DeferredJobs` (`MCDeferredJobsEmits`) | `EmitAfterTerminal` | `TerminalLast` |
 | `DeferredJobs` (`MCDeferredJobsEmits`) | `NoEmitCredit` | `EmitCreditsBounded` |
+| `DeferredJobs` (`MCDeferredJobsHeld`) | `EarlyCredit` (a held result returns its credit when the work ends) | `HeldCounted` |
+| `DeferredJobs` (`MCDeferredJobsHeld`) | `HeldDeadlineLost` (the deadline cannot take a held result) | `DeadlineArmedWhileHeld` |
 
 Measured 2026-11-10 (TLC 2.19, fede; the two `MCDeferredReplies` rows on
 2026-11-11, after the exit-pending change):
@@ -624,10 +626,11 @@ Measured 2026-11-10 (TLC 2.19, fede; the two `MCDeferredReplies` rows on
 | `MCDeferredReplies` (fast: 2 requests, `BoundA` 2, `BoundB` 1, clock 2; safety and liveness) | 4,035,345 | 21,287,403 | 33 | 2 min 19 s, 4 workers |
 | `MCDeferredRepliesDeep` (clock 3; safety) | 11,016,668 | 58,096,711 | 34 | 55 s, 4 workers |
 | `MCDeferredJobs` (fast: 3 jobs, 2 keyed, 2 permits, 2 instances, no emits; safety and liveness) | 229,070 | 487,283 | 17 | 5 s, 8 workers |
-| `MCDeferredJobsEmits` (fast: 2 keyed jobs, 1 instance, 2 emits each, 1 credit; safety and liveness) | 20,422 | 37,220 | 18 | 1 s, 8 workers |
-| `MCDeferredJobsDeep` (3 jobs, 2 instances, 1 emit each; safety) | 5,876,658 | 12,792,039 | 23 | 25 s, 12 workers |
+| `MCDeferredJobsEmits` (fast: 2 keyed jobs, 1 instance, 2 emits each, 1 credit; safety and liveness) | 24,842 | 50,944 | 18 | 1 s, 2 workers |
+| `MCDeferredJobsHeld` (fast: 3 unkeyed jobs, 2 permits, 1 instance, 1 emit or scheduled emit each, 1 credit; safety and liveness) | 1,946,047 | 6,230,609 | 22 | 2 min, 2 workers |
+| `MCDeferredJobsDeep` (3 jobs, 2 instances, 1 emit or scheduled emit each; safety) | 7,980,942 | 19,676,218 | 23 | 82 s, 2 workers |
 
-All 22 named controls find their counterexample, each in a few seconds.
+All 24 named controls find their counterexample, each in a few seconds.
 
 ### Job trace validation
 
