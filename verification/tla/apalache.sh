@@ -195,7 +195,9 @@ for model in $models; do
         # without signalling the remaining targets (JoinAfterAllSignalled);
         # RollbackReady: the #209 bug, a ready root stopped by its startup
         # rollback outside the coordinator's order (OrderedShutdown).
-        for fault in ReleaseEarly ForgetFailure ForgetSignal RollbackReady; do
+        # NoKillAtGrace / KillEarly: v0.8 grace-expiry kill missing, or sent
+        # before the grace expired (GraceKillsRemaining, KillOnlyAtGrace).
+        for fault in ReleaseEarly ForgetFailure ForgetSignal RollbackReady NoKillAtGrace KillEarly; do
           mutate "$module" "$fault" "$module.tla" \
             "s/OVERRIDE_Fault == \"None\"/OVERRIDE_Fault == \"$fault\"/" IndInv 4
         done

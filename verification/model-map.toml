@@ -113,9 +113,6 @@ code = [
     "concurrency/src/mailbox_admission.rs",
     "concurrency/src/lifecycle_trace.rs",
 ]
-[models.Lifecycle.tlc_only]
-reason = "models the proposed v0.8 exit-signal contract; the code on main is v0.7, so there are no lifecycle trace events yet"
-tracking = "PR #240 adds LifeEvent and TraceLifecycle.tla; remove this entry once it merges"
 
 [models.DeferredReplies]
 # Rank 11: reply slots, deadlines, deferral credits, owner exit and death.
@@ -128,9 +125,6 @@ code = [
     "concurrency/src/reply/**",
     "concurrency/src/lifecycle_trace.rs",
 ]
-[models.DeferredReplies.tlc_only]
-reason = "rank 11 design model; the implementation is not on main yet"
-tracking = "PR #240 adds reply events and TraceReplies.tla; remove this entry once it merges"
 
 [models.DeferredJobs]
 # Rank 11: pipe jobs, keyed replacement, ActorId and cancellation fencing,
@@ -146,9 +140,6 @@ code = [
     "concurrency/src/threads/jobs.rs",
     "concurrency/src/lifecycle_trace.rs",
 ]
-[models.DeferredJobs.tlc_only]
-reason = "rank 11 design model; the implementation is not on main yet"
-tracking = "PR #240 adds JobEvent and TraceJobs.tla; remove this entry once it merges"
 
 [models.DynamicSupervisor]
 # Rank 12a design model (PR #245); no code yet.
@@ -221,6 +212,8 @@ emitters = [
 specs = ["verification/tla/TraceLifecycle.tla"]
 [trace.rejected]
 Held = "a signal held while started() runs (phase 0) is outside Lifecycle.tla; the trace is rejected"
+[trace.unlogged]
+EarlyFire = "fault device only (Fault = EarlyNotify: links and monitors fire when exit begins); no code path takes it"
 [trace.translated]
 Spawn = { into = [], why = "trace_check.py numbers actors from Spawn events" }
 Send = { into = ["Request", "Enqueue"], why = "trace_check.py splits Send into Request and Enqueue" }

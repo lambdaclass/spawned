@@ -531,6 +531,10 @@ def main():
     model_fault("MCCoordinator", "ForgetSignal", args.tlc, temporal=True,
                 drop=("JoinAfterAllSignalled",))
     model_fault("MCCoordinator", "RollbackReady", args.tlc, invariant="OrderedShutdown")
+    # v0.8 grace expiry: no kill (a stuck trapping root holds the join), or a
+    # kill in the ordered loop (stopped() skipped before the grace expired).
+    model_fault("MCCoordinator", "NoKillAtGrace", args.tlc, invariant="GraceKillsRemaining")
+    model_fault("MCCoordinator", "KillEarly", args.tlc, invariant="KillOnlyAtGrace")
     model_fault("MCNested", "Join", args.tlc)
     # A Temporary child restarted after a panic (MCSupervision has no
     # Temporary child, so only MCSupervisionTemporary can catch this).
