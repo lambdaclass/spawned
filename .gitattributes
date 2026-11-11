@@ -11,3 +11,7 @@ legacy/research/client-observations/**/figures/** linguist-generated=true
 legacy/docs/reviews/dedicated-runtime-evidence/** linguist-generated=true
 legacy/verification/evidence/** linguist-generated=true
 legacy/verification/evidence/**/*.log whitespace=-blank-at-eof
+
+# Every PR adds a bullet under `## Unreleased`; union merge keeps both sides instead of
+# conflicting. Local git and rebases honour it; GitHub's server-side merges may not.
+CHANGELOG.md merge=union

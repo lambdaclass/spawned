@@ -6,6 +6,12 @@
   requires: stable API rules, a complete semantics contract, production-safe
   defaults, introspection, determinism, release gates, production proof and
   documentation).
+- Toolchain pinned to CI's 1.93.0 in `rust-toolchain.toml`, so local, fede
+  and agent builds match CI; the fuzz job selects its nightly explicitly.
+  `CHANGELOG.md` merges with git's union driver. ROADMAP: the design-review
+  rule now requires a test plan, trace validation against real code,
+  planted bugs, an introspection hook and a no-cost benchmark for every new
+  feature.
 - Tests: coverage follow-ups. `restart_modes_distinguish_normal_shutdown_and_panic`
   now sends a real `Normal` exit; a per-PR `MCSupervisionTemporary` TLC
   configuration makes `TemporaryStartsOnce` non-vacuous, with a negative
