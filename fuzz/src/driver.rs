@@ -1780,7 +1780,7 @@ fn budget_checks(world: &World) {
     let calls = s.calls.clone();
     let mut found = Vec::new();
     let mut seen: HashMap<(usize, String), usize> = HashMap::new();
-    let mut retries: Vec<Vec<Duration>> = vec![Vec::new(); s.sups.len()];
+    let mut retries: Vec<Vec<(Duration, &str)>> = vec![Vec::new(); s.sups.len()];
     for c in &calls {
         let n = seen.entry((c.inst, c.slot.clone())).or_default();
         *n += 1;
@@ -1791,38 +1791,69 @@ fn budget_checks(world: &World) {
                     c.slot.clone(),
                 ));
             }
-            retries[c.inst].push(c.at);
+            retries[c.inst].push((c.at, &c.slot));
         }
     }
-    for (inst, times) in retries.iter().enumerate() {
+    for (inst, log) in retries.iter().enumerate() {
         let SupInst {
             max_restarts,
             window,
             cohort,
             ..
         } = s.sups[inst].clone();
-        // V5 charges restart actions: a OneForOne retry is one, a cohort
-        // round is one however many children it rebuilds (at most all of
-        // them), so the factory log bounds a cohort supervisor's rebuilds by
-        // `max_restarts` times its children.
-        let children = calls
-            .iter()
-            .filter(|c| c.inst == inst)
-            .map(|c| &c.slot)
-            .collect::<std::collections::HashSet<_>>()
-            .len()
-            .max(1);
-        let bound = if cohort {
-            max_restarts * children
-        } else {
-            max_restarts
-        };
-        for (i, t) in times.iter().enumerate() {
-            let in_window = times[..=i].iter().filter(|u| *t - **u < window).count();
-            if in_window > bound {
+        if !cohort {
+            // A OneForOne retry is one action, stamped at its admission:
+            // the factory call's time is the grant's.
+            for (i, (t, _)) in log.iter().enumerate() {
+                let in_window = log[..=i].iter().filter(|(u, _)| *t - *u < window).count();
+                if in_window > max_restarts {
+                    found.push((
+                        "V5: more restarts than the budget within one window",
+                        format!("instance {inst}: {in_window} > {max_restarts} in {window:?}"),
+                    ));
+                    break;
+                }
+            }
+            continue;
+        }
+        // A cohort round is one action however many children it rebuilds,
+        // charged when it is selected, before the cohort stops and the
+        // backoff: its rebuilds come later by an unbounded delay, so their
+        // times are not the grants'. What the factory log does fix: a round
+        // calls each slot at most once and only while it is current, so the
+        // next round's grant follows its calls. Split the log where a slot
+        // repeats: each segment's first call starts a distinct round whose
+        // grant lies after the previous segment's first call and no later
+        // than its own first call (a merged segment only undercounts).
+        // `max_restarts + 1` rounds forced into less than one window break
+        // V5. (Retries before the tree is ready are per-child grants at
+        // their call, inside the same bounds.)
+        let mut firsts: Vec<Duration> = Vec::new();
+        let mut open: Vec<&str> = Vec::new();
+        for (t, slot) in log {
+            if firsts.is_empty() || open.contains(slot) {
+                firsts.push(*t);
+                open.clear();
+            }
+            open.push(slot);
+        }
+        for i in 0..firsts.len() {
+            let Some(last) = firsts.get(i + max_restarts) else {
+                break;
+            };
+            let earliest = if i == 0 {
+                Duration::ZERO
+            } else {
+                firsts[i - 1]
+            };
+            if *last - earliest < window {
                 found.push((
                     "V5: more restarts than the budget within one window",
-                    format!("instance {inst}: {in_window} > {bound} in {window:?}"),
+                    format!(
+                        "instance {inst}: {} rounds within {:?} < {window:?}",
+                        max_restarts + 1,
+                        *last - earliest
+                    ),
                 ));
                 break;
             }
