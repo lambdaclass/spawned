@@ -586,6 +586,8 @@ def main():
     model_fault("MCCoordinator", "ReleaseEarly", args.tlc)
     model_fault("MCCoordinator", "ForgetFailure", args.tlc)
     model_fault("MCCoordinator", "ForgetSignal", args.tlc, invariant="JoinAfterAllSignalled")
+    # A root left unsignalled is also left unkilled at grace expiry: drop
+    # GraceKillsRemaining too, so the run reaches the liveness check.
     model_fault("MCCoordinator", "ForgetSignal", args.tlc, temporal=True,
                 drop=("JoinAfterAllSignalled", "GraceKillsRemaining"))
     model_fault("MCCoordinator", "RollbackReady", args.tlc, invariant="OrderedShutdown")
