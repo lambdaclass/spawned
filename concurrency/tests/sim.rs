@@ -59,25 +59,30 @@ impl Message for Crash {
     type Result = ();
 }
 
-/// Records started/stopped. With `crash_after: Some(k)`, `started()` spawns a
-/// task that yields `k` times and then sends the actor a panicking message,
-/// so it dies a few scheduling steps after it publishes readiness.
+/// Records started/stopped. With `fail_start_after: Some(k)`, `started()`
+/// yields `k` times and then panics, so the child's first start fails and
+/// the supervisor's initial start aborts (S1 in
+/// docs/design/otp-exit-signals.md; a crash after readiness would instead be
+/// processed after the initial start completes). With `trap`, the actor traps
+/// exits, so the system's or supervisor's shutdown (the parent's exit signal)
+/// still runs `stopped()` (E3).
 struct Node {
     id: u32,
-    crash_after: Option<u32>,
+    fail_start_after: Option<u32>,
+    trap: bool,
     log: Log,
 }
 impl Actor for Node {
     async fn started(&mut self, ctx: &Context<Self>) {
         push(&self.log, format!("started:{}", self.id));
-        if let Some(yields) = self.crash_after {
-            let actor = ctx.actor_ref();
-            drop(spawned_rt::tasks::spawn(async move {
-                for _ in 0..yields {
-                    sim::yield_now().await;
-                }
-                let _ = actor.send(Crash);
-            }));
+        if self.trap {
+            ctx.trap_exit(true);
+        }
+        if let Some(yields) = self.fail_start_after {
+            for _ in 0..yields {
+                sim::yield_now().await;
+            }
+            panic!("injected first-start failure");
         }
     }
     async fn stopped(&mut self, _: &Context<Self>) {
@@ -132,7 +137,8 @@ async fn shutdown_order(log: Log) -> Vec<u32> {
     let group = system.async_group("sim-order", 2).unwrap();
     let start = |id| Node {
         id,
-        crash_after: None,
+        fail_start_after: None,
+        trap: true,
         log: log.clone(),
     };
     for id in 0..2 {
@@ -147,7 +153,8 @@ async fn shutdown_order(log: Log) -> Vec<u32> {
         async move {
             Ok::<_, String>(Node {
                 id: 100,
-                crash_after: None,
+                fail_start_after: None,
+                trap: true,
                 log,
             })
         }
@@ -224,7 +231,8 @@ async fn initial_failure(log: Log, yields: u32) -> Placement {
                     async move {
                         Ok::<_, String>(Node {
                             id: index,
-                            crash_after: (index == 0).then_some(yields),
+                            fail_start_after: (index == 0).then_some(yields),
+                            trap: false,
                             log,
                         })
                     }
@@ -366,7 +374,9 @@ fn thread_groups_are_rejected() {
 /// PR #204 finding 2, pinned: before the v0.7.1 lifecycle fixes (PR #209),
 /// seed 12 left the launched but never-started child `c1` Failed and seed 2
 /// left it Stopped. With PR #209 a failed initial placement finishes every
-/// never-started child as Failed, so both seeds must now agree.
+/// never-started child as Failed, so both seeds must now agree. (Since S1 the
+/// injected failure is `c0`'s first start, so the seeds select different
+/// schedules than in v0.7; the expected states are unchanged.)
 #[test]
 fn pr204_never_started_child_state_pinned_seeds() {
     for (seed, expected) in [(12, "Failed"), (2, "Failed")] {
@@ -424,7 +434,8 @@ async fn restart_window(out: Arc<Mutex<Option<WindowRun>>>) {
         .add(ChildSpec::new("flappy", &group, |_| async {
             Ok::<_, String>(Node {
                 id: 0,
-                crash_after: None,
+                fail_start_after: None,
+                trap: false,
                 log: Log::default(),
             })
         }))

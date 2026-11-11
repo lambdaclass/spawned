@@ -205,38 +205,22 @@ async fn lost_update_three_workers() {
 // terminal state depends on which of two finishes runs last.
 // ---------------------------------------------------------------------------
 
-struct Crash;
-impl Message for Crash {
-    type Result = ();
-}
 struct Node {
-    crash: bool,
+    fail_start: bool,
 }
-/// As in `tests/sim.rs` with zero yields: `started()` spawns a task that sends
-/// the actor a panicking message.
+/// As in `tests/sim.rs` with zero yields: `started()` panics, so the first
+/// child's first start fails and the initial start aborts (S1 in
+/// docs/design/otp-exit-signals.md).
 impl Actor for Node {
-    async fn started(&mut self, ctx: &Context<Self>) {
-        if self.crash {
-            let actor = ctx.actor_ref();
-            drop(spawned_rt::tasks::spawn(async move {
-                let _ = actor.send(Crash);
-            }));
+    async fn started(&mut self, _: &Context<Self>) {
+        if self.fail_start {
+            panic!("injected first-start failure");
         }
-    }
-}
-impl Handler<Crash> for Node {
-    async fn handle(
-        &mut self,
-        _: Crash,
-        _reply: spawned_concurrency::reply::PendingReply<'_, ()>,
-        _: &Context<Self>,
-    ) {
-        panic!("injected crash after readiness");
     }
 }
 
 /// States (`Debug` of the state, generation) of three OneForAll children
-/// whose first child crashes right after `started()`.
+/// whose first child fails its first start.
 async fn initial_failure() -> Vec<(String, u64)> {
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("explore-initial", 2).unwrap();
@@ -258,7 +242,9 @@ async fn initial_failure() -> Vec<(String, u64)> {
         .map(|index| {
             tree.add(
                 ChildSpec::new(format!("c{index}"), &group, move |_| async move {
-                    Ok::<_, String>(Node { crash: index == 0 })
+                    Ok::<_, String>(Node {
+                        fail_start: index == 0,
+                    })
                 })
                 .restart(RestartMode::Permanent),
             )
