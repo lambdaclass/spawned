@@ -247,29 +247,38 @@ START_CONTROLS = [
     ("MCStart", "NoInherit", "InheritedPlacement"),
     ("MCStart", "LinkAfterStarted", "LinkBeforeStarted"),
     ("MCStart", "DoubleRegister", "NameUnique"),
-    ("MCStart", "LateUnregister", "NameReleasedAtDeath"),
-    ("MCStart", "AbortLeaksLink", "AbortInvisible"),
-    ("MCStart", "EarlyFailAck", "FailureAfterDeath"),
-    ("MCStart", "AckBeforeStarted", "AckMeansStarted"),
+    ("MCStart", "LateUnregister", "NameFreeBeforeObservation"),
+    ("MCStart", "UnregisterAtDeath", "NoOverlapOnReuse"),
+    ("MCStart", "SplitCommit", "AbortInvisible"),
+    ("MCStart", "EarlyFailAck", "FailureAfterPublication"),
+    ("MCStart", "AckBeforeStarted", "ResultMatchesCommit"),
+    ("MCStart", "ErrorAsOk", "ResultMatchesCommit"),
+    ("MCStart", "DivertAfterReady", "ReadyIsFinal"),
+    ("MCStart", "ReadyAfterClose", "ReadyOnlyWhileOpen"),
     ("MCStart", "NoMonitorFlush", "FailureFlushed"),
     ("MCStart", "NoLinkFlush", "FailureFlushed"),
-    ("MCStart", "KillBeforeUnlink", "TimeoutContained"),
     ("MCStart", "LinkCheckLate", "NoEdgeToDeadParent"),
     ("MCStart", "AdmitClosed", "AdmittedOnlyOpen"),
     ("MCStart", "IgnoreCap", "CapacityRespected"),
     ("MCStart", "AbandonDropsNotice", "AbandonedNoticeDelivered"),
+    ("MCStart", "DoubleNotice", "NoticeOnce"),
+    ("MCStartTimeout", "TimerIgnoresCommit", "TimeoutNeverKillsReady"),
+    ("MCStartTimeout", "KillBeforeUnlink", "TimeoutContained"),
     ("MCStartContinue", "ContinueQueued", "ContinueFirst"),
+    ("MCStartScope", "EarlyGenDone", "GenDoneMeansOwnedDone"),
 ]
 START_TEMPORAL_CONTROLS = [
-    ("DropHeld", "ParentExitReachesChild"),
+    ("MCStartLive", "DropHeld", "ParentExitReachesChild"),
+    ("MCStartLive", "NoAnswerIgnore", "StartAnswered"),
+    ("MCStartScope", "NoScopeKill", "OwnedScopeFinishes"),
 ]
 
 
 def start_controls(tlc):
     for module, fault, invariant in START_CONTROLS:
         named_fault(module, fault, invariant, tlc)
-    for fault, prop in START_TEMPORAL_CONTROLS:
-        named_temporal("MCStartLive", fault, prop, tlc)
+    for module, fault, prop in START_TEMPORAL_CONTROLS:
+        named_temporal(module, fault, prop, tlc)
 
 
 def main():
