@@ -566,3 +566,38 @@ impl<A: Actor> Context<A> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::threads::ActorStart;
+
+    struct Owner;
+    impl Actor for Owner {}
+    struct Note;
+    impl Message for Note {
+        type Result = ();
+    }
+    impl Handler<Note> for Owner {
+        fn handle(&mut self, _: Note, _: PendingReply<'_, ()>, _: &Context<Self>) {}
+    }
+
+    /// Review P1 (Codex 13), threads mode: see the tasks-mode test.
+    #[test]
+    fn a_refused_emit_returns_its_credit_once() {
+        let owner = Owner.start();
+        for credits in [1, u16::MAX] {
+            let state = JobState::new(owner.id(), credits);
+            let job = JobCtx {
+                state: state.clone(),
+                ctx: owner.context(),
+            };
+            state.acquire_blocking().unwrap();
+            state.cancel();
+            assert_eq!(job.enqueue(Note), Err(JobGone));
+            assert_eq!(state.emit_credits(), credits, "credit returned twice");
+        }
+        owner.context().stop();
+        owner.join();
+    }
+}

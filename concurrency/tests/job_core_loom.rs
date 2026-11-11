@@ -181,6 +181,17 @@ enum Msg {
     Terminal(u32),
 }
 
+/// The production emit credit guard (`EmitCredit`): returns the credit when
+/// dropped unless it travelled with an enqueued message.
+struct CreditGuard(Option<JobArc<TestJob>>);
+impl Drop for CreditGuard {
+    fn drop(&mut self) {
+        if let Some(job) = self.0.take() {
+            job.core.return_emit_credit();
+        }
+    }
+}
+
 #[derive(Default)]
 struct Mailbox(Mutex<Vec<Msg>>);
 impl Mailbox {
@@ -325,8 +336,14 @@ fn emit_vs_notification_and_cancel() {
                 loom::thread::spawn(move || -> Result<(), JobGone> {
                     for i in 0..2 {
                         job.core.acquire_blocking()?;
+                        // The production credit guard: it moves into the
+                        // envelope when enqueued and returns the credit when
+                        // dropped otherwise (the only owner of the return).
+                        let credit = CreditGuard(Some(job.clone()));
                         job.core
                             .enqueue_emit(|| {
+                                let mut credit = credit;
+                                credit.0 = None; // travels with the message
                                 mailbox.push(Msg::Emit(0, i));
                                 Ok::<(), ()>(())
                             })

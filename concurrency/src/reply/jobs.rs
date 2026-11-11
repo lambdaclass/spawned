@@ -423,6 +423,12 @@ impl JobState {
         self.core.is_running()
     }
 
+    /// Free emit credits (tests).
+    #[cfg(test)]
+    pub(crate) fn emit_credits(&self) -> u16 {
+        self.core.emit_credits()
+    }
+
     /// Execution of a cancelled async job ended without a notification (the
     /// model's `Finish` when the notification was suppressed).
     #[cfg(feature = "async")]

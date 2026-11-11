@@ -910,3 +910,42 @@ where
 {
     Box::new(move |outcome| done(outcome, token))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tasks::ActorStart;
+
+    struct Owner;
+    impl Actor for Owner {}
+    struct Note;
+    impl Message for Note {
+        type Result = ();
+    }
+    impl Handler<Note> for Owner {
+        async fn handle(&mut self, _: Note, _: PendingReply<'_, ()>, _: &Context<Self>) {}
+    }
+
+    /// Review P1 (Codex 13): an emit refused after its credit was taken
+    /// (the job was cancelled in between) returns that credit once, through
+    /// its guard. It used to be returned by the refusal and again by the
+    /// guard, so the job ended with more credits than it was given (and
+    /// `u16::MAX` credits overflowed).
+    #[tokio::test]
+    async fn a_refused_emit_returns_its_credit_once() {
+        let owner = Owner.start();
+        for credits in [1, u16::MAX] {
+            let state = JobState::new(owner.id(), credits);
+            let job = JobCtx {
+                state: state.clone(),
+                ctx: owner.context(),
+            };
+            state.acquire_blocking().unwrap();
+            state.cancel();
+            assert_eq!(job.enqueue(Note), Err(JobGone));
+            assert_eq!(state.emit_credits(), credits, "credit returned twice");
+        }
+        owner.context().stop();
+        owner.join().await;
+    }
+}

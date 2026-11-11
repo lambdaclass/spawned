@@ -234,18 +234,19 @@ impl JobCore {
     }
 
     /// Emit step 2: under the job's lock, enqueue unless the job is
-    /// cancelled or notified (then the credit returns here). An envelope the
-    /// mailbox refused comes back to be dropped after the lock is released;
-    /// its credit guard returns the credit then.
+    /// cancelled or notified. The caller's credit guard is the only owner of
+    /// the credit's return: it travels inside `enqueue` and returns the
+    /// credit when that closure is dropped uncalled (refused here) or when
+    /// an envelope the mailbox refused is dropped after the lock is released.
     pub(crate) fn enqueue_emit<X>(
         &self,
         enqueue: impl FnOnce() -> Result<(), X>,
     ) -> Result<(), (JobGone, Option<X>)> {
-        let mut inner = lock(&self.inner);
+        let inner = lock(&self.inner);
         if !inner.accepting() {
-            inner.emit_credits += 1;
             drop(inner);
-            self.emitters.notify_all();
+            // `enqueue` (and the credit guard it owns) drops here, unlocked.
+            drop(enqueue);
             return Err((JobGone, None));
         }
         enqueue().map_err(|unsent| (JobGone, Some(unsent)))
