@@ -1141,9 +1141,10 @@ Each step is a PR with its tests, docs and CHANGELOG entry.
    `which_children`/`count_children`/`tree()` with the shared types, crash and
    supervisor events, `get_state`/`get_status`/`Inspect`,
    `ActorError::CallbackFailed`.
-2. Tier 1: activity slot, interner, coarse clock, mailbox counters, actor and
-   system tables, `processes()`, `snapshot()`, `render_json`; fold
-   `diagnostics`; benchmark gate and codegen check.
+2. Actor and system tables (under `console` or `introspection`),
+   `processes()`, `snapshot()`, `render_json`; then tier 1: activity slot,
+   interner, coarse clock, mailbox counters; fold `diagnostics`; benchmark
+   gate and codegen check.
 3. Watchdog: D1-D4, reports, sink sessions, metrics, dump directory,
    `check_now`; remove `WarnOnBlocking`.
 4. Fenced kill policy, Loom model, `lifecycle-trace` events and
