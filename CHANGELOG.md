@@ -33,6 +33,31 @@
   action; every model must be trace-validated or allowlisted as TLC-only with
   a tracking item (Coordinator, Lifecycle, DeferredReplies, DeferredJobs);
   per-model trace coverage has a floor that may only go up.
+- Design: introspection v1 for 0.9 (priority tier 2), in review:
+  [`docs/design/introspection.md`](docs/design/introspection.md). Per-actor
+  `process_info`, `sys:get_state`/`get_status` answered between turns,
+  supervision-tree and system snapshots, an opt-in stall watchdog (rank 8) and
+  the data model for `spawned-top` (rank 30), an attachable remote console on
+  a local Unix socket (`spawned-ctl`, on by default, read-only by default, no
+  TCP, no eval), with a cost table per field, consistency guarantees and a
+  test plan. TLA+ model `Introspection.tla` (fenced watchdog kill, status
+  between turns and at death) with six negative controls. Design only; no
+  library code change.
+
+- Design: introspection v1 for 0.9 (priority tier 2), revision 2 after two
+  reviews: [`docs/design/introspection.md`](docs/design/introspection.md).
+- Design: introspection v1 for 0.9 (priority tier 2), revision 3 after two
+  review rounds: [`docs/design/introspection.md`](docs/design/introspection.md).
+  `process_info`-style `info()` readable while a handler is wedged (strictly
+  free tier 0, richer with the `introspection` feature), `sys:get_state`/
+  `get_status` as a turn of their own, supervision-tree and system
+  snapshots, structured reports, an opt-in stall watchdog (rank 8) with a
+  fenced kill, and an attachable remote console on a local Unix socket
+  (`spawned-ctl`; on with `ActorSystem::new`, read-only by default, no TCP,
+  no eval). TLA+ model `Introspection.tla` (every activity end, including
+  panics in `started()` and `stopped()`, consumes the kill bit; status between
+  turns and at D; runtime drop; one action per linearization point, status admission included) with 20
+  negative controls; a fork-safe, lock-first socket publication protocol. Design only; no library code change.
 - Tests: coverage follow-ups. `restart_modes_distinguish_normal_shutdown_and_panic`
   now sends a real `Normal` exit; a per-PR `MCSupervisionTemporary` TLC
   configuration makes `TemporaryStartsOnce` non-vacuous, with a negative

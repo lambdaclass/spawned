@@ -241,6 +241,29 @@ DEFERRED_CONTROLS = [
     ("MCDeferredJobsEmits", "NoEmitCredit", "EmitCreditsBounded"),
 ]
 
+INTROSPECTION_CONTROLS = [
+    ("MCIntrospection", "CheckThenAct", "NoChargeFinishedTurn"),
+    ("MCIntrospection", "FailedCasKills", "NoChargeFinishedTurn"),
+    ("MCIntrospection", "LooseCas", "CommitOnOpen"),
+    ("MCIntrospection", "KillBitIgnored", "NoDispatchAfterStop"),
+    ("MCIntrospection", "LostBitRunsStopped", "KillSkipsStopped"),
+    ("MCIntrospection", "PanicOverKill", "KillDominates"),
+    ("MCIntrospection", "StartPanicOverKill", "KillDominates"),
+    ("MCIntrospection", "HookPanicOverKill", "KillDominates"),
+    ("MCIntrospection", "DropLosesKill", "KillDominates"),
+    ("MCIntrospection", "NoInvalidateAtD", "NoCommitAfterD"),
+    ("MCIntrospection", "KillRunsStopped", "KillSkipsStopped"),
+    ("MCIntrospection", "DispatchAfterStop", "NoDispatchAfterStop"),
+    ("MCIntrospection", "StatusInTurn", "StatusBetweenTurns"),
+    ("MCIntrospection", "StatusLost", "StatusDischarged"),
+    ("MCIntrospection", "StaleStatusReason", "StatusReasonIsFinal"),
+    ("MCIntrospection", "DoubleAnswer", "StatusAtMostOnce"),
+    ("MCIntrospection", "CallbackAfterGiveUp", "NoCallbackAfterGiveUp"),
+    ("MCIntrospection", "RunAfterSkip", "NoCallbackAfterGiveUp"),
+    ("MCIntrospection", "CallbackPanicStops", "CallbackPanicContained"),
+    ("MCIntrospection", "AnswerPanicStops", "CallbackPanicContained"),
+]
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -304,6 +327,8 @@ def main():
     for module, fault, invariant in DEFERRED_CONTROLS:
         named_fault(module, fault, invariant, args.tlc)
     for module, fault, invariant in LIFECYCLE_CONTROLS:
+        named_fault(module, fault, invariant, args.tlc)
+    for module, fault, invariant in INTROSPECTION_CONTROLS:
         named_fault(module, fault, invariant, args.tlc)
     for fault, prop in LIFECYCLE_TEMPORAL_CONTROLS:
         named_temporal("MCLifecycleLive", fault, prop, args.tlc, LIFECYCLE_SMALL)
