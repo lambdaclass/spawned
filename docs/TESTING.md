@@ -687,6 +687,7 @@ oracle's name, so shrinking can match it):
 | X1 | `Down` only for the watcher's own monitor, at most once, with the target's published reason; after quiescing, a live watcher has a `Down` for every exited, non-demonitored target |
 | X3, X5 | `Exit` carries the peer's published reason; a trapping, still-linked actor gets it (no more often than links were made); a non-trapping one does not survive a peer's abnormal exit |
 | X7 | No `Note` from a source after its `Down`/`Exit` at the same receiver |
+| X8 | An actor whose only possible stop cause was one driver `stop`, `shutdown` or `stop_with_reason` on it while alive publishes exactly that reason (skipped if a hook or the state destructor panicked) |
 | L4, M | An actor that panicked exits abnormally; a published reason never changes; an actor nothing could have stopped is still alive |
 | V1, V3, V5 | A Temporary child is built at most once per supervisor instance; no factory runs while an earlier generation of its slot (or subtree) is alive; retries per rolling window never exceed `max_restarts` |
 | V4, V9 | `current()` never returns an exited generation; a finished supervisor has every child `Stopped` or `Failed`, no live generation, and runs no factory afterwards; children stop in reverse declaration order |
