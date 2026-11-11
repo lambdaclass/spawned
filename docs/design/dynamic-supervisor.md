@@ -796,10 +796,14 @@ TLC results (TLC 2.19, fede, 4 workers, `nice -n 19`):
 
 | Configuration | Instance | Distinct states | Depth | Time |
 |---|---|---|---|---|
-RESULT_ROWS
+| `MCDynamicSupervisor` (per PR; safety, `NeverReopens`) | 2 slots, every pair of restart types, `max_children` 1, budget 1, one window release, exits `Normal`/`Panic`, start failures factory/`Normal`, cleanup failures | 3,459,556 | 33 | 39 s |
+| `MCDynamicSupervisorLive` (per PR; liveness) | as above without cleanup failures, factory start failures only | 1,628,738 | 33 | 5m21s |
+| `MCDynamicSupervisorZero` (per PR; safety, liveness) | as `MCDynamicSupervisor` with budget 0 | 589,159 | 22 | 1m23s |
+| `MCDynamicSupervisorDeep` (weekly; safety) | budget 2, two window releases, `max_children` 2 | 31,620,430 | 42 | 5m06s |
 
 Negative controls (`negative_checks.py`, run one at a time; each checks
-`TypeOK` and only the named property, on `MCDynamicSupervisor`):
+`TypeOK` and only the named property, safety controls on
+`MCDynamicSupervisor`, liveness controls on `MCDynamicSupervisorLive`):
 
 | `Fault` | Mutation | Fails | Origin |
 |---|---|---|---|

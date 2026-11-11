@@ -932,8 +932,8 @@ safety invariants (among them: no child outlives the supervisor, the cap
 counts restarting children, restarts follow the table in both directions,
 every restart attempt is charged once, no commit, publication or generation
 after close or terminate, a child stuck while retiring fails only itself),
-`NeverReopens` and four liveness properties. `MCDynamicSupervisor` and
-`MCDynamicSupervisorZero` run on every PR, `MCDynamicSupervisorDeep` weekly.
+`NeverReopens` and four liveness properties. `MCDynamicSupervisor`,
+`MCDynamicSupervisorLive` and `MCDynamicSupervisorZero` run on every PR, `MCDynamicSupervisorDeep` weekly.
 Twenty-seven named negative controls each produce a counterexample. See the
 [design](design/dynamic-supervisor.md#what-the-model-establishes).
 
