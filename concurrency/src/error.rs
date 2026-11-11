@@ -63,7 +63,7 @@ impl std::fmt::Display for ExitReason {
     }
 }
 
-/// The target of [`try_link`](crate::tasks::Context::try_link) no longer
+/// The target of `Context::try_link` no longer
 /// existed (it was past its death point), as OTP's `noproc`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("noproc")]

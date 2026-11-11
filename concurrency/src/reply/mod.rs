@@ -1,7 +1,7 @@
 //! Reply transport for requests: reply slots, tokens and receivers
 //! (docs/design/deferred-replies.md).
 //!
-//! Every request has a reply slot ([`slot::Slot`]) shared by the envelope,
+//! Every request has a reply slot (`slot::Slot`) shared by the envelope,
 //! then by the handler's [`PendingReply`] (and, after [`PendingReply::defer`],
 //! a storable [`ReplyTo`]), and by the caller's [`ReplyReceiver`]. Each slot
 //! gets exactly one terminal discharge.
@@ -498,7 +498,7 @@ impl<R: Send + 'static> Drop for ReplyTo<R> {
 /// with the owner's final exit reason when it died first.
 ///
 /// One pointer wide: the deadline timer lives in the awaiting future
-/// ([`ReplyFuture`]), not in the receiver, so receivers are cheap to store
+/// (`ReplyFuture`), not in the receiver, so receivers are cheap to store
 /// and move. Dropping it abandons the request: a later reply is dropped and
 /// any deferred credit returns at once.
 pub struct ReplyReceiver<R> {

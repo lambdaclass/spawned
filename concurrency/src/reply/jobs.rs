@@ -1,7 +1,7 @@
 //! Pipe-to-self jobs: the mode-independent core
 //! (docs/design/deferred-replies.md §8, §9).
 //!
-//! Each job has one shared [`JobState`] with three parts:
+//! Each job has one shared `JobState` with three parts:
 //!
 //! - **execution** (running or finished), physical: cancelled or timed-out
 //!   work may keep running, and keeps its credit (or native slot) until it
