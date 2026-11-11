@@ -1,5 +1,0 @@
-elapsed_ms,submitted,started,completed,observed,queued,outstanding,hot_queued,cold_queued,rss_bytes
-0.049,0,0,0,0,0,0,0,0,25059328
-100.148,0,0,0,26848,0,0,0,0,31158272
-200.856,0,0,0,54650,0,0,0,0,32940032
-300.924,0,0,0,65536,0,0,0,0,38125568

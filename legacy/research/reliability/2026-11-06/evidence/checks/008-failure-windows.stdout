@@ -1,8 +1,0 @@
-
-running 1 test
-semantic failure coverage: Async:9, Blocking:9, Thread:9, Native:9; windows=["stop_started_with_queued_request", "timeout_after_effect_before_reply", "caller_drop_after_effect", "panic_after_effect_before_reply", "cleanup_panic_after_normal_stop", "linked_failure_after_normal_stop", "linked_failure_before_normal_stop", "demonitor_before_target_exit", "demonitor_after_down_dispatch"]
-
-test controlled_failures_reach_every_required_window_on_every_backend ... ok
-
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
-

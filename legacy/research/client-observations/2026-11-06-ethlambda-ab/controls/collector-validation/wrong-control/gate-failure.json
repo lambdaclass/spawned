@@ -1,4 +1,0 @@
-{
-  "error": "beacon-eth5: required build fragment 'c585f3d', observed ['ethlambda/v1.0.0-bump-spawned-0.6.0-5259dee/x86_64-unknown-linux-gnu/rustc-v1.97.1']",
-  "complete": false
-}

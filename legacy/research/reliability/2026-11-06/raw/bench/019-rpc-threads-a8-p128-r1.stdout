@@ -1,2 +1,0 @@
-backend,scenario,actors,active_actors,producers,messages,payload_bytes,iterations,rate,timing,allocation_counting,elapsed_s,completed_per_s,completion_p50_ns,completion_p95_ns,completion_p99_ns,observed_p99_ns,queue_p99_ns,handler_p99_ns,enqueue_lag_p99_ns,allocations,allocated_bytes
-threads,rpc,8,8,128,65536,64,800,0,true,false,0.044369372,1477054.938,67978,106992,148019,186441,147238,682,0,0,0

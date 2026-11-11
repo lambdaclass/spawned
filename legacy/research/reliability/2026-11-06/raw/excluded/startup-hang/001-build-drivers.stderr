@@ -1,8 +1,0 @@
-   Compiling crossbeam-utils v0.8.21
-   Compiling crossbeam-epoch v0.9.21
-   Compiling crossbeam-deque v0.8.8
-   Compiling async-task v4.7.1
-   Compiling spawned-macros v0.6.0 (/tmp/spawned-pr-security-review/integrated/macros)
-   Compiling spawned-rt v0.6.0 (/tmp/spawned-pr-security-review/integrated/rt)
-   Compiling spawned-concurrency v0.6.0 (/tmp/spawned-pr-security-review/integrated/concurrency)
-    Finished `release` profile [optimized] target(s) in 7.85s
