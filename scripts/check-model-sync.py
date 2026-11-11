@@ -610,7 +610,7 @@ def check_models(args, root):
     models = config["models"]
     baseline_path = root / BASELINE
     baseline = json.loads(baseline_path.read_text()) if baseline_path.exists() else {}
-    errors, warnings, rows = [], [], []
+    errors, warnings, rows, tlc_only = [], [], [], set()
     for model in base_models(root):
         entry = models.get(model)
         if entry is None:
@@ -623,6 +623,7 @@ def check_models(args, root):
             if allow:
                 warnings.append(f"{model} has trace validation now; remove its `tlc_only` allowlist entry")
         elif allow:
+            tlc_only.add(model)
             if not allow.get("reason") or not allow.get("tracking"):
                 errors.append(f"{model}: a `tlc_only` entry needs both `reason` and `tracking`")
             status = f"TLC ONLY (allowlisted: {allow.get('reason', '?')}; tracking: {allow.get('tracking', '?')})"
@@ -653,7 +654,7 @@ def check_models(args, root):
             print(f"::warning title=model-sync models::{w}")
     for e in errors:
         print(f"ERROR   {e}")
-    allowlisted = [m for m in base_models(root) if models.get(m, {}).get("tlc_only")]
+    allowlisted = [m for m in base_models(root) if models.get(m, {}).get("tlc_only") and m in tlc_only]
     if allowlisted:
         print(f"\nTLC-only models (no trace validation; these can drift from the code): {', '.join(allowlisted)}")
     if errors:
