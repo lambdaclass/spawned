@@ -1,8 +1,7 @@
 ---------------------------- MODULE MCStartDeep ----------------------------
 EXTENDS Start
-\* Weekly safety instance: MCStart plus the init timer and an unmanaged
-\* parent, so the timer races two named children's readiness, failure,
-\* abandonment and publication. (Every variant with every option at two
-\* children is beyond TLC; MCStartContinue, MCStartTimeout and MCStartScope
-\* cover those dimensions one child at a time.)
+\* Weekly safety instance (30M states, about 5 minutes on 4 workers): two
+\* named children started with start_link or start_monitor by a managed
+\* parent that may exit, abandonment, failure, retry: the per-PR MCStart and
+\* MCStartNames combined.
 =============================================================================
