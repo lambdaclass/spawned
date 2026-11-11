@@ -5,7 +5,7 @@ forwarding, pipe-to-self) through rank 11a, and for rank 47 (session types)
 through rank 47a, in the [roadmap](../../ROADMAP.md#step-4-request-semantics).
 The existing rank 11 design notes (why deferred replies, delegation versus
 promises, CAF and Pekko references) are in
-[framework ideas](../../legacy/docs/research/framework-ideas.md#design-notes-request-semantics);
+[framework ideas](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/docs/research/framework-ideas.md#design-notes-request-semantics);
 this note adds three ideas from other traditions.
 
 ## What it is

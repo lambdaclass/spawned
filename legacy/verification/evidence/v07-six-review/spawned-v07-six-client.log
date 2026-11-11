@@ -1,9 +1,0 @@
-   Compiling spawned-macros v0.6.0 (/tmp/spawned-v07/macros)
-    Checking spawned-concurrency v0.6.0 (/tmp/spawned-v07/concurrency)
-    Checking ethlambda-network-api v1.0.0 (/tmp/ethlambda-v07-compat-20261109/crates/net/api)
-    Checking ethlambda-blockchain v1.0.0 (/tmp/ethlambda-v07-compat-20261109/crates/blockchain)
-    Checking ethlambda-p2p v1.0.0 (/tmp/ethlambda-v07-compat-20261109/crates/net/p2p)
-    Checking ethlambda-rpc v1.0.0 (/tmp/ethlambda-v07-compat-20261109/crates/net/rpc)
-    Checking ethlambda v1.0.0 (/tmp/ethlambda-v07-compat-20261109/bin/ethlambda)
-    Finished `release` profile [optimized] target(s) in 5.83s
-RESOURCE GUARD peak_rss_kib= 778196 exit= 0

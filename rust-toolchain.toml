@@ -1,0 +1,7 @@
+# The toolchain CI uses (dtolnay/rust-toolchain@1.93.0 in .github/workflows), so local builds,
+# fede and agents match CI exactly, including trybuild compile-fail output. Jobs that need
+# nightly select it explicitly (`cargo +nightly`, or RUSTUP_TOOLCHAIN in fuzz.yml), which takes
+# precedence over this file. Nix-provided cargo (no rustup) ignores this file.
+[toolchain]
+channel = "1.93.0"
+components = ["rustfmt", "clippy"]

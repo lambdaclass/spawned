@@ -2,16 +2,47 @@
 
 ## Unreleased
 
-- Design (0.9, in review): a unified start API (`docs/design/unified-start.md`,
-  rank 5h). OTP's `start`, `start_link` and `start_monitor` wait for
-  `started()`, and `spawn` starts without waiting. All four take one
-  `StartOptions` (placement, typed name, init timeout, label, stack size).
-  `started()` may fail or continue (`Init`). Linked and monitored children
-  inherit their parent's placement. It replaces `start_on`,
-  `start_with_backend`, `ExecutionGroup::start` and `start_linked`. A new
-  TLA+ model, `Start.tla`, runs in a per-PR CI leg `start` with 16 negative
-  controls, and a client mapping covers 51 sites.
-
+- Design (0.9, in review, revision 2): a unified start API
+  (`docs/design/unified-start.md`, rank 5h). OTP's `start`, `start_link` and
+  `start_monitor` wait for `started()`, and `spawn` does not. All four take one
+  typed `StartOptions`. `started()` may fail, ignore or continue (`Init`). A
+  per-start cell commits readiness once and independently of the waiter, and
+  the init timer and abandonment arbitrate through it. Errors are answered
+  after publication. Linked children are owned by the parent's scope. It
+  replaces `start_on`, `start_with_backend`, `ExecutionGroup::start` and
+  `start_linked`. A new TLA+ model, `Start.tla`, has six configurations and
+  25 negative controls, and a client mapping covers 51 sites.
+- ROADMAP: a ranked determinism backlog (D1-D10) under priority tier 3, from
+  an audit of what escapes the simulator in Spawned, Ethrex and Ethlambda
+  ([docs/research/determinism-audit.md](docs/research/determinism-audit.md)).
+  Same-seed reruns found no schedule nondeterminism; traces differ only in
+  process-global ids.
+- Removed `legacy/` (archived research, benchmark data and reviews, about 58 MB);
+  it remains in history at [`efba2434`](https://github.com/lambdaclass/spawned/tree/efba24340a01df82f872ec422b9dbaf48f897b04/legacy),
+  and live docs link there.
+- ROADMAP: a Path to 1.0 section (0.8, 0.9, 0.10 contents and what 1.0
+  requires: stable API rules, a complete semantics contract, production-safe
+  defaults, introspection, determinism, release gates, production proof and
+  documentation).
+- Toolchain pinned to CI's 1.93.0 in `rust-toolchain.toml`, so local, fede
+  and agent builds match CI; the fuzz job selects its nightly explicitly.
+  `CHANGELOG.md` merges with git's union driver. ROADMAP: the design-review
+  rule now requires a test plan, trace validation against real code,
+  planted bugs, an introspection hook and a no-cost benchmark for every new
+  feature.
+- ROADMAP: Erlang/OTP, Elixir and Gleam gaps table (G1-G23, including a remote
+  console) with tiers and target versions, and the OTP features Spawned will
+- ROADMAP: Erlang/OTP, Elixir and Gleam gaps table (G1-G23, including an attachable
+  console in every binary, targeted at 0.9) with tiers and target versions, and the OTP features Spawned will
+  not add as non-goals; the comparison is in
+  `docs/research/otp-elixir-gleam.md`.
+- CI: model-sync checks. A `model-sync` job fails a PR that changes code a TLA+
+  model covers (`verification/model-map.toml`) without touching that model,
+  unless it carries the `no-model-change` label and a `Model: no change because
+  <reason>` line. Every lifecycle trace event kind must map to a trace-spec
+  action; every model must be trace-validated or allowlisted as TLC-only with
+  a tracking item (Coordinator, Lifecycle, DeferredReplies, DeferredJobs);
+  per-model trace coverage has a floor that may only go up.
 - Tests: coverage follow-ups. `restart_modes_distinguish_normal_shutdown_and_panic`
   now sends a real `Normal` exit; a per-PR `MCSupervisionTemporary` TLC
   configuration makes `TemporaryStartsOnce` non-vacuous, with a negative
@@ -47,6 +78,21 @@
   with the usual seed and tape replay lines. Default 250 ms;
   `SPAWNED_SIM_TURN_BUDGET=ms` tunes it and `0` disables it. Compiled only
   under the cfg: no cost in normal builds.
+- Testing: planted-bug sensitivity matrix. Hand-written realistic bugs in
+  supervision, links, monitors, exit reasons, registry, mailbox, timers,
+  shutdown ordering and handle lifetimes are applied one at a time and run
+  against the test suite, the simulated suites and the scenario fuzzer
+  (`testing/planted/`, `docs/TESTING.md#planted-bug-sensitivity`); new oracles
+  close the escapes. Work in progress.
+
+- Testing: planted-bug sensitivity matrix (`docs/TESTING.md#planted-bug-sensitivity`).
+  24 hand-written realistic bugs (`verification/planted/patches/`, re-run with
+  `verification/planted/run.sh`) against the test suite, simulated suites,
+  fuzz harness tests, a 600 s fuzz run and TLA+ trace validation: 23 caught
+  (22 by the test suite), one unobservable through the public contract. New
+  oracles: a Temporary nested subtree is never rebuilt, fuzzer oracle X8 (a
+  stopped actor publishes the reason it was stopped with), and unit tests that
+  kill cargo-mutants survivors in `supervision/nested.rs` and `supervision.rs`.
 - Lockfile: `rustix` 1.1.2 -> 1.1.6 for RUSTSEC-2026-0486 (pulled in by the
   examples' `native-tls` dependency; spawned's crates are unaffected).
 - CI: a `sim` job runs the simulated test suites (`--cfg spawned_sim`) on
@@ -92,6 +138,15 @@
   it is computed from, so unrelated models no longer invalidate it, and is
   regenerated (same keys and state counts). `check.sh` gains `--only` and
   `--exclude`.
+- Tests: a long-running soak harness (`concurrency/benches/soak`, run by hand,
+  not in CI). It churns actors in both modes and every backend, managed
+  groups, supervisors with every strategy, links, monitors, `trap_exit`,
+  timers, the registry, timed-out requests, stream listeners, `ActorSystem`
+  cycles and mailbox bursts from a seed, samples RSS, live heap, OS threads,
+  file descriptors, Tokio tasks, registry size, live actors and the `metrics`
+  gauges into a CSV, fails on growth per hour after warm-up or on any count
+  not returning to its baseline after quiesce, and has a `--inject-leak`
+  negative control. Run it before each release (`docs/TESTING.md`).
 
 ## 0.7.3 — 2026-11-10
 

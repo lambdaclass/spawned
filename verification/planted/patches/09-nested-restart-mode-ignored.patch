@@ -1,0 +1,15 @@
+Planted bug 09 (nested-restart-mode-ignored): A nested supervisor's restart mode is ignored (always Permanent)
+
+diff --git a/concurrency/src/supervision/nested.rs b/concurrency/src/supervision/nested.rs
+index 1db30210..5785a5d4 100644
+--- a/concurrency/src/supervision/nested.rs
++++ b/concurrency/src/supervision/nested.rs
+@@ -145,7 +145,7 @@ pub(super) fn add(
+                 })
+             }
+         })
+-        .restart(spec.restart)
++        .restart(RestartMode::Permanent)
+         .startup_timeout(spec.startup_timeout)
+         .shutdown_timeout(spec.shutdown_timeout),
+     )?;

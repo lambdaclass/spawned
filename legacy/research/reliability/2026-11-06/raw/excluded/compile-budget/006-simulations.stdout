@@ -1,9 +1,0 @@
-
-running 2 tests
-125 bounded abstract states; 500 real-backend witness replays; no claim of exhaustive Rust schedules
-test finite_model_witnesses_replay_against_all_execution_modes ... ok
-256 seeded scripts × four backends; virtual ticks order commands, not arbitrary I/O or await points
-test seeded_handler_interleavings_have_identical_audit_fingerprints ... ok
-
-test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.21s
-

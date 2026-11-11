@@ -1,0 +1,15 @@
+Planted bug 14 (exit-shutdown-reports-normal): ChildHandle::shutdown commits Normal instead of Shutdown
+
+diff --git a/concurrency/src/child_handle.rs b/concurrency/src/child_handle.rs
+index dbcd8611..76b5df14 100644
+--- a/concurrency/src/child_handle.rs
++++ b/concurrency/src/child_handle.rs
+@@ -190,7 +190,7 @@ impl ChildHandle {
+     /// Request an ordered cooperative shutdown without replacing an earlier
+     /// committed cause. A cleanup panic remains an abnormal exit.
+     pub fn shutdown(&self) {
+-        crate::link::stop_with_reason(&self.linked_reason, ExitReason::Shutdown, || {
++        crate::link::stop_with_reason(&self.linked_reason, ExitReason::Normal, || {
+             (self.cancel)()
+         });
+     }

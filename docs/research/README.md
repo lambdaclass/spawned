@@ -4,12 +4,13 @@ Maintained research behind the [roadmap](../../ROADMAP.md). Each note says what
 a technique or system is, how it works, who uses it (sourced claims only), what
 it means for Spawned with links to ranked items, and its sources. Claims we
 could not verify are marked in place. Earlier research, no longer maintained,
-is archived in [legacy](../../legacy/docs/research/); these notes link to it
+is in the [archived `legacy/docs/research`](https://github.com/lambdaclass/spawned/tree/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/docs/research); these notes link to it
 rather than repeat it.
 
 | Note | Roadmap items |
 |---|---|
 | [Virtual actors](virtual-actors.md) | Ranks 12, 26, 44, 49-51 |
+| [Erlang/OTP, Elixir and Gleam compared](otp-elixir-gleam.md) | The OTP, Elixir and Gleam gaps table in the roadmap (G1-G23), 0.9 designs, non-goals |
 | [Systematic testing, simulation and runtime monitoring](systematic-testing.md) | Verification rule, testing to add, ranks 5c, 20-22a |
 | [How the Ethereum ecosystem tests clients](ethereum-testing.md) | Ranks 5, 5c, 20-22 |
 | [Request semantics references](request-semantics-references.md) | Ranks 11, 11a, 47, 47a; rank 11 and 11a decisions in the [deferred replies design](../design/deferred-replies.md) |
@@ -21,6 +22,7 @@ rather than repeat it.
 | [Supervision models](supervision-models.md) | Ranks 12a, 13, 27 |
 | [Deadlock and stall detection](deadlock-and-stall-detection.md) | Ranks 7 (approach chosen), 8, 8a, 30; rank 6 idle check |
 | [Test techniques](test-techniques.md) | Testing to add (cancellation safety, dhat, open-loop load, platform matrix, metamorphic rows); TESTING.md planned layers |
+| [Determinism audit](determinism-audit.md) | Determinism backlog D1-D10 (priority tier 3), S2, ranks 6b and 22a |
 | [Event sourcing](event-sourcing.md) | Ranks 21, 49, 50, 51; phase 8 |
 
 **[Virtual actors](virtual-actors.md).** Orleans grains are always addressable
@@ -117,3 +119,11 @@ testing to add rows and the planned layers in [TESTING.md](../TESTING.md).
 **[Event sourcing](event-sourcing.md).** Akka Persistence, Orleans
 `JournaledGrain` and Restate's journal, and how they relate to durability and
 crash tapes. *Landed in:* ranks 21, 49, 50 and 51; phase 8.
+
+**[Determinism audit](determinism-audit.md).** What escapes the deterministic
+simulator in Spawned, Ethrex and Ethlambda: direct Tokio spawns and timers,
+OS threads and blocking offloads, wall-clock reads, unseeded randomness,
+default-hasher maps and real I/O, counted per client subsystem, with
+same-seed rerun results (no schedule nondeterminism found). The main lever is
+madsim-style interposition of the clock and entropy. *Landed in:* the
+determinism backlog D1-D10.

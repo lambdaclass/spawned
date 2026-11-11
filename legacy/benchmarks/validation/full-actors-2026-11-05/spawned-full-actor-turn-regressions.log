@@ -1,9 +1,0 @@
-   Compiling spawned-concurrency v0.5.0 (/private/tmp/spawned-scenario-tests/concurrency)
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.87s
-     Running unittests src/lib.rs (target/debug/deps/spawned_concurrency-85dc348326b739bd)
-
-running 2 tests
-test tasks::actor::turn_regressions::idle_time_is_excluded_and_an_empty_mailbox_needs_no_yield ... ok
-test tasks::actor::turn_regressions::stop_during_batch_yield_does_not_execute_the_next_queued_message ... ok
-
-test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 105 filtered out; finished in 0.00s

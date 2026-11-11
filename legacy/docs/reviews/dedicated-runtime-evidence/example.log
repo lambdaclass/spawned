@@ -1,6 +1,0 @@
-   Compiling spawned-rt v0.6.0 (/tmp/spawned-pr-security-review/integrated/rt)
-   Compiling spawned-concurrency v0.6.0 (/tmp/spawned-pr-security-review/integrated/concurrency)
-   Compiling spawned-capability-examples v0.1.0 (/tmp/spawned-pr-security-review/integrated/examples/capabilities)
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.44s
-     Running `/tmp/spawned-fede-research-25dGGmPA/fairness-target/debug/dedicated_thread`
-dedicated actor root + 1 async helper worker; helper progressed while root waited

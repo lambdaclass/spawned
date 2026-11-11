@@ -1,0 +1,15 @@
+Planted bug 18 (reg-not-removed-on-death): A managed actor's registered name is never removed when its scope ends
+
+diff --git a/concurrency/src/system.rs b/concurrency/src/system.rs
+index 0de9b0f5..c6457430 100644
+--- a/concurrency/src/system.rs
++++ b/concurrency/src/system.rs
+@@ -1233,7 +1233,7 @@ impl Drop for Lease {
+             }
+         }
+         if last {
+-            drop(registrations);
++            std::mem::forget(registrations);
+             if let Some(g) = self.scope.group.upgrade() {
+                 g.remove_scope(self.scope.id);
+             }

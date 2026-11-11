@@ -114,9 +114,10 @@ Status of each layer. "Planned" items are tracked in the
 | Design, any size | TLAPS or Veil | An invariant that fails only for larger configurations | Planned ([verification tools](research/verification-tools.md)) |
 | Spec and code | Trace validation | The implementation doing something the model forbids | Real OneForOne, cohort and nested traces plus invalid-trace and model-mutation controls |
 | Spec and code coverage | Trace coverage (`verification/tla/trace_coverage.py`) | Model actions, states and transitions no test ever reaches | Report on every PR (actions covered by the dedicated trace tests may not regress); whole test suite weekly. See [trace coverage](#trace-coverage) |
+| Spec and code in sync | `scripts/check-model-sync.py`, `verification/model-map.toml` | A PR changing modelled code without its model; a trace event no trace spec replays; a model no real run is checked against; trace coverage going down | `model-sync` job on every PR. See [model sync](#model-sync) |
 | Primitives | Loom | Atomic and memory-ordering bugs in cancellation, ready gate and wakeups | In CI; expand to reply slots and mailbox publication versus shutdown |
 | Whole runtime, deterministic | Simulation backend for `spawned-rt::tasks` (random, PCT, bounded DFS) | Async races, replayed from a seed with virtual time | In CI (`sim` job, [simulated suites in CI](#simulated-suites-in-ci)) |
-| Resource stability | Soak tests | Memory, file descriptors, threads, tasks and registry entries growing over hours of actor churn and restarts | Planned |
+| Resource stability | Soak harness (`concurrency/benches/soak`) | Memory, file descriptors, threads, tasks and registry entries growing over hours of actor churn and restarts | Run by hand before each release, never in CI ([soak harness](#soak-harness)) |
 | Behaviour drift | Behaviour snapshots | Silent changes to lifecycle traces, shutdown reports and exit reasons in about 30 standard scenarios | Planned |
 | Model-derived tests | Tests generated from the TLA+ models | Interesting model states (a crash during backoff while shutdown starts, a restart racing a deadline) that no hand-written test reaches | Planned, after trace coverage |
 | Time | Clock-jump tests | Timers and backoff misbehaving on paused time or large forward and backward clock jumps | Planned |
@@ -149,7 +150,7 @@ Status of each layer. "Planned" items are tracked in the
 | Distribution | turmoil, Jepsen-style histories | Loss, delay, partitions and reordering between nodes | Only with a remote transport ([roadmap](../ROADMAP.md) rank 22a) |
 
 The fuller rationale is archived in the
-[verification strategy note](../legacy/docs/research/verification-strategy.md).
+[verification strategy note](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/docs/research/verification-strategy.md).
 
 ### API and feature checks
 
@@ -368,7 +369,7 @@ Use an available CPU set appropriate to the machine. The benchmark phase records
 closed-loop requests, actor-to-actor graphs, concentrated offered load and actor
 churn/idle soaks. Benchmarks describe their generator as well as actor work; high
 producer counts do not imply that many actor workers. See the
-[recorded campaign](../legacy/research/reliability/2026-11-06/README.md) for results,
+[recorded campaign](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/research/reliability/2026-11-06/README.md) for results,
 excluded preflights and reproducibility details. No throughput threshold is
 enforced in shared CI. Nightly CI retains failure coverage and stress logs.
 
@@ -687,6 +688,7 @@ oracle's name, so shrinking can match it):
 | X1 | `Down` only for the watcher's own monitor, at most once, with the target's published reason; after quiescing, a live watcher has a `Down` for every exited, non-demonitored target |
 | X3, X5 | `Exit` carries the peer's published reason; a trapping, still-linked actor gets it (no more often than links were made); a non-trapping one does not survive a peer's abnormal exit |
 | X7 | No `Note` from a source after its `Down`/`Exit` at the same receiver |
+| X8 | An actor whose only possible stop cause was one driver `stop`, `shutdown` or `stop_with_reason` on it while alive publishes exactly that reason (skipped if a hook or the state destructor panicked) |
 | L4, M | An actor that panicked exits abnormally; a published reason never changes; an actor nothing could have stopped is still alive |
 | V1, V3, V5 | A Temporary child is built at most once per supervisor instance; no factory runs while an earlier generation of its slot (or subtree) is alive; retries per rolling window never exceed `max_restarts` |
 | V4, V9 | `current()` never returns an exited generation; a finished supervisor has every child `Stopped` or `Failed`, no live generation, and runs no factory afterwards; children stop in reverse declaration order |
@@ -854,8 +856,8 @@ is asserted; allocator retention can differ between platforms.
    `repeated_stop_during_a_handler_discards_queued_requests`). The #168 tests are
    in `concurrency/src/threads/actor.rs`.
 
-Reviews and evidence: [PR #166](../legacy/docs/reviews/pr-166-links.md) and
-[PR #168](../legacy/docs/reviews/pr-168-security.md).
+Reviews and evidence: [PR #166](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/docs/reviews/pr-166-links.md) and
+[PR #168](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/docs/reviews/pr-168-security.md).
 
 Thread actor completion now uses a watch notification, so async exit waits can
 be cancelled without leaving a blocking-pool worker waiting for target exit.
@@ -987,7 +989,7 @@ Matching layout is a regression check, not proof that Ethrex's RPC tests pass
 at a 2 MiB debug stack; rerun them (`RUST_MIN_STACK` bisection of
 `cargo test -p ethrex-test --test ethrex_tests rpc::`) when handles or request
 futures change. Earlier probes comparing fc35abaf, 35bea650 and the compact
-sender are in the [round-2 evidence](../legacy/verification/evidence/v071-review-round2/README.md).
+sender are in the [round-2 evidence](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/verification/evidence/v071-review-round2/README.md).
 
 ## Stack-depth budgets
 
@@ -1044,7 +1046,7 @@ exercise retry-window boundaries and reproducible capped backoff/jitter.
 These are controlled failure tests, not a deterministic executor or a claim that
 all OS schedules were explored. CI also runs both asserted capability examples.
 
-The [implementation review](../legacy/docs/reviews/execution-groups-supervision-implementation.md)
+The [implementation review](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/docs/reviews/execution-groups-supervision-implementation.md)
 archives 33 focused integration tests, full workspace/default/all-feature gates,
 strict Clippy, eight examples and 20 fresh-process repetitions of the 32-iteration
 crash/producer/shutdown race (640 iterations). These explore ordinary OS/Tokio
@@ -1123,6 +1125,195 @@ deadlock-free; `==`, which is not, is caught). Run cargo-mutants with the
 feature that compiles a mutated line before treating it as a gap. Code inside
 `macro_rules!` bodies is not mutated at all, so keep lifecycle code out of
 single-use macros.
+
+### Model sync
+
+Models track the code: a PR that changes behaviour a TLA+ model specifies
+updates the model in the same PR, and drift is a bug. The `model-sync` job
+(`.github/workflows/model-sync.yml`) checks four things mechanically.
+
+- **Paths.** `verification/model-map.toml` maps code to the models that
+  cover it (for example `actor_cleanup.rs`, `link.rs`, `monitor.rs` and the
+  actor loops to `Lifecycle`; `supervision.rs` to `Supervision`, `Cohorts`
+  and `NestedSupervision`; `system.rs` to `Coordinator`). If a PR changes a
+  mapped file but none of its models (the model, its MC configurations,
+  inductive or coverage modules, or trace spec; a comment-only model edit
+  does not count, and one covering model is enough), the job fails. Changes to
+  comments only, or only inside a `#[cfg(test)] mod` block, are exempt (the
+  file's code outside test modules must be unchanged, so removing
+  `#[cfg(test)]` is not exempt); when the script cannot tell, it requires
+  the waiver. The waiver is the
+  `no-model-change` label AND a PR body line `Model: no change because
+  <reason>`. In the merge queue the step passes, which is sound because
+  `model-sync` is a required check on the PR.
+- **Trace events.** Every action name the code can record with the
+  `lifecycle-trace` feature (the string literal, or the literals of an
+  `if .. else` chain, passed to each emitter listed in the map, such as
+  `Event::new`, `Event::sup` and `TreeEvent::new`) must be an `e.a = "..."` arm of its trace spec, or be
+  declared in the map as translated by `trace_check.py` or rejected on
+  purpose (`Unmodelled`). A non-literal action name, an event struct with no
+  map entry, or a cohort event filter that differs from `TraceCohorts.tla`
+  fails. Warnings list spec arms no code emits and model actions no trace
+  spec takes (except those declared unlogged, such as `WindowExpire`). The
+  event names are strings, not an enum, so this is a source scan rather than
+  a compile-time `match`; the mapping it checks lives in TLA+.
+- **Models with trace validation.** Every model in `verification/tla` needs
+  a map entry and trace validation, checked statically: a `Trace*.tla` that
+  extends the model, is named in `trace_check.py`, and has arms that events
+  the code emits reach (the `tla-traces` job replays the recorded traces). A
+  model checked by TLC alone can drift from the code unnoticed, so it fails
+  unless it has a `tlc_only` allowlist entry with a reason and a tracking
+  item. `check-model-sync.py models` prints the current list.
+- **Coverage floors.** Each trace-validated model has a `coverage_floor`: the
+  action keys the dedicated trace tests cover in
+  `verification/tla/coverage-baseline.json` (Supervision 36 of 40, Cohorts
+  40 of 46, Nested 11 of 11). The `tla` job already fails when a baseline key
+  stops being covered; this check fails when the baseline shrinks below the
+  floor, so coverage only grows. Raise the floor when coverage grows.
+
+```bash
+python3 scripts/check-model-sync.py events
+python3 scripts/check-model-sync.py models                      # inventory: trace validation and coverage floors
+python3 scripts/check-model-sync.py paths                       # this branch against origin/main
+python3 scripts/check-model-sync.py paths --pr 123              # with that PR's labels and body
+python3 -m unittest scripts/tests/test_model_sync.py            # self-tests and negative controls
+```
+
+## Planted-bug sensitivity
+
+Mutation testing breaks one operator at a time. To measure whether the stack
+catches the bugs a reviewer would actually miss, 24 realistic bugs were written
+by hand (`verification/planted/patches/`, one patch each, listed in
+`INDEX.tsv`) and each was run, alone, against five layers:
+
+| Layer | What runs | Budget |
+|---|---|---|
+| T | `cargo test -p spawned-concurrency --features failpoints` (unit, integration, proptest at 32 cases, failpoints; real Tokio) | 900 s timeout |
+| S | Simulated suites (`scripts/run-sim-tests.py`, 8 seeds per `sim_test`, 200 for the `sim.rs` sweeps) | 120 s per test |
+| C | Fuzz harness tests on stable (`cd fuzz && cargo test --release`: 64 seeds, 64 generated inputs, the regression inputs) | none |
+| F | `cargo fuzz run` from `fuzz/seeds`, one process | 600 s |
+| V | TLA+ trace validation of the lifecycles recorded by the dedicated trace tests (`Supervision`, `Cohorts`, `NestedSupervision`) | none |
+
+```sh
+verification/planted/run.sh -l TSCFV -f 600 -o /tmp/planted baseline   # control: every layer must miss
+verification/planted/run.sh -l TSCFV -f 600 -o /tmp/planted             # all 24 patches
+verification/planted/run.sh -l TS -o /tmp/planted verification/planted/patches/09-*.patch
+```
+
+The runner applies a patch, runs each layer, records `caught`/`missed` and the
+wall time in `OUT/results.tsv`, then reverts the patch and deletes any proptest
+seed files the run created (a seed found under one bug must not help the next).
+Simulator and fuzzer tapes go to `OUT/tmp`. Patches touch
+`concurrency/src` only; they are never applied in CI.
+
+**Results** (2026-11-11, `cc60801d`, the 30-core shared server at `nice 19`,
+four patches in parallel). Times are seconds for the whole layer (T, S, C, V)
+or to the first failing input (F, from the seed corpus; "<1" means a seed or
+one of the first inputs). A dash is a miss. The unpatched control missed in
+every layer, including 600 s (590,000 executions) of fuzzing.
+
+| # | Bug | T | S | C | F | V |
+|---|---|---|---|---|---|---|
+| 01 | Restart window admits `max + 1` restarts | 53 (1 unit test) | - | - | - | - |
+| 02 | A restart exactly `window` old still counts | 46 (same unit test) | - | - | - | - |
+| 03 | RestForOne rebuilds the failed child and the ones *before* it | 98 | 21 | - | - | 18 |
+| 04 | Transient restarts after `Shutdown` | 72 | 28 | - | - | 16 |
+| 05 | Temporary sibling rebuilt as OneForAll/RestForOne collateral | 48 | 14 | - | 8 (V1) | - |
+| 06 | Backoff failure streak never resets after a stable generation | 43 | 29 | - | - | - |
+| 07 | Supervisor stops children in declaration order | 71 | 17 | - | 8 (V9) | 15 |
+| 08 | Exhausted budget retires the child instead of failing the supervisor | hang (8 tests) | 16 | - | - | 14 |
+| 09 | Nested supervisor's restart mode ignored (always Permanent) | - | - | 13 | <1 (V1) | - |
+| 10 | `Normal` exit kills a non-trapping linked peer | 97 | 11 | - | - | - |
+| 11 | `unlink` removes only the caller's edge | 64 (2 unit tests) | - | - | - | - |
+| 12 | Linking to a dead peer reports `Normal`, not its reason | 72 | - | 20 | <1 (X3) | - |
+| 13 | Actor killed through a link exits `Normal` (no transitive propagation) | 71 | 24 | - | - | - |
+| 14 | `ChildHandle::shutdown` commits `Normal` instead of `Shutdown` | 55 | 11 | - | - | - |
+| 15 | Monitor waiter delivers `Down` after `demonitor` removed it | - | - | - | - | - |
+| 16 | Monitoring an already-dead actor gives no `Down` | 155 | - | 13 | 2 (X1) | - |
+| 17 | Exiting observer does not cancel its monitor waiters | 59 | 14 | - | - | - |
+| 18 | Managed actor's registered name never removed | 72 | 27 | 19 | <1 (S5) | - |
+| 19 | Run loop keeps handling queued messages after stop (D4) | 81 | - | - | - | - |
+| 20 | `ActorRef::send` enqueues from a spawned task (breaks D1) | hang (1 test) | 23 | 14 | <1 (D1) | - |
+| 21 | `send_after` ignores its own cancellation token | 91 (1 unit test) | - | - | - | - |
+| 22 | `send_interval` keeps ticking after its actor stops | 107 | 13 | - | - | - |
+| 23 | System shutdown stops targets in admission order | 96 | 14 | 15 | <1 (S2) | - |
+| 24 | System shutdown ignores admission order between actors and trees | 76 | 19 | - | 13 (S2) | - |
+| | **Caught** | **22** | **15** | **6** | **9** | **4** |
+
+23 of 24 were caught by at least one layer; T alone caught 22. One bug (15)
+escaped everything. What the matrix says about each layer:
+
+- **T is the backstop.** Its misses were 09 (caught only by the fuzzer) and
+  15. Five catches rest on a single test each (unit tests for 01, 02, 11
+  and 21; `backoff_exponent_resets_only_after_a_stable_generation` for 06):
+  delete that test and the bug ships. Two bugs (08, 20) make tests hang
+  instead of fail; in CI that is a job timeout, not a named failure.
+- **S** only runs `sim_test`s and the `sim.rs` sweeps; the many plain
+  `#[test]`s that need OS threads are compiled out, so it misses most link,
+  timer and mailbox bugs (11, 12, 16, 19, 21) that T catches.
+- **F found 9 bugs, all in under 15 s**, and nothing in the remaining 600 s.
+  It has no oracle for *which* children a restart rebuilds (03, 04), for the
+  restart budget's lower bound or window edge (01, 02, 08), for backoff
+  timing (06), or for the reason a stopped actor publishes when it agrees with
+  what its peers saw (13, 14): X3 and X1 compare a notification with the
+  published reason, so a wrong published reason that is consistently wrong
+  passes. Longer runs would not help without new oracles.
+- **V** only sees supervisor lifecycles, and caught 4 of the 9 supervision
+  bugs (it cannot see restart timing, the budget window or Temporary rules
+  for nested trees).
+
+**Oracles added for the gaps** (each fails with its bug planted and passes on
+`main`; checked with `run.sh`):
+
+| Bug | Oracle | Layers that now catch it |
+|---|---|---|
+| 09 | `nested_supervision::temporary_subtree_failure_is_not_rebuilt` (a `sim_test`) | T, S (was C, F only) |
+| 14 | Fuzzer oracle **X8**: an actor whose only possible stop cause was the driver's `stop`, `shutdown` or `stop_with_reason` on a live actor publishes exactly that reason (instances whose hooks or state destructor panicked are skipped) | F < 1 s, C (was T, S only) |
+| 15 | None possible through the public API: see below | - |
+
+Bug 15 is not observable. `demonitor` is documented best-effort ("the message
+may still arrive"), and the window is between the waiter observing the exit and
+taking the table lock, in one poll: on the simulator a poll is atomic and the
+waiter's `select` polls the cancellation first, so the bug is unreachable; on
+Tokio it needs another thread to `demonitor` inside a few instructions. A
+`Down` after `demonitor` returned is allowed by the contract, so no test can
+tell the bug from correct behaviour. This differs from OTP, where
+`demonitor(Ref, [flush])` guarantees no `'DOWN'` after it returns. Catching
+it needs either that guarantee in the contract or a failpoint between the
+waiter's wake-up and its table lookup in `tasks/actor.rs`.
+
+**cargo-mutants** on `link.rs`, `monitor.rs`, `registry.rs` and
+`supervision/nested.rs` (60 mutants, full test suite with `failpoints`): 24
+caught, 8 timeouts (a disabled link or stop path that hangs a test), 15
+unviable, 13 missed. Equivalent survivors: `Default::default()` for
+`new_link_table`, `new_trap_exit_flag` and `new_linked_exit_reason` (the same
+value), `with_pair`'s order flipped (documented above), `||` to `&&` in the
+self-link guards of `register_link`/`unregister_link` (same id and same table
+always coincide), `LinkCleanup::drop` (the enclosing `ActorCleanup` completes
+links first; this drop is a redundant net) and `parent_runners.len() + 1` to
+`* 1` in `nested::add` (only a `lifecycle-trace` slot index). The four
+meaningful survivors in `nested.rs` (`resolve` with `&&` to `||`, and the
+adapter's `Drop` deleted or with its own-entry check inverted) are killed by
+`nested::resolve_and_drop_tests`. All of `monitor.rs` and `registry.rs` was
+caught.
+
+`supervision.rs` (314 mutants, run against the supervision-focused tests
+only: `--lib` and the `supervision`, `supervision_strategies`,
+`supervisor_policies`, `nested_supervision`, `failpoints` and
+`execution_groups` binaries, so a survivor here may still die under the full
+weekly run): 175 caught, 11 timeouts, 65 unviable, 63 missed. About 40 of the
+63 change only `lifecycle-trace` event arguments (`+ 1` slot and round
+indices, `count`, `trace_id`, `Core::cohort`) or logging (`log_failure_once`,
+the `generation > 1` restart log), which are equivalent in a default build.
+Two were real gaps and are now killed by unit tests: `jitter_seed` with `^`
+to `|` (the existing test only checked that pairs differ) and
+`RetryBudget::available` with `<` to `<=` (no test reached a reservation at
+exactly the limit). The rest are the race-only guards listed above
+(`finish_unless_recovering`'s supersession check, `close_admission`,
+`cancel_unready_startup`, `stop_remaining`, the OneForOne/closed-gate exit of
+`run_child`'s non-restart branch); the planted bugs show the stack catches
+gross mistakes on these paths, and these single-operator survivors need the
+narrow windows the failpoints were built for.
 
 ## Kani proofs of supervisor arithmetic
 
@@ -1298,6 +1489,118 @@ change under test. When a spawned change needs a client change, push the client
 change to a branch made from `spawned-v0.7`, dispatch the workflow with that
 ref, and land the spawned PR once both are green; then move the client branch. The `spawned-v0.7` client
 branches back long-lived draft PRs and are never merged from here.
+
+## Soak harness
+
+Seconds-long tests cannot see a leak of a few bytes per restart; production
+can (ethrex's mailbox leak grew 1.5 GB a day). `concurrency/benches/soak` runs
+hours of seeded actor churn and fails when a resource grows. It is a
+`harness = false` bench, so `cargo test` never builds or runs it; the
+`--all-targets` clippy job keeps it compiling. It needs Linux (`/proc`).
+
+```sh
+# on fede, from the repository root; release build with line tables
+CARGO_INCREMENTAL=0 CARGO_PROFILE_BENCH_DEBUG=line-tables-only \
+  nice -n 19 cargo bench -p spawned-concurrency --features metrics --bench soak --no-run
+nice -n 19 taskset -c 26-29 target/release/deps/soak-<hash> \
+  --duration 4h --seed 1 --out ~/spawned-work/soak/out/release-4h
+```
+
+`cargo bench ... --bench soak -- --duration 4h --seed 1` also works. Options:
+`--duration` (`4h`, `10m`, `1h30m`), `--seed`, `--sample` (default: duration
+/ 360, between 1 s and 10 s), `--warmup`, `--lanes` (async lanes, default 4),
+`--workers` (Tokio workers, default 4), `--out`, `--config` (default
+`concurrency/benches/soak/thresholds.toml`) and `--inject-leak`. Exit code 0 is
+PASS, 1 FAIL, 2 a usage error.
+
+**Workload.** Four async lanes and one threads-mode lane each pick scenarios
+from a seeded RNG until the duration ends; every scenario checks its own
+outcome (exit reasons, replies, Down and Exit counts, registry contents) and
+a scenario stuck for 60 s is an error. The scenarios: start, request and end
+(crash, stop or `Shutdown`) actors on each backend (Async, Blocking, Thread)
+and in threads mode; managed actors on a long-lived async group and thread
+group with owned registrations; supervisors with each strategy, and nested,
+crashing children and waiting for the replacement generation; links (trapped,
+propagated, `start_linked`, unlink); monitors (demonitor, monitoring a dead
+actor, the watcher dying first); `send_after` and `send_interval` cancelled,
+fired or live at stop; unmanaged registry register, duplicate and unregister;
+requests that time out, are dropped mid-flight or hit a stopped actor;
+finite and endless stream listeners; a whole `ActorSystem` with running
+actors and a supervisor shut down; and bursts of 1,000 to 21,000 messages
+drained or discarded at stop. The seed fixes each lane's scenario sequence and
+parameters; thread interleavings are not reproducible. A 10-minute run on fede
+starts about 1.7 million actors, so a 4-hour run executes every path millions of
+times.
+
+**Measurements**, one CSV row (`samples.csv`) per sample interval, plus a
+`phase` column (`baseline`, `warmup`, `steady`, `quiesce`):
+
+| Column | Source |
+|---|---|
+| `rss_mb` | `VmRSS` in `/proc/self/status` |
+| `heap_mb` | live heap bytes from a counting global allocator installed in the harness binary only |
+| `threads`, `fds` | entries in `/proc/self/task` and `/proc/self/fd` |
+| `tokio_tasks` | `RuntimeMetrics::num_alive_tasks()` of the harness runtime |
+| `registry` | `registry::registered().len()` |
+| `actors_live` | harness actor states constructed and not yet dropped (started minus fully stopped) |
+| `actors_active`, `mailbox_depth`, `handlers_active`, `requests_active` | spawned's own `metrics` gauges |
+| `actors_started`, `scenarios`, `errors` | progress counters (not judged) |
+
+Framework-internal `ActorRef` and `Context` clones are not countable through
+public APIs; a leaked one keeps its actor's shared state and mailbox alive, so
+it shows in `heap_mb` (and LeakSanitizer covers them at process exit, see
+[leak tests](#leak-tests-and-leaksanitizer)).
+
+**Pass/fail** (`thresholds.toml`, every value documented there). The run
+first primes every scenario once and lets the runtime settle, then takes the
+baseline. After warm-up (a quarter of the run, at most 30 minutes) each series
+gets a least-squares slope per hour: RSS over every sample, the other series
+over their floor (the minimum of each of about 20 consecutive windows), since
+counts swing with the workload and a leak raises the floor. A series fails
+when the slope is above its limit *and* at least 3 standard errors above zero,
+so short noisy runs do not fail but a steady leak does, and when the growth
+it implies over the steady window exceeds a small floor (`growth.*`: 8
+threads, 5 tasks or actors, 4 MiB RSS, 1 MiB heap, 0 registry entries), so a
+bounded pool adding a few threads in a short run does not fail either. Limits: RSS 16 MiB/h,
+heap 4 MiB/h, threads, fds and registry 2/h, Tokio tasks, live actors and the
+active-handler and request gauges 10/h, mailbox depth 100/h. At the end the lanes
+stop, the long-lived system shuts down, and within 60 s every count must
+return exactly to its baseline and the heap to within 8 MiB of it (RSS is not
+checked here: the allocator keeps freed pages). Any scenario error, a stuck
+lane or an incomplete system shutdown also fails the run.
+
+**Reading the results.** `summary.txt` (also printed) has the verdict, the
+first scenario errors, a table with each series' baseline, steady maximum,
+final quiesce value, slope ± standard error, limit and the two checks, and
+the run count of every scenario. A `trend` FAIL with a clean `settle` usually
+means growth that is released on shutdown (an unbounded cache or queue); a
+`settle` FAIL means something outlived everything that owned it. Plot the
+CSV columns against `elapsed_s` to see when growth starts. A real leak gets a
+minimal repro and a failing test, never a raised threshold.
+
+**Negative control.** `--inject-leak registry,arc,task` (or `all`) plants
+known leaks: one in four unmanaged registry names is never unregistered, every
+supervised (re)start leaks a 4 KiB `Arc` and an actor-state token, and every
+supervisor episode leaks a pending Tokio task. A 3-minute run with `all` must
+FAIL on `registry`, `heap_mb`, `actors_live` and `tokio_tasks`; run it after
+changing the harness or the thresholds.
+
+```sh
+nice -n 19 taskset -c 26-29 target/release/deps/soak-<hash> \
+  --duration 3m --seed 1 --inject-leak all --out ~/spawned-work/soak/out/self-test
+```
+
+Runs are by hand only: no schedule. Run a 4-hour soak before each release
+([release checklist](#release-checklist)).
+
+## Release checklist
+
+Before tagging a release (`gh release create` triggers `release.yaml`, which
+publishes to crates.io):
+
+1. CI green on the release PR, including the `client-compat` gate.
+2. A 4-hour [soak](#soak-harness) on fede passes on the release commit; link
+   its `summary.txt` in the release PR.
 
 ## CI hardening
 

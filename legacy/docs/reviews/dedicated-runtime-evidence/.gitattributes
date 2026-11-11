@@ -1,4 +1,0 @@
-# Retain exact captured test output, including blank terminal lines.
-**/*.stdout -whitespace
-**/*.stderr -whitespace
-**/*.log -whitespace

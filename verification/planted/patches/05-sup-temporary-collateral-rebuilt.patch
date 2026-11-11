@@ -1,0 +1,15 @@
+Planted bug 05 (sup-temporary-collateral-rebuilt): A Temporary sibling stopped as collateral by OneForAll/RestForOne is rebuilt
+
+diff --git a/concurrency/src/supervision.rs b/concurrency/src/supervision.rs
+index 328ed91b..6ab677b2 100644
+--- a/concurrency/src/supervision.rs
++++ b/concurrency/src/supervision.rs
+@@ -1695,7 +1695,7 @@ async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, core: Arc<C
+                 Either::Right((Either::Right(_), _)) => (),
+             }
+             last_recovery = round.meta.id;
+-            if spec.restart == RestartMode::Temporary {
++            if spec.restart == RestartMode::Temporary && round.meta.origin == view.index {
+                 let failed = system::lock(&core.failure).is_some();
+                 // Publish terminal state under the same lock as assignment before
+                 // acknowledging the round. A superseding coordinator must either

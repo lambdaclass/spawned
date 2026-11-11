@@ -1,0 +1,15 @@
+Planted bug 04 (sup-transient-restarts-on-shutdown): Transient restarts on Shutdown (only Normal treated as clean)
+
+diff --git a/concurrency/src/supervision.rs b/concurrency/src/supervision.rs
+index 328ed91b..ff3b2a99 100644
+--- a/concurrency/src/supervision.rs
++++ b/concurrency/src/supervision.rs
+@@ -41,7 +41,7 @@ impl RestartMode {
+     fn restarts(self, reason: Option<&ExitReason>) -> bool {
+         match self {
+             Self::Permanent => true,
+-            Self::Transient => reason.map(ExitReason::is_abnormal).unwrap_or(true),
++            Self::Transient => reason.map(|r| *r != ExitReason::Normal).unwrap_or(true),
+             Self::Temporary => false,
+         }
+     }

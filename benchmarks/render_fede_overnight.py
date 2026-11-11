@@ -121,8 +121,8 @@ def main():
     p.add_argument(
         "--findings",
         type=Path,
-        default=Path(__file__).resolve().parents[1]
-        / "legacy/research/backend-experiments/2026-11-06-fede/FINDINGS.md",
+        default=None,
+        help="optional findings Markdown to embed in the report",
     )
     a = p.parse_args()
     out = a.output
@@ -429,7 +429,7 @@ def main():
     for block, info in meta["inputs"].items():
         doc.append(f"| {block} | `{info['revision'][:12]}` | {info['samples']} |")
     findings = a.findings
-    if findings.exists():
+    if findings is not None and findings.exists():
         insertion = doc.index("## What each backend does")
         doc[insertion:insertion] = ["", findings.read_text(), ""]
     doc.extend(["", "## Matched graph results", ""])
