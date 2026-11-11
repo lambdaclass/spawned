@@ -197,6 +197,7 @@ async fn leaks(world: &World, baseline: usize) {
     while now() - start < LEAK_WAIT {
         let (live, names, tasks) = clean(world);
         if live == 0 && names == 0 && tasks <= baseline {
+            trace(|| format!("released after {:?}", now() - start));
             return;
         }
         i += 1;
