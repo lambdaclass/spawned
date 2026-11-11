@@ -816,8 +816,19 @@ impl<A: Actor> Context<A> {
     /// `Task.async` + `handle_info` would. `work` receives the job's
     /// [`JobCtx`] (to check cancellation and `emit` fenced messages, bounded
     /// by `emit_credits`; the terminal message is always last) and returns
-    /// the future to run; `|_| fut` when it needs neither. A panic arrives
-    /// as `Err(JobError::Panicked)`. Holds one `MAX_OUTSTANDING` credit
+    /// the future to run; `|_| fut` when it needs neither. A panic in the
+    /// future arrives as `Err(JobError::Panicked)`.
+    ///
+    /// `work` itself is a factory that runs **at once, in this turn, on the
+    /// calling thread**: only the future it returns is the job. Code before
+    /// its `async` block runs in the handler, so a panic there is a handler
+    /// panic (the actor's panic boundary, not `JobError::Panicked`), and if
+    /// the owner's exit closes admission meanwhile the job is refused after
+    /// the factory ran (its future is dropped unpolled). Put fallible or slow
+    /// preparation inside the `async` block. (`pipe_blocking` runs its
+    /// closure on the job's thread, under the job's panic boundary.)
+    ///
+    /// Holds one `MAX_OUTSTANDING` credit
     /// while it executes. Rejects at once at a bound; never waits. On `Err`,
     /// `work` and `done` are dropped: use [`reserve_job`](Self::reserve_job)
     /// to keep them.

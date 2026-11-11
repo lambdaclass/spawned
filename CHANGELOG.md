@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Docs: an async job's `work` is a factory run at once in the current turn
+  (its panic is a handler panic; a job refused by the owner's exit has run
+  it); only its future is the job (`pipe` rustdoc, GUIDE).
 - **Behaviour (0.8)**: `demonitor` flushes, as OTP's `demonitor(Ref, [flush])`:
   once it returns, in both modes, no `Down` of that monitor is enqueued or
   handled, including one already in the mailbox. Framework `Down`s travel in

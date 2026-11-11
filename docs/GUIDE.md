@@ -716,6 +716,12 @@ ctx.pipe_reply(JobOptions::new(), token, |_| async move { downstream?.await }, |
   `.emit_credits(n)` and, for `pipe_reply*` only,
   `.cancel_on_caller_gone()`. The work receives the job's `JobCtx` by
   value (`|_| fut` when it needs neither cancellation nor emits).
+- For async jobs (`pipe`, `pipe_reply`), `work` is a factory that runs at
+  once, in the current turn: only the future it returns is the job. A panic
+  before its `async` block is a handler panic, not `JobError::Panicked`,
+  and a job the owner's exit refuses meanwhile has already run its factory.
+  Keep preparation inside the `async` block. Blocking jobs run their whole
+  closure on the job's thread, under the job's panic boundary.
 - `done(outcome)` runs in the owner's turn. `JobOutcome<T>` is
   `Result<T, JobError>`; `Err` carries `JobError::Panicked` or
   `JobError::DeadlineExceeded`. `JobError` and `PipeError` are
