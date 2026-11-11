@@ -54,8 +54,11 @@ keeps the generated modules and TLC logs.
 Scenarios: normal start and stop of three children with mixed modes;
 Permanent and Transient panics and restarts; Transient normal exit (no
 restart); Temporary exit; `ChildHandle::shutdown` of running children;
-factory error then success; non-restartable startup failure; restart budget
-exhaustion and disabled retries; shutdown during backoff; startup timeout;
+replacement factory error then success; first-start factory error and
+first-start timeout (both fail the start, S1); a ready child's exit deferred
+during the initial start (`DeferExit`/`Undefer`, S1); non-restartable startup
+failure; restart budget exhaustion and disabled retries; shutdown during
+backoff; replacement startup timeout;
 `Supervisor::shutdown` with a short deadline and a hanging `stopped()`
 (`ShutdownDeadline`, `SupChildTimeout`, `CleanupStuck`); and seeded random
 crashes, normal exits and external shutdowns racing a stop or shutdown.
@@ -373,7 +376,7 @@ and `--negative-controls` removes one guard at a time and requires induction
 to fail: for `Supervision` the retry limit, ordered start, join wait, restart
 table, cleanup, unpublish-on-stop, admission gate on `Attempt` and the
 reverse-shutdown wait; for `Cohorts` and `NestedSupervision` the existing
-`Fault` mutations (`Selection`, `Cleanup`, `Retirement`, `Closed`, `InPlaceRetry`, `Join`);
+`Fault` mutations (`Selection`, `Cleanup`, `Retirement`, `Closed`, `InPlaceRetry`, `FirstStartRetry`, `Join`);
 for `Coordinator` see below.
 
 The type annotations are `\* @type:` comments, ignored by TLC. Apalache also
@@ -536,6 +539,9 @@ exactly the property it targets:
 
 | Model (configuration) | Mutation | Breaks |
 |---|---|---|
+| `Supervision` (`MCSupervision`, a rewrite of `Supervision.tla`: no `Fault` constant) | `FirstStartRetry` (v0.7 retried a failed first start) | `RestartFollowsPolicy` |
+| `Supervision` (`MCSupervision`, rewrite) | `NoDeferral` (v0.7 decided on a ready child's exit during the initial start) | `RestartFollowsPolicy` |
+| `Cohorts` (`MCCohortsAll`) | `FirstStartRetry` | `FirstStartOnce` (in `Safety`) |
 | `DeferredReplies` | `NoAutoReply` | `NoOrphan` |
 | `DeferredReplies` | `NoAtomicExpiry` (abstract double discharge; the real race needs Loom) | `AtMostOneDischarge` |
 | `DeferredReplies` | `LateSuccess` | `NoSuccessAfterDeadline` |

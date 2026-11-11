@@ -815,8 +815,10 @@ async fn system_shutdown_is_cancel_safe() {
                     !matches!(outcome, Attempt::Done(ref r) if r.complete),
                     "{op}"
                 );
+                // Zero grace: the system kills at once after its ordered pass
+                // (E3); let the kill land while stopped() still runs (E1).
+                spawned_rt::tasks::sleep(Duration::from_millis(50)).await;
                 gate.notify_one();
-                // Zero grace: the kill reached it inside stopped() (E1).
                 assert_eq!(
                     spawned_rt::tasks::timeout(LIMIT, actor.wait_exit())
                         .await

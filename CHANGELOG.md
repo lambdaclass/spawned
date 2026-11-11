@@ -32,8 +32,21 @@
   `mailbox_cleanup_failure()` deprecated) that restart a Transient child
   without changing the reason; `spawned-test` `faults::exit` sends an exact
   exit signal; metrics `actors_exited_killed_total`,
-  `actors_exited_noproc_total`. Remaining: S1/S2 supervisor startup, rank 11
-  reason-bearing `ActorStopped`/`NoProc` errors, TLA+ and trace work.
+  `actors_exited_noproc_total`. Supervisor startup (S1/S2): any failed first
+  start of a child (factory error or panic, panic or stop in `started()`,
+  `startup_timeout`, placement or group closure) fails `start()` whatever the
+  restart type, with no retry, as `SupervisorError::FailedToStartChild
+  { child, cause, rollback_failures }` (a stuck cleanup during the initial
+  start is `StartupCleanupStuck`); a ready child's exit during the initial
+  start is deferred and processed under the strategy once the tree commits
+  ready (OneForOne no longer restarts it at once, OneForAll/RestForOne no
+  longer fail the start); `start()` returns its error only after the
+  rollback (every child terminal, or `Failed` once its cleanup is stuck).
+  `Supervision.tla` (no restart before the tree is ready, deferral actions
+  `DeferExit`/`Undefer`, traced) and `Cohorts.tla` (round 0 once per child,
+  `FirstStartOnce`) follow, with the v0.7 behaviours as negative controls.
+  Remaining: rank 11 reason-bearing `ActorStopped`/`NoProc` errors,
+  lifecycle-trace mapping to `Lifecycle.tla`, Loom and simulator coverage.
 
 - **Breaking (0.8), in progress:** deferred replies and pipe-to-self
   (ROADMAP rank 11), implementing

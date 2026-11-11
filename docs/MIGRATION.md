@@ -81,9 +81,18 @@ table is the full list). What to edit:
   (`ChildHandle::exit`): `Normal` is ignored by a non-trapping target,
   `Panic(msg)` ends it with exactly `Panic(msg)`, `Kill` ends it `Killed`, a
   trapping target receives an `Exit`.
-- **Supervisor start (rank 5f, not implemented yet in this branch):** any
-  first-start failure of a child will fail `SupervisorBuilder::start()`,
-  whatever its restart type, with no opt-in retry (decision 7). **ethrex**:
+- **Supervisor start (rank 5f):** any first-start failure of a child (factory
+  error or panic, panic or stop in `started()`, `startup_timeout`, placement)
+  fails `SupervisorBuilder::start()`, whatever its restart type, with no
+  opt-in retry (decision 7), as `SupervisorError::FailedToStartChild { child,
+  cause, rollback_failures }`; match on it (or keep treating any `Err` as a
+  failed start). Replacements still retry within the restart budget. A ready
+  child that exits while later siblings start is no longer restarted at once
+  (OneForOne) or fatal (OneForAll/RestForOne): its exit is processed after
+  the initial start completes. `start()` now returns its error after the
+  rollback, so it can take up to two `shutdown_timeout`s per started child; a
+  child whose cleanup is stuck is reported `Failed` and its work stays owned
+  by the system. **ethrex**:
   the Transient discovery child's factory (`DiscoveryServer::build`) can fail
   at boot when pinging a bootnode fails; v0.7 retried it, v0.8 fails
   `start()` and `init_network` panics on `.expect("Network starts")`. Fix in

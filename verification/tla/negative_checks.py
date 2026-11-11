@@ -122,6 +122,51 @@ def named_fault(module, fault, invariant, tlc):
     print(f"COUNTEREXAMPLE model: {module}/{fault} ({invariant})")
 
 
+def spec_mutation(module, spec, label, pattern, replacement, prop, tlc):
+    """Run MODULE with one guard of SPEC rewritten (for models without a
+    Fault constant), checking TypeOK and the single action property PROP,
+    and require PROP to be violated."""
+    import re
+    with tempfile.TemporaryDirectory(prefix="bad-spec-") as directory:
+        work = Path(directory)
+        for source in HERE.glob("*.tla"):
+            shutil.copy(source, work)
+        text = (work / spec).read_text()
+        mutated, count = re.subn(pattern, replacement, text, flags=re.S)
+        if count != 1:
+            raise AssertionError(f"{spec}/{label}: mutation did not apply")
+        (work / spec).write_text(mutated)
+        lines = []
+        # Keep SPECIFICATION, CONSTANTS and CONSTRAINT (which precede the
+        # checked invariants and properties in the cfg).
+        for line in (HERE / f"{module}.cfg").read_text().splitlines():
+            if line.startswith(("INVARIANT", "PROPERT")):
+                break
+            lines.append(line)
+        lines += ["INVARIANT TypeOK", f"PROPERTY {prop}"]
+        (work / f"{module}.cfg").write_text("\n".join(lines) + "\n")
+        result = subprocess.run(shlex.split(tlc) + ["-workers", "1", "-deadlock", "-cleanup", module],
+                                cwd=work, capture_output=True, text=True)
+        log = result.stdout + result.stderr
+        if f"property {prop} is violated" not in log:
+            raise AssertionError(f"{spec}/{label}: {prop} not violated\n{log}")
+    print(f"COUNTEREXAMPLE model: {spec}/{label} ({prop})")
+
+
+# S1 (otp-exit-signals.md): v0.7's startup behaviours against Supervision.tla,
+# which has no Fault constant: (label, pattern, replacement).
+SUPERVISION_S1_CONTROLS = [
+    # v0.7 retried a failed first start of a Permanent/Transient child.
+    ("FirstStartRetry",
+     r'    init /\\ \(Restarts\(m, r\) \\/ \(~ready /\\ m # "Temporary"\)\)',
+     r'    Restarts(m, r) \\/ (~ready /\\ init /\\ m # "Temporary")'),
+    # v0.7 decided at once on a ready child's exit during the initial start.
+    ("NoDeferral",
+     r'(Decide\(c\) ==\s*/\\ pc\[c\] = "decide")\s*/\\ ~\(open /\\ ~sready /\\ readyGen\[c\]\)',
+     r'\1'),
+]
+
+
 # Rank 11 design models: (module, fault, invariant it must violate).
 def named_temporal(module, fault, prop, tlc, constants=None):
     """Run MODULE with Fault = FAULT, TypeOK and the single temporal property
@@ -325,6 +370,23 @@ def main():
         model_fault("MCCohortsAll", fault, args.tlc)
     # Needs a second generation within one round (MaxGen 3).
     model_fault("MCCohortsAllSupersession", "InPlaceRetry", args.tlc)
+    model_fault("MCCohortsAll", "FirstStartRetry", args.tlc, invariant="Safety")
+    for label, pattern, replacement in SUPERVISION_S1_CONTROLS:
+        spec_mutation("MCSupervision", "Supervision.tla", label, pattern, replacement,
+                      "RestartFollowsPolicy", args.tlc)
+    deferred = next(t for t in traces if t["name"] == "ready_exit_deferred")
+    def decide_at_once(events):
+        # v0.7: no deferral; the restart decision is taken during startup,
+        # where the deferral was recorded (before SupStartDone).
+        at = next(i for i, e in enumerate(events) if e["a"] == "DeferExit")
+        child = events[at]["c"]
+        undefer = next(i for i, e in enumerate(events) if e["a"] == "Undefer")
+        decide = next(i for i, e in enumerate(events)
+                      if i > undefer and e["a"] == "Decide" and e["c"] == child)
+        events[at] = events.pop(decide)
+        events.pop(undefer)
+    require_rejected(deferred, decide_at_once,
+                     "ready child's exit decided during the initial start", args.tlc)
     model_fault("MCCoordinator", "ReleaseEarly", args.tlc)
     model_fault("MCCoordinator", "ForgetFailure", args.tlc)
     model_fault("MCCoordinator", "ForgetSignal", args.tlc, invariant="JoinAfterAllSignalled")

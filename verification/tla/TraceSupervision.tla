@@ -33,7 +33,7 @@ Bool(x) == x = "true"
 
 ChildEvents == {"RetryReserve", "RetryRelease", "LoopTop", "BackoffDone", "Attempt", "BecomeReady",
                 "StartupFailed", "SelfExit", "StopObserved", "CleanupDone",
-                "CleanupStuck", "Decide", "Finish"}
+                "CleanupStuck", "DeferExit", "Undefer", "Decide", "Finish"}
 
 \* The model action named by logged event e, constrained by its parameters.
 Step(e) ==
@@ -70,6 +70,8 @@ Step(e) ==
              [] e.a = "StopObserved" -> StopObserved(c)
              [] e.a = "CleanupDone"  -> CleanupDone(c)
              [] e.a = "CleanupStuck" -> CleanupStuck(c)
+             [] e.a = "DeferExit"    -> DeferExit(c)
+             [] e.a = "Undefer"      -> Undefer(c)
              [] e.a = "Decide"       ->
                   /\ Decide(c)
                   /\ CASE e.x = "closed"  -> ~open

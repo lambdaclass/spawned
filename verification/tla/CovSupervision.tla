@@ -42,6 +42,8 @@ CovNext ==
         \/ StopObserved(c) /\ L("StopObserved", c)
         \/ CleanupDone(c) /\ L("CleanupDone", c)
         \/ CleanupStuck(c) /\ L("CleanupStuck", c)
+        \/ DeferExit(c) /\ L("DeferExit", c)
+        \/ Undefer(c) /\ L("Undefer", c)
         \/ Decide(c) /\ L("Decide", c)
         \/ Finish(c) /\ L("Finish", c)
 

@@ -3,13 +3,15 @@
 #![cfg_attr(spawned_sim, allow(unused_imports, dead_code))]
 use spawned_concurrency::{
     message::Message,
-    supervision::{Backoff, ChildSpec, RestartMode, SupervisorConfig, SupervisorStrategy},
+    supervision::{
+        Backoff, ChildSpec, RestartMode, SupervisorConfig, SupervisorError, SupervisorStrategy,
+    },
     system::ActorSystem,
     tasks::{Actor, Context, Handler},
 };
 use std::{
     sync::{
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc, Mutex,
     },
     time::Duration,
@@ -602,7 +604,11 @@ async fn upstream_failure_supersedes_a_round_while_a_dependent_factory_is_pendin
 }
 
 #[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
-async fn ready_dependency_failure_rolls_back_slow_initial_tree_startup() {
+/// S1: a ready dependency's exit during the initial start is deferred: the
+/// start continues (v0.7 rolled back at once), the dependency is not replaced
+/// alone, and when a later first start fails the deferred exit is part of the
+/// rollback.
+async fn ready_dependency_exit_is_deferred_during_slow_initial_tree_startup() {
     for strategy in [
         SupervisorStrategy::OneForAll,
         SupervisorStrategy::RestForOne,
@@ -639,21 +645,41 @@ async fn ready_dependency_failure_rolls_back_slow_initial_tree_startup() {
                             })
                         }
                     })
-                    .startup_timeout(Duration::from_secs(30)),
+                    .startup_timeout(if index == 2 {
+                        Duration::from_millis(500)
+                    } else {
+                        Duration::from_secs(30)
+                    }),
                 )
                 .unwrap(),
             );
         }
-        let startup = spawned_rt::tasks::spawn(tree.start());
+        let finished = Arc::new(AtomicBool::new(false));
+        let flag = finished.clone();
+        let startup = spawned_rt::tasks::spawn(async move {
+            let result = tree.start().await;
+            flag.store(true, Ordering::SeqCst);
+            result
+        });
         spawned_rt::tasks::timeout(LIMIT, entered.notified())
             .await
             .unwrap();
         assert!(children[0].current().unwrap().request(Crash).await.is_err());
-        assert!(spawned_rt::tasks::timeout(LIMIT, startup)
+        spawned_rt::tasks::sleep(Duration::from_millis(100)).await;
+        assert!(
+            !finished.load(Ordering::SeqCst),
+            "{strategy:?}: start rolled back at once"
+        );
+        match spawned_rt::tasks::timeout(LIMIT, startup)
             .await
             .unwrap()
             .unwrap()
-            .is_err());
+        {
+            Err(SupervisorError::FailedToStartChild { child, .. }) => {
+                assert_eq!(child, "startup-dependency-2")
+            }
+            other => panic!("{strategy:?}: {:?}", other.err()),
+        }
         assert_eq!(
             children[0].snapshot().generation,
             1,

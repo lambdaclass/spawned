@@ -84,7 +84,18 @@ H_initial ==
 H_retry == \A c \in Children :
     /\ pc[c] \in {"top", "backoff", "attempt"} /\ gen[c] > 0 =>
            Retries(Mode[c], exitR[c], readyGen[c], initial[c])
-    /\ pc[c] = "decide" => gen[c] > 0
+    /\ pc[c] \in {"decide", "deferred"} => gen[c] > 0
+
+\* S1: nothing restarts before the tree commits ready. Decide sends a
+\* controller back to "top" only with initial[c] (Retries); before sready a
+\* child has at most its first generation, whose readiness is initial[c],
+\* so Decide's deferral guard (open, ~sready, readyGen) leaves no restart.
+\* A deferred controller holds a ready generation's exit.
+H_first == \A c \in Children :
+    /\ gen[c] <= 1 /\ initial[c] => readyGen[c]
+    /\ gen[c] > 1 => sready
+    /\ pc[c] \in {"top", "backoff", "attempt"} /\ gen[c] > 0 => sready
+    /\ pc[c] = "deferred" => readyGen[c]
 
 \* Reverse-order shutdown: while stopping, every child after sidx has
 \* finished or was abandoned on timeout (cdone and timedOut only grow).
@@ -115,7 +126,7 @@ SafetyInd ==
 
 Helpers ==
     /\ H_gen /\ H_launch /\ H_initial
-    /\ H_retry /\ H_shutdown /\ H_done /\ H_budget
+    /\ H_retry /\ H_first /\ H_shutdown /\ H_done /\ H_budget
 
 IndInv == TypeInd /\ H_alive /\ H_pub /\ Helpers /\ SafetyInd
 
@@ -128,8 +139,9 @@ NoStartAfterCloseStep ==
 RestartFollowsPolicyStep ==
     \A c \in Children :
         (gen'[c] > gen[c] /\ gen[c] > 0) =>
-            \/ DesignAllowsRestart(Mode[c], exitR[c])
-            \/ ~readyGen[c] /\ initial[c] /\ Mode[c] # "Temporary"
+            /\ sready
+            /\ \/ DesignAllowsRestart(Mode[c], exitR[c])
+               \/ ~readyGen[c] /\ initial[c] /\ Mode[c] # "Temporary"
 ReverseShutdownStep ==
     \A c \in Children :
         (stopTurn'[c] /\ ~stopTurn[c] /\ ~deadline') =>

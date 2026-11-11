@@ -231,9 +231,11 @@ async fn failed_factories_cancel_owned_helpers_before_retry_and_catch_panics() {
                     })
                     .unwrap();
                 drop(helper);
+                // v0.8 (S1): a first start is never retried, so the failed
+                // constructions are replacements after a crash.
                 match attempt {
-                    0 => Err("injected construction error".to_string()),
-                    1 => panic!("injected factory panic"),
+                    1 => Err("injected construction error".to_string()),
+                    2 => panic!("injected factory panic"),
                     _ => Ok(Counter(0)),
                 }
             }
@@ -243,9 +245,14 @@ async fn failed_factories_cancel_owned_helpers_before_retry_and_catch_panics() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(attempts.load(Ordering::SeqCst), 3);
-    assert_eq!(child.snapshot().generation, 3);
-    assert_eq!(child.current().unwrap().request(Next).await.unwrap(), 1);
+    assert!(child.current().unwrap().request(Crash).await.is_err());
+    let replacement = spawned_rt::tasks::timeout(LIMIT, child.wait_for_generation(1))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(attempts.load(Ordering::SeqCst), 4);
+    assert_eq!(child.snapshot().generation, 4);
+    assert_eq!(replacement.request(Next).await.unwrap(), 1);
     assert!(supervisor.shutdown(LIMIT).await.complete);
     assert!(!live.load(Ordering::SeqCst));
     assert!(system.shutdown(LIMIT).await.complete);
@@ -1035,8 +1042,10 @@ async fn transient_startup_timeout_retries_after_actual_cleanup() {
             ChildSpec::new("slow-init", &group, move |ctx| {
                 attempts.fetch_add(1, Ordering::SeqCst);
                 async move {
+                    // v0.8 (S1): a first start is never retried, so the
+                    // slow start is the first replacement's.
                     Ok::<_, String>(SlowInit {
-                        first: ctx.generation() == 1,
+                        first: ctx.generation() == 2,
                     })
                 }
             })
@@ -1048,8 +1057,13 @@ async fn transient_startup_timeout_retries_after_actual_cleanup() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(calls.load(Ordering::SeqCst), 2);
-    assert_eq!(child.snapshot().generation, 2);
+    child.current().unwrap().child_handle().kill();
+    spawned_rt::tasks::timeout(LIMIT, child.wait_for_generation(2))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(calls.load(Ordering::SeqCst), 3);
+    assert_eq!(child.snapshot().generation, 3);
     assert_eq!(child.snapshot().last_exit, Some(ExitReason::Shutdown));
     assert!(child.current().is_ok());
     assert!(supervisor.shutdown(LIMIT).await.complete);

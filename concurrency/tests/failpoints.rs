@@ -124,7 +124,6 @@ impl Handler<Ping> for Worker {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn factory_errors_restart_within_budget_and_count_generations() {
     let _scenario = FailScenario::setup();
-    failpoints::configure("child.factory", FailPoint::new(Action::Error).times(3)).unwrap();
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("fp-factory", 1).unwrap();
     let started = Started::default();
@@ -141,13 +140,17 @@ async fn factory_errors_restart_within_budget_and_count_generations() {
         }))
         .unwrap();
     let tree = tree.start().await.unwrap();
-    let current = child.wait_ready().await.unwrap();
+    // v0.8 (S1): a first start is never retried, so the failures are
+    // injected into the replacements after a crash.
+    failpoints::configure("child.factory", FailPoint::new(Action::Error).times(3)).unwrap();
+    child.wait_ready().await.unwrap().send(Crash).unwrap();
+    let current = child.wait_for_generation(1).await.unwrap();
     // Three injected failures, each its own generation, then one success.
     assert_eq!(failpoints::stats("child.factory").fired, 3);
-    assert_eq!(child.snapshot().generation, 4);
-    assert_eq!(constructed.load(Ordering::SeqCst), 1);
-    assert_eq!(started.handles().len(), 1);
-    assert_eq!(started.handles()[0].id(), current.id());
+    assert_eq!(child.snapshot().generation, 5);
+    assert_eq!(constructed.load(Ordering::SeqCst), 2);
+    assert_eq!(started.handles().len(), 2);
+    assert_eq!(started.handles()[1].id(), current.id());
     assert!(tree.failure().is_none());
     let report = tree.shutdown(LIMIT).await;
     assert!(report.complete && report.failure.is_none());
@@ -155,7 +158,7 @@ async fn factory_errors_restart_within_budget_and_count_generations() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn persistent_factory_failure_exhausts_budget_and_fails_startup() {
+async fn persistent_factory_failure_fails_startup_without_retry() {
     let _scenario = FailScenario::setup();
     failpoints::configure("child.factory", Action::Error).unwrap();
     let system = ActorSystem::new().unwrap();
@@ -170,13 +173,14 @@ async fn persistent_factory_failure_exhausts_budget_and_fails_startup() {
         }))
         .unwrap();
     match tree.start().await {
-        Err(SupervisorError::Failed(error)) => {
-            assert!(error.contains("restart budget exhausted"), "{error}")
+        Err(SupervisorError::FailedToStartChild { child, cause, .. }) => {
+            assert_eq!(child, "worker");
+            assert!(cause.contains("failpoint child.factory"), "{cause}")
         }
-        other => panic!("expected budget failure, got {:?}", other.err()),
+        other => panic!("expected a first-start failure, got {:?}", other.err()),
     }
-    // One initial attempt plus max_restarts retries.
-    assert_eq!(failpoints::stats("child.factory").fired, 3);
+    // v0.8 (S1): one attempt; a first start is not retried.
+    assert_eq!(failpoints::stats("child.factory").fired, 1);
     assert!(started.handles().is_empty());
     assert!(child.current().is_err());
     assert!(system.shutdown(LIMIT).await.complete);
@@ -185,7 +189,6 @@ async fn persistent_factory_failure_exhausts_budget_and_fails_startup() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn factory_panic_is_a_failed_start_not_a_controller_failure() {
     let _scenario = FailScenario::setup();
-    failpoints::configure("child.factory", FailPoint::new(Action::Panic).times(1)).unwrap();
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("fp-factory-panic", 1).unwrap();
     let started = Started::default();
@@ -198,9 +201,12 @@ async fn factory_panic_is_a_failed_start_not_a_controller_failure() {
         }))
         .unwrap();
     let tree = tree.start().await.unwrap();
-    child.wait_ready().await.unwrap();
+    // v0.8 (S1): injected into the replacement; a first start is not retried.
+    failpoints::configure("child.factory", FailPoint::new(Action::Panic).times(1)).unwrap();
+    child.wait_ready().await.unwrap().send(Crash).unwrap();
+    child.wait_for_generation(1).await.unwrap();
     let snapshot = child.snapshot();
-    assert_eq!(snapshot.generation, 2);
+    assert_eq!(snapshot.generation, 3);
     assert!(snapshot
         .last_error
         .as_deref()
@@ -253,11 +259,6 @@ async fn seeded_probabilistic_factory_failures_match_generation_count() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn ready_generation_discarded_before_publication_is_never_current() {
     let _scenario = FailScenario::setup();
-    failpoints::configure(
-        "child.after_ready_before_publish",
-        FailPoint::new(Action::Error).times(1),
-    )
-    .unwrap();
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("fp-discard", 1).unwrap();
     let started = Started::default();
@@ -270,17 +271,25 @@ async fn ready_generation_discarded_before_publication_is_never_current() {
         }))
         .unwrap();
     let tree = tree.start().await.unwrap();
-    let current = child.wait_ready().await.unwrap();
+    // v0.8 (S1): a discarded first start fails start(), so discard a
+    // replacement.
+    failpoints::configure(
+        "child.after_ready_before_publish",
+        FailPoint::new(Action::Error).times(1),
+    )
+    .unwrap();
+    child.wait_ready().await.unwrap().send(Crash).unwrap();
+    let current = child.wait_for_generation(1).await.unwrap();
     let handles = started.handles();
-    assert_eq!(handles.len(), 2);
-    assert_ne!(handles[0].id(), current.id());
-    assert_eq!(handles[1].id(), current.id());
+    assert_eq!(handles.len(), 3);
+    assert_ne!(handles[1].id(), current.id());
+    assert_eq!(handles[2].id(), current.id());
     // The discarded generation was stopped, not leaked.
-    let reason = tokio::time::timeout(LIMIT, handles[0].wait_exit_async())
+    let reason = tokio::time::timeout(LIMIT, handles[1].wait_exit_async())
         .await
         .unwrap();
     assert_eq!(reason, ExitReason::Shutdown);
-    assert_eq!(child.snapshot().generation, 2);
+    assert_eq!(child.snapshot().generation, 3);
     assert!(tree.shutdown(LIMIT).await.complete);
     assert!(system.shutdown(LIMIT).await.complete);
 }
@@ -541,20 +550,14 @@ async fn placement_failure_is_reported_and_fails_the_supervisor() {
         }))
         .unwrap();
     match tree.start().await {
-        Err(SupervisorError::Failed(error)) => {
-            assert!(error.contains("placement failed"), "{error}")
+        Err(SupervisorError::FailedToStartChild { child, cause, .. }) => {
+            assert_eq!(child, "worker");
+            assert!(cause.contains("placement failed"), "{cause}")
         }
         other => panic!("expected placement failure, got {:?}", other.err()),
     }
-    // start() returns once the supervisor has failed; the child's controller
-    // publishes its terminal state afterwards. Never started: `Failed` is
-    // sticky, so the outcome does not depend on whether the unstarted-child
-    // sweep or the controller finishes last.
-    let began = Instant::now();
-    while child.snapshot().state == ChildState::Waiting {
-        assert!(began.elapsed() < LIMIT, "child never left Waiting");
-        tokio::time::sleep(Duration::from_millis(2)).await;
-    }
+    // v0.8 (S2): start() returns after the rollback, so the never-started
+    // child is already terminal (#223 polled for it).
     assert_eq!(child.snapshot().state, ChildState::Failed);
     assert_eq!(child.snapshot().generation, 0);
     failpoints::remove("system.reserve");

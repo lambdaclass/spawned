@@ -166,7 +166,9 @@ async fn failed_nested_startup_is_cleaned_before_parent_retries() {
                     "fallible",
                     &placement,
                     move |_| async move {
-                        if attempt == 0 {
+                        // v0.8 (S1): the parent's first start of the nested
+                        // tree is not retried, so its replacement fails.
+                        if attempt == 1 {
                             Err("nested initial construction failed".to_string())
                         } else {
                             Ok(Counter(0))
@@ -181,8 +183,13 @@ async fn failed_nested_startup_is_cleaned_before_parent_retries() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(calls.load(Ordering::SeqCst), 2);
-    assert_eq!(nested.snapshot().generation, 2);
+    nested.current().unwrap().stop();
+    spawned_rt::tasks::timeout(LIMIT, nested.wait_for_generation(2))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(calls.load(Ordering::SeqCst), 3);
+    assert_eq!(nested.snapshot().generation, 3);
     assert!(nested.current().is_ok());
     assert!(supervisor.shutdown(LIMIT).await.complete);
     assert!(system.shutdown(LIMIT).await.complete);

@@ -46,7 +46,17 @@ H_barrier ==
 \* false.
 H_done == s.phase = "Done" => ~s.open
 
-IndInv == TypeInd /\ H_barrier /\ H_done /\ Safety
+\* S1: recovery rounds exist only after the tree committed ready, which
+\* needs every child's first start. CRequest needs committed; CSelect needs
+\* a pending request; CAssign assigns the selected round. So a round-r > 0
+\* CBegin never runs for a child without its first start (FirstStartOnce).
+H_first ==
+ /\ s.committed => s.initial = Children
+ /\ s.pending # {} => s.committed
+ /\ s.epoch > 0 => s.committed
+ /\ \A c \in Children : s.assigned[c] > 0 => s.committed
+
+IndInv == TypeInd /\ H_barrier /\ H_done /\ H_first /\ Safety
 
 \* Probe (apalache.sh requires it violated): IndInv admits a mid-round state
 \* with live generations, i.e. the step check is not over an empty set.

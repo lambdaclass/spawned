@@ -558,6 +558,218 @@ mod tasks_mode {
         assert_eq!(ended(&child).await, ExitReason::Shutdown);
         assert!(seen.stopped());
     }
+
+    mod startup {
+        use super::*;
+        use spawned_concurrency::supervision::{
+            ChildSpec, ChildState, RestartMode, SupervisorConfig, SupervisorError,
+            SupervisorStrategy,
+        };
+        use spawned_concurrency::system::ActorSystem;
+        use std::sync::atomic::AtomicUsize;
+
+        fn terminal(state: ChildState) -> bool {
+            matches!(state, ChildState::Stopped | ChildState::Failed)
+        }
+
+        // S1: a child's first start that fails aborts start() whatever the
+        // restart type: no retry (v0.7 retried Permanent and Transient
+        // children and timeouts within the restart budget).
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn first_start_failure_aborts_start_whatever_the_restart_type() {
+            for (mode, timeout) in [
+                (RestartMode::Permanent, false),
+                (RestartMode::Transient, false),
+                (RestartMode::Permanent, true),
+                (RestartMode::Transient, true),
+            ] {
+                let system = ActorSystem::new().unwrap();
+                let group = system.async_group("s1", 1).unwrap();
+                let calls = Arc::new(AtomicUsize::new(0));
+                let mut tree = system.supervisor(SupervisorConfig::default()).unwrap();
+                let seen = Seen::default();
+                tree.add(ChildSpec::new("first", &group, move |_| {
+                    let seen = seen.clone();
+                    async move { Ok::<_, String>(Node::new(&seen, false)) }
+                }))
+                .unwrap();
+                let counted = calls.clone();
+                tree.add(
+                    ChildSpec::new("failing", &group, move |_| {
+                        counted.fetch_add(1, Ordering::SeqCst);
+                        async move {
+                            if timeout {
+                                std::future::pending::<()>().await;
+                            }
+                            Err::<Node, _>("boot failed")
+                        }
+                    })
+                    .restart(mode)
+                    .startup_timeout(Duration::from_millis(50)),
+                )
+                .unwrap();
+                let result = tokio::time::timeout(LIMIT, tree.start()).await.unwrap();
+                match result {
+                    Err(SupervisorError::FailedToStartChild { child, .. }) => {
+                        assert_eq!(child, "failing")
+                    }
+                    other => panic!("{mode:?}/{timeout}: unexpected {:?}", other.err()),
+                }
+                assert_eq!(
+                    calls.load(Ordering::SeqCst),
+                    1,
+                    "{mode:?}: first start retried"
+                );
+                assert!(system.shutdown(LIMIT).await.complete);
+            }
+        }
+
+        // S1: a ready child's exit during the initial start is recorded and
+        // processed after the tree commits ready, under the strategy (v0.7:
+        // OneForOne restarted at once, OneForAll/RestForOne failed start()).
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn ready_child_exit_during_startup_is_processed_afterwards() {
+            for strategy in [
+                SupervisorStrategy::OneForOne,
+                SupervisorStrategy::OneForAll,
+                SupervisorStrategy::RestForOne,
+            ] {
+                let system = ActorSystem::new().unwrap();
+                let group = system.async_group("s1", 1).unwrap();
+                let config = SupervisorConfig {
+                    strategy,
+                    ..SupervisorConfig::default()
+                };
+                let mut tree = system.supervisor(config).unwrap();
+                let seen = Seen::default();
+                let first = tree
+                    .add(ChildSpec::new("first", &group, move |_| {
+                        let seen = seen.clone();
+                        async move { Ok::<_, String>(Node::new(&seen, false)) }
+                    }))
+                    .unwrap();
+                let (entered_tx, entered) = tokio::sync::oneshot::channel::<()>();
+                let (release, release_rx) = tokio::sync::oneshot::channel::<()>();
+                let gate = Arc::new(Mutex::new(Some((entered_tx, release_rx))));
+                let second = tree
+                    .add(ChildSpec::new("second", &group, move |_| {
+                        let gate = gate.lock().unwrap().take();
+                        let seen = Seen::default();
+                        async move {
+                            if let Some((entered, release)) = gate {
+                                let _ = entered.send(());
+                                let _ = release.await;
+                            }
+                            Ok::<_, String>(Node::new(&seen, false))
+                        }
+                    }))
+                    .unwrap();
+                let start = tokio::spawn(tree.start());
+                entered.await.unwrap();
+                let handle = first.current().unwrap().child_handle();
+                handle.kill();
+                assert_eq!(ended(&handle).await, ExitReason::Killed);
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                assert_eq!(
+                    first.snapshot().generation,
+                    1,
+                    "{strategy:?}: restarted before the initial start completed"
+                );
+                release.send(()).unwrap();
+                let supervisor = tokio::time::timeout(LIMIT, start)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .unwrap_or_else(|e| panic!("{strategy:?}: start failed: {e}"));
+                tokio::time::timeout(LIMIT, first.wait_for_generation(1))
+                    .await
+                    .unwrap()
+                    .unwrap();
+                if strategy == SupervisorStrategy::OneForOne {
+                    assert_eq!(second.snapshot().generation, 1);
+                } else {
+                    tokio::time::timeout(LIMIT, second.wait_for_generation(1))
+                        .await
+                        .unwrap()
+                        .unwrap();
+                }
+                assert!(supervisor.shutdown(LIMIT).await.complete);
+                assert!(system.shutdown(LIMIT).await.complete);
+            }
+        }
+
+        // S2: start() returns its error only after the rollback finished:
+        // every started child is terminal, including one whose stopped()
+        // gets stuck (killed at shutdown_timeout, then stuck after a second
+        // interval), whose cleanup failure is listed separately.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn start_returns_its_error_after_rollback() {
+            let system = ActorSystem::new().unwrap();
+            let group = system.async_group("s2", 2).unwrap();
+            let mut tree = system.supervisor(SupervisorConfig::default()).unwrap();
+            let slow_seen = Seen::default();
+            let s = slow_seen.clone();
+            let slow = tree
+                .add(ChildSpec::new("slow", &group, move |_| {
+                    let seen = s.clone();
+                    let (tx, rx) = tokio::sync::oneshot::channel();
+                    // stopped() waits until the sender's timer fires.
+                    tokio::spawn(async move {
+                        tokio::time::sleep(Duration::from_millis(200)).await;
+                        let _ = tx.send(());
+                    });
+                    let (entered, _) = tokio::sync::oneshot::channel();
+                    async move {
+                        let mut node = Node::new(&seen, true);
+                        node.in_stopped = Some((entered, rx));
+                        Ok::<_, String>(node)
+                    }
+                }))
+                .unwrap();
+            let (_hold, hold_rx) = tokio::sync::oneshot::channel::<()>();
+            let hold_rx = Arc::new(Mutex::new(Some(hold_rx)));
+            let stuck = tree
+                .add(
+                    ChildSpec::new("stuck", &group, move |_| {
+                        let rx = hold_rx.lock().unwrap().take().unwrap();
+                        let (entered, _) = tokio::sync::oneshot::channel();
+                        async move {
+                            let mut node = Node::new(&Seen::default(), true);
+                            node.in_stopped = Some((entered, rx));
+                            Ok::<_, String>(node)
+                        }
+                    })
+                    .shutdown_timeout(Duration::from_millis(50)),
+                )
+                .unwrap();
+            tree.add(
+                ChildSpec::new("failing", &group, |_| async {
+                    Err::<Node, _>("boot failed")
+                })
+                .restart(RestartMode::Temporary),
+            )
+            .unwrap();
+            let result = tokio::time::timeout(LIMIT, tree.start()).await.unwrap();
+            assert!(slow_seen.stopped(), "start() returned before rollback");
+            assert!(terminal(slow.snapshot().state), "{:?}", slow.snapshot());
+            assert_eq!(stuck.snapshot().state, ChildState::Failed);
+            match result {
+                Err(SupervisorError::FailedToStartChild {
+                    child,
+                    rollback_failures,
+                    ..
+                }) => {
+                    assert_eq!(child, "failing");
+                    assert!(
+                        rollback_failures.iter().any(|f| f.contains("stuck")),
+                        "{rollback_failures:?}"
+                    );
+                }
+                other => panic!("unexpected {:?}", other.err()),
+            }
+            let _ = system.shutdown(Duration::from_millis(100)).await;
+        }
+    }
 }
 
 mod threads_mode {

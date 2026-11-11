@@ -909,17 +909,21 @@ mod tasks_mode {
                 let child_gate = gate.clone();
                 let child = tree
                     .add(ChildSpec::new("victim", &group, move |ctx| {
-                        let fault = (ctx.generation() == 1).then_some(fault);
+                        // v0.8 (S1): a first start is not retried, so a
+                        // started() panic is injected into the replacement.
+                        let faulty = if fault == Fault::Started { 2 } else { 1 };
+                        let fault = (ctx.generation() == faulty).then_some(fault);
                         let victim = TaskVictim(Victim::new(fault, &child_gate));
                         async move { Ok::<_, String>(victim) }
                     }))
                     .unwrap();
                 let supervisor = env.bounded(tree.start()).unwrap();
                 if fault == Fault::Started {
-                    // The first generation never became ready; the retry did.
-                    let next = env.bounded(child.wait_ready()).unwrap();
+                    // The replacement never became ready; its retry did.
+                    child.current().unwrap().child_handle().kill();
+                    let next = env.bounded(child.wait_for_generation(2)).unwrap();
                     assert_eq!(env.bounded(next.request(Ask)).unwrap(), 1);
-                    assert_eq!(child.snapshot().generation, 2);
+                    assert_eq!(child.snapshot().generation, 3);
                     assert_eq!(child.snapshot().last_exit, Some(expected(fault)));
                 } else {
                     let first = child.current().unwrap();
@@ -964,7 +968,9 @@ mod tasks_mode {
                 let mut tree = env.system.as_ref().unwrap().supervisor(config()).unwrap();
                 let child = tree
                     .add(ChildSpec::new("factory", &group, move |ctx| {
-                        let first = ctx.generation() == 1;
+                        // v0.8 (S1): a first start is not retried, so the
+                        // panic is injected into the replacement.
+                        let first = ctx.generation() == 2;
                         if first && !in_future {
                             panic!("injected factory panic");
                         }
@@ -978,10 +984,11 @@ mod tasks_mode {
                     }))
                     .unwrap();
                 let supervisor = env.bounded(tree.start()).unwrap();
-                let actor = child.current().unwrap();
+                child.current().unwrap().child_handle().kill();
+                let actor = env.bounded(child.wait_for_generation(2)).unwrap();
                 assert_eq!(env.bounded(actor.request(Ask)).unwrap(), 1);
                 let snapshot = child.snapshot();
-                assert_eq!(snapshot.generation, 2, "{place:?} in_future={in_future}");
+                assert_eq!(snapshot.generation, 3, "{place:?} in_future={in_future}");
                 assert!(snapshot
                     .last_error
                     .as_deref()

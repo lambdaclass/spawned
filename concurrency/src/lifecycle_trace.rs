@@ -376,6 +376,14 @@ mod imp {
         lock(&TRACES).remove(&id).unwrap_or_default()
     }
 
+    /// Whether a supervisor's trace already holds an event named `action`
+    /// (lets a test wait for an ordering point without taking the trace).
+    pub fn recorded(id: u64, action: &str) -> bool {
+        lock(&TRACES)
+            .get(&id)
+            .is_some_and(|events| events.iter().any(|e| e.action == action))
+    }
+
     /// What a dumped trace needs besides its events: the constants
     /// `trace_check.py` instantiates the model with.
     struct Meta {
@@ -567,4 +575,4 @@ mod imp {
 }
 
 #[cfg(feature = "lifecycle-trace")]
-pub use imp::{take, take_jobs, take_replies, take_tree, watch_deferred};
+pub use imp::{recorded, take, take_jobs, take_replies, take_tree, watch_deferred};

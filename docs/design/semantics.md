@@ -377,16 +377,21 @@ Checked by: Kani `backoff_bound_is_capped`, `backoff_jitter_stays_in_range`,
 [`supervision::backoff_exponent_resets_only_after_a_stable_generation`][supervision].
 
 **V7. Startup.** Children start serially in declaration order. A tree reports
-ready only when every child is ready; a non-restartable failure (or exhausted
-retries) rolls back the started children in reverse order. Each attempt has a
-`startup_timeout` (default 5 s) that counts as a failure. A child that stops
-`Normal` (or `Shutdown`) before its initial readiness is a startup failure and,
-if Transient, fails the start, as a failed child `init` fails an OTP
-supervisor's start. A replacement that stops before readiness is a failed
-restart attempt and is retried (V1). Factories run on the child's
-group; a factory error or panic is a failed attempt. Cancelling the start future
-before readiness rolls the tree back.
-Checked by: `Supervision!ReadyMeansAllStarted`; [`supervision::failed_partial_startup_rolls_back_without_starting_later_children`][supervision],
+ready only when every child is ready. A child's first start that fails for
+any reason (factory error or panic, panic or stop in `started()`, a missed
+`startup_timeout`, default 5 s, placement or group closure) fails the start
+whatever the restart type, with no retry, as OTP's `start_children` returns
+`failed_to_start_child`: the started children roll back in reverse order and
+`start()` returns `SupervisorError::FailedToStartChild` only after the
+rollback (every child terminal, or `Failed` once its cleanup is stuck). A
+ready child's exit while later siblings start is recorded and processed under
+the strategy once the tree commits ready, as OTP handles the queued `'EXIT'`
+after `init`; if the start aborts, it is part of the rollback. A replacement
+that fails before readiness is a failed restart attempt and is retried (V1).
+Factories run on the child's group. Cancelling the start future before
+readiness rolls the tree back.
+Checked by: `Supervision!ReadyMeansAllStarted`, `Supervision!RestartFollowsPolicy` (no restart before the tree is ready), `Cohorts!FirstStartOnce`; [`supervision::failed_partial_startup_rolls_back_without_starting_later_children`][supervision],
+`otp_exit_signals::first_start_failure_aborts_start_whatever_the_restart_type`, `ready_child_exit_during_startup_is_processed_afterwards`, `start_returns_its_error_after_rollback`,
 `transient_startup_timeout_retries_after_actual_cleanup`, `normal_pre_ready_exit_records_real_cause_and_fails_transient_startup`,
 `transient_replacement_exiting_before_readiness_is_retried`, [`supervision_trace::trace_replacement_exiting_before_readiness_is_retried`][supervision_trace],
 `failed_factories_cancel_owned_helpers_before_retry_and_catch_panics`,
@@ -572,7 +577,7 @@ ignored by non-trapping peers (X3), and the Permanent/Transient/Temporary table 
 | A kill propagated over a link stays `Kill` (X4) | It arrives as `killed` | Planned v0.8, rank 5e: a distinct trappable `Killed` |
 | Linking or monitoring an already-exited actor delivers its real exit reason (X1, X5) | `noproc` | Planned v0.8, rank 5e: `NoProc` |
 | The restart budget counts every child factory call, collateral ones included (V5) | Intensity counts recovery rounds | Planned v0.8, rank 5f |
-| Initial startup retries a Permanent or Transient child whose factory fails, panics or times out (V7), within the budget | `start_link` aborts on any child start error | Planned v0.8, rank 5f |
+| Initial startup retried a Permanent or Transient child whose factory failed, panicked or timed out (V7), within the budget | `start_link` aborts on any child start error | Aligned in v0.8 (rank 5f, #240): any first-start failure fails `start()` |
 | An actor dropped by its runtime exits `Kill` in tasks; the threads fallback is `Panic("unexpected framework panic")` (L4) | No counterpart | Planned v0.8, rank 5g: one reason in both modes |
 | Stop is cooperative: a running handler or blocking call is never interrupted (L3) | `kill` ends a process at once | Rust-forced: Rust cannot preempt or kill a thread |
 | Panics are caught only with unwinding (P2) | Process crashes are always isolated | Rust-forced: `panic = "abort"` and a panicking panic hook end the process |

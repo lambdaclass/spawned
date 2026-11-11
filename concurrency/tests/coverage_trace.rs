@@ -153,39 +153,48 @@ async fn first_attempt_abandoned_when_startup_is_dropped() {
     write_trace("first_attempt_closed", trace_id, &modes, 5);
 }
 
-/// `T|Close|..|backoff|starting|open`, then `BackoffDone/closed` and
-/// `SupStartDone/notready` with a child in backoff: the first child's
-/// construction fails during initial startup and, while it waits out its
-/// backoff, the caller gives up on the startup (drops the start future).
+/// `T|Close|..|deferred|starting|open`, then `Undefer` and `Decide/closed`:
+/// a ready child's exit during the initial start is deferred (S1) and the
+/// caller gives up on the startup (drops the start future) while it waits.
+/// (v0.7 reached `T|Close|..|backoff|starting|open` here through a retried
+/// first start, which v0.8 no longer makes.)
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn startup_cancelled_while_first_child_backs_off() {
+async fn startup_cancelled_while_a_ready_exit_is_deferred() {
     let _scenario = FailScenario::setup();
     let system = ActorSystem::new().unwrap();
-    let group = system.async_group("cov-start-backoff", 1).unwrap();
+    let group = system.async_group("cov-start-deferred", 2).unwrap();
     let modes = [RestartMode::Permanent, RestartMode::Transient];
-    let mut policy = config(5);
-    policy.backoff.initial = Duration::from_secs(60);
-    policy.backoff.maximum = Duration::from_secs(60);
-    let mut tree = system.supervisor(policy).unwrap();
-    let flaky = tree
-        .add(ChildSpec::new("flaky", &group, |ctx| async move {
-            if ctx.generation() == 1 {
-                Err("first construction fails".to_string())
-            } else {
-                Ok(Worker)
-            }
-        }))
+    let (_open, gate) = tokio::sync::watch::channel(false);
+    let mut tree = system.supervisor(config(5)).unwrap();
+    let early = tree.add(worker("early", &group)).unwrap();
+    let later = tree
+        .add(
+            ChildSpec::new("later", &group, move |_| {
+                let mut gate = gate.clone();
+                async move {
+                    let _ = gate.wait_for(|open| *open).await;
+                    Ok::<_, String>(Worker)
+                }
+            })
+            .restart(modes[1]),
+        )
         .unwrap();
-    let later = tree.add(worker("later", &group).restart(modes[1])).unwrap();
     let trace_id = tree.trace_id();
     let start = tokio::spawn(tree.start());
-    until("backoff", || flaky.snapshot().state == ChildState::Backoff).await;
+    until("the later child under construction", || {
+        later.snapshot().state == ChildState::Starting
+    })
+    .await;
+    crash(&early).await;
+    until("the deferred exit", || {
+        lifecycle_trace::recorded(trace_id, "DeferExit")
+    })
+    .await;
     start.abort();
     assert!(start.await.is_err());
     assert!(system.shutdown(LIMIT).await.complete);
-    assert_eq!(flaky.snapshot().generation, 1);
-    assert_eq!(later.snapshot().generation, 0);
-    write_trace("startup_cancelled_during_backoff", trace_id, &modes, 5);
+    assert_eq!(early.snapshot().generation, 1);
+    write_trace("startup_cancelled_while_deferred", trace_id, &modes, 5);
 }
 
 /// Shutdown begins while a restart is under construction and its deadline
@@ -310,10 +319,11 @@ impl Handler<Crash> for QuitInStarted {
     }
 }
 
-/// A ready child crashes and restarts while a later sibling is still being
-/// constructed during initial startup (`T|SelfExit/Panic|..|starting|open`).
+/// A ready child crashes while a later sibling is still being constructed
+/// during initial startup (`T|SelfExit/Panic|..|starting|open`); its exit is
+/// deferred (S1) and it restarts once the tree commits ready.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn ready_child_restarts_while_a_sibling_is_still_starting() {
+async fn ready_child_exit_deferred_while_a_sibling_is_still_starting() {
     let _scenario = FailScenario::setup();
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("cov-start-sibling", 2).unwrap();
@@ -333,20 +343,26 @@ async fn ready_child_restarts_while_a_sibling_is_still_starting() {
             .restart(modes[1]),
         )
         .unwrap();
+    let trace_id = tree.trace_id();
     let start = tokio::spawn(tree.start());
     until("the late child under construction", || {
         late.snapshot().state == ChildState::Starting
     })
     .await;
     crash(&early).await;
-    tokio::time::timeout(LIMIT, early.wait_for_generation(1))
-        .await
-        .unwrap()
-        .unwrap();
+    until("the deferred exit", || {
+        lifecycle_trace::recorded(trace_id, "DeferExit")
+    })
+    .await;
+    assert_eq!(early.snapshot().generation, 1);
     open.send_replace(true);
     let supervisor = tokio::time::timeout(LIMIT, start)
         .await
         .unwrap()
+        .unwrap()
+        .unwrap();
+    tokio::time::timeout(LIMIT, early.wait_for_generation(1))
+        .await
         .unwrap()
         .unwrap();
     assert_eq!(early.snapshot().generation, 2);

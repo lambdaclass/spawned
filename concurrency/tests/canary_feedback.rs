@@ -100,14 +100,14 @@ async fn unfinished_report_identifies_child_and_active_turn() {
         assert_eq!(detail.message_type, None);
         assert_eq!(detail.turn_age, None);
     }
+    // The system kills what remains at grace (E3); let the kill land
+    // before the turn returns, so the outcome does not race it.
+    spawned_rt::tasks::sleep(Duration::from_millis(100)).await;
     release.send(()).unwrap();
     let report = report.wait(LIMIT).await;
     assert!(report.complete);
     assert!(report.unfinished_actor_details.is_empty());
-    assert_eq!(
-        actor.child_handle().exit_reason(),
-        Some(ExitReason::Shutdown)
-    );
+    assert_eq!(actor.child_handle().exit_reason(), Some(ExitReason::Killed));
 }
 
 // Not simulated: uses spawn_blocking.
@@ -346,7 +346,7 @@ async fn supervision_logs_restart_budget_exhaustion_and_give_up() {
             && fields.get("child").map(String::as_str) == Some("canary-give-up")
             && fields
                 .get("error")
-                .is_some_and(|e| e.contains("non-restartable child"))));
+                .is_some_and(|e| e.contains("failed to start child"))));
     let exhausted: Vec<_> = events
         .iter()
         .filter(|(_, fields)| {

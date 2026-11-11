@@ -177,10 +177,29 @@ pub enum SupervisorError {
     DuplicateChild(String),
     #[error("child capacity exceeded")]
     Capacity,
+    /// The start was cancelled or the system closed before it completed.
     #[error("supervisor stopped before startup completed")]
     Stopped,
     #[error("supervisor failed: {0}")]
     Failed(String),
+    /// A child's first start failed (S1, OTP `failed_to_start_child`): its
+    /// factory errored or panicked, it stopped or panicked before readiness,
+    /// it missed `startup_timeout`, or its placement or group failed.
+    /// Returned after the rollback finished; `rollback_failures` lists
+    /// cleanup failures of that rollback.
+    #[error("failed to start child {child}: {cause}")]
+    FailedToStartChild {
+        child: String,
+        cause: String,
+        rollback_failures: Vec<String>,
+    },
+    /// A child's cleanup got stuck during the initial start (S2).
+    #[error("child cleanup stuck during initial start: {child}: {cause}")]
+    StartupCleanupStuck {
+        child: String,
+        cause: String,
+        rollback_failures: Vec<String>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -421,6 +440,29 @@ impl<A: Actor> View<A> {
         self.done.send_replace(true);
         true
     }
+    /// Cleanup stuck past its deadlines: the snapshot settles as Failed,
+    /// which releases a waiting `start()` (S2), while the controller keeps
+    /// awaiting the real join.
+    fn mark_stuck(&self) {
+        self.change(|data| {
+            data.current = None;
+            data.snapshot.state = ChildState::Failed;
+        });
+    }
+    /// Terminal, or settled as Failed by a stuck cleanup.
+    async fn settled(&self) {
+        let mut changes = self.changed.subscribe();
+        loop {
+            changes.borrow_and_update();
+            let state = system::lock(&self.data).snapshot.state;
+            if matches!(state, ChildState::Stopped | ChildState::Failed) || *self.done.borrow() {
+                return;
+            }
+            if changes.changed().await.is_err() {
+                return;
+            }
+        }
+    }
     fn finish(&self, failed: bool) {
         self.change(|data| {
             data.current = None;
@@ -502,6 +544,7 @@ trait ChildControl: Send + Sync {
     fn initial(&self) -> watch::Receiver<bool>;
     fn shutdown_timeout(&self) -> Duration;
     fn finish_unstarted(&self, failed: bool);
+    fn settled(&self) -> BoxFuture<'_, ()>;
 }
 impl<A: Actor> ChildControl for View<A> {
     fn assign_recovery(&self, slot: Arc<RecoverySlot>) -> bool {
@@ -575,6 +618,9 @@ impl<A: Actor> ChildControl for View<A> {
             self.finish(failed);
         }
     }
+    fn settled(&self) -> BoxFuture<'_, ()> {
+        Box::pin(View::settled(self))
+    }
 }
 
 struct RetryBudget {
@@ -626,6 +672,8 @@ pub(crate) fn admit_in_window<T: Copy>(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FailureKind {
     Other,
+    /// A child's first start failed (S1).
+    FirstStart,
     Cleanup,
     Coordinator,
     RestartBudget,
@@ -672,6 +720,9 @@ struct Core {
     failure: Mutex<Option<Failure>>,
     failed: Arc<std::sync::atomic::AtomicBool>,
     cleanup_failure: Mutex<Option<String>>,
+    /// Every recorded cleanup failure, for the rollback list of a failed
+    /// start (S2).
+    cleanup_failures: Mutex<Vec<String>>,
     children: Mutex<Vec<Arc<dyn ChildControl>>>,
     budget: Mutex<RetryBudget>,
     config: SupervisorConfig,
@@ -773,6 +824,7 @@ impl Core {
         let _ = make;
     }
     fn record_cleanup_failure(&self, error: &str) {
+        system::lock(&self.cleanup_failures).push(error.to_string());
         let mut failure = system::lock(&self.cleanup_failure);
         if failure.is_none() {
             *failure = Some(error.to_string());
@@ -1070,6 +1122,7 @@ impl SupervisorBuilder {
             failure: Mutex::new(None),
             failed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             cleanup_failure: Mutex::new(None),
+            cleanup_failures: Mutex::new(Vec::new()),
             children: Mutex::new(Vec::new()),
             budget: Mutex::new(RetryBudget {
                 attempts: VecDeque::new(),
@@ -1222,16 +1275,52 @@ impl SupervisorBuilder {
         // Readiness is historical, just like ActorRef::ready(). A later system
         // admission close must not turn successful startup into rollback.
         let initialized = *core.ready.borrow();
-        let result = if initialized {
+        if initialized {
             guard.armed = false;
-            Ok(Supervisor { core: core.clone() })
-        } else {
-            Err(system::lock(&core.failure)
-                .clone()
-                .map(|failure| SupervisorError::Failed(failure.message))
-                .unwrap_or(SupervisorError::Stopped))
+            return Ok(Supervisor { core: core.clone() });
+        }
+        // S2: the error is returned only after the rollback finished: every
+        // child is terminal, or settled as Failed by its stuck cleanup.
+        let children = system::lock(&core.children).clone();
+        for child in &children {
+            child.settled().await;
+        }
+        Err(core.start_error())
+    }
+}
+impl Core {
+    /// The cause of a failed initial start (S2), with the rollback's cleanup
+    /// failures listed separately.
+    fn start_error(&self) -> SupervisorError {
+        let Some(failure) = system::lock(&self.failure).clone() else {
+            return SupervisorError::Stopped;
         };
-        result
+        let rollback_failures: Vec<String> = system::lock(&self.cleanup_failures)
+            .iter()
+            .filter(|f| **f != failure.message)
+            .cloned()
+            .collect();
+        match (failure.kind, failure.origin) {
+            (FailureKind::FirstStart, Some(origin)) => {
+                let prefix = format!("failed to start child {}: ", origin.child);
+                let cause = failure
+                    .message
+                    .strip_prefix(&prefix)
+                    .unwrap_or(&failure.message)
+                    .to_string();
+                SupervisorError::FailedToStartChild {
+                    child: origin.child,
+                    cause,
+                    rollback_failures,
+                }
+            }
+            (FailureKind::Cleanup, Some(origin)) => SupervisorError::StartupCleanupStuck {
+                child: origin.child,
+                cause: failure.message,
+                rollback_failures,
+            },
+            _ => SupervisorError::Failed(failure.message),
+        }
     }
 }
 impl Drop for SupervisorBuilder {
@@ -1821,7 +1910,11 @@ async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, core: Arc<C
                             child_failure(
                                 &spec,
                                 &view,
-                                FailureKind::Other,
+                                if *view.initial.borrow() {
+                                    FailureKind::Other
+                                } else {
+                                    FailureKind::FirstStart
+                                },
                                 format!("placement failed for {}: {e}", spec.name),
                             ),
                             || Some(Event::new("Unmodelled", c, "PlacementFailed")),
@@ -2100,6 +2193,7 @@ async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, core: Arc<C
                                             format!("actor cleanup stuck for {}", spec.name),
                                             || Some(Event::new("CleanupStuck", c, "")),
                                         );
+                                        view.mark_stuck();
                                         child.wait_exit_async().await
                                     }
                                 }
@@ -2116,6 +2210,7 @@ async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, core: Arc<C
                                     format!("actor cleanup stuck for {}", spec.name),
                                     || Some(Event::new("CleanupStuck", c, "")),
                                 );
+                                view.mark_stuck();
                                 child.wait_exit_async().await
                             }
                         },
@@ -2135,7 +2230,10 @@ async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, core: Arc<C
         view.change(|v| {
             v.current = None;
             v.snapshot.last_exit = exit.clone();
-            v.snapshot.state = ChildState::Stopping;
+            // A stuck cleanup already settled the snapshot as Failed (S2).
+            if v.snapshot.state != ChildState::Failed {
+                v.snapshot.state = ChildState::Stopping;
+            }
         });
         fail_point!("child.before_cleanup_join", async);
         let remaining = cleanup_until
@@ -2160,6 +2258,7 @@ async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, core: Arc<C
                     Some(Event::new("CleanupStuck", c, ""))
                 },
             );
+            view.mark_stuck();
             scope.joined().await;
             trace::atomic(|| {
                 trace::tree(core.trace, |id| {
@@ -2207,19 +2306,44 @@ async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, core: Arc<C
         if core.gate.is_open() && view.recovery(last_recovery).is_some() {
             continue;
         }
+        // S1: a child's first start that fails (any cause) aborts the
+        // supervisor's start whatever the restart type, as OTP's
+        // `start_children` returns `failed_to_start_child`.
+        let first_start = ready_at.is_none() && !*view.initial.borrow();
         // A generation that never became ready after the child's initial
         // readiness is a failed restart attempt: retried within the budget
         // whatever its exit reason, as OTP retries a failed restart
-        // (`try_again_restart`), unless Temporary. Before initial readiness
-        // the restart table applies (semantics V7), so a Transient child
-        // stopping Normal or Shutdown in its first startup fails the start.
-        let failed_restart = ready_at.is_none() && *view.initial.borrow();
-        let restart = if startup_timed_out || failed_restart {
+        // (`try_again_restart`), unless Temporary.
+        let failed_restart = ready_at.is_none() && !first_start;
+        let restart = if first_start {
+            false
+        } else if startup_timed_out || failed_restart {
             spec.restart != RestartMode::Temporary
         } else {
             spec.restart
                 .restarts(exit.as_ref(), cleanup_failure.is_some())
         };
+        // S1: a ready child's exit during the initial start is recorded and
+        // processed once the tree commits ready, as OTP handles the queued
+        // 'EXIT' after `init` returns. If the start aborts instead, the
+        // exit is part of the rollback. Only the decision waits: cleanup
+        // already ran within its deadline.
+        let deferred = ready_at.is_some()
+            && trace::atomic(|| {
+                let defer = core.gate.is_open() && !*core.ready.borrow();
+                if defer {
+                    trace::emit(core.trace, || Event::new("DeferExit", c, ""));
+                }
+                defer
+            });
+        if deferred {
+            let _ = select(
+                Box::pin(core.admission_closed.cancelled()),
+                Box::pin(system::wait_true(core.ready.subscribe())),
+            )
+            .await;
+            trace::emit(core.trace, || Event::new("Undefer", c, ""));
+        }
         // Gate check, decision and any resulting failure happen in one step,
         // so a concurrent stop is never followed by a failure of this child.
         let again = trace::atomic(|| {
@@ -2234,7 +2358,11 @@ async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, core: Arc<C
                     child_failure(
                         &spec,
                         &view,
-                        FailureKind::Other,
+                        if first_start {
+                            FailureKind::FirstStart
+                        } else {
+                            FailureKind::Other
+                        },
                         format!("execution group closed for {}", spec.name),
                     ),
                     || Some(Event::new("Unmodelled", c, "GroupClosed")),
@@ -2242,42 +2370,32 @@ async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, core: Arc<C
                 return false;
             }
             if restart {
-                if core.config.strategy != SupervisorStrategy::OneForOne
-                    && !*core.ready.borrow()
-                    && ready_at.is_some()
-                {
-                    // A dependency already published ready but died before the
-                    // initial tree committed. Roll back the whole startup rather
-                    // than leave later factories bound to its obsolete instance.
-                    core.fail_record_if_open_as(
-                        child_failure(
-                            &spec,
-                            &view,
-                            FailureKind::Other,
-                            format!(
-                                "ready child exited during initial tree startup: {}",
-                                spec.name
-                            ),
-                        ),
-                        || Some(Event::new("Unmodelled", c, "InitialCohortFailed")),
-                    );
-                    return false;
-                }
                 trace::emit(core.trace, || Event::new("Decide", c, "restart"));
                 return true;
             }
             if ready_at.is_some() {
                 trace::emit(core.trace, || Event::new("Decide", c, "stop"));
             } else {
-                core.fail_record_if_open_as(
-                    child_failure(
-                        &spec,
-                        &view,
+                let (kind, message) = if first_start {
+                    let snapshot = view.snapshot();
+                    let cause = snapshot
+                        .last_error
+                        .clone()
+                        .or_else(|| exit.as_ref().map(|reason| format!("exited {reason}")))
+                        .unwrap_or_else(|| "unknown".into());
+                    (
+                        FailureKind::FirstStart,
+                        format!("failed to start child {}: {cause}", spec.name),
+                    )
+                } else {
+                    (
                         FailureKind::Other,
                         format!("non-restartable child failed startup: {}", spec.name),
-                    ),
-                    || Some(Event::new("Decide", c, "fail")),
-                );
+                    )
+                };
+                core.fail_record_if_open_as(child_failure(&spec, &view, kind, message), || {
+                    Some(Event::new("Decide", c, "fail"))
+                });
             }
             false
         });
@@ -2483,9 +2601,9 @@ mod policy_tests {
         .unwrap();
         tree.runners[1] = Box::new(PanicRunner);
         let core = tree.core.clone();
-        assert!(
-            matches!(tree.start().await, Err(SupervisorError::Failed(e)) if e.contains("injected supervisor coordinator fault"))
-        );
+        // v0.8 (S2): start() returns its error only after the rollback, which
+        // waits for the live child's owned helper.
+        let start = rt::spawn(tree.start());
         assert!(rt::timeout(
             Duration::from_millis(30),
             system::wait_true(core.done.subscribe())
@@ -2493,6 +2611,9 @@ mod policy_tests {
         .await
         .is_err());
         release.send(()).unwrap();
+        assert!(
+            matches!(start.await.unwrap(), Err(SupervisorError::Failed(e)) if e.contains("injected supervisor coordinator fault"))
+        );
         assert!(rt::timeout(
             Duration::from_secs(10),
             system::wait_true(core.done.subscribe())
@@ -2828,11 +2949,15 @@ mod policy_tests {
     #[tokio::test]
     async fn started_failures_allow_n_restarts_and_escalate_the_next_failure() {
         use std::sync::atomic::{AtomicUsize, Ordering};
-        struct FailsStarted(Arc<AtomicUsize>);
+        // v0.8 (S1): a first start is not retried, so the first generation
+        // is healthy and every replacement panics in started().
+        struct FailsStarted(Arc<AtomicUsize>, bool);
         impl Actor for FailsStarted {
             async fn started(&mut self, _: &crate::tasks::Context<Self>) {
-                self.0.fetch_add(1, Ordering::SeqCst);
-                panic!("injected started failure");
+                if self.1 {
+                    self.0.fetch_add(1, Ordering::SeqCst);
+                    panic!("injected started failure");
+                }
             }
         }
         for allowed in [0, 1, 3] {
@@ -2853,25 +2978,25 @@ mod policy_tests {
                 })
                 .unwrap();
             let child = builder
-                .add(ChildSpec::new("startup-failure", &group, move |_| {
+                .add(ChildSpec::new("startup-failure", &group, move |ctx| {
                     let attempts = attempts.clone();
-                    async move { Ok::<_, String>(FailsStarted(attempts)) }
+                    let fail = ctx.generation() > 1;
+                    async move { Ok::<_, String>(FailsStarted(attempts, fail)) }
                 }))
                 .unwrap();
             let core = builder.core.clone();
-            assert!(matches!(
-                rt::timeout(Duration::from_secs(30), builder.start())
-                    .await
-                    .unwrap(),
-                Err(SupervisorError::Failed(_))
-            ));
+            rt::timeout(Duration::from_secs(30), builder.start())
+                .await
+                .unwrap()
+                .unwrap();
+            child.current().unwrap().child_handle().kill();
             assert!(rt::timeout(
                 Duration::from_secs(30),
                 system::wait_true(core.done.subscribe())
             )
             .await
             .unwrap());
-            assert_eq!(count.load(Ordering::SeqCst), allowed + 1);
+            assert_eq!(count.load(Ordering::SeqCst), allowed);
             assert_eq!(child.snapshot().generation as usize, allowed + 1);
             assert_eq!(
                 system::lock(&core.failure).as_ref().unwrap().kind,

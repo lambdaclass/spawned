@@ -52,17 +52,18 @@ Restarts(m, r) ==
     ELSE \/ m = "Permanent"
          \/ m = "Transient" /\ r \in {"none", "Panic", "Kill"}
 
-\* Whether a controller retries after cleanup. A generation that never became
-\* ready after the child's initial readiness is a failed restart attempt,
-\* retried whatever its exit reason (as OTP retries a failed restart), unless
-\* Temporary. Before initial readiness the restart table applies, so a
-\* Transient child stopping Normal or Shutdown in its first startup fails it.
+\* Whether a controller retries after cleanup. A child's first start that
+\* fails (init FALSE) is never retried, whatever its restart type: it fails
+\* the supervisor's start (S1 in docs/design/otp-exit-signals.md, OTP's
+\* failed_to_start_child). After it, the restart table applies, and a
+\* generation that never became ready is a failed restart attempt, retried
+\* whatever its exit reason (as OTP retries a failed restart), unless
+\* Temporary.
 Retries(m, r, ready, init) ==
-    \/ Restarts(m, r)
-    \/ ~ready /\ init /\ m # "Temporary"
+    init /\ (Restarts(m, r) \/ (~ready /\ m # "Temporary"))
 
 Pcs == {"idle", "top", "backoff", "attempt", "constructing", "running",
-        "cleanup", "decide", "finish", "finished"}
+        "cleanup", "decide", "deferred", "finish", "finished"}
 
 VARIABLES
     \* @type: Bool;
@@ -292,8 +293,25 @@ CleanupStuck(c) ==
     /\ UNCHANGED <<sphase, sidx, sready, sdone, budget, reserved, deadline, timedOut,
                    gen, initial, exitR, readyGen, first, stopTurn, cdone>>
 
+\* S1: a ready child's exit during the initial start is recorded; its
+\* restart decision waits until the tree commits ready (or the start
+\* aborts and the exit is part of the rollback), as OTP handles the queued
+\* 'EXIT' after init returns. Cleanup already ran.
+DeferExit(c) ==
+    /\ pc[c] = "decide"
+    /\ open /\ ~sready /\ readyGen[c]
+    /\ Goto(c, "deferred")
+    /\ UNCHANGED <<sup, st, gen, alive, pub, initial, exitR, readyGen, first, stopTurn, cdone>>
+
+Undefer(c) ==
+    /\ pc[c] = "deferred"
+    /\ sready \/ ~open
+    /\ Goto(c, "decide")
+    /\ UNCHANGED <<sup, st, gen, alive, pub, initial, exitR, readyGen, first, stopTurn, cdone>>
+
 Decide(c) ==
     /\ pc[c] = "decide"
+    /\ ~(open /\ ~sready /\ readyGen[c])
     /\ IF ~open THEN Goto(c, "finish") /\ UNCHANGED <<open, failed>>
        ELSE IF Retries(Mode[c], exitR[c], readyGen[c], initial[c]) THEN Goto(c, "top") /\ UNCHANGED <<open, failed>>
        ELSE IF ~readyGen[c] THEN Fail /\ Goto(c, "finish")   \* non-restartable startup failure
@@ -381,7 +399,7 @@ ChildStep(c) ==
     \/ \E r \in StartupResults : StartupFailed(c, r)
     \/ \E r \in SelfExits : SelfExit(c, r)
     \/ StopObserved(c) \/ CleanupDone(c) \/ CleanupStuck(c)
-    \/ Decide(c) \/ Finish(c)
+    \/ DeferExit(c) \/ Undefer(c) \/ Decide(c) \/ Finish(c)
 
 SupStep ==
     \/ SupLaunch \/ SupStartDone \/ SupCancelSeen \/ SupStopTurn
@@ -399,6 +417,7 @@ Fairness ==
          /\ WF_vars(RetryReserve(c)) /\ WF_vars(RetryRelease(c))
          /\ WF_vars(LoopTop(c)) /\ WF_vars(BackoffDone(c)) /\ WF_vars(Attempt(c))
          /\ WF_vars(StopObserved(c)) /\ WF_vars(CleanupDone(c))
+         /\ WF_vars(DeferExit(c)) /\ WF_vars(Undefer(c))
          /\ WF_vars(Decide(c)) /\ WF_vars(Finish(c))
          /\ WF_vars(\E r \in {"Shutdown"} : StartupFailed(c, r))
     /\ WF_vars(SupLaunch) /\ WF_vars(SupStartDone) /\ WF_vars(SupCancelSeen)
@@ -441,24 +460,29 @@ Safety ==
 NoStartAfterClose ==
     [][\A c \in Children : (gen'[c] > gen[c] \/ (pub'[c] # 0 /\ pub[c] = 0)) => open]_vars
 
-\* The design's restart table (docs/design/execution-groups-supervision.md),
-\* stated independently of the Restarts operator the actions use:
-\* Permanent restarts after any exit, Transient only after an abnormal exit
-\* or failed startup, Temporary never.
+\* The design's restart table (docs/design/execution-groups-supervision.md,
+\* with S1 of otp-exit-signals.md), stated independently of the Restarts
+\* operator the actions use: Permanent restarts after any exit, Transient
+\* only after an abnormal exit, Temporary never. A failed startup ("none",
+\* "timeout") is restarted only as a failed restart attempt below; a first
+\* start is never retried.
 DesignAllowsRestart(m, r) ==
     CASE m = "Temporary" -> FALSE
       [] m = "Permanent" -> TRUE
-      [] m = "Transient" -> r \in {"none", "timeout", "Panic", "Kill"}
+      [] m = "Transient" -> r \in {"Panic", "Kill"}
 
-\* A new generation after the first only follows an exit for which the
-\* design table allows a restart, or a failed restart attempt (a generation
-\* that never became ready after the child's initial readiness) of a child
-\* that is not Temporary.
+\* A new generation after the first happens only after the tree committed
+\* ready (S1: with ReadyMeansAllStarted, no first start is retried and no
+\* exit during the initial start is processed before it completes), and
+\* only follows an exit for which the design table allows a restart, or a
+\* failed restart attempt (a generation that never became ready after the
+\* child's initial readiness) of a child that is not Temporary.
 RestartFollowsPolicy ==
     [][\A c \in Children :
         (gen'[c] > gen[c] /\ gen[c] > 0) =>
-            \/ DesignAllowsRestart(Mode[c], exitR[c])
-            \/ ~readyGen[c] /\ initial[c] /\ Mode[c] # "Temporary"]_vars
+            /\ sready
+            /\ \/ DesignAllowsRestart(Mode[c], exitR[c])
+               \/ ~readyGen[c] /\ initial[c] /\ Mode[c] # "Temporary"]_vars
 
 \* Ready children are stopped in reverse declaration order: a stop turn is
 \* only given once every later child finished or was abandoned, unless the

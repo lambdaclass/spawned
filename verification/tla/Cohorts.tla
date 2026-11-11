@@ -97,9 +97,13 @@ CResume(c,r) ==
 \* requests a new round (CRequest), which OneForAll applies to the whole
 \* cohort, as OTP's try_again_restart re-runs the strategy. Fault
 \* "InPlaceRetry" restores the old in-round retry of that child alone.
+\* Round 0 (the first start) begins once per child: a failed first start
+\* fails the supervisor's start (S1, otp-exit-signals.md). Fault
+\* "FirstStartRetry" restores v0.7's retry of it.
 CBegin(c,r,n) ==
  /\ c \in Active /\ n = s.gen[c] + 1 /\ n <= MaxGen
  /\ s.open \/ Fault = "Closed"
+ /\ r = 0 => n = 1 \/ Fault = "FirstStartRetry"
  /\ \/ /\ r = 0 /\ ~s.committed /\ c \notin s.initial
        /\ \A j \in Children : j < c => j \in s.initial
     \/ /\ r = s.assigned[c] /\ r > 0 /\ c \in s.resumed /\ c \notin s.ack
@@ -163,10 +167,13 @@ OneStartPerRound == ~s.badRetry
 NoStartAfterClose == ~s.badClosed
 NoRetiredParticipant == ~s.badTerminal
 TemporaryStartsOnce == \A c \in Children : Mode[c] = "Temporary" => s.gen[c] <= 1
+\* S1: a child that never completed its first start had one attempt.
+FirstStartOnce == \A c \in Children : c \notin s.initial => s.gen[c] <= 1
 DoneMeansQuiescent == s.phase = "Done" => \A c \in Children : s.live[c] = {}
 Safety == TypeOK /\ AtMostOneGeneration /\ PublishedIsLive /\ StrategySelection
           /\ WholeCohortBarrier /\ NoStartAfterClose /\ NoRetiredParticipant
           /\ TemporaryStartsOnce /\ DoneMeansQuiescent /\ OneStartPerRound
+          /\ FirstStartOnce
 Next ==
  \/ \E c \in Children, r \in Epochs, x \in {"true","false"} : CRequest(c,r,x)
  \/ \E c \in Children, r \in Epochs, n \in Children : CSelect(c,r,n)

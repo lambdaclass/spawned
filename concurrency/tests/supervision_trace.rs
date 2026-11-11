@@ -400,6 +400,88 @@ async fn trace_external_shutdown_of_permanent_child_restarts() {
     assert!(system.shutdown(LIMIT).await.complete);
 }
 
+/// S1: a Permanent child whose first construction fails aborts the start (v0.7
+/// retried it); the model's Decide fails because the child never completed
+/// its first start.
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
+async fn trace_first_start_factory_error_fails_start() {
+    let system = ActorSystem::new().unwrap();
+    let group = system.async_group("trace-factory-first", 1).unwrap();
+    let modes = [RestartMode::Permanent, RestartMode::Permanent];
+    let mut tree = system.supervisor(config(5)).unwrap();
+    tree.add(worker("a", &group).restart(modes[0])).unwrap();
+    tree.add(
+        ChildSpec::new("flaky", &group, |_| async {
+            Err::<Worker, _>("first construction fails")
+        })
+        .restart(modes[1]),
+    )
+    .unwrap();
+    let trace_id = tree.trace_id();
+    assert!(spawned_rt::tasks::timeout(LIMIT, tree.start())
+        .await
+        .unwrap()
+        .is_err());
+    assert!(system.shutdown(LIMIT).await.complete);
+    write_trace("first_start_factory_error", trace_id, &modes, 5);
+}
+
+/// S1: a ready child's exit during the initial start is deferred (DeferExit)
+/// and processed once the tree commits ready (Undefer, then the restart).
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
+async fn trace_ready_exit_deferred_during_startup() {
+    let system = ActorSystem::new().unwrap();
+    let group = system.async_group("trace-deferred", 2).unwrap();
+    let modes = [RestartMode::Permanent, RestartMode::Permanent];
+    let mut tree = system.supervisor(config(5)).unwrap();
+    let a = tree.add(worker("a", &group).restart(modes[0])).unwrap();
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let (e, r) = (entered.clone(), release.clone());
+    tree.add(
+        ChildSpec::new("b", &group, move |ctx| {
+            let (e, r) = (e.clone(), r.clone());
+            async move {
+                if ctx.generation() == 1 {
+                    e.notify_one();
+                    r.notified().await;
+                }
+                Ok::<_, String>(Worker)
+            }
+        })
+        .restart(modes[1]),
+    )
+    .unwrap();
+    let trace_id = tree.trace_id();
+    let start = spawned_rt::tasks::spawn(tree.start());
+    spawned_rt::tasks::timeout(LIMIT, entered.notified())
+        .await
+        .unwrap();
+    crash(&a).await;
+    // The exit is recorded before the start completes.
+    spawned_rt::tasks::timeout(LIMIT, async {
+        while !lifecycle_trace::recorded(trace_id, "DeferExit") {
+            spawned_rt::tasks::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .unwrap();
+    release.notify_one();
+    let supervisor = spawned_rt::tasks::timeout(LIMIT, start)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    spawned_rt::tasks::timeout(LIMIT, a.wait_for_generation(1))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(supervisor.shutdown(LIMIT).await.complete);
+    write_trace("ready_exit_deferred", trace_id, &modes, 5);
+    assert!(system.shutdown(LIMIT).await.complete);
+}
+
+/// A replacement whose construction fails is retried within the budget.
 #[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn trace_factory_error_then_success() {
     let system = ActorSystem::new().unwrap();
@@ -408,19 +490,25 @@ async fn trace_factory_error_then_success() {
     let calls = Arc::new(AtomicUsize::new(0));
     let mut tree = system.supervisor(config(5)).unwrap();
     let count = calls.clone();
-    tree.add(ChildSpec::new("flaky", &group, move |_| {
-        let attempt = count.fetch_add(1, Ordering::SeqCst);
-        async move {
-            if attempt == 0 {
-                Err("first construction fails".to_string())
-            } else {
-                Ok(Worker)
+    let flaky = tree
+        .add(ChildSpec::new("flaky", &group, move |_| {
+            let attempt = count.fetch_add(1, Ordering::SeqCst);
+            async move {
+                if attempt == 1 {
+                    Err("replacement construction fails".to_string())
+                } else {
+                    Ok(Worker)
+                }
             }
-        }
-    }))
-    .unwrap();
+        }))
+        .unwrap();
     let supervisor = tree.start().await.unwrap();
-    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    crash(&flaky).await;
+    spawned_rt::tasks::timeout(LIMIT, flaky.wait_for_generation(2))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(calls.load(Ordering::SeqCst), 3);
     assert!(supervisor.shutdown(LIMIT).await.complete);
     write_trace(
         "factory_error_then_success",
@@ -600,23 +688,55 @@ impl Actor for SlowInit {
         }
     }
 }
+/// S1: a first start that misses startup_timeout aborts the start, whatever
+/// the restart type (v0.7 retried a Transient child).
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
+async fn trace_first_start_timeout_fails_start() {
+    let system = ActorSystem::new().unwrap();
+    let group = system.async_group("trace-timeout-first", 1).unwrap();
+    let modes = [RestartMode::Transient];
+    let mut tree = system.supervisor(config(3)).unwrap();
+    tree.add(
+        ChildSpec::new("slow-init", &group, |_| async move {
+            Ok::<_, String>(SlowInit { first: true })
+        })
+        .restart(modes[0])
+        .startup_timeout(Duration::from_millis(20)),
+    )
+    .unwrap();
+    let trace_id = tree.trace_id();
+    assert!(spawned_rt::tasks::timeout(LIMIT, tree.start())
+        .await
+        .unwrap()
+        .is_err());
+    assert!(system.shutdown(LIMIT).await.complete);
+    write_trace("first_start_timeout", trace_id, &modes, 3);
+}
+
+/// A replacement that misses startup_timeout is retried.
 #[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn trace_startup_timeout_retries() {
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("trace-timeout", 1).unwrap();
     let modes = [RestartMode::Transient];
     let mut tree = system.supervisor(config(3)).unwrap();
-    tree.add(
-        ChildSpec::new("slow-init", &group, |ctx| async move {
-            Ok::<_, String>(SlowInit {
-                first: ctx.generation() == 1,
+    let child = tree
+        .add(
+            ChildSpec::new("slow-init", &group, |ctx| async move {
+                Ok::<_, String>(SlowInit {
+                    first: ctx.generation() == 2,
+                })
             })
-        })
-        .restart(modes[0])
-        .startup_timeout(Duration::from_millis(20)),
-    )
-    .unwrap();
+            .restart(modes[0])
+            .startup_timeout(Duration::from_millis(20)),
+        )
+        .unwrap();
     let supervisor = spawned_rt::tasks::timeout(LIMIT, tree.start())
+        .await
+        .unwrap()
+        .unwrap();
+    child.current().unwrap().child_handle().kill();
+    spawned_rt::tasks::timeout(LIMIT, child.wait_for_generation(2))
         .await
         .unwrap()
         .unwrap();
