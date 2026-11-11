@@ -5,6 +5,66 @@ every change; this guide covers what you need to edit when upgrading.
 
 ## Unreleased
 
+### Exit signals, startup and runtime drops as in OTP (ranks 5e, 5f, 5g, targets 0.8, in progress)
+
+Design: [otp-exit-signals.md](design/otp-exit-signals.md) (its migration
+table is the full list). What to edit:
+
+- **`match` on `ExitReason`**: add a wildcard arm (`#[non_exhaustive]`, new
+  `Killed` and `NoProc`).
+- **Kill from outside**: `ChildHandle::kill()` is the untrappable kill; the
+  actor ends `Killed` and `stopped()` is skipped unless already running.
+  `stop_with_reason(Kill)` stays an administrative stop ending `Kill`.
+- **`stopped()` no longer always runs.** It is skipped when the exit is begun
+  by a kill, an untrapped exit signal or link notice (a linked peer's
+  abnormal death), or a runtime drop. **This includes supervisor and system
+  shutdown of a non-trapping actor**: the supervisor's `Shutdown` is now the
+  parent's exit signal (OTP `exit(Child, shutdown)`), so a non-trapping child
+  ends `Shutdown` without `stopped()`, as a gen_server that does not trap
+  exits skips `terminate`. Cleanup that must run on every exit belongs in
+  `Drop`, or the actor calls `ctx.trap_exit(true)` in `started()`: a trapping
+  child processes the messages queued before the shutdown, then runs
+  `stopped()`. A child that has not reached its death point within
+  `shutdown_timeout` is killed; cleanup is stuck only after a second
+  `shutdown_timeout`.
+- **Runtime drop** reports `Killed` (was `Kill` in tasks mode,
+  `Panic("unexpected framework panic")` in threads mode).
+- **Late link or monitor**: to an actor past its death point, `monitor`
+  delivers `Down { reason: NoProc }` and `link` delivers `NoProc` (a
+  non-trapping caller exits `NoProc`). Use `ctx.try_link` to get
+  `Err(NoProc)` instead, and `ChildHandle::exit_reason()` for the real
+  reason. `link` from an actor whose exit already began is inert.
+- **A late signal during exit**: a non-`Normal` link notice or exit signal
+  that reaches a non-trapping actor while it exits (for example during its
+  `stopped()`) now replaces its reason. The regression test
+  `late_link_failure_cannot_relabel_an_already_requested_normal_stop` was
+  inverted deliberately into
+  `late_link_failure_relabels_an_already_requested_normal_stop`.
+- **Panic in `stopped()`** after an abnormal reason now becomes the reason
+  (`Panic("panic in stopped(): ..")`), except after a kill.
+- **Destructor panics** (actor state, queued messages) after the death point
+  no longer change the exit reason: a `Normal` exit stays `Normal` and
+  `ChildHandle::cleanup_failure()` reports the failure
+  (`mailbox_cleanup_failure()` is a deprecated alias). A Transient child
+  restarts on an abnormal reason **or** a cleanup failure, also after
+  `Shutdown`; `ChildSnapshot::last_error` holds the failure.
+- **`start_linked` children that trap exits** end when their parent ends,
+  with the parent's reason (`Normal` included), through `stopped()`;
+  `exit_received` no longer sees the parent's exit. Use `ctx.link` instead
+  of `start_linked` to observe the parent's exit as an `Exit`.
+- **`spawned-test` `faults::exit`** now sends the exact exit signal
+  (`ChildHandle::exit`): `Normal` is ignored by a non-trapping target,
+  `Panic(msg)` ends it with exactly `Panic(msg)`, `Kill` ends it `Killed`, a
+  trapping target receives an `Exit`.
+- **Supervisor start (rank 5f, not implemented yet in this branch):** any
+  first-start failure of a child will fail `SupervisorBuilder::start()`,
+  whatever its restart type, with no opt-in retry (decision 7). **ethrex**:
+  the Transient discovery child's factory (`DiscoveryServer::build`) can fail
+  at boot when pinging a bootnode fails; v0.7 retried it, v0.8 fails
+  `start()` and `init_network` panics on `.expect("Network starts")`. Fix in
+  ethrex: make the bootnode ping best-effort (log and continue) so the
+  factory does not fail on it, or retry `start()` at application level.
+
 ### Deferred replies (rank 11, targets 0.8, in progress)
 
 This is a breaking release. The notes below grow with the implementation:

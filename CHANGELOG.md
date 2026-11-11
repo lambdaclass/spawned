@@ -2,6 +2,36 @@
 
 ## Unreleased
 
+- **Breaking (0.8), in progress:** exit signals, startup and runtime-drop
+  semantics as in OTP (ROADMAP ranks 5e, 5f, 5g), implementing
+  [the design](docs/design/otp-exit-signals.md) (#240, stacked on rank 11).
+  Done so far: `ExitReason` is `#[non_exhaustive]` with `Killed` and `NoProc`;
+  `ChildHandle::kill()` (untrappable, ends `Killed`, supersedes any reason
+  until the death point), `ChildHandle::exit(reason)` and
+  `Context::exit(&target, reason)` with `erlang:exit_signal/2` rules
+  (`Normal` ignored by a non-trapping actor, other reasons end it without
+  `stopped()`, trapping actors get an `Exit`), `ActorId::EXTERNAL`;
+  administrative `stop`/`stop_with_reason`/`shutdown` unchanged; one death
+  point after `stopped()` where the reason becomes final and the link table
+  closes; a late untrapped signal replaces the requested reason unless a kill
+  was received (decision 8); a panic in `stopped()` replaces an earlier
+  abnormal reason (except after a kill); `stopped()` is skipped on a kill, an
+  untrapped signal or link notice and a runtime drop; runtime-dropped actors
+  end `Killed` in both modes; `link`/`monitor` to an actor past its death
+  point give `NoProc` (a non-trapping caller of `link` exits `NoProc`;
+  `Context::try_link` returns `Err(NoProc)`); `link` from an actor whose exit
+  began is inert; `unlink`/`demonitor` are fences; a `start_linked` parent's
+  exit ends a trapping child through `stopped()` (never `exit_received`);
+  signals arriving during `started()` are resolved when it returns;
+  supervisor and system shutdown send the parent's `Shutdown` exit signal
+  and kill at `shutdown_timeout` (system: at grace); destructor panics after
+  the death point are cleanup failures (`ChildHandle::cleanup_failure()`,
+  `mailbox_cleanup_failure()` deprecated) that restart a Transient child
+  without changing the reason; `spawned-test` `faults::exit` sends an exact
+  exit signal; metrics `actors_exited_killed_total`,
+  `actors_exited_noproc_total`. Remaining: S1/S2 supervisor startup, rank 11
+  reason-bearing `ActorStopped`/`NoProc` errors, TLA+ and trace work.
+
 - **Breaking (0.8), in progress:** deferred replies and pipe-to-self
   (ROADMAP rank 11), implementing
   [the design](docs/design/deferred-replies.md). Every request now has a reply
