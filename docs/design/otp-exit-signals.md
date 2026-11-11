@@ -690,7 +690,7 @@ leaves 5e to "only add the reason". With the phases above:
 | `start()` returning `Err` | may return before the child is `Failed` | returns after rollback; can take up to two `shutdown_timeout`s per started child; owned work may still be running (reported) |
 | supervisor `shutdown(deadline)` | children past the deadline are signalled and abandoned to the stuck rule | same report deadline; each child still gets its kill and second interval |
 | state or queued-message destructor panic after a `Normal` exit | exit becomes `Panic`; Transient restarts | exit stays `Normal`; `cleanup_failure()` (or the deprecated `mailbox_cleanup_failure()`) reports it; Transient restarts (same decision, different reason) |
-| the same after a `Shutdown` exit | exit stays `Shutdown`; `mailbox_cleanup_failure()` reports it; Transient does not restart | exit stays `Shutdown`; **new:** Transient restarts because of the cleanup failure, unless the supervisor is closing |
+| the same after a `Shutdown` exit | exit stays `Shutdown`; a queued-message destructor failure is reported by `mailbox_cleanup_failure()`, a state destructor failure is only logged; Transient does not restart | exit stays `Shutdown`; **new:** Transient restarts because of the cleanup failure, unless the supervisor is closing |
 | panic in `stopped()` after an abnormal reason | keeps the earlier reason | becomes `Panic` (except after a kill) |
 | a request whose handler panicked | `ActorStopped` at once | answered at D with the final reason |
 | restart decision | `is_abnormal()` of the reason | reason abnormal or a cleanup failure |
@@ -906,6 +906,12 @@ table, first-start abort and deferred startup exits.
 Round 1: Codex no-go (one blocker, eight majors), agy go with changes (six
 majors). Both reviewed the design and model without the author's answers to
 the open questions.
+
+### Round 4 (Codex: go with changes, one minor; agy: see below)
+
+| Finding | Resolution |
+|---|---|
+| Codex 1. The v0.7 column said `mailbox_cleanup_failure()` reports state destructor failures after `Shutdown` | Corrected: in v0.7 only queued-message failures reach the accessor; a state destructor failure is only logged. |
 
 ### Round 3, agy (go with changes, three must-fix)
 
