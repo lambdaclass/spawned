@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- README: a "Why Spawned instead of raw Tokio or threads" section on central
+  verification and deterministic, replayable tests.
 - Lockfile: `rustix` 1.1.2 -> 1.1.6 for RUSTSEC-2026-0486 (pulled in by the
   examples' `native-tls` dependency; spawned's crates are unaffected).
 - CI: a `sim` job runs the simulated test suites (`--cfg spawned_sim`)

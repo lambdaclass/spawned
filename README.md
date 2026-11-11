@@ -13,6 +13,24 @@ An actor framework for Rust, inspired by Erlang/OTP.
 
 The core API is stable, so periods without commits are expected (they mean things are working, not that the project is abandoned). New features land as those projects need them (see the [roadmap](ROADMAP.md)). Bug reports, questions, and pull requests are welcome and get answered.
 
+## Why Spawned instead of raw Tokio or threads
+
+More and more code is written by LLMs and reviewed by people who did not write it. Concurrency is where that goes wrong: each call site looks plausible, and the bugs live in how the call sites interact. Spawned matters for two reasons.
+
+**The guarantees are verified once, centrally.** Nobody can model-check and fuzz every hand-rolled Tokio pattern in an application. One framework can be. Message ordering, request outcomes, links, monitors, exit reasons, supervision and shutdown are written down in a [semantics contract](docs/design/semantics.md). They are checked by:
+
+- TLA+ models (with Apalache proofs of the safety invariants);
+- trace validation of the real code against those models;
+- Loom;
+- a deterministic simulator;
+- a coverage-guided scenario fuzzer;
+- failpoints, sanitizers, Kani and mutation testing;
+- the ethrex and ethlambda test suites in CI.
+
+Every application built on Spawned inherits that work instead of redoing it. [TESTING.md](docs/TESTING.md) describes each layer.
+
+**Tests are deterministic.** Under `--cfg spawned_sim`, async tests written with `#[spawned_macros::sim_test]` run on a seeded, single-threaded simulator with virtual time, across many schedules. A failure prints its seed and a decision tape. The tape replays the exact interleaving and is shrunk to a minimal one. With raw Tokio, the same race shows up as a flaky CI run that nobody can reproduce. The simulator covers `tasks` mode. Code that calls `tokio::spawn` or `tokio::time` directly, instead of going through Spawned, cannot run on it. See [what the simulator does not model](docs/TESTING.md#seeds-and-decision-tapes-under---cfg-spawned_sim).
+
 ## Quick Example
 
 Define a protocol, implement it on an actor, and call it:
