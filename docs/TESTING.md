@@ -543,7 +543,7 @@ cargo install cargo-fuzz --locked --version 0.13.2
 cd fuzz
 export RUSTFLAGS="--cfg spawned_sim --cfg tokio_unstable"
 cargo +nightly-2026-10-20 fuzz run -s none scenario corpus -- -max_total_time=600
-./campaign.sh 3600 4 /tmp/campaign      # fork mode, coverage.csv sampled every minute
+./campaign.sh 3600 2 /tmp/campaign      # fork mode (2 workers), coverage.csv every minute
 cargo test --release --test corpus      # seeds and generated inputs, stable Rust, no libFuzzer
 ```
 
