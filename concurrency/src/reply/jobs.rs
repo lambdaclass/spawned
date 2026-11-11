@@ -832,15 +832,41 @@ impl Drop for CleanedGuard {
 /// Opt-in caller-give-up cancellation for jobs that cannot await
 /// (`pipe_reply_blocking*` with `cancel_on_caller_gone`): a watcher waker on
 /// the linked slot cancels the job when the slot closes.
-pub(crate) fn cancel_when_closed<R>(slot: &super::slot::Slot<R>, state: &Arc<JobState>) {
-    struct CancelJob(Arc<JobState>);
-    impl std::task::Wake for CancelJob {
-        fn wake(self: Arc<Self>) {
-            self.0.cancel();
+///
+/// Watchers are also woken when the token's deadline is shortened (so timers
+/// re-arm): the waker rechecks the slot and re-registers while it is open,
+/// as an awaiting watcher would re-poll. It refers to the slot weakly (the
+/// slot stores it), and a slot that is gone has no caller left.
+pub(crate) fn cancel_when_closed<R: Send + 'static>(
+    slot: &Arc<super::slot::Slot<R>>,
+    state: &Arc<JobState>,
+) {
+    struct CancelJob<R> {
+        slot: std::sync::Weak<super::slot::Slot<R>>,
+        state: Arc<JobState>,
+    }
+    impl<R: Send + 'static> CancelJob<R> {
+        /// Register as the slot's watcher; `true` once the slot is closed.
+        fn closed(self: &Arc<Self>) -> bool {
+            let Some(slot) = self.slot.upgrade() else {
+                return true;
+            };
+            let waker = std::task::Waker::from(self.clone());
+            slot.poll_closed(&waker, &super::now_ticks).is_ready()
         }
     }
-    let waker = std::task::Waker::from(Arc::new(CancelJob(state.clone())));
-    if slot.poll_closed(&waker, &super::now_ticks).is_ready() {
+    impl<R: Send + 'static> std::task::Wake for CancelJob<R> {
+        fn wake(self: Arc<Self>) {
+            if self.closed() {
+                self.state.cancel();
+            }
+        }
+    }
+    let watcher = Arc::new(CancelJob {
+        slot: Arc::downgrade(slot),
+        state: state.clone(),
+    });
+    if watcher.closed() {
         state.cancel();
     }
 }

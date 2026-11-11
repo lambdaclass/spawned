@@ -525,3 +525,251 @@ mod threads_mode {
         actor.join();
     }
 }
+
+/// Review P2 (Codex 14, agy 3): shortening a delegated token's deadline
+/// wakes its watchers so they re-arm; the caller-gone watcher of a blocking
+/// `pipe_reply` job must recheck the slot, not cancel the job. A blocking
+/// linked job's deadline hands the token back while the work keeps running;
+/// the handler then shortens the token and checks the job.
+#[cfg(all(feature = "async", not(spawned_sim)))] // native jobs are not simulated
+mod caller_gone_vs_shortening_tasks {
+    use spawned_concurrency::message::Message;
+    use spawned_concurrency::tasks::{
+        Actor, ActorStart, Context, Handler, Instant, JobError, JobHandle, JobOptions, JobOutcome,
+        PendingReply, ReplyTo,
+    };
+    use std::time::Duration;
+
+    #[derive(Default)]
+    struct Delegator {
+        job: Option<JobHandle>,
+    }
+    impl Actor for Delegator {}
+    struct Ask;
+    impl Message for Ask {
+        type Result = (bool, bool);
+    }
+    struct Delegated(JobOutcome<()>, ReplyTo<(bool, bool)>);
+    impl Message for Delegated {
+        type Result = ();
+    }
+    impl Handler<Ask> for Delegator {
+        async fn handle(&mut self, _: Ask, reply: PendingReply<'_, (bool, bool)>, ctx: &Context<Self>) {
+            let token = reply.defer().unwrap();
+            let opts = JobOptions {
+                cancel_on_caller_gone: true,
+                ..JobOptions::default()
+            }
+            .deadline_after(Duration::from_millis(20));
+            let job = ctx
+                .pipe_reply_blocking_with(
+                    opts,
+                    token,
+                    |_| std::thread::sleep(Duration::from_millis(300)),
+                    Delegated,
+                )
+                .unwrap();
+            self.job = Some(job);
+        }
+    }
+    struct Leave;
+    impl Message for Leave {
+        type Result = ();
+    }
+    struct Probe;
+    impl Message for Probe {
+        type Result = bool;
+    }
+    struct Ended(ReplyTo<()>);
+    impl Message for Ended {
+        type Result = ();
+    }
+    impl Handler<Ended> for Delegator {
+        async fn handle(&mut self, msg: Ended, _: PendingReply<'_, ()>, _: &Context<Self>) {
+            msg.0.reply(());
+        }
+    }
+    impl Handler<Leave> for Delegator {
+        async fn handle(&mut self, _: Leave, reply: PendingReply<'_, ()>, ctx: &Context<Self>) {
+            let token = reply.defer().unwrap();
+            let opts = JobOptions {
+                cancel_on_caller_gone: true,
+                ..JobOptions::default()
+            };
+            let job = ctx
+                .pipe_reply_blocking_with(
+                    opts,
+                    token,
+                    |job| {
+                        while !job.is_cancelled() {
+                            std::thread::sleep(Duration::from_millis(5));
+                        }
+                    },
+                    |_, token| Ended(token),
+                )
+                .unwrap();
+            self.job = Some(job);
+        }
+    }
+    impl Handler<Probe> for Delegator {
+        async fn handle(&mut self, _: Probe, reply: PendingReply<'_, bool>, _: &Context<Self>) {
+            reply.reply(self.job.as_ref().unwrap().is_cancelled());
+        }
+    }
+    impl Handler<Delegated> for Delegator {
+        async fn handle(&mut self, msg: Delegated, _: PendingReply<'_, ()>, _: &Context<Self>) {
+            let Delegated(outcome, token) = msg;
+            let deadline = matches!(outcome.into_result(), Err(JobError::DeadlineExceeded));
+            token.with_deadline(Instant::now() + Duration::from_secs(30));
+            let cancelled = self.job.as_ref().unwrap().is_cancelled();
+            token.reply((deadline, cancelled));
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn shortening_the_deadline_does_not_cancel_a_caller_gone_job() {
+        let actor = Delegator::default().start();
+        let (deadline, cancelled) = actor
+            .request_with_timeout(Ask, Duration::from_secs(60))
+            .await
+            .unwrap();
+        assert!(deadline, "the job deadline handed the token back");
+        assert!(!cancelled, "a shortened deadline cancelled the job");
+        // The caller leaving still cancels a blocking linked job.
+        let left = actor.request_raw(Leave).unwrap();
+        assert!(!actor.request(Probe).await.unwrap(), "cancelled before the caller left");
+        drop(left);
+        let mut cancelled = false;
+        for _ in 0..500 {
+            cancelled = actor.request(Probe).await.unwrap();
+            if cancelled {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+        assert!(cancelled, "the caller left but the job was not cancelled");
+        actor.context().stop();
+        actor.join().await;
+    }
+}
+
+#[cfg(not(spawned_sim))]
+mod caller_gone_vs_shortening_threads {
+    use spawned_concurrency::message::Message;
+    use spawned_concurrency::threads::{
+        Actor, ActorStart, Context, Handler, Instant, JobError, JobHandle, JobOptions, JobOutcome,
+        PendingReply, ReplyTo,
+    };
+    use std::time::Duration;
+
+    #[derive(Default)]
+    struct Delegator {
+        job: Option<JobHandle>,
+    }
+    impl Actor for Delegator {}
+    struct Ask;
+    impl Message for Ask {
+        type Result = (bool, bool);
+    }
+    struct Delegated(JobOutcome<()>, ReplyTo<(bool, bool)>);
+    impl Message for Delegated {
+        type Result = ();
+    }
+    impl Handler<Ask> for Delegator {
+        fn handle(&mut self, _: Ask, reply: PendingReply<'_, (bool, bool)>, ctx: &Context<Self>) {
+            let token = reply.defer().unwrap();
+            let opts = JobOptions {
+                cancel_on_caller_gone: true,
+                ..JobOptions::default()
+            }
+            .deadline_after(Duration::from_millis(20));
+            let job = ctx
+                .pipe_reply_blocking_with(
+                    opts,
+                    token,
+                    |_| std::thread::sleep(Duration::from_millis(300)),
+                    Delegated,
+                )
+                .unwrap();
+            self.job = Some(job);
+        }
+    }
+    struct Leave;
+    impl Message for Leave {
+        type Result = ();
+    }
+    struct Probe;
+    impl Message for Probe {
+        type Result = bool;
+    }
+    struct Ended(ReplyTo<()>);
+    impl Message for Ended {
+        type Result = ();
+    }
+    impl Handler<Ended> for Delegator {
+        fn handle(&mut self, msg: Ended, _: PendingReply<'_, ()>, _: &Context<Self>) {
+            msg.0.reply(());
+        }
+    }
+    impl Handler<Leave> for Delegator {
+        fn handle(&mut self, _: Leave, reply: PendingReply<'_, ()>, ctx: &Context<Self>) {
+            let token = reply.defer().unwrap();
+            let opts = JobOptions {
+                cancel_on_caller_gone: true,
+                ..JobOptions::default()
+            };
+            let job = ctx
+                .pipe_reply_blocking_with(
+                    opts,
+                    token,
+                    |job| {
+                        while !job.is_cancelled() {
+                            std::thread::sleep(Duration::from_millis(5));
+                        }
+                    },
+                    |_, token| Ended(token),
+                )
+                .unwrap();
+            self.job = Some(job);
+        }
+    }
+    impl Handler<Probe> for Delegator {
+        fn handle(&mut self, _: Probe, reply: PendingReply<'_, bool>, _: &Context<Self>) {
+            reply.reply(self.job.as_ref().unwrap().is_cancelled());
+        }
+    }
+    impl Handler<Delegated> for Delegator {
+        fn handle(&mut self, msg: Delegated, _: PendingReply<'_, ()>, _: &Context<Self>) {
+            let Delegated(outcome, token) = msg;
+            let deadline = matches!(outcome.into_result(), Err(JobError::DeadlineExceeded));
+            token.with_deadline(Instant::now() + Duration::from_secs(30));
+            let cancelled = self.job.as_ref().unwrap().is_cancelled();
+            token.reply((deadline, cancelled));
+        }
+    }
+
+    #[test]
+    fn shortening_the_deadline_does_not_cancel_a_caller_gone_job() {
+        let actor = Delegator::default().start();
+        let (deadline, cancelled) = actor
+            .request_with_timeout(Ask, Duration::from_secs(60))
+            .unwrap();
+        assert!(deadline, "the job deadline handed the token back");
+        assert!(!cancelled, "a shortened deadline cancelled the job");
+        // The caller leaving still cancels a blocking linked job.
+        let left = actor.request_raw(Leave).unwrap();
+        assert!(!actor.request(Probe).unwrap(), "cancelled before the caller left");
+        drop(left);
+        let mut cancelled = false;
+        for _ in 0..500 {
+            cancelled = actor.request(Probe).unwrap();
+            if cancelled {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert!(cancelled, "the caller left but the job was not cancelled");
+        actor.context().stop();
+        actor.join();
+    }
+}
