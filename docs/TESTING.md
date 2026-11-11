@@ -389,7 +389,7 @@ and monitor workloads), `dedicated_runtime`, `delivery_simulation`,
 `execution_groups`, `execution_profiles`, `failure_windows`, `leaks`,
 `mailbox_drop_panic`, `nested_supervision`, `panic_safety`,
 `process_failures`, `protocol_compile`, `request_histories`,
-`resource_cleanup`, `semantics_gaps` (its async module), `shutdown_publication`, `startup_admission`,
+`resource_cleanup`, `semantics_gaps` (its async module), `shutdown_publication`, `stack_budget`, `startup_admission`,
 `supervision_strategies` and `supervision`. `leaks` replaces its excluded
 async checks with a `sim_leaks` module (actor, cycle, timer, monitor-waiter,
 system-actor and helper releases, counted from the simulator's task table over
