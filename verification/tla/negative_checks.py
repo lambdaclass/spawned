@@ -259,6 +259,7 @@ INTROSPECTION_CONTROLS = [
     ("MCIntrospection", "StaleStatusReason", "StatusReasonIsFinal"),
     ("MCIntrospection", "DoubleAnswer", "StatusAtMostOnce"),
     ("MCIntrospection", "CallbackAfterGiveUp", "NoCallbackAfterGiveUp"),
+    ("MCIntrospection", "RunAfterSkip", "NoCallbackAfterGiveUp"),
     ("MCIntrospection", "CallbackPanicStops", "CallbackPanicContained"),
     ("MCIntrospection", "AnswerPanicStops", "CallbackPanicContained"),
 ]

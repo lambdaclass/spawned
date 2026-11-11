@@ -56,7 +56,7 @@
   (`spawned-ctl`; on with `ActorSystem::new`, read-only by default, no TCP,
   no eval). TLA+ model `Introspection.tla` (every activity end, including
   panics in `started()` and `stopped()`, consumes the kill bit; status between
-  turns and at D; runtime drop; one action per linearization point) with 18
+  turns and at D; runtime drop; one action per linearization point, status admission included) with 21
   negative controls; a fork-safe, lock-first socket publication protocol. Design only; no library code change.
 - Tests: coverage follow-ups. `restart_modes_distinguish_normal_shutdown_and_panic`
   now sends a real `Normal` exit; a per-PR `MCSupervisionTemporary` TLC

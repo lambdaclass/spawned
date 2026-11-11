@@ -56,7 +56,7 @@ its section 3.3).
 | 3 | **Tier 1 is the `introspection` feature**: the activity word (turn id, kind, kill bit), message type, turn and poll ages, mailbox counters, the watchdog and console `trace`. Compiled out without it. | The fields that diagnose a stall need stores per turn and an RMW per send. |
 | 4 | **The coarse clock is for display only and can say "unknown".** Turns stamp a process-wide millisecond clock (one relaxed load); stamp 0 means "before the clock started" and is reported as unknown, never as a large age. **Kill eligibility never uses the stamp**: the watchdog measures how long it has itself seen the same open turn id, with its own monotonic clock. | A delayed or late-started clock thread must not produce false ages, and a false age must never kill. |
 | 5 | **The watchdog is an OS thread**, started at run time, never a Tokio task, with sampling separated from report delivery. Four detectors: a poll blocking a shared async worker (OTP `long_schedule`), a long turn, a starved execution group (Akka probe), a long mailbox (OTP 26 `long_message_queue`). | It must keep working when every runtime worker is occupied (ethrex `d958dcba4`, `535647e45`) and when the log sink blocks. |
-| 6 | **Policy: report by default; kill opt-in and fenced.** A watchdog kill is one CAS on the actor's activity word naming the observed open turn; a failed CAS does nothing. Every way an activity ends (return, handler panic, callback panic, hook end, runtime drop) consumes the kill bit, so a committed kill always yields `Killed`; D closes the word for good. L3 is unchanged: the kill takes effect when the activity returns, and a `stopped()` already running finishes. | OTP-aligned reason; no false kills; checked by 18 TLA+ negative controls. |
+| 6 | **Policy: report by default; kill opt-in and fenced.** A watchdog kill is one CAS on the actor's activity word naming the observed open turn; a failed CAS does nothing. Every way an activity ends (return, handler panic, callback panic, hook end, runtime drop) consumes the kill bit, so a committed kill always yields `Killed`; D closes the word for good. L3 is unchanged: the kill takes effect when the activity returns, and a `stopped()` already running finishes. | OTP-aligned reason; no false kills; checked by 21 TLA+ negative controls. |
 | 7 | Turn abort at an await is not in v1 (0.10 at the earliest, its own model). | Per-suspended-turn cost, a change to L3, and the comparison's "no `brutal_kill` emulation" rule. |
 | 8 | **Flight recorder (rank 9) deferred to 0.10.** v1 ships the bounded multi-session event sink and a minimal, bounded console turn trace (tier 1). | The current turn, the crash breadcrumb and the watchdog cover the incidents; the recorder and full `sys:trace` share one ring, designed once with rank 5c. |
 | 9 | **Typed `get_state(f)` on every actor; type-erased state only through `Inspect`, redacted by default.** | A typed closure is ordinary code bound by Rust privacy; dumps reach operators and logs. |
@@ -211,9 +211,13 @@ panic). Rules:
    mutability (a mutex it poisoned, a message it sent, `ctx.stop()` through a
    captured handle, a `ReplyTo` it took out of a `RefCell` and dropped, which
    is answered `ReplyDropped` as in any returning turn) remain.
-5. **Skipped when abandoned.** At dispatch, if the slot is already closed
-   (deadline passed or receiver dropped: the 0.8 slot's own arbitration is
-   the linearization point), the callback is not run. This is an explicit,
+5. **Skipped when abandoned.** Inside the status turn, before running the
+   callback, the envelope checks its reply slot. This admission check is its
+   own linearization point, after the turn is published and separate from it.
+   If the slot is closed (the deadline passed or the receiver was dropped; the
+   0.8 slot's own arbitration decides), the callback is not run and the turn
+   ends; a slot that closes after admission lets the callback finish, and its
+   answer is dropped (`Delivery::Expired`). This is an explicit,
    documented exception to R4 for status envelopes only: it changes side
    effects of a callback that should have none. A callback already running
    is not interrupted; one that blocks blocks the actor (as any turn) and the
@@ -981,8 +985,8 @@ one actor whose every activity (`started()`, messages, the status turn,
 `stopped()`) opens a new turn id; activities that may suspend forever (the
 status callback, synchronous, does not); panics in `started()`, a handler and
 `stopped()`, and a caught status-callback panic; the status request with a
-deadline, its answer and the end of its turn as separate steps, and the skip
-of a callback whose caller gave up before dispatch; administrative stop and
+deadline, its callback admission (`StatusAdmit`), its answer and the end of
+its turn as separate steps, the slot closing before or after admission; administrative stop and
 unfenced kill (also between the drop swap and D); the runtime drop's swap and
 D as separate steps; publication, which may never come; and the watchdog's
 observe, successful CAS, failed CAS and record. Reads are not actions. It
@@ -1010,8 +1014,10 @@ the other guarantees (memory ordering, listings, limits, redaction, cost)
 are checked by Loom, tests and the benchmark gate listed in the test plan.
 
 Results (TLC 2.19 on fede, 4 workers, `nice 19`, one configuration at a
-time): `MCIntrospection` (3 messages) 46,008 distinct states, depth 26, no
-error; 4 messages 77,382 states, depth 29. Each control failed on its named
+time): `MCIntrospection` (3 messages) 47,968 distinct states, depth 27, no
+error; 4 messages 80,482 states, depth 30 (round three; the controls affected
+by round three were re-run: the four callback controls and the four other
+status controls). Each control failed on its named
 invariant, run alone (`negative_checks.py`, `INTROSPECTION_CONTROLS`):
 
 | Control | Bug | Fails |
@@ -1032,7 +1038,8 @@ invariant, run alone (`negative_checks.py`, `INTROSPECTION_CONTROLS`):
 | `StatusLost` | waiting status not answered at D | `StatusDischarged` |
 | `StaleStatusReason` | status answered at D with a reason computed before the kill | `StatusReasonIsFinal` |
 | `DoubleAnswer` | status answered twice | `StatusAtMostOnce` |
-| `CallbackAfterGiveUp` | callback run after its caller timed out before dispatch | `NoCallbackAfterGiveUp` |
+| `CallbackAfterGiveUp` | admission ignores a closed slot and runs the callback | `NoCallbackAfterGiveUp` |
+| `RunAfterSkip` | the callback runs after admission decided to skip | `NoCallbackAfterGiveUp` |
 | `CallbackPanicStops` | a caught callback panic begins exit at the status turn's end | `CallbackPanicContained` |
 | `AnswerPanicStops` | the panic is recorded while the callback runs, before the end | `CallbackPanicContained` |
 
@@ -1056,7 +1063,8 @@ observable.
 | `ISend` | envelope id, accepted | `Send` | admission (existing `life_send`) |
 | `IStatusSent` | request id, deadline | `SendStatus` | admission |
 | `IStatusTimeout` | request id | `StatusTimeout` | slot expiry |
-| `IDispatch` | turn, kind, envelope or request id, callback admitted | `Dispatch` | `word.store(open)` |
+| `IDispatch` | turn, kind, envelope or request id | `Dispatch` | `word.store(open)` |
+| `IStatusAdmit` | request id, `run` or `skip`, slot state seen | `StatusAdmit` | the status envelope's slot check, inside the status turn |
 | `ISuspend` / `IResume` | turn, poll count | `Suspend` / `Resume` | a poll returns `Pending` / the next poll's entry (messages and async hooks) |
 | `IEnd` / `IPanic` | turn, kind, old word | `MsgEnd` / `MsgPanic` | the end swap |
 | `IStatusAnswer` | request id, outcome (`ok`, `failed`) | `StatusAnswer` | the reply slot's discharge in the status turn |
@@ -1081,11 +1089,13 @@ Required trace suites: a wedged turn with a fenced kill; the kill racing the
 end swap in both orders (failpoints); a kill during `started()` and during
 `stopped()`; panics in `started()`, a handler and `stopped()` after a
 commit; a runtime drop after a commit, with an ordinary kill between the drop
-swap and D; status queued at D, timed out before dispatch, a callback panic;
+swap and D; status queued at D, its slot expiring before dispatch, between dispatch and
+admission, and after admission, a callback panic;
 console `kill` with a stale expectation. Trace coverage must reach every
 production action (fault-only actions such as `StatusFromTurn` and
 `KillDecide` are excluded). Negative controls on **recorded traces**
-(`require_rejected`): an `IRecord` moved after the next `IDispatch`; an `ICas`
+(`require_rejected`): an `IStatusAnswer` after an `IStatusAdmit` with
+`skip`; an `IRecord` moved after the next `IDispatch`; an `ICas`
 with result `ok` whose returned word is closed; an `IStatusAnswer` outside
 its status turn; an `ID` that drops a pending `IStatusAnswer`; an
 `IHookBegin` after an `ICas` whose bit no end consumed.
@@ -1473,6 +1483,7 @@ Each finding was treated as a claim and checked against the design and the
 | agy P1-1 | An idle read can accept `w1 == w2 == (N, closed)` with activity N+1's tag, stored before N+1's word | Accepted | `tag` becomes a 64-bit word stamped with the low 32 bits of its turn id (one relaxed store, unchanged cost); a read whose tag is ahead of `w1` is retried; the exact interleaving is added to `activity_slot_loom` and to the planted bugs. Not modelled in TLA+: the model's steps are atomic and sequentially consistent and reads are not actions, so a torn read cannot be expressed there. The bug is a memory-ordering property of separate atomics, which is what Loom checks against the C11 model |
 | Codex r3 #1 | Idle validation still accepts a mixed activity (writer paused after payload writes, before open publication) | Accepted, same fix as agy P1-1 | In that schedule N+1's tag carries turn N+1, which is ahead of `w1 = (N, closed)`, so the read is retried, not accepted. Idle reads return only the turn-stamped tag, never `since` or `poll`, so no unstamped mutable field reaches an idle result. The Loom case pauses the writer after all payload stores and before the open store |
 | Codex r3 #3 | Panic containment is checked only at the status turn's end; a panic recorded while the callback runs passes | Accepted | The ghost now fires on any step taken while a status turn is open that records a panic. New control `AnswerPanicStops` records it at the answer, and `CallbackPanicStops` is kept at the end; both fail `CallbackPanicContained` (re-run on fede) |
+| Codex r3 #4 | Status callback admission has no linearization point of its own (merged with dispatch), so a valid trace in which the slot closes after dispatch but before the check is rejected | Accepted | `StatusAdmit` is a model step after `Dispatch` and before `StatusAnswer`/`StatusEnd`, with its own trace event `IStatusAdmit`; the slot can close on either side. New control `RunAfterSkip` (the callback runs after a skip decision) fails `NoCallbackAfterGiveUp`, as `CallbackAfterGiveUp` (admission ignores a closed slot) does; required trace suites cover expiry before dispatch, between dispatch and admission and after admission, and a recorded-trace control rejects an answer after a skip |
 | Codex r3 #2 | Cancelled console `state` requests can accumulate in a wedged actor's mailbox | Accepted | Console status permits, at most 2 per target actor, 32 per process and 1 per connection, held by the envelope until it is dequeued or discarded at D, never released on timeout or disconnect; `busy` otherwise; `wedged_actor_state_requests_are_bounded` and a planted bug. Application `get_status` calls are ordinary requests and are not limited, as `request` is not |
 
 ## Open questions for reviewers
