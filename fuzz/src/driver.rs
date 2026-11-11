@@ -34,6 +34,8 @@ const MAX_ROOTS: usize = 4;
 const MAX_SYSTEMS: usize = 3;
 const MAX_CHILDREN: usize = 4;
 const MAX_TIMERS: usize = 16;
+/// Monitors tracked (inside and outside); later monitor commands are no-ops.
+const MAX_MONITORS: usize = 128;
 const MAX_PENDING: usize = 16;
 const REGISTERED_PREFIX: &str = "fz-reg-";
 
@@ -412,8 +414,10 @@ impl Driver {
                 None => Act::Noop,
             },
             Cmd::Monitor(i) => match self.pick(i) {
-                Some(peer) => Act::Monitor(peer.child_handle()),
-                None => Act::Noop,
+                Some(peer) if self.world.lock().monitors.len() < MAX_MONITORS => {
+                    Act::Monitor(peer.child_handle())
+                }
+                _ => Act::Noop,
             },
             Cmd::Trap(on) => Act::Trap(on),
             Cmd::Register(v) => Act::Register(format!("{REGISTERED_PREFIX}{}", v % 4)),
@@ -554,6 +558,9 @@ impl Driver {
                 let (Some(w), Some(t)) = (self.pick(watcher), self.pick(target)) else {
                     return;
                 };
+                if self.world.lock().monitors.len() >= MAX_MONITORS {
+                    return;
+                }
                 let mref = w.context().monitor(&t.child_handle());
                 self.world.lock().monitors.push(crate::world::MonRec {
                     watcher: w.id(),
@@ -604,8 +611,18 @@ impl Driver {
                 // A repeating sleep would queue unbounded work (one tick per
                 // millisecond, each sleeping seconds): fences could never
                 // catch up. One-shot timers may sleep.
+                // Nor do repeating links, monitors or registrations: they
+                // would grow the harness's tables by one per millisecond.
                 let cmd = match cmd {
-                    Cmd::Sleep(_) if interval => Cmd::Noop,
+                    Cmd::Sleep(_)
+                    | Cmd::Monitor(_)
+                    | Cmd::Link(_)
+                    | Cmd::Unlink(_)
+                    | Cmd::Register(_)
+                        if interval =>
+                    {
+                        Cmd::Noop
+                    }
                     cmd => cmd,
                 };
                 let act = self.act(cmd, &aref);
@@ -1258,7 +1275,7 @@ impl Driver {
                     );
                 }
             }
-            if m.demonitored {
+            if m.demonitored || !received(self).is_empty() {
                 continue;
             }
             let Some(waref) = self.find(m.watcher) else {
