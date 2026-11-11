@@ -227,8 +227,14 @@ reply gives a `request` caller `ReplyDropped`; with it, the caller gets
 `Ok(())`.
 
 **Tests.** Replace test-only "run this closure in the actor" messages and
-`cfg(test)` bypasses with `spawned_test::tasks::in_actor(&actor, |state,
-ctx| ..)` (`threads::in_actor` in threads mode).
+`cfg(test)` bypasses of handlers with `spawned_test::tasks::in_actor(&actor,
+|state, ctx| ..)` (`threads::in_actor` in threads mode). `in_actor` runs in
+a turn, so only after `started()` returned: it cannot replace a bypass
+inside `started()` itself. If `started()` does work a test must skip (for
+example `if handshake().await.is_err() { ctx.stop() }`), keep that work
+injectable instead: pass the handshake (or its outcome) in the actor's
+constructor, or move it to a message the test does not send, so the test
+builds the post-handshake state directly.
 
 **Lifecycle.** At death the registry closes (open deferred tokens answer
 `ActorStopped`), then the mailbox is disposed, then actor state is dropped:

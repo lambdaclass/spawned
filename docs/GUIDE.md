@@ -1614,7 +1614,7 @@ These helpers fail with a report instead of hanging the test:
 | `wait_for_generation(&child, after, deadline)` | a supervised child does not reach a new generation, printing its snapshot |
 | `shutdown_supervisor(&supervisor, deadline)` | the supervisor report is incomplete, listing its children |
 | `shutdown_system(&system, deadline)` / `TestSystem::shutdown` | the `ActorSystem` report is incomplete, listing unfinished groups, actors, exits and failures |
-| `in_actor(&actor, \|state, ctx\| ..)` | the actor is gone or the closure panicked; otherwise runs the closure in one of the actor's turns (after earlier sends) and returns its result, so a test can reach `ctx` (start a job, defer a reply) or inspect state without an ad hoc message or a `cfg(test)` bypass |
+| `in_actor(&actor, \|state, ctx\| ..)` | the actor is gone or the closure panicked; otherwise runs the closure in one of the actor's turns (after earlier sends) and returns its result, so a test can reach `ctx` (start a job, defer a reply) or inspect state without an ad hoc message or a `cfg(test)` bypass. It runs only after `started()` returned: work in `started()` a test must skip belongs in the constructor or a message |
 
 `TestSystem::new()` owns an `ActorSystem` with a two-worker async group named
 `test`, and starts actors and mocks on it. The `threads` module has the
