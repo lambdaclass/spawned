@@ -164,11 +164,12 @@ fn mailbox_drop_child() {
                             ExitReason::Panic("panic in handler: original handler failure".into())
                         );
                     } else {
+                        // A destructor panic after the death point is a
+                        // cleanup failure; the final reason stays Normal.
+                        assert_eq!(reason, ExitReason::Normal);
                         assert_eq!(
-                            reason,
-                            ExitReason::Panic(
-                                "queued message destructor: queued message destructor".into()
-                            )
+                            victim.child_handle().cleanup_failure().as_deref(),
+                            Some("queued message destructor")
                         );
                     }
                     let first = tokio::time::timeout(LIMIT, events.recv())
@@ -259,10 +260,12 @@ fn abandoned_receiver_child() {
                 let replies: Vec<_> = (0..2).map(|_| actor.request_raw(Bomb(dropped.clone())).unwrap()).collect();
                 shutdown.send(()).unwrap();
                 let reason = tokio::time::timeout(LIMIT, actor.wait_exit()).await.unwrap();
-                if state_panics && !polled { assert!(matches!(reason, ExitReason::Panic(ref message) if message.contains("actor state destructor"))); }
-                else { assert_eq!(reason, ExitReason::Kill); }
+                // A runtime drop ends Killed (G1); destructor panics are
+                // cleanup failures, never the reason.
+                let _ = state_panics;
+                assert_eq!(reason, ExitReason::Killed);
                 assert_eq!(dropped.load(Ordering::SeqCst), 2);
-                assert_eq!(actor.child_handle().mailbox_cleanup_failure().as_deref(), Some("queued message destructor"));
+                assert_eq!(actor.child_handle().cleanup_failure().as_deref(), Some("queued message destructor"));
                 for reply in replies { assert!(tokio::time::timeout(LIMIT, reply).await.unwrap().is_err()); }
                 drop(hold);
                 owner.join().unwrap();
@@ -304,7 +307,7 @@ fn abandoned_receiver_child() {
                 release.send(()).unwrap();
                 assert_eq!(tokio::time::timeout(LIMIT, actor.wait_exit()).await.unwrap(), committed);
                 assert_eq!(dropped.load(Ordering::SeqCst), 2);
-                assert_eq!(actor.child_handle().mailbox_cleanup_failure().as_deref(), Some("queued message destructor"));
+                assert_eq!(actor.child_handle().cleanup_failure().as_deref(), Some("queued message destructor"));
                 assert!(system.shutdown(LIMIT).await.complete);
             }
         }

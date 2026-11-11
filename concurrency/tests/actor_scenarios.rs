@@ -264,7 +264,8 @@ fn scenario(backend: u8, count: usize, operations: &[(u8, u8)], endings: &[u8]) 
         let child = actor.child();
         let ending = endings[i % endings.len()] % 3;
         // Compete monitor registration and a request with termination. A
-        // monitor must observe termination even if registration loses the race.
+        // monitor must observe termination even if registration loses the
+        // race: then its single Down carries NoProc (E4).
         let gate = Arc::new(Barrier::new(2));
         let racer = actor.clone();
         let gate2 = gate.clone();
@@ -323,7 +324,11 @@ fn scenario(backend: u8, count: usize, operations: &[(u8, u8)], endings: &[u8]) 
             .position(|(id, _)| *id == event.monitor_ref)
             .expect("duplicate or unknown monitor");
         let (_, reason) = expected_down.remove(index);
-        assert_eq!(event.reason, reason);
+        assert!(
+            event.reason == reason || event.reason == ExitReason::NoProc,
+            "Down {:?}, final reason {reason:?}",
+            event.reason
+        );
     }
     assert!(expected_down.is_empty());
     observer.child().stop();

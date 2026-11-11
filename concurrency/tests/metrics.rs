@@ -217,7 +217,7 @@ fn metrics_conserve_work_across_all_lifecycle_paths() {
             owner.block_on(entered).unwrap();
         }
         drop(owner);
-        assert_eq!(actor.exit_reason(), Some(ExitReason::Kill));
+        assert_eq!(actor.exit_reason(), Some(ExitReason::Killed));
         assert_eq!(actor.mailbox_depth(), 0);
     }
     let rt = tokio::runtime::Builder::new_multi_thread()

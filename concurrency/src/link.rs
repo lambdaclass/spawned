@@ -637,8 +637,10 @@ mod tests {
         assert_eq!(seen.load(Ordering::SeqCst), 1);
         assert!(bt.lock().unwrap().entries.is_empty());
         // b links to the dead a: a late NoProc notice, delivered and removed.
+        // b, already exiting, gets the late NoProc signal, which replaces
+        // its reason (decision 8).
         assert_eq!(register_link(&b, &bt, &a, &at, false), LinkOutcome::NoProc);
-        assert_eq!(seen.load(Ordering::SeqCst), 1, "b already exiting: no second wake");
+        assert_eq!(seen.load(Ordering::SeqCst), 2);
         assert_eq!(lock_request(&b.request).reason(), Some(&ExitReason::NoProc));
         assert!(at.lock().unwrap().entries.is_empty() && bt.lock().unwrap().entries.is_empty());
     }

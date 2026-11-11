@@ -154,11 +154,15 @@ async fn trace_queued_destructor_panic_restarts_transient_child() {
         .unwrap()
         .unwrap();
     assert_ne!(replacement.id(), actor.id());
+    // The final reason stays Normal; the destructor panic after the death
+    // point is a cleanup failure, which restarts a Transient child.
     assert_eq!(
         child.snapshot().last_exit,
-        Some(spawned_concurrency::ExitReason::Panic(
-            "queued message destructor: injected queued destructor panic".into()
-        ))
+        Some(spawned_concurrency::ExitReason::Normal)
+    );
+    assert_eq!(
+        child.snapshot().last_error.as_deref(),
+        Some("injected queued destructor panic")
     );
     assert!(supervisor.shutdown(LIMIT).await.complete);
     write_trace(
@@ -171,7 +175,7 @@ async fn trace_queued_destructor_panic_restarts_transient_child() {
 }
 
 #[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
-async fn trace_queued_destructor_failure_preserves_shutdown() {
+async fn trace_queued_destructor_failure_after_shutdown_restarts_transient_child() {
     use spawned_concurrency::ExitReason;
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("trace-drain-shutdown", 1).unwrap();
@@ -191,16 +195,21 @@ async fn trace_queued_destructor_failure_preserves_shutdown() {
     actor.send(DropBomb).unwrap();
     actor.child_handle().shutdown();
     release.send(()).unwrap();
-    wait_state(&child, ChildState::Stopped).await;
-    assert_eq!(child.snapshot().generation, 1);
+    // v0.8: the reason stays Shutdown, but the cleanup failure restarts a
+    // Transient child (the supervisor is not closing).
+    let replacement = spawned_rt::tasks::timeout(LIMIT, child.wait_for_generation(1))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_ne!(replacement.id(), actor.id());
     assert_eq!(child.snapshot().last_exit, Some(ExitReason::Shutdown));
     assert_eq!(
-        actor.child_handle().mailbox_cleanup_failure().as_deref(),
+        actor.child_handle().cleanup_failure().as_deref(),
         Some("injected queued destructor panic")
     );
     assert!(supervisor.shutdown(LIMIT).await.complete);
     write_trace(
-        "queued_drop_preserves_shutdown",
+        "queued_drop_shutdown_restarts",
         supervisor.trace_id(),
         &[RestartMode::Transient],
         5,

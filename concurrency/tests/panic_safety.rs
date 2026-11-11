@@ -61,7 +61,9 @@ fn expected(fault: Fault) -> ExitReason {
         Fault::DownHandler => panic("panic in handler: injected Down panic"),
         Fault::MessageDrop => panic("panic in handler: injected message drop panic"),
         Fault::ReplyDrop => panic("panic in handler: injected reply drop panic"),
-        Fault::QueuedMessageDrop => panic("queued message destructor: injected queued drop panic"),
+        // A destructor panic after the death point is a cleanup failure
+        // (`ChildHandle::cleanup_failure`), never the exit reason.
+        Fault::QueuedMessageDrop => ExitReason::Normal,
     }
 }
 
@@ -548,20 +550,30 @@ fn exercise(h: &dyn Harness, fault: Fault, gate: &Gate, events: &Events) -> Exit
     );
     assert_eq!(h.observer_ask(), 7, "{fault:?}: observer stopped working");
     let seen = events.snapshot();
+    // A victim that panics in started() can pass its death point before the
+    // observer's monitor or link is registered: that registration gets NoProc.
+    let carries = |r: &ExitReason| *r == reason || (fault == Fault::Started && *r == ExitReason::NoProc);
     assert_eq!(
         seen.iter()
-            .filter(|e| matches!(e, Event::Down(m, r) if *m == monitor && *r == reason))
+            .filter(|e| matches!(e, Event::Down(m, r) if *m == monitor && carries(r)))
             .count(),
         1,
         "{fault:?}: {seen:?}"
     );
     assert_eq!(
         seen.iter()
-            .filter(|e| matches!(e, Event::Exit(id, r) if *id == victim.id() && *r == reason))
+            .filter(|e| matches!(e, Event::Exit(id, r) if *id == victim.id() && carries(r)))
             .count(),
         1,
         "{fault:?}: {seen:?}"
     );
+    if fault == Fault::QueuedMessageDrop {
+        assert_eq!(
+            victim.cleanup_failure().as_deref(),
+            Some("injected queued drop panic"),
+            "{fault:?}"
+        );
+    }
     assert_eq!(seen.len(), 2, "{fault:?}: extra notification {seen:?}");
     reason
 }

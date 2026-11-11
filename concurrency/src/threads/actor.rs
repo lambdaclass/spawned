@@ -2255,6 +2255,15 @@ mod stop_wakeup_regression {
                 2 => actor.cancellation_token.cancel(),
                 _ => failing.as_ref().unwrap().send(Crash).unwrap(),
             }
+            if route == 3 {
+                // An untrapped link notice ends the idle actor without
+                // stopped() (decision 2): the wakeup is observed as its exit.
+                let reason = actor.child_handle().wait_exit_blocking();
+                assert!(matches!(reason, ExitReason::Panic(_)), "got {reason:?}");
+                assert!(stopped.try_recv().is_err(), "stopped() ran");
+                failing.unwrap().join();
+                continue;
+            }
             let result = stopped.recv_timeout(Duration::from_secs(2));
             // A failed test must not hang cleanup on a broken wakeup callback.
             if result.is_err() {

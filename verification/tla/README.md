@@ -401,8 +401,11 @@ existing reason model. A negative control erases Kill and must reject the
 resulting transient restart; the entry point adds no new model transition.
 `queued_drop_panic` checks a queued destructor fault during ordinary stop and
 the resulting transient restart. Erasing its Panic exit must reject the tape.
-`queued_drop_preserves_shutdown` retains a committed Shutdown despite a destructor
-failure; escalating it to Panic must reject transient retirement.
+`queued_drop_shutdown_restarts` keeps the raw Shutdown reason but records the
+destructor failure after the death point as a cleanup failure, which the trace
+projects to the abnormal class (v0.8, otp-exit-signals.md "Phases of an
+exit"): the Transient child restarts. Projecting the raw Shutdown instead must
+reject the restart.
 All library crates continue to forbid unsafe Rust; native synchronization and
 Linux affinity use safe interfaces. No unsafe exemption was introduced.
 

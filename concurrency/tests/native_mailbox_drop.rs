@@ -106,21 +106,12 @@ fn native_drop_child() {
             let (done, exit) = mpsc::channel();
             std::thread::spawn(move || done.send(waiter.wait_exit_blocking()).unwrap());
             let exit = exit.recv_timeout(LIMIT).unwrap();
-            if reason != ExitReason::Normal {
-                assert_eq!(exit, reason);
-            } else if state_panics {
-                assert_eq!(
-                    exit,
-                    ExitReason::Panic("actor state destructor: native state destructor".into())
-                );
-            } else {
-                assert_eq!(
-                    exit,
-                    ExitReason::Panic("queued message destructor: native queued destructor".into())
-                );
-            }
+            // Destructor panics after the death point are cleanup failures:
+            // the final reason is the requested one.
+            let _ = state_panics;
+            assert_eq!(exit, reason);
             assert_eq!(
-                child.mailbox_cleanup_failure().as_deref(),
+                child.cleanup_failure().as_deref(),
                 Some("native queued destructor")
             );
             assert_eq!(dropped.load(Ordering::SeqCst), 2);

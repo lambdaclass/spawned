@@ -327,7 +327,7 @@ async fn ambient_actor_started_inside_group_is_unmanaged_and_aborted_at_teardown
         .unwrap()
         .starts_with("spawned-ambient-child"));
     assert!(system.shutdown(LIMIT).await.complete);
-    assert_eq!(ambient.wait_exit().await, ExitReason::Kill);
+    assert_eq!(ambient.wait_exit().await, ExitReason::Killed);
     assert_eq!(managed.wait_exit().await, ExitReason::Shutdown);
 }
 

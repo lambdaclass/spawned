@@ -38,12 +38,26 @@ pub enum RestartMode {
     Temporary,
 }
 impl RestartMode {
-    fn restarts(self, reason: Option<&ExitReason>) -> bool {
+    /// The restart table. A Transient child restarts if its final reason is
+    /// abnormal or a cleanup failure (a destructor panic after its death
+    /// point) was recorded: `is_abnormal()` alone no longer predicts it.
+    fn restarts(self, reason: Option<&ExitReason>, cleanup_failed: bool) -> bool {
         match self {
             Self::Permanent => true,
-            Self::Transient => reason.map(ExitReason::is_abnormal).unwrap_or(true),
+            Self::Transient => cleanup_failed || reason.map(ExitReason::is_abnormal).unwrap_or(true),
             Self::Temporary => false,
         }
+    }
+}
+
+/// Trace projection of a child's exit: the raw reason class, or the abnormal
+/// class when a cleanup failure was recorded, so `Supervision.tla`'s restart
+/// decision (`RestartFollowsPolicy`) stays valid.
+fn exit_class(reason: &ExitReason, cleanup_failed: bool) -> &'static str {
+    if cleanup_failed && !reason.is_abnormal() {
+        "Panic"
+    } else {
+        trace::reason(Some(reason))
     }
 }
 
@@ -2051,8 +2065,9 @@ async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, core: Arc<C
                         match rt::timeout(spec.shutdown_timeout, child.wait_exit_async()).await {
                             Ok(reason) => {
                                 if !stop_turn {
+                                    let failed = child.cleanup_failure().is_some();
                                     trace::emit(core.trace, || {
-                                        Event::new("SelfExit", c, trace::reason(Some(&reason)))
+                                        Event::new("SelfExit", c, exit_class(&reason, failed))
                                     });
                                 }
                                 reason
@@ -2141,8 +2156,12 @@ async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, core: Arc<C
                 trace::emit(core.trace, || Event::new("CleanupDone", c, ""));
             });
         }
+        let cleanup_failure = scope.child().and_then(|child| child.cleanup_failure());
         view.change(|v| {
             v.snapshot.last_exit = exit.clone();
+            if cleanup_failure.is_some() {
+                v.snapshot.last_error = cleanup_failure.clone();
+            }
             if v.snapshot.actor_id.is_none() {
                 v.snapshot.actor_id = scope.child().map(|child| child.id());
             }
@@ -2166,7 +2185,8 @@ async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, core: Arc<C
         let restart = if startup_timed_out || failed_restart {
             spec.restart != RestartMode::Temporary
         } else {
-            spec.restart.restarts(exit.as_ref())
+            spec.restart
+                .restarts(exit.as_ref(), cleanup_failure.is_some())
         };
         // Gate check, decision and any resulting failure happen in one step,
         // so a concurrent stop is never followed by a failure of this child.

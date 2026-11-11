@@ -3070,7 +3070,7 @@ mod tests {
     }
 
     #[test]
-    pub fn link_to_already_dead_actor_delivers_signal() {
+    pub fn link_to_already_dead_actor_delivers_noproc() {
         let runtime = rt::Runtime::new().unwrap();
         runtime.block_on(async move {
             // Start and panic a target
@@ -3094,7 +3094,8 @@ mod tests {
             let _ = target.send(Boom3);
             target.wait_exit().await;
 
-            // Now link from a trapping observer — should receive Exit immediately
+            // Now link from a trapping observer: the target is past its
+            // death point, so the Exit carries NoProc (E4), not its reason.
             let observer = make_trapper(true);
             observer
                 .request(LinkTo(target.child_handle()))
@@ -3108,7 +3109,8 @@ mod tests {
             .await
             .unwrap();
             assert_eq!(exits.len(), 1);
-            assert!(matches!(exits[0].reason, ExitReason::Panic(_)));
+            assert_eq!(exits[0].reason, ExitReason::NoProc);
+            assert!(matches!(target.exit_reason(), Some(ExitReason::Panic(_))));
 
             let oh = observer.child_handle();
             oh.stop();

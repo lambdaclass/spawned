@@ -900,7 +900,7 @@ fn monitor_workload(env: &mut Env, endings: &[Ending], double: &[bool]) -> Monit
     for (target, &ending) in targets.iter().zip(endings) {
         end(env, target, ending);
     }
-    // Watching an already-dead target delivers Down immediately.
+    // Watching an already-dead target delivers one Down { NoProc } at once (E4).
     monitors.push(vec![watch(&targets[0])]);
     let expected: usize = monitors.iter().map(Vec::len).sum();
     let count = |events: &[Obs]| {
@@ -1232,7 +1232,7 @@ proptest! {
         for (i, &ending) in endings.iter().enumerate() {
             prop_assert!(outcome.downs[i].iter().all(|r| *r == expected_reason(ending)));
         }
-        prop_assert_eq!(&outcome.downs[endings.len()], &vec![expected_reason(endings[0])]);
+        prop_assert_eq!(&outcome.downs[endings.len()], &vec![ExitReason::NoProc]);
     }
 
     #[test]

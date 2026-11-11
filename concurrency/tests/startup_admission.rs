@@ -112,7 +112,7 @@ async fn managed_actor_stopped_before_first_poll_runs_no_hooks_but_drops_state()
     assert_eq!(counts.dropped.load(Ordering::SeqCst), 1);
     assert_eq!(dropped.load(Ordering::SeqCst), 2);
     assert_eq!(
-        actor.child_handle().mailbox_cleanup_failure().as_deref(),
+        actor.child_handle().cleanup_failure().as_deref(),
         Some("unstarted queued destructor")
     );
     for reply in replies {

@@ -297,13 +297,15 @@ def main():
                 event["x"] = "Normal"
     require_rejected(drain, erase_drain_failure,
                      "transient restart after erased queued destructor panic", args.tlc)
-    shutdown = next(t for t in traces if t["name"] == "queued_drop_preserves_shutdown")
-    def escalate_shutdown(events):
+    shutdown = next(t for t in traces if t["name"] == "queued_drop_shutdown_restarts")
+    def drop_cleanup_failure(events):
+        # v0.8: a cleanup failure after Shutdown projects to the abnormal
+        # class; projecting the raw Shutdown instead must reject the restart.
         for event in events:
-            if event.get("x") == "Shutdown":
-                event["x"] = "Panic"
-    require_rejected(shutdown, escalate_shutdown,
-                     "transient retirement after incorrectly escalated shutdown", args.tlc)
+            if event.get("a") == "SelfExit" and event.get("x") == "Panic":
+                event["x"] = "Shutdown"
+    require_rejected(shutdown, drop_cleanup_failure,
+                     "transient restart after a Shutdown without its cleanup failure", args.tlc)
     replacement = next(t for t in traces if t["name"] == "transient_replacement_normal_before_ready")
     def fail_instead_of_retry(events):
         failed = next(i for i, e in enumerate(events)
