@@ -103,6 +103,14 @@ name = "runtime_isolation"
 harness = false
 required-features = ["backend-experiments"]
 
+# Long-running resource-leak soak, run by hand (docs/TESTING.md, "Soak harness").
+# Not built by `cargo test`; `--all-targets` clippy keeps it compiling.
+[[bench]]
+name = "soak"
+path = "benches/soak/main.rs"
+harness = false
+required-features = ["async", "metrics"]
+
 [[bench]]
 name = "metrics_overhead"
 harness = false
