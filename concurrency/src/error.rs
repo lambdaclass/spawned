@@ -1,5 +1,9 @@
 /// Reason an actor stopped. Used by supervision to decide whether to restart.
+///
+/// Non-exhaustive, as OTP exit reasons are open terms: match with a wildcard
+/// arm.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum ExitReason {
     /// Clean stop via `ctx.stop()` or `ChildHandle::stop()`. The run loop holds
     /// a sender to its own mailbox, so the mailbox never closes while it runs.
@@ -8,11 +12,19 @@ pub enum ExitReason {
     Shutdown,
     /// Actor panicked in `started()`, a handler, or `stopped()`.
     Panic(String),
-    /// Direct kill outcome, also used when an async task is aborted externally.
-    /// Propagated link notices carrying Kill are trappable. An active handler may finish and the
-    /// actor still runs `stopped()`. An externally dropped future cannot guarantee
-    /// execution of that async cleanup hook. No blocking Rust code is preempted.
+    /// A self-exit with `Kill` (`ctx.stop_with_reason(Kill)`, OTP `exit(kill)`),
+    /// an administrative `stop_with_reason(Kill)`, or a `Kill` link notice.
+    /// Propagated over links as `Kill` (trappable), not converted to `Killed`.
     Kill,
+    /// Killed by an untrappable kill signal ([`ChildHandle::kill`],
+    /// `exit(Kill)`), or dropped by its runtime before it finished (OTP
+    /// `killed`). Links receive `Killed`, which is trappable.
+    ///
+    /// [`ChildHandle::kill`]: crate::ChildHandle::kill
+    Killed,
+    /// The target no longer existed when a link, monitor, send or request
+    /// was made (OTP `noproc`).
+    NoProc,
 }
 
 impl ExitReason {
@@ -22,7 +34,10 @@ impl ExitReason {
     pub fn is_abnormal(&self) -> bool {
         match self {
             ExitReason::Normal | ExitReason::Shutdown => false,
-            ExitReason::Panic(_) | ExitReason::Kill => true,
+            ExitReason::Panic(_)
+            | ExitReason::Kill
+            | ExitReason::Killed
+            | ExitReason::NoProc => true,
         }
     }
 }
@@ -34,9 +49,17 @@ impl std::fmt::Display for ExitReason {
             ExitReason::Shutdown => write!(f, "shutdown"),
             ExitReason::Panic(msg) => write!(f, "panic: {msg}"),
             ExitReason::Kill => write!(f, "kill"),
+            ExitReason::Killed => write!(f, "killed"),
+            ExitReason::NoProc => write!(f, "noproc"),
         }
     }
 }
+
+/// The target of [`try_link`](crate::tasks::Context::try_link) no longer
+/// existed (it was past its death point), as OTP's `noproc`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("noproc")]
+pub struct NoProc;
 
 /// Extract a human-readable message from a panic payload.
 pub(crate) fn panic_message(panic: &(dyn std::any::Any + Send)) -> String {
@@ -106,6 +129,8 @@ mod tests {
         assert!(!ExitReason::Shutdown.is_abnormal());
         assert!(ExitReason::Panic("boom".into()).is_abnormal());
         assert!(ExitReason::Kill.is_abnormal());
+        assert!(ExitReason::Killed.is_abnormal());
+        assert!(ExitReason::NoProc.is_abnormal());
     }
 
     #[test]
@@ -114,6 +139,8 @@ mod tests {
         assert_eq!(ExitReason::Shutdown.to_string(), "shutdown");
         assert_eq!(ExitReason::Panic("oops".into()).to_string(), "panic: oops");
         assert_eq!(ExitReason::Kill.to_string(), "kill");
+        assert_eq!(ExitReason::Killed.to_string(), "killed");
+        assert_eq!(ExitReason::NoProc.to_string(), "noproc");
     }
 
     #[test]

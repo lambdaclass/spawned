@@ -13,6 +13,13 @@ impl DropFailures {
     pub(crate) fn first(&self) -> Option<String> {
         self.0.lock().unwrap_or_else(|p| p.into_inner()).clone()
     }
+    /// Record a cleanup failure; the first one is kept.
+    pub(crate) fn record(&self, message: String) {
+        self.0
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get_or_insert(message);
+    }
     pub(crate) fn discard<T>(&self, value: T) {
         if let Err(payload) = catch_unwind(AssertUnwindSafe(|| drop(value))) {
             let message = crate::error::panic_message(&*payload);

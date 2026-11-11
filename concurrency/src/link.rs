@@ -1,7 +1,7 @@
 use crate::child_handle::ActorId;
 use crate::error::{ActorError, ExitReason};
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
 // ---------------------------------------------------------------------------
@@ -31,46 +31,253 @@ pub struct Exit {
 /// mailbox. Captures the peer's typed sender at link time.
 pub(crate) type SendExitFn = Arc<dyn Fn(Exit) -> Result<(), ActorError> + Send + Sync>;
 
-/// Per-actor flag controlling how exit signals from linked actors are handled.
-/// `false` (default): the receiver is cancelled. `true`: the receiver gets an
-/// `Exit` message via `Actor::exit_received`.
+/// Queues a signal held during `started()`; `true` for a parent signal.
+pub(crate) type SendHeldFn = Arc<dyn Fn(Exit, bool) -> Result<(), ActorError> + Send + Sync>;
+
+/// Per-actor flag controlling how exit signals are handled. `false`
+/// (default): a non-`Normal` signal ends the receiver. `true`: the receiver
+/// gets an `Exit` message via `Actor::exit_received` (only a kill is
+/// untrappable).
 pub(crate) type TrapExitFlag = Arc<AtomicBool>;
 
-/// Per-actor slot holding the exit reason of a linked actor whose death
-/// triggered cancellation. When a non-trapping actor is cancelled by a link
-/// signal, this slot is set so the actor's own exit reason propagates
-/// transitively through further links.
-pub(crate) type LinkedExitReason = Arc<Mutex<Option<ExitReason>>>;
+/// The exit request of one actor instance (design otp-exit-signals.md,
+/// "Phases of an exit"): the requested reason, kill provenance, whether
+/// `stopped()` is skipped, and the death point D after which nothing changes.
+#[derive(Debug, Default)]
+pub(crate) struct ExitRequest {
+    reason: Option<ExitReason>,
+    /// A kill signal (or the supervisor's escalation) arrived before D.
+    killed: bool,
+    /// The exit was begun by a kill, an untrapped signal or link notice, or
+    /// `stopped()` must otherwise not start (decision 2).
+    skip_hook: bool,
+    hook_begun: bool,
+    /// Past the death point D: the reason is final.
+    dead: bool,
+    /// Phase 0: `started()` is running; non-kill signals are held.
+    starting: bool,
+    /// Reasons of the signals held during `started()`, in arrival order.
+    held: Vec<ExitReason>,
+    /// Held signal envelopes become `Exit`s (the actor trapped when
+    /// `started()` returned); otherwise they are inert.
+    held_trapped: bool,
+}
 
-/// Create a new empty linked-exit-reason slot.
+impl ExitRequest {
+    /// The requested reason (final after D).
+    pub(crate) fn reason(&self) -> Option<&ExitReason> {
+        self.reason.as_ref()
+    }
+    pub(crate) fn is_dead(&self) -> bool {
+        self.dead
+    }
+    /// A self-exit or an administrative stop: the first requested reason
+    /// wins. Returns whether the run loop must be woken.
+    pub(crate) fn request(&mut self, reason: ExitReason) -> bool {
+        if self.dead {
+            return false;
+        }
+        if self.reason.is_none() {
+            self.reason = Some(reason);
+        }
+        true
+    }
+    /// An untrapped non-`Normal` exit signal or link notice: begins exit
+    /// without `stopped()`, or replaces the reason of an actor already
+    /// exiting (decision 8), unless a kill was received.
+    pub(crate) fn untrapped(&mut self, reason: ExitReason) -> bool {
+        if self.dead || self.killed {
+            return false;
+        }
+        if self.reason.is_none() && !self.hook_begun {
+            self.skip_hook = true;
+        }
+        self.reason = Some(reason);
+        true
+    }
+    /// An untrappable kill: `Killed` supersedes any reason until D and
+    /// skips a `stopped()` that has not begun.
+    pub(crate) fn kill(&mut self) -> bool {
+        if self.dead {
+            return false;
+        }
+        self.reason = Some(ExitReason::Killed);
+        self.killed = true;
+        if !self.hook_begun {
+            self.skip_hook = true;
+        }
+        true
+    }
+    /// A panic in `started()`, a handler or `stopped()`: begins exit, or
+    /// replaces the requested reason, unless a kill was received.
+    pub(crate) fn panic(&mut self, reason: ExitReason) {
+        if !self.dead && !self.killed {
+            self.reason = Some(reason);
+        }
+    }
+    /// `stopped()` is about to start: returns whether it runs.
+    pub(crate) fn begin_hook(&mut self) -> bool {
+        self.hook_begun = true;
+        !self.skip_hook
+    }
+    /// The death point D: the requested reason becomes final.
+    pub(crate) fn die(&mut self) -> ExitReason {
+        self.dead = true;
+        self.reason.get_or_insert(ExitReason::Normal).clone()
+    }
+    /// The runtime dropped the actor before D (G1): `Killed` unless a
+    /// non-`Normal` reason was already requested; then D.
+    pub(crate) fn runtime_drop(&mut self) -> ExitReason {
+        if !self.dead {
+            self.reason = match self.reason.take() {
+                None | Some(ExitReason::Normal) => Some(ExitReason::Killed),
+                Some(reason) => Some(reason),
+            };
+        }
+        self.die()
+    }
+    pub(crate) fn begin_starting(&mut self) {
+        self.starting = true;
+    }
+    /// `started()` returned: resolve the held signals with the trap flag read
+    /// now. A non-trapping actor begins exit with the first non-`Normal`
+    /// one; a trapping actor dispatches each held envelope as an `Exit` in
+    /// its own place in the queue. Returns whether the run loop must stop.
+    pub(crate) fn end_starting(&mut self, trapping: bool) -> bool {
+        self.starting = false;
+        let held = std::mem::take(&mut self.held);
+        self.held_trapped = trapping;
+        if !trapping {
+            if let Some(reason) = held.into_iter().find(|r| *r != ExitReason::Normal) {
+                return self.untrapped(reason);
+            }
+        }
+        false
+    }
+    pub(crate) fn held_trapped(&self) -> bool {
+        self.held_trapped
+    }
+}
+
+/// Per-actor exit request, shared by every handle of the instance (and by its
+/// managed scope).
+pub(crate) type LinkedExitReason = Arc<Mutex<ExitRequest>>;
+
+/// Create a new empty exit request.
 pub(crate) fn new_linked_exit_reason() -> LinkedExitReason {
-    Arc::new(Mutex::new(None))
+    Arc::new(Mutex::new(ExitRequest::default()))
+}
+
+pub(crate) fn lock_request(request: &LinkedExitReason) -> std::sync::MutexGuard<'_, ExitRequest> {
+    request.lock().unwrap_or_else(|p| p.into_inner())
+}
+
+/// Everything needed to deliver an exit signal to one actor instance without
+/// knowing its type.
+pub(crate) struct SignalTarget {
+    pub(crate) id: ActorId,
+    /// The actor's `start_linked` parent: its signals are parent exits.
+    pub(crate) parent: Option<ActorId>,
+    pub(crate) trap: TrapExitFlag,
+    pub(crate) request: LinkedExitReason,
+    /// Wakes the run loop (cancels its token) without recording a reason.
+    pub(crate) wake: Arc<dyn Fn() + Send + Sync>,
+    /// Queues an `Exit` for `exit_received`.
+    pub(crate) send_exit: SendExitFn,
+    /// Queues a parent exit: when dispatched, exit begins with its reason and
+    /// `stopped()` runs; `exit_received` never sees it (E3).
+    pub(crate) send_parent_exit: SendExitFn,
+    /// Queues a signal held during `started()` in its place in the mailbox
+    /// (the flag marks a parent signal).
+    pub(crate) send_held: SendHeldFn,
+}
+
+/// Where an exit signal comes from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Origin {
+    /// `ctx.exit` / `ChildHandle::exit` / `kill` (a `Kill` is untrappable).
+    Direct,
+    /// A death notice of a link, or a late `NoProc` (a `Kill` is trappable).
+    Link,
+}
+
+/// Deliver an exit signal (OTP `exit_signal/2` semantics, design E1-E3).
+/// `from_parent` marks the internal entry point of supervisors and systems.
+pub(crate) fn deliver_signal(
+    target: &SignalTarget,
+    from: ActorId,
+    reason: ExitReason,
+    origin: Origin,
+    from_parent: bool,
+) {
+    if origin == Origin::Direct && reason == ExitReason::Kill {
+        if lock_request(&target.request).kill() {
+            (target.wake)();
+        }
+        return;
+    }
+    let from_parent = from_parent || target.parent == Some(from);
+    let mut request = lock_request(&target.request);
+    if request.dead {
+        return;
+    }
+    let exit = Exit { from, reason };
+    if request.starting {
+        // Held in arrival order, and as an envelope in its mailbox place.
+        request.held.push(exit.reason.clone());
+        let _ = (target.send_held)(exit, from_parent);
+        return;
+    }
+    // The trap flag is read when the signal arrives.
+    if target.trap.load(Ordering::Acquire) {
+        drop(request);
+        let send = if from_parent {
+            &target.send_parent_exit
+        } else {
+            &target.send_exit
+        };
+        let _ = send(exit); // admission may be closed if the peer just died
+        return;
+    }
+    if exit.reason == ExitReason::Normal {
+        return;
+    }
+    if request.untrapped(exit.reason) {
+        drop(request);
+        (target.wake)();
+    }
 }
 
 /// An entry in an actor's link table, representing one linked peer.
 pub(crate) struct LinkEntry {
     /// The peer's unique actor ID.
     pub peer_id: ActorId,
-    /// Delivers an exit signal to the peer.
-    pub signal: ExitSignalFn,
-    /// Reference to the peer's link table, so we can remove ourselves on death.
+    /// Edge generation: both records of one link share it; a late record has
+    /// its own. Delivery applies only to a record with this generation.
+    pub gen: u64,
+    /// The peer, to deliver this actor's death notice to it.
+    pub peer: Arc<SignalTarget>,
+    /// Reference to the peer's link table, for receiver-side delivery.
     pub peer_links: Weak<Mutex<LinkState>>,
+    /// A pending late `NoProc` notice (the peer was past D at `link`).
+    pub late: bool,
 }
 
-/// Type-erased function that signals exit to a peer. Decides whether to
-/// cancel the peer or send an `Exit` message based on the peer's `trap_exit`
-/// flag and the exit reason.
-pub(crate) type ExitSignalFn = Arc<dyn Fn(ActorId, ExitReason) + Send + Sync>;
-
-/// An actor's link table — a list of linked peers.
+/// An actor's exit table: its link records and its death point.
 #[derive(Default)]
 pub(crate) struct LinkState {
     entries: Vec<LinkEntry>,
-    // Published under the same mutex as registration, before edges are drained.
-    // Completion channels can be published later without losing a racing link.
+    // Set at the death point D under the same mutex as registration.
     exited: Option<ExitReason>,
 }
 pub(crate) type LinkTable = Arc<Mutex<LinkState>>;
+
+impl LinkState {
+    /// Past the death point D.
+    pub(crate) fn is_dead(&self) -> bool {
+        self.exited.is_some()
+    }
+}
 
 /// Create a new empty link table.
 pub(crate) fn new_link_table() -> LinkTable {
@@ -82,40 +289,7 @@ pub(crate) fn new_trap_exit_flag() -> TrapExitFlag {
     Arc::new(AtomicBool::new(false))
 }
 
-/// Build an `ExitSignalFn` that signals a peer based on its trap_exit flag
-/// and a typed-erased send-exit function.
-pub(crate) fn make_signal(
-    peer_trap_exit: TrapExitFlag,
-    peer_cancel: Arc<dyn Fn() + Send + Sync>,
-    peer_send_exit: SendExitFn,
-    peer_linked_reason: LinkedExitReason,
-) -> ExitSignalFn {
-    Arc::new(move |sender_id, reason| {
-        // A propagated notice is trappable, including Kill. Only a direct
-        // stop_with_reason(Kill) bypasses the target's trap_exit flag.
-        // Normal exit signals are silently dropped unless the peer is trapping
-        let trapping = peer_trap_exit.load(Ordering::Acquire);
-        if matches!(reason, ExitReason::Normal) && !trapping {
-            return;
-        }
-        if trapping {
-            // Send Exit message to the peer's mailbox
-            let exit = Exit {
-                from: sender_id,
-                reason,
-            };
-            let _ = peer_send_exit(exit); // mailbox may be closed if peer just died
-        } else {
-            // Peer is not trapping: record the linked reason then cancel
-            let mut slot = peer_linked_reason.lock().unwrap_or_else(|p| p.into_inner());
-            if slot.is_none() {
-                *slot = Some(reason);
-            }
-            drop(slot);
-            peer_cancel();
-        }
-    })
-}
+static NEXT_EDGE: AtomicU64 = AtomicU64::new(1);
 
 /// Mutate both ends in one transaction. Callbacks and removed entries are
 /// handled after releasing both locks. Pointer order is stable while Arcs live.
@@ -135,42 +309,69 @@ fn with_pair<R>(
     }
 }
 
-/// Register before actor execution starts, or atomically observe a closed peer.
-/// Late operations through an already-closed own context are ignored.
+/// The outcome of a link attempt.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum LinkOutcome {
+    Linked,
+    /// Nothing to do: self link, an existing record, or the caller is past D.
+    Unchanged,
+    /// The peer was past D.
+    NoProc,
+}
+
+/// Link `own` and `peer` (OTP `link/1`). An existing record (live or
+/// pending) makes it a no-op. Past the peer's D, `try_only` returns
+/// `NoProc` without a record; otherwise a pending late record is created and
+/// its `NoProc` notice is delivered through the receiver-side step, so a
+/// concurrent `unlink` still fences it.
 pub(crate) fn register_link(
-    own_id: ActorId,
-    own: &LinkTable,
-    own_signal: ExitSignalFn,
-    peer_id: ActorId,
-    peer: &LinkTable,
-    peer_signal: ExitSignalFn,
-) {
-    if own_id == peer_id || Arc::ptr_eq(own, peer) {
-        return;
+    own: &Arc<SignalTarget>,
+    own_links: &LinkTable,
+    peer: &Arc<SignalTarget>,
+    peer_links: &LinkTable,
+    try_only: bool,
+) -> LinkOutcome {
+    if own.id == peer.id || Arc::ptr_eq(own_links, peer_links) {
+        return LinkOutcome::Unchanged;
     }
     fail_point!("link.before_install");
-    let closed = with_pair(own, peer, |a, b| {
-        if a.exited.is_some() || a.entries.iter().any(|e| e.peer_id == peer_id) {
-            return None;
+    let gen = NEXT_EDGE.fetch_add(1, Ordering::Relaxed);
+    let outcome = with_pair(own_links, peer_links, |a, b| {
+        if a.exited.is_some() || a.entries.iter().any(|e| e.peer_id == peer.id) {
+            return LinkOutcome::Unchanged;
         }
-        if let Some(reason) = &b.exited {
-            return Some(reason.clone());
+        if b.exited.is_some() {
+            if !try_only {
+                a.entries.push(LinkEntry {
+                    peer_id: peer.id,
+                    gen,
+                    peer: peer.clone(),
+                    peer_links: Arc::downgrade(peer_links),
+                    late: true,
+                });
+            }
+            return LinkOutcome::NoProc;
         }
         a.entries.push(LinkEntry {
-            peer_id,
-            signal: peer_signal.clone(),
-            peer_links: Arc::downgrade(peer),
+            peer_id: peer.id,
+            gen,
+            peer: peer.clone(),
+            peer_links: Arc::downgrade(peer_links),
+            late: false,
         });
         b.entries.push(LinkEntry {
-            peer_id: own_id,
-            signal: own_signal.clone(),
-            peer_links: Arc::downgrade(own),
+            peer_id: own.id,
+            gen,
+            peer: own.clone(),
+            peer_links: Arc::downgrade(own_links),
+            late: false,
         });
-        None
+        LinkOutcome::Linked
     });
-    if let Some(reason) = closed {
-        deliver(&own_signal, peer_id, reason);
+    if outcome == LinkOutcome::NoProc && !try_only {
+        deliver_notice(own_links, own, peer.id, gen, ExitReason::NoProc);
     }
+    outcome
 }
 
 fn remove(table: &mut LinkState, id: ActorId) -> Option<LinkEntry> {
@@ -181,8 +382,8 @@ fn remove(table: &mut LinkState, id: ActorId) -> Option<LinkEntry> {
         .map(|i| table.entries.swap_remove(i))
 }
 
-/// Unlink is atomic with registration. An exit already taken for delivery may
-/// still arrive; unlink does not retract a signal already in flight.
+/// Unlink removes both records, live or pending: once it returns, no notice
+/// of that edge takes effect (E6). An `Exit` already queued stays.
 pub(crate) fn unregister_link(
     own_id: ActorId,
     own: &LinkTable,
@@ -196,61 +397,89 @@ pub(crate) fn unregister_link(
     drop(removed);
 }
 
-fn deliver(signal: &ExitSignalFn, id: ActorId, reason: ExitReason) {
-    // One failing internal cancellation callback must not prevent other peers
-    // from being notified, or panic again during actor-future destruction.
-    if let Err(payload) = catch_unwind(AssertUnwindSafe(|| signal(id, reason))) {
-        crate::mailbox::dispose_panic(payload);
-        if let Err(payload) = catch_unwind(AssertUnwindSafe(|| {
-            tracing::error!("Panic while delivering a linked exit");
-        })) {
-            crate::mailbox::dispose_panic(payload);
-        }
-    }
-}
-
-/// Close the registration state before draining. Terminal closure is idempotent.
-pub(crate) fn propagate_exit(own_id: ActorId, own: &LinkTable, reason: &ExitReason) {
-    let entries = {
-        let mut state = own.lock().unwrap_or_else(|p| p.into_inner());
-        if state.exited.is_some() {
-            return;
-        }
-        state.exited = Some(reason.clone());
-        std::mem::take(&mut state.entries)
+/// Receiver-side delivery: under the receiver's table lock, apply the notice
+/// only if the record with that peer and generation is still present, and
+/// remove it. `unlink` removes records under the same lock (the fence).
+fn deliver_notice(
+    receiver_links: &LinkTable,
+    receiver: &SignalTarget,
+    from: ActorId,
+    gen: u64,
+    reason: ExitReason,
+) {
+    let mut table = receiver_links.lock().unwrap_or_else(|p| p.into_inner());
+    let Some(i) = table
+        .entries
+        .iter()
+        .position(|e| e.peer_id == from && e.gen == gen)
+    else {
+        return;
     };
-    for entry in entries {
-        let removed = entry.peer_links.upgrade().and_then(|peer| {
-            let mut table = peer.lock().unwrap_or_else(|p| p.into_inner());
-            remove(&mut table, own_id)
+    let record = table.entries.swap_remove(i);
+    // One failing internal callback must not prevent other peers from being
+    // notified, or panic again during actor-future destruction.
+    if let Err(payload) = catch_unwind(AssertUnwindSafe(|| {
+        deliver_signal(receiver, from, reason, Origin::Link, false)
+    })) {
+        crate::mailbox::dispose_panic(payload);
+        crate::actor_cleanup::log_safely(|| {
+            tracing::error!("Panic while delivering a linked exit");
         });
-        drop(removed);
-        deliver(&entry.signal, own_id, reason.clone());
+    }
+    drop(table);
+    drop(record);
+}
+
+/// Death notices taken at D, delivered at publication.
+#[derive(Default)]
+pub(crate) struct LinkNotices {
+    from: Option<ActorId>,
+    reason: Option<ExitReason>,
+    entries: Vec<LinkEntry>,
+}
+
+impl LinkNotices {
+    /// Deliver every notice (publication). Each is applied only if the
+    /// receiver still holds the record (E6 fence).
+    pub(crate) fn deliver(self) {
+        let (Some(from), Some(reason)) = (self.from, self.reason) else {
+            return;
+        };
+        for entry in self.entries {
+            if entry.late {
+                continue;
+            }
+            if let Some(peer_links) = entry.peer_links.upgrade() {
+                deliver_notice(&peer_links, &entry.peer, from, entry.gen, reason.clone());
+            }
+        }
     }
 }
 
-/// Created before constructing the actor future/thread closure, so shutdown
-/// before its first poll also closes links. Weak reverse edges avoid Arc cycles.
-pub(crate) struct LinkCleanup {
-    id: ActorId,
-    links: LinkTable,
-}
-impl LinkCleanup {
-    pub(crate) fn new(id: ActorId, links: LinkTable) -> Self {
-        Self { id, links }
+/// Close the exit table at D: set the final reason and take one notice per
+/// link. Takes only this actor's own lock. Terminal closure is idempotent.
+pub(crate) fn close_links(own_id: ActorId, own: &LinkTable, reason: &ExitReason) -> LinkNotices {
+    let mut state = own.lock().unwrap_or_else(|p| p.into_inner());
+    if state.exited.is_some() {
+        return LinkNotices::default();
     }
-    pub(crate) fn complete(&self, reason: &ExitReason) {
-        propagate_exit(self.id, &self.links, reason);
-    }
-}
-impl Drop for LinkCleanup {
-    fn drop(&mut self) {
-        self.complete(&ExitReason::Kill);
+    state.exited = Some(reason.clone());
+    LinkNotices {
+        from: Some(own_id),
+        reason: Some(reason.clone()),
+        entries: std::mem::take(&mut state.entries),
     }
 }
 
-/// A local stop commits its cause before cancelling. A linked failure recorded
-/// first wins; a late linked failure cannot relabel an already-requested stop.
+/// Close and deliver at once (tests and paths with nothing in between).
+#[cfg(test)]
+pub(crate) fn propagate_exit(own_id: ActorId, own: &LinkTable, reason: &ExitReason) {
+    close_links(own_id, own, reason).deliver();
+}
+
+/// A self-exit or administrative stop commits its cause before waking. The
+/// first requested reason wins over later self-exits and stops; a later
+/// untrapped signal or kill can still replace it until D.
 pub(crate) fn normal_stop(reason: &LinkedExitReason, cancel: impl FnOnce()) {
     stop_with_reason(reason, ExitReason::Normal, cancel);
 }
@@ -260,12 +489,9 @@ pub(crate) fn stop_with_reason(
     cause: ExitReason,
     cancel: impl FnOnce(),
 ) {
-    let mut slot = reason.lock().unwrap_or_else(|p| p.into_inner());
-    if slot.is_none() {
-        *slot = Some(cause);
+    if lock_request(reason).request(cause) {
+        cancel();
     }
-    drop(slot);
-    cancel();
 }
 
 #[cfg(test)]
@@ -332,11 +558,15 @@ mod tests {
         }
         let drops = Arc::new(AtomicUsize::new(0));
         let callback_drops = drops.clone();
-        let signal: ExitSignalFn =
-            Arc::new(move |_, _| std::panic::panic_any(Payload(callback_drops.clone())));
+        let mut receiver = target(&Arc::new(AtomicUsize::new(0)));
+        receiver.wake = Arc::new(move || std::panic::panic_any(Payload(callback_drops.clone())));
+        let receiver = Arc::new(receiver);
+        let sender = Arc::new(target(&Arc::new(AtomicUsize::new(0))));
+        let (a, b) = (new_link_table(), new_link_table());
+        register_link(&receiver, &a, &sender, &b, false);
         let result = catch_unwind(AssertUnwindSafe(|| {
             tracing::subscriber::with_default(PanicSubscriber(drops.clone()), || {
-                deliver(&signal, ActorId::next(), ExitReason::Kill);
+                propagate_exit(sender.id, &b, &ExitReason::Kill);
             });
         }));
         assert!(result.is_ok(), "delivery unwound through its caller");
@@ -367,94 +597,168 @@ mod tests {
     fn trap_exit_defaults_false() {
         assert!(!new_trap_exit_flag().load(Ordering::Acquire));
     }
-    fn signal(counter: &Arc<AtomicUsize>) -> ExitSignalFn {
-        let c = counter.clone();
-        Arc::new(move |_, _| {
-            c.fetch_add(1, Ordering::SeqCst);
-        })
+    /// A receiver whose wake and Exit deliveries are counted.
+    fn target(counter: &Arc<AtomicUsize>) -> SignalTarget {
+        let (c1, c2, c3) = (counter.clone(), counter.clone(), counter.clone());
+        SignalTarget {
+            id: ActorId::next(),
+            parent: None,
+            trap: new_trap_exit_flag(),
+            request: new_linked_exit_reason(),
+            wake: Arc::new(move || {
+                c1.fetch_add(1, Ordering::SeqCst);
+            }),
+            send_exit: Arc::new(move |_| {
+                c2.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }),
+            send_parent_exit: Arc::new(move |_| {
+                c3.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }),
+            send_held: Arc::new(|_, _| Ok(())),
+        }
+    }
+    fn pair(seen: &Arc<AtomicUsize>) -> (Arc<SignalTarget>, LinkTable, Arc<SignalTarget>, LinkTable) {
+        (
+            Arc::new(target(seen)),
+            new_link_table(),
+            Arc::new(target(seen)),
+            new_link_table(),
+        )
     }
     #[test]
     fn closure_is_terminal_and_delivers_each_edge_once() {
-        let a = new_link_table();
-        let b = new_link_table();
-        let aid = ActorId::next();
-        let bid = ActorId::next();
         let seen = Arc::new(AtomicUsize::new(0));
-        register_link(aid, &a, signal(&seen), bid, &b, signal(&seen));
-        propagate_exit(aid, &a, &ExitReason::Kill);
-        propagate_exit(aid, &a, &ExitReason::Kill);
+        let (a, at, b, bt) = pair(&seen);
+        assert_eq!(register_link(&a, &at, &b, &bt, false), LinkOutcome::Linked);
+        propagate_exit(a.id, &at, &ExitReason::Panic("x".into()));
+        propagate_exit(a.id, &at, &ExitReason::Panic("x".into()));
         assert_eq!(seen.load(Ordering::SeqCst), 1);
-        assert!(b.lock().unwrap().entries.is_empty());
-        register_link(bid, &b, signal(&seen), aid, &a, signal(&seen));
-        assert_eq!(seen.load(Ordering::SeqCst), 2);
-        assert!(a.lock().unwrap().entries.is_empty() && b.lock().unwrap().entries.is_empty());
+        assert!(bt.lock().unwrap().entries.is_empty());
+        // b links to the dead a: a late NoProc notice, delivered and removed.
+        assert_eq!(register_link(&b, &bt, &a, &at, false), LinkOutcome::NoProc);
+        assert_eq!(seen.load(Ordering::SeqCst), 1, "b already exiting: no second wake");
+        assert_eq!(lock_request(&b.request).reason(), Some(&ExitReason::NoProc));
+        assert!(at.lock().unwrap().entries.is_empty() && bt.lock().unwrap().entries.is_empty());
+    }
+    #[test]
+    fn try_link_to_a_dead_actor_keeps_no_record() {
+        let seen = Arc::new(AtomicUsize::new(0));
+        let (a, at, b, bt) = pair(&seen);
+        propagate_exit(b.id, &bt, &ExitReason::Normal);
+        assert_eq!(register_link(&a, &at, &b, &bt, true), LinkOutcome::NoProc);
+        assert_eq!(seen.load(Ordering::SeqCst), 0);
+        assert!(at.lock().unwrap().entries.is_empty());
+        assert_eq!(lock_request(&a.request).reason(), None);
+    }
+    #[test]
+    fn unlink_fences_a_notice_taken_at_death() {
+        let seen = Arc::new(AtomicUsize::new(0));
+        let (a, at, b, bt) = pair(&seen);
+        register_link(&a, &at, &b, &bt, false);
+        let notices = close_links(a.id, &at, &ExitReason::Panic("x".into()));
+        unregister_link(b.id, &bt, a.id, &at);
+        notices.deliver();
+        assert_eq!(seen.load(Ordering::SeqCst), 0, "unlink returned before delivery");
+        // A relink while the notice is pending is a no-op, as an existing record.
+        let (c, ct, d, dt) = pair(&seen);
+        register_link(&c, &ct, &d, &dt, false);
+        let notices = close_links(c.id, &ct, &ExitReason::Panic("y".into()));
+        assert_eq!(register_link(&d, &dt, &c, &ct, false), LinkOutcome::Unchanged);
+        notices.deliver();
+        assert_eq!(seen.load(Ordering::SeqCst), 1);
+    }
+    #[test]
+    fn signal_rules_follow_exit_signal_2() {
+        let seen = Arc::new(AtomicUsize::new(0));
+        let t = target(&seen);
+        let from = ActorId::next();
+        // Normal is ignored by a non-trapping target.
+        deliver_signal(&t, from, ExitReason::Normal, Origin::Direct, false);
+        assert_eq!(lock_request(&t.request).reason(), None);
+        // Any other reason begins exit without stopped().
+        deliver_signal(&t, from, ExitReason::Shutdown, Origin::Direct, false);
+        assert_eq!(lock_request(&t.request).reason(), Some(&ExitReason::Shutdown));
+        assert!(!lock_request(&t.request).begin_hook());
+        // Trapping: queued as Exit, nothing committed.
+        let t = target(&seen);
+        t.trap.store(true, Ordering::Release);
+        deliver_signal(&t, from, ExitReason::Shutdown, Origin::Direct, false);
+        assert_eq!(lock_request(&t.request).reason(), None);
+        // A Kill signal is untrappable and ends Killed; a Kill link notice is trappable.
+        deliver_signal(&t, from, ExitReason::Kill, Origin::Link, false);
+        assert_eq!(lock_request(&t.request).reason(), None);
+        deliver_signal(&t, from, ExitReason::Kill, Origin::Direct, false);
+        assert_eq!(lock_request(&t.request).reason(), Some(&ExitReason::Killed));
+    }
+    #[test]
+    fn reason_precedence_until_death() {
+        // A late non-kill signal replaces a requested reason (decision 8);
+        // a kill supersedes it and nothing replaces Killed.
+        let mut r = ExitRequest::default();
+        assert!(r.request(ExitReason::Normal));
+        assert!(r.untrapped(ExitReason::Shutdown));
+        assert_eq!(r.reason(), Some(&ExitReason::Shutdown));
+        assert!(r.begin_hook(), "a late signal does not skip a self-exit's stopped()");
+        r.panic(ExitReason::Panic("stopped".into()));
+        assert_eq!(r.reason(), Some(&ExitReason::Panic("stopped".into())));
+        assert!(r.kill());
+        r.panic(ExitReason::Panic("after kill".into()));
+        assert!(!r.untrapped(ExitReason::Shutdown));
+        assert!(r.request(ExitReason::Normal));
+        assert_eq!(r.die(), ExitReason::Killed);
+        assert!(!r.kill() && !r.untrapped(ExitReason::Shutdown));
+        // Runtime drop: Killed unless a non-Normal reason was requested.
+        let mut r = ExitRequest::default();
+        r.request(ExitReason::Normal);
+        assert_eq!(r.runtime_drop(), ExitReason::Killed);
+        let mut r = ExitRequest::default();
+        r.request(ExitReason::Shutdown);
+        assert_eq!(r.runtime_drop(), ExitReason::Shutdown);
     }
     #[test]
     fn self_link_is_noop() {
-        let a = new_link_table();
-        let id = ActorId::next();
         let seen = Arc::new(AtomicUsize::new(0));
-        register_link(id, &a, signal(&seen), id, &a, signal(&seen));
-        assert!(a.lock().unwrap().entries.is_empty());
-        assert_eq!(Arc::strong_count(&a), 1);
+        let a = Arc::new(target(&seen));
+        let at = new_link_table();
+        register_link(&a, &at, &a, &at, false);
+        assert!(at.lock().unwrap().entries.is_empty());
+        assert_eq!(Arc::strong_count(&at), 1);
     }
     #[test]
     fn weak_edges_do_not_keep_link_tables_alive() {
-        let a = new_link_table();
-        let b = new_link_table();
-        let weak_a = Arc::downgrade(&a);
-        let weak_b = Arc::downgrade(&b);
         let c = Arc::new(AtomicUsize::new(0));
-        register_link(
-            ActorId::next(),
-            &a,
-            signal(&c),
-            ActorId::next(),
-            &b,
-            signal(&c),
-        );
-        drop(a);
-        drop(b);
+        let (a, at, b, bt) = pair(&c);
+        let weak_a = Arc::downgrade(&at);
+        let weak_b = Arc::downgrade(&bt);
+        register_link(&a, &at, &b, &bt, false);
+        drop(at);
+        drop(bt);
         assert!(weak_a.upgrade().is_none() && weak_b.upgrade().is_none());
     }
     #[test]
     fn concurrent_link_unlink_preserves_symmetry() {
-        let a = new_link_table();
-        let b = new_link_table();
-        let aid = ActorId::next();
-        let bid = ActorId::next();
         let c = Arc::new(AtomicUsize::new(0));
+        let (a, at, b, bt) = pair(&c);
         std::thread::scope(|scope| {
             scope.spawn(|| {
                 for _ in 0..2000 {
-                    register_link(aid, &a, signal(&c), bid, &b, signal(&c));
-                    unregister_link(aid, &a, bid, &b);
+                    register_link(&a, &at, &b, &bt, false);
+                    unregister_link(a.id, &at, b.id, &bt);
                 }
             });
             scope.spawn(|| {
                 for _ in 0..2000 {
-                    register_link(bid, &b, signal(&c), aid, &a, signal(&c));
-                    unregister_link(bid, &b, aid, &a);
+                    register_link(&b, &bt, &a, &at, false);
+                    unregister_link(b.id, &bt, a.id, &at);
                 }
             });
         });
         assert_eq!(
-            a.lock().unwrap().entries.len(),
-            b.lock().unwrap().entries.len()
+            at.lock().unwrap().entries.len(),
+            bt.lock().unwrap().entries.len()
         );
-        assert!(a.lock().unwrap().entries.len() <= 1);
-    }
-    #[test]
-    fn normal_stop_cause_is_not_replaced_by_late_failure() {
-        let reason = new_linked_exit_reason();
-        normal_stop(&reason, || {});
-        let signal = make_signal(
-            new_trap_exit_flag(),
-            Arc::new(|| {}),
-            Arc::new(|_| Ok(())),
-            reason.clone(),
-        );
-        signal(ActorId::next(), ExitReason::Panic("late".into()));
-        assert_eq!(*reason.lock().unwrap(), Some(ExitReason::Normal));
+        assert!(at.lock().unwrap().entries.len() <= 1);
     }
 }

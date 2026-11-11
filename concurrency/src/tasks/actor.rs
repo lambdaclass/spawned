@@ -1,8 +1,10 @@
 use crate::child_handle::{ActorId, ChildHandle};
 use crate::error::{panic_message, ActorError, ExitReason};
+use crate::child_handle::Completion;
+use crate::error::NoProc;
 use crate::link::{
-    self, new_link_table, new_linked_exit_reason, new_trap_exit_flag, Exit, LinkTable,
-    LinkedExitReason, SendExitFn, TrapExitFlag,
+    self, new_link_table, new_linked_exit_reason, new_trap_exit_flag, Exit, LinkOutcome,
+    LinkTable, LinkedExitReason, SendExitFn, SendHeldFn, SignalTarget, TrapExitFlag,
 };
 use crate::mailbox::tasks as mpsc;
 use crate::message::Message;
@@ -270,6 +272,95 @@ impl<A: Actor> Envelope<A> for ExitEnvelope {
     }
 }
 
+/// A parent exit (E3): when dispatched, exit begins with the parent's reason
+/// and `stopped()` runs. `exit_received` never sees it.
+struct ParentExitEnvelope {
+    exit: Exit,
+}
+
+impl<A: Actor> Envelope<A> for ParentExitEnvelope {
+    #[cfg(feature = "diagnostics")]
+    fn message_type(&self) -> &'static str {
+        "ParentExit"
+    }
+
+    fn handle<'a>(
+        self: Box<Self>,
+        _actor: &'a mut A,
+        ctx: &'a Context<A>,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+        Box::pin(async move { ctx.stop_with_reason(self.exit.reason) })
+    }
+}
+
+/// An exit signal that arrived while `started()` ran, in its mailbox place
+/// (phase 0). If the actor trapped exits when `started()` returned it is an
+/// `Exit` (or parent exit); otherwise it was resolved then and is inert.
+struct HeldEnvelope {
+    exit: Exit,
+    parent: bool,
+}
+
+impl<A: Actor> Envelope<A> for HeldEnvelope {
+    #[cfg(feature = "diagnostics")]
+    fn message_type(&self) -> &'static str {
+        "Exit"
+    }
+
+    fn handle<'a>(
+        self: Box<Self>,
+        actor: &'a mut A,
+        ctx: &'a Context<A>,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+        Box::pin(async move {
+            if !link::lock_request(&ctx.shared.linked_reason).held_trapped() {
+                return;
+            }
+            if self.parent {
+                ctx.stop_with_reason(self.exit.reason);
+            } else {
+                actor.exit_received(self.exit, ctx).await;
+            }
+        })
+    }
+}
+
+/// Build the signal target of a new actor instance.
+fn signal_target<A: Actor>(
+    id: ActorId,
+    parent: Option<ActorId>,
+    sender: &mpsc::Sender<Box<dyn Envelope<A> + Send>>,
+    trap: TrapExitFlag,
+    request: LinkedExitReason,
+    token: CancellationToken,
+) -> Arc<SignalTarget> {
+    let exit_tx = sender.clone();
+    let parent_tx = sender.clone();
+    let held_tx = sender.clone();
+    let send_exit: SendExitFn = Arc::new(move |exit: Exit| {
+        let envelope: Box<dyn Envelope<A> + Send> = Box::new(ExitEnvelope { exit });
+        exit_tx.send(envelope).map_err(|_| ActorError::ActorStopped)
+    });
+    let send_parent_exit: SendExitFn = Arc::new(move |exit: Exit| {
+        let envelope: Box<dyn Envelope<A> + Send> = Box::new(ParentExitEnvelope { exit });
+        parent_tx.send(envelope).map_err(|_| ActorError::ActorStopped)
+    });
+    let send_held: SendHeldFn = Arc::new(move |exit: Exit, parent: bool| {
+        let envelope: Box<dyn Envelope<A> + Send> = Box::new(HeldEnvelope { exit, parent });
+        held_tx.send(envelope).map_err(|_| ActorError::ActorStopped)
+    });
+    Arc::new(SignalTarget {
+        id,
+        parent,
+        trap,
+        request,
+        wake: Arc::new(move || token.cancel()),
+        send_exit,
+        send_parent_exit,
+        send_held,
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Context
 // ---------------------------------------------------------------------------
@@ -298,6 +389,8 @@ struct ActorShared<A: Actor> {
     trap_exit: TrapExitFlag,
     links: LinkTable,
     linked_reason: LinkedExitReason,
+    /// This instance as the target of exit signals and link notices.
+    signal: Arc<SignalTarget>,
     mailbox: crate::instrumentation::Mailbox,
     managed: Option<Arc<crate::system::Scope>>,
     /// This instance's reply registry: deferred tokens, credits, turn phase.
@@ -351,22 +444,36 @@ impl<A: Actor> Context<A> {
         self.shared.id
     }
 
-    /// Signal the actor to stop. The current handler will finish, then
-    /// `stopped()` is called and the actor exits.
+    /// Self-exit: the current handler finishes, then `stopped()` is called
+    /// and the actor exits `Normal`.
     pub fn stop(&self) {
         self.stop_with_reason(ExitReason::Normal);
     }
 
-    /// Request a cooperative exit with an explicit reason, without unwinding.
-    /// The current handler finishes and `stopped()` runs. The first committed
-    /// stop/link reason wins; a cleanup panic can still make the exit abnormal.
-    /// `Shutdown` is non-abnormal; `Kill` requests an abnormal exit and can
-    /// trigger transient supervision or propagate through links. It does not
-    /// forcibly interrupt running Rust code.
+    /// Self-exit with an explicit reason (OTP `{stop, Reason, State}`), without
+    /// unwinding. The current handler finishes and `stopped()` runs. The first
+    /// requested self-exit or stop wins; until the death point a kill
+    /// replaces it with `Killed`, an untrapped exit signal with its reason, and
+    /// a panic (in the handler or `stopped()`) with `Panic`. `Kill` stays
+    /// `Kill` and propagates over links as `Kill` (trappable).
     pub fn stop_with_reason(&self, reason: ExitReason) {
         link::stop_with_reason(&self.shared.linked_reason, reason, || {
             self.shared.cancellation_token.cancel()
         });
+    }
+
+    /// Send an exit signal from this actor to `target` (OTP
+    /// `exit_signal(Target, Reason)`); see [`ChildHandle::exit`] for the
+    /// delivery rules. From the target's `start_linked` parent the signal is a
+    /// parent exit (a trapping target ends normally, through `stopped()`).
+    /// Works until this actor's death point, including from `stopped()`;
+    /// inert after it. A signal to this actor's own handle is a signal, not a
+    /// self-exit: a non-trapping actor ignores `Normal`.
+    pub fn exit(&self, target: &ChildHandle, reason: ExitReason) {
+        if link::lock_request(&self.shared.linked_reason).is_dead() {
+            return;
+        }
+        target.exit_from(self.shared.id, reason, false);
     }
 
     /// Send a fire-and-forget message to this actor.
@@ -467,10 +574,12 @@ impl<A: Actor> Context<A> {
     /// Set up a unidirectional monitor on another actor.
     ///
     /// Returns a [`MonitorRef`] that can be used to cancel the monitor via
-    /// [`Context::demonitor`]. When the monitored actor stops, a [`Down`]
-    /// message is delivered to this actor's mailbox via `Handler<Down>`.
+    /// [`Context::demonitor`]. When the monitored actor's exit is published,
+    /// a [`Down`] with its final reason is delivered via `Handler<Down>`.
     ///
-    /// If the target is already dead, a `Down` message is delivered immediately.
+    /// If the target is past its death point, exactly one
+    /// `Down { reason: NoProc }` is delivered at once (OTP `noproc`; use
+    /// [`ChildHandle::exit_reason`] for the real reason).
     ///
     /// Multiple independent monitors are allowed on the same target — each
     /// call returns a distinct `MonitorRef`.
@@ -502,6 +611,15 @@ impl<A: Actor> Context<A> {
             let Some(monitors) = monitors.as_mut() else {
                 return monitor_ref;
             };
+            // Linearised against the target's death point (E4): past it the
+            // only notice is NoProc, delivered under the observer's lock.
+            if target.is_past_death() {
+                let _ = self.send(Down {
+                    monitor_ref,
+                    reason: ExitReason::NoProc,
+                });
+                return monitor_ref;
+            }
             monitors.insert(monitor_ref, active.clone());
         }
 
@@ -521,21 +639,21 @@ impl<A: Actor> Context<A> {
                 futures::future::Either::Left(_) => return,
                 futures::future::Either::Right((reason, _)) => reason,
             };
-            // Remove the entry from the monitor table so it doesn't accumulate
-            // stale entries over the actor's lifetime. Done before delivery
-            // since `demonitor` is now a no-op for this monitor anyway.
-            let deliver = monitors
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
+            // Receiver-side fence (E6): the entry is removed and the Down
+            // enqueued in one critical section, so once `demonitor` returns
+            // no Down of this monitor is enqueued.
+            let mut entries = monitors.lock().unwrap_or_else(|p| p.into_inner());
+            if entries
                 .as_mut()
                 .and_then(|entries| entries.remove(&monitor_ref))
-                .is_some();
-            if deliver {
+                .is_some()
+            {
                 let _ = actor_ref.send(Down {
                     monitor_ref,
                     reason,
                 });
             }
+            drop(entries);
         });
 
         monitor_ref
@@ -543,10 +661,8 @@ impl<A: Actor> Context<A> {
 
     /// Cancel a previously-set monitor.
     ///
-    /// The monitor waiter is released promptly.
-    /// If the target hasn't yet died, no `Down` message will be delivered.
-    /// If a `Down` message has already been delivered (or queued), this is
-    /// a best-effort cancellation — the message may still arrive.
+    /// A fence (OTP `demonitor/1`): once it returns, no `Down` of this
+    /// monitor is enqueued; one already queued stays.
     pub fn demonitor(&self, monitor_ref: MonitorRef) {
         let active = self
             .shared
@@ -561,44 +677,49 @@ impl<A: Actor> Context<A> {
         }
     }
 
-    /// Set up a bidirectional link with another actor.
+    /// Set up a bidirectional link with another actor (OTP `link/1`).
     ///
-    /// When either side dies abnormally, the other receives an exit signal.
-    /// By default the receiver is terminated by the signal. Call
-    /// [`trap_exit(true)`] to convert signals into `Exit` messages delivered
-    /// via [`Actor::exit_received`] instead.
+    /// When either side's exit is published, the other receives a link
+    /// notice with the final reason: a non-trapping peer ignores `Normal` and
+    /// otherwise exits with that reason without running `stopped()`; a
+    /// trapping peer gets an `Exit` via [`Actor::exit_received`].
     ///
-    /// If the target is already dead with an abnormal reason, the exit
-    /// signal is delivered immediately without retaining a link. Repeating an
-    /// existing live link is a no-op; each attempt to link a closed peer reports
-    /// that peer's exit for the new attempt.
+    /// If the target is past its death point, this actor receives a `NoProc`
+    /// notice: an `Exit { reason: NoProc }` when trapping, otherwise it exits
+    /// `NoProc` (decision 1). Use [`try_link`](Self::try_link) to get
+    /// `Err(NoProc)` instead. An existing link, or a pending notice from that
+    /// peer, makes this a no-op.
     ///
-    /// [`trap_exit(true)`]: Self::trap_exit
     /// [`Actor::exit_received`]: Actor::exit_received
     pub fn link(&self, target: &ChildHandle) {
-        let own_signal = link::make_signal(
-            self.shared.trap_exit.clone(),
-            self.own_cancel_fn(),
-            self.own_send_exit_fn(),
-            self.shared.linked_reason.clone(),
-        );
-        let peer_signal = link::make_signal(
-            target.trap_exit_flag().clone(),
-            target.cancel_fn().clone(),
-            target.send_exit_fn().clone(),
-            target.linked_reason().clone(),
-        );
         link::register_link(
-            self.shared.id,
+            &self.shared.signal,
             &self.shared.links,
-            own_signal,
-            target.id(),
+            target.signal_target(),
             target.links(),
-            peer_signal,
+            false,
         );
     }
 
-    /// Remove a previously-set bidirectional link.
+    /// Link as [`link`](Self::link), but report a target past its death
+    /// point as `Err(NoProc)` and keep no record, whether or not this actor
+    /// traps exits.
+    pub fn try_link(&self, target: &ChildHandle) -> Result<(), NoProc> {
+        match link::register_link(
+            &self.shared.signal,
+            &self.shared.links,
+            target.signal_target(),
+            target.links(),
+            true,
+        ) {
+            LinkOutcome::NoProc => Err(NoProc),
+            LinkOutcome::Linked | LinkOutcome::Unchanged => Ok(()),
+        }
+    }
+
+    /// Remove a link. A fence (OTP `unlink/1`): once it returns, the link has
+    /// no further effect on this actor, including a notice already taken at
+    /// the peer's death; an `Exit` already queued stays.
     pub fn unlink(&self, target: &ChildHandle) {
         link::unregister_link(
             self.shared.id,
@@ -608,31 +729,21 @@ impl<A: Actor> Context<A> {
         );
     }
 
-    /// Control how exit signals from linked actors are handled.
+    /// Control how exit signals (link notices and `exit` signals) are
+    /// handled; read when each signal arrives (OTP `trap_exit`).
     ///
-    /// - `false` (default): an abnormal exit signal from a linked actor cancels
-    ///   this actor (propagating the death).
-    /// - `true`: the signal is converted to an `Exit` message and delivered to
+    /// - `false` (default): `Normal` is ignored; any other reason ends this
+    ///   actor after its current handler, without `stopped()`.
+    /// - `true`: the signal is queued as an `Exit` for
     ///   [`Actor::exit_received`].
     ///
-    /// A direct `stop_with_reason(Kill)` cannot be trapped. Propagated link
-    /// notices, including Kill, are delivered as Exit when trapping is enabled.
-    /// Cancellation remains cooperative: an in-flight handler is not preempted.
+    /// Only a kill is untrappable. A parent's exit (the `start_linked` parent,
+    /// the supervisor or the system) ends a trapping actor normally, through
+    /// `stopped()`, and never reaches `exit_received`. Set it first thing in
+    /// `started()`: signals that arrive while `started()` runs are resolved
+    /// when it returns. Handlers are never preempted.
     pub fn trap_exit(&self, enabled: bool) {
         self.shared.trap_exit.store(enabled, Ordering::Release);
-    }
-
-    /// Build a type-erased cancel closure for this actor.
-    fn own_cancel_fn(&self) -> Arc<dyn Fn() + Send + Sync> {
-        let token = self.shared.cancellation_token.clone();
-        let reason = self.shared.linked_reason.clone();
-        Arc::new(move || link::normal_stop(&reason, || token.cancel()))
-    }
-
-    /// Build a type-erased `SendExitFn` that enqueues an `ExitEnvelope`
-    /// onto this actor's mailbox.
-    fn own_send_exit_fn(&self) -> SendExitFn {
-        self.shared.send_exit_fn()
     }
 
     /// Type-erased handle to this actor, without an intermediate `ActorRef`.
@@ -944,24 +1055,17 @@ impl<A: Actor> ActorRef<A> {
         }
     }
 
-    /// Poll the exit reason. Returns `None` if the actor is still running.
-    /// A completion channel closed without a reason reports [`ExitReason::Kill`],
-    /// matching the wait methods (for example, after runtime shutdown).
+    /// Poll the exit reason. Returns `None` until the exit is published.
+    /// A completion channel closed without a reason reports
+    /// [`ExitReason::Killed`], matching the wait methods (for example, after
+    /// runtime shutdown).
     pub fn exit_reason(&self) -> Option<ExitReason> {
         crate::child_handle::poll_exit_reason(&self.shared.completion_rx)
     }
 
-    /// Wait until the actor stops and return the exit reason.
+    /// Wait until the actor's exit is published and return its final reason.
     pub async fn wait_exit(&self) -> ExitReason {
-        let mut rx = self.shared.completion_rx.clone();
-        loop {
-            if let Some(reason) = rx.borrow_and_update().clone() {
-                return reason;
-            }
-            if rx.changed().await.is_err() {
-                return ExitReason::Kill;
-            }
-        }
+        crate::child_handle::wait_loop(self.shared.completion_rx.clone()).await
     }
 
     /// Waiting messages, including in-flight enqueue reservations, excluding
@@ -990,25 +1094,11 @@ impl<A: Actor> ActorRef<A> {
 }
 
 impl<A: Actor> ActorShared<A> {
-    /// Build a type-erased `SendExitFn` that enqueues an `ExitEnvelope`
-    /// onto this actor's mailbox.
-    fn send_exit_fn(&self) -> SendExitFn {
-        let sender = self.sender.clone();
-        Arc::new(move |exit: Exit| {
-            let envelope: Box<dyn Envelope<A> + Send> = Box::new(ExitEnvelope { exit });
-            sender.send(envelope).map_err(|_| ActorError::ActorStopped)
-        })
-    }
-
     fn child_handle(&self) -> ChildHandle {
-        ChildHandle::from_tasks(
-            self.id,
-            self.cancellation_token.clone(),
-            self.completion_rx.clone(),
-            self.trap_exit.clone(),
+        ChildHandle::new(
+            self.signal.clone(),
+            Completion::Tasks(self.completion_rx.clone()),
             self.links.clone(),
-            self.linked_reason.clone(),
-            self.send_exit_fn(),
         )
         .with_mailbox_failures(self.sender.failures())
     }
@@ -1082,6 +1172,16 @@ impl<A: Actor> ActorRef<A> {
             .unwrap_or_else(new_linked_exit_reason);
 
         let id = ActorId::next();
+        // Phase 0: signals that arrive before started() returns are held.
+        link::lock_request(&linked_reason).begin_starting();
+        let signal = signal_target::<A>(
+            id,
+            parent.as_ref().map(ChildHandle::id),
+            &tx,
+            trap_exit.clone(),
+            linked_reason.clone(),
+            cancellation_token.clone(),
+        );
         let (cleaned_tx, cleaned_rx) = watch::channel(false);
         let actor_ref = ActorRef {
             shared: Arc::new(ActorShared {
@@ -1099,6 +1199,7 @@ impl<A: Actor> ActorRef<A> {
                 trap_exit,
                 links: links.clone(),
                 linked_reason: linked_reason.clone(),
+                signal,
                 mailbox: crate::instrumentation::Mailbox::default(),
                 managed: managed.clone(),
             }),
@@ -1153,7 +1254,6 @@ impl<A: Actor> ActorRef<A> {
             linked_reason,
             actor_ref.shared.monitors.clone(),
             completion_tx,
-            ExitReason::Kill,
             move || cleanup_token.cancel(),
         )
         .with_mailbox_failures(actor_ref.shared.sender.failures());
@@ -1175,30 +1275,22 @@ impl<A: Actor> ActorRef<A> {
             let _borrowed_runtime = borrowed_runtime;
             #[cfg(feature = "backend-experiments")]
             let _borrowed_dispatcher = borrowed_dispatcher;
-            let reason = run_actor(
+            run_actor(
                 actor,
                 ctx,
                 rx,
                 cancellation_token,
+                &mut cleanup,
                 #[cfg(feature = "backend-experiments")]
                 turn,
             )
             .await;
-            let reason = match reason {
-                Ok(reason) => {
-                    cleanup.complete(reason.clone());
-                    reason
-                }
-                Err(reason) => {
-                    cleanup.complete_secondary(reason.clone());
-                    reason
-                }
-            };
+            let reason = cleanup.die();
             if let Some(scope) = &managed {
-                let actual = crate::system::lock(&scope.cause).clone().unwrap_or(reason);
-                scope.exited(actual);
+                scope.exited(reason);
             }
-            // Publish the exit (monitors and links fire) before the job join.
+            // Publication (wait_exit, monitors, link notices) after the
+            // state drop, before the job join.
             drop(cleanup);
             // Job cleanup (deferred-replies §5 step 4), after death: join the
             // cancelled jobs, bounded by the cleanup deadline; a job still
@@ -1364,21 +1456,23 @@ impl<A> Drop for ExitOnDrop<A> {
     }
 }
 
-async fn run_actor<A: Actor>(
+async fn run_actor<A: Actor, C: Fn()>(
     actor: A,
     ctx: Context<A>,
     mut rx: mpsc::Receiver<Box<dyn Envelope<A> + Send>>,
     cancellation_token: CancellationToken,
+    cleanup: &mut crate::actor_cleanup::ActorCleanup<C>,
     #[cfg(feature = "backend-experiments")] turn: Option<MessageTurn>,
-) -> Result<ExitReason, ExitReason> {
+) {
     let replies = ctx.shared.replies.clone();
     let jobs = ctx.shared.jobs.clone();
+    let request = ctx.shared.linked_reason.clone();
     let mut owned = ExitOnDrop {
         actor: Some(actor),
         replies: replies.clone(),
         jobs: jobs.clone(),
     };
-    let primary = match AssertUnwindSafe(run_actor_lifecycle(
+    if let Err(payload) = AssertUnwindSafe(run_actor_lifecycle(
         owned.actor.as_mut().expect("the state lives until death"),
         ctx,
         &mut rx,
@@ -1389,26 +1483,28 @@ async fn run_actor<A: Actor>(
     .catch_unwind()
     .await
     {
-        Ok(reason) => Ok(reason),
-        Err(payload) => {
-            let message = panic_message(&*payload);
-            crate::mailbox::dispose_panic(payload);
-            Err(ExitReason::Panic(format!(
-                "actor lifecycle unwound: {message}"
-            )))
-        }
-    };
-    // Death (deferred-replies §5 step 3), only now that `stopped()` returned:
-    // close the registry (every open token answers ActorStopped), dispose
-    // the mailbox (queued requests answer ActorStopped), drop the state.
-    // Early returns (startup panic, closed scope) and an unwound lifecycle
-    // also begin exit here, so jobs never outlive their owner.
+        let message = panic_message(&*payload);
+        crate::mailbox::dispose_panic(payload);
+        link::lock_request(&request).panic(ExitReason::Panic(format!(
+            "actor lifecycle unwound: {message}"
+        )));
+    }
+    // The death point D, only now that `stopped()` returned (or was
+    // skipped): the reason becomes final, the link table closes, the
+    // registry closes (every open token is answered) and the mailbox refuses
+    // admission (queued requests are answered). Early returns (startup
+    // panic, closed scope) and an unwound lifecycle also come here, so jobs
+    // never outlive their owner.
     replies.exiting();
     jobs.cancel_all();
+    cleanup.die();
     replies.close();
     drop(rx);
+    // Destruction: a destructor panic is a cleanup failure, never the reason.
     let actor = owned.actor.take().expect("the state lives until death");
-    crate::actor_cleanup::finish_actor_state(actor, primary)
+    if let Some(failure) = crate::actor_cleanup::finish_actor_state(actor) {
+        cleanup.cleanup_failed(failure);
+    }
 }
 
 async fn run_actor_lifecycle<A: Actor>(
@@ -1417,12 +1513,13 @@ async fn run_actor_lifecycle<A: Actor>(
     rx: &mut mpsc::Receiver<Box<dyn Envelope<A> + Send>>,
     cancellation_token: CancellationToken,
     #[cfg(feature = "backend-experiments")] mut turn: Option<MessageTurn>,
-) -> ExitReason {
+) {
     let _monitor_cleanup = MonitorCleanup(ctx.shared.monitors.clone());
+    let request = ctx.shared.linked_reason.clone();
     if let Some(scope) = &ctx.shared.managed {
         if !scope.can_start() {
             scope.stop(ExitReason::Shutdown);
-            return ExitReason::Normal;
+            return;
         }
     }
     let start_result = AssertUnwindSafe(async {
@@ -1436,8 +1533,15 @@ async fn run_actor_lifecycle<A: Actor>(
         crate::actor_cleanup::log_safely(|| {
             tracing::error!("Panic in started() callback: {msg}");
         });
+        // No stopped() after a failed start (L5).
+        link::lock_request(&request).panic(ExitReason::Panic(format!("panic in started(): {msg}")));
         cancellation_token.cancel();
-        return ExitReason::Panic(format!("panic in started(): {msg}"));
+        return;
+    }
+    // Phase 0 ends: resolve signals held during started() with the trap
+    // flag read now.
+    if link::lock_request(&request).end_starting(ctx.shared.trap_exit.load(Ordering::Acquire)) {
+        cancellation_token.cancel();
     }
 
     fail_point!("actor.after_started_before_ready", async);
@@ -1447,31 +1551,7 @@ async fn run_actor_lifecycle<A: Actor>(
         }
     }
 
-    if cancellation_token.is_cancelled() {
-        if let Some(scope) = &ctx.shared.managed {
-            scope.end_running();
-        }
-        ctx.shared.replies.exiting();
-        ctx.shared.jobs.cancel_all();
-        if let Err(panic) = AssertUnwindSafe(async {
-            fail_point!("actor.before_stopped", async);
-            actor.stopped(&ctx).await
-        })
-        .catch_unwind()
-        .await
-        {
-            let msg = panic_message(&*panic);
-            crate::actor_cleanup::log_safely(|| {
-                tracing::error!("Panic in stopped() callback: {msg}");
-            });
-            return ExitReason::Panic(format!("panic in stopped(): {msg}"));
-        }
-        return ExitReason::Normal;
-    }
-
-    let mut exit_reason = ExitReason::Normal;
-
-    loop {
+    while !cancellation_token.is_cancelled() {
         let msg = {
             let recv = pin!(future::poll_fn(|cx| {
                 // Stop and closed-mailbox both take the normal lifecycle exit,
@@ -1528,7 +1608,10 @@ async fn run_actor_lifecycle<A: Actor>(
                     crate::actor_cleanup::log_safely(|| {
                         tracing::error!("Panic in message handler: {msg}");
                     });
-                    exit_reason = ExitReason::Panic(format!("panic in handler: {msg}"));
+                    // A panic begins exit, or replaces the requested reason
+                    // unless a kill was received.
+                    link::lock_request(&request)
+                        .panic(ExitReason::Panic(format!("panic in handler: {msg}")));
                     break;
                 }
                 #[cfg(feature = "backend-experiments")]
@@ -1551,6 +1634,11 @@ async fn run_actor_lifecycle<A: Actor>(
     cancellation_token.cancel();
     ctx.shared.replies.exiting();
     ctx.shared.jobs.cancel_all();
+    // stopped() is skipped when a kill, an untrapped exit signal or link
+    // notice began the exit (decision 2); one that already began finishes.
+    if !link::lock_request(&request).begin_hook() {
+        return;
+    }
     let stop_result = AssertUnwindSafe(async {
         fail_point!("actor.before_stopped", async);
         actor.stopped(&ctx).await
@@ -1562,12 +1650,8 @@ async fn run_actor_lifecycle<A: Actor>(
         crate::actor_cleanup::log_safely(|| {
             tracing::error!("Panic in stopped() callback: {msg}");
         });
-        if !exit_reason.is_abnormal() {
-            exit_reason = ExitReason::Panic(format!("panic in stopped(): {msg}"));
-        }
+        link::lock_request(&request).panic(ExitReason::Panic(format!("panic in stopped(): {msg}")));
     }
-
-    exit_reason
 }
 
 // ---------------------------------------------------------------------------
@@ -1594,9 +1678,12 @@ pub trait ActorStart: Actor {
         ActorRef::spawn(self, backend, None)
     }
 
-    /// Register the bidirectional link before the child can run `started()`.
-    /// A closed parent is observed under its link-state mutex; an abnormal
-    /// parent exit cancels the child cooperatively before message dispatch.
+    /// Start linked to `parent_ctx`'s actor, which becomes this instance's
+    /// parent (E3). The link is registered before `started()`. The parent's
+    /// exit ends a trapping child normally (its `stopped()` runs; it never
+    /// reaches `exit_received`), a non-trapping child as any link notice. A
+    /// parent already past its death point gives the child a `NoProc` parent
+    /// exit.
     fn start_linked<P: Actor>(self, parent_ctx: &Context<P>) -> ActorRef<Self> {
         ActorRef::spawn(self, Backend::Async, Some(parent_ctx.child_handle()))
     }

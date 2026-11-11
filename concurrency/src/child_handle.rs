@@ -1,5 +1,5 @@
 use crate::error::ExitReason;
-use crate::link::{LinkTable, LinkedExitReason, SendExitFn, TrapExitFlag};
+use crate::link::{LinkTable, Origin, SignalTarget};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -15,6 +15,10 @@ static NEXT_ACTOR_ID: AtomicU64 = AtomicU64::new(1);
 pub struct ActorId(u64);
 
 impl ActorId {
+    /// The sender of an exit signal sent from outside any actor
+    /// ([`ChildHandle::exit`]). Never an actor's identity, never a parent.
+    pub const EXTERNAL: ActorId = ActorId(0);
+
     #[cfg_attr(not(feature = "lifecycle-trace"), allow(dead_code))]
     pub(crate) fn raw(self) -> u64 {
         self.0
@@ -53,85 +57,43 @@ pub(crate) enum Completion {
 pub(crate) type CancelFn = Arc<dyn Fn() + Send + Sync>;
 
 /// Type-erased handle to a running actor. Provides lifecycle operations
-/// (stop, liveness check, exit reason) without knowing the actor's concrete type.
+/// (administrative stops, exit signals, liveness check, exit reason) without
+/// knowing the actor's concrete type.
 ///
 /// Obtained via `ChildHandle::from(actor_ref)`.
 ///
 /// Unlike `ActorRef<A>`, a `ChildHandle` cannot send messages directly — it
-/// only provides supervision-related operations (stop, wait, check liveness,
-/// link/monitor).
+/// only provides supervision-related operations (stop, exit, kill, wait,
+/// check liveness, link/monitor).
 #[derive(Clone)]
 pub struct ChildHandle {
-    id: ActorId,
+    target: Arc<SignalTarget>,
     cancel: CancelFn,
     completion: Completion,
-    // Link/trap_exit support — carried so `ctx.link()` can wire up signal
-    // propagation without knowing the underlying actor type.
-    trap_exit: TrapExitFlag,
     links: LinkTable,
-    linked_reason: LinkedExitReason,
-    send_exit: SendExitFn,
     mailbox_failures: Option<Arc<crate::mailbox::DropFailures>>,
 }
 
 impl std::fmt::Debug for ChildHandle {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ChildHandle")
-            .field("id", &self.id)
+            .field("id", &self.target.id)
             .finish_non_exhaustive()
     }
 }
 
 impl ChildHandle {
-    /// Create a ChildHandle for tasks mode.
-    #[allow(clippy::too_many_arguments)]
-    #[cfg(feature = "async")]
-    pub(crate) fn from_tasks(
-        id: ActorId,
-        cancellation_token: spawned_rt::tasks::CancellationToken,
-        completion_rx: spawned_rt::sync::watch::Receiver<Option<ExitReason>>,
-        trap_exit: TrapExitFlag,
-        links: LinkTable,
-        linked_reason: LinkedExitReason,
-        send_exit: SendExitFn,
-    ) -> Self {
-        let stop_reason = linked_reason.clone();
+    /// Create a ChildHandle from an actor's signal target, completion channel
+    /// and exit table.
+    pub(crate) fn new(target: Arc<SignalTarget>, completion: Completion, links: LinkTable) -> Self {
+        let stop = target.clone();
         Self {
-            id,
             cancel: Arc::new(move || {
-                crate::link::normal_stop(&stop_reason, || cancellation_token.cancel())
+                crate::link::normal_stop(&stop.request, || (stop.wake)())
             }),
-            completion: Completion::Tasks(completion_rx),
-            trap_exit,
+            target,
+            completion,
             links,
-            linked_reason,
-            send_exit,
-            mailbox_failures: None,
-        }
-    }
-
-    /// Create a ChildHandle for threads mode.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn from_threads(
-        id: ActorId,
-        cancellation_token: spawned_rt::threads::CancellationToken,
-        completion: spawned_rt::sync::watch::Receiver<Option<ExitReason>>,
-        trap_exit: TrapExitFlag,
-        links: LinkTable,
-        linked_reason: LinkedExitReason,
-        send_exit: SendExitFn,
-    ) -> Self {
-        let stop_reason = linked_reason.clone();
-        Self {
-            id,
-            cancel: Arc::new(move || {
-                crate::link::normal_stop(&stop_reason, || cancellation_token.cancel())
-            }),
-            completion: Completion::Threads(completion),
-            trap_exit,
-            links,
-            linked_reason,
-            send_exit,
             mailbox_failures: None,
         }
     }
@@ -143,28 +105,34 @@ impl ChildHandle {
         self
     }
 
-    /// First queued-message destructor failure, recorded independently of the
-    /// primary exit reason. Complete after actor termination; Shutdown, Kill
-    /// and an existing panic are never replaced by this secondary failure.
-    pub fn mailbox_cleanup_failure(&self) -> Option<String> {
+    /// First cleanup failure after the death point (a panicking state or
+    /// queued-message destructor), recorded independently of the final exit
+    /// reason, which it never changes. Complete after publication. A
+    /// supervisor restarts a Transient child that has one.
+    pub fn cleanup_failure(&self) -> Option<String> {
         self.mailbox_failures.as_ref().and_then(|f| f.first())
     }
 
-    /// Crate-internal accessors used by `ctx.link()` to wire up signal propagation.
-    pub(crate) fn trap_exit_flag(&self) -> &TrapExitFlag {
-        &self.trap_exit
+    /// Deprecated alias of [`cleanup_failure`](Self::cleanup_failure).
+    #[deprecated(since = "0.8.0", note = "use `cleanup_failure()`")]
+    pub fn mailbox_cleanup_failure(&self) -> Option<String> {
+        self.cleanup_failure()
+    }
+
+    /// Crate-internal accessors used by `ctx.link()` and `ctx.monitor()`.
+    pub(crate) fn signal_target(&self) -> &Arc<SignalTarget> {
+        &self.target
     }
     pub(crate) fn links(&self) -> &LinkTable {
         &self.links
     }
-    pub(crate) fn linked_reason(&self) -> &LinkedExitReason {
-        &self.linked_reason
-    }
-    pub(crate) fn cancel_fn(&self) -> &CancelFn {
-        &self.cancel
-    }
-    pub(crate) fn send_exit_fn(&self) -> &SendExitFn {
-        &self.send_exit
+    /// Past the death point D: links, monitors, sends and requests report
+    /// `NoProc` from now on.
+    pub(crate) fn is_past_death(&self) -> bool {
+        self.links
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .is_dead()
     }
 
     // Each child_handle() creates this allocation; its clones share it.
@@ -175,28 +143,59 @@ impl ChildHandle {
 
     /// The actor's unique identity.
     pub fn id(&self) -> ActorId {
-        self.id
+        self.target.id
     }
 
-    /// Signal the actor to stop. The actor will finish its current handler,
-    /// run `stopped()`, and exit.
+    /// Administrative stop (Spawned's `gen_server:stop`): the actor finishes
+    /// its current handler, discards its queue, runs `stopped()` and exits
+    /// `Normal`. Untrappable; returns at once (join with `wait_exit_*`).
     pub fn stop(&self) {
         (self.cancel)();
     }
 
-    /// Direct cooperative stop with a chosen reason. Trapping only affects
-    /// linked exit notices and cannot intercept this request. Kill remains
-    /// trappable when this actor's final reason is propagated to its peers.
+    /// Administrative stop with a chosen reason, as [`stop`](Self::stop).
+    /// Not an exit signal: `trap_exit` cannot intercept it and `stopped()`
+    /// runs. `stop_with_reason(Kill)` ends `Kill`; use [`kill`](Self::kill)
+    /// for the untrappable kill signal that ends `Killed`.
     pub fn stop_with_reason(&self, reason: ExitReason) {
-        crate::link::stop_with_reason(&self.linked_reason, reason, || (self.cancel)());
+        crate::link::stop_with_reason(&self.target.request, reason, || (self.target.wake)());
     }
 
-    /// Request an ordered cooperative shutdown without replacing an earlier
-    /// committed cause. A cleanup panic remains an abnormal exit.
+    /// Administrative stop with reason `Shutdown`, as [`stop`](Self::stop).
+    /// The first requested reason wins over later stops.
     pub fn shutdown(&self) {
-        crate::link::stop_with_reason(&self.linked_reason, ExitReason::Shutdown, || {
-            (self.cancel)()
-        });
+        self.stop_with_reason(ExitReason::Shutdown);
+    }
+
+    /// Send an exit signal from outside any actor (OTP `exit_signal/2`, the
+    /// sender is [`ActorId::EXTERNAL`]):
+    ///
+    /// - `Kill` is untrappable: the actor ends `Killed` (see [`kill`](Self::kill));
+    /// - `Normal` is ignored by a non-trapping actor;
+    /// - any other reason ends a non-trapping actor with that reason after
+    ///   its current handler, **without** `stopped()`, discarding its queue;
+    /// - a trapping actor gets `Exit { from: EXTERNAL, reason }` queued
+    ///   behind its messages.
+    ///
+    /// A signal to an actor past its death point is dropped.
+    pub fn exit(&self, reason: ExitReason) {
+        self.exit_from(ActorId::EXTERNAL, reason, false);
+    }
+
+    /// Untrappable kill signal (`exit(Kill)`): the actor ends `Killed`, also
+    /// when it is already exiting (until its death point), and nothing
+    /// replaces that reason. The current handler, and a `stopped()` that
+    /// already began, still finish (Rust cannot preempt them); a `stopped()`
+    /// that has not begun is skipped. Links receive `Killed` (trappable),
+    /// monitors `Down { reason: Killed }`.
+    pub fn kill(&self) {
+        self.exit(ExitReason::Kill);
+    }
+
+    /// Exit signal with an explicit sender; `from_parent` marks the internal
+    /// entry point of supervisors and systems (E3).
+    pub(crate) fn exit_from(&self, from: ActorId, reason: ExitReason, from_parent: bool) {
+        crate::link::deliver_signal(&self.target, from, reason, Origin::Direct, from_parent);
     }
 
     /// Returns `true` if the actor is still running.
@@ -204,9 +203,10 @@ impl ChildHandle {
         self.exit_reason().is_none()
     }
 
-    /// Poll the exit reason. Returns `None` if the actor is still running.
-    /// A completion channel closed without a reason reports [`ExitReason::Kill`],
-    /// matching the wait methods (for example, after runtime shutdown).
+    /// Poll the exit reason. Returns `None` until the exit is published.
+    /// A completion channel closed without a reason reports
+    /// [`ExitReason::Killed`], matching the wait methods (for example, after
+    /// runtime shutdown).
     pub fn exit_reason(&self) -> Option<ExitReason> {
         match &self.completion {
             #[cfg(feature = "async")]
@@ -260,18 +260,20 @@ pub(crate) fn poll_exit_reason(
     let closed = rx.has_changed().is_err();
     rx.borrow()
         .clone()
-        .or_else(|| closed.then_some(ExitReason::Kill))
+        .or_else(|| closed.then_some(ExitReason::Killed))
 }
 
 /// Async loop that polls a watch channel until it carries an exit reason.
-/// Returns `ExitReason::Kill` if the watch sender is dropped without a reason.
-async fn wait_loop(mut rx: spawned_rt::sync::watch::Receiver<Option<ExitReason>>) -> ExitReason {
+/// Returns `ExitReason::Killed` if the watch sender is dropped without a reason.
+pub(crate) async fn wait_loop(
+    mut rx: spawned_rt::sync::watch::Receiver<Option<ExitReason>>,
+) -> ExitReason {
     loop {
         if let Some(reason) = rx.borrow_and_update().clone() {
             return reason;
         }
         if rx.changed().await.is_err() {
-            return ExitReason::Kill;
+            return ExitReason::Killed;
         }
     }
 }
@@ -312,7 +314,7 @@ pub(crate) fn wait_for_thread_exit_blocking(
 ///   making progress (deadlock). Use `wait_exit_async` from async context, or
 ///   run on a multi-thread runtime.
 ///
-/// Returns `ExitReason::Kill` if the watch sender is dropped without setting a
+/// Returns `ExitReason::Killed` if the watch sender is dropped without setting a
 /// reason — this means the actor task was aborted externally (e.g., runtime
 /// shutdown) without going through the normal exit path.
 #[cfg(feature = "async")]
@@ -350,7 +352,7 @@ fn wait_for_tasks_exit_blocking(
 
 impl PartialEq for ChildHandle {
     fn eq(&self, other: &Self) -> bool {
-        self.id == other.id
+        self.target.id == other.target.id
     }
 }
 
@@ -358,7 +360,7 @@ impl Eq for ChildHandle {}
 
 impl std::hash::Hash for ChildHandle {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.id.hash(state);
+        self.target.id.hash(state);
     }
 }
 
@@ -366,6 +368,20 @@ impl std::hash::Hash for ChildHandle {
 mod tests {
     use super::*;
     use crate::link::{new_link_table, new_linked_exit_reason, new_trap_exit_flag};
+
+    /// A signal target whose wake cancels `token`.
+    pub(crate) fn test_target(id: ActorId, token: spawned_rt::threads::CancellationToken) -> Arc<SignalTarget> {
+        Arc::new(SignalTarget {
+            id,
+            parent: None,
+            trap: new_trap_exit_flag(),
+            request: new_linked_exit_reason(),
+            wake: Arc::new(move || token.cancel()),
+            send_exit: Arc::new(|_| Ok(())),
+            send_parent_exit: Arc::new(|_| Ok(())),
+            send_held: Arc::new(|_, _| Ok(())),
+        })
+    }
 
     // Shared tasks-mode fixture: an Idler actor that does nothing and never
     // stops on its own. Used by multiple tests below.
@@ -382,15 +398,10 @@ mod tests {
         token: spawned_rt::threads::CancellationToken,
         completion: spawned_rt::sync::watch::Receiver<Option<ExitReason>>,
     ) -> ChildHandle {
-        let no_op_send_exit: SendExitFn = Arc::new(|_| Ok(()));
-        ChildHandle::from_threads(
-            ActorId::next(),
-            token,
-            completion,
-            new_trap_exit_flag(),
+        ChildHandle::new(
+            test_target(ActorId::next(), token),
+            Completion::Threads(completion),
             new_link_table(),
-            new_linked_exit_reason(),
-            no_op_send_exit,
         )
     }
 
@@ -440,24 +451,15 @@ mod tests {
         let (_completion_tx, completion) = spawned_rt::sync::watch::channel(None);
         let token = spawned_rt::threads::CancellationToken::new();
         let id = ActorId::next();
-        let no_op_send_exit: SendExitFn = Arc::new(|_| Ok(()));
-        let h1 = ChildHandle::from_threads(
-            id,
-            token.clone(),
-            completion.clone(),
-            new_trap_exit_flag(),
+        let h1 = ChildHandle::new(
+            test_target(id, token.clone()),
+            Completion::Threads(completion.clone()),
             new_link_table(),
-            new_linked_exit_reason(),
-            no_op_send_exit.clone(),
         );
-        let h2 = ChildHandle::from_threads(
-            id,
-            token,
-            completion,
-            new_trap_exit_flag(),
+        let h2 = ChildHandle::new(
+            test_target(id, token),
+            Completion::Threads(completion),
             new_link_table(),
-            new_linked_exit_reason(),
-            no_op_send_exit,
         );
         assert_eq!(h1, h2);
     }
@@ -735,7 +737,7 @@ mod tests {
 #[cfg(test)]
 mod closed_completion_tests {
     use super::*;
-    use crate::link::{new_link_table, new_linked_exit_reason, new_trap_exit_flag};
+    use crate::link::new_link_table;
     #[test]
     fn closed_without_reason_is_dead_and_all_waits_agree() {
         #[cfg(not(feature = "async"))]
@@ -744,52 +746,39 @@ mod closed_completion_tests {
         let modes = [false, true];
         for threads in modes {
             let (tx, rx) = spawned_rt::sync::watch::channel(None);
-            let child = if threads {
-                ChildHandle::from_threads(
-                    ActorId::next(),
-                    spawned_rt::threads::CancellationToken::new(),
-                    rx,
-                    new_trap_exit_flag(),
-                    new_link_table(),
-                    new_linked_exit_reason(),
-                    Arc::new(|_| Ok(())),
-                )
+            let target = super::tests::test_target(
+                ActorId::next(),
+                spawned_rt::threads::CancellationToken::new(),
+            );
+            let completion = if threads {
+                Completion::Threads(rx)
             } else {
                 #[cfg(not(feature = "async"))]
                 unreachable!();
                 #[cfg(feature = "async")]
-                {
-                    ChildHandle::from_tasks(
-                        ActorId::next(),
-                        spawned_rt::tasks::CancellationToken::new(),
-                        rx,
-                        new_trap_exit_flag(),
-                        new_link_table(),
-                        new_linked_exit_reason(),
-                        Arc::new(|_| Ok(())),
-                    )
-                }
+                Completion::Tasks(rx)
             };
+            let child = ChildHandle::new(target, completion, new_link_table());
             assert!(child.is_alive());
             drop(tx);
-            assert_eq!(child.exit_reason(), Some(ExitReason::Kill));
+            assert_eq!(child.exit_reason(), Some(ExitReason::Killed));
             assert!(!child.is_alive());
             assert_eq!(
                 futures::executor::block_on(child.wait_exit_async()),
-                ExitReason::Kill
+                ExitReason::Killed
             );
             // Already-exited fast path must not enter another executor or reject
             // a current-thread runtime merely because no exit value was published.
             assert_eq!(
                 futures::executor::block_on(async { child.wait_exit_blocking() }),
-                ExitReason::Kill
+                ExitReason::Killed
             );
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
                 .unwrap();
             rt.block_on(async {
-                assert_eq!(child.wait_exit_blocking(), ExitReason::Kill);
+                assert_eq!(child.wait_exit_blocking(), ExitReason::Killed);
             });
         }
     }

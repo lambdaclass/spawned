@@ -107,7 +107,7 @@ pub mod tasks;
 pub mod threads;
 
 pub use child_handle::{ActorId, ChildHandle};
-pub use error::{ActorError, ExitReason};
+pub use error::{ActorError, ExitReason, NoProc};
 pub use link::Exit;
 pub use monitor::{Down, MonitorRef};
 pub use reply::{

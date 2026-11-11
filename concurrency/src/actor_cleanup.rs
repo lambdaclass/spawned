@@ -2,7 +2,7 @@
 use crate::{
     child_handle::ActorId,
     error::ExitReason,
-    link::{LinkCleanup, LinkTable, LinkedExitReason},
+    link::{LinkNotices, LinkTable, LinkedExitReason},
     monitor::{MonitorCleanup, MonitorTable},
 };
 use spawned_rt::sync::watch;
@@ -15,18 +15,18 @@ pub(crate) fn log_safely(log: impl FnOnce()) {
 }
 
 /// Constructed before dispatch, so even a never-polled actor has cleanup.
-/// Completion owns its sender until links and outgoing monitors are closed.
+/// [`die`](Self::die) is the death point D; dropping it is publication.
 pub(crate) struct ActorCleanup<C: Fn()> {
     id: ActorId,
     metrics: crate::instrumentation::ActorObservation,
-    links: LinkCleanup,
+    links: LinkTable,
     cause: LinkedExitReason,
     monitors: Option<MonitorCleanup>,
     completion: watch::Sender<Option<ExitReason>>,
-    fallback: ExitReason,
     reason: Option<ExitReason>,
+    notices: Option<LinkNotices>,
     cancel: C,
-    mailbox_failures: Option<std::sync::Arc<crate::mailbox::DropFailures>>,
+    failures: Option<std::sync::Arc<crate::mailbox::DropFailures>>,
 }
 impl<C: Fn()> ActorCleanup<C> {
     pub(crate) fn new(
@@ -35,126 +35,94 @@ impl<C: Fn()> ActorCleanup<C> {
         cause: LinkedExitReason,
         monitors: MonitorTable,
         completion: watch::Sender<Option<ExitReason>>,
-        fallback: ExitReason,
         cancel: C,
     ) -> Self {
         Self {
             id,
             metrics: crate::instrumentation::ActorObservation::new(),
-            links: LinkCleanup::new(id, links),
+            links,
             cause,
             monitors: Some(MonitorCleanup(monitors)),
             completion,
-            fallback,
             reason: None,
+            notices: None,
             cancel,
-            mailbox_failures: None,
+            failures: None,
         }
     }
     pub(crate) fn with_mailbox_failures(
         mut self,
         failures: std::sync::Arc<crate::mailbox::DropFailures>,
     ) -> Self {
-        self.mailbox_failures = Some(failures);
+        self.failures = Some(failures);
         self
     }
-    pub(crate) fn complete(&mut self, reason: ExitReason) {
-        self.complete_inner(reason, false);
-    }
-    pub(crate) fn complete_secondary(&mut self, reason: ExitReason) {
-        self.complete_inner(reason, true);
-    }
-    fn complete_inner(&mut self, mut reason: ExitReason, secondary: bool) {
-        let mut cause = self.cause.lock().unwrap_or_else(|p| p.into_inner());
-        if secondary {
-            if let Some(committed) = cause.as_ref().filter(|c| **c != ExitReason::Normal) {
-                reason = committed.clone();
-            }
+    /// The death point D: the requested reason becomes final and the link
+    /// table closes, taking one notice per link (delivered at publication).
+    /// Idempotent; returns the final reason.
+    pub(crate) fn die(&mut self) -> ExitReason {
+        if let Some(reason) = &self.reason {
+            return reason.clone();
         }
-        if matches!(reason, ExitReason::Normal) {
-            if let Some(linked) = cause.as_ref() {
-                reason = linked.clone();
-            }
-            if reason == ExitReason::Normal {
-                if let Some(message) = self.mailbox_failures.as_ref().and_then(|f| f.first()) {
-                    reason = ExitReason::Panic(format!("queued message destructor: {message}"));
-                }
-            }
+        let reason = crate::link::lock_request(&self.cause).die();
+        self.close(reason)
+    }
+    fn close(&mut self, reason: ExitReason) -> ExitReason {
+        self.notices = Some(crate::link::close_links(self.id, &self.links, &reason));
+        self.reason = Some(reason.clone());
+        reason
+    }
+    /// Record a cleanup failure after D (state or queued-envelope
+    /// destructor): it never changes the final reason.
+    pub(crate) fn cleanup_failed(&self, message: String) {
+        if let Some(failures) = &self.failures {
+            failures.record(message);
         }
-        // Freeze the completed outcome before any further cancellation callbacks.
-        *cause = Some(reason.clone());
-        self.reason = Some(reason);
     }
 }
 impl<C: Fn()> Drop for ActorCleanup<C> {
     fn drop(&mut self) {
-        let completed = self.reason.is_some();
-        let failure = self.mailbox_failures.as_ref().and_then(|f| f.first());
-        let mut reason = self.reason.take().unwrap_or_else(|| self.fallback.clone());
-        {
-            let mut cause = self.cause.lock().unwrap_or_else(|p| p.into_inner());
-            if !completed {
-                if let Some(committed) = cause.as_ref().filter(|c| **c != ExitReason::Normal) {
-                    reason = committed.clone();
-                }
+        // Never reached D: the runtime dropped the actor (G1).
+        let reason = match self.reason.clone() {
+            Some(reason) => reason,
+            None => {
+                let reason = crate::link::lock_request(&self.cause).runtime_drop();
+                self.close(reason)
             }
-            // Queued destructors are secondary to committed Shutdown/Kill or
-            // a linked/handler panic. Only a completed Normal lifecycle gains
-            // a new panic outcome; aborted tasks keep their abort outcome.
-            if completed && reason == ExitReason::Normal {
-                if let Some(message) = &failure {
-                    reason = ExitReason::Panic(format!("queued message destructor: {message}"));
-                }
-            }
-            *cause = Some(reason.clone());
-        }
-        if let Some(message) = failure {
+        };
+        if let Some(message) = self.failures.as_ref().and_then(|f| f.first()) {
             // Subscriber code must not unwind through a receiver/actor teardown.
-            if let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                tracing::warn!(event = "mailbox_cleanup_failed", actor = %self.id, %message, %reason,
-                    "queued message destructor failed");
-            })) {
-                crate::mailbox::dispose_panic(payload);
-            }
+            log_safely(|| {
+                tracing::warn!(event = "actor_cleanup_failed", actor = %self.id, %message, %reason,
+                    "destructor failed after the death point");
+            });
         }
         (self.cancel)();
         drop(self.monitors.take());
-        self.links.complete(&reason);
         self.metrics.finish(&reason);
+        // Publication: wait_exit, join and monitors observe the final reason,
+        // then the link notices taken at D are delivered.
         self.completion.send_replace(Some(reason));
+        if let Some(notices) = self.notices.take() {
+            notices.deliver();
+        }
     }
 }
 
-/// Destroy state after capturing the lifecycle outcome. A state destructor is
-/// secondary to an already observed handler/start/stop panic, even before that
-/// outcome has been committed to the shared exit slot.
-pub(crate) fn finish_actor_state<A>(
-    actor: A,
-    primary: Result<ExitReason, ExitReason>,
-) -> Result<ExitReason, ExitReason> {
+/// Destroy state after D. A destructor panic never changes the final reason;
+/// it is returned as a cleanup failure.
+pub(crate) fn finish_actor_state<A>(actor: A) -> Option<String> {
     let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(actor)))
     else {
-        return primary;
+        return None;
     };
     let message = crate::error::panic_message(&*payload);
     crate::mailbox::dispose_panic(payload);
-    let keep_primary = match &primary {
-        Ok(reason) => *reason != ExitReason::Normal,
-        Err(_) => true,
-    };
-    if keep_primary {
-        if let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            tracing::warn!(event = "actor_state_cleanup_failed", actor_type = std::any::type_name::<A>(),
-                ?primary, secondary = %message, "actor state destructor panicked after a terminal outcome");
-        })) {
-            crate::mailbox::dispose_panic(payload);
-        }
-        primary
-    } else {
-        Err(ExitReason::Panic(format!(
-            "actor state destructor: {message}"
-        )))
-    }
+    log_safely(|| {
+        tracing::warn!(event = "actor_state_cleanup_failed", actor_type = std::any::type_name::<A>(),
+            secondary = %message, "actor state destructor panicked after the death point");
+    });
+    Some(format!("actor state destructor: {message}"))
 }
 
 /// Captured as one value by the dispatch closure. Declaration order makes
@@ -184,9 +152,7 @@ impl<P, C: Fn()> Drop for ActorStartup<P, C> {
                 let message = crate::error::panic_message(&*panic);
                 crate::mailbox::dispose_panic(panic);
                 if let Some(cleanup) = &mut self.cleanup {
-                    cleanup.complete_secondary(ExitReason::Panic(format!(
-                        "actor startup payload destructor: {message}"
-                    )));
+                    cleanup.cleanup_failed(format!("actor startup payload destructor: {message}"));
                 }
             }
         }
@@ -203,22 +169,11 @@ mod state_drop_tests {
         }
     }
     #[test]
-    fn destructor_failure_only_escalates_normal_even_without_a_committed_cause() {
-        for primary in [
-            Ok(ExitReason::Normal),
-            Ok(ExitReason::Shutdown),
-            Ok(ExitReason::Kill),
-            Ok(ExitReason::Panic("handler failure".into())),
-            Err(ExitReason::Panic("lifecycle unwind".into())),
-        ] {
-            let expected = if primary == Ok(ExitReason::Normal) {
-                Err(ExitReason::Panic(
-                    "actor state destructor: secondary state failure".into(),
-                ))
-            } else {
-                primary.clone()
-            };
-            assert_eq!(finish_actor_state(Explodes, primary), expected);
-        }
+    fn destructor_failure_is_a_cleanup_failure_not_a_reason() {
+        assert_eq!(
+            finish_actor_state(Explodes),
+            Some("actor state destructor: secondary state failure".into())
+        );
+        assert_eq!(finish_actor_state(()), None);
     }
 }
