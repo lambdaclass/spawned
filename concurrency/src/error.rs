@@ -34,10 +34,9 @@ impl ExitReason {
     pub fn is_abnormal(&self) -> bool {
         match self {
             ExitReason::Normal | ExitReason::Shutdown => false,
-            ExitReason::Panic(_)
-            | ExitReason::Kill
-            | ExitReason::Killed
-            | ExitReason::NoProc => true,
+            ExitReason::Panic(_) | ExitReason::Kill | ExitReason::Killed | ExitReason::NoProc => {
+                true
+            }
         }
     }
 }

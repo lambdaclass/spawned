@@ -44,7 +44,9 @@ impl RestartMode {
     fn restarts(self, reason: Option<&ExitReason>, cleanup_failed: bool) -> bool {
         match self {
             Self::Permanent => true,
-            Self::Transient => cleanup_failed || reason.map(ExitReason::is_abnormal).unwrap_or(true),
+            Self::Transient => {
+                cleanup_failed || reason.map(ExitReason::is_abnormal).unwrap_or(true)
+            }
             Self::Temporary => false,
         }
     }

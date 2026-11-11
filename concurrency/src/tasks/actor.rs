@@ -1,10 +1,10 @@
-use crate::child_handle::{ActorId, ChildHandle};
-use crate::error::{panic_message, ActorError, ExitReason};
 use crate::child_handle::Completion;
+use crate::child_handle::{ActorId, ChildHandle};
 use crate::error::NoProc;
+use crate::error::{panic_message, ActorError, ExitReason};
 use crate::link::{
-    self, new_link_table, new_linked_exit_reason, new_trap_exit_flag, Exit, LinkOutcome,
-    LinkTable, LinkedExitReason, SendExitFn, SendHeldFn, SignalTarget, TrapExitFlag,
+    self, new_link_table, new_linked_exit_reason, new_trap_exit_flag, Exit, LinkOutcome, LinkTable,
+    LinkedExitReason, SendExitFn, SendHeldFn, SignalTarget, TrapExitFlag,
 };
 use crate::mailbox::tasks as mpsc;
 use crate::message::Message;
@@ -343,7 +343,9 @@ fn signal_target<A: Actor>(
     });
     let send_parent_exit: SendExitFn = Arc::new(move |exit: Exit| {
         let envelope: Box<dyn Envelope<A> + Send> = Box::new(ParentExitEnvelope { exit });
-        parent_tx.send(envelope).map_err(|_| ActorError::ActorStopped)
+        parent_tx
+            .send(envelope)
+            .map_err(|_| ActorError::ActorStopped)
     });
     let send_held: SendHeldFn = Arc::new(move |exit: Exit, parent: bool| {
         let envelope: Box<dyn Envelope<A> + Send> = Box::new(HeldEnvelope { exit, parent });
@@ -1688,14 +1690,8 @@ fn test_context<A: Actor>(
         }),
     };
     let noop: fn() = || {};
-    let cleanup = crate::actor_cleanup::ActorCleanup::new(
-        id,
-        links,
-        request,
-        monitors,
-        completion_tx,
-        noop,
-    );
+    let cleanup =
+        crate::actor_cleanup::ActorCleanup::new(id, links, request, monitors, completion_tx, noop);
     (ctx, cleanup)
 }
 

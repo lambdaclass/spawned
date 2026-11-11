@@ -1273,7 +1273,11 @@ impl Drop for Lease {
                     .scope
                     .child()
                     .and_then(|c| c.exit_reason())
-                    .or_else(|| crate::link::lock_request(&self.scope.cause).reason().cloned())
+                    .or_else(|| {
+                        crate::link::lock_request(&self.scope.cause)
+                            .reason()
+                            .cloned()
+                    })
                     .unwrap_or(ExitReason::Killed);
                 self.scope.ready.send_replace(StartupState::Failed(reason));
             }

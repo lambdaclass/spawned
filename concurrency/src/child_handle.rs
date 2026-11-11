@@ -88,9 +88,7 @@ impl ChildHandle {
     pub(crate) fn new(target: Arc<SignalTarget>, completion: Completion, links: LinkTable) -> Self {
         let stop = target.clone();
         Self {
-            cancel: Arc::new(move || {
-                crate::link::normal_stop(&stop.request, || (stop.wake)())
-            }),
+            cancel: Arc::new(move || crate::link::normal_stop(&stop.request, || (stop.wake)())),
             target,
             completion,
             links,
@@ -370,7 +368,10 @@ pub(crate) mod tests {
     use crate::link::{new_link_table, new_linked_exit_reason, new_trap_exit_flag};
 
     /// A signal target whose wake cancels `token`.
-    pub(crate) fn test_target(id: ActorId, token: spawned_rt::threads::CancellationToken) -> Arc<SignalTarget> {
+    pub(crate) fn test_target(
+        id: ActorId,
+        token: spawned_rt::threads::CancellationToken,
+    ) -> Arc<SignalTarget> {
         Arc::new(SignalTarget {
             id,
             parent: None,

@@ -48,7 +48,10 @@ mod tasks_mode {
         pub seen: Seen,
         pub trap: bool,
         /// stopped() waits for this signal (to act while it runs).
-        pub in_stopped: Option<(tokio::sync::oneshot::Sender<()>, tokio::sync::oneshot::Receiver<()>)>,
+        pub in_stopped: Option<(
+            tokio::sync::oneshot::Sender<()>,
+            tokio::sync::oneshot::Receiver<()>,
+        )>,
         pub panic_in_stopped: bool,
     }
     impl Node {
@@ -135,8 +138,12 @@ mod tasks_mode {
     // links receive Killed (trappable), monitors Down { Killed }.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn kill_is_untrappable_and_propagates_killed() {
-        let (target_seen, peer_seen, watcher_seen, trapper_seen) =
-            (Seen::default(), Seen::default(), Seen::default(), Seen::default());
+        let (target_seen, peer_seen, watcher_seen, trapper_seen) = (
+            Seen::default(),
+            Seen::default(),
+            Seen::default(),
+            Seen::default(),
+        );
         let target = Node::new(&target_seen, true).start();
         let peer = Node::new(&peer_seen, false).start();
         let trapper = Node::new(&trapper_seen, true).start();
@@ -164,7 +171,10 @@ mod tasks_mode {
         settle(&trapper).await;
         assert_eq!(
             trapper_seen.exits(),
-            vec![Exit { from: t.id(), reason: ExitReason::Killed }]
+            vec![Exit {
+                from: t.id(),
+                reason: ExitReason::Killed
+            }]
         );
         settle(&watcher).await;
         assert_eq!(watcher_seen.downs().len(), 1);
@@ -218,7 +228,10 @@ mod tasks_mode {
         settle(&plain).await;
         plain.child_handle().exit(ExitReason::Normal);
         settle(&plain).await;
-        assert!(plain.child_handle().is_alive(), "Normal stopped a non-trapping actor");
+        assert!(
+            plain.child_handle().is_alive(),
+            "Normal stopped a non-trapping actor"
+        );
 
         let trap_seen = Seen::default();
         let trapper = Node::new(&trap_seen, true).start();
@@ -229,15 +242,24 @@ mod tasks_mode {
         assert_eq!(
             trap_seen.exits(),
             vec![
-                Exit { from: ActorId::EXTERNAL, reason: ExitReason::Normal },
-                Exit { from: ActorId::EXTERNAL, reason: ExitReason::Shutdown },
+                Exit {
+                    from: ActorId::EXTERNAL,
+                    reason: ExitReason::Normal
+                },
+                Exit {
+                    from: ActorId::EXTERNAL,
+                    reason: ExitReason::Shutdown
+                },
             ]
         );
         assert!(trapper.child_handle().is_alive());
 
         plain.child_handle().exit(ExitReason::Shutdown);
         assert_eq!(ended(&plain.child_handle()).await, ExitReason::Shutdown);
-        assert!(!plain_seen.stopped(), "stopped() ran after an untrapped signal");
+        assert!(
+            !plain_seen.stopped(),
+            "stopped() ran after an untrapped signal"
+        );
         trapper.child_handle().stop();
         ended(&trapper.child_handle()).await;
     }
@@ -251,11 +273,17 @@ mod tasks_mode {
         settle(&b).await;
         let bh = b.child_handle();
         let bh2 = bh.clone();
-        on(&a, move |ctx| ctx.exit(&bh2, ExitReason::Panic("from a".into()))).await;
+        on(&a, move |ctx| {
+            ctx.exit(&bh2, ExitReason::Panic("from a".into()))
+        })
+        .await;
         settle(&b).await;
         assert_eq!(
             b_seen.exits(),
-            vec![Exit { from: a.id(), reason: ExitReason::Panic("from a".into()) }]
+            vec![Exit {
+                from: a.id(),
+                reason: ExitReason::Panic("from a".into())
+            }]
         );
         let bh3 = bh.clone();
         on(&a, move |ctx| ctx.exit(&bh3, ExitReason::Kill)).await;
@@ -271,8 +299,12 @@ mod tasks_mode {
     async fn registrations_after_death_report_noproc() {
         let dead_seen = Seen::default();
         let dead = Node::new(&dead_seen, false).start();
-        dead.child_handle().stop_with_reason(ExitReason::Panic("gone".into()));
-        assert!(matches!(ended(&dead.child_handle()).await, ExitReason::Panic(_)));
+        dead.child_handle()
+            .stop_with_reason(ExitReason::Panic("gone".into()));
+        assert!(matches!(
+            ended(&dead.child_handle()).await,
+            ExitReason::Panic(_)
+        ));
         let d = dead.child_handle();
 
         let trap_seen = Seen::default();
@@ -286,7 +318,10 @@ mod tasks_mode {
         settle(&trapper).await;
         assert_eq!(
             trap_seen.exits(),
-            vec![Exit { from: d.id(), reason: ExitReason::NoProc }]
+            vec![Exit {
+                from: d.id(),
+                reason: ExitReason::NoProc
+            }]
         );
         let downs = trap_seen.downs();
         assert_eq!(downs.len(), 1);
@@ -296,7 +331,10 @@ mod tasks_mode {
         let trier = Node::new(&try_seen, false).start();
         let result = Arc::new(Mutex::new(None));
         let (d3, r) = (d.clone(), result.clone());
-        on(&trier, move |ctx| *r.lock().unwrap() = Some(ctx.try_link(&d3))).await;
+        on(&trier, move |ctx| {
+            *r.lock().unwrap() = Some(ctx.try_link(&d3))
+        })
+        .await;
         assert_eq!(*result.lock().unwrap(), Some(Err(NoProc)));
         settle(&trier).await;
         assert!(trier.child_handle().is_alive());
@@ -334,8 +372,12 @@ mod tasks_mode {
         ended(&gone.child_handle()).await;
         peer.child_handle().exit(ExitReason::Panic("peer".into()));
         settle(&peer).await;
-        peer.child_handle().stop_with_reason(ExitReason::Panic("peer".into()));
-        assert!(matches!(ended(&peer.child_handle()).await, ExitReason::Panic(_)));
+        peer.child_handle()
+            .stop_with_reason(ExitReason::Panic("peer".into()));
+        assert!(matches!(
+            ended(&peer.child_handle()).await,
+            ExitReason::Panic(_)
+        ));
         assert!(dead_seen.exits().is_empty());
         assert_eq!(dead.child_handle().exit_reason(), Some(ExitReason::Normal));
     }
@@ -374,10 +416,15 @@ mod tasks_mode {
             }
             .start();
             let child = parent.request(Spawn).await.unwrap();
-            parent.child_handle().stop_with_reason(parent_reason.clone());
+            parent
+                .child_handle()
+                .stop_with_reason(parent_reason.clone());
             assert_eq!(ended(&child).await, parent_reason);
             assert!(child_seen.stopped(), "the parent exit skipped stopped()");
-            assert!(child_seen.exits().is_empty(), "exit_received saw the parent exit");
+            assert!(
+                child_seen.exits().is_empty(),
+                "exit_received saw the parent exit"
+            );
         }
     }
 
@@ -413,7 +460,10 @@ mod tasks_mode {
         assert_eq!(actor.request(Ping).await.unwrap(), 7);
         assert_eq!(
             seen.exits(),
-            vec![Exit { from: ActorId::EXTERNAL, reason: ExitReason::Shutdown }]
+            vec![Exit {
+                from: ActorId::EXTERNAL,
+                reason: ExitReason::Shutdown
+            }]
         );
         actor.child_handle().stop();
         ended(&actor.child_handle()).await;
@@ -491,7 +541,10 @@ mod threads_mode {
         assert_eq!(peer.request(Ping).unwrap(), 7);
         assert_eq!(
             peer_seen.exits(),
-            vec![Exit { from: target.id(), reason: ExitReason::Killed }]
+            vec![Exit {
+                from: target.id(),
+                reason: ExitReason::Killed
+            }]
         );
         // NoProc for a late link and try_link.
         assert_eq!(peer.context().try_link(&target.child_handle()), Err(NoProc));

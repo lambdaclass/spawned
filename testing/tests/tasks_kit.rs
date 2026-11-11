@@ -266,7 +266,10 @@ async fn exit_injects_every_reason() {
     // a kill ends it Killed.
     for (reason, expected) in [
         (ExitReason::Shutdown, ExitReason::Shutdown),
-        (ExitReason::Panic("injected".into()), ExitReason::Panic("injected".into())),
+        (
+            ExitReason::Panic("injected".into()),
+            ExitReason::Panic("injected".into()),
+        ),
         (ExitReason::Kill, ExitReason::Killed),
     ] {
         let actor = Counter(Arc::default()).start();

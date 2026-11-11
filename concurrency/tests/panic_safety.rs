@@ -552,7 +552,8 @@ fn exercise(h: &dyn Harness, fault: Fault, gate: &Gate, events: &Events) -> Exit
     let seen = events.snapshot();
     // A victim that panics in started() can pass its death point before the
     // observer's monitor or link is registered: that registration gets NoProc.
-    let carries = |r: &ExitReason| *r == reason || (fault == Fault::Started && *r == ExitReason::NoProc);
+    let carries =
+        |r: &ExitReason| *r == reason || (fault == Fault::Started && *r == ExitReason::NoProc);
     assert_eq!(
         seen.iter()
             .filter(|e| matches!(e, Event::Down(m, r) if *m == monitor && carries(r)))

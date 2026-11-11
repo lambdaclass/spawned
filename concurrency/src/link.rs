@@ -627,7 +627,9 @@ mod tests {
             send_held: Arc::new(|_, _| Ok(())),
         }
     }
-    fn pair(seen: &Arc<AtomicUsize>) -> (Arc<SignalTarget>, LinkTable, Arc<SignalTarget>, LinkTable) {
+    fn pair(
+        seen: &Arc<AtomicUsize>,
+    ) -> (Arc<SignalTarget>, LinkTable, Arc<SignalTarget>, LinkTable) {
         (
             Arc::new(target(seen)),
             new_link_table(),
@@ -647,7 +649,10 @@ mod tests {
         // b links to the dead a: a late NoProc notice, delivered and removed.
         // b is exiting (the notice began its exit): its link is inert
         // (model: Link requires a running caller).
-        assert_eq!(register_link(&b, &bt, &a, &at, false), LinkOutcome::Unchanged);
+        assert_eq!(
+            register_link(&b, &bt, &a, &at, false),
+            LinkOutcome::Unchanged
+        );
         assert_eq!(seen.load(Ordering::SeqCst), 1);
         // A running c linking to the dead a gets the late NoProc notice.
         let c = Arc::new(target(&seen));
@@ -676,12 +681,19 @@ mod tests {
         let notices = close_links(a.id, &at, &ExitReason::Panic("x".into()));
         unregister_link(b.id, &bt, a.id, &at);
         notices.deliver();
-        assert_eq!(seen.load(Ordering::SeqCst), 0, "unlink returned before delivery");
+        assert_eq!(
+            seen.load(Ordering::SeqCst),
+            0,
+            "unlink returned before delivery"
+        );
         // A relink while the notice is pending is a no-op, as an existing record.
         let (c, ct, d, dt) = pair(&seen);
         register_link(&c, &ct, &d, &dt, false);
         let notices = close_links(c.id, &ct, &ExitReason::Panic("y".into()));
-        assert_eq!(register_link(&d, &dt, &c, &ct, false), LinkOutcome::Unchanged);
+        assert_eq!(
+            register_link(&d, &dt, &c, &ct, false),
+            LinkOutcome::Unchanged
+        );
         notices.deliver();
         assert_eq!(seen.load(Ordering::SeqCst), 1);
     }
@@ -695,7 +707,10 @@ mod tests {
         assert_eq!(lock_request(&t.request).reason(), None);
         // Any other reason begins exit without stopped().
         deliver_signal(&t, from, ExitReason::Shutdown, Origin::Direct, false);
-        assert_eq!(lock_request(&t.request).reason(), Some(&ExitReason::Shutdown));
+        assert_eq!(
+            lock_request(&t.request).reason(),
+            Some(&ExitReason::Shutdown)
+        );
         assert!(!lock_request(&t.request).begin_hook());
         // Trapping: queued as Exit, nothing committed.
         let t = target(&seen);
@@ -716,7 +731,10 @@ mod tests {
         assert!(r.request(ExitReason::Normal));
         assert!(r.untrapped(ExitReason::Shutdown));
         assert_eq!(r.reason(), Some(&ExitReason::Shutdown));
-        assert!(r.begin_hook(), "a late signal does not skip a self-exit's stopped()");
+        assert!(
+            r.begin_hook(),
+            "a late signal does not skip a self-exit's stopped()"
+        );
         r.panic(ExitReason::Panic("stopped".into()));
         assert_eq!(r.reason(), Some(&ExitReason::Panic("stopped".into())));
         assert!(r.kill());
@@ -739,15 +757,24 @@ mod tests {
         // Exit begun: no record on either side, even to a live peer.
         let (a, at, b, bt) = pair(&seen);
         lock_request(&a.request).request(ExitReason::Normal);
-        assert_eq!(register_link(&a, &at, &b, &bt, false), LinkOutcome::Unchanged);
+        assert_eq!(
+            register_link(&a, &at, &b, &bt, false),
+            LinkOutcome::Unchanged
+        );
         assert!(at.lock().unwrap().entries.is_empty() && bt.lock().unwrap().entries.is_empty());
         // Past D, even to a dead peer: no NoProc notice, no try_link error.
         let (c, ct, d, dt) = pair(&seen);
         lock_request(&c.request).die();
         propagate_exit(c.id, &ct, &ExitReason::Normal);
         propagate_exit(d.id, &dt, &ExitReason::Normal);
-        assert_eq!(register_link(&c, &ct, &d, &dt, false), LinkOutcome::Unchanged);
-        assert_eq!(register_link(&c, &ct, &d, &dt, true), LinkOutcome::Unchanged);
+        assert_eq!(
+            register_link(&c, &ct, &d, &dt, false),
+            LinkOutcome::Unchanged
+        );
+        assert_eq!(
+            register_link(&c, &ct, &d, &dt, true),
+            LinkOutcome::Unchanged
+        );
         assert_eq!(seen.load(Ordering::SeqCst), 0);
     }
     #[test]
