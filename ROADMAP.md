@@ -212,6 +212,38 @@ one per actor. Additional placement changes still need application measurements.
 execution groups and supervision remain async-only for v0.7. Extending those
 capabilities to the Tokio-free build is a later roadmap item, outside this release.
 
+### Erlang/OTP, Elixir and Gleam gaps
+
+From a comparison against OTP 28/29, Elixir 1.20 and gleam_otp 1.3 on 2026-11-11 ([research](docs/research/otp-elixir-gleam.md)). Tier is the [priority](#priorities) tier; targets follow the [path to 1.0](#path-to-10). Each gap still goes through the design-review rule before code.
+
+| Gap | What OTP, Elixir or Gleam does | Tier | Target |
+|---|---|---|---|
+| G1 | Fallible, value-returning startup on every start path (`init` returning `{error,R}`/`{stop,R}`/`ignore`; Gleam's initialiser returning data to the starter) | soundness | 0.9 (unified start) |
+| G2 | Post-start continuation (`handle_continue`), guaranteed to run before any external message | soundness | 0.9 (unified start; the dynamic supervisor needs it) |
+| G3 | `sys:get_state`/`get_status`: an in-band request answered between turns, opt-in and redacted (`format_status`) | introspection | 0.9 (introspection v1) |
+| G4 | Actor listing, labels (OTP 27 `set_label`) and tree snapshots (`which_children`/`count_children` everywhere) | introspection | 0.9 |
+| G5 | Structured crash and supervisor reports (last message type, label, parent chain, mailbox length) | introspection | 0.9 |
+| G6 | `terminate_child`, `restart_child`, `delete_child` on static supervisors | features (OTP alignment) | 0.9 |
+| G7 | Clean exits that carry a payload (`{shutdown, Term}`) | soundness | 0.9 |
+| G8 | `start_monitor`, link and monitor on every backend and group, one start-options struct | soundness | 0.9 (unified start) |
+| G9 | Runtime-toggled, rate-limited per-actor message tracing with isolated sessions (`sys:trace`, OTP 27 trace sessions, `recon_trace`) | introspection | 0.10, opt-in |
+| G10 | Per-turn logging context (Logger metadata) and stable event names (`:telemetry`) | introspection | 0.10, opt-in |
+| G11 | Control lane modelled on OTP 28 priority messages (receiver opts in per source) | soundness | 0.10 (rank 14) |
+| G12 | Named, replace-on-set timers and idle timeouts | features | 0.10 (with rank 38) |
+| G13 | `start_supervised` and per-test isolation in `spawned-test` | testing | 0.9 |
+| G14 | Typed, scoped, restart-surviving names | features | 1.0 (rank 12) |
+| G15 | Significant children and `auto_shutdown` | features | 1.x; leave room in 0.9's child spec |
+| G16 | `gen_statem`-style behaviour (state enter calls, postpone, state and event timeouts) | features | 1.x (ranks 16, 32) |
+| G17 | Process groups, Registry-style PubSub, `PartitionSupervisor` | features | 1.x (rank 27) |
+| G18 | Bounded parallel map like `Task.async_stream` | features | 1.x (rank 11b) |
+| G19 | Request collections (`reqids`) | features | 1.0 (helper and GUIDE recipe) |
+| G20 | Per-actor memory limit (`max_heap_size`) | features | 1.x (rank 18a) |
+| G21 | Demand-driven pipelines (GenStage, Broadway) | features | 1.x (ranks 18, 33, 35) |
+| G22 | Node watchdog (`heart`): feed systemd's watchdog from the stall watchdog | introspection | 1.0 (documentation) |
+| G23 | Remote console like `erl -remsh`: every binary running an `ActorSystem` is attachable through a local Unix socket (`0600`, per process, on by default, read-only by default; mutating commands opt-in; `SPAWNED_CONSOLE=off` or a Cargo feature to remove it) and a `spawned-ctl` CLI (`attach`, `ps`, `info`, `state`, `tree`, `stuck`, `trace`, `restart`); built on introspection, no code evaluation, nothing on the send or dispatch path | introspection | 0.9 (introspection v1) |
+
+Kept on purpose, where Rust's types do better than Erlang: typed replies, reply tokens that must be answered, a `Result` instead of crashing the caller on a timeout, bounded work, and the explicit stuck policy instead of `brutal_kill`.
+
 ### Non-goals
 
 Performance work may add opt-in profiles, but none of these may become the
@@ -224,6 +256,20 @@ default (from the [Silver/flux study](https://github.com/lambdaclass/spawned/blo
 - application handlers owning poll loops, reply routing or runtime
   infrastructure to make a backend faster;
 - mandatory dedicated cores or spinning for ordinary actors.
+
+From the OTP, Elixir and Gleam comparison, Spawned will not add:
+
+- unrestricted selective receive (needs an O(n) scannable mailbox; bounded stashing, rank 16, and postpone, rank 32, cover the uses);
+- `gen_event` (handlers share one process, so one crash affects all; Elixir deprecated it);
+- hot code upgrade (`change_code`, appup/relup), which has no meaning for compiled Rust;
+- BEAM heap and GC knobs (`hibernate`, `fullsweep_after`, `min_heap_size`, `message_queue_data`);
+- per-process CPU priority levels (a cooperative runtime cannot honour them; execution groups and rank 39 are the honest form; OTP 28 *message* priority, G11, is different and planned);
+- `sys:replace_state`, which mutates state outside a turn;
+- calls that crash the caller on timeout (keep `Result`);
+- ETS or `persistent_term` clones in core (use `Arc`, atomics or published snapshots, rank 10);
+- `global`, `multi_call` or `abcast` in core (distribution is a separate layer, rank 44);
+- `brutal_kill` emulation by aborting threads or detaching tasks (it leaves destructors half-run);
+- an `Agent` core type (a few lines on `Actor`; snapshots serve reads better).
 
 **Principle: match Erlang/OTP as closely as possible.** Exit signals, links, monitors, `trap_exit`, supervision budgets and reply semantics follow OTP. A deviation is allowed only where Rust forces it, where Rust's types make spawned stricter (for example a typed reply token that must be answered), or where spawned adds a bound Erlang lacks (bounded outstanding work, backpressure). Every remaining deviation is listed with its reason in the [semantics contract](docs/design/semantics.md). Already aligned: stopping an actor discards its queued messages, as a process exit drops its mailbox (draining, rank 13, is the opt-in alternative). Newer capabilities (Orleans-style virtual actors, rank 26; process groups and topics, 27; distribution, 44; durable execution, 51; CRDTs and sagas, 54) are layers built on this OTP-faithful core: they may add behaviour, but never change the core's semantics.
 

@@ -20,6 +20,12 @@
   rule now requires a test plan, trace validation against real code,
   planted bugs, an introspection hook and a no-cost benchmark for every new
   feature.
+- ROADMAP: Erlang/OTP, Elixir and Gleam gaps table (G1-G23, including a remote
+  console) with tiers and target versions, and the OTP features Spawned will
+- ROADMAP: Erlang/OTP, Elixir and Gleam gaps table (G1-G23, including an attachable
+  console in every binary, targeted at 0.9) with tiers and target versions, and the OTP features Spawned will
+  not add as non-goals; the comparison is in
+  `docs/research/otp-elixir-gleam.md`.
 - Tests: coverage follow-ups. `restart_modes_distinguish_normal_shutdown_and_panic`
   now sends a real `Normal` exit; a per-PR `MCSupervisionTemporary` TLC
   configuration makes `TemporaryStartsOnce` non-vacuous, with a negative
