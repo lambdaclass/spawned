@@ -344,13 +344,18 @@ impl JobState {
     /// `Cancel` (the owner's exit and key replacement cancel through the job
     /// set instead, as part of `Exit` and `Start`).
     pub(crate) fn cancel(&self) {
-        trace::atomic(|| {
-            if self.core.cancel() {
+        let held = trace::atomic(|| {
+            let (newly, held) = self.core.cancel_keeping_held();
+            if newly {
                 self.count_cancel();
                 self.record(|job| trace::JobEvent::new("Cancel", job));
                 self.link_cancel();
             }
+            held
         });
+        // The suppressed held result (user payload): outside the trace
+        // section, after its Cancel and JobCancel are recorded.
+        drop(held);
         self.wake_cancelled();
     }
 
@@ -418,8 +423,8 @@ impl JobState {
         enqueue: impl FnOnce() -> Option<X>,
     ) -> (bool, Option<X>) {
         let deadline = end == "deadline";
-        let (taken, unsent) = trace::atomic(|| {
-            let (taken, unsent) = self.core.notify(enqueue);
+        let (taken, unsent, held) = trace::atomic(|| {
+            let (taken, unsent, held) = self.core.notify_keeping_held(enqueue);
             if taken {
                 crate::instrumentation::hooks::job_notified(end);
                 self.link_notified();
@@ -437,8 +442,11 @@ impl JobState {
             } else if taken {
                 self.record(|job| trace::JobEvent::new("JobDeadline", job));
             }
-            (taken, unsent)
+            (taken, unsent, held)
         });
+        // A held result the deadline displaced (user payload): dropped
+        // outside the trace section, after JobDeadline is recorded.
+        drop(held);
         #[cfg(feature = "async")]
         if taken {
             self.wake_emitters();

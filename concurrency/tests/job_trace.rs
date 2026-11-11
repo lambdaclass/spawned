@@ -291,6 +291,57 @@ impl Handler<ReplaceNow> for Owner {
     }
 }
 
+/// A held result whose destructor checks, from another thread, that the
+/// process-wide trace section is free (it waits at most 1 s).
+struct SectionProbe(Arc<std::sync::atomic::AtomicBool>);
+impl std::fmt::Debug for SectionProbe {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SectionProbe")
+    }
+}
+impl Drop for SectionProbe {
+    fn drop(&mut self) {
+        let (entered_tx, entered) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            // Enters the trace section (no effect here: this binary does not
+            // record the base lifecycle).
+            let _ = lifecycle_trace::take_lifecycle();
+            let _ = entered_tx.send(());
+        });
+        if entered.recv_timeout(Duration::from_secs(1)).is_ok() {
+            self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+}
+/// A job whose result (a `SectionProbe`) is held behind a far emit; its
+/// handle goes to the test and to `handles` (for `CancelStored`).
+struct HeldProbe(
+    Arc<std::sync::atomic::AtomicBool>,
+    std::sync::mpsc::Sender<JobHandle>,
+);
+impl Message for HeldProbe {
+    type Result = ();
+}
+impl Handler<HeldProbe> for Owner {
+    async fn handle(&mut self, msg: HeldProbe, reply: PendingReply<'_, ()>, ctx: &Context<Self>) {
+        let HeldProbe(free, handle_tx) = msg;
+        let handle = ctx
+            .pipe(
+                JobOptions::new(),
+                |job: JobCtx<Owner>| async move {
+                    let at = spawned_concurrency::Instant::now() + Duration::from_secs(60);
+                    job.emit_at(at, Emitted(3)).await.unwrap();
+                    SectionProbe(free)
+                },
+                done("held_probe"),
+            )
+            .unwrap();
+        handle_tx.send(handle.clone()).unwrap();
+        self.handles.push(handle);
+        reply.reply(());
+    }
+}
+
 /// Cancel the stored handles, then open the gates.
 struct CancelStored;
 impl Message for CancelStored {
@@ -513,6 +564,34 @@ async fn keyed_replacement_drops_the_old_emit_after_the_new_start() {
     assert!(
         second_start < dropped_fire,
         "the replaced job's emit dropped before the new Start: {actions:?}"
+    );
+}
+
+/// Final review (agy P2 3): cancelling a job drops its suppressed held
+/// result (user payload) after the trace section, after its Cancel is
+/// recorded; it used to drop inside the process-wide section, so a
+/// destructor that needed the section (here, on another thread) waited for
+/// its own caller.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cancel_drops_a_held_result_outside_the_trace_section() {
+    let (actor, _log) = start();
+    let free = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (handle_tx, handle) = std::sync::mpsc::channel();
+    actor
+        .request(HeldProbe(free.clone(), handle_tx))
+        .await
+        .unwrap();
+    let job = handle.recv_timeout(Duration::from_secs(5)).unwrap();
+    // Handshake: the work returned with its emit scheduled, so its result
+    // is held.
+    while job.is_running() {
+        sleep(Duration::from_millis(1)).await;
+    }
+    actor.request(CancelStored).await.unwrap();
+    finish("cancel_held", actor, 16).await;
+    assert!(
+        free.load(std::sync::atomic::Ordering::SeqCst),
+        "a held result was destroyed inside the trace section"
     );
 }
 

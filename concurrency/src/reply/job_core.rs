@@ -141,18 +141,28 @@ impl JobCore {
     /// caller after the lock is released. When taken, the caller wakes async
     /// emitters.
     pub(crate) fn notify<X>(&self, enqueue: impl FnOnce() -> Option<X>) -> (bool, Option<X>) {
+        let (taken, unsent, held) = self.notify_keeping_held(enqueue);
+        // A deadline overtaking a held result: the result is dropped.
+        drop(held);
+        (taken, unsent)
+    }
+
+    /// [`notify`](Self::notify) that hands a displaced held result back
+    /// (user payload) for the caller to drop outside its critical sections.
+    pub(crate) fn notify_keeping_held<X>(
+        &self,
+        enqueue: impl FnOnce() -> Option<X>,
+    ) -> (bool, Option<X>, Option<HeldTerminal>) {
         let (unsent, held) = {
             let mut inner = lock(&self.inner);
             if !inner.open() {
-                return (false, None);
+                return (false, None, None);
             }
             inner.notification = Notification::Notified;
-            // A deadline overtaking a held result: the result is dropped.
             (enqueue(), inner.held.take())
         };
-        drop(held);
         self.emitters.notify_all();
-        (true, unsent)
+        (true, unsent, held)
     }
 
     /// The work's result: take the notification as [`notify`](Self::notify)
