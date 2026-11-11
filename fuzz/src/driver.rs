@@ -132,7 +132,10 @@ pub async fn run_body(scenario: Scenario, seed: u64) {
                 let stats = sim::stats();
                 if stats.steps >= last + 200_000 {
                     last = stats.steps;
-                    eprintln!("[watch] {:?} poll {} tasks {} ready {}", stats.now, stats.steps, stats.tasks, stats.ready);
+                    eprintln!(
+                        "[watch] {:?} poll {} tasks {} ready {}",
+                        stats.now, stats.steps, stats.tasks, stats.ready
+                    );
                 }
                 sim::yield_now().await;
             }
@@ -194,10 +197,16 @@ async fn leaks(world: &World, baseline: usize) {
     }
     let (live, names, tasks) = clean(world);
     if live != 0 {
-        world.violate("M5/S3: worker state not released after shutdown", format!("{live} live"));
+        world.violate(
+            "M5/S3: worker state not released after shutdown",
+            format!("{live} live"),
+        );
     }
     if names != 0 {
-        world.violate("S5: registration left after shutdown", format!("{names} names"));
+        world.violate(
+            "S5: registration left after shutdown",
+            format!("{names} names"),
+        );
     }
     if tasks > baseline {
         world.violate(
@@ -378,7 +387,9 @@ impl Driver {
             self.world.lock().nested.values().cloned().collect();
         out.extend(nested.iter().filter_map(|c| c.current().ok()));
         for a in &out {
-            self.handles.entry(a.id()).or_insert_with(|| a.child_handle());
+            self.handles
+                .entry(a.id())
+                .or_insert_with(|| a.child_handle());
         }
         out
     }
@@ -440,14 +451,26 @@ impl Driver {
         }
     }
 
-    fn check_reply(&self, nonce: u64, timeout_ms: u64, elapsed: Duration, reply: Result<u64, ActorError>) {
+    fn check_reply(
+        &self,
+        nonce: u64,
+        timeout_ms: u64,
+        elapsed: Duration,
+        reply: Result<u64, ActorError>,
+    ) {
         match reply {
             Ok(n) => {
                 if n != nonce {
-                    self.violate("R2: a reply reached the wrong request", format!("{n} for {nonce}"));
+                    self.violate(
+                        "R2: a reply reached the wrong request",
+                        format!("{n} for {nonce}"),
+                    );
                 }
                 if !self.world.lock().handled.contains_key(&nonce) {
-                    self.violate("R1: Ok reply without the handler running", format!("{nonce}"));
+                    self.violate(
+                        "R1: Ok reply without the handler running",
+                        format!("{nonce}"),
+                    );
                 }
             }
             Err(ActorError::RequestTimeout) => {
@@ -515,7 +538,10 @@ impl Driver {
                 let request = async move {
                     let start = now();
                     let reply = match timeout {
-                        Some(_) => aref.request_with_timeout(msg, Duration::from_millis(ms)).await,
+                        Some(_) => {
+                            aref.request_with_timeout(msg, Duration::from_millis(ms))
+                                .await
+                        }
                         None => aref.request(msg).await,
                     };
                     (nonce, ms, now() - start, reply)
@@ -541,7 +567,7 @@ impl Driver {
                 // nothing is predicted for the pair.
                 let linker_exited = pa.child_handle().exit_reason().is_some();
                 pa.context().link(&pb.child_handle());
-                let trap = |d: &Self, id| d.traps.get(&id).map_or(false, |t| t.0);
+                let trap = |d: &Self, id| d.traps.get(&id).is_some_and(|t| t.0);
                 self.links.push(LinkRec {
                     trap_a: trap(self, pa.id()),
                     trap_b: trap(self, pb.id()),
@@ -582,8 +608,12 @@ impl Driver {
             Op::Demonitor { which } => {
                 let record = {
                     let s = self.world.lock();
-                    (!s.monitors.is_empty())
-                        .then(|| (which as usize % s.monitors.len(), s.monitors[which as usize % s.monitors.len()].clone()))
+                    (!s.monitors.is_empty()).then(|| {
+                        (
+                            which as usize % s.monitors.len(),
+                            s.monitors[which as usize % s.monitors.len()].clone(),
+                        )
+                    })
                 };
                 let Some((index, m)) = record else { return };
                 let watcher = self.targets().into_iter().find(|a| a.id() == m.watcher);
@@ -725,12 +755,14 @@ impl Driver {
                 if self.actors.is_empty() {
                     (worker.start(), None)
                 } else {
-                    let parent = self.actors[parent as usize % self.actors.len()].aref.clone();
+                    let parent = self.actors[parent as usize % self.actors.len()]
+                        .aref
+                        .clone();
                     let aref = worker.start_linked(&parent.context());
                     self.may_stop(parent.id());
                     self.may_stop(aref.id());
                     self.links.push(LinkRec {
-                        trap_a: self.traps.get(&parent.id()).map_or(false, |t| t.0),
+                        trap_a: self.traps.get(&parent.id()).is_some_and(|t| t.0),
                         trap_b: false,
                         a: parent,
                         b: aref.clone(),
@@ -833,9 +865,13 @@ impl Driver {
                 }
             }
         }
-        let model = modes
-            .filter(|m| !m.is_empty())
-            .map(|m| (cfg_strategy(&spec.policy), (spec.policy.max_restarts % 7) as usize, m));
+        let model = modes.filter(|m| !m.is_empty()).map(|m| {
+            (
+                cfg_strategy(&spec.policy),
+                (spec.policy.max_restarts % 7) as usize,
+                m,
+            )
+        });
         self.units.push((sys, Unit::Root(root)));
         trace(|| format!("supervisor r{root}: start"));
         // A tree whose subtree restarts slower than its budget refills
@@ -895,7 +931,9 @@ impl Driver {
             }
             return;
         }
-        let Ok(aref) = workers[i].current() else { return };
+        let Ok(aref) = workers[i].current() else {
+            return;
+        };
         if !aref.child_handle().is_alive() {
             self.violate(
                 "V4: current() returned a generation that already exited",
@@ -962,7 +1000,11 @@ impl Driver {
     }
 
     /// Check a supervisor whose shutdown reported complete (V9).
-    fn root_done(&mut self, root: usize, children: &[spawned_concurrency::supervision::ChildSnapshot]) {
+    fn root_done(
+        &mut self,
+        root: usize,
+        children: &[spawned_concurrency::supervision::ChildSnapshot],
+    ) {
         for c in children {
             if !matches!(c.state, ChildState::Stopped | ChildState::Failed) {
                 self.violate(
@@ -1001,7 +1043,9 @@ impl Driver {
     #[cfg(feature = "lifecycle-trace")]
     fn export_trace(&self, root: usize) {
         use spawned_concurrency::lifecycle_trace;
-        let Some(sup) = &self.roots[root].sup else { return };
+        let Some(sup) = &self.roots[root].sup else {
+            return;
+        };
         let events = lifecycle_trace::take(sup.trace_id());
         let (Some(dir), Some((strategy, max_restarts, modes))) = (
             std::env::var_os("SPAWNED_FUZZ_TLA_DIR"),
@@ -1021,9 +1065,21 @@ impl Driver {
                 .filter(|e| {
                     matches!(
                         e.action,
-                        "CRequest" | "CSelect" | "CAssign" | "CStop" | "CClean" | "CResume"
-                            | "CBegin" | "CReady" | "CJoined" | "CRetire" | "CAck" | "CEnd"
-                            | "CInitialReady" | "CClose" | "CDone"
+                        "CRequest"
+                            | "CSelect"
+                            | "CAssign"
+                            | "CStop"
+                            | "CClean"
+                            | "CResume"
+                            | "CBegin"
+                            | "CReady"
+                            | "CJoined"
+                            | "CRetire"
+                            | "CAck"
+                            | "CEnd"
+                            | "CInitialReady"
+                            | "CClose"
+                            | "CDone"
                     )
                 })
                 .collect()
@@ -1070,7 +1126,10 @@ impl Driver {
                 let running = self.running();
                 let report = s.shutdown(LONG).await;
                 if !report.complete {
-                    self.violate("V9: supervisor shutdown did not complete", format!("r{root}"));
+                    self.violate(
+                        "V9: supervisor shutdown did not complete",
+                        format!("r{root}"),
+                    );
                     return;
                 }
                 self.root_done(root, &report.children);
@@ -1122,7 +1181,10 @@ impl Driver {
         self.systems[i].system = Some(system);
         self.systems[i].shut = true;
         if mode % 3 != 1 && !report.complete {
-            self.violate("S2: system shutdown did not complete", format!("system {i}"));
+            self.violate(
+                "S2: system shutdown did not complete",
+                format!("system {i}"),
+            );
         }
         if report.complete {
             self.system_done(i, &report);
@@ -1182,7 +1244,9 @@ impl Driver {
         s.insts
             .iter()
             .enumerate()
-            .filter(|(_, i)| i.started_end.is_some() && i.stopped_begin.is_none() && i.dropped.is_none())
+            .filter(|(_, i)| {
+                i.started_end.is_some() && i.stopped_begin.is_none() && i.dropped.is_none()
+            })
             .map(|(n, _)| n)
             .collect()
     }
@@ -1245,9 +1309,11 @@ impl Driver {
             let mut found = None;
             'outer: for i in 0..units.len() {
                 for j in i + 1..units.len() {
-                    if let (Some(stop), Some(drop)) = (first_stop(&units[i]), last_drop(&units[j])) {
+                    if let (Some(stop), Some(drop)) = (first_stop(&units[i]), last_drop(&units[j]))
+                    {
                         if stop < drop {
-                            found = Some(format!("unit {i} began stopping before unit {j} finished"));
+                            found =
+                                Some(format!("unit {i} began stopping before unit {j} finished"));
                             break 'outer;
                         }
                     }
@@ -1266,7 +1332,10 @@ impl Driver {
             .iter()
             .map(|(p, _)| self.members(running, p))
             .collect();
-        self.check_order("V9: supervisor children did not stop in reverse declaration order", &units);
+        self.check_order(
+            "V9: supervisor children did not stop in reverse declaration order",
+            &units,
+        );
         for (path, count) in &self.roots[root].paths {
             if *count > 0 {
                 let units: Vec<Vec<usize>> = (0..*count)
@@ -1320,16 +1389,25 @@ impl Driver {
             lane: 0,
             act: Act::Noop,
         };
-        match aref.request_with_timeout(msg, LONG + self.queued_sleep).await {
+        match aref
+            .request_with_timeout(msg, LONG + self.queued_sleep)
+            .await
+        {
             Ok(n) => {
                 if n != nonce {
-                    self.violate("R2: a reply reached the wrong request", format!("{n} for {nonce}"));
+                    self.violate(
+                        "R2: a reply reached the wrong request",
+                        format!("{n} for {nonce}"),
+                    );
                 }
                 true
             }
             Err(ActorError::ActorStopped) => {
                 if rt::timeout(LONG, aref.wait_exit()).await.is_err() {
-                    self.violate("L7: a stopping actor never published its exit", String::new());
+                    self.violate(
+                        "L7: a stopping actor never published its exit",
+                        String::new(),
+                    );
                 }
                 false
             }
@@ -1354,7 +1432,10 @@ impl Driver {
                         Slot::Worker(c) => c.snapshot().state,
                         Slot::Nested(n) => n.snapshot().state,
                     };
-                    busy |= !matches!(state, ChildState::Running | ChildState::Stopped | ChildState::Failed);
+                    busy |= !matches!(
+                        state,
+                        ChildState::Running | ChildState::Stopped | ChildState::Failed
+                    );
                 }
             }
             let nested: Vec<SupervisedChild<Worker>> =
@@ -1456,7 +1537,12 @@ impl Driver {
             .links
             .iter()
             .filter(|l| !l.unlinked)
-            .flat_map(|l| [(l.a.clone(), l.b.clone(), l.trap_a, l.at), (l.b.clone(), l.a.clone(), l.trap_b, l.at)])
+            .flat_map(|l| {
+                [
+                    (l.a.clone(), l.b.clone(), l.trap_a, l.at),
+                    (l.b.clone(), l.a.clone(), l.trap_b, l.at),
+                ]
+            })
             .collect();
         for (w, p, trap, at) in links {
             let (wid, pid) = (w.id(), p.id());
@@ -1464,18 +1550,24 @@ impl Driver {
                 continue;
             }
             let pair_unlinked = self.links.iter().any(|l| {
-                l.unlinked && ((l.a.id(), l.b.id()) == (wid, pid) || (l.a.id(), l.b.id()) == (pid, wid))
+                l.unlinked
+                    && ((l.a.id(), l.b.id()) == (wid, pid) || (l.a.id(), l.b.id()) == (pid, wid))
             });
             let calls = self
                 .links
                 .iter()
-                .filter(|l| (l.a.id(), l.b.id()) == (wid, pid) || (l.a.id(), l.b.id()) == (pid, wid))
+                .filter(|l| {
+                    (l.a.id(), l.b.id()) == (wid, pid) || (l.a.id(), l.b.id()) == (pid, wid)
+                })
                 .count();
             let uncertain = {
                 let s = self.world.lock();
                 s.uncertain.contains(&wid) || s.uncertain.contains(&pid)
             };
-            let toggled = self.traps.get(&wid).is_some_and(|(_, changed)| *changed > at);
+            let toggled = self
+                .traps
+                .get(&wid)
+                .is_some_and(|(_, changed)| *changed > at);
             if pair_unlinked || uncertain || toggled {
                 continue;
             }
@@ -1517,7 +1609,10 @@ impl Driver {
             if trap {
                 let n = exits(self).len();
                 if n == 0 {
-                    self.violate("X3: a trapping linked actor never received Exit", String::new());
+                    self.violate(
+                        "X3: a trapping linked actor never received Exit",
+                        String::new(),
+                    );
                 } else if n > calls {
                     self.violate(
                         "X5: Exit delivered more often than links were made",
@@ -1584,7 +1679,10 @@ impl Driver {
             if report.complete {
                 self.root_done(root, &report.children);
             } else {
-                self.violate("V9: supervisor shutdown did not complete", format!("r{root}"));
+                self.violate(
+                    "V9: supervisor shutdown did not complete",
+                    format!("r{root}"),
+                );
             }
         }
         for i in 0..self.systems.len() {
@@ -1598,7 +1696,10 @@ impl Driver {
             if report.complete {
                 self.system_done(i, &report);
             } else {
-                self.violate("S2: system shutdown did not complete", format!("system {i}"));
+                self.violate(
+                    "S2: system shutdown did not complete",
+                    format!("system {i}"),
+                );
             }
         }
         for a in &self.actors {
@@ -1606,11 +1707,17 @@ impl Driver {
                 a.aref.child_handle().stop();
             }
         }
-        let actors: Vec<(ActorRef<Worker>, usize)> =
-            self.actors.iter().map(|a| (a.aref.clone(), a.instance)).collect();
+        let actors: Vec<(ActorRef<Worker>, usize)> = self
+            .actors
+            .iter()
+            .map(|a| (a.aref.clone(), a.instance))
+            .collect();
         for (aref, instance) in actors {
             if rt::timeout(LONG, aref.wait_exit()).await.is_err() {
-                self.violate("L3: an actor did not exit after stop", format!("w{instance}"));
+                self.violate(
+                    "L3: an actor did not exit after stop",
+                    format!("w{instance}"),
+                );
             }
         }
         self.collect_pending().await;
@@ -1630,13 +1737,20 @@ fn budget_checks(world: &World) {
         *n += 1;
         if *n > 1 {
             if c.temporary {
-                found.push(("V1: a Temporary child was constructed twice", c.slot.clone()));
+                found.push((
+                    "V1: a Temporary child was constructed twice",
+                    c.slot.clone(),
+                ));
             }
             retries[c.inst].push(c.at);
         }
     }
     for (inst, times) in retries.iter().enumerate() {
-        let SupInst { max_restarts, window, .. } = s.sups[inst].clone();
+        let SupInst {
+            max_restarts,
+            window,
+            ..
+        } = s.sups[inst].clone();
         for (i, t) in times.iter().enumerate() {
             let in_window = times[..=i].iter().filter(|u| *t - **u < window).count();
             if in_window > max_restarts {

@@ -34,7 +34,11 @@ fn main() {
         std::process::exit(2);
     };
     println!("{scenario:#?}");
-    println!("strategy {}, seed {}", strategy(scenario.sched), scenario.seed);
+    println!(
+        "strategy {}, seed {}",
+        strategy(scenario.sched),
+        scenario.seed
+    );
     if args.iter().any(|a| a == "--print") {
         return;
     }
@@ -44,7 +48,13 @@ fn main() {
         // A once-failing input (a fixed bug, or a harness false positive)
         // can still be kept as a regression, with the run's own tape.
         if let Some(name) = emit {
-            emit_regression(&name, &bytes, &scenario, run.tape.as_ref(), "none (passing input)");
+            emit_regression(
+                &name,
+                &bytes,
+                &scenario,
+                run.tape.as_ref(),
+                "none (passing input)",
+            );
         }
         return;
     };
@@ -56,7 +66,10 @@ fn main() {
     let strict = execute(&scenario, Some(&tape));
     println!(
         "strict tape replay: {}",
-        strict.failure.as_deref().unwrap_or("passed (not reproducible!)")
+        strict
+            .failure
+            .as_deref()
+            .unwrap_or("passed (not reproducible!)")
     );
     let budget = std::env::var("SPAWNED_SIM_SHRINK")
         .ok()
@@ -96,7 +109,8 @@ fn emit_regression(
     std::fs::create_dir_all(root.join("tests")).unwrap();
     std::fs::write(root.join(format!("regressions/{name}.input")), bytes).unwrap();
     if let Some(tape) = tape {
-        tape.save(&root.join(format!("regressions/{name}.tape"))).unwrap();
+        tape.save(&root.join(format!("regressions/{name}.tape")))
+            .unwrap();
     }
     let scenario_doc: String = format!("{scenario:#?}")
         .lines()

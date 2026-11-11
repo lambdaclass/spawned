@@ -271,7 +271,8 @@ impl Actor for Worker {
             let mut s = self.world.lock();
             let seq = s.tick();
             let inst = &mut s.insts[self.instance];
-            let (twice, after_started_panic) = (inst.stopped_begin.is_some(), inst.started_panicked);
+            let (twice, after_started_panic) =
+                (inst.stopped_begin.is_some(), inst.started_panicked);
             inst.stopped_begin = Some(seq);
             if twice {
                 s.violate("L1: stopped() ran twice", format!("w{}", self.instance));
@@ -425,7 +426,10 @@ impl Handler<Down> for Worker {
                 "X1: Down delivered to an actor that did not create the monitor",
                 format!("w{}", self.instance),
             ),
-            None => s.violate("X1: Down for an unknown monitor", format!("w{}", self.instance)),
+            None => s.violate(
+                "X1: Down for an unknown monitor",
+                format!("w{}", self.instance),
+            ),
         }
         let inst = &mut s.insts[self.instance];
         let duplicate = inst.downs.iter().any(|(r, _)| *r == down.monitor_ref);

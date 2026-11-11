@@ -16,7 +16,12 @@ fn check(name: &str, bytes: &[u8]) -> bool {
     };
     let run = execute(&scenario, None);
     if std::env::var_os("SPAWNED_FUZZ_TRACE").is_some() {
-        eprintln!("{name}: {} ops, {:?}, {} polls", scenario.ops.len(), scenario.sched, run.polls);
+        eprintln!(
+            "{name}: {} ops, {:?}, {} polls",
+            scenario.ops.len(),
+            scenario.sched,
+            run.polls
+        );
     }
     if let Some(failure) = run.failure {
         eprintln!("{name}: {failure}");

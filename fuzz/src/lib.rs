@@ -113,7 +113,11 @@ pub fn fuzz_one(scenario: &Scenario) {
     for detail in last_details() {
         eprintln!("spawned-fuzz:   {detail}");
     }
-    eprintln!("spawned-fuzz: strategy {}, seed {}", strategy(scenario.sched), scenario.seed);
+    eprintln!(
+        "spawned-fuzz: strategy {}, seed {}",
+        strategy(scenario.sched),
+        scenario.seed
+    );
     if let Some(tape) = &run.tape {
         let dir = std::env::var_os("SPAWNED_FUZZ_TAPE_DIR")
             .map(PathBuf::from)
@@ -156,10 +160,13 @@ pub fn assert_passes(input: &[u8], tape: Option<&str>) {
         let mut failure = execute(&scenario, Some(&tape)).failure;
         // After a fix the recorded schedule may no longer apply exactly
         // (other tasks, other picks): follow it as far as it goes instead.
-        if failure.as_deref().is_some_and(|f| f.contains("replay diverged")) {
+        if failure
+            .as_deref()
+            .is_some_and(|f| f.contains("replay diverged"))
+        {
             let body = |seed: u64| run_body(scenario.clone(), seed);
-            failure = sim::run_with(tape.seed, Some((&tape, sim::ReplayMode::Permissive)), &body)
-                .failure;
+            failure =
+                sim::run_with(tape.seed, Some((&tape, sim::ReplayMode::Permissive)), &body).failure;
         }
         assert_eq!(failure, None, "scenario fails under its recorded tape");
     }
