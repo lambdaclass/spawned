@@ -6,8 +6,12 @@ maintainer settled every open question (see [Decisions](#decisions)).
 
 - Covers ROADMAP rank 5e (exit signals), the startup part of rank 5f, rank 5g
   (runtime-dropped actors) and the supervisor `start()` ordering found by the
-  quality pass (#223). Counting the restart budget per recovery round (the
-  other half of 5f) is a separate change.
+  quality pass (#223). The other half of 5f, counting the restart budget per
+  recovery round, shipped in the same 0.8 stack: a OneForAll/RestForOne
+  round takes one grant when the coordinator selects it (OTP's
+  `add_restart` once per restart action), its rebuilds take none, and a
+  failed replacement requests a new round that is charged again (semantics
+  V5).
 - Target: v0.8. Changes L3, L4, L6, L7, X1-X7, V3, V7, V9 and §11 of the
   [semantics contract](semantics.md), and refines the death boundary of
   [deferred-replies.md §5](deferred-replies.md#5-owner-lifecycle) (rank 11,

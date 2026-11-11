@@ -336,49 +336,91 @@ async fn failed_cohort_construction_rebuilds_the_whole_cohort_like_otp() {
     assert!(system.shutdown(LIMIT).await.complete);
 }
 
+/// OTP charges one restart per restart action: a OneForAll or RestForOne
+/// recovery round costs one grant however many children it rebuilds. With
+/// three children and `max_restarts = 2`, two rounds rebuild the cohort and
+/// the third failure exhausts the budget (per-child charging would have
+/// failed the supervisor while rebuilding the first round).
 #[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
-async fn cohort_reconstruction_consumes_shared_factory_attempt_budget() {
-    let system = ActorSystem::new().unwrap();
-    let group = system.async_group("cohort-budget", 1).unwrap();
-    let mut config = policy(SupervisorStrategy::OneForAll);
-    config.max_restarts = 2;
-    let mut tree = system.supervisor(config).unwrap();
-    let mut children = Vec::new();
-    let live = Arc::new((0..3).map(|_| AtomicUsize::new(0)).collect::<Vec<_>>());
-    let events = Arc::new(Mutex::new(Vec::new()));
-    for index in 0..3 {
-        let live = live.clone();
-        let events = events.clone();
-        children.push(
-            tree.add(ChildSpec::new(
-                format!("child-{index}"),
-                &group,
-                move |ctx| {
-                    let live = live.clone();
-                    let events = events.clone();
-                    async move {
-                        assert_eq!(live[index].fetch_add(1, Ordering::SeqCst), 0);
-                        Ok::<_, String>(Probe {
-                            index,
-                            generation: ctx.generation() as usize,
-                            value: 0,
-                            live,
-                            events,
-                        })
-                    }
-                },
-            ))
-            .unwrap(),
+async fn cohort_reconstruction_charges_one_restart_per_round() {
+    for strategy in [
+        SupervisorStrategy::OneForAll,
+        SupervisorStrategy::RestForOne,
+    ] {
+        let system = ActorSystem::new().unwrap();
+        let group = system.async_group("cohort-budget", 1).unwrap();
+        let mut config = policy(strategy);
+        config.max_restarts = 2;
+        let mut tree = system.supervisor(config).unwrap();
+        let mut children = Vec::new();
+        let live = Arc::new((0..3).map(|_| AtomicUsize::new(0)).collect::<Vec<_>>());
+        let events = Arc::new(Mutex::new(Vec::new()));
+        for index in 0..3 {
+            let live = live.clone();
+            let events = events.clone();
+            children.push(
+                tree.add(ChildSpec::new(
+                    format!("child-{index}"),
+                    &group,
+                    move |ctx| {
+                        let live = live.clone();
+                        let events = events.clone();
+                        async move {
+                            assert_eq!(live[index].fetch_add(1, Ordering::SeqCst), 0);
+                            Ok::<_, String>(Probe {
+                                index,
+                                generation: ctx.generation() as usize,
+                                value: 0,
+                                live,
+                                events,
+                            })
+                        }
+                    },
+                ))
+                .unwrap(),
+            );
+        }
+        let supervisor = tree.start().await.unwrap();
+        // Two rounds, each rebuilding all three children (the first child
+        // is the origin, so RestForOne rebuilds the whole tail too).
+        for round in 1..=2u64 {
+            assert!(children[0].current().unwrap().request(Crash).await.is_err());
+            for child in &children {
+                spawned_rt::tasks::timeout(LIMIT, child.wait_for_generation(round))
+                    .await
+                    .unwrap()
+                    .unwrap_or_else(|e| {
+                        panic!(
+                            "{strategy:?} round {round}: {e:?} {:?}",
+                            supervisor.failure()
+                        )
+                    });
+            }
+            assert!(
+                supervisor.failure().is_none(),
+                "{strategy:?}: round {round} charged per rebuilt child: {:?}",
+                supervisor.failure()
+            );
+        }
+        assert!(children
+            .iter()
+            .all(|child| child.snapshot().generation == 3));
+        // The third failure is the third restart action in the window.
+        assert!(children[0].current().unwrap().request(Crash).await.is_err());
+        spawned_rt::tasks::timeout(LIMIT, supervisor.join())
+            .await
+            .unwrap();
+        let failure = supervisor.failure().unwrap();
+        assert!(
+            failure.contains("restart budget exhausted by child-0"),
+            "{strategy:?}: {failure}"
         );
+        assert!(children
+            .iter()
+            .all(|child| child.snapshot().generation == 3));
+        assert!(system.shutdown(LIMIT).await.complete);
+        assert!(live.iter().all(|n| n.load(Ordering::SeqCst) == 0));
     }
-    let supervisor = tree.start().await.unwrap();
-    assert!(children[0].current().unwrap().request(Crash).await.is_err());
-    spawned_rt::tasks::timeout(LIMIT, supervisor.join())
-        .await
-        .unwrap();
-    assert!(supervisor.failure().unwrap().contains("budget exhausted"));
-    assert!(system.shutdown(LIMIT).await.complete);
-    assert!(live.iter().all(|n| n.load(Ordering::SeqCst) == 0));
 }
 
 // Not simulated: children meet at a std::sync::Barrier, which needs OS threads.

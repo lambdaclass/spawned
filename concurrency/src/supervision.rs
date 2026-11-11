@@ -147,9 +147,11 @@ pub enum SupervisorStrategy {
 #[derive(Debug, Clone)]
 pub struct SupervisorConfig {
     pub strategy: SupervisorStrategy,
-    /// Supervisor-wide child retry grants per window, including collateral
-    /// OneForAll/RestForOne replacements. A six-child OneForAll round requires
-    /// six available grants. This retains v0.7's per-child accounting.
+    /// Supervisor-wide restarts per `restart_window` (OTP's intensity and
+    /// period). One restart is one restart action: a OneForOne child retry,
+    /// or one OneForAll/RestForOne recovery round, however many children
+    /// the round rebuilds. A failed replacement inside a round requests a
+    /// new round, which is charged again (OTP's `try_again_restart`).
     pub max_restarts: usize,
     pub restart_window: Duration,
     pub max_children: usize,
@@ -986,6 +988,15 @@ impl Core {
                 .flatten()
         })
     }
+    /// One OneForAll/RestForOne recovery round is one restart action (OTP's
+    /// `add_restart` runs once per restart, before the cohort is rebuilt):
+    /// take its grant now. The round's controllers then rebuild without a
+    /// grant of their own. Pending per-child reservations (retries during
+    /// the initial start) keep their capacity. Returns whether it was taken.
+    fn charge_round(&self) -> bool {
+        let mut budget = system::lock(&self.budget);
+        budget.take(Instant::now())
+    }
     /// Caller holds the admission gate and slot lock; charge atomically with
     /// generation admission, so placement failure or supersession refunds it.
     fn retry_under_gate(&self, reservation: &mut RetryReservation<'_>) -> bool {
@@ -1629,6 +1640,12 @@ async fn run_recoveries(core: Arc<Core>) {
         }
         let round = trace::atomic(|| {
             let mut queue = system::lock(&core.recovery);
+            // The round is the restart action: charge it once, before any
+            // child of the cohort is stopped or rebuilt.
+            let origin = queue.pending.iter().position(|pending| *pending)?;
+            if !core.charge_round() {
+                return Some(Err(origin));
+            }
             queue
                 .select(core.config.strategy == SupervisorStrategy::OneForAll)
                 .map(|(origin, start, id)| {
@@ -1642,10 +1659,21 @@ async fn run_recoveries(core: Arc<Core>) {
                             .round(id)
                             .count(start + 1)
                     });
-                    (start, meta)
+                    Ok((start, meta))
                 })
         });
-        let Some((start, meta)) = round else {
+        if let Some(Err(origin)) = round {
+            // Exhausted: a concurrent stop wins; only an open supervisor fails.
+            let snapshot = children[origin].snapshot();
+            let message = format!("restart budget exhausted by {}", snapshot.name);
+            core.fail_record_if_open_as(
+                snapshot_failure(snapshot, FailureKind::RestartBudget, message),
+                || None,
+            );
+            core.log_failure_once();
+            return;
+        }
+        let Some(Ok((start, meta))) = round else {
             if matches!(
                 select(
                     Box::pin(core.admission_closed.cancelled()),
@@ -1767,6 +1795,8 @@ async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, core: Arc<C
     let mut first = true;
     let mut last_recovery = 0;
     let mut collateral = false;
+    // This iteration rebuilds for a recovery round (already charged).
+    let mut in_round = false;
     let mut failures = 0u32;
     // Wall-clock entropy; the simulation seed's entropy stream under spawned_sim.
     let seed = core
@@ -1844,12 +1874,21 @@ async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, core: Arc<C
                 continue;
             }
             collateral = round.meta.origin != view.index;
+            in_round = true;
         }
         let mut backoff = Duration::ZERO;
         let mut retry_reservation = None;
+        // A recovery round was charged once when the coordinator selected
+        // it: its rebuilds (origin and collateral) take no grant of their own.
+        let round_rebuild = std::mem::take(&mut in_round);
         if !first {
             fail_point!("supervisor.before_restart", async);
-            let Some(reservation) = core.reserve_retry(c) else {
+            let reservation = if round_rebuild {
+                Some(None)
+            } else {
+                core.reserve_retry(c).map(Some)
+            };
+            let Some(reservation) = reservation else {
                 // A concurrent stop wins: only fail a supervisor that is still open.
                 trace::atomic(|| {
                     if core.gate.is_open() {
@@ -1910,7 +1949,7 @@ async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, core: Arc<C
             if count_attempt {
                 failures = failures.saturating_add(1);
             }
-            retry_reservation = Some(reservation);
+            retry_reservation = reservation;
         }
         first = false;
         let (scope, lease) = match spec.group.reserve(Some(core.gate.clone())) {
@@ -1947,7 +1986,7 @@ async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, core: Arc<C
             }
         };
         #[cfg(test)]
-        if retry_reservation.is_some() {
+        if retry_reservation.is_some() || round_rebuild {
             let pause = system::lock(&core.retry_admission_pause).take();
             if let Some((resume, entered)) = pause {
                 entered.send_replace(true);
@@ -3089,8 +3128,11 @@ mod policy_tests {
         assert!(system.shutdown(Duration::from_secs(30)).await.complete);
     }
 
+    /// OTP charges `add_restart` when it decides a restart, before the
+    /// cohort is rebuilt: a superseded round keeps its charge, and the
+    /// superseding round is charged once more.
     #[tokio::test]
-    async fn supersession_before_generation_admission_refunds_the_retry() {
+    async fn supersession_charges_each_selected_round_once() {
         let limit = Duration::from_secs(30);
         let system = ActorSystem::new().unwrap();
         let group = system
@@ -3140,11 +3182,10 @@ mod policy_tests {
             .id;
         {
             let budget = system::lock(&core.budget);
-            assert!(
-                budget.attempts.is_empty(),
-                "an unadmitted generation was charged"
-            );
-            assert_eq!(budget.reserved, 1);
+            // The round was charged once, at selection; its rebuilds hold
+            // no reservation of their own.
+            assert_eq!(budget.attempts.len(), 1);
+            assert_eq!(budget.reserved, 0);
         }
         children[0]
             .current()
@@ -3165,21 +3206,23 @@ mod policy_tests {
         assert!(tree.failure().is_none());
         {
             let budget = system::lock(&core.budget);
-            assert_eq!(budget.attempts.len(), 3);
+            // Two restart actions: the superseded round and its successor,
+            // however many children each rebuilt.
+            assert_eq!(budget.attempts.len(), 2);
             assert_eq!(budget.reserved, 0);
         }
         assert!(system.shutdown(limit).await.complete);
     }
 
     #[tokio::test]
-    async fn cohort_budget_retains_v07_per_child_grant_accounting() {
+    async fn cohort_round_takes_one_grant_for_all_rebuilt_children() {
         let limit = Duration::from_secs(30);
         let system = ActorSystem::new().unwrap();
         let group = system.async_group("cohort-budget-contract", 2).unwrap();
         let mut builder = system
             .supervisor(SupervisorConfig {
                 strategy: SupervisorStrategy::OneForAll,
-                max_restarts: 5,
+                max_restarts: 1,
                 backoff: Backoff {
                     initial: Duration::ZERO,
                     maximum: Duration::ZERO,
@@ -3201,20 +3244,38 @@ mod policy_tests {
                     .unwrap(),
             );
         }
+        let core = builder.core.clone();
         let tree = builder.start().await.unwrap();
         children[5]
             .current()
             .unwrap()
             .child_handle()
             .stop_with_reason(ExitReason::Panic("last child fails".into()));
+        // One grant rebuilds all six children (one restart action).
+        for child in &children {
+            rt::timeout(limit, child.wait_for_generation(1))
+                .await
+                .unwrap()
+                .unwrap();
+        }
+        assert!(tree.failure().is_none());
+        assert_eq!(system::lock(&core.budget).attempts.len(), 1);
+        children[5]
+            .current()
+            .unwrap()
+            .child_handle()
+            .stop_with_reason(ExitReason::Panic("second failure".into()));
         rt::timeout(limit, tree.join()).await.unwrap();
-        assert!(tree.failure().unwrap().contains("budget exhausted"));
+        assert!(tree
+            .failure()
+            .unwrap()
+            .contains("budget exhausted by worker-5"));
         assert_eq!(
             children
                 .iter()
                 .map(|child| child.snapshot().generation)
                 .collect::<Vec<_>>(),
-            vec![2, 2, 2, 2, 2, 1]
+            vec![2; 6]
         );
         assert!(system.shutdown(limit).await.complete);
     }

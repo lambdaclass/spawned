@@ -252,13 +252,14 @@ async fn supervision_logs_restart_budget_exhaustion_and_give_up() {
     // Not simulated: the cohort case blocks a spawn_blocking helper.
     #[cfg(not(spawned_sim))]
     {
-        // The healthy collateral child takes the last retry grant. Its failing
-        // sibling must give up before a 60-second backoff, and lookups must report
-        // owner failure even while the healthy sibling's owned cleanup is pending.
+        // The round is the restart action: with no grant left the supervisor
+        // gives up when it would select the round, before the origin's
+        // 60-second backoff, and lookups must report owner failure even while
+        // the healthy sibling's owned cleanup is pending.
         let mut cohort = system
             .supervisor(SupervisorConfig {
                 strategy: SupervisorStrategy::OneForAll,
-                max_restarts: 1,
+                max_restarts: 0,
                 backoff: Backoff {
                     initial: Duration::from_secs(60),
                     maximum: Duration::from_secs(60),
@@ -275,7 +276,7 @@ async fn supervision_logs_restart_budget_exhaustion_and_give_up() {
                 ChildSpec::new("canary-healthy", &group, move |ctx| {
                     let gate = gate.clone();
                     async move {
-                        if ctx.generation() == 2 {
+                        if ctx.generation() == 1 {
                             let gate = gate.lock().unwrap().take().unwrap();
                             let (entered, arrival) = oneshot::channel();
                             ctx.spawn_blocking_helper(move || {
@@ -317,7 +318,7 @@ async fn supervision_logs_restart_budget_exhaustion_and_give_up() {
             healthy.current(),
             Err(ChildUnavailable(ChildState::Failed))
         ));
-        assert_eq!(healthy.snapshot().generation, 2);
+        assert_eq!(healthy.snapshot().generation, 1);
         release.send(()).unwrap();
         spawned_rt::tasks::timeout(LIMIT, cohort.join())
             .await

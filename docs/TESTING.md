@@ -210,7 +210,7 @@ This generated suite uses zero backoff and a high, unexhausted restart budget;
 it does not claim budget-exhaustion or shutdown-during-backoff coverage.
 Those are controlled cases in `supervision` (`restart_budget_is_shared_between_siblings_and_exhaustion_closes_tree`,
 `shutdown_during_backoff_prevents_new_factory_invocation`) and
-`supervision_strategies` (`cohort_reconstruction_consumes_shared_factory_attempt_budget`).
+`supervision_strategies` (`cohort_reconstruction_charges_one_restart_per_round`).
 
 ```sh
 cargo test --locked -p spawned-concurrency --test supervisor_policies

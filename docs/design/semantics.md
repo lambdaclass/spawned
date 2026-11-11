@@ -422,14 +422,20 @@ Checked by: `Supervision!PublishedIsLive`, `Cohorts!PublishedIsLive`;
 [`supervisor_policies`][supervisor_policies] (request fences),
 [`supervision_recovery`][ex_supervision_recovery] example.
 
-**V5. Restart budget.** At most `max_restarts` retry grants per rolling
-`restart_window` (default 5 per 30 s), shared by the whole supervisor. Initial
-construction is free; every later factory call counts, including failed
-factories and collateral OneForAll/RestForOne children (unlike OTP, which counts
-rounds). Capacity is reserved before backoff, refunded if the backoff is
-cancelled or superseded, and stamped as a grant at admission. An exhausted
-window or `max_restarts = 0` fails at once, without waiting for backoff.
-Exhaustion fails the supervisor and stops its children in reverse order.
+**V5. Restart budget.** At most `max_restarts` restart actions per rolling
+`restart_window` (default 5 per 30 s), shared by the whole supervisor, as OTP's
+intensity and period. Initial construction is free. A OneForOne child retry
+(and any retry before the tree is ready) is one action: its capacity is
+reserved before backoff, refunded if the backoff is cancelled or superseded,
+and stamped as a grant at admission, so a failed factory or `started()` after
+admission still counts. A OneForAll/RestForOne recovery round is one action,
+however many children it rebuilds: the coordinator takes its grant when it
+selects the round, before stopping the cohort (OTP's `add_restart`), and the
+round's rebuilds take none. A failed replacement inside a round requests a new
+round, charged again (`try_again_restart`); a superseded round keeps its
+charge. An exhausted window or `max_restarts = 0` fails at once, without
+waiting for backoff. Exhaustion fails the supervisor and stops its children in
+reverse order.
 Checked by: `Supervision!BudgetBounded`; Kani `restart_window_admits_exactly_within_budget`;
 [`supervision::restart_budget_is_shared_between_siblings_and_exhaustion_closes_tree`][supervision],
 `disabled_retries_fail_without_waiting_for_a_long_backoff`,

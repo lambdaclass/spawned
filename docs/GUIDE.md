@@ -1083,10 +1083,12 @@ Use an owned `async_group` for independent scheduling capacity and runtime
 lifetime guarantees. Ambient `.start()` remains unmanaged, including inside a
 managed handler; use `ctx.execution_group().start(...)` for owned child work.
 
-The restart limit counts admitted child retry attempts across the supervisor,
-including collateral OneForAll/RestForOne replacements, retaining v0.7 behavior.
-A six-child OneForAll round needs six available grants. This differs from OTP
-intensity accounting per recovery round; it is not changed silently in this patch.
+The restart limit counts restart actions across the supervisor, as OTP's
+intensity does: a OneForOne child retry is one, and a OneForAll/RestForOne
+recovery round is one however many children it rebuilds (a six-child
+OneForAll round needs one available grant). The round takes its grant when it
+is selected, before the cohort is stopped; a replacement that fails inside the
+round requests a new round, which takes another.
 
 Retry capacity is checked and reserved before a backoff. An exhausted window
 fails immediately, even if an older grant would expire during the proposed wait.

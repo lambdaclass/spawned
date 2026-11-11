@@ -12,6 +12,12 @@ table is the full list). What to edit:
 
 - **`match` on `ExitReason`**: add a wildcard arm (`#[non_exhaustive]`, new
   `Killed` and `NoProc`).
+- **`max_restarts` with OneForAll/RestForOne counts rounds** (rank 5f): one
+  recovery round takes one grant, however many children it rebuilds (v0.7
+  charged each rebuilt child). A cohort supervisor now tolerates more
+  failures for the same `max_restarts`; if you had raised it to cover
+  collateral rebuilds (for example `failures × children`), lower it to the
+  number of failures you mean to allow. OneForOne is unchanged.
 - **Kill from outside**: `ChildHandle::kill()` is the untrappable kill; the
   actor ends `Killed` and `stopped()` is skipped unless already running.
   `stop_with_reason(Kill)` stays an administrative stop ending `Kill`.

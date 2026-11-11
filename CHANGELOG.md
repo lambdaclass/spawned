@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **Breaking (0.8):** the restart budget counts restart actions, as OTP's
+  intensity does (ROADMAP rank 5f): a OneForAll or RestForOne recovery round
+  takes one `max_restarts` grant when the coordinator selects it, before the
+  cohort is stopped, however many children it rebuilds (v0.7 charged every
+  rebuilt child, so a six-child OneForAll round needed six grants). A failed
+  replacement inside a round requests a new round, charged again (OTP's
+  `try_again_restart`); a superseded round keeps its charge; OneForOne and
+  retries before the tree is ready still take one grant per child retry. An
+  exhausted budget fails the supervisor when the round would be selected,
+  naming the round's origin child. `max_restarts` documentation, semantics
+  V5, the guide and the migration notes follow.
 - **Breaking (0.8), in progress:** exit signals, startup and runtime-drop
   semantics as in OTP (ROADMAP ranks 5e, 5f, 5g), implementing
   [the design](docs/design/otp-exit-signals.md) (#240, stacked on rank 11).
