@@ -467,7 +467,10 @@ mod tasks_mode {
         let result = actor
             .request_with_timeout(Shorten, Duration::from_secs(60))
             .await;
-        assert!(matches!(result, Err(ActorError::RequestTimeout)), "{result:?}");
+        assert!(
+            matches!(result, Err(ActorError::RequestTimeout)),
+            "{result:?}"
+        );
         assert!(
             began.elapsed() < Duration::from_secs(5),
             "the caller slept until the old deadline: {:?}",

@@ -86,7 +86,10 @@ async fn shutdown_waits_for_the_blocking_job(borrowed: bool) {
     );
     release.send(()).unwrap();
     let report = report.wait(Duration::from_secs(5)).await;
-    assert!(report.complete, "shutdown did not complete after the job ended");
+    assert!(
+        report.complete,
+        "shutdown did not complete after the job ended"
+    );
     assert!(!running.load(Ordering::SeqCst));
 }
 
@@ -181,7 +184,11 @@ async fn a_supervisor_does_not_replace_a_child_whose_blocking_job_still_runs() {
         }
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
-    assert_eq!(starts.load(Ordering::SeqCst), 2, "no replacement after the job ended");
+    assert_eq!(
+        starts.load(Ordering::SeqCst),
+        2,
+        "no replacement after the job ended"
+    );
     let _ = system.shutdown(Duration::from_secs(5)).await;
 }
 
@@ -194,7 +201,10 @@ async fn a_supervisor_does_not_replace_a_child_whose_blocking_job_still_runs() {
 #[cfg(target_os = "linux")]
 #[test]
 fn a_failed_job_thread_spawn_is_a_reservation_error() {
-    subprocess::run("job_thread_spawn_failure_child", "job thread spawn failure reported");
+    subprocess::run(
+        "job_thread_spawn_failure_child",
+        "job thread spawn failure reported",
+    );
 }
 
 #[cfg(target_os = "linux")]
@@ -240,7 +250,11 @@ fn job_thread_spawn_failure_child() {
         matches!(piped, Err(ref e) if matches!(e.kind, PipeErrorKind::SpawnFailed(_))),
         "pipe_blocking_with returned {piped:?}"
     );
-    assert_eq!(ctx.deferred_outstanding(), 0, "a refused job kept its credit");
+    assert_eq!(
+        ctx.deferred_outstanding(),
+        0,
+        "a refused job kept its credit"
+    );
     // With threads available again, the same call runs the job.
     let permit = ctx.reserve_blocking_job().expect("a job thread");
     drop(permit);

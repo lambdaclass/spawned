@@ -788,7 +788,11 @@ pub(crate) struct ScheduledEmit {
 
 impl Drop for ScheduledEmit {
     fn drop(&mut self) {
-        let send = self.send.get_mut().unwrap_or_else(|p| p.into_inner()).take();
+        let send = self
+            .send
+            .get_mut()
+            .unwrap_or_else(|p| p.into_inner())
+            .take();
         self.failures.discard(send);
     }
 }
@@ -944,7 +948,8 @@ mod tests {
         let (sent_tx, sent_rx) = std::sync::mpsc::channel::<()>();
         let (done_tx, done_rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            AFTER_SCHEDULE.with(|hook| *hook.borrow_mut() = Some(Box::new(move || cancelled.cancel())));
+            AFTER_SCHEDULE
+                .with(|hook| *hook.borrow_mut() = Some(Box::new(move || cancelled.cancel())));
             let send: SendScheduled = Box::new(move || {
                 let _ = sent_tx.send(());
                 Ok(())
@@ -957,7 +962,10 @@ mod tests {
             .expect("schedule_emit deadlocked discarding its own emit");
         assert_eq!(result, Err(JobGone));
         assert_eq!(scheduled, 0, "the discarded emit is no longer scheduled");
-        assert!(sent_rx.try_recv().is_err(), "a cancelled job's emit was sent");
+        assert!(
+            sent_rx.try_recv().is_err(),
+            "a cancelled job's emit was sent"
+        );
     }
 
     /// Review P1: a rejected reservation must not build a guard whose drop

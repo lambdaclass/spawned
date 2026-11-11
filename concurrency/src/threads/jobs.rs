@@ -168,9 +168,9 @@ where
                 let run = self.clone();
                 // Dropped unrun (a deadline or a cancel overtook it) possibly
                 // on the deadline service thread: contained.
-                let outcome = outcome
-                    .take()
-                    .map(|outcome| crate::reply::jobs::Contained::new(outcome, self.ctx.sender.failures()));
+                let outcome = outcome.take().map(|outcome| {
+                    crate::reply::jobs::Contained::new(outcome, self.ctx.sender.failures())
+                });
                 Box::new(move || {
                     if let Some(outcome) = outcome.and_then(|o| o.into_inner()) {
                         run.notify(outcome);
@@ -186,7 +186,11 @@ impl<A: Actor, T, M> Drop for Run<A, T, M> {
     /// The last reference may go on the deadline service thread (a deadline
     /// or a held result firing): `done` and its captures drop contained.
     fn drop(&mut self) {
-        let done = self.done.get_mut().unwrap_or_else(|p| p.into_inner()).take();
+        let done = self
+            .done
+            .get_mut()
+            .unwrap_or_else(|p| p.into_inner())
+            .take();
         self.ctx.sender.failures().discard(done);
     }
 }

@@ -554,7 +554,12 @@ mod caller_gone_vs_shortening_tasks {
         type Result = ();
     }
     impl Handler<Ask> for Delegator {
-        async fn handle(&mut self, _: Ask, reply: PendingReply<'_, (bool, bool)>, ctx: &Context<Self>) {
+        async fn handle(
+            &mut self,
+            _: Ask,
+            reply: PendingReply<'_, (bool, bool)>,
+            ctx: &Context<Self>,
+        ) {
             let token = reply.defer().unwrap();
             let opts = JobOptions {
                 cancel_on_caller_gone: true,
@@ -637,7 +642,10 @@ mod caller_gone_vs_shortening_tasks {
         assert!(!cancelled, "a shortened deadline cancelled the job");
         // The caller leaving still cancels a blocking linked job.
         let left = actor.request_raw(Leave).unwrap();
-        assert!(!actor.request(Probe).await.unwrap(), "cancelled before the caller left");
+        assert!(
+            !actor.request(Probe).await.unwrap(),
+            "cancelled before the caller left"
+        );
         drop(left);
         let mut cancelled = false;
         for _ in 0..500 {
@@ -758,7 +766,10 @@ mod caller_gone_vs_shortening_threads {
         assert!(!cancelled, "a shortened deadline cancelled the job");
         // The caller leaving still cancels a blocking linked job.
         let left = actor.request_raw(Leave).unwrap();
-        assert!(!actor.request(Probe).unwrap(), "cancelled before the caller left");
+        assert!(
+            !actor.request(Probe).unwrap(),
+            "cancelled before the caller left"
+        );
         drop(left);
         let mut cancelled = false;
         for _ in 0..500 {

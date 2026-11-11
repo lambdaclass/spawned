@@ -279,10 +279,9 @@ impl JobCore {
         debug_assert!(inner.scheduled > 0, "scheduled emit underflow");
         inner.scheduled = inner.scheduled.saturating_sub(1);
         let (result, unused) = match enqueue {
-            Some(enqueue) if inner.open() => (
-                enqueue().map_err(|unsent| (JobGone, Some(unsent))),
-                None,
-            ),
+            Some(enqueue) if inner.open() => {
+                (enqueue().map_err(|unsent| (JobGone, Some(unsent))), None)
+            }
             unused => (Err((JobGone, None)), unused),
         };
         let held = if inner.scheduled == 0 {

@@ -123,9 +123,10 @@ fn deadline_service_child() {
             .unwrap()
             .await
             .unwrap();
-        let deadline = tokio::task::spawn_blocking(move || fired.recv_timeout(Duration::from_secs(5)))
-            .await
-            .unwrap();
+        let deadline =
+            tokio::task::spawn_blocking(move || fired.recv_timeout(Duration::from_secs(5)))
+                .await
+                .unwrap();
         assert_eq!(deadline, Ok(true), "a job deadline did not fire");
         other.context().stop();
         other.join().await;
