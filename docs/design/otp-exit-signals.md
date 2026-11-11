@@ -623,10 +623,11 @@ user code hangs; that is the cleanup-stuck rule, checked by
 | `RequestsAnswered` | every sent request ends `Ok`, `ActorStopped` or `NoProc` |
 | `ExitCompletes` | an exit, once begun, is published |
 | `ShutdownEndsChild` | a supervisor's Shutdown ends the child, trapping or not, without the kill |
-| `DownDelivered` | a fired or late monitor delivers its `Down` unless the observer is gone or demonitored |
+| `DownDelivered` | a monitor whose target is dead (fired at D, registered late, or still registered) delivers its `Down` unless the observer is gone or demonitored |
 | `LinkedPeersStop` | an abnormal death notice stops a non-trapping peer or queues an `Exit`/parent exit for a trapping one, unless unlinked |
 
-Negative controls (`negative_checks.py`; each checks only the named property):
+Negative controls (`negative_checks.py`; each checks only the named property;
+the two liveness controls run on a smaller instance, `LIFECYCLE_SMALL`):
 
 | `Fault` | Reintroduces | Fails |
 |---|---|---|

@@ -478,10 +478,13 @@ RequestsAnswered == \A r \in Reqs : (req[r].s \in {"sending", "queued"}) ~> (req
 ExitCompletes == \A a \in Actors : (st[a] = "stopping") ~> (st[a] = "dead")
 \* A supervisor Shutdown ends the child, trapping or not, without the kill.
 ShutdownEndsChild == \A c \in Children : (c \in psent) ~> (st[c] = "dead")
-\* Down exactly once: a fired or late monitor delivers its Down unless the
-\* observer is gone or demonitored it.
+\* Down exactly once: a monitor whose target is dead (fired at D, late, or
+\* still registered) delivers its Down unless the observer is gone or
+\* demonitored it.
 DownDelivered ==
-    \A m \in MonIds : (mstate[m] \in {"fired", "late"}) ~>
+    \A m \in MonIds :
+        (\/ mstate[m] \in {"fired", "late"}
+         \/ (mstate[m] = "active" /\ mon[m].t \in Actors /\ st[mon[m].t] = "dead")) ~>
         (downs[m] = 1 \/ mstate[m] = "cancelled"
             \/ (mon[m].o \in Actors /\ st[mon[m].o] \in {"gone", "dead"}))
 \* An abnormal death notice reaches its linked peer: a non-trapping peer
