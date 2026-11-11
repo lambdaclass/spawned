@@ -55,11 +55,6 @@ struct Block(mpsc::Receiver<()>, mpsc::Sender<()>);
 impl Message for Block {
     type Result = ();
 }
-/// Defers and keeps the token in the actor's state.
-struct Park;
-impl Message for Park {
-    type Result = ();
-}
 
 /// Wait until `poll` yields, at most `LIMIT`.
 fn eventually<T>(what: &str, mut poll: impl FnMut() -> Option<T>) -> T {
@@ -78,6 +73,12 @@ mod tasks_mode {
     use super::*;
     use spawned_concurrency::tasks::{Actor, ActorStart, Context, Handler};
     use spawned_concurrency::{PendingReply, ReplyTo};
+
+    /// Defers and keeps the token in the actor's state.
+    struct Park;
+    impl Message for Park {
+        type Result = ();
+    }
 
     struct Owner {
         _state: Gated,
