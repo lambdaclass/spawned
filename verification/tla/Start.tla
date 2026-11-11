@@ -52,7 +52,7 @@ None == "none"
 NonNormal == {"Panic", "Killed", "Shutdown"}
 Reasons == {"Normal"} \cup NonNormal
 Phases == {"idle", "begun", "reg1", "starting", "ready", "exiting", "dead",
-           "released", "published", "aborted"}
+           "namerel", "released", "published", "aborted"}
 Commits == {None, "ready", "failed", "ignored", "timedout"}
 FailCommits == {"failed", "ignored", "timedout"}
 Waits == {"none", "waiting", "abandoned", "consumed"}
@@ -71,7 +71,7 @@ VARIABLES
     lnote, mnote, pubAlive, div, divEver, handed, lost,
     cont, msgs, early,
     reg, seen, blamed, slots,
-    exitN, downN, exitR, downR
+    exitN, downN, exitR, downR, obN, obR, dlvOk
 
 pV == <<pst, pplace, ptrap, pwhy, pcause, gopen, ownerOpen, gdone, sfired, pn>>
 oV == <<kind, expl, wname>>
@@ -82,7 +82,7 @@ cV == <<commit, commit0, initR, why, wait, res, resR, pend, dl>>
 nV == <<lnote, mnote, pubAlive, div, divEver, handed, lost>>
 mV == <<cont, msgs, early>>
 rV == <<reg, seen, blamed, slots>>
-dV == <<exitN, downN, exitR, downR>>
+dV == <<exitN, downN, exitR, downR, obN, obR, dlvOk>>
 vars == <<pV, oV, sV, eV, xV, cV, nV, mV, rV, dV>>
 
 Waiting(k) == k \in {"start", "link", "monitor"}
@@ -135,6 +135,8 @@ TypeOK ==
     /\ blamed \subseteq Kids /\ slots \subseteq Kids
     /\ exitN \in [Kids -> 0..3] /\ downN \in [Kids -> 0..3]
     /\ exitR \in [Kids -> Reasons \cup {None}] /\ downR \in [Kids -> Reasons \cup {None}]
+    /\ obN \in [Kids -> 0..3] /\ obR \in [Kids -> Reasons \cup {None}]
+    /\ dlvOk \in [Kids -> BOOLEAN]
 
 F(v) == [c \in Kids |-> v]
 Init ==
@@ -157,6 +159,7 @@ Init ==
     /\ cont = F(FALSE) /\ msgs = F(0) /\ early = F(FALSE)
     /\ reg = {} /\ seen = F(FALSE) /\ blamed = {} /\ slots = {}
     /\ exitN = F(0) /\ downN = F(0) /\ exitR = F(None) /\ downR = F(None)
+    /\ obN = F(0) /\ obR = F(None) /\ dlvOk = F(FALSE)
 
 -----------------------------------------------------------------------------
 (* Notices reaching P (only while P's mailbox admits: before P's D). *)
@@ -275,8 +278,9 @@ CommitRest(c) ==
     /\ UNCHANGED <<pV, oV, readyOpen, xV, commit, commit0, initR, why, resR, pend, dl,
                    nV, mV, seen, dV>>
 
+\* Any number of lookups; a repeated one is a stuttering step.
 Lookup ==
-    /\ \E c \in reg : ~seen[c] /\ seen' = [seen EXCEPT ![c] = TRUE]
+    /\ \E c \in reg : seen' = [seen EXCEPT ![c] = TRUE]
     /\ UNCHANGED <<pV, oV, sV, eV, xV, cV, nV, mV, reg, blamed, slots, dV>>
 
 -----------------------------------------------------------------------------
@@ -447,14 +451,20 @@ Die(c) ==
                    linkEver, monEver, xV, cV, pubAlive, div, divEver, handed, lost, mV,
                    seen, blamed, dV>>
 
-\* After destruction: the name and the slot are released.
-Release(c) ==
+\* After destruction: the name is released (registry lock), then the slot
+\* (group lock); two atomic points, two trace events (design 5.2, 16.2).
+ReleaseName(c) ==
     /\ phase[c] = "dead"
-    /\ phase' = [phase EXCEPT ![c] = "released"]
+    /\ phase' = [phase EXCEPT ![c] = "namerel"]
     /\ reg' = IF Fault = "LateUnregister" THEN reg ELSE reg \ {c}
+    /\ UNCHANGED <<pV, oV, place, admOpen, owned, ownOpenAt, readyOpen, edgeWhenRun,
+                   eV, xV, cV, nV, mV, seen, blamed, slots, dV>>
+ReleaseSlot(c) ==
+    /\ phase[c] = "namerel"
+    /\ phase' = [phase EXCEPT ![c] = "released"]
     /\ slots' = slots \ {c}
     /\ UNCHANGED <<pV, oV, place, admOpen, owned, ownOpenAt, readyOpen, edgeWhenRun,
-                   eV, xV, cV, nV, mV, seen, blamed, dV>>
+                   eV, xV, cV, nV, mV, reg, seen, blamed, dV>>
 
 \* Publication: each taken notice is disposed of by the commitment and the
 \* waiter (design 5.2); answers become final.
@@ -486,17 +496,30 @@ Publish(c) ==
                          \/ ((ln \/ mn) /\ ~(b1 \/ b2 \/ b3 \/ divertL \/ divertM) /\ ~legit)]
           /\ div' = IF divertL \/ divertM THEN [div EXCEPT ![c] = r] ELSE div
           /\ divEver' = IF divertL \/ divertM THEN [divEver EXCEPT ![c] = TRUE] ELSE divEver
-          /\ IF ln /\ (ordinary \/ (ptrap /\ Fault = "NoLinkFlush") \/ dbl)
-             THEN /\ DeliverLink(c, r) /\ UNCHANGED <<downN, downR>>
-             ELSE IF applyNow /\ pst = "run"
-             THEN /\ pst' = "exiting" /\ pwhy' = r /\ pcause' = c
-                  /\ UNCHANGED dV
-             ELSE IF mn /\ (ordinary \/ Fault = "NoMonitorFlush")
-             THEN /\ DeliverDown(c, r) /\ UNCHANGED <<exitN, exitR, pst, pwhy, pcause>>
-             ELSE UNCHANGED <<dV, pst, pwhy, pcause>>
-    /\ UNCHANGED <<pplace, ptrap, gopen, ownerOpen, gdone, sfired, pn, oV,
-                   place, admOpen, owned, ownOpenAt, readyOpen, edgeWhenRun,
-                   eV, xV, cV, lnote, mnote, handed, mV, rV>>
+          \* The disposition is decided here; delivery is a later step.
+          /\ obN' = IF b1 \/ b2 \/ b3 THEN [obN EXCEPT ![c] = @ + 1] ELSE obN
+          /\ obR' = IF b1 \/ b2 \/ b3 THEN [obR EXCEPT ![c] = r] ELSE obR
+    /\ UNCHANGED <<pV, oV, place, admOpen, owned, ownOpenAt, readyOpen, edgeWhenRun,
+                   eV, xV, cV, lnote, mnote, handed, mV, rV,
+                   exitN, downN, exitR, downR, dlvOk>>
+
+\* Delivery of a disposed notice to P (its mailbox, or the signal applied
+\* to a non-trapping P); a separate event (PNotice) from the disposition.
+Deliver(c) ==
+    /\ obN[c] > 0
+    /\ obN' = [obN EXCEPT ![c] = @ - 1]
+    /\ dlvOk' = [dlvOk EXCEPT ![c] = Alive(pst)]
+    /\ LET r == obR[c]
+           force == Fault = "KillOnNormalFailure" /\ ~ptrap /\ kind[c] = "link"
+                    /\ commit0[c] \in {"failed", "ignored"} /\ pst = "run"
+       IN IF kind[c] = "monitor"
+          THEN DeliverDown(c, r) /\ UNCHANGED <<exitN, exitR, pst, pwhy, pcause>>
+          ELSE IF force
+          THEN /\ pst' = "exiting" /\ pwhy' = r /\ pcause' = c
+               /\ UNCHANGED <<exitN, exitR, downN, downR>>
+          ELSE DeliverLink(c, r) /\ UNCHANGED <<downN, downR>>
+    /\ UNCHANGED <<pplace, ptrap, gopen, ownerOpen, gdone, sfired, pn, oV, sV, eV, xV,
+                   cV, nV, mV, rV, obR>>
 
 LateRelease(c) ==
     /\ Fault = "LateUnregister" /\ phase[c] = "published" /\ c \in reg
@@ -521,7 +544,7 @@ Timeout(c) ==
 \* The bounded wait for publication expires (measured from the commitment).
 CleanupDeadline(c) ==
     /\ commit0[c] \in FailCommits /\ ~dl[c]
-    /\ phase[c] \in {"starting", "exiting", "dead"}
+    /\ phase[c] \in {"starting", "exiting", "dead", "namerel"}
     /\ dl' = [dl EXCEPT ![c] = TRUE]
     /\ UNCHANGED <<pV, oV, sV, eV, xV, commit, commit0, initR, why, wait, res, resR, pend,
                    nV, mV, rV, dV>>
@@ -546,7 +569,7 @@ AckFail(c) ==
        \/ Fault = "AnswerReadyAsFailure" /\ commit0[c] = "ready" /\ phase[c] = "published"
     /\ ~(Fault = "NoAnswerIgnore" /\ commit0[c] = "ignored")
     /\ \E late \in BOOLEAN :
-         /\ IF late THEN phase[c] \in {"starting", "exiting", "dead", "released"}
+         /\ IF late THEN phase[c] \in {"starting", "exiting", "dead", "namerel", "released"}
                          /\ (dl[c] \/ Fault = "EarlyPending")
             ELSE \/ phase[c] = "published"
                  \/ Fault = "EarlyFailAck" /\ phase[c] = "dead"
@@ -570,14 +593,12 @@ Abandon(c) ==
            drop == Fault = "AbandonDropsNotice"
        IN /\ handed' = [handed EXCEPT ![c] = give]
           /\ lost' = [lost EXCEPT ![c] = lost[c] \/ (give /\ drop)]
-          /\ IF give /\ ~drop /\ kind[c] = "link"
-             THEN DeliverLink(c, r) /\ UNCHANGED <<downN, downR>>
-             ELSE IF give /\ ~drop /\ kind[c] = "monitor"
-             THEN DeliverDown(c, r) /\ UNCHANGED <<exitN, exitR, pst, pwhy, pcause>>
-             ELSE UNCHANGED <<dV, pst, pwhy, pcause>>
-    /\ UNCHANGED <<pplace, ptrap, gopen, ownerOpen, gdone, sfired, pn, oV, sV, eV, xV,
+          /\ obN' = IF give /\ ~drop THEN [obN EXCEPT ![c] = @ + 1] ELSE obN
+          /\ obR' = IF give /\ ~drop THEN [obR EXCEPT ![c] = r] ELSE obR
+    /\ UNCHANGED <<pV, oV, sV, eV, xV,
                    commit, commit0, initR, why, res, resR, pend, dl,
-                   lnote, mnote, pubAlive, divEver, mV, rV>>
+                   lnote, mnote, pubAlive, divEver, mV, rV,
+                   exitN, downN, exitR, downR, dlvOk>>
 
 -----------------------------------------------------------------------------
 (* The parent, its scope and the groups. *)
@@ -660,7 +681,8 @@ ChildStep(c) ==
     \/ KilledEarly(c) \/ StartedEnd(c)
     \/ Send(c) \/ RunContinue(c) \/ Handle(c) \/ HandleQueuedExit(c)
     \/ ApplyParentExit(c) \/ ReadyExit(c) \/ KillReady(c)
-    \/ ChildUnlink(c) \/ Die(c) \/ Release(c) \/ Publish(c) \/ LateRelease(c)
+    \/ ChildUnlink(c) \/ Die(c) \/ ReleaseName(c) \/ ReleaseSlot(c) \/ Publish(c) \/ Deliver(c)
+    \/ LateRelease(c)
     \/ Timeout(c) \/ CleanupDeadline(c) \/ AckOk(c) \/ AckFail(c) \/ Abandon(c)
 
 Next == (\E c \in Kids : ChildStep(c)) \/ Lookup \/ PExit \/ OwnerClose \/ PDie
@@ -672,7 +694,7 @@ Next == (\E c \in Kids : ChildStep(c)) \/ Lookup \/ PExit \/ OwnerClose \/ PDie
 Progress(c) ==
     \/ StartedBegin(c) \/ KilledEarly(c) \/ StartedEnd(c) \/ RunContinue(c)
     \/ HandleQueuedExit(c) \/ ApplyParentExit(c) \/ KillReady(c)
-    \/ Die(c) \/ Release(c) \/ Publish(c) \/ AckOk(c)
+    \/ Die(c) \/ ReleaseName(c) \/ ReleaseSlot(c) \/ Publish(c) \/ Deliver(c) \/ AckOk(c)
 Fairness ==
     /\ \A c \in Kids : /\ WF_vars(Progress(c)) /\ WF_vars(Commit(c))
                        /\ SF_vars(AckFail(c))
@@ -762,7 +784,7 @@ FailureFlushed ==
 FailureEndsNonTrappingParent ==
     \A c \in Kids :
         (kind[c] = "link" /\ ~ptrap /\ commit0[c] = "failed" /\ why[c] \in NonNormal
-         /\ phase[c] = "published" /\ lnote[c] /\ pubAlive[c]) => pst # "run"
+         /\ phase[c] = "published" /\ lnote[c] /\ pubAlive[c] /\ obN[c] = 0) => pst # "run"
 \* ... and one whose final reason is Normal (error, ignore, stop(Normal),
 \* not escalated by a kill before D) never does.
 NormalFailureSparesParent ==
@@ -780,7 +802,7 @@ OwnedOnlyWhileOwnerOpen == \A c \in Kids : owned[c] => ownOpenAt[c]
 \* Slots (P's included) are held until release, and never exceed Cap.
 CapacityRespected == Used <= Cap
 ParentSlotHeld == (pplace = "G" /\ pst \in {"run", "exiting", "dead"}) => PSlot = 1
-SlotHeldUntilReleased == \A c \in Kids : (place[c] = "G" /\ phase[c] \in LiveP) => c \in slots
+SlotHeldUntilReleased == \A c \in Kids : (place[c] = "G" /\ phase[c] \in LiveP \cup {"namerel"}) => c \in slots
 
 NoticeOnce == \A c \in Kids : exitN[c] <= 1 /\ downN[c] <= 1
 
@@ -789,7 +811,7 @@ NoLostNotice == \A c \in Kids : ~lost[c]
 
 \* A notice handed on by an abandoned wait reaches P with its kind and reason.
 AbandonedNoticeDelivered ==
-    \A c \in Kids : handed[c] =>
+    \A c \in Kids : (handed[c] /\ obN[c] = 0 /\ dlvOk[c]) =>
         /\ (kind[c] = "link" /\ ptrap) => exitN[c] >= 1 /\ exitR[c] = why[c]
         /\ (kind[c] = "link" /\ ~ptrap /\ why[c] \in NonNormal) => pst # "run"
         /\ kind[c] = "monitor" => downN[c] >= 1 /\ downR[c] = why[c]
