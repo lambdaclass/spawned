@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- Deferred replies and jobs, fixes from the 0.8 pre-release review: a job
+  deadline still fires while the result waits for scheduled emits, and the
+  job keeps its `MAX_OUTSTANDING` credit until its terminal message; a job
+  admitted while its owner exits is refused in one step with the exit
+  (`pipe_reply*` returns `OwnerStopping` with the token); in `tasks` mode a
+  blocking job's thread (outside a runtime) is created at reservation
+  (`SpawnFailed` instead of a silently lost job) and a managed actor's
+  blocking job keeps its scope until its body ends (a supervisor does not
+  replace the child, and shutdown is not complete, while it runs);
+  shortening a token's deadline no longer cancels a `cancel_on_caller_gone`
+  blocking job and wakes the waiting caller to re-arm its timer; an
+  `emit_at` discarded by a concurrent cancel returns `JobGone`; a refused
+  emit returns its credit once; a panicking payload destructor no longer
+  stops the process-wide deadline service; a tasks handler that panics
+  while building its future is a handler panic (`stopped()` runs).
 - **Breaking (0.8):** `DeferError` and `Delivery` are `#[non_exhaustive]`
   (like `JobOutcome`, `JobError` and `PipeErrorKind`): match them with a
   wildcard arm.
