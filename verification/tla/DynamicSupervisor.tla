@@ -102,12 +102,12 @@ VARIABLES
     mode, sl, tc,
     \* history (GhostUpdate only)
     lateCommit, latePub, lateGenClose, lateGenTerm, badRestart, badRetire,
-    restarts, outOfOrder, freedEarly
+    restarts, outOfOrder, freedEarly, queuedAtClose
 
 sup   == <<open, failed, exhausted, sphase, windowed, expired, reserved, stamped,
            q, ticket, served, op>>
 ghost == <<lateCommit, latePub, lateGenClose, lateGenTerm, badRestart, badRetire,
-           restarts, outOfOrder, freedEarly>>
+           restarts, outOfOrder, freedEarly, queuedAtClose>>
 vars  == <<sup, sl, tc, ghost, mode>>
 
 SlotInit == [cs |-> "idle", gen |-> 0, alive |-> {}, pub |-> 0, lastPub |-> 0,
@@ -139,6 +139,7 @@ Init ==
     /\ lateGenClose = [s \in Slots |-> FALSE] /\ lateGenTerm = [s \in Slots |-> FALSE]
     /\ badRestart = [s \in Slots |-> FALSE] /\ badRetire = [s \in Slots |-> FALSE]
     /\ restarts = 0 /\ outOfOrder = FALSE /\ freedEarly = [s \in Slots |-> FALSE]
+    /\ queuedAtClose = [c \in TermCalls |-> FALSE]
 
 -----------------------------------------------------------------------------
 (* Helpers *)
@@ -232,7 +233,7 @@ TermCall(c) ==
 RejectQueuedTerm(c) ==
     /\ tc[c].st = "queued" /\ ~open
     /\ \E i \in 1..Len(q) : q[i].k = "term" /\ q[i].c = c /\ q' = Rm(i)
-    /\ tc' = [tc EXCEPT ![c].st = IF Fault = "QueuedTermOk" THEN "pending" ELSE "stopped"]
+    /\ tc' = [tc EXCEPT ![c].st = IF Fault = "QueuedTermOk" THEN "ok" ELSE "stopped"]
     /\ UNCHANGED <<open, failed, exhausted, sphase, windowed, expired, reserved,
                    stamped, ticket, served, op, sl>>
 
@@ -564,7 +565,11 @@ GhostUpdate ==
                         (sl[s].cs = "decide" /\ sl'[s].cs \in {"finalizing", "removed"} /\ open'
                          /\ ~sl[s].term /\ Allowed(s))]
     /\ restarts' = restarts + Cardinality({s \in Slots : Grew(s) /\ sl[s].gen > 0})
-    /\ outOfOrder' = (outOfOrder \/ (served' # served /\ served' < served))
+    \* the loop selected an operation: it must be the head at selection
+    /\ outOfOrder' = (outOfOrder \/ (served' # served /\ (Len(q) = 0 \/ served' # q[1].t)))
+    \* terminate calls still queued at the moment admission closed
+    /\ queuedAtClose' = [c \in TermCalls |-> queuedAtClose[c] \/
+                           (open /\ ~open' /\ tc[c].st = "queued")]
     /\ freedEarly' = [s \in Slots |-> freedEarly[s] \/
                         (sl'[s].cs = "removed" /\ sl[s].cs \notin {"finalizing", "removed"})]
     /\ UNCHANGED mode
@@ -672,6 +677,11 @@ StuckIsolated ==
 \* capacity cover retained arguments and an ignored attempt's cleanup.
 RemovedAfterFinalize == \A s \in Slots : ~freedEarly[s]
 
+\* A terminate call still queued when shutdown began is answered Stopped
+\* (and stays so), never Ok or NotFound.
+QueuedTermStopped ==
+    \A c \in TermCalls : queuedAtClose[c] => tc[c].st \in {"queued", "stopped"}
+
 ConcurrentShutdown ==
     sphase \in {"waiting", "done"} => \A s \in Slots : sl[s].cs = "running" => sl[s].stopSig
 
@@ -695,7 +705,7 @@ Safety ==
     /\ NoStartAfterShutdown /\ RestartFollowsPolicy /\ FirstStartNeverRetried
     /\ FailedAfterCleanup /\ FailureCauseKept /\ ChargedRestarts /\ ReservationsMatch
     /\ BudgetBounded /\ ExhaustionCloses /\ StuckIsolated /\ ConcurrentShutdown
-    /\ OkMeansReady /\ TermResultsSound /\ RemovedAfterFinalize
+    /\ OkMeansReady /\ TermResultsSound /\ RemovedAfterFinalize /\ QueuedTermStopped
 
 NeverReopens == [][open' => open]_vars
 \* A committed terminate result never changes.
@@ -711,6 +721,10 @@ TerminateAnswered == \A c \in TermCalls :
     (tc[c].st \in {"queued", "pending"}) ~> (tc[c].st \notin {"queued", "pending"})
 \* Every admitted child is signalled even if siblings never finish.
 FanoutCompletes == (~open) ~> (sphase \in {"waiting", "done"})
+\* Once shutdown began, every pending start is answered (by its abort and
+\* cleanup deadline), even without startup deadlines (MCDynamicSupervisorAbort).
+ShutdownAnswersStarts == \A s \in Slots :
+    (~open /\ sl[s].result = "pending") ~> (sl[s].result # "pending")
 \* Under Spec (cleanup ends):
 ClosedLeadsToDone == (~open) ~> (sphase = "done")
 RecoveryProgress == \A s \in Slots :

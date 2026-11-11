@@ -259,15 +259,15 @@ DYNAMIC_CONTROLS = [
     ("MCDynamicSupervisor", "OverReserve", "BudgetBounded"),
     ("MCDynamicSupervisor", "TermReplyEarly", "TermResultsSound"),
     ("MCDynamicSupervisor", "SlotLookup", "TermResultsSound"),
-    ("MCDynamicSupervisor", "QueuedTermOk", "TermResultsSound"),
+    ("MCDynamicSupervisor", "QueuedTermOk", "QueuedTermStopped"),
     ("MCDynamicSupervisor", "StuckResultLost", "TermResultsSound"),
     ("MCDynamicSupervisor", "IgnoreExpect", "TermResultsSound"),
     ("MCDynamicSupervisor", "EarlyFree", "RemovedAfterFinalize"),
     ("MCDynamicSupervisor", "IgnoreFreesEarly", "RemovedAfterFinalize"),
 ]
 DYNAMIC_TEMPORAL_CONTROLS = [
-    # Without startup deadlines, so the deadline cannot mask the missing abort.
-    ("MCDynamicSupervisorCallers", "NoAbort", "StartAnswered", {"StartDeadlines": "FALSE"}),
+    # MCDynamicSupervisorAbort has no startup deadlines and passes unmutated.
+    ("MCDynamicSupervisorAbort", "NoAbort", "ShutdownAnswersStarts"),
     ("MCDynamicSupervisorCallers", "NoDeadline", "StartAnswered"),
     ("MCDynamicSupervisorCallers", "TermLost", "TerminateAnswered"),
     ("MCDynamicSupervisorCallers", "Sequential", "FanoutCompletes"),

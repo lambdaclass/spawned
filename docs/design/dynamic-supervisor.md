@@ -931,7 +931,7 @@ stuck children, for `ClosedLeadsToDone` and `RecoveryProgress`.
 | `NoChildOutlivesSupervisor` | done means every child finished and was removed |
 | `MaxChildrenBound` | children held never exceed `max_children` |
 | `SerialConstruction` | at most one generation is being constructed |
-| `FifoOrder` | the loop takes queued operations in arrival order |
+| `FifoOrder` | every operation the loop selects is the head of the queue at selection (not merely a non-decreasing ticket: a later operation served first, then the earlier one rejected at close, is caught) |
 | `TemporaryNeverRestarted` | a Temporary child has one generation |
 | `TerminatedNeverRestarted` | no generation begins after a found `terminate_child` |
 | `NoGenerationAfterClose` | no generation begins after admission closed |
@@ -948,11 +948,14 @@ stuck children, for `ClosedLeadsToDone` and `RecoveryProgress`.
 | `StuckIsolated` | the supervisor fails only by exhaustion, a stuck child the table would restart (checked against the table), or while closing |
 | `ConcurrentShutdown` | once waiting, every running child has its stop signal |
 | `OkMeansReady` | `Ok` only for a child that became ready |
+| `QueuedTermStopped` | a terminate call still queued when shutdown began is answered `Stopped` and stays so |
+| `RemovedAfterFinalize` | a slot is freed only after slot finalization (and an ignored attempt's cleanup) |
 | `TermResultsSound` | `Ok` only after removal and never for a stuck child; a pending call holds the loop; an id call or a fenced slot call reaches only the generation it named |
 
 Action properties: `NeverReopens`, `TermResultStable` (a committed terminate
 result never changes). Liveness: `StartAnswered`, `TerminateAnswered`,
-`FanoutCompletes` (CallerSpec); `ClosedLeadsToDone`, `RecoveryProgress`
+`FanoutCompletes` (CallerSpec), `ShutdownAnswersStarts` (CallerSpec without
+startup deadlines, `MCDynamicSupervisorAbort`); `ClosedLeadsToDone`, `RecoveryProgress`
 (Spec).
 
 Configurations (TLC 2.19, fede, 4 workers, `nice -n 19`). These are
@@ -1007,10 +1010,12 @@ property above has at least one; the two action properties do not.
 | `OverReserve` | a restart reserved beyond the budget | `BudgetBounded` | main |
 | `TermReplyEarly` | `terminate_child` returns before removal | `TermResultsSound` | main |
 | `SlotLookup` | an id call reaches a newer generation | `TermResultsSound` | main |
-| `QueuedTermOk` | a call queued at shutdown waits and may return `Ok` | `TermResultsSound` | main |
+| `QueuedTermOk` | shutdown answers a queued call `Ok` | `QueuedTermStopped` | main |
+| `EarlyFree` | removal frees the slot before finalization | `RemovedAfterFinalize` | main |
+| `IgnoreFreesEarly` | an ignored attempt frees the slot at once | `RemovedAfterFinalize` | main |
 | `StuckResultLost` | `CleanupStuck` not committed; later turns into `Ok` | `TermResultsSound` | main |
 | `IgnoreExpect` | a fenced call terminates a child that moved on | `TermResultsSound` | main |
-| `NoAbort` | a start racing shutdown is not cancelled | `StartAnswered` | callers, without startup deadlines (with them the deadline answers the start anyway, which masks the mutation) |
+| `NoAbort` | a start racing shutdown is not cancelled | `ShutdownAnswersStarts` | abort: `CallerSpec` without startup deadlines, which passes unmutated (with deadlines the timeout would answer the start and mask the mutation) |
 | `NoDeadline` | no cleanup deadline | `StartAnswered` | callers |
 | `TermLost` | a found call never signals the child | `TerminateAnswered` | callers |
 | `Sequential` | the fan-out waits for each signalled child | `FanoutCompletes` | callers |

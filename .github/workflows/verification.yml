@@ -39,7 +39,7 @@ jobs:
           - leg: dynamic-safety
             select: --only 'MCDynamicSupervisor,MCDynamicSupervisorBackoff,MCDynamicSupervisorZero,MCDynamicSupervisorThree'
           - leg: dynamic-liveness
-            select: --only 'MCDynamicSupervisorCallers,MCDynamicSupervisorLive'
+            select: --only 'MCDynamicSupervisorCallers,MCDynamicSupervisorLive,MCDynamicSupervisorAbort'
           - leg: other
             select: --exclude 'MCSupervision,MCLifecycle*,MCDeferred*,MCDynamicSupervisor*'
     steps:
