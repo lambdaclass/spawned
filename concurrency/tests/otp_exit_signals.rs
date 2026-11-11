@@ -105,7 +105,8 @@ mod tasks_mode {
             reply.reply(());
         }
     }
-    struct Do(Box<dyn FnOnce(&Context<Node>) + Send>);
+    type Action = Box<dyn FnOnce(&Context<Node>) + Send>;
+    struct Do(Action);
     impl Message for Do {
         type Result = ();
     }
