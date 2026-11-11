@@ -82,7 +82,7 @@ def model_fault(module, fault, tlc, temporal=False, invariant="Safety", drop=())
     with tempfile.TemporaryDirectory(prefix="bad-model-") as directory:
         work = Path(directory)
         for source in HERE.glob("*.tla"):
-            shutil.copy(source, work)
+            shutil.copyfile(source, work / source.name)  # writable copy (sources may be read-only)
         cfg = (HERE / f"{module}.cfg").read_text().replace('Fault = "None"', f'Fault = "{fault}"')
         for name in drop:
             cfg = cfg.replace(f"INVARIANT {name}\n", "")
@@ -103,7 +103,7 @@ def named_fault(module, fault, invariant, tlc):
     with tempfile.TemporaryDirectory(prefix="bad-model-") as directory:
         work = Path(directory)
         for source in HERE.glob("*.tla"):
-            shutil.copy(source, work)
+            shutil.copyfile(source, work / source.name)  # writable copy (sources may be read-only)
         lines = []
         for line in (HERE / f"{module}.cfg").read_text().splitlines():
             if line.startswith("PROPERTY"):
@@ -130,7 +130,7 @@ def spec_mutation(module, spec, label, pattern, replacement, prop, tlc):
     with tempfile.TemporaryDirectory(prefix="bad-spec-") as directory:
         work = Path(directory)
         for source in HERE.glob("*.tla"):
-            shutil.copy(source, work)
+            shutil.copyfile(source, work / source.name)  # writable copy (sources may be read-only)
         text = (work / spec).read_text()
         mutated, count = re.subn(pattern, replacement, text, flags=re.S)
         if count != 1:
@@ -177,7 +177,7 @@ def named_temporal(module, fault, prop, tlc, constants=None):
     with tempfile.TemporaryDirectory(prefix="bad-model-") as directory:
         work = Path(directory)
         for source in HERE.glob("*.tla"):
-            shutil.copy(source, work)
+            shutil.copyfile(source, work / source.name)  # writable copy (sources may be read-only)
         lines = []
         for line in (HERE / f"{module}.cfg").read_text().splitlines():
             if line.startswith(("PROPERTY", "INVARIANT")):
