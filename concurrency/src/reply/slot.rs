@@ -365,15 +365,32 @@ impl<R> Slot<R> {
     /// `OPEN -> to` (drop, overloaded, expiry, abandonment, registry close).
     /// Returns whether this call won the transition.
     pub(crate) fn terminate(&self, to: Terminal) -> bool {
+        self.terminate_admitted(to, || Some(()))
+    }
+
+    /// [`terminate`](Self::terminate) admitted by the owner: `admit`'s
+    /// permit covers only the transition's CAS; the credit return and the
+    /// wakes (executor code) run after it is released. Refused (`None`), the
+    /// slot is left to the owner's close.
+    pub(crate) fn terminate_admitted<P>(
+        &self,
+        to: Terminal,
+        admit: impl FnOnce() -> Option<P>,
+    ) -> bool {
         debug_assert!(to != Terminal::Replied);
+        let Some(permit) = admit() else {
+            return false;
+        };
         let target = to.state();
-        match self.cas::<()>(None, |w| {
+        let transition = self.cas::<()>(None, |w| {
             if state(w) == OPEN {
                 Ok(with_state(w, target))
             } else {
                 Err(())
             }
-        }) {
+        });
+        drop(permit);
+        match transition {
             Ok((old, new)) => {
                 self.after(old, new).run(&self.parked);
                 true

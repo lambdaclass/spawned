@@ -73,6 +73,8 @@ mod tasks_mode {
     use super::*;
     use spawned_concurrency::tasks::{Actor, ActorStart, Context, Handler};
     use spawned_concurrency::{PendingReply, ReplyTo};
+    use std::future::Future;
+    use std::sync::Arc;
 
     /// Defers and keeps the token in the actor's state.
     struct Park;
@@ -101,6 +103,77 @@ mod tasks_mode {
         async fn handle(&mut self, _: Park, reply: PendingReply<'_, ()>, _: &Context<Self>) {
             self.parked.push(reply.defer().unwrap());
         }
+    }
+
+    /// Defers and hands the token out.
+    struct HandOut(mpsc::Sender<ReplyTo<()>>);
+    impl Message for HandOut {
+        type Result = ();
+    }
+    impl Handler<HandOut> for Owner {
+        async fn handle(&mut self, msg: HandOut, reply: PendingReply<'_, ()>, _: &Context<Self>) {
+            msg.0.send(reply.defer().unwrap()).unwrap();
+        }
+    }
+
+    /// Review round 2 (Codex 3): `ReplyTo::overloaded()` holds its
+    /// death-fence permit only across the transition. Its caller's waker
+    /// runs after: here it stops the owner and waits for the published
+    /// exit. The permit used to cover the wake, so the owner's death waited
+    /// for the waker and the waker for the death.
+    #[test]
+    fn overloaded_wakes_the_caller_after_releasing_the_death_fence() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::task::{Wake, Waker};
+        struct StopAndWait {
+            actor: spawned_concurrency::tasks::ActorRef<Owner>,
+            exited: Arc<AtomicBool>,
+        }
+        impl Wake for StopAndWait {
+            fn wake(self: Arc<Self>) {
+                self.actor.context().stop();
+                let began = Instant::now();
+                while began.elapsed() < Duration::from_secs(3) {
+                    if self.actor.exit_reason().is_some() {
+                        self.exited.store(true, Ordering::SeqCst);
+                        return;
+                    }
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+            }
+        }
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        let _guard = runtime.enter();
+        let actor = Owner {
+            _state: inert(),
+            parked: Vec::new(),
+        }
+        .start();
+        let (tokens, token) = mpsc::channel();
+        let receiver = actor
+            .request_raw_until(HandOut(tokens), spawned_concurrency::Deadline::Never)
+            .unwrap();
+        let token = token.recv_timeout(LIMIT).unwrap();
+        let exited = Arc::new(AtomicBool::new(false));
+        let waker = Waker::from(Arc::new(StopAndWait {
+            actor: actor.clone(),
+            exited: exited.clone(),
+        }));
+        let mut awaiting = Box::pin(std::future::IntoFuture::into_future(receiver));
+        let mut cx = std::task::Context::from_waker(&waker);
+        assert!(awaiting.as_mut().poll(&mut cx).is_pending());
+        // The wake runs on this helper, inside `overloaded()`.
+        std::thread::spawn(move || token.overloaded())
+            .join()
+            .unwrap();
+        assert!(
+            exited.load(Ordering::SeqCst),
+            "the owner could not die while overloaded() held its fence permit"
+        );
     }
 
     fn stopped<R>(result: Option<Result<R, ActorError>>, reason: &ExitReason) -> Option<()> {

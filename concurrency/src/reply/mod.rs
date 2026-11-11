@@ -399,9 +399,8 @@ impl<R: Send + 'static> ReplyTo<R> {
     /// Past the owner's death point the caller gets its final reason.
     pub fn overloaded(mut self) {
         if let Some(slot) = self.slot.take() {
-            if let Some(_permit) = self.registry.reply_permit() {
-                slot.terminate(Terminal::Overloaded);
-            }
+            // The permit covers the transition only, never its wakes.
+            slot.terminate_admitted(Terminal::Overloaded, || self.registry.reply_permit());
         }
     }
 
