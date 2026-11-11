@@ -1394,6 +1394,67 @@ mod tasks_contract {
         placement.finish().await;
     }
 
+    /// Records the thread its destructor runs on.
+    struct WhereDropped(Arc<Mutex<Option<String>>>);
+    impl Drop for WhereDropped {
+        fn drop(&mut self) {
+            *self.0.lock().unwrap() = std::thread::current().name().map(str::to_owned);
+        }
+    }
+    struct Late(#[allow(dead_code)] WhereDropped);
+    impl Message for Late {
+        type Result = ();
+    }
+    struct Arm(Arc<Mutex<Option<String>>>);
+    impl Message for Arm {
+        type Result = ();
+    }
+    struct Timed;
+    impl Actor for Timed {}
+    impl Handler<Late> for Timed {
+        async fn handle(&mut self, _: Late, _: &Context<Self>) {
+            panic!("T1: a timer fired after its actor stopped");
+        }
+    }
+    impl Handler<Arm> for Timed {
+        async fn handle(&mut self, Arm(slot): Arm, ctx: &Context<Self>) {
+            spawned_concurrency::tasks::send_after(
+                Duration::from_secs(3600),
+                ctx.clone(),
+                Late(WhereDropped(slot)),
+            );
+        }
+    }
+
+    /// T1, T3: a managed actor's timer task runs on the actor's group, and
+    /// stopping the actor before the timer fires drops its payload there
+    /// without sending it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn managed_timers_run_on_the_group_and_die_with_the_actor() {
+        let placement = Placement::new();
+        let actor = placement.start(Timed, Place::AsyncGroup);
+        let slot = Arc::new(Mutex::new(None));
+        actor.request_with_timeout(Arm(slot.clone()), LIMIT).await.unwrap();
+        actor.child_handle().stop();
+        assert_eq!(timeout(LIMIT, actor.wait_exit()).await.unwrap(), ExitReason::Normal);
+        let deadline = tokio::time::Instant::now() + LIMIT;
+        let thread = loop {
+            if let Some(name) = slot.lock().unwrap().clone() {
+                break name;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "T1: timer payload not dropped after its actor stopped"
+            );
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        };
+        assert!(
+            thread.starts_with("spawned-contract-async"),
+            "T3: timer ran on {thread}, not the actor's group"
+        );
+        placement.finish().await;
+    }
+
     struct Napper;
     impl Actor for Napper {}
     struct Nap(Duration);
