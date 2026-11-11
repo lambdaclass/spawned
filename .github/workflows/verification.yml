@@ -30,7 +30,7 @@ jobs:
       - name: Record supervisor lifecycle traces
         env:
           LIFECYCLE_TRACE_DIR: ${{ github.workspace }}/lifecycle-traces
-        run: cargo test --locked -p spawned-concurrency --features lifecycle-trace,failpoints --test supervision_trace --test cohort_trace --test tree_trace --test nested_supervision --test coverage_trace
+        run: cargo test --locked -p spawned-concurrency --features lifecycle-trace,failpoints --test supervision_trace --test cohort_trace --test tree_trace --test nested_supervision --test coverage_trace --test job_trace
       - name: Model-check (fast configuration) and validate traces
         run: nix run .#check-tla -- --traces lifecycle-traces --negative-controls
       # Which model actions, projected states and transitions the recorded

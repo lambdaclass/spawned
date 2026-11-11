@@ -90,7 +90,7 @@ pub mod failpoints;
 
 pub mod child_handle;
 pub mod error;
-#[cfg(feature = "async")]
+#[cfg_attr(not(feature = "async"), allow(dead_code))]
 pub mod lifecycle_trace;
 pub mod link;
 pub mod message;

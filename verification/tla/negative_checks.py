@@ -149,6 +149,47 @@ DEFERRED_CONTROLS = [
 ]
 
 
+def job_trace_controls(traces, tlc):
+    """Edits of recorded pipe-to-self job traces that DeferredJobs.tla must
+    reject: each erases or reorders what the job core enforces."""
+    by_name = {t["name"]: t for t in traces if t.get("schema") == "jobs-v1"}
+
+    def deliver_replaced(events):
+        next(e for e in events if e["a"] == "Dispatch" and e["fenced"])["fenced"] = False
+    require_rejected(by_name["jobs_keyed_fenced"], deliver_replaced,
+                     "replaced keyed job's terminal message delivered", tlc)
+
+    def emit_after_terminal(events):
+        finish = next(i for i, e in enumerate(events) if e["a"] == "Finish")
+        last_emit = max(i for i, e in enumerate(events) if e["a"] == "Emit")
+        events.insert(last_emit, events.pop(finish))
+    require_rejected(by_name["jobs_emits"], emit_after_terminal,
+                     "emit enqueued after the terminal message", tlc)
+
+    def skip_credit_return(events):
+        events.remove(next(e for e in events if e["a"] == "Dispatch"))
+    require_rejected(by_name["jobs_emits"], skip_credit_return,
+                     "second emit with its credit still in flight", tlc)
+
+    def second_terminal(events):
+        next(e for e in events if e["a"] == "Finish")["x"] = "notified"
+    require_rejected(by_name["jobs_deadline"], second_terminal,
+                     "terminal message after the job deadline's", tlc)
+
+    def forget_cancel(events):
+        events.remove(next(e for e in events if e["a"] == "Cancel"))
+    require_rejected(by_name["jobs_cancelled"], forget_cancel,
+                     "quiet finish of a job that was never cancelled", tlc)
+
+    def dispatch_after_exit(events):
+        exit_at = next(i for i, e in enumerate(events) if e["a"] == "Exit")
+        dispatch = next(e for e in events if e["a"] == "Dispatch")
+        events.remove(dispatch)
+        events.insert(exit_at, dispatch)
+    require_rejected(by_name["jobs_plain"], dispatch_after_exit,
+                     "dispatch after the owner's exit", tlc)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("traces", type=Path)
@@ -205,6 +246,7 @@ def main():
     model_fault("MCNested", "Propagation", args.tlc, temporal=True)
     for module, fault, invariant in DEFERRED_CONTROLS:
         named_fault(module, fault, invariant, args.tlc)
+    job_trace_controls(traces, args.tlc)
 
 if __name__ == "__main__":
     main()

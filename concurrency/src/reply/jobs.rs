@@ -155,11 +155,15 @@ impl<R: Send + 'static> PipeReplyError<R> {
 
 pub use super::job_core::JobGone;
 use super::job_core::{Job, JobCore, JobSetCore};
+use crate::lifecycle_trace as trace;
 
 /// One job's shared state: the core protocol plus the async wake-ups.
 pub(crate) struct JobState {
     owner: ActorId,
     core: JobCore,
+    /// The job's number in lifecycle traces.
+    #[cfg(feature = "lifecycle-trace")]
+    trace: u64,
     /// Async cancellation for `tasks` jobs (drops the work future).
     #[cfg(feature = "async")]
     cancel: spawned_rt::tasks::CancellationToken,
@@ -177,15 +181,13 @@ impl JobState {
         Arc::new(Self {
             owner,
             core: JobCore::new(emit_credits),
+            #[cfg(feature = "lifecycle-trace")]
+            trace: crate::lifecycle_trace::next_job(),
             #[cfg(feature = "async")]
             cancel: spawned_rt::tasks::CancellationToken::new(),
             #[cfg(feature = "async")]
             emit_wakers: Mutex::new(Vec::new()),
         })
-    }
-
-    pub(crate) fn owner(&self) -> ActorId {
-        self.owner
     }
 
     pub(crate) fn is_cancelled(&self) -> bool {
@@ -197,10 +199,32 @@ impl JobState {
         &self.cancel
     }
 
+    /// Record a `DeferredJobs.tla` action of this job (lifecycle traces).
+    #[cfg_attr(not(feature = "lifecycle-trace"), allow(unused_variables))]
+    fn record(&self, event: impl FnOnce(u64) -> trace::JobEvent) {
+        #[cfg(feature = "lifecycle-trace")]
+        trace::job(self.owner.raw(), || event(self.trace));
+    }
+
     /// Set the cancellation flag: suppresses a pending notification and
-    /// wakes blocked emitters. Never undoes effects.
+    /// wakes blocked emitters. Never undoes effects. Recorded as the model's
+    /// `Cancel` (the owner's exit and key replacement cancel through the job
+    /// set instead, as part of `Exit` and `Start`).
     pub(crate) fn cancel(&self) {
+        trace::atomic(|| {
+            if self.core.cancel() {
+                self.record(|job| trace::JobEvent::new("Cancel", job));
+            }
+        });
+        self.wake_cancelled();
+    }
+
+    fn cancel_quietly(&self) {
         self.core.cancel();
+        self.wake_cancelled();
+    }
+
+    fn wake_cancelled(&self) {
         #[cfg(feature = "async")]
         {
             self.cancel.cancel();
@@ -217,9 +241,25 @@ impl JobState {
     }
 
     /// Take the terminal notification and run `enqueue` under the job's
-    /// lock (see [`JobCore::notify`]).
-    pub(crate) fn notify<X>(&self, enqueue: impl FnOnce() -> Option<X>) -> (bool, Option<X>) {
-        let (taken, unsent) = self.core.notify(enqueue);
+    /// lock (see [`JobCore::notify`]). `deadline` tells the job deadline from
+    /// the end of execution (the model's `JobDeadline` and `Finish`).
+    pub(crate) fn notify<X>(
+        &self,
+        deadline: bool,
+        enqueue: impl FnOnce() -> Option<X>,
+    ) -> (bool, Option<X>) {
+        let (taken, unsent) = trace::atomic(|| {
+            let (taken, unsent) = self.core.notify(enqueue);
+            if !deadline {
+                self.record(|job| trace::JobEvent {
+                    x: if taken { "notified" } else { "quiet" },
+                    ..trace::JobEvent::new("Finish", job)
+                });
+            } else if taken {
+                self.record(|job| trace::JobEvent::new("JobDeadline", job));
+            }
+            (taken, unsent)
+        });
         #[cfg(feature = "async")]
         if taken {
             self.wake_emitters();
@@ -229,6 +269,31 @@ impl JobState {
 
     pub(crate) fn is_running(&self) -> bool {
         self.core.is_running()
+    }
+
+    /// Execution of a cancelled async job ended without a notification (the
+    /// model's `Finish` when the notification was suppressed).
+    #[cfg(feature = "async")]
+    pub(crate) fn ended_cancelled(&self) {
+        self.record(|job| trace::JobEvent {
+            x: "quiet",
+            ..trace::JobEvent::new("Finish", job)
+        });
+    }
+
+    /// The dispatch fence: a message of this job dispatched by instance `at`
+    /// is dropped when the job is cancelled or belongs to another instance.
+    /// `kind` is `emit`, `done` or `deadline` (the model's `Dispatch`).
+    pub(crate) fn fenced(&self, at: ActorId, kind: &'static str) -> bool {
+        trace::atomic(|| {
+            let fenced = self.is_cancelled() || self.owner != at;
+            self.record(|job| trace::JobEvent {
+                x: kind,
+                fenced,
+                ..trace::JobEvent::new("Dispatch", job)
+            });
+            fenced
+        })
     }
 
     /// Emit step 1 (blocking).
@@ -259,7 +324,13 @@ impl JobState {
         &self,
         enqueue: impl FnOnce() -> Result<(), X>,
     ) -> Result<(), (JobGone, Option<X>)> {
-        self.core.enqueue_emit(enqueue)
+        trace::atomic(|| {
+            let result = self.core.enqueue_emit(enqueue);
+            if result.is_ok() {
+                self.record(|job| trace::JobEvent::new("Emit", job));
+            }
+            result
+        })
     }
 
     /// Emit step 3: a credit comes back when its message is dispatched,
@@ -273,7 +344,7 @@ impl JobState {
 
 impl Job for JobState {
     fn cancel(&self) {
-        JobState::cancel(self);
+        self.cancel_quietly();
     }
     fn is_running(&self) -> bool {
         self.core.is_running()
@@ -326,6 +397,9 @@ impl JobHandle {
 pub(crate) struct JobSet {
     owner: ActorId,
     core: JobSetCore<JobState, JobKey>,
+    /// Whether the owner's exit was recorded (lifecycle traces).
+    #[cfg(feature = "lifecycle-trace")]
+    exited: std::sync::atomic::AtomicBool,
     #[cfg(feature = "async")]
     idle_async: Mutex<Vec<std::task::Waker>>,
 }
@@ -335,6 +409,8 @@ impl JobSet {
         Self {
             owner,
             core: JobSetCore::new(max_native),
+            #[cfg(feature = "lifecycle-trace")]
+            exited: std::sync::atomic::AtomicBool::new(false),
             #[cfg(feature = "async")]
             idle_async: Mutex::new(Vec::new()),
         }
@@ -354,9 +430,17 @@ impl JobSet {
     }
 
     /// Admit a job: replace (cancel) the previous one with the same key and
-    /// count it as running.
-    pub(crate) fn admit(&self, state: &Arc<JobState>, key: Option<JobKey>) {
-        self.core.admit(state, key);
+    /// count it as running (the model's `Start`).
+    pub(crate) fn admit(&self, state: &Arc<JobState>, key: Option<JobKey>, deadline: bool) {
+        trace::atomic(|| {
+            let keyed = key.is_some();
+            self.core.admit(state, key);
+            state.record(|job| trace::JobEvent {
+                keyed,
+                deadline,
+                ..trace::JobEvent::new("Start", job)
+            });
+        });
     }
 
     /// A job's execution ended.
@@ -375,7 +459,13 @@ impl JobSet {
 
     /// Owner exit: cancel every job (flag set, blocked emitters woken).
     pub(crate) fn cancel_all(&self) {
-        self.core.cancel_all();
+        trace::atomic(|| {
+            self.core.cancel_all();
+            #[cfg(feature = "lifecycle-trace")]
+            if !self.exited.swap(true, std::sync::atomic::Ordering::AcqRel) {
+                trace::job(self.owner.raw(), || trace::JobEvent::new("Exit", 0));
+            }
+        });
     }
 
     /// Join the cancelled jobs, bounded by `deadline`; returns how many are
@@ -535,10 +625,10 @@ mod tests {
     fn replacement_cancels_a_finished_keyed_job() {
         let set = JobSet::new(ActorId::next(), 1);
         let old = JobState::new(set.owner(), 1);
-        set.admit(&old, Some(JobKey::new("k")));
+        set.admit(&old, Some(JobKey::new("k")), false);
         set.ended(&old);
         let new = JobState::new(set.owner(), 1);
-        set.admit(&new, Some(JobKey::new("k")));
+        set.admit(&new, Some(JobKey::new("k")), false);
         assert!(old.is_cancelled(), "the finished job escaped replacement");
         assert!(!new.is_cancelled());
     }

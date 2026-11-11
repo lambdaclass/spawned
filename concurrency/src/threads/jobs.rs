@@ -45,7 +45,7 @@ where
 {
     fn handle(self: Box<Self>, actor: &mut A, ctx: &Context<A>) {
         let EmitEnvelope { msg, credit } = *self;
-        let fenced = credit.0.is_cancelled() || credit.0.owner() != ctx.id();
+        let fenced = credit.0.fenced(ctx.id(), "emit");
         // The credit returns at dispatch (or here, when fenced).
         drop(credit);
         if fenced {
@@ -74,7 +74,12 @@ where
 {
     fn handle(self: Box<Self>, actor: &mut A, ctx: &Context<A>) {
         let TerminalEnvelope { job, done, outcome } = *self;
-        if job.is_cancelled() || job.owner() != ctx.id() {
+        let kind = if matches!(outcome, JobOutcome::Err(JobError::DeadlineExceeded)) {
+            "deadline"
+        } else {
+            "done"
+        };
+        if job.fenced(ctx.id(), kind) {
             // Fenced: `done` and its captures (a linked token) drop in the
             // turn, by the drop rules.
             ctx.sender.failures().discard((done, outcome));
@@ -104,7 +109,8 @@ where
 {
     /// Take the terminal notification and enqueue `(done, outcome)`.
     fn notify(&self, outcome: JobOutcome<T>) {
-        let (_, unsent) = self.state.notify(|| {
+        let deadline = matches!(outcome, JobOutcome::Err(JobError::DeadlineExceeded));
+        let (_, unsent) = self.state.notify(deadline, || {
             let done = self.done.lock().unwrap_or_else(|p| p.into_inner()).take()?;
             let envelope: Box<dyn Envelope<A> + Send> = Box::new(TerminalEnvelope {
                 job: self.state.clone(),
@@ -302,7 +308,8 @@ impl<A: Actor> Context<A> {
             });
         match spawned {
             Ok(_thread) => {
-                self.jobs.admit(&state, opts.key.clone());
+                self.jobs
+                    .admit(&state, opts.key.clone(), opts.deadline.is_some());
                 let deadline = self.arm_deadline(&opts, &run);
                 let ended = Ended(self.clone(), state.clone());
                 let _ = start.send((ended, deadline));

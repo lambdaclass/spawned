@@ -12,7 +12,11 @@
   versus terminal notification and cancel, native completion versus cleanup
   join, final destruction after a `Weak` upgrade), each with planted-bug
   controls. The job model found two destructions under the job set's locks
-  (key-map clear at owner exit, weak-list compaction), now fixed. `Handler::handle` takes a `PendingReply<'_, R>`
+  (key-map clear at owner exit, weak-list compaction), now fixed. With
+  `lifecycle-trace`, the job core records `DeferredJobs.tla` actions, and
+  `tests/job_trace.rs` traces (seven scenarios) are checked by TLC
+  (`TraceJobs.tla`, schema `jobs-v1`), with six edited traces as negative
+  controls. `Handler::handle` takes a `PendingReply<'_, R>`
   and returns `()`; `#[actor]` generates it, and `#[deferred_handler]` methods
   receive the obligation and may `defer()` it into a storable `ReplyTo<R>`
   (bounded by `Actor::MAX_OUTSTANDING`, `Overloaded` at the bound). Dropped

@@ -107,6 +107,41 @@ impl TreeEvent {
     }
 }
 
+/// One pipe-to-self job action of `verification/tla/DeferredJobs.tla`,
+/// recorded per owner instance. `job` is a process-wide job number
+/// (normalized by the checker); `x` is the action's parameter: the message
+/// kind (`emit`, `done`, `deadline`) and fence verdict for `Dispatch`, and
+/// whether the terminal message was enqueued for `Finish`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JobEvent {
+    pub action: &'static str,
+    pub job: u64,
+    pub x: &'static str,
+    pub keyed: bool,
+    pub deadline: bool,
+    pub fenced: bool,
+}
+
+impl JobEvent {
+    pub(crate) fn new(action: &'static str, job: u64) -> Self {
+        Self {
+            action,
+            job,
+            x: "",
+            keyed: false,
+            deadline: false,
+            fenced: false,
+        }
+    }
+    /// JSON object understood by `verification/tla/trace_check.py`.
+    pub fn to_json(&self) -> String {
+        format!(
+            r#"{{"a":"{}","j":{},"x":"{}","keyed":{},"dl":{},"fenced":{}}}"#,
+            self.action, self.job, self.x, self.keyed, self.deadline, self.fenced
+        )
+    }
+}
+
 pub(crate) fn flag(value: bool) -> &'static str {
     if value {
         "true"
@@ -155,6 +190,23 @@ mod imp {
     static TREES: Mutex<Vec<TreeEvent>> = Mutex::new(Vec::new());
     static SECTION: Mutex<()> = Mutex::new(());
     static TRACES: Mutex<BTreeMap<u64, Vec<Event>>> = Mutex::new(BTreeMap::new());
+    static JOBS: Mutex<BTreeMap<u64, Vec<super::JobEvent>>> = Mutex::new(BTreeMap::new());
+
+    /// A job number for [`super::JobEvent::job`].
+    pub(crate) fn next_job() -> u64 {
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    }
+
+    /// Record a job action of owner instance `owner` (inside the section).
+    pub(crate) fn job(owner: u64, event: impl FnOnce() -> super::JobEvent) {
+        atomic(|| lock(&JOBS).entry(owner).or_default().push(event()));
+    }
+
+    /// Remove and return the job events recorded for an owner instance.
+    pub fn take_jobs(owner: u64) -> Vec<super::JobEvent> {
+        lock(&JOBS).remove(&owner).unwrap_or_default()
+    }
     thread_local! {
         static DEPTH: Cell<usize> = const { Cell::new(0) };
         static SUPPRESS_CLOSE: Cell<bool> = const { Cell::new(false) };
@@ -429,7 +481,10 @@ mod imp {
     pub(crate) fn failing<R>(f: impl FnOnce() -> R) -> R {
         f()
     }
+    #[allow(dead_code)] // recording is compiled out without the feature
+    #[inline(always)]
+    pub(crate) fn job(_: u64, _: impl FnOnce() -> super::JobEvent) {}
 }
 
 #[cfg(feature = "lifecycle-trace")]
-pub use imp::{take, take_tree};
+pub use imp::{take, take_jobs, take_tree};

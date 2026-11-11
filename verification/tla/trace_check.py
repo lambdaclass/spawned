@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Check recorded supervisor lifecycle traces against Supervision.tla.
+"""Check recorded lifecycle traces against Supervision.tla (and, by schema,
+Cohorts.tla, NestedSupervision.tla and DeferredJobs.tla).
 
 Each JSON trace (written by concurrency/tests/supervision_trace.rs with the
 `lifecycle-trace` feature) looks like:
@@ -47,10 +48,12 @@ def tla_event(event, cohort=False):
 
 def generate(trace, workdir):
     schema = trace.get("schema", "one-for-one-v1")
-    if schema not in {"one-for-one-v1", "cohort-v1", "tree-v1"}:
+    if schema not in {"one-for-one-v1", "cohort-v1", "tree-v1", "jobs-v1"}:
         raise ValueError(f"unsupported trace schema: {schema}")
     if schema == "tree-v1":
         return generate_tree(trace, workdir)
+    if schema == "jobs-v1":
+        return generate_jobs(trace, workdir)
     cohort = schema == "cohort-v1"
     modules = ("Cohorts.tla", "TraceCohorts.tla") if cohort else MODELS
     for model in modules:
@@ -103,6 +106,46 @@ def generate_tree(trace, workdir):
         out.write("INIT TraceInit\nNEXT TraceNext\nCONSTANTS\n"
                   f" NodeCount = {len(nodes)}\n Slots = {max(1,max(int(e['arity']) for e in trace['events']))}\n"
                   " MaxGen = 1000\n Fault = \"None\"\n Trace <- TraceLog\n"
+                  "INVARIANT Safety\nINVARIANT TraceIncomplete\n")
+
+
+def generate_jobs(trace, workdir):
+    """One owner instance's pipe-to-self jobs against DeferredJobs.tla."""
+    for model in ("DeferredJobs.tla", "TraceJobs.tla"):
+        shutil.copy(os.path.join(HERE, model), workdir)
+    if int(trace.get("keys", 0)) > 1:
+        raise ValueError("DeferredJobs.tla models one key per trace")
+    # Number jobs 1..J in the order they appear; Exit carries job 0.
+    jobs = {}
+    for e in trace["events"]:
+        if int(e["j"]):
+            jobs.setdefault(int(e["j"]), len(jobs) + 1)
+    if not jobs:
+        raise ValueError("a jobs trace needs at least one job")
+    keyed = sorted({jobs[int(e["j"])] for e in trace["events"] if e["a"] == "Start" and e["keyed"]})
+    emits = {}
+    for e in trace["events"]:
+        if e["a"] == "Emit":
+            emits[int(e["j"])] = emits.get(int(e["j"]), 0) + 1
+
+    def flag(value):
+        return "TRUE" if value else "FALSE"
+
+    records = ",\n    ".join(
+        "[a |-> {}, j |-> {}, x |-> {}, keyed |-> {}, dl |-> {}, fenced |-> {}]".format(
+            tla_string(e["a"]), jobs.get(int(e["j"]), 0), tla_string(e["x"]),
+            flag(e["keyed"]), flag(e["dl"]), flag(e["fenced"]))
+        for e in trace["events"])
+    with open(os.path.join(workdir, "TraceRun.tla"), "w") as out:
+        out.write("---- MODULE TraceRun ----\nEXTENDS TraceJobs\n"
+                  "TraceKeyed == {" + ", ".join(map(str, keyed)) + "}\n"
+                  f"TraceLog == <<\n    {records}\n>>\n====\n")
+    with open(os.path.join(workdir, "TraceRun.cfg"), "w") as out:
+        out.write("INIT TraceInit\nNEXT TraceNext\nCONSTANTS\n"
+                  f"    J = {len(jobs)}\n    JobBound = {len(jobs)}\n    MaxGen = 1\n"
+                  f"    MaxEmit = {max(emits.values(), default=0)}\n"
+                  f"    Credits = {int(trace['credits'])}\n    Fault = \"None\"\n"
+                  "    Keyed <- TraceKeyed\n    Trace <- TraceLog\n"
                   "INVARIANT Safety\nINVARIANT TraceIncomplete\n")
 
 

@@ -73,11 +73,12 @@ impl JobCore {
     }
 
     /// Set the cancellation flag: suppresses a pending notification and
-    /// wakes blocked emitters. Never undoes effects. The caller wakes async
-    /// emitters afterwards.
-    pub(crate) fn cancel(&self) {
-        {
+    /// wakes blocked emitters. Never undoes effects. Returns whether this
+    /// call set the flag. The caller wakes async emitters afterwards.
+    pub(crate) fn cancel(&self) -> bool {
+        let newly = {
             let mut inner = lock(&self.inner);
+            let newly = !inner.cancelled;
             inner.cancelled = true;
             if inner.notification == Notification::Pending {
                 inner.notification = Notification::Suppressed;
@@ -85,8 +86,10 @@ impl JobCore {
             // Set under the lock, so a dispatch that sees an enqueued
             // message's job as not cancelled ran before this cancel.
             self.cancelled_fast.store(true, Ordering::Release);
-        }
+            newly
+        };
         self.emitters.notify_all();
+        newly
     }
 
     /// Take the terminal notification and run `enqueue` under the job's

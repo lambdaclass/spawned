@@ -54,7 +54,7 @@ where
         ctx: &'a Context<A>,
     ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
         let EmitEnvelope { msg, credit } = *self;
-        let fenced = credit.0.is_cancelled() || credit.0.owner() != ctx.id();
+        let fenced = credit.0.fenced(ctx.id(), "emit");
         // The credit returns at dispatch (or here, when fenced).
         drop(credit);
         if fenced {
@@ -91,11 +91,16 @@ where
         ctx: &'a Context<A>,
     ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
         let TerminalEnvelope { job, done, outcome } = *self;
+        let kind = if matches!(outcome, JobOutcome::Err(JobError::DeadlineExceeded)) {
+            "deadline"
+        } else {
+            "done"
+        };
         // Everything runs inside the returned future, so a panicking `done`
         // is a handler panic caught by the run loop (`stopped()`, turn end
         // and job cancellation still run).
         Box::pin(async move {
-            if job.is_cancelled() || job.owner() != ctx.id() {
+            if job.fenced(ctx.id(), kind) {
                 // Fenced: `done` and its captures (a linked token) are
                 // discarded in the turn, through the mailbox drop path.
                 ctx.shared.sender.failures().discard((done, outcome));
@@ -126,7 +131,8 @@ where
 {
     /// Take the terminal notification and enqueue `(done, outcome)`.
     fn notify(&self, outcome: JobOutcome<T>) {
-        let (_, unsent) = self.state.notify(|| {
+        let deadline = matches!(outcome, JobOutcome::Err(JobError::DeadlineExceeded));
+        let (_, unsent) = self.state.notify(deadline, || {
             let done = self.done.lock().unwrap_or_else(|p| p.into_inner()).take()?;
             let envelope: Box<dyn Envelope<A> + Send> = Box::new(TerminalEnvelope {
                 job: self.state.clone(),
@@ -305,7 +311,9 @@ impl<A: Actor> Context<A> {
         R: Send + 'static,
         W: Future<Output = T> + Send + 'static,
     {
-        self.shared.jobs.admit(&state, opts.key.clone());
+        self.shared
+            .jobs
+            .admit(&state, opts.key.clone(), opts.deadline.is_some());
         let run = Arc::new(Run {
             state: state.clone(),
             ctx: self.clone(),
@@ -339,7 +347,10 @@ impl<A: Actor> Context<A> {
                 }
                 // Cancelled (or the opt-in caller give-up): the work future is
                 // dropped here, and with it any downstream receiver.
-                future::Either::Right(_) => state.cancel(),
+                future::Either::Right(_) => {
+                    state.cancel();
+                    state.ended_cancelled();
+                }
             }
         });
         handle
@@ -395,7 +406,9 @@ impl<A: Actor> Context<A> {
             });
         match spawned {
             Ok(_thread) => {
-                self.shared.jobs.admit(&state, opts.key.clone());
+                self.shared
+                    .jobs
+                    .admit(&state, opts.key.clone(), opts.deadline.is_some());
                 let deadline = self.arm_deadline(&opts, &run);
                 let ended = Ended(self.clone(), state.clone());
                 let _ = start.send((ended, deadline));

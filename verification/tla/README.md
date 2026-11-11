@@ -572,3 +572,30 @@ Measured 2026-11-10 (TLC 2.19, fede):
 | `MCDeferredJobsDeep` (3 jobs, 2 instances, 1 emit each; safety) | 5,876,658 | 12,792,039 | 23 | 25 s, 12 workers |
 
 All 22 named controls find their counterexample, each in a few seconds.
+
+### Job trace validation
+
+With `lifecycle-trace`, the job core (`concurrency/src/reply/jobs.rs`) records
+one `DeferredJobs.tla` action per owner instance: `Start` (keyed, with a job
+deadline), `Emit`, `Finish` (whether it enqueued the terminal message),
+`JobDeadline`, `Cancel`, `Exit` and `Dispatch` (kind and fence verdict). Each
+is recorded in the trace section together with its effect (the flag change
+under the job lock, the enqueue, the fence read), so the log is a
+linearization. `concurrency/tests/job_trace.rs` records seven scenarios (plain
+result, a finished keyed job replaced and fenced, emits with one credit,
+handle cancel, job deadline with the work still running, owner exit with a
+running job, a blocking job emitting); `trace_check.py` checks them (schema
+`jobs-v1`) against `TraceJobs.tla` with one owner instance and one key. The
+permit bound is not checked (`JobBound = J`): the code returns a job's credit
+just before `Finish`, and rejected admissions are not model actions.
+
+```bash
+cargo test -p spawned-concurrency --features lifecycle-trace --test job_trace
+python3 verification/tla/trace_check.py target/lifecycle-traces
+```
+
+`negative_checks.py` requires six edited job traces to be rejected: the
+replaced job's terminal message delivered, an emit after the terminal
+message, a second emit with its credit in flight, a second terminal message
+after the deadline's, a quiet finish without a cancel, and a dispatch after
+the owner's exit.
