@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Tests: coverage follow-ups. `restart_modes_distinguish_normal_shutdown_and_panic`
+  now sends a real `Normal` exit; a per-PR `MCSupervisionTemporary` TLC
+  configuration makes `TemporaryStartsOnce` non-vacuous, with a negative
+  control that restarts a Temporary child; threads-mode clock tests for
+  `send_after`, `send_interval` and the restart window on a `thread_group` (T4).
 - ROADMAP: a Priorities section (soundness, including a smaller stable API and
   soak tests; introspection; determinism; testing; client-driven features;
   performance behind a regression gate), and the runtime direction. Keep Tokio; rank 37 becomes the main

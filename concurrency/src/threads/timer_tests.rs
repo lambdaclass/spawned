@@ -185,3 +185,122 @@ pub fn test_send_after_actor_shutdown() {
 
     assert_eq!(1, count2);
 }
+
+// --- T4: threads timers use the monotonic clock (`recv_timeout`) ---
+
+/// Logs the monotonic instant of every handled `Fired` and of every clone
+/// of `Stamp` (send_interval clones the message once per send).
+struct Clocked {
+    handled: std::sync::Arc<std::sync::Mutex<Vec<std::time::Instant>>>,
+    stall: Option<Duration>,
+}
+impl Actor for Clocked {}
+
+#[derive(Debug)]
+struct Fired;
+impl Message for Fired {
+    type Result = ();
+}
+impl Handler<Fired> for Clocked {
+    fn handle(&mut self, _: Fired, _: &Context<Self>) {
+        self.handled.lock().unwrap().push(std::time::Instant::now());
+    }
+}
+
+#[derive(Debug)]
+struct Stamp(std::sync::Arc<std::sync::Mutex<Vec<std::time::Instant>>>);
+impl Clone for Stamp {
+    fn clone(&self) -> Self {
+        self.0.lock().unwrap().push(std::time::Instant::now());
+        Stamp(self.0.clone())
+    }
+}
+impl Message for Stamp {
+    type Result = ();
+}
+impl Handler<Stamp> for Clocked {
+    fn handle(&mut self, _: Stamp, _: &Context<Self>) {
+        self.handled.lock().unwrap().push(std::time::Instant::now());
+        // The first tick stalls the actor for several periods.
+        if let Some(stall) = self.stall.take() {
+            rt::sleep(stall);
+        }
+    }
+}
+
+/// T1/T4: `send_after` measures its delay on the monotonic clock: it never
+/// fires early, fires once, and a long delay cancelled halfway never fires.
+#[test]
+pub fn threads_send_after_uses_the_monotonic_clock_over_long_delays() {
+    let handled = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let actor = Clocked {
+        handled: handled.clone(),
+        stall: None,
+    }
+    .start();
+    let delay = Duration::from_millis(300);
+    let long = Duration::from_millis(1_500);
+    let armed = std::time::Instant::now();
+    let _short = send_after(delay, Context::from_ref(&actor), Fired);
+    let cancelled = send_after(long, Context::from_ref(&actor), Fired);
+    assert!(
+        wait_for(|| handled.lock().unwrap().len(), |n| *n >= 1) >= 1,
+        "timer never fired"
+    );
+    let fired = handled.lock().unwrap()[0];
+    assert!(
+        fired.duration_since(armed) >= delay,
+        "T4: send_after fired after {:?}, before its {delay:?}",
+        fired.duration_since(armed)
+    );
+    cancelled.cancellation_token.cancel();
+    let _uncancelled = send_after(long, Context::from_ref(&actor), Fired);
+    let armed_long = std::time::Instant::now();
+    assert!(
+        wait_for(|| handled.lock().unwrap().len(), |n| *n >= 2) >= 2,
+        "timer never fired"
+    );
+    let fired_long = handled.lock().unwrap()[1];
+    assert!(
+        fired_long.duration_since(armed_long) >= long,
+        "T4: long send_after fired after {:?}",
+        fired_long.duration_since(armed_long)
+    );
+    // The cancelled 1.5 s timer was due before the uncancelled one fired.
+    assert!(armed + long <= fired_long);
+    assert_eq!(handled.lock().unwrap().len(), 2, "T1: fired more than once");
+    actor.child_handle().stop();
+    actor.join();
+}
+
+/// T2/T4: threads `send_interval` is fixed delay on the monotonic clock:
+/// consecutive sends are at least one period apart, also while the actor is
+/// stalled for 3.5 periods, so there is no burst to catch up.
+#[test]
+pub fn threads_send_interval_is_fixed_delay_while_the_actor_stalls() {
+    let period = Duration::from_millis(50);
+    let sends = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let handled = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let actor = Clocked {
+        handled: handled.clone(),
+        stall: Some(period * 7 / 2),
+    }
+    .start();
+    let timer = send_interval(period, Context::from_ref(&actor), Stamp(sends.clone()));
+    assert!(
+        wait_for(|| handled.lock().unwrap().len(), |n| *n >= 10) >= 10,
+        "timer never fired"
+    );
+    timer.cancellation_token.cancel();
+    let sends = sends.lock().unwrap().clone();
+    assert!(sends.len() >= 10, "{}", sends.len());
+    for pair in sends.windows(2) {
+        assert!(
+            pair[1].duration_since(pair[0]) >= period,
+            "T2/T4: two sends {:?} apart, period {period:?}",
+            pair[1].duration_since(pair[0])
+        );
+    }
+    actor.child_handle().stop();
+    actor.join();
+}

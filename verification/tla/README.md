@@ -8,6 +8,7 @@ this fits with Loom, Shuttle, Miri, ThreadSanitizer and mutation testing.
 |---|---|
 | `Supervision.tla` | The implemented OneForOne supervisor: `run_supervisor` and `run_child` in `concurrency/src/supervision.rs`, restart modes, rolling restart budget, ordered startup, reverse shutdown, shutdown deadlines, cleanup-stuck failures. |
 | `MCSupervision.tla/.cfg` | Fast instance (CI, every PR): two children (Permanent, Transient), safety, action properties and liveness. |
+| `MCSupervisionTemporary.tla/.cfg` | Small instance (CI, every PR, `other` leg, seconds): a Temporary and a Permanent child, safety and action properties, so `TemporaryStartsOnce` is not vacuous; `negative_checks.py` restarts the Temporary child and requires a violation. |
 | `MCSupervisionDeep.tla/.cfg` | Deep instance (weekly, `--deep`): three children, one per restart mode, safety and action properties. |
 | `TraceSupervision.tla` | Trace validation: replays a lifecycle trace recorded from real Rust runs as a behavior of `Supervision.tla`. |
 | `Cohorts.tla`, `MCCohorts*.tla/.cfg` | OneForAll/RestForOne range selection, reverse cleanup, whole-cohort join barrier, ordered resume, stale notifications, superseding rounds and retired slots. Three-child mixed-mode and two-round configurations. |

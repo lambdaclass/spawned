@@ -122,6 +122,42 @@ def named_fault(module, fault, invariant, tlc):
     print(f"COUNTEREXAMPLE model: {module}/{fault} ({invariant})")
 
 
+def source_fault(module, source, old, new, invariant, tlc):
+    """Run MODULE (safety only: TypeOK and INVARIANT) with OLD replaced by NEW
+    in SOURCE, for models without a Fault constant, and require INVARIANT to
+    be violated."""
+    with tempfile.TemporaryDirectory(prefix="bad-model-") as directory:
+        work = Path(directory)
+        for path in HERE.glob("*.tla"):
+            shutil.copy(path, work)
+        target = work / source
+        text = target.read_text()
+        if text.count(old) != 1:
+            raise AssertionError(f"{source}: mutation anchor {old!r} not found exactly once")
+        # Copies from the Nix store are read-only.
+        target.chmod(0o644)
+        target.write_text(text.replace(old, new))
+        lines = []
+        properties = False
+        for line in (HERE / f"{module}.cfg").read_text().splitlines():
+            if line.startswith("PROPERT"):
+                properties = True
+                continue
+            if properties and line.startswith((" ", "\t")):
+                continue
+            properties = False
+            if line.startswith("INVARIANT"):
+                line = f"INVARIANT TypeOK\nINVARIANT {invariant}"
+            lines.append(line)
+        (work / f"{module}.cfg").write_text("\n".join(lines) + "\n")
+        result = subprocess.run(shlex.split(tlc) + ["-workers", "1", "-deadlock", "-cleanup", module],
+                                cwd=work, capture_output=True, text=True)
+        log = result.stdout + result.stderr
+        if f"Invariant {invariant} is violated" not in log:
+            raise AssertionError(f"{module}/{source} mutation: {invariant} not violated\n{log}")
+    print(f"COUNTEREXAMPLE model: {module}/{source} mutation ({invariant})")
+
+
 # Rank 11 design models: (module, fault, invariant it must violate).
 def named_temporal(module, fault, prop, tlc, constants=None):
     """Run MODULE with Fault = FAULT, TypeOK and the single temporal property
@@ -259,6 +295,11 @@ def main():
                 drop=("JoinAfterAllSignalled",))
     model_fault("MCCoordinator", "RollbackReady", args.tlc, invariant="OrderedShutdown")
     model_fault("MCNested", "Join", args.tlc)
+    # A Temporary child restarted after a panic (MCSupervision has no
+    # Temporary child, so only MCSupervisionTemporary can catch this).
+    source_fault("MCSupervisionTemporary", "Supervision.tla",
+                 '\\/ m = "Permanent"\n', '\\/ m \\in {"Permanent", "Temporary"}\n',
+                 "TemporaryStartsOnce", args.tlc)
     model_fault("MCNested", "Propagation", args.tlc, temporal=True)
     for module, fault, invariant in DEFERRED_CONTROLS:
         named_fault(module, fault, invariant, args.tlc)

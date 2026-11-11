@@ -115,7 +115,12 @@ async fn restart_modes_distinguish_normal_shutdown_and_panic() {
         RestartMode::Transient,
         RestartMode::Temporary,
     ] {
-        for abnormal in [false, true] {
+        for exit in [
+            ExitReason::Normal,
+            ExitReason::Shutdown,
+            ExitReason::Panic(String::new()),
+        ] {
+            let abnormal = exit.is_abnormal();
             let system = ActorSystem::new().unwrap();
             let group = system.async_group("mode", 1).unwrap();
             let mut tree = system.supervisor(config(5)).unwrap();
@@ -127,18 +132,29 @@ async fn restart_modes_distinguish_normal_shutdown_and_panic() {
                 .unwrap();
             let supervisor = tree.start().await.unwrap();
             let old = child.current().unwrap();
-            if abnormal {
-                assert!(old.request(Crash).await.is_err());
-            } else {
-                old.child_handle().shutdown();
+            let generation = child.snapshot().generation;
+            match &exit {
+                ExitReason::Normal => old.child_handle().stop(),
+                ExitReason::Shutdown => old.child_handle().shutdown(),
+                _ => assert!(old.request(Crash).await.is_err()),
             }
-            let next = spawned_rt::tasks::timeout(LIMIT, child.wait_for_generation(1))
+            // The child really exited with the reason under test.
+            let reason = old.child_handle().wait_exit_async().await;
+            match &exit {
+                ExitReason::Panic(_) => assert!(matches!(reason, ExitReason::Panic(_))),
+                expected => assert_eq!(&reason, expected),
+            }
+            let next = spawned_rt::tasks::timeout(LIMIT, child.wait_for_generation(generation))
                 .await
                 .unwrap();
             assert_eq!(
                 next.is_ok(),
-                mode == RestartMode::Permanent || (mode == RestartMode::Transient && abnormal)
+                mode == RestartMode::Permanent || (mode == RestartMode::Transient && abnormal),
+                "{mode:?} after {reason:?}"
             );
+            if next.is_err() {
+                assert_eq!(child.snapshot().last_exit, Some(reason), "{mode:?}");
+            }
             assert!(supervisor.shutdown(LIMIT).await.complete);
             assert!(system.shutdown(LIMIT).await.complete);
         }
@@ -1438,4 +1454,63 @@ fn supervisor_config_limits_are_validated_at_their_boundaries() {
         backoff: backoff(11, 10),
         ..base()
     }));
+}
+
+/// T4/V5: on native threads (`thread_group`) the restart window runs on the
+/// monotonic clock: a grant expires after `restart_window` of real time, so
+/// a crash after a long pause is restarted, while a second crash inside the
+/// window exhausts a budget of one.
+// Not simulated: thread groups need OS threads, and this checks real time.
+#[cfg(not(spawned_sim))]
+#[test]
+fn native_restart_window_expires_on_the_monotonic_clock() {
+    let window = Duration::from_millis(400);
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let system = ActorSystem::new().unwrap();
+        let group = system.thread_group("window", 4).unwrap();
+        let mut tree = system
+            .supervisor(SupervisorConfig {
+                max_restarts: 1,
+                restart_window: window,
+                ..config(1)
+            })
+            .unwrap();
+        let child = tree
+            .add(ChildSpec::new("native", &group, |_| async {
+                Ok::<_, String>(Counter(0))
+            }))
+            .unwrap();
+        let supervisor = tree.start().await.unwrap();
+        let child = &child;
+        let crash = |generation| {
+            let current = child.current().unwrap();
+            async move {
+                assert!(current.request(Crash).await.is_err());
+                spawned_rt::tasks::timeout(LIMIT, child.wait_for_generation(generation)).await
+            }
+        };
+        // First crash: the one grant in the window.
+        let g = child.snapshot().generation;
+        crash(g).await.unwrap().expect("first restart");
+        // A long pause on the real clock: the grant leaves the window.
+        tokio::time::sleep(window * 3 / 2).await;
+        let g = child.snapshot().generation;
+        crash(g)
+            .await
+            .unwrap()
+            .expect("T4: restart refused after the window passed");
+        // A crash inside the new grant's window exhausts the budget.
+        let g = child.snapshot().generation;
+        assert!(
+            crash(g).await.unwrap().is_err(),
+            "V5: a second restart inside the window was granted"
+        );
+        assert!(supervisor.failure().is_some());
+        assert!(system.shutdown(LIMIT).await.complete);
+    });
 }
