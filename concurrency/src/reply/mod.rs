@@ -467,9 +467,13 @@ impl<R> ReplyReceiver<R> {
     /// included).
     #[cfg(feature = "async")]
     pub(crate) fn into_timed_future(self) -> ReplyFuture<R> {
-        let mut future = std::future::IntoFuture::into_future(self);
-        future.timer = true;
-        future
+        ReplyFuture {
+            rx: self,
+            armed: NEVER,
+            sleep: None,
+            timer: true,
+            tracked: false,
+        }
     }
 
     fn slot(&self) -> &Arc<Slot<R>> {
@@ -497,7 +501,7 @@ impl<R> ReplyReceiver<R> {
 }
 
 #[cfg(feature = "async")]
-impl<R> std::future::IntoFuture for ReplyReceiver<R> {
+impl<R: Send + 'static> std::future::IntoFuture for ReplyReceiver<R> {
     type Output = Result<R, ActorError>;
     type IntoFuture = ReplyFuture<R>;
     fn into_future(self) -> ReplyFuture<R> {
@@ -535,7 +539,7 @@ impl<R> std::fmt::Debug for ReplyFuture<R> {
 }
 
 #[cfg(feature = "async")]
-impl<R> std::future::Future for ReplyFuture<R> {
+impl<R: Send + 'static> std::future::Future for ReplyFuture<R> {
     type Output = Result<R, ActorError>;
 
     fn poll(
