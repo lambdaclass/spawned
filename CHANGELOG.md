@@ -2,16 +2,20 @@
 
 ## Unreleased
 
-- Design (0.9, in review, revision 2): a unified start API
+- Design (0.9, in review, revision 3): a unified start API
   (`docs/design/unified-start.md`, rank 5h). OTP's `start`, `start_link` and
   `start_monitor` wait for `started()`, and `spawn` does not. All four take one
-  typed `StartOptions`. `started()` may fail, ignore or continue (`Init`). A
-  per-start cell commits readiness once and independently of the waiter, and
-  the init timer and abandonment arbitrate through it. Errors are answered
-  after publication. Linked children are owned by the parent's scope. It
-  replaces `start_on`, `start_with_backend`, `ExecutionGroup::start` and
-  `start_linked`. A new TLA+ model, `Start.tla`, has six configurations and
-  25 negative controls, and a client mapping covers 51 sites.
+  typed `StartOptions`. `started()` may fail, ignore or continue (`Init`), and a
+  failed init never runs `stopped()`, as OTP. Every instance has an immutable
+  startup commitment, and readiness is committed by the child, independently
+  of the waiter. Errors are answered after publication with the final exit
+  reason. One global lock order covers the commit, readiness and scope
+  admission. Linked children in the parent's system are owned by its scope,
+  with a polite Shutdown at the parent's publication and absolute,
+  composing deadlines. It replaces `start_on`, `start_with_backend`,
+  `ExecutionGroup::start` and `start_linked`. A new TLA+ model, `Start.tla`,
+  has eight configurations and 37 negative controls, and a client mapping
+  covers 51 sites.
 - ROADMAP: a ranked determinism backlog (D1-D10) under priority tier 3, from
   an audit of what escapes the simulator in Spawned, Ethrex and Ethlambda
   ([docs/research/determinism-audit.md](docs/research/determinism-audit.md)).

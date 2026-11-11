@@ -1091,7 +1091,52 @@ RESULTS_TABLE
 **Negative controls** (`negative_checks.py`, each with `TypeOK` and only the
 named property, run one at a time):
 
-CONTROLS_TABLE
+Every control produced its counterexample in 1-12 s:
+
+| Configuration | Fault | Reintroduces | Fails |
+|---|---|---|---|
+| `MCStart` | `NoInherit` | 0.8 `start_linked` placement | `InheritedPlacement` |
+| `MCStart` | `LinkAfterStarted` | the edge set once `started()` runs | `LinkBeforeStarted` |
+| `MCStart` | `LinkCheckLate` | the commit ignores the parent's exit | `EdgeOnlyToRunningParent` |
+| `MCStartNames` | `DoubleRegister` | check-then-insert names | `NameUnique` |
+| `MCStartNames` | `UnregisterAtDeath` | the name released at D, before destruction | `NameKeptWhileLive` |
+| `MCStartNames` | `UnregisterAtDeath` | the name released at D, before destruction | `NoOverlapOnReuse` |
+| `MCStartNames` | `LateUnregister` | the name released after the notices | `NameFreeBeforeObservation` |
+| `MCStartNames` | `SplitCommit` | the name published before the rest of the commit | `AbortInvisible` |
+| `MCStart` | `EarlyFailAck` | an error answered before publication without pending | `FailureAfterPublication` |
+| `MCStart` | `EarlyPending` | a pending answer before the cleanup deadline | `PendingOnlyAfterDeadline` |
+| `MCStart` | `AckBeforeStarted` | `Ok` before the commitment | `ResultMatchesCommit` |
+| `MCStart` | `ErrorAsOk` | `ignore` answered as started | `ResultMatchesCommit` |
+| `MCStart` | `AnswerReadyAsFailure` | a ready instance answered as an error | `ReadyIsFinal` |
+| `MCStart` | `MarkKeptAfterReady` | readiness keeps the start marks, so a post-ready notice is lost | `NoLostNotice` |
+| `MCStart` | `NoMonitorFlush` | a failed `start_monitor` also delivers `Down` | `FailureFlushed` |
+| `MCStart` | `NoLinkFlush` | a failed `start_link` also delivers `Exit` | `FailureFlushed` |
+| `MCStart` | `NoParentKillOnFailure` | a non-`Normal` init failure spares a non-trapping parent | `FailureEndsNonTrappingParent` |
+| `MCStart` | `KillOnNormalFailure` | a `Normal` init failure kills a non-trapping parent | `NormalFailureSparesParent` |
+| `MCStart` | `AbandonDropsNotice` | an abandoned wait loses the diverted notice | `AbandonedNoticeDelivered` |
+| `MCStart` | `DoubleNotice` | a notice both delivered and diverted | `NoticeOnce` |
+| `MCStartTimeout` | `RewriteCommit` | the timer rewrites a ready commitment | `CommitImmutable` |
+| `MCStartTimeout` | `TimerIgnoresCommit` | the timer kills without checking the commitment | `TimeoutNeverKillsReady` |
+| `MCStartTimeout` | `KillBeforeUnlink` | the timeout's `Killed` reaches a waiting parent | `TimeoutContained` |
+| `MCStartTimeout` | `ReadyAfterClose` | readiness after admission closed | `ReadyOnlyWhileOpen` |
+| `MCStartTimeout` | `FrozenReason` | the answer reports the requested reason after publication | `ReportedReasonFinal` |
+| `MCStartCap` | `AdmitClosed` | a closed group admits | `AdmittedOnlyOpen` |
+| `MCStartCap` | `IgnoreCap` | a full group admits | `CapacityRespected` |
+| `MCStartCap` | `EarlySlotRelease` | the slot released at D | `SlotHeldUntilReleased` |
+| `MCStartContinue` | `ContinueQueued` | the continuation queued behind earlier entries | `ContinueFirst` |
+| `MCStartScope` | `EarlyGenDone` | the generation ends before its members | `GenDoneMeansOwnedDone` |
+| `MCStartScope` | `GenDoneAtParentD` | the generation ends at P's D | `GenDoneMeansOwnedDone` |
+| `MCStartScope` | `NoScopeKill` | the scope deadline spares exiting members | `DeadlineKillsAllOwned` |
+| `MCStartScope` | `OwnerUnchecked` | the commit ignores the owner's gate | `OwnedOnlyWhileOwnerOpen` |
+| `MCStartScope` | `ParentSlotAtD` | P's slot released at its D | `ParentSlotHeld` |
+| `MCStartLive` | `DropHeld` (liveness) | a held parent exit dropped | `ParentExitReachesChild` |
+| `MCStartLive` | `NoAnswerIgnore` (liveness) | an ignored start never answered | `StartAnswered` |
+| `MCStartScope` | `NoPoliteStop` (liveness) | no Shutdown to owned members at P's publication | `OwnedScopeFinishes` |
+
+In round 2, `SplitCommit` first found no counterexample in `MCStartNames`:
+`start` children were unmanaged and nothing refused them. The names
+instance now places them in `G` with closure, and `CommitRest` reuses the
+full refusal rules. A control that cannot fail is reported, not counted.
 
 **Not modelled:**
 
@@ -1247,6 +1292,9 @@ Each is caught by at least two layers:
 | `start-name-released-at-death` | name released at D (before destruction) | `state_drop_finishes_before_failure_answer_and_name_reuse`, trace `NoOverlapOnReuse` |
 | `start-mark-not-cleared-at-ready` | readiness leaves the start marks | `ready_then_immediate_crash_with_unpolled_waiter_*`, `start_sim::ready_commit_races_post_ready_death` |
 | `start-timer-without-cas` | the timer kills without checking the cell | `init_timeout_racing_ready_agrees_with_ready`, Loom `ready_commit_races_timer` |
+| `start-timedout-notice-dropped` | a waiting `TimedOut` notice is dropped at publication, so a later abandonment loses a non-trapping parent's kill (round 2, agy F1) | `abandoned_start_with_timeout_delivers_killed` (abandon after publication), `start_sim::abandon_races_publication`, trace control "drop a diverted notice on `SAbandon`" |
+| `start-reason-frozen-at-resolution` | the answer reports the requested reason after a pre-D kill (round 2, Codex R3) | `kill_between_resolution_and_d_reports_killed`, `start_sim::kill_races_d_after_failed_init` |
+| `start-parent-notices-at-d` | a parent's notices to children delivered, and its slot released, at its D instead of its publication (round 2, Codex R2) | `parent_hung_in_drop_keeps_children_unnotified_and_slot_held`, trace `ParentSlotHeld` |
 
 ### 16.6 Coverage matrix
 
@@ -1295,7 +1343,7 @@ branch, which its own author maintains.
 
 | Item | Agreed shape | Unified start | #245 dynamic supervisor | #256 introspection |
 |---|---|---|---|---|
-| Start result | `StartOutcome<T> { Started(T), Ignored }` | `T = ActorRef<A>` or `(ActorRef<A>, MonitorRef)` | `StartOutcome<Started<A>>` (rename from `StartOutcome<A>`) | n/a |
+| Start result | `StartOutcome<T> { Started(T), Ignored { pending: Option<ChildHandle> } }` | `T = ActorRef<A>` or `(ActorRef<A>, MonitorRef)` | `StartOutcome<Started<A>>` (rename from `StartOutcome<A>`); `Ignored` gains `pending` for a stuck ignoring instance (round 2, Codex R4) | n/a |
 | `Started` | `{ actor, child }` | n/a | **drop `data: A::StartData`** (deferred, section 17) | n/a |
 | Factory result | `ChildStart<A> { Actor(A), Ignore }`, `From<A>` | static `ChildSpec` | as proposed | n/a |
 | `ignore` | static: spec kept, `ChildState::Ignored`, restarted in later cohort rounds, Temporary removed; dynamic: nothing stored (first start) or removed (restart), no `ChildState` variant needed | section 9 | as proposed | `ChildState::Ignored` appears only for static children; counted in `specs` and `workers`, not `active` |
