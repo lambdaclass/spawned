@@ -786,7 +786,7 @@ Line-delimited JSON; see the [wire and data contract](#wire-and-data-contract).
 |---|---|---|---|
 | `hello`, `ps [--sort ..] [--group g] [--type t] [--limit n]`, `info <a>`, `links <a>`, `tree [sup]`, `groups`, `snapshot` | read | tables, tier 0, tier 1 if compiled | answers |
 | `stuck [--window 2s]` | read | watchdog reports, or two samples of turn ids (needs `introspection`) | answers |
-| `state <a> [--timeout 5s]` | read (state is opt-in per actor through `Inspect`) | `get_status`; awaited on the console runtime, never blocking the thread | times out; the error points to `info` |
+| `state <a> [--timeout 5s]` | read (state is opt-in per actor through `Inspect`) | `get_status` under a status permit (limits below); awaited on the console runtime, never blocking the thread | times out; the error points to `info` |
 | `trace <a> <rate> [--max n] [--for t]` | `trace` | bounded turn events (needs `introspection`) | events stop; `info` shows the open turn |
 | `kill <target> --expect <id>[@gen]` | `kill` | resolves the target once to an instance-bound handle; `stale_target` if the id or generation differs; then `ChildHandle::kill()` | `accepted`: effective when the activity returns (L3) |
 | `terminate <sup> <child> --expect <id>[@gen]` | `terminate` | the supervisor's terminate operation with the expectation passed in: the supervisor compares the child's current `ActorId` and generation with it inside the operation's own admission (its control loop), so a restart between the console's lookup and the operation yields `stale_target`, never the termination of the newer generation (dynamic supervisors: `terminate_slot` gains an `expect` argument, coordinated with PR #245; static supervisors once G6 adds the operation) | as the supervisor's call |
@@ -830,6 +830,7 @@ capacity are dropped and counted. The run loop reads the `trace` flag (its own a
 | work per slice | a command processes at most 1,000 actors or 5 ms, then yields to the console runtime, so other connections and every write deadline keep running; threads-only builds serve each connection on its own thread |
 | memory | per connection 8 MiB (request, response under construction, write buffer); process-wide 32 MiB; a command that would exceed either fails with `too_large` before allocating more |
 | `state` timeout | at most 30 s (default 5 s) |
+| queued `state` requests | a console `state` takes a status permit before it enqueues: at most 2 per target actor and 32 per process, and 1 per connection. The permit lives in the `StatusEnvelope` and is released only when the envelope is dequeued (run or skipped) or discarded at D, never on timeout or disconnect. With the permits taken, `state` answers `busy` ("2 status requests already queued for this actor; it may be wedged, use `info`"). So a client that repeatedly requests and disconnects against a wedged actor retains at most 2 envelopes for it and 32 in total |
 | `tree` | depth 64, 10,000 nodes |
 | strings in output | labels, names, errors: 256 bytes; `format_status` output cut at 64 KiB. The formatter's own allocation while it runs (on the actor) is user code and outside the guarantee |
 | write deadline | 2 s for a whole frame (partial writes included), then the connection is closed (a paused client cannot block others) |
@@ -1168,6 +1169,7 @@ Placements: A `Backend::Async`, B `Blocking`, T `Thread`, N threads mode, G
 | `held_but_not_answering_is_shown_not_deleted` | the entry deleted |
 | `topk_ps_and_memory_budget` (1,000,000 actors) | memory proportional to the table; budget exceeded without `too_large` |
 | `large_command_yields` (a 100,000-actor `snapshot` on one connection while another sends `info` every 10 ms) | the second client's latency exceeds one slice plus scheduling |
+| `wedged_actor_state_requests_are_bounded` (10,000 rounds of connect, `state`, disconnect against a permanently wedged actor, from several connections) | more than 2 envelopes queued for the actor or 32 in the process; a permit released before dequeue; permits not returned at D |
 | `blocked_audit_delivery` (a subscriber that blocks forever) | reads stop; a mutation runs without a queued record; drops uncounted |
 | `drop_with_blocked_delivery_does_not_hang`, `restart_with_stuck_delivery_errors`, `last_system_removal_with_blocked_delivery` | a hang; blocked delivery threads accumulate |
 | `terminate_expect_is_fenced_at_the_supervisor` (a restart forced between lookup and operation) | the newer generation terminated |
@@ -1267,6 +1269,7 @@ an exhaustive `match` on `Lifecycle` or `Unavailable` without a wildcard.
 | `terminate` checked only in the console | `terminate_expect_is_fenced_at_the_supervisor` |
 | Sorted `ps` capturing every key | `topk_ps_and_memory_budget` |
 | Group listing keeping published actors | `group_listing_excludes_published_with_draining_helper` |
+| Status permit released on timeout or disconnect | `wedged_actor_state_requests_are_bounded` |
 
 ### Coverage-matrix rows
 
@@ -1465,6 +1468,8 @@ Each finding was treated as a claim and checked against the design and the
 | Finding | Claim | Verdict | Resolution |
 |---|---|---|---|
 | agy P1-1 | An idle read can accept `w1 == w2 == (N, closed)` with activity N+1's tag, stored before N+1's word | Accepted | `tag` becomes a 64-bit word stamped with the low 32 bits of its turn id (one relaxed store, unchanged cost); a read whose tag is ahead of `w1` is retried; the exact interleaving is added to `activity_slot_loom` and to the planted bugs. Not modelled in TLA+: the model's steps are atomic and sequentially consistent and reads are not actions, so a torn read cannot be expressed there. The bug is a memory-ordering property of separate atomics, which is what Loom checks against the C11 model |
+| Codex r3 #1 | Idle validation still accepts a mixed activity (writer paused after payload writes, before open publication) | Accepted, same fix as agy P1-1 | In that schedule N+1's tag carries turn N+1, which is ahead of `w1 = (N, closed)`, so the read is retried, not accepted. Idle reads return only the turn-stamped tag, never `since` or `poll`, so no unstamped mutable field reaches an idle result. The Loom case pauses the writer after all payload stores and before the open store |
+| Codex r3 #2 | Cancelled console `state` requests can accumulate in a wedged actor's mailbox | Accepted | Console status permits, at most 2 per target actor, 32 per process and 1 per connection, held by the envelope until it is dequeued or discarded at D, never released on timeout or disconnect; `busy` otherwise; `wedged_actor_state_requests_are_bounded` and a planted bug. Application `get_status` calls are ordinary requests and are not limited, as `request` is not |
 
 ## Open questions for reviewers
 
