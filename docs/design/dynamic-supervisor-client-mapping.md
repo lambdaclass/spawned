@@ -158,7 +158,7 @@ fails only itself.
 | ethrex today | With the dynamic supervisor |
 |---|---|
 | `.start()`, unmanaged, on the caller's runtime | `start_child(args)` on a `DynamicSupervisor<PeerConnectionServer, ConnArgs>`, placed on the `p2p` group |
-| handshake inside `started()` (up to `HANDSHAKE_TIMEOUT`, 10 s) | **required change:** the handshake moves to the post-start continuation of the unified-start design (0.9, OTP's `handle_continue`): it runs right after `started()` returns and before any message, still under `HANDSHAKE_TIMEOUT`, and a failure ends the actor (a Temporary exit, not a start failure). Otherwise one silent peer would hold the supervisor's control loop, and with it every accept and dial, for the whole `startup_timeout`. A self-sent first message is not equivalent: a message enqueued by another actor first would run before it |
+| handshake inside `started()` (up to `HANDSHAKE_TIMEOUT`, 10 s) | **required change:** the handshake moves to the post-start continuation of the unified-start design (0.9, OTP's `handle_continue`): it runs right after `started()` returns and before any message, still under `HANDSHAKE_TIMEOUT`, and a failure ends the actor (a Temporary exit, not a start failure). Otherwise one silent peer would hold the supervisor's control loop, and with it every accept and dial, for the whole `startup_timeout`. A self-sent first message is not equivalent: a message enqueued by another actor first would run before it. The continuation precedes messages but cannot prevent termination: `terminate_child` or shutdown can end the connection before or during the handshake, which then ends it without registering in the peer table (nothing to clean up there) |
 | no owner; shutdown does not stop connections | the supervisors are owned by the system, nested under the p2p supervisor (recommended) or as roots admitted after the peer table; connections stop before the table, all at once, each killed after its `shutdown_timeout` |
 | `Semaphore(150)` plus `_admission_permit` in actor state | `max_children = Some(150)` on an inbound supervisor; `Rejected { MaxChildren, args }` returns the `ConnArgs`, so the accept loop can still send an RLPx Disconnect or just drop the stream, as today |
 | outbound uncapped | a second supervisor for dials without `max_children` |
@@ -197,10 +197,14 @@ match inbound.current()?.start_child(ConnArgs::receiver(context.clone(), peer_ad
 }
 
 // Connection actor (server.rs): the handshake leaves started().
-// Handshake in the post-start continuation (unified start, 0.9): runs
-// after started() returns and before any message.
-#[continue_start]
-async fn handshake(&mut self, ctx: &Context<Self>) -> ContinueResult { /* existing code */ }
+// Handshake as the post-start continuation (unified start #259, 0.9):
+// runs after the readiness commit and before any message.
+async fn started(&mut self, _ctx: &Context<Self>) -> Init<Self> {
+    Init::continue_with(Handshake)
+}
+impl Handler<Handshake> for PeerConnectionServer {
+    async fn handle(&mut self, _: Handshake, ctx: &Context<Self>) { /* existing handshake code */ }
+}
 
 // Peer table (peer_table.rs): registration installs the monitor...
 async fn handle_new_connected_peer(&mut self, msg: NewConnectedPeer, ctx: &Context<Self>) -> bool {

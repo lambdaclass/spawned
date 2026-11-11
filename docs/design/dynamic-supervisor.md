@@ -149,8 +149,9 @@ Round two (revision 3):
 | G1 | Post-start work | Depends on the post-start continuation (a `handle_continue` equivalent) of the unified-start design (0.9), not on "the first message", which other messages could overtake |
 | G2 | Restart type for connections | The ethrex mapping and the example use `temporary()` (a dropped peer must not be redialled by the supervisor); the default stays Permanent (OTP) |
 | G3 | `ignore` | Accepted from the factory: nothing is stored, `start_child` returns `Ignored` (OTP `{ok, undefined}`) |
-| G4 | Start data | `Started` carries the child's start data (unified start's `Init<R>`), as Gleam's `Started(data)` |
+| G4 | Start data | Deferred, as in unified start (#259): `gen_server` returns only `{ok, Pid}`; `Started` is `{ actor, child }` |
 | G5 | Introspection | `ChildInfo` and `ChildCounts` are the types introspection v1 exposes for static supervisors too; names agreed across both designs |
+| U1 | Shared shapes with unified start (#259 rev. 2, section 18) | `StartOutcome<Started<A>>` with `Ignored` as an `Ok` outcome; `FailedToStart { cause: ChildStartError, cleanup_stuck }`; `ChildStart<A>`; `StartOptions<A>` through `DynamicChildSpec::options`; the continuation is `Init::continue_with(msg)`, which precedes messages but is no termination barrier |
 | I1 | Fenced termination (introspection #256 rev. 3) | `terminate_slot` takes an optional `expect: ActorId@generation`; a mismatch returns `Stale { current }` and does nothing, checked at the supervisor operation itself, so the console's `terminate --expect` cannot kill a child that moved on |
 
 ## API
@@ -181,8 +182,15 @@ impl<A: Actor, Args: Send + 'static> DynamicChildSpec<A, Args> {
 }
 
 impl<A: Actor, Args> DynamicChildSpec<A, Args> {
-    pub fn startup_timeout(self, limit: Duration) -> Self;   // default 5 s
+    /// Covers the factory and `started()` together (#259); default 5 s;
+    /// `Timeout::Infinity` allowed.
+    pub fn startup_timeout(self, limit: impl Into<Timeout>) -> Self;
     pub fn shutdown_timeout(self, limit: Duration) -> Self;  // default 5 s
+    /// Per-child start options shared with unified start (#259 section 2.4):
+    /// name, label, stack size, per-instance bounds. The template's group
+    /// stays the positional argument of `new`/`temporary`; a `backend` here
+    /// is rejected (`InvalidOptions`), as for a `ChildSpec`.
+    pub fn options(self, options: StartOptions<A>) -> Self;
 }
 ```
 
@@ -237,7 +245,7 @@ impl<A: Actor, Args> DynamicSupervisor<A, Args> {
     /// OTP start_child(Sup, ExtraArgs). Queued on the control loop; resolves
     /// when the first generation is ready, was ignored, or failed.
     pub async fn start_child(&self, args: Args)
-        -> Result<StartOutcome<A>, StartChildError<Args>>;
+        -> Result<StartOutcome<Started<A>>, StartChildError<Args>>;
     /// OTP terminate_child(Sup, Pid): the actor id is looked up when the loop
     /// handles the call; it names the slot only if it is the slot's last
     /// published id at that moment.
@@ -255,17 +263,17 @@ impl<A: Actor, Args> DynamicSupervisor<A, Args> {
     pub fn failure(&self) -> Option<String>;
 }
 
-pub enum StartOutcome<A: Actor> {
-    Started(Started<A>),
-    /// The factory returned ignore: nothing is supervised or counted
-    /// (OTP {ok, undefined}).
+/// Shared with unified start (#259 section 18): `T` is `ActorRef<A>` there.
+pub enum StartOutcome<T> {
+    Started(T),
+    /// The factory returned `ChildStart::Ignore`, or `started()` returned
+    /// `Init::ignore()`: nothing is supervised or counted (OTP {ok, undefined}).
     Ignored,
 }
 
 pub struct Started<A: Actor> {
     pub actor: ActorRef<A>,       // the first generation, as OTP's Pid
     pub child: DynamicChild<A>,   // the slot, across restarts
-    pub data: A::StartData,       // what the child's start returned (unified start, Init<R>)
 }
 
 /// Like `SupervisedChild<A>` for a dynamic slot. Holds no arguments and no
@@ -305,7 +313,9 @@ pub enum StartChildError<Args> {
     Aborted,
     /// The first generation failed: factory error or panic, panic or stop
     /// in started(), or startup_timeout. Not retried, not charged.
-    FailedToStart { cause: String, exit: Option<ExitReason>, cleanup_stuck: bool },
+    /// `ChildStartError` is #259's: `Factory`, `Start(StartError)` (with
+    /// `InitFailed`/`InitExited { reason }`), `StartupTimeout { pending }`.
+    FailedToStart { cause: ChildStartError, cleanup_stuck: bool },
 }
 
 #[non_exhaustive]
@@ -344,15 +354,19 @@ pub struct ChildCounts {
 ```
 
 - The factory returns `Result<ChildStart<A>, E>` with
-  `ChildStart::Actor(a) | ChildStart::Ignore`, the unified-start design's
-  shape. An ignore on a first start returns `Ignored` and stores nothing; on
-  a restart it removes the child (OTP drops it), without charge beyond the
-  attempt already stamped.
+  `ChildStart::Actor(a) | ChildStart::Ignore` (`From<A>`), and `started()`
+  may return `Init::ignore()`; both are unified start's shapes (#259). An
+  ignore on a first start returns `Ok(StartOutcome::Ignored)` and stores
+  nothing; on a restart it removes the child (OTP drops it), without charge
+  beyond the attempt already stamped.
+- Typed start data (`Started::data`) is deferred, as in #259: `gen_server`
+  returns only `{ok, Pid}`.
 - `StartChildError<Args>` implements `Error` when `Args: Debug`;
   `into_args()` returns the arguments of a `Rejected`, and `without_args()`
   maps to `StartChildError<()>` for `?`.
-- `FailedToStart` carries the generation's `ExitReason` when an actor
-  existed, so callers need not match strings.
+- `FailedToStart` carries #259's `ChildStartError`, so the generation's
+  `ExitReason` (`InitExited { reason }`) or cause (`InitFailed`,
+  `Factory`) is typed, not a string.
 - `ChildState` gains no variant: a dynamic child is `Starting`, `Running`,
   `Backoff` (restart pending), `Stopping` (including stuck), then leaves
   `which_children`, which is a snapshot in no particular order.
@@ -510,12 +524,15 @@ Consequences, as in OTP:
   in terminate_child(id) for T" (decision R1).
 
 **Post-start continuation.** Slow initialisation (ethrex's RLPx handshake)
-belongs in the unified-start design's continuation, OTP's
-`handle_continue`: it runs right after `started()` and before any message,
-including messages that other actors enqueue once they learn the
-reference. That design targets 0.9 and this one depends on it; "send
-yourself a message in `started()`" is not equivalent, because a message
-enqueued by someone else before the self-send can run first.
+belongs in unified start's continuation (#259 section 8, OTP's
+`handle_continue`): `started()` returns `Init::continue_with(msg)` and
+`Handler<M>` runs it as the first turn after the readiness commit, before
+any mailbox entry. "Send yourself a message in `started()`" is not
+equivalent, because a message enqueued by someone else first would run
+first. The continuation is not a termination barrier: readiness is already
+committed, so `terminate_child`, a kill or shutdown can end the child before
+or during it, as fatal signals end an OTP process in `handle_continue`.
+This design depends on #259 (0.9).
 
 ### `start_child`
 
@@ -1013,7 +1030,7 @@ the generation, and where noted the queue ticket or call id.
 | `DAdmit` (slot, ticket, outcome: admitted / max) | the loop takes a start | `LoopAdmit` |
 | `DReject` (slot) | shutdown answers a queued start | `RejectQueued` |
 | `DReady` (slot, gen) | readiness commits | `Ready` |
-| `DIgnore` (slot, gen) | the factory returned ignore | `Ignore` |
+| `DIgnore` (slot, gen) | the factory returned `ChildStart::Ignore` or `started()` returned `Init::ignore()` | `Ignore` |
 | `DStartFail` (slot, gen, reason) | factory error or panic, stop or panic in `started()` | `StartFail` |
 | `DStartTimeout` (slot, gen) | `startup_timeout` fired | `StartTimeout` |
 | `DAbort` (slot, gen) | shutdown cancelled a construction | `AbortStart` |
@@ -1047,7 +1064,9 @@ recorded in the `tla-traces` CI job, plus generated scripts in
 1. Admission order: two starts at the cap; the second rejected with its
    arguments.
 2. First-start failures: factory error, panic in `started()`, startup
-   timeout, ignore; each answered after cleanup; one with a stuck cleanup.
+   timeout, `Init::error`, ignore (factory and `Init::ignore()`); each
+   answered after cleanup with its `ChildStartError`; one with a stuck
+   cleanup.
 3. Restart table per type and reason, with and without backoff, including a
    failed replacement re-queued and retried, and a recorded cleanup failure
    restarting a Transient child.
