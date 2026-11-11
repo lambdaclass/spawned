@@ -799,11 +799,22 @@ ChildSpec::new(id, &group, |fctx| async { Ok(MyActor::new(..)) })   // or Ok(Chi
   outcome.
 - **`startup_timeout` stays on `ChildSpec`** (agy P1-7, Codex 3). It bounds
   the whole attempt: factory, stage 1 and `started()`. The default is 5 s
-  (V7), and `Timeout::Infinity` is allowed. The actor's init timer gets the
-  remaining budget at the commit, or the smaller of that and
-  `options.init_timeout`. Expiry during the factory cancels it (V7, unchanged);
-  expiry after the commit is the cell's `TimedOut`. The dynamic supervisor
-  bounds construction and `started()` together the same way.
+  (V7), and `Timeout::Infinity` is allowed. The dynamic supervisor bounds
+  construction and `started()` together the same way. The attempt carries
+  one **absolute deadline**, taken when the attempt begins (Codex R9, agy
+  F5):
+  - **during the factory:** expiry cancels it (V7, unchanged) and gives
+    `StartupTimeout { pending: None }`;
+  - **in the prepare step and the commit:** the deadline is rechecked under
+    the commit locks (section 3). If it has passed, the commit refuses: the
+    prepared state is dropped, nothing is visible, and the attempt fails
+    with `StartupTimeout { pending: None }`. No zero-duration `init_timeout`
+    is ever built, so this is never `InvalidOptions`;
+  - **after the commit:** the instance's init timer is armed at the same
+    absolute deadline, or at `options.init_timeout`'s deadline if that is
+    earlier. Its expiry is the cell's `TimedOut`, reported to the supervisor
+    as `Start(InitTimeout { pending })` and treated as a startup timeout
+    under V1/V7.
 - **Placement.** The positional group stays: a supervised child is always
   managed, in the supervisor's system. A `group` in `options` replaces it;
   a `backend` is `InvalidOptions` at `add()`.
@@ -830,6 +841,17 @@ ChildSpec::new(id, &group, |fctx| async { Ok(MyActor::new(..)) })   // or Ok(Chi
     stamped (V5) and adds nothing.
   - **Waiting.** `SupervisedChild::wait_ready()` and `current()` return
     `ChildUnavailable(ChildState::Ignored)` at once rather than waiting.
+  - **The controller loop** (agy F6). An `Ignored` child's controller stays
+    parked. If supervisor shutdown comes, it reports done at once. If a cohort
+    round comes, it answers the round's stop and clean barriers (`CStop`,
+    `CClean`) at once, since it has no generation, then waits on the round's
+    resume (`CResume`) and starts its next attempt in declaration order.
+  - **A stuck `ignore`** (Codex R4). The ignoring instance is observed as
+    `Ignored` only once it is published. Until then its slot stays `Stopping`
+    and owned, under V3's stuck rule: cleanup deadline, then stuck. A cohort
+    barrier treats it as not yet clean, so no replacement overlaps it. The
+    spec becomes `Ignored` only after publication. A direct waiter gets
+    `Ok(Ignored { pending: Some(h) })` at the cleanup deadline (5.5).
   - **Model and traces.** `Supervision.tla` and `Cohorts.tla` gain the
     `Ignored` state and the cohort rule, and traces gain an `Ignore(c, g)`
     event between `Attempt` and the round's barrier, with `trace_check.py`
@@ -942,15 +964,18 @@ Revision 2 corrects the mapping on two points:
 The implementation PR writes these into `semantics.md`, with the "Checked by"
 lines from section 16.
 
-- **L1 (changed).** `stopped()` runs after a ready commit, or after a
-  `ctx.stop*` called in `started()`; never after a failed or ignored init.
+- **L1 (changed).** `stopped()` runs only after a ready commit; never after
+  a failed or ignored init, including a `ctx.stop*` called in `started()` (as
+  OTP skips `terminate/2` when `init/1` fails).
 - **L2 (changed).** Readiness exists for every placement. It is the startup
   cell's `Ready`: committed by the child at the end of `started()`, while
   admission is open, before any continuation or dispatch. It is final.
   `ready()` and the waiting starts read the same committed value.
-- **L8 (new), Start.** Stage 1 is one commit (section 3), and a refusal is
-  never observable. The waiting starts answer per 5.5. Errors come after
-  publication or carry `pending`.
+- **L8 (new), Start.** Stage 1 is one commit under the global lock order,
+  and a refusal is never observable (section 3). Every instance has an
+  immutable startup result (5.1). The waiting starts and `ready()` answer per
+  5.5: errors come after publication with the final reason, or after the
+  cleanup deadline with `pending` and the requested reason.
 - **L9 (new), Init resolution.** The precedence table in 2.3, including
   trapping children.
 - **L10 (new), Continuation.** It precedes every mailbox entry. It is not a
@@ -959,12 +984,19 @@ lines from section 16.
   child's `started()`, on every placement. A start through an exiting or
   dead parent is refused.
 - **X3 (changed).** The parent row reads "`start_link` caller".
-- **X8 (new), Startup notices.** The disposition table in 5.2. The init
-  timeout never reaches the parent unless the wait was abandoned. An
-  abandoned wait delivers a diverted notice exactly once.
+- **X8 (new), Startup notices.** The disposition table in 5.2:
+  - no taken notice is ever lost;
+  - the init timeout never reaches the parent unless the wait was abandoned;
+  - an abandoned wait delivers a diverted notice exactly once;
+  - a parent's notices to its children are delivered at the parent's
+    publication.
 - **S6 (changed).** `spawn`/`start` are unmanaged unless given a placement.
 - **S7 (new), Inheritance.** Section 4, with no fallback.
-- **S8 (new), Scope ownership.** Section 4.1.
+- **S8 (new), Scope ownership.** Section 4.1: ownership is attached under
+  the owner's gate. At the parent's publication, its owned members get a
+  polite `Shutdown`. The scope deadline is anchored at the parent's exit
+  begin and kills members directly. The generation ends after the parent and
+  every member are published. The E3 rows are revised.
 - **S9 (new), Start-time names.** Committed atomically, unique, held until
   publication, released before any notice.
 - **T5 (new), Init timeout.** A framework-owned timer that loses to a ready
@@ -1121,18 +1153,24 @@ guarantee breaks.
 | X5 parent exited | `NoEdgeToDeadParent` | `start_link_through_dead_context_is_refused`; `start_link_from_stopped_is_refused` | `parent_stops_during_child_started` | | |
 | X8 disposition | `FailureFlushed`, `NoticeOnce`, `TimeoutContained` | `failed_start_link_consumes_exit_of_trapping_parent`; `failed_start_link_kills_nontrapping_parent_after_handler`; `failed_start_monitor_consumes_down`; `init_timeout_never_reaches_the_parent` | `failure_races_ack` | no notice for a start that returned an error; at most one per child | |
 | X8 abandonment | `AbandonedNoticeDelivered` | `abandoned_start_monitor_still_delivers_down`; `abandoned_start_link_delivers_exit`; `abandoned_start_with_timeout_delivers_killed` | `abandon_races_publication` | | |
-| L8 failure after publication (P0-3) | `FailureAfterPublication`, `NoOverlapOnReuse` | `state_drop_finishes_before_failure_answer_and_name_reuse` (`Mock::drop_flag`); `hung_drop_answers_with_pending_handle_at_the_bound` | `retry_never_overlaps_old_drop` | no two live states of one name | |
+| L8 failure after publication (P0-3) | `FailureAfterPublication`, `NoOverlapOnReuse`, `ReportedReasonFinal`, `PendingOnlyAfterDeadline` | `state_drop_finishes_before_failure_answer_and_name_reuse` (`Mock::drop_flag`); `hung_drop_answers_with_pending_handle_at_the_bound`; `kill_between_resolution_and_d_reports_killed` (round 2) | `retry_never_overlaps_old_drop`; `kill_races_d_after_failed_init` | no two live states of one name; the reported reason equals `wait_exit`'s | |
+| Stuck `ignore` (Codex R4) | `FailureAfterPublication`, `PendingOnlyAfterDeadline` | `hung_drop_after_ignore_answers_ignored_with_pending`; `supervised_stuck_ignore_keeps_the_slot_stopping` | | | |
+| `ready()` storage (Codex R5) | `CommitImmutable` | `spawn_ready_reports_init_failed_with_its_diagnostic`; `ready_samples_pending_then_published` (two observers on either side of publication) | | | |
+| Parent publication (Codex R2) | `ParentSlotHeld`, `GenDoneMeansOwnedDone` | `parent_hung_in_drop_keeps_children_unnotified_and_slot_held`; `generation_waits_for_parent_publication` | | | |
+| S8 polite stop (agy F3) | `OwnedScopeFinishes`, `DeadlineKillsAllOwned` | `owned_unlinked_child_gets_shutdown_at_parent_publication`; `owned_nontrapping_child_stops_on_normal_parent_exit`; `scope_deadline_kills_a_member_stuck_in_stopped`; `nested_scope_deadline_is_the_earliest`; three-level tree | `parent_stuck_before_d_does_not_delay_member_kill` | | |
+| Owner gate (Codex R1) | `OwnedOnlyWhileOwnerOpen`, `ReadyOnlyWhileOpen` | `closed_owner_refuses_an_open_target_group`; `owner_closure_racing_ready_commit` | | | |
+| Attempt deadline (Codex R9) | | `startup_deadline_expiring_in_prepare_is_startup_timeout_not_invalid_options` | | | |
 | T5 timer vs readiness (P0-2) | `TimeoutNeverKillsReady`, `ResultMatchesCommit` | `init_timeout_racing_ready_agrees_with_ready()` (failpoint at the commit); `spawn_init_timeout_kills_and_ready_reports_it`; `stuck_started_keeps_name_and_reports_pending` | `timeout_races_ready_commit` | timeout options generated; a ready child never ends `Killed` by its timer | |
 | `ready()` parity (agy P1-6) | `ResultMatchesCommit` | `ready_returns_the_same_result_as_the_waiter` for `Started`, `Ignored`, `InitFailed`, `InitExited`, `InitTimeout`, via `spawn` and `Starting::actor_ref()` | | | |
 | S7 inheritance | `InheritedPlacement` | `link_and_monitor_inherit_{async_group,thread_group,pinned_shard,backend_async,backend_blocking,backend_thread}`; `plain_start_never_inherits`; `placement_of_opts_in` | | placement oracle | `threads_options_have_no_group_or_backend` |
 | S7 closed/full | `AdmittedOnlyOpen`, `CapacityRespected` | `inherited_start_into_closing_group_fails_closed`; `..._full_thread_group_fails_capacity`; `capacity_released_only_at_publication` | `group_shutdown_during_start` | | |
 | S8 ownership | `GenDoneMeansOwnedDone`, `OwnedScopeFinishes` | `system_shutdown_stops_owned_children_with_their_parent`; `supervised_generation_waits_for_owned_children`; `unlinked_owned_child_is_killed_at_the_scope_deadline`; `stuck_parent_does_not_delay_descendant_kill`; `foreign_system_and_unmanaged_children_are_not_owned` | `parent_shutdown_racing_child_start` | S1-S4/V3 oracles see owned children | |
-| S9 names | `NameUnique`, `NameHeldUntilPublished`, `NameFreeBeforeObservation` | `name_clash_returns_already_started_with_holder` (the holder kept alive across both calls); `failed_named_start_can_be_retried_at_once`; `name_released_before_down_and_exit`; `typed_name_whereis`; `unregister_then_reregister_keeps_ownership`; `cross_type_name_clash_reports_none_holder` | `name_registration_race` | one live holder | `name_type_must_match_actor` |
+| S9 names | `NameUnique`, `NameHeldUntilReleased`, `NameKeptWhileLive`, `NameFreeBeforeObservation` | `name_clash_returns_already_started_with_holder` (the holder kept alive across both calls); `failed_named_start_can_be_retried_at_once`; `name_released_before_down_and_exit`; `typed_name_whereis`; `unregister_then_reregister_keeps_ownership`; `cross_type_actor_name_clash_reports_the_holder_handle`; `non_actor_holder_reports_none` | `name_registration_race` | one live holder | `name_type_must_match_actor` |
 | V1/V5/V7 supervisors | `Supervision`/`Cohorts` `Ignored` (impl PR) | `factory_ignore_and_init_ignore_keep_the_spec`; `ignored_child_restarted_in_one_for_all_round`; `ignored_child_restarted_in_rest_for_one_round`; `temporary_ignore_is_removed`; `wait_ready_on_ignored_returns_unavailable`; `startup_timeout_bounds_a_hung_factory`; `startup_timeout_infinity`; `restart_name_clash_is_a_failed_attempt` (traced, `trace_check.py`) | | V1 oracle treats `Ignored` | |
 | Options | | `zero_timeout_and_zero_bounds_are_invalid_options` (both modes); `stack_size_on_pooled_placement_is_invalid`; `spawn_panics_on_executor_failure` (failpoint) | | | `start_options_struct_literal`; `start_options_clone_without_actor_clone` (ui-pass) |
 | API removal | | | | | `start_on_removed`, `start_with_backend_removed`, `start_linked_removed`, `execution_group_start_removed`, `start_monitor_requires_down_handler` |
 | No cost on send/dispatch | | | | | benchmark gate: the default send, request and dispatch benchmarks within noise of 0.8 (`benchmarks/`, the gate introspection #256 uses); `future_layout` sizes unchanged for the run loop |
-| Lock order | | Loom: `commit_races_parent_exit_begin`, `two_commits_one_name`, `ready_commit_races_timer` (the cell's CAS) | | | |
+| Lock order | | Loom: `commit_races_parent_exit_begin`, `two_commits_one_name`, `ready_commit_races_timer` (the cell's CAS), `ready_commit_races_scope_close`, `cross_group_commits` | | | |
 
 **Placements.** Every integration test runs in:
 
@@ -1148,36 +1186,46 @@ They use a per-placement macro, as `semantics_gaps` does.
 `concurrency/tests/start_trace.rs` records every scenario in 16.1 on `Async`,
 `async_group` and `thread_group`. `TraceStart.tla` replays each trace as a
 behaviour of `Start.tla`, and `trace_check.py` gains schema `start-v1`.
-
-Every event names the code point at which it is recorded, which is its
-linearization point.
+Every event names the code point at which it is recorded (its
+linearization point), and every event has exactly one consumable model
+transition (Codex R8).
 
 | Event | Fields | Model action | Linearization point (code) |
 |---|---|---|---|
-| `SConfig` | parent placement, parent trap flag, Cap | `Init` | trace start |
+| `SConfig` | parent placement, parent trap flag, Cap, owner gate | `Init` | trace start |
 | `SBegin` | c, kind, explicit, named | `Begin` | entry of the start call |
 | `SPrepareFail` | c, error | `PrepareFail` | the prepare step's error return |
 | `SCommit` | c, place, edge kind, named, owned | `Commit` | inside the commit section, all locks held |
-| `SRefuse` | c, reason | `Commit` (refusal) | inside the commit section |
-| `SLookup` | c | `Lookup` | `whereis` under the registry read lock (test probes only) |
+| `SRefuse` | c, reason, blamed holder | `Commit` (refusal) | inside the commit section |
+| `SLookup` | name, hit c or miss | `Lookup` (hit) or a stuttering step whose guard requires the name free (miss) | `whereis`, under the registry lock (test probes) |
 | `SStartedBegin` | c | `StartedBegin` | before the first poll of `started()` |
-| `SResolve` | c, outcome, trap flag, held signals, committed cell | `StartedEnd` / `KilledEarly` | under the cell lock at the end of `started()` |
-| `STimer` | c, won | `Timeout` | under the cell lock in the timer |
-| `SContinue` / `SHandle` | c | `RunContinue` / `Handle` | the start of the turn |
-| `SExit` | c, reason | `Exit` (via `ReadyExit`, `KillReady`, `ApplyParentExit`, `HandleQueuedExit`) | exit begin (0.8 phase 2) |
+| `SAdminStop`, `SKill` | c | `AdminStop`, `OutsideKill` | the signal's arrival (exit-request lock) |
+| `SResolve` | c, outcome, trap flag, held signals, commitment, requested reason | `StartedEnd` / `KilledEarly` | under the cell lock at the end of `started()`; every pre-readiness exit is recorded here and never as `SExit` (agy F8) |
+| `STimer` | c, won or lost | `Timeout` (won) or a stuttering step whose guard requires a commitment (lost) | under the cell lock in the timer |
+| `SDeadline` | c | `CleanupDeadline` | the cleanup-deadline timer |
+| `SContinue` / `SHandle` | c | `RunContinue` / `Handle` / `HandleQueuedExit` | the start of the turn |
+| `SExit` | c, reason | `ReadyExit`, `KillReady`, `ApplyParentExit`, `HandleQueuedExit` (post-readiness only) | exit begin (0.8 phase 2) |
+| `SReason` | c, new reason | `KillExiting` | a pre-D reason change (exit-request lock) |
 | `SUnlink` | c | `ChildUnlink` | the unlink fence |
-| `SDie` | c, taken link note, taken monitor note | `Die` | D (0.8 phase 4) |
-| `SPublish` | c, name released, slot released, disposition per note (delivered, diverted, applied, dropped) | `Publish` | publication (0.8 phase 6), under the cell lock |
-| `SAnswer` | c, result, pending | `AckOk` / `AckFail` | under the cell lock when the waiter takes the result |
+| `SDie` | c, final reason, taken notes | `Die` | D (0.8 phase 4) |
+| `SRelease` | c, name released, slot released | `Release` | after destruction; registry then group lock |
+| `SPublish` | c, disposition per note (delivered, diverted, applied, dropped) | `Publish` | publication, under the cell lock |
+| `SAnswer` | c, result, reason, pending | `AckOk` / `AckFail` | under the cell lock when the waiter takes the result |
+| `SReady` | c, observed result | a stuttering step whose guard requires the commitment (and publication or the deadline) to match | `ready()` returning |
 | `SAbandon` | c, handed-on notice | `Abandon` | `Drop` of `Starting`, under the cell lock |
-| `PExitBegin` | reason | `PExit` | the parent's exit begin |
-| `PDie` | per child: queued or held parent exit | `PDie` | the parent's D |
-| `PNotice` | c, kind, reason | (part of `Publish`/`Abandon`) | enqueue into the parent's mailbox, or the signal applied to it |
+| `PExitBegin`, `PDie`, `PPublish` | reason; per child: link note taken; per child: notice and polite Shutdown | `PExit`, `PDie`, `PPublish` | the parent's exit begin, D and publication |
+| `POwnerClose` | | `OwnerClose` | the owner's gate closing |
+| `PNotice` | c, kind, reason | part of `Publish`/`Abandon` | enqueue into the parent's mailbox, or the signal applied to it |
 | `GClose`, `GScopeKill`, `GGenDone` | | `GClose`, `ScopeDeadline`, `GenDone` | group close; the scope deadline; the generation-end commit |
 
-- **Complete consumption.** Replay must consume every event, and it may not
-  invent observable events: every notice the parent sees has its own
-  `PNotice` and must match the disposition recorded in `SPublish`.
+- **Interleavings.** `SRelease` and `SPublish` are separate events because
+  the release and the disposition happen under different locks. A trace in
+  which C1's name is released, C2 commits the same name, and then C1
+  publishes replays faithfully. A control moves `SRelease` after the
+  competing `SCommit` and must be rejected.
+- **Complete consumption.** Replay must consume every event without inventing
+  observable events. Every notice the parent sees has its own `PNotice`,
+  which must match the disposition in `SPublish` or `SAbandon`.
 - **Fault-only actions** (`RegisterFirst`, `CommitRest`, `LateLink`,
   `LateRelease`) are excluded from positive coverage. `trace_coverage.py`
   requires every other action to be reached.
@@ -1185,10 +1233,13 @@ linearization point.
   trace, which the checker must reject:
   - move `SCommit` after `SStartedBegin`;
   - give two children overlapping names;
-  - change a managed child's `SCommit` place to unmanaged;
-  - add a `PNotice` after an `SAnswer` error for a trapping parent;
-  - move `SAnswer` (error) before `SPublish`;
-  - add an `STimer won` after an `SResolve` that committed ready.
+  - move a `SRelease` after a competing `SCommit`;
+  - change a managed child's place to unmanaged;
+  - add a `PNotice` after an error answer to a trapping parent;
+  - move an error `SAnswer` before `SPublish` without an `SDeadline`;
+  - add an `STimer won` after a ready `SResolve`;
+  - change an error answer's reason to the requested one after an `SReason`;
+  - drop a diverted notice on `SAbandon`.
 
 ### 16.3 Simulator
 
