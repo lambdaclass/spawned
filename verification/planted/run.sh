@@ -174,7 +174,7 @@ layer_K() {
     timed timeout 3600 bash -c "${KANI_ENV:+. '$KANI_ENV' && }cd '$root/concurrency' && cargo kani --output-format terse"
     if grep -q 'VERIFICATION:- FAILED' "$log"; then
         verdict=caught
-        detail="$(grep -B30 'VERIFICATION:- FAILED' "$log" | grep -oE 'Checking harness [a-z_:]+' | sed 's/Checking harness //' | sort -u | head -4 | tr '\n' ' ')"
+        detail="$(awk '/Checking harness/ {h = $3; sub(/[.]+$/, "", h)} /VERIFICATION:- FAILED/ {print h}' "$log" | sort -u | head -4 | tr '\n' ' ')"
     elif grep -q 'Complete - [0-9]* successfully verified harnesses, 0 failures' "$log"; then
         verdict=missed; detail=""
     elif grep -qE '^error(\[E[0-9]+\])?:' "$log"; then
