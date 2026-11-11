@@ -20,6 +20,13 @@ Active design contracts. Usage is documented in the [guide](../GUIDE.md).
   runtime-dropped actors as in OTP (ROADMAP ranks 5e, 5f, 5g), with the base
   actor lifecycle model `Lifecycle.tla`.
 
+- **[unified-start.md](unified-start.md)** (rank 5h, 0.9, design in review,
+  not implemented): one start API as OTP's `start`, `start_link` and
+  `start_monitor` plus `spawn`, with `StartOptions`, placement inheritance,
+  fallible init, continuations and atomic names. Model:
+  `verification/tla/Start.tla`. Client rewrites:
+  [unified-start-client-mapping.md](unified-start-client-mapping.md).
+
 Earlier designs (the v0.5 API redesign alternatives, the framework comparison
 and superseded roadmap plans) are archived in
 [`legacy/docs/design`](../../legacy/docs/design).

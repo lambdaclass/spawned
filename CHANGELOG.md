@@ -2,12 +2,15 @@
 
 ## Unreleased
 
-- Design (0.9, in review): a unified start API, `docs/design/unified-start.md`.
-  OTP's `start`, `start_link` and `start_monitor`, each optionally taking one
-  `StartOptions` (placement, registered name, startup timeout, per-instance
-  bounds). Linked and monitored children inherit their parent's placement.
-  It replaces `start_on`, `start_with_backend`, `ExecutionGroup::start` and
-  `start_linked`. A new TLA+ model, `Start.tla`, has negative controls.
+- Design (0.9, in review): a unified start API (`docs/design/unified-start.md`,
+  rank 5h). OTP's `start`, `start_link` and `start_monitor` wait for
+  `started()`, and `spawn` starts without waiting. All four take one
+  `StartOptions` (placement, typed name, init timeout, label, stack size).
+  `started()` may fail or continue (`Init`). Linked and monitored children
+  inherit their parent's placement. It replaces `start_on`,
+  `start_with_backend`, `ExecutionGroup::start` and `start_linked`. A new
+  TLA+ model, `Start.tla`, runs in a per-PR CI leg `start` with 16 negative
+  controls, and a client mapping covers 51 sites.
 
 - Tests: coverage follow-ups. `restart_modes_distinguish_normal_shutdown_and_panic`
   now sends a real `Normal` exit; a per-PR `MCSupervisionTemporary` TLC

@@ -17,6 +17,7 @@ this fits with Loom, Shuttle, Miri, ThreadSanitizer and mutation testing.
 | `DeferredReplies.tla`, `MCDeferredReplies*.tla/.cfg` | Rank 11 design model (not implemented), part 1: reply slots, send-time deadlines with shortening, deferral credits shared by a token and its first linked job, the exiting phase with unwind-local drops, a stuck phase (cleanup deadline passed while `stopped()` runs: nothing closed early, death later or never), death, and downstream request cleanup. Thirteen named negative controls. |
 | `DeferredJobs.tla`, `MCDeferredJobs*.tla/.cfg` | Rank 11 design model, part 2: pipe jobs with separate execution, cancellation and notification states; keyed replacement including notified jobs; optional job deadlines; a FIFO mailbox with emit credits and the terminal message last; `ActorId` fencing. `MCDeferredJobsEmits` is the fast configuration with emits. Nine named negative controls. |
 | `Lifecycle.tla`, `MCLifecycle{,Live,Fence,Deep,LiveDeep,WideDeep}.tla/.cfg` | Base actor lifecycle as proposed for v0.8 ([design](../../docs/design/otp-exit-signals.md)): links, monitors, `trap_exit`, exit signals (`Killed`, ignored `Normal`, `NoProc`, parent exits), administrative stops, requests around death, `Exit`/`Down` ordering. Seventeen negative-control faults (17 safety checks, 2 liveness checks): the v0.7 exit-signal behaviours (direct stops ignoring `trap_exit`, kills ending `Kill`, unfenced `unlink`/`demonitor`, real reasons for late registrations, `stopped()` after kills and untrapped signals, late signals ignored during exit), the PR #182/#185 bugs, early exit errors, kill and panic precedence, runtime-drop reasons, early notification, a split death point and a parent exit reaching `exit_received`. Per PR: `MCLifecycle` (7.5M states, fewer reasons, where the safety controls run), `MCLifecycleFence`, `MCLifecycleLive`; weekly: `MCLifecycleWideDeep` (the former 43M-state per-PR instance), `MCLifecycleDeep`, `MCLifecycleLiveDeep`. |
+| `Start.tla`, `MCStart{,Continue,Live,Deep}.tla/.cfg` | Unified start API, 0.9 design ([design](../../docs/design/unified-start.md), not implemented): `spawn`, `start`, `start_link`, `start_monitor`, with placement inheritance, an atomic link or monitor before `started()`, atomic names, fallible init, the init timeout, a continuation run before any mailbox message, abandoned waits, and parent death and group closure between the steps of stage 1. Sixteen negative controls (15 safety, 1 liveness); see [Unified start](#unified-start-09-design). Per PR: `MCStart`, `MCStartContinue`, `MCStartLive` (CI leg `start`); weekly: `MCStartDeep`. |
 | `TraceCohorts.tla`, `TraceNested.tla` | Policy and ownership projections of real cohort/nested Rust executions. |
 | `trace_check.py`, `negative_checks.py` | Replay recorded traces; deliberately wrong selections, premature resume/join and broken propagation must be rejected or produce counterexamples. |
 | `SupervisionInd.tla`, `CohortsInd.tla`, `NestedSupervisionInd.tla`, `CoordinatorInd.tla`, `MC*Ind.tla`, `apalache.sh` | Inductive invariants (`IndInv`) checked with Apalache; see [Inductive invariants](#inductive-invariants-apalache). |
@@ -36,7 +37,7 @@ nix develop -c tlc MCSupervision -workers auto   # ad hoc, from verification/tla
 
 **CI.** On every PR (`.github/workflows/verification.yml`) the per-PR
 configurations run as parallel `tla-models` legs (`supervision`, `lifecycle`,
-`deferred`, and `other` for every configuration no leg names), next to
+`deferred`, `start`, and `other` for every configuration no leg names), next to
 `tla-traces` (trace validation, negative controls, trace coverage). Weekly and
 on dispatch, `tla-deep` checks each `*Deep.cfg` on its own runner. The
 required check `tla` passes only if all of them passed.
@@ -580,3 +581,66 @@ Measured 2026-11-10 (TLC 2.19, fede):
 | `MCDeferredJobsDeep` (3 jobs, 2 instances, 1 emit each; safety) | 5,876,658 | 12,792,039 | 23 | 25 s, 12 workers |
 
 All 22 named controls find their counterexample, each in a few seconds.
+
+## Unified start (0.9 design)
+
+`Start.tla` backs the [unified start design](../../docs/design/unified-start.md),
+written before the implementation, as the deferred-replies models were. The
+design's section 15 lists what it covers and what it leaves out.
+
+**What is modelled.**
+
+- One parent: managed in group `G` or unmanaged, trapping or not, and able
+  to exit.
+- Children started with `spawn`, `start`, `start_link` or `start_monitor`,
+  with an explicit or default placement and possibly one shared name.
+- Stage 1 as four steps (admit, link/monitor, register, dispatch). Parent
+  death, group closure and a competing registration can interleave between
+  any two of them.
+- `started()` as one step with every `Init` outcome. Signals are held until
+  it returns.
+- Messages from others that a continuation must precede.
+- A waiting starter that acknowledges, fails, times out or abandons the wait.
+
+**Safety invariants:**
+
+- `InheritedPlacement`, `LinkBeforeStarted`;
+- `NameUnique`, `NameReleasedAtDeath`;
+- `AbortInvisible`, `AckMeansStarted`, `FailureAfterDeath`, `FailureFlushed`;
+- `TimeoutContained`, `NoEdgeToDeadParent`;
+- `AdmittedOnlyOpen`, `CapacityRespected`, `NoticeOnce`;
+- `ContinueFirst`, `AbandonedNoticeDelivered`.
+
+Liveness: `ParentExitReachesChild` (`MCStartLive`).
+
+| Configuration | Run | Instance |
+|---|---|---|
+| `MCStart` | per PR | two children, every waiting variant, default placements, one name, timeouts, a closing group with room for two |
+| `MCStartContinue` | per PR | one child of every variant, two messages from others, no name |
+| `MCStartLive` | per PR | two linked or monitored children of a managed parent, liveness |
+| `MCStartDeep` | weekly | as `MCStart`, plus every explicit placement, `spawn` and messages |
+
+**Negative controls** (`START_CONTROLS` and `START_TEMPORAL_CONTROLS` in
+`negative_checks.py`; each checks `TypeOK` and only the named property):
+
+| Fault | Breaks |
+|---|---|
+| `NoInherit` (the 0.8 `start_linked` placement) | `InheritedPlacement` |
+| `LinkAfterStarted` | `LinkBeforeStarted` |
+| `DoubleRegister` | `NameUnique` |
+| `LateUnregister` | `NameReleasedAtDeath` |
+| `AbortLeaksLink` | `AbortInvisible` |
+| `EarlyFailAck` | `FailureAfterDeath` |
+| `AckBeforeStarted` | `AckMeansStarted` |
+| `NoMonitorFlush`, `NoLinkFlush` | `FailureFlushed` |
+| `KillBeforeUnlink` | `TimeoutContained` |
+| `LinkCheckLate` | `NoEdgeToDeadParent` |
+| `AdmitClosed` | `AdmittedOnlyOpen` |
+| `IgnoreCap` | `CapacityRespected` |
+| `AbandonDropsNotice` | `AbandonedNoticeDelivered` |
+| `ContinueQueued` (`MCStartContinue`) | `ContinueFirst` |
+| `DropHeld` (`MCStartLive`, liveness) | `ParentExitReachesChild` |
+
+The trace schema `start-v1` and `TraceStart.tla` (real start, link, monitor,
+name and placement events replayed against this model) belong to the
+implementation PR, as the verification rule requires.
