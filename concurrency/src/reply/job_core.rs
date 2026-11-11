@@ -266,19 +266,24 @@ impl JobCore {
 
     /// Delayed emit, step 2 at its deadline, or when dropped unfired
     /// (`enqueue` is `None`): under the job's lock, enqueue if the
-    /// notification is still pending. A message not enqueued returns its
-    /// credit through its guard, after the lock. The last scheduled emit
-    /// hands back a held terminal, to run outside the lock.
-    pub(crate) fn fire<X>(
+    /// notification is still pending. A message not enqueued (the refused
+    /// envelope, or the uncalled `enqueue` handed back as the third value)
+    /// returns its credit through its guard when the caller drops it, after
+    /// the lock: it is user payload. The last scheduled emit hands back a
+    /// held terminal, to run outside the lock.
+    pub(crate) fn fire<X, F: FnOnce() -> Result<(), X>>(
         &self,
-        enqueue: Option<impl FnOnce() -> Result<(), X>>,
-    ) -> (EmitResult<X>, Option<HeldTerminal>) {
+        enqueue: Option<F>,
+    ) -> (EmitResult<X>, Option<HeldTerminal>, Option<F>) {
         let mut inner = lock(&self.inner);
         debug_assert!(inner.scheduled > 0, "scheduled emit underflow");
         inner.scheduled = inner.scheduled.saturating_sub(1);
-        let result = match enqueue {
-            Some(enqueue) if inner.open() => enqueue().map_err(|unsent| (JobGone, Some(unsent))),
-            _ => Err((JobGone, None)),
+        let (result, unused) = match enqueue {
+            Some(enqueue) if inner.open() => (
+                enqueue().map_err(|unsent| (JobGone, Some(unsent))),
+                None,
+            ),
+            unused => (Err((JobGone, None)), unused),
         };
         let held = if inner.scheduled == 0 {
             inner.held.take()
@@ -287,7 +292,7 @@ impl JobCore {
         };
         drop(inner);
         self.emitters.notify_all();
-        (result, held)
+        (result, held, unused)
     }
 
     #[allow(dead_code)] // used by the Loom model

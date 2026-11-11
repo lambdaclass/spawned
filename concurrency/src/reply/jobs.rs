@@ -394,6 +394,7 @@ impl JobState {
         self: &Arc<Self>,
         at: u64,
         send: SendScheduled,
+        failures: Arc<crate::mailbox::DropFailures>,
         track: impl FnOnce(u64, std::sync::Weak<dyn Expirable>),
     ) -> Result<(), JobGone> {
         self.core.schedule()?;
@@ -403,6 +404,7 @@ impl JobState {
             at,
             job: Arc::downgrade(self),
             send: Mutex::new(Some(send)),
+            failures,
         });
         lock(&self.scheduled).push(emit.clone());
         if self.is_cancelled() {
@@ -739,16 +741,56 @@ impl Expirable for JobDeadline {
     }
 }
 
+/// A value (user payload) whose drop is contained by the owner's failure
+/// sink: it may be dropped on the deadline service thread.
+pub(crate) struct Contained<T> {
+    value: Option<T>,
+    failures: Arc<crate::mailbox::DropFailures>,
+}
+
+impl<T> Contained<T> {
+    pub(crate) fn new(value: T, failures: Arc<crate::mailbox::DropFailures>) -> Self {
+        Self {
+            value: Some(value),
+            failures,
+        }
+    }
+    pub(crate) fn into_inner(mut self) -> Option<T> {
+        self.value.take()
+    }
+}
+
+impl<T> Drop for Contained<T> {
+    fn drop(&mut self) {
+        if let Some(value) = self.value.take() {
+            self.failures.discard(value);
+        }
+    }
+}
+
 /// Enqueues a delayed emit's envelope; a refused envelope comes back erased,
 /// to be dropped outside locks.
 pub(crate) type SendScheduled = Box<dyn FnOnce() -> Result<(), Box<dyn Send>> + Send>;
 
 /// One delayed emit (`JobCtx::emit_at`), serviced by the owner's deadline
 /// heap. Holds its message and emit credit until it fires or is discarded.
+///
+/// Its message is user payload and is usually dropped on the process-wide
+/// deadline service thread: every drop goes through the owner's failure
+/// sink, which contains a panicking destructor (recorded as a cleanup
+/// failure), so the emit still settles and the service keeps running.
 pub(crate) struct ScheduledEmit {
     at: u64,
     job: std::sync::Weak<JobState>,
     send: Mutex<Option<SendScheduled>>,
+    failures: Arc<crate::mailbox::DropFailures>,
+}
+
+impl Drop for ScheduledEmit {
+    fn drop(&mut self) {
+        let send = self.send.get_mut().unwrap_or_else(|p| p.into_inner()).take();
+        self.failures.discard(send);
+    }
 }
 
 impl ScheduledEmit {
@@ -759,24 +801,26 @@ impl ScheduledEmit {
         let Some(send) = lock(&self.send).take() else {
             return false;
         };
-        // A discarded message (and its credit guard) drops at the end,
-        // outside the trace section and every lock.
-        let (deliver, _discarded) = if deliver {
+        // A discarded message (and its credit guard) drops below, outside the
+        // trace section and every lock, through the failure sink.
+        let (deliver, discarded) = if deliver {
             (Some(send), None)
         } else {
             (None, Some(send))
         };
-        let (result, held) = trace::atomic(|| {
-            let (result, held) = job.core.fire(deliver);
+        let (result, held, unused) = trace::atomic(|| {
+            let (result, held, unused) = job.core.fire(deliver);
             if result.is_ok() {
                 crate::instrumentation::hooks::job_emitted();
                 job.record(|id| trace::JobEvent::new("Emit", id));
             }
-            (result, held)
+            (result, held, unused)
         });
         let delivered = result.is_ok();
-        // A refused envelope (and its credit guard) drops here, unlocked.
-        drop(result);
+        // Whatever was not enqueued (the refused envelope, the uncalled send
+        // or the discarded one, each with its credit guard) drops here,
+        // unlocked and contained.
+        self.failures.discard((result, unused, discarded));
         lock(&job.scheduled).retain(|emit| !std::ptr::eq(Arc::as_ptr(emit), self));
         if let Some(held) = held {
             held();
@@ -905,7 +949,7 @@ mod tests {
                 let _ = sent_tx.send(());
                 Ok(())
             });
-            let result = state.schedule_emit(u64::MAX - 1, send, |_, _| {});
+            let result = state.schedule_emit(u64::MAX - 1, send, Arc::default(), |_, _| {});
             let _ = done_tx.send((result, state.core.scheduled()));
         });
         let (result, scheduled) = done_rx

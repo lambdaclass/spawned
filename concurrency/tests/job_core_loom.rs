@@ -410,10 +410,12 @@ fn scheduled_emit_vs_finish_and_cancel() {
             let timer = {
                 let (job, mailbox) = (job.clone(), mailbox.clone());
                 loom::thread::spawn(move || {
-                    let (result, held) = job.core.fire(Some(|| {
+                    let (result, held, unused) = job.core.fire(Some(|| {
                         mailbox.push(Msg::Emit(0, 0));
                         Ok::<(), ()>(())
                     }));
+                    // Not enqueued: handed back to drop outside the lock.
+                    assert_eq!(result.is_err(), unused.is_some());
                     if result.is_err() {
                         // Not enqueued: the credit guard returns it.
                         job.core.return_emit_credit();

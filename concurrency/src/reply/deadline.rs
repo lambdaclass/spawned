@@ -246,11 +246,16 @@ mod thread_service {
                     }
                     state.actors.remove(&key);
                     drop(state);
-                    if let Some(registry) = weak.upgrade() {
-                        if let Some(next) = registry.service_deadlines(now) {
-                            schedule(&registry, next);
+                    // Entries are contained one by one; this also covers the
+                    // visit itself and dropping the upgraded registry, so the
+                    // one process-wide service never stops.
+                    super::super::registry::contain_entry(|| {
+                        if let Some(registry) = weak.upgrade() {
+                            if let Some(next) = registry.service_deadlines(now) {
+                                schedule(&registry, next);
+                            }
                         }
-                    }
+                    });
                     state = lock(service);
                 }
                 Some(Reverse((at, _))) => {

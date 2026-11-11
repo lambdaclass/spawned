@@ -128,7 +128,9 @@ where
         let (_, unsent) = self
             .state
             .notify(end_of(&outcome), || self.enqueue_terminal(outcome));
-        drop(unsent);
+        // A refused terminal message (`done` and the outcome) may drop on
+        // the deadline service thread: contained.
+        self.ctx.sender.failures().discard(unsent);
     }
 
     fn enqueue_terminal(&self, outcome: JobOutcome<T>) -> Option<MailboxItem<A>> {
@@ -164,15 +166,28 @@ where
             || self.enqueue_terminal(outcome.take()?),
             || {
                 let run = self.clone();
-                let outcome = outcome.take();
+                // Dropped unrun (a deadline or a cancel overtook it) possibly
+                // on the deadline service thread: contained.
+                let outcome = outcome
+                    .take()
+                    .map(|outcome| crate::reply::jobs::Contained::new(outcome, self.ctx.sender.failures()));
                 Box::new(move || {
-                    if let Some(outcome) = outcome {
+                    if let Some(outcome) = outcome.and_then(|o| o.into_inner()) {
                         run.notify(outcome);
                     }
                 })
             },
         );
-        drop(unsent);
+        self.ctx.sender.failures().discard(unsent);
+    }
+}
+
+impl<A: Actor, T, M> Drop for Run<A, T, M> {
+    /// The last reference may go on the deadline service thread (a deadline
+    /// or a held result firing): `done` and its captures drop contained.
+    fn drop(&mut self) {
+        let done = self.done.get_mut().unwrap_or_else(|p| p.into_inner()).take();
+        self.ctx.sender.failures().discard(done);
     }
 }
 
@@ -276,6 +291,7 @@ impl<A: Actor> JobCtx<A> {
             &self.state,
             spawned_rt::time::to_ticks(at),
             send,
+            self.ctx.sender.failures(),
             |at, item| self.ctx.replies.track(at, item),
         )
     }

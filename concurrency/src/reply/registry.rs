@@ -215,12 +215,21 @@ impl Registry {
 
     /// The service visits: expire every due entry outside the lock, and
     /// return the next earliest deadline.
+    ///
+    /// Entries run framework code that can reach user code (a waker, a
+    /// payload destructor the entry did not route to its failure sink, the
+    /// last reference to a job's `done`). Each runs contained, so one
+    /// failing entry neither skips the others nor ends the shared service.
     pub(crate) fn service_deadlines(&self, now: u64) -> Option<u64> {
         let due = lock(&self.lists).deadlines.due(now);
         for item in due {
-            if item.pending_deadline().is_some_and(|d| d <= now) {
-                item.expire(now);
-            }
+            contain_entry(|| {
+                if item.pending_deadline().is_some_and(|d| d <= now) {
+                    item.expire(now);
+                }
+                // Possibly the last reference: dropped inside the guard.
+                drop(item);
+            });
         }
         lock(&self.lists).deadlines.earliest()
     }
@@ -358,6 +367,18 @@ impl Registry {
         #[cfg(all(spawned_sim, feature = "async"))]
         self.sim.wake();
         closed
+    }
+}
+
+/// Run one deadline-service step; a panic is logged and disposed of.
+pub(crate) fn contain_entry(step: impl FnOnce()) {
+    if let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(step)) {
+        let message = crate::error::panic_message(&*payload);
+        crate::mailbox::dispose_panic(payload);
+        crate::actor_cleanup::log_safely(|| {
+            tracing::error!(event = "deadline_entry_failed", %message,
+                "a deadline entry panicked on the deadline service; servicing continues");
+        });
     }
 }
 
