@@ -28,6 +28,21 @@ handlers and the existing default behavior. New policies are explicit and opt-in
 
 - **v0.7.1:** canary shutdown, destructor/subscriber-panic containment and restart
   budget fixes, compact async handles, and the first published `spawned-test` kit.
+- **v0.7.2:** one-pointer `ActorRef`/`Context` handles (fixes ethrex's `rpc::`
+  stack overflow) and macro fixes.
+- **v0.7.3:** OTP-aligned restart retry with OneForAll cohort rebuild, and the
+  deterministic simulator (virtual time, decision tapes, PCT, bounded DFS).
+  Ethrex and Ethlambda run 0.7.3 in their draft PRs and on canary nodes.
+- **v0.8 (in progress):** deferred replies and pipe-to-self (rank 11, PR #239)
+  and OTP exit signals, startup and runtime-drop semantics (ranks 5e, 5f, 5g,
+  PR #240). The final pre-release review found 2 P0 and about 13 P1 issues,
+  mostly at the actor's death point; they are being fixed on #240 before the
+  release. Client ports are ready on the clients' `spawned-v0.8` branches.
+- **Next feature:** dynamic supervisor (rank 12a), design and TLA+ model in
+  review (PR #245).
+- **Process:** every PR merges through GitHub's merge queue with 19 required
+  checks, including the simulated suites (`sim`). Robustness features must add
+  no cost on the default path (see [Non-goals](#non-goals)).
 
 Already-erased protocol timeout configuration remains a separate
 API follow-up: configure the concrete handle before `to_x_ref()` today. Native
