@@ -275,18 +275,28 @@ mod sim {
     use std::time::Duration;
 
     /// Per-heap service task state, kept by the registry.
-    #[derive(Default)]
     pub(crate) struct SimService {
         started: AtomicBool,
         earliest: AtomicU64,
         waker: AtomicWaker,
     }
 
+    impl Default for SimService {
+        fn default() -> Self {
+            Self {
+                started: AtomicBool::new(false),
+                // Nothing scheduled yet: a first schedule only lowers it, so a
+                // concurrent earlier deadline is never overwritten.
+                earliest: AtomicU64::new(u64::MAX),
+                waker: AtomicWaker::new(),
+            }
+        }
+    }
+
     pub(super) fn schedule(registry: &Arc<Registry>, at: u64) {
         let service = registry.sim_service();
         service.earliest.fetch_min(at, Ordering::AcqRel);
         if !service.started.swap(true, Ordering::AcqRel) {
-            service.earliest.store(at, Ordering::Release);
             let weak = Arc::downgrade(registry);
             spawned_rt::tasks::spawn(run(weak));
         }

@@ -117,6 +117,12 @@ impl<M: Message> Handler<M> for Mock {
                     }
                     reply.reply(value);
                 }
+                Plan::Discard { delay } => {
+                    if let Some(delay) = delay {
+                        sleep(delay).await;
+                    }
+                    drop(reply);
+                }
                 Plan::Defer => {
                     if let Ok(token) = reply.defer() {
                         inbox.store_deferred::<M>(token);

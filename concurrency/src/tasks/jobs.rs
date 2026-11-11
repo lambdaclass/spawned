@@ -330,7 +330,13 @@ impl<A: Actor> Context<A> {
             let work = pin!(AssertUnwindSafe(work).catch_unwind());
             let stop = future::select(cancelled, gone);
             match future::select(work, stop).await {
-                future::Either::Left((result, _)) => run.notify(caught(result)),
+                future::Either::Left((result, _)) => {
+                    // Execution ended: return its credit (and linked-job
+                    // count) before the terminal message can be dispatched,
+                    // so `done`'s turn can start the next job at the bound.
+                    drop(_hold);
+                    run.notify(caught(result))
+                }
                 // Cancelled (or the opt-in caller give-up): the work future is
                 // dropped here, and with it any downstream receiver.
                 future::Either::Right(_) => state.cancel(),
@@ -383,6 +389,8 @@ impl<A: Actor> Context<A> {
                 let _ended = ended;
                 let _deadline = deadline;
                 let result = std::panic::catch_unwind(AssertUnwindSafe(|| work(&job)));
+                // Execution ended: release the native slot and credit first.
+                drop((_native, _hold));
                 thread_run.notify(caught(result));
             });
         match spawned {

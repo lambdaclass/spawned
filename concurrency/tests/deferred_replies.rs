@@ -61,6 +61,7 @@ mod tasks_mode {
     use super::*;
     use spawned_concurrency::tasks::{Actor, ActorStart, Context, Handler};
     use spawned_concurrency::PendingReply;
+    use spawned_rt::tasks::sleep;
 
     pub struct Parker {
         pub parked: Vec<(u64, ReplyTo<u64>)>,
@@ -400,6 +401,25 @@ mod tasks_mode {
         assert!(actor.request(Done).await.unwrap());
         actor.context().stop();
         actor.join().await;
+    }
+
+    /// agy #11: `closed()` re-arms when the deadline is shortened while it
+    /// waits.
+    #[spawned_macros::sim_test]
+    async fn closed_follows_a_shortened_deadline() {
+        let (reply, _rx) = spawned_concurrency::reply::reply_pair::<u32>(Deadline::Never);
+        let token = std::sync::Arc::new(reply.defer().unwrap());
+        let watcher = {
+            let token = token.clone();
+            spawned_rt::tasks::spawn(async move { token.closed().await })
+        };
+        sleep(Duration::from_millis(5)).await;
+        token.with_deadline(spawned_rt::time::Instant::now() + Duration::from_millis(20));
+        spawned_rt::tasks::timeout(Duration::from_secs(5), watcher)
+            .await
+            .expect("closed() missed the shortened deadline")
+            .unwrap();
+        assert!(token.is_closed());
     }
 
     #[spawned_macros::sim_test]

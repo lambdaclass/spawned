@@ -259,7 +259,18 @@ impl<R> Slot<R> {
             if up > 0 {
                 match pool {
                     Some(pool) if pool.reserve(up) => {}
-                    _ => return Err(None),
+                    _ => {
+                        // Report the bound only for the word it was computed
+                        // from: a word that changed meanwhile (closed,
+                        // abandoned) is re-evaluated, so a closed slot reports
+                        // `Closed`, not `Overloaded`.
+                        let actual = self.word.load(Ordering::Acquire);
+                        if actual != current {
+                            current = actual;
+                            continue;
+                        }
+                        return Err(None);
+                    }
                 }
             }
             match self
@@ -377,13 +388,18 @@ impl<R> Slot<R> {
     /// seen by any reply that has not read it yet.
     pub(crate) fn shorten(&self, at: u64, now: &impl Fn() -> u64) -> bool {
         let lowered = {
-            let _inner = lock(&self.inner);
+            let mut _inner = lock(&self.inner);
             let lower = state(self.word()) == OPEN && at < self.deadline();
             if lower {
                 self.deadline.store(at, Ordering::Release);
             }
-            lower
+            (lower, if lower { std::mem::take(&mut _inner.watchers) } else { Vec::new() })
         };
+        let (lowered, watchers) = lowered;
+        // Token-side waiters re-arm their timers for the earlier deadline.
+        for watcher in watchers {
+            watcher.wake();
+        }
         self.check_deadline(now);
         lowered
     }

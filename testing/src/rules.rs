@@ -44,6 +44,8 @@ pub(crate) enum Plan<R> {
     Crash(String),
     /// `Mock::defer`: take the reply obligation and store it for the test.
     Defer,
+    /// `Mock::discard`: wait `delay`, then drop the reply obligation.
+    Discard { delay: Option<Duration> },
 }
 
 #[derive(Default)]
@@ -149,14 +151,10 @@ impl Rules {
             return Plan::Crash(reason);
         }
         if rule.discard {
-            let value = unit_result::<M>().expect("discard requires Result = ()");
-            let mut record = inbox.arrive(msg);
-            record.replied(Outcome::Discarded);
-            return Plan::Reply {
-                delay,
-                value,
-                record: Some(record),
-            };
+            // Discarded: the reply obligation is dropped unanswered, so a
+            // request gets `ReplyDropped`, as a lost message would.
+            inbox.push(msg, Outcome::Discarded);
+            return Plan::Discard { delay };
         }
         if rule.reply.is_none() && unit_result::<M>().is_none() {
             inbox.push(msg, Outcome::Unexpected);

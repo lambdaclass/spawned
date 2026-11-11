@@ -438,3 +438,29 @@ fn abandon_vs_shorten_vs_expiry() {
         assert_balanced(&pool, &[&slot]);
     });
 }
+
+/// agy #6: a deferral that finds the pool full while the caller abandons
+/// reports `Overloaded` only if the slot really became `OVERLOADED`; a slot
+/// that closed first reports `Closed`.
+#[test]
+fn defer_at_the_bound_vs_abandon() {
+    model(|| {
+        let pool = Arc::new(CreditPool::new(0));
+        let slot: Arc<Slot<u32>> = Arc::new(Slot::new(NEVER));
+        let caller = {
+            let slot = slot.clone();
+            loom::thread::spawn(move || slot.abandon())
+        };
+        let deferred = slot.defer(&pool, &|| 0);
+        let abandoned = caller.join().unwrap();
+        match deferred {
+            Err(Refused::Overloaded) => {
+                assert_eq!(state(slot.word()), slot::OVERLOADED);
+                assert!(!abandoned);
+            }
+            Err(Refused::Closed) => assert!(abandoned),
+            Ok(()) => panic!("a full pool granted a credit"),
+        }
+        assert_eq!(pool.used(), 0);
+    });
+}

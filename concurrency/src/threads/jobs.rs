@@ -296,6 +296,8 @@ impl<A: Actor> Context<A> {
                 let _ended = ended;
                 let _deadline = deadline;
                 let result = std::panic::catch_unwind(AssertUnwindSafe(|| work(&job)));
+                // Execution ended: release the native slot and credit first.
+                drop((_native, _hold));
                 thread_run.notify(caught(result));
             });
         match spawned {

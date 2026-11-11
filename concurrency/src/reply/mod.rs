@@ -357,14 +357,33 @@ impl<R: Send + 'static> ReplyTo<R> {
     #[cfg(feature = "async")]
     pub async fn closed(&self) {
         let slot = self.slot();
-        let waiting = std::future::poll_fn(|cx| slot.poll_closed(cx.waker(), &now_ticks));
-        let deadline = slot.deadline();
-        if deadline == NEVER {
-            return waiting.await;
-        }
-        let wait = Duration::from_nanos(deadline.saturating_sub(now_ticks()));
-        if spawned_rt::tasks::timeout(wait, waiting).await.is_err() {
-            slot.terminate(Terminal::TimedOut);
+        loop {
+            // One wait per deadline value: a shortening wakes the watchers,
+            // and the loop re-arms for the earlier deadline.
+            let deadline = slot.deadline();
+            let mut woken = false;
+            let waiting = std::future::poll_fn(|cx| {
+                if woken && slot.deadline() != deadline {
+                    return std::task::Poll::Ready(false);
+                }
+                woken = true;
+                slot.poll_closed(cx.waker(), &now_ticks).map(|()| true)
+            });
+            let closed = if deadline == NEVER {
+                waiting.await
+            } else {
+                let wait = Duration::from_nanos(deadline.saturating_sub(now_ticks()));
+                match spawned_rt::tasks::timeout(wait, waiting).await {
+                    Ok(closed) => closed,
+                    Err(_) => {
+                        slot.check_deadline(&now_ticks);
+                        slot.is_terminal()
+                    }
+                }
+            };
+            if closed {
+                return;
+            }
         }
     }
 

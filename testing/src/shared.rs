@@ -62,11 +62,11 @@ macro_rules! mock_builder {
         /// Fault: log each `M` as [`crate::Outcome::Discarded`] and do nothing
         /// else, as if the message were lost after a successful send.
         ///
-        /// Meant for fire-and-forget messages. A handler cannot tell a send
-        /// from a request, so a *request* `M` (a protocol method returning
-        /// `Response<()>`) still gets its `()` reply and the caller sees
-        /// success, whereas a genuinely lost request would time out; use
-        /// [`delay`](Self::delay) beyond the caller's timeout for that. A
+        /// Meant for fire-and-forget messages. A *request* `M` (a protocol
+        /// method returning `Response<()>`) has its reply obligation dropped
+        /// unanswered, so the caller gets `ReplyDropped`; use
+        /// [`delay`](Self::delay) beyond the caller's timeout to simulate a
+        /// request that is never answered. A
         /// discarded message stays `Discarded` even if the mock dies during
         /// a `delay` on it.
         pub fn discard<M: Message<Result = ()>>(mut self) -> Self {
