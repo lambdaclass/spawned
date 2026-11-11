@@ -52,8 +52,12 @@
 - Design (not implementation) for rank 12a, the dynamic supervisor
   (`DynamicSupervisor` / `simple_one_for_one`, PR #245):
   `docs/design/dynamic-supervisor.md`, the ethrex/ethlambda client mapping
-  and the `DynamicSupervisor` TLA+ model (per-PR and weekly configurations)
-  with 11 named negative controls.
+  and the `DynamicSupervisor` TLA+ model (per-PR, zero-budget and weekly
+  configurations). Revision 2 applies the maintainer's decisions (OTP-style
+  serialised starts, Elixir's 3-in-5 s budget with opt-in backoff,
+  `Shutdown` on exhaustion, arguments returned on rejection) and both
+  reviews (stuck-child isolation, reservation protocol, history-based
+  invariants), with 27 named negative controls.
 
 ## 0.7.3 — 2026-11-10
 

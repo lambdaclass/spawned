@@ -182,6 +182,10 @@ LIFECYCLE_SMALL = {"Reqs": "{}", "MaxSignals": "0", "DropEnabled": "FALSE"}
 
 # Rank 12a design model (docs/design/dynamic-supervisor.md): each mutation
 # against the invariant it must break, on the per-PR configuration.
+# Rank 12a design model (docs/design/dynamic-supervisor.md, revision 2):
+# each mutation against the invariant it must break, on the per-PR
+# configuration. Run one at a time (parallel TLC runs race on the standard
+# modules TLC extracts to /tmp).
 DYNAMIC_CONTROLS = [
     ("MCDynamicSupervisor", "IgnoreMax", "MaxChildrenBound"),
     ("MCDynamicSupervisor", "UncountedRestart", "MaxChildrenBound"),
@@ -192,6 +196,22 @@ DYNAMIC_CONTROLS = [
     ("MCDynamicSupervisor", "NoEscalate", "ExhaustionCloses"),
     ("MCDynamicSupervisor", "EarlyDone", "NoChildOutlivesSupervisor"),
     ("MCDynamicSupervisor", "Sequential", "ConcurrentShutdown"),
+    ("MCDynamicSupervisor", "ConcurrentStart", "SerialConstruction"),
+    ("MCDynamicSupervisor", "StuckFailsAll", "StuckIsolated"),
+    ("MCDynamicSupervisor", "PublishAfterClose", "NoPublishAfterStop"),
+    ("MCDynamicSupervisor", "OverlapGeneration", "AtMostOneGeneration"),
+    ("MCDynamicSupervisor", "PublishBeforeReady", "PublishedIsLive"),
+    ("MCDynamicSupervisor", "PrematureOk", "OkMeansReady"),
+    ("MCDynamicSupervisor", "UnchargedRetry", "ChargedRestarts"),
+    ("MCDynamicSupervisor", "ChargeFirstStart", "ChargedRestarts"),
+    ("MCDynamicSupervisor", "TransientNormalRestart", "RestartFollowsPolicy"),
+    ("MCDynamicSupervisor", "PermanentRetires", "RestartFollowsPolicy"),
+    ("MCDynamicSupervisor", "RetryFirstStart", "FirstStartNeverRetried"),
+    ("MCDynamicSupervisor", "EarlyFailedReply", "FailedAfterCleanup"),
+    ("MCDynamicSupervisor", "LateFailedOverwrite", "FailureCauseKept"),
+    ("MCDynamicSupervisor", "NoRefund", "ReservationsMatch"),
+    ("MCDynamicSupervisor", "ExpireReserved", "ReservationsMatch"),
+    ("MCDynamicSupervisor", "TermReplyEarly", "TermOkMeansRemoved"),
 ]
 DYNAMIC_TEMPORAL_CONTROLS = [
     ("NoAbort", "StartAnswered"),
