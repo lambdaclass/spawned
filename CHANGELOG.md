@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- ROADMAP: a ranked determinism backlog (D1-D10) under priority tier 3, from
+  an audit of what escapes the simulator in Spawned, Ethrex and Ethlambda
+  ([docs/research/determinism-audit.md](docs/research/determinism-audit.md)).
+  Same-seed reruns found no schedule nondeterminism; traces differ only in
+  process-global ids.
 - ROADMAP: a Path to 1.0 section (0.8, 0.9, 0.10 contents and what 1.0
   requires: stable API rules, a complete semantics contract, production-safe
   defaults, introspection, determinism, release gates, production proof and

@@ -61,6 +61,25 @@ Decided 2026-11-11, in this order: **soundness, introspection, determinism, test
 5. **Features a client needs.** Dynamic supervisor (12a), bounded mailboxes (17).
 6. **Performance, behind a regression gate.** A small benchmark set on every hot-path PR that flags slowdowns past a threshold, so "no cost on the default path" is enforced, not remembered. Then profiling, rank 37 and the [runtime direction](#runtime-direction).
 
+### Determinism backlog (tier 3)
+
+From the [determinism audit](docs/research/determinism-audit.md) (2026-11-11) of Spawned and the Ethrex and Ethlambda `spawned-v0.8` branches, ranked by how much more real code runs deterministically per unit of effort. Same-seed reruns (S2) found no schedule nondeterminism; traces differ only in process-global ids (D5).
+
+| # | Item | Effort |
+|---|---|---|
+| D1 | Interpose `clock_gettime`/`gettimeofday` and `getrandom`/`getentropy` under `spawned_sim` (madsim's technique): virtual time and seeded bytes on a thread that owns a world, so `Instant::now`, `SystemTime::now`, `thread_rng`, `OsRng` and `HashMap` keys become deterministic with no call-site change; `SPAWNED_SIM_STRICT=1` panics with the caller instead (the `tokio::spawn`-style check). Covers ~270 clock and ~50 rand sites in the clients. | M |
+| D2 | `spawn_blocking` runs inline under sim as one atomic step (today it panics): synchronous DB and compute offload (64 client sites) becomes simulable. | S |
+| D3 | Complete `spawned_rt::tasks` (`interval`, `sleep_until`, a `JoinSet`) and turn Tokio's "timers are disabled" panic into a message naming the `spawned_rt` replacement. | S |
+| D4 | Route the clients' direct Tokio calls: Ethrex 34 `tokio::spawn`/`JoinSet` and 48 `tokio::time`, Ethlambda 8 and 8 (lists in the audit). | M |
+| D5 | Library fixes: per-world id counters under sim (byte-identical traces, so S2 can run in CI); `PendingReplies::drain` in insertion order (0.8); `FailScenario::setup()` seeded from the world. | S |
+| D6 | First client `#[sim_test]`s (none exist today): Ethlambda's blockchain actor, Ethrex `tx_broadcaster` and `peer_table`, after D1. | S-M |
+| D7 | Recommended clippy `disallowed-methods` set for applications (with rank 6b). | S |
+| D8 | Blocking/Thread-backend actors and 0.8 native jobs as sim tasks (the "run native actors as simulator tasks" research). | M |
+| D9 | Seeded `spawned_rt::rand` as a portable, explicit alternative to D1. | S |
+| D10 | Wall-clock verdicts (turn budget, poll watchdog): a poll-count option so an overloaded machine cannot fail a run that replays clean. | S |
+
+Sockets stay with rank 22a; synchronous databases, EVM execution and cryptography remain atomic synchronous steps.
+
 ## Path to 1.0
 
 1.0 is a promise, not a feature set: the API is stable, every guarantee is checked, and it has been proven in production. Planned order (each release follows the [Priorities](#priorities)):
