@@ -1,17 +1,3 @@
-legacy/research/backend-experiments/**/results/** linguist-generated=true
-legacy/research/backend-experiments/**/report/** linguist-generated=true
-legacy/research/framework-metrics/**/data/** linguist-generated=true
-legacy/research/framework-metrics/**/evidence/*.log linguist-generated=true
-legacy/research/framework-metrics/**/data/*.csv whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol
-legacy/research/reliability/**/raw/** linguist-generated=true
-legacy/research/reliability/**/evidence/** linguist-generated=true
-legacy/research/reliability/**/figures/** linguist-generated=true
-legacy/research/client-observations/**/data/** linguist-generated=true
-legacy/research/client-observations/**/figures/** linguist-generated=true
-legacy/docs/reviews/dedicated-runtime-evidence/** linguist-generated=true
-legacy/verification/evidence/** linguist-generated=true
-legacy/verification/evidence/**/*.log whitespace=-blank-at-eof
-
 # Every PR adds a bullet under `## Unreleased`; union merge keeps both sides instead of
 # conflicting. Local git and rebases honour it; GitHub's server-side merges may not.
 CHANGELOG.md merge=union
