@@ -74,9 +74,9 @@ impl Handler<Emitted> for Owner {
 
 fn done<T: std::fmt::Debug>(name: &'static str) -> impl FnOnce(JobOutcome<T>) -> Done {
     move |outcome| {
-        Done(match outcome {
-            JobOutcome::Ok(v) => format!("{name}:ok:{v:?}"),
-            JobOutcome::Err(e) => format!("{name}:{e}"),
+        Done(match outcome.into_result() {
+            Ok(v) => format!("{name}:ok:{v:?}"),
+            Err(e) => format!("{name}:{e}"),
         })
     }
 }

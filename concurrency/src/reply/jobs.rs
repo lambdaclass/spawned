@@ -37,12 +37,14 @@ pub fn default_max_native_jobs() -> usize {
 /// Per-instance overrides of `Actor::MAX_OUTSTANDING` and
 /// `Actor::MAX_NATIVE_JOBS` (set per `ChildSpec`); `None` keeps the actor's
 /// constant.
+#[cfg(feature = "async")]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct Bounds {
     pub(crate) max_outstanding: Option<usize>,
     pub(crate) max_native_jobs: Option<usize>,
 }
 
+#[cfg(feature = "async")]
 impl Bounds {
     /// The effective `(max_outstanding, max_native_jobs)` for an actor whose
     /// constants are `outstanding` and `native`.

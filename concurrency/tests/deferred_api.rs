@@ -93,7 +93,7 @@ mod tasks_mode {
             if entries.len() >= n {
                 return entries;
             }
-            tokio::time::sleep(Duration::from_millis(2)).await;
+            spawned_rt::tasks::sleep(Duration::from_millis(2)).await;
         }
         panic!("log never reached {n} entries: {:?}", log.snapshot());
     }
@@ -104,7 +104,7 @@ mod tasks_mode {
         assert_eq!(<Owner as Actor>::MAX_NATIVE_JOBS, Some(2));
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[spawned_macros::sim_test]
     async fn macro_bounds_apply_and_permits_keep_the_parts() {
         let (actor, _log) = start();
         let kinds = in_actor(&actor, |_, ctx| {
@@ -132,6 +132,7 @@ mod tasks_mode {
         actor.join().await;
     }
 
+    #[cfg(not(spawned_sim))] // native jobs are not simulated
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn blocking_jobs_run_on_the_tokio_blocking_pool() {
         let (actor, log) = start();
@@ -162,6 +163,7 @@ mod tasks_mode {
         actor.join().await;
     }
 
+    #[cfg(not(spawned_sim))] // native jobs are not simulated
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn emit_at_arrives_late_but_before_the_terminal_message() {
         let (actor, log) = start();
@@ -185,7 +187,31 @@ mod tasks_mode {
         actor.join().await;
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[spawned_macros::sim_test]
+    async fn async_emit_at_holds_the_terminal_message() {
+        let (actor, log) = start();
+        in_actor(&actor, |_, ctx| {
+            ctx.pipe_with_ctx(
+                JobOptions::default(),
+                |job| async move {
+                    let at = Instant::now() + Duration::from_millis(50);
+                    job.emit_at(at, Note("late".into())).await?;
+                    job.emit(Note("now".into())).await
+                },
+                |o| describe("job", o),
+            )
+            .unwrap();
+        })
+        .await;
+        let entries = wait_for(&log, 3).await;
+        assert_eq!(entries, ["now", "late", "job:ok:Ok(())"]);
+        let outstanding = in_actor(&actor, |_, ctx| ctx.deferred_outstanding()).await;
+        assert_eq!(outstanding, 0);
+        actor.context().stop();
+        actor.join().await;
+    }
+
+    #[spawned_macros::sim_test]
     async fn a_cancelled_job_fences_its_scheduled_emits() {
         let (actor, log) = start();
         in_actor(&actor, |_, ctx| {
@@ -215,7 +241,7 @@ mod tasks_mode {
                 .unwrap();
         })
         .await;
-        tokio::time::sleep(Duration::from_millis(150)).await;
+        spawned_rt::tasks::sleep(Duration::from_millis(150)).await;
         assert_eq!(log.snapshot(), ["new:ok:1"]);
         let outstanding = in_actor(&actor, |_, ctx| ctx.deferred_outstanding()).await;
         assert_eq!(outstanding, 0);
@@ -223,6 +249,7 @@ mod tasks_mode {
         actor.join().await;
     }
 
+    #[cfg(not(spawned_sim))] // native jobs are not simulated
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn job_deadlines_are_hard() {
         let (actor, log) = start();
@@ -241,13 +268,13 @@ mod tasks_mode {
         })
         .await;
         assert_eq!(wait_for(&log, 1).await, ["slow:deadline"]);
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        spawned_rt::tasks::sleep(Duration::from_millis(200)).await;
         assert_eq!(log.snapshot(), ["slow:deadline"]);
         actor.context().stop();
         actor.join().await;
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[spawned_macros::sim_test]
     async fn send_handler_impls_answer_requests_with_unit() {
         let (actor, log) = start();
         assert!(matches!(actor.request(Poke(false)).await, Ok(())));
@@ -260,7 +287,7 @@ mod tasks_mode {
         assert!(actor.request(Poke(false)).await.is_err());
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[spawned_macros::sim_test]
     async fn child_spec_overrides_the_actor_bounds() {
         let system = ActorSystem::new().unwrap();
         let group = system.async_group("bounds", 1).unwrap();
@@ -295,6 +322,7 @@ mod tasks_mode {
     }
 }
 
+#[cfg(not(spawned_sim))]
 mod threads_mode {
     use super::*;
     use spawned_concurrency::threads::{

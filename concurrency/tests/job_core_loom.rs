@@ -431,12 +431,13 @@ fn scheduled_emit_vs_finish_and_cancel() {
             if let Some(canceller) = canceller {
                 canceller.join().unwrap();
             }
-            let mut terminals = 0;
+            let (mut terminals, mut emits) = (0, 0);
             for msg in mailbox.take() {
                 match msg {
                     Msg::Terminal(_) => terminals += 1,
                     Msg::Emit(..) => {
                         assert_eq!(terminals, 0, "the delayed emit followed the terminal");
+                        emits += 1;
                         job.core.return_emit_credit();
                     }
                 }
@@ -445,6 +446,7 @@ fn scheduled_emit_vs_finish_and_cancel() {
             assert_eq!(job.core.scheduled(), 0);
             if !cancel {
                 assert_eq!(terminals, 1, "the held terminal was lost");
+                assert_eq!(emits, 1, "the delayed emit was dropped without a cancel");
             }
             if terminals == 0 {
                 assert_eq!(job.core.notification(), Notification::Suppressed);

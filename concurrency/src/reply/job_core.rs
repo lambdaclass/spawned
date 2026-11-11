@@ -58,6 +58,10 @@ impl Inner {
     }
 }
 
+/// An emit's step 2: enqueued, or `JobGone` with the envelope the mailbox
+/// refused (to drop outside locks).
+pub(crate) type EmitResult<X> = Result<(), (JobGone, Option<X>)>;
+
 /// What [`JobCore::finish`] did with the work's result.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Finish {
@@ -267,7 +271,7 @@ impl JobCore {
     pub(crate) fn fire<X>(
         &self,
         enqueue: Option<impl FnOnce() -> Result<(), X>>,
-    ) -> (Result<(), (JobGone, Option<X>)>, Option<HeldTerminal>) {
+    ) -> (EmitResult<X>, Option<HeldTerminal>) {
         let mut inner = lock(&self.inner);
         debug_assert!(inner.scheduled > 0, "scheduled emit underflow");
         inner.scheduled = inner.scheduled.saturating_sub(1);

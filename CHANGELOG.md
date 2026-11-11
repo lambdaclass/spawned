@@ -47,6 +47,29 @@
   `ReplyDropped` and `Overloaded`; `metrics::Snapshot` gains
   `requests_reply_dropped_total` and `requests_overloaded_total`. Example:
   `deferred_replies`. See [migration](docs/MIGRATION.md#unreleased).
+- Rank 11 API refinements from porting ethlambda and ethrex to 0.8:
+  `#[actor(max_outstanding = N, max_native_jobs = N)]` sets the bounds, and
+  `ChildSpec::max_outstanding`/`max_native_jobs` override them per
+  supervised child (the design's per-spec override). `tasks`-mode blocking
+  jobs (`pipe_blocking*`) run on Tokio's blocking pool instead of a fresh OS
+  thread each, still under `MAX_NATIVE_JOBS`, with panics as
+  `JobError::Panicked` and cancellation and fencing unchanged (threads mode
+  keeps owned threads; a reservation pre-spawns the job's thread).
+  Reserve-then-spawn: `ctx.reserve_job()` / `ctx.reserve_blocking_job()`
+  return a `JobPermit` / `BlockingJobPermit` whose `pipe*` cannot fail, so a
+  refused caller keeps what it would have moved into `work` and `done`.
+  `JobCtx::emit_at` / `emit_at_blocking` deliver a fenced, credit-accounted
+  message at an instant; the job's terminal message waits for its scheduled
+  emits (new Loom model `scheduled_emit_vs_finish_and_cancel`).
+  `JobOptions::deadline_after(Duration)`; `spawned_concurrency::Instant`
+  (also `tasks::`/`threads::Instant`) re-exports the deadline clock.
+  `#[send_handler]` on a manual `impl Handler<M>` (for `Result = ()`) drops
+  the reply parameter and answers `()` when `handle` returns.
+  `spawned_test::tasks::in_actor` / `threads::in_actor` run a closure in a
+  live actor's turn. `JobOutcome`, `JobError` and `PipeErrorKind` are
+  `#[non_exhaustive]`. GUIDE: hard job deadlines and the soft-deadline
+  pattern, replies carrying a reason through `R = Result<..>`, the
+  `request_raw` rows.
 - Design (not implementation) for rank 11, deferred typed replies and
   pipe-to-self, revised over four passes after independent reviews:
   `docs/design/deferred-replies.md`, client mapping for ethrex and ethlambda,

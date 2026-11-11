@@ -465,7 +465,8 @@ error) and still owns the token.
 ## 8. Bounds
 
 **Credits per actor instance: `MAX_OUTSTANDING`** (an `Actor` constant,
-default 1024, overridable per `ChildSpec`). This is a count limit, not a
+default 1024; `#[actor(max_outstanding = N)]`, overridable per `ChildSpec`
+with `ChildSpec::max_outstanding`). This is a count limit, not a
 memory budget; byte credits are rank 18.
 
 - An in-place reply needs no credit.
@@ -491,7 +492,8 @@ matter which job finishes first: the request holds
 `max(running jobs, live token)` credits.
 
 **Native execution budget: `MAX_NATIVE_JOBS`** (an `Actor` constant,
-overridable per `ChildSpec`; provisional default
+`#[actor(max_native_jobs = N)]`, overridable per `ChildSpec` with
+`ChildSpec::max_native_jobs`; provisional default
 `min(4, available_parallelism)`). It covers `threads`-mode jobs and
 `pipe_blocking*`.
 
@@ -522,6 +524,10 @@ ctx.pipe_blocking_with(opts, |job| .., done)           -> Result<JobHandle, Pipe
 ctx.pipe_reply(token, work, done)                      -> Result<JobHandle, PipeReplyError<R>>
 ctx.pipe_reply_with(opts, token, work, done)           -> Result<JobHandle, PipeReplyError<R>>
 ctx.pipe_reply_blocking_with(opts, token, |job| .., done) -> Result<JobHandle, PipeReplyError<R>>
+// Reserve-then-spawn: the admission checks (owner running, credit, native
+// slot) before `work`/`done` exist; spawning from the permit cannot fail.
+ctx.reserve_job()          -> Result<JobPermit<A>, PipeError>        // .pipe/.pipe_with/.pipe_with_ctx
+ctx.reserve_blocking_job() -> Result<BlockingJobPermit<A>, PipeError> // .pipe_blocking_with
 
 pub enum PipeErrorKind { Overloaded, NativeBudget, SpawnFailed(io::Error), OwnerStopping }
 pub struct PipeError { pub kind: PipeErrorKind }
@@ -537,7 +543,12 @@ impl<A> JobCtx<A> {
     pub async fn cancelled(&self);
     pub async fn emit<M>(&self, msg: M) -> Result<(), JobGone> where A: Handler<M>;
     pub fn emit_blocking<M>(&self, msg: M) -> Result<(), JobGone> where A: Handler<M>;
+    // Delayed emit: credit taken now, step 2 at `at` (see the emit protocol).
+    pub async fn emit_at<M>(&self, at: Instant, msg: M) -> Result<(), JobGone> where A: Handler<M>;
+    pub fn emit_at_blocking<M>(&self, at: Instant, msg: M) -> Result<(), JobGone> where A: Handler<M>;
 }
+// `JobOutcome`, `JobError` and `PipeErrorKind` are #[non_exhaustive];
+// `JobOptions::deadline_after(d)` sets `deadline` to now + d.
 ```
 
 **Failure disposition.** On every error no job is spawned, and any credit
@@ -589,6 +600,17 @@ handle, the key map and every message it produces. It has three parts:
    which return `JobGone`. A blocked emitter therefore never holds up the
    stop-time join.
 
+**Delayed emits (`emit_at`).** Step 1 runs at the call. A scheduled emit is
+then registered under the job's lock (refused, `JobGone`, if the job is no
+longer accepting emits) and serviced by the owner's deadline heap; at its
+instant, step 2 runs as for `emit`. So it is fenced and credit-accounted like
+any emit. To keep the terminal message last, the work's result is **held**
+while scheduled emits remain: the last one to fire enqueues it. Cancellation
+drops the scheduled emits and a held result; a job deadline takes the
+notification as usual (deadlines are hard), and later scheduled emits are
+then dropped at their instant. Not modelled in `DeferredJobs.tla`; Loom
+model `scheduled_emit_vs_finish_and_cancel`.
+
 **Fencing at dispatch.** Every job message carries the job's `JobState` and
 the owner's `ActorId`. The run loop drops it before the handler runs if:
 
@@ -612,11 +634,14 @@ panic, so no consumed `FnOnce` has to be retried.
 
 **Executors.**
 
-- **`tasks` mode:** async jobs on the owner's runtime and blocking jobs on the
-  native budget.
+- **`tasks` mode:** async jobs on the owner's runtime; blocking jobs on
+  Tokio's blocking pool (`spawn_blocking` on the managed actor's group
+  runtime, or the current one), under the native budget. Outside a Tokio
+  runtime, and under the simulator, an owned thread.
 - **`threads` mode:** one owned native thread per admitted job under the
-  native budget. Spawning is fallible (`SpawnFailed`). The shared pool comes
-  in rank 11b.
+  native budget. Spawning is fallible (`SpawnFailed`); the thread is spawned
+  at reservation and parked until its job starts, so a permit's spawn is not.
+  A managed compute pool comes in rank 11b.
 - **Unmanaged actors** own their job set like managed ones; managed actors
   also register theirs with the scope.
 - **Jobs must not wait on their own owner.** Once the owner is exiting it no
