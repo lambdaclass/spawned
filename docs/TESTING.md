@@ -931,7 +931,7 @@ the budget reservation protocol, ignore, stuck children and shutdown. TLC
 checks 23 safety invariants, two action properties and five liveness
 properties (callers answered even if cleanup never ends; shutdown and
 recovery complete when it does). Six configurations run on every PR and one
-weekly; 40 named negative controls each fail their property. The design's
+weekly; 41 named negative controls each fail their property. The design's
 [test plan](design/dynamic-supervisor.md#test-plan-relating-the-model-to-the-code)
 specifies the trace events and trace-validation tests the implementation
 must ship.

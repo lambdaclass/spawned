@@ -151,6 +151,7 @@ Round two (revision 3):
 | G3 | `ignore` | Accepted from the factory: nothing is stored, `start_child` returns `Ignored` (OTP `{ok, undefined}`) |
 | G4 | Start data | `Started` carries the child's start data (unified start's `Init<R>`), as Gleam's `Started(data)` |
 | G5 | Introspection | `ChildInfo` and `ChildCounts` are the types introspection v1 exposes for static supervisors too; names agreed across both designs |
+| I1 | Fenced termination (introspection #256 rev. 3) | `terminate_slot` takes an optional `expect: ActorId@generation`; a mismatch returns `Stale { current }` and does nothing, checked at the supervisor operation itself, so the console's `terminate --expect` cannot kill a child that moved on |
 
 ## API
 
@@ -241,8 +242,11 @@ impl<A: Actor, Args> DynamicSupervisor<A, Args> {
     /// handles the call; it names the slot only if it is the slot's last
     /// published id at that moment.
     pub async fn terminate_child(&self, id: ActorId) -> Result<(), TerminateChildError>;
-    /// The same by slot (any generation).
-    pub async fn terminate_slot(&self, id: DynamicChildId) -> Result<(), TerminateChildError>;
+    /// The same by slot. With `expect`, only if the slot's current published
+    /// child is still that `ActorId@generation`; otherwise `Stale` and
+    /// nothing is done (introspection's `terminate --expect`, #256).
+    pub async fn terminate_slot(&self, id: DynamicChildId, expect: Option<ExpectedChild>)
+        -> Result<(), TerminateChildError>;
     pub fn which_children(&self) -> Vec<ChildInfo>;
     pub fn count_children(&self) -> ChildCounts;
     pub fn stop(&self);
@@ -271,7 +275,7 @@ impl<A: Actor> DynamicChild<A> {
     pub fn current(&self) -> Result<ActorRef<A>, ChildUnavailable>;
     pub async fn wait_for_generation(&self, after: u64) -> Result<ActorRef<A>, ChildUnavailable>;
     pub fn snapshot(&self) -> ChildSnapshot;
-    pub async fn terminate(&self) -> Result<(), TerminateChildError>;   // = terminate_slot
+    pub async fn terminate(&self) -> Result<(), TerminateChildError>;   // = terminate_slot(id, None)
 }
 
 /// Nested form, as `SupervisedSupervisor`.
@@ -311,9 +315,13 @@ pub enum RejectReason {
     Placement(SystemError), // the group is closed or out of native capacity
 }
 
+pub struct ExpectedChild { pub actor: ActorId, pub generation: u64 }
+
 #[non_exhaustive]
 pub enum TerminateChildError {
     NotFound,      // no current child with that id or slot (Elixir {:error, :not_found})
+    /// `expect` did not match: the slot's current published child moved on.
+    Stale { current: Option<ExpectedChild> },
     Stopped,       // shutdown began before the loop handled the call
     CleanupStuck,  // the child missed its deadlines; see "Stuck children"
 }
@@ -561,6 +569,7 @@ enqueued by someone else before the self-send can run first.
 | `start_child` vs a sibling's removal | the slot frees only after the removed child's cleanup and slot finalization |
 | `terminate_slot` vs a crash of that child | the loop takes them in order. Exit first: a pending restart is cancelled and refunded, or the restart attempt (which holds the loop) finishes and the call then terminates the new generation. Terminate first: the crash is consumed by the termination, no restart. Either way the child is removed and never restarted (`TerminatedNeverRestarted`, `NoPublishAfterStop`) |
 | `terminate_child(id)` vs a crash of that child | the id is looked up when the loop handles the call. If the slot's last published id is still `id` (cleanup, backoff, a failed replacement), the child is terminated as above. If a replacement committed readiness before the call reached the head, `id` is stale: `NotFound`, and the replacement keeps running (Elixir; `TermResultsSound`, control `SlotLookup`) |
+| `terminate_slot(id, expect)` vs a restart | the expectation is compared when the loop handles the call, under the same order as everything else: if the slot's last published child is no longer `expect`, `Stale { current }` and nothing is done; a child in cleanup or backoff whose last published id still matches is terminated (`TermResultsSound`, control `IgnoreExpect`) |
 | `terminate_child` vs shutdown | a call still queued when shutdown begins gets `Stopped`; a call in progress resolves when the child is removed (`Ok`) or at its deadline (`CleanupStuck`) (control `QueuedTermOk`) |
 | two calls for one child | the second is handled after the first completed: `NotFound` if the child was removed, `CleanupStuck` if it is stuck (Elixir; no shared waiters) |
 | a terminate whose child gets stuck | `CleanupStuck` is committed at the deadline and never changes, even if the work ends later (`TermResultsSound`, `TermResultStable`, control `StuckResultLost`) |
@@ -862,8 +871,9 @@ that generation died, not that the slot is gone.
 
 [`DynamicSupervisor.tla`](../../verification/tla/DynamicSupervisor.tla)
 (revision 3) models one dynamic supervisor, `start_child` calls made at any
-moment, and `terminate_child` calls, each aimed at a slot either by the id
-the caller saw or by slot. The control loop takes starts, terminate calls,
+moment, and `terminate_child` calls, each aimed at a slot by the id the caller
+saw, by slot, or by slot fenced with `expect` (the id@generation the caller
+saw). The control loop takes starts, terminate calls,
 exit notices and backoff retries from one FIFO queue; the exit of the child
 an operation waits for is consumed by that operation. Each slot's restart
 type is chosen in `Init`. Budget reservations, stamping, refunds and window
@@ -908,7 +918,7 @@ stuck children, for `ClosedLeadsToDone` and `RecoveryProgress`.
 | `StuckIsolated` | the supervisor fails only by exhaustion, a stuck child the table would restart (checked against the table), or while closing |
 | `ConcurrentShutdown` | once waiting, every running child has its stop signal |
 | `OkMeansReady` | `Ok` only for a child that became ready |
-| `TermResultsSound` | `Ok` only after removal and never for a stuck child; a pending call holds the loop; an id call reaches only the generation it named |
+| `TermResultsSound` | `Ok` only after removal and never for a stuck child; a pending call holds the loop; an id call or a fenced slot call reaches only the generation it named |
 
 Action properties: `NeverReopens`, `TermResultStable` (a committed terminate
 result never changes). Liveness: `StartAnswered`, `TerminateAnswered`,
@@ -969,6 +979,7 @@ property above has at least one; the two action properties do not.
 | `SlotLookup` | an id call reaches a newer generation | `TermResultsSound` | main |
 | `QueuedTermOk` | a call queued at shutdown waits and may return `Ok` | `TermResultsSound` | main |
 | `StuckResultLost` | `CleanupStuck` not committed; later turns into `Ok` | `TermResultsSound` | main |
+| `IgnoreExpect` | a fenced call terminates a child that moved on | `TermResultsSound` | main |
 | `NoAbort` | a start racing shutdown is not cancelled | `StartAnswered` | callers |
 | `NoDeadline` | no cleanup deadline | `StartAnswered` | callers |
 | `TermLost` | a found call never signals the child | `TerminateAnswered` | callers |
@@ -1016,7 +1027,7 @@ the generation, and where noted the queue ticket or call id.
 | `DRetry` (slot, gen, ticket) | the loop took a retry | `BackoffDone` |
 | `DCancel` (slot) | a pending restart was cancelled and refunded | `CancelBackoff` |
 | `DTermCall` (call, slot, named gen, ticket) | `terminate_child`/`terminate_slot` called | `TermCall` |
-| `DTermLookup` (call, outcome: found / notfound / stuck) | the loop handled the call | `LoopTerm` |
+| `DTermLookup` (call, outcome: found / notfound / stuck / stale) | the loop handled the call | `LoopTerm` |
 | `DTermReject` (call) | shutdown answered a queued call | `RejectQueuedTerm` |
 | `DTermDone` (call, result) | the call resolved `Ok` | `TermResolve` |
 | `DClose`, `DSignal` (slot), `DDone` | shutdown began, a child was signalled, all children finished | `Close`, `SupSignal`/`SupSignalStep`, `SupDone` |
@@ -1044,7 +1055,7 @@ recorded in the `tla-traces` CI job, plus generated scripts in
    and on shutdown during backoff.
 5. Terminate: by id, by slot, a stale id after a successful replacement, a
    second call, a call during a restart attempt, a call queued at
-   shutdown, a stuck child.
+   shutdown, a stuck child, a fenced call whose child moved on (`Stale`).
 6. Shutdown with several children, one stuck; a start racing shutdown; a
    commit racing shutdown.
 7. Seeded random scripts (as `supervision_trace`) for coverage.
@@ -1181,3 +1192,10 @@ Also from the OTP/Elixir/Gleam comparison: decisions G1-G5 (continuation,
 types), and the standing rule that models are related to the code: the
 [test plan](#test-plan-relating-the-model-to-the-code) lists the events, their
 action mapping, the required tests and the expected coverage.
+
+**Introspection dependency (#256 revision 3).** The console's
+`terminate --expect id@generation` is fenced at the supervisor operation:
+`terminate_slot` takes `expect` and answers `Stale { current }` without
+acting when the slot's published child moved on. Modelled as a third call
+kind (`expect`) in `LoopTerm`, with control `IgnoreExpect`. `ChildInfo`,
+`ChildCounts` and `ChildKey` are shared with introspection v1.

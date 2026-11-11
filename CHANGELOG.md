@@ -61,7 +61,8 @@
   second reviews and the round-two decisions: one FIFO operation queue,
   terminate lookup when the loop handles the call, stuck classification by
   exit reason, caller liveness without assuming cleanup ends, `ignore` and
-  start data, a trace-validation test plan, and 40 negative controls.
+  start data, a trace-validation test plan, a fenced `terminate_slot(.., expect)` for introspection, and 41 negative
+  controls.
 
 ## 0.7.3 — 2026-11-10
 
