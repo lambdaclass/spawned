@@ -629,6 +629,11 @@ struct SlowStop {
     release: Option<tokio::sync::oneshot::Receiver<()>>,
 }
 impl Actor for SlowStop {
+    async fn started(&mut self, ctx: &Context<Self>) {
+        // v0.8: stopped() runs on a parent's shutdown only for a trapping
+        // actor (E3, decision 2).
+        ctx.trap_exit(true);
+    }
     async fn stopped(&mut self, _: &Context<Self>) {
         if let Some(release) = self.release.take() {
             let _ = release.await;

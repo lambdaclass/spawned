@@ -367,6 +367,11 @@ async fn native_leaf_helper_blocks_subtree_replacement_and_remains_owned_after_a
 
 struct HeldStop(Arc<tokio::sync::Notify>);
 impl Actor for HeldStop {
+    async fn started(&mut self, ctx: &Context<Self>) {
+        // v0.8: stopped() runs on a parent's shutdown only for a trapping
+        // actor (E3, decision 2).
+        ctx.trap_exit(true);
+    }
     async fn stopped(&mut self, _: &Context<Self>) {
         self.0.notified().await;
     }

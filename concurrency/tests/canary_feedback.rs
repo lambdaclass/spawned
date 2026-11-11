@@ -441,10 +441,9 @@ async fn panicked_turn_is_cleared_before_stopped_hook() {
     assert_eq!(detail.turn_age, None);
     release.send(()).unwrap();
     assert!(report.wait(LIMIT).await.complete);
-    assert!(matches!(
-        actor.child_handle().exit_reason(),
-        Some(ExitReason::Panic(_))
-    ));
+    // The system's kill at grace reached it inside stopped(), before its
+    // death point: Killed replaces the panic (E1).
+    assert_eq!(actor.child_handle().exit_reason(), Some(ExitReason::Killed));
 }
 
 #[cfg(feature = "diagnostics")]

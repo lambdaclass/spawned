@@ -103,6 +103,9 @@ struct State {
     ticks_seen: u32,
     pulses_wanted: u32,
     pulses_seen: u32,
+    /// Trap exits from started(): v0.8 runs stopped() on a parent's
+    /// (supervisor or system) shutdown only for a trapping actor (E3).
+    trap: bool,
 }
 impl State {
     fn new(index: u32, log: Log) -> Self {
@@ -115,7 +118,12 @@ impl State {
             ticks_seen: 0,
             pulses_wanted: 0,
             pulses_seen: 0,
+            trap: false,
         }
+    }
+    fn trapping(mut self) -> Self {
+        self.trap = true;
+        self
     }
     fn echo(&mut self, v: u64) -> Reply {
         self.handled += 1;
@@ -144,6 +152,11 @@ mod tasks_node {
         pub interval: Option<TimerHandle>,
     }
     impl Actor for Node {
+        async fn started(&mut self, ctx: &Context<Self>) {
+            if self.state.trap {
+                ctx.trap_exit(true);
+            }
+        }
         async fn stopped(&mut self, _: &Context<Self>) {
             self.state.log.push(Obs::Stopped(self.state.index));
         }
@@ -298,6 +311,11 @@ mod threads_node {
         pub interval: Option<TimerHandle>,
     }
     impl Actor for Node {
+        fn started(&mut self, ctx: &Context<Self>) {
+            if self.state.trap {
+                ctx.trap_exit(true);
+            }
+        }
         fn stopped(&mut self, _: &Context<Self>) {
             self.state.log.push(Obs::Stopped(self.state.index));
         }
@@ -1021,7 +1039,7 @@ fn supervisor_workload(
             let log = log.clone();
             tree.add(ChildSpec::new(format!("c{i}"), &group, move |_| {
                 calls[i].fetch_add(1, Ordering::SeqCst);
-                let state = State::new(i as u32, log.clone());
+                let state = State::new(i as u32, log.clone()).trapping();
                 async move {
                     Ok::<_, String>(tasks_node::Node {
                         state,
@@ -1093,8 +1111,13 @@ struct ShutdownOutcome {
 fn shutdown_workload(env: &mut Env, before: u32, sup_children: u32, after: u32) -> ShutdownOutcome {
     let log = Recorder::new();
     let mut ids = Vec::new();
+    // Trapping, so stopped() records the system's shutdown order (E3).
+    let trap = |actor: Ref| {
+        assert_eq!(actor.request(Cmd::Trap).unwrap(), Reply::Unit);
+        actor.child().id()
+    };
     for i in 0..before {
-        ids.push(env.start(i, vec![], &log).child().id());
+        ids.push(trap(env.start(i, vec![], &log)));
     }
     let group = env.group.clone().unwrap();
     let system = env.system.take().unwrap();
@@ -1104,7 +1127,7 @@ fn shutdown_workload(env: &mut Env, before: u32, sup_children: u32, after: u32) 
     for i in 0..sup_children {
         let log = log.clone();
         tree.add(ChildSpec::new(format!("s{i}"), &group, move |_| {
-            let state = State::new(100 + i, log.clone());
+            let state = State::new(100 + i, log.clone()).trapping();
             async move {
                 Ok::<_, String>(tasks_node::Node {
                     state,
@@ -1117,7 +1140,7 @@ fn shutdown_workload(env: &mut Env, before: u32, sup_children: u32, after: u32) 
     }
     let supervisor = (sup_children > 0).then(|| env.bounded(tree.start()).unwrap().unwrap());
     for i in 0..after {
-        ids.push(env.start(200 + i, vec![], &log).child().id());
+        ids.push(trap(env.start(200 + i, vec![], &log)));
     }
     // ActorSystem::shutdown owns ordering; Env::finish must not stop actors first.
     env.started.clear();

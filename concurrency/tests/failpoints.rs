@@ -68,6 +68,8 @@ impl Started {
 }
 struct Worker {
     started: Started,
+    /// Trap exits, so stopped() runs on a parent's shutdown (v0.8, E3).
+    trap: bool,
     name: Option<&'static str>,
     registration: Arc<Mutex<Option<bool>>>,
 }
@@ -75,6 +77,7 @@ impl Worker {
     fn new(started: &Started) -> Self {
         Self {
             started: started.clone(),
+            trap: false,
             name: None,
             registration: Default::default(),
         }
@@ -82,6 +85,9 @@ impl Worker {
 }
 impl Actor for Worker {
     async fn started(&mut self, ctx: &Context<Self>) {
+        if self.trap {
+            ctx.trap_exit(true);
+        }
         self.started
             .0
             .lock()
@@ -811,14 +817,18 @@ async fn slow_stopped_reports_at_deadline_then_completes() {
     .unwrap();
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("fp-stopped", 1).unwrap();
-    let actor = group.start(Worker::new(&Started::default())).unwrap();
+    let mut worker = Worker::new(&Started::default());
+    worker.trap = true;
+    let actor = group.start(worker).unwrap();
     actor.ready().await.unwrap();
     let report = system.shutdown(Duration::from_millis(100)).await;
     assert!(!report.complete);
     assert_eq!(report.unfinished_actors, [actor.id()]);
     let report = report.wait(LIMIT).await;
     assert!(report.complete);
-    assert_eq!(actor.exit_reason(), Some(ExitReason::Shutdown));
+    // The kill at grace arrived while stopped() ran: it finishes, but the
+    // reason becomes Killed (E1).
+    assert_eq!(actor.exit_reason(), Some(ExitReason::Killed));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -118,7 +118,10 @@ struct Starting {
     stopped: Arc<AtomicUsize>,
 }
 impl Actor for Starting {
-    async fn started(&mut self, _: &Context<Self>) {
+    async fn started(&mut self, ctx: &Context<Self>) {
+        // v0.8: stopped() runs on the system's shutdown only for a
+        // trapping actor (E3, decision 2).
+        ctx.trap_exit(true);
         self.entered.take().unwrap().send(()).unwrap();
         let _ = self.release.take().unwrap().await;
     }
@@ -475,6 +478,11 @@ async fn stuck_standalone_cleanup_does_not_leave_earlier_actor_running_forever()
         release: Option<tokio::sync::oneshot::Receiver<()>>,
     }
     impl Actor for Stuck {
+        async fn started(&mut self, ctx: &Context<Self>) {
+            // v0.8: stopped() runs on the system's shutdown only for a
+            // trapping actor (E3, decision 2).
+            ctx.trap_exit(true);
+        }
         async fn stopped(&mut self, _: &Context<Self>) {
             let _ = self.entered.take().unwrap().send(());
             let _ = self.release.take().unwrap().await;
@@ -493,11 +501,13 @@ async fn stuck_standalone_cleanup_does_not_leave_earlier_actor_running_forever()
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(
-        spawned_rt::tasks::timeout(LIMIT, first.wait_exit())
-            .await
-            .unwrap(),
-        ExitReason::Shutdown
+    // Signalled after the grace expired, it also gets the kill at grace (E3).
+    let reason = spawned_rt::tasks::timeout(LIMIT, first.wait_exit())
+        .await
+        .unwrap();
+    assert!(
+        matches!(reason, ExitReason::Shutdown | ExitReason::Killed),
+        "{reason:?}"
     );
     release.send(()).unwrap();
     assert!(report.wait(LIMIT).await.complete);
@@ -544,6 +554,11 @@ struct SnapshotHeld {
     release: Option<tokio::sync::oneshot::Receiver<()>>,
 }
 impl Actor for SnapshotHeld {
+    async fn started(&mut self, ctx: &Context<Self>) {
+        // v0.8: stopped() runs on the system's shutdown only for a
+        // trapping actor (E3, decision 2).
+        ctx.trap_exit(true);
+    }
     async fn stopped(&mut self, _: &Context<Self>) {
         let _ = self.release.take().unwrap().await;
     }
@@ -596,6 +611,11 @@ struct Dependent {
     observed: Arc<AtomicUsize>,
 }
 impl Actor for Dependent {
+    async fn started(&mut self, ctx: &Context<Self>) {
+        // v0.8: stopped() runs on the system's shutdown only for a
+        // trapping actor (E3, decision 2).
+        ctx.trap_exit(true);
+    }
     async fn stopped(&mut self, _: &Context<Self>) {
         assert!(self.earlier.request(CheckAdmission).await.unwrap());
         self.observed.fetch_add(1, Ordering::SeqCst);

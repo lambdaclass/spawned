@@ -100,12 +100,14 @@ impl<C: Fn()> Drop for ActorCleanup<C> {
         (self.cancel)();
         drop(self.monitors.take());
         self.metrics.finish(&reason);
-        // Publication: wait_exit, join and monitors observe the final reason,
-        // then the link notices taken at D are delivered.
-        self.completion.send_replace(Some(reason));
+        // Publication: the link notices taken at D are delivered, then
+        // wait_exit, join and monitors observe the final reason. Delivering
+        // first keeps v0.7's guarantee that once `wait_exit` returns, every
+        // linked peer's `Exit` is already queued (or its exit requested).
         if let Some(notices) = self.notices.take() {
             notices.deliver();
         }
+        self.completion.send_replace(Some(reason));
     }
 }
 

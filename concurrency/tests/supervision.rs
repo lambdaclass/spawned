@@ -358,6 +358,10 @@ struct SlowStop {
     release: Option<tokio::sync::oneshot::Receiver<()>>,
 }
 impl Actor for SlowStop {
+    async fn started(&mut self, ctx: &Context<Self>) {
+        // Traps exits so stopped() also runs on its parent's shutdown (E3).
+        ctx.trap_exit(true);
+    }
     async fn stopped(&mut self, _: &Context<Self>) {
         let _ = self.entered.take().unwrap().send(());
         let _ = self.release.take().unwrap().await;
@@ -430,7 +434,9 @@ async fn stuck_stopped_hook_triggers_cleanup_deadline_before_terminal_publicatio
     let report = report.wait(LIMIT).await;
     assert!(report.complete);
     assert_eq!(calls.load(Ordering::SeqCst), 1);
-    assert!(matches!(old.exit_reason(), Some(ExitReason::Panic(_))));
+    // The system's kill at grace reached the actor inside its stuck
+    // stopped() (before its death point): Killed replaces the panic (E1).
+    assert_eq!(old.exit_reason(), Some(ExitReason::Killed));
 }
 
 struct Ordered {
@@ -438,7 +444,10 @@ struct Ordered {
     log: Arc<std::sync::Mutex<Vec<String>>>,
 }
 impl Actor for Ordered {
-    async fn started(&mut self, _: &Context<Self>) {
+    async fn started(&mut self, ctx: &Context<Self>) {
+        // v0.8: only a trapping child runs stopped() on its parent's
+        // shutdown (E3, decision 2); the order is observed through it.
+        ctx.trap_exit(true);
         self.log
             .lock()
             .unwrap()
@@ -803,18 +812,18 @@ async fn stuck_supervisor_does_not_prevent_earlier_standalone_shutdown_after_sys
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(
-        spawned_rt::tasks::timeout(LIMIT, earlier.wait_exit())
+    // Signalled after the system's grace expired, they also get the kill
+    // at grace (E3): Shutdown if they reached their death point first,
+    // otherwise Killed.
+    for actor in [earlier.child_handle(), inner_actor.child_handle()] {
+        let reason = spawned_rt::tasks::timeout(LIMIT, actor.wait_exit_async())
             .await
-            .unwrap(),
-        ExitReason::Shutdown
-    );
-    assert_eq!(
-        spawned_rt::tasks::timeout(LIMIT, inner_actor.wait_exit())
-            .await
-            .unwrap(),
-        ExitReason::Shutdown
-    );
+            .unwrap();
+        assert!(
+            matches!(reason, ExitReason::Shutdown | ExitReason::Killed),
+            "{reason:?}"
+        );
+    }
     release.send(()).unwrap();
     assert!(report.wait(LIMIT).await.complete);
 }

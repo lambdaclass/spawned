@@ -158,6 +158,11 @@ impl Probe {
 }
 impl Actor for Probe {
     async fn started(&mut self, ctx: &Context<Self>) {
+        // A stop gate slows stopped(); on a parent's shutdown it runs only
+        // for a trapping actor (v0.8, E3).
+        if self.stop_gate.is_some() {
+            ctx.trap_exit(true);
+        }
         if let Some(gate) = &self.start_gate {
             gate.notified().await;
         }

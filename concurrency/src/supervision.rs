@@ -2561,6 +2561,11 @@ mod policy_tests {
             release: Option<rt::oneshot::Receiver<()>>,
         }
         impl Actor for Ordered {
+            async fn started(&mut self, ctx: &crate::tasks::Context<Self>) {
+                // v0.8: stopped() records the order only for a trapping
+                // child (E3, decision 2).
+                ctx.trap_exit(true);
+            }
             async fn stopped(&mut self, _: &crate::tasks::Context<Self>) {
                 system::lock(&self.log).push(self.id);
                 if let Some(entered) = self.entered.take() {
@@ -2660,6 +2665,11 @@ mod policy_tests {
             release: Option<rt::oneshot::Receiver<()>>,
         }
         impl Actor for Ordered {
+            async fn started(&mut self, ctx: &crate::tasks::Context<Self>) {
+                // v0.8: stopped() records the order only for a trapping
+                // child (E3, decision 2).
+                ctx.trap_exit(true);
+            }
             async fn stopped(&mut self, _: &crate::tasks::Context<Self>) {
                 system::lock(&self.log).push(self.id);
                 if let Some(entered) = self.entered.take() {
