@@ -258,14 +258,20 @@ mod tasks_mode {
     }
 
     /// Starts keyed job `old`, publishing its handle.
-    struct StartOld(Arc<Mutex<Option<spawned_concurrency::tasks::JobHandle>>>);
+    type OldJob = Arc<Mutex<Option<(spawned_concurrency::tasks::JobHandle, oneshot::Sender<()>)>>>;
+    struct StartOld(OldJob);
     impl Message for StartOld {
         type Result = ();
     }
     impl Handler<StartOld> for Owner {
         async fn handle(&mut self, msg: StartOld, reply: PendingReply<'_, ()>, ctx: &Context<Self>) {
-            let job = ctx.pipe_keyed("r", async { 1 }, |o| describe("old", o)).unwrap();
-            *msg.0.lock().unwrap() = Some(job);
+            let (open, gate) = oneshot::channel::<()>();
+            let job = ctx
+                .pipe_keyed("r", async move { gate.await.map(|()| 1).unwrap_or(0) }, |o| {
+                    describe("old", o)
+                })
+                .unwrap();
+            *msg.0.lock().unwrap() = Some((job, open));
             reply.reply(());
         }
     }
@@ -294,7 +300,9 @@ mod tasks_mode {
         actor.request(StartOld(handle.clone())).await.unwrap();
         let go = Arc::new(std::sync::atomic::AtomicBool::new(false));
         actor.send(ReplaceWhen(go.clone())).unwrap();
-        let old = handle.lock().unwrap().take().unwrap();
+        // `ReplaceWhen` is queued before the old job can finish.
+        let (old, open) = handle.lock().unwrap().take().unwrap();
+        open.send(()).unwrap();
         while old.is_running() {
             sleep(Duration::from_millis(1)).await;
         }
