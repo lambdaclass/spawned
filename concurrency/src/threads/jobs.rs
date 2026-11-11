@@ -327,15 +327,17 @@ impl<A: Actor> JobCtx<A> {
 // Context API
 // ---------------------------------------------------------------------------
 
-/// The task a native worker thread runs once its job is spawned; it gets
-/// the thread's native slot so it can release it before notifying.
-type NativeTask<A> = Box<dyn FnOnce(NativeSlot<A>) + Send>;
+/// The task a native worker thread runs once its job is spawned.
+type NativeTask = Box<dyn FnOnce() + Send>;
 
 /// A native thread spawned at reservation and parked until its job is
-/// spawned, so spawning from a permit cannot fail. Dropped unused, the
-/// thread exits and releases its native slot.
+/// spawned, so spawning from a permit cannot fail, with its native slot.
+/// The slot stays here until the job is launched (it then moves into the
+/// task): dropped unused, the worker returns the slot at once, on the
+/// dropping thread, and the parked thread exits.
 struct NativeWorker<A: Actor> {
-    start: std::sync::mpsc::Sender<NativeTask<A>>,
+    start: std::sync::mpsc::Sender<NativeTask>,
+    native: NativeSlot<A>,
 }
 
 /// A blocking job's admission reserved ahead of building the work:
@@ -419,16 +421,16 @@ impl<A: Actor> Context<A> {
             return Err(PipeErrorKind::NativeBudget);
         }
         let native = NativeSlot(self.clone());
-        let (start, started) = std::sync::mpsc::channel::<NativeTask<A>>();
+        let (start, started) = std::sync::mpsc::channel::<NativeTask>();
         std::thread::Builder::new()
             .name("spawned-job".into())
             .spawn(move || {
                 if let Ok(task) = started.recv() {
-                    task(native);
+                    task();
                 }
             })
             .map_err(PipeErrorKind::SpawnFailed)?;
-        Ok(NativeWorker { start })
+        Ok(NativeWorker { start, native })
     }
 
     /// Reserve a blocking job's admission (owner running, one credit, a
@@ -510,7 +512,8 @@ impl<A: Actor> Context<A> {
             state: state.clone(),
             ctx: self.clone(),
         };
-        let task: NativeTask<A> = Box::new(move |native| {
+        let NativeWorker { start, native } = worker;
+        let task: NativeTask = Box::new(move || {
             let _ended = ended;
             let result = std::panic::catch_unwind(AssertUnwindSafe(|| work(&job)));
             // Execution ended: release the native slot now; the run returns
@@ -520,7 +523,7 @@ impl<A: Actor> Context<A> {
         });
         // The worker thread is parked on `recv` until this send (or its
         // sender's drop); it cannot have exited.
-        let _ = worker.start.send(task);
+        let _ = start.send(task);
         JobHandle::new(state)
     }
 
@@ -638,6 +641,28 @@ mod tests {
     }
     impl Handler<Note> for Owner {
         fn handle(&mut self, _: Note, _: PendingReply<'_, ()>, _: &Context<Self>) {}
+    }
+
+    /// Review round 2 (agy 2): dropping an unused permit returns its
+    /// `MAX_NATIVE_JOBS` slot synchronously, so the next reservation
+    /// succeeds at once. The slot used to live on the parked thread and
+    /// return only when that thread woke up and exited.
+    #[test]
+    fn a_dropped_unused_permit_returns_its_native_slot_at_once() {
+        struct One;
+        impl Actor for One {
+            const MAX_NATIVE_JOBS: Option<usize> = Some(1);
+        }
+        let owner = One.start();
+        let ctx = owner.context();
+        for i in 0..2000 {
+            let permit = ctx
+                .reserve_blocking_job()
+                .unwrap_or_else(|e| panic!("reservation {i} refused: {e}"));
+            drop(permit);
+        }
+        ctx.stop();
+        owner.join();
     }
 
     /// Review P1 (Codex 13), threads mode: see the tasks-mode test.
