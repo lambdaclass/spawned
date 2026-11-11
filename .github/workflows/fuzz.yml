@@ -42,14 +42,20 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.FUZZ_NIGHTLY }}
+          components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: fuzz
       - name: Install cargo-fuzz
         run: cargo install cargo-fuzz --locked --version 0.13.2
-      - name: Seed corpus and generated inputs (no libFuzzer)
+      - name: Format and lints (harness crate)
         working-directory: fuzz
-        run: cargo test --locked --release --test corpus
+        run: |
+          cargo fmt --check
+          cargo clippy --locked --all-targets -- -D warnings
+      - name: Seed corpus, regressions and generated inputs (no libFuzzer)
+        working-directory: fuzz
+        run: cargo test --locked --release
       - name: Smoke run (60 s, one process)
         if: github.event_name == 'pull_request'
         working-directory: fuzz
