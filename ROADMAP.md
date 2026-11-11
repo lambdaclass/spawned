@@ -129,8 +129,8 @@ sections and [research notes](docs/research/README.md).
    projections complement failure/stress tests, review and ThreadSanitizer;
    they do not prove the wider base lifecycle or every Rust schedule.
    All crates retain `forbid(unsafe_code)`; Miri precedes any future unsafe proposal.
-   See the [implementation evidence](legacy/docs/reviews/capabilities-extension.md)
-   and [v0.7 review fixes and formal coverage](legacy/docs/reviews/v07-supervision.md).
+   See the [implementation evidence](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/docs/reviews/capabilities-extension.md)
+   and [v0.7 review fixes and formal coverage](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/docs/reviews/v07-supervision.md).
    The client search is done; see [results](#client-search-results).
 3. **Adopt v0.7 in Ethlambda** (rank 5), including the per-method
    request timeout (rank 5a), the migration guide for the clients' hand-wired
@@ -140,7 +140,7 @@ sections and [research notes](docs/research/README.md).
    metrics and the explicit-async migration, and audits the exact documented
    no-default removals. Conditional `request_timeout` attributes are explicitly
    rejected, the API script supports Python 3.9, stream examples use handshakes,
-   and dated reports/evidence are archived in `legacy/` without host-specific
+   and dated reports/evidence are archived in [`legacy/`](https://github.com/lambdaclass/spawned/tree/efba24340a01df82f872ec422b9dbaf48f897b04/legacy) without host-specific
    driver scripts. Both clients pin spawned 0.5.0, so their
    upgrade crosses 0.6 as well; the migration guide covers 0.5 to 0.7 in one
    path. v0.7.0 is released; migrate Ethlambda (shutdown
@@ -215,7 +215,7 @@ capabilities to the Tokio-free build is a later roadmap item, outside this relea
 ### Non-goals
 
 Performance work may add opt-in profiles, but none of these may become the
-default (from the [Silver/flux study](legacy/docs/research/silver-flux.md#what-must-not-become-spawneds-default)):
+default (from the [Silver/flux study](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/docs/research/silver-flux.md#what-must-not-become-spawneds-default)):
 
 - static topology replacing dynamic actor creation;
 - Copy-only payload requirements replacing ordinary Rust message types;
@@ -372,7 +372,7 @@ Deterministic simulation and record/replay remain the testing flagship (ranks
 20-22), followed by environment simulation (rank 22a). Prior art and how
 databases combine these techniques: [systematic testing](docs/research/systematic-testing.md).
 
-The [archived v0.7 gate review](legacy/docs/reviews/v07-release-gates.md) records
+The [archived v0.7 gate review](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/docs/reviews/v07-release-gates.md) records
 the original scans and their limits. The corrected [testing guide](docs/TESTING.md)
 covers the expanded API profiles and protocol/supervision regressions.
 
@@ -519,7 +519,7 @@ failing run for replay. Spawned already owns those points, so `explore` needs no
 handler changes. Ranks 21-22 add what Coyote does not centre on: capturing
 delivery order from a real client and replaying it under the same scheduler.
 
-The [v0.7 gate review](legacy/docs/reviews/v07-release-gates.md) records the completed
+The [v0.7 gate review](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/docs/reviews/v07-release-gates.md) records the completed
 API/feature scans, generated-policy campaign and compatibility correction.
 
 ## Ranked backlog
@@ -545,13 +545,13 @@ Maintained [research notes](docs/research/README.md) cover
 [test techniques](docs/research/test-techniques.md) and
 [event sourcing](docs/research/event-sourcing.md).
 Older background notes (sources, design notes and experiments, without rankings of
-their own) are archived in [legacy](legacy/README.md):
-[framework ideas](legacy/docs/research/framework-ideas.md),
-[concurrency ideas](legacy/docs/research/concurrency-ideas.md),
-[Commonware](legacy/docs/research/commonware.md),
-[Silver/flux](legacy/docs/research/silver-flux.md),
-[verification strategy](legacy/docs/research/verification-strategy.md) and the
-earlier [detailed acceptance criteria](legacy/docs/design/roadmap-acceptance-2026-11-06.md).
+their own) are in the [archived `legacy/` directory](https://github.com/lambdaclass/spawned/tree/efba24340a01df82f872ec422b9dbaf48f897b04/legacy):
+[framework ideas](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/docs/research/framework-ideas.md),
+[concurrency ideas](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/docs/research/concurrency-ideas.md),
+[Commonware](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/docs/research/commonware.md),
+[Silver/flux](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/docs/research/silver-flux.md),
+[verification strategy](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/docs/research/verification-strategy.md) and the
+earlier [detailed acceptance criteria](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/docs/design/roadmap-acceptance-2026-11-06.md).
 
 ### Implemented (no longer ranked)
 
@@ -614,7 +614,7 @@ A broader read of the same revisions for workarounds, incidents and comments
 
 Preserve this verification before a release and expand its scope for the new
 cohort/nested semantics. Restart and shutdown races are the bug class behind
-PRs #180, #182 and #185. Plan and acceptance criteria: [verification strategy](legacy/docs/research/verification-strategy.md).
+PRs #180, #182 and #185. Plan and acceptance criteria: [verification strategy](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/docs/research/verification-strategy.md).
 
 | Rank | Idea | Assessment |
 |---|---|---|
@@ -739,7 +739,7 @@ Rejected: replacing Tokio with Glommio or monoio wholesale (loses work stealing,
 | 49 | Durable outbox/idempotency recipe | Application-layer example when recovery needs it. Commit intent/dedup with effects; do not persist arbitrary boxed Rust envelopes. **Research ([event sourcing](docs/research/event-sourcing.md)):** a recipe for an event-sourced actor: snapshot plus replay in `started()`, append with expected version, side effects after the append, idempotency key. Prior art: Akka Persistence (`EventSourcedBehavior`), Orleans `JournaledGrain`, coerce's persistence in Rust. |
 | 50 | Durable timers/reminders | Separate persistence contract: identity, clock changes, missed executions and duplication across restart. Model reminders as events (timer set, timer fired) so replay re-arms unfired timers ([event sourcing](docs/research/event-sourcing.md)). |
 | 51 | Temporal-style durable execution | A separate product-scale subsystem: persisted decisions, deterministic replay, external effects and upgrades. Supervision alone does not provide it. Event sourcing persists state changes; durable execution persists handler progress. Restate remains the reference ([event sourcing](docs/research/event-sourcing.md)). |
-| 52 | Thread-per-core I/O backend (io_uring) | **Research pointer, frozen; reopens as a `spawned::net` backend (rank 22a), not a runtime replacement.** Seastar, Glommio, monoio and tokio-uring are each their own executor (one ring per core, polled by that core), so "our executor plus Glommio for I/O" means spawned becoming thread-per-core. That loses work stealing, which matters with a few heavy actors (block execution, sync) beside thousands of light ones; io_uring is blocked by Docker's default seccomp profile and disabled on many hardened kernels, so it can never be required; and the clients' time goes to EVM execution, cryptography and synchronous databases, not network I/O. Parked pinned shards already give per-core placement. The earlier Monoio experiments ([design findings](legacy/benchmarks/DESIGN-FINDINGS.md#what-we-learned-in-the-linux-vm)) did not justify replacing Tokio. Reopen as an opt-in execution-group backend behind `spawned::net` when an application built for thread-per-core (proxy, gateway, storage node) or a client I/O profile justifies it; clients would need no change ([note](docs/research/concurrency-models.md#6-thread-per-core-and-io_uring)). |
+| 52 | Thread-per-core I/O backend (io_uring) | **Research pointer, frozen; reopens as a `spawned::net` backend (rank 22a), not a runtime replacement.** Seastar, Glommio, monoio and tokio-uring are each their own executor (one ring per core, polled by that core), so "our executor plus Glommio for I/O" means spawned becoming thread-per-core. That loses work stealing, which matters with a few heavy actors (block execution, sync) beside thousands of light ones; io_uring is blocked by Docker's default seccomp profile and disabled on many hardened kernels, so it can never be required; and the clients' time goes to EVM execution, cryptography and synchronous databases, not network I/O. Parked pinned shards already give per-core placement. The earlier Monoio experiments ([design findings](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/benchmarks/DESIGN-FINDINGS.md#what-we-learned-in-the-linux-vm)) did not justify replacing Tokio. Reopen as an opt-in execution-group backend behind `spawned::net` when an application built for thread-per-core (proxy, gateway, storage node) or a client I/O profile justifies it; clients would need no change ([note](docs/research/concurrency-models.md#6-thread-per-core-and-io_uring)). |
 | 53 | Incremental dataflow | **Research pointer.** Timely/differential dataflow (Materialize). A different programming model; read its progress tracking (frontiers) before designing rank 33's completion watermarks ([note](docs/research/concurrency-models.md#7-incremental-dataflow)). |
 | 54 | CRDT-replicated state, sagas and process managers | **Research pointer**, distribution/durability tier. CRDTs only with multi-node replicas (rank 44); a crash-surviving process manager is durable execution (ranks 49-51). A saga example with compensation, supervision and timeouts could come first ([note](docs/research/concurrency-models.md#8-crdts-sagas-and-process-managers)). |
 
@@ -820,7 +820,7 @@ behavior and its important failure/overload limit. Prefer a program with
 assertions over a snippet that only compiles, and do not present speculative API
 names as working code. The [examples index](examples/README.md) lists what
 exists today. Experimental backend drivers and their evidence stay under
-`benchmarks/` and [legacy](legacy/README.md).
+`benchmarks/` and the [archived `legacy/` directory](https://github.com/lambdaclass/spawned/tree/efba24340a01df82f872ec422b9dbaf48f897b04/legacy).
 
 ### Release example coverage
 

@@ -4,7 +4,7 @@ Research note, 2026-11-09. Informs ranks 9, 28, 29 and 30 of the
 [roadmap](../../ROADMAP.md#ranked-backlog), and the stall watchdog (rank 8)
 where it overlaps. The earlier idea list (live introspection, flight recorder,
 causal tracing) is in
-[framework ideas](../../legacy/docs/research/framework-ideas.md#d-observability-and-debugging);
+[framework ideas](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/docs/research/framework-ideas.md#d-observability-and-debugging);
 this note adds the prior art behind it.
 
 ## What it is

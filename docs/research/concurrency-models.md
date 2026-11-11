@@ -473,9 +473,9 @@ changing the I/O layer. Earlier experiments measured Monoio epoll and io_uring
 against Tokio: io_uring improved the measured tail on 128 loopback sockets but
 did not lead throughput, and the result "does not measure the isolated effect
 of io_uring or justify replacing Tokio"
-([design findings](../../legacy/benchmarks/DESIGN-FINDINGS.md#what-we-learned-in-the-linux-vm),
-[experiments](../../legacy/benchmarks/EXPERIMENTS.md),
-[scheduler research](../../legacy/research/backend-experiments/2026-11-06-fede/SCHEDULER-RESEARCH.md)).
+([design findings](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/benchmarks/DESIGN-FINDINGS.md#what-we-learned-in-the-linux-vm),
+[experiments](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/benchmarks/EXPERIMENTS.md),
+[scheduler research](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/research/backend-experiments/2026-11-06-fede/SCHEDULER-RESEARCH.md)).
 Both clients use Tokio I/O throughout. **Research pointer 52, frozen** until a
 client I/O profile shows syscall or reactor cost dominating, per the roadmap's
 backend freeze.
@@ -565,5 +565,5 @@ Client sources: ethrex commits
 [535647e45](https://github.com/lambdaclass/ethrex/commit/535647e45), and the
 file links above at ethrex `1dfaa09ec` and ethlambda `c3f5f566`. Earlier
 Spawned I/O-engine experiments:
-[design findings](../../legacy/benchmarks/DESIGN-FINDINGS.md),
-[experiments](../../legacy/benchmarks/EXPERIMENTS.md).
+[design findings](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/benchmarks/DESIGN-FINDINGS.md),
+[experiments](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/benchmarks/EXPERIMENTS.md).

@@ -4,7 +4,7 @@ Maintained research behind the [roadmap](../../ROADMAP.md). Each note says what
 a technique or system is, how it works, who uses it (sourced claims only), what
 it means for Spawned with links to ranked items, and its sources. Claims we
 could not verify are marked in place. Earlier research, no longer maintained,
-is archived in [legacy](../../legacy/docs/research/); these notes link to it
+is in the [archived `legacy/docs/research`](https://github.com/lambdaclass/spawned/tree/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/docs/research); these notes link to it
 rather than repeat it.
 
 | Note | Roadmap items |
