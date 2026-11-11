@@ -1,5 +1,6 @@
 ---------------------------- MODULE MCStartLive ----------------------------
 EXTENDS Start
-\* Per-PR liveness instance: a parent exit, also one held during the
-\* child's started(), reaches every linked child.
+\* Per-PR liveness instance: one child of every waiting variant of a
+\* managed parent; parent exits (also held during started()) reach linked
+\* children, and every waiting start is answered.
 =============================================================================

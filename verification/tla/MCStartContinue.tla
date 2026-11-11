@@ -1,6 +1,7 @@
 ---------------------------- MODULE MCStartContinue ----------------------------
 EXTENDS Start
-\* Per-PR instance for the continuation (Init::continue_with): one child of
-\* every variant, two messages from others racing started(), the parent's
-\* exit and a startup timeout. ContinueFirst and its control run here.
+\* Per-PR instance for the continuation and trapping children: one child
+\* of every variant with every explicit placement, two messages from others,
+\* a child that may trap exits (a held parent exit is then queued behind the
+\* continuation, E3). ContinueFirst and its control run here.
 =============================================================================
