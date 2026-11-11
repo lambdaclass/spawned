@@ -123,6 +123,63 @@ def named_fault(module, fault, invariant, tlc):
 
 
 # Rank 11 design models: (module, fault, invariant it must violate).
+def named_temporal(module, fault, prop, tlc, constants=None):
+    """Run MODULE with Fault = FAULT, TypeOK and the single temporal property
+    PROP, and require a liveness counterexample for exactly that property.
+    CONSTANTS overrides constant values (a smaller instance keeps the
+    single-worker liveness check fast)."""
+    constants = constants or {}
+    with tempfile.TemporaryDirectory(prefix="bad-model-") as directory:
+        work = Path(directory)
+        for source in HERE.glob("*.tla"):
+            shutil.copy(source, work)
+        lines = []
+        for line in (HERE / f"{module}.cfg").read_text().splitlines():
+            if line.startswith(("PROPERTY", "INVARIANT")):
+                continue
+            name = line.strip().split(" ")[0]
+            if name in constants:
+                line = f"    {name} = {constants[name]}"
+            lines.append(line.replace('Fault = "None"', f'Fault = "{fault}"'))
+        lines += ["INVARIANT TypeOK", f"PROPERTY {prop}"]
+        (work / f"{module}.cfg").write_text("\n".join(lines) + "\n")
+        result = subprocess.run(shlex.split(tlc) + ["-workers", "1", "-deadlock", "-cleanup", module],
+                                cwd=work, capture_output=True, text=True)
+        log = result.stdout + result.stderr
+        if "Temporal properties were violated" not in log:
+            raise AssertionError(f"{module}/{fault}: {prop} not violated\n{log}")
+    print(f"COUNTEREXAMPLE model: {module}/{fault} ({prop})")
+
+
+# Base actor lifecycle (docs/design/otp-exit-signals.md): the v0.7 exit-signal
+# behaviours and the PR #182/#185 bugs, each against the invariant it breaks.
+LIFECYCLE_CONTROLS = [
+    ("MCLifecycle", "DirectStop", "TrapRespected"),
+    ("MCLifecycle", "DirectStop", "NormalSignalIgnored"),
+    ("MCLifecycle", "KillAsKill", "KilledFromKill"),
+    ("MCLifecycle", "KillNoSupersede", "KilledFromKill"),
+    ("MCLifecycleFence", "NoUnlinkFence", "CancelFenced"),
+    ("MCLifecycleFence", "NoDemonitorFence", "CancelFenced"),
+    ("MCLifecycle", "EarlyStopped", "StoppedAtDeath"),
+    ("MCLifecycle", "PanicOverKill", "KilledFromKill"),
+    ("MCLifecycle", "DropKeepsNormal", "RuntimeDropReason"),
+    ("MCLifecycle", "AlwaysHook", "SkipHook"),
+    ("MCLifecycle", "LateSignalIgnored", "LateSignalWins"),
+    ("MCLifecycle", "LateRealReason", "NoProcIffLate"),
+    ("MCLifecycle", "Retain182", "NoOrphanRequest"),
+    ("MCLifecycle", "Dispatch185", "NoDispatchAfterStop"),
+    ("MCLifecycle", "DropQueued", "NoOrphanRequest"),
+    ("MCLifecycle", "EarlyNotify", "ExitAfterMessages"),
+    ("MCLifecycle", "SplitDeathPoint", "NoEdgeToDead"),
+]
+
+# Liveness controls run on a smaller instance of MCLifecycleLive.
+LIFECYCLE_TEMPORAL_CONTROLS = [
+    ("ParentAsExit", "ShutdownEndsChild"),
+    ("SplitDeathPoint", "DownDelivered"),
+]
+LIFECYCLE_SMALL = {"Reqs": "{}", "MaxSignals": "0", "DropEnabled": "FALSE"}
+
 DEFERRED_CONTROLS = [
     ("MCDeferredReplies", "NoAutoReply", "NoOrphan"),
     ("MCDeferredReplies", "NoAtomicExpiry", "AtMostOneDischarge"),
@@ -278,6 +335,11 @@ def main():
         named_fault(module, fault, invariant, args.tlc)
     job_trace_controls(traces, args.tlc)
     reply_trace_controls(traces, args.tlc)
+    for module, fault, invariant in LIFECYCLE_CONTROLS:
+        named_fault(module, fault, invariant, args.tlc)
+    for fault, prop in LIFECYCLE_TEMPORAL_CONTROLS:
+        named_temporal("MCLifecycleLive", fault, prop, args.tlc, LIFECYCLE_SMALL)
+
 
 if __name__ == "__main__":
     main()

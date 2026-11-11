@@ -15,6 +15,10 @@ Active design contracts. Usage is documented in the [guide](../GUIDE.md).
   `ActorId` and cancellation fencing, with the rank 11a decisions. Models:
   `verification/tla/DeferredReplies.tla` and `DeferredJobs.tla`. Client
   rewrites: [deferred-replies-client-mapping.md](deferred-replies-client-mapping.md).
+- **[otp-exit-signals.md](otp-exit-signals.md)**: proposed v0.8 contract (not
+  implemented) for exit signals, `Killed`/`NoProc`, supervisor startup and
+  runtime-dropped actors as in OTP (ROADMAP ranks 5e, 5f, 5g), with the base
+  actor lifecycle model `Lifecycle.tla`.
 
 Earlier designs (the v0.5 API redesign alternatives, the framework comparison
 and superseded roadmap plans) are archived in
