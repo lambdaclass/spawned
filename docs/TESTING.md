@@ -1241,7 +1241,25 @@ links first; this drop is a redundant net) and `parent_runners.len() + 1` to
 meaningful survivors in `nested.rs` (`resolve` with `&&` to `||`, and the
 adapter's `Drop` deleted or with its own-entry check inverted) are killed by
 `nested::resolve_and_drop_tests`. All of `monitor.rs` and `registry.rs` was
-caught. SUPERVISION_MUTANTS
+caught.
+
+`supervision.rs` (314 mutants, run against the supervision-focused tests
+only: `--lib` and the `supervision`, `supervision_strategies`,
+`supervisor_policies`, `nested_supervision`, `failpoints` and
+`execution_groups` binaries, so a survivor here may still die under the full
+weekly run): 175 caught, 11 timeouts, 65 unviable, 63 missed. About 40 of the
+63 change only `lifecycle-trace` event arguments (`+ 1` slot and round
+indices, `count`, `trace_id`, `Core::cohort`) or logging (`log_failure_once`,
+the `generation > 1` restart log), which are equivalent in a default build.
+Two were real gaps and are now killed by unit tests: `jitter_seed` with `^`
+to `|` (the existing test only checked that pairs differ) and
+`RetryBudget::available` with `<` to `<=` (no test reached a reservation at
+exactly the limit). The rest are the race-only guards listed above
+(`finish_unless_recovering`'s supersession check, `close_admission`,
+`cancel_unready_startup`, `stop_remaining`, the OneForOne/closed-gate exit of
+`run_child`'s non-restart branch); the planted bugs show the stack catches
+gross mistakes on these paths, and these single-operator survivors need the
+narrow windows the failpoints were built for.
 
 ## Kani proofs of supervisor arithmetic
 
