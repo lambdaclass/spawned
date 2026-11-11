@@ -225,6 +225,7 @@ DYNAMIC_CONTROLS = [
     ("MCDynamicSupervisor", "SlotLookup", "TermResultsSound"),
     ("MCDynamicSupervisor", "QueuedTermOk", "TermResultsSound"),
     ("MCDynamicSupervisor", "StuckResultLost", "TermResultsSound"),
+    ("MCDynamicSupervisor", "IgnoreExpect", "TermResultsSound"),
 ]
 DYNAMIC_TEMPORAL_CONTROLS = [
     ("MCDynamicSupervisorCallers", "NoAbort", "StartAnswered"),

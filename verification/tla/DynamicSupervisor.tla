@@ -46,7 +46,8 @@ CONSTANTS
     CleanupFails, \* {FALSE} or {FALSE, TRUE}: cleanup may record a failure
     TermCalls,    \* terminate_child calls
     CallSlot,     \* CallSlot[c]: slot the call is about
-    CallKind,     \* CallKind[c] \in {"id", "slot"}
+    CallKind,     \* CallKind[c] \in {"id", "slot", "expect"}: by actor id, by
+                  \* slot, or by slot fenced on the expected id@generation
     BackoffOn,    \* backoff configured (opt-in)
     FanoutSteps,  \* shutdown fan-out as separate steps (refinement)
     Fault
@@ -66,13 +67,13 @@ Faults   == {"None",
     \* revision 3
     "LaterOp", "MisclassifyStuck", "EarlyRemove", "OverReserve", "LostRestart",
     "TermLost", "NoDeadline", "SkipSignal", "SlotLookup", "QueuedTermOk",
-    "PublishAfterExit", "StuckResultLost"}
+    "PublishAfterExit", "StuckResultLost", "IgnoreExpect"}
 
 ASSUME N \in Nat \ {0} /\ MaxChildren \in Nat /\ MaxRestarts \in Nat /\ MaxExpire \in Nat
 ASSUME ModeSet \subseteq Modes /\ ModeSet # {}
 ASSUME SelfExits \subseteq Reasons /\ StartFails \subseteq Reasons
 ASSUME CleanupFails \subseteq BOOLEAN /\ FALSE \in CleanupFails
-ASSUME \A c \in TermCalls : CallSlot[c] \in Slots /\ CallKind[c] \in {"id", "slot"}
+ASSUME \A c \in TermCalls : CallSlot[c] \in Slots /\ CallKind[c] \in {"id", "slot", "expect"}
 ASSUME BackoffOn \in BOOLEAN /\ FanoutSteps \in BOOLEAN /\ Fault \in Faults
 
 States   == {"idle", "queued", "starting", "running", "cleanup", "decide",
@@ -117,7 +118,7 @@ TypeOK ==
     /\ op.k \in {"idle", "start", "restart", "term"}
     /\ \A s \in Slots : sl[s].cs \in States /\ sl[s].alive \subseteq Nat
     /\ \A c \in TermCalls :
-         tc[c].st \in {"none", "queued", "pending", "ok", "stuck", "notfound", "stopped"}
+         tc[c].st \in {"none", "queued", "pending", "ok", "stuck", "notfound", "stopped", "stale"}
 
 Init ==
     /\ open = TRUE /\ failed = FALSE /\ exhausted = FALSE /\ sphase = "running"
@@ -231,9 +232,16 @@ LoopTerm(c) ==
     /\ tc[c].st = "queued" /\ op.k = "idle" /\ open /\ IsHead("term", CallSlot[c], c)
     /\ q' = Tail(q) /\ served' = q[1].t
     /\ LET s == CallSlot[c]
-           found == /\ sl[s].cs \in Active \ {"stuck"}
-                    /\ CallKind[c] = "slot" \/ sl[s].lastPub = tc[c].g \/ Fault = "SlotLookup"
-       IN IF sl[s].cs = "stuck" /\ (CallKind[c] = "slot" \/ sl[s].lastPub = tc[c].g)
+           named   == CallKind[c] = "slot" \/ sl[s].lastPub = tc[c].g
+           live    == sl[s].cs \in Active \ {"stuck"}
+           \* expect: the slot exists but its current published child moved on
+           stale   == CallKind[c] = "expect" /\ sl[s].cs \in Active
+                      /\ sl[s].lastPub # tc[c].g /\ Fault # "IgnoreExpect"
+           found   == live /\ (named \/ Fault = "SlotLookup"
+                              \/ (CallKind[c] = "expect" /\ Fault = "IgnoreExpect"))
+       IN IF stale
+          THEN /\ tc' = [tc EXCEPT ![c].st = "stale"] /\ UNCHANGED <<sl, op>>
+          ELSE IF sl[s].cs = "stuck" /\ named
           THEN /\ tc' = [tc EXCEPT ![c].st = "stuck"] /\ UNCHANGED <<sl, op>>
           ELSE IF ~found
           THEN /\ tc' = [tc EXCEPT ![c].st = "notfound"] /\ UNCHANGED <<sl, op>>
@@ -631,15 +639,15 @@ ConcurrentShutdown ==
 OkMeansReady == \A s \in Slots : sl[s].result = "ok" => sl[s].everReady
 
 \* terminate results: Ok only after removal; Stuck stays Stuck; a call
-\* still queued at shutdown is Stopped, never Ok; an id call never reaches a
-\* generation published after the call was made.
+\* still queued at shutdown is Stopped, never Ok; an id call or a fenced
+\* (expect) slot call never reaches a generation other than the one named.
 TermResultsSound ==
     \A c \in TermCalls :
         LET s == CallSlot[c] IN
         /\ tc[c].st = "ok" =>
                sl[s].cs = "removed" /\ sl[s].alive = {} /\ sl[s].stuck = "none"
         /\ tc[c].st = "pending" => op = [k |-> "term", s |-> s, c |-> c]
-        /\ tc[c].st = "pending" /\ CallKind[c] = "id" => sl[s].lastPub = tc[c].g
+        /\ tc[c].st = "pending" /\ CallKind[c] \in {"id", "expect"} => sl[s].lastPub = tc[c].g
 
 Safety ==
     /\ TypeOK /\ AtMostOneGeneration /\ PublishedIsLive /\ NoChildOutlivesSupervisor
@@ -654,7 +662,7 @@ NeverReopens == [][open' => open]_vars
 \* A committed terminate result never changes.
 TermResultStable ==
     [][\A c \in TermCalls :
-        tc[c].st \in {"ok", "stuck", "notfound", "stopped"} => tc'[c].st = tc[c].st]_vars
+        tc[c].st \in {"ok", "stuck", "notfound", "stopped", "stale"} => tc'[c].st = tc[c].st]_vars
 
 (* Liveness *)
 \* Under CallerSpec (cleanup may never end):
