@@ -4,6 +4,15 @@
 
 - Lockfile: `rustix` 1.1.2 -> 1.1.6 for RUSTSEC-2026-0486 (pulled in by the
   examples' `native-tls` dependency; spawned's crates are unaffected).
+- CI: a `sim` job runs the simulated test suites (`--cfg spawned_sim`)
+  on every pull request, one test per process with a timeout. `stack_budget`
+  is compiled out under the simulator: it measures real thread stacks.
+- CI: a `sim` job runs the simulated test suites (`--cfg spawned_sim`) on
+  every pull request: all integration tests of `spawned-concurrency` and
+  `spawned-rt` plus the executor unit tests, one test per process with a
+  120 s timeout (`scripts/run-sim-tests.py`), decision tapes uploaded on
+  failure. `stack_budget` is compiled out under the simulator: it measures
+  real thread stacks.
 - CI: the core workflows (`ci`, `verification`, `failpoints`) also run on
   `merge_group`, so pull requests can go through GitHub's merge queue.
 
