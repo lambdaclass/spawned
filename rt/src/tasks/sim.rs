@@ -1090,7 +1090,12 @@ impl Runtime {
         lock(&self.handle.shared.state).spin_limit = polls.max(1);
     }
     pub fn stats(&self) -> Stats {
-        let state = lock(&self.handle.shared.state);
+        self.handle.shared.stats()
+    }
+}
+impl Shared {
+    fn stats(&self) -> Stats {
+        let state = lock(&self.state);
         Stats {
             seed: state.seed,
             steps: state.steps,
@@ -1146,6 +1151,13 @@ pub fn ambient_handle() -> Handle {
     Handle {
         shared: current_or_ambient(),
     }
+}
+
+/// [`Runtime::stats`] of the running simulation, for bodies that do not own
+/// the `Runtime` (those run by [`run_once`] or [`explore`]); the scenario
+/// fuzzer reads the task count from it to check for leaked tasks.
+pub fn stats() -> Stats {
+    current_or_ambient().stats()
 }
 
 /// Virtual time elapsed in this thread's simulation.

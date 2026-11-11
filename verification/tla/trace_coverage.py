@@ -187,13 +187,41 @@ def open_cache(path, mode):
     return io.TextIOWrapper(gzip.GzipFile(path, "wb", mtime=0), encoding="utf-8")
 
 
+def model_files():
+    """The .tla and .cfg files the model side reads: the coverage, projection
+    and MC modules of MODELS, their configurations and every module they
+    EXTEND or INSTANCE in this directory. Other models (Lifecycle, Deferred*)
+    do not invalidate the cache."""
+    roots = set()
+    files = set()
+    for spec in MODELS.values():
+        roots |= {spec["cov"], spec["proj"]}
+        for mc_module, cfg_file, _ in spec["configs"]:
+            roots.add(mc_module)
+            if cfg_file:
+                files.add(cfg_file)
+    seen, todo = set(), list(roots)
+    while todo:
+        module = todo.pop()
+        path = os.path.join(HERE, module + ".tla")
+        if module in seen or not os.path.exists(path):
+            continue   # standard modules (Naturals, TLC, ...)
+        seen.add(module)
+        files.add(module + ".tla")
+        with open(path) as fh:
+            text = fh.read()
+        for line in re.findall(r"\bEXTENDS\b([^\n]*)", text):
+            todo += re.findall(r"\w+", line)
+        todo += re.findall(r"\bINSTANCE\s+(\w+)", text)
+    return sorted(files)
+
+
 def model_digest():
     """Hash of everything the model side depends on, to validate a cache."""
     h = hashlib.sha256(repr(sorted((m, repr(v)) for m, v in MODELS.items())).encode())
-    for f in sorted(os.listdir(HERE)):
-        if f.endswith((".tla", ".cfg")) and not f.startswith("Trace") and "Ind" not in f:
-            with open(os.path.join(HERE, f), "rb") as fh:
-                h.update(f.encode() + b"\0" + fh.read())
+    for f in model_files():
+        with open(os.path.join(HERE, f), "rb") as fh:
+            h.update(f.encode() + b"\0" + fh.read())
     return h.hexdigest()
 
 

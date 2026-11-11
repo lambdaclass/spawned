@@ -790,9 +790,11 @@ that ethrex's boot path stops hiding a failed discovery start behind retries.
 ## What the model establishes
 
 TLC results on the model with the maintainer decisions (TLC 2.19, 4 workers):
-`MCLifecycle` 43,340,533 distinct states, depth 22, no error, 6m55s;
-`MCLifecycleLive` 324,179 states, no error, 1m24s; `MCLifecycleFence` 387,985
-states, no error, 3 s. All 19 negative-control checks produce their
+`MCLifecycleWideDeep` (the per-PR `MCLifecycle` until the per-PR instance was
+made smaller; now weekly) 43,340,533 distinct states, depth 22, no error,
+6m55s; `MCLifecycle` 7,473,761 states, no error, 96 s;
+`MCLifecycleLive` 324,179 states, no error, 1m24s; `MCLifecycleFence` 979,508
+states (with one actor-to-actor message), no error, 14 s. All 19 negative-control checks produce their
 counterexample (1-6 s each). The weekly configurations `MCLifecycleLiveDeep`
 (5,117,864 states, no error, 34 min, on the model before the decisions) and
 `MCLifecycleDeep` are re-run after the 2026-11-11 canary window, with
@@ -803,18 +805,25 @@ code (`ChildHandle` holders, a caller) and one supervisor, with the six phases
 above (`Die` is D, `Publish` is publication). Configurations:
 
 - `MCLifecycle` (every PR, safety): two actors, `a1` supervised and the
-  `start_linked` parent of `a2`; one request, one monitor, one actor-to-actor
-  message, one exit signal (from either actor or from outside) or
-  administrative stop, one registration after D, runtime drop. Reasons are
-  one per behaviour class: self-exits `Normal`, `Panic`, `Kill`; signals
-  `Normal`, `Shutdown`, `Kill`; administrative `Shutdown`.
+  `start_linked` parent of `a2`; one request, one monitor, one exit signal
+  (from either actor or from outside) or administrative stop, one
+  registration after D, runtime drop. Fewer reasons than the weekly
+  instances: self-exits `Normal` (a panic still comes from a request handler
+  or `PanicWhileExiting`), signals `Normal` and `Kill` (`Shutdown` still
+  comes from administrative stops and the supervisor), administrative
+  `Shutdown`, no actor-to-actor message. 7,473,761 distinct states. Every
+  Lifecycle safety control fails here on its named invariant.
+- `MCLifecycleWideDeep` (weekly, safety): the former per-PR instance, as
+  above plus one actor-to-actor message, self-exits `Normal`, `Panic`,
+  `Kill` and signals `Normal`, `Shutdown`, `Kill` (43,340,533 states; about
+  16 minutes on a GitHub runner, which is why it left the per-PR job).
 - `MCLifecycleLive` (every PR): the liveness properties with the request,
   the monitor and late registrations, without the actor-to-actor message,
   outside signals or runtime drop.
 - `MCLifecycleLiveDeep` (weekly): the same with one outside signal or
   administrative stop and runtime drop.
-- `MCLifecycleFence` (every PR, safety): two late registrations and
-  `unlink`, nothing else; the fence controls run here.
+- `MCLifecycleFence` (every PR, safety): two late registrations,
+  `unlink` and one actor-to-actor message; the fence controls run here.
 - `MCLifecycleDeep` (weekly, safety): every reason for every operation (so
   `Killed` and `NoProc` are also sent explicitly), `unlink`, and turning
   `trap_exit` off.

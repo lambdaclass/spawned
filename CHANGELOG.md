@@ -197,6 +197,42 @@
   `#[non_exhaustive]`. GUIDE: hard job deadlines and the soft-deadline
   pattern, replies carrying a reason through `R = Result<..>`, the
   `request_raw` rows.
+- ROADMAP: a Priorities section (soundness, including a smaller stable API and
+  soak tests; introspection; determinism; testing; client-driven features;
+  performance behind a regression gate), and the runtime direction. Keep Tokio; rank 37 becomes the main
+  performance track (generated dispatch, reusable reply slots, a single-wakeup
+  mailbox, batched draining), after profiling; rank 22a becomes actor-owned
+  I/O (`spawned::net`, Erlang ports) with a simulated network so whole client
+  nodes run deterministically; rank 52 (io_uring) reopens only as a
+  `spawned::net` backend.
+- README: centred on why Spawned exists. A "Why Spawned" section first (guarantees
+  verified once and inherited by every application; deterministic, replayable
+  tests), both points leading the feature list, and a "Testing your own actors
+  deterministically" section showing `#[spawned_macros::sim_test]`.
+- ROADMAP: no-cost-on-the-default-path principle, the Erlang gaps table, and new
+  ranks 6b (shared-state and abort lints), 8b (simulator check for handlers
+  that never yield), 8c (per-group stack size) and 44a (execution groups in a
+  separate OS process); rank 18a's tracking allocator is opt-in.
+- Tests: semantics-contract coverage audit. `docs/TESTING.md` has a
+  guarantee-by-guarantee matrix (checks, modes and placements, whether a
+  check fails when the guarantee breaks): 31 of 50 guarantees were fully
+  covered, now 46. New `sim_ordering` checks D1, R2, M1, L1, D3/D4/L7 and X7
+  under PCT and bounded DFS; `semantics_gaps` checks the stop window, D5,
+  M1, M4, M5, L2, L5, R3, T3 and S6 on every placement and V2, V4, V6, V9,
+  S1 and S3 on the simulator. No bugs found; several contract citations
+  corrected.
+- Lockfile: `rustix` 1.1.2 -> 1.1.6 for RUSTSEC-2026-0486 (pulled in by the
+  examples' `native-tls` dependency; spawned's crates are unaffected).
+- CI: a `sim` job runs the simulated test suites (`--cfg spawned_sim`) on
+  every pull request: all integration tests of `spawned-concurrency` and
+  `spawned-rt` plus the executor unit tests, one test per process with a
+  120 s timeout (`scripts/run-sim-tests.py`), decision tapes uploaded on
+  failure. `stack_budget` is compiled out under the simulator: it measures
+  real thread stacks.
+- CI: the core workflows (`ci`, `verification`, `failpoints`) also run on
+  `merge_group`, so pull requests go through GitHub's merge queue, which runs
+  all 19 required checks (including `sim`) on the merged result before
+  anything lands on `main`.
 - Design (not implementation) for rank 11, deferred typed replies and
   pipe-to-self, revised over four passes after independent reviews:
   `docs/design/deferred-replies.md`, client mapping for ethrex and ethlambda,
@@ -210,6 +246,26 @@
   base actor lifecycle TLA+ model (`Lifecycle.tla`) with negative controls for
   the v0.7 behaviours and the PR #182/#185 bugs; see
   `docs/design/otp-exit-signals.md`.
+- Test: coverage-guided scenario fuzzing on the deterministic simulator
+  (`fuzz/`, cargo-fuzz + `arbitrary`): generated operation sequences over
+  actors, links, monitors, timers, supervisors and systems, checked against
+  the semantics contract, with seed/strategy-fixed inputs, decision tapes,
+  `cargo fuzz tmin` -> `repro --emit` regressions, coverage and TLA+ trace
+  sample scripts, and a 60 s CI smoke run on pull requests (no scheduled
+  runs). A first 3-hour campaign found no framework bug. Adds
+  `spawned_rt::tasks::sim::stats()` (simulation builds only).
+- CI: keep the per-PR TLA+ checks fast again (about 52 minutes, sometimes
+  hitting the 60-minute timeout, down to about 8). The per-PR `MCLifecycle`
+  is a smaller instance (7.5M states instead of 43M, fewer reasons, no
+  actor-to-actor message, which moved to `MCLifecycleFence`); every
+  Lifecycle negative control still fails on it on its named invariant. The
+  former instance runs weekly as `MCLifecycleWideDeep`. The TLA+ checks run
+  as parallel jobs (`tla-models` legs, `tla-traces`, weekly `tla-deep` with
+  one runner per deep configuration) behind a required `tla` job. The
+  trace-coverage cache (`coverage-model.json.gz`) is keyed only on the specs
+  it is computed from, so unrelated models no longer invalidate it, and is
+  regenerated (same keys and state counts). `check.sh` gains `--only` and
+  `--exclude`.
 
 ## 0.7.3 — 2026-11-10
 

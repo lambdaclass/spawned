@@ -5,6 +5,7 @@ on:
     branches: ["main"]
   pull_request:
     branches: ["main"]
+  merge_group:
 
 env:
   CARGO_TERM_COLOR: always
@@ -74,6 +75,34 @@ jobs:
         run: taskset -c 0 cargo test --locked -p spawned-concurrency
       - name: Workspace tests, CPU 0 only
         run: taskset -c 0 cargo test --locked --workspace
+
+  # Deterministic simulator (docs/TESTING.md, "Simulated suites in CI"):
+  # every integration test of spawned-concurrency and spawned-rt, plus
+  # spawned-rt's simulator unit tests, built with --cfg spawned_sim and run
+  # one test per process with a per-test timeout, four at a time. Failing
+  # seeds leave decision tapes, uploaded as an artifact.
+  sim:
+    runs-on: ubuntu-latest
+    needs: build
+    timeout-minutes: 15
+    env:
+      RUSTFLAGS: --cfg spawned_sim --cfg tokio_unstable
+      SPAWNED_SIM_TAPE_DIR: ${{ github.workspace }}/sim-tapes
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.93.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: sim
+      - name: Simulated suites, one test per process
+        run: python3 scripts/run-sim-tests.py -p spawned-concurrency -p spawned-rt:lib --jobs 4 --timeout 120
+      - name: Upload decision tapes
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sim-tapes
+          path: sim-tapes
+          if-no-files-found: ignore
 
   # Semantics guarantee P2 (docs/design/semantics.md): with panic = "abort" a
   # panicking handler aborts the process (no stopped(), no reply), while
