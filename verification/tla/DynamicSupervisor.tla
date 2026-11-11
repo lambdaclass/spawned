@@ -13,8 +13,11 @@
 (* up concurrently. Shutdown (Close) and failure close admission at once  *)
 (* and cancel the operation in progress (B: tree-wide admission closure). *)
 (*                                                                         *)
-(* Restart types are per slot so one instance covers all three (a         *)
-(* simple_one_for_one template has one type; mixing them loses nothing).  *)
+(* Restart types are chosen per slot in Init (`mode`), so one run covers  *)
+(* every combination (a simple_one_for_one template has one type; mixing  *)
+(* them is the general case). Two slots suffice: every property relates   *)
+(* at most a pair of children (one holds the cap or restarts, the other   *)
+(* races it); three slots exceed 100M states with revision 2's detail.    *)
 (*                                                                         *)
 (* Abstractions:                                                           *)
 (*  - `open` is the admission gate and the supervisor's cancel together.  *)
@@ -42,7 +45,7 @@ EXTENDS Naturals, FiniteSets
 
 CONSTANTS
     N,            \* number of start_child calls (slots 1..N)
-    Mode,         \* Mode[s] \in {"Permanent", "Transient", "Temporary"}
+    ModeSet,      \* restart types a slot may have; chosen per slot in Init
     MaxChildren,  \* max_children
     MaxRestarts,  \* restart intensity (grants per window)
     MaxExpire,    \* how often the rolling window may release a grant
@@ -71,7 +74,7 @@ Faults   == {"None",
 
 ASSUME N \in Nat \ {0} /\ MaxChildren \in Nat
 ASSUME MaxRestarts \in Nat /\ MaxExpire \in Nat
-ASSUME \A s \in Slots : Mode[s] \in Modes
+ASSUME ModeSet \subseteq Modes /\ ModeSet # {}
 ASSUME SelfExits \subseteq Reasons /\ StartFails \subseteq Reasons
 ASSUME CleanupFails \subseteq BOOLEAN /\ FALSE \in CleanupFails
 ASSUME Fault \in Faults
@@ -107,6 +110,7 @@ VARIABLES
     reserved,   \* slots holding a reservation (pending restarts)
     stamped,    \* grants ever stamped (charged restart attempts)
     op,         \* the control loop's current operation [k, s]
+    mode,       \* restart type of each slot, fixed after Init
     sl,         \* per-slot record, see SlotInit
     \* History, written only by GhostUpdate.
     lateCommit, latePub, lateGenClose, lateGenTerm, badRestart, badRetire,
@@ -114,7 +118,7 @@ VARIABLES
 
 sup   == <<open, failed, exhausted, sphase, windowed, expired, reserved, stamped, op>>
 ghost == <<lateCommit, latePub, lateGenClose, lateGenTerm, badRestart, badRetire, restarts>>
-vars  == <<sup, sl, ghost>>
+vars  == <<sup, sl, ghost, mode>>
 
 SlotInit == [cs |-> "idle", gen |-> 0, alive |-> {}, pub |-> 0,
              reason |-> "none", cfail |-> FALSE, readyGen |-> FALSE,
@@ -139,6 +143,7 @@ Init ==
     /\ open = TRUE /\ failed = FALSE /\ exhausted = FALSE /\ sphase = "running"
     /\ windowed = 0 /\ expired = 0 /\ reserved = {} /\ stamped = 0 /\ op = Idle
     /\ sl = [s \in Slots |-> SlotInit]
+    /\ mode \in [Slots -> ModeSet]
     /\ lateCommit = [s \in Slots |-> FALSE] /\ latePub = [s \in Slots |-> FALSE]
     /\ lateGenClose = [s \in Slots |-> FALSE] /\ lateGenTerm = [s \in Slots |-> FALSE]
     /\ badRestart = [s \in Slots |-> FALSE] /\ badRetire = [s \in Slots |-> FALSE]
@@ -164,17 +169,17 @@ DesignAllowsRestart(m, r, cf) ==
 \* the table, or a failed replacement (never ready) of a restartable child.
 Allowed(s) ==
     /\ sl[s].everReady
-    /\ \/ DesignAllowsRestart(Mode[s], sl[s].reason, sl[s].cfail)
-       \/ ~sl[s].readyGen /\ Mode[s] # "Temporary"
+    /\ \/ DesignAllowsRestart(mode[s], sl[s].reason, sl[s].cfail)
+       \/ ~sl[s].readyGen /\ mode[s] # "Temporary"
 
 \* What the supervisor decides (with the policy faults).
 WouldRestart(s, cf) ==
     /\ sl[s].everReady \/ Fault = "RetryFirstStart"
-    /\ \/ Mode[s] = "Permanent" /\ Fault # "PermanentRetires"
-       \/ Mode[s] = "Transient"
+    /\ \/ mode[s] = "Permanent" /\ Fault # "PermanentRetires"
+       \/ mode[s] = "Transient"
           /\ (sl[s].reason \in Abnormal \/ cf \/ Fault = "TransientNormalRestart")
-       \/ Mode[s] # "Temporary" /\ ~sl[s].readyGen
-       \/ Mode[s] = "Temporary" /\ Fault = "RestartTemporary"
+       \/ mode[s] # "Temporary" /\ ~sl[s].readyGen
+       \/ mode[s] = "Temporary" /\ Fault = "RestartTemporary"
 
 CloseGate == open' = FALSE
 Fail      == failed' = TRUE /\ CloseGate
@@ -450,7 +455,7 @@ Act ==
     \/ Close \/ WindowExpire \/ SupSignal \/ SupSignalOne \/ SupDone
     \/ \E s \in Slots : SlotStep(s)
 
-Next == Act /\ GhostUpdate
+Next == Act /\ GhostUpdate /\ UNCHANGED mode
 
 \* Progress: the loop, construction, stops, cleanup and stuck children
 \* eventually move (crashes, start failures and getting stuck are not fair).
@@ -492,7 +497,7 @@ MaxChildrenBound == Cardinality({s \in Slots : sl[s].cs \in Active}) <= MaxChild
 SerialConstruction ==
     Cardinality({s \in Slots : sl[s].cs \in {"starting", "restarting"}}) <= 1
 
-TemporaryNeverRestarted == \A s \in Slots : Mode[s] = "Temporary" => sl[s].gen <= 1
+TemporaryNeverRestarted == \A s \in Slots : mode[s] = "Temporary" => sl[s].gen <= 1
 
 \* No generation begins after terminate_child, or after admission closed.
 TerminatedNeverRestarted == \A s \in Slots : ~lateGenTerm[s]
