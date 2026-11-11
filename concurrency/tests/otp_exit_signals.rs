@@ -236,7 +236,15 @@ mod tasks_mode {
             trapper_seen.exits(),
             vec![Exit::new(t.id(), ExitReason::Killed)]
         );
-        settle(&watcher).await;
+        // The Down is queued by the monitor's waiter after publication
+        // (GUIDE: "shortly after"), so wait for it rather than one round
+        // trip, which a single CPU can finish first.
+        let began = std::time::Instant::now();
+        while watcher_seen.downs().is_empty() {
+            assert!(began.elapsed() < LIMIT, "no Down after the kill");
+            settle(&watcher).await;
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
         assert_eq!(watcher_seen.downs().len(), 1);
         assert_eq!(watcher_seen.downs()[0].reason, ExitReason::Killed);
         trapper.child_handle().stop();
