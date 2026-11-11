@@ -440,6 +440,7 @@ GhostUpdate ==
                         (sl[s].cs = "decide" /\ sl'[s].cs = "removed" /\ open'
                          /\ ~sl[s].term /\ Allowed(s))]
     /\ restarts' = restarts + Cardinality({s \in Slots : Grew(s) /\ sl[s].gen > 0})
+    /\ UNCHANGED mode
 
 SlotStep(s) ==
     \/ Request(s) \/ LoopAdmit(s) \/ RejectQueued(s)
@@ -455,7 +456,7 @@ Act ==
     \/ Close \/ WindowExpire \/ SupSignal \/ SupSignalOne \/ SupDone
     \/ \E s \in Slots : SlotStep(s)
 
-Next == Act /\ GhostUpdate /\ UNCHANGED mode
+Next == Act /\ GhostUpdate
 
 \* Progress: the loop, construction, stops, cleanup and stuck children
 \* eventually move (crashes, start failures and getting stuck are not fair).
