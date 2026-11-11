@@ -645,7 +645,9 @@ Rules (the [design](design/deferred-replies.md) has the full contract):
   the caller can no longer be answered; the actor's deadline heap expires
   stored tokens on time and returns their credits.
 - `PendingReplies<K, R>` is a bounded table of tokens by key (purges terminal
-  entries on insert; `InsertError::{Duplicate, Full}` hands the token back).
+  entries on insert; `InsertError::{Duplicate, Full}` hands the token back; `into_parts()`
+  gives the `InsertErrorKind` and the token together, so even a reason
+  added later can be answered).
 
 **Answering with a reason.** The framework's errors (`ReplyDropped`,
 `ActorStopped`, `Overloaded`, `RequestTimeout`) say what happened to the

@@ -39,7 +39,7 @@ every change; this guide covers what you need to edit when upgrading.
 | `reply.has_caller()` *(0.8 pre-release)* | removed: `reply.defer()` returns `Err(DeferError::NoCaller)` for a send |
 | `PendingReply::detached()` *(0.8 pre-release)* | `spawned_test::detached_reply()` |
 | `PendingReplies::{purge, retained, live}` *(0.8 pre-release)* | `len()` / `is_empty()` (live tokens); purging is automatic on `insert` |
-| `InsertError<ReplyTo<R>>` *(0.8 pre-release)* | `InsertError<R>` (`#[non_exhaustive]`) |
+| `InsertError<ReplyTo<R>>` *(0.8 pre-release)* | `InsertError<R>` (`#[non_exhaustive]`): match on `refused.kind()` (`InsertErrorKind`, also non-exhaustive) or take `let (kind, token) = refused.into_parts()`, so a wildcard arm still answers the token (e.g. `token.overloaded()`) instead of dropping it (`ReplyDropped`) |
 | `DEFAULT_MAX_OUTSTANDING` *(0.8 pre-release)* | removed from the public API (`Actor::MAX_OUTSTANDING` defaults to 1024) |
 | `system.shutdown(deadline)`, `supervisor.shutdown(deadline)`, `report.wait(deadline)` | unchanged calls; the `Duration` parameter is named `grace` (a deadline is an instant in 0.8) |
 | `Down { monitor_ref, reason }` (pattern) | `Down { monitor_ref, reason, .. }`; `Down` gains `actor: ActorId` (the monitored actor) and, like `Exit`, is `#[non_exhaustive]` |

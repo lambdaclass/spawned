@@ -7,6 +7,21 @@ use std::hash::Hash;
 /// Why [`PendingReplies::insert`] handed the token back. The handler decides
 /// the answer (typically `token.overloaded()` or a domain error) and still
 /// owns the token.
+///
+/// The enum is `#[non_exhaustive]`; match on [`kind`](Self::kind) (or take
+/// both with [`into_parts`](Self::into_parts)) so the token is answered
+/// whatever the reason, including one added later, instead of being
+/// dropped in a wildcard arm (which answers the caller `ReplyDropped`):
+///
+/// ```ignore
+/// if let Err(refused) = table.insert(id, token) {
+///     let (kind, token) = refused.into_parts();
+///     match kind {
+///         InsertErrorKind::Duplicate => token.reply(Err(Error::DuplicateId)),
+///         _ => token.overloaded(), // Full, and any later reason
+///     }
+/// }
+/// ```
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum InsertError<R: Send + 'static> {
@@ -16,12 +31,33 @@ pub enum InsertError<R: Send + 'static> {
     Full(ReplyTo<R>),
 }
 
+/// Why an insert was refused, without the token ([`InsertError::kind`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum InsertErrorKind {
+    /// A live token is already stored under this key.
+    Duplicate,
+    /// The table holds `cap` live tokens.
+    Full,
+}
+
 impl<R: Send + 'static> InsertError<R> {
+    /// Why the token was handed back.
+    pub fn kind(&self) -> InsertErrorKind {
+        match self {
+            Self::Duplicate(_) => InsertErrorKind::Duplicate,
+            Self::Full(_) => InsertErrorKind::Full,
+        }
+    }
     /// The token handed back.
     pub fn into_inner(self) -> ReplyTo<R> {
         match self {
             Self::Duplicate(token) | Self::Full(token) => token,
         }
+    }
+    /// The reason and the token together: every refusal can be answered.
+    pub fn into_parts(self) -> (InsertErrorKind, ReplyTo<R>) {
+        (self.kind(), self.into_inner())
     }
 }
 
@@ -195,5 +231,29 @@ mod tests {
             .collect();
         assert_eq!(once, expected);
         assert_eq!(twice, expected);
+    }
+
+    /// Every refusal hands back its reason and its token together, so a
+    /// caller can answer the token for any reason, known or not.
+    #[test]
+    fn a_refusal_gives_its_kind_and_its_token() {
+        let mut table = PendingReplies::with_capacity(1);
+        let (a, ra) = token();
+        let (dup, rdup) = token();
+        let (full, rfull) = token();
+        table.insert(1, a).unwrap();
+        let refused = table.insert(1, dup).unwrap_err();
+        assert_eq!(refused.kind(), InsertErrorKind::Duplicate);
+        let (kind, token) = refused.into_parts();
+        assert_eq!(kind, InsertErrorKind::Duplicate);
+        token.overloaded();
+        assert!(matches!(rdup.recv(), Err(ActorError::Overloaded)));
+        let refused = table.insert(2, full).unwrap_err();
+        let (kind, token) = refused.into_parts();
+        assert_eq!(kind, InsertErrorKind::Full);
+        token.reply(9);
+        assert_eq!(rfull.recv().unwrap(), 9);
+        table.take(&1).unwrap().reply(1);
+        assert_eq!(ra.recv().unwrap(), 1);
     }
 }

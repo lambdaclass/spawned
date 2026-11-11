@@ -11,8 +11,8 @@ pub use crate::reply::jobs::{
     JobError, JobGone, JobHandle, JobKey, JobOptions, JobOutcome, PipeError, PipeReplyError,
 };
 pub use crate::reply::{
-    Deadline, DeferError, Delivery, InsertError, PendingReplies, PendingReply, ReplyFuture,
-    ReplyReceiver, ReplyTo,
+    Deadline, DeferError, Delivery, InsertError, InsertErrorKind, PendingReplies, PendingReply,
+    ReplyFuture, ReplyReceiver, ReplyTo,
 };
 pub use crate::response::Response;
 pub use crate::Instant;

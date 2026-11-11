@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- `InsertError::kind()` (a `#[non_exhaustive]` `InsertErrorKind`) and
+  `InsertError::into_parts()`: a refused insert's reason and token come
+  together, so a caller answers the token for any reason, including one
+  added later, instead of dropping it in a wildcard arm.
 - Docs: an async job's `work` is a factory run at once in the current turn
   (its panic is a handler panic; a job refused by the owner's exit has run
   it); only its future is the job (`pipe` rustdoc, GUIDE).

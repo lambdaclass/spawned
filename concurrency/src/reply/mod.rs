@@ -14,7 +14,7 @@ pub(crate) mod registry;
 pub(crate) mod slot;
 pub(crate) mod turn;
 
-pub use pending::{InsertError, PendingReplies};
+pub use pending::{InsertError, InsertErrorKind, PendingReplies};
 pub(crate) use registry::DEFAULT_MAX_OUTSTANDING;
 pub use slot::Delivery;
 

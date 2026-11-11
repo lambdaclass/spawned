@@ -13,7 +13,7 @@
 //!    rest with `ActorStopped`.
 use spawned_concurrency::message::Message;
 use spawned_concurrency::tasks::{
-    Actor, ActorRef, ActorStart, Context, Deadline, Handler, InsertError, JobError, JobOptions,
+    Actor, ActorRef, ActorStart, Context, Deadline, Handler, InsertErrorKind, JobError, JobOptions,
     JobOutcome, PendingReplies, PendingReply, ReplyTo,
 };
 use spawned_concurrency::{actor, protocol, ActorError, Response};
@@ -194,11 +194,14 @@ impl Connection {
         _: &Context<Self>,
     ) {
         let Ok(token) = reply.defer() else { return };
-        match self.current_requests.insert(msg.id, token) {
-            Ok(()) => {} // the request goes out on the socket here
-            Err(InsertError::Duplicate(token)) => drop(token), // ReplyDropped; the first caller is kept
-            // `Full` (InsertError is non_exhaustive): answer Overloaded.
-            Err(error) => error.into_inner().overloaded(),
+        // The request goes out on the socket on Ok(()). A refusal hands back
+        // its reason and the token together, so every reason is answered.
+        if let Err(refused) = self.current_requests.insert(msg.id, token) {
+            let (kind, token) = refused.into_parts();
+            match kind {
+                InsertErrorKind::Duplicate => drop(token), // ReplyDropped; the first caller is kept
+                _ => token.overloaded(),                   // Full, and any reason added later
+            }
         }
     }
 

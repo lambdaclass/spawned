@@ -504,7 +504,7 @@ impl<K: Hash + Eq, R> PendingReplies<K, R> {
     pub fn drain(&mut self) -> impl Iterator<Item = (K, ReplyTo<R>)>; // live tokens, oldest first
 }
 #[non_exhaustive]
-pub enum InsertError<R> { Duplicate(ReplyTo<R>), Full(ReplyTo<R>) }   // into_inner()
+pub enum InsertError<R> { Duplicate(ReplyTo<R>), Full(ReplyTo<R>) }   // kind(), into_inner(), into_parts()
 ```
 
 Retained entries never exceed `cap`, however fast tokens expire. The handler

@@ -118,8 +118,8 @@ pub use error::{ActorError, ExitReason, NoProc};
 pub use link::Exit;
 pub use monitor::{Down, MonitorRef};
 pub use reply::{
-    Deadline, DeferError, Delivery, InsertError, PendingReplies, PendingReply, ReplyReceiver,
-    ReplyTo,
+    Deadline, DeferError, Delivery, InsertError, InsertErrorKind, PendingReplies, PendingReply,
+    ReplyReceiver, ReplyTo,
 };
 pub use response::{Response, DEFAULT_REQUEST_TIMEOUT};
 pub use spawned_macros::{actor, protocol, send_handler};

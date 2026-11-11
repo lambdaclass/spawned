@@ -86,8 +86,10 @@ async fn request(&mut self, msg: Request, reply: PendingReply<'_, Message>, ctx:
     let Ok(token) = reply.defer() else { return }; // Overloaded (caller told) or Closed (caller gone)
     match state.current_requests.insert(id, token) {
         Ok(()) => state.outbox.push(msg.message),  // see note on the socket send
-        Err(InsertError::Duplicate(token)) => drop(token), // the new caller is told; the old one kept
-        Err(InsertError::Full(token)) => token.overloaded(), // caller gets Err(Overloaded)
+        Err(refused) => match refused.into_parts() {
+            (InsertErrorKind::Duplicate, token) => drop(token), // the new caller is told; the old one kept
+            (_, token) => token.overloaded(), // Full or a later reason: caller gets Err(Overloaded)
+        },
     }
 }
 // response path
