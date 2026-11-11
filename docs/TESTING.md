@@ -77,7 +77,10 @@ each one catches bugs the others cannot:
    supervision strategy. Metamorphic tests run one workload on every backend
    and require the same observable result. A Porcupine-style linearizability
    checker (`spawned_test::linearizability`) checks concurrent request
-   histories of about 1,000 operations against a real actor.
+   histories of about 1,000 operations against a real actor. Coverage-guided
+   [scenario fuzzing](#scenario-fuzzing-fuzz) generates whole programs
+   (actors, links, monitors, timers, supervisor trees, system shutdowns) on
+   the simulator and checks the semantics contract after every run.
 6. **Code and tests.** Kani proves small functions (backoff, jitter, the
    restart window, recovery ids) free of overflow and panics for all inputs in
    a bound. `cargo-mutants` breaks the code on purpose and requires some test
@@ -479,10 +482,139 @@ RUSTFLAGS="--cfg spawned_sim --cfg tokio_unstable" cargo test --release -p spawn
   --test sim_explore -- --include-ignored --nocapture
 ```
 
+### Scenario fuzzing (`fuzz/`)
+
+`fuzz/` is a cargo-fuzz (libFuzzer) crate, outside the workspace, whose
+target `scenario` decodes each input with `arbitrary` into a `Scenario`: a
+simulator seed, a scheduling strategy and up to 64 operations. Everything that
+can change a run is in the input, so every execution is deterministic and
+replays from the input alone.
+
+| Part | Contents |
+|---|---|
+| Schedule | `Random` (seeded walk), `Pct { d = 1..4, k = 1..4000 }` (one PCT run) or `Canonical` (smallest ready task), all from `sim::explore` |
+| Actors | spawn unmanaged (`start`), managed (`start_on` an async group of up to three systems) or `start_linked`; hooks that sleep (virtual time) or panic in `started()`, `stopped()` or the state destructor |
+| Messages | `send` (by `ActorRef` or `Recipient`), requests inline or in their own task with no or any timeout; handler commands: no-op, panic, sleep, stop self with any `ExitReason`, send a `Note`, link, unlink, monitor, trap exits, register a name, stop another actor |
+| Signals | link, unlink, monitor, demonitor and `trap_exit` from outside; `stop`, `shutdown`, `stop_with_reason(Kill/Panic)` |
+| Timers and time | `send_after`, `send_interval`, cancel; advance virtual time; yield |
+| Supervision | trees of up to four children, workers or nested supervisors (two levels), every strategy and restart mode, budgets (`max_restarts` 0-6, window 50 ms-131 s), backoff with or without jitter (fixed seed), startup and shutdown timeouts; per-generation factory errors, factory panics and hook failures; crash or stop the current generation, stop a nested supervisor, stop or shut down a root |
+| Systems | create systems and async groups, `shutdown(deadline)` (generous, short, or after quiescing with an order check), drop a system |
+
+Only `Backend::Async`, async groups and supervisors run: the simulator has
+one thread (Thread, Blocking and native placements are outside it, see the
+fidelity limits above). A supervisor's initial `start()` is cancelled after
+30 s of virtual time, because a subtree that restarts more slowly than its
+parent's budget refills legitimately retries forever.
+
+Oracles, checked during and after every run (the failure message is the
+oracle's name, so shrinking can match it):
+
+| Contract | Check |
+|---|---|
+| P1 | No panic escapes the framework into the driver; the simulator reports no deadlock and no livelock (2 million polls) |
+| M1, L1, L5 | No handler before `started()` returned or after `stopped()` began; each hook at most once; no `stopped()` after a panic in `started()` |
+| D1, D2 | Per-sender FIFO on the driver's lane; no message handled twice |
+| R1-R3 | Every request resolves; `Ok` carries its own nonce and the handler ran; `RequestTimeout` never before the timeout |
+| X1 | `Down` only for the watcher's own monitor, at most once, with the target's published reason; after quiescing, a live watcher has a `Down` for every exited, non-demonitored target |
+| X3, X5 | `Exit` carries the peer's published reason; a trapping, still-linked actor gets it (no more often than links were made); a non-trapping one does not survive a peer's abnormal exit |
+| X7 | No `Note` from a source after its `Down`/`Exit` at the same receiver |
+| L4, M | An actor that panicked exits abnormally; a published reason never changes; an actor nothing could have stopped is still alive |
+| V1, V3, V5 | A Temporary child is built at most once per supervisor instance; no factory runs while an earlier generation of its slot (or subtree) is alive; retries per rolling window never exceed `max_restarts` |
+| V4, V9 | `current()` never returns an exited generation; a finished supervisor has every child `Stopped` or `Failed`, no live generation, and runs no factory afterwards; children stop in reverse declaration order |
+| S1-S4 | A complete system shutdown leaves no managed actor running and no coordinator failure; a shut-down system admits nothing; targets stop in reverse admission order |
+| M5, S3, S5 | After teardown: every actor state dropped, no registered name left, and the simulator's task count back to its starting value |
+
+Order checks run only after quiescing (timers cancelled, requests collected,
+every actor fenced, no child starting or backing off) and when every
+`stopped()` fits its shutdown timeout: a missed timeout signals the remaining
+siblings early by design. Link predictions skip pairs whose trap flag or links
+changed inside a handler, pairs that were unlinked, and links made from an
+exited actor's context (a no-op).
+
+Running it needs the pinned nightly (`nightly-2026-10-20`, for libFuzzer's
+SanitizerCoverage flags) and cargo-fuzz 0.13. cargo-fuzz appends
+`RUSTFLAGS`, so every crate in the target, `spawned-rt` and
+`spawned-concurrency` included, is instrumented. The crates forbid
+`unsafe`, so the runs use `-s none` (no AddressSanitizer):
+
+```sh
+rustup toolchain install nightly-2026-10-20 --profile minimal -c llvm-tools-preview
+cargo install cargo-fuzz --locked --version 0.13.2
+cd fuzz
+export RUSTFLAGS="--cfg spawned_sim --cfg tokio_unstable"
+cargo +nightly-2026-10-20 fuzz run -s none scenario corpus -- -max_total_time=600
+./campaign.sh 3600 2 /tmp/campaign      # fork mode (2 workers), coverage.csv every minute
+cargo test --release --test corpus      # seeds and generated inputs, stable Rust, no libFuzzer
+```
+
+A failing run prints the oracle, its details, the strategy and seed, and the
+path of its decision tape (`SPAWNED_FUZZ_TAPE_DIR`, default
+`$TMPDIR/spawned-fuzz`), then aborts so libFuzzer saves the input. To turn
+it into a regression:
+
+```sh
+cargo +nightly-2026-10-20 fuzz tmin -s none scenario artifacts/scenario/crash-<sha>
+cargo run --release --example repro -- artifacts/scenario/minimized-from-<sha>          # decode, run, shrink the tape
+cargo run --release --example repro -- artifacts/scenario/minimized-from-<sha> --emit name
+cargo test --release --test name
+```
+
+`repro --emit` writes `regressions/name.{input,tape}` and `tests/name.rs`:
+one test replays the shrunk tape strictly (or, once a fix changed the task
+structure so the tape diverges, follows it permissively) and requires the
+scenario to pass, and a `#[sim_test(seeds = 32)]` runs the same operations
+over other seeds. `--emit` also keeps a passing input (a fixed bug or a
+fixed harness false positive) with its own tape; `fuzz/tests/` holds them.
+`SPAWNED_FUZZ_TRACE=1` prints each operation with virtual time and poll
+count; `SPAWNED_FUZZ_VERBOSE=1` keeps panic output.
+
+TLA+ trace validation of a sample: with the `lifecycle-trace` feature the
+harness writes the lifecycle trace of every finished flat tree (OneForOne
+for `Supervision.tla`, OneForAll and RestForOne, cohort actions only, for
+`Cohorts.tla`; nested trees are not exported), and
+`fuzz/tla-sample.sh CORPUS [MAX] [OUT]` replays a corpus and runs
+`trace_check.py` on them (`nix develop -c fuzz/tla-sample.sh ...`).
+
+CI (`fuzz.yml`) runs rustfmt, clippy and the harness tests (seeds,
+regressions, generated inputs) and a 60 s single-process smoke run on pull
+requests that touch `rt`, `concurrency`, `macros` or `fuzz`; longer
+campaigns are `workflow_dispatch` only. There is no scheduled run.
+
+**First campaign** (2026-11-11, a shared 30-core Linux server, libFuzzer fork
+mode with 4 then 2 workers at `nice 19`, `-s none`): about 3 h 10 min and
+20 million executions over eight segments; each segment restarted from the
+previous corpus after a harness fix. Throughput was 300-2,400 executions per
+second (median about 700) depending on machine load; a single process on
+an idle GitHub runner does about 1,100. Edge coverage (libFuzzer `cov`) grew
+from 7,900 after one minute to 9,400 after the first hour and 9,965 at the
+end (feature count 59,300, corpus 4,700 inputs), still rising slowly.
+`fuzz/coverage.sh` on the final corpus: lines covered in
+`supervision.rs` 83%, `tasks/actor.rs` 79%, `system.rs` 73%,
+`supervision/nested.rs` 75%, `link.rs` 91%, `monitor.rs` 77%, `tasks/time.rs`
+100%; threads mode, streams and protocol `Response` are not reachable from
+the harness. `fuzz/tla-sample.sh` on the minimized corpus exported 238 lifecycles of
+finished flat trees (62 OneForOne, 176 OneForAll/RestForOne) and TLC
+accepted all 238.
+
+Every failure was a harness false positive; no framework bug and no
+simulator fidelity problem was found. Each is kept in `fuzz/tests/` with the
+input and, for random schedules, its tape:
+
+| Oracle | Cause (harness) |
+|---|---|
+| liveness (fence) | a 1 ms `send_interval` of a 4 s sleep queued hours of work (`interval_sleep_fence`) |
+| S2 order | a later unit's abnormal exit stopped an earlier, linked unit through the link before the coordinator reached the units in between (`link_skips_shutdown_order`) |
+| V9 order | a `shutdown(0 ms)` that timed out signals every remaining child at once, by design (`short_shutdown_then_ordered`) |
+| M5/S3 leak | a dropped system's background shutdown released state after 3.4 s of virtual time, past a 3 s wait (`dropped_system_slow_cleanup`) |
+| V9 order | under the canonical schedule a yielding driver starved a child that was already stopping; quiescing now sleeps (`stopping_child_settles_before_order`) |
+| X3 | `ctx.link` from an exited actor's context is a no-op (`register_link` sees its own table closed), while linking to an exited peer delivers its reason (X5); found by the generated-input test before the campaign. The asymmetry is not stated in the semantics contract. |
+| livelock | a nested subtree that restarts more slowly than its parent's budget refills retries forever; the start is now bounded at 30 s |
+
 ## Scope
 
 This is generated, model-checked scenario testing on real runtimes, not an
-exhaustive scheduler or coverage-guided fuzzer. It does not cover bounded mailboxes or supervisor restart policies.
+exhaustive scheduler; the coverage-guided fuzzer above runs on the simulator
+only. It does not cover bounded mailboxes or supervisor restart policies.
 Demonitor races permit an already-queued notification; tests use bounded
 observation windows and do not claim exhaustive delivery verification.
 Do not interpret a passing campaign as proof of race freedom.

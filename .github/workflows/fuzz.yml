@@ -1,0 +1,83 @@
+name: Scenario fuzzing
+
+# Coverage-guided scenario fuzzing on the deterministic simulator (`fuzz/`,
+# docs/TESTING.md "Scenario fuzzing"). A short smoke run on pull requests that
+# touch the runtime, the actor library or the harness; longer runs only on
+# demand. Never scheduled.
+
+on:
+  pull_request:
+    branches: ["main"]
+    paths:
+      - 'concurrency/**'
+      - 'rt/**'
+      - 'macros/**'
+      - 'fuzz/**'
+      - '.github/workflows/fuzz.yml'
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: 'Fuzzing time in seconds'
+        default: '3600'
+      jobs:
+        description: 'libFuzzer fork-mode workers'
+        default: '2'
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # Pinned: cargo-fuzz needs nightly for -Zsanitizer/sancov flags.
+  FUZZ_NIGHTLY: nightly-2026-10-20
+  RUSTFLAGS: --cfg spawned_sim --cfg tokio_unstable
+  SPAWNED_FUZZ_TAPE_DIR: ${{ github.workspace }}/fuzz/artifacts/tapes
+
+jobs:
+  scenario:
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ github.event_name == 'workflow_dispatch' && 360 || 25 }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.FUZZ_NIGHTLY }}
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked --version 0.13.2
+      - name: Format and lints (harness crate)
+        working-directory: fuzz
+        run: |
+          cargo fmt --check
+          cargo clippy --locked --all-targets -- -D warnings
+      - name: Seed corpus, regressions and generated inputs (no libFuzzer)
+        working-directory: fuzz
+        run: cargo test --locked --release
+      - name: Smoke run (60 s, one process)
+        if: github.event_name == 'pull_request'
+        working-directory: fuzz
+        run: |
+          mkdir -p corpus/scenario artifacts
+          cp seeds/* corpus/scenario/
+          cargo fuzz run -s none scenario corpus/scenario -- \
+            -max_total_time=60 -timeout=60 -rss_limit_mb=4096 -max_len=4096 \
+            -artifact_prefix=artifacts/ -print_final_stats=1
+      - name: Campaign
+        if: github.event_name == 'workflow_dispatch'
+        run: fuzz/campaign.sh "${{ inputs.seconds }}" "${{ inputs.jobs }}" fuzz/artifacts/campaign
+      - name: Fail on campaign crashes
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          crashes=$(ls fuzz/artifacts/campaign/artifacts | wc -l)
+          echo "$crashes crash/timeout artifacts"
+          test "$crashes" -eq 0
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: scenario-fuzz
+          path: |
+            fuzz/artifacts
+          if-no-files-found: ignore
