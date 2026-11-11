@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Design (not implementation) for rank 12a, the dynamic supervisor
+  (`DynamicSupervisor` / `simple_one_for_one`):
+  `docs/design/dynamic-supervisor.md`, the ethrex/ethlambda client mapping
+  and the `DynamicSupervisor` TLA+ model with negative controls.
 - Lockfile: `rustix` 1.1.2 -> 1.1.6 for RUSTSEC-2026-0486 (pulled in by the
   examples' `native-tls` dependency; spawned's crates are unaffected).
 - CI: a `sim` job runs the simulated test suites (`--cfg spawned_sim`)
