@@ -92,6 +92,9 @@ pub struct State {
     /// Actors something may have stopped (direct stop, injected panic,
     /// link, system shutdown).
     pub may_stop: HashSet<ActorId>,
+    /// How many separate causes could have stopped each actor (every
+    /// `stoppable` call): X8 predicts the reason only when there was one.
+    pub causes: HashMap<ActorId, u32>,
     pub live: BTreeMap<String, i64>,
     pub live_total: i64,
     pub sups: Vec<SupInst>,
@@ -124,6 +127,11 @@ impl World {
 impl State {
     pub fn violate(&mut self, kind: &'static str, detail: String) {
         self.violations.push(Violation { kind, detail });
+    }
+    /// Record one more cause that may stop `id`.
+    pub fn stoppable(&mut self, id: ActorId) {
+        self.may_stop.insert(id);
+        *self.causes.entry(id).or_default() += 1;
     }
     fn tick(&mut self) -> u64 {
         self.seq += 1;
@@ -388,7 +396,7 @@ impl Handler<Do> for Worker {
                 });
             }
             Act::Stop(target, reason) => {
-                self.world.lock().may_stop.insert(target.id());
+                self.world.lock().stoppable(target.id());
                 target.stop_with_reason(reason);
             }
         }
@@ -400,10 +408,10 @@ impl Worker {
     fn uncertain(&self, me: ActorId, peer: Option<ActorId>) {
         let mut s = self.world.lock();
         s.uncertain.insert(me);
-        s.may_stop.insert(me);
+        s.stoppable(me);
         if let Some(peer) = peer {
             s.uncertain.insert(peer);
-            s.may_stop.insert(peer);
+            s.stoppable(peer);
         }
     }
 }
