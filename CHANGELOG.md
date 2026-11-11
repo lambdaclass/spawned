@@ -23,13 +23,13 @@
   began is inert; `unlink`/`demonitor` are fences; a `start_linked` parent's
   exit ends a trapping child through `stopped()` (never `exit_received`);
   signals arriving during `started()` are resolved when it returns;
-  supervisor and system shutdown send the parent's `Shutdown` exit signal
-  and kill at `shutdown_timeout` (system: at grace); destructor panics after
+  destructor panics after
   the death point are cleanup failures (`ChildHandle::cleanup_failure()`,
   `mailbox_cleanup_failure()` deprecated) that restart a Transient child
   without changing the reason; `spawned-test` `faults::exit` sends an exact
   exit signal; metrics `actors_exited_killed_total`,
-  `actors_exited_noproc_total`. Remaining: S1/S2 supervisor startup, rank 11
+  `actors_exited_noproc_total`. Remaining: supervisor/system shutdown as the parent's exit signal
+  with the kill escalation (E3), S1/S2 supervisor startup, rank 11
   reason-bearing `ActorStopped`/`NoProc` errors, TLA+ and trace work.
 
 - **Breaking (0.8), in progress:** deferred replies and pipe-to-self

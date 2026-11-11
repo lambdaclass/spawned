@@ -17,9 +17,9 @@ table is the full list). What to edit:
   `stop_with_reason(Kill)` stays an administrative stop ending `Kill`.
 - **`stopped()` no longer always runs.** It is skipped when the exit is begun
   by a kill, an untrapped exit signal or link notice (a linked peer's
-  abnormal death), or a runtime drop. **This includes supervisor and system
-  shutdown of a non-trapping actor**: the supervisor's `Shutdown` is now the
-  parent's exit signal (OTP `exit(Child, shutdown)`), so a non-trapping child
+  abnormal death), or a runtime drop. **Once E3 lands (not yet in this
+  branch) this includes supervisor and system shutdown of a non-trapping
+  actor**: the supervisor's `Shutdown` becomes the parent's exit signal (OTP `exit(Child, shutdown)`), so a non-trapping child
   ends `Shutdown` without `stopped()`, as a gen_server that does not trap
   exits skips `terminate`. Cleanup that must run on every exit belongs in
   `Drop`, or the actor calls `ctx.trap_exit(true)` in `started()`: a trapping

@@ -523,13 +523,11 @@ impl<A: Actor> ChildControl for View<A> {
         self.changed.send_modify(|n| *n = n.wrapping_add(1));
         true
     }
-    /// Collateral stop (OneForAll/RestForOne): the supervisor's parent exit
-    /// signal (E3); the controller escalates to a kill at `shutdown_timeout`.
     fn stop_generation(&self, slot: &RecoverySlot) {
         slot.stop.cancel();
         let scope = system::lock(&self.data).scope.clone();
         if let Some(scope) = scope {
-            scope.signal_parent(ExitReason::Shutdown);
+            scope.stop(ExitReason::Shutdown);
         }
     }
     fn snapshot(&self) -> ChildSnapshot {
@@ -548,15 +546,10 @@ impl<A: Actor> ChildControl for View<A> {
         }
         self.changed.send_modify(|n| *n = n.wrapping_add(1));
     }
-    /// Supervisor shutdown of this child (V9, reverse order): the parent
-    /// exit signal `exit(Child, shutdown)` (E3). A non-trapping child ends
-    /// `Shutdown` without `stopped()`; a trapping child finishes its earlier
-    /// messages and runs `stopped()`. The controller kills it at
-    /// `shutdown_timeout`.
     fn stop(&self) {
         self.stop_turn.cancel();
         if let Some(scope) = system::lock(&self.data).scope.clone() {
-            scope.signal_parent(ExitReason::Shutdown);
+            scope.stop(ExitReason::Shutdown);
         }
     }
     fn done(&self) -> watch::Receiver<bool> {
@@ -2058,7 +2051,7 @@ async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, core: Arc<C
                     if stop_turn {
                         view.stop_turn.cancelled().await;
                         trace::emit(core.trace, || Event::new("StopObserved", c, ""));
-                        // ChildView::stop already sent the parent's Shutdown.
+                        scope.stop(ExitReason::Shutdown);
                     }
                     view.change(|v| {
                         v.current = None;
@@ -2078,29 +2071,6 @@ async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, core: Arc<C
                                     });
                                 }
                                 reason
-                            }
-                            // E3: the supervisor stopped this child and it
-                            // did not reach its death point within
-                            // shutdown_timeout: the parent's kill, then a
-                            // second interval before cleanup is stuck.
-                            Err(_) if stop_turn => {
-                                scope.kill();
-                                // The second interval runs from the kill.
-                                cleanup_until = Some(Instant::now());
-                                match rt::timeout(spec.shutdown_timeout, child.wait_exit_async())
-                                    .await
-                                {
-                                    Ok(reason) => reason,
-                                    Err(_) => {
-                                        stuck = true;
-                                        core.fail_cleanup_for(
-                                            view.snapshot(),
-                                            format!("actor cleanup stuck for {}", spec.name),
-                                            || Some(Event::new("CleanupStuck", c, "")),
-                                        );
-                                        child.wait_exit_async().await
-                                    }
-                                }
                             }
                             Err(_) => {
                                 if !stop_turn {
