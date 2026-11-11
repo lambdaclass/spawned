@@ -46,6 +46,9 @@ sim_flags="--cfg spawned_sim --cfg tokio_unstable"
 mkdir -p "$out"
 out=$(cd "$out" && pwd)
 results="$out/results.tsv"
+# Keep simulator and fuzzer tapes (written to $TMPDIR by default) in OUT.
+export TMPDIR="$out/tmp"
+mkdir -p "$TMPDIR"
 [[ -f $results ]] || printf 'patch\tlayer\tverdict\tseconds\tdetail\n' > "$results"
 
 if [[ $# -eq 0 ]]; then
