@@ -17,16 +17,41 @@ table is the full list). What to edit:
   `stop_with_reason(Kill)` stays an administrative stop ending `Kill`.
 - **`stopped()` no longer always runs.** It is skipped when the exit is begun
   by a kill, an untrapped exit signal or link notice (a linked peer's
-  abnormal death), or a runtime drop. **Once E3 lands (not yet in this
-  branch) this includes supervisor and system shutdown of a non-trapping
-  actor**: the supervisor's `Shutdown` becomes the parent's exit signal (OTP `exit(Child, shutdown)`), so a non-trapping child
-  ends `Shutdown` without `stopped()`, as a gen_server that does not trap
-  exits skips `terminate`. Cleanup that must run on every exit belongs in
-  `Drop`, or the actor calls `ctx.trap_exit(true)` in `started()`: a trapping
-  child processes the messages queued before the shutdown, then runs
-  `stopped()`. A child that has not reached its death point within
-  `shutdown_timeout` is killed; cleanup is stuck only after a second
-  `shutdown_timeout`.
+  abnormal death), or a runtime drop (decision 2, as OTP skips `terminate`).
+  Cleanup that must run on every exit belongs in `Drop`.
+
+> **Supervised and system-owned actors: `stopped()` is skipped on shutdown
+> unless the actor traps exits.** Supervisor and system shutdown send the
+> parent's `Shutdown` exit signal (OTP `exit(Child, shutdown)`). A
+> non-trapping child ends `Shutdown` at once (after its current handler)
+> **without `stopped()`**, as a gen_server that does not trap exits skips
+> `terminate`. An actor that needs `stopped()` for cleanup on shutdown must
+> trap exits, as in OTP; it then finishes the messages queued before the
+> shutdown and runs `stopped()`. A child that has not finished within its
+> `shutdown_timeout` is killed (`Killed`, `stopped()` skipped if it has not
+> begun); cleanup counts as stuck only after a second `shutdown_timeout`.
+> Unmanaged `.start()` actors have no parent and are unaffected.
+>
+> ```rust
+> #[actor(protocol = StoreProtocol)]
+> impl Store {
+>     #[started]
+>     async fn started(&mut self, ctx: &Context<Self>) {
+>         // v0.8: needed for stopped() to run on supervisor/system shutdown.
+>         ctx.trap_exit(true);
+>     }
+>
+>     #[stopped]
+>     async fn stopped(&mut self, _ctx: &Context<Self>) {
+>         self.flush_to_disk().await;
+>     }
+> }
+> ```
+>
+> A trapping actor also receives linked peers' deaths as `Exit` messages
+> (`exit_received`) instead of dying with them; trap only where that is
+> intended, or move the cleanup into `Drop`.
+
 - **Runtime drop** reports `Killed` (was `Kill` in tasks mode,
   `Panic("unexpected framework panic")` in threads mode).
 - **Late link or monitor**: to an actor past its death point, `monitor`
