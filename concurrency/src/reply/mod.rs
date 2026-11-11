@@ -111,9 +111,17 @@ fn terminal_error(terminal: Terminal) -> ActorError {
 }
 
 /// A new reply slot for a request with `deadline`, and the caller's receiver.
-pub(crate) fn reply_slot<R>(deadline: Deadline) -> (SlotHandle<R>, ReplyReceiver<R>) {
+///
+/// `owner` is the receiving instance's registry: an awaited raw receiver
+/// puts its deadline in that owner's heap instead of arming its own timer.
+pub(crate) fn reply_slot<R>(
+    deadline: Deadline,
+    owner: Option<&Arc<Registry>>,
+) -> (SlotHandle<R>, ReplyReceiver<R>) {
     let slot = Arc::new(Slot::new(deadline.ticks()));
-    (SlotHandle(Some(slot.clone())), ReplyReceiver::new(slot))
+    let mut receiver = ReplyReceiver::new(slot.clone());
+    receiver.owner = owner.cloned();
+    (SlotHandle(Some(slot)), receiver)
 }
 
 // ---------------------------------------------------------------------------
@@ -427,6 +435,7 @@ impl<R: Send + 'static> Drop for ReplyTo<R> {
 /// any deferred credit returns at once.
 pub struct ReplyReceiver<R> {
     slot: Option<Arc<Slot<R>>>,
+    owner: Option<Arc<Registry>>,
 }
 
 impl<R> Drop for ReplyReceiver<R> {
@@ -447,7 +456,20 @@ impl<R> std::fmt::Debug for ReplyReceiver<R> {
 
 impl<R> ReplyReceiver<R> {
     fn new(slot: Arc<Slot<R>>) -> Self {
-        Self { slot: Some(slot) }
+        Self {
+            slot: Some(slot),
+            owner: None,
+        }
+    }
+
+    /// Await with the caller's own runtime timer (the `request` and
+    /// `Response` paths, which follow the runtime's clock, paused test clocks
+    /// included).
+    #[cfg(feature = "async")]
+    pub(crate) fn into_timed_future(self) -> ReplyFuture<R> {
+        let mut future = std::future::IntoFuture::into_future(self);
+        future.timer = true;
+        future
     }
 
     fn slot(&self) -> &Arc<Slot<R>> {
@@ -483,6 +505,8 @@ impl<R> std::future::IntoFuture for ReplyReceiver<R> {
             rx: self,
             armed: NEVER,
             sleep: None,
+            timer: false,
+            tracked: false,
         }
     }
 }
@@ -494,6 +518,10 @@ pin_project_lite::pin_project! {
     pub struct ReplyFuture<R> {
         rx: ReplyReceiver<R>,
         armed: u64,
+        // Arm a runtime timer (`request`/`Response`), rather than putting the
+        // deadline in the owner's heap (raw receivers).
+        timer: bool,
+        tracked: bool,
         #[pin]
         sleep: Option<spawned_rt::tasks::Sleep>,
     }
@@ -525,6 +553,18 @@ impl<R> std::future::Future for ReplyFuture<R> {
             let deadline = slot.deadline();
             if deadline == NEVER {
                 return Poll::Pending;
+            }
+            // A raw receiver registers its deadline once in the owner's
+            // deadline heap; the service expires the slot (waking this
+            // future) without a per-request runtime timer.
+            if !*this.timer {
+                if let Some(owner) = &this.rx.owner {
+                    if !*this.tracked {
+                        owner.track_deadline(slot);
+                        *this.tracked = true;
+                    }
+                    return Poll::Pending;
+                }
             }
             if *this.armed != deadline || this.sleep.is_none() {
                 let wait = Duration::from_nanos(deadline.saturating_sub(now_ticks()));
@@ -558,7 +598,7 @@ impl<R> std::future::Future for ReplyFuture<R> {
 pub fn reply_pair<R: Send + 'static>(
     deadline: Deadline,
 ) -> (PendingReply<'static, R>, ReplyReceiver<R>) {
-    let (mut handle, receiver) = reply_slot(deadline);
+    let (mut handle, receiver) = reply_slot(deadline, None);
     let reply = PendingReply::new(handle.take(), Registry::detached());
     (reply, receiver)
 }

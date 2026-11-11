@@ -314,7 +314,7 @@ impl<A: Actor> Context<A> {
         A: Handler<M>,
         M: Message,
     {
-        let (slot, rx) = reply_slot(deadline);
+        let (slot, rx) = reply_slot(deadline, None);
         enqueue(&self.sender, &self.mailbox, msg, slot)?;
         Ok(rx)
     }
@@ -700,7 +700,7 @@ impl<A: Actor> ActorRef<A> {
         A: Handler<M>,
         M: Message,
     {
-        let (slot, rx) = reply_slot(deadline);
+        let (slot, rx) = reply_slot(deadline, None);
         enqueue(&self.sender, &self.mailbox, msg, slot)?;
         Ok(rx)
     }
@@ -1993,7 +1993,7 @@ mod idle_stop_regression {
             )
         });
         entered.wait();
-        let (slot, response) = reply_slot(crate::reply::Deadline::Never);
+        let (slot, response) = reply_slot(crate::reply::Deadline::Never, None);
         tx.send(MailboxItem::Message(Box::new(MessageEnvelope {
             msg: Increment(events.clone(), monitors),
             slot,

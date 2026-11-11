@@ -2,8 +2,6 @@ use crate::error::ActorError;
 #[cfg(feature = "async")]
 use crate::reply::{ReplyFuture, ReplyReceiver};
 use std::future::Future;
-#[cfg(feature = "async")]
-use std::future::IntoFuture;
 use std::pin::Pin;
 use std::time::Duration;
 
@@ -154,7 +152,7 @@ impl<T> From<Result<ReplyReceiver<T>, ActorError>> for Response<T> {
         let observation = crate::instrumentation::RequestObservation::new();
         match result {
             Ok(rx) => Self(
-                ResponseState::Receiver(Box::pin(rx.into_future())),
+                ResponseState::Receiver(Box::pin(rx.into_timed_future())),
                 #[cfg(feature = "metrics")]
                 Some(observation),
             ),

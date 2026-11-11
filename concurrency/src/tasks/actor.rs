@@ -405,7 +405,7 @@ impl<A: Actor> Context<A> {
         A: Handler<M>,
         M: Message,
     {
-        let (slot, rx) = reply_slot(deadline);
+        let (slot, rx) = reply_slot(deadline, Some(&self.shared.replies));
         enqueue(&self.shared.sender, &self.shared.mailbox, msg, slot)?;
         Ok(rx)
     }
@@ -442,7 +442,7 @@ impl<A: Actor> Context<A> {
                 return result;
             }
         };
-        let result = rx.await;
+        let result = rx.into_timed_future().await;
         observation.finish(&result);
         result
     }
@@ -779,7 +779,7 @@ pub async fn request<M: Message>(
             return result;
         }
     };
-    let result = rx.await;
+    let result = rx.into_timed_future().await;
     observation.finish(&result);
     result
 }
@@ -868,7 +868,7 @@ impl<A: Actor> ActorRef<A> {
         A: Handler<M>,
         M: Message,
     {
-        let (slot, rx) = reply_slot(deadline);
+        let (slot, rx) = reply_slot(deadline, Some(&self.shared.replies));
         enqueue(&self.shared.sender, &self.shared.mailbox, msg, slot)?;
         Ok(rx)
     }
@@ -905,7 +905,7 @@ impl<A: Actor> ActorRef<A> {
                 return result;
             }
         };
-        let result = rx.await;
+        let result = rx.into_timed_future().await;
         observation.finish(&result);
         result
     }
@@ -3504,7 +3504,7 @@ mod idle_stop_regression {
             // Start and park the actual actor loop, without allowing another
             // executor task to run it between admission and stop below.
             assert!(futures::poll!(actor.as_mut()).is_pending());
-            let (slot, response) = reply_slot(crate::reply::Deadline::Never);
+            let (slot, response) = reply_slot(crate::reply::Deadline::Never, None);
             tx.send(Box::new(MessageEnvelope {
                 msg: Increment,
                 slot,
