@@ -22,5 +22,5 @@ llvm_cov="$sysroot/lib/rustlib/$host/bin/llvm-cov"
 binary="$here/target/$host/coverage/$host/release/scenario"
 "$llvm_cov" report "$binary" \
     -instr-profile="$here/coverage/scenario/coverage.profdata" \
-    -ignore-filename-regex='(\.cargo/registry|/rustc/|/fuzz/)' \
+    -ignore-filename-regex='(\.cargo/registry|/rustc/|fuzz/(src|fuzz_targets)/)' \
     > "$report"
