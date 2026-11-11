@@ -816,7 +816,7 @@ Negative controls (`negative_checks.py`, run one at a time; each checks
 | `NoEscalate` | exhaustion drops only that child | `ExhaustionCloses` | rev. 1 |
 | `EarlyDone` | done before every child finished | `NoChildOutlivesSupervisor` | rev. 1 |
 | `Sequential` | children stopped one at a time | `ConcurrentShutdown` | rev. 1 |
-| `ConcurrentStart` | constructions not serialised | `SerialConstruction` | Codex 1 |
+| `ConcurrentStart` | constructions not serialised (checked with `max_children` 2: with a cap of one the cap alone serialises) | `SerialConstruction` | Codex 1 |
 | `StuckFailsAll` | any stuck child fails the supervisor | `StuckIsolated` | agy P0 |
 | `PublishAfterClose` | a constructing replacement publishes after close | `NoPublishAfterStop` | agy 3 |
 | `OverlapGeneration` | the replacement starts before the old cleanup ended | `AtMostOneGeneration` | Codex 7 |
@@ -835,7 +835,7 @@ Negative controls (`negative_checks.py`, run one at a time; each checks
 | `NoAbort` (liveness) | a start racing shutdown is not cancelled | `StartAnswered` | rev. 1 |
 | `StuckBackoff` (liveness) | shutdown does not cancel a pending restart | `ClosedLeadsToDone` | rev. 1 |
 
-CONTROLS_NOTE
+All 27 produce their counterexample on the named property when run one at a time, each in 1-5 s. (Run in parallel, TLC instances race on the standard modules TLC extracts to `/tmp`; `negative_checks.py` runs them serially.)
 
 Not modelled: handler bodies, mailboxes and requests (`Lifecycle.tla`;
 rank 11's models); real time (backoff delays, the window clock, deadlines
