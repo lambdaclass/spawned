@@ -3,7 +3,7 @@ EXTENDS Naturals, FiniteSets
 (***************************************************************************)
 (* Unified start API (0.9; design: docs/design/unified-start.md).          *)
 (*                                                                         *)
-(* One parent actor P starts children with start, start_link or            *)
+(* One parent actor P starts children with spawn, start, start_link or     *)
 (* start_monitor, each with optional StartOptions (explicit placement,     *)
 (* a registered name). A start has two stages:                             *)
 (*   stage 1 (in the caller, before the child runs any code):              *)
@@ -12,11 +12,13 @@ EXTENDS Naturals, FiniteSets
 (*     Link     start_link/start_monitor: the edge is recorded while P is  *)
 (*              running, else the start is refused (NoProc-like);          *)
 (*     Register the name, atomically, or AlreadyStarted;                   *)
-(*     Dispatch the child: start returns here (immediate);                 *)
-(*   stage 2 (on the child): started() begins and returns, panics or       *)
-(*     stops; signals received meanwhile are held until it returns.        *)
-(*     start_link and start_monitor return after it (the ack): Ok when     *)
-(*     started() returned with no exit pending, otherwise the error after  *)
+(*     Dispatch the child: spawn returns here (no ack);                    *)
+(*   stage 2 (on the child): started() returns Init (ready, or ready with  *)
+(*     a continuation), returns an error or ignore (exit Normal), or       *)
+(*     panics or stops abnormally; signals received meanwhile are held     *)
+(*     until it returns. A continuation runs before any mailbox message.   *)
+(*     start, start_link and start_monitor return after started() (the     *)
+(*     ack): Ok when it returned ready with no exit pending, else the error after *)
 (*     the child's death point D, consuming the link notice (trapping      *)
 (*     parent) or the Down. A startup timeout unlinks and demonitors       *)
 (*     first, then kills.                                                  *)
@@ -30,7 +32,7 @@ EXTENDS Naturals, FiniteSets
 (***************************************************************************)
 CONSTANTS
     Kids,           \* child names
-    Kinds,          \* start variants used: subset of {"start","link","monitor"}
+    Kinds,          \* variants used: subset of {"spawn","start","link","monitor"}
     Explicit,       \* explicit placements: subset of {"none","G","U","same"}
                     \* ("same" = StartOptions::placement_of(&ctx))
     ParentPlaces,   \* where P runs: subset of {"G","U"}
@@ -39,6 +41,7 @@ CONSTANTS
     TimeoutEnabled, \* start_link/start_monitor may time out
     ParentCanExit,  \* P may exit (with Normal or Panic)
     CloseEnabled,   \* G may close (system shutdown)
+    MaxMsgs,        \* messages others may send to each child
     Fault           \* "None" or a negative control, see below
 
 (* Negative controls (each must produce a counterexample):                 *)
@@ -62,6 +65,8 @@ CONSTANTS
 (*                                                -> NoEdgeToDeadParent    *)
 (*  AdmitClosed      a closed group admits        -> AdmittedOnlyOpen      *)
 (*  IgnoreCap        a full group admits          -> CapacityRespected     *)
+(*  ContinueQueued   the continuation is queued behind earlier messages    *)
+(*                                                -> ContinueFirst         *)
 (*  DropHeld         a parent exit held during started() is dropped        *)
 (*                                (liveness)      -> ParentExitReachesChild*)
 
@@ -94,7 +99,10 @@ VARIABLES
     retd,     \* [Kids -> started() returned, panicked or stopped]
     killed,   \* [Kids -> startup-timeout kill received]
     pex,      \* [Kids -> parent exit queued at the child, or None]
-    pexAbn,   \* [Kids -> an abnormal parent exit was ever queued]
+    pexAbn,   \* [Kids -> a non-Normal parent exit was ever queued]
+    cont,     \* [Kids -> a continuation is pending]
+    msgs,     \* [Kids -> messages sent to the child by others]
+    early,    \* [Kids -> a message was handled before the continuation]
     why,      \* [Kids -> exit reason or None]
     res,      \* [Kids -> what the start call returned]
     reg,      \* children holding the name
@@ -103,10 +111,10 @@ VARIABLES
 
 vars == <<pst, pplace, ptrap, pwhy, pcause, gopen, kind, expl, wname, phase,
           place, admOpen, edge, mon, linkedAt, monAt, began, retd, killed,
-          pex, pexAbn, why, res, reg, exits, downs>>
+          pex, pexAbn, cont, msgs, early, why, res, reg, exits, downs>>
 pVars == <<pst, pplace, ptrap, pwhy, pcause, gopen>>
 optVars == <<kind, expl, wname>>
-startVars == <<began, retd, killed, pex, pexAbn, why>>
+startVars == <<began, retd, killed, pex, pexAbn, why, cont, msgs, early>>
 obsVars == <<reg, exits, downs>>
 
 Live(c) == phase[c] \in {"admitted", "linked", "registered", "starting",
@@ -132,7 +140,7 @@ TypeOK ==
     /\ pwhy \in Reasons \cup {None}
     /\ pcause \in Kids \cup {None}
     /\ gopen \in BOOLEAN
-    /\ kind \in [Kids -> {"start", "link", "monitor", None}]
+    /\ kind \in [Kids -> {"spawn", "start", "link", "monitor", None}]
     /\ expl \in [Kids -> {"G", "U", "same", None}]
     /\ wname \in [Kids -> BOOLEAN]
     /\ phase \in [Kids -> Phases]
@@ -147,6 +155,9 @@ TypeOK ==
     /\ killed \in [Kids -> BOOLEAN]
     /\ pex \in [Kids -> Reasons \cup {None}]
     /\ pexAbn \in [Kids -> BOOLEAN]
+    /\ cont \in [Kids -> BOOLEAN]
+    /\ msgs \in [Kids -> 0..MaxMsgs]
+    /\ early \in [Kids -> BOOLEAN]
     /\ why \in [Kids -> Reasons \cup {None}]
     /\ res \in [Kids -> Results]
     /\ reg \subseteq Kids
@@ -175,6 +186,9 @@ Init ==
     /\ killed = [c \in Kids |-> FALSE]
     /\ pex = [c \in Kids |-> None]
     /\ pexAbn = [c \in Kids |-> FALSE]
+    /\ cont = [c \in Kids |-> FALSE]
+    /\ msgs = [c \in Kids |-> 0]
+    /\ early = [c \in Kids |-> FALSE]
     /\ why = [c \in Kids |-> None]
     /\ res = [c \in Kids |-> "none"]
     /\ reg = {}
@@ -225,7 +239,7 @@ Admit(c) ==
 \* the parent's state; an exiting or dead parent refuses the start.
 Link(c) ==
     /\ phase[c] = "admitted"
-    /\ IF kind[c] = "start" \/ (kind[c] = "link" /\ Fault = "LinkAfterStarted")
+    /\ IF kind[c] \in {"spawn", "start"} \/ (kind[c] = "link" /\ Fault = "LinkAfterStarted")
        THEN /\ phase' = [phase EXCEPT ![c] = "linked"]
             /\ UNCHANGED <<edge, mon, linkedAt, monAt, res, place, reg>>
        ELSE IF pst = "run" \/ Fault = "LinkCheckLate"
@@ -252,12 +266,12 @@ Register(c) ==
        ELSE Abort(c, "already")
     /\ UNCHANGED <<pVars, optVars, admOpen, linkedAt, monAt, startVars, exits, downs>>
 
-\* The child is handed to its executor; start returns Ok here, start_link
-\* and start_monitor wait for the ack.
+\* The child is handed to its executor; spawn returns Ok here, start,
+\* start_link and start_monitor wait for the ack.
 Dispatch(c) ==
     /\ phase[c] = "registered"
     /\ phase' = [phase EXCEPT ![c] = "starting"]
-    /\ res' = [res EXCEPT ![c] = IF kind[c] = "start" THEN "ok" ELSE "pending"]
+    /\ res' = [res EXCEPT ![c] = IF kind[c] = "spawn" THEN "ok" ELSE "pending"]
     /\ UNCHANGED <<pVars, optVars, place, admOpen, edge, mon, linkedAt, monAt,
                    startVars, obsVars>>
 
@@ -274,7 +288,8 @@ StartedBegin(c) ==
     /\ ~killed[c]
     /\ began' = [began EXCEPT ![c] = TRUE]
     /\ UNCHANGED <<pVars, optVars, phase, place, admOpen, edge, mon, linkedAt,
-                   monAt, retd, killed, pex, pexAbn, why, res, obsVars>>
+                   monAt, retd, killed, pex, pexAbn, why, cont, msgs, early,
+                   res, obsVars>>
 
 \* Only under LinkAfterStarted: the link is set once started() is running.
 LateLink(c) ==
@@ -296,27 +311,58 @@ KilledEarly(c) ==
     /\ killed[c]
     /\ Exit(c, "Killed")
     /\ UNCHANGED <<pVars, optVars, place, admOpen, edge, mon, linkedAt, monAt,
-                   began, retd, killed, pex, pexAbn, res, obsVars>>
+                   began, retd, killed, pex, pexAbn, cont, msgs, early, res, obsVars>>
 
-\* started() returns, panics or stops; held signals are applied then: a kill
-\* wins, then an abnormal parent exit; a Normal parent exit is ignored.
+\* started() returns Init::ready, Init::continue_with, an error or ignore
+\* (the child exits Normal), or panics (or Init::stop with a non-Normal
+\* reason). Held signals apply when it returns: a kill wins, then a
+\* non-Normal parent exit; a Normal parent exit is ignored.
 StartedEnd(c) ==
     /\ phase[c] = "starting"
     /\ began[c]
     /\ ~retd[c]
     /\ retd' = [retd EXCEPT ![c] = TRUE]
-    /\ \E o \in {"ok", "panic", "stop"}:
-         IF killed[c] THEN /\ Exit(c, "Killed") /\ UNCHANGED pex
-         ELSE IF o = "panic" THEN /\ Exit(c, "Panic") /\ UNCHANGED pex
-         ELSE IF o = "stop" THEN /\ Exit(c, "Normal") /\ UNCHANGED pex
+    /\ \E o \in {"ready", "continue", "panic", "error"}:
+         IF killed[c] THEN /\ Exit(c, "Killed") /\ UNCHANGED <<pex, cont>>
+         ELSE IF o = "panic" THEN /\ Exit(c, "Panic") /\ UNCHANGED <<pex, cont>>
+         ELSE IF o = "error" THEN /\ Exit(c, "Normal") /\ UNCHANGED <<pex, cont>>
          ELSE IF pex[c] \in Abnormal /\ Fault # "DropHeld"
          THEN /\ Exit(c, pex[c])
               /\ pex' = [pex EXCEPT ![c] = None]
+              /\ UNCHANGED cont
          ELSE /\ phase' = [phase EXCEPT ![c] = "ready"]
               /\ pex' = [pex EXCEPT ![c] = None]
+              /\ cont' = [cont EXCEPT ![c] = o = "continue"]
               /\ UNCHANGED why
     /\ UNCHANGED <<pVars, optVars, place, admOpen, edge, mon, linkedAt, monAt,
-                   began, killed, pexAbn, res, obsVars>>
+                   began, killed, pexAbn, msgs, early, res, obsVars>>
+
+\* Others (a peer that found the name, the caller after the ack) send.
+Send(c) ==
+    /\ phase[c] \in {"starting", "ready"}
+    /\ msgs[c] < MaxMsgs
+    /\ msgs' = [msgs EXCEPT ![c] = msgs[c] + 1]
+    /\ UNCHANGED <<pVars, optVars, phase, place, admOpen, edge, mon, linkedAt,
+                   monAt, began, retd, killed, pex, pexAbn, cont, early, why,
+                   res, obsVars>>
+
+\* The continuation runs first; a mailbox message only after it.
+RunContinue(c) ==
+    /\ phase[c] = "ready"
+    /\ cont[c]
+    /\ cont' = [cont EXCEPT ![c] = FALSE]
+    /\ UNCHANGED <<pVars, optVars, phase, place, admOpen, edge, mon, linkedAt,
+                   monAt, began, retd, killed, pex, pexAbn, msgs, early, why,
+                   res, obsVars>>
+
+Handle(c) ==
+    /\ phase[c] = "ready"
+    /\ msgs[c] > 0
+    /\ ~cont[c] \/ Fault = "ContinueQueued"
+    /\ msgs' = [msgs EXCEPT ![c] = msgs[c] - 1]
+    /\ early' = [early EXCEPT ![c] = early[c] \/ cont[c]]
+    /\ UNCHANGED <<pVars, optVars, phase, place, admOpen, edge, mon, linkedAt,
+                   monAt, began, retd, killed, pex, pexAbn, cont, why, res, obsVars>>
 
 \* A parent exit reaching a running child.
 ApplyParentExit(c) ==
@@ -325,7 +371,7 @@ ApplyParentExit(c) ==
     /\ pex' = [pex EXCEPT ![c] = None]
     /\ IF pex[c] \in Abnormal THEN Exit(c, pex[c]) ELSE UNCHANGED <<phase, why>>
     /\ UNCHANGED <<pVars, optVars, place, admOpen, edge, mon, linkedAt, monAt,
-                   began, retd, killed, pexAbn, res, obsVars>>
+                   began, retd, killed, pexAbn, cont, msgs, early, res, obsVars>>
 
 \* The child's death point D: the name is released, then the link notice
 \* and the Down are taken. While the start call still waits (res pending),
@@ -353,10 +399,10 @@ ChildDie(c) ==
                    monAt, startVars, res>>
 
 -----------------------------------------------------------------------------
-(* The ack of start_link / start_monitor. *)
+(* The ack of start, start_link and start_monitor. *)
 
 AckOk(c) ==
-    /\ kind[c] \in {"link", "monitor"}
+    /\ kind[c] \in {"start", "link", "monitor"}
     /\ res[c] = "pending"
     /\ ~killed[c]
     /\ phase[c] = "ready" \/ (Fault = "AckBeforeStarted" /\ phase[c] = "starting")
@@ -383,7 +429,8 @@ Timeout(c) ==
     /\ edge' = IF Fault = "KillBeforeUnlink" THEN edge ELSE [edge EXCEPT ![c] = FALSE]
     /\ mon' = IF Fault = "KillBeforeUnlink" THEN mon ELSE [mon EXCEPT ![c] = FALSE]
     /\ UNCHANGED <<pVars, optVars, phase, place, admOpen, linkedAt, monAt,
-                   began, retd, pex, pexAbn, why, res, obsVars>>
+                   began, retd, pex, pexAbn, why, cont, msgs, early, res,
+                   obsVars>>
 
 \* Returns Timeout after the child's D or after the bounded wait for it.
 AckTimeout(c) ==
@@ -415,7 +462,8 @@ PDie ==
     /\ edge' = [c \in Kids |-> FALSE]
     /\ mon' = [c \in Kids |-> FALSE]
     /\ UNCHANGED <<pplace, ptrap, pwhy, pcause, gopen, optVars, phase, place,
-                   admOpen, linkedAt, monAt, began, retd, killed, why, res, obsVars>>
+                   admOpen, linkedAt, monAt, began, retd, killed, why, cont,
+                   msgs, early, res, obsVars>>
 
 GClose ==
     /\ CloseEnabled
@@ -428,6 +476,7 @@ ChildStep(c) ==
     \/ Begin(c) \/ Admit(c) \/ Link(c) \/ Register(c) \/ Dispatch(c)
     \/ StartedBegin(c) \/ LateLink(c) \/ KilledEarly(c) \/ StartedEnd(c)
     \/ ApplyParentExit(c) \/ ChildDie(c)
+    \/ Send(c) \/ RunContinue(c) \/ Handle(c)
     \/ AckOk(c) \/ AckFail(c) \/ Timeout(c) \/ AckTimeout(c)
 
 Next == (\E c \in Kids : ChildStep(c)) \/ PExit \/ PDie \/ GClose
@@ -468,9 +517,12 @@ AbortInvisible ==
         /\ \A e \in exits \cup downs : e.c # c
         /\ pcause # c
 
-\* Ok from start_link/start_monitor means started() returned.
+\* Ok from start, start_link or start_monitor means started() returned.
 AckMeansStarted ==
-    \A c \in Kids : (res[c] = "ok" /\ kind[c] \in {"link", "monitor"}) => retd[c]
+    \A c \in Kids : (res[c] = "ok" /\ kind[c] \in {"start", "link", "monitor"}) => retd[c]
+
+\* No mailbox message is handled before the continuation.
+ContinueFirst == \A c \in Kids : ~early[c]
 
 \* A startup failure is returned after the child's D.
 FailureAfterDeath == \A c \in Kids : res[c] = "failed" => phase[c] = "dead"
@@ -505,6 +557,7 @@ Safety ==
     /\ NameReleasedAtDeath /\ AbortInvisible /\ AckMeansStarted
     /\ FailureAfterDeath /\ FailureFlushed /\ TimeoutContained
     /\ NoEdgeToDeadParent /\ AdmittedOnlyOpen /\ CapacityRespected /\ NoticeOnce
+    /\ ContinueFirst
 
 (* Liveness: a child linked to a parent that dies abnormally, also during   *)
 (* the child's started(), dies.                                            *)
