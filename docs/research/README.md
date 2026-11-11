@@ -21,6 +21,7 @@ rather than repeat it.
 | [Supervision models](supervision-models.md) | Ranks 12a, 13, 27 |
 | [Deadlock and stall detection](deadlock-and-stall-detection.md) | Ranks 7 (approach chosen), 8, 8a, 30; rank 6 idle check |
 | [Test techniques](test-techniques.md) | Testing to add (cancellation safety, dhat, open-loop load, platform matrix, metamorphic rows); TESTING.md planned layers |
+| [Determinism audit](determinism-audit.md) | Determinism backlog D1-D10 (priority tier 3), S2, ranks 6b and 22a |
 | [Event sourcing](event-sourcing.md) | Ranks 21, 49, 50, 51; phase 8 |
 
 **[Virtual actors](virtual-actors.md).** Orleans grains are always addressable
@@ -117,3 +118,11 @@ testing to add rows and the planned layers in [TESTING.md](../TESTING.md).
 **[Event sourcing](event-sourcing.md).** Akka Persistence, Orleans
 `JournaledGrain` and Restate's journal, and how they relate to durability and
 crash tapes. *Landed in:* ranks 21, 49, 50 and 51; phase 8.
+
+**[Determinism audit](determinism-audit.md).** What escapes the deterministic
+simulator in Spawned, Ethrex and Ethlambda: direct Tokio spawns and timers,
+OS threads and blocking offloads, wall-clock reads, unseeded randomness,
+default-hasher maps and real I/O, counted per client subsystem, with
+same-seed rerun results (no schedule nondeterminism found). The main lever is
+madsim-style interposition of the clock and entropy. *Landed in:* the
+determinism backlog D1-D10.
