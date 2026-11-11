@@ -16,7 +16,7 @@ use spawned_concurrency::tasks::{
     Actor, ActorRef, ActorStart, Context, Deadline, Handler, InsertError, JobError, JobOptions,
     JobOutcome, PendingReplies, PendingReply, ReplyTo,
 };
-use spawned_concurrency::{actor, protocol, ActorError, DeferError, Response};
+use spawned_concurrency::{actor, protocol, ActorError, Response};
 use std::collections::VecDeque;
 use std::time::Duration;
 
@@ -248,7 +248,9 @@ impl PeerTable {
         }
         match reply.defer() {
             Ok(token) => self.waiters.push_back(token),
-            Err(DeferError::Overloaded | DeferError::Closed | DeferError::NoCaller) => {}
+            // Overloaded, Closed or NoCaller: the caller was already answered
+            // (or there is none). `DeferError` is `#[non_exhaustive]`.
+            Err(_) => {}
         }
     }
 

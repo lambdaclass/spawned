@@ -480,8 +480,8 @@ steps; its header lists the mapping (actors `a1`, `a2` in spawn order,
 folded request panics, the late `NoProc` notice of a non-trapping caller,
 and `Hook` "skip" accepted after a kill that arrived before `stopped()`
 began, which the model's `Kill` leaves out). Phase 0 (signals held during
-`started()`), managed scopes' own stops and actor-to-actor sends are not
-mapped: they reject. `concurrency/tests/lifecycle_trace.rs` records 14
+`started()`; not in `Lifecycle.tla` either: actors start in `run`), managed
+scopes' own stops and actor-to-actor sends are not mapped: they reject. `concurrency/tests/lifecycle_trace.rs` records 14
 scenarios (`lifecycle_*.json`, schema `lifecycle-v1`): kill with a queued
 request answered `Killed` and a later `NoProc`, kill during `stopped()`,
 untrapped and `Normal` signals, trapped exits (also from an actor, then a

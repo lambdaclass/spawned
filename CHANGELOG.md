@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **Breaking (0.8):** `DeferError` and `Delivery` are `#[non_exhaustive]`
+  (like `JobOutcome`, `JobError` and `PipeErrorKind`): match them with a
+  wildcard arm.
 - **Breaking (0.8):** the restart budget counts restart actions, as OTP's
   intensity does (ROADMAP rank 5f): a OneForAll or RestForOne recovery round
   takes one `max_restarts` grant when the coordinator selects it, before the

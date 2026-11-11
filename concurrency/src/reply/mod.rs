@@ -197,8 +197,10 @@ impl<R: Send + 'static> Drop for SlotHandle<R> {
 // PendingReply
 // ---------------------------------------------------------------------------
 
-/// Why [`PendingReply::defer`] did not return a token.
+/// Why [`PendingReply::defer`] did not return a token. More reasons may be
+/// added.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
 pub enum DeferError {
     /// The owner's `MAX_OUTSTANDING` credits are in use; the caller has
     /// already been answered `Overloaded`.

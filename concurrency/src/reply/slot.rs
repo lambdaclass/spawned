@@ -115,8 +115,9 @@ impl Terminal {
     }
 }
 
-/// Outcome of a reply, as the replier sees it.
+/// Outcome of a reply, as the replier sees it. More outcomes may be added.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Delivery {
     /// The value was published to the caller.
     Delivered,

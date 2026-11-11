@@ -27,6 +27,8 @@ mod tasks_mode {
             match reply.defer() {
                 Ok(token) => self.waiters.push(token),
                 Err(DeferError::Overloaded | DeferError::Closed | DeferError::NoCaller) => {}
+                // `DeferError` is `#[non_exhaustive]`.
+                Err(_) => {}
             }
         }
         #[send_handler]

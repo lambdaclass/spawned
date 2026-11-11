@@ -304,6 +304,7 @@ impl PeerTable {
             Err(DeferError::Overloaded) => {}   // caller already answered Overloaded
             Err(DeferError::Closed) => {}       // caller already timed out or left
             Err(DeferError::NoCaller) => {}     // reached by send
+            Err(_) => {}                        // #[non_exhaustive]
         }
     }
 }
