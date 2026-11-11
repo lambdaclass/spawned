@@ -29,6 +29,8 @@ use std::{
 const LONG: Duration = Duration::from_secs(600);
 /// Virtual time a supervisor's initial start may take before it is cancelled.
 const START_LIMIT: Duration = Duration::from_secs(30);
+/// Virtual time teardown cleanup may take before leftovers count as leaks.
+const LEAK_WAIT: Duration = Duration::from_secs(120);
 const MAX_ACTORS: usize = 16;
 const MAX_ROOTS: usize = 4;
 const MAX_SYSTEMS: usize = 3;
@@ -187,12 +189,18 @@ async fn leaks(world: &World, baseline: usize) {
             .count();
         (live, names, sim::stats().tasks)
     };
-    for i in 0..3_000 {
+    // Yield first (cleanup that is merely scheduled), then let virtual time
+    // pass: a dropped system's shutdown runs with a 5 s grace and hooks sleep
+    // up to 2.75 s each. LEAK_WAIT bounds the virtual time allowed.
+    let start = now();
+    let mut i = 0u64;
+    while now() - start < LEAK_WAIT {
         let (live, names, tasks) = clean(world);
         if live == 0 && names == 0 && tasks <= baseline {
             return;
         }
-        if i % 100 == 99 {
+        i += 1;
+        if i % 100 == 0 {
             rt::sleep(Duration::from_millis(100)).await;
         } else {
             sim::yield_now().await;
