@@ -221,7 +221,7 @@ def main():
         named_fault(module, fault, invariant, args.tlc)
     for module, fault, invariant in LIFECYCLE_CONTROLS:
         named_fault(module, fault, invariant, args.tlc)
-    model_fault("MCLifecycle", "ParentAsExit", args.tlc, temporal=True)
+    model_fault("MCLifecycleLive", "ParentAsExit", args.tlc, temporal=True)
 
 
 if __name__ == "__main__":

@@ -438,17 +438,18 @@ that ethrex's boot path stops hiding a failed discovery start behind retries.
 
 [`Lifecycle.tla`](../../verification/tla/Lifecycle.tla) models actors, one
 outside caller (`ChildHandle` holder and request sender) and one supervisor.
-`MCLifecycle` (every PR, safety and liveness) has two actors: `a1` is
-supervised and started `a2` with `start_linked`; one request, one monitor, one
-actor-to-actor message, one outside signal or administrative stop and one
-registration against a dead actor. `MCLifecycleDeep` (weekly, safety) adds an
-unrelated third actor and `unlink`. Any actor may turn `trap_exit` on at any
+`MCLifecycle` (every PR, safety) has two actors: `a1` is supervised and
+started `a2` with `start_linked`; one request, one monitor, one actor-to-actor
+message, one outside signal or administrative stop and one registration
+against a dead actor. `MCLifecycleLive` (every PR) checks the liveness
+properties at the same bounds without the actor-to-actor message.
+`MCLifecycleDeep` (weekly, safety) adds an unrelated third actor and `unlink`. Any actor may turn `trap_exit` on at any
 turn (turning it off adds no rule). Handlers are atomic and nondeterministic
 (reply, panic, ignore or act on a trapped exit); a panic in any turn is a
 self-exit. Death is one atomic step (E6). It models the proposed contract; the
 v0.7 behaviours are negative controls.
 
-Invariants (TLC, `MCLifecycle.cfg`):
+Invariants (TLC, `MCLifecycle.cfg`, `MCLifecycleLive.cfg`, `MCLifecycleDeep.cfg`):
 
 | Invariant | Meaning |
 |---|---|
@@ -462,7 +463,8 @@ Invariants (TLC, `MCLifecycle.cfg`):
 | `NoEdgeToDead` | no live link or monitor points at a dead actor (E6) |
 | `ExitAfterMessages` | `Exit`/`Down` follow every earlier message from the same source |
 
-Liveness (weak fairness on dispatch, death, delivery and enqueue):
+Liveness (`MCLifecycleLive`; weak fairness on dispatch, death, delivery and
+enqueue):
 `RequestsAnswered` (every sent request ends `Ok`, `ActorStopped` or `NoProc`),
 `ExitCompletes`, `ShutdownEndsChild` (a supervisor's Shutdown ends the child
 without needing the kill), `DownDelivered` (a fired or late monitor delivers
