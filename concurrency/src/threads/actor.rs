@@ -585,7 +585,9 @@ impl<A: Actor> Context<A> {
     /// If the target is past its death point, this actor receives a `NoProc`
     /// notice: an `Exit { reason: NoProc }` when trapping, otherwise it exits
     /// `NoProc`. Use [`try_link`](Self::try_link) to get `Err(NoProc)`
-    /// instead. An existing link, or a pending notice from that peer, makes
+    /// instead. Inert once this actor's exit began (in `stopped()`, from a
+    /// helper after the stop, or past its death point): no record and no
+    /// notice, as `monitor`. An existing link, or a pending notice from that peer, makes
     /// this a no-op.
     ///
     /// [`Actor::exit_received`]: Actor::exit_received

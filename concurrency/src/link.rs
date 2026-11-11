@@ -313,7 +313,8 @@ fn with_pair<R>(
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum LinkOutcome {
     Linked,
-    /// Nothing to do: self link, an existing record, or the caller is past D.
+    /// Nothing to do: self link, an existing record, or the caller's exit
+    /// began (inert, as `monitor`).
     Unchanged,
     /// The peer was past D.
     NoProc,
@@ -332,6 +333,13 @@ pub(crate) fn register_link(
     try_only: bool,
 ) -> LinkOutcome {
     if own.id == peer.id || Arc::ptr_eq(own_links, peer_links) {
+        return LinkOutcome::Unchanged;
+    }
+    // Sender lifetime (design Terms, semantics X2): `link` works only while
+    // the caller runs. Once its exit began (or past its D, checked again
+    // under the table lock below) the call is inert: no record, no notice,
+    // no NoProc. A dead process cannot call link in OTP.
+    if lock_request(&own.request).reason().is_some() {
         return LinkOutcome::Unchanged;
     }
     fail_point!("link.before_install");
@@ -718,6 +726,23 @@ mod tests {
         let mut r = ExitRequest::default();
         r.request(ExitReason::Shutdown);
         assert_eq!(r.runtime_drop(), ExitReason::Shutdown);
+    }
+    #[test]
+    fn link_from_an_exiting_or_dead_caller_is_inert() {
+        let seen = Arc::new(AtomicUsize::new(0));
+        // Exit begun: no record on either side, even to a live peer.
+        let (a, at, b, bt) = pair(&seen);
+        lock_request(&a.request).request(ExitReason::Normal);
+        assert_eq!(register_link(&a, &at, &b, &bt, false), LinkOutcome::Unchanged);
+        assert!(at.lock().unwrap().entries.is_empty() && bt.lock().unwrap().entries.is_empty());
+        // Past D, even to a dead peer: no NoProc notice, no try_link error.
+        let (c, ct, d, dt) = pair(&seen);
+        lock_request(&c.request).die();
+        propagate_exit(c.id, &ct, &ExitReason::Normal);
+        propagate_exit(d.id, &dt, &ExitReason::Normal);
+        assert_eq!(register_link(&c, &ct, &d, &dt, false), LinkOutcome::Unchanged);
+        assert_eq!(register_link(&c, &ct, &d, &dt, true), LinkOutcome::Unchanged);
+        assert_eq!(seen.load(Ordering::SeqCst), 0);
     }
     #[test]
     fn self_link_is_noop() {

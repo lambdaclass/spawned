@@ -243,7 +243,14 @@ Checked by: [`actor_scenarios::demonitor_before_exit_suppresses_notification_and
 **X2. Demonitor and late registration.** `demonitor` before the target exits
 suppresses `Down`; a `Down` already queued may still arrive. A monitor
 registered by an actor that is already stopping is inert (no waiter, no `Down`).
+Likewise `ctx.link`/`ctx.try_link` called through a `Context` whose actor's
+exit already began, or which is past its death point (for example from a
+helper that outlives the actor), is inert: no record, no notice, no `NoProc`,
+and `try_link` returns `Ok(())` (a dead process cannot call `link` in OTP;
+design otp-exit-signals.md, "Sender lifetime").
 Checked by: `src/*/actor.rs::demonitor_before_target_dies_suppresses_down`,
+`link::tests::link_from_an_exiting_or_dead_caller_is_inert`,
+[`otp_exit_signals::tasks_mode::link_from_a_dead_actor_is_inert`][otp_exit_signals],
 `closed_monitor_table_rejects_late_registration`, [`leaks::monitor_waiters_released_on_demonitor_owner_exit_and_target_exit`][leaks].
 
 **X3. Link propagation.** When a linked actor exits:
@@ -604,6 +611,7 @@ See the [ranked backlog](../../ROADMAP.md#ranked-backlog).
 [cohort_trace]: ../../concurrency/tests/cohort_trace.rs
 [context_exit]: ../../concurrency/tests/context_exit.rs
 [cross_backend]: ../../concurrency/tests/cross_backend.rs
+[otp_exit_signals]: ../../concurrency/tests/otp_exit_signals.rs
 [delivery_simulation]: ../../concurrency/tests/delivery_simulation.rs
 [execution_groups]: ../../concurrency/tests/execution_groups.rs
 [exit_signal_matrix]: ../../concurrency/tests/exit_signal_matrix.rs

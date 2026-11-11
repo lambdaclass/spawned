@@ -314,6 +314,32 @@ mod tasks_mode {
         ended(&trier.child_handle()).await;
     }
 
+    // Sender lifetime / semantics X2: a Context kept by a helper after its
+    // actor exited cannot link: no record, no notice, no NoProc.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn link_from_a_dead_actor_is_inert() {
+        let (dead_seen, peer_seen) = (Seen::default(), Seen::default());
+        let dead = Node::new(&dead_seen, true).start();
+        let peer = Node::new(&peer_seen, true).start();
+        settle(&peer).await;
+        let kept = dead.context();
+        dead.child_handle().stop();
+        ended(&dead.child_handle()).await;
+        kept.link(&peer.child_handle());
+        assert_eq!(kept.try_link(&peer.child_handle()), Ok(()));
+        // The live peer gets no edge: its own exit notifies nobody.
+        let gone = Node::new(&Seen::default(), false).start();
+        kept.link(&gone.child_handle());
+        gone.child_handle().stop();
+        ended(&gone.child_handle()).await;
+        peer.child_handle().exit(ExitReason::Panic("peer".into()));
+        settle(&peer).await;
+        peer.child_handle().stop_with_reason(ExitReason::Panic("peer".into()));
+        assert!(matches!(ended(&peer.child_handle()).await, ExitReason::Panic(_)));
+        assert!(dead_seen.exits().is_empty());
+        assert_eq!(dead.child_handle().exit_reason(), Some(ExitReason::Normal));
+    }
+
     pub struct Parent {
         pub child: Option<ActorRef<Node>>,
         pub child_seen: Seen,

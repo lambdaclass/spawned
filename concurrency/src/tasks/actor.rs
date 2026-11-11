@@ -688,7 +688,9 @@ impl<A: Actor> Context<A> {
     /// notice: an `Exit { reason: NoProc }` when trapping, otherwise it exits
     /// `NoProc` (decision 1). Use [`try_link`](Self::try_link) to get
     /// `Err(NoProc)` instead. An existing link, or a pending notice from that
-    /// peer, makes this a no-op.
+    /// peer, makes this a no-op. Inert once this actor's exit began (in
+    /// `stopped()`, from a helper after the stop, or past its death point):
+    /// no record and no notice, as `monitor`.
     ///
     /// [`Actor::exit_received`]: Actor::exit_received
     pub fn link(&self, target: &ChildHandle) {
