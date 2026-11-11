@@ -72,6 +72,10 @@ struct Root {
     /// required (a missed timeout signals the remaining siblings early).
     ordered_ok: bool,
     done: bool,
+    /// For TLA+ trace export: strategy, budget and child restart modes, set
+    /// only for flat trees whose children were all declared.
+    #[allow(dead_code)]
+    model: Option<(SupervisorStrategy, usize, Vec<RestartMode>)>,
 }
 
 /// Admission order of standalone managed actors and supervisor roots.
@@ -242,6 +246,10 @@ fn config(p: &Policy, seed: u64) -> SupervisorConfig {
         },
         ..SupervisorConfig::default()
     }
+}
+
+fn cfg_strategy(p: &Policy) -> SupervisorStrategy {
+    config(p, 0).strategy
 }
 
 fn new_sup_inst(world: &World, root: usize, cfg: &SupervisorConfig) -> usize {
@@ -759,6 +767,7 @@ impl Driver {
         let mut paths = Vec::new();
         let mut slots = Vec::new();
         let mut ordered_ok = true;
+        let mut modes = Some(Vec::new());
         for (i, def) in spec.children.iter().take(MAX_CHILDREN).enumerate() {
             let path = format!("r{root}/c{i}");
             match def {
@@ -769,6 +778,11 @@ impl Driver {
                     if let Ok(child) = builder.add(spec) {
                         slots.push(Slot::Worker(child));
                         paths.push((path, 0));
+                        if let Some(m) = &mut modes {
+                            m.push(restart_mode(w.restart));
+                        }
+                    } else {
+                        modes = None;
                     }
                 }
                 ChildDef::Nested {
@@ -777,6 +791,7 @@ impl Driver {
                     policy,
                     children,
                 } => {
+                    modes = None;
                     let children: Vec<WorkerDef> =
                         children.iter().take(MAX_CHILDREN).copied().collect();
                     // The nested slot's own stop (all its children, in turn)
@@ -822,6 +837,7 @@ impl Driver {
             slots,
             ordered_ok,
             done: false,
+            model,
         });
         if self.systems[sys].shut {
             self.world.lock().roots_done.resize(self.roots.len(), false);
@@ -910,11 +926,47 @@ impl Driver {
             );
         }
         self.roots[root].done = true;
+        #[cfg(feature = "lifecycle-trace")]
+        self.export_trace(root);
         let mut s = self.world.lock();
         if s.roots_done.len() <= root {
             s.roots_done.resize(root + 1, false);
         }
         s.roots_done[root] = true;
+    }
+
+    /// Write a finished flat tree's lifecycle trace for
+    /// `verification/tla/trace_check.py` (to `SPAWNED_FUZZ_TLA_DIR`).
+    #[cfg(feature = "lifecycle-trace")]
+    fn export_trace(&self, root: usize) {
+        use spawned_concurrency::lifecycle_trace;
+        let Some(sup) = &self.roots[root].sup else { return };
+        let events = lifecycle_trace::take(sup.trace_id());
+        let (Some(dir), Some((strategy, max_restarts, modes))) = (
+            std::env::var_os("SPAWNED_FUZZ_TLA_DIR"),
+            self.roots[root].model.as_ref(),
+        ) else {
+            return;
+        };
+        if events.last().map(|e| e.action) != Some("SupJoin") {
+            return;
+        }
+        let modes: Vec<String> = modes.iter().map(|m| format!("\"{m:?}\"")).collect();
+        let events: Vec<String> = events.iter().map(|e| e.to_json()).collect();
+        let name = format!("fuzz-{}-r{root}", self.seed);
+        let header = match strategy {
+            SupervisorStrategy::OneForOne => format!("\"max_restarts\":{max_restarts}"),
+            other => format!("\"schema\":\"cohort-v1\",\"strategy\":\"{other:?}\""),
+        };
+        let json = format!(
+            "{{{header},\"name\":\"{name}\",\"n\":{},\"modes\":[{}],\"events\":[\n{}\n]}}\n",
+            modes.len(),
+            modes.join(","),
+            events.join(",\n")
+        );
+        let dir = std::path::PathBuf::from(dir);
+        let _ = std::fs::create_dir_all(&dir);
+        let _ = std::fs::write(dir.join(format!("{name}.json")), json);
     }
 
     async fn stop_supervisor(&mut self, sup: u8, mode: u8, ms: u16) {

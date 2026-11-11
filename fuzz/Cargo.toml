@@ -21,6 +21,11 @@ spawned-rt = { path = "../rt" }
 spawned-concurrency = { path = "../concurrency" }
 spawned-macros = { path = "../macros" }
 
+[features]
+# Record supervisor lifecycle traces of finished flat trees for TLA+ trace
+# validation (`repro --features lifecycle-trace`, SPAWNED_FUZZ_TLA_DIR).
+lifecycle-trace = ["spawned-concurrency/lifecycle-trace"]
+
 [[bin]]
 name = "scenario"
 path = "fuzz_targets/scenario.rs"
