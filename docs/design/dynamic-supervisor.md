@@ -114,8 +114,6 @@ Non-goals (v1):
   [Interaction with rank 12](#interaction-with-rank-12-scoped-registries)).
 - Supervisor-type dynamic children (a template that builds a nested
   supervisor per call). Possible later through the nested adapter.
-- `ignore` from a factory (the static supervisor does not have it either,
-  S1).
 - `Task.Supervisor` (ranks 11 and 15), `PartitionSupervisor` (sharding),
   significant children and `auto_shutdown` (OTP rejects them for
   `simple_one_for_one`).
@@ -166,10 +164,11 @@ pub struct DynamicChildSpec<A: Actor, Args> { /* name, group, factory, restart, 
 impl<A: Actor, Args: Clone + Send + 'static> DynamicChildSpec<A, Args> {
     /// Permanent, as OTP's default. A restartable child is rebuilt from its
     /// arguments, hence `Clone`.
-    pub fn new<F, U, E>(name: impl Into<String>, group: &ExecutionGroup, factory: F) -> Self
+    pub fn new<F, U, S, E>(name: impl Into<String>, group: &ExecutionGroup, factory: F) -> Self
     where
         F: Fn(FactoryContext, Args) -> U + Send + Sync + 'static,
-        U: Future<Output = Result<A, E>> + Send + 'static,
+        U: Future<Output = Result<S, E>> + Send + 'static,
+        S: Into<ChildStart<A>>,   // `A` (via From<A>) or `ChildStart::Ignore` (#259)
         E: std::fmt::Display;
     pub fn restart(self, restart: RestartMode) -> Self;
 }
@@ -338,7 +337,7 @@ pub enum TerminateChildError {
 
 /// Shared with introspection v1 (static and dynamic supervisors).
 pub struct ChildInfo {
-    pub id: ChildKey,             // DynamicChildId here; the name for static children
+    pub key: ChildKey,            // DynamicChildId here; the name for static children
     pub actor: Option<ActorId>,   // last published id; None before the first readiness
     pub ready: bool,              // true iff state == Running
     pub state: ChildState,
@@ -381,8 +380,10 @@ pub struct ChildCounts {
 - Removed slots are evicted from the supervisor's table after slot
   finalization ([Retained arguments](#retained-arguments)): memory is
   O(children held).
-- `ChildInfo`, `ChildCounts` and `ChildKey` are introspection v1's types;
-  this design only fixes their dynamic-supervisor contents.
+- `ChildInfo`, `ChildCounts` and `ChildKey` are introspection v1's types
+  (#256); the implementation uses its canonical declarations, which have
+  more fields than the ones shown here, which are those this design
+  depends on.
 
 ### Restart types
 
@@ -566,8 +567,8 @@ This design depends on #259 (0.9).
    resolves the replacement (Codex 2).
 5. **First-start failure.** Factory error or panic, panic or stop in
    `started()`, or `startup_timeout`: the generation is stopped and cleaned
-   up, the slot removed, and `FailedToStart { cause, exit, cleanup_stuck: false }`
-   returned. Never retried, never charged (OTP). If the cleanup misses its
+   up, the slot finalized and removed, and
+   `FailedToStart { cause: ChildStartError, cleanup_stuck: false }` returned. Never retried, never charged (OTP). If the cleanup misses its
    deadlines (E3 rows 3-4), `FailedToStart { .., cleanup_stuck: true }` is
    returned at the deadline; the slot stays counted and its work stays owned
    by the system until it really ends, as S2 releases `start()`'s waiter
@@ -865,7 +866,9 @@ Until rank 12, the pattern depends on the restart type (Codex 13):
 that generation, guarded by the monitor reference.
 
 ```rust
-let started = peers.start_child(args).await?;
+let StartOutcome::Started(started) = peers.start_child(args).await? else {
+    return Ok(());   // the factory or started() ignored: nothing to track
+};
 let mref = ctx.monitor(&started.actor.child_handle());
 self.by_key.insert(key, Entry { child: started.child, monitor: mref });
 // Handler<Down>: remove the entry only if it still holds this monitor.
@@ -936,7 +939,7 @@ stuck children, for `ClosedLeadsToDone` and `RecoveryProgress`.
 | `TerminatedNeverRestarted` | no generation begins after a found `terminate_child` |
 | `NoGenerationAfterClose` | no generation begins after admission closed |
 | `NoPublishAfterStop` | no generation is published after close or termination |
-| `NoStartAfterShutdown` | no `start_child` success commits after admission closed |
+| `NoStartAfterShutdown` | no `start_child` outcome (`Ok` or the ignore decision) commits after admission closed |
 | `RestartFollowsPolicy` | every restart decision (reservation, attempt, exhaustion) is allowed by the table; no restartable exit is retired while open |
 | `FirstStartNeverRetried` | a failed first start is never retried |
 | `FailedAfterCleanup` | `FailedToStart`/`Aborted` only once cleanup really finished (removed, no live generation) or with the deadline failure recorded |
@@ -1012,6 +1015,7 @@ property above has at least one; the two action properties do not.
 | `SlotLookup` | an id call reaches a newer generation | `TermResultsSound` | main |
 | `QueuedTermOk` | shutdown answers a queued call `Ok` | `QueuedTermStopped` | main |
 | `EarlyFree` | removal frees the slot before finalization | `RemovedAfterFinalize` | main |
+| `IgnoreAfterClose` | an ignore decided after shutdown began | `NoStartAfterShutdown` | main |
 | `IgnoreFreesEarly` | an ignored attempt frees the slot at once | `RemovedAfterFinalize` | main |
 | `StuckResultLost` | `CleanupStuck` not committed; later turns into `Ok` | `TermResultsSound` | main |
 | `IgnoreExpect` | a fenced call terminates a child that moved on | `TermResultsSound` | main |

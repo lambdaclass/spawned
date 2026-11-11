@@ -72,7 +72,7 @@ Faults   == {"None",
     "TermLost", "NoDeadline", "SkipSignal", "SlotLookup", "QueuedTermOk",
     "PublishAfterExit", "StuckResultLost", "IgnoreExpect",
     \* round 3
-    "EarlyFree", "IgnoreFreesEarly"}
+    "EarlyFree", "IgnoreFreesEarly", "IgnoreAfterClose"}
 
 ASSUME N \in Nat \ {0} /\ MaxChildren \in Nat /\ MaxRestarts \in Nat /\ MaxExpire \in Nat
 ASSUME ModeSet \subseteq Modes /\ ModeSet # {}
@@ -313,6 +313,9 @@ Ready(s) ==
 \* decided now (cause "ignored"), answered after cleanup or at its deadline.
 Ignore(s) ==
     /\ sl[s].cs \in {"starting", "restarting"}
+    \* an ignore decides the outcome: only while admission is open (agy round 3)
+    /\ \/ open
+       \/ Fault \in {"AcceptDuringShutdown", "IgnoreAfterClose"} /\ sl[s].cs = "starting"
     /\ IF Fault = "IgnoreFreesEarly"
        THEN sl' = [sl EXCEPT ![s].cs = "removed", ![s].alive = {}, ![s].pub = 0,
                      ![s].result = IF sl[s].cs = "starting" THEN "ignored" ELSE sl[s].result]
@@ -553,8 +556,10 @@ Decided(s) ==
        \/ exhausted' /\ ~exhausted /\ sl'[s].cs \in {"finalizing", "removed"}
 
 GhostUpdate ==
+    \* a start outcome committed after close: Ok, or the ignore decision
     /\ lateCommit' = [s \in Slots |-> lateCommit[s] \/
-                        (sl'[s].result = "ok" /\ sl[s].result # "ok" /\ ~open)]
+                        ((sl'[s].result = "ok" /\ sl[s].result # "ok"
+                          \/ sl'[s].cause = "ignored" /\ sl[s].cause # "ignored") /\ ~open)]
     /\ latePub' = [s \in Slots |-> latePub[s] \/
                         (sl'[s].pub # sl[s].pub /\ sl'[s].pub # 0 /\ (~open \/ sl[s].term))]
     /\ lateGenClose' = [s \in Slots |-> lateGenClose[s] \/ (Grew(s) /\ ~open)]

@@ -264,6 +264,7 @@ DYNAMIC_CONTROLS = [
     ("MCDynamicSupervisor", "IgnoreExpect", "TermResultsSound"),
     ("MCDynamicSupervisor", "EarlyFree", "RemovedAfterFinalize"),
     ("MCDynamicSupervisor", "IgnoreFreesEarly", "RemovedAfterFinalize"),
+    ("MCDynamicSupervisor", "IgnoreAfterClose", "NoStartAfterShutdown"),
 ]
 DYNAMIC_TEMPORAL_CONTROLS = [
     # MCDynamicSupervisorAbort has no startup deadlines and passes unmutated.
