@@ -35,6 +35,16 @@ calls block before returning a Response, so a generic wrapper around an already
 returned response cannot correctly apply that timeout. Preserve handwritten
 protocol/forwarding compatibility when designing an explicit erased dispatch API.
 
+## Priorities
+
+Decided 2026-11-11. Work is picked in this order; a lower tier waits unless a client needs it.
+
+1. **Soundness.** Spawned's value is that its guarantees hold, so a bug in what it promises outranks any feature or speedup. Ship 0.8 only after every review fix and a re-review; close the remaining semantics-coverage gaps; planted-bug sensitivity; long-running soak tests (memory, threads, tasks, file descriptors and registry entries flat over hours of churn; run by hand on fede before each release, no schedule); Apalache for the new models; longer fuzzer campaigns run by hand. Includes **a smaller, stable API**: review the public surface before 0.8 is published (merge overlapping functions, hide what only the clients needed, mark the rest experimental), then a 1.0 with a written stability promise.
+2. **Introspection.** Operators must be able to answer "which actor is stuck, on what message, with how much queued" the way Erlang's `observer`, `sys:get_state`, `process_info` and `recon` do: per-actor info (lifecycle state, mailbox length, current message type and turn age, restarts, links and monitors), supervision-tree and system snapshots, `spawned-top` (rank 30), the stall watchdog (8) and the flight recorder (9). Cheap counters and opt-in tracing, under the no-cost rule.
+3. **Testing for applications.** `#[spawned_concurrency::sim_test]`, the `spawned-test` kit, then whole-node simulation through actor-owned I/O (rank 22a).
+4. **Features a client needs.** Dynamic supervisor (12a), bounded mailboxes (17).
+5. **Performance, behind a regression gate.** A small benchmark set on every hot-path PR that flags slowdowns past a threshold, so "no cost on the default path" is enforced, not remembered. Then profiling, rank 37 and the [runtime direction](#runtime-direction).
+
 ## North star
 
 Spawned aims to be the best-designed and best-tested actor framework. This list
@@ -606,7 +616,7 @@ the first start (semantics §11; found reviewing #233). Behaviour change: extend
 
 ### Runtime direction
 
-Decided 2026-11-11, with Ethrex and Ethlambda open to rewrites:
+Decided 2026-11-11, with Ethrex and Ethlambda open to rewrites. This is priority tier 5 (rank 22a's simulated network is tier 3): it waits for soundness and introspection ([Priorities](#priorities)).
 
 1. **Keep Tokio as the runtime.** Each actor is already one Tokio task with its own receive loop, which is what a purpose-built actor executor would converge to; Tokio's work stealing gives the load balancing the BEAM gets from process migration. `spawned-rt` stays the single seam (Tokio, OS threads, simulator).
 2. **Make each message cheaper (rank 37)**, after profiling where a message's time goes. This is expected to be the largest performance gain and changes no semantics.
