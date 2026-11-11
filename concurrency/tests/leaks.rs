@@ -819,9 +819,13 @@ mod sim_leaks {
                     .unwrap();
                 let supervisor = within!(tree.start()).await.unwrap();
                 for generation in 1..=3 {
-                    let current = within!(child.wait_for_generation(generation - 1)).await.unwrap();
+                    let current = within!(child.wait_for_generation(generation - 1))
+                        .await
+                        .unwrap();
                     current.request(Crash).await.unwrap_err();
-                    within!(child.wait_for_generation(generation)).await.unwrap();
+                    within!(child.wait_for_generation(generation))
+                        .await
+                        .unwrap();
                 }
                 assert!(registry::registered().iter().any(|n| n == name));
                 assert!(supervisor.shutdown(Duration::from_secs(5)).await.complete);

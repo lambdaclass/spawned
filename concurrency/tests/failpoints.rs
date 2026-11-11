@@ -219,7 +219,9 @@ async fn seeded_probabilistic_factory_failures_match_generation_count() {
     for _ in 0..8 {
         let generation = child.snapshot().generation;
         actor.send(Crash).unwrap();
-        actor = within!(child.wait_for_generation(generation)).await.unwrap();
+        actor = within!(child.wait_for_generation(generation))
+            .await
+            .unwrap();
     }
     // Every generation is either an injected failure or a started actor.
     let fired = failpoints::stats("child.factory").fired as usize;
@@ -683,7 +685,10 @@ async fn peer_exit_during_link_install_still_propagates() {
     linker.send(LinkTo(target.child_handle())).unwrap();
     reached("link.before_install", 1).await;
     target.send(Crash).unwrap();
-    assert!(matches!(within!(target.wait_exit()).await, ExitReason::Panic(_)));
+    assert!(matches!(
+        within!(target.wait_exit()).await,
+        ExitReason::Panic(_)
+    ));
     // The link completes after the peer died; the exit must still arrive.
     tokio::time::timeout(LIMIT, linker.join()).await.unwrap();
 }

@@ -517,7 +517,10 @@ async fn readiness_reports_actual_panic_after_startup_stop_instead_of_early_norm
                 ready,
                 Err(SystemError::StartupFailed(ExitReason::Panic(_)))
             ));
-            assert!(matches!(within!(actor.wait_exit()).await, ExitReason::Panic(_)));
+            assert!(matches!(
+                within!(actor.wait_exit()).await,
+                ExitReason::Panic(_)
+            ));
         }
     }
     assert!(system.shutdown(LIMIT).await.complete);

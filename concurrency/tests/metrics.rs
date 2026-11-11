@@ -138,7 +138,10 @@ fn metrics_conserve_work_across_all_lifecycle_paths() {
             actor.request(Crash).await,
             Err(ActorError::ActorStopped)
         ));
-        assert!(matches!(within!(actor.wait_exit()).await, ExitReason::Panic(_)));
+        assert!(matches!(
+            within!(actor.wait_exit()).await,
+            ExitReason::Panic(_)
+        ));
         // Managed restart/shutdown must conserve the same aggregate accounting.
         let system = spawned_concurrency::system::ActorSystem::new().unwrap();
         let group = system.async_group("metrics-recovery", 1).unwrap();

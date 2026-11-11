@@ -12,12 +12,12 @@
 //! let tree = within!(tree.start()).await.unwrap();
 //! ```
 #![allow(dead_code, unused_macros)]
-use std::{future::Future, time::Duration};
+use std::time::Duration;
 
 pub const WAIT: Duration = Duration::from_secs(120);
 
 #[cfg(feature = "async")]
-pub async fn within<F: Future>(what: &str, future: F) -> F::Output {
+pub async fn within<F: std::future::Future>(what: &str, future: F) -> F::Output {
     match spawned_rt::tasks::timeout(WAIT, future).await {
         Ok(output) => output,
         Err(_) => panic!("timed out after {WAIT:?} waiting for {what}"),
