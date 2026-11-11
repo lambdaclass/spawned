@@ -576,10 +576,14 @@ impl Driver {
                 };
                 self.may_stop(pa.id());
                 self.may_stop(pb.id());
-                // A context whose actor already exited cannot link: the call
-                // is a no-op (`register_link` sees its own table closed), so
-                // nothing is predicted for the pair.
-                let linker_exited = pa.child_handle().exit_reason().is_some();
+                // A context whose actor already exited, or whose exit began,
+                // cannot link (0.8, as in OTP: an exiting process cannot call
+                // link): the call is inert, so nothing is predicted for the
+                // pair. (`exit_pending` also counts a queued parent exit, which
+                // does not make the link inert: the check is then skipped,
+                // conservatively.)
+                let linker_exited =
+                    pa.child_handle().exit_reason().is_some() || pa.context().exit_pending();
                 pa.context().link(&pb.child_handle());
                 let trap = |d: &Self, id| d.traps.get(&id).is_some_and(|t| t.0);
                 self.links.push(LinkRec {
