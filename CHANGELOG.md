@@ -52,6 +52,13 @@
   with the usual seed and tape replay lines. Default 250 ms;
   `SPAWNED_SIM_TURN_BUDGET=ms` tunes it and `0` disables it. Compiled only
   under the cfg: no cost in normal builds.
+- Testing: planted-bug sensitivity matrix. Hand-written realistic bugs in
+  supervision, links, monitors, exit reasons, registry, mailbox, timers,
+  shutdown ordering and handle lifetimes are applied one at a time and run
+  against the test suite, the simulated suites and the scenario fuzzer
+  (`testing/planted/`, `docs/TESTING.md#planted-bug-sensitivity`); new oracles
+  close the escapes. Work in progress.
+
 - Lockfile: `rustix` 1.1.2 -> 1.1.6 for RUSTSEC-2026-0486 (pulled in by the
   examples' `native-tls` dependency; spawned's crates are unaffected).
 - CI: a `sim` job runs the simulated test suites (`--cfg spawned_sim`) on
