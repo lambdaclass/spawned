@@ -324,6 +324,10 @@ pub enum RejectReason {
     Placement(SystemError), // the group is closed or out of native capacity
 }
 
+/// The slot's last published child: its `ActorId` and the generation at
+/// which it was published. Failed replacement attempts do not change it
+/// (they advance `ChildInfo::generation`, the attempt count, but publish
+/// nothing), so an `expect` taken during backoff still matches.
 pub struct ExpectedChild { pub actor: ActorId, pub generation: u64 }
 
 #[non_exhaustive]
@@ -1058,19 +1062,19 @@ the generation, and where noted the queue ticket or call id.
 | `DAbort` (slot, gen) | shutdown cancelled a construction | `AbortStart` |
 | `DExit` (slot, gen, reason) | a running generation began exiting on its own | `SelfExit` |
 | `DStopSeen` (slot, gen, reason) | a signalled generation began exiting (Shutdown/Killed) | `StopObserved` |
-| `DCleaned` (slot, gen, cleanup_failure, ticket) | owned cleanup finished; exit notice queued | `CleanupDone` |
+| `DCleaned` (slot, gen, cleanup_failure, ticket?) | owned cleanup finished; the exit notice is queued with a ticket, or carries none when the start or terminate waiting for this child consumes it directly | `CleanupDone` |
 | `DStuck` (slot, gen, kind) | a deadline was missed | `CleanupStuck` |
-| `DStuckDone` (slot) | a stuck child or finalization finally ended | `StuckDone` |
+| `DStuckDone` (slot) | a stuck child or finalization finally ended (after `DStuck`, the generation's later end emits only this, never `DCleaned`) | `StuckDone` |
 | `DFinalized` (slot) | slot finalization ended: retained arguments dropped, capacity and the slot released; a pending start answered | `Finalize` |
 | `DDecide` (slot, ticket?, outcome: finalize / backoff / restart / exhausted) | the loop handled an exit; "finalize" starts slot finalization, which `DFinalized` (or `DStuck`) ends | `Decide` |
 | `DRetryQueued` (slot, ticket) | the backoff timer fired | `BackoffFire` |
 | `DRetry` (slot, gen, ticket) | the loop took a retry | `BackoffDone` |
 | `DCancel` (slot) | a pending restart was cancelled and refunded; finalization starts | `CancelBackoff` |
-| `DTermCall` (call, slot, named gen, ticket) | `terminate_child`/`terminate_slot` called | `TermCall` |
+| `DTermCall` (call, slot, named gen, ticket) | `terminate_child`/`terminate_slot` called; the named generation is whatever the caller passed, current or superseded | `TermCall` |
 | `DTermLookup` (call, outcome: found / notfound / stuck / stale) | the loop handled the call | `LoopTerm` |
 | `DTermReject` (call) | shutdown answered a queued call | `RejectQueuedTerm` |
 | `DTermDone` (call, result) | the call resolved `Ok` | `TermResolve` |
-| `DClose`, `DSignal` (slot), `DDone` | shutdown began, a child was signalled, all children finished | `Close`, `SupSignal`/`SupSignalStep`, `SupDone` |
+| `DClose`, `DSignal` (slot), `DDone` | external or parent shutdown began (exhaustion and a restart-required or closing stuck child close admission themselves, inside `DDecide`/`DStuck`); a child was signalled (the last signal ends the fan-out); all children finished | `Close`, `SupSignal`/`SupSignalStep`, `SupDone` |
 | `DExpire` | a grant left the window | `WindowExpire` |
 
 The trace checker (`trace_check.py`) learns a `dynamic-v1` schema that

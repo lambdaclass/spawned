@@ -220,11 +220,14 @@ RejectQueued(s) ==
     /\ UNCHANGED <<open, failed, exhausted, sphase, windowed, expired, reserved,
                    stamped, ticket, served, op, tc>>
 
-\* terminate_child (by the id the caller saw) or terminate_slot.
+\* terminate_child(id) or terminate_slot(slot, expect). The caller may name
+\* any generation it ever saw published, the current one or a superseded
+\* one (a stale id, an outdated expect), so stale calls replay (agy round 3).
 TermCall(c) ==
     /\ tc[c].st = "none" /\ sl[CallSlot[c]].everReady
     /\ IF open
-       THEN /\ tc' = [tc EXCEPT ![c] = [st |-> "queued", g |-> sl[CallSlot[c]].lastPub]]
+       THEN /\ \E g \in (IF CallKind[c] = "slot" THEN {0} ELSE 1..sl[CallSlot[c]].lastPub) :
+                 tc' = [tc EXCEPT ![c] = [st |-> "queued", g |-> g]]
             /\ Enq([k |-> "term", s |-> CallSlot[c], c |-> c, t |-> 0])
        ELSE /\ tc' = [tc EXCEPT ![c].st = "stopped"] /\ UNCHANGED <<q, ticket>>
     /\ UNCHANGED <<open, failed, exhausted, sphase, windowed, expired, reserved,
@@ -363,13 +366,17 @@ StopObserved(s, r) ==
     /\ Unchanged1
 
 \* Owned cleanup finished. The exit is queued for the loop (OTP 'EXIT'),
-\* unless the operation in progress waits for this very child; a failed
-\* restart attempt gives the loop back and re-queues (try_again_restart).
+\* unless the operation in progress waits for this very child (a start or
+\* a terminate), which consumes it directly: no queue entry, no ticket. A
+\* failed restart attempt gives the loop back and re-queues
+\* (try_again_restart).
 CleanupDone(s, f) ==
     /\ sl[s].cs = "cleanup" /\ f \in CleanupFails
     /\ sl' = [sl EXCEPT ![s].cs = "decide", ![s].cfail = f,
                         ![s].alive = sl[s].alive \ {sl[s].gen}]
-    /\ Enq([k |-> "exit", s |-> s, c |-> 0, t |-> 0])
+    /\ IF op.s = s /\ op.k \in {"start", "term"}
+       THEN UNCHANGED <<q, ticket>>
+       ELSE Enq([k |-> "exit", s |-> s, c |-> 0, t |-> 0])
     /\ op' = IF op.k = "restart" /\ op.s = s THEN Idle ELSE op
     /\ UNCHANGED <<open, failed, exhausted, sphase, windowed, expired, reserved,
                    stamped, served, tc>>
@@ -433,6 +440,10 @@ Decide(s) ==
               \/ op.s = s /\ op.k \in {"start", "term"}
            /\ q' = Rm(i)
            /\ served' = IF i = 1 /\ LoopIdle THEN q[i].t ELSE served
+       \* consumed directly by the operation waiting for this child
+       \/ /\ op.s = s /\ op.k \in {"start", "term"} /\ ExitIdx(s) = {}
+          /\ sl[s].cs = "decide"
+          /\ UNCHANGED <<q, served>>
        \/ Fault = "OverlapGeneration" /\ sl[s].cs = "cleanup" /\ LoopIdle
           /\ UNCHANGED <<q, served>>
     /\ LET ownStart == op.s = s /\ op.k = "start"
@@ -535,7 +546,10 @@ SupSignalStep ==
     /\ LET todo == {s \in Slots : ~sl[s].stopSig /\ sl[s].cs \in Active}
        IN IF todo = {}
           THEN sphase' = "waiting" /\ UNCHANGED sl
-          ELSE \E s \in todo : sl' = [sl EXCEPT ![s].stopSig = TRUE] /\ sphase' = "signal"
+          ELSE \E s \in todo :
+                 /\ sl' = [sl EXCEPT ![s].stopSig = TRUE]
+                 \* the last signal ends the fan-out (no extra unlogged step)
+                 /\ sphase' = IF todo = {s} THEN "waiting" ELSE "signal"
     /\ UNCHANGED <<open, failed, exhausted, windowed, expired, reserved, stamped,
                    q, ticket, served, op, tc>>
 
