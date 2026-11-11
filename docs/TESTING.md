@@ -415,6 +415,31 @@ RUSTFLAGS="--cfg spawned_sim --cfg tokio_unstable" CARGO_TARGET_DIR=target/sim \
   cargo test -p spawned-concurrency --test deferred_sim --test deferred_replies --test deferred_jobs
 ```
 
+`exit_signals_sim` explores the exit-signal orderings with PCT (`d=3`, 1,000
+runs) and bounded DFS (`bound=3`, `depth=300`, up to 300 runs for each of
+input seeds 0-11): a kill against an administrative stop's slow `stopped()`
+(skipped before it begins, finishes during it, ignored after the death point;
+a monitor sees the same reason), a late untrapped signal against the death
+point (replaces the reason before it; link and monitor agree), a `link` +
+`monitor` or `try_link` against the target's death (one notice each, the real
+reason or `NoProc`, the same for both registrations of one turn), `unlink` +
+`demonitor` against delivery (nothing after a marker sent right after the
+fence), a supervisor's shutdown against a trapping child's queued messages
+(handled in order, `exit_pending` monotone, `stopped()` runs, no
+`exit_received`), and a ready child's kill against the tree's initial commit
+(start succeeds, one restart, after the slow sibling is ready). Each test
+counts the outcomes its assertions distinguish and every one is reached. The
+DFS searches are exhausted for every seed of the four single-actor workloads
+and for 10 of 12 seeds of the supervisor shutdown one; the startup workload
+reaches its 300-run budget for every seed. Planted
+bugs (a late signal ignored, a kill that does not skip `stopped()`, a monitor
+that ignores the death point) are found in the first run.
+
+```sh
+RUSTFLAGS="--cfg spawned_sim --cfg tokio_unstable" CARGO_TARGET_DIR=target/sim \
+  cargo test -p spawned-concurrency --test exit_signals_sim -- --nocapture
+```
+
 ### Exploration strategies (`sim::explore`)
 
 The random walk can be swapped for a systematic strategy with
@@ -531,7 +556,8 @@ models that inject Loom's synchronization types (`super::sync`):
 
 ```sh
 RUSTFLAGS="--cfg spawned_scheduler_loom" cargo test --release -p spawned-concurrency \
-  --no-default-features --test reply_slot_loom --test registry_turn_loom --test job_core_loom
+  --no-default-features --test reply_slot_loom --test registry_turn_loom --test job_core_loom \
+  --test link_fence_loom
 ```
 
 `reply_slot_loom` covers the packed slot word (reply, expiry, shortening,
@@ -543,6 +569,23 @@ and cancel, native completion against the owner's cleanup join, and a job's
 final destruction after a `Weak` upgrade (modelled `Arc`/`Weak`; the
 destruction takes the job set's locks, so running it under one is a Loom
 deadlock). Each model was checked against a planted bug.
+
+`link_fence_loom` shares the link table (`src/link/table.rs`: edge
+generations, the two-lock install, receiver-side fenced delivery, the close at
+the death point) and the observer's monitor table (`src/monitor/fence.rs`)
+with production in the same way; `ActorId`, `ExitReason` and the receiver are
+stand-ins, and applying a notice is an append under the receiver's lock. Its
+nine tests are explored without a preemption bound (5 to 382 executions
+each): at most one notice per edge generation, none after the receiver's
+`unlink` returned or after its own death point, exactly one notice (real
+reason or `NoProc`) for a `link` racing the peer's death and none for a
+`try_link` after it, a stale generation ignored after unlink and relink, one
+edge from concurrent links; at most one `Down`, none after `demonitor` or the
+observer's close returned, exactly one (real reason or `NoProc`) for a
+`monitor` racing the target's death. Seven planted bugs (no generation check,
+unlink keeping the receiver's record, close keeping records, install ignoring
+the peer's death, `Down` enqueued outside the lock, registration ignoring the
+death point, a close that keeps the table open) each fail at least one test.
 
 Run sustained actor creation, traffic, monitoring, and shutdown:
 

@@ -24,7 +24,7 @@ or model that checks each one, are collected in the
 - [Message Trait](#message-trait)
 - [Error Handling](#error-handling)
 - [spawned-rt](#spawned-rt)
-- [Links and trapped exits](#links-and-trapped-exits)
+- [Links, monitors and exit signals](#links-monitors-and-exit-signals) (v0.8)
 - [Execution groups and supervision](#execution-groups-and-supervision) (v0.7)
 - [Metrics](#metrics)
 - [Testing your actors](#testing-your-actors)
@@ -67,7 +67,7 @@ All three phases are wrapped in `catch_unwind`:
 
 - **Panic in `started()`** — the actor stops immediately. No messages are processed, `stopped()` is not called.
 - **Panic in a handler** — the current message is lost. The actor stops and `stopped()` is called.
-- **Panic in `stopped()`** — the panic is logged and `join()` still returns, but the exit reason becomes `Panic("panic in stopped(): ...")` unless it was already abnormal.
+- **Panic in `stopped()`** — the panic is logged and `join()` still returns, but the exit reason becomes `Panic("panic in stopped(): ...")` unless the actor was killed (a kill's `Killed` stands).
 
 In all cases, `join()` will eventually return and subsequent `send()`/`request()` calls return `Err(NoProc)`.
 
@@ -129,9 +129,12 @@ State that must be released on every exit, including kills and runtime drops, be
 | `ctx.actor_ref()` | Get an `ActorRef<A>` from the context |
 | `ctx.id()` | This actor's `ActorId` |
 | `ctx.monitor(&child_handle)` | Receive a `Down` message when the target exits; returns a `MonitorRef` |
-| `ctx.demonitor(monitor_ref)` | Cancel a monitor |
-| `ctx.link(&child_handle)` / `ctx.unlink(&child_handle)` | Bidirectional exit propagation (see [Links and trapped exits](#links-and-trapped-exits)) |
-| `ctx.trap_exit(bool)` | Receive linked exits as messages instead of being cancelled |
+| `ctx.demonitor(monitor_ref)` | Cancel a monitor (a fence: no later `Down`) |
+| `ctx.link(&child_handle)` / `ctx.unlink(&child_handle)` | Bidirectional exit propagation (see [Links, monitors and exit signals](#links-monitors-and-exit-signals)) |
+| `ctx.try_link(&child_handle)` | Link, or `Err(NoProc)` if the target is already gone |
+| `ctx.exit(&child_handle, reason)` | Send an exit signal from this actor (OTP `exit/2`) |
+| `ctx.trap_exit(bool)` | Receive exit signals and link notices as `Exit` messages instead of exiting |
+| `ctx.exit_pending()` | Whether this actor's exit has begun or a parent exit is queued |
 | `ctx.spawn_helper(future)` / `ctx.spawn_blocking_helper(f)` | Actor-owned helper tasks, cancelled and joined before cleanup completes (v0.7) |
 | `ctx.register_name(name)` | Register this actor under a name, released with its generation (v0.7) |
 | `ctx.execution_group()` | The `ExecutionGroup` a managed actor runs on (v0.7) |
@@ -734,55 +737,144 @@ Wraps standard library primitives:
 See [Execution Modes and Backends](#execution-modes-and-backends) for choosing between
 `tasks` and `threads`.
 
+<a id="links-and-trapped-exits"></a>
 <a id="links-and-trapped-exits-unreleased-main"></a>
 
-## Links and trapped exits
+## Links, monitors and exit signals
 
-Available since v0.6.0.
+Exit signals follow Erlang/OTP (v0.8, [design](design/otp-exit-signals.md)).
+Everything in this section works in both modes and across modes; use the
+`threads` imports and synchronous hooks in synchronous mode. The
+[exit_signals example](../examples/capabilities/src/bin/exit_signals.rs) runs
+each rule below.
 
-Links are bidirectional failure notifications. Use `ctx.link(&child_handle)` and
-`ctx.unlink(&child_handle)` for existing actors, or `child.start_linked(&parent_ctx)`
-to perform registration before the child starts. Child handles allow links across
-execution modes. Normal peer exits are ignored by non-trapping actors; abnormal
-exits request cooperative cancellation and propagate their cause.
+### Exit signals
 
-Call `ctx.trap_exit(true)` to receive linked exits through `Actor::exit_received`
-instead. The actor macro supports this lifecycle hook:
+`ChildHandle::exit(reason)` sends an exit signal from outside any actor
+(`from` is `ActorId::EXTERNAL`); `ctx.exit(&target, reason)` sends it from
+the calling actor; `ChildHandle::kill()` is `exit(ExitReason::Kill)`. The
+target applies OTP's `exit_signal/2` rules, with the trap flag read when the
+signal arrives:
+
+| Signal | Non-trapping target | Trapping target |
+|---|---|---|
+| `Kill` | ends `Killed` | ends `Killed` (untrappable) |
+| `Normal` | ignored | `Exit { from, reason: Normal }` queued |
+| any other reason | ends with that reason after its current handler, without `stopped()`; its queue is discarded | `Exit { from, reason }` queued |
+| from the target's parent | as above | a parent exit is queued (see [Parent exits](#parent-exits)) |
+
+A kill supersedes any other reason until the actor's death point: an actor
+already stopping (even inside `stopped()`) ends `Killed`, and a panic after
+the kill does not replace it. `stopped()` is skipped if it has not begun; a
+`stopped()` that is running finishes, since Rust cannot interrupt it. A
+non-kill signal to a non-trapping actor that is already exiting replaces its
+reason, unless it was killed; a signal after the death point does nothing.
+Signals that arrive while `started()` runs take effect when it returns, with
+the trap flag read then, so `ctx.trap_exit(true)` first thing in `started()`
+covers them.
+
+`stop()`, `shutdown()` and `stop_with_reason(r)` (on a `ChildHandle` or the
+`Context`) are not exit signals. They are administrative stops, as
+`gen_server:stop`: untrappable, `stopped()` runs, and the first stop's reason
+wins over later stops. `stop_with_reason(ExitReason::Kill)` is such a stop
+and ends `Kill`; only a `Kill` exit signal (`kill()`, `exit(Kill)`)
+produces `Killed`.
+
+### Links and trapped exits
+
+Links are bidirectional. Use `ctx.link(&child_handle)` and
+`ctx.unlink(&child_handle)` for existing actors, or
+`child.start_linked(&parent_ctx)`, which links before the child's `started()`
+and makes the caller its parent. Repeated links and links to oneself are
+no-ops. When a linked actor dies, each peer receives a link notice with its
+final reason, under the same rules as an exit signal except that a `Kill`
+notice is trappable: a non-trapping peer ignores `Normal` and otherwise ends
+with the same reason, without `stopped()`, and propagates it to its own links.
+
+Call `ctx.trap_exit(true)` to receive signals and notices through
+`Actor::exit_received` instead:
 
 ```rust
 use spawned_concurrency::{actor, Exit};
 use spawned_concurrency::tasks::{Actor, Context};
 
-struct Supervisor;
+struct Watcher;
 
 #[actor]
-impl Supervisor {
+impl Watcher {
     #[started]
     async fn setup(&mut self, ctx: &Context<Self>) {
         ctx.trap_exit(true);
     }
 
     #[exit_received]
-    async fn child_exit(&mut self, exit: Exit, _ctx: &Context<Self>) {
+    async fn peer_exit(&mut self, exit: Exit, _ctx: &Context<Self>) {
         tracing::warn!(actor = %exit.from, reason = ?exit.reason, "Linked actor exited");
     }
 }
 ```
 
-Use synchronous methods and the `threads` imports in synchronous mode. The hook
-is optional and defaults to doing nothing. Trapped exits use the ordinary actor
-mailbox; they do not interrupt a running handler. A direct
-`stop_with_reason(ExitReason::Kill)` bypasses trapping and requests cooperative
-cancellation. Propagated Kill notices are trappable, so they cannot bypass
-another actor's failure boundary. The notice keeps the existing Kill enum value. A normal stop already committed is
-not relabelled by a later peer failure; callback failures are still reported.
+The hook is optional and defaults to doing nothing. `Exit`, `Down` and
+parent exits are ordinary mailbox messages: they queue behind messages already
+there and never interrupt a running handler. A death notice follows every
+message the dying actor sent earlier to the same receiver. A link notice is
+queued before the dying actor's `wait_exit()` returns; a `Down` is queued by
+the monitor shortly after.
 
-A link to a closed peer creates no retained relationship and applies that peer's
-exit-signal rules for the attempt. Repeated live links are no-ops. Unlink prevents
-future propagation through the relationship but does not retract an exit already
-in flight. Links are a supervision primitive. Managed OneForOne/OneForAll/RestForOne recovery is described in
-[execution groups and supervision](#execution-groups-and-supervision).
-Transparent reference rebinding remains separate work. The [review and regression evidence](../legacy/docs/reviews/pr-166-links.md) is archived.
+A link or monitor made through a `Context` whose actor is already exiting (for
+example from a helper that outlives it) is inert: no record and no notice.
+
+### Parent exits
+
+An actor's parent is fixed when it starts: the actor passed to
+`start_linked`, the supervisor of a supervised child, or the `ActorSystem` of
+a standalone `start_on` actor; a plain `.start()` actor has none. A signal
+from the parent to a **trapping** actor is queued as a parent exit: when
+dispatched, the actor exits with that reason (`Normal` included) and
+`stopped()` runs; `exit_received` never sees it. A non-trapping actor treats
+it as any exit signal.
+
+Supervisor and system shutdown are the parent's `Shutdown` signal. A
+non-trapping child ends `Shutdown` without `stopped()`. A trapping child
+handles the messages queued before the shutdown, then runs `stopped()`
+([`exit_pending()`](#when-stopped-does-not-run) reports the queued shutdown).
+A child that has not reached its death point `shutdown_timeout` after its
+signal is killed, and reported stuck after a second interval; a system kills
+the actors left when its `grace` expires.
+
+### NoProc
+
+An actor is gone from its death point on, which comes right after `stopped()`
+returns (or is skipped). After it:
+
+- `ctx.link(&h)` delivers one `Exit { from: h, reason: NoProc }` to a trapping
+  caller; a non-trapping caller receives that exit signal and ends `NoProc`;
+- `ctx.try_link(&h)` returns `Err(NoProc)` and keeps no link;
+- `ctx.monitor(&h)` delivers one `Down { reason: NoProc }`;
+- `send`/`request` return `Err(ActorError::NoProc)`.
+
+Before it, including while the target runs `stopped()`, links and monitors
+register and fire with the final reason. `ChildHandle::exit_reason()` and
+`wait_exit()` give the real reason once it is published, shortly after the
+death point.
+
+### Unlink and demonitor are fences
+
+Once `ctx.unlink(&h)` returns, that link has no further effect on the caller;
+once `ctx.demonitor(r)` returns, no `Down` of that monitor is queued. An
+`Exit` or `Down` already in the mailbox stays. Linking again creates a new
+link that gets its own notice.
+
+### Runtime drop
+
+An actor whose runtime drops it (runtime shutdown, abort, never polled) ends
+`Killed` in both modes, unless a reason other than `Normal` was already
+requested. `stopped()` does not run; links receive `Killed` and monitors
+`Down { reason: Killed }`.
+
+Callers see the same final reason: see [Error Handling](#error-handling)
+(`ActorStopped(reason)`, `NoProc`). Supervisor startup rules are in
+[Construct fresh children after failure](#construct-fresh-children-after-failure).
 
 ---
 
@@ -950,8 +1042,8 @@ let report = supervisor.shutdown(Duration::from_secs(5)).await;
 ```
 
 A factory may return an error or panic. Registered construction helpers are
-cancelled and joined before retry, including when the factory never returns an
-actor. Existing `started()` and `stopped()` hooks keep their signatures. Readiness
+cancelled and joined before a replacement is retried, including when the
+factory never returns an actor. Existing `started()` and `stopped()` hooks keep their signatures. Readiness
 commits after `started()` returns and admission remains open; no ordinary handler
 runs before that barrier. Enqueued startup messages are discarded if startup fails.
 Calling `ready()` later reports that historical barrier, not current liveness.
@@ -963,11 +1055,23 @@ Drop, not only by `stopped()`. Legacy unmanaged `.start()` and synchronous
 `threads` actors retain their behavior of running both hooks after an early
 cooperative stop, provided startup itself succeeds.
 Failed readiness waits for the actual startup outcome, so a non-returning hook
-can keep it pending; use a timeout. A startup deadline is a failed attempt and can retry under Permanent/Transient
-policy after cleanup, whether it expired in the factory or in `started()`.
-A self-requested normal stop before readiness is still a
-startup failure: a Transient/Temporary spec fails the tree rather than claiming
-a ready service; a Permanent spec can retry within its budget.
+can keep it pending; use a timeout.
+
+The initial start follows OTP's `start_link` (v0.8):
+
+- A child's **first start** that fails for any reason (factory error or panic,
+  panic or stop in `started()`, a missed `startup_timeout`, placement or group
+  closure) fails `start()` whatever the restart mode; it is not retried. Retry
+  in the application if a dependency may be briefly unavailable at boot.
+- The started children roll back in reverse order, and `start()` returns its
+  error only after every child is terminal (or `Failed` once its cleanup is
+  stuck): `SupervisorError::FailedToStartChild { child, cause, rollback_failures }`,
+  or `StartupCleanupStuck`.
+- A ready child that exits while later siblings are still starting is
+  recorded; its exit is handled under the strategy once the whole tree is
+  ready, as OTP handles a child's `'EXIT'` after `init` returns.
+- A replacement that fails before readiness is a failed restart attempt and
+  is retried under the restart policy and budget.
 
 A supervisor accepts only groups owned by its ActorSystem. ActorRefs can still
 communicate between independent systems. Children start in declaration order
@@ -997,7 +1101,7 @@ Supervision emits structured `tracing` events: `restart_scheduled` and
 at WARN. Fields include `child`, `generation`, `reason` and an available error.
 Enable an application tracing subscriber to collect them; Spawned installs none.
 
-| Restart mode while supervisor is running | Normal / Shutdown | Panic / Kill |
+| Restart mode while supervisor is running | Normal / Shutdown | Panic / Kill / Killed / NoProc |
 |---|---|---|
 | Permanent (default) | Restart | Restart |
 | Transient | Stay stopped | Restart |
@@ -1010,14 +1114,13 @@ before cooperative cancellation while preserving a previously committed cause;
 actual handler or cleanup panics remain failures. Existing link propagation still
 applies and can affect siblings explicitly linked by the application.
 Receiver-owned cleanup discards queued envelopes individually during completion,
-cancellation and unwinding in both modes. An otherwise completed Normal exit
-becomes `Panic("queued message destructor: ...")` when a queued destructor fails.
-Committed Shutdown, Kill and linked/handler panics keep their primary reason;
-`child_handle.mailbox_cleanup_failure()` records the secondary destructor failure
-independently. In particular, canceled managed startup remains Shutdown and does
-not become restartable because of discarded messages. Runtime-abort fallback
-Kill is retained. Every accepted queued reply sender is released before actor
-completion, even while ActorRefs remain alive.
+cancellation and unwinding in both modes. Queued messages and the actor state
+are dropped after the death point, so a panicking destructor does not change
+the exit reason; it is recorded in `child_handle.cleanup_failure()`, and a
+Transient child whose reason is `Normal` or `Shutdown` restarts when its
+cleanup failed. An actor dropped by its runtime ends `Killed`. Every accepted
+queued request is answered before actor completion, even while ActorRefs
+remain alive.
 
 Async sends retain their channel fast path; receiver cleanup closes Tokio's
 channel and receives through EOF without cooperative-budget deferral. Native
@@ -1030,9 +1133,10 @@ user value cannot be recovered by the envelope boundary.
 
 `ctx.stop_with_reason(ExitReason::Shutdown)` requests a cooperative shutdown;
 `ExitReason::Kill` requests an abnormal exit without panicking. Both modes finish
-the current handler and run `stopped()`. The first committed reason wins, while
-an actual cleanup panic can still make the exit abnormal. A transient supervisor
-restarts Kill exits but leaves Shutdown exits stopped. `ctx.stop()` keeps Normal.
+the current handler and run `stopped()`. The first stop's reason wins over later
+stops; a panic, a kill or an untrapped exit signal before the death point still
+replaces it. A transient supervisor restarts Kill exits but leaves Shutdown
+exits stopped. `ctx.stop()` keeps Normal.
 
 The default shared budget permits five retry attempts per rolling 30-second
 window. Initial construction does not consume a retry; every subsequent attempt
@@ -1070,11 +1174,10 @@ notifications are coalesced into a bounded per-child pending set, with one recov
 cohort at a time. A late old-generation failure is absorbed by its assigned
 round. A new upstream failure interrupts reconstruction and starts a fresh
 cleanup round, so dependent factories cannot hold recovery behind a dead upstream.
-Initial startup remains serial, retrying a failed construction attempt before
-starting dependents. For OneForAll/RestForOne, if an already-ready dependency
-exits restartably before the whole tree commits readiness, startup fails and rolls
-back the tree. It does not replace that dependency alone underneath initializing
-children. A parent supervisor can retry that whole subtree from its factory.
+Initial startup is serial and does not retry a failed first start. If an
+already-ready dependency exits before the whole tree commits readiness, its
+exit is deferred until then and handled under the strategy, so it is not
+replaced alone underneath initializing children.
 
 The rolling restart budget charges every subsequent factory invocation, including
 collateral reconstruction and failed constructors. For a large OneForAll tree,
@@ -1431,7 +1534,7 @@ capture it when called, since `#[track_caller]` does not reach into an
 
 | Fault | How |
 |---|---|
-| Stop any actor with a chosen reason | `faults::exit(&handle, reason)`: `Normal` calls `stop()` and `Shutdown` calls `shutdown()`; both stop the actor even if it traps exits (unlike Erlang's `exit(Pid, normal)`, which a non-trapping process ignores). `Panic(msg)` arrives from a crashed linked peer and can be trapped. `Kill` uses a direct `ChildHandle::stop_with_reason(Kill)`, bypassing the target's trapping flag in both modes; its linked peers can trap the resulting notice. Because the panic travels through a link, the actor exits with `Panic("panic in handler: {msg}")`, and the default panic hook prints `msg`. An already-exited target is left alone. Never blocks the caller, even on a `current_thread` runtime. |
+| Send an exit signal with a chosen reason | `faults::exit(&handle, reason)` is `ChildHandle::exit(reason)` (see [Exit signals](#exit-signals)): `Normal` is ignored by a non-trapping target; `Kill` ends the target `Killed`, trapping or not; any other reason (`Panic(msg)` included) ends a non-trapping target with exactly that reason, without `stopped()`, and reaches a trapping one as an `Exit`. For an untrappable stop that runs `stopped()`, use `ChildHandle::stop`/`stop_with_reason`. An already-exited target is left alone. Never blocks the caller, even on a `current_thread` runtime. |
 | Crash a supervised child and get its replacement | `tasks::restart_child(&child, reason, deadline)`: the returned instance always replaces the one it targeted, even if the child was already restarting; `deadline` bounds the whole call |
 | Slow dependency / forced request timeout | `Mock::delay::<M>(d)` with a caller timeout shorter than `d` (`with_request_timeout`, `#[protocol(timeout = ..)]`) |
 | Lost message | `Mock::discard::<M>()` (fire-and-forget messages: a request returning `Response<()>` still gets `()`; to lose a request, `delay` it past the caller's timeout) |

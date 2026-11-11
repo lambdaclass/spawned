@@ -75,7 +75,19 @@
   `Context::exit_pending()` (both modes) tells a trapping actor that its exit
   began or a parent exit is queued behind the current message, so it can
   refuse late work (advisory, read-only, no per-message cost).
-  Remaining: Loom and simulator coverage, GUIDE and examples.
+  Concurrency checks: the link table (`src/link/table.rs`) and the monitor
+  fence (`src/monitor/fence.rs`) are shared with a Loom model
+  (`tests/link_fence_loom.rs`, 9 tests explored exhaustively: one notice per
+  edge, none after `unlink`/`demonitor` or the receiver's death, a link or
+  monitor racing the death point gets the real reason or `NoProc`, never both
+  nor none); `tests/exit_signals_sim.rs` explores six orderings on the
+  simulator with PCT and bounded DFS (kill vs `stopped()`, late signal vs the
+  death point, link/monitor vs the death point, unlink/demonitor fences,
+  supervisor shutdown vs a trapping child's queue and `exit_pending`, a ready
+  child's exit vs the tree commit). GUIDE "Links, monitors and exit signals",
+  the `exit_signals` capability example, and semantics L3-L6, X1-X6, V1, V3,
+  V9 and the OTP differences table.
+  Remaining: the heavy TLC configurations and Apalache after the canaries.
 
 - **Breaking (0.8), in progress:** deferred replies and pipe-to-self
   (ROADMAP rank 11), implementing
