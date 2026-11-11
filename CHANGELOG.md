@@ -33,6 +33,13 @@
   action; every model must be trace-validated or allowlisted as TLC-only with
   a tracking item (Coordinator, Lifecycle, DeferredReplies, DeferredJobs);
   per-model trace coverage has a floor that may only go up.
+- Design: introspection v1 for 0.9 (priority tier 2), in review:
+  [`docs/design/introspection.md`](docs/design/introspection.md). Per-actor
+  `process_info`, `sys:get_state`/`get_status` answered between turns,
+  supervision-tree and system snapshots, an opt-in stall watchdog (rank 8) and
+  the data model for `spawned-top` (rank 30), with a cost table per field,
+  consistency guarantees and a test plan. Design only; no code change.
+
 - Tests: coverage follow-ups. `restart_modes_distinguish_normal_shutdown_and_panic`
   now sends a real `Normal` exit; a per-PR `MCSupervisionTemporary` TLC
   configuration makes `TemporaryStartsOnce` non-vacuous, with a negative
