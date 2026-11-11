@@ -1,0 +1,18 @@
+Planted bug 21 (timer-after-cancel): send_after ignores its own cancellation token (fires after cancel)
+
+diff --git a/concurrency/src/tasks/time.rs b/concurrency/src/tasks/time.rs
+index ef0db0d0..8c2d8f65 100644
+--- a/concurrency/src/tasks/time.rs
++++ b/concurrency/src/tasks/time.rs
+@@ -28,9 +28,8 @@ where
+     let actor_cancellation_token = ctx.cancellation_token();
+     let spawn_ctx = ctx.clone();
+     let join_handle = spawn_ctx.spawn_framework(async move {
+-        let cancel_token_fut = pin!(cloned_token.cancelled());
+-        let actor_cancel_fut = pin!(actor_cancellation_token.cancelled());
+-        let cancel_conditions = select(cancel_token_fut, actor_cancel_fut);
++        let _ = &cloned_token;
++        let cancel_conditions = pin!(actor_cancellation_token.cancelled());
+ 
+         let async_block = pin!(async {
+             rt::sleep(period).await;

@@ -1,3 +1,0 @@
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.02s
-     Running `/tmp/spawned-pr-security-review/system-target/debug/protocol_timeouts`
-Timeout precedence: handle override > method > protocol > five-second default.

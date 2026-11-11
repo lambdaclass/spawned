@@ -274,10 +274,30 @@
   live actor's turn. GUIDE: hard job deadlines and the soft-deadline
   pattern, replies carrying a reason through `R = Result<..>`, the
   `send_request` rows.
+- ROADMAP: a ranked determinism backlog (D1-D10) under priority tier 3, from
+  an audit of what escapes the simulator in Spawned, Ethrex and Ethlambda
+  ([docs/research/determinism-audit.md](docs/research/determinism-audit.md)).
+  Same-seed reruns found no schedule nondeterminism; traces differ only in
+  process-global ids.
+- Removed `legacy/` (archived research, benchmark data and reviews, about 58 MB);
+  it remains in history at [`efba2434`](https://github.com/lambdaclass/spawned/tree/efba24340a01df82f872ec422b9dbaf48f897b04/legacy),
+  and live docs link there.
 - ROADMAP: a Path to 1.0 section (0.8, 0.9, 0.10 contents and what 1.0
   requires: stable API rules, a complete semantics contract, production-safe
   defaults, introspection, determinism, release gates, production proof and
   documentation).
+- Toolchain pinned to CI's 1.93.0 in `rust-toolchain.toml`, so local, fede
+  and agent builds match CI; the fuzz job selects its nightly explicitly.
+  `CHANGELOG.md` merges with git's union driver. ROADMAP: the design-review
+  rule now requires a test plan, trace validation against real code,
+  planted bugs, an introspection hook and a no-cost benchmark for every new
+  feature.
+- ROADMAP: Erlang/OTP, Elixir and Gleam gaps table (G1-G23, including a remote
+  console) with tiers and target versions, and the OTP features Spawned will
+- ROADMAP: Erlang/OTP, Elixir and Gleam gaps table (G1-G23, including an attachable
+  console in every binary, targeted at 0.9) with tiers and target versions, and the OTP features Spawned will
+  not add as non-goals; the comparison is in
+  `docs/research/otp-elixir-gleam.md`.
 - Tests: coverage follow-ups. `restart_modes_distinguish_normal_shutdown_and_panic`
   now sends a real `Normal` exit; a per-PR `MCSupervisionTemporary` TLC
   configuration makes `TemporaryStartsOnce` non-vacuous, with a negative
@@ -313,6 +333,21 @@
   with the usual seed and tape replay lines. Default 250 ms;
   `SPAWNED_SIM_TURN_BUDGET=ms` tunes it and `0` disables it. Compiled only
   under the cfg: no cost in normal builds.
+- Testing: planted-bug sensitivity matrix. Hand-written realistic bugs in
+  supervision, links, monitors, exit reasons, registry, mailbox, timers,
+  shutdown ordering and handle lifetimes are applied one at a time and run
+  against the test suite, the simulated suites and the scenario fuzzer
+  (`testing/planted/`, `docs/TESTING.md#planted-bug-sensitivity`); new oracles
+  close the escapes. Work in progress.
+
+- Testing: planted-bug sensitivity matrix (`docs/TESTING.md#planted-bug-sensitivity`).
+  24 hand-written realistic bugs (`verification/planted/patches/`, re-run with
+  `verification/planted/run.sh`) against the test suite, simulated suites,
+  fuzz harness tests, a 600 s fuzz run and TLA+ trace validation: 23 caught
+  (22 by the test suite), one unobservable through the public contract. New
+  oracles: a Temporary nested subtree is never rebuilt, fuzzer oracle X8 (a
+  stopped actor publishes the reason it was stopped with), and unit tests that
+  kill cargo-mutants survivors in `supervision/nested.rs` and `supervision.rs`.
 - Lockfile: `rustix` 1.1.2 -> 1.1.6 for RUSTSEC-2026-0486 (pulled in by the
   examples' `native-tls` dependency; spawned's crates are unaffected).
 - CI: a `sim` job runs the simulated test suites (`--cfg spawned_sim`) on

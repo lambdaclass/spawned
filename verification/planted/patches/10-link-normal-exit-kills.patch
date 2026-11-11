@@ -1,0 +1,16 @@
+Planted bug 10 (link-normal-exit-kills): A Normal exit kills a non-trapping linked peer
+
+diff --git a/concurrency/src/link.rs b/concurrency/src/link.rs
+index 48cf54a8..a05dd0bd 100644
+--- a/concurrency/src/link.rs
++++ b/concurrency/src/link.rs
+@@ -95,9 +95,6 @@ pub(crate) fn make_signal(
+         // stop_with_reason(Kill) bypasses the target's trap_exit flag.
+         // Normal exit signals are silently dropped unless the peer is trapping
+         let trapping = peer_trap_exit.load(Ordering::Acquire);
+-        if matches!(reason, ExitReason::Normal) && !trapping {
+-            return;
+-        }
+         if trapping {
+             // Send Exit message to the peer's mailbox
+             let exit = Exit {

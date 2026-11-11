@@ -2623,6 +2623,9 @@ mod policy_tests {
         assert_ne!(jitter_seed(7, b"left"), jitter_seed(7, b"right"));
         assert_eq!(jitter_seed(7, b""), 7);
         assert_eq!(jitter_seed(0, b"ab"), 97 * 31 + 98);
+        // The seed is mixed with `^`: `|` and `&` survived cargo-mutants
+        // (both still separate the pairs above).
+        assert_eq!(jitter_seed(1, b"a"), 1 ^ 97);
     }
     #[tokio::test]
     async fn failure_classification_is_typed_and_terminal_failure_is_sticky() {
@@ -3383,6 +3386,25 @@ mod policy_tests {
         assert!(system.shutdown(Duration::from_secs(10)).await.complete);
     }
 
+    #[test]
+    fn retry_budget_reservations_count_against_availability() {
+        // `available` (the reservation check) must agree with `take` at the
+        // limit: `< max` became `<= max` without any test failing.
+        let now = Instant::now();
+        let mut budget = RetryBudget {
+            attempts: VecDeque::from([now]),
+            reserved: 0,
+            max: 2,
+            window: Duration::from_secs(10),
+        };
+        assert!(budget.available(now));
+        budget.reserved = 1;
+        assert!(!budget.available(now));
+        budget.reserved = 0;
+        budget.attempts.push_back(now);
+        assert!(!budget.available(now));
+        assert!(budget.available(now + Duration::from_secs(10)));
+    }
     #[test]
     fn retry_window_releases_capacity_at_boundary_and_does_not_bank_unused_retries() {
         let now = Instant::now();

@@ -1,3 +1,0 @@
-   Compiling spawned-rt v0.6.0 (/tmp/spawned-pr-security-review/integrated/rt)
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.50s
-     Running tests/cancellation_loom.rs (/tmp/spawned-fede-research-25dGGmPA/fairness-target/debug/deps/cancellation_loom-132ac9b65616046e)

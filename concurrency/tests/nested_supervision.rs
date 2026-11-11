@@ -143,6 +143,64 @@ async fn nested_budget_failure_reconstructs_fresh_subtree_and_preserves_parent_s
     assert!(system.shutdown(LIMIT).await.complete);
 }
 
+// Planted-bug oracle (docs/TESTING.md, "Planted-bug sensitivity", bug 09): a
+// nested supervisor's own restart mode must reach its parent slot. A Temporary
+// subtree that fails is retired, never rebuilt, and its parent keeps running.
+#[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
+async fn temporary_subtree_failure_is_not_rebuilt() {
+    let system = ActorSystem::new().unwrap();
+    let controls = system.async_group("tree-controls", 1).unwrap();
+    let workers = system.async_group("tree-workers", 1).unwrap();
+    let published: Published = Arc::new(Mutex::new(None));
+    let expose = published.clone();
+    let placement = workers.clone();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let factories = calls.clone();
+    let mut root = system.supervisor(policy(3)).unwrap();
+    let subtree = root
+        .add_supervisor(
+            SupervisorSpec::new("subtree", &controls, policy(0), move |tree| {
+                factories.fetch_add(1, Ordering::SeqCst);
+                let leaf = tree.add(ChildSpec::new("leaf", &placement, |_| async {
+                    Ok::<_, String>(Counter(0))
+                }))?;
+                *expose.lock().unwrap() = Some(leaf);
+                Ok::<_, SupervisorError>(())
+            })
+            .restart(RestartMode::Temporary),
+        )
+        .unwrap();
+    let sibling = root
+        .add(ChildSpec::new("healthy", &workers, |_| async {
+            Ok::<_, String>(Counter(0))
+        }))
+        .unwrap();
+    let supervisor = root.start().await.unwrap();
+    let old_tree = subtree.current().unwrap();
+    let leaf = published
+        .lock()
+        .unwrap()
+        .as_ref()
+        .unwrap()
+        .current()
+        .unwrap();
+    // The subtree's budget is zero: one leaf crash fails the subtree.
+    assert!(leaf.request(Crash).await.is_err());
+    spawned_rt::tasks::timeout(LIMIT, old_tree.join())
+        .await
+        .unwrap();
+    assert!(old_tree.failure().unwrap().contains("budget exhausted"));
+    // Give a wrong restart decision time to construct a replacement.
+    spawned_rt::tasks::sleep(Duration::from_millis(200)).await;
+    assert_eq!(calls.load(Ordering::SeqCst), 1, "Temporary subtree rebuilt");
+    assert_eq!(subtree.snapshot().generation, 1);
+    assert!(subtree.current().is_err());
+    assert!(supervisor.failure().is_none());
+    assert_eq!(sibling.current().unwrap().request(Next).await.unwrap(), 1);
+    assert!(supervisor.shutdown(LIMIT).await.complete);
+    assert!(system.shutdown(LIMIT).await.complete);
+}
+
 #[spawned_macros::sim_test(flavor = "multi_thread", worker_threads = 2)]
 async fn failed_nested_startup_is_cleaned_before_parent_retries() {
     let system = ActorSystem::new().unwrap();

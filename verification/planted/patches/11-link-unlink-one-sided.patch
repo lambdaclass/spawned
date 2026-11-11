@@ -1,0 +1,15 @@
+Planted bug 11 (link-unlink-one-sided): unlink removes only the caller's edge; the peer still signals it
+
+diff --git a/concurrency/src/link.rs b/concurrency/src/link.rs
+index 48cf54a8..c68b389b 100644
+--- a/concurrency/src/link.rs
++++ b/concurrency/src/link.rs
+@@ -192,7 +192,7 @@ pub(crate) fn unregister_link(
+     if own_id == peer_id || Arc::ptr_eq(own, peer) {
+         return;
+     }
+-    let removed = with_pair(own, peer, |a, b| (remove(a, peer_id), remove(b, own_id)));
++    let removed = with_pair(own, peer, |a, _b| remove(a, peer_id));
+     drop(removed);
+ }
+ 

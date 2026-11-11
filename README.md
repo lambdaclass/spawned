@@ -120,7 +120,7 @@ For every feature (timers, type erasure, registry, backends, links, supervision,
 | [Design](docs/design/README.md) | Active design contracts |
 | [Research](docs/research/README.md) | Research notes behind roadmap items: virtual actors, systematic testing, Ethereum client testing, request semantics |
 | [Benchmarks](benchmarks/README.md) | Running the benchmark harness |
-| [Legacy](legacy/README.md) | Archived designs, reviews, research notes and raw experiment data (not maintained) |
+| [Archive at `efba2434`](https://github.com/lambdaclass/spawned/tree/efba24340a01df82f872ec422b9dbaf48f897b04/legacy) | Archived designs, reviews, research notes and raw experiment data (not maintained) |
 
 ## Features
 
@@ -227,8 +227,7 @@ spawned/
 ├── examples/      # Usage examples and capability guides
 ├── docs/          # Guide, migration, testing, design contracts
 ├── benchmarks/    # Benchmark harness
-├── verification/  # TLA+ model
-└── legacy/        # Archived research and history (not maintained)
+└── verification/  # TLA+ model
 ```
 
 Users depend only on `spawned-concurrency` (which re-exports the macros) and `spawned-rt`.
@@ -279,7 +278,7 @@ text export. Metrics are compiled out by default and need no handler changes. Se
 
 The [benchmark harness](benchmarks/README.md) measures the existing backends in
 fresh processes. Microbenchmarks document limits; they are not client-level
-results. Earlier reports and backend studies are archived in [legacy](legacy/README.md).
+results. Earlier reports and backend studies are in the [archived `legacy/` directory](https://github.com/lambdaclass/spawned/tree/efba24340a01df82f872ec422b9dbaf48f897b04/legacy) (removed from the tree; git history at `efba2434`).
 
 ## Testing
 

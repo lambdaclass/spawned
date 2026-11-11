@@ -61,6 +61,25 @@ Decided 2026-11-11, in this order: **soundness, introspection, determinism, test
 5. **Features a client needs.** Dynamic supervisor (12a), bounded mailboxes (17).
 6. **Performance, behind a regression gate.** A small benchmark set on every hot-path PR that flags slowdowns past a threshold, so "no cost on the default path" is enforced, not remembered. Then profiling, rank 37 and the [runtime direction](#runtime-direction).
 
+### Determinism backlog (tier 3)
+
+From the [determinism audit](docs/research/determinism-audit.md) (2026-11-11) of Spawned and the Ethrex and Ethlambda `spawned-v0.8` branches, ranked by how much more real code runs deterministically per unit of effort. Same-seed reruns (S2) found no schedule nondeterminism; traces differ only in process-global ids (D5).
+
+| # | Item | Effort |
+|---|---|---|
+| D1 | Interpose `clock_gettime`/`gettimeofday` and `getrandom`/`getentropy` under `spawned_sim` (madsim's technique): virtual time and seeded bytes on a thread that owns a world, so `Instant::now`, `SystemTime::now`, `thread_rng`, `OsRng` and `HashMap` keys become deterministic with no call-site change; `SPAWNED_SIM_STRICT=1` panics with the caller instead (the `tokio::spawn`-style check). Covers ~270 clock and ~50 rand sites in the clients. | M |
+| D2 | `spawn_blocking` runs inline under sim as one atomic step (today it panics): synchronous DB and compute offload (64 client sites) becomes simulable. | S |
+| D3 | Complete `spawned_rt::tasks` (`interval`, `sleep_until`, a `JoinSet`) and turn Tokio's "timers are disabled" panic into a message naming the `spawned_rt` replacement. | S |
+| D4 | Route the clients' direct Tokio calls: Ethrex 34 `tokio::spawn`/`JoinSet` and 48 `tokio::time`, Ethlambda 8 and 8 (lists in the audit). | M |
+| D5 | Library fixes: per-world id counters under sim (byte-identical traces, so S2 can run in CI); `PendingReplies::drain` in insertion order (0.8); `FailScenario::setup()` seeded from the world. | S |
+| D6 | First client `#[sim_test]`s (none exist today): Ethlambda's blockchain actor, Ethrex `tx_broadcaster` and `peer_table`, after D1. | S-M |
+| D7 | Recommended clippy `disallowed-methods` set for applications (with rank 6b). | S |
+| D8 | Blocking/Thread-backend actors and 0.8 native jobs as sim tasks (the "run native actors as simulator tasks" research). | M |
+| D9 | Seeded `spawned_rt::rand` as a portable, explicit alternative to D1. | S |
+| D10 | Wall-clock verdicts (turn budget, poll watchdog): a poll-count option so an overloaded machine cannot fail a run that replays clean. | S |
+
+Sockets stay with rank 22a; synchronous databases, EVM execution and cryptography remain atomic synchronous steps.
+
 ## Path to 1.0
 
 1.0 is a promise, not a feature set: the API is stable, every guarantee is checked, and it has been proven in production. Planned order (each release follows the [Priorities](#priorities)):
@@ -110,8 +129,8 @@ sections and [research notes](docs/research/README.md).
    projections complement failure/stress tests, review and ThreadSanitizer;
    they do not prove the wider base lifecycle or every Rust schedule.
    All crates retain `forbid(unsafe_code)`; Miri precedes any future unsafe proposal.
-   See the [implementation evidence](legacy/docs/reviews/capabilities-extension.md)
-   and [v0.7 review fixes and formal coverage](legacy/docs/reviews/v07-supervision.md).
+   See the [implementation evidence](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/docs/reviews/capabilities-extension.md)
+   and [v0.7 review fixes and formal coverage](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/docs/reviews/v07-supervision.md).
    The client search is done; see [results](#client-search-results).
 3. **Adopt v0.7 in Ethlambda** (rank 5), including the per-method
    request timeout (rank 5a), the migration guide for the clients' hand-wired
@@ -121,7 +140,7 @@ sections and [research notes](docs/research/README.md).
    metrics and the explicit-async migration, and audits the exact documented
    no-default removals. Conditional `request_timeout` attributes are explicitly
    rejected, the API script supports Python 3.9, stream examples use handshakes,
-   and dated reports/evidence are archived in `legacy/` without host-specific
+   and dated reports/evidence are archived in [`legacy/`](https://github.com/lambdaclass/spawned/tree/efba24340a01df82f872ec422b9dbaf48f897b04/legacy) without host-specific
    driver scripts. Both clients pin spawned 0.5.0, so their
    upgrade crosses 0.6 as well; the migration guide covers 0.5 to 0.7 in one
    path. v0.7.0 is released; migrate Ethlambda (shutdown
@@ -193,10 +212,42 @@ one per actor. Additional placement changes still need application measurements.
 execution groups and supervision remain async-only for v0.7. Extending those
 capabilities to the Tokio-free build is a later roadmap item, outside this release.
 
+### Erlang/OTP, Elixir and Gleam gaps
+
+From a comparison against OTP 28/29, Elixir 1.20 and gleam_otp 1.3 on 2026-11-11 ([research](docs/research/otp-elixir-gleam.md)). Tier is the [priority](#priorities) tier; targets follow the [path to 1.0](#path-to-10). Each gap still goes through the design-review rule before code.
+
+| Gap | What OTP, Elixir or Gleam does | Tier | Target |
+|---|---|---|---|
+| G1 | Fallible, value-returning startup on every start path (`init` returning `{error,R}`/`{stop,R}`/`ignore`; Gleam's initialiser returning data to the starter) | soundness | 0.9 (unified start) |
+| G2 | Post-start continuation (`handle_continue`), guaranteed to run before any external message | soundness | 0.9 (unified start; the dynamic supervisor needs it) |
+| G3 | `sys:get_state`/`get_status`: an in-band request answered between turns, opt-in and redacted (`format_status`) | introspection | 0.9 (introspection v1) |
+| G4 | Actor listing, labels (OTP 27 `set_label`) and tree snapshots (`which_children`/`count_children` everywhere) | introspection | 0.9 |
+| G5 | Structured crash and supervisor reports (last message type, label, parent chain, mailbox length) | introspection | 0.9 |
+| G6 | `terminate_child`, `restart_child`, `delete_child` on static supervisors | features (OTP alignment) | 0.9 |
+| G7 | Clean exits that carry a payload (`{shutdown, Term}`) | soundness | 0.9 |
+| G8 | `start_monitor`, link and monitor on every backend and group, one start-options struct | soundness | 0.9 (unified start) |
+| G9 | Runtime-toggled, rate-limited per-actor message tracing with isolated sessions (`sys:trace`, OTP 27 trace sessions, `recon_trace`) | introspection | 0.10, opt-in |
+| G10 | Per-turn logging context (Logger metadata) and stable event names (`:telemetry`) | introspection | 0.10, opt-in |
+| G11 | Control lane modelled on OTP 28 priority messages (receiver opts in per source) | soundness | 0.10 (rank 14) |
+| G12 | Named, replace-on-set timers and idle timeouts | features | 0.10 (with rank 38) |
+| G13 | `start_supervised` and per-test isolation in `spawned-test` | testing | 0.9 |
+| G14 | Typed, scoped, restart-surviving names | features | 1.0 (rank 12) |
+| G15 | Significant children and `auto_shutdown` | features | 1.x; leave room in 0.9's child spec |
+| G16 | `gen_statem`-style behaviour (state enter calls, postpone, state and event timeouts) | features | 1.x (ranks 16, 32) |
+| G17 | Process groups, Registry-style PubSub, `PartitionSupervisor` | features | 1.x (rank 27) |
+| G18 | Bounded parallel map like `Task.async_stream` | features | 1.x (rank 11b) |
+| G19 | Request collections (`reqids`) | features | 1.0 (helper and GUIDE recipe) |
+| G20 | Per-actor memory limit (`max_heap_size`) | features | 1.x (rank 18a) |
+| G21 | Demand-driven pipelines (GenStage, Broadway) | features | 1.x (ranks 18, 33, 35) |
+| G22 | Node watchdog (`heart`): feed systemd's watchdog from the stall watchdog | introspection | 1.0 (documentation) |
+| G23 | Remote console like `erl -remsh`: every binary running an `ActorSystem` is attachable through a local Unix socket (`0600`, per process, on by default, read-only by default; mutating commands opt-in; `SPAWNED_CONSOLE=off` or a Cargo feature to remove it) and a `spawned-ctl` CLI (`attach`, `ps`, `info`, `state`, `tree`, `stuck`, `trace`, `restart`); built on introspection, no code evaluation, nothing on the send or dispatch path | introspection | 0.9 (introspection v1) |
+
+Kept on purpose, where Rust's types do better than Erlang: typed replies, reply tokens that must be answered, a `Result` instead of crashing the caller on a timeout, bounded work, and the explicit stuck policy instead of `brutal_kill`.
+
 ### Non-goals
 
 Performance work may add opt-in profiles, but none of these may become the
-default (from the [Silver/flux study](legacy/docs/research/silver-flux.md#what-must-not-become-spawneds-default)):
+default (from the [Silver/flux study](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/docs/research/silver-flux.md#what-must-not-become-spawneds-default)):
 
 - static topology replacing dynamic actor creation;
 - Copy-only payload requirements replacing ordinary Rust message types;
@@ -205,6 +256,20 @@ default (from the [Silver/flux study](legacy/docs/research/silver-flux.md#what-m
 - application handlers owning poll loops, reply routing or runtime
   infrastructure to make a backend faster;
 - mandatory dedicated cores or spinning for ordinary actors.
+
+From the OTP, Elixir and Gleam comparison, Spawned will not add:
+
+- unrestricted selective receive (needs an O(n) scannable mailbox; bounded stashing, rank 16, and postpone, rank 32, cover the uses);
+- `gen_event` (handlers share one process, so one crash affects all; Elixir deprecated it);
+- hot code upgrade (`change_code`, appup/relup), which has no meaning for compiled Rust;
+- BEAM heap and GC knobs (`hibernate`, `fullsweep_after`, `min_heap_size`, `message_queue_data`);
+- per-process CPU priority levels (a cooperative runtime cannot honour them; execution groups and rank 39 are the honest form; OTP 28 *message* priority, G11, is different and planned);
+- `sys:replace_state`, which mutates state outside a turn;
+- calls that crash the caller on timeout (keep `Result`);
+- ETS or `persistent_term` clones in core (use `Arc`, atomics or published snapshots, rank 10);
+- `global`, `multi_call` or `abcast` in core (distribution is a separate layer, rank 44);
+- `brutal_kill` emulation by aborting threads or detaching tasks (it leaves destructors half-run);
+- an `Agent` core type (a few lines on `Actor`; snapshots serve reads better).
 
 **Principle: match Erlang/OTP as closely as possible.** Exit signals, links, monitors, `trap_exit`, supervision budgets and reply semantics follow OTP. A deviation is allowed only where Rust forces it, where Rust's types make spawned stricter (for example a typed reply token that must be answered), or where spawned adds a bound Erlang lacks (bounded outstanding work, backpressure). Every remaining deviation is listed with its reason in the [semantics contract](docs/design/semantics.md). Already aligned: stopping an actor discards its queued messages, as a process exit drops its mailbox (draining, rank 13, is the opt-in alternative). Newer capabilities (Orleans-style virtual actors, rank 26; process groups and topics, 27; distribution, 44; durable execution, 51; CRDTs and sagas, 54) are layers built on this OTP-faithful core: they may add behaviour, but never change the core's semantics.
 
@@ -226,6 +291,32 @@ model, trace replay of real Rust runs and negative checks that must fail, as
 OneForOne, OneForAll/RestForOne and nested supervision did. Release is blocked
 until they pass. Everything also keeps ordinary tests, an example, clippy and
 ThreadSanitizer.
+
+**Design-review rule (every new feature, before code).** A design doc in
+`docs/design/`, reviewed by two independent reviewers (Codex and agy, run
+without each other's findings), containing:
+
+1. **Semantics:** the guarantees it adds or changes in `semantics.md`, its
+   non-guarantees, and an Erlang/OTP alignment table with a Rust-forced reason
+   for every deviation.
+2. **A TLA+ model** with a negative control (a deliberately broken variant)
+   for every invariant, each shown to fail on its named property, and a per-PR
+   configuration that runs in about two minutes.
+3. **Trace validation:** the trace events the implementation must emit, how
+   they map to model actions, and the expected action coverage. A model not
+   checked against real code runs does not count. **Models track the code:** a
+   PR that changes modelled behaviour updates the model in the same PR.
+4. **A test plan:** for every guarantee, the check that fails if it breaks:
+   integration tests in both modes and every backend, deterministic simulator
+   tests for each race, scenario-fuzzer operations, trybuild cases for
+   compile-time guarantees, and new rows in the semantics coverage matrix.
+5. **Planted bugs:** three or four realistic implementation bugs the test plan
+   must catch, added to the planted-bug matrix.
+6. **Introspection:** how the feature shows up in `process_info`, the tree
+   snapshot, the stall watchdog and the attachable console.
+7. **Cost:** nothing on the default send, dispatch or turn path, proven by a
+   benchmark against main; anything costly is opt-in.
+8. **A client mapping:** the Ethrex and Ethlambda call sites it changes.
 
 **Production arm (rank 5c).** Trace validation checks test runs. After the
 Ethlambda canary, the same invariants (`AtMostOneGeneration`,
@@ -327,7 +418,7 @@ Deterministic simulation and record/replay remain the testing flagship (ranks
 20-22), followed by environment simulation (rank 22a). Prior art and how
 databases combine these techniques: [systematic testing](docs/research/systematic-testing.md).
 
-The [archived v0.7 gate review](legacy/docs/reviews/v07-release-gates.md) records
+The [archived v0.7 gate review](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/docs/reviews/v07-release-gates.md) records
 the original scans and their limits. The corrected [testing guide](docs/TESTING.md)
 covers the expanded API profiles and protocol/supervision regressions.
 
@@ -474,7 +565,7 @@ failing run for replay. Spawned already owns those points, so `explore` needs no
 handler changes. Ranks 21-22 add what Coyote does not centre on: capturing
 delivery order from a real client and replaying it under the same scheduler.
 
-The [v0.7 gate review](legacy/docs/reviews/v07-release-gates.md) records the completed
+The [v0.7 gate review](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/docs/reviews/v07-release-gates.md) records the completed
 API/feature scans, generated-policy campaign and compatibility correction.
 
 ## Ranked backlog
@@ -500,13 +591,13 @@ Maintained [research notes](docs/research/README.md) cover
 [test techniques](docs/research/test-techniques.md) and
 [event sourcing](docs/research/event-sourcing.md).
 Older background notes (sources, design notes and experiments, without rankings of
-their own) are archived in [legacy](legacy/README.md):
-[framework ideas](legacy/docs/research/framework-ideas.md),
-[concurrency ideas](legacy/docs/research/concurrency-ideas.md),
-[Commonware](legacy/docs/research/commonware.md),
-[Silver/flux](legacy/docs/research/silver-flux.md),
-[verification strategy](legacy/docs/research/verification-strategy.md) and the
-earlier [detailed acceptance criteria](legacy/docs/design/roadmap-acceptance-2026-11-06.md).
+their own) are in the [archived `legacy/` directory](https://github.com/lambdaclass/spawned/tree/efba24340a01df82f872ec422b9dbaf48f897b04/legacy):
+[framework ideas](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/docs/research/framework-ideas.md),
+[concurrency ideas](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/docs/research/concurrency-ideas.md),
+[Commonware](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/docs/research/commonware.md),
+[Silver/flux](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/docs/research/silver-flux.md),
+[verification strategy](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/docs/research/verification-strategy.md) and the
+earlier [detailed acceptance criteria](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/docs/design/roadmap-acceptance-2026-11-06.md).
 
 ### Implemented (no longer ranked)
 
@@ -569,7 +660,7 @@ A broader read of the same revisions for workarounds, incidents and comments
 
 Preserve this verification before a release and expand its scope for the new
 cohort/nested semantics. Restart and shutdown races are the bug class behind
-PRs #180, #182 and #185. Plan and acceptance criteria: [verification strategy](legacy/docs/research/verification-strategy.md).
+PRs #180, #182 and #185. Plan and acceptance criteria: [verification strategy](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/docs/research/verification-strategy.md).
 
 | Rank | Idea | Assessment |
 |---|---|---|
@@ -694,7 +785,7 @@ Rejected: replacing Tokio with Glommio or monoio wholesale (loses work stealing,
 | 49 | Durable outbox/idempotency recipe | Application-layer example when recovery needs it. Commit intent/dedup with effects; do not persist arbitrary boxed Rust envelopes. **Research ([event sourcing](docs/research/event-sourcing.md)):** a recipe for an event-sourced actor: snapshot plus replay in `started()`, append with expected version, side effects after the append, idempotency key. Prior art: Akka Persistence (`EventSourcedBehavior`), Orleans `JournaledGrain`, coerce's persistence in Rust. |
 | 50 | Durable timers/reminders | Separate persistence contract: identity, clock changes, missed executions and duplication across restart. Model reminders as events (timer set, timer fired) so replay re-arms unfired timers ([event sourcing](docs/research/event-sourcing.md)). |
 | 51 | Temporal-style durable execution | A separate product-scale subsystem: persisted decisions, deterministic replay, external effects and upgrades. Supervision alone does not provide it. Event sourcing persists state changes; durable execution persists handler progress. Restate remains the reference ([event sourcing](docs/research/event-sourcing.md)). |
-| 52 | Thread-per-core I/O backend (io_uring) | **Research pointer, frozen; reopens as a `spawned::net` backend (rank 22a), not a runtime replacement.** Seastar, Glommio, monoio and tokio-uring are each their own executor (one ring per core, polled by that core), so "our executor plus Glommio for I/O" means spawned becoming thread-per-core. That loses work stealing, which matters with a few heavy actors (block execution, sync) beside thousands of light ones; io_uring is blocked by Docker's default seccomp profile and disabled on many hardened kernels, so it can never be required; and the clients' time goes to EVM execution, cryptography and synchronous databases, not network I/O. Parked pinned shards already give per-core placement. The earlier Monoio experiments ([design findings](legacy/benchmarks/DESIGN-FINDINGS.md#what-we-learned-in-the-linux-vm)) did not justify replacing Tokio. Reopen as an opt-in execution-group backend behind `spawned::net` when an application built for thread-per-core (proxy, gateway, storage node) or a client I/O profile justifies it; clients would need no change ([note](docs/research/concurrency-models.md#6-thread-per-core-and-io_uring)). |
+| 52 | Thread-per-core I/O backend (io_uring) | **Research pointer, frozen; reopens as a `spawned::net` backend (rank 22a), not a runtime replacement.** Seastar, Glommio, monoio and tokio-uring are each their own executor (one ring per core, polled by that core), so "our executor plus Glommio for I/O" means spawned becoming thread-per-core. That loses work stealing, which matters with a few heavy actors (block execution, sync) beside thousands of light ones; io_uring is blocked by Docker's default seccomp profile and disabled on many hardened kernels, so it can never be required; and the clients' time goes to EVM execution, cryptography and synchronous databases, not network I/O. Parked pinned shards already give per-core placement. The earlier Monoio experiments ([design findings](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/benchmarks/DESIGN-FINDINGS.md#what-we-learned-in-the-linux-vm)) did not justify replacing Tokio. Reopen as an opt-in execution-group backend behind `spawned::net` when an application built for thread-per-core (proxy, gateway, storage node) or a client I/O profile justifies it; clients would need no change ([note](docs/research/concurrency-models.md#6-thread-per-core-and-io_uring)). |
 | 53 | Incremental dataflow | **Research pointer.** Timely/differential dataflow (Materialize). A different programming model; read its progress tracking (frontiers) before designing rank 33's completion watermarks ([note](docs/research/concurrency-models.md#7-incremental-dataflow)). |
 | 54 | CRDT-replicated state, sagas and process managers | **Research pointer**, distribution/durability tier. CRDTs only with multi-node replicas (rank 44); a crash-surviving process manager is durable execution (ranks 49-51). A saga example with compensation, supervision and timeouts could come first ([note](docs/research/concurrency-models.md#8-crdts-sagas-and-process-managers)). |
 
@@ -775,7 +866,7 @@ behavior and its important failure/overload limit. Prefer a program with
 assertions over a snippet that only compiles, and do not present speculative API
 names as working code. The [examples index](examples/README.md) lists what
 exists today. Experimental backend drivers and their evidence stay under
-`benchmarks/` and [legacy](legacy/README.md).
+`benchmarks/` and the [archived `legacy/` directory](https://github.com/lambdaclass/spawned/tree/efba24340a01df82f872ec422b9dbaf48f897b04/legacy).
 
 ### Release example coverage
 

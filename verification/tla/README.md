@@ -1,7 +1,7 @@
 # TLA+ models
 
 Formal models of Spawned lifecycle contracts, checked with TLC. See the
-[verification strategy](../../legacy/docs/research/verification-strategy.md) for how
+[verification strategy](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/docs/research/verification-strategy.md) for how
 this fits with Loom, Shuttle, Miri, ThreadSanitizer and mutation testing.
 
 | Model | Covers |
@@ -508,7 +508,7 @@ publication before D, a `Normal` signal stopping an actor, a late `Down` or
 link notice with the real reason, a notice after unlink, a `Down` after
 demonitor, a parent exit dispatched as an `Exit`, and a runtime drop ending
 `Normal`: all eleven are rejected. `trace_coverage.py` skips this schema.
-Source: [verification strategy](../../legacy/docs/research/verification-strategy.md#acceptance).
+Source: [verification strategy](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/docs/research/verification-strategy.md#acceptance).
 
 `Coordinator.tla` checks coordinator failure ownership independently of the actor
 policy models: a panic closes admission, records failure, signals remaining

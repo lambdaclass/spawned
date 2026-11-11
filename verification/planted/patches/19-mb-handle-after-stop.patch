@@ -1,0 +1,16 @@
+Planted bug 19 (mb-handle-after-stop): The run loop keeps handling queued messages after stop (D4)
+
+diff --git a/concurrency/src/tasks/actor.rs b/concurrency/src/tasks/actor.rs
+index a7fb0ec2..200d1e8c 100644
+--- a/concurrency/src/tasks/actor.rs
++++ b/concurrency/src/tasks/actor.rs
+@@ -1273,9 +1273,6 @@ async fn run_actor_lifecycle<A: Actor>(
+                 // Stop and closed-mailbox both take the normal lifecycle exit,
+                 // just like the cancellation arm below. Check before consuming
+                 // work, including when receive resumes from a pending poll.
+-                if cancellation_token.is_cancelled() {
+-                    return std::task::Poll::Ready(None);
+-                }
+                 let result = rx.poll_recv(cx);
+                 #[cfg(feature = "backend-experiments")]
+                 if let Some(turn) = &mut turn {

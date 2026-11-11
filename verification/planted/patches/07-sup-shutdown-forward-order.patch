@@ -1,0 +1,15 @@
+Planted bug 07 (sup-shutdown-forward-order): Supervisor stops children in declaration order instead of reverse
+
+diff --git a/concurrency/src/supervision.rs b/concurrency/src/supervision.rs
+index 328ed91b..63421c5a 100644
+--- a/concurrency/src/supervision.rs
++++ b/concurrency/src/supervision.rs
+@@ -1469,7 +1469,7 @@ async fn run_supervisor_body(
+     }
+     core.cancel.cancelled().await;
+     trace::emit(core.trace, || Event::sup("SupCancelSeen"));
+-    for (index, child) in children.iter().enumerate().rev() {
++    for (index, child) in children.iter().enumerate() {
+         let c = index + 1;
+         trace::emit(core.trace, || Event::new("SupStopTurn", c, ""));
+         fail_point!("shutdown.before_stop_child", async);

@@ -1,1 +1,0 @@
-{"conversation_id":"96ba1fcd-7448-4cc3-8733-3ad47b5b136a","status":"ERROR","response":"PASS\n","error":"The stream was interrupted. Please continue the task you were working on.","duration_seconds":618.132859,"num_turns":3,"usage":{"input_tokens":151069,"output_tokens":38785,"thinking_tokens":32619,"cache_read_tokens":56754,"total_tokens":189854},"finished_reason":"error"}
