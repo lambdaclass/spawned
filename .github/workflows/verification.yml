@@ -36,8 +36,12 @@ jobs:
             select: --only 'MCLifecycle*'
           - leg: deferred
             select: --only 'MCDeferred*'
+          - leg: dynamic-safety
+            select: --only 'MCDynamicSupervisor,MCDynamicSupervisorBackoff,MCDynamicSupervisorZero,MCDynamicSupervisorThree'
+          - leg: dynamic-liveness
+            select: --only 'MCDynamicSupervisorCallers,MCDynamicSupervisorLive'
           - leg: other
-            select: --exclude 'MCSupervision,MCLifecycle*,MCDeferred*'
+            select: --exclude 'MCSupervision,MCLifecycle*,MCDeferred*,MCDynamicSupervisor*'
     steps:
       - uses: actions/checkout@v4
       - uses: DeterminateSystems/nix-installer-action@v16
