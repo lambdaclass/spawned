@@ -16,7 +16,7 @@ this fits with Loom, Shuttle, Miri, ThreadSanitizer and mutation testing.
 | `NestedSupervision.tla`, `MCNested.tla/.cfg` | Dynamic subtree ownership and shutdown delivery; parent scope completion waits for descendant completion. Bounded three-node/two-generation model with fair cleanup. |
 | `DeferredReplies.tla`, `MCDeferredReplies*.tla/.cfg` | Rank 11 design model (not implemented), part 1: reply slots, send-time deadlines with shortening, deferral credits shared by a token and its first linked job, the exiting phase with exit-pending drops (unwound or dropped while exiting, answered at death with the final reason), a stuck phase (cleanup deadline passed while `stopped()` runs: nothing closed early, death later or never), death, and downstream request cleanup. Fourteen named negative controls. |
 | `DeferredJobs.tla`, `MCDeferredJobs*.tla/.cfg` | Rank 11 design model, part 2: pipe jobs with separate execution, cancellation and notification states; keyed replacement including notified jobs; optional job deadlines; a FIFO mailbox with emit credits and the terminal message last; `ActorId` fencing. `MCDeferredJobsEmits` is the fast configuration with emits; `MCDeferredJobsHeld` the one with delayed emits (`emit_at`) and held results (completion, held notification, scheduled emits and credit ownership as separate steps). Eleven named negative controls. |
-| `Lifecycle.tla`, `MCLifecycle{,Live,Fence,Deep,LiveDeep,WideDeep}.tla/.cfg` | Base actor lifecycle as proposed for v0.8 ([design](../../docs/design/otp-exit-signals.md)): links, monitors, `trap_exit`, exit signals (`Killed`, ignored `Normal`, `NoProc`, parent exits), administrative stops, requests around death, `Exit`/`Down` ordering. Seventeen negative-control faults (17 safety checks, 2 liveness checks): the v0.7 exit-signal behaviours (direct stops ignoring `trap_exit`, kills ending `Kill`, unfenced `unlink`/`demonitor`, real reasons for late registrations, `stopped()` after kills and untrapped signals, late signals ignored during exit), the PR #182/#185 bugs, early exit errors, kill and panic precedence, runtime-drop reasons, early notification, a split death point and a parent exit reaching `exit_received`. Per PR: `MCLifecycle` (7.5M states, fewer reasons, where the safety controls run), `MCLifecycleFence`, `MCLifecycleLive`; weekly: `MCLifecycleWideDeep` (the former 43M-state per-PR instance), `MCLifecycleDeep`, `MCLifecycleLiveDeep`. |
+| `Lifecycle.tla`, `MCLifecycle{,Live,Fence,Deep,LiveDeep,WideDeep}.tla/.cfg` | Base actor lifecycle as proposed for v0.8 ([design](../../docs/design/otp-exit-signals.md)): links, monitors, `trap_exit`, exit signals (`Killed`, ignored `Normal`, `NoProc`, parent exits), administrative stops, requests around death, `Exit`/`Down` ordering. Nineteen negative-control faults (19 safety checks, 2 liveness checks): the v0.7 exit-signal behaviours (direct stops ignoring `trap_exit`, kills ending `Kill`, unfenced `unlink`/`demonitor`, real reasons for late registrations, `stopped()` after kills and untrapped signals, late signals ignored during exit), the PR #182/#185 bugs, early exit errors, kill and panic precedence, runtime-drop reasons, early notification, a split death point, a parent exit reaching `exit_received`, an exit signal past the sender's death point (`NoSignalFence`) and publication before the queued requests were answered (`PublishBeforeDischarge`). Death is two steps, as in `actor_cleanup.rs`: the death point (`Die`/`RuntimeDrop`: signal fence, seal, table closed) and `Discharge` (queued and exit-pending requests answered), with other actors' steps in between; `Publish` waits for `Discharge`. Per PR: `MCLifecycle` (10.0M states, fewer reasons, where the safety controls run), `MCLifecycleFence`, `MCLifecycleLive`; weekly: `MCLifecycleWideDeep` (the former 43M-state per-PR instance), `MCLifecycleDeep`, `MCLifecycleLiveDeep`. |
 | `TraceCohorts.tla`, `TraceNested.tla` | Policy and ownership projections of real cohort/nested Rust executions. |
 | `trace_check.py`, `negative_checks.py` | Replay recorded traces; deliberately wrong selections, premature resume/join and broken propagation must be rejected or produce counterexamples. |
 | `SupervisionInd.tla`, `CohortsInd.tla`, `NestedSupervisionInd.tla`, `CoordinatorInd.tla`, `MC*Ind.tla`, `apalache.sh` | Inductive invariants (`IndInv`) checked with Apalache; see [Inductive invariants](#inductive-invariants-apalache). |
@@ -389,7 +389,7 @@ and `--negative-controls` removes one guard at a time and requires induction
 to fail: for `Supervision` the retry limit, ordered start, join wait, restart
 table, cleanup, unpublish-on-stop, admission gate on `Attempt` and the
 reverse-shutdown wait; for `Cohorts` and `NestedSupervision` the existing
-`Fault` mutations (`Selection`, `Cleanup`, `Retirement`, `Closed`, `InPlaceRetry`, `FirstStartRetry`, `Join`);
+`Fault` mutations (`Selection`, `Cleanup`, `Retirement`, `Closed`, `InPlaceRetry`, `FirstStartRetry`, `PerChildCharge`, `Join`);
 for `Coordinator` see below.
 
 The type annotations are `\* @type:` comments, ignored by TLC. Apalache also
@@ -593,6 +593,7 @@ exactly the property it targets:
 | `Supervision` (`MCSupervision`, a rewrite of `Supervision.tla`: no `Fault` constant) | `FirstStartRetry` (v0.7 retried a failed first start) | `RestartFollowsPolicy` |
 | `Supervision` (`MCSupervision`, rewrite) | `NoDeferral` (v0.7 decided on a ready child's exit during the initial start) | `RestartFollowsPolicy` |
 | `Cohorts` (`MCCohortsAll`) | `FirstStartRetry` | `FirstStartOnce` (in `Safety`) |
+| `Cohorts` (`MCCohortsAll`) | `PerChildCharge` (v0.7 charged the restart budget per rebuilt child, not per round) | `RoundCharged` |
 | `DeferredReplies` | `NoAutoReply` | `NoOrphan` |
 | `DeferredReplies` | `NoAtomicExpiry` (abstract double discharge; the real race needs Loom) | `AtMostOneDischarge` |
 | `DeferredReplies` | `LateSuccess` | `NoSuccessAfterDeadline` |
@@ -607,6 +608,8 @@ exactly the property it targets:
 | `DeferredReplies` | `LeakDownstream` | `DownstreamOwned` |
 | `DeferredReplies` | `EarlyClose` (closes the registry at the cleanup deadline) | `NoEarlyClose` |
 | `DeferredReplies` | `EarlyStopped` (rank 11 before 5e: a token dropped while exiting or unwound answers `Stopped` at once) | `StoppedAtDeath` |
+| `DeferredReplies` | `NoReplyFence` (a stored token's reply is admitted after the death point) | `NoReplyAfterDeath` |
+| `DeferredReplies` | `CallbackBeforeDischarge` (an answer's wake-up runs before the last answer of the death batch) | `WokenAfterDischarge` |
 | `DeferredJobs` | `NoInstanceCheck` | `NoLateResult` |
 | `DeferredJobs` | `NoCancelFence` | `NoStaleAfterCancel` |
 | `DeferredJobs` | `DoubleTerminal` | `AtMostOneTerminal` |
@@ -618,17 +621,19 @@ exactly the property it targets:
 | `DeferredJobs` (`MCDeferredJobsEmits`) | `NoEmitCredit` | `EmitCreditsBounded` |
 | `DeferredJobs` (`MCDeferredJobsHeld`) | `EarlyCredit` (a held result returns its credit when the work ends) | `HeldCounted` |
 | `DeferredJobs` (`MCDeferredJobsHeld`) | `HeldDeadlineLost` (the deadline cannot take a held result) | `DeadlineArmedWhileHeld` |
+| `DeferredJobs` (`MCDeferredJobsHeld`) | `ExitKeepsHeld` (owner exit cancels running work only, not held results or scheduled emits) | `ExitCancelsJobs` |
+| `DeferredJobs` | `NoAdmissionFence` (a job admitted after the exit cancelled the job set) | `ExitCancelsJobs` |
 
 Measured 2026-11-10 (TLC 2.19, fede; the two `MCDeferredReplies` rows on
 2026-11-11, after the exit-pending change):
 
 | Configuration | Distinct states | Generated | Depth | Time |
 |---|---|---|---|---|
-| `MCDeferredReplies` (fast: 2 requests, `BoundA` 2, `BoundB` 1, clock 2; safety and liveness) | 4,035,345 | 21,287,403 | 33 | 2 min 19 s, 4 workers |
+| `MCDeferredReplies` (fast: 2 requests, `BoundA` 2, `BoundB` 1, clock 2; safety and liveness; death split into D and the answer batch, 2026-11-11) | 4,864,810 | 25,029,343 | 34 | 4 min 22 s, 4 workers (fede shared) |
 | `MCDeferredRepliesDeep` (clock 3; safety) | 11,016,668 | 58,096,711 | 34 | 55 s, 4 workers |
 | `MCDeferredJobs` (fast: 3 jobs, 2 keyed, 2 permits, 2 instances, no emits; safety and liveness) | 229,070 | 487,283 | 17 | 5 s, 8 workers |
 | `MCDeferredJobsEmits` (fast: 2 keyed jobs, 1 instance, 2 emits each, 1 credit; safety and liveness) | 24,842 | 50,944 | 18 | 1 s, 2 workers |
-| `MCDeferredJobsHeld` (fast: 3 unkeyed jobs, 2 permits, 1 instance, 1 emit or scheduled emit each, 1 credit; safety and liveness) | 1,946,047 | 6,230,609 | 22 | 2 min, 2 workers |
+| `MCDeferredJobsHeld` (fast: 3 unkeyed jobs, 2 permits, 1 instance, 1 emit or scheduled emit each, 1 credit; safety and liveness) | 1,946,047 | 6,230,609 | 22 | 1 min 30 s, 4 workers (with `ExitCancelsJobs`, 2026-11-11) |
 | `MCDeferredJobsDeep` (3 jobs, 2 instances, 1 emit or scheduled emit each; safety) | 7,980,942 | 19,676,218 | 23 | 82 s, 2 workers |
 
 All 24 named controls find their counterexample, each in a few seconds.

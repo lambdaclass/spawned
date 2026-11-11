@@ -251,6 +251,8 @@ LIFECYCLE_CONTROLS = [
     ("MCLifecycle", "DropQueued", "NoOrphanRequest"),
     ("MCLifecycle", "EarlyNotify", "ExitAfterMessages"),
     ("MCLifecycle", "SplitDeathPoint", "NoEdgeToDead"),
+    ("MCLifecycle", "PublishBeforeDischarge", "AnsweredBeforePublish"),
+    ("MCLifecycle", "NoSignalFence", "SignalsBeforeDeath"),
 ]
 
 # Liveness controls run on a smaller instance of MCLifecycleLive.
@@ -275,6 +277,8 @@ DEFERRED_CONTROLS = [
     ("MCDeferredReplies", "LeakDownstream", "DownstreamOwned"),
     ("MCDeferredReplies", "EarlyClose", "NoEarlyClose"),
     ("MCDeferredReplies", "EarlyStopped", "StoppedAtDeath"),
+    ("MCDeferredReplies", "NoReplyFence", "NoReplyAfterDeath"),
+    ("MCDeferredReplies", "CallbackBeforeDischarge", "WokenAfterDischarge"),
     ("MCDeferredJobs", "NoInstanceCheck", "NoLateResult"),
     ("MCDeferredJobs", "NoCancelFence", "NoStaleAfterCancel"),
     ("MCDeferredJobs", "DoubleTerminal", "AtMostOneTerminal"),
@@ -286,6 +290,8 @@ DEFERRED_CONTROLS = [
     ("MCDeferredJobsEmits", "NoEmitCredit", "EmitCreditsBounded"),
     ("MCDeferredJobsHeld", "EarlyCredit", "HeldCounted"),
     ("MCDeferredJobsHeld", "HeldDeadlineLost", "DeadlineArmedWhileHeld"),
+    ("MCDeferredJobsHeld", "ExitKeepsHeld", "ExitCancelsJobs"),
+    ("MCDeferredJobs", "NoAdmissionFence", "ExitCancelsJobs"),
 ]
 
 
@@ -500,6 +506,8 @@ def main():
     # Needs a second generation within one round (MaxGen 3).
     model_fault("MCCohortsAllSupersession", "InPlaceRetry", args.tlc)
     model_fault("MCCohortsAll", "FirstStartRetry", args.tlc, invariant="Safety")
+    # Rank 5f: v0.7 charged every rebuilt child of a round.
+    named_fault("MCCohortsAll", "PerChildCharge", "RoundCharged", args.tlc)
     for label, pattern, replacement in SUPERVISION_S1_CONTROLS:
         spec_mutation("MCSupervision", "Supervision.tla", label, pattern, replacement,
                       "RestartFollowsPolicy", args.tlc)
