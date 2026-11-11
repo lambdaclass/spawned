@@ -216,7 +216,7 @@ Held = "a signal held while started() runs (phase 0) is outside Lifecycle.tla; t
 EarlyFire = "fault device only (Fault = EarlyNotify: links and monitors fire when exit begins); no code path takes it"
 [trace.translated]
 Spawn = { into = [], why = "trace_check.py numbers actors from Spawn events" }
-Send = { into = ["Request", "Enqueue"], why = "trace_check.py splits Send into Request and Enqueue" }
+Send = { into = ["Request", "Enqueue", "Send"], why = "trace_check.py splits a Send from outside code into Request and Enqueue, and keeps one from a recorded actor as the model's Send" }
 
 [[trace]]
 struct = "JobEvent"

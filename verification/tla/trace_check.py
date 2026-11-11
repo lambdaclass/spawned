@@ -184,7 +184,7 @@ def lifecycle_records(trace):
             folded |= {turn[t], i}
             turn[t] = None
 
-    monitors, requests, children = {}, 0, set()
+    monitors, requests, children, sends = {}, 0, set(), 0
     signals = late = 0
     records = []
 
@@ -199,6 +199,11 @@ def lifecycle_records(trace):
             continue
         t = actor(e["t"])
         if a == "Send":
+            # A plain message from a recorded actor: the model's Send(s, t).
+            if int(e.get("s", 0)) and e["x"] == "queued":
+                sends += 1
+                record("Send", t=t, s=actor(e["s"]))
+                continue
             requests += 1
             record("Request", t=t, q=requests)
             record("Enqueue", t=t, q=requests, x=e["x"])
@@ -229,6 +234,7 @@ def lifecycle_records(trace):
         "monitors": len(monitors),
         "signals": signals,
         "late": late,
+        "sends": sends,
     }
     return records, constants
 
@@ -259,7 +265,7 @@ def generate_lifecycle(trace, workdir):
         out.write("INIT TraceInit\nNEXT TraceNext\nCONSTANTS\n"
                   "    Actors <- TraceActors\n    Children <- TraceChildren\n"
                   "    LinkParent <- TraceLinkParent\n    Reqs <- TraceReqs\n"
-                  "    MonIds <- TraceMonIds\n    MaxSends = 0\n"
+                  f"    MonIds <- TraceMonIds\n    MaxSends = {c['sends']}\n"
                   f"    MaxSignals = {c['signals']}\n    MaxLate = {c['late']}\n"
                   "    UnlinkEnabled = TRUE\n    TrapCanClear = TRUE\n"
                   "    SelfReasons <- Reasons\n    SignalReasons <- Reasons\n"

@@ -147,6 +147,10 @@ struct MessageEnvelope<M: Message> {
     msg: M,
     #[cfg(feature = "metrics")]
     observation: Option<crate::instrumentation::MessageObservation>,
+    /// The recorded actor that sent it (0: outside code or a request); its
+    /// mailbox item kind is then the model's `msg`.
+    #[cfg(feature = "lifecycle-trace")]
+    from: u64,
 }
 
 impl<A, M> Envelope<A> for MessageEnvelope<M>
@@ -157,7 +161,11 @@ where
     /// The model's mailbox item kind (`Lifecycle.tla`), for the trace.
     #[cfg(feature = "lifecycle-trace")]
     fn trace_kind(&self) -> &'static str {
-        crate::lifecycle_trace::life_kind::<M>()
+        if self.from != 0 {
+            "msg"
+        } else {
+            crate::lifecycle_trace::life_kind::<M>()
+        }
     }
     #[cfg(feature = "metrics")]
     fn observation(&mut self) -> Option<crate::instrumentation::MessageObservation> {
@@ -218,13 +226,16 @@ where
     A: Actor + Handler<M>,
     M: Message,
 {
+    let from = crate::lifecycle_trace::life_sender::<M>(replies.owner().raw(), slot.is_detached());
     let envelope: Box<dyn Envelope<A> + Send> = Box::new(MessageEnvelope {
         msg,
         slot,
         #[cfg(feature = "metrics")]
         observation: Some(_mailbox.enqueued()),
+        #[cfg(feature = "lifecycle-trace")]
+        from,
     });
-    admit::<A, M>(sender, replies, envelope)
+    admit::<A, M>(sender, replies, envelope, from)
 }
 
 /// A monitor's `Down`, enqueued by the framework (the waiter at the target's
@@ -250,7 +261,7 @@ fn enqueue_down<A: Actor + Handler<Down>>(
         #[cfg(feature = "metrics")]
         observation: Some(_mailbox.enqueued()),
     });
-    admit::<A, Down>(sender, replies, envelope)
+    admit::<A, Down>(sender, replies, envelope, 0)
 }
 
 /// Admission of a built envelope (`M` names its kind for the trace).
@@ -258,6 +269,7 @@ fn admit<A: Actor, M: 'static>(
     sender: &mpsc::Sender<MailboxItem<A>>,
     replies: &Registry,
     envelope: Box<dyn Envelope<A> + Send>,
+    _from: u64,
 ) -> Result<(), ActorError> {
     // Admission and its trace event are one step of the lifecycle trace.
     let owner = replies.owner().raw();
@@ -265,14 +277,14 @@ fn admit<A: Actor, M: 'static>(
         if replies.refuses_admission() {
             #[cfg(feature = "metrics")]
             envelope.reject();
-            crate::lifecycle_trace::life_send::<M>(owner, false);
+            crate::lifecycle_trace::life_send::<M>(owner, false, _from);
             return Err(ActorError::NoProc);
         }
         match sender.send(MailboxItem::Message(envelope)) {
             Ok(()) => {
                 #[cfg(feature = "metrics")]
                 crate::instrumentation::accepted();
-                crate::lifecycle_trace::life_send::<M>(owner, true);
+                crate::lifecycle_trace::life_send::<M>(owner, true, _from);
                 Ok(())
             }
             Err(_error) => {
@@ -282,7 +294,7 @@ fn admit<A: Actor, M: 'static>(
                         envelope.reject();
                     }
                 }
-                crate::lifecycle_trace::life_send::<M>(owner, false);
+                crate::lifecycle_trace::life_send::<M>(owner, false, _from);
                 Err(ActorError::NoProc)
             }
         }
@@ -1365,7 +1377,7 @@ fn run_actor_receiving<A: Actor>(
     let _monitor_cleanup = MonitorCleanup(ctx.monitors.clone());
     let start_result = catch_unwind(AssertUnwindSafe(|| {
         fail_point!("actor.before_started");
-        actor.started(&ctx);
+        crate::lifecycle_trace::with_actor(trace_id, || actor.started(&ctx));
     }));
     if let Err(panic) = start_result {
         let msg = panic_message(&*panic);
@@ -1425,7 +1437,7 @@ fn run_actor_receiving<A: Actor>(
                     .map(|observation| observation.begin());
                 ctx.replies.begin_turn();
                 let result = catch_unwind(AssertUnwindSafe(|| {
-                    envelope.handle(actor, &ctx);
+                    crate::lifecycle_trace::with_actor(trace_id, || envelope.handle(actor, &ctx));
                 }));
                 ctx.replies.end_turn(result.is_err());
                 #[cfg(feature = "metrics")]
@@ -1483,7 +1495,7 @@ fn run_actor_receiving<A: Actor>(
     if run_hook {
         let stop_result = catch_unwind(AssertUnwindSafe(|| {
             fail_point!("actor.before_stopped");
-            actor.stopped(&ctx);
+            crate::lifecycle_trace::with_actor(trace_id, || actor.stopped(&ctx));
         }));
         if let Err(panic) = stop_result {
             let msg = panic_message(&*panic);
@@ -2479,6 +2491,8 @@ mod idle_stop_regression {
             slot,
             #[cfg(feature = "metrics")]
             observation: None,
+            #[cfg(feature = "lifecycle-trace")]
+            from: 0,
         })))
         .unwrap();
         token.cancel();

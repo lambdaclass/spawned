@@ -447,16 +447,71 @@ mod imp {
     }
 
     /// A send or request to `owner` was admitted or refused (`NoProc`). A
-    /// `Down` is recorded by its monitor as a notice delivery instead.
-    pub(crate) fn life_send<M: 'static>(owner: u64, admitted: bool) {
+    /// `Down` is recorded by its monitor as a notice delivery instead. `from`
+    /// is the recorded actor that sent it ([`life_sender`]); an admitted
+    /// send of one is the model's actor-to-actor `Send`, anything else a
+    /// request from `Ext`.
+    pub(crate) fn life_send<M: 'static>(owner: u64, admitted: bool, from: u64) {
         if life_kind::<M>() == "down" {
             return;
         }
         life_emit(owner, || {
-            super::LifeEvent::new("Send", owner).x(if admitted { "queued" } else { "noproc" })
+            super::LifeEvent::new("Send", owner)
+                .s(if admitted { from } else { 0 })
+                .x(if admitted { "queued" } else { "noproc" })
         });
     }
+
+    /// The recorded actor whose turn (or hook) is sending a plain message
+    /// (not a request, not a `Down`) to another actor `owner`; 0 otherwise.
+    pub(crate) fn life_sender<M: 'static>(owner: u64, is_send: bool) -> u64 {
+        if !is_send || life_kind::<M>() == "down" {
+            return 0;
+        }
+        let current = CURRENT.with(Cell::get);
+        if current != 0 && current != owner && life_traced(current) {
+            current
+        } else {
+            0
+        }
+    }
+
+    /// Run `f` as part of actor `id`'s turn or hook (threads mode).
+    pub(crate) fn with_actor<R>(id: u64, f: impl FnOnce() -> R) -> R {
+        struct Restore(u64);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                CURRENT.with(|c| c.set(self.0));
+            }
+        }
+        let _restore = Restore(CURRENT.with(|c| c.replace(id)));
+        f()
+    }
+
+    type Turn<'a> = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>>;
+
+    /// Poll a turn or hook future as part of actor `id` (tasks mode).
+    pub(crate) fn in_actor(id: u64, turn: Turn<'_>) -> Turn<'_> {
+        Box::pin(InActor { id, turn })
+    }
+    struct InActor<'a> {
+        id: u64,
+        turn: Turn<'a>,
+    }
+    impl std::future::Future for InActor<'_> {
+        type Output = ();
+        fn poll(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<()> {
+            let id = self.id;
+            with_actor(id, || self.turn.as_mut().poll(cx))
+        }
+    }
+
     thread_local! {
+        /// The recorded actor whose turn this thread is running.
+        static CURRENT: Cell<u64> = const { Cell::new(0) };
         static DEPTH: Cell<usize> = const { Cell::new(0) };
         static SUPPRESS_CLOSE: Cell<bool> = const { Cell::new(false) };
     }
@@ -757,7 +812,22 @@ mod imp {
     pub(crate) fn life_spawn(_: u64, _: u64) {}
     #[allow(dead_code)]
     #[inline(always)]
-    pub(crate) fn life_send<M: 'static>(_: u64, _: bool) {}
+    pub(crate) fn life_send<M: 'static>(_: u64, _: bool, _: u64) {}
+    #[allow(dead_code, clippy::extra_unused_type_parameters)]
+    #[inline(always)]
+    pub(crate) fn life_sender<M: 'static>(_: u64, _: bool) -> u64 {
+        0
+    }
+    #[allow(dead_code)]
+    #[inline(always)]
+    pub(crate) fn with_actor<R>(_: u64, f: impl FnOnce() -> R) -> R {
+        f()
+    }
+    #[allow(dead_code)]
+    #[inline(always)]
+    pub(crate) fn in_actor<T>(_: u64, turn: T) -> T {
+        turn
+    }
 }
 
 #[cfg(feature = "lifecycle-trace")]

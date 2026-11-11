@@ -196,6 +196,11 @@ impl<R: Send + 'static> SlotHandle<R> {
     pub(crate) fn detached() -> Self {
         Self(None)
     }
+    /// Whether no caller waits (a send).
+    #[cfg_attr(not(feature = "lifecycle-trace"), allow(dead_code))]
+    pub(crate) fn is_detached(&self) -> bool {
+        self.0.is_none()
+    }
     pub(crate) fn take(&mut self) -> Option<Arc<Slot<R>>> {
         self.0.take()
     }

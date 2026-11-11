@@ -191,6 +191,11 @@ request!(TryLink(ChildHandle) -> bool, |_this, msg, ctx| ctx.try_link(&msg.0).is
 request!(Unlink(ChildHandle) -> (), |_this, msg, ctx| ctx.unlink(&msg.0));
 request!(Monitor(ChildHandle) -> MonitorRef, |_this, msg, ctx| ctx.monitor(&msg.0));
 request!(Demonitor(MonitorRef) -> (), |_this, msg, ctx| ctx.demonitor(msg.0));
+request!(Note() -> (), |this, _msg, _ctx| this.note("note"));
+request!(NoteThenExit(ActorRef<Node>) -> (), |_this, msg, ctx| {
+    msg.0.send(Note()).unwrap();
+    ctx.stop_with_reason(ExitReason::Shutdown);
+});
 
 /// A request whose handler panics.
 struct Boom();
@@ -700,5 +705,107 @@ fn threads_trapped_exit_then_kill() {
             "a1.Die:Killed",
             "a1.Publish",
         ],
+    );
+}
+
+/// An actor-to-actor message (the model's `Send`) and the sender's death
+/// notice after it (`ExitAfterMessages`): a2, linked to the trapping a1,
+/// sends a1 a message in a turn and then stops `Shutdown`; a1 handles the
+/// message before the `Exit`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn message_then_death_notice() {
+    let _serial = SERIAL.lock().await;
+    lifecycle_trace::record_lifecycle();
+    let log = Log::default();
+    let a1 = Node::trapping(&log).start();
+    let a2 = Node::new(&Log::default()).start();
+    a1.request(Sync()).await.unwrap();
+    a2.request(Link(a1.child_handle())).await.unwrap();
+    a2.request(NoteThenExit(a1.clone())).await.unwrap();
+    assert_eq!(exit_of(&a2).await, ExitReason::Shutdown);
+    wait_for(&log, "exit:Shutdown").await;
+    assert_eq!(logged(&log), ["note", "exit:Shutdown"]);
+    a1.child_handle().stop();
+    assert_eq!(exit_of(&a1).await, ExitReason::Normal);
+    let (id1, id2) = (a1.id().to_string(), a2.id().to_string());
+    let events = write("message_then_exit");
+    has(
+        &events,
+        &[
+            "a1.Send:queued",
+            "a2.Stop:Shutdown",
+            "a2.Die:Shutdown",
+            "a1.Dispatch",
+            "a1.Dispatch",
+        ],
+    );
+    let json =
+        std::fs::read_to_string(trace_dir().join("lifecycle_message_then_exit.json")).unwrap();
+    assert!(
+        json.contains(&format!(r#""a":"Send","t":{id1},"s":{id2},"x":"queued""#)),
+        "the message was not recorded as a2's: {json}"
+    );
+}
+
+/// Threads mode: an actor-to-actor message is recorded as the sender's.
+#[test]
+fn threads_actor_message() {
+    use spawned_concurrency::threads;
+    let _serial = SERIAL.blocking_lock();
+    lifecycle_trace::record_lifecycle();
+    struct Native(Log);
+    impl threads::Actor for Native {}
+    struct Hello;
+    impl Message for Hello {
+        type Result = ();
+    }
+    impl threads::Handler<Hello> for Native {
+        fn handle(&mut self, _: Hello, _: PendingReply<'_, ()>, _: &threads::Context<Self>) {
+            self.0.lock().unwrap().push("hello".into());
+        }
+    }
+    struct Forward(threads::ActorRef<Native>);
+    impl Message for Forward {
+        type Result = ();
+    }
+    impl threads::Handler<Forward> for Native {
+        fn handle(
+            &mut self,
+            msg: Forward,
+            reply: PendingReply<'_, ()>,
+            _: &threads::Context<Self>,
+        ) {
+            msg.0.send(Hello).unwrap();
+            reply.reply(());
+        }
+    }
+    struct Ping;
+    impl Message for Ping {
+        type Result = ();
+    }
+    impl threads::Handler<Ping> for Native {
+        fn handle(&mut self, _: Ping, reply: PendingReply<'_, ()>, _: &threads::Context<Self>) {
+            reply.reply(());
+        }
+    }
+    use threads::ActorStart as _;
+    let log = Log::default();
+    let a1 = Native(log.clone()).start();
+    let a2 = Native(Log::default()).start();
+    a2.request(Forward(a1.clone())).unwrap();
+    a1.request(Ping).unwrap();
+    assert_eq!(logged(&log), ["hello"]);
+    a1.child_handle().stop();
+    a2.child_handle().stop();
+    a1.child_handle().wait_exit_blocking();
+    a2.child_handle().wait_exit_blocking();
+    let (id1, id2) = (a1.id().to_string(), a2.id().to_string());
+    let events = write("threads_actor_message");
+    has(&events, &["a1.Send:queued", "a1.Dispatch"]);
+    let json =
+        std::fs::read_to_string(trace_dir().join("lifecycle_threads_actor_message.json")).unwrap();
+    assert!(
+        json.contains(&format!(r#""a":"Send","t":{id1},"s":{id2},"x":"queued""#)),
+        "the message was not recorded as a2's: {json}"
     );
 }

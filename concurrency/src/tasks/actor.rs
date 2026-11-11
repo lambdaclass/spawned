@@ -214,6 +214,10 @@ struct MessageEnvelope<M: Message> {
     msg: M,
     #[cfg(feature = "metrics")]
     observation: Option<crate::instrumentation::MessageObservation>,
+    /// The recorded actor that sent it (0: outside code or a request); its
+    /// mailbox item kind is then the model's `msg`.
+    #[cfg(feature = "lifecycle-trace")]
+    from: u64,
 }
 
 impl<A, M> Envelope<A> for MessageEnvelope<M>
@@ -224,7 +228,11 @@ where
     /// The model's mailbox item kind (`Lifecycle.tla`), for the trace.
     #[cfg(feature = "lifecycle-trace")]
     fn trace_kind(&self) -> &'static str {
-        crate::lifecycle_trace::life_kind::<M>()
+        if self.from != 0 {
+            "msg"
+        } else {
+            crate::lifecycle_trace::life_kind::<M>()
+        }
     }
     #[cfg(any(feature = "diagnostics", spawned_sim))]
     fn message_type(&self) -> &'static str {
@@ -307,13 +315,16 @@ where
     A: Actor + Handler<M>,
     M: Message,
 {
+    let from = crate::lifecycle_trace::life_sender::<M>(replies.owner().raw(), slot.is_detached());
     let envelope: Box<dyn Envelope<A> + Send> = Box::new(MessageEnvelope {
         msg,
         slot,
         #[cfg(feature = "metrics")]
         observation: Some(_mailbox.enqueued()),
+        #[cfg(feature = "lifecycle-trace")]
+        from,
     });
-    admit::<A, M>(sender, replies, envelope)
+    admit::<A, M>(sender, replies, envelope, from)
 }
 
 /// A monitor's `Down`, enqueued by the framework (the waiter at the target's
@@ -339,7 +350,7 @@ fn enqueue_down<A: Actor + Handler<Down>>(
         #[cfg(feature = "metrics")]
         observation: Some(_mailbox.enqueued()),
     });
-    admit::<A, Down>(sender, replies, envelope)
+    admit::<A, Down>(sender, replies, envelope, 0)
 }
 
 /// Admission of a built envelope (`M` names its kind for the trace).
@@ -347,6 +358,7 @@ fn admit<A: Actor, M: 'static>(
     sender: &mpsc::Sender<Box<dyn Envelope<A> + Send>>,
     replies: &Registry,
     envelope: Box<dyn Envelope<A> + Send>,
+    _from: u64,
 ) -> Result<(), ActorError> {
     // Admission and its trace event are one step of the lifecycle trace.
     let owner = replies.owner().raw();
@@ -354,14 +366,14 @@ fn admit<A: Actor, M: 'static>(
         if replies.refuses_admission() {
             #[cfg(feature = "metrics")]
             envelope.reject();
-            crate::lifecycle_trace::life_send::<M>(owner, false);
+            crate::lifecycle_trace::life_send::<M>(owner, false, _from);
             return Err(ActorError::NoProc);
         }
         match sender.send(envelope) {
             Ok(()) => {
                 #[cfg(feature = "metrics")]
                 crate::instrumentation::accepted();
-                crate::lifecycle_trace::life_send::<M>(owner, true);
+                crate::lifecycle_trace::life_send::<M>(owner, true, _from);
                 Ok(())
             }
             Err(_error) => {
@@ -369,7 +381,7 @@ fn admit<A: Actor, M: 'static>(
                 {
                     _error.0.reject();
                 }
-                crate::lifecycle_trace::life_send::<M>(owner, false);
+                crate::lifecycle_trace::life_send::<M>(owner, false, _from);
                 Err(ActorError::NoProc)
             }
         }
@@ -1930,7 +1942,13 @@ async fn run_actor_lifecycle<A: Actor, C: Fn()>(
     }
     let start_result = AssertUnwindSafe(async {
         fail_point!("actor.before_started", async);
-        DeathFirst::new(Box::pin(actor.started(&ctx)), &mut *rx, &mut *cleanup, None).await
+        DeathFirst::new(
+            crate::lifecycle_trace::in_actor(ctx.shared.id.raw(), Box::pin(actor.started(&ctx))),
+            &mut *rx,
+            &mut *cleanup,
+            None,
+        )
+        .await
     })
     .catch_unwind()
     .await;
@@ -2026,7 +2044,10 @@ async fn run_actor_lifecycle<A: Actor, C: Fn()>(
                 // same call).
                 let caller = envelope.caller();
                 let result = AssertUnwindSafe(async {
-                    let turn = envelope.handle(actor, &ctx);
+                    let turn = crate::lifecycle_trace::in_actor(
+                        ctx.shared.id.raw(),
+                        envelope.handle(actor, &ctx),
+                    );
                     DeathFirst::new(turn, &mut *rx, &mut *cleanup, caller).await
                 })
                 .catch_unwind()
@@ -2103,7 +2124,13 @@ async fn run_actor_lifecycle<A: Actor, C: Fn()>(
     }
     let stop_result = AssertUnwindSafe(async {
         fail_point!("actor.before_stopped", async);
-        DeathFirst::new(Box::pin(actor.stopped(&ctx)), &mut *rx, &mut *cleanup, None).await
+        DeathFirst::new(
+            crate::lifecycle_trace::in_actor(ctx.shared.id.raw(), Box::pin(actor.stopped(&ctx))),
+            &mut *rx,
+            &mut *cleanup,
+            None,
+        )
+        .await
     })
     .catch_unwind()
     .await;
@@ -4101,6 +4128,8 @@ mod turn_regressions {
                     slot: SlotHandle::detached(),
                     #[cfg(feature = "metrics")]
                     observation: None,
+                    #[cfg(feature = "lifecycle-trace")]
+                    from: 0,
                 }) as Box<dyn Envelope<Count> + Send>)
                     .unwrap();
             }
@@ -4175,6 +4204,8 @@ mod idle_stop_regression {
                 slot,
                 #[cfg(feature = "metrics")]
                 observation: None,
+                #[cfg(feature = "lifecycle-trace")]
+                from: 0,
             }) as Box<dyn Envelope<Counter> + Send>)
                 .unwrap();
             token.cancel();

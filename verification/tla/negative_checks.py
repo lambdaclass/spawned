@@ -416,6 +416,29 @@ def lifecycle_trace_controls(traces, tlc):
     require_rejected(by_name["lifecycle_runtime_drop"], drop_keeps_normal,
                      "runtime drop ends Normal instead of Killed (v0.7)", tlc)
 
+    # Actor-to-actor messages (the model's Send).
+    def send_after_death(events):
+        send = index(events, "Send")
+        die = index(events, "Die", "Shutdown")
+        events.insert(die, events.pop(send))
+    require_rejected(by_name["lifecycle_message_then_exit"], send_after_death,
+                     "message sent by an actor after its death point", tlc)
+
+    def notice_before_message(events):
+        send = events.pop(index(events, "Send"))
+        deliver = index(events, "Deliver")
+        events.insert(deliver + 1, send)
+    require_rejected(by_name["lifecycle_message_then_exit"], notice_before_message,
+                     "death notice overtakes the dying actor's earlier message", tlc)
+
+    def message_as_request(events):
+        msg = index(events, "Dispatch")
+        while events[msg]["k"] != "msg":
+            msg = index(events, "Dispatch", after=msg + 1)
+        events[msg]["k"] = "req"
+    require_rejected(by_name["lifecycle_threads_actor_message"], message_as_request,
+                     "actor-to-actor message dispatched as an outside request", tlc)
+
 
 def job_trace_controls(traces, tlc):
     """Edits of recorded pipe-to-self job traces that DeferredJobs.tla must
