@@ -688,7 +688,7 @@ oracle's name, so shrinking can match it):
 | X3, X5 | `Exit` carries the peer's published reason; a trapping, still-linked actor gets it (no more often than links were made); a non-trapping one does not survive a peer's abnormal exit |
 | X7 | No `Note` from a source after its `Down`/`Exit` at the same receiver |
 | X8 | An actor whose only possible stop cause was one driver `stop`, `shutdown` or `stop_with_reason` on it while alive publishes exactly that reason (skipped if a hook or the state destructor panicked) |
-| X3 (reason) | A standalone, non-trapping actor whose only possible stop cause was its link to a peer that exited with `Shutdown`, `Panic` or `Kill` publishes the peer's reason, so the crash keeps propagating |
+| X3 (reason) | A standalone, non-trapping actor whose only possible stop cause was its link to a peer survives the peer's `Normal` exit, and after `Shutdown`, `Panic` or `Kill` publishes the peer's reason, so the crash keeps propagating |
 | X5 (unlink) | After the driver unlinks two running actors (and does not link them again), neither receives an `Exit` from the other, and a standalone actor whose only stop causes were links to that peer outlives it |
 | T1 (cancel) | A timer cancelled at time `c` delivers at most the ticks due by `c` (`send_after`: at most one, none if cancelled before its period; `send_interval`: one per elapsed period) |
 | L4, M | An actor that panicked exits abnormally; a published reason never changes; an actor nothing could have stopped is still alive |

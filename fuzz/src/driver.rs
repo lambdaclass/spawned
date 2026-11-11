@@ -1759,7 +1759,7 @@ impl Driver {
                 rt::sleep(Duration::from_millis(10)).await;
             }
             if !alive {
-                if !trap && published != ExitReason::Normal {
+                if !trap {
                     self.linked_reason(wid, &published);
                 }
                 continue;
@@ -1837,9 +1837,10 @@ impl Driver {
         }
     }
 
-    /// A standalone actor whose only possible stop cause was its link to a
-    /// peer that exited abnormally publishes the peer's reason (X3: "exits
-    /// with the same reason ... propagates further").
+    /// A standalone, non-trapping actor whose only possible stop cause was
+    /// its link to a peer: a `Normal` peer exit must not have stopped it, and
+    /// any other publishes the peer's reason (X3: "exits with the same reason
+    /// ... propagates further").
     fn linked_reason(&self, id: ActorId, peer: &ExitReason) {
         let Some(a) = self.actors.iter().find(|a| a.aref.id() == id) else {
             return;
@@ -1849,9 +1850,17 @@ impl Driver {
         };
         let s = self.world.lock();
         let x = &s.insts[a.instance];
-        if s.causes.get(&id) == Some(&1) && !x.panicked && !x.drop_panicked && exit != *peer {
-            let detail = format!("w{} published {exit:?}, peer {peer:?}", a.instance);
-            drop(s);
+        if s.causes.get(&id) != Some(&1) || x.panicked || x.drop_panicked {
+            return;
+        }
+        let detail = format!("w{} published {exit:?}, peer {peer:?}", a.instance);
+        drop(s);
+        if *peer == ExitReason::Normal {
+            self.violate(
+                "X3: a non-trapping actor was stopped by a linked peer's Normal exit",
+                detail,
+            );
+        } else if exit != *peer {
             self.violate(
                 "X3: an actor stopped through a link published another reason than its peer",
                 detail,
