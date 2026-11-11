@@ -457,6 +457,41 @@ def job_trace_controls(traces, tlc):
     require_rejected(by_name["jobs_plain"], dispatch_after_exit,
                      "dispatch after the owner's exit", tlc)
 
+    # Delayed emits (emit_at) and held results.
+    def release_before_fire(events):
+        release = next(i for i, e in enumerate(events) if e["a"] == "Release")
+        fire = next(i for i, e in enumerate(events) if e["a"] == "Fire")
+        events.insert(fire, events.pop(release))
+    require_rejected(by_name["jobs_held_release"], release_before_fire,
+                     "held result released before its last delayed emit fired", tlc)
+
+    def terminal_while_scheduled(events):
+        next(e for e in events if e["a"] == "Finish")["x"] = "notified"
+    require_rejected(by_name["jobs_held_release"], terminal_while_scheduled,
+                     "terminal message enqueued while a delayed emit is scheduled", tlc)
+
+    def release_without_last_fire(events):
+        next(e for e in events if e["a"] == "Fire")["rel"] = False
+    require_rejected(by_name["jobs_held_release"], release_without_last_fire,
+                     "held result released by a fire that did not take it", tlc)
+
+    def emit_after_deadline(events):
+        next(e for e in events if e["a"] == "Fire")["x"] = "emit"
+    require_rejected(by_name["jobs_held_deadline"], emit_after_deadline,
+                     "delayed emit enqueued after the job deadline took the result", tlc)
+
+    def fire_unscheduled(events):
+        events.remove(next(e for e in events if e["a"] == "Schedule"))
+    require_rejected(by_name["jobs_due_now"], fire_unscheduled,
+                     "delayed emit fired without being scheduled", tlc)
+
+    def drop_before_cancel(events):
+        cancel = next(i for i, e in enumerate(events) if e["a"] == "Cancel")
+        fire = next(i for i, e in enumerate(events) if e["a"] == "Fire")
+        events.insert(cancel, events.pop(fire))
+    require_rejected(by_name["jobs_cancel_scheduled"], drop_before_cancel,
+                     "delayed emit dropped while the job still accepts it", tlc)
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)

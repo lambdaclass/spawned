@@ -224,6 +224,8 @@ emitters = [
     { call = '\bJobEvent::new\(', arg = 0 },
 ]
 specs = ["verification/tla/TraceJobs.tla"]
+[trace.unlogged]
+Restart = "a new owner instance reading the old one's slot-addressed mailbox: the code has no such mailbox (a job's messages go to its owner instance's own mailbox, discarded at that instance's death), so the model's cross-instance delivery is a conservative over-approximation (NoLateResult holds a fortiori); a trace is one instance"
 
 [[trace]]
 struct = "ReplyEvent"

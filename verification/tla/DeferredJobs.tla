@@ -54,6 +54,12 @@
 (* otherwise, until execution ends: a held result keeps it (HeldCounted).  *)
 (* The job deadline can take a held result's notification (it stays armed *)
 (* until the terminal message).                                            *)
+(*                                                                         *)
+(* Releasing a held result is two steps, as in the code: the last fire     *)
+(* takes the held result under the job's lock (FireScheduled; `releasing`) *)
+(* and the terminal message is enqueued after the lock is released         *)
+(* (ReleaseHeld), unless a deadline or a cancel took or suppressed the     *)
+(* notification in between. The job keeps its credit until ReleaseHeld.   *)
 (***************************************************************************)
 EXTENDS Naturals, FiniteSets, Sequences
 CONSTANTS J, Keyed, JobBound, MaxGen, MaxEmit, Credits, Fault
@@ -79,14 +85,15 @@ VARIABLES
     seen,       \* history of dispatched messages
     sched,      \* scheduled (emit_at) emits not yet fired, each with a credit
     held,       \* the work ended with emits scheduled: its result is held
-    credit      \* the job holds its MAX_OUTSTANDING credit
+    credit,     \* the job holds its MAX_OUTSTANDING credit
+    releasing   \* the last fire took the held result; its terminal is next
 
 vars == <<inst, alive, exec, owner, hasDl, cancelled, notif, emitted, inflight,
-          started, mbox, termSent, seen, sched, held, credit>>
+          started, mbox, termSent, seen, sched, held, credit, releasing>>
 
 \* Variables of delayed emits and held results, unchanged by the steps that
 \* do not concern them.
-heldVars == <<sched, held, credit>>
+heldVars == <<sched, held, credit, releasing>>
 
 Init ==
     /\ inst = 1 /\ alive = TRUE
@@ -98,6 +105,7 @@ Init ==
     /\ termSent = [j \in Jobs |-> 0] /\ seen = {}
     /\ sched = [j \in Jobs |-> 0] /\ held = [j \in Jobs |-> FALSE]
     /\ credit = [j \in Jobs |-> FALSE]
+    /\ releasing = [j \in Jobs |-> FALSE]
 
 Running == {j \in Jobs : exec[j] = "running"}
 \* Jobs holding a MAX_OUTSTANDING credit (admission checks the bound).
@@ -115,8 +123,9 @@ CancelCore(S) ==
     /\ notif' = [j \in Jobs |-> IF j \in S /\ notif[j] = "pending" THEN "suppressed" ELSE notif[j]]
     /\ sched' = [j \in Jobs |-> IF j \in S THEN 0 ELSE sched[j]]
     /\ held' = [j \in Jobs |-> IF j \in S THEN FALSE ELSE held[j]]
+\* A releasing job keeps its credit until ReleaseHeld.
 CreditAfterCancel(S) ==
-    [j \in Jobs |-> IF j \in S /\ exec[j] = "finished" THEN FALSE ELSE credit[j]]
+    [j \in Jobs |-> IF j \in S /\ exec[j] = "finished" /\ ~releasing[j] THEN FALSE ELSE credit[j]]
 CancelSet(S) == CancelCore(S) /\ credit' = CreditAfterCancel(S)
 
 \* Admission and the exit's cancel_all are serialized (one jobs lock and
@@ -133,7 +142,7 @@ Start(j) ==
        ELSE /\ started' = IF j \in Keyed THEN Append(started, j) ELSE started
             /\ credit' = [credit EXCEPT ![j] = TRUE]
             /\ UNCHANGED <<cancelled, notif, sched, held>>
-    /\ UNCHANGED <<inst, alive, emitted, inflight, mbox, termSent, seen>>
+    /\ UNCHANGED <<inst, alive, emitted, inflight, mbox, termSent, seen, releasing>>
 
 Accepting(j) == notif[j] = "pending" /\ ~cancelled[j]
 
@@ -157,27 +166,39 @@ ScheduleEmit(j) ==
     /\ emitted' = [emitted EXCEPT ![j] = @ + 1]
     /\ sched' = [sched EXCEPT ![j] = @ + 1]
     /\ UNCHANGED <<inst, alive, exec, owner, hasDl, cancelled, notif, inflight, started, mbox,
-                   termSent, seen, held, credit>>
+                   termSent, seen, held, credit, releasing>>
 
 \* A scheduled emit fires: enqueued while the notification is pending (else
-\* dropped, its credit returning). The last one releases a held result: its
-\* terminal message, then the job's credit.
+\* dropped, its credit returning). The last one takes a held result for
+\* release (ReleaseHeld enqueues its terminal message).
 FireScheduled(j) ==
     /\ sched[j] > 0
     /\ sched' = [sched EXCEPT ![j] = @ - 1]
     /\ LET fires == Accepting(j)
            release == held[j] /\ sched[j] = 1
-           emitMsg == IF fires THEN <<[j |-> j, kind |-> "emit"]>> ELSE <<>>
-           doneMsg == IF release THEN <<[j |-> j, kind |-> "done"]>> ELSE <<>>
-       IN /\ mbox' = mbox \o emitMsg \o doneMsg
+       IN /\ mbox' = IF fires THEN Append(mbox, [j |-> j, kind |-> "emit"]) ELSE mbox
           /\ inflight' = IF fires THEN [inflight EXCEPT ![j] = @ + 1] ELSE inflight
           /\ IF release
              THEN /\ held' = [held EXCEPT ![j] = FALSE]
-                  /\ notif' = [notif EXCEPT ![j] = "notified"]
-                  /\ termSent' = [termSent EXCEPT ![j] = @ + 1]
-                  /\ credit' = [credit EXCEPT ![j] = FALSE]
-             ELSE UNCHANGED <<held, notif, termSent, credit>>
-    /\ UNCHANGED <<inst, alive, exec, owner, hasDl, cancelled, emitted, started, seen>>
+                  /\ releasing' = [releasing EXCEPT ![j] = TRUE]
+             ELSE UNCHANGED <<held, releasing>>
+    /\ UNCHANGED <<inst, alive, exec, owner, hasDl, cancelled, notif, emitted, started, seen,
+                   termSent, credit>>
+
+\* The released result's terminal message, after the job's lock was
+\* released: enqueued unless a deadline or a cancel came in between. The
+\* job's credit returns either way.
+ReleaseHeld(j) ==
+    /\ releasing[j]
+    /\ releasing' = [releasing EXCEPT ![j] = FALSE]
+    /\ credit' = [credit EXCEPT ![j] = FALSE]
+    /\ IF Accepting(j)
+       THEN /\ notif' = [notif EXCEPT ![j] = "notified"]
+            /\ mbox' = Append(mbox, [j |-> j, kind |-> "done"])
+            /\ termSent' = [termSent EXCEPT ![j] = @ + 1]
+       ELSE UNCHANGED <<notif, mbox, termSent>>
+    /\ UNCHANGED <<inst, alive, exec, owner, hasDl, cancelled, emitted, inflight, started, seen,
+                   sched, held>>
 
 \* Physical completion; the notification is a one-shot. With emits still
 \* scheduled the result is held (keeping the credit); otherwise the terminal
@@ -199,14 +220,15 @@ Finish(j) ==
             /\ UNCHANGED <<notif, mbox, termSent>>
        ELSE /\ credit' = [credit EXCEPT ![j] = FALSE]
             /\ UNCHANGED <<notif, mbox, termSent, held>>
-    /\ UNCHANGED <<inst, alive, owner, hasDl, cancelled, emitted, inflight, started, seen, sched>>
+    /\ UNCHANGED <<inst, alive, owner, hasDl, cancelled, emitted, inflight, started, seen, sched,
+                   releasing>>
 
 \* Job deadline (only for jobs started with one): the notification is
 \* DeadlineExceeded now. Running work keeps running and keeps its credit; a
 \* held result is dropped and its credit returns.
 JobDeadline(j) ==
     /\ hasDl[j] /\ notif[j] = "pending"
-    /\ exec[j] = "running" \/ (held[j] /\ Fault # "HeldDeadlineLost")
+    /\ exec[j] = "running" \/ (held[j] /\ Fault # "HeldDeadlineLost") \/ releasing[j]
     /\ notif' = [notif EXCEPT ![j] = "notified"]
     /\ mbox' = Append(mbox, [j |-> j, kind |-> "deadline"])
     /\ termSent' = [termSent EXCEPT ![j] = @ + 1]
@@ -214,22 +236,28 @@ JobDeadline(j) ==
     /\ credit' = IF held[j] \/ Fault = "ReleaseOnTimeout"
                   THEN [credit EXCEPT ![j] = FALSE] ELSE credit
     /\ UNCHANGED <<inst, alive, exec, owner, hasDl, cancelled, emitted, inflight, started, seen,
-                   sched>>
+                   sched, releasing>>
 
 Cancel(j) ==
     /\ alive /\ owner[j] = inst /\ exec[j] # "none" /\ ~cancelled[j]
     /\ CancelSet({j})
-    /\ UNCHANGED <<inst, alive, exec, owner, hasDl, emitted, inflight, started, mbox, termSent, seen>>
+    /\ UNCHANGED <<inst, alive, exec, owner, hasDl, emitted, inflight, started, mbox, termSent, seen,
+                   releasing>>
 
 \* Owner exit cancels the live job set (running, or with emits scheduled or
 \* a result held). Queued messages stay addressed to the slot (the
-\* conservative case); they are fenced at dispatch.
+\* conservative case); they are fenced at dispatch. A releasing job may or
+\* may not still be in the job list the exit cancels (the list is compacted
+\* only at size thresholds): either way.
 Exit ==
     /\ alive /\ alive' = FALSE
-    /\ CancelSet({j \in Jobs : owner[j] = inst
-                               /\ (exec[j] = "running"
-                                   \/ ((sched[j] > 0 \/ held[j]) /\ Fault # "ExitKeepsHeld"))})
-    /\ UNCHANGED <<inst, exec, owner, hasDl, emitted, inflight, started, mbox, termSent, seen>>
+    /\ \E R \in SUBSET {j \in Jobs : owner[j] = inst /\ releasing[j]} :
+         CancelSet({j \in Jobs : owner[j] = inst
+                                /\ (exec[j] = "running"
+                                    \/ ((sched[j] > 0 \/ held[j]) /\ Fault # "ExitKeepsHeld"))}
+                   \cup R)
+    /\ UNCHANGED <<inst, exec, owner, hasDl, emitted, inflight, started, mbox, termSent, seen,
+                   releasing>>
 
 Restart ==
     /\ ~alive /\ inst < MaxGen /\ inst' = inst + 1 /\ alive' = TRUE
@@ -259,10 +287,11 @@ Dispatch ==
 Next ==
     \/ Exit \/ Restart \/ Dispatch
     \/ \E j \in Jobs : Start(j) \/ Emit(j) \/ Finish(j) \/ JobDeadline(j) \/ Cancel(j)
-                      \/ ScheduleEmit(j) \/ FireScheduled(j)
+                      \/ ScheduleEmit(j) \/ FireScheduled(j) \/ ReleaseHeld(j)
 
 Spec == Init /\ [][Next]_vars
-FairSpec == Spec /\ (\A j \in Jobs : WF_vars(JobDeadline(j)) /\ WF_vars(FireScheduled(j)))
+FairSpec == Spec /\ (\A j \in Jobs : WF_vars(JobDeadline(j)) /\ WF_vars(FireScheduled(j))
+                                   /\ WF_vars(ReleaseHeld(j)))
             /\ WF_vars(Dispatch)
 
 ------------------------------------------------------------------------------
@@ -284,7 +313,7 @@ AtMostOneTerminal == \A j \in Jobs : termSent[j] <= 1 /\ Cardinality(TermSeen(j)
 PermitsBounded == Cardinality(Running) <= JobBound
 \* Running work and held results count against the bound: a held result
 \* keeps the job's credit until its terminal message.
-HeldCounted == Cardinality({j \in Jobs : exec[j] = "running" \/ held[j]}) <= JobBound
+HeldCounted == Cardinality({j \in Jobs : exec[j] = "running" \/ held[j] \/ releasing[j]}) <= JobBound
 \* The job deadline stays armed while a result is held.
 DeadlineArmedWhileHeld ==
     \A j \in Jobs : (held[j] /\ hasDl[j] /\ notif[j] = "pending") => ENABLED JobDeadline(j)

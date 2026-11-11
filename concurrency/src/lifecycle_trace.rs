@@ -114,8 +114,11 @@ impl TreeEvent {
 /// One pipe-to-self job action of `verification/tla/DeferredJobs.tla`,
 /// recorded per owner instance. `job` is a process-wide job number
 /// (normalized by the checker); `x` is the action's parameter: the message
-/// kind (`emit`, `done`, `deadline`) and fence verdict for `Dispatch`, and
-/// whether the terminal message was enqueued for `Finish`.
+/// kind (`emit`, `done`, `deadline`) and fence verdict for `Dispatch`,
+/// whether the terminal message was enqueued for `Finish` (`notified`,
+/// `quiet`, or `held` when scheduled emits keep the result) and `Release`,
+/// and whether a delayed emit was enqueued for `Fire` (`emit`, `dropped`;
+/// `release` when it was the last and took a held result).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JobEvent {
     pub action: &'static str,
@@ -124,6 +127,7 @@ pub struct JobEvent {
     pub keyed: bool,
     pub deadline: bool,
     pub fenced: bool,
+    pub release: bool,
 }
 
 impl JobEvent {
@@ -135,13 +139,14 @@ impl JobEvent {
             keyed: false,
             deadline: false,
             fenced: false,
+            release: false,
         }
     }
     /// JSON object understood by `verification/tla/trace_check.py`.
     pub fn to_json(&self) -> String {
         format!(
-            r#"{{"a":"{}","j":{},"x":"{}","keyed":{},"dl":{},"fenced":{}}}"#,
-            self.action, self.job, self.x, self.keyed, self.deadline, self.fenced
+            r#"{{"a":"{}","j":{},"x":"{}","keyed":{},"dl":{},"fenced":{},"rel":{}}}"#,
+            self.action, self.job, self.x, self.keyed, self.deadline, self.fenced, self.release
         )
     }
 }

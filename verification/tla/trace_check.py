@@ -282,18 +282,19 @@ def generate_jobs(trace, workdir):
     if not jobs:
         raise ValueError("a jobs trace needs at least one job")
     keyed = sorted({jobs[int(e["j"])] for e in trace["events"] if e["a"] == "Start" and e["keyed"]})
+    # Emits and delayed emits (Schedule) both count towards MaxEmit.
     emits = {}
     for e in trace["events"]:
-        if e["a"] == "Emit":
+        if e["a"] in {"Emit", "Schedule"}:
             emits[int(e["j"])] = emits.get(int(e["j"]), 0) + 1
 
     def flag(value):
         return "TRUE" if value else "FALSE"
 
     records = ",\n    ".join(
-        "[a |-> {}, j |-> {}, x |-> {}, keyed |-> {}, dl |-> {}, fenced |-> {}]".format(
+        "[a |-> {}, j |-> {}, x |-> {}, keyed |-> {}, dl |-> {}, fenced |-> {}, rel |-> {}]".format(
             tla_string(e["a"]), jobs.get(int(e["j"]), 0), tla_string(e["x"]),
-            flag(e["keyed"]), flag(e["dl"]), flag(e["fenced"]))
+            flag(e["keyed"]), flag(e["dl"]), flag(e["fenced"]), flag(e.get("rel", False)))
         for e in trace["events"])
     with open(os.path.join(workdir, "TraceRun.tla"), "w") as out:
         out.write("---- MODULE TraceRun ----\nEXTENDS TraceJobs\n"

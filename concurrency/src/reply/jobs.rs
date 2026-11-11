@@ -351,9 +351,12 @@ impl JobState {
                 crate::instrumentation::hooks::job_notified(end);
             }
             if !deadline {
+                // Only a held result's terminal notifies without the
+                // deadline (the work's own result goes through `finish`):
+                // the model's ReleaseHeld.
                 self.record(|job| trace::JobEvent {
                     x: if taken { "notified" } else { "quiet" },
-                    ..trace::JobEvent::new("Finish", job)
+                    ..trace::JobEvent::new("Release", job)
                 });
             } else if taken {
                 self.record(|job| trace::JobEvent::new("JobDeadline", job));
@@ -393,7 +396,10 @@ impl JobState {
                     x: "quiet",
                     ..trace::JobEvent::new("Finish", job)
                 }),
-                Finish::Held => {}
+                Finish::Held => self.record(|job| trace::JobEvent {
+                    x: "held",
+                    ..trace::JobEvent::new("Finish", job)
+                }),
             }
             (finish, unsent)
         });
@@ -422,7 +428,13 @@ impl JobState {
         failures: Arc<crate::mailbox::DropFailures>,
         track: impl FnOnce(u64, std::sync::Weak<dyn Expirable>),
     ) -> Result<(), JobGone> {
-        self.core.schedule()?;
+        trace::atomic(|| {
+            let scheduled = self.core.schedule();
+            if scheduled.is_ok() {
+                self.record(|job| trace::JobEvent::new("Schedule", job));
+            }
+            scheduled
+        })?;
         #[cfg(test)]
         tests::after_schedule();
         let emit = Arc::new(ScheduledEmit {
@@ -907,8 +919,14 @@ impl ScheduledEmit {
             let (result, held, unused) = job.core.fire(deliver);
             if result.is_ok() {
                 crate::instrumentation::hooks::job_emitted();
-                job.record(|id| trace::JobEvent::new("Emit", id));
             }
+            // The model's FireScheduled: enqueued or dropped, and whether
+            // this last fire took a held result (released below).
+            job.record(|id| trace::JobEvent {
+                x: if result.is_ok() { "emit" } else { "dropped" },
+                release: held.is_some(),
+                ..trace::JobEvent::new("Fire", id)
+            });
             (result, held, unused)
         });
         let delivered = result.is_ok();

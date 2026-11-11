@@ -89,6 +89,15 @@ enum Scenario {
     Gated,
     Deadline,
     Blocking,
+    /// emit_at in the future, work done first: the result is held and the
+    /// last fire releases it.
+    HeldRelease,
+    /// emit_at already due: fired at the call.
+    DueNow,
+    /// The job deadline takes a held result; the later fire is dropped.
+    HeldDeadline,
+    /// A cancel drops the scheduled emit.
+    CancelScheduled,
 }
 
 struct Run(Scenario);
@@ -165,6 +174,59 @@ impl Handler<Run> for Owner {
                     done("blocking"),
                 )
                 .unwrap();
+            }
+            Scenario::HeldRelease => {
+                let opts = JobOptions::new().emit_credits(std::num::NonZeroU16::new(1).unwrap());
+                ctx.pipe(
+                    opts,
+                    |job: JobCtx<Owner>| async move {
+                        let at = spawned_concurrency::Instant::now() + Duration::from_millis(60);
+                        job.emit_at(at, Emitted(9)).await.unwrap();
+                        7u32
+                    },
+                    done("held"),
+                )
+                .unwrap();
+            }
+            Scenario::DueNow => {
+                ctx.pipe(
+                    JobOptions::new(),
+                    |job: JobCtx<Owner>| async move {
+                        let at = spawned_concurrency::Instant::now();
+                        job.emit_at(at, Emitted(4)).await.unwrap();
+                        4u32
+                    },
+                    done("due"),
+                )
+                .unwrap();
+            }
+            Scenario::HeldDeadline => {
+                let opts = JobOptions::new().deadline(Duration::from_millis(30));
+                ctx.pipe(
+                    opts,
+                    |job: JobCtx<Owner>| async move {
+                        let at = spawned_concurrency::Instant::now() + Duration::from_millis(150);
+                        job.emit_at(at, Emitted(8)).await.unwrap();
+                        8u32
+                    },
+                    done("held_dl"),
+                )
+                .unwrap();
+            }
+            Scenario::CancelScheduled => {
+                let handle = ctx
+                    .pipe(
+                        JobOptions::new(),
+                        |job: JobCtx<Owner>| async move {
+                            let at = spawned_concurrency::Instant::now() + Duration::from_secs(60);
+                            job.emit_at(at, Emitted(6)).await.unwrap();
+                            job.cancelled().await;
+                            6u32
+                        },
+                        done("cancel_sched"),
+                    )
+                    .unwrap();
+                self.handles.push(handle);
             }
         }
         reply.reply(());
@@ -331,4 +393,140 @@ async fn blocking_job_emits_then_completes() {
     wait_for(&log, "blocking:ok:5").await;
     finish("blocking", actor, 2).await;
     assert_eq!(log.snapshot(), ["emit:0", "emit:1", "blocking:ok:5"]);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn delayed_emit_releases_the_held_result() {
+    let (actor, log) = start();
+    actor.request(Run(Scenario::HeldRelease)).await.unwrap();
+    wait_for(&log, "held:ok:7").await;
+    let actions = finish("held_release", actor, 1).await;
+    assert_eq!(log.snapshot(), ["emit:9", "held:ok:7"]);
+    for a in ["Schedule", "Finish", "Fire", "Release"] {
+        assert!(actions.iter().any(|x| x == a), "{a} missing: {actions:?}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn due_delayed_emit_fires_at_the_call() {
+    let (actor, log) = start();
+    actor.request(Run(Scenario::DueNow)).await.unwrap();
+    wait_for(&log, "due:ok:4").await;
+    let actions = finish("due_now", actor, 16).await;
+    assert_eq!(log.snapshot(), ["emit:4", "due:ok:4"]);
+    assert_eq!(
+        actions,
+        ["Start", "Schedule", "Fire", "Finish", "Dispatch", "Dispatch", "Exit"]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn job_deadline_takes_a_held_result() {
+    let (actor, log) = start();
+    actor.request(Run(Scenario::HeldDeadline)).await.unwrap();
+    wait_for(&log, "held_dl:job deadline exceeded").await;
+    sleep(Duration::from_millis(250)).await;
+    let actions = finish("held_deadline", actor, 16).await;
+    assert_eq!(log.snapshot(), ["held_dl:job deadline exceeded"]);
+    assert_eq!(
+        actions,
+        [
+            "Start",
+            "Schedule",
+            "Finish",
+            "JobDeadline",
+            "Dispatch",
+            "Fire",
+            "Exit"
+        ]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cancel_drops_a_scheduled_emit() {
+    let (actor, log) = start();
+    actor.request(Run(Scenario::CancelScheduled)).await.unwrap();
+    // The emit is registered before the job awaits its cancellation.
+    sleep(Duration::from_millis(30)).await;
+    actor.request(CancelStored).await.unwrap();
+    sleep(Duration::from_millis(30)).await;
+    let actions = finish("cancel_scheduled", actor, 16).await;
+    assert!(log.snapshot().is_empty(), "{:?}", log.snapshot());
+    assert_eq!(
+        actions,
+        ["Start", "Schedule", "Cancel", "Fire", "Finish", "Exit"]
+    );
+}
+
+/// Threads mode: `emit_at_blocking` from a `pipe_blocking` job, result held
+/// until the delayed emit fires.
+mod threads_mode {
+    use super::*;
+    use spawned_concurrency::threads::{
+        Actor as TActor, ActorStart as _, Context as TContext, Handler as THandler,
+        JobCtx as TJobCtx,
+    };
+
+    struct TOwner(Arc<Log>);
+    impl TActor for TOwner {}
+    impl THandler<Done> for TOwner {
+        fn handle(&mut self, msg: Done, _: PendingReply<'_, ()>, _: &TContext<Self>) {
+            self.0.push(msg.0);
+        }
+    }
+    impl THandler<Emitted> for TOwner {
+        fn handle(&mut self, msg: Emitted, _: PendingReply<'_, ()>, _: &TContext<Self>) {
+            self.0.push(format!("emit:{}", msg.0));
+        }
+    }
+    struct Go;
+    impl Message for Go {
+        type Result = ();
+    }
+    impl THandler<Go> for TOwner {
+        fn handle(&mut self, _: Go, reply: PendingReply<'_, ()>, ctx: &TContext<Self>) {
+            let opts = JobOptions::new().emit_credits(std::num::NonZeroU16::new(1).unwrap());
+            ctx.pipe_blocking(
+                opts,
+                |job: TJobCtx<TOwner>| {
+                    let at = spawned_concurrency::Instant::now() + Duration::from_millis(60);
+                    job.emit_at_blocking(at, Emitted(3)).unwrap();
+                    3u32
+                },
+                done("theld"),
+            )
+            .unwrap();
+            reply.reply(());
+        }
+    }
+
+    #[test]
+    fn delayed_emit_releases_the_held_result_threads() {
+        let log = Arc::new(Log::default());
+        let actor = TOwner(log.clone()).start();
+        let id: u64 = actor.id().to_string().parse().unwrap();
+        lifecycle_trace::watch_deferred(id);
+        actor.request(Go).unwrap();
+        for _ in 0..400 {
+            if log.snapshot().iter().any(|e| e == "theld:ok:3") {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(log.snapshot(), ["emit:3", "theld:ok:3"]);
+        actor.context().stop();
+        actor.join();
+        let events = lifecycle_trace::take_jobs(id);
+        let actions: Vec<&str> = events.iter().map(|e| e.action).collect();
+        for a in ["Schedule", "Finish", "Fire", "Release", "Exit"] {
+            assert!(actions.contains(&a), "{a} missing: {actions:?}");
+        }
+        let json = format!(
+            "{{\"name\":\"jobs_held_release_threads\",\"schema\":\"jobs-v1\",\"credits\":1,\"keys\":1,\"events\":[\n{}\n]}}\n",
+            events.iter().map(|e| e.to_json()).collect::<Vec<_>>().join(",\n")
+        );
+        let dir = trace_dir();
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("jobs_held_release_threads.json"), json).unwrap();
+    }
 }

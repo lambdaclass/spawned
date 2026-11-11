@@ -14,7 +14,16 @@
 (*   Emit(j)         an emit enqueued                                       *)
 (*   Finish(j)       execution ended; x = "notified" if it enqueued the    *)
 (*                   terminal message, "quiet" if the notification was     *)
-(*                   already taken or suppressed                           *)
+(*                   already taken or suppressed, "held" if scheduled      *)
+(*                   emits keep the result                                 *)
+(*   Schedule(j)     emit_at registered a delayed emit (ScheduleEmit)      *)
+(*   Fire(j)         a delayed emit fired (FireScheduled): x = "emit" if   *)
+(*                   enqueued, "dropped" if not; rel: the last one took a  *)
+(*                   held result. A cancel drops the scheduled emits after *)
+(*                   the model's Cancel already did: those "dropped" fires *)
+(*                   are stutter steps                                     *)
+(*   Release(j)      the held result's terminal, after the job's lock      *)
+(*                   (ReleaseHeld): x = "notified" or "quiet"              *)
 (*   JobDeadline(j)  the job deadline took the notification                 *)
 (*   Cancel(j)       handle cancel (or the opt-in caller give-up)          *)
 (*   Exit            the owner's exit cancelled the job set                *)
@@ -22,10 +31,12 @@
 (*                                                                         *)
 (* One trace is one owner instance (MaxGen = 1) and at most one key. The   *)
 (* model's permit bound is not checked (JobBound = J): rejected            *)
-(* admissions are not model actions. Delayed emits (emit_at) are not       *)
-(* recorded; the recorded scenarios use none (MCDeferredJobsHeld checks    *)
-(* them). The trace is accepted iff some behavior consumes the whole log   *)
-(* (TLC reports TraceIncomplete violated).                                 *)
+(* admissions are not model actions. The model's Restart (a new owner     *)
+(* instance reading the same slot-addressed mailbox) has no code           *)
+(* counterpart: a job's messages go to its owner instance's own mailbox,   *)
+(* which is discarded at that instance's death, so a trace is one          *)
+(* instance. The trace is accepted iff some behavior consumes the whole    *)
+(* log (TLC reports TraceIncomplete violated).                             *)
 (***************************************************************************)
 EXTENDS DeferredJobs, TLC
 
@@ -42,6 +53,17 @@ Step(e) ==
                                 /\ (e.j \in Keyed) = e.keyed
       [] e.a = "Emit"        -> e.j \in Jobs /\ Emit(e.j)
       [] e.a = "Finish"      -> e.j \in Jobs /\ Finish(e.j)
+                                /\ (termSent'[e.j] > termSent[e.j]) = (e.x = "notified")
+                                /\ held'[e.j] = (e.x = "held")
+      [] e.a = "Schedule"    -> e.j \in Jobs /\ ScheduleEmit(e.j)
+      [] e.a = "Fire"        -> e.j \in Jobs /\
+                                \/ /\ FireScheduled(e.j)
+                                   /\ (inflight'[e.j] > inflight[e.j]) = (e.x = "emit")
+                                   /\ releasing'[e.j] = e.rel
+                                \/ /\ e.x = "dropped" /\ ~e.rel
+                                   /\ cancelled[e.j] /\ sched[e.j] = 0
+                                   /\ UNCHANGED vars
+      [] e.a = "Release"     -> e.j \in Jobs /\ ReleaseHeld(e.j)
                                 /\ (termSent'[e.j] > termSent[e.j]) = (e.x = "notified")
       [] e.a = "JobDeadline" -> e.j \in Jobs /\ JobDeadline(e.j)
       [] e.a = "Cancel"      -> e.j \in Jobs /\ Cancel(e.j)
