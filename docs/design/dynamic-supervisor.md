@@ -1,6 +1,6 @@
 # Dynamic supervisor: design contract
 
-**Status: design in review (revision 3), not implemented.** ROADMAP rank 12a.
+**Status: approved for implementation after review round 3 (revision 3), not implemented.** ROADMAP rank 12a.
 Draft PR [#245](https://github.com/lambdaclass/spawned/pull/245). Revision 2
 applied the maintainer's decisions on revision 1's open questions and the
 first reviews; revision 3 applies the decisions on round two's questions and
@@ -1245,3 +1245,18 @@ action mapping, the required tests and the expected coverage.
 acting when the slot's published child moved on. Modelled as a third call
 kind (`expect`) in `LoopTerm`, with control `IgnoreExpect`. `ChildInfo`,
 `ChildCounts` and `ChildKey` are shared with introspection v1.
+
+### Round 3 (confirmation)
+
+Codex (3 P1) and agy (2 P1, P2s), both "approve after the listed changes",
+no P0. Each fixed in its own commit.
+
+| Finding | Resolution |
+|---|---|
+| **Codex 1**: `Ignore` and removal erased cleanup the contract keeps (an `Init::ignore()` attempt's state and helpers; slot finalization of retained arguments), so real interleavings could not replay | **Accepted.** An ignored attempt goes through cleanup like any exit; every removal goes through a `finalizing` state that keeps the slot counted and its capacity held until finalization ends (or is stuck), and the loop awaits it. New events `DFinalized`, `DDecide(finalize)`. Invariant `RemovedAfterFinalize`; controls `EarlyFree`, `IgnoreFreesEarly`. An ignored start whose cleanup misses its deadline is answered `Ignored` at the deadline, the slot stays counted |
+| **Codex 2**: `FifoOrder` accepted serve-2-then-reject-1; a queued terminate answered `Ok` at shutdown passed; `NoAbort` failed on a config where `StartAnswered` fails without the mutation | **Accepted.** `FifoOrder` checks that every selection is the head at selection. `QueuedTermStopped` (history of calls queued when admission closed) with `QueuedTermOk` mutating the real wrong `Ok`. `ShutdownAnswersStarts` on `MCDynamicSupervisorAbort` (no startup deadlines), which passes unmutated; `NoAbort` fails there |
+| **Codex 3**: mempool reservations released on the peer table's `Down` could be lost if the peer table stopped first; `Down.reason == Shutdown` cannot detect shutdown (escalation kills) | **Accepted.** Reservations outside actors are held by an owning registration (`InFlightLease`) in the connection's state, released synchronously by its destruction on every exit path before the slot frees. Records inside an actor's state die with it. Retries are suppressed by the node's shutdown token |
+| **agy 1**: `Ignore` had no `open` guard and escaped `NoStartAfterShutdown`; leftover `StartOutcome`/`ChildStart` mismatches | **Accepted.** `Ignore` only while open; the ignore decision counts as a commit in the history; control `IgnoreAfterClose`. The non-goal line removed, the factory returns `S: Into<ChildStart<A>>`, `FailedToStart { cause: ChildStartError, .. }` throughout, the rank 12 example matches `StartOutcome::Started`, `ChildInfo::key` |
+| **agy 2**: stale `terminate` ids could not be replayed; `ExpectedChild::generation` vs failed replacements; tickets for directly consumed exits; an unlogged fan-out step | **Accepted.** A call names any generation the caller saw; `ExpectedChild` is the last published child (failed attempts publish nothing); an exit consumed by the waiting start or terminate takes no ticket (`DCleaned` ticket optional); the last signal ends the fan-out. `DClose` only for external or parent shutdown |
+| **agy P2**: the loop must await finalization | **Accepted** (with Codex 1) |
+| **Codex note**: use the canonical shared declarations | **Accepted**: `ChildInfo`/`ChildCounts`/`ChildKey` and `ChildStart` are #256's and #259's; the shapes here show only the fields this design depends on |

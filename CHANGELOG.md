@@ -161,7 +161,10 @@
   trace-validation test plan, a fenced `terminate_slot(.., expect)` for
   introspection, the shared shapes with unified start (#259:
   `StartOutcome<Started<A>>`, `ChildStartError`, `Init::continue_with`,
-  `StartOptions<A>`), and 41 negative controls.
+  `StartOptions<A>`), and 41 negative controls. Round 3: slot finalization
+  and ignored-attempt cleanup kept in the model, FIFO checked at selection,
+  queued terminate calls `Stopped` at shutdown, mempool reservations held by
+  an owning registration, 44 negative controls; approved for implementation.
 
 ## 0.7.3 — 2026-11-10
 
