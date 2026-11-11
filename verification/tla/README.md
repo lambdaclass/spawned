@@ -605,13 +605,13 @@ checks; no cutoff argument is claimed.
 
 | Configuration | Distinct states | Depth | Time |
 |---|---|---|---|
-| `MCDynamicSupervisor` (per PR, safety) | 9,237,075 | 30 | 2m13s |
-| `MCDynamicSupervisorBackoff` (per PR, safety) | 10,599,610 | 36 | 2m43s |
-| `MCDynamicSupervisorZero` (per PR, safety) | 1,170,745 | 21 | 26 s |
-| `MCDynamicSupervisorThree` (per PR, safety, three slots) | 442,239 | 30 | 11 s |
-| `MCDynamicSupervisorCallers` (per PR, liveness under `CallerSpec`) | 3,413,878 | 29 | 8m48s |
-| `MCDynamicSupervisorLive` (per PR, liveness under `Spec`) | 531,760 | 34 | 55 s |
-| `MCDynamicSupervisorDeep` (weekly, safety) | 10,060,062 | 45 | 2m24s |
+| `MCDynamicSupervisor` (per PR, safety) | 8,488,736 | 30 | 1m26s |
+| `MCDynamicSupervisorBackoff` (per PR, safety) | 9,878,333 | 36 | 1m48s |
+| `MCDynamicSupervisorZero` (per PR, safety) | 1,170,745 | 21 | 12 s |
+| `MCDynamicSupervisorThree` (per PR, safety, three slots) | 442,239 | 30 | 7 s |
+| `MCDynamicSupervisorCallers` (per PR, liveness under `CallerSpec`) | 3,380,536 | 29 | 6m33s |
+| `MCDynamicSupervisorLive` (per PR, liveness under `Spec`) | 581,563 | 34 | 55 s |
+| `MCDynamicSupervisorDeep` (weekly, safety) | 9,992,213 | 45 | 1m35s |
 
 Not yet: Apalache inductive invariants, and trace validation, which comes
 with the implementation.
