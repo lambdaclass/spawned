@@ -951,9 +951,25 @@ impl Driver {
         ) else {
             return;
         };
-        if events.last().map(|e| e.action) != Some("SupJoin") {
+        if !events.iter().any(|e| e.action == "SupJoin") {
             return;
         }
+        // Cohorts.tla models only the cohort actions (as cohort_trace.rs).
+        let events: Vec<_> = if *strategy == SupervisorStrategy::OneForOne {
+            events
+        } else {
+            events
+                .into_iter()
+                .filter(|e| {
+                    matches!(
+                        e.action,
+                        "CRequest" | "CSelect" | "CAssign" | "CStop" | "CClean" | "CResume"
+                            | "CBegin" | "CReady" | "CJoined" | "CRetire" | "CAck" | "CEnd"
+                            | "CInitialReady" | "CClose" | "CDone"
+                    )
+                })
+                .collect()
+        };
         let modes: Vec<String> = modes.iter().map(|m| format!("\"{m:?}\"")).collect();
         let events: Vec<String> = events.iter().map(|e| e.to_json()).collect();
         let name = format!("fuzz-{}-r{root}", self.seed);
