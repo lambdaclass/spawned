@@ -24,6 +24,7 @@ use spawned_rt::tasks::{
     sleep, spawn,
 };
 use std::{
+    cell::RefCell,
     collections::BTreeMap,
     future::Future,
     sync::{Arc, Mutex},
@@ -44,12 +45,15 @@ fn position(log: &[String], entry: &str) -> Option<usize> {
     log.iter().position(|e| e == entry)
 }
 
-/// Outcome counts per body, printed by the driver: every branch the
-/// assertions distinguish must be reached.
-static OUTCOMES: Mutex<BTreeMap<String, usize>> = Mutex::new(BTreeMap::new());
+// Outcome counts per body, printed by the driver: every branch the
+// assertions distinguish must be reached. Per test thread (the simulator
+// runs a body on the thread that explores it).
+thread_local! {
+    static OUTCOMES: RefCell<BTreeMap<String, usize>> = const { RefCell::new(BTreeMap::new()) };
+}
 
 fn outcome(name: impl Into<String>) {
-    *OUTCOMES.lock().unwrap().entry(name.into()).or_default() += 1;
+    OUTCOMES.with(|o| *o.borrow_mut().entry(name.into()).or_default() += 1);
 }
 
 fn ms(n: u64) -> Duration {
@@ -541,7 +545,7 @@ where
     F: Fn(u64) -> Fut,
     Fut: Future<Output = ()>,
 {
-    OUTCOMES.lock().unwrap().clear();
+    OUTCOMES.with(|o| o.borrow_mut().clear());
     let report = explore(&Strategy::parse(PCT.0).unwrap(), 0, PCT.1, &body);
     assert!(
         report.found.is_none(),
@@ -569,7 +573,9 @@ where
         "{name} {}: {runs} runs over {DFS_SEEDS} seeds, {exhausted} searches exhausted",
         DFS.0
     );
-    println!("{name} outcomes: {:?}", OUTCOMES.lock().unwrap());
+    let outcomes = OUTCOMES.with(|o| o.borrow().clone());
+    assert!(!outcomes.is_empty(), "{name}: no outcome recorded");
+    println!("{name} outcomes: {outcomes:?}");
 }
 
 #[test]
