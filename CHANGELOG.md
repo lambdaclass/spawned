@@ -2,10 +2,6 @@
 
 ## Unreleased
 
-- Design (not implementation) for rank 12a, the dynamic supervisor
-  (`DynamicSupervisor` / `simple_one_for_one`):
-  `docs/design/dynamic-supervisor.md`, the ethrex/ethlambda client mapping
-  and the `DynamicSupervisor` TLA+ model with negative controls.
 - Lockfile: `rustix` 1.1.2 -> 1.1.6 for RUSTSEC-2026-0486 (pulled in by the
   examples' `native-tls` dependency; spawned's crates are unaffected).
 - CI: a `sim` job runs the simulated test suites (`--cfg spawned_sim`)
@@ -53,6 +49,11 @@
   it is computed from, so unrelated models no longer invalidate it, and is
   regenerated (same keys and state counts). `check.sh` gains `--only` and
   `--exclude`.
+- Design (not implementation) for rank 12a, the dynamic supervisor
+  (`DynamicSupervisor` / `simple_one_for_one`, PR #245):
+  `docs/design/dynamic-supervisor.md`, the ethrex/ethlambda client mapping
+  and the `DynamicSupervisor` TLA+ model (per-PR and weekly configurations)
+  with 11 named negative controls.
 
 ## 0.7.3 — 2026-11-10
 

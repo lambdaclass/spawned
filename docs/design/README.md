@@ -19,6 +19,13 @@ Active design contracts. Usage is documented in the [guide](../GUIDE.md).
   implemented) for exit signals, `Killed`/`NoProc`, supervisor startup and
   runtime-dropped actors as in OTP (ROADMAP ranks 5e, 5f, 5g), with the base
   actor lifecycle model `Lifecycle.tla`.
+- **[dynamic-supervisor.md](dynamic-supervisor.md)** (rank 12a, design in
+  review, not implemented): OTP's `simple_one_for_one` / Elixir's
+  `DynamicSupervisor`: runtime `start_child` from a typed template,
+  `terminate_child`, `max_children` counting restarting children, a
+  supervisor-wide budget and concurrent shutdown. Model:
+  `verification/tla/DynamicSupervisor.tla`. Client mapping (ethrex's
+  per-peer connections): [dynamic-supervisor-client-mapping.md](dynamic-supervisor-client-mapping.md).
 
 Earlier designs (the v0.5 API redesign alternatives, the framework comparison
 and superseded roadmap plans) are archived in

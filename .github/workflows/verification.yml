@@ -112,6 +112,7 @@ jobs:
           - MCLifecycleWideDeep
           - MCLifecycleLiveDeep
           - MCLifecycleDeep
+          - MCDynamicSupervisorDeep
     steps:
       - uses: actions/checkout@v4
       - uses: DeterminateSystems/nix-installer-action@v16

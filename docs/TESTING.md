@@ -109,7 +109,7 @@ Status of each layer. "Planned" items are tracked in the
 
 | Layer | Tool | Catches | Status |
 |---|---|---|---|
-| Design | TLA+ and TLC | Holes in lifecycle, restart and shutdown rules | `Supervision`, `Cohorts`, `NestedSupervision` and `Coordinator` models in `verification/tla`, run in CI |
+| Design | TLA+ and TLC | Holes in lifecycle, restart and shutdown rules | `Supervision`, `Cohorts`, `NestedSupervision` and `Coordinator` models in `verification/tla`, run in CI; design models `Lifecycle` (v0.8 exit signals), `DeferredReplies`/`DeferredJobs` (rank 11) and `DynamicSupervisor` (rank 12a), each with named negative controls |
 | Design, unbounded depth | Apalache inductive invariants | An invariant that a state TLC never reached would break | Safety invariants of all four models proven inductive at fixed sizes, with negative controls; `tla-apalache` CI job |
 | Design, any size | TLAPS or Veil | An invariant that fails only for larger configurations | Planned ([verification tools](research/verification-tools.md)) |
 | Spec and code | Trace validation | The implementation doing something the model forbids | Real OneForOne, cohort and nested traces plus invalid-trace and model-mutation controls |
@@ -923,6 +923,17 @@ seeded random runs, and TLC checks every recorded trace is a behavior of the
 model. Hand-edited traces are rejected at the edited event. Trace validation
 found one model gap (a running child may exit with `Shutdown` while the
 supervisor is open, via `ChildHandle::shutdown`); no implementation deviation.
+
+`verification/tla/DynamicSupervisor.tla` models the rank 12a design (not
+implemented): `start_child` racing crashes, restarts, `terminate_child`,
+`max_children`, budget exhaustion and shutdown. TLC checks twelve safety
+invariants (no child outlives the supervisor, the cap counts restarting
+children, Temporary and terminated children are never restarted, no start
+succeeds after shutdown begins, exhaustion closes the supervisor, shutdown
+signals every child at once), `NeverReopens` and three liveness properties;
+`MCDynamicSupervisor` runs on every PR and `MCDynamicSupervisorDeep` weekly.
+Eleven named negative controls (nine safety, two liveness) each produce a
+counterexample. See the [design](design/dynamic-supervisor.md#what-the-model-establishes).
 
 Apalache checks that the safety invariants of `Supervision`, `Cohorts`,
 `NestedSupervision` and `Coordinator` are inductive (`Init => IndInv`,

@@ -218,7 +218,7 @@ Under the dynamic supervisor that is a first-start failure: `start_child`
 returns `FailedToStart`, the slot is freed, nothing is restarted or charged,
 which is the behaviour ethrex wants. Two consequences: the accept loop would
 wait for the handshake, and `startup_timeout` (default 5 s) must exceed
-`HANDSHAKE_TIMEOUT` or the supervisor cuts handshakes short. Either the
+`HANDSHAKE_TIMEOUT` (10 s) or the supervisor cuts handshakes short. Either the
 accept loop spawns the `start_child` future (it does not need the result),
 or the handshake moves from `started()` into a first self-sent message, the
 Spawned counterpart of OTP's `handle_continue`. The second is better:
