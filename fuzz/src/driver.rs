@@ -1497,9 +1497,10 @@ impl Driver {
             for aref in self.targets() {
                 self.fence(&aref).await;
             }
-            for _ in 0..200 {
-                sim::yield_now().await;
-            }
+            // Sleep rather than yield: under the canonical schedule (and
+            // PCT) a yielding driver can be picked again at once and starve
+            // everyone else, while a timer fires only once nothing is ready.
+            rt::sleep(Duration::from_millis(1)).await;
             if !self.settle_supervisors().await {
                 return false;
             }
