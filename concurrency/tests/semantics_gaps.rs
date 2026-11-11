@@ -678,8 +678,12 @@ fn check_turns(events: &[Turn], counter: usize, outcomes: &[(usize, Result<usize
                 assert_eq!(reply, id, "R2");
                 assert!(handled.contains(id), "R1: Ok without a turn for {id}");
             }
-            Err(ActorError::ActorStopped) => {
+            Err(ActorError::ActorStopped(_)) => {
                 assert!(!handled.contains(id), "R1: {id} ran but got ActorStopped")
+            }
+            // Sent after the death point (0.8: `NoProc`, never admitted).
+            Err(ActorError::NoProc) => {
+                assert!(!handled.contains(id), "R1: {id} ran but got NoProc")
             }
             Err(other) => panic!("R1: unexpected {other:?} for {id}"),
         }
@@ -715,21 +719,45 @@ mod native_contract {
         }
     }
     impl Handler<Hold> for Holder {
-        fn handle(&mut self, hold: Hold, _: &Context<Self>) {
-            self.seen.lock().unwrap().push("hold");
-            hold.entered.send(()).unwrap();
-            let _ = hold.release.recv_timeout(LIMIT);
+        fn handle(
+            &mut self,
+            hold: Hold,
+            __reply: spawned_concurrency::PendingReply<'_, ()>,
+            _: &Context<Self>,
+        ) {
+            let __value: () = {
+                self.seen.lock().unwrap().push("hold");
+                hold.entered.send(()).unwrap();
+                let _ = hold.release.recv_timeout(LIMIT);
+            };
+            __reply.reply(__value);
         }
     }
     impl Handler<Queued> for Holder {
-        fn handle(&mut self, _: Queued, _: &Context<Self>) {
-            self.seen.lock().unwrap().push("queued");
+        fn handle(
+            &mut self,
+            _: Queued,
+            __reply: spawned_concurrency::PendingReply<'_, ()>,
+            _: &Context<Self>,
+        ) {
+            let __value: () = {
+                self.seen.lock().unwrap().push("queued");
+            };
+            __reply.reply(__value);
         }
     }
     impl Handler<Asked> for Holder {
-        fn handle(&mut self, _: Asked, _: &Context<Self>) -> u64 {
-            self.seen.lock().unwrap().push("asked");
-            1
+        fn handle(
+            &mut self,
+            _: Asked,
+            __reply: spawned_concurrency::PendingReply<'_, u64>,
+            _: &Context<Self>,
+        ) {
+            let __value: u64 = {
+                self.seen.lock().unwrap().push("asked");
+                1
+            };
+            __reply.reply(__value);
         }
     }
 
@@ -773,10 +801,9 @@ mod native_contract {
             WINDOW + 1,
             "D4/L7: a queued payload outlived join()"
         );
-        for reply in replies {
-            assert_eq!(
-                reply.try_recv(),
-                Err(mpsc::TryRecvError::Disconnected),
+        for mut reply in replies {
+            assert!(
+                matches!(reply.try_recv(), Some(Err(ActorError::ActorStopped(_)))),
                 "D4/L7: a queued reply sender outlived join()"
             );
         }
@@ -789,7 +816,7 @@ mod native_contract {
         assert_eq!(actor.wait_exit(), ExitReason::Normal);
         assert!(matches!(
             actor.send(Queued(Payload(drops.clone()))),
-            Err(ActorError::ActorStopped)
+            Err(ActorError::NoProc)
         ));
     }
 
@@ -817,13 +844,21 @@ mod native_contract {
         }
     }
     impl Handler<Work> for Turns {
-        fn handle(&mut self, Work(id): Work, _: &Context<Self>) -> usize {
-            self.push(Turn::Begin(id));
-            let seen = self.counter;
-            std::thread::yield_now();
-            self.counter = seen + 1;
-            self.push(Turn::End(id));
-            id
+        fn handle(
+            &mut self,
+            Work(id): Work,
+            __reply: spawned_concurrency::PendingReply<'_, usize>,
+            _: &Context<Self>,
+        ) {
+            let __value: usize = {
+                self.push(Turn::Begin(id));
+                let seen = self.counter;
+                std::thread::yield_now();
+                self.counter = seen + 1;
+                self.push(Turn::End(id));
+                id
+            };
+            __reply.reply(__value);
         }
     }
 
@@ -877,19 +912,41 @@ mod native_contract {
         struct Backlog(Vec<usize>);
         impl Actor for Backlog {}
         impl Handler<Hold> for Backlog {
-            fn handle(&mut self, hold: Hold, _: &Context<Self>) {
-                hold.entered.send(()).unwrap();
-                let _ = hold.release.recv_timeout(LIMIT * 6);
+            fn handle(
+                &mut self,
+                hold: Hold,
+                __reply: spawned_concurrency::PendingReply<'_, ()>,
+                _: &Context<Self>,
+            ) {
+                let __value: () = {
+                    hold.entered.send(()).unwrap();
+                    let _ = hold.release.recv_timeout(LIMIT * 6);
+                };
+                __reply.reply(__value);
             }
         }
         impl Handler<Seq> for Backlog {
-            fn handle(&mut self, Seq(i): Seq, _: &Context<Self>) {
-                self.0.push(i);
+            fn handle(
+                &mut self,
+                Seq(i): Seq,
+                __reply: spawned_concurrency::PendingReply<'_, ()>,
+                _: &Context<Self>,
+            ) {
+                let __value: () = {
+                    self.0.push(i);
+                };
+                __reply.reply(__value);
             }
         }
         impl Handler<Count> for Backlog {
-            fn handle(&mut self, _: Count, _: &Context<Self>) -> Vec<usize> {
-                std::mem::take(&mut self.0)
+            fn handle(
+                &mut self,
+                _: Count,
+                __reply: spawned_concurrency::PendingReply<'_, Vec<usize>>,
+                _: &Context<Self>,
+            ) {
+                let __value: Vec<usize> = std::mem::take(&mut self.0);
+                __reply.reply(__value);
             }
         }
         let actor = Backlog(Vec::new()).start();
@@ -927,12 +984,20 @@ mod native_contract {
     }
     impl Actor for Looper {}
     impl Handler<Loop> for Looper {
-        fn handle(&mut self, _: Loop, ctx: &Context<Self>) {
-            self.count += 1;
-            let _ = self.reports.send(self.count);
-            if self.count < 100 {
-                ctx.send(Loop).unwrap();
-            }
+        fn handle(
+            &mut self,
+            _: Loop,
+            __reply: spawned_concurrency::PendingReply<'_, ()>,
+            ctx: &Context<Self>,
+        ) {
+            let __value: () = {
+                self.count += 1;
+                let _ = self.reports.send(self.count);
+                if self.count < 100 {
+                    ctx.send(Loop).unwrap();
+                }
+            };
+            __reply.reply(__value);
         }
     }
 
@@ -1053,21 +1118,48 @@ mod tasks_contract {
         }
     }
     impl Handler<Hold> for Holder {
-        async fn handle(&mut self, hold: Hold, _: &Context<Self>) {
-            self.seen.lock().unwrap().push("hold");
-            hold.entered.send(()).unwrap();
-            let _ = timeout(LIMIT, hold.release).await;
+        async fn handle(
+            &mut self,
+            hold: Hold,
+            __reply: spawned_concurrency::PendingReply<'_, ()>,
+            _: &Context<Self>,
+        ) {
+            let __value: () = async {
+                self.seen.lock().unwrap().push("hold");
+                hold.entered.send(()).unwrap();
+                let _ = timeout(LIMIT, hold.release).await;
+            }
+            .await;
+            __reply.reply(__value);
         }
     }
     impl Handler<Queued> for Holder {
-        async fn handle(&mut self, _: Queued, _: &Context<Self>) {
-            self.seen.lock().unwrap().push("queued");
+        async fn handle(
+            &mut self,
+            _: Queued,
+            __reply: spawned_concurrency::PendingReply<'_, ()>,
+            _: &Context<Self>,
+        ) {
+            let __value: () = async {
+                self.seen.lock().unwrap().push("queued");
+            }
+            .await;
+            __reply.reply(__value);
         }
     }
     impl Handler<Asked> for Holder {
-        async fn handle(&mut self, _: Asked, _: &Context<Self>) -> u64 {
-            self.seen.lock().unwrap().push("asked");
-            1
+        async fn handle(
+            &mut self,
+            _: Asked,
+            __reply: spawned_concurrency::PendingReply<'_, u64>,
+            _: &Context<Self>,
+        ) {
+            let __value: u64 = async {
+                self.seen.lock().unwrap().push("asked");
+                1
+            }
+            .await;
+            __reply.reply(__value);
         }
     }
 
@@ -1115,7 +1207,7 @@ mod tasks_contract {
             );
             for mut reply in replies {
                 assert!(
-                    matches!(reply.try_recv(), Err(oneshot::error::TryRecvError::Closed)),
+                    matches!(reply.try_recv(), Some(Err(ActorError::ActorStopped(_)))),
                     "D4/L7 {place:?}: a queued reply sender outlived join()"
                 );
             }
@@ -1128,7 +1220,7 @@ mod tasks_contract {
             assert_eq!(actor.wait_exit().await, ExitReason::Normal, "{place:?}");
             assert!(matches!(
                 actor.send(Queued(Payload(drops.clone()))),
-                Err(ActorError::ActorStopped)
+                Err(ActorError::NoProc)
             ));
         }
         placement.finish().await;
@@ -1160,14 +1252,23 @@ mod tasks_contract {
     impl Handler<Work> for Turns {
         /// A read-modify-write that spans an await: it loses updates unless
         /// the handler keeps the turn while it awaits (M1).
-        async fn handle(&mut self, Work(id): Work, _: &Context<Self>) -> usize {
-            self.push(Turn::Begin(id));
-            let seen = self.counter;
-            spawned_rt::tasks::yield_now().await;
-            spawned_rt::tasks::yield_now().await;
-            self.counter = seen + 1;
-            self.push(Turn::End(id));
-            id
+        async fn handle(
+            &mut self,
+            Work(id): Work,
+            __reply: spawned_concurrency::PendingReply<'_, usize>,
+            _: &Context<Self>,
+        ) {
+            let __value: usize = async {
+                self.push(Turn::Begin(id));
+                let seen = self.counter;
+                spawned_rt::tasks::yield_now().await;
+                spawned_rt::tasks::yield_now().await;
+                self.counter = seen + 1;
+                self.push(Turn::End(id));
+                id
+            }
+            .await;
+            __reply.reply(__value);
         }
     }
 
@@ -1229,19 +1330,43 @@ mod tasks_contract {
     struct Backlog(Vec<usize>);
     impl Actor for Backlog {}
     impl Handler<Hold> for Backlog {
-        async fn handle(&mut self, hold: Hold, _: &Context<Self>) {
-            hold.entered.send(()).unwrap();
-            let _ = timeout(LIMIT * 6, hold.release).await;
+        async fn handle(
+            &mut self,
+            hold: Hold,
+            __reply: spawned_concurrency::PendingReply<'_, ()>,
+            _: &Context<Self>,
+        ) {
+            let __value: () = async {
+                hold.entered.send(()).unwrap();
+                let _ = timeout(LIMIT * 6, hold.release).await;
+            }
+            .await;
+            __reply.reply(__value);
         }
     }
     impl Handler<Seq> for Backlog {
-        async fn handle(&mut self, Seq(i): Seq, _: &Context<Self>) {
-            self.0.push(i);
+        async fn handle(
+            &mut self,
+            Seq(i): Seq,
+            __reply: spawned_concurrency::PendingReply<'_, ()>,
+            _: &Context<Self>,
+        ) {
+            let __value: () = async {
+                self.0.push(i);
+            }
+            .await;
+            __reply.reply(__value);
         }
     }
     impl Handler<Count> for Backlog {
-        async fn handle(&mut self, _: Count, _: &Context<Self>) -> Vec<usize> {
-            std::mem::take(&mut self.0)
+        async fn handle(
+            &mut self,
+            _: Count,
+            __reply: spawned_concurrency::PendingReply<'_, Vec<usize>>,
+            _: &Context<Self>,
+        ) {
+            let __value: Vec<usize> = async { std::mem::take(&mut self.0) }.await;
+            __reply.reply(__value);
         }
     }
 
@@ -1292,12 +1417,21 @@ mod tasks_contract {
     }
     impl Actor for Looper {}
     impl Handler<Loop> for Looper {
-        async fn handle(&mut self, _: Loop, ctx: &Context<Self>) {
-            self.count += 1;
-            let _ = self.reports.send(self.count);
-            if self.count < 100 {
-                ctx.send(Loop).unwrap();
+        async fn handle(
+            &mut self,
+            _: Loop,
+            __reply: spawned_concurrency::PendingReply<'_, ()>,
+            ctx: &Context<Self>,
+        ) {
+            let __value: () = async {
+                self.count += 1;
+                let _ = self.reports.send(self.count);
+                if self.count < 100 {
+                    ctx.send(Loop).unwrap();
+                }
             }
+            .await;
+            __reply.reply(__value);
         }
     }
 
@@ -1376,12 +1510,21 @@ mod tasks_contract {
         }
     }
     impl Handler<Work> for Victim {
-        async fn handle(&mut self, Work(id): Work, _: &Context<Self>) -> usize {
-            self.handled.fetch_add(1, Ordering::SeqCst);
-            if self.fault == Fault::Handler {
-                panic!("victim handler");
+        async fn handle(
+            &mut self,
+            Work(id): Work,
+            __reply: spawned_concurrency::PendingReply<'_, usize>,
+            _: &Context<Self>,
+        ) {
+            let __value: usize = async {
+                self.handled.fetch_add(1, Ordering::SeqCst);
+                if self.fault == Fault::Handler {
+                    panic!("victim handler");
+                }
+                id
             }
-            id
+            .await;
+            __reply.reply(__value);
         }
     }
 
@@ -1410,7 +1553,7 @@ mod tasks_contract {
                     actor.child_handle().stop();
                 } else {
                     assert!(
-                        matches!(first, Err(ActorError::ActorStopped)),
+                        matches!(first, Err(ActorError::ActorStopped(_))),
                         "{place:?} {fault:?}: {first:?}"
                     );
                 }
@@ -1453,9 +1596,18 @@ mod tasks_contract {
         }
     }
     impl Handler<Work> for Gate {
-        async fn handle(&mut self, Work(id): Work, _: &Context<Self>) -> usize {
-            self.handled.fetch_add(1, Ordering::SeqCst);
-            id
+        async fn handle(
+            &mut self,
+            Work(id): Work,
+            __reply: spawned_concurrency::PendingReply<'_, usize>,
+            _: &Context<Self>,
+        ) {
+            let __value: usize = async {
+                self.handled.fetch_add(1, Ordering::SeqCst);
+                id
+            }
+            .await;
+            __reply.reply(__value);
         }
     }
 
@@ -1518,17 +1670,35 @@ mod tasks_contract {
     struct Timed;
     impl Actor for Timed {}
     impl Handler<Late> for Timed {
-        async fn handle(&mut self, _: Late, _: &Context<Self>) {
-            panic!("T1: a timer fired after its actor stopped");
+        async fn handle(
+            &mut self,
+            _: Late,
+            __reply: spawned_concurrency::PendingReply<'_, ()>,
+            _: &Context<Self>,
+        ) {
+            let __value: () = async {
+                panic!("T1: a timer fired after its actor stopped");
+            }
+            .await;
+            __reply.reply(__value);
         }
     }
     impl Handler<Arm> for Timed {
-        async fn handle(&mut self, Arm(slot): Arm, ctx: &Context<Self>) {
-            spawned_concurrency::tasks::send_after(
-                Duration::from_secs(3600),
-                ctx.clone(),
-                Late(WhereDropped(slot)),
-            );
+        async fn handle(
+            &mut self,
+            Arm(slot): Arm,
+            __reply: spawned_concurrency::PendingReply<'_, ()>,
+            ctx: &Context<Self>,
+        ) {
+            let __value: () = async {
+                spawned_concurrency::tasks::send_after(
+                    Duration::from_secs(3600),
+                    ctx.clone(),
+                    Late(WhereDropped(slot)),
+                );
+            }
+            .await;
+            __reply.reply(__value);
         }
     }
 
@@ -1574,8 +1744,17 @@ mod tasks_contract {
         type Result = ();
     }
     impl Handler<Nap> for Napper {
-        async fn handle(&mut self, Nap(d): Nap, _: &Context<Self>) {
-            tokio::time::sleep(d).await;
+        async fn handle(
+            &mut self,
+            Nap(d): Nap,
+            __reply: spawned_concurrency::PendingReply<'_, ()>,
+            _: &Context<Self>,
+        ) {
+            let __value: () = async {
+                tokio::time::sleep(d).await;
+            }
+            .await;
+            __reply.reply(__value);
         }
     }
 
@@ -1623,18 +1802,27 @@ mod tasks_contract {
         struct Spawner;
         impl Actor for Spawner {}
         impl Handler<Spawn> for Spawner {
-            async fn handle(&mut self, spawn: Spawn, _: &Context<Self>) {
-                let probe = Payload(spawn.task_drops);
-                drop(tokio::spawn(async move {
-                    let _probe = probe;
-                    std::future::pending::<()>().await;
-                }));
-                let release = spawn.thread_release;
-                let done = spawn.thread_done;
-                drop(std::thread::spawn(move || {
-                    let _ = release.recv();
-                    done.fetch_add(1, Ordering::SeqCst);
-                }));
+            async fn handle(
+                &mut self,
+                spawn: Spawn,
+                __reply: spawned_concurrency::PendingReply<'_, ()>,
+                _: &Context<Self>,
+            ) {
+                let __value: () = async {
+                    let probe = Payload(spawn.task_drops);
+                    drop(tokio::spawn(async move {
+                        let _probe = probe;
+                        std::future::pending::<()>().await;
+                    }));
+                    let release = spawn.thread_release;
+                    let done = spawn.thread_done;
+                    drop(std::thread::spawn(move || {
+                        let _ = release.recv();
+                        done.fetch_add(1, Ordering::SeqCst);
+                    }));
+                }
+                .await;
+                __reply.reply(__value);
             }
         }
         let system = ActorSystem::new().unwrap();
@@ -1739,33 +1927,78 @@ mod supervision_contract {
     }
     impl Actor for Slot {}
     impl Handler<Hold> for Slot {
-        async fn handle(&mut self, hold: Hold, _: &Context<Self>) {
-            let _ = hold.entered.send(());
-            let _ = hold.release.await;
-            panic!("crash with a queue behind it");
+        async fn handle(
+            &mut self,
+            hold: Hold,
+            __reply: spawned_concurrency::PendingReply<'_, ()>,
+            _: &Context<Self>,
+        ) {
+            let __value: () = async {
+                let _ = hold.entered.send(());
+                let _ = hold.release.await;
+                panic!("crash with a queue behind it");
+            }
+            .await;
+            __reply.reply(__value);
         }
     }
     impl Handler<Incr> for Slot {
-        async fn handle(&mut self, _: Incr, _: &Context<Self>) {
-            self.n += 1;
-            self.handled.fetch_add(1, Ordering::SeqCst);
+        async fn handle(
+            &mut self,
+            _: Incr,
+            __reply: spawned_concurrency::PendingReply<'_, ()>,
+            _: &Context<Self>,
+        ) {
+            let __value: () = async {
+                self.n += 1;
+                self.handled.fetch_add(1, Ordering::SeqCst);
+            }
+            .await;
+            __reply.reply(__value);
         }
     }
     impl Handler<Next> for Slot {
-        async fn handle(&mut self, _: Next, _: &Context<Self>) -> usize {
-            self.n += 1;
-            self.n
+        async fn handle(
+            &mut self,
+            _: Next,
+            __reply: spawned_concurrency::PendingReply<'_, usize>,
+            _: &Context<Self>,
+        ) {
+            let __value: usize = async {
+                self.n += 1;
+                self.n
+            }
+            .await;
+            __reply.reply(__value);
         }
     }
     impl Handler<Crash> for Slot {
-        async fn handle(&mut self, _: Crash, _: &Context<Self>) {
-            panic!("injected crash");
+        async fn handle(
+            &mut self,
+            _: Crash,
+            __reply: spawned_concurrency::PendingReply<'_, ()>,
+            _: &Context<Self>,
+        ) {
+            let __value: () = async {
+                panic!("injected crash");
+            }
+            .await;
+            __reply.reply(__value);
         }
     }
     impl Handler<Slow> for Slot {
-        async fn handle(&mut self, _: Slow, _: &Context<Self>) {
-            self.handled.fetch_add(1, Ordering::SeqCst);
-            sleep(Duration::from_millis(10)).await;
+        async fn handle(
+            &mut self,
+            _: Slow,
+            __reply: spawned_concurrency::PendingReply<'_, ()>,
+            _: &Context<Self>,
+        ) {
+            let __value: () = async {
+                self.handled.fetch_add(1, Ordering::SeqCst);
+                sleep(Duration::from_millis(10)).await;
+            }
+            .await;
+            __reply.reply(__value);
         }
     }
 
@@ -1829,7 +2062,10 @@ mod supervision_contract {
         let new = next_generation(&child, generation).await;
         for reply in replies {
             assert!(
-                timeout(LIMIT, reply).await.unwrap().is_err(),
+                timeout(LIMIT, std::future::IntoFuture::into_future(reply))
+                    .await
+                    .unwrap()
+                    .is_err(),
                 "V4: a queued request was answered"
             );
         }
@@ -1839,7 +2075,7 @@ mod supervision_contract {
             "V4: state or queue replayed"
         );
         assert_eq!(handled.load(Ordering::SeqCst), 0, "V4: a queued Incr ran");
-        assert!(matches!(old.send(Incr), Err(ActorError::ActorStopped)));
+        assert!(matches!(old.send(Incr), Err(ActorError::NoProc)));
         assert_eq!(calls.load(Ordering::SeqCst), 2);
         assert!(supervisor.shutdown(LIMIT).await.complete);
         assert!(system.shutdown(LIMIT).await.complete);
@@ -1995,29 +2231,56 @@ mod supervision_contract {
     }
     impl Actor for Late {}
     impl Handler<Fired> for Late {
-        async fn handle(&mut self, _: Fired, _: &Context<Self>) {
-            self.fired.fetch_add(1, Ordering::SeqCst);
+        async fn handle(
+            &mut self,
+            _: Fired,
+            __reply: spawned_concurrency::PendingReply<'_, ()>,
+            _: &Context<Self>,
+        ) {
+            let __value: () = async {
+                self.fired.fetch_add(1, Ordering::SeqCst);
+            }
+            .await;
+            __reply.reply(__value);
         }
     }
     impl Handler<Down> for Late {
-        async fn handle(&mut self, _: Down, _: &Context<Self>) {
-            self.downs.fetch_add(1, Ordering::SeqCst);
+        async fn handle(
+            &mut self,
+            _: Down,
+            __reply: spawned_concurrency::PendingReply<'_, ()>,
+            _: &Context<Self>,
+        ) {
+            let __value: () = async {
+                self.downs.fetch_add(1, Ordering::SeqCst);
+            }
+            .await;
+            __reply.reply(__value);
         }
     }
     impl Handler<Probe> for Late {
         /// Called while system shutdown is in progress but this actor is
         /// still running: timers, monitors and registrations are inert.
-        async fn handle(&mut self, probe: Probe, ctx: &Context<Self>) -> (bool, bool) {
-            send_after(Duration::from_millis(1), ctx.clone(), Fired);
-            ctx.monitor(&probe.target);
-            let registered = ctx.register_name("semantics-gaps-late-name").is_ok();
-            let started = Late {
-                fired: self.fired.clone(),
-                downs: self.downs.clone(),
+        async fn handle(
+            &mut self,
+            probe: Probe,
+            __reply: spawned_concurrency::PendingReply<'_, (bool, bool)>,
+            ctx: &Context<Self>,
+        ) {
+            let __value: (bool, bool) = async {
+                send_after(Duration::from_millis(1), ctx.clone(), Fired);
+                ctx.monitor(&probe.target);
+                let registered = ctx.register_name("semantics-gaps-late-name").is_ok();
+                let started = Late {
+                    fired: self.fired.clone(),
+                    downs: self.downs.clone(),
+                }
+                .start_on(&ctx.execution_group().unwrap())
+                .is_ok();
+                (registered, started)
             }
-            .start_on(&ctx.execution_group().unwrap())
-            .is_ok();
-            (registered, started)
+            .await;
+            __reply.reply(__value);
         }
     }
     /// Stops first (admitted last); probes `late` from its `stopped()` and
@@ -2028,6 +2291,11 @@ mod supervision_contract {
         result: Arc<Mutex<Option<(bool, bool)>>>,
     }
     impl Actor for Prober {
+        // 0.8 (E3): the system's shutdown is its parent's exit signal; a
+        // trapping actor ends through `stopped()`, where the probe runs.
+        async fn started(&mut self, ctx: &Context<Self>) {
+            ctx.trap_exit(true);
+        }
         async fn stopped(&mut self, ctx: &Context<Self>) {
             let probe = Probe {
                 target: ctx.actor_ref().child_handle(),
@@ -2085,6 +2353,10 @@ mod supervision_contract {
         release: Option<oneshot::Receiver<()>>,
     }
     impl Actor for Gated {
+        // 0.8 (E3): shutdown reaches a trapping actor through `stopped()`.
+        async fn started(&mut self, ctx: &Context<Self>) {
+            ctx.trap_exit(true);
+        }
         async fn stopped(&mut self, _: &Context<Self>) {
             if let Some(stopping) = self.stopping.take() {
                 let _ = stopping.send(());
@@ -2096,7 +2368,8 @@ mod supervision_contract {
     }
 
     /// S3, S2: dropping an `ActorSystem` does not block, stops the latest
-    /// admitted actor first, and signals earlier ones only at the 5 s grace.
+    /// admitted actor first, and signals earlier ones only at the 5 s grace
+    /// (with the parent's kill, E3).
     #[spawned_macros::sim_test]
     async fn dropping_a_system_shuts_down_in_order_with_a_five_second_grace() {
         let system = ActorSystem::new().unwrap();
@@ -2132,17 +2405,24 @@ mod supervision_contract {
                 "S2/S3: earlier actor signalled before the later one finished or the grace"
             );
         }
-        assert_eq!(
-            timeout(Duration::from_secs(3), earlier.wait_exit())
-                .await
-                .expect("S3: earlier actor not signalled at the 5 s grace"),
-            ExitReason::Shutdown
+        let earlier_reason = timeout(Duration::from_secs(3), earlier.wait_exit())
+            .await
+            .expect("S3: earlier actor not signalled at the 5 s grace");
+        // 0.8 (E3): at the grace the earlier actor gets the parent's
+        // `Shutdown`, then every remaining actor the parent's kill; a
+        // trapping actor that finishes its parent exit first ends `Shutdown`.
+        assert!(
+            matches!(earlier_reason, ExitReason::Shutdown | ExitReason::Killed),
+            "{earlier_reason:?}"
         );
         assert!(later.child_handle().is_alive());
         release.send(()).unwrap();
-        assert_eq!(
-            timeout(LIMIT, later.wait_exit()).await.unwrap(),
-            ExitReason::Shutdown
+        // `later` is inside `stopped()`: it finishes; a kill that reached it
+        // before its death point supersedes its reason (X4).
+        let later_reason = timeout(LIMIT, later.wait_exit()).await.unwrap();
+        assert!(
+            matches!(later_reason, ExitReason::Shutdown | ExitReason::Killed),
+            "{later_reason:?}"
         );
     }
 }
