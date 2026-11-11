@@ -1757,7 +1757,11 @@ impl<'ast> syn::visit::Visit<'ast> for SharedStateFinder {
 }
 
 /// A warning at `span`: the use of a local `#[deprecated]` unit struct.
-fn deprecation_warning(name: &str, note: &str, span: proc_macro2::Span) -> proc_macro2::TokenStream {
+fn deprecation_warning(
+    name: &str,
+    note: &str,
+    span: proc_macro2::Span,
+) -> proc_macro2::TokenStream {
     let name = Ident::new(name, span);
     quote::quote_spanned! { span =>
         const _: () = {
@@ -1792,9 +1796,7 @@ fn actor_lints(
             ));
         }
     }
-    if !allow_panic_abort
-        && !PANIC_ABORT_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed)
-    {
+    if !allow_panic_abort && !PANIC_ABORT_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
         let warning = deprecation_warning(
             "PanicAbortInActorCrate",
             PANIC_ABORT_NOTE,
