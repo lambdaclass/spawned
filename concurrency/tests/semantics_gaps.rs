@@ -1253,6 +1253,147 @@ mod tasks_contract {
         placement.finish().await;
     }
 
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    enum Fault {
+        Started,
+        Handler,
+        Stopped,
+    }
+    struct Victim {
+        fault: Fault,
+        handled: Arc<AtomicUsize>,
+        stopped_ran: Arc<AtomicUsize>,
+    }
+    impl Actor for Victim {
+        async fn started(&mut self, _: &Context<Self>) {
+            if self.fault == Fault::Started {
+                panic!("victim started");
+            }
+        }
+        async fn stopped(&mut self, _: &Context<Self>) {
+            self.stopped_ran.fetch_add(1, Ordering::SeqCst);
+            if self.fault == Fault::Stopped {
+                panic!("victim stopped");
+            }
+        }
+    }
+    impl Handler<Work> for Victim {
+        async fn handle(&mut self, Work(id): Work, _: &Context<Self>) -> usize {
+            self.handled.fetch_add(1, Ordering::SeqCst);
+            if self.fault == Fault::Handler {
+                panic!("victim handler");
+            }
+            id
+        }
+    }
+
+    /// L5 on every tasks placement: a panic in `started()` skips `stopped()`
+    /// and every message; a handler panic loses that message and runs
+    /// `stopped()`; a panic in `stopped()` still completes the exit.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn panics_in_hooks_follow_the_contract_on_every_placement() {
+        let placement = Placement::new();
+        for place in PLACES {
+            for fault in [Fault::Started, Fault::Handler, Fault::Stopped] {
+                let handled = Arc::new(AtomicUsize::new(0));
+                let stopped_ran = Arc::new(AtomicUsize::new(0));
+                let actor = placement.start(
+                    Victim {
+                        fault,
+                        handled: handled.clone(),
+                        stopped_ran: stopped_ran.clone(),
+                    },
+                    place,
+                );
+                let first = actor.request_with_timeout(Work(1), LIMIT).await;
+                let second = actor.send(Work(2));
+                if fault == Fault::Stopped {
+                    assert!(matches!(first, Ok(1)), "{place:?}");
+                    actor.child_handle().stop();
+                } else {
+                    assert!(
+                        matches!(first, Err(ActorError::ActorStopped)),
+                        "{place:?} {fault:?}: {first:?}"
+                    );
+                }
+                let reason = timeout(LIMIT, actor.wait_exit()).await.unwrap();
+                let (prefix, ran, stopped) = match fault {
+                    Fault::Started => ("panic in started(): ", 0, 0),
+                    Fault::Handler => ("panic in handler: ", 1, 1),
+                    Fault::Stopped => ("panic in stopped(): ", usize::from(second.is_ok()) + 1, 1),
+                };
+                assert!(
+                    matches!(&reason, ExitReason::Panic(m) if m.starts_with(prefix)),
+                    "L5 {place:?} {fault:?}: {reason:?}"
+                );
+                if fault != Fault::Stopped {
+                    assert_eq!(handled.load(Ordering::SeqCst), ran, "L5 {place:?} {fault:?}");
+                }
+                assert_eq!(
+                    stopped_ran.load(Ordering::SeqCst),
+                    stopped,
+                    "L5 {place:?} {fault:?}: stopped() calls"
+                );
+            }
+        }
+        placement.finish().await;
+    }
+
+    struct Gate {
+        release: Option<oneshot::Receiver<()>>,
+        handled: Arc<AtomicUsize>,
+    }
+    impl Actor for Gate {
+        async fn started(&mut self, _: &Context<Self>) {
+            if let Some(release) = self.release.take() {
+                let _ = timeout(LIMIT, release).await;
+            }
+        }
+    }
+    impl Handler<Work> for Gate {
+        async fn handle(&mut self, Work(id): Work, _: &Context<Self>) -> usize {
+            self.handled.fetch_add(1, Ordering::SeqCst);
+            id
+        }
+    }
+
+    /// L2 on both group kinds: messages queued while `started()` runs wait
+    /// for readiness; `ready()` stays `Ok` after the actor exits.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn managed_readiness_gates_handlers_and_stays_historical() {
+        let placement = Placement::new();
+        for place in [Place::AsyncGroup, Place::ThreadGroup] {
+            let handled = Arc::new(AtomicUsize::new(0));
+            let (release, release_rx) = oneshot::channel();
+            let actor = placement.start(
+                Gate {
+                    release: Some(release_rx),
+                    handled: handled.clone(),
+                },
+                place,
+            );
+            let replies: Vec<_> = (0..4).map(|i| actor.request_raw(Work(i)).unwrap()).collect();
+            tokio::task::yield_now().await;
+            assert!(
+                timeout(Duration::from_millis(20), actor.ready()).await.is_err(),
+                "L2 {place:?}: ready before started() returned"
+            );
+            assert_eq!(handled.load(Ordering::SeqCst), 0, "L2 {place:?}");
+            release.send(()).unwrap();
+            timeout(LIMIT, actor.ready()).await.unwrap().unwrap();
+            for (i, reply) in replies.into_iter().enumerate() {
+                assert_eq!(timeout(LIMIT, reply).await.unwrap().unwrap(), i);
+            }
+            actor.child_handle().stop();
+            timeout(LIMIT, actor.join()).await.unwrap();
+            assert!(
+                timeout(LIMIT, actor.ready()).await.unwrap().is_ok(),
+                "L2 {place:?}: ready() is the historical barrier"
+            );
+        }
+        placement.finish().await;
+    }
+
     struct Napper;
     impl Actor for Napper {}
     struct Nap(Duration);
