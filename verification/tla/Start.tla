@@ -203,15 +203,18 @@ PrepareFail(c) ==
                    eV, xV, commit, commit0, initR, why, wait, resR, pend, dl,
                    nV, mV, rV, dV>>
 
-Refusal(c) ==
+RefusalNoName(c) ==
     LET t == Target(c) IN
     CASE IsOwned(c, t) /\ ~ownerOpen /\ Fault # "OwnerUnchecked" -> "closed"
       [] t = "G" /\ ~gopen /\ Fault # "AdmitClosed" -> "closed"
       [] t = "G" /\ Used >= Cap /\ Fault # "IgnoreCap" -> "capacity"
       [] kind[c] \in {"link", "monitor"} /\ pst # "run" /\ ~(Fault = "LinkCheckLate" /\ pst # "published")
              -> "parentexited"
-      [] wname[c] /\ reg # {} /\ Fault # "DoubleRegister" -> "already"
       [] OTHER -> None
+Refusal(c) ==
+    IF RefusalNoName(c) # None THEN RefusalNoName(c)
+    ELSE IF wname[c] /\ reg # {} /\ Fault # "DoubleRegister" THEN "already"
+    ELSE None
 
 \* Who a refusal was caused by (a competing start's observation).
 Blame(r) == CASE r = "capacity" -> slots [] r = "already" -> reg [] OTHER -> {}
@@ -260,9 +263,7 @@ RegisterFirst(c) ==
 CommitRest(c) ==
     /\ phase[c] = "reg1"
     /\ LET t == Target(c)
-           r == CASE t = "G" /\ (~gopen \/ Used >= Cap) -> "capacity"
-                  [] kind[c] \in {"link", "monitor"} /\ pst # "run" -> "parentexited"
-                  [] OTHER -> None
+           r == RefusalNoName(c)
        IN IF r # None
           THEN /\ phase' = [phase EXCEPT ![c] = "aborted"]
                /\ res' = [res EXCEPT ![c] = r]
