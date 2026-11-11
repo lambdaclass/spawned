@@ -67,13 +67,15 @@ timed() {
 }
 
 layer_T() {
-    timed cargo test -p spawned-concurrency --features failpoints --no-fail-fast
+    timed timeout 1800 cargo test -p spawned-concurrency --features failpoints --no-fail-fast
     if grep -qE '^error(\[E[0-9]+\])?:' "$log" && ! grep -q '^test result' "$log"; then
         verdict=build; detail=""; return
     fi
     local failed
     failed=$(grep -E '^    [A-Za-z0-9_:]+$' "$log" | sed 's/^ *//' | sort -u)
-    if [[ $status -ne 0 ]]; then
+    if [[ $status -eq 124 ]]; then
+        verdict=caught; detail="hang (killed after 1800 s)"
+    elif [[ $status -ne 0 ]]; then
         verdict=caught
         detail="$(echo "$failed" | grep -c .) failing: $(echo "$failed" | head -4 | tr '\n' ' ')"
     else
@@ -96,7 +98,7 @@ layer_S() {
 }
 
 layer_C() {
-    timed bash -c "cd '$root/fuzz' && RUSTFLAGS='$sim_flags' cargo test --release --no-fail-fast"
+    timed timeout 1800 bash -c "cd '$root/fuzz' && RUSTFLAGS='$sim_flags' cargo test --release --no-fail-fast"
     if grep -qE '^error(\[E[0-9]+\])?:' "$log" && ! grep -q '^test result' "$log"; then
         verdict=build; detail=""; return
     fi
