@@ -529,12 +529,14 @@ impl Actor for Source {}
 struct Burst {
     to: Recipient<Ping>,
     end: End,
+    entered: oneshot::Sender<()>,
 }
 impl Message for Burst {
     type Result = ();
 }
 impl Handler<Burst> for Source {
     async fn handle(&mut self, burst: Burst, ctx: &Context<Self>) {
+        let _ = burst.entered.send(());
         for i in 0..PINGS {
             burst.to.send(Ping(i)).unwrap();
             yield_now().await;
@@ -555,10 +557,12 @@ async fn exit_after_last_message_body(end: End) {
         .request_with_timeout(Watch(source.child_handle()), LIMIT)
         .await
         .unwrap();
+    let (entered_tx, entered_rx) = oneshot::channel();
     source
         .send(Burst {
             to: observer.recipient(),
             end,
+            entered: entered_tx,
         })
         .unwrap();
     let noise = {
@@ -571,7 +575,10 @@ async fn exit_after_last_message_body(end: End) {
         })
     };
     if let End::External = end {
-        yields(2).await;
+        // Stop once the burst is running (a stop before it is dequeued would
+        // discard it, D4), racing the remaining sends.
+        entered_rx.await.unwrap();
+        yield_now().await;
         source.child_handle().stop();
     }
     noise.await.unwrap();
