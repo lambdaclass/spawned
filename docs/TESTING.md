@@ -1363,10 +1363,13 @@ it shows in `heap_mb` (and LeakSanitizer covers them at process exit, see
 **Pass/fail** (`thresholds.toml`, every value documented there). The run
 first primes every scenario once and lets the runtime settle, then takes the
 baseline. After warm-up (a quarter of the run, at most 30 minutes) each series
-gets a least-squares slope per hour; it fails when the slope is above its
-limit *and* at least 3 standard errors above zero, so short noisy runs do not
-fail but a steady leak does. Limits: RSS 16 MiB/h, heap 4 MiB/h, threads and
-fds 2/h, registry 2/h, Tokio tasks and live actors 20/h. At the end the lanes
+gets a least-squares slope per hour: RSS over every sample, the other series
+over their floor (the minimum of each of about 20 consecutive windows), since
+counts swing with the workload and a leak raises the floor. A series fails
+when the slope is above its limit *and* at least 3 standard errors above zero,
+so short noisy runs do not fail but a steady leak does. Limits: RSS 16 MiB/h,
+heap 4 MiB/h, threads, fds and registry 2/h, Tokio tasks, live actors and the
+active-handler and request gauges 10/h, mailbox depth 100/h. At the end the lanes
 stop, the long-lived system shuts down, and within 60 s every count must
 return exactly to its baseline and the heap to within 8 MiB of it (RSS is not
 checked here: the allocator keeps freed pages). Any scenario error, a stuck
