@@ -283,16 +283,17 @@ mod tasks_mode {
             reply.reply(());
         }
     }
-    /// Busy until `go`, then replaces the key.
-    struct ReplaceWhen(Arc<std::sync::atomic::AtomicBool>);
+    /// Holds its turn until `go` fires, then replaces the key. The turn
+    /// awaits instead of blocking the worker: a blocked worker strands the
+    /// old job, spawned into its non-stealable LIFO slot in the same poll,
+    /// so the old job never runs and the test hangs.
+    struct ReplaceWhen(oneshot::Receiver<()>);
     impl Message for ReplaceWhen {
         type Result = ();
     }
     impl Handler<ReplaceWhen> for Owner {
         async fn handle(&mut self, msg: ReplaceWhen, _: PendingReply<'_, ()>, ctx: &Context<Self>) {
-            while !msg.0.load(std::sync::atomic::Ordering::SeqCst) {
-                std::thread::sleep(Duration::from_millis(1));
-            }
+            msg.0.await.unwrap();
             ctx.pipe_keyed("r", async { 2 }, |o| describe("new", o))
                 .unwrap();
         }
@@ -307,15 +308,15 @@ mod tasks_mode {
         let (actor, log) = start();
         let handle = Arc::new(Mutex::new(None));
         actor.request(StartOld(handle.clone())).await.unwrap();
-        let go = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        actor.send(ReplaceWhen(go.clone())).unwrap();
+        let (go, held) = oneshot::channel::<()>();
+        actor.send(ReplaceWhen(held)).unwrap();
         // `ReplaceWhen` is queued before the old job can finish.
         let (old, open) = handle.lock().unwrap().take().unwrap();
         open.send(()).unwrap();
         while old.is_running() {
             sleep(Duration::from_millis(1)).await;
         }
-        go.store(true, std::sync::atomic::Ordering::SeqCst);
+        go.send(()).unwrap();
         assert_eq!(entries(&actor, &log, 1).await, ["new:ok:2"]);
         sleep(Duration::from_millis(20)).await;
         assert!(
