@@ -16,7 +16,7 @@ this fits with Loom, Shuttle, Miri, ThreadSanitizer and mutation testing.
 | `DeferredReplies.tla`, `MCDeferredReplies*.tla/.cfg` | Rank 11 design model (not implemented), part 1: reply slots, send-time deadlines with shortening, deferral credits shared by a token and its first linked job, the exiting phase with unwind-local drops, a stuck phase (cleanup deadline passed while `stopped()` runs: nothing closed early, death later or never), death, and downstream request cleanup. Thirteen named negative controls. |
 | `DeferredJobs.tla`, `MCDeferredJobs*.tla/.cfg` | Rank 11 design model, part 2: pipe jobs with separate execution, cancellation and notification states; keyed replacement including notified jobs; optional job deadlines; a FIFO mailbox with emit credits and the terminal message last; `ActorId` fencing. `MCDeferredJobsEmits` is the fast configuration with emits. Nine named negative controls. |
 | `Lifecycle.tla`, `MCLifecycle{,Live,Fence,Deep,LiveDeep,WideDeep}.tla/.cfg` | Base actor lifecycle as proposed for v0.8 ([design](../../docs/design/otp-exit-signals.md)): links, monitors, `trap_exit`, exit signals (`Killed`, ignored `Normal`, `NoProc`, parent exits), administrative stops, requests around death, `Exit`/`Down` ordering. Seventeen negative-control faults (17 safety checks, 2 liveness checks): the v0.7 exit-signal behaviours (direct stops ignoring `trap_exit`, kills ending `Kill`, unfenced `unlink`/`demonitor`, real reasons for late registrations, `stopped()` after kills and untrapped signals, late signals ignored during exit), the PR #182/#185 bugs, early exit errors, kill and panic precedence, runtime-drop reasons, early notification, a split death point and a parent exit reaching `exit_received`. Per PR: `MCLifecycle` (7.5M states, fewer reasons, where the safety controls run), `MCLifecycleFence`, `MCLifecycleLive`; weekly: `MCLifecycleWideDeep` (the former 43M-state per-PR instance), `MCLifecycleDeep`, `MCLifecycleLiveDeep`. |
-| `DynamicSupervisor.tla`, `MCDynamicSupervisor{,Deep}.tla/.cfg` | Rank 12a design model (not implemented, [design](../../docs/design/dynamic-supervisor.md)): one dynamic supervisor and N `start_child` calls racing crashes, restarts with fresh generations, `terminate_child`, `max_children` (counting restarting children), the supervisor-wide budget and its exhaustion, and concurrent shutdown with the kill escalation and stuck cleanup. Eleven named negative controls (nine safety, two liveness). Per PR: `MCDynamicSupervisor` (3 slots, one per restart type); weekly: `MCDynamicSupervisorDeep` (the same 3 slots with budget 2 and two window releases). |
+| `DynamicSupervisor.tla`, `MCDynamicSupervisor{,Zero,Deep}.tla/.cfg` | Rank 12a design model (not implemented, [design](../../docs/design/dynamic-supervisor.md)): `start_child` calls racing crashes, restarts, `terminate_child`, `max_children` (counting restarting children), the budget reservation protocol and its exhaustion, stuck children and concurrent shutdown, with OTP's serialised control loop. Twenty-seven named negative controls. Per PR: `MCDynamicSupervisor`, `MCDynamicSupervisorZero`; weekly: `MCDynamicSupervisorDeep`. |
 | `TraceCohorts.tla`, `TraceNested.tla` | Policy and ownership projections of real cohort/nested Rust executions. |
 | `trace_check.py`, `negative_checks.py` | Replay recorded traces; deliberately wrong selections, premature resume/join and broken propagation must be rejected or produce counterexamples. |
 | `SupervisionInd.tla`, `CohortsInd.tla`, `NestedSupervisionInd.tla`, `CoordinatorInd.tla`, `MC*Ind.tla`, `apalache.sh` | Inductive invariants (`IndInv`) checked with Apalache; see [Inductive invariants](#inductive-invariants-apalache). |
@@ -583,45 +583,32 @@ All 22 named controls find their counterexample, each in a few seconds.
 
 ## Dynamic supervisor (rank 12a design)
 
-`DynamicSupervisor.tla` backs the [dynamic supervisor design](../../docs/design/dynamic-supervisor.md),
-written before any implementation. Slots 1..N are `start_child` calls, each
-made at most once at any moment, so starts race everything else. Restart
-types are per slot (one instance covers all three). The rolling window is a
-counter released at most `MaxExpire` times, which also bounds the number of
-generations, so no state constraint is needed and the liveness properties
-are checked on the full graph.
+`DynamicSupervisor.tla` backs the [dynamic supervisor design](../../docs/design/dynamic-supervisor.md)
+(revision 2), written before any implementation. Slots are `start_child`
+calls made at any moment, each started child can get one `terminate_child`,
+and one control loop serialises starts, exit handling and terminations as
+OTP's supervisor process does. Each slot's restart type is chosen in `Init`.
+Budget reservations, stamping, refunds and window expiry are explicit;
+children can get stuck (before or after their death point) under the
+stuck-isolation policy. Invariants about events (late commits, publications
+and generations, forbidden restarts or retirements, restart attempts) read
+history variables computed by `GhostUpdate` from each step's state change,
+separately from the actions.
 
-Invariants: `AtMostOneGeneration`, `PublishedIsLive`,
-`NoChildOutlivesSupervisor`, `MaxChildrenBound`, `TemporaryNeverRestarted`,
-`TerminatedNeverRestarted`, `NoStartAfterShutdown`, `NoGenerationAfterClose`,
-`ExhaustionCloses`, `BudgetBounded`, `ConcurrentShutdown`, `OkMeansReady`.
-Action property `NeverReopens`; liveness `ClosedLeadsToDone`,
-`StartAnswered`, `TerminateCompletes` (crashes and stuck cleanup are not
-fair).
-
-| Configuration | Mutation | Breaks |
-|---|---|---|
-| `MCDynamicSupervisor` | `IgnoreMax` | `MaxChildrenBound` |
-| `MCDynamicSupervisor` | `UncountedRestart` (a crashed child frees its slot until it restarts) | `MaxChildrenBound` |
-| `MCDynamicSupervisor` | `RestartTemporary` | `TemporaryNeverRestarted` |
-| `MCDynamicSupervisor` | `RestartTerminated` | `TerminatedNeverRestarted` |
-| `MCDynamicSupervisor` | `AcceptDuringShutdown` | `NoStartAfterShutdown` |
-| `MCDynamicSupervisor` | `RestartAfterClose` | `NoGenerationAfterClose` |
-| `MCDynamicSupervisor` | `NoEscalate` (exhaustion drops only that child) | `ExhaustionCloses` |
-| `MCDynamicSupervisor` | `EarlyDone` | `NoChildOutlivesSupervisor` |
-| `MCDynamicSupervisor` | `Sequential` (static reverse-order stops) | `ConcurrentShutdown` |
-| `MCDynamicSupervisor` (liveness) | `NoAbort` (a start racing shutdown is not cancelled) | `StartAnswered` |
-| `MCDynamicSupervisor` (liveness) | `StuckBackoff` (shutdown does not cancel a pending restart) | `ClosedLeadsToDone` |
+Configurations: `MCDynamicSupervisor` (per PR; two slots, every pair of
+restart types, `max_children` 1, budget 1; safety, `NeverReopens`,
+liveness), `MCDynamicSupervisorZero` (per PR; budget 0),
+`MCDynamicSupervisorDeep` (weekly; budget 2, two window releases,
+`max_children` 2; safety). Twenty-seven named negative controls (25 safety,
+2 liveness), listed with their origin in the design's
+[model section](../../docs/design/dynamic-supervisor.md#what-the-model-establishes),
+run one at a time from `negative_checks.py`.
 
 Measured 2026-11-11 (TLC 2.19, fede, 4 workers, `nice -n 19`):
 
 | Configuration | Distinct states | Generated | Depth | Time |
 |---|---|---|---|---|
-| `MCDynamicSupervisor` (fast: 3 slots, `max_children` 2, budget 1, one window release; safety, `NeverReopens`, liveness) | 1,601,979 | 5,010,572 | 33 | 2m16s |
-| `MCDynamicSupervisorDeep` (budget 2, two releases; safety, `NeverReopens`) | 5,617,958 | 18,853,746 | 42 | 41 s |
+README_ROWS
 
-All eleven controls find their counterexample in under 5 s each. Not yet:
-Apalache inductive invariants (needs type annotations and an `IndInv`, as
-`SupervisionInd.tla`) and trace validation, which come with the
-implementation.
-
+Not yet: Apalache inductive invariants and trace validation, which come
+with the implementation.

@@ -925,15 +925,17 @@ found one model gap (a running child may exit with `Shutdown` while the
 supervisor is open, via `ChildHandle::shutdown`); no implementation deviation.
 
 `verification/tla/DynamicSupervisor.tla` models the rank 12a design (not
-implemented): `start_child` racing crashes, restarts, `terminate_child`,
-`max_children`, budget exhaustion and shutdown. TLC checks twelve safety
-invariants (no child outlives the supervisor, the cap counts restarting
-children, Temporary and terminated children are never restarted, no start
-succeeds after shutdown begins, exhaustion closes the supervisor, shutdown
-signals every child at once), `NeverReopens` and three liveness properties;
-`MCDynamicSupervisor` runs on every PR and `MCDynamicSupervisorDeep` weekly.
-Eleven named negative controls (nine safety, two liveness) each produce a
-counterexample. See the [design](design/dynamic-supervisor.md#what-the-model-establishes).
+implemented, revision 2): `start_child` racing crashes, restarts,
+`terminate_child`, `max_children`, the budget reservation protocol, stuck
+children and shutdown, with OTP's serialised control loop. TLC checks 23
+safety invariants (among them: no child outlives the supervisor, the cap
+counts restarting children, restarts follow the table in both directions,
+every restart attempt is charged once, no commit, publication or generation
+after close or terminate, a child stuck while retiring fails only itself),
+`NeverReopens` and four liveness properties. `MCDynamicSupervisor` and
+`MCDynamicSupervisorZero` run on every PR, `MCDynamicSupervisorDeep` weekly.
+Twenty-seven named negative controls each produce a counterexample. See the
+[design](design/dynamic-supervisor.md#what-the-model-establishes).
 
 Apalache checks that the safety invariants of `Supervision`, `Cohorts`,
 `NestedSupervision` and `Coordinator` are inductive (`Init => IndInv`,

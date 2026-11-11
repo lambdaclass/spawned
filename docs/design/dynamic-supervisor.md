@@ -743,8 +743,11 @@ that generation died, not that the slot is gone.
 (revision 2) models one dynamic supervisor, N `start_child` calls made at any
 moment, and one `terminate_child` per started child. A control loop (`op`)
 serialises admission and first construction, exit handling and restart
-attempts, and terminations. Restart types are per slot so one instance
-covers all three. Budget reservations, stamping, refunds and window expiry
+attempts, and terminations. Each slot's restart type is chosen in `Init`,
+so one run covers every combination. The instances use two slots: every
+property relates at most a pair of children (one holds the cap or restarts
+while the other races it), and with revision 2's detail three slots passed
+6.7 GB of TLC state in 38 minutes without finishing. Budget reservations, stamping, refunds and window expiry
 are explicit. Exits come from children (`Normal`, `Panic`), stop signals
 (`Shutdown`, or `Killed` after the kill), start failures (factory error,
 `Normal` before readiness), and cleanup may record a failure (the Transient
