@@ -92,10 +92,21 @@ H_retry == \A c \in Children :
 \* so Decide's deferral guard (open, ~sready, readyGen) leaves no restart.
 \* A deferred controller holds a ready generation's exit.
 H_first == \A c \in Children :
+    /\ initial[c] => gen[c] > 0
     /\ gen[c] <= 1 /\ initial[c] => readyGen[c]
     /\ gen[c] > 1 => sready
     /\ pc[c] \in {"top", "backoff", "attempt"} /\ gen[c] > 0 => sready
     /\ pc[c] = "deferred" => readyGen[c]
+
+\* A generation under construction is not ready yet (Attempt cleared
+\* readyGen). A ready generation leaves "running" only through SelfExit or StopObserved,
+\* which record a self-exit reason; "none" and "timeout" are startup failures
+\* of a generation that never became ready (S1 removed them from the
+\* Transient restart table, so RestartFollowsPolicy needs this).
+H_exit == \A c \in Children :
+    /\ pc[c] = "constructing" => ~readyGen[c]   \* Attempt cleared it
+    /\ pc[c] \in {"cleanup", "decide", "deferred", "top", "backoff", "attempt"}
+           /\ gen[c] > 0 /\ readyGen[c] => exitR[c] \in SelfExits
 
 \* Reverse-order shutdown: while stopping, every child after sidx has
 \* finished or was abandoned on timeout (cdone and timedOut only grow).
@@ -126,7 +137,7 @@ SafetyInd ==
 
 Helpers ==
     /\ H_gen /\ H_launch /\ H_initial
-    /\ H_retry /\ H_first /\ H_shutdown /\ H_done /\ H_budget
+    /\ H_retry /\ H_first /\ H_exit /\ H_shutdown /\ H_done /\ H_budget
 
 IndInv == TypeInd /\ H_alive /\ H_pub /\ Helpers /\ SafetyInd
 
