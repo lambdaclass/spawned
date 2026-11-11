@@ -546,25 +546,23 @@ Act ==
 
 Next == Act /\ GhostUpdate
 
-F(A) == WF_vars(A /\ GhostUpdate)
-
 \* Loop work and deadlines only: no user cleanup is assumed to finish.
 CallerFairness ==
     /\ \A s \in Slots :
-         /\ F(LoopAdmit(s)) /\ F(RejectQueued(s)) /\ F(StartTimeout(s))
-         /\ F(AbortStart(s)) /\ F(CleanupStuck(s)) /\ F(Decide(s))
-         /\ F(BackoffFire(s)) /\ F(BackoffDone(s)) /\ F(CancelBackoff(s))
-    /\ \A c \in TermCalls : F(RejectQueuedTerm(c)) /\ F(LoopTerm(c)) /\ F(TermResolve(c))
-    /\ F(SupSignal) /\ F(SupSignalStep) /\ F(SupDone)
+         /\ WF_vars(GhostUpdate /\ LoopAdmit(s)) /\ WF_vars(GhostUpdate /\ RejectQueued(s)) /\ WF_vars(GhostUpdate /\ StartTimeout(s))
+         /\ WF_vars(GhostUpdate /\ AbortStart(s)) /\ WF_vars(GhostUpdate /\ CleanupStuck(s)) /\ WF_vars(GhostUpdate /\ Decide(s))
+         /\ WF_vars(GhostUpdate /\ BackoffFire(s)) /\ WF_vars(GhostUpdate /\ BackoffDone(s)) /\ WF_vars(GhostUpdate /\ CancelBackoff(s))
+    /\ \A c \in TermCalls : WF_vars(GhostUpdate /\ RejectQueuedTerm(c)) /\ WF_vars(GhostUpdate /\ LoopTerm(c)) /\ WF_vars(GhostUpdate /\ TermResolve(c))
+    /\ WF_vars(GhostUpdate /\ SupSignal) /\ WF_vars(GhostUpdate /\ SupSignalStep) /\ WF_vars(GhostUpdate /\ SupDone)
 
 \* Plus progress of children and cleanup.
 Fairness ==
     /\ CallerFairness
     /\ \A s \in Slots :
-         /\ F(Ready(s))
-         /\ F(\E r \in {"Shutdown", "Killed"} : StopObserved(s, r))
-         /\ F(\E f \in CleanupFails : CleanupDone(s, f))
-         /\ F(StuckDone(s))
+         /\ WF_vars(GhostUpdate /\ Ready(s))
+         /\ WF_vars(GhostUpdate /\ \E r \in {"Shutdown", "Killed"} : StopObserved(s, r))
+         /\ WF_vars(GhostUpdate /\ \E f \in CleanupFails : CleanupDone(s, f))
+         /\ WF_vars(GhostUpdate /\ StuckDone(s))
 
 Spec       == Init /\ [][Next]_vars /\ Fairness
 CallerSpec == Init /\ [][Next]_vars /\ CallerFairness
