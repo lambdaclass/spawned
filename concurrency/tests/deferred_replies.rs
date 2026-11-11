@@ -226,6 +226,9 @@ mod tasks_mode {
             actor.request(Park(3)).await,
             Err(ActorError::Overloaded)
         ));
+        // The caller is answered in the deferring step; the handler's record
+        // of it is visible once a later turn ran (FIFO).
+        settle(&actor).await;
         assert_eq!(*seen.defer_errors.lock().unwrap(), [DeferError::Overloaded]);
         assert_eq!(actor.request(Release(0)).await.unwrap(), 2);
         assert_eq!((a.await.unwrap(), b.await.unwrap()), (1, 2));
@@ -560,10 +563,11 @@ mod threads_mode {
             actor.request(Park(3)),
             Err(ActorError::Overloaded)
         ));
-        assert_eq!(*seen.defer_errors.lock().unwrap(), [DeferError::Overloaded]);
         // Abandonment returns the credit.
         drop(c);
         assert_eq!(actor.request(Outstanding).unwrap(), 1);
+        // The handler's record is visible after a later turn (FIFO).
+        assert_eq!(*seen.defer_errors.lock().unwrap(), [DeferError::Overloaded]);
         // Expired deadline: the receiver expires the slot; the late reply is dropped.
         let e = actor
             .request_raw_until(Park(4), Deadline::after(Duration::from_millis(20)))
