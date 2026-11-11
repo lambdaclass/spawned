@@ -7,8 +7,10 @@
 warmup.fraction = 0.25
 warmup.max_secs = 1800
 
-# Trend: least-squares slope of each series over the post-warm-up samples,
-# per hour. A series fails when its slope exceeds the limit AND is at least
+# Trend: least-squares slope per hour after warm-up. rss_mb is fitted on
+# every sample; the other series on their floor (the minimum of each of about
+# 20 consecutive windows), because they swing with the workload and a leak
+# raises the floor. A series fails when its slope exceeds the limit AND is at least
 # `sigmas` standard errors above zero, so noise in short runs does not fail
 # but a steady leak does. rss_mb and heap_mb are MiB per hour; the rest are
 # counts per hour. For scale: ethrex's mailbox leak was about 62 MiB/h.
@@ -17,13 +19,13 @@ trend.rss_mb = 16
 trend.heap_mb = 4
 trend.threads = 2
 trend.fds = 2
-trend.tokio_tasks = 20
+trend.tokio_tasks = 10
 trend.registry = 2
-trend.actors_live = 20
-trend.actors_active = 20
-trend.mailbox_depth = 20000
-trend.handlers_active = 20
-trend.requests_active = 20
+trend.actors_live = 10
+trend.actors_active = 10
+trend.mailbox_depth = 100
+trend.handlers_active = 10
+trend.requests_active = 10
 
 # Quiesce: after the workload stops and the long-lived ActorSystem shuts
 # down, each series must return to within `slack` of its baseline (sampled

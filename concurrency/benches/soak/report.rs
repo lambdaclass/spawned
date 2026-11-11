@@ -134,6 +134,25 @@ pub struct RunInfo<'a> {
     pub system_shutdown: Result<(), String>,
 }
 
+/// The minimum of each of about 20 consecutive windows, at the window's
+/// midpoint. Counts swing with the workload (a burst, a batch of Thread-backend
+/// actors) and neighbouring samples are correlated, so a fit on raw samples
+/// finds spurious trends; a leak raises the floor, which the workload does not.
+fn floors(steady: &[&Sample], i: usize) -> Vec<(f64, f64)> {
+    let width = (steady.len() / 20).max(5);
+    steady
+        .chunks(width)
+        .filter(|w| w.len() * 2 >= width)
+        .map(|w| {
+            let mid = (w[0].elapsed + w[w.len() - 1].elapsed) / 2.0;
+            (
+                mid,
+                w.iter().map(|s| s.values[i]).fold(f64::INFINITY, f64::min),
+            )
+        })
+        .collect()
+}
+
 /// Judge every series: a significant trend above its per-hour limit after
 /// warm-up fails, and so does a final quiesce value above baseline + slack.
 pub fn judge(t: &Thresholds, samples: &[Sample], info: &RunInfo) -> Verdict {
@@ -165,7 +184,11 @@ pub fn judge(t: &Thresholds, samples: &[Sample], info: &RunInfo) -> Verdict {
     )
     .unwrap();
     for (i, name) in SERIES.iter().enumerate() {
-        let points: Vec<(f64, f64)> = steady.iter().map(|s| (s.elapsed, s.values[i])).collect();
+        let points = if *name == "rss_mb" {
+            steady.iter().map(|s| (s.elapsed, s.values[i])).collect()
+        } else {
+            floors(&steady, i)
+        };
         let fit = slope_per_hour(&points);
         let limit = t.get(&format!("trend.{name}"));
         let trend_ok = match (fit, limit) {
