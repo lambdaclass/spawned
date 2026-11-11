@@ -990,6 +990,7 @@ Erlang lacks).
 | `ChildSpec::{max_outstanding, max_native_jobs}` | `.options(StartOptions::new().max_*(..))` | same |
 | factory `Ok(actor)` | unchanged (`From<A> for ChildStart<A>`); `Ok(ChildStart::Ignore)` is new | same |
 | `async fn started(..) {}` | unchanged | same |
+| `stopped()` ran after a `ctx.stop*()` called inside `started()` | it no longer runs after any failed init, `ctx.stop*` in `started()` included (as OTP skips `terminate/2` when `init/1` fails, 2.3) | **changes:** move initialization cleanup into `started()` itself before returning the error, or hold the resources in RAII guards whose `Drop` releases them |
 | `Mock::start()` / `start_on` | `Mock::spawn()` / `spawn_with` | same |
 | `TestSystem::start` / `start_mock` | `TestSystem::spawn` / `spawn_mock` | same |
 
