@@ -5,6 +5,7 @@ ignore = [
     "RUSTSEC-2026-0194", # quick-xml via pprof/inferno (private profiling-experiments feature)
     "RUSTSEC-2026-0195", # quick-xml via pprof/inferno (private profiling-experiments feature)
     "RUSTSEC-2025-0057", # fxhash via monoio (private io-experiments feature)
+    "RUSTSEC-2026-0441", # pin-utils via loom's futures feature (Loom dev-dependency only)
 ]
 informational_warnings = ["unmaintained", "unsound"]
 
