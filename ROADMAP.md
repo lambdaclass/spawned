@@ -45,8 +45,8 @@ handlers and the existing default behavior. New policies are explicit and opt-in
   `info()` readable while a handler is wedged, `sys:get_state`/`get_status`
   between turns, supervision-tree and system snapshots, structured crash and
   supervisor reports, the stall watchdog (rank 8) and an attachable remote
-  console on a local Unix socket (`spawned-ctl`, gap G23, on by default,
-  read-only by default). Flight recorder (rank 9) deferred to 0.10.
+  console on a local Unix socket (`spawned-ctl`, gap G23; starts with
+  `ActorSystem::new`, read-only by default). Revision 2 answers two reviews. Flight recorder (rank 9) deferred to 0.10.
 - **Process:** every PR merges through GitHub's merge queue with 19 required
   checks, including the simulated suites (`sim`). Robustness features must add
   no cost on the default path (see [Non-goals](#non-goals)).

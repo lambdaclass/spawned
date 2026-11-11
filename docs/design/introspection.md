@@ -1,11 +1,14 @@
-# Introspection v1 (0.9 design, in review)
+# Introspection v1 (0.9 design, revision 2, in review)
 
-Status: design only, not implemented. Priority tier 2 of the
+Status: design only, not implemented. Revision 2 answers two independent
+reviews (Codex and agy, both "approve after the listed changes"); see
+[Review resolutions](#review-resolutions). Priority tier 2 of the
 [roadmap](../../ROADMAP.md#priorities): ranks 8 (stall watchdog), 30
-(read-only inspection, `spawned-top`), 29 (metrics), with 9 (flight recorder)
-and 28 (causal tracing) placed explicitly. Builds on 0.8 (PR #239 deferred
-replies, PR #240 OTP exit signals): it reads the reply registry's turn phase,
-the death point D and `ExitReason::Killed`. Model:
+(read-only inspection, `spawned-top`), 29 (metrics) and gap G23 (remote
+console), with 9 (flight recorder) and 28 (causal tracing) placed explicitly.
+Builds on 0.8 (PR #239 deferred replies, PR #240 OTP exit signals): it reads
+the reply registry's turn phase, the exit request, the death point D and
+`ExitReason::Killed`, and changes none of them. Model:
 [`Introspection.tla`](../../verification/tla/Introspection.tla).
 
 The question this design must answer in minutes on a live node:
@@ -13,11 +16,10 @@ The question this design must answer in minutes on a live node:
 > Which actor is stuck, on what message, for how long, with how much queued,
 > and what is it linked to?
 
-Prior art and sources: [observability](../research/observability.md),
+Prior art: [observability](../research/observability.md),
 [deadlock and stall detection](../research/deadlock-and-stall-detection.md),
-and the OTP/Elixir/Gleam comparison done for 0.9 (gaps G3, G4, G5, G9 and its
-section 3.3), whose suggestions are folded in below
-([decisions](#decisions-at-a-glance) lists what was accepted and rejected).
+and the OTP/Elixir/Gleam comparison done for 0.9 (gaps G3, G4, G5, G9, G23 and
+its section 3.3).
 
 ## Contents
 
@@ -25,262 +27,289 @@ section 3.3), whose suggestions are folded in below
 2. [Tiers and the opt-in mechanism](#tiers-and-the-opt-in-mechanism)
 3. [API](#api)
 4. [How the fields are kept](#how-the-fields-are-kept)
-5. [Cost table](#cost-table)
-6. [Consistency guarantees and non-guarantees](#consistency-guarantees-and-non-guarantees)
-7. [The stall watchdog](#the-stall-watchdog)
-8. [Determinism and the simulator](#determinism-and-the-simulator)
-9. [Access paths and the `spawned-top` data model](#access-paths-and-the-spawned-top-data-model)
-10. [Remote console (`spawned-ctl`)](#remote-console-spawned-ctl)
-11. [OTP alignment](#otp-alignment)
-12. [Alternatives considered](#alternatives-considered)
-13. [Semantics contract: guarantees added](#semantics-contract-guarantees-added)
-14. [TLA+ model](#tla-model)
-15. [Test plan](#test-plan)
-16. [Client mapping](#client-mapping)
-17. [Coordination with other 0.9 work](#coordination-with-other-09-work)
-18. [Implementation order](#implementation-order)
-19. [Open questions for reviewers](#open-questions-for-reviewers)
+5. [The activity word and the kill protocol](#the-activity-word-and-the-kill-protocol)
+6. [Cost table](#cost-table)
+7. [Consistency guarantees and non-guarantees](#consistency-guarantees-and-non-guarantees)
+8. [The stall watchdog](#the-stall-watchdog)
+9. [Determinism and the simulator](#determinism-and-the-simulator)
+10. [Access paths](#access-paths)
+11. [Remote console (`spawned-ctl`)](#remote-console-spawned-ctl)
+12. [Wire and data contract](#wire-and-data-contract)
+13. [OTP alignment](#otp-alignment)
+14. [Alternatives considered](#alternatives-considered)
+15. [Semantics contract: guarantees added](#semantics-contract-guarantees-added)
+16. [TLA+ model and trace validation](#tla-model-and-trace-validation)
+17. [Test plan](#test-plan)
+18. [Client mapping](#client-mapping)
+19. [Coordination with other 0.9 work](#coordination-with-other-09-work)
+20. [Implementation order](#implementation-order)
+21. [Review resolutions](#review-resolutions)
+22. [Open questions for reviewers](#open-questions-for-reviewers)
 
 ## Decisions at a glance
 
 | # | Decision | Why |
 |---|---|---|
-| 1 | **Two kinds of access.** `info()` (OTP `process_info`) is out of band: it reads shared atomics and tables and works while a handler is wedged. `get_state`/`get_status` (OTP `sys`) are in band: a request answered between turns, in mailbox order, which times out on a stuck actor, as in OTP. | The stuck case cannot be answered from inside the stuck turn, and the handler future holds `&mut A` across awaits. OTP and recon draw the same line. |
-| 2 | **Tier 0 is free and always on**: identity, type, label, lifecycle state, a per-actor turn id, links, monitors, `trap_exit`, parent, supervisor position, placement, deferred replies and jobs, supervision trees, structured crash and supervisor reports. All read state that already exists or is written once at spawn. The turn id rides in 0.8's turn-phase word, which the run loop already stores at every turn begin and swaps at every end: the store gets wider, not more frequent. | Nothing is added on the send, dispatch or turn path, yet a default build can say "this actor has been in the same turn for at least T". |
-| 3 | **Tier 1 is the `introspection` Cargo feature**: current message type, turn age, poll age, mailbox length, per-actor counters, the stall watchdog, per-actor tracing. Compiled out without it. With it, a turn costs a few relaxed stores and no clock read. | The fields that diagnose a stall need a store per turn and an RMW per send; the rule allows that only opt-in. |
-| 4 | **No clock read per turn.** Turns stamp a process-wide coarse clock (one relaxed load) that a lazily started thread advances every 5 ms; ages are exact to one tick. Stall detection fences on a per-actor turn id, as Go's `sysmon` checks `schedtick`. | `Instant::now()` twice per turn and per poll is the dominant cost of today's `diagnostics` and `WarnOnBlocking`. |
-| 5 | **The watchdog is an OS thread**, started at run time (`Watchdog::start`), never a Tokio task. Four detectors: a poll blocking a shared async worker (OTP `long_schedule`), a turn open too long across awaits, a starved execution group (Akka probe), a long mailbox (OTP 26 `long_message_queue`). | It must keep reporting when every runtime worker is occupied, which is exactly ethrex `d958dcba4` and `535647e45`. |
-| 6 | **Policy: `Report` by default; `Kill` opt-in per actor type, ChildSpec or group, fenced.** A watchdog kill is a CAS on the actor's activity word naming the observed turn; a turn that already ended is never charged. The kill is an ordinary `Killed` exit: L3 is unchanged, so it takes effect when the turn returns. | OTP-aligned (`Killed`, no new reason); no false kills of a recovered actor (TLA+ `FencedKill`, two negative controls). |
-| 7 | **Turn abort at an await is not in v1.** | Per-suspended-turn cost, a change to L3, and the comparison's "no `brutal_kill` emulation" rule; analysed in [alternatives](#alternatives-considered) as a separate item. |
-| 8 | **Flight recorder (rank 9) deferred to 0.10.** v1 ships the shared event sink (bounded, isolated sessions, counted gaps) and, because the console needs it, only a minimal per-actor `trace` (one event per turn of a traced actor, rate-limited, auto-stopping, tier 1). Full `sys:trace` semantics (messages out, lifecycle events, filters) stay in 0.10 (G9). | None of the client incidents needed history; the current turn, the last message in crash reports and the watchdog cover them. The recorder and full tracing are the same per-turn ring and should be designed once with rank 5c's production sink. |
-| 9 | **`get_state(f)` is typed and available on every actor; the type-erased status (`get_status` through `ChildHandle`, dumps, `spawned-top`) shows state only for actors that opt into `Inspect`, redacted by default** (OTP 25 `format_status`). | A typed closure is ordinary code bound by Rust privacy; dumps reach operators and logs, so peer keys must not leak by default. |
-| 10 | **`which_children`/`count_children`/`tree()` on every supervisor**, with one `ChildInfo`/`ChildCounts` shared with the dynamic supervisor (PR #245). | `spawned-top` walks one tree shape. |
-| 11 | **Labels** (`ctx.set_label`, OTP 27 `proc_lib:set_label`), set rarely, read by every report. | 10,000 `RLPxConnection`s are readable only by peer. |
-| 12 | **Structured `tracing` events with stable names** for crashes, supervisor actions and stalls. | The cheapest high-value piece; exporters can rely on the names (1.0 stability promise). |
+| 1 | **Two kinds of access.** `info()` (OTP `process_info`) is out of band: it reads shared atomics and tables and never waits for a turn, so it answers while a handler is wedged. `get_state`/`get_status` (OTP `sys`) are in band: a turn of their own, between handler turns, in mailbox order, which times out on a stuck actor, as in OTP. | The handler future holds `&mut A` across awaits; the stuck case cannot be answered from inside the stuck turn. |
+| 2 | **Tier 0 is strictly free**: identity, type, label, lifecycle, links, monitors, `trap_exit`, parent, supervisor position, placement, deferred replies and jobs, supervision trees, structured crash and supervisor reports. It reads state that exists (0.8's turn phase, exit request, final reason) or is written at spawn, admission or by explicit calls. **No turn ids in tier 0**: 0.8's Loom-verified turn-phase word is not widened. | The strict no-cost rule: nothing added on send, dispatch or turn, not even arithmetic. |
+| 3 | **Tier 1 is the `introspection` feature**: the activity word (turn id, kind, kill bit), message type, turn and poll ages, mailbox counters, the watchdog and console `trace`. Compiled out without it. | The fields that diagnose a stall need stores per turn and an RMW per send. |
+| 4 | **The coarse clock is for display only and can say "unknown".** Turns stamp a process-wide millisecond clock (one relaxed load); stamp 0 means "before the clock started" and is reported as unknown, never as a large age. **Kill eligibility never uses the stamp**: the watchdog measures how long it has itself seen the same open turn id, with its own monotonic clock. | A delayed or late-started clock thread must not produce false ages, and a false age must never kill. |
+| 5 | **The watchdog is an OS thread**, started at run time, never a Tokio task, with sampling separated from report delivery. Four detectors: a poll blocking a shared async worker (OTP `long_schedule`), a long turn, a starved execution group (Akka probe), a long mailbox (OTP 26 `long_message_queue`). | It must keep working when every runtime worker is occupied (ethrex `d958dcba4`, `535647e45`) and when the log sink blocks. |
+| 6 | **Policy: report by default; kill opt-in and fenced.** A watchdog kill is one CAS on the actor's activity word naming the observed open turn; a failed CAS does nothing. Every way an activity ends (return, handler panic, callback panic, hook end, runtime drop) consumes the kill bit, so a committed kill always yields `Killed`; D closes the word for good. L3 is unchanged: the kill takes effect when the activity returns, and a `stopped()` already running finishes. | OTP-aligned reason; no false kills; checked by 13 TLA+ negative controls. |
+| 7 | Turn abort at an await is not in v1 (0.10 at the earliest, its own model). | Per-suspended-turn cost, a change to L3, and the comparison's "no `brutal_kill` emulation" rule. |
+| 8 | **Flight recorder (rank 9) deferred to 0.10.** v1 ships the bounded multi-session event sink and a minimal, bounded console turn trace (tier 1). | The current turn, the crash breadcrumb and the watchdog cover the incidents; the recorder and full `sys:trace` share one ring, designed once with rank 5c. |
+| 9 | **Typed `get_state(f)` on every actor; type-erased state only through `Inspect`, redacted by default.** | A typed closure is ordinary code bound by Rust privacy; dumps reach operators and logs. |
+| 10 | **`which_children`/`count_children`/`tree()` on every supervisor**, one `ChildInfo`/`ChildCounts` shared with the dynamic supervisor (PR #245). Rows are sampled independently; a tree expands only the captured, instance-bound handles. | Coherent-looking snapshots that the locks cannot deliver would be a false promise. |
+| 11 | Labels (`ctx.set_label`, OTP 27 `proc_lib:set_label`). | 10,000 `RLPxConnection`s are readable only by peer. |
+| 12 | Structured `tracing` events with stable names and field sets. | Exporters can rely on them (1.0 stability promise). |
 | 13 | Out of scope: `sys:replace_state`, `suspend`/`resume`, `change_code`. | They mutate state outside a turn or do not apply to Rust. |
-| 14 | The `diagnostics` feature is folded into `introspection` (kept one release as a deprecated alias). `WarnOnBlocking` is removed when detector 1 lands. | One instrumentation point, cheaper than both. |
-| 15 | **Every binary is attachable**: a remote console on a local Unix socket, on by default (Cargo feature `console` in `default`), read-only by default, with opt-in mutations, no TCP and no eval; `spawned-ctl` as the client. Its default cost is one idle listener off the application workers and the process-wide actor table (insert at spawn, remove at exit). | `erl -remsh` on every node is what makes BEAM operable; the cost stays off send, dispatch and turn. |
+| 14 | `diagnostics` folds into `introspection` (one release as a deprecated alias); `WarnOnBlocking` is removed when detector 1 lands. | One instrumentation point. |
+| 15 | **Every `ActorSystem` process is attachable**: a local Unix-socket console, Cargo feature `console` in `default`, read-only by default, separately allowed `kill`, `terminate` and `trace`, no TCP, no eval. It starts automatically only with `ActorSystem::new`; bare-actor programs call `console::start(cfg)`. A refcount binds on 0→1 and unlinks on 1→0. It runs on its own `spawned-console` thread. | `erl -remsh` on every node is what makes BEAM operable; the cost stays off send, dispatch and turn. |
 
 ## Tiers and the opt-in mechanism
 
 | Level | How it is enabled | What it adds | Cost when not enabled |
 |---|---|---|---|
-| Tier 0 | Always | `info()` minus tier 1 fields, labels, listing of managed actors, supervision trees, `get_state`/`get_status`, structured crash and supervisor events | None on send, dispatch or turn; a few words per actor written at spawn |
-| Console | `console` feature, **in `default`**; `SPAWNED_CONSOLE=off` at run time | The process-wide actor and system tables (so `processes()` and `snapshot()` cover bare actors), `render_json`, the Unix-socket listener | Feature off: compiled out. Run-time off: the table is still kept (spawn/exit), no listener |
-| Tier 1 | `features = ["introspection"]` | Activity slot (message type, turn and poll age), mailbox counters, the actor tables (also without `console`), the watchdog, per-actor `trace` | Compiled out entirely: no field, no store, no symbol |
-| Watchdog | `Watchdog::start(config)` at run time (tier 1) | One OS thread sampling the tables; probe tasks per group | Not started: nothing runs |
-| Per actor type | Associated consts set by `#[actor(...)]` | `INSPECT` (state formatter), `STALL` (limits and kill policy) | Constants, folded at compile time |
+| Tier 0 | Always | `info()` minus tier 1 fields, labels, supervision trees, `get_state`/`get_status`, crash and supervisor events | Nothing on send, dispatch or turn |
+| Console | `console` feature, **in `default`**; `SPAWNED_CONSOLE=off` at run time | The process-wide actor and system tables (so listings cover bare actors), the wire encoder, the listener thread | Feature off: compiled out. Run-time off: tables kept (spawn/exit cost), no thread, no socket |
+| Tier 1 | `features = ["introspection"]` | Activity word and slot, interner, coarse clock, mailbox counters, the tables (also without `console`), the watchdog, console `trace` | Compiled out entirely |
+| Watchdog | `Watchdog::start(config)` (tier 1) | Sampling thread, delivery thread, probe tasks | Not started: nothing runs |
+| Per actor type | Associated consts set by `#[actor(...)]` | `FORMAT_STATUS` (state formatter), `STALL` (limits and kill policy) | Constants |
 | Per ChildSpec / group | `ChildSpec::stall(..)`, `async_group(..).stall(..)` | Overrides of `STALL` | Read only by the watchdog |
 
-Precedence for stall limits: ChildSpec, then execution group, then the actor
-type's constant, then the watchdog's defaults.
+Precedence for stall limits: ChildSpec, execution group, actor type, watchdog
+defaults.
+
+**Which console answers need which feature:**
+
+| Command | Default build (`console`) | Needs `introspection` |
+|---|---|---|
+| `ps`, `info`, `links`, `tree`, `groups`, `snapshot` | id, type, label, name, lifecycle (`Starting`/`Idle`/`InTurn`/`Exiting`/`Dead`), links, monitors, trap_exit, parent, supervisor position, placement, deferred, jobs | message type, turn id, turn age, poll age, mailbox length, `--sort mailbox\|turn_age\|poll_age` |
+| `state` | yes (in band) | — |
+| `stuck` | answers `{"unavailable":"feature","feature":"introspection"}` with the list of actors currently `InTurn` as a hint | turn ages, watchdog reports |
+| `trace` | `unavailable: feature` | yes, if allowed |
+| `kill`, `terminate` | yes, if allowed | — |
+
+The console states the missing feature in every reply that omits a field
+(`"mailbox_len":{"unavailable":"feature"}`), and `hello` lists the compiled
+features.
 
 ## API
 
-Tasks and threads expose the same names. Reads return immediately in both
-modes. In-band calls return `Response<T>` (tasks: `.await`; threads: blocking),
-as requests do. Types live in `spawned_concurrency::introspection` and are
-shared by both modes.
+Tasks and threads expose the same names. Reads return immediately. In-band
+calls return `Response<T>` (tasks: `.await`; threads: blocking). Types live in
+`spawned_concurrency::introspection`, shared by both modes. Every public
+struct and enum in this section is `#[non_exhaustive]`.
 
 ### Per-actor info (`process_info`)
 
 ```rust
-// Both modes. Tier 0 unless marked.
 impl<A: Actor> ActorRef<A> { pub fn info(&self) -> ActorInfo; }
 impl<A: Actor> Context<A>  { pub fn info(&self) -> ActorInfo; pub fn set_label(&self, label: impl Into<Arc<str>>); }
-impl ChildHandle           { pub fn info(&self) -> ActorInfo; pub fn links(&self) -> Vec<ActorId>; pub fn monitors(&self) -> Vec<ActorId>; }
-
+impl ChildHandle {
+    pub fn info(&self) -> ActorInfo;
+    pub fn links(&self) -> Vec<ActorId>;
+    pub fn monitors(&self) -> Vec<ActorId>;   // actors this actor monitors (OTP `monitors`)
+}
 #[cfg(any(feature = "console", feature = "introspection"))]
-pub fn introspection::info(id: ActorId) -> Option<ActorInfo>;   // None: unknown or past cleanup (OTP: undefined)
+pub fn introspection::info(id: ActorId) -> Option<ActorInfo>;   // None once published (OTP: undefined)
 
-#[non_exhaustive]
 pub struct ActorInfo {
     pub id: ActorId,
-    pub actor_type: &'static str,          // type_name::<A>()  (OTP initial_call)
-    pub label: Option<Arc<str>>,           // ctx.set_label     (OTP 27 proc_lib:set_label)
-    pub name: Option<String>,              // first registered name (OTP registered_name)
+    pub system: Option<SystemId>,
+    pub actor_type: &'static str,          // type_name::<A>()   (OTP initial_call)
+    pub label: Option<Arc<str>>,           // OTP 27 set_label
+    pub name: Option<String>,              // registry name only (OTP registered_name)
     pub lifecycle: Lifecycle,
     pub trap_exit: bool,
-    pub links: usize,                      // list: ChildHandle::links()
-    pub monitors: usize,                   // outgoing monitors this actor holds
+    pub links: usize,
+    pub monitors: usize,
     pub parent: Parent,
-    pub supervisor: Option<SupervisorPosition>,
+    pub supervisor: Option<SupervisorPosition>,   // ChildSpec key, generation, restarts
     pub placement: Placement,
-    pub deferred_outstanding: usize,       // live ReplyTo tokens + linked jobs (0.8 credits)
+    pub deferred_outstanding: usize,
     pub jobs_running: usize,
-    pub turns: u64,                        // dispatched turns so far, from the turn id (OTP reductions, roughly)
-    pub in_turn_since: Option<TurnId>,     // the open turn's id; two reads with the same id = the same turn
-    // Tier 1 (`introspection`); None without the feature.
-    pub activity: Option<Activity>,
-    pub mailbox_len: Option<u64>,
-    pub messages_in: Option<u64>,          // accepted envelopes, monotonic
+    // Tier 1
+    pub activity: Field<Activity>,
+    pub mailbox: Field<MailboxCounts>,
 }
 
-pub enum Lifecycle { Starting, Idle, InTurn, Exiting, Dead(ExitReason) }   // OTP status
-pub struct Activity {
-    pub kind: ActivityKind,                // Started | Message | ExitReceived | Status | Stopped
-    pub message: Option<&'static str>,     // type_name of the message (Message, ExitReceived)
-    pub turn: TurnId,                      // per-actor sequence; fences stall reports and kills
-    pub age: Duration,                     // exact to one clock tick
-    pub poll: Option<Duration>,            // Some: inside a poll for this long; None: suspended at an await
-    pub kill_pending: bool,                // a fenced kill is waiting for this turn to return
+pub enum Field<T> { Value(T), Unavailable(Unavailable) }
+pub enum Unavailable { Feature, ReadContended, ClockNotStarted, Redacted, Dead }
+
+pub enum Lifecycle {
+    Starting,                              // exit request phase 0: started() running
+    Idle,                                  // 0.8 turn phase Running
+    InTurn,                                // 0.8 turn phase InTurn / InTurnPending (handler turns)
+    Exiting,                               // exit began; stopped() may be running
+    Dead { reason: ExitReason, published: bool },  // past D; `published` once wait_exit() returns
 }
-pub enum Parent { None, Actor(ActorId), Group(String), Supervisor(SupervisorPath) }
-pub struct SupervisorPosition { pub path: SupervisorPath, pub child: ChildKey, pub generation: u64, pub restarts: u64 }
-pub struct Placement { pub backend: BackendKind, pub group: Option<String> }  // Async | Blocking | Thread | Native | Pinned(shard)
+pub struct Activity {                      // tier 1
+    pub kind: ActivityKind,                // Started | Message | ExitReceived | Status | Stopped | Idle
+    pub turn: TurnId,                      // per-actor id of the current or last activity
+    pub message: Option<&'static str>,     // the last message type handled or being handled
+    pub age: Field<Duration>,              // stamp age; Unavailable(ClockNotStarted) for stamp 0
+    pub poll: Option<PollState>,           // async only: InPoll { age } or Suspended
+    pub kill_pending: bool,                // a committed kill waits for this activity to return
+}
+pub struct MailboxCounts { pub len: u64, pub accepted: u64, pub dequeued: u64, pub discarded: u64 }
 ```
 
-`Lifecycle` is derived from state 0.8 already keeps: phase 0 of the exit
-request (`Starting`), the reply registry's turn phase (`Idle`/`InTurn`, and
-`Exiting` from the exiting phase), and the death point's final reason
-(`Dead`). `Exiting` covers `stopped()` and the cleanup before D; the activity
-kind `Stopped` says `stopped()` itself is running.
+Tier 0 `Lifecycle` reads 0.8 state only, so it is exact for handler turns and
+does not distinguish a turn of `exit_received` from a message turn; `started()`
+is `Starting` and `stopped()` is `Exiting`. Tier 1 `Activity.kind` refines
+both.
+
+`ActorInfo.name` is the first `registry` name only (bare `registry::register`
+gains the `ActorId` so bare actors are covered); a ChildSpec's name is
+`supervisor.child`. `monitors` counts outgoing monitors; the monitor table
+stores the target `ActorId` at `ctx.monitor` (a monitor-call cost, not a
+message cost). `monitored_by` is deferred.
 
 ### State and status (`sys:get_state`, `sys:get_status`)
 
 ```rust
 impl<A: Actor> ActorRef<A> {
-    /// OTP sys:get_state. Runs `f` on the state in a turn of its own,
-    /// between handler turns, in mailbox order. Default timeout 5 s.
-    pub fn get_state<R, F>(&self, f: F) -> Response<R>
+    pub fn get_state<R, F>(&self, f: F) -> Response<R>      // default timeout 5 s
     where F: FnOnce(&A) -> R + Send + 'static, R: Send + 'static;
     pub fn get_status(&self) -> Response<StatusReport>;
 }
+// with_request_timeout(d).get_state(f) / .get_status() for other timeouts.
 impl ChildHandle {
-    /// Type-erased sys:get_status (spawned-top, dumps).
-    pub fn get_status(&self, timeout: Duration) -> Response<StatusReport>;
+    pub fn get_status(&self) -> Response<StatusReport>;                       // 5 s
+    pub fn get_status_with_timeout(&self, timeout: Duration) -> Response<StatusReport>;
 }
+pub struct StatusReport { pub info: ActorInfo, pub state: StateView }   // Redacted | Formatted(String) | Truncated(String)
 
-pub struct StatusReport {
-    pub info: ActorInfo,                   // sampled inside the status turn
-    pub state: StateView,                  // Redacted | Formatted(String)
-}
-
-/// Opt-in, as OTP 25 format_status: without it the state is never shown.
-pub trait Inspect: Actor {
-    fn format_status(&self) -> String;
-}
-// #[actor(inspect)]          uses the Inspect impl;
-// #[actor(inspect = debug)]  formats with Debug (the user accepts the exposure).
-// Wired through `const FORMAT_STATUS: Option<fn(&Self) -> String> = None` on Actor.
+pub trait Inspect: Actor { fn format_status(&self) -> String; }      // OTP 25 format_status/1
+// #[actor(inspect)] or #[actor(inspect = debug)] sets
+// `const FORMAT_STATUS: Option<fn(&Self) -> String>` on Actor (default None).
 ```
 
-Rules:
+The status turn is a dedicated `StatusEnvelope`, not 0.8's
+`InTurnEnvelope` (which deliberately treats a closure panic as a handler
+panic). Rules:
 
-- The status turn is an envelope of the existing kind (`InTurnEnvelope`
-  already runs a closure in a turn for `spawned-test`); there is no control
-  lane. It queues behind the backlog (M2), runs between turns (M1), and is
-  answered at the death point if still queued (R1): `Ok`, `RequestTimeout`,
-  `ActorStopped(final reason)` or `NoProc`.
-- A panic in `f` or `format_status` is caught and returned as the new
-  `ActorError::CallbackFailed(String)` (OTP `{callback_failed, ..}` from
-  `sys:replace_state`); the actor is unaffected and its next turn runs
-  normally.
-- If the caller already gave up (the reply slot is closed) the callback is
-  skipped. Unobservable, and it keeps a stale dump from costing a `Debug`
-  of a large state.
-- The status turn does not count as a handled message in `metrics`, does not
-  run `Handler` code and does not reset any user timer.
-- On a stuck actor `get_status` times out. That is expected; the operator
-  uses `info()`, which does not need the actor.
+1. **A turn of its own.** It opens activity kind `Status` with a new turn id
+   (tier 1), so a blocking callback is visible to `info()` and the watchdog.
+   It queues behind the backlog (M2) and runs between turns (M1).
+2. **`StatusReport.info`** is sampled at the start of the status turn and
+   reports the actor as it was between turns: lifecycle `Idle`, the activity
+   of the previous turn.
+3. **Reply slot.** It uses a 0.8 reply slot with the caller's send-time
+   deadline (R3), answered immediately in the status turn; it never defers and
+   takes no `MAX_OUTSTANDING` credit. Outcomes: `Ok`, `RequestTimeout`,
+   `ActorStopped(final reason)` (queued at D), `NoProc` (sent after D), or the
+   new `ActorError::CallbackFailed(String)`. `metrics` match arms gain the
+   variant.
+4. **Callback panic.** The envelope runs the callback under its own
+   `catch_unwind`, answers `CallbackFailed`, disposes of the payload with
+   `dispose_panic`, and returns normally, so the turn ends as a returning turn
+   (`end_turn(false)`). A caught callback panic alone does not end the actor.
+   There is no rollback: effects the callback made through interior
+   mutability (a mutex it poisoned, a message it sent, `ctx.stop()` through a
+   captured handle, a `ReplyTo` it took out of a `RefCell` and dropped, which
+   is answered `ReplyDropped` as in any returning turn) remain.
+5. **Skipped when abandoned.** At dispatch, if the slot is already closed
+   (deadline passed or receiver dropped: the 0.8 slot's own arbitration is
+   the linearization point), the callback is not run. This is an explicit,
+   documented exception to R4 for status envelopes only: it changes side
+   effects of a callback that should have none. A callback already running
+   is not interrupted; one that blocks blocks the actor (as any turn) and the
+   watchdog reports it as kind `Status`.
+6. **Accounting.** Status envelopes bypass the `metrics` mailbox and request
+   accounting on both enqueue and dequeue (no `mailbox_depth` leak, not a
+   handled message), and are counted in introspection's `MailboxCounts`
+   (every envelope). A status request during `stopped()` or destruction
+   queues and is answered `ActorStopped` at D.
+7. **Output bound.** `format_status` output over 64 KiB is cut to
+   `Truncated`.
 
 ### Listing and snapshots
 
 ```rust
-// Tier 0: managed actors (groups already keep their scopes).
-impl ActorSystem    { pub fn actors(&self) -> Vec<ActorInfo>; pub fn snapshot(&self) -> SystemSnapshot; }
+// Tier 0: managed actors, from the groups' scopes.
+impl ActorSystem    { pub fn id(&self) -> SystemId; pub fn actors(&self) -> Vec<ActorInfo>; pub fn snapshot(&self) -> SystemSnapshot; }
 impl ExecutionGroup { pub fn actors(&self) -> Vec<ActorInfo>; pub fn snapshot(&self) -> Option<GroupSnapshot>; }
+// With `console` (default) or `introspection`: every actor, managed or bare.
+pub fn introspection::processes() -> Vec<ActorId>;           // sorted by id
+pub fn introspection::snapshot() -> Snapshot;
 
-// With `console` (default) or `introspection`: every live actor in the process,
-// managed or bare (OTP erlang:processes/0).
-pub fn introspection::processes() -> Vec<ActorId>;
-pub fn introspection::snapshot() -> Snapshot;            // all systems + unmanaged actors + watchdog state
-
-pub struct Snapshot {
-    pub schema: u32,                                     // 1
-    pub taken_at: Instant, pub wall_clock: SystemTime,
-    pub systems: Vec<SystemSnapshot>,
-    pub unmanaged: Vec<ActorInfo>,
-    pub watchdog: Option<WatchdogState>,                 // last probe delays, open stalls
-}
-pub struct SystemSnapshot { pub groups: Vec<GroupSnapshot>, pub supervisors: Vec<SupervisorTree> }
-pub struct GroupSnapshot {
-    pub name: String, pub profile: ExecutionProfile, pub worker_budget: usize,
-    pub closing: bool,
-    pub actors: Vec<ActorInfo>,
-    pub busy_workers: Option<usize>,                     // tier 1: actors of this group inside a poll
-    pub scheduling_delay: Option<Duration>,              // last watchdog probe
-}
+pub struct Snapshot { pub schema: u32, pub taken_at: Instant, pub wall_clock: SystemTime,
+                      pub systems: Vec<SystemSnapshot>, pub unmanaged: Vec<ActorInfo>,
+                      pub watchdog: Option<WatchdogState> }
+pub struct SystemSnapshot { pub id: SystemId, pub groups: Vec<GroupSnapshot>, pub supervisors: Vec<SupervisorTree> }
+pub struct GroupSnapshot { pub name: String, pub profile: ExecutionProfile, pub worker_budget: usize,
+                           pub closing: bool, pub actors: Vec<ActorInfo>,
+                           pub busy_workers: Field<usize>, pub scheduling_delay: Field<Duration> }
 impl Snapshot {
-    /// recon proc_count: top n by an attribute at this instant.
-    pub fn top(&self, by: Rank, n: usize) -> Vec<&ActorInfo>;
-    /// recon proc_window: top n by growth between two snapshots.
-    pub fn window(&self, earlier: &Snapshot, by: Rank, n: usize) -> Vec<(ActorId, u64)>;
+    pub fn top(&self, by: Rank, n: usize) -> Vec<&ActorInfo>;                          // recon proc_count
+    pub fn window(&self, earlier: &Snapshot, by: Rank, n: usize) -> Vec<(ActorId, u64)>; // recon proc_window
 }
-pub enum Rank { MailboxLen, TurnAge, PollAge, Turns, MessagesIn }
 ```
 
-`busy_workers` counts this group's actors inside a poll: a lower bound on
-occupied workers (helpers and foreign tasks are not counted). Native and
-pinned groups report leased slots, which they already track. Tokio's stable
-`RuntimeMetrics` (`num_workers`, `num_alive_tasks`, `global_queue_depth`) is
-added to `GroupSnapshot` where available; per-worker busy time needs
-`tokio_unstable` and is not used.
+Listings and the actor table hold an actor from spawn until **publication**
+(not D): between D and publication it appears as
+`Dead { published: false }`, which is how a destructor hanging after D is
+seen. `ExecutionGroup::actors()` skips scopes not yet attached, and shows a
+scope past D whose helpers still drain as `Dead { published: false }` too.
+`is_alive()` is false from D. Every listing is sorted by `ActorId`.
 
-### Supervision trees (`which_children`, `count_children`)
+### Supervision trees
 
 ```rust
-impl Supervisor {                      // static; DynamicSupervisor (PR #245) gets the same three
+impl Supervisor {   // DynamicSupervisor (PR #245) gets the same three
     pub fn which_children(&self) -> Vec<ChildInfo>;
     pub fn count_children(&self) -> ChildCounts;
-    pub fn tree(&self) -> SupervisorTree;  // nested supervisors expanded, workers with their ActorInfo
+    pub fn tree(&self) -> SupervisorTree;
 }
-
-/// One type for static and dynamic children; replaces ChildSnapshot and #245's DynamicChildInfo.
-pub struct ChildInfo {
-    pub key: ChildKey,                 // Named(String) | Dynamic(DynamicChildId)
-    pub actor: Option<ActorId>,        // last published generation (OTP: pid | restarting | undefined)
-    pub ready: bool,
-    pub state: ChildState,
-    pub kind: ChildKind,               // Worker | Supervisor
-    pub restart: RestartMode,
-    pub generation: u64,
-    pub restarts: u64,                 // this child's restarts (supervisor-wide budget below)
-    pub last_exit: Option<ExitReason>,
-    pub last_error: Option<String>,
+pub struct ChildInfo {     // replaces ChildSnapshot and #245's DynamicChildInfo
+    pub key: ChildKey,     // Named(String) | Dynamic(DynamicChildId)
+    pub actor: Option<ActorId>, pub ready: bool, pub state: ChildState,
+    pub kind: ChildKind, pub restart: RestartMode,
+    pub generation: u64, pub restarts: u64,
+    pub last_exit: Option<ExitReason>, pub last_error: Option<String>,
 }
-pub struct ChildCounts { pub specs: usize, pub active: usize, pub supervisors: usize, pub workers: usize } // OTP, as in #245
+pub struct ChildCounts { pub specs: usize, pub active: usize, pub supervisors: usize, pub workers: usize }
 pub struct SupervisorTree {
-    pub name: String, pub strategy: SupervisorStrategy, pub phase: SupervisorPhase,
-    pub budget: RestartBudget,         // used / max in the current window
-    pub busy: Option<SupervisorBusy>,  // e.g. "terminate_child(id) for 12 s" (comparison 3.2.6)
-    pub counts: ChildCounts,
-    pub children: Vec<TreeChild>,      // { info: ChildInfo, node: Worker(Option<ActorInfo>) | Supervisor(SupervisorTree) }
+    pub system: SystemId, pub name: String, pub strategy: SupervisorStrategy,
+    pub phase: SupervisorPhase, pub budget: RestartBudget, pub busy: Option<SupervisorBusy>,
+    pub counts: ChildCounts,   // derived from `children` below
+    pub children: Vec<TreeChild>,
 }
+pub enum TreeNode { Worker(Field<ActorInfo>), Supervisor(Field<SupervisorTree>) }
 ```
 
-`SupervisedChild::snapshot()` becomes `info()`; `Supervisor::snapshots()` is
-kept one release as a deprecated alias of `which_children()`.
+`tree()` takes the supervisor's locks only to copy rows and instance-bound
+handles (`ChildHandle` with its `ActorId`, or the nested `Supervisor` of that
+generation), releases every lock, then expands each captured handle. Because
+handles are instance-bound, a node never mixes generation N's row with
+generation N+1's actor: if the captured instance has exited, its node shows
+`Dead` or `Unavailable(Dead)`. No lock is held across a child's `info()` or a
+nested `tree()`, so no lock order exists between supervisors and actors.
+`count_children()` and `tree().counts` are derived from the same captured
+rows. `SupervisedChild::snapshot()` becomes `info()`; `Supervisor::snapshots()`
+stays one release as a deprecated alias.
 
 ### Structured reports
 
-Emitted only on exit, supervisor and watchdog paths, never per message. The
-target and field names are a contract (stable from 1.0):
+Emitted only on exit, supervisor and watchdog paths. Target and field names
+are a contract (stable from 1.0).
 
 | Target, level | When | Fields |
 |---|---|---|
-| `spawned::crash`, ERROR | an actor's final reason is abnormal (`Panic`, `Kill`, `Killed`, `NoProc`), at D | `actor_id`, `actor_type`, `label`, `name`, `reason`, `ancestors` (`"sup/child#gen > sup"`), `generation`, `group`, `links`; tier 1: `last_message`, `mailbox_len`, `turn` |
-| `spawned::supervisor`, INFO/WARN/ERROR | `child_terminated`, `child_restarted`, `start_failed`, `restart_intensity_reached`, `shutdown_error` | `supervisor`, `child`, `generation`, `reason`, `restarts_in_window`, `max_restarts`, `window_ms`, `action` |
-| `spawned::stall`, WARN | a watchdog detector fires or a stalled turn ends | `detector`, `actor_id`, `actor_type`, `label`, `message`, `turn`, `age_ms`, `poll_ms`, `group`, `mailbox_len`, `action` (`reported`, `killed`, `kill_skipped`) |
-| `spawned::starvation`, WARN | a group's probe is late | `group`, `delay_ms`, `workers`, `busy`, `occupants` (top 8 `Type(label)/Message poll_ms`) |
+| `spawned::crash`, ERROR | abnormal final reason, emitted at D | `actor_id`, `system`, `actor_type`, `label`, `name`, `reason`, `ancestors`, `generation`, `group`, `links`; tier 1: `last_message`, `turn`, `mailbox_len` |
+| `spawned::supervisor`, INFO/WARN/ERROR | `child_terminated`, `child_restarted`, `start_failed`, `restart_intensity_reached`, `shutdown_error`, `killed_by_console` | `supervisor`, `system`, `child`, `generation`, `reason`, `restarts_in_window`, `max_restarts`, `window_ms`, `action` |
+| `spawned::stall`, WARN | a detector fires, or a reported activity ends | `detector`, `actor_id`, `actor_type`, `label`, `kind`, `message`, `turn`, `observed_ms` (watchdog), `stamp_age_ms`, `poll_ms`, `group`, `mailbox_len`, `action` (`reported`, `kill_committed`, `kill_skipped`, `ended`) |
+| `spawned::starvation`, WARN | a group's probe is late | `group`, `delay_ms`, `workers`, `busy`, `occupants` |
+| `spawned::console`, INFO/WARN | every console command | `peer_pid`, `peer_uid`, `cmd`, `args`, `outcome`, `bytes` |
 
-The existing `"Panic in message handler"` log becomes the `spawned::crash`
-event; its text is kept as the message.
+`last_message` is the activity slot's `tag`, which only message turns write,
+so entering `stopped()` does not erase it (no extra store). A stall's end
+report gives the observed range (`observed_ms` from the watchdog's first and
+last sight, and the stamp age), not an exact total.
 
 ### Event sink and sessions
-
-Reports also go to a bounded in-memory sink that several consumers read
-independently, as OTP 27 trace sessions:
 
 ```rust
 #[cfg(feature = "introspection")]
@@ -288,154 +317,193 @@ pub fn introspection::session(filter: EventFilter, capacity: usize) -> Session;
 impl Session { pub fn drain(&mut self) -> (Vec<Event>, /* lost */ u64); }
 ```
 
-Requirements, binding on the 0.10 work that extends it (rank 5c production
-lifecycle monitors, rank 9 flight recorder, G9 `sys:trace`): bounded memory;
-per-actor order preserved; each session has its own cursor and filter; a slow
-session loses its own events, counted, and never blocks a producer or another
-session; producing an event never allocates on a turn path. v1 producers are
-the exit path, supervisors and the watchdog only.
+Bounded memory; per-actor order preserved; each session has its own cursor
+and filter; a slow session loses its own events, counted, and never blocks a
+producer or another session; no allocation on a turn path (producers write
+fixed-size records). The 0.10 work (rank 5c monitors, rank 9 recorder, full
+`sys:trace`) extends this sink.
 
 ## How the fields are kept
 
-### Tier 0 (no feature)
+### Tier 0
 
 | Field | Kept where | Written |
 |---|---|---|
-| `actor_type`, backend | `ActorShared` (one `&'static str`, one byte) | at spawn |
-| `label` | `Mutex<Option<Arc<str>>>` in `ActorShared` | by `set_label` only |
-| type-erased reads | `SignalTarget` gains `Weak<dyn Probe>` to the actor's shared state | at spawn |
-| `Lifecycle` | 0.8 turn phase, exit request phase 0, final reason | already |
-| turn id (tier 0) | 0.8's turn-phase word widened from `AtomicU8` to `AtomicU64`: `turn_id << 3 \| phase` | the same store at begin and swap at end; the run loop keeps the counter in a register. The drop-recording CASes preserve the high bits; `registry_turn_loom` is extended to cover them |
-| actor and system tables | process-wide, with `console` or `introspection` | insert at spawn, remove at the death point's publication |
-| links, monitors, `trap_exit`, parent | existing tables and flag | already |
-| supervisor position | `Scope` gains child key, generation and restarts | at admission |
-| deferred and jobs | 0.8 credit pool and job set | already |
-| supervision trees | supervisor core under its own lock | already |
+| `actor_type`, backend, system id | `ActorShared` | at spawn |
+| `label` | `Mutex<Option<Arc<str>>>` in `ActorShared` | by `set_label` |
+| type-erased reads | `SignalTarget` gains `Weak<dyn Probe>` | at spawn |
+| `Lifecycle` | 0.8 turn phase (read only), exit request, final reason, publication flag | already |
+| links, monitors, `trap_exit`, parent | existing tables; monitor entries gain the target id | at link/monitor calls |
+| supervisor position | `Scope` gains child key, generation, restarts | at admission |
+| deferred, jobs | 0.8 credit pool (load), job set (its lock) | already |
+
+**Threads-mode parity.** In the reviewed tree, `threads::ActorRef` and
+`threads::Context` inline their fields (several `Arc`s) instead of sharing one
+`Arc<ActorShared<A>>` as tasks mode does since 0.7.2. Step 0 of the
+implementation consolidates threads mode onto `Arc<ActorShared<A>>` (one word
+per handle, one reference-count increment per clone), so both modes get the
+same fields at the same cost. That step stands on its own and is measured
+before any introspection field is added.
+
+### Actor and system tables (`console` or `introspection`)
+
+64 shards keyed by `ActorId & 63`, each a `RwLock<BTreeMap<u64, Arc<dyn
+Probe>>>` (ordered, no random hasher). Insert at spawn; mark at D; remove at
+publication. Readers take one shard's read lock at a time and copy what they
+need; they never hold a lock across a probe call that locks the actor's own
+metadata. Systems register in a small ordered list with their `SystemId`.
 
 ### Tier 1: the activity slot
 
 One cache-aligned block per actor, written only by its run loop:
 
 ```text
-word   AtomicU64  turn_id << 4 | kill << 3 | kind      store at begin, swap at end
-tag    AtomicU32  interned message type                store at begin
-since  AtomicU64  coarse clock at begin                load clock + store
-poll   AtomicU64  poll_count << 1 | in_poll            store before and after each poll
-poll_t AtomicU64  coarse clock at poll start           load clock + store
-out    AtomicU64  dequeued envelopes                   store per dispatch
+word  AtomicU64  turn_id:56 | trace:1 | kill:1 | open:1 | kind:3 | dead:1 (DEAD = all-ones kind)
+tag   AtomicU32  interned message type, written by message and exit_received turns only
+since AtomicU64  coarse clock (ms, 0 = clock not started) at activity begin
+poll  AtomicU64  poll_count:23 | in_poll:1 | poll_stamp_ms:40     one store before and after each poll
 ```
 
-A separate cache line holds `in: AtomicU64`, incremented (`fetch_add`,
-relaxed) by every accepted send, so senders do not contend with the run loop.
-`mailbox_len = in - out` (saturating), a momentary value: an envelope being
-pushed may be counted a moment late (as the `metrics` gauge today). It counts
-every envelope: messages, requests, `Exit`, `Down`, status requests.
+Senders increment `accepted: AtomicU64` (relaxed `fetch_add`) on their own
+cache line after a successful push. The run loop stores `dequeued` at each
+dispatch and adds the drained count to `discarded` when it discards the queue
+(stop, death). `len = accepted - dequeued - discarded` (saturating); a push
+in flight is counted when it succeeds; a failed enqueue (`NoProc`) is not
+counted. After D, `MailboxCounts` is frozen and `len` reads 0.
 
-**Message type without `unsafe`.** The crates are `#![forbid(unsafe_code)]`,
-and a `&'static str` cannot be stored in one atomic. Each run loop keeps a
-small cache from the `type_name::<M>()` pointer (compared with `ptr::eq`) to
-a `u32` tag from a process-wide interner (a mutex taken only on a cache miss:
-once per message type per actor instance). Steady state per turn: one virtual
-call returning a constant, a probe of a few entries, one relaxed store.
+**Message type without `unsafe`.** Each run loop caches the `type_name::<M>()`
+pointer (compared with `ptr::eq` and length) to a `u32` tag from a
+process-wide interner. A cache miss (once per message type per actor instance)
+takes the interner's mutex and may allocate, on the opted-in dispatch path.
 
-**Coarse clock.** `introspection::clock` is a process-wide `AtomicU64` of
-milliseconds since process start, advanced every 5 ms by the
-`spawned-introspect` thread. The thread starts lazily on the first tier 1
-read or `Watchdog::start`; until then stamps are 0 and ages read "at least
-since the clock started". Under `--cfg spawned_sim` the stamp is the virtual
-clock, read directly, and there is no thread.
+## The activity word and the kill protocol
 
-**Consistent activity reads.** A reader loads `word`, then `tag`, `since`,
-`poll`, then `word` again, and retries (bounded, then reports `unknown`) if
-`word` changed: the writer publishes `word` last at begin (Release) and
-first at end. One turn's fields are never mixed with another's.
+### Writer (the run loop, single writer)
 
-**Fenced kill.** The watchdog commits a kill with
-`compare_exchange(word = (N, in turn), (N, in turn, kill))`. The run loop's
-turn end is `swap(word, (N+1, idle))`; if the old value had the kill bit, it
-records `Killed` before the next receive. The watchdog then also records the
-kill through the ordinary path (idempotent). A turn that ended before the CAS
-makes it fail: nothing is killed.
+| Step | Operation | Ordering |
+|---|---|---|
+| begin activity N | `fence(Release)`; `tag` (message kinds only), `since`, `poll` stores | Relaxed after the fence |
+| | `word.store(N, open, kind)` | Release |
+| each poll (async) | `poll.store(count, in_poll=1, stamp)`; poll; `poll.store(count, 0, stamp)` | Relaxed (one word, never torn) |
+| end activity N (return, handler panic, callback panic, hook end) | `old = word.swap(N, closed, kind=Idle)` | AcqRel |
+| | if `old.kill`: record `Killed` in the exit request before anything else (before `stopped()` is decided, before the next receive) | — |
+| runtime drop (cleanup reaches D without the loop) | `old = word.swap(DEAD)`; if `old.kill`: `Killed` | AcqRel, before the reason is finalized |
+| D | `word.store(DEAD)` (already DEAD after a drop) | Release |
 
-**Actor and system tables** (compiled with `console` or `introspection`). 64 shards of `RwLock<HashMap<u64, Arc<dyn
-Probe>>>` keyed by `ActorId`; insert at spawn, remove at the death point's
-publication. Systems register in a small list. Readers hold one shard's read
-lock at a time.
+The `fence(Release)` at begin orders the new activity's payload stores after
+the previous end's swap, so a reader that sees a payload store of activity N+1
+also sees the word move past N (the C++ seqlock construction of Boehm, "Can
+seqlocks get along with programming language memory models?", 2012).
+
+### Reader (`info()`, watchdog, console)
+
+```text
+w1 = word.load(Acquire)
+if w1.dead -> Dead; if !w1.open -> Idle (tag still names the last message)
+t = tag.load(Relaxed); s = since.load(Relaxed); p = poll.load(Relaxed)
+fence(Acquire)
+w2 = word.load(Relaxed)
+accept iff w1 and w2 are equal ignoring the kill and trace bits
+retry at most 3 times, then Field::Unavailable(ReadContended)
+```
+
+`poll` is one atomic word, so a poll's count, flag and stamp are never mixed;
+within one accepted read it belongs to activity N because activity N+1's poll
+stores follow the begin fence. The protocol, with every field stored and
+loaded separately, is checked by Loom (`activity_slot_loom`, test plan).
+
+### The fenced kill
+
+1. **Eligibility (watchdog only).** The watchdog keeps, per actor, the first
+   instant it saw open turn id N (its own monotonic clock). N is eligible when
+   it has been seen open for `kill_after`. The stamp never decides.
+2. **Commit.** `word.compare_exchange((N, open, kill=0), (N, open, kill=1),
+   AcqRel, Acquire)`. On failure (the activity ended, a new one began, the
+   word is DEAD or another kill bit is set) nothing happens: the watchdog
+   does not call any kill path and reports `kill_skipped`.
+3. **Record.** After a successful commit the watchdog records `Killed`
+   through the ordinary exit-request path (idempotent; inert after D).
+   Whichever of this and the run loop's end swap comes first records it.
+4. **Every end consumes the bit**: return, handler panic (a committed kill
+   dominates `Panic`, as 0.8's precedence already says), callback panic,
+   `started()` and `stopped()` ending, runtime drop. Nothing dispatches after
+   the end of a committed activity.
+5. **Hooks.** A kill committed during `started()`: when it returns, exit
+   begins and `stopped()` is skipped (L5). During `stopped()`: the hook
+   already running finishes cooperatively (L3) and the final reason is
+   `Killed` (0.8: a kill during `stopped()` supersedes).
+6. **D closes the word.** After D the word is DEAD, so a retained probe can
+   never commit against a dead actor.
+
+Trace instrumentation (below) records the CAS and the kill record as separate
+events, never in one critical section, so the race stays observable.
 
 ## Cost table
 
-"Turn" is one dispatched envelope; "send" is one accepted envelope.
+"Turn" is one dispatched envelope (status included); "activity" adds
+`started()`/`stopped()`.
 
-| Field or mechanism | Tier | Send | Turn | Poll | Spawn / exit | Reader |
+| Mechanism | Tier | Send | Turn | Poll | Spawn / exit | Reader |
 |---|---|---|---|---|---|---|
-| id, type, backend, parent | 0 | – | – | – | 3 words stored | loads |
+| id, type, backend, system, parent | 0 | – | – | – | a few words stored | loads |
 | label | 0 | – | – | – | – | short lock |
-| lifecycle | 0 | – | – (reuses 0.8 phase store) | – | – | 1 load + exit-request lock |
-| links, monitors, trap_exit | 0 | – | – | – | – | table lock, bounded copy |
-| supervisor position, restarts | 0 | – | – | – | 3 words at admission | scope lock |
-| deferred, jobs | 0 | – | – | – | – | loads |
+| lifecycle | 0 | – | – (reads 0.8's phase, unchanged) | – | – | load + exit-request lock |
+| links, monitors, trap_exit | 0 | – | – | – | monitor calls store the target id | table locks, bounded copies |
+| supervisor position | 0 | – | – | – | 3 words at admission | scope lock |
+| deferred, jobs | 0 | – | – | – | – | a load; the job set's lock |
 | `get_state`/`get_status` | 0 | – | one status turn when called | – | – | a request |
-| supervision trees | 0 | – | – | – | – | supervisor lock |
-| crash / supervisor events | 0 | – | – | – | on abnormal exit | – |
+| trees, crash/supervisor events | 0 | – | – | – | on exit and supervisor actions | supervisor locks, briefly |
 | `Weak<dyn Probe>` | 0 | – | – | – | weak count +1 | upgrade |
-| turn id (widened phase word) | 0 | – | same store and swap, 8 bytes instead of 1 | – | – | 1 load |
-| actor and system tables | console (default) | – | – | – | 1 shard write lock at spawn, 1 at exit | shard read locks |
-| console listener | console (default) | – | – | – | one idle task on the control runtime (or one OS thread, threads-only builds), created with the first system or actor | per command |
-| `render_json` | console (default) | – | – | – | – | per request |
-| activity: kind, turn id | 1 | – | 1 store + 1 swap | – | – | seqlock-style read |
-| message type | 1 | – | virtual call, cache probe, 1 store | – | – | interner lookup |
-| turn age | 1 | – | 1 load (shared, read-mostly) + 1 store | – | – | – |
-| poll age, `polling` | 1 | – | – | 2 stores + 1 load + 1 store | – | – |
-| `mailbox_len`, `messages_in` | 1 | 1 relaxed `fetch_add` (per-actor line) | 1 store | – | – | 2 loads |
+| actor and system tables | console (default) | – | – | – | one shard write lock at spawn, at D (mark) and at publication | shard read locks |
+| console thread | console (default) | – | – | – | one idle OS thread per process while a system or guard exists | per command |
+| activity word | 1 | – | `fence(Release)` + 3 relaxed stores + 1 Release store at begin; 1 swap at end | – | – | seqlock read |
+| message type | 1 | – | virtual call, cache probe, 1 store; a miss locks and may allocate | – | – | interner lookup |
+| coarse clock | 1 | – | 1 relaxed load (in the begin stores above) | 1 load | – | – |
+| poll stamps | 1 | – | – | 2 relaxed stores | – | – |
+| mailbox counters | 1 | 1 relaxed `fetch_add` (per-actor line) | 1 store; 1 store at discard | – | – | 3 loads |
+| trace bit | 1 | – | in the end swap's old value (no extra load) | – | – | – |
 | clock thread | 1 | – | – | – | – | wakes every 5 ms once started |
-| watchdog sampling | 1 + started | – | – | – | – | O(actors) loads per sample on its own thread |
-| starvation probe | 1 + started | – | – | – | – | 1 tiny task per group per second |
-| fenced kill | 1 + policy | – | swap instead of store at turn end | – | – | 1 CAS when firing |
-| per-actor `trace` flag | 1 | – | 1 relaxed load (activity line) | – | – | – |
-| default build (`console` on, `introspection` off) | – | **nothing** | **nothing new** | **nothing** | tier 0 + table | – |
-| `console` and `introspection` off | – | **nothing** | **nothing new** | **nothing** | tier 0 | – |
+| watchdog | 1 + started | – | – | – | – | O(actors) per sample on its own thread |
+| fenced kill | 1 + policy | – | the end swap above | – | – | 1 CAS when firing |
+| **default build** (`console` on) | – | **nothing** | **nothing** | **nothing** | tables + thread | – |
+| `console` off | – | **nothing** | **nothing** | **nothing** | tier 0 only | – |
 
-Expected with the feature on (to be measured, see the
-[benchmark gate](#benchmark-gate)): a few nanoseconds per turn and per send,
-against a request round trip of hundreds of nanoseconds. Today's
-`diagnostics` takes a mutex and an `Instant::now()` per managed turn; debug
-builds' `WarnOnBlocking` reads the clock twice per poll of every async actor.
+The default turn path is the 0.8 turn path unchanged (same code), which the
+benchmark gate compares against the 0.8 release, not against today's main.
 
 ## Consistency guarantees and non-guarantees
 
-A snapshot of a live system is not atomic. What holds:
+What holds:
 
-- **Per actor, per read.** Each scalar is one atomic load or one locked read.
-  The activity fields (kind, message, turn, age, poll) are one consistent
-  set from the same turn. Different fields of one `ActorInfo` are not from
-  the same instant (a `mailbox_len` and a `Lifecycle` may straddle a turn).
-- **Monotonic.** `turn`, `turns`, `messages_in`, `generation` and `restarts`
-  never decrease across reads of the same actor. `Dead` is final, and an id
-  never belongs to another actor (M4).
-- **No ABA on stalls.** The same `TurnId` in two reads means the same turn
-  was open in between. Ages are exact to one clock tick (5 ms).
-- **Listings.** An actor admitted before a listing starts and not past D when
-  it ends appears exactly once. Actors started or ended during it may or may
-  not appear, possibly as `Dead`. No id appears twice.
-- **Supervision.** Each `which_children`, `count_children` or `tree()` level
-  is read under that supervisor's lock: the list and counts of one call agree
-  with each other and with the supervisor's bookkeeping at one instant.
-  Levels of a tree are read parent first, not at one instant. A listed actor
-  may already be dead and not yet processed; a restarting child shows
-  `ready: false` and its last id (OTP `restarting`).
-- **No perturbation.** Out-of-band reads never enqueue, wake, block or run
-  user code on the observed actor, and never wait for a turn to end.
+- **Per field.** Each scalar is one atomic load or one locked read. The
+  activity fields come from one activity (seqlock read) or are reported
+  `ReadContended`. Fields of one `ActorInfo` are not from one instant.
+- **Monotonic.** Turn ids, `accepted`, `dequeued`, `discarded`, generations,
+  restarts never decrease; `Dead` is final; ids are never reused (M4).
+- **No ABA.** The same `TurnId` open in two reads means the same activity was
+  open in between.
+- **Ages.** A stamp age is an estimate: the clock may lag its 5 ms cadence by
+  the thread's scheduling delay (reported as `clock_lag` in the snapshot), and
+  a stamp of 0 is `ClockNotStarted`. The watchdog's `observed` duration is a
+  lower bound measured with its own monotonic clock.
+- **Listings.** An actor not past D for the whole listing appears exactly
+  once, in `ActorId` order; actors starting or ending during it may or may not
+  appear; one between D and publication appears as `Dead { published: false
+  }`; no id appears twice.
+- **Supervision.** Each `ChildInfo` row is consistent with itself (one
+  child's lock); rows of one call may be sampled at different instants, so a
+  level as a whole may never have existed. Counts agree with the rows of the
+  same call. Expanded nodes belong to the captured instance.
+- **No waiting on turns.** Out-of-band reads never enqueue, wake, run user
+  code on the observed actor, or wait for a turn. They take short metadata
+  locks the actor also takes (labels, links, the exit request), so they can
+  contend briefly; never for the length of a turn.
 
-Not guaranteed:
-
-- an instant view across actors, groups or tree levels;
-- `mailbox_len` exact under concurrent sends (it can lag a send in flight);
-- that `get_status` answers a busy actor in time (it queues behind the
-  backlog, as in OTP);
-- detection when the watchdog thread itself is starved of CPU by the OS;
-- that a watchdog kill ends a turn that never returns (L3: nothing preempts);
-- memory per actor (rank 18a), message payloads, mailbox contents (recon's
-  rule: never copy a mailbox), or the history of past turns (0.10).
+Not guaranteed: an instant view across actors, groups or tree levels; exact
+`len` under concurrent sends; that `get_status` answers a busy actor in time;
+detection while the watchdog thread is itself starved; that a kill ends an
+activity that never returns (L3); memory per actor, payloads, mailbox
+contents, or history.
 
 ## The stall watchdog
 
@@ -443,754 +511,746 @@ Not guaranteed:
 #[cfg(feature = "introspection")]
 let watchdog = introspection::Watchdog::start(WatchdogConfig {
     sample_every: Duration::from_millis(50),
-    long_poll: Some(Duration::from_millis(100)),   // shared async workers only
-    long_turn: Some(Duration::from_secs(10)),
-    long_mailbox: Some((10_000, 1_000)),           // enable, disable (OTP long_message_queue)
-    starvation: Some(Duration::from_millis(250)),  // probe every second
-    kill_after: None,                              // StallPolicy::Report
-    dump_dir: None,                                // Some(dir): write render_json on each report
+    long_poll: Some(Duration::from_millis(100)),     // shared async workers only
+    long_turn: Some(Duration::from_secs(10)),        // every activity kind
+    long_mailbox: Some((10_000, 1_000)),             // enable, disable
+    starvation: Some(Duration::from_millis(250)),    // one probe per target at a time
+    kill_after: None,                                // Some(d): fenced kill on long turns only
+    dump_dir: None,
     ..Default::default()
 })?;
-watchdog.probe_runtime(tokio::runtime::Handle::current(), "main"); // unmanaged actors' runtime
-// Groups of every ActorSystem are probed automatically.
-let reports: Vec<StallReport> = watchdog.check_now();               // one synchronous pass (tests, sim)
-
-#[actor(stall(long_turn = "4s", kill_after = "30s"))]               // per type; or ChildSpec::stall(..)
+watchdog.probe_runtime(tokio::runtime::Handle::current(), "main");
+let reports = watchdog.check_now();                  // one synchronous pass; report-only
 ```
 
-| Detector | Detects | Signal | Applies to |
-|---|---|---|---|
-| D1 long poll | synchronous code blocking a worker (OTP `system_monitor` `long_schedule`) | `in_poll` with the same poll count for `long_poll` | actors on shared async workers: `Backend::Async`, async groups. Not `Thread`, `Blocking`, native groups or threads mode, which own their thread |
-| D2 long turn | a handler stuck across awaits, or a long synchronous turn on its own thread; also `started()`/`stopped()` | same `TurnId` for `long_turn` | every actor, both modes |
-| D3 starvation | a group (or the probed ambient runtime) cannot run new tasks | the probe task has not run `starvation` after it was spawned (reported before it runs) | async groups and probed runtimes |
-| D4 long mailbox | backlog | `mailbox_len >= enable`, cleared at `<= disable` | every actor |
+| Detector | Signal (watchdog-observed) | Applies to |
+|---|---|---|
+| D1 long poll | the same `(turn, poll_count)` seen `in_poll` for `long_poll` | `Backend::Async` and async groups; not `Thread`, `Blocking`, native groups, threads mode |
+| D2 long turn | the same open turn id for `long_turn` | every actor and activity kind, both modes |
+| D3 starvation | the probe task has not run `starvation` after spawn (reported before it runs) | async groups, probed runtimes |
+| D4 long mailbox | `len >= enable`, cleared at `<= disable` | every actor |
 
-Each report names the actor (id, type, label), the message type, the turn
-id, the turn age and poll age; D3 names the group and the actors of that
-group inside a poll, oldest first (the likely culprits). Reports are rate
-limited per actor and turn: at the threshold, at 2x, 4x, and once when the
-turn ends (with its total). Each also increments a counter and, with
-`dump_dir`, writes the full snapshot (at most one file per second, the last
-16 kept), which survives a runtime whose workers are all blocked.
+**Structure.** A sampling thread reads the tables and the activity words and
+pushes fixed-size reports into a bounded channel; a separate delivery thread
+emits `tracing` events, updates metrics and writes dumps (at most one file per
+second, 16 kept). If delivery blocks (a stuck subscriber or disk), sampling
+continues and excess reports are dropped and counted (`reports_dropped`).
+At most one starvation probe is outstanding per target; a late probe is
+reported once and not re-spawned until it runs. Reports are rate limited per
+actor and activity: at the threshold, 2x, 4x, and an `ended` report.
 
-**Policy.** `Report` is the default and the only policy for D1, D3 and D4.
-`kill_after` adds a fenced kill when a turn's age passes it: the actor exits
-`Killed`, `stopped()` is skipped, linked actors and monitors see `Killed`, and
-a supervisor restarts it as any abnormal exit (OTP: an operator or supervisor
-`exit(Pid, kill)`). Because L3 stands, a kill takes effect when the turn
-returns. A turn wedged forever keeps the actor alive; the watchdog keeps
-reporting it with `kill_pending: true`, and supervisor shutdown reports it as
-stuck, as today. Erlang has no stall watchdog (preemption makes it less
-needed); `long_schedule` and `long_message_queue` are the nearest.
+**Policy.** Report for D1, D3, D4. `kill_after` adds the fenced kill for D2
+only (a long poll can be legitimate CPU work). The watchdog's own lifecycle:
+dropping `Watchdog` stops both threads; `start` twice returns
+`AlreadyRunning`.
 
 ## Determinism and the simulator
 
-- Out-of-band reads, `snapshot()` and `check_now()` take no scheduler
-  decision, register no waker and draw no randomness, so a seed's tape is the
-  same with or without them. Under `--cfg spawned_sim` the clock stamp is
-  virtual time and the clock thread does not exist.
-- `Watchdog::start` is not available under `spawned_sim` (it would add an OS
-  thread and wall-clock behaviour). Tests call `check_now()` after advancing
-  virtual time; the simulator's turn budget (rank 8b) remains the check for a
-  poll that never yields.
-- `get_status`/`get_state` are requests: under the simulator they are
-  scheduled like any request and replay identically.
-- Usable inside `#[sim_test]`: assert mailbox lengths, lifecycle, the current
-  message of an actor parked at an await, `which_children` across a restart,
-  and that `check_now()` reports a turn after 10 virtual seconds.
+- **Reads and report-only checks are neutral.** `info`, listings,
+  `snapshot`, `tree`, console command handling and `check_now()` without a
+  kill policy take no scheduling decision, register no waker, draw no
+  randomness and iterate in `ActorId` order (ordered shards, sorted outputs),
+  so a seed's decision tape is identical with or without them.
+- **Kill-capable checks are deterministic, not neutral.** A
+  `check_now_with(cfg)` that commits a kill changes the run; it replays
+  identically for the same seed and script.
+- Under `spawned_sim` the stamp is virtual time and there is no clock,
+  watchdog or console thread; `Watchdog::start` and the console listener are
+  not available. Tests call `check_now()` and `console::handle_line()` (the
+  same function the listener uses).
 
-```rust
-#[sim_test]
-async fn backlog_builds_behind_a_wedged_peer() {
-    let peer = Peer::new().start();
-    let gate = Gate::new();                       // a handler awaits it forever
-    peer.send(Wedge(gate.clone())).unwrap();
-    for i in 0..100 { peer.send(Ping(i)).unwrap(); }
-    rt::sleep(Duration::from_secs(11)).await;     // virtual
-    let info = peer.info();
-    assert_eq!(info.mailbox_len, Some(100));
-    assert_eq!(info.activity.unwrap().message, Some(type_name::<Wedge>()));
-    assert!(info.activity.unwrap().poll.is_none()); // suspended, not blocking
-    assert!(matches!(peer.get_status().with_timeout(1s).await, Err(ActorError::RequestTimeout)));
-    let reports = introspection::Watchdog::check_now_with(WatchdogConfig::default());
-    assert!(reports.iter().any(|r| r.detector == Detector::LongTurn && r.actor_id() == Some(peer.id())));
-}
-```
+## Access paths
 
-## Access paths and the `spawned-top` data model
-
-1. **Rust API** above, identical in both modes.
-2. **`tracing`**: the structured events; `spawned::stall` and
-   `spawned::starvation` are emitted from the watchdog thread, so they are
-   produced even when every runtime worker is blocked (provided the
-   subscriber does not write from a runtime task).
-3. **Metrics** (with `metrics` also enabled), fixed cardinality, each family
-   checked by `scripts/check-metrics-exposition.py` with a negative control:
-   `spawned_watchdog_long_polls_total`, `_long_turns_total`,
-   `_long_mailboxes_total`, `_kills_total`, gauges `spawned_oldest_turn_age_seconds`,
-   `spawned_max_mailbox_len`, `spawned_actors_in_turn`, and per group (label
-   bounded by the groups an application creates):
-   `spawned_group_scheduling_delay_seconds{group}` histogram and
-   `spawned_group_starvation_total{group}`. No actor or message labels.
-4. **The remote console** (next section), on by default, over the same
-   JSON forms.
-5. **`spawned-top`** (rank 30, later step): `introspection::render_json(&Snapshot)`
-   renders a versioned document without a `serde` dependency (as
-   `render_prometheus`); the application serves it on its admin endpoint, and
-   the watchdog can write it to `dump_dir`. The tool polls one of them. The
-   data model supports its views: a process list with observer's columns
-   (id, type, label, lifecycle, current message, turn age, poll age, mailbox,
-   group) sorted by any `Rank`; recon's sliding window from two snapshots'
-   monotonic counters; the tree view from `SupervisorTree` and `Parent`;
-   group load from `busy_workers` and `scheduling_delay`; open stalls from
-   `WatchdogState`. Attaching to a process that serves nothing, and
-   wait-for edges (rank 7), are later.
-
-An admin endpoint on a starved runtime cannot answer; the dump file and the
-watchdog's own `tracing` output are the paths that keep working (the smaller
-first step rank 43 asks for).
+1. The Rust API above, identical in both modes.
+2. `tracing`: the structured events, delivered by the watchdog's delivery
+   thread or the emitting path.
+3. Metrics (with `metrics`), each family checked by
+   `scripts/check-metrics-exposition.py` with a negative control:
+   `spawned_watchdog_{long_polls,long_turns,long_mailboxes,kills,reports_dropped}_total`,
+   gauges `spawned_oldest_turn_observed_seconds`, `spawned_max_mailbox_len`,
+   `spawned_actors_in_turn`, and per group (labels bounded by the groups an
+   application creates) `spawned_group_scheduling_delay_seconds{group}` and
+   `spawned_group_starvation_total{group}`.
+4. The remote console.
+5. `spawned-top` (rank 30, later): a TUI over the console protocol.
 
 ## Remote console (`spawned-ctl`)
 
-Every binary that runs spawned is attachable, as `erl -remsh` attaches to any
-BEAM node, but with a closed command set over the introspection data and no
-code evaluation (gap G23, moved to 0.9).
+A closed command set over the introspection data, no code evaluation (gap
+G23).
 
-### Defaults and escape hatches
+### Lifecycle
 
 | | Default | Override |
 |---|---|---|
-| Compiled | yes: Cargo feature `console`, in `default` features | `default-features = false` (or omit `console`): no listener, no table, no symbol |
-| Listening | yes, when the process creates its first `ActorSystem` or starts its first actor | `SPAWNED_CONSOLE=off`, or `ConsoleConfig { enabled: false, .. }` |
-| Mode | read-only | `SPAWNED_CONSOLE_ALLOW=terminate,restart,trace` or `ConsoleConfig::allow(..)` |
-| Path | `$XDG_RUNTIME_DIR/spawned/<pid>.sock`, else `/tmp/spawned-<uid>/<pid>.sock` | `SPAWNED_CONSOLE_PATH=/dir` or `ConsoleConfig::dir(..)` (containers, read-only filesystems) |
-| Failure | one `WARN spawned::console` and startup continues | — |
-| Transport | Unix domain socket only, never TCP | — |
+| Compiled | `console` feature, in `default` | omit it: no thread, socket, table or symbol |
+| Starts | on `ActorSystem::new` (automatic) or `console::start(cfg) -> ConsoleGuard` (explicit, for bare-actor programs); never on a bare `.start()` | `SPAWNED_CONSOLE=off` or `ConsoleConfig { enabled: false }` |
+| Mode | read-only | `SPAWNED_CONSOLE_ALLOW=kill,terminate,trace` (each separately) or `ConsoleConfig::allow(..)` |
+| Directory | `$XDG_RUNTIME_DIR/spawned`, else `/tmp/spawned-<euid>` | `SPAWNED_CONSOLE_DIR=/dir` or `ConsoleConfig::dir(..)` |
+| Failure | one `WARN spawned::console` (`ENOENT`, `EROFS`, `EACCES`, `EPERM`/seccomp, untrusted directory) and the program continues | — |
 
-```rust
-// Optional: configure before the first ActorSystem or actor starts; otherwise
-// the defaults and the environment apply.
-spawned_concurrency::console::configure(ConsoleConfig::default()
-    .dir("/run/ethrex")
-    .allow([Allow::Terminate, Allow::Restart]))?;
-```
+**Refcount.** A process-wide `Mutex<ConsoleState>` counts live
+`ActorSystem`s and `ConsoleGuard`s. On 0→1 it creates the directory, binds a
+fresh socket and starts the `spawned-console` thread; on 1→0 it stops the
+thread and removes its own files; a later 0→1 binds again (a new instance
+nonce). It records `bound_pid` at bind time and never removes a file unless
+`std::process::id() == bound_pid`. After `fork()` the child inherits the
+count but no thread; an increment in a process whose pid differs from
+`bound_pid` resets the state and binds anew. There is no `atexit` and no
+`unsafe`: a process that exits without dropping its systems leaves files
+that the lock protocol below identifies as stale.
 
-**Where the listener runs.** Never on application workers: it would be
-starved exactly when it is needed (ethrex `d958dcba4`). In tasks mode it is
-one idle task on the `ActorSystem`'s control runtime, which already runs on
-its own thread (`spawned-control`). A process with bare actors and no
-`ActorSystem` gets that control thread lazily, at its first actor start. In
-threads-only builds (no Tokio) it is one OS thread blocked in `accept`. Each
-connection is served on the same control runtime or thread, with at most 8
-concurrent connections.
+**Where it runs.** On its own `spawned-console` OS thread, never on
+application workers and not on a system's control runtime, so console work
+cannot delay supervision or shutdown, and the console outlives any one system.
+In tasks builds the thread runs a current-thread Tokio runtime with one task
+per connection; in threads-only builds it accepts and hands each connection
+to a short-lived thread (at most 8).
 
-**Coverage.** With `console` (or `introspection`) compiled, every actor is
-inserted in the process-wide actor table at spawn and removed at its death
-point's publication, managed or bare (`actor.start()`, `start_with_backend`,
-`start_linked`, threads mode): that is the allowed spawn/exit cost. Bare
-actors appear with `Parent::None` or `Parent::Actor` and no group. The 0.9
-unified start funnels every start function through one spawn path, so
-registration lives in exactly one place and covers every actor by
-construction; a test compares the spawned counter with the table under churn
-for every public start function.
+**Coverage.** Every actor, managed or bare, is in the actor table while
+`console` or `introspection` is compiled. The 0.9 unified start funnels every
+start function through one spawn path, so registration lives in one place; a
+test compares the spawned counter with the table for every start function.
 
-### Socket lifecycle and permissions
+### Files, permissions and stale sockets
 
-1. Resolve the directory. Create it with mode `0700` if absent. If it
-   exists, `lstat` it: it must be a directory (not a symlink), owned by the
-   process uid, mode `0700`; otherwise refuse with one warning (a directory
-   pre-created by another user in `/tmp` is the squatting attack).
-2. Remove `<pid>.sock` if present: the pid is ours, so it is a stale socket
-   from a dead process that had the same pid.
-3. Bind with a `0177` umask, then `chmod 0600` before `listen` (the `0700`
-   directory already closes the window).
-4. On every accepted connection, read the peer's credentials
-   (`SO_PEERCRED` on Linux, `getpeereid` on macOS, through Tokio's
-   `peer_cred` or `rustix`, no `unsafe` in spawned) and drop any peer whose
-   uid differs from ours. Root can pass; it can read our memory anyway.
-5. Unlink the socket when the last `ActorSystem` shuts down and from an
-   `atexit`-style guard on normal exit. A killed process leaves a stale
-   socket: `spawned-ctl list` connects to each, and removes those whose pid is
-   gone and whose file the caller owns.
+Per instance: `<pid>-<nonce>.sock` and `<pid>-<nonce>.lock`, with a random
+64-bit nonce. The process umask is never touched.
 
-Windows: not supported in v1 (`console` compiles to nothing there); named
-pipes later.
+1. **Directory.** `$XDG_RUNTIME_DIR` must be a directory owned by the
+   effective uid with no group or other access (as the XDG spec requires);
+   `spawned` inside it is created with `DirBuilder::mode(0o700)`. The `/tmp`
+   fallback creates `/tmp/spawned-<euid>` with `mkdir` (mode `0700`). An
+   existing directory is accepted only if `symlink_metadata` shows a real
+   directory, owned by the effective uid, with `mode & 0o077 == 0`; otherwise
+   the console does not start (one warning; no fallback to another
+   location, which would invite squatting). A configured directory gets the
+   same check, and every ancestor must be owned by root or the effective uid
+   and not writable by group or others unless sticky (OpenSSH StrictModes).
+   The directory is reopened and rechecked by handle before binding.
+2. **Bind** inside it, then set the socket file to `0600` (defence in
+   depth; the `0700` directory is the access control).
+3. **Peer check.** Each connection's peer credentials (`SO_PEERCRED` on
+   Linux, `getpeereid` on macOS, through Tokio's `peer_cred` or `rustix`) must
+   match the process's **effective** uid. Root peers are refused unless the
+   process runs as root.
+4. **Liveness lock.** The instance holds an exclusive `File::lock` (std,
+   stable since Rust 1.89) on its `.lock` file for its lifetime.
+5. **Cleanup** removes only the instance's own two files, after checking
+   their `(dev, ino)` against those recorded at creation and `pid ==
+   bound_pid`.
+6. **Stale entries.** `spawned-ctl list` treats an entry as live if its lock
+   is held. If `try_lock` succeeds the instance is dead: holding that lock,
+   `spawned-ctl` removes the pair (rechecking `(dev, ino)`). It never removes
+   an entry whose lock is held, so a socket of a live process, including one
+   in another pid namespace with the same pid, is never deleted; the nonce
+   keeps such pairs apart. The server never removes anything but its own
+   files.
 
-### Wire protocol (version 1)
+### Wire protocol
 
-Line-delimited JSON over the socket, one object per line, UTF-8, at most 64
-KiB per request line. The payloads are the `render_json` forms of the Rust
-types in this design (`ActorInfo`, `Snapshot`, `SupervisorTree`,
-`StallReport`, `StatusReport`): the console, `spawned-top` and the Rust API
-share one data model and one schema version.
+Line-delimited JSON; see the [wire and data contract](#wire-and-data-contract).
 
 ```text
-<- {"v":1,"hello":{"pid":41237,"binary":"ethrex","spawned":"0.9.0","schema":1,
-     "features":["introspection"],"allow":[],"watchdog":true}}
+<- {"v":1,"hello":{"pid":41237,"nonce":"9f2c…","pidns":"4026531836","binary":"ethrex",
+     "spawned":"0.9.0","schema":1,"features":["console","introspection"],"allow":[],"watchdog":true}}
 -> {"v":1,"id":1,"cmd":"ps","args":{"sort":"turn_age","limit":20}}
-<- {"v":1,"id":1,"ok":{"taken_at_ms":91233411,"actors":[{"id":88123,"type":"…RLPxConnection",…}]}}
--> {"v":1,"id":2,"cmd":"restart","args":{"child":"p2p/peer_table"}}
-<- {"v":1,"id":2,"err":{"code":"not_allowed","msg":"restart is disabled (SPAWNED_CONSOLE_ALLOW)"}}
--> {"v":1,"id":3,"cmd":"trace","args":{"actor":88123,"rate":"10/s","max":200,"for_ms":10000}}
-<- {"v":1,"id":3,"event":{"turn":5531,"message":"…GetCells","ms":1910,"outcome":"ok"}}
-<- {"v":1,"id":3,"end":{"reason":"max","lost":0}}
+<- {"v":1,"id":1,"ok":{"taken_at_ms":91233411,"actors":[…],"next":"c:7"}}
+-> {"v":1,"id":2,"cmd":"kill","args":{"target":"sys1/p2p/peer_table","expect":"12@3"}}
+<- {"v":1,"id":2,"err":{"code":"not_allowed","msg":"kill is disabled (SPAWNED_CONSOLE_ALLOW)"}}
 ```
-
-Rules: the server speaks first (`hello`); a request with an unknown `v`
-gets `{"err":{"code":"version"}}` and the server's version; new fields may be
-added within a version (clients ignore unknown fields); removing or renaming
-one is a new version. Responses are capped (a `ps` on 100,000 actors is
-paginated with `limit`/`after`). Idle connections close after 10 minutes.
 
 ### Commands
 
-| Command | Default | Answers from | While an actor is wedged |
+| Command | Allow | Answers from | While an actor is wedged |
 |---|---|---|---|
-| `hello`, `ps [--sort mailbox\|turn_age\|poll_age\|turns\|id] [--group g] [--type t] [--limit n]` | read-only | actor table, tier 0 fields; mailbox and ages with `introspection` | answers |
-| `info <actor>` (id, `name`, or `label~substring`), `links <actor>` | read-only | `info()` | answers |
-| `tree [supervisor]`, `groups`, `snapshot` | read-only | supervision trees, group snapshots | answers |
-| `stuck [--window 2s]` | read-only | the watchdog's open reports if it runs; otherwise two samples of the turn ids `window` apart | answers |
-| `state <actor> [--timeout 5s]` | read-only | `get_status`: in band; state shown only for `Inspect` actors (opt-in per actor, so no console switch) | times out, with "use `info`" in the error |
-| `trace <actor> <rate> [--max n] [--for t]` | **opt-in** (`trace`) | per-actor turn events through a sink session owned by the connection; stops at `max`, `for` (default 10 s) or disconnect; needs `introspection` | events stop while the turn is open; the open turn shows in `info` |
-| `restart <child>` | **opt-in** (`restart`) | `ChildHandle::kill()` on the child's current generation: `Killed`, counted in the restart budget, as `exit(Pid, kill)` | takes effect when the turn returns (L3); the reply says so |
-| `terminate <child>` | **opt-in** (`terminate`) | the supervisor's `terminate_child` (dynamic supervisors, PR #245; static supervisors once G6 adds it) | as the supervisor's own call |
+| `hello`, `ps [--sort ..] [--group g] [--type t] [--limit n]`, `info <a>`, `links <a>`, `tree [sup]`, `groups`, `snapshot` | read | tables, tier 0, tier 1 if compiled | answers |
+| `stuck [--window 2s]` | read | watchdog reports, or two samples of turn ids (needs `introspection`) | answers |
+| `state <a> [--timeout 5s]` | read (state is opt-in per actor through `Inspect`) | `get_status`; awaited on the console runtime, never blocking the thread | times out; the error points to `info` |
+| `trace <a> <rate> [--max n] [--for t]` | `trace` | bounded turn events (needs `introspection`) | events stop; `info` shows the open turn |
+| `kill <target> --expect <id>[@gen]` | `kill` | resolves the target once to an instance-bound handle; `stale_target` if the id or generation differs; then `ChildHandle::kill()` | `accepted`: effective when the activity returns (L3) |
+| `terminate <sup> <child> --expect <id>[@gen]` | `terminate` | the supervisor's `terminate_child` (dynamic supervisors; static ones once G6 adds it) | as the supervisor's call |
 
-There is no `eval`, `replace_state`, `suspend` or arbitrary send. Every
-command is logged as `INFO spawned::console` (`WARN` for mutating ones) with
-the peer pid and uid, the command and the outcome.
+`kill` is OTP's `exit(Pid, kill)`, not `restart_child`: the supervisor then
+applies its policy. A Temporary child is not restarted; under OneForAll or
+RestForOne siblings are rebuilt; the restart counts against the budget and may
+fail the tree. The reply says `accepted`; completion is visible through
+`info`/`tree`. Targets carry the system id (`sys<id>/…`) and an expected
+instance, so a stale operator view cannot hit a newer generation. There is no
+`eval`, `replace_state`, `suspend` or arbitrary send. Every command is logged
+(`spawned::console`; WARN for `kill`, `terminate`, `trace`).
 
-**`trace` in v1.** The console needs it, so v1 includes the minimal
-per-actor trace that decision 8 otherwise left for 0.10: with the
-`introspection` feature only, each turn of a traced actor emits one event
-(message type, turn id, duration, outcome) into the connection's own sink
-session, rate-limited and auto-stopping (recon's rules). The cost is one
-relaxed load of a flag on the activity cache line per turn, compiled out
-without `introspection`. The flight recorder stays in 0.10.
+**Console turn trace (v1, tier 1).** One fixed-size event per activity of a
+traced actor (turn id, kind, message, observed duration, outcome) into the
+connection's own session; at most one trace per connection and 4 traced
+actors per process; `max` default 100 (cap 10,000), `for` default 10 s (cap 5
+min); stops at either, or on disconnect; events beyond the session's
+capacity are dropped and counted. The producer reads the trace bit from the
+end swap's old value.
 
-### `spawned-ctl`
+### Limits
 
-A new workspace binary, `tools/spawned-ctl` (later `spawned-top` adds the
-live TUI over the same protocol):
-
-```text
-spawned-ctl list                          # sockets in the default and configured dirs, with pid, binary, liveness
-spawned-ctl attach <pid|path>             # interactive: ps, info, state, tree, stuck, trace, restart, terminate
-spawned-ctl <pid|path> ps --sort mailbox  # one-shot; --json prints the raw protocol objects
-```
+| Resource | Limit |
+|---|---|
+| connections | 8; the ninth is refused with `busy` |
+| request line / JSON depth | 64 KiB / 32 |
+| requests in flight per connection | 1 executing, 4 queued, then `busy` |
+| commands per connection | 20 per second |
+| response size | 4 MiB; larger results are cut with `"truncated":true` and a cursor |
+| `ps` rows | default 100, max 1,000; built from a copied `(sort key, id)` vector, 16 bytes per actor, locks released per shard |
+| `tree` | depth 64, 10,000 nodes |
+| strings in output | labels, names, errors: 256 bytes; `format_status`: 64 KiB |
+| write deadline | 2 s per frame, then the connection is closed (a paused client cannot block others) |
+| idle connection | 10 minutes |
+| disconnect | cancels the connection's pending `state` and `trace` |
 
 ### Security
 
-- **Threat model: same user.** Anyone who can connect already runs as the
-  process's uid (or root), and can read its memory with a debugger or
-  `/proc/<pid>/mem` (subject to Yama's `ptrace_scope`), send it signals and
-  read its files. The console gives that principal a structured, read-only
-  view by default, and three narrow mutations only if the operator enables
-  them. Other local users are stopped three times: the `0700` directory, the
-  `0600` socket, and the peer-uid check.
-- **What it reveals.** Actor types, labels, registered names, message type
-  names, counters, exit reasons, supervision structure. Never message
-  payloads or mailbox contents; state only for actors that opt into
-  `Inspect`, through their redacting `format_status`. Labels may contain
-  peer addresses: they are visible to the same user, as logs are.
-- **Why no TCP.** A network listener needs authentication, encryption, key
-  or cookie management and firewalling, and its failure mode is remote
-  access. A Unix socket's access control is the filesystem plus kernel
-  credentials, with nothing to configure or leak. Remote use goes through
-  SSH, which already authenticates users (`ssh host spawned-ctl <pid> ps`).
-- **Why no eval.** Rust is compiled: an evaluator would mean shipping an
-  interpreter or loading code, which turns any access into arbitrary code
-  execution. The closed command set keeps the console's capability equal to
-  its read-only purpose.
-- **Denial of service.** At most 8 connections, 64 KiB request lines,
-  paginated responses, per-connection rate limit (20 commands per second),
-  idle timeout. Commands read tables under short locks, never wait for a
-  turn, and never block actors.
-- **Compared with Erlang.** `erl -remsh` joins the node's distribution: epmd
-  and a TCP port, authenticated by a shared cookie (`~/.erlang.cookie`),
-  unencrypted unless TLS distribution is configured, and the shell has full
-  `eval`. Anyone with the cookie and network reach has arbitrary code
-  execution on the node. The spawned console has a smaller capability (no
-  eval), a smaller surface (local only) and no secret to manage; it gives up
-  remote attach without SSH and live code changes, which Rust cannot do
-  anyway.
+- **Threat model: the same effective uid.** Connecting requires the
+  process's effective uid. Such a principal can already signal the process,
+  read its files and usually trace it (subject to Yama's `ptrace_scope`, so
+  this is an authorization choice, not proof of equivalent access). Read-only
+  by default; three narrow mutations each enabled explicitly. Other local
+  users are stopped by the `0700` directory and the peer-uid check.
+- **What it reveals.** Types, labels, names, message type names, counters,
+  exit reasons, structure. Never payloads or mailbox contents; state only
+  through `Inspect`. Labels may hold peer addresses: same exposure as logs.
+- **Why no TCP.** A network listener needs authentication, encryption and
+  secrets, and fails as remote access. Remote use goes through SSH
+  (`ssh host spawned-ctl <pid> ps`).
+- **Why no eval.** An evaluator turns any access into arbitrary code
+  execution; Rust has no safe interpreter to offer.
+- **Denial of service.** The limits above; console work runs on its own
+  thread with per-frame write deadlines, so a slow or hostile client cannot
+  stall supervision, shutdown, the watchdog or other clients.
+- **Compared with Erlang.** `erl -remsh` joins distribution: epmd, a TCP
+  port, a shared cookie, unencrypted unless TLS distribution is configured,
+  and full `eval`. Anyone with the cookie and network reach can run code. The
+  console has no eval, no network surface and no secret.
+
+## Wire and data contract
+
+Frozen before release:
+
+- **Framing.** One JSON object per line, UTF-8, at most 64 KiB per request,
+  nesting depth 32. Encoded with `serde_json` under `console` through
+  dedicated wire structs, so the schema does not follow Rust's derived
+  representation.
+- **Envelope.** Server first: `{"v":1,"hello":{…}}`. Requests
+  `{"v":1,"id":<u32>,"cmd":<string>,"args":{…}}`; `id` is client-chosen and
+  unique among the connection's in-flight requests. Responses
+  `{"v":1,"id":…,"ok":{…}}` or `{"v":1,"id":…,"err":{"code":…,"msg":…}}`.
+  Streams send `{"id":…,"event":{…}}` lines then exactly one
+  `{"id":…,"end":{"reason":…,"lost":<n>}}`.
+- **Error codes.** `version`, `parse`, `too_large`, `busy`, `unknown_cmd`,
+  `bad_args`, `not_found`, `stale_target`, `not_allowed`, `unavailable`,
+  `timeout`, `actor_stopped`, `noproc`, `callback_failed`, `internal`.
+- **Numbers and time.** Ids, turn ids and generations are decimal strings
+  (they may exceed 2^53); counts under 2^53 are numbers. Durations are integer
+  milliseconds in `*_ms` fields; `taken_at_ms` is monotonic milliseconds
+  since process start; `wall_unix_ms` is wall time.
+- **Unavailable values.** A field that cannot be given is
+  `{"unavailable":"feature"|"read_contended"|"clock_not_started"|"redacted"|"dead"}`,
+  never `null` or omission, so "not compiled" and "could not read" differ.
+- **Enums** are strings; a client shows an unknown value verbatim.
+- **Evolution.** New fields and enum values may appear within `v:1`; removing
+  or renaming one, or changing a type, is `v:2`. A client ignores unknown
+  fields.
+- **Pagination.** `next` is an opaque cursor naming a key vector captured by
+  the first page and kept 30 s per connection; later pages come from that
+  capture, so a changing sort key cannot duplicate or skip rows (rows may be
+  stale or `dead`).
+- **Rust types.** Every public type in the API sections is
+  `#[non_exhaustive]`; `Field<T>` carries the same `Unavailable` reasons.
 
 ## OTP alignment
 
 | OTP | Spawned v1 | Status |
 |---|---|---|
-| `process_info/2`: `status` | `Lifecycle` | aligned (names differ) |
-| `message_queue_len` | `mailbox_len` | tier 1; aligned, approximate under concurrency |
-| `current_function` / `current_stacktrace` | `activity.message`, `kind`, `age`, `poll` | adapted: Rust has no cheap stack sampling; the message type is the useful unit |
-| `links`, `monitors`, `trap_exit` | `links`, `monitors`, `trap_exit` | aligned; `monitored_by` deferred (no reverse table today) |
-| `registered_name`, `initial_call`, `parent`/`$ancestors` | `name`, `actor_type`, `parent`, `supervisor.path` | aligned |
-| `reductions` | `turns`, `messages_in` | adapted: dispatched envelopes, not work units |
-| `memory`, `heap_size`, `dictionary`, `group_leader` | not provided | Rust-forced (rank 18a for memory) |
-| `proc_lib:set_label` (OTP 27) | `ctx.set_label` | aligned |
-| `erlang:processes/0` | `introspection::processes()` | tier 1 |
-| `sys:get_state/1,2` | `ActorRef::get_state(f)` | aligned: in band, between callbacks, 5 s default; a closure instead of returning the term |
-| `sys:get_status`, `format_status/1` (OTP 25) | `get_status`, `Inspect::format_status` | aligned; redacted by default |
-| callback crash in `sys` calls | `ActorError::CallbackFailed`, actor unaffected | aligned (`callback_failed`) |
-| `sys:statistics` | `turns`, `messages_in`, `ActorInfo` | adapted: always counted with the feature, no enable/disable |
-| `sys:trace`, `trace` sessions (OTP 27), `recon_trace` | sink with sessions in v1; per-actor message tracing 0.10 | deferred |
-| `sys:replace_state`, `suspend`/`resume`, `change_code` | not provided | rejected (state outside a turn; not Rust) |
-| `supervisor:which_children/1`, `count_children/1` | `which_children`, `count_children`, `tree` | aligned, plus `restarts`, `ready`, `busy` |
-| SASL supervisor reports, proc_lib crash reports | `spawned::supervisor`, `spawned::crash` events | aligned fields where they exist |
-| `erlang:system_monitor` `long_schedule`, `long_message_queue` (OTP 26) | watchdog D1, D4 | aligned in spirit; Spawned reports, OTP sends a message to one monitor process |
-| observer, recon `proc_count`/`proc_window`, `recon:info` (no mailbox copy) | `spawned-top` data model, `Snapshot::top`/`window`; never copies a mailbox | aligned |
-| `exit(Pid, kill)` for a hung process | fenced `Killed` | aligned reason; takes effect at turn end (L3, Rust-forced) |
-| `erl -remsh` / remote shell over distribution | `spawned-ctl attach` over a local Unix socket | adapted: closed command set, no eval, local only (see [security](#security)) |
+| `process_info(status)` | `Lifecycle` | adapted: different vocabulary (`Idle`/`InTurn`, not `waiting`/`running`/`runnable`) |
+| `message_queue_len` | `MailboxCounts.len` | aligned (tier 1), approximate under concurrency |
+| `current_function` | `Activity.kind`, `message`, ages | adapted: message type instead of a stack |
+| `links`, `monitors`, `trap_exit`, `registered_name`, `initial_call` | same names | aligned; `monitored_by` deferred |
+| `reductions` | turn ids, `dequeued` | adapted |
+| `memory`, `dictionary`, `group_leader` | none | Rust-forced (rank 18a for memory) |
+| `proc_lib:set_label` (OTP 27) | `set_label` | aligned |
+| `erlang:processes/0` | `processes()` | aligned (with `console` or `introspection`) |
+| `sys:get_state/1,2` | `get_state(f)` | aligned in placement (between callbacks, in order, 5 s); adapted in form (a closure) |
+| `sys:get_status`, `format_status/1` | `get_status`, `Inspect` | **stronger**: OTP's default `format_status` returns the state; Spawned redacts unless `Inspect` |
+| formatter or callback crash | `CallbackFailed`, actor continues | adapted: OTP returns `{callback_failed, …}` from `sys:replace_state`/`get_state` callbacks and substitutes a failure term for a crashing `format_status`; Spawned uses one error for both |
+| `sys:statistics` | turn ids, counters | adapted: always on with the feature |
+| `sys:trace`, OTP 27 trace sessions, `recon_trace` | sink with sessions; bounded console turn trace | partial; full trace 0.10 |
+| `sys:replace_state`, `suspend`, `change_code` | none | rejected |
+| `which_children`, `count_children` | same, plus `tree` | aligned rows; counts as OTP |
+| SASL supervisor reports, proc_lib crash reports | `spawned::supervisor`, `spawned::crash` | aligned fields where they exist |
+| `system_monitor` `long_schedule`, `long_message_queue` | D1, D4 | aligned in spirit (Spawned reports; OTP messages one monitor process) |
+| observer, recon `proc_count`/`proc_window`, `recon:info` | `spawned-top`, `top`/`window`; no mailbox copy | aligned |
+| `exit(Pid, kill)` | fenced watchdog kill; console `kill` | aligned reason; effective at return (L3, Rust-forced) |
+| `erl -remsh` | `spawned-ctl attach` | adapted: closed command set, local only |
 
 ## Alternatives considered
 
 | Alternative | Decision | Reason |
 |---|---|---|
-| Control lane so `get_status` jumps the queue | Rejected for v1 | OTP handles system messages in order; `info()` is the stuck-actor path. Rank 14 / G11 (0.10) may add it as a receiver opt-in. |
-| Read the state from outside during a turn | Impossible | The handler future holds `&mut A` across awaits. |
-| `Instant::now()` per turn and per poll | Rejected | ~20 ns per read; a coarse clock gives 5 ms accuracy for one load. |
-| Tokio `on_before_task_poll`/`on_after_task_poll` hooks | Rejected as the mechanism | `tokio_unstable`, runtime-wide, no actor or message identity; may feed `GroupSnapshot` later behind a feature. |
-| tokio-console integration | Complement, later | It sees tasks, not actors, mailboxes, `Thread` or threads-mode actors. |
-| Mailbox length from the channel | Not possible | Tokio's `len()` is on the receiver, owned by the (possibly stuck) actor task; `std::sync::mpsc` has none. Rank 37's own mailbox can provide it later at no extra cost. |
-| Per-actor counters always on | Rejected | An RMW per send on the default path. |
-| Process-wide actor table always on | Rejected | Spawn cost for churn-heavy users; managed actors are listable for free. |
-| A `&'static str` or `TypeId` in an atomic | Rejected | Needs `unsafe` or 128-bit atomics; the interned tag is safe. |
-| A new `ExitReason::Stalled` | Rejected | OTP uses `killed`; a new reason breaks matches for no information the report lacks. |
-| **Turn abort at an await** (a kill drops the handler future at its next await, opt-in per type) | **Deferred to its own item** | It would make `kill` work on the wedged `.await` ethrex describes, and Rust can drop a pending future safely. But it costs a kill-wakeup registration per suspended turn for the opted-in type, changes L3 (a semantics change needing its own model: reply obligations of the dropped turn, helpers, `stopped()`), and is close to the `brutal_kill` emulation the OTP comparison advises against. Ethrex fixed its case with a send timeout. Reviewers: see question 4. |
-| **Flight recorder in v1** | **Deferred to 0.10** | Same per-turn ring as `sys:trace` and rank 22's dequeue log; design once with the sink. v1's current turn, crash `last_message` and watchdog cover the incidents. |
-| Per-turn `tracing` span (G10) | Deferred to rank 28 | Cheap but not free even when filtered; same instrumentation point, no API conflict. |
-| kameo-style console server in the library | Rejected | No network I/O in the library; `render_json` plus the application's endpoint, as metrics. |
-| Watchdog as a Tokio task | Rejected | It would starve with the runtime it watches. |
-| Console over TCP or HTTP | Rejected | Needs authentication, encryption and secrets; remote access goes through SSH. An application may still serve `render_json` on its own admin endpoint. |
-| Console with `eval` | Rejected | Arbitrary code execution for any connected user; Rust has no safe interpreter to offer. |
-| Console listener on the application runtime | Rejected | Unreachable during starvation; the control runtime already has its own thread. |
-| Linux abstract-namespace socket | Rejected | No filesystem permissions (any local user can connect, only the peer-uid check would remain) and not portable to macOS. |
-| Console off by default | Rejected (user decision) | Attachability must not depend on foresight; the cost is off the hot path, with `SPAWNED_CONSOLE=off` and the feature as escape hatches. |
+| Control lane for `get_status` | Rejected for v1 | OTP handles system messages in order; `info()` is the stuck path. G11 (0.10) may add a receiver opt-in. |
+| Reading state mid-turn | Impossible | `&mut A` is held across awaits. |
+| Turn ids in tier 0 by widening 0.8's phase word | Rejected (revision 2) | Packing and a persistent counter are added work on the turn path and touch a Loom-verified protocol; the strict rule wins. |
+| `Instant::now()` per turn and poll | Rejected | ~20 ns per read; the stamp is display-only. |
+| The stamp deciding kill eligibility | Rejected (revision 2) | A late clock would make a young turn look old; the watchdog's own observation is a defensible lower bound. |
+| Tokio task hooks, tokio-console | Not the mechanism; complement later | `tokio_unstable`, no actor or message identity, blind to `Thread` and threads mode. |
+| Mailbox length from the channel | Not possible | Tokio's `len()` is receiver-side; `std::sync::mpsc` has none. Rank 37's own mailbox can provide it later. |
+| Per-actor counters always on | Rejected | An RMW per send. |
+| Process-wide table in the default build | **Accepted** (console decision) | Spawn/exit cost only, required for attaching to bare-actor programs; compiled out with `console` off. |
+| `&'static str` or `TypeId` in an atomic | Rejected | Needs `unsafe` or 128-bit atomics. |
+| `ExitReason::Stalled` | Rejected | OTP uses `killed`. |
+| Turn abort at an await | Deferred (0.10 at the earliest) | Cost per suspended turn, L3 change, cancellation safety, deferred obligations; own model. |
+| Flight recorder in v1 | Deferred to 0.10 | Same ring as full `sys:trace`; design once. |
+| Per-turn `tracing` span | Deferred to rank 28 | Not free even when filtered. |
+| Console on a system's control runtime | Rejected (revision 2) | A system may end while others live; console work must not delay supervision. |
+| Console started by bare `.start()` | Rejected (revision 2) | Hidden threads and sockets in library calls, seccomp failures; bare programs opt in with `console::start`. |
+| Changing the umask to create the socket | Rejected (revision 2) | Process-global, races other threads, needs `unsafe`. |
+| Pid-only socket names, pid-based stale cleanup | Rejected (revision 2) | Pid namespaces and reuse; nonce plus lock instead. |
+| `atexit` cleanup | Rejected | Needs `unsafe`; the lock makes leftovers identifiable. |
+| Console over TCP/HTTP, console `eval`, abstract-namespace socket | Rejected | See security. |
+| `restart` as a console command | Renamed `kill` (revision 2) | It is `exit(Pid, kill)`, not OTP `restart_child`. |
+| Watchdog as a Tokio task | Rejected | It would starve with what it watches. |
+| A coherent published supervisor view | Deferred | Would make each tree level an instant; costs work on supervisor paths; v1 promises per-row consistency only. |
 
 ## Semantics contract: guarantees added
 
-Proposed new section 13 of [semantics.md](semantics.md), "Introspection";
-ids proposed. L3, M1, M2 and R1 are unchanged.
+Proposed section 13 of [semantics.md](semantics.md). L3, L5, M1, M2, R1 and
+R3 are unchanged; R4 gains one exception (I4).
 
 | Id | Guarantee | Checked by (planned) |
 |---|---|---|
-| I1 | **Out of band.** `info`, listings, snapshots, supervision trees and watchdog sampling never enqueue, wake, block or run user code on the observed actor, and return while it is inside a turn. | `introspection::*::info_returns_during_a_wedged_turn` (every placement); `introspection_sim::reads_do_not_change_the_tape` |
-| I2 | **Activity is consistent and fenced.** The activity fields come from one turn; the same `TurnId` in two reads means that turn was open in between; ages are exact to one clock tick. | `introspection::*::activity_*`; Loom `activity_slot_loom`; sim |
-| I3 | **Monotonic and final.** Turn ids, counters, generations and restarts never decrease; `Dead(reason)` is final and equals `wait_exit()`. | `introspection::*::monotonic_counters_*`; fuzz oracle |
-| I4 | **Status is in band.** `get_state`/`get_status` run in their own turn between handler turns, in mailbox order, with exactly one outcome (`Ok`, `RequestTimeout`, `ActorStopped(final)`, `NoProc`, `CallbackFailed`); a callback panic does not change the actor. | `Introspection!StatusBetweenTurns`, `!StatusDischarged`; `introspection::*::status_*`; sim race with death |
-| I5 | **Redaction.** A type-erased status shows state only for actors that opted into `Inspect`. | `introspection::*::state_is_redacted_by_default`; trybuild |
-| I6 | **Listings.** An actor live for a whole listing appears exactly once; no id twice. | `introspection::listing_under_churn` (Loom/Shuttle on the table); fuzz |
-| I7 | **Supervision snapshots** are consistent per supervisor level (list and counts agree), not across levels. | `introspection::*::tree_*`, sim restarts |
-| I8 | **Watchdog detection.** With the watchdog running, D1 reports a poll on a shared async worker lasting `long_poll` + 2 samples, D2 a turn lasting `long_turn` + 2 samples, D3 a probe late by `starvation`, D4 a mailbox at its threshold; none fires for a duration under its threshold minus one tick. | `watchdog::*` (real time, generous margins); `check_now` sim tests |
-| I9 | **Fenced kill.** A watchdog kill applies only to the turn it observed: a turn that ended first is not charged, and once committed no later turn of that actor dispatches. The exit is `Killed` (L4, L5) and takes effect when the turn returns (L3). | `Introspection!FencedKill`, `!KillBitOnTarget`, `!KillSkipsStopped`, `!NoDispatchAfterStop`; Loom on the activity word; sim |
-| I10 | **Reports.** Crash, supervisor and stall events use the documented targets and field names; sink sessions are isolated, bounded, and lose events only with a count. | `reports::*` with a capturing subscriber; `sink::*` |
-| I11 | **No cost on the default path.** In the default build (`console` on, `introspection` off) and with both off, send, dispatch and turn code execute the same operations as the release before it (the turn-phase store is wider, not added). | the [benchmark gate](#benchmark-gate) and the codegen check |
-| I13 | **Console.** The console listens only on a Unix socket whose directory is `0700` and owned by the process user and whose file is `0600`, and serves only peers with the process's uid; it never opens a network port; it is read-only unless mutations are enabled; every command is logged; its commands are out-of-band reads (I1) except `state` (in band, I4) and the enabled mutations; a socket failure never fails startup. | `console::*` (below) |
-| I12 | **Deterministic.** Under `spawned_sim`, reads and `check_now()` take no scheduling decision and draw no randomness. | `introspection_sim::reads_do_not_change_the_tape` |
+| I1 | **Out of band.** `info`, listings, snapshots, trees, console reads and watchdog sampling never enqueue, wake, run user code on the observed actor or wait for a turn; they may contend briefly on metadata locks. | `info_returns_during_a_wedged_turn` (every placement); `reads_do_not_change_the_tape` |
+| I2 | **Activity reads.** The activity fields come from one activity or are reported `ReadContended`; the same open `TurnId` in two reads is the same activity; a stamp of 0 is `ClockNotStarted`. | `activity_slot_loom`; `activity_*`; `lazy_clock_*` |
+| I3 | **Monotonic and final.** Turn ids, mailbox counters, generations, restarts never decrease; `Dead { reason }` is final, its reason equals `wait_exit()`, and `published` becomes true exactly when `wait_exit()` returns. | `monotonic_*`; `d_to_publication_*`; fuzz oracle |
+| I4 | **Status is a turn.** `get_state`/`get_status` run in their own turn, between handler turns, in mailbox order, with one outcome (`Ok`, `RequestTimeout`, `ActorStopped(final)`, `NoProc`, `CallbackFailed`). A caught callback panic alone does not end the actor; no effect is rolled back. A status envelope whose caller gave up before dispatch is not run (an exception to R4). | `Introspection!StatusBetweenTurns`, `!StatusDischarged`, `!StatusAtMostOnce`, `!NoCallbackAfterGiveUp`, `!CallbackPanicContained`; `status_*` |
+| I5 | **Redaction.** Type-erased state appears only for `Inspect` actors. | `state_is_redacted_by_default`; trybuild |
+| I6 | **Listings.** An actor not past D for a whole listing appears exactly once, in id order; between D and publication it appears `Dead { published: false }`. | `listing_under_churn`; `actor_table_loom`; fuzz |
+| I7 | **Supervision rows.** Each row is self-consistent; counts agree with the rows of the same call; expanded nodes belong to the captured instance. | `tree_*`; `snapshot_during_restarts` |
+| I8 | **Watchdog detection.** With the watchdog running and its threads scheduled, D1–D4 report within their threshold plus two samples; no report for an activity observed open for less than its threshold; sampling continues while delivery is blocked. | `watchdog::*`; `check_now_*` |
+| I9 | **Fenced kill.** A watchdog kill commits only on the open activity it observed; a failed commit has no effect; a commit before D makes the final reason `Killed` however the activity ends (return, panic, callback panic, hook end, runtime drop); nothing is dispatched after it; `stopped()` never begins after a kill and one already running finishes; no commit after D. | `Introspection!NoChargeFinishedTurn`, `!KillDominates`, `!NoDispatchAfterStop`, `!KillSkipsStopped`, `!NoCommitAfterD`; Loom; sim |
+| I10 | **Reports and sessions.** Documented targets and fields; sessions isolated and bounded; losses counted. | `reports::*`; `sink::*` |
+| I11 | **No cost on the default path.** With `introspection` off (console on or off), send, dispatch and turn execute the 0.8 code unchanged. | benchmark gate; codegen check |
+| I12 | **Determinism.** Reads, console commands and report-only checks leave the tape unchanged; kill-capable checks replay identically. | `reads_do_not_change_the_tape`; `console_queries_do_not_change_the_tape`; `kill_check_replays` |
+| I13 | **Console.** Local Unix socket only, in a directory owned by the effective uid with no group/other access; peers with another effective uid are refused; read-only unless each mutation is allowed; every command logged; never removes a live instance's files; limits bound memory and time per client; a failure to start never fails the program. | `console::*` |
 
-Section 10 (not guaranteed) gains the non-guarantees listed
-[above](#consistency-guarantees-and-non-guarantees); section 11 gains the
-`get_state` closure, `turns` for reductions and the absent memory fields.
+## TLA+ model and trace validation
 
-## TLA+ model
+[`Introspection.tla`](../../verification/tla/Introspection.tla), revision 2:
+one actor whose every activity (`started()`, messages, the status turn,
+`stopped()`) opens a new turn id; turns that may suspend forever; handler and
+callback panics; the status request with a deadline (`StatusTimeout`) and the
+skip of abandoned callbacks; administrative stop and unfenced kill; runtime
+drop at any point before D; D and publication (which may never come); and the
+watchdog's observe, successful CAS, failed CAS and record steps. Reads are not
+actions. It stays separate from `Lifecycle.tla` (being changed by PR #240) and
+abstracts links and monitors, which v1 does not touch.
 
-New lifecycle interactions in v1: a status request answered between turns and
-racing the death point; a watchdog that kills; the kill's race with the end
-of the turn it targets. Snapshot races add none: reads change no state, so
-they are not model actions (their consistency is a property of the tables,
-checked with Loom and tests).
-
-[`Introspection.tla`](../../verification/tla/Introspection.tla) is a small
-standalone model (one actor, turns that may suspend forever at an await, a
-FIFO mailbox with messages and one status request, cooperative stop, unfenced
-`ChildHandle::kill`, and the watchdog's observe/CAS/record steps). It is kept
-separate from `Lifecycle.tla`, which PR #240 is changing, and abstracts links
-and monitors, which v1 does not touch. Invariants: `FencedKill`,
-`KillBitOnTarget`, `StatusBetweenTurns`, `StatusDischarged`,
-`KillSkipsStopped`, `NoDispatchAfterStop`.
+Invariants: `NoChargeFinishedTurn`, `NoDispatchAfterStop`, `KillDominates`,
+`NoCommitAfterD`, `KillSkipsStopped`, `StatusBetweenTurns`,
+`StatusDischarged`, `StatusAtMostOnce`, `NoCallbackAfterGiveUp`,
+`CallbackPanicContained`.
 
 Results (TLC 2.19 on fede, 4 workers, `nice 19`): `MCIntrospection` (3
-messages) 3,304 distinct states, depth 20, no error; 5 messages 10,436
-states. Each negative control fails on its named invariant, run one at a
+messages) 29,216 distinct states, depth 23, no error; 4 messages 49,516
+states, depth 26. Each control failed on its named invariant, run one at a
 time (`negative_checks.py`, `INTROSPECTION_CONTROLS`):
 
 | Control | Bug | Fails |
 |---|---|---|
-| `CheckThenAct` | the watchdog checks the turn, then kills in a later step | `FencedKill` |
-| `KillBitIgnored` | turn end drops the kill bit set by the CAS | `FencedKill` |
-| `StatusInTurn` | the status request is answered while a turn is suspended | `StatusBetweenTurns` |
-| `StatusLost` | a queued status request is not answered at death | `StatusDischarged` |
-| `KillRunsStopped` | `stopped()` runs after a kill | `KillSkipsStopped` |
-| `DispatchAfterStop` | the run loop dispatches after a stop is recorded | `NoDispatchAfterStop` |
+| `CheckThenAct` | checks the turn, kills in a later step | `NoChargeFinishedTurn` |
+| `FailedCasKills` | a failed CAS still records a kill | `NoChargeFinishedTurn` |
+| `KillBitIgnored` | normal end drops the kill bit | `NoDispatchAfterStop` |
+| `PanicOverKill` | a handler panic ignores the kill bit | `KillDominates` |
+| `DropLosesKill` | runtime drop ignores the kill bit | `KillDominates` |
+| `NoInvalidateAtD` | the word stays open after a drop | `NoCommitAfterD` |
+| `KillRunsStopped` | `stopped()` begins after a kill | `KillSkipsStopped` |
+| `DispatchAfterStop` | dispatch after a stop or kill | `NoDispatchAfterStop` |
+| `StatusInTurn` | status answered inside a suspended turn | `StatusBetweenTurns` |
+| `StatusLost` | waiting status not answered at D | `StatusDischarged` |
+| `DoubleAnswer` | status answered twice | `StatusAtMostOnce` |
+| `CallbackAfterGiveUp` | callback run after its caller timed out | `NoCallbackAfterGiveUp` |
+| `CallbackPanicStops` | a caught callback panic ends the actor | `CallbackPanicContained` |
 
-No liveness property is checked: with L3 unchanged, an actor whose turn never
-resumes legitimately never dies, and the remaining progress properties
-(status answered when the actor is idle) are ordinary request progress,
-already covered by `Lifecycle.tla` and `DeferredReplies.tla`. Trace
-validation: the `lifecycle-trace` feature records `Observe`, `KillCas`,
-`TurnEnd` (with the kill bit) and status dispatch, and `TraceIntrospection.tla`
-replays them (implementation step 4).
+No liveness property: with L3 unchanged, an actor whose turn never resumes
+legitimately never dies; ordinary request progress is covered by
+`Lifecycle.tla` and `DeferredReplies.tla`.
+
+### Trace events and their mapping
+
+Under `lifecycle-trace`, the implementation records these events per actor
+(actor id, and the fields listed); `TraceIntrospection.tla` replays them as
+behaviours of the model. Linearization points are the atomic operations
+named; events are recorded inside the operation's critical section where one
+exists (`life_section`), and never merged across two operations.
+
+| Event | Fields | Model action | Linearization point |
+|---|---|---|---|
+| `IStart` | turn | `Init` | spawn |
+| `IBegin` | turn, kind, envelope or request id | `Dispatch`, `BeginExit` (hook) | `word.store(open)` |
+| `ISuspend` / `IResume` | turn, poll count | `Suspend` / `Resume` | poll returns `Pending` / poll entry |
+| `IEnd` | turn, kind, outcome (`ok`, `panic`, `callback_panic`, `skipped`), old kill bit | `StartedEnd`, `MsgEnd`, `MsgPanic`, `StatusEnd`, `StatusPanic`, `HookEnd` | the end swap |
+| `IStatusSent` / `IStatusTimeout` | request id, deadline | `SendStatus` / `StatusTimeout` | admission / slot expiry |
+| `IStatusAnswer` | request id, outcome | part of `StatusEnd`/`StatusPanic`/`Die` | slot discharge |
+| `ISend` | envelope id, accepted | `Send` | admission (existing `life_send`) |
+| `IStop`, `IKill` | reason | `Stop`, `ExternalKill` | exit-request lock |
+| `IObserve` | turn seen, open | `Observe` | the watchdog's word load |
+| `ICas` | expected word, result | `KillCas` / `KillCasFail` | the CAS |
+| `IRecord` | target turn | `KillRecord` | exit-request lock |
+| `IExitBegin` | hook run or skipped | `BeginExit` | existing `Hook` event |
+| `IDrop` | old kill bit | `RuntimeDrop` | the drop swap |
+| `ID` | final reason | `Die` | existing death point |
+| `IPublish` | — | `Publish` | completion publication |
+
+An event the model cannot take (placement failure, runtime experiments)
+records `Unmodelled` and rejects the trace. Required suites: wedged turn with
+a fenced kill; kill racing turn end (both orders, by failpoints); kill during
+`started()` and `stopped()`; handler panic after a commit; runtime drop after
+a commit; status queued at D, timed out before dispatch, callback panic;
+console `kill` with a stale expectation. Trace coverage reports every model
+action reached. Negative controls on **recorded traces** (`require_rejected`
+in `negative_checks.py`): an `IRecord` moved after the next `IBegin`; an
+`ICas` with result `ok` on a closed word; an `IStatusAnswer` inside an open
+message turn; a dropped `IStatusAnswer` at `ID`.
 
 ## Test plan
 
-Every guarantee has a check that fails if it breaks. Placements: A
-`Backend::Async`, B `Blocking`, T `Thread`, N threads mode, G `async_group`, TG
-`thread_group`, P `pinned_group` (Linux), using the `semantics_gaps` placement
-macros.
+Placements: A `Backend::Async`, B `Blocking`, T `Thread`, N threads mode, G
+`async_group`, TG `thread_group`, P `pinned_group` (Linux), using the
+`semantics_gaps` placement macros.
 
 ### Integration tests (`concurrency/tests/introspection.rs`, both modes, every placement)
 
 | Test | Guarantee | Fails if |
 |---|---|---|
-| `info_returns_during_a_wedged_turn` (a handler awaits a never-completed future; another blocks in sync code on T/N) | I1 | `info()` waits for the turn, or misreports `InTurn` |
-| `lifecycle_walks_starting_idle_in_turn_exiting_dead` (gates in `started`, a handler, `stopped`) | Lifecycle | a state is skipped or wrong; `Dead` reason differs from `wait_exit` |
-| `activity_names_the_message_and_turn` | I2 | wrong type name, turn id not incremented |
-| `activity_fields_are_from_one_turn` (10^6 short turns, reader loop) | I2 | a read mixes one turn's tag with another's id |
-| `turn_age_is_within_one_tick` (sleeps under paused and real clocks) | I2 | age off by more than a tick plus scheduling slack |
-| `mailbox_len_counts_the_backlog` (100,000 sends behind a wedged turn) | fields | not exactly 100,000 when quiescent; nonzero after death |
-| `monotonic_counters_never_decrease` | I3 | a decrease across reads |
-| `links_monitors_trap_exit_parent_supervisor_position` | fields | any field wrong after link/unlink, monitor/demonitor, restart |
-| `status_runs_between_turns_in_mailbox_order` | I4 | status answered before an earlier message or during a turn |
-| `status_outcomes` (idle; queued at death; after D; timed out; caller dropped) | I4, R1 | an outcome other than the listed one, or two |
-| `callback_panic_is_callback_failed_and_actor_continues` | I4 | the actor exits or the next turn does not run |
-| `state_is_redacted_by_default` / `inspect_formats_state` | I5 | a non-`Inspect` actor's state appears |
-| `listing_under_churn` (spawn and kill 10,000 actors while listing) | I6 | a stable actor missing or duplicated |
-| `tree_counts_agree_with_children` (static, nested, dynamic once #245 lands) | I7 | counts disagree with the list of the same call |
-| `labels_show_in_info_and_reports` | fields, I10 | label missing |
-| `reports::crash_event_fields` (capturing subscriber) | I10 | a documented field missing or renamed |
-| `reports::supervisor_event_fields` | I10 | same |
-| `sink::sessions_are_isolated` (one slow session, one fast) | I10 | the fast session loses events, a producer blocks, a loss is uncounted |
-| `watchdog::long_poll_names_actor_and_message` (A, G only; not T, B, N, TG) | I8 | no report within `long_poll` + 2 samples, or a report on a dedicated thread |
-| `watchdog::long_turn_across_awaits` (all placements) | I8 | no report |
-| `watchdog::starvation_reported_before_probe_runs` (a 2-worker group with both blocked) | I8 | report only after release, or culprits not named |
+| `info_returns_during_a_wedged_turn` (await that never completes; sync block on T/N) | I1 | `info()` waits for the turn |
+| `lifecycle_walks_starting_idle_in_turn_exiting_dead` | lifecycle | a state skipped or wrong |
+| `d_to_publication_interval` (a `Drop` gated on a barrier) | I3, I6 | `Dead{published:false}` not shown, `is_alive()` true after D, `NoProc` not returned, `wait_exit()` returns early, entry removed at D |
+| `activity_names_the_message_and_turn` (two types whose names are prefixes) | I2 | wrong tag or turn id |
+| `activity_fields_are_from_one_turn` (10^6 short turns, reader loop) | I2 | a mixed read accepted |
+| `lazy_clock_started_mid_turn_does_not_false_kill` | I2, I8 | stamp 0 reported as an age, or a report or kill fires early |
+| `mailbox_counts_every_transition` (accepted, failed enqueue, dispatch, stop discard, death drain, in-flight sends, `Exit`/`Down`, status) | fields | `len` wrong at quiescence or nonzero after D |
+| `monotonic_counters_never_decrease` | I3 | a decrease |
+| `links_monitors_trap_exit_parent_supervisor_position` | fields | a field wrong |
+| `status_runs_between_turns_in_mailbox_order` | I4 | answered early or during a turn |
+| `status_outcomes` (idle, queued at D, after D, timed out, receiver dropped) | I4 | an unlisted or second outcome |
+| `status_skipped_when_caller_gave_up` | I4 | the callback runs |
+| `callback_panic_is_callback_failed_and_actor_continues` (also dropping a `ReplyTo` taken from a `RefCell`) | I4 | actor exits; the token not `ReplyDropped` |
+| `status_during_stopped_and_destruction` | I4 | not `ActorStopped` |
+| `get_state_runs_while_deferred_reply_is_outstanding` | I4 | credit consumed or disturbed |
+| `status_bypasses_metrics_mailbox_accounting` | I4 | `mailbox_depth` leaks or a handled message counted |
+| `state_is_redacted_by_default` / `inspect_formats_state` / `format_status_truncated` | I5 | state leaks; no cut |
+| `listing_under_churn` | I6 | a stable actor missing or duplicated; not sorted |
+| `tree_rows_and_counts_agree` / `tree_expands_captured_instance` (restart between capture and expansion) | I7 | counts disagree; generation N+1 attached to N's row |
+| `tree_holds_no_lock_across_children` (lock-order check under a nested restart storm) | I7 | deadlock or lock held |
+| `reports::crash_event_fields`, `reports::supervisor_event_fields`, `crash_last_message_survives_stopped` | I10 | a field missing; `last_message` lost |
+| `sink::sessions_are_isolated` | I10 | interference or uncounted loss |
+| `watchdog::long_poll_names_actor_and_message` (A, G only) | I8 | missing, or fires on T/B/N/TG |
+| `watchdog::long_turn_across_awaits`, `..._in_started`, `..._in_stopped`, `..._in_status_callback` | I8 | missing |
+| `watchdog::starvation_reported_before_probe_runs`, `one_probe_outstanding` | I8 | late, or probes pile up |
 | `watchdog::no_report_under_threshold` | I8 | false positive |
-| `watchdog::fenced_kill_kills_the_observed_turn` and `..._skips_a_finished_turn` | I9 | kill misses or hits the next turn |
-| `watchdog::kill_waits_for_a_wedged_turn` | I9, L3 | the turn is preempted, or `kill_pending` not shown |
-| `watchdog_dump_survives_starvation` | access paths | no file while every worker is blocked |
-| `feature_off_api_shape` (`--no-default-features`, `async` only) | tiers | tier 1 fields are not `None`, or a tier 1 item compiles |
+| `watchdog::delivery_blocked_sampling_continues` (a subscriber that blocks; a dump dir on a full filesystem) | I8 | sampling stops; drops uncounted |
+| `watchdog::drop_and_restart` | I8 | threads leak; `AlreadyRunning` missing |
+| `fenced_kill_kills_the_observed_turn`, `..._skips_a_finished_turn` | I9 | kill misses or hits the next turn |
+| `fenced_kill_beats_handler_panic_and_self_stop` | I9 | reason not `Killed`; `stopped()` runs |
+| `fenced_kill_during_started_and_stopped` | I9 | `stopped()` runs after a kill in `started()`; a running `stopped()` interrupted |
+| `fenced_kill_then_runtime_drop` | I9 | reason not `Killed` |
+| `kill_waits_for_a_wedged_turn` | I9, L3 | preempted; `kill_pending` not shown |
+| `feature_off_api_shape` | tiers | tier 1 fields not `Unavailable(Feature)` |
 
-### Console tests (`concurrency/tests/console.rs`, Unix; `tools/spawned-ctl` tests)
+### Console tests (`concurrency/tests/console.rs`, Linux and macOS; `tools/spawned-ctl`)
 
-| Test | Guarantee | Fails if |
-|---|---|---|
-| `socket_created_at_first_system_and_first_bare_actor` | lifecycle | no socket, wrong path, created before any actor |
-| `socket_removed_on_shutdown_and_drop` | lifecycle | file left after `ActorSystem::shutdown` or normal exit |
-| `stale_socket_with_our_pid_is_replaced` | lifecycle | bind fails or the stale file is reused |
-| `ctl_list_removes_sockets_of_dead_processes` (child process killed with SIGKILL) | lifecycle | stale socket listed as live or not removed |
-| `directory_0700_socket_0600` | I13 | other mode bits set |
-| `foreign_or_symlinked_directory_is_refused_with_one_warning` | I13 | the console uses it, or startup fails, or more than one warning |
-| `peer_with_another_uid_is_dropped` (CI job running as root, connecting from a `setuid` child) | I13 | a command is answered |
-| `fallback_to_tmp_without_xdg_runtime_dir`, `configured_dir_is_used` | defaults | wrong path |
-| `bind_failure_warns_and_startup_continues` (read-only dir) | I13 | startup fails |
-| `commands_answer_while_a_handler_is_wedged` (`ps`, `info`, `stuck`, `tree`; one handler blocked in sync code on every worker of a 2-worker group) | I1, I13 | any command waits for the turn |
-| `state_times_out_on_a_wedged_actor_and_says_use_info` | I4 | hangs or answers from inside the turn |
-| `stuck_without_introspection_uses_turn_ids` | tier 0 | a wedged actor not listed, or an idle one listed |
-| `eight_concurrent_attaches_and_the_ninth_refused` | DoS | a client starves another or the ninth is served |
-| `mutations_refused_unless_allowed` / `allowed_restart_kills_the_generation` / `trace_stops_at_max_and_on_disconnect` | I13 | a mutation without allowance; trace keeps running |
-| `every_command_is_logged` (capturing subscriber) | I13 | a command without a `spawned::console` event |
-| `spawned_console_off_opens_nothing` | escape hatch | a socket or thread exists |
-| `feature_off_build` (`--no-default-features --features async`; `cargo tree` and `nm`) | escape hatch | listener, table or console symbol present |
-| `protocol_v1_roundtrip`, `unknown_version_is_rejected`, `oversized_line_is_rejected` | protocol | malformed handling |
-| `every_start_function_registers` (spawned counter vs table under churn) | coverage | an actor missing from the table |
+| Test | Fails if |
+|---|---|
+| `starts_with_actor_system_not_with_bare_start` | a socket appears for bare `.start()` |
+| `console_start_guard_for_bare_programs` | no socket with the guard; left after its drop |
+| `refcount_binds_and_unbinds_and_binds_again` (two systems, then a third later) | socket missing while a system lives; not removed at 1→0; no rebind |
+| `forked_child_never_unlinks_parent_socket` (`drop_subprocess`-style fork) | the parent's files removed |
+| `stale_pair_removed_only_when_lock_is_free` (SIGKILLed child) | live pair removed; dead pair kept |
+| `same_pid_two_namespaces_coexist` (two instances forced to the same pid prefix) | one removes the other |
+| `directory_checks` (symlink, foreign owner, group-writable, untrusted ancestor) | the console uses it, or the program fails |
+| `umask_untouched` (a concurrent thread creating files during bind) | a file's mode changes |
+| `peer_with_another_euid_is_refused`, `root_refused_unless_process_is_root` (CI job as root, setuid child) | a command answered |
+| `bind_failure_warns_once_and_continues` (ENOENT, EROFS, EACCES dirs) | the program fails or warns twice |
+| `commands_answer_while_a_handler_is_wedged` (every worker of a group blocked) | a command waits |
+| `state_times_out_on_a_wedged_actor_and_says_use_info` | hangs |
+| `stuck_without_introspection_says_unavailable` | a misleading answer |
+| `slow_reader_does_not_wedge_control_plane` (client never reads during `snapshot` and `trace`) | other clients, the watchdog or a supervisor restart stall; the client not dropped after 2 s |
+| `partial_lines_and_huge_requests` | crash, unbounded buffering |
+| `eight_attaches_and_the_ninth_refused`, `pipelined_requests_bounded` | starvation, unbounded queue |
+| `large_tables_are_paginated_and_truncated` (100,000 actors) | over 4 MiB; duplicated or skipped rows across pages |
+| `mutations_refused_unless_each_allowed`, `kill_with_stale_expectation_is_refused`, `trace_stops_at_max_for_and_disconnect` | wrong gate, stale hit, trace keeps running |
+| `every_command_is_logged` | a command without an event |
+| `spawned_console_off_opens_nothing`, `feature_off_build` (`cargo tree`, `nm`) | thread, socket or console symbol present |
+| `protocol_v1_contract` (golden JSON for every command; unknown version; unknown fields ignored; unavailable encodings; id echo; stream `end`) | contract drift |
+| `every_start_function_registers` | an actor missing from the table |
 
-### Simulator tests (`concurrency/tests/introspection_sim.rs`, `#[sim_test]`, seed sweeps, PCT and DFS where marked)
+### Simulator tests (`#[sim_test]`)
 
 - `snapshot_during_restarts` (PCT): a OneForAll cohort restarting while
-  `tree()` and `actors()` run every step; I6 and I7 oracles (no duplicate id,
-  counts agree, generations monotonic).
-- `get_status_races_death` (PCT, DFS): status sent concurrently with `stop`,
-  `kill` and a panic; exactly one outcome, `ActorStopped` carries the final
-  reason, never answered during a turn.
-- `fenced_kill_races_turn_end` (DFS): `check_now()` with `kill_after` while
-  the observed turn ends; the next turn never runs after a committed kill;
-  an ended turn is never killed.
-- `reads_do_not_change_the_tape`: the same seed with and without `info`,
-  `snapshot` and `check_now` calls between steps records the same decision
-  tape (I1, I12).
-- `check_now_reports_after_virtual_time`: the example above.
-- `console_queries_do_not_change_the_tape`: under `spawned_sim` there is no
-  socket; the test calls the console's command handler
-  (`console::handle_line`, the same function the listener calls) with `ps`,
-  `info`, `tree` and `stuck` between steps, and compares decision tapes with
-  a run without them (I12, I13).
+  `tree()`/`actors()` run every step; I6, I7 oracles.
+- `get_status_races_death` (PCT, DFS): status against stop, kill, panic and
+  a timeout; one outcome; never inside a turn.
+- `fenced_kill_races_turn_end` (DFS): `check_now_with(kill)` while the
+  observed turn ends, panics or is dropped.
+- `reads_do_not_change_the_tape` and `console_queries_do_not_change_the_tape`
+  (`console::handle_line` with `ps`, `info`, `tree`, `stuck`): identical tapes
+  with and without (I1, I12).
+- `kill_check_replays`: a kill-capable check replays identically for the
+  same seed.
+- `check_now_reports_after_virtual_time`.
 
-### Fuzzer operations (`fuzz/`)
+### Fuzzer operations
 
-New `Op`s: `Info { who }`, `Snapshot`, `Tree { sup }`, `GetStatus { who, ms }`,
-`WatchdogCheck { kill_after_ms }`. Oracles against the driver's model:
-`Dead` iff the driver saw the exit, with the same reason; `mailbox_len` 0 when
-dead; counters monotonic per id; `GetStatus` outcome in the allowed set and
-consistent with the actor's fate; no id twice in a snapshot; after a
-`WatchdogCheck` kill, no later handled message of that actor.
+`Info { who }`, `Snapshot`, `Tree { sup }`, `GetStatus { who, ms }`,
+`WatchdogCheck { kill_after_ms }`. Oracles: `Dead` iff sends return `NoProc`;
+`published` iff `wait_exit()` has returned; reasons agree; `len` 0 once
+dead; counters monotonic; `GetStatus` outcome in the allowed set; no
+duplicate id in a snapshot; after a committed kill no later handled message.
 
 ### Loom
 
-`activity_slot_loom` (writer begin/end, reader seqlock-style read, watchdog
-CAS): no mixed read, no kill of a later turn, kill bit never lost.
-`actor_table_loom`: insert/remove against a sharded listing (I6).
+`activity_slot_loom`: the exact writer and reader protocol with every field a
+separate atomic, two consecutive activities, polls changing within one, CAS
+against the end swap, a callback panic end and the drop swap; asserts no
+mixed accepted read, no kill bit lost, no commit after DEAD.
+`actor_table_loom`: insert, D-mark and removal against a sharded listing.
 
 ### Benchmark gate
 
-- `concurrency/benches/introspection_overhead.rs`, shaped like
-  `metrics_overhead`: async and threads; 1, 64 and 1024 actors; 1 and 64
-  producers; send-only and request round trip; zero and small work.
-- **Off vs main** (I11): alternating A/B runs of the release binary built
-  from main and from the branch with the feature off, 10 pairs each, on fede:
-  medians within noise (acceptance: no configuration slower by more than 1%,
-  with a confidence interval that includes zero).
-- **Default build vs console off vs main**: the same A/B on send, request
-  and turn benchmarks for three builds: main, the branch's default features
-  (`console` on), and the branch with `console` off. Acceptance as above
-  (I11).
-- **Spawn churn**: `lifecycle_soak`-style start/stop of 100,000 actors,
-  reported with and without `console`, to show the table's spawn/exit cost
-  (proposed budget: at most 5% of spawn-to-join time).
-- **Codegen check**: `cargo asm` (or `objdump`) of the run loop's dispatch
-  and `enqueue` with the feature off, diffed against main in CI; plus a test
-  asserting `size_of` of `ActorRef`, `Context` and the envelope is unchanged,
-  and that no `introspection` symbol is linked.
-- **On vs off**: reported, with an acceptance budget for reviewers to set
-  (proposed: at most 3% on request round trip, 5% on 64-producer send).
+- `concurrency/benches/introspection_overhead.rs` (shaped like
+  `metrics_overhead`): async and threads; 1, 64, 1,024 actors; 1 and 64
+  producers; send-only and request round trip.
+- **Default path (I11)**: alternating A/B on fede of three builds against the
+  **0.8 release**: 0.8; the branch's default features (`console` on,
+  `introspection` off); the branch with `console` off. 10 pairs each;
+  acceptance: no configuration slower by more than 1% with a confidence
+  interval including zero.
+- **Codegen**: the run loop's dispatch and `enqueue` with `introspection` off
+  are instruction-for-instruction those of 0.8 (`cargo asm` diff in CI), and
+  `size_of` of `ActorRef`, `Context` and envelopes is unchanged; no activity
+  or watchdog symbol is linked.
+- **Spawn churn**: start/stop of 100,000 actors with and without `console`
+  (budget: at most 5% of spawn-to-join time).
+- **Threads consolidation (step 0)**: before/after clone and request cost.
+- **On vs off**: reported; proposed budget at most 3% on request round trip,
+  5% on 64-producer send.
 
-### trybuild (`concurrency/tests/ui`)
+### trybuild
 
-`#[actor(inspect)]` without an `Inspect` impl; `#[actor(inspect = debug)]`
-without `Debug`; `#[actor(stall(long_turn = "x"))]` with a bad duration;
-`get_state` with a non-`Send` closure or result; tier 1 fields used without
-the feature. Passing forms in `ui-pass`.
+`#[actor(inspect)]` without `Inspect`; `inspect = debug` without `Debug`;
+bad `stall(..)` durations; `get_state` with a non-`Send` closure or result;
+an exhaustive `match` on `Lifecycle` or `Unavailable` without a wildcard.
 
-### Planted bugs (`verification/planted/patches/`, PR #247)
+### Planted bugs
 
-| Bug | Must be caught by |
+| Bug | Caught by |
 |---|---|
-| The watchdog checks then kills without the CAS | `fenced_kill_races_turn_end` (sim), Loom, `Introspection!FencedKill` via trace validation |
-| Turn end stores instead of swapping, dropping the kill bit | same |
-| Turn end does not reset the activity word (a finished turn looks stuck) | `watchdog::no_report_under_threshold`, `activity_names_*` |
-| Activity read without the second word load (mixed turns) | `activity_fields_are_from_one_turn`, Loom |
-| The sender counter is not incremented for `Exit`/`Down` envelopes | `mailbox_len_counts_the_backlog` variant |
-| The actor table is not cleaned at D (leak, dead actors listed) | `listing_under_churn`, leak tests |
-| A queued status request is not discharged at death | `status_outcomes`, `get_status_races_death` |
-| A `format_status` panic is treated as a handler panic | `callback_panic_is_callback_failed_*` |
-| `Inspect` default formats with `Debug` | `state_is_redacted_by_default` |
-| Two message types share an interned tag (pointer equality only, no length) | `activity_names_the_message_and_turn` with two types whose names are prefixes |
-| D1 applied to `Thread` actors | `watchdog::long_poll_*` placements |
-| The console socket bound before the directory check (or with umask 0022) | `directory_0700_socket_0600` |
-| The peer-uid check skipped | `peer_with_another_uid_is_dropped` |
-| The listener spawned on the ambient runtime instead of the control runtime | `commands_answer_while_a_handler_is_wedged` |
-| A bare-actor start path that does not register | `every_start_function_registers` |
-| The clock stamp read from real time under `spawned_sim` | `reads_do_not_change_the_tape`, `check_now_reports_after_virtual_time` |
+| Check-then-act kill / a failed CAS that still kills | `fenced_kill_races_turn_end`, Loom, trace control |
+| End store instead of swap (kill bit lost) | same |
+| Panic path or drop path ignores the kill bit | `fenced_kill_beats_handler_panic_*`, `fenced_kill_then_runtime_drop` |
+| No `fence(Release)` at begin / reader without the second load | `activity_slot_loom` |
+| `poll` split back into two words | `activity_fields_are_from_one_turn`, Loom |
+| Stamp 0 read as process uptime | `lazy_clock_*` |
+| Discards not subtracted from `len` | `mailbox_counts_every_transition` |
+| Table entry removed at D, or kept after publication | `d_to_publication_interval`, leak tests |
+| Status via `InTurnEnvelope` (panic ends actor) | `callback_panic_*` |
+| Abandoned status callback still runs | `status_skipped_when_caller_gave_up` |
+| `tree()` holds the parent lock while expanding | `tree_holds_no_lock_across_children` |
+| Console binds on bare `.start()` / unlinks without the pid check | `starts_with_actor_system_*`, `forked_child_*` |
+| Stale cleanup without the lock | `stale_pair_removed_only_*` |
+| Blocking write without a deadline | `slow_reader_*` |
+| Unordered shard iteration | `reads_do_not_change_the_tape` |
 
-### Coverage-matrix rows (TESTING.md, "Semantics coverage")
+### Coverage-matrix rows
 
 | Id | Strongest checks | Modes |
 |---|---|---|
-| I1 | `info_returns_during_a_wedged_turn`; `reads_do_not_change_the_tape` | A B T N G TG P, Sim |
-| I2 | `activity_*`; `activity_slot_loom` | A B T N G TG, Loom, Sim |
-| I3 | `monotonic_counters_*`; fuzz oracle | A B T N G TG, Fz |
-| I4 | `status_*`; `get_status_races_death`; `Introspection!StatusBetweenTurns`, `!StatusDischarged` | A B T N G TG P, Sim (PCT, DFS), Model |
-| I5 | `state_is_redacted_by_default`; trybuild | A N |
-| I6 | `listing_under_churn`; `actor_table_loom`; fuzz | A G N, Loom, Fz |
-| I7 | `tree_*`; `snapshot_during_restarts` | G TG, Sim (PCT) |
-| I8 | `watchdog::*`; `check_now_*` | A G (D1), all (D2, D4), G (D3), Sim |
-| I9 | `fenced_kill_*`; `Introspection!FencedKill` and three more | A G N, Sim (DFS), Loom, Model |
+| I1 | `info_returns_during_a_wedged_turn`; tape neutrality | A B T N G TG P, Sim |
+| I2 | `activity_slot_loom`; `activity_*`; `lazy_clock_*` | A B T N G TG, Loom |
+| I3 | `monotonic_*`; `d_to_publication_interval`; fuzz | A B T N G TG, Fz |
+| I4 | `status_*`; `get_status_races_death`; model | A B T N G TG P, Sim, Model |
+| I5 | redaction tests; trybuild | A N |
+| I6 | `listing_under_churn`; `actor_table_loom` | A G N, Loom, Fz |
+| I7 | `tree_*`; `snapshot_during_restarts` | G TG, Sim |
+| I8 | `watchdog::*` | A G (D1), all (D2, D4), G (D3), Sim |
+| I9 | `fenced_kill_*`; model; Loom; trace controls | A G N, Sim, Loom, Model |
 | I10 | `reports::*`; `sink::*` | A N |
-| I11 | benchmark gate; codegen and `size_of` checks | A N |
-| I12 | `reads_do_not_change_the_tape`; `console_queries_do_not_change_the_tape` | Sim |
+| I11 | benchmark gate; codegen | A N |
+| I12 | tape tests; `kill_check_replays` | Sim |
 | I13 | `console::*` | A N G (Linux, macOS) |
 
 ## Client mapping
 
-What an operator would have seen with v1 and the watchdog at its defaults.
+What an operator would have seen with v1 (`introspection` and the watchdog
+on, unless stated).
 
 ### Ethrex `d958dcba4`: `GetCells` served synchronously on every runtime worker
 
-The incident: an eth/72 `GetCells` request could name 256 hashes, each
-expanding all blob cells, "all of it ran synchronously on the peer connection
-task, so a few concurrent requests could occupy every runtime worker". The fix
-bounded the work and moved it to `spawn_blocking`.
+An eth/72 `GetCells` request could name 256 hashes, each expanding all blob
+cells, "all of it ran synchronously on the peer connection task, so a few
+concurrent requests could occupy every runtime worker". The fix bounded the
+work and moved it to `spawn_blocking`.
 
-Within about 300 ms of the workers filling, from the watchdog thread (the
-runtime itself is unable to run anything):
+From the watchdog's threads, within about 300 ms:
 
 ```text
 WARN spawned::starvation group="main" delay_ms=1840 workers=8 busy=8
-     occupants="RLPxConnection(peer 0x3a1f…)/GetCells poll_ms=1910; RLPxConnection(peer 0x92c0…)/GetCells poll_ms=1720; …"
-WARN spawned::stall detector="long_poll" actor_type="ethrex_p2p::rlpx::connection::server::RLPxConnection"
-     label="peer 0x3a1f… 203.0.113.7:30303" message="ethrex_p2p::rlpx::eth::cells::GetCells" poll_ms=1910 group="main"
+     occupants="RLPxConnection(peer 0x3a1f…)/GetCells poll_ms=1910; …"
+WARN spawned::stall detector="long_poll" actor_type="…::RLPxConnection" label="peer 0x3a1f… 203.0.113.7"
+     kind="message" message="…::GetCells" observed_ms=1900 group="main"
 ```
 
-`spawned_watchdog_long_polls_total` and `spawned_group_scheduling_delay_seconds`
-alert. The operator knows in one log line that a synchronous handler for one
-message type, from peers, is blocking the runtime, and which peers sent it;
-mitigation is to drop those peers, the fix is the one ethrex made. Requires
-`watchdog.probe_runtime(handle, "main")`, since the connection actors run on
-the default runtime.
-
-#### The same incident, attached with `spawned-ctl`
-
-The node is not answering RPC. On the host, as the node's user:
+Attached with `spawned-ctl` (the node uses an `ActorSystem`, so the console
+is on; its thread is not a runtime worker):
 
 ```text
 $ spawned-ctl list
-PID     BINARY  SPAWNED  ACTORS  SOCKET
-41237   ethrex  0.9.0    10412   /run/user/1000/spawned/41237.sock
-
+PID     NONCE  BINARY  SPAWNED  ACTORS  LIVE
+41237   9f2c   ethrex  0.9.0    10412   yes
 $ spawned-ctl attach 41237
-spawned 0.9.0, ethrex pid 41237, read-only, introspection on, watchdog on
+spawned 0.9.0, ethrex pid 41237, read-only, features console+introspection, watchdog on
 > stuck
 GROUP main: probe late 1840 ms, 8/8 workers in a poll
-  ACTOR   TYPE            LABEL                         MESSAGE   POLL     TURN
-  88123   RLPxConnection  peer 0x3a1f… 203.0.113.7      GetCells  1910 ms  1910 ms
-  90311   RLPxConnection  peer 0x92c0… 198.51.100.4     GetCells  1720 ms  1720 ms
-  …6 more RLPxConnection / GetCells
+  ACTOR   TYPE            LABEL                     KIND     MESSAGE   OBSERVED
+  88123   RLPxConnection  peer 0x3a1f… 203.0.113.7  message  GetCells  1.9 s (in poll)
+  90311   RLPxConnection  peer 0x92c0… 198.51.100.4 message  GetCells  1.7 s (in poll)
+  …6 more
 > ps --sort mailbox --limit 3
-  ACTOR   TYPE             STATE    MAILBOX  MESSAGE      TURN AGE
-  12      PeerTableServer  Idle     4113     -            -
-  15      RpcHandler       Idle     2380     -            -
-  88123   RLPxConnection   InTurn   41       GetCells     1.9 s
-> info 88123
-  RLPxConnection 88123 "peer 0x3a1f…" InTurn GetCells poll 1.9 s, mailbox 41,
-  parent p2p/connections (dynamic) generation 1, links 1, monitors 2, group main
+  ACTOR   TYPE             STATE    MAILBOX  MESSAGE   TURN AGE
+  12      PeerTableServer  Idle     4113     -         -
+  15      RpcHandler       Idle     2380     -         -
+  88123   RLPxConnection   InTurn   41       GetCells  1.9 s
 ```
 
-Every worker is inside a poll of `GetCells` from a connection actor, and the
-idle actors' mailboxes grow behind them: synchronous CPU in that handler. The
-listener runs on the control runtime's thread, so it answers while every
-application worker is blocked. Without the `introspection` feature, `stuck`
-still lists the eight `RLPxConnection` actors as "same turn for at least
-2.0 s" (from the tier 0 turn ids sampled two seconds apart) with labels and
-actor types, without the message type or the mailbox column.
+Every worker is inside one poll of `GetCells` from a connection actor, and
+idle actors' queues grow behind them: synchronous CPU in that handler. A
+default build without `introspection` still shows, from tier 0, eight
+`RLPxConnection` actors `InTurn` with their labels in `ps`, and `stuck`
+answers that turn ages need the `introspection` feature.
 
 ### Ethrex `535647e45`: L2 imports deadlocked at 0% CPU, RPC and logging stopped
 
-Each L2 connection ran `add_block_pipeline` on a Tokio worker; each import
-parked 17 jobs on the shared 17-thread merkle pool, so concurrent imports
-split the pool and none finished. Workers blocked, the node froze at 0% CPU.
-
-With v1, logs stopping is itself the symptom, so the dump directory matters:
+Each L2 connection ran `add_block_pipeline` on a Tokio worker, parking 17
+jobs on the shared 17-thread merkle pool; concurrent imports split the pool
+and none finished.
 
 ```text
 WARN spawned::starvation group="main" delay_ms=30000 busy=4 occupants="L2Connection(peer …)/NewBlock poll_ms=31200; ×4"
-WARN spawned::stall detector="long_poll" actor_type="…::L2Connection" message="…::l2::NewBlockMessage" poll_ms=31200 (×4, one per connection)
-dump: /var/lib/ethrex/spawned/2026-10-23T14:02:11.json   (written by the watchdog thread)
+dump: /var/lib/ethrex/spawned/2026-10-23T14:02:11.json   (written by the watchdog's delivery thread)
 ```
 
-Four connection actors, all inside one poll of the same message for 30 s, at
-0% CPU (the process is idle): concurrent blocking imports waiting on a shared
-resource. `info()` on the RPC actors shows their mailboxes growing behind the
-starved runtime. The operator restarts the node with one connection to the
-sequencer as a workaround; the fix is the single importer ethrex wrote. If the
-tracing subscriber writes through a runtime task, the `tracing` lines stop
-too, which is why the dump file is written by the watchdog thread itself.
+Four connection actors in one poll of the same message for 30 s at 0% CPU:
+blocking imports waiting on a shared resource. If logging stops because the
+subscriber writes through a runtime task, the delivery thread's dump file and
+`spawned-ctl stuck` (on its own thread) still answer.
 
-### Ethlambda: the chain actor moved to `Backend::Thread` (now a one-thread `thread_group`)
+### Ethlambda: the chain actor moved to its own thread
 
-The chain actor's handlers (block import, state transition, signing) are
-long synchronous CPU; on the shared runtime they starved P2P and HTTP. The
-fix gave it its own thread.
-
-On the shared runtime, v1 would have shown starvation of the network work
-naming the culprit:
-
-```text
-WARN spawned::starvation group="main" delay_ms=640 occupants="BlockChain/NewBlock poll_ms=790"
-WARN spawned::stall detector="long_poll" actor_type="ethlambda_blockchain::BlockChain" message="…::NewBlock" poll_ms=790
-```
-
-with the `P2P` actor's `mailbox_len` climbing during each import. After the
-move, D1 no longer applies (the actor owns its thread), and the right
-setting is a per-type turn limit tied to the slot:
+The chain actor's long synchronous handlers starved P2P and HTTP on the
+shared runtime; it now has a one-thread `thread_group`. On the shared runtime
+v1 would have shown starvation naming `BlockChain/NewBlock poll_ms=790` and
+the P2P actor's mailbox climbing. After the move D1 does not apply, and a
+per-type turn limit catches an import that would miss the 4 s slot:
 
 ```rust
-#[actor(stall(long_turn = "3s"))]   // a block import must finish well within the 4 s slot
+#[actor(stall(long_turn = "3s"))]
 impl BlockChain { … }
 ```
 
-so an import that would miss the slot is reported with its message type.
-Ethlambda's shutdown overrun (`1d7902da`, 14.3 s against Docker's 10 s) shows
-up as `activity.kind = Stopped, age = 9.8 s` on that actor in
-`ShutdownReport` and in `info()` during shutdown.
+Ethlambda's shutdown overrun (`1d7902da`, 14.3 s) shows as kind `Stopped`
+observed for 9.8 s in `info()` and `ShutdownReport`.
 
-### Two smaller cases from the client sweep
+### Two smaller cases
 
-- Ethrex checks actor health with an ordinary request, which times out while
-  a busy actor works. `info()` answers the same question without queueing.
-- Ethrex `63167661a`: a `get_best_peer` timeout under mailbox pressure exited
-  the node. D4 would have reported `PeerTableServer` crossing its
-  `long_mailbox` threshold, with its current message, before the timeout.
+- Ethrex's health check by ordinary request (which times out while a busy
+  actor works): `info()` answers without queueing.
+- Ethrex `63167661a` (`get_best_peer` timeout under mailbox pressure): D4
+  reports `PeerTableServer` crossing its threshold, with its current message.
 
 ## Coordination with other 0.9 work
 
 - **Dynamic supervisor (PR #245):** adopt `ChildInfo` (with `ChildKey`) and
-  `ChildCounts` from this design instead of `DynamicChildInfo`; add
-  `tree()`; a slow `terminate_child` shows as `SupervisorTree::busy`
-  (comparison 3.2.6). PR #245 owns `DynamicChildId`.
-- **Unified start:** labels, `Inspect` and stall limits may become start
-  options there; the per-type constants stay the zero-cost default.
-- **0.8 (PR #240):** the design reads its turn phase, death point and
-  `Killed`; nothing here changes their semantics.
-- **Rank 5c, 9, G9 (0.10):** extend the event sink, not a new one.
-- **Rank 7 (deadlock detection):** its wait-for edges become an `ActorInfo`
-  field and a `spawned-top` view.
-- **Rank 8a (cooperative budgets):** shares the poll stamps; per-turn work
-  metrics read the same slot.
+  `ChildCounts`; add `tree()`; a slow `terminate_child` shows as
+  `SupervisorTree::busy`; console `terminate` maps to `terminate_slot`.
+- **Unified start:** one spawn path registers every actor; labels, `Inspect`
+  and stall limits may become start options.
+- **0.8 (PR #240):** read only; nothing here changes its semantics.
+- **0.10:** full `sys:trace`, flight recorder and rank 5c extend the sink;
+  turn abort at an await, if pursued, gets its own design and model.
+- **Rank 7:** wait-for edges become an `ActorInfo` field. **Rank 8a:** shares
+  the poll word.
 
 ## Implementation order
 
-Each step is a PR with its tests, docs and CHANGELOG entry.
+0. Threads mode onto `Arc<ActorShared<A>>`, measured on its own.
+1. Tier 0: metadata and labels, `info()`, trees with the shared types, crash
+   and supervisor events, `StatusEnvelope`, `get_state`/`get_status`,
+   `Inspect`, `ActorError::CallbackFailed`.
+2. Tables (`console` or `introspection`), `processes()`, `snapshot()`, wire
+   structs; tier 1 activity slot, interner, clock, mailbox counters; fold
+   `diagnostics`; benchmark gate and codegen check.
+3. Watchdog: sampling and delivery threads, D1–D4, reports, sessions,
+   metrics, dumps, `check_now`; remove `WarnOnBlocking`.
+4. Fenced kill, `activity_slot_loom`, trace events, `TraceIntrospection.tla`
+   and the recorded-trace controls.
+5. Console: lifecycle and files, protocol v1, commands, limits,
+   `tools/spawned-ctl`, console turn trace; console tests.
+6. Examples (`introspection`, `stall_watchdog`, `console`, both modes),
+   guide, semantics section 13, coverage rows.
 
-1. Tier 0: per-actor metadata and labels, `info()` from existing state,
-   `which_children`/`count_children`/`tree()` with the shared types, crash and
-   supervisor events, `get_state`/`get_status`/`Inspect`,
-   `ActorError::CallbackFailed`.
-2. Actor and system tables (under `console` or `introspection`),
-   `processes()`, `snapshot()`, `render_json`; then tier 1: activity slot,
-   interner, coarse clock, mailbox counters; fold `diagnostics`; benchmark
-   gate and codegen check.
-3. Watchdog: D1-D4, reports, sink sessions, metrics, dump directory,
-   `check_now`; remove `WarnOnBlocking`.
-4. Fenced kill policy, Loom model, `lifecycle-trace` events and
-   `TraceIntrospection.tla`.
-5. Console: socket lifecycle and permissions, protocol v1, commands,
-   `tools/spawned-ctl`, the per-actor `trace`; console tests and the
-   default-build benchmark.
-6. Examples (`introspection`, `stall_watchdog`, `console`, both modes), guide section,
-   semantics section 13 and coverage rows.
+## Review resolutions
+
+Each finding was treated as a claim and checked against the design and the
+0.8 code. "Accepted" means the claim held and the design changed.
+
+| Finding | Claim | Verdict | Resolution |
+|---|---|---|---|
+| Codex 1, agy P1-1 | The activity reader can accept a torn read: wrong orderings, and `poll`/`poll_t` change within a turn while `word` stays fixed | Accepted | `poll` packed into one word; writer `fence(Release)` before the payload, Release store of the word, AcqRel end swap; reader Acquire load, payload, `fence(Acquire)`, second load; bounded retries then `ReadContended`; `activity_slot_loom` with separate field atomics ([protocol](#the-activity-word-and-the-kill-protocol)) |
+| Codex 2, agy P0-1 | The fenced kill is incomplete: panics, hooks, runtime drop, D, failed CAS; `stopped()` contradiction | Accepted | Every activity opens a turn id and every end path consumes the kill bit; kill dominates `Panic`; runtime drop swaps the word to DEAD and consumes the bit before the reason; D closes the word; a failed CAS does nothing; a kill during `stopped()` lets it finish with `Killed`. Model revision 2 includes failed CAS, handler and callback panics, hooks, drop and D, with 13 controls |
+| Codex 3, agy P1-2 | A lazy or delayed coarse clock gives false ages and could kill | Accepted | Stamp 0 = `ClockNotStarted`; ages are estimates with `clock_lag`; kill eligibility uses only the watchdog's own observed duration; `lazy_clock_*` test |
+| Codex 4, agy P1-3 | Tier 0 turn ids are not free; duplicated with tier 1; hooks missing | Accepted | No turn ids in tier 0; 0.8's phase word unchanged; one tier 1 word with the turn id, covering hooks and status; the end swap is listed in the cost table; the gate compares against 0.8 |
+| Codex 5, agy P1-10 | D and publication are conflated | Accepted | Tables hold entries until publication; `Lifecycle::Dead { published }`; `is_alive()` false from D; watchdog ineligible after D; crash report at D; fuzz oracle and planted bug corrected; `d_to_publication_interval` test |
+| Codex 6, agy P1-9 | Per-supervisor atomic snapshots don't follow from the locks; `tree()` lock-order hazard | Accepted | Promise weakened to self-consistent rows and counts derived from them; `tree()` copies rows and instance-bound handles, releases all locks, then expands; generation-mismatch shows `Dead`/`Unavailable`; lock-order test. A coherent published view is listed as a deferred alternative |
+| Codex 7 | Mailbox and report accounting miss transitions; `stopped()` overwrites the last message | Accepted | `accepted`/`dequeued`/`discarded` with every transition specified; frozen at D; `tag` written only by message turns; stall end reports an observed range |
+| Codex 8 | "Actor unaffected" overpromises; skipping abandoned callbacks changes R4; `InTurnEnvelope` treats panics as handler panics | Accepted | Dedicated `StatusEnvelope`; "a caught panic alone does not end the actor, no rollback"; the skip is a documented R4 exception for status envelopes with the slot's arbitration as linearization point; tests for `ReplyTo` drop in a caught panic, status during `stopped()` and destruction |
+| agy P1-8 | `get_state` vs 0.8 reply slots, turn id, metrics | Accepted | Immediate slot with the caller's deadline, no credit, no deferral; own turn id and kind `Status`; `StatusReport.info` sampled before the status activity; bypasses `metrics` mailbox/request accounting both ways; `metrics` match arms gain `CallbackFailed` |
+| Codex 9, agy P1-7 | Model invariants weaker than described; `gaveUp` unused; no failed CAS or panics | Accepted | Status is a real turn; commit recorded separately; `NoChargeFinishedTurn` checks the charged turn had not ended; response counts, deadline skip, panics, drop, D and publication modelled ([results](#tla-model-and-trace-validation)) |
+| Codex 10, agy P1-7 | Trace mapping not concrete | Accepted | Event table with fields, actions and linearization points; CAS and record never merged; required suites; recorded-trace controls |
+| Codex 11 | A kill-capable `check_now()` cannot be tape-neutral | Accepted | Neutrality only for reads and report-only checks; kill-capable checks promise identical replay (`kill_check_replays`) |
+| Codex 12, agy P1-4 | Changing the umask is unsafe and racy; leaf-only checks | Accepted | Umask never touched; private `0700` directory, bind inside, `0600` as defence in depth, effective-uid peer check; ancestor and symlink checks; root refused unless the process is root |
+| Codex 13, agy P1-5 | Pid-based stale cleanup and system-owned lifetime are unsafe | Accepted | Instance nonce, a held `File::lock` as liveness, removal only with the lock and a `(dev, ino)` match, the server removes only its own files; refcounted lifetime independent of any one system |
+| agy P0-2 | Console on bare `.start()`, `atexit`, multiple systems, `fork()` | Accepted (coordinator decision 1) | Automatic only on `ActorSystem::new`; `console::start` guard for bare programs; refcount 0→1 bind, 1→0 unlink, rebind later; `bound_pid` check; no `atexit`, no `unsafe`; failures warn once |
+| Codex 14, agy P1-6 | Console and watchdog can block the control plane | Accepted | Own console thread; per-frame 2 s write deadline; limits table (connections, requests, rows, bytes, depth, strings, rate); `state` awaited, not blocking; threads-only builds use a thread per connection; watchdog sampling separate from delivery; one outstanding probe per target |
+| Codex 15 | `restart` is misleading and unfenced | Accepted (coordinator decision 3) | Renamed `kill`; consequences per supervisor policy documented; targets carry system id and an expected `id@generation`; `stale_target`; `kill`, `terminate`, `trace` allowed separately |
+| Codex 16 | Wire and data contracts not frozen | Accepted | [Wire and data contract](#wire-and-data-contract): framing, envelope, error codes, encodings, `Unavailable` values, enums, evolution, cursors; `SystemId` in snapshots; `#[non_exhaustive]` on every public type; `serde_json` with dedicated wire structs |
+| Codex 17, agy P2-2 | OTP claims too strong; contradictory scope text | Accepted | Alignment table distinguishes adaptations (lifecycle vocabulary, stronger redaction, one `CallbackFailed`); alternatives reconciled with the console decision; `get_status` timeout symmetry; `name` only for registry names; `monitors` direction defined |
+| agy P1-11 | Threads mode has no `ActorShared` | Accepted | Step 0 consolidates threads mode onto `Arc<ActorShared<A>>`, measured on its own |
+| agy P2-1 | Hash iteration breaks simulator determinism | Accepted | Ordered shards (`BTreeMap`, shard by `id & 63`), outputs sorted by `ActorId` |
+| agy P2-3 | Four missing tests | Accepted | `fenced_kill_beats_handler_panic_and_self_stop`, `get_state_runs_while_deferred_reply_is_outstanding`, `slow_reader_does_not_wedge_control_plane`, `lazy_clock_started_mid_turn_does_not_false_kill` added |
+| Codex test-plan audit | Missing failure-sensitive checks; three inconsistent tests | Accepted | Rows added for every listed gap; "tier 1 fields used without the feature" replaced by `Unavailable(Feature)` checks; "no introspection symbol" narrowed to activity/watchdog symbols; the D/publication oracle fixed |
+| Codex Q9 | Use `serde_json` | Accepted | Under `console`, with wire structs independent of Rust types |
+| Codex Q13 | Defer the console turn trace | Partly rejected | The user requires `trace` in the console; kept, but only as a bounded turn trace with the limits above, gated separately, tier 1; full `sys:trace` stays 0.10 |
+| Codex Q5 | Per-system ownership with a process facade | Partly accepted | Tables are process-wide (bare actors have no system) but every entry carries its `SystemId`, and listings can filter by system; per-system watchdog scoping is open question 2 |
 
 ## Open questions for reviewers
 
-1. **`last_message` in crash reports without the feature.** Fetching the
-   type name into a local before each handler costs one virtual call per turn
-   and no store. Is that acceptable as tier 0 (most useful crash field), or
-   must it stay tier 1?
-2. **Typed `get_state` on every actor**, with `Inspect` gating only the
-   type-erased path. The comparison suggested opt-in for both.
-3. **One `ChildInfo` replacing `ChildSnapshot` and `DynamicChildInfo`**
-   (breaking for `SupervisedChild::snapshot()`); agree with PR #245.
-4. **Turn abort at an await** for opted-in actor types: a separate 0.9 item
-   with its own model, 0.10, or never?
-5. **Process-wide or per-`ActorSystem` tables and watchdog.** Rank 12 wants
-   registries scoped per system so multi-node simulations do not share them;
-   v1 proposes process-wide tables with a system id on each entry.
-6. **The clock thread** starts lazily on first use; is one 5 ms waking thread
-   acceptable in production builds with the feature?
-7. **`mailbox_len` counts control envelopes** (`Exit`, `Down`, status) as
-   OTP counts all messages; the `metrics` gauge counts user messages only.
-   Keep both definitions?
-8. **D1 default threshold** 100 ms (today's debug `WarnOnBlocking` uses
-   10 ms), and D2's 10 s.
-9. **JSON without `serde`** (hand-rendered and versioned) versus an optional
-   `serde` feature.
-10. **Kill policy scope:** only D2 (turn age) in v1; should a long poll also
-    be killable once it returns, to remove a poison actor?
-11. **Console defaults.** On by default and listening as soon as the first
-    actor starts (not only with an `ActorSystem`), so bare-actor binaries are
-    attachable too; one lazily created control thread for those. Is that
-    acceptable, or should bare-actor processes need an explicit
-    `console::start()`?
-12. **`restart <child>` as a kill** of the current generation (counted in
-    the budget, effective at turn end) rather than a new supervisor
-    operation; and whether `terminate` on static supervisors waits for G6.
-13. **Console `trace` in v1**, pulling a minimal per-actor trace forward
-    from 0.10 (one flag load per turn under `introspection`).
-14. **Widening 0.8's turn-phase word** to carry the turn id touches a
-    Loom-verified protocol; worth it for tier 0 `stuck`, or keep turn ids
-    tier 1 only?
+1. **`last_message` in default builds** stays tier 1 (both reviews). An
+   exit-only extraction from the failing envelope, with no work on returning
+   turns, could make it tier 0 later; worth a follow-up?
+2. **Watchdog per process or per `ActorSystem`** (Codex Q5): v1 has one
+   process watchdog with per-group and per-ChildSpec limits; multi-node
+   simulations use `check_now` per system.
+3. **A coherent published supervisor view** (Codex 6, option b) for 0.10, if
+   operators need instant tree levels.
+4. **Console thread in the default build**: one idle OS thread per process
+   with an `ActorSystem`. Acceptable, or should the default build open the
+   socket but serve it from the first system's control runtime?
+5. **Default thresholds**: D1 100 ms, D2 10 s, D4 10,000/1,000 (both
+   reviews: reasonable for report-only).
+6. **`mailbox_len` vs the `metrics` gauge**: introspection counts every
+   envelope, metrics counts application messages (Codex Q7: keep both,
+   documented).

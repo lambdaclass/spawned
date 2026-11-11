@@ -44,6 +44,17 @@
   between turns and at death) with six negative controls. Design only; no
   library code change.
 
+- Design: introspection v1 for 0.9 (priority tier 2), revision 2 after two
+  reviews: [`docs/design/introspection.md`](docs/design/introspection.md).
+  `process_info`-style `info()` readable while a handler is wedged (strictly
+  free tier 0, richer with the `introspection` feature), `sys:get_state`/
+  `get_status` as a turn of their own, supervision-tree and system
+  snapshots, structured reports, an opt-in stall watchdog (rank 8) with a
+  fenced kill, and an attachable remote console on a local Unix socket
+  (`spawned-ctl`; on with `ActorSystem::new`, read-only by default, no TCP,
+  no eval). TLA+ model `Introspection.tla` (every activity end consumes the
+  kill bit, status between turns and at D, runtime drop, D vs publication)
+  with 13 negative controls. Design only; no library code change.
 - Tests: coverage follow-ups. `restart_modes_distinguish_normal_shutdown_and_panic`
   now sends a real `Normal` exit; a per-PR `MCSupervisionTemporary` TLC
   configuration makes `TemporaryStartsOnce` non-vacuous, with a negative
