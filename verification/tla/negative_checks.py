@@ -186,43 +186,53 @@ LIFECYCLE_TEMPORAL_CONTROLS = [
 ]
 LIFECYCLE_SMALL = {"Reqs": "{}", "MaxSignals": "0", "DropEnabled": "FALSE"}
 
-# Rank 12a design model (docs/design/dynamic-supervisor.md): each mutation
-# against the invariant it must break, on the per-PR configuration.
-# Rank 12a design model (docs/design/dynamic-supervisor.md, revision 2):
-# each mutation against the invariant it must break, on the per-PR
-# configuration. Run one at a time (parallel TLC runs race on the standard
-# modules TLC extracts to /tmp).
+# Rank 12a design model (docs/design/dynamic-supervisor.md, revision 3):
+# each mutation against the property it must break. Every invariant and
+# liveness property of DynamicSupervisor.tla has at least one. Run one at a
+# time (parallel TLC runs race on the standard modules TLC extracts to /tmp).
 DYNAMIC_CONTROLS = [
     ("MCDynamicSupervisor", "IgnoreMax", "MaxChildrenBound"),
     ("MCDynamicSupervisor", "UncountedRestart", "MaxChildrenBound"),
     ("MCDynamicSupervisor", "RestartTemporary", "TemporaryNeverRestarted"),
     ("MCDynamicSupervisor", "RestartTerminated", "TerminatedNeverRestarted"),
     ("MCDynamicSupervisor", "AcceptDuringShutdown", "NoStartAfterShutdown"),
-    ("MCDynamicSupervisor", "RestartAfterClose", "NoGenerationAfterClose"),
+    ("MCDynamicSupervisorBackoff", "RestartAfterClose", "NoGenerationAfterClose"),
     ("MCDynamicSupervisor", "NoEscalate", "ExhaustionCloses"),
     ("MCDynamicSupervisor", "EarlyDone", "NoChildOutlivesSupervisor"),
-    ("MCDynamicSupervisor", "Sequential", "ConcurrentShutdown"),
-    # Two constructions at once need room for two children.
+    ("MCDynamicSupervisor", "SkipSignal", "ConcurrentShutdown"),
     ("MCDynamicSupervisor", "ConcurrentStart", "SerialConstruction", {"MaxChildren": "2"}),
+    ("MCDynamicSupervisor", "LaterOp", "FifoOrder"),
     ("MCDynamicSupervisor", "StuckFailsAll", "StuckIsolated"),
+    ("MCDynamicSupervisor", "MisclassifyStuck", "StuckIsolated"),
     ("MCDynamicSupervisor", "PublishAfterClose", "NoPublishAfterStop"),
+    ("MCDynamicSupervisor", "PublishAfterExit", "PublishedIsLive"),
     ("MCDynamicSupervisor", "OverlapGeneration", "AtMostOneGeneration"),
     ("MCDynamicSupervisor", "PublishBeforeReady", "PublishedIsLive"),
     ("MCDynamicSupervisor", "PrematureOk", "OkMeansReady"),
     ("MCDynamicSupervisor", "UnchargedRetry", "ChargedRestarts"),
     ("MCDynamicSupervisor", "ChargeFirstStart", "ChargedRestarts"),
     ("MCDynamicSupervisor", "TransientNormalRestart", "RestartFollowsPolicy"),
+    ("MCDynamicSupervisor", "TransientNormalRestart", "RestartFollowsPolicy", {"MaxRestarts": "0", "MaxExpire": "0"}),
     ("MCDynamicSupervisor", "PermanentRetires", "RestartFollowsPolicy"),
     ("MCDynamicSupervisor", "RetryFirstStart", "FirstStartNeverRetried"),
     ("MCDynamicSupervisor", "EarlyFailedReply", "FailedAfterCleanup"),
+    ("MCDynamicSupervisor", "EarlyRemove", "FailedAfterCleanup"),
     ("MCDynamicSupervisor", "LateFailedOverwrite", "FailureCauseKept"),
-    ("MCDynamicSupervisor", "NoRefund", "ReservationsMatch"),
-    ("MCDynamicSupervisor", "ExpireReserved", "ReservationsMatch"),
-    ("MCDynamicSupervisor", "TermReplyEarly", "TermOkMeansRemoved"),
+    ("MCDynamicSupervisorBackoff", "NoRefund", "ReservationsMatch"),
+    ("MCDynamicSupervisorBackoff", "ExpireReserved", "ReservationsMatch"),
+    ("MCDynamicSupervisor", "OverReserve", "BudgetBounded"),
+    ("MCDynamicSupervisor", "TermReplyEarly", "TermResultsSound"),
+    ("MCDynamicSupervisor", "SlotLookup", "TermResultsSound"),
+    ("MCDynamicSupervisor", "QueuedTermOk", "TermResultsSound"),
+    ("MCDynamicSupervisor", "StuckResultLost", "TermResultsSound"),
 ]
 DYNAMIC_TEMPORAL_CONTROLS = [
-    ("NoAbort", "StartAnswered"),
-    ("StuckBackoff", "ClosedLeadsToDone"),
+    ("MCDynamicSupervisorCallers", "NoAbort", "StartAnswered"),
+    ("MCDynamicSupervisorCallers", "NoDeadline", "StartAnswered"),
+    ("MCDynamicSupervisorCallers", "TermLost", "TerminateAnswered"),
+    ("MCDynamicSupervisorCallers", "Sequential", "FanoutCompletes"),
+    ("MCDynamicSupervisorLive", "StuckBackoff", "ClosedLeadsToDone"),
+    ("MCDynamicSupervisorLive", "LostRestart", "RecoveryProgress"),
 ]
 
 DEFERRED_CONTROLS = [
@@ -313,8 +323,8 @@ def main():
         named_temporal("MCLifecycleLive", fault, prop, args.tlc, LIFECYCLE_SMALL)
     for module, fault, invariant, *constants in DYNAMIC_CONTROLS:
         named_fault(module, fault, invariant, args.tlc, *constants)
-    for fault, prop in DYNAMIC_TEMPORAL_CONTROLS:
-        named_temporal("MCDynamicSupervisorLive", fault, prop, args.tlc)
+    for module, fault, prop in DYNAMIC_TEMPORAL_CONTROLS:
+        named_temporal(module, fault, prop, args.tlc)
 
 
 if __name__ == "__main__":

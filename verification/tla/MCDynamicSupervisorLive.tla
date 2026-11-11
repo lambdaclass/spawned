@@ -1,3 +1,3 @@
------------------------ MODULE MCDynamicSupervisorLive -----------------------
+---- MODULE MCDynamicSupervisorLive ----
 EXTENDS MCDynamicSupervisor
-=============================================================================
+====

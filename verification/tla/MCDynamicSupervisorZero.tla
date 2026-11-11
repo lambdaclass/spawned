@@ -1,3 +1,3 @@
------------------------ MODULE MCDynamicSupervisorZero -----------------------
+---- MODULE MCDynamicSupervisorZero ----
 EXTENDS MCDynamicSupervisor
-=============================================================================
+====
