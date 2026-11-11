@@ -6,6 +6,10 @@
   verified once and inherited by every application; deterministic, replayable
   tests), both points leading the feature list, and a "Testing your own actors
   deterministically" section showing `#[spawned_macros::sim_test]`.
+- ROADMAP: no-cost-on-the-default-path principle, the Erlang gaps table, and new
+  ranks 6b (shared-state and abort lints), 8b (simulator check for handlers
+  that never yield), 8c (per-group stack size) and 44a (execution groups in a
+  separate OS process); rank 18a's tracking allocator is opt-in.
 - Lockfile: `rustix` 1.1.2 -> 1.1.6 for RUSTSEC-2026-0486 (pulled in by the
   examples' `native-tls` dependency; spawned's crates are unaffected).
 - CI: a `sim` job runs the simulated test suites (`--cfg spawned_sim`) on
