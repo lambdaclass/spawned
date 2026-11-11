@@ -6,23 +6,30 @@ EXTENDS Naturals, Sequences, FiniteSets
 (* proposed v0.8 contract, not of the v0.7 code: the v0.7 behaviours are   *)
 (* negative controls (Fault values below) that must fail.                  *)
 (*                                                                         *)
-(* An actor is "run" (dispatching), "stopping" (exit begun: no dispatch,   *)
-(* stopped() may still run and send) or "dead". Death is one atomic step   *)
-(* (design rule D): the mailbox is disposed and every queued request is    *)
-(* answered ActorStopped, then the link and monitor table closes and one   *)
-(* notification per link and monitor is put in flight. Registration        *)
-(* (link, monitor) is atomic with that close: before it, the edge fires at *)
-(* death with the real reason; after it, a NoProc notice is produced.      *)
+(* Phases of an actor (design "Phases of an exit"):                        *)
+(*   "run"      dispatching;                                               *)
+(*   "stopping" exit begun: no dispatch; stopped() may run and send; an    *)
+(*              untrappable kill still replaces the requested reason;      *)
+(*   "gone"     past the death point D: the reason is final, the mailbox   *)
+(*              refuses admission, every queued request was answered, the  *)
+(*              link and monitor table is closed and one notice per edge   *)
+(*              was taken; destruction (state drop) is in progress;        *)
+(*   "dead"     published: wait_exit/join return; the notices taken at D   *)
+(*              may now be delivered.                                      *)
+(* Registration (link, monitor) and request admission are atomic with D:   *)
+(* before it the edge fires (or the request is answered) with the real     *)
+(* reason; after it they get NoProc.                                       *)
 (*                                                                         *)
-(* Exit signals: Kill from outside is untrappable and the target exits     *)
+(* Exit signals (exit_signal/2): Kill is untrappable and the target ends   *)
 (* Killed; any other signal to a trapping actor is queued as an Exit       *)
-(* message, except that an exit signal from the actor's parent (the        *)
-(* supervisor, or the start_linked parent) is queued as a parent exit that *)
-(* runs normal termination when dispatched; a Normal signal is ignored by  *)
-(* a non-trapping actor; any other reason begins exit with that reason.    *)
-(* Administrative stop (ChildHandle::stop / stop_with_reason) stays an     *)
-(* untrappable cooperative stop. Handlers are atomic steps; "after the     *)
-(* current handler" is the next step.                                      *)
+(* message, except that a signal from the actor's parent (its supervisor   *)
+(* or start_linked parent) is queued as a parent exit that runs normal     *)
+(* termination when dispatched; a Normal signal is ignored by a            *)
+(* non-trapping actor; any other reason begins exit with that reason.      *)
+(* Administrative stops (ChildHandle::stop and friends) are untrappable.   *)
+(* Handlers are atomic steps; "after the current handler" is the next      *)
+(* step. Liveness assumes handlers, stopped() and destruction return       *)
+(* (weak fairness on Dispatch, Die and Publish).                           *)
 (***************************************************************************)
 CONSTANTS
     Actors,        \* actor names
@@ -31,59 +38,74 @@ CONSTANTS
     Reqs,          \* request ids, each sent at most once by an outside caller
     MonIds,        \* monitor ids, each used at most once
     MaxSends,      \* bound on actor-to-actor messages
-    MaxSignals,    \* bound on exit signals and administrative stops from outside
-    MaxLate,       \* bound on registrations against dead actors
-    UnlinkEnabled, \* include Unlink (deep configuration only)
+    MaxSignals,    \* bound on exit signals and administrative stops
+    MaxLate,       \* bound on registrations against gone actors
+    UnlinkEnabled, \* include Unlink
+    TrapCanClear,  \* trap_exit may also be turned off
+    SelfReasons,   \* reasons of self-exits (subset of Reasons)
+    SignalReasons, \* reasons of exit signals (Kill is the kill signal)
+    AdminReasons,  \* reasons of administrative stops
+    DropEnabled,   \* the runtime may drop actors
     Fault          \* "None" or a negative control, see below
 
 None == "none"
-Ext == "ext"       \* an outside ChildHandle holder
+Ext == "ext"       \* outside code (a ChildHandle holder, a caller)
 Sup == "sup"       \* the supervisor of Children
 Reasons == {"Normal", "Shutdown", "Panic", "Kill", "Killed", "NoProc"}
 Done == {"ok", "stopped", "noproc"}
+Past(a, s) == s \in {"gone", "dead"}
 
 (* Negative controls (each must produce a counterexample):                 *)
 (*  DirectStop      v0.7: exit signals ignore trap_exit, Normal stops too  *)
-(*  KillAsKill      v0.7: an outside kill exits Kill, peers receive Kill   *)
-(*  LateRealReason  v0.7: link/monitor to a dead actor gets its reason     *)
+(*  KillAsKill      v0.7: an outside kill ends Kill                        *)
+(*  KillNoSupersede kill during stopping keeps the requested reason        *)
+(*  LateRealReason  v0.7: link/monitor to a gone actor gets its reason     *)
 (*  ParentAsExit    parent Shutdown reaches exit_received, may be ignored  *)
-(*  Retain182       PR #182: a request published after death is kept       *)
+(*  Retain182       PR #182: a request published after D is kept           *)
 (*  Dispatch185     PR #185: work dispatched after stop was observed       *)
-(*  DropQueued      death does not answer queued requests                  *)
-(*  EarlyNotify     links and monitors fire when exit begins, not at death *)
-(*  SplitDeathPoint registration checks a later "published" flag           *)
+(*  DropQueued      D does not answer queued requests                      *)
+(*  EarlyNotify     links and monitors fire when exit begins               *)
+(*  SplitDeathPoint registration checks publication instead of D           *)
+(*  NoFence         unlink/demonitor do not cancel a notice in flight      *)
 KilledReason == IF Fault = "KillAsKill" THEN "Kill" ELSE "Killed"
 
 VARIABLES
-    st,        \* [Actors -> {"run", "stopping", "dead"}]
+    st,        \* [Actors -> {"run", "stopping", "gone", "dead"}]
     trap,      \* [Actors -> BOOLEAN]
-    why,       \* [Actors -> Reasons \cup {None}]: committed exit reason
-    cause,     \* [Actors -> causes]: what began the exit (ghost)
+    why,       \* [Actors -> Reasons \cup {None}]: requested, final from D
+    cause,     \* [Actors -> causes]: what decided the reason (ghost)
     trapAt,    \* [Actors -> BOOLEAN]: trap flag when the exit began (ghost)
     mbox,      \* [Actors -> Seq(Item)]
     links,     \* set of two-element sets of actors
     mon,       \* [MonIds -> [o, t]]: owner and target
     mstate,    \* [MonIds -> {"unused", "active", "fired", "cancelled", "late"}]
     downs,     \* [MonIds -> Nat]: Down messages enqueued (ghost)
-    inflight,  \* set of notices taken at death, not yet delivered
+    inflight,  \* notices taken at D (or late registrations), not yet delivered
     fired,     \* actors whose links and monitors already fired (ghost)
-    published, \* actors whose death is visible to registration
+    cancelled, \* notices cancelled by unlink/demonitor (ghost)
+    afterCancel, \* a cancelled notice took effect (ghost)
     req,       \* [Reqs -> [t, s]]
     sends, signals, lates,
     psent,     \* children that received the supervisor's Shutdown
     afterStop  \* a message was dispatched after stop was observed (ghost)
 
 vars == <<st, trap, why, cause, trapAt, mbox, links, mon, mstate, downs,
-          inflight, fired, published, req, sends, signals, lates, psent, afterStop>>
+          inflight, fired, cancelled, afterCancel, req, sends, signals, lates,
+          psent, afterStop>>
 life == <<st, why, cause, trapAt>>
-reg == <<links, mon, mstate, downs, inflight, fired, published>>
+reg == <<links, mon, mstate, downs, inflight, fired, cancelled, afterCancel>>
 budget == <<sends, signals, lates, psent>>
 
-Item(k, s, r, m, q, late) == [k |-> k, s |-> s, r |-> r, m |-> m, q |-> q, late |-> late]
-Note(to, from, k, r, m, late) ==
-    [to |-> to, from |-> from, k |-> k, r |-> r, m |-> m, late |-> late]
+\* Mailbox items. o: "death" (link or monitor notice taken at D), "late"
+\* (registration after D), "direct" (an exit signal sent by a live sender),
+\* "none" (ordinary message or request).
+Item(k, s, r, m, q, o) == [k |-> k, s |-> s, r |-> r, m |-> m, q |-> q, o |-> o]
+Note(to, from, k, r, m, o) ==
+    [to |-> to, from |-> from, k |-> k, r |-> r, m |-> m, o |-> o]
 IsParent(a, s) == s = LinkParent[a] \/ (s = Sup /\ a \in Children)
-IsDead(a) == IF Fault = "SplitDeathPoint" THEN a \in published ELSE st[a] = "dead"
+\* Registration and admission see D; the SplitDeathPoint control sees
+\* publication instead.
+IsGone(a) == IF Fault = "SplitDeathPoint" THEN st[a] = "dead" ELSE Past(a, st[a])
 Push(a, x) == mbox' = [mbox EXCEPT ![a] = Append(@, x)]
 
 Init ==
@@ -99,12 +121,13 @@ Init ==
     /\ downs = [m \in MonIds |-> 0]
     /\ inflight = {}
     /\ fired = {}
-    /\ published = {}
+    /\ cancelled = {}
+    /\ afterCancel = FALSE
     /\ req = [r \in Reqs |-> [t |-> None, s |-> "idle"]]
     /\ sends = 0 /\ signals = 0 /\ lates = 0 /\ psent = {}
     /\ afterStop = FALSE
 
-(* Exit begins once; the first committed reason wins. *)
+(* Exit begins once; the first requested reason wins until D, except kill. *)
 Begin(a, r, c) ==
     IF st[a] = "run"
     THEN /\ st' = [st EXCEPT ![a] = "stopping"]
@@ -113,91 +136,126 @@ Begin(a, r, c) ==
          /\ trapAt' = [trapAt EXCEPT ![a] = trap[a]]
     ELSE UNCHANGED life
 
-(* An exit signal from s (an actor, Ext or Sup) with reason r arrives at a.  *)
-(* Used for link notices and for direct signals; the caller updates mbox    *)
-(* only through this operator.                                             *)
-Signal(a, s, r, late, c) ==
-    IF st[a] = "dead" THEN UNCHANGED <<st, why, cause, trapAt, mbox>>
+(* An untrappable kill: begins exit, or replaces the requested reason of an *)
+(* actor that is still before D (OTP kills a process inside terminate).    *)
+Kill(a) ==
+    IF st[a] = "run" THEN Begin(a, KilledReason, "kill")
+    ELSE IF st[a] = "stopping"
+    THEN /\ why' = IF Fault = "KillNoSupersede" THEN why ELSE [why EXCEPT ![a] = KilledReason]
+         /\ cause' = [cause EXCEPT ![a] = "kill"]
+         /\ UNCHANGED <<st, trapAt>>
+    ELSE UNCHANGED life
+
+(* An exit signal from s with reason r and origin o arrives at a. c is the *)
+(* cause recorded if it ends a non-trapping actor.                         *)
+Signal(a, s, r, o, c) ==
+    IF st[a] # "run" THEN UNCHANGED <<st, why, cause, trapAt, mbox>>
     ELSE IF trap[a]
     THEN /\ Push(a, Item(IF IsParent(a, s) /\ Fault # "ParentAsExit" THEN "pexit" ELSE "exit",
-                         s, r, 0, 0, late))
+                         s, r, 0, 0, o))
          /\ UNCHANGED life
     ELSE IF r = "Normal" THEN UNCHANGED <<st, why, cause, trapAt, mbox>>
     ELSE /\ Begin(a, r, c)
          /\ UNCHANGED mbox
 
-(* Links and monitors of a fire: one notice per edge, real reason r. *)
+(* The table of a closes: one notice per edge with the final reason r. *)
 Fire(a, r) ==
     LET peers == {b \in Actors : {a, b} \in links}
         watched == {m \in MonIds : mstate[m] = "active" /\ mon[m].t = a}
         owned == {m \in MonIds : mstate[m] = "active" /\ mon[m].o = a}
     IN /\ inflight' = inflight
-            \cup {Note(b, a, "link", r, 0, FALSE) : b \in peers}
-            \cup {Note(mon[m].o, a, "down", r, m, FALSE) : m \in watched}
+            \cup {Note(b, a, "link", r, 0, "death") : b \in peers}
+            \cup {Note(mon[m].o, a, "down", r, m, "death") : m \in watched}
        /\ links' = {l \in links : a \notin l}
        /\ mstate' = [m \in MonIds |-> IF m \in watched THEN "fired"
                                       ELSE IF m \in owned THEN "cancelled"
                                       ELSE mstate[m]]
        /\ fired' = fired \cup {a}
 
+(* The death point D of a with final reason r: admission closes, queued    *)
+(* requests are answered, the table closes. Shared by Die and RuntimeDrop. *)
+Death(a, r) ==
+    /\ st' = [st EXCEPT ![a] = "gone"]
+    /\ mbox' = [mbox EXCEPT ![a] = <<>>]
+    /\ req' = [q \in Reqs |->
+                 IF req[q].s = "queued" /\ req[q].t = a /\ Fault # "DropQueued"
+                 THEN [req[q] EXCEPT !.s = "stopped"] ELSE req[q]]
+    /\ IF a \in fired THEN UNCHANGED <<inflight, links, mstate, fired>> ELSE Fire(a, r)
+
 ----------------------------------------------------------------------------
 (* Turns of a running actor. *)
 
-SetTrap(a) ==   \* ctx.trap_exit(true); turning it off adds no rule to check
-    /\ st[a] = "run" /\ ~trap[a]
-    /\ trap' = [trap EXCEPT ![a] = TRUE]
+SetTrap(a, b) ==
+    /\ st[a] = "run" /\ trap[a] # b /\ (b \/ TrapCanClear)
+    /\ trap' = [trap EXCEPT ![a] = b]
     /\ UNCHANGED <<life, mbox, reg, req, budget, afterStop>>
 
 Send(a, b) ==   \* also from stopped(): st[a] = "stopping"
-    /\ st[a] \in {"run", "stopping"} /\ a # b /\ st[b] # "dead"
+    /\ st[a] \in {"run", "stopping"} /\ a # b /\ st[b] \in {"run", "stopping"}
     /\ sends < MaxSends /\ sends' = sends + 1
-    /\ Push(b, Item("msg", a, None, 0, 0, FALSE))
+    /\ Push(b, Item("msg", a, None, 0, 0, "none"))
     /\ UNCHANGED <<life, trap, reg, req, signals, lates, psent, afterStop>>
 
-SelfExit(a, r) ==   \* ctx.stop(), ctx.stop_with_reason(Kill), a panic in any turn
-    /\ st[a] = "run" /\ r \in {"Normal", "Panic", "Kill"}
+SelfExit(a, r) ==   \* ctx.stop, ctx.stop_with_reason(r), a panic in any turn
+    /\ st[a] = "run" /\ r \in SelfReasons
     /\ Begin(a, r, "self")
     /\ UNCHANGED <<trap, mbox, reg, req, budget, afterStop>>
 
 Link(a, b) ==
     /\ st[a] = "run" /\ a # b /\ {a, b} \notin links
-    /\ IF IsDead(b)
+    /\ IF IsGone(b)
        THEN /\ lates < MaxLate /\ lates' = lates + 1
             /\ IF trap[a]
                THEN /\ inflight' = inflight \cup
-                        {Note(a, b, "link", IF Fault = "LateRealReason" THEN why[b] ELSE "NoProc", 0, TRUE)}
+                        {Note(a, b, "link", IF Fault = "LateRealReason" THEN why[b] ELSE "NoProc", 0, "late")}
                     /\ UNCHANGED <<life, links>>
                \* Not trapping: the design leaves open whether link returns an
-               \* error (OTP's noproc exception) or the caller exits NoProc
-               \* (OTP's signal path). Both are allowed here.
+               \* error (OTP's local noproc exception) or the caller exits
+               \* NoProc (OTP's signal semantics). Both are allowed here.
                ELSE /\ \/ UNCHANGED life
                        \/ Begin(a, IF Fault = "LateRealReason" THEN why[b] ELSE "NoProc", "noproc")
                     /\ UNCHANGED <<inflight, links>>
        ELSE /\ links' = links \cup {{a, b}}
             /\ UNCHANGED <<life, inflight, lates>>
-    /\ UNCHANGED <<trap, mbox, mon, mstate, downs, fired, published, req, sends, signals, psent, afterStop>>
+    /\ UNCHANGED <<trap, mbox, mon, mstate, downs, fired, cancelled, afterCancel,
+                   req, sends, signals, psent, afterStop>>
 
-Unlink(a, b) ==   \* does not retract a notice already in flight
-    /\ st[a] = "run" /\ {a, b} \in links
-    /\ links' = links \ {{a, b}}
-    /\ UNCHANGED <<life, trap, mbox, mon, mstate, downs, inflight, fired, published, req, budget, afterStop>>
+(* Unlink: removes the link, and cancels a notice from b already taken at   *)
+(* b's death but not yet delivered (OTP: once unlink returns, the link has  *)
+(* no further effect). A trapped Exit already queued stays.                *)
+Unlink(a, b) ==
+    LET pending == {n \in inflight : n.to = a /\ n.from = b /\ n.k = "link"}
+    IN /\ UnlinkEnabled /\ st[a] = "run"
+       /\ ({a, b} \in links \/ pending # {})
+       /\ links' = links \ {{a, b}}
+       /\ cancelled' = cancelled \cup pending
+       /\ inflight' = IF Fault = "NoFence" THEN inflight ELSE inflight \ pending
+       /\ UNCHANGED <<life, trap, mbox, mon, mstate, downs, fired, afterCancel,
+                      req, budget, afterStop>>
 
 Monitor(a, b, m) ==
     /\ st[a] = "run" /\ a # b /\ mstate[m] = "unused"
     /\ mon' = [mon EXCEPT ![m] = [o |-> a, t |-> b]]
-    /\ IF IsDead(b)
+    /\ IF IsGone(b)
        THEN /\ lates < MaxLate /\ lates' = lates + 1
             /\ mstate' = [mstate EXCEPT ![m] = "late"]
             /\ inflight' = inflight \cup
-                 {Note(a, b, "down", IF Fault = "LateRealReason" THEN why[b] ELSE "NoProc", m, TRUE)}
+                 {Note(a, b, "down", IF Fault = "LateRealReason" THEN why[b] ELSE "NoProc", m, "late")}
        ELSE /\ mstate' = [mstate EXCEPT ![m] = "active"]
             /\ UNCHANGED <<inflight, lates>>
-    /\ UNCHANGED <<life, trap, mbox, links, downs, fired, published, req, sends, signals, psent, afterStop>>
+    /\ UNCHANGED <<life, trap, mbox, links, downs, fired, cancelled, afterCancel,
+                   req, sends, signals, psent, afterStop>>
 
-Demonitor(a, m) ==   \* a Down already in flight or queued may still arrive
-    /\ st[a] = "run" /\ mstate[m] = "active" /\ mon[m].o = a
-    /\ mstate' = [mstate EXCEPT ![m] = "cancelled"]
-    /\ UNCHANGED <<life, trap, mbox, links, mon, downs, inflight, fired, published, req, budget, afterStop>>
+(* Demonitor: no Down is enqueued after it returns; one already queued stays. *)
+Demonitor(a, m) ==
+    LET pending == {n \in inflight : n.k = "down" /\ n.m = m}
+    IN /\ st[a] = "run" /\ mon[m].o = a
+       /\ mstate[m] \in {"active", "fired", "late"} /\ (mstate[m] = "active" \/ pending # {})
+       /\ mstate' = [mstate EXCEPT ![m] = "cancelled"]
+       /\ cancelled' = cancelled \cup pending
+       /\ inflight' = IF Fault = "NoFence" THEN inflight ELSE inflight \ pending
+       /\ UNCHANGED <<life, trap, mbox, links, mon, downs, fired, afterCancel,
+                      req, budget, afterStop>>
 
 (* One message is dispatched. Handlers are atomic and nondeterministic. *)
 Dispatch(a) ==
@@ -222,40 +280,51 @@ Dispatch(a) ==
                  UNCHANGED <<life, req>>
     /\ UNCHANGED <<trap, reg, budget>>
 
-(* stopped() returned: death. *)
+(* stopped() returned: the death point D. *)
 Die(a) ==
     /\ st[a] = "stopping"
-    /\ st' = [st EXCEPT ![a] = "dead"]
-    /\ mbox' = [mbox EXCEPT ![a] = <<>>]
-    /\ req' = [r \in Reqs |->
-                 IF req[r].s = "queued" /\ req[r].t = a /\ Fault # "DropQueued"
-                 THEN [req[r] EXCEPT !.s = "stopped"] ELSE req[r]]
-    /\ IF a \in fired THEN UNCHANGED <<inflight, links, mstate, fired>> ELSE Fire(a, why[a])
-    /\ published' = IF Fault = "SplitDeathPoint" THEN published ELSE published \cup {a}
-    /\ UNCHANGED <<why, cause, trapAt, trap, mon, downs, budget, afterStop>>
+    /\ Death(a, why[a])
+    /\ UNCHANGED <<why, cause, trapAt, trap, mon, downs, cancelled, afterCancel,
+                   budget, afterStop>>
+
+(* The runtime drops the actor (tasks: the future is dropped; threads: the  *)
+(* closure never ran). No stopped(); reason Killed unless a non-Normal one  *)
+(* was already requested (G1).                                             *)
+RuntimeDrop(a) ==
+    /\ DropEnabled /\ st[a] \in {"run", "stopping"}
+    /\ LET r == IF why[a] \in {None, "Normal"} THEN "Killed" ELSE why[a] IN
+       /\ why' = [why EXCEPT ![a] = r]
+       /\ cause' = [cause EXCEPT ![a] = IF r = "Killed" THEN "drop" ELSE cause[a]]
+       /\ trapAt' = [trapAt EXCEPT ![a] = IF st[a] = "run" THEN trap[a] ELSE trapAt[a]]
+       /\ Death(a, r)
+    /\ UNCHANGED <<trap, mon, downs, cancelled, afterCancel, budget, afterStop>>
 
 EarlyFire(a) ==   \* Fault EarlyNotify only
     /\ Fault = "EarlyNotify" /\ st[a] = "stopping" /\ a \notin fired
     /\ Fire(a, why[a])
-    /\ UNCHANGED <<life, trap, mbox, mon, downs, published, req, budget, afterStop>>
+    /\ UNCHANGED <<life, trap, mbox, mon, downs, cancelled, afterCancel, req, budget, afterStop>>
 
-Publish(a) ==     \* Fault SplitDeathPoint only
-    /\ Fault = "SplitDeathPoint" /\ st[a] = "dead" /\ a \notin published
-    /\ published' = published \cup {a}
-    /\ UNCHANGED <<life, trap, mbox, links, mon, mstate, downs, inflight, fired, req, budget, afterStop>>
+(* Destruction finished: the exit is published. *)
+Publish(a) ==
+    /\ st[a] = "gone"
+    /\ st' = [st EXCEPT ![a] = "dead"]
+    /\ UNCHANGED <<why, cause, trapAt, trap, mbox, reg, req, budget, afterStop>>
 
+(* A notice taken at D is delivered after publication; late notices at once. *)
 Deliver(n) ==
     /\ n \in inflight
+    /\ n.o = "late" \/ st[n.from] = "dead" \/ Fault = "EarlyNotify"
     /\ inflight' = inflight \ {n}
+    /\ afterCancel' = (afterCancel \/ n \in cancelled)
     /\ IF n.k = "down"
-       THEN IF st[n.to] = "dead"
+       THEN IF st[n.to] \in {"gone", "dead"}
             THEN UNCHANGED <<life, mbox, downs>>
-            ELSE /\ Push(n.to, Item("down", n.from, n.r, n.m, 0, n.late))
+            ELSE /\ Push(n.to, Item("down", n.from, n.r, n.m, 0, n.o))
                  /\ downs' = [downs EXCEPT ![n.m] = @ + 1]
                  /\ UNCHANGED life
-       ELSE /\ Signal(n.to, n.from, n.r, n.late, "link")
+       ELSE /\ Signal(n.to, n.from, n.r, n.o, "link")
             /\ UNCHANGED downs
-    /\ UNCHANGED <<trap, links, mon, mstate, fired, published, req, budget, afterStop>>
+    /\ UNCHANGED <<trap, links, mon, mstate, fired, cancelled, req, budget, afterStop>>
 
 ----------------------------------------------------------------------------
 (* Outside world: callers, ChildHandle holders, the supervisor. *)
@@ -268,48 +337,50 @@ Request(r, t) ==   \* the caller begins a request; enqueue is a separate step
 Enqueue(r) ==
     /\ req[r].s = "sending"
     /\ LET t == req[r].t IN
-       IF st[t] = "dead" /\ Fault # "Retain182"
-       THEN /\ req' = [req EXCEPT ![r].s = "noproc"]   \* not accepted
+       IF Past(t, st[t]) /\ Fault # "Retain182"
+       THEN /\ req' = [req EXCEPT ![r].s = "noproc"]   \* not admitted
             /\ UNCHANGED mbox
        ELSE /\ req' = [req EXCEPT ![r].s = "queued"]
-            /\ Push(t, Item("req", Ext, None, 0, r, FALSE))
+            /\ Push(t, Item("req", Ext, None, 0, r, "none"))
     /\ UNCHANGED <<life, trap, reg, budget, afterStop>>
 
-ExitSignal(a, r) ==   \* ChildHandle::exit(r); r = Kill is ChildHandle::kill()
-    /\ signals < MaxSignals /\ signals' = signals + 1
-    /\ r \in {"Normal", "Shutdown", "Kill"}
+(* exit_signal(a, r) from s: ctx.exit(&a, r) from actor s, or            *)
+(* ChildHandle::exit(r) from outside (s = Ext). r = Kill is kill().       *)
+ExitSignal(s, a, r) ==
+    /\ r \in SignalReasons /\ signals < MaxSignals /\ signals' = signals + 1
+    /\ IF s = Ext THEN TRUE ELSE st[s] = "run"
     /\ IF r = "Kill"
-       THEN /\ Begin(a, KilledReason, "kill") /\ UNCHANGED mbox
+       THEN /\ Kill(a) /\ UNCHANGED mbox
        ELSE IF Fault = "DirectStop"
        THEN /\ Begin(a, r, "signal") /\ UNCHANGED mbox
-       ELSE Signal(a, Ext, r, FALSE, "signal")
+       ELSE Signal(a, s, r, "direct", "signal")
     /\ UNCHANGED <<trap, reg, req, sends, lates, psent, afterStop>>
 
-AdminStop(a, r) ==    \* ChildHandle::stop / stop_with_reason: untrappable, cooperative
-    /\ signals < MaxSignals /\ signals' = signals + 1
-    /\ r = "Shutdown"
+AdminStop(a, r) ==    \* ChildHandle::stop / stop_with_reason / shutdown
+    /\ r \in AdminReasons /\ signals < MaxSignals /\ signals' = signals + 1
     /\ Begin(a, r, "admin")
     /\ UNCHANGED <<trap, mbox, reg, req, sends, lates, psent, afterStop>>
 
 SupShutdown(c) ==     \* exit(Child, shutdown) from the parent
-    /\ c \in Children /\ c \notin psent /\ st[c] # "dead"
+    /\ c \in Children /\ c \notin psent /\ st[c] = "run"
     /\ psent' = psent \cup {c}
-    /\ Signal(c, Sup, "Shutdown", FALSE, "parent")
+    /\ Signal(c, Sup, "Shutdown", "direct", "parent")
     /\ UNCHANGED <<trap, reg, req, sends, signals, lates, afterStop>>
 
 SupKill(c) ==         \* shutdown_timeout passed: exit(Child, kill)
-    /\ c \in psent /\ st[c] = "run"
-    /\ Begin(c, KilledReason, "kill")
+    /\ c \in psent /\ st[c] \in {"run", "stopping"}
+    /\ Kill(c)
     /\ UNCHANGED <<trap, mbox, reg, req, budget, afterStop>>
 
 Next ==
     \/ \E a \in Actors :
-         \/ SetTrap(a)
-         \/ \E b \in Actors : Send(a, b) \/ Link(a, b) \/ (UnlinkEnabled /\ Unlink(a, b))
+         \/ \E b \in BOOLEAN : SetTrap(a, b)
+         \/ \E b \in Actors : Send(a, b) \/ Link(a, b) \/ Unlink(a, b)
          \/ \E b \in Actors, m \in MonIds : Monitor(a, b, m)
          \/ \E m \in MonIds : Demonitor(a, m)
-         \/ \E r \in Reasons : SelfExit(a, r) \/ ExitSignal(a, r) \/ AdminStop(a, r)
-         \/ Dispatch(a) \/ Die(a) \/ EarlyFire(a) \/ Publish(a)
+         \/ \E r \in Reasons : SelfExit(a, r) \/ AdminStop(a, r)
+                               \/ \E s \in Actors \cup {Ext} : ExitSignal(s, a, r)
+         \/ Dispatch(a) \/ Die(a) \/ RuntimeDrop(a) \/ EarlyFire(a) \/ Publish(a)
          \/ SupShutdown(a) \/ SupKill(a)
     \/ \E n \in inflight : Deliver(n)
     \/ \E r \in Reqs : Enqueue(r) \/ \E t \in Actors : Request(r, t)
@@ -326,9 +397,9 @@ FairSpec == Spec /\ Fairness
 ----------------------------------------------------------------------------
 (* Safety *)
 
-Causes == {None, "self", "kill", "link", "parent", "signal", "admin", "noproc"}
+Causes == {None, "self", "kill", "link", "parent", "signal", "admin", "noproc", "drop"}
 TypeOK ==
-    /\ st \in [Actors -> {"run", "stopping", "dead"}]
+    /\ st \in [Actors -> {"run", "stopping", "gone", "dead"}]
     /\ trap \in [Actors -> BOOLEAN]
     /\ why \in [Actors -> Reasons \cup {None}]
     /\ cause \in [Actors -> Causes]
@@ -336,11 +407,11 @@ TypeOK ==
     /\ \A r \in Reqs : req[r].s \in {"idle", "sending", "queued"} \cup Done
     /\ \A a \in Actors : (st[a] = "run") <=> (why[a] = None)
 
-\* Every request is answered at most once, and a queued request never sits
-\* in a dead actor's mailbox (PR #182; rank 11 death boundary).
+\* A queued request is in exactly one live mailbox; past D it was answered
+\* (PR #182; rank 11 death boundary).
 NoOrphanRequest ==
     \A r \in Reqs : req[r].s = "queued" =>
-        /\ st[req[r].t] # "dead"
+        /\ st[req[r].t] \in {"run", "stopping"}
         /\ Len(SelectSeq(mbox[req[r].t], LAMBDA x : x.k = "req" /\ x.q = r)) = 1
 
 \* No message is dispatched once the actor observed its stop (PR #185).
@@ -349,72 +420,78 @@ NoDispatchAfterStop == ~afterStop
 \* At most one Down per monitor.
 DownAtMostOnce == \A m \in MonIds : downs[m] <= 1
 
-\* NoProc exactly for registrations against an actor that already died;
-\* every other notice carries the source's committed reason.
+\* NoProc exactly for registrations after D; a death notice carries the
+\* source's final reason; NoProc as a caller's own reason comes from link.
 Queued(a) ==
-    {Note(a, mbox[a][i].s, mbox[a][i].k, mbox[a][i].r, mbox[a][i].m, mbox[a][i].late) :
-        i \in {j \in 1..Len(mbox[a]) :
-            mbox[a][j].k \in {"exit", "pexit", "down"} /\ mbox[a][j].s \in Actors}}
+    {Note(a, mbox[a][i].s, mbox[a][i].k, mbox[a][i].r, mbox[a][i].m, mbox[a][i].o) :
+        i \in {j \in 1..Len(mbox[a]) : mbox[a][j].o \in {"death", "late"}}}
 Notices == inflight \cup UNION {Queued(a) : a \in Actors}
 NoProcIffLate ==
-    \A n \in Notices :
-        /\ n.late => n.r = "NoProc"
-        /\ ~n.late => n.r = why[n.from]
+    /\ \A n \in Notices :
+        /\ n.o = "late" => n.r = "NoProc"
+        /\ n.o = "death" => n.r = why[n.from]
+    /\ \A a \in Actors : cause[a] = "noproc" => why[a] = "NoProc"
 
-\* Only an outside kill bypasses trap_exit; parent exits and administrative
-\* stops end a trapping actor through its normal termination path.
+\* Only a kill (or a runtime drop) bypasses trap_exit; parent exits and
+\* administrative stops end a trapping actor through normal termination.
 TrapRespected ==
     \A a \in Actors : st[a] # "run" /\ trapAt[a] =>
-        cause[a] \in {"self", "kill", "parent", "admin"}
+        cause[a] \in {"self", "kill", "parent", "admin", "drop"}
 
-\* A Normal exit signal never stops a non-trapping actor.
+\* A Normal exit signal or link notice never stops a non-trapping actor.
 NormalSignalIgnored ==
     \A a \in Actors : cause[a] \in {"link", "signal"} => why[a] # "Normal"
 
-\* An outside kill exits Killed, and only kills and their propagation produce
-\* Killed: over a link, through a parent exit (a trapping child ends with its
-\* parent's reason), or a trapping actor choosing to exit with it.
+\* A kill ends the target Killed, also when it arrives while the target is
+\* still before D; a runtime drop never reports a Normal exit.
 KilledFromKill ==
     \A a \in Actors :
         /\ cause[a] = "kill" => why[a] = "Killed"
-        /\ why[a] = "Killed" => cause[a] \in {"kill", "link", "parent", "self"}
+        /\ cause[a] = "drop" => why[a] = "Killed"
 
-\* Registration is atomic with the death point: no live edge to a dead actor.
+\* Registration is atomic with D: no live edge to an actor past D.
 NoEdgeToDead ==
-    /\ \A m \in MonIds : mstate[m] = "active" => st[mon[m].t] # "dead"
-    /\ \A l \in links : \A x \in l : st[x] # "dead"
+    /\ \A m \in MonIds : mstate[m] = "active" => st[mon[m].t] \in {"run", "stopping"}
+    /\ \A l \in links : \A x \in l : st[x] \in {"run", "stopping"}
 
-\* Exit and Down follow every message the source sent earlier to the same
-\* observer (signal ordering between a pair of processes).
+\* A death notice follows every message its source sent earlier to the same
+\* observer. (Direct signals from a live sender are ordinary per-sender FIFO.)
 ExitAfterMessages ==
     \A a \in Actors : \A i, j \in 1..Len(mbox[a]) :
-        (i < j /\ mbox[a][i].k \in {"exit", "pexit", "down"} /\ ~mbox[a][i].late
-               /\ mbox[a][j].k = "msg")
+        (i < j /\ mbox[a][i].o = "death" /\ mbox[a][j].k = "msg")
             => mbox[a][j].s # mbox[a][i].s
+
+\* Nothing takes effect after unlink or demonitor cancelled it.
+CancelFenced == ~afterCancel
 
 Safety ==
     /\ TypeOK /\ NoOrphanRequest /\ NoDispatchAfterStop /\ DownAtMostOnce
     /\ NoProcIffLate /\ TrapRespected /\ NormalSignalIgnored /\ KilledFromKill
-    /\ NoEdgeToDead /\ ExitAfterMessages
+    /\ NoEdgeToDead /\ ExitAfterMessages /\ CancelFenced
 
 ----------------------------------------------------------------------------
-(* Liveness (under FairSpec) *)
+(* Liveness (under FairSpec: handlers, stopped() and destruction return) *)
 
 \* Every request that was sent ends Ok, ActorStopped or NoProc.
 RequestsAnswered == \A r \in Reqs : (req[r].s \in {"sending", "queued"}) ~> (req[r].s \in Done)
-\* Exit, once begun, reaches death (stopped() returns; cleanup is cooperative).
+\* Exit, once begun, is published.
 ExitCompletes == \A a \in Actors : (st[a] = "stopping") ~> (st[a] = "dead")
-\* A supervisor Shutdown ends the child, trapping or not, without a kill.
+\* A supervisor Shutdown ends the child, trapping or not, without the kill.
 ShutdownEndsChild == \A c \in Children : (c \in psent) ~> (st[c] = "dead")
 \* Down exactly once: a fired or late monitor delivers its Down unless the
-\* observer died first.
+\* observer is gone or demonitored it.
 DownDelivered ==
     \A m \in MonIds : (mstate[m] \in {"fired", "late"}) ~>
-        (downs[m] = 1 \/ (mon[m].o \in Actors /\ st[mon[m].o] = "dead"))
-\* An abnormal exit notice reaches its linked peer: a non-trapping peer
-\* stops, a trapping one gets an Exit (or a parent exit) message.
+        (downs[m] = 1 \/ mstate[m] = "cancelled"
+            \/ (mon[m].o \in Actors /\ st[mon[m].o] \in {"gone", "dead"}))
+\* An abnormal death notice reaches its linked peer: a non-trapping peer
+\* begins exit, a trapping one gets an Exit or parent-exit message, unless
+\* the peer unlinked first or was already exiting.
 LinkedPeersStop ==
-    \A a, b \in Actors :
-        (\E r \in Reasons \ {"Normal"} : Note(b, a, "link", r, 0, FALSE) \in inflight) ~>
-            (st[b] # "run" \/ \E i \in 1..Len(mbox[b]) : mbox[b][i].s = a)
+    \A a, b \in Actors : \A r \in Reasons \ {"Normal"} :
+        (Note(b, a, "link", r, 0, "death") \in inflight) ~>
+            \/ st[b] # "run"
+            \/ Note(b, a, "link", r, 0, "death") \in cancelled
+            \/ \E i \in 1..Len(mbox[b]) :
+                   mbox[b][i].k \in {"exit", "pexit"} /\ mbox[b][i].s = a /\ mbox[b][i].o = "death"
 =============================================================================

@@ -123,12 +123,36 @@ def named_fault(module, fault, invariant, tlc):
 
 
 # Rank 11 design models: (module, fault, invariant it must violate).
+def named_temporal(module, fault, prop, tlc):
+    """Run MODULE with Fault = FAULT, TypeOK and the single temporal property
+    PROP, and require a liveness counterexample for exactly that property."""
+    with tempfile.TemporaryDirectory(prefix="bad-model-") as directory:
+        work = Path(directory)
+        for source in HERE.glob("*.tla"):
+            shutil.copy(source, work)
+        lines = []
+        for line in (HERE / f"{module}.cfg").read_text().splitlines():
+            if line.startswith(("PROPERTY", "INVARIANT")):
+                continue
+            lines.append(line.replace('Fault = "None"', f'Fault = "{fault}"'))
+        lines += ["INVARIANT TypeOK", f"PROPERTY {prop}"]
+        (work / f"{module}.cfg").write_text("\n".join(lines) + "\n")
+        result = subprocess.run(shlex.split(tlc) + ["-workers", "1", "-deadlock", "-cleanup", module],
+                                cwd=work, capture_output=True, text=True)
+        log = result.stdout + result.stderr
+        if "Temporal properties were violated" not in log:
+            raise AssertionError(f"{module}/{fault}: {prop} not violated\n{log}")
+    print(f"COUNTEREXAMPLE model: {module}/{fault} ({prop})")
+
+
 # Base actor lifecycle (docs/design/otp-exit-signals.md): the v0.7 exit-signal
 # behaviours and the PR #182/#185 bugs, each against the invariant it breaks.
 LIFECYCLE_CONTROLS = [
     ("MCLifecycle", "DirectStop", "TrapRespected"),
     ("MCLifecycle", "DirectStop", "NormalSignalIgnored"),
     ("MCLifecycle", "KillAsKill", "KilledFromKill"),
+    ("MCLifecycle", "KillNoSupersede", "KilledFromKill"),
+    ("MCLifecycle", "NoFence", "CancelFenced"),
     ("MCLifecycle", "LateRealReason", "NoProcIffLate"),
     ("MCLifecycle", "Retain182", "NoOrphanRequest"),
     ("MCLifecycle", "Dispatch185", "NoDispatchAfterStop"),
@@ -221,7 +245,8 @@ def main():
         named_fault(module, fault, invariant, args.tlc)
     for module, fault, invariant in LIFECYCLE_CONTROLS:
         named_fault(module, fault, invariant, args.tlc)
-    model_fault("MCLifecycleLive", "ParentAsExit", args.tlc, temporal=True)
+    named_temporal("MCLifecycleLive", "ParentAsExit", "ShutdownEndsChild", args.tlc)
+    named_temporal("MCLifecycleLive", "SplitDeathPoint", "DownDelivered", args.tlc)
 
 
 if __name__ == "__main__":
