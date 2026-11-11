@@ -1,7 +1,8 @@
-# Introspection v1 (0.9 design, revision 2, in review)
+# Introspection v1 (0.9 design, revision 3, in review)
 
-Status: design only, not implemented. Revision 2 answers two independent
-reviews (Codex and agy, both "approve after the listed changes"); see
+Status: design only, not implemented. Revisions 2 and 3 answer two rounds of
+independent reviews (Codex and agy, each round "approve after the listed
+changes"; no P0 remained after round one); see
 [Review resolutions](#review-resolutions). Priority tier 2 of the
 [roadmap](../../ROADMAP.md#priorities): ranks 8 (stall watchdog), 30
 (read-only inspection, `spawned-top`), 29 (metrics) and gap G23 (remote
@@ -55,7 +56,7 @@ its section 3.3).
 | 3 | **Tier 1 is the `introspection` feature**: the activity word (turn id, kind, kill bit), message type, turn and poll ages, mailbox counters, the watchdog and console `trace`. Compiled out without it. | The fields that diagnose a stall need stores per turn and an RMW per send. |
 | 4 | **The coarse clock is for display only and can say "unknown".** Turns stamp a process-wide millisecond clock (one relaxed load); stamp 0 means "before the clock started" and is reported as unknown, never as a large age. **Kill eligibility never uses the stamp**: the watchdog measures how long it has itself seen the same open turn id, with its own monotonic clock. | A delayed or late-started clock thread must not produce false ages, and a false age must never kill. |
 | 5 | **The watchdog is an OS thread**, started at run time, never a Tokio task, with sampling separated from report delivery. Four detectors: a poll blocking a shared async worker (OTP `long_schedule`), a long turn, a starved execution group (Akka probe), a long mailbox (OTP 26 `long_message_queue`). | It must keep working when every runtime worker is occupied (ethrex `d958dcba4`, `535647e45`) and when the log sink blocks. |
-| 6 | **Policy: report by default; kill opt-in and fenced.** A watchdog kill is one CAS on the actor's activity word naming the observed open turn; a failed CAS does nothing. Every way an activity ends (return, handler panic, callback panic, hook end, runtime drop) consumes the kill bit, so a committed kill always yields `Killed`; D closes the word for good. L3 is unchanged: the kill takes effect when the activity returns, and a `stopped()` already running finishes. | OTP-aligned reason; no false kills; checked by 13 TLA+ negative controls. |
+| 6 | **Policy: report by default; kill opt-in and fenced.** A watchdog kill is one CAS on the actor's activity word naming the observed open turn; a failed CAS does nothing. Every way an activity ends (return, handler panic, callback panic, hook end, runtime drop) consumes the kill bit, so a committed kill always yields `Killed`; D closes the word for good. L3 is unchanged: the kill takes effect when the activity returns, and a `stopped()` already running finishes. | OTP-aligned reason; no false kills; checked by 18 TLA+ negative controls. |
 | 7 | Turn abort at an await is not in v1 (0.10 at the earliest, its own model). | Per-suspended-turn cost, a change to L3, and the comparison's "no `brutal_kill` emulation" rule. |
 | 8 | **Flight recorder (rank 9) deferred to 0.10.** v1 ships the bounded multi-session event sink and a minimal, bounded console turn trace (tier 1). | The current turn, the crash breadcrumb and the watchdog cover the incidents; the recorder and full `sys:trace` share one ring, designed once with rank 5c. |
 | 9 | **Typed `get_state(f)` on every actor; type-erased state only through `Inspect`, redacted by default.** | A typed closure is ordinary code bound by Rust privacy; dumps reach operators and logs. |
@@ -142,7 +143,7 @@ pub enum Lifecycle {
     Idle,                                  // 0.8 turn phase Running
     InTurn,                                // 0.8 turn phase InTurn / InTurnPending (handler turns)
     Exiting,                               // exit began; stopped() may be running
-    Dead { reason: ExitReason, published: bool },  // past D; `published` once wait_exit() returns
+    Dead { reason: ExitReason, published: bool },  // past D; `published` once wait_exit() is ready
 }
 pub struct Activity {                      // tier 1
     pub kind: ActivityKind,                // Started | Message | ExitReceived | Status | Stopped | Idle
@@ -220,8 +221,9 @@ panic). Rules:
 6. **Accounting.** Status envelopes bypass the `metrics` mailbox and request
    accounting on both enqueue and dequeue (no `mailbox_depth` leak, not a
    handled message), and are counted in introspection's `MailboxCounts`
-   (every envelope). A status request during `stopped()` or destruction
-   queues and is answered `ActorStopped` at D.
+   (every envelope). A status request admitted during `stopped()` queues and
+   is answered `ActorStopped` at D; one sent during destruction is after D and
+   gets `NoProc`.
 7. **Output bound.** `format_status` output over 64 KiB is cut to
    `Truncated`.
 
@@ -241,7 +243,8 @@ pub struct Snapshot { pub schema: u32, pub taken_at: Instant, pub wall_clock: Sy
 pub struct SystemSnapshot { pub id: SystemId, pub groups: Vec<GroupSnapshot>, pub supervisors: Vec<SupervisorTree> }
 pub struct GroupSnapshot { pub name: String, pub profile: ExecutionProfile, pub worker_budget: usize,
                            pub closing: bool, pub actors: Vec<ActorInfo>,
-                           pub busy_workers: Field<usize>, pub scheduling_delay: Field<Duration> }
+                           pub busy_workers: Field<usize>, pub scheduling_delay: Field<Duration>,
+                           pub helpers_draining: usize }
 impl Snapshot {
     pub fn top(&self, by: Rank, n: usize) -> Vec<&ActorInfo>;                          // recon proc_count
     pub fn window(&self, earlier: &Snapshot, by: Rank, n: usize) -> Vec<(ActorId, u64)>; // recon proc_window
@@ -251,9 +254,12 @@ impl Snapshot {
 Listings and the actor table hold an actor from spawn until **publication**
 (not D): between D and publication it appears as
 `Dead { published: false }`, which is how a destructor hanging after D is
-seen. `ExecutionGroup::actors()` skips scopes not yet attached, and shows a
-scope past D whose helpers still drain as `Dead { published: false }` too.
-`is_alive()` is false from D. Every listing is sorted by `ActorId`.
+seen. `ExecutionGroup::actors()` skips scopes not yet attached and scopes
+whose actor is already published, even while owned helpers keep the scope
+alive (revision 3; those helpers appear in `GroupSnapshot.helpers_draining`, a
+count). Publication means `wait_exit()` has become ready (not that a caller
+has returned from it). `is_alive()` is false from D. Every listing is sorted
+by `ActorId`.
 
 ### Supervision trees
 
@@ -348,8 +354,9 @@ before any introspection field is added.
 ### Actor and system tables (`console` or `introspection`)
 
 64 shards keyed by `ActorId & 63`, each a `RwLock<BTreeMap<u64, Arc<dyn
-Probe>>>` (ordered, no random hasher). Insert at spawn; mark at D; remove at
-publication. Readers take one shard's read lock at a time and copy what they
+Probe>>>` (ordered, no random hasher). Insert at spawn; remove at
+publication. D needs no table write: the probe reads D from the actor's own
+state (the 0.8 final reason). Readers take one shard's read lock at a time and copy what they
 need; they never hold a lock across a probe call that locks the actor's own
 metadata. Systems register in a small ordered list with their `SystemId`.
 
@@ -358,18 +365,46 @@ metadata. Systems register in a small ordered list with their `SystemId`.
 One cache-aligned block per actor, written only by its run loop:
 
 ```text
-word  AtomicU64  turn_id:56 | trace:1 | kill:1 | open:1 | kind:3 | dead:1 (DEAD = all-ones kind)
+word  AtomicU64  turn_id:56 | kill:1 | open:1 | kind:3 | spare:3   (DEAD = kind 7, turn id kept)
 tag   AtomicU32  interned message type, written by message and exit_received turns only
 since AtomicU64  coarse clock (ms, 0 = clock not started) at activity begin
 poll  AtomicU64  poll_count:23 | in_poll:1 | poll_stamp_ms:40     one store before and after each poll
+trace AtomicU32  0 = off, else the console session id tracing this actor
 ```
+
+**Writers.** The run loop is the only writer of `tag`, `since`, `poll` and of
+`word` except for the kill bit; the watchdog's CAS is the only other writer of
+`word`, and it only sets the kill bit on an open word. `trace` is not in
+`word` (revision 3): the console owns it. Enabling is
+`trace.compare_exchange(0, session)`, disabling and disconnect are
+`compare_exchange(session, 0)`, so a session can only clear its own trace and
+two sessions cannot overwrite each other (the second gets `busy`). The run
+loop reads `trace` with one relaxed load at each activity end (same cache
+line); a change takes effect at the next activity end. The Loom model covers
+enable, disable and disconnect racing activity ends.
+
+**Finite identifiers.** Turn ids are 56 bits: at one activity per nanosecond
+that is over two years. A run loop that would exceed the maximum stops
+publishing new ids (the word stays at the maximum, the watchdog treats the
+actor as unobservable and reports `turn_id_exhausted` once); an old id is never
+reused. The 23-bit poll count wraps, so detector D1 identifies a poll by
+`(turn, poll_count, poll_stamp_ms)`: a wrap that also repeats the millisecond
+stamp would need 8 million polls in one millisecond. Loom and unit tests run
+the protocol with reduced widths (8-bit turn ids, 4-bit poll counts) to check
+both rules.
 
 Senders increment `accepted: AtomicU64` (relaxed `fetch_add`) on their own
 cache line after a successful push. The run loop stores `dequeued` at each
 dispatch and adds the drained count to `discarded` when it discards the queue
 (stop, death). `len = accepted - dequeued - discarded` (saturating); a push
 in flight is counted when it succeeds; a failed enqueue (`NoProc`) is not
-counted. After D, `MailboxCounts` is frozen and `len` reads 0.
+counted. From D, `len` reads 0. The counters are not frozen at D: a sender that
+pushed before D can be descheduled before its `fetch_add` and resume after D
+(revision 3). They become final once every send call that began before D has
+returned; sends never block, so that is bounded by scheduling, not by the
+actor. A failpoint between the push and the increment tests exactly this
+interleaving. A fenced admission reservation would give a sharp freeze point
+at the cost of a second RMW per send; v1 does not take it.
 
 **Message type without `unsafe`.** Each run loop caches the `type_name::<M>()`
 pointer (compared with `ptr::eq` and length) to a `u32` tag from a
@@ -385,10 +420,10 @@ takes the interner's mutex and may allocate, on the opted-in dispatch path.
 | begin activity N | `fence(Release)`; `tag` (message kinds only), `since`, `poll` stores | Relaxed after the fence |
 | | `word.store(N, open, kind)` | Release |
 | each poll (async) | `poll.store(count, in_poll=1, stamp)`; poll; `poll.store(count, 0, stamp)` | Relaxed (one word, never torn) |
-| end activity N (return, handler panic, callback panic, hook end) | `old = word.swap(N, closed, kind=Idle)` | AcqRel |
+| end activity N (return or panic in `started()`, a handler or `stopped()`; status end) | `old = word.swap(N, closed, kind=Idle)`; `trace.load` | AcqRel; Relaxed |
 | | if `old.kill`: record `Killed` in the exit request before anything else (before `stopped()` is decided, before the next receive) | — |
 | runtime drop (cleanup reaches D without the loop) | `old = word.swap(DEAD)`; if `old.kill`: `Killed` | AcqRel, before the reason is finalized |
-| D | `word.store(DEAD)` (already DEAD after a drop) | Release |
+| D | `word.store(turn_id, DEAD)`, keeping the last turn id (already DEAD after a drop) | Release |
 
 The `fence(Release)` at begin orders the new activity's payload stores after
 the previous end's swap, so a reader that sees a payload store of activity N+1
@@ -399,13 +434,20 @@ seqlocks get along with programming language memory models?", 2012).
 
 ```text
 w1 = word.load(Acquire)
-if w1.dead -> Dead; if !w1.open -> Idle (tag still names the last message)
 t = tag.load(Relaxed); s = since.load(Relaxed); p = poll.load(Relaxed)
 fence(Acquire)
 w2 = word.load(Relaxed)
-accept iff w1 and w2 are equal ignoring the kill and trace bits
+accept iff w1 and w2 are equal ignoring the kill bit
+  open  -> the activity of w1 with t, s, p
+  idle  -> Idle; t is the last message (the same validation applies: a tag
+           written by a newer activity moves the word, so it is rejected)
+  dead  -> Dead (with the last turn id and message)
 retry at most 3 times, then Field::Unavailable(ReadContended)
 ```
+
+The idle and dead cases go through the same validation as the open case
+(revision 3: the round-two reviews found that returning early on an idle word
+could pair turn N's id with turn N+1's tag).
 
 `poll` is one atomic word, so a poll's count, flag and stamp are never mixed;
 within one accepted read it belongs to activity N because activity N+1's poll
@@ -454,14 +496,14 @@ events, never in one critical section, so the race stays observable.
 | `get_state`/`get_status` | 0 | – | one status turn when called | – | – | a request |
 | trees, crash/supervisor events | 0 | – | – | – | on exit and supervisor actions | supervisor locks, briefly |
 | `Weak<dyn Probe>` | 0 | – | – | – | weak count +1 | upgrade |
-| actor and system tables | console (default) | – | – | – | one shard write lock at spawn, at D (mark) and at publication | shard read locks |
+| actor and system tables | console (default) | – | – | – | one shard write lock at spawn and one at publication | shard read locks |
 | console thread | console (default) | – | – | – | one idle OS thread per process while a system or guard exists | per command |
 | activity word | 1 | – | `fence(Release)` + 3 relaxed stores + 1 Release store at begin; 1 swap at end | – | – | seqlock read |
 | message type | 1 | – | virtual call, cache probe, 1 store; a miss locks and may allocate | – | – | interner lookup |
 | coarse clock | 1 | – | 1 relaxed load (in the begin stores above) | 1 load | – | – |
 | poll stamps | 1 | – | – | 2 relaxed stores | – | – |
 | mailbox counters | 1 | 1 relaxed `fetch_add` (per-actor line) | 1 store; 1 store at discard | – | – | 3 loads |
-| trace bit | 1 | – | in the end swap's old value (no extra load) | – | – | – |
+| trace flag | 1 | – | 1 relaxed load at activity end (same cache line) | – | – | – |
 | clock thread | 1 | – | – | – | – | wakes every 5 ms once started |
 | watchdog | 1 + started | – | – | – | – | O(actors) per sample on its own thread |
 | fenced kill | 1 + policy | – | the end swap above | – | – | 1 CAS when firing |
@@ -525,7 +567,7 @@ let reports = watchdog.check_now();                  // one synchronous pass; re
 
 | Detector | Signal (watchdog-observed) | Applies to |
 |---|---|---|
-| D1 long poll | the same `(turn, poll_count)` seen `in_poll` for `long_poll` | `Backend::Async` and async groups; not `Thread`, `Blocking`, native groups, threads mode |
+| D1 long poll | the same `(turn, poll_count, poll_stamp)` seen `in_poll` for `long_poll` | `Backend::Async` and async groups; not `Thread`, `Blocking`, native groups, threads mode |
 | D2 long turn | the same open turn id for `long_turn` | every actor and activity kind, both modes |
 | D3 starvation | the probe task has not run `starvation` after spawn (reported before it runs) | async groups, probed runtimes |
 | D4 long mailbox | `len >= enable`, cleared at `<= disable` | every actor |
@@ -540,17 +582,36 @@ reported once and not re-spawned until it runs. Reports are rate limited per
 actor and activity: at the threshold, 2x, 4x, and an `ended` report.
 
 **Policy.** Report for D1, D3, D4. `kill_after` adds the fenced kill for D2
-only (a long poll can be legitimate CPU work). The watchdog's own lifecycle:
-dropping `Watchdog` stops both threads; `start` twice returns
-`AlreadyRunning`.
+only (a long poll can be legitimate CPU work).
+
+**Shutdown (revision 3).** Dropping `Watchdog` (or the end of the last
+`ActorSystem` that started it) signals both threads and joins only the
+sampling thread, which never runs user code and finishes within one sample.
+It never joins the delivery thread, which may be blocked inside a `tracing`
+subscriber or a filesystem write: that thread is detached and exits when its
+current delivery returns. At most one detached delivery thread may exist per
+process: `Watchdog::start` while a previous one is still blocked reuses no
+thread and returns `Err(DeliveryStuck)` (reported, with the time it has been
+blocked), so blocked threads cannot accumulate. Nothing in `ActorSystem`
+destruction waits on subscriber code.
+
+**Systems.** The watchdog's observation state is keyed by `ActorId` (unique
+in the process); its limits are resolved per system, group and ChildSpec; its
+reports carry the `SystemId`. `check_now()` covers every system;
+`check_now_for(system: SystemId)` covers one, which is what multi-node
+simulations use.
 
 ## Determinism and the simulator
 
 - **Reads and report-only checks are neutral.** `info`, listings,
-  `snapshot`, `tree`, console command handling and `check_now()` without a
+  `snapshot`, `tree`, the console's read commands (`hello`, `ps`, `info`,
+  `links`, `tree`, `groups`, `snapshot`, `stuck`) and `check_now()` without a
   kill policy take no scheduling decision, register no waker, draw no
   randomness and iterate in `ActorId` order (ordered shards, sorted outputs),
-  so a seed's decision tape is identical with or without them.
+  so a seed's decision tape is identical with or without them. The console's
+  `state` is in band (an ordinary request), and `kill`, `terminate` and
+  `trace` change execution: they are deterministic for the same script, not
+  neutral.
 - **Kill-capable checks are deterministic, not neutral.** A
   `check_now_with(cfg)` that commits a kill changes the run; it replays
   identically for the same seed and script.
@@ -590,15 +651,31 @@ G23).
 | Failure | one `WARN spawned::console` (`ENOENT`, `EROFS`, `EACCES`, `EPERM`/seccomp, untrusted directory) and the program continues | — |
 
 **Refcount.** A process-wide `Mutex<ConsoleState>` counts live
-`ActorSystem`s and `ConsoleGuard`s. On 0→1 it creates the directory, binds a
-fresh socket and starts the `spawned-console` thread; on 1→0 it stops the
-thread and removes its own files; a later 0→1 binds again (a new instance
-nonce). It records `bound_pid` at bind time and never removes a file unless
-`std::process::id() == bound_pid`. After `fork()` the child inherits the
-count but no thread; an increment in a process whose pid differs from
-`bound_pid` resets the state and binds anew. There is no `atexit` and no
-`unsafe`: a process that exits without dropping its systems leaves files
-that the lock protocol below identifies as stale.
+`ActorSystem`s and `ConsoleGuard`s. On 0→1 it publishes a new instance (the
+protocol below) and starts the `spawned-console` thread; on 1→0 it stops the
+thread (joined with a 1 s deadline; the thread runs no user code and never
+calls a `tracing` subscriber, see audit below) and withdraws the instance; a
+later 0→1 publishes a new instance with a new nonce. There is no `atexit`
+and no `unsafe`: a process that exits without dropping its systems leaves
+files that the lock protocol identifies as stale.
+
+**`fork()` (revision 3).** v1 supports `fork()` followed by `exec` or
+`_exit`, which is what process spawning does, and nothing else. All console
+descriptors (the lock file, the listening socket, accepted connections) are
+opened close-on-exec (Rust's standard library does so by default), so an
+`exec`ed child holds none of them. A child that continues to run Rust code
+after `fork()` must not use, start or drop any inherited `ActorSystem` or
+`ConsoleGuard` (inherited mutexes may be held by threads that do not exist in
+the child). As a safety net only, guard and system destruction never removes
+or unlocks files when `std::process::id() != bound_pid`, and the lock is
+never released with an explicit `unlock()` (which on a shared `flock` would
+release it for the parent too), only by closing the descriptor, which leaves
+the parent's lock in place. Continued execution after `fork()` with a working
+console in the child would need its own reviewed protocol and is not offered.
+Consequence documented for operators: a forked child that neither `exec`s
+nor exits keeps an inherited lock descriptor open, so after the parent dies
+`spawned-ctl list` sees the lock held and shows the entry as
+`held, not answering` rather than deleting it.
 
 **Where it runs.** On its own `spawned-console` OS thread, never on
 application workers and not on a system's control runtime, so console work
@@ -616,6 +693,40 @@ test compares the spawned counter with the table for every start function.
 
 Per instance: `<pid>-<nonce>.sock` and `<pid>-<nonce>.lock`, with a random
 64-bit nonce. The process umask is never touched.
+
+**Publication (revision 3).** The lock is taken and verified before the
+socket exists, and removed after it:
+
+1. Check the directory (step 1 below), and keep it open by handle.
+2. Create `<pid>-<nonce>.lock` with `create_new` (O_EXCL), mode `0600`,
+   close-on-exec. `AlreadyExists` → new nonce (at most 3 tries).
+3. `try_lock()` (non-blocking, exclusive). `WouldBlock` (a cleaner holds it)
+   → close, new nonce. `Unsupported`/`ENOLCK` (for example on NFS) → no
+   console (one warning).
+4. Verify identity: `fstat` of the open descriptor equals `lstat` of the path
+   (same `dev` and `ino`), the path is a regular file (not a symlink) owned
+   by the effective uid. A mismatch or a missing path (a cleaner removed it
+   between steps 2 and 3) → close, new nonce.
+5. Bind `<pid>-<nonce>.sock`; `AddrInUse` → withdraw (below) and new nonce.
+   Set `0600`; record the socket's `(dev, ino)` from `lstat`.
+6. Serve.
+
+**Withdrawal**, with the lock still held: stop accepting; remove the socket
+if its `lstat` still shows the recorded `(dev, ino)`; remove the lock file if
+it still matches; then close the lock descriptor (releasing the lock).
+
+**Cleaning (`spawned-ctl list`).** For each `.lock`: open it read-only with
+`O_NOFOLLOW` and close-on-exec; `try_lock()`. `WouldBlock` → live (or held
+by a forked child, see above): never touched. Acquired → re-verify
+`fstat == lstat`; if it still matches, remove the `.sock` (only if it is a
+socket owned by the caller), then the `.lock`, then close. If it no longer
+matches, close and skip. A `.sock` with no `.lock` cannot belong to a running
+instance (the lock exists from step 2 until after the socket is removed), so
+it is removed if owned by the caller. Two cleaners: only one acquires a given
+lock; the other sees `WouldBlock` and leaves the entry for a later run.
+Startup against a cleaner: a cleaner can only win step 3's lock on a file
+with no socket, removes it, and the server's step 4 sees the missing path and
+retries; a server past step 4 holds the lock, so no cleaner touches it.
 
 1. **Directory.** `$XDG_RUNTIME_DIR` must be a directory owned by the
    effective uid with no group or other access (as the XDG spec requires);
@@ -635,17 +746,13 @@ Per instance: `<pid>-<nonce>.sock` and `<pid>-<nonce>.lock`, with a random
    match the process's **effective** uid. Root peers are refused unless the
    process runs as root.
 4. **Liveness lock.** The instance holds an exclusive `File::lock` (std,
-   stable since Rust 1.89) on its `.lock` file for its lifetime.
-5. **Cleanup** removes only the instance's own two files, after checking
-   their `(dev, ino)` against those recorded at creation and `pid ==
-   bound_pid`.
-6. **Stale entries.** `spawned-ctl list` treats an entry as live if its lock
-   is held. If `try_lock` succeeds the instance is dead: holding that lock,
-   `spawned-ctl` removes the pair (rechecking `(dev, ino)`). It never removes
-   an entry whose lock is held, so a socket of a live process, including one
-   in another pid namespace with the same pid, is never deleted; the nonce
-   keeps such pairs apart. The server never removes anything but its own
-   files.
+   stable since Rust 1.89) on its `.lock` file for its lifetime, taken before
+   the socket exists (publication above).
+5. **Cleanup** is the withdrawal above, only when `pid == bound_pid`; the
+   server never removes anything but its own files.
+6. **Stale entries** are removed only by a cleaner holding their lock, so a
+   live instance, including one in another pid namespace with the same pid
+   (the nonce keeps their names apart), is never deleted.
 
 ### Wire protocol
 
@@ -669,7 +776,7 @@ Line-delimited JSON; see the [wire and data contract](#wire-and-data-contract).
 | `state <a> [--timeout 5s]` | read (state is opt-in per actor through `Inspect`) | `get_status`; awaited on the console runtime, never blocking the thread | times out; the error points to `info` |
 | `trace <a> <rate> [--max n] [--for t]` | `trace` | bounded turn events (needs `introspection`) | events stop; `info` shows the open turn |
 | `kill <target> --expect <id>[@gen]` | `kill` | resolves the target once to an instance-bound handle; `stale_target` if the id or generation differs; then `ChildHandle::kill()` | `accepted`: effective when the activity returns (L3) |
-| `terminate <sup> <child> --expect <id>[@gen]` | `terminate` | the supervisor's `terminate_child` (dynamic supervisors; static ones once G6 adds it) | as the supervisor's call |
+| `terminate <sup> <child> --expect <id>[@gen]` | `terminate` | the supervisor's terminate operation with the expectation passed in: the supervisor compares the child's current `ActorId` and generation with it inside the operation's own admission (its control loop), so a restart between the console's lookup and the operation yields `stale_target`, never the termination of the newer generation (dynamic supervisors: `terminate_slot` gains an `expect` argument, coordinated with PR #245; static supervisors once G6 adds the operation) | as the supervisor's call |
 
 `kill` is OTP's `exit(Pid, kill)`, not `restart_child`: the supervisor then
 applies its policy. A Temporary child is not restarted; under OneForAll or
@@ -677,16 +784,24 @@ RestForOne siblings are rebuilt; the restart counts against the budget and may
 fail the tree. The reply says `accepted`; completion is visible through
 `info`/`tree`. Targets carry the system id (`sys<id>/…`) and an expected
 instance, so a stale operator view cannot hit a newer generation. There is no
-`eval`, `replace_state`, `suspend` or arbitrary send. Every command is logged
-(`spawned::console`; WARN for `kill`, `terminate`, `trace`).
+`eval`, `replace_state`, `suspend` or arbitrary send.
+
+**Audit (revision 3).** Every command produces a fixed-size audit record
+(`spawned::console`; WARN for `kill`, `terminate`, `trace`). The console
+thread never calls a `tracing` subscriber itself: records go through a
+bounded channel (256) to the same kind of detached delivery thread the
+watchdog uses. If delivery is blocked, records beyond the channel are dropped
+and counted, the count is reported in the next `hello` and on recovery, and
+a mutating command is refused with `audit_unavailable` while its record
+cannot be queued (reads continue). So a blocked subscriber can stop audit
+output but cannot stop the console, and no mutation goes unrecorded.
 
 **Console turn trace (v1, tier 1).** One fixed-size event per activity of a
 traced actor (turn id, kind, message, observed duration, outcome) into the
 connection's own session; at most one trace per connection and 4 traced
 actors per process; `max` default 100 (cap 10,000), `for` default 10 s (cap 5
 min); stops at either, or on disconnect; events beyond the session's
-capacity are dropped and counted. The producer reads the trace bit from the
-end swap's old value.
+capacity are dropped and counted. The run loop reads the `trace` flag (its own atomic, owned by the console) at each activity end.
 
 ### Limits
 
@@ -697,10 +812,14 @@ end swap's old value.
 | requests in flight per connection | 1 executing, 4 queued, then `busy` |
 | commands per connection | 20 per second |
 | response size | 4 MiB; larger results are cut with `"truncated":true` and a cursor |
-| `ps` rows | default 100, max 1,000; built from a copied `(sort key, id)` vector, 16 bytes per actor, locks released per shard |
+| `ps` sorted by a metric | top-k only (recon `proc_count`): one pass over the shards keeping a heap of at most `limit` ≤ 1,000 entries, so memory is O(k), not O(actors); no pagination of sorted views |
+| `ps`/`snapshot` in id order | pages of at most 1,000 actors by keyset (`after = last id`): exact for actors that live across pages, no captured vectors, no cursor state on the server |
+| work per slice | a command processes at most 1,000 actors or 5 ms, then yields to the console runtime, so other connections and every write deadline keep running; threads-only builds serve each connection on its own thread |
+| memory | per connection 8 MiB (request, response under construction, write buffer); process-wide 32 MiB; a command that would exceed either fails with `too_large` before allocating more |
+| `state` timeout | at most 30 s (default 5 s) |
 | `tree` | depth 64, 10,000 nodes |
-| strings in output | labels, names, errors: 256 bytes; `format_status`: 64 KiB |
-| write deadline | 2 s per frame, then the connection is closed (a paused client cannot block others) |
+| strings in output | labels, names, errors: 256 bytes; `format_status` output cut at 64 KiB. The formatter's own allocation while it runs (on the actor) is user code and outside the guarantee |
+| write deadline | 2 s for a whole frame (partial writes included), then the connection is closed (a paused client cannot block others) |
 | idle connection | 10 minutes |
 | disconnect | cancels the connection's pending `state` and `trace` |
 
@@ -745,8 +864,10 @@ Frozen before release:
 - **Error codes.** `version`, `parse`, `too_large`, `busy`, `unknown_cmd`,
   `bad_args`, `not_found`, `stale_target`, `not_allowed`, `unavailable`,
   `timeout`, `actor_stopped`, `noproc`, `callback_failed`, `internal`.
-- **Numbers and time.** Ids, turn ids and generations are decimal strings
-  (they may exceed 2^53); counts under 2^53 are numbers. Durations are integer
+- **Numbers and time.** Every `u64` (ids, turn ids, generations, counters,
+  `accepted`/`dequeued`/`discarded`, `turns`) is a decimal string, whatever its
+  value. Only values bounded below 2^32 by construction (limits, link and
+  monitor counts, page sizes) are JSON numbers. Durations are integer
   milliseconds in `*_ms` fields; `taken_at_ms` is monotonic milliseconds
   since process start; `wall_unix_ms` is wall time.
 - **Unavailable values.** A field that cannot be given is
@@ -756,10 +877,12 @@ Frozen before release:
 - **Evolution.** New fields and enum values may appear within `v:1`; removing
   or renaming one, or changing a type, is `v:2`. A client ignores unknown
   fields.
-- **Pagination.** `next` is an opaque cursor naming a key vector captured by
-  the first page and kept 30 s per connection; later pages come from that
-  capture, so a changing sort key cannot duplicate or skip rows (rows may be
-  stale or `dead`).
+- **Pagination.** Id-order listings page by keyset: `next` is the last
+  `ActorId` returned, and the next page starts after it, with no state kept
+  on the server; an actor alive across both pages appears exactly once.
+  Views sorted by a changing metric are top-k only and not paginated
+  (revision 3: the captured-vector cursor of revision 2 did not bound
+  memory).
 - **Rust types.** Every public type in the API sections is
   `#[non_exhaustive]`; `Field<T>` carries the same `Unavailable` reasons.
 
@@ -823,98 +946,132 @@ R3 are unchanged; R4 gains one exception (I4).
 
 | Id | Guarantee | Checked by (planned) |
 |---|---|---|
-| I1 | **Out of band.** `info`, listings, snapshots, trees, console reads and watchdog sampling never enqueue, wake, run user code on the observed actor or wait for a turn; they may contend briefly on metadata locks. | `info_returns_during_a_wedged_turn` (every placement); `reads_do_not_change_the_tape` |
+| I1 | **Out of band.** `info`, listings, snapshots, trees, the console's read commands (not `state`, `kill`, `terminate`, `trace`) and watchdog sampling never enqueue, wake, run user code on the observed actor or wait for a turn; they may contend briefly on metadata locks. | `info_returns_during_a_wedged_turn` (every placement); `reads_do_not_change_the_tape` |
 | I2 | **Activity reads.** The activity fields come from one activity or are reported `ReadContended`; the same open `TurnId` in two reads is the same activity; a stamp of 0 is `ClockNotStarted`. | `activity_slot_loom`; `activity_*`; `lazy_clock_*` |
-| I3 | **Monotonic and final.** Turn ids, mailbox counters, generations, restarts never decrease; `Dead { reason }` is final, its reason equals `wait_exit()`, and `published` becomes true exactly when `wait_exit()` returns. | `monotonic_*`; `d_to_publication_*`; fuzz oracle |
-| I4 | **Status is a turn.** `get_state`/`get_status` run in their own turn, between handler turns, in mailbox order, with one outcome (`Ok`, `RequestTimeout`, `ActorStopped(final)`, `NoProc`, `CallbackFailed`). A caught callback panic alone does not end the actor; no effect is rolled back. A status envelope whose caller gave up before dispatch is not run (an exception to R4). | `Introspection!StatusBetweenTurns`, `!StatusDischarged`, `!StatusAtMostOnce`, `!NoCallbackAfterGiveUp`, `!CallbackPanicContained`; `status_*` |
+| I3 | **Monotonic and final.** Turn ids, mailbox counters, generations, restarts never decrease; `len` reads 0 from D and the counters are final once every send call that began before D has returned; `Dead { reason }` is final, its reason equals `wait_exit()`'s, and `published` becomes true exactly when `wait_exit()` becomes ready. | `monotonic_*`; `d_to_publication_*`; fuzz oracle |
+| I4 | **Status is a turn.** `get_state`/`get_status` run in their own turn, between handler turns, in mailbox order, with one outcome (`Ok`, `RequestTimeout`, `ActorStopped(final)`, `NoProc`, `CallbackFailed`). A caught callback panic alone does not end the actor; no effect is rolled back. A status envelope whose caller gave up before dispatch is not run (an exception to R4). | `Introspection!StatusBetweenTurns`, `!StatusDischarged`, `!StatusReasonIsFinal`, `!StatusAtMostOnce`, `!NoCallbackAfterGiveUp`, `!CallbackPanicContained`; `status_*` |
 | I5 | **Redaction.** Type-erased state appears only for `Inspect` actors. | `state_is_redacted_by_default`; trybuild |
 | I6 | **Listings.** An actor not past D for a whole listing appears exactly once, in id order; between D and publication it appears `Dead { published: false }`. | `listing_under_churn`; `actor_table_loom`; fuzz |
 | I7 | **Supervision rows.** Each row is self-consistent; counts agree with the rows of the same call; expanded nodes belong to the captured instance. | `tree_*`; `snapshot_during_restarts` |
 | I8 | **Watchdog detection.** With the watchdog running and its threads scheduled, D1–D4 report within their threshold plus two samples; no report for an activity observed open for less than its threshold; sampling continues while delivery is blocked. | `watchdog::*`; `check_now_*` |
-| I9 | **Fenced kill.** A watchdog kill commits only on the open activity it observed; a failed commit has no effect; a commit before D makes the final reason `Killed` however the activity ends (return, panic, callback panic, hook end, runtime drop); nothing is dispatched after it; `stopped()` never begins after a kill and one already running finishes; no commit after D. | `Introspection!NoChargeFinishedTurn`, `!KillDominates`, `!NoDispatchAfterStop`, `!KillSkipsStopped`, `!NoCommitAfterD`; Loom; sim |
+| I9 | **Fenced kill.** A watchdog kill commits only on the open activity it observed; a failed commit has no effect; a commit before D makes the final reason `Killed` however the activity ends (return; panic in `started()`, a handler or `stopped()`; status end; runtime drop); nothing is dispatched after it; `stopped()` is never decided after a kill or a commitment, and one already running finishes; no commit after D. | `Introspection!NoChargeFinishedTurn`, `!CommitOnOpen`, `!KillDominates`, `!NoDispatchAfterStop`, `!KillSkipsStopped`, `!NoCommitAfterD`; Loom; sim |
 | I10 | **Reports and sessions.** Documented targets and fields; sessions isolated and bounded; losses counted. | `reports::*`; `sink::*` |
 | I11 | **No cost on the default path.** With `introspection` off (console on or off), send, dispatch and turn execute the 0.8 code unchanged. | benchmark gate; codegen check |
-| I12 | **Determinism.** Reads, console commands and report-only checks leave the tape unchanged; kill-capable checks replay identically. | `reads_do_not_change_the_tape`; `console_queries_do_not_change_the_tape`; `kill_check_replays` |
-| I13 | **Console.** Local Unix socket only, in a directory owned by the effective uid with no group/other access; peers with another effective uid are refused; read-only unless each mutation is allowed; every command logged; never removes a live instance's files; limits bound memory and time per client; a failure to start never fails the program. | `console::*` |
+| I12 | **Determinism.** Reads, the console's read commands and report-only checks leave the tape unchanged; `state`, console mutations and kill-capable checks replay identically for the same script. | `reads_do_not_change_the_tape`; `console_queries_do_not_change_the_tape`; `kill_check_replays` |
+| I13 | **Console.** Local Unix socket only, in a directory owned by the effective uid with no group/other access; peers with another effective uid are refused; read-only unless each mutation is allowed; every command produces an audit record or is counted as dropped, and no mutation runs without a queued record; the lock is held before the socket exists and until after it is removed, and only a lock holder removes files, so a live instance's files are never removed; limits bound memory, per-slice work and time per client; a failure to start never fails the program. | `console::*` |
 
 ## TLA+ model and trace validation
 
-[`Introspection.tla`](../../verification/tla/Introspection.tla), revision 2:
+[`Introspection.tla`](../../verification/tla/Introspection.tla), revision 3:
 one actor whose every activity (`started()`, messages, the status turn,
-`stopped()`) opens a new turn id; turns that may suspend forever; handler and
-callback panics; the status request with a deadline (`StatusTimeout`) and the
-skip of abandoned callbacks; administrative stop and unfenced kill; runtime
-drop at any point before D; D and publication (which may never come); and the
-watchdog's observe, successful CAS, failed CAS and record steps. Reads are not
-actions. It stays separate from `Lifecycle.tla` (being changed by PR #240) and
-abstracts links and monitors, which v1 does not touch.
+`stopped()`) opens a new turn id; activities that may suspend forever (the
+status callback, synchronous, does not); panics in `started()`, a handler and
+`stopped()`, and a caught status-callback panic; the status request with a
+deadline, its answer and the end of its turn as separate steps, and the skip
+of a callback whose caller gave up before dispatch; administrative stop and
+unfenced kill (also between the drop swap and D); the runtime drop's swap and
+D as separate steps; publication, which may never come; and the watchdog's
+observe, successful CAS, failed CAS and record. Reads are not actions. It
+stays separate from `Lifecycle.tla` (being changed by PR #240) and abstracts
+links and monitors, which v1 does not touch.
 
-Invariants: `NoChargeFinishedTurn`, `NoDispatchAfterStop`, `KillDominates`,
-`NoCommitAfterD`, `KillSkipsStopped`, `StatusBetweenTurns`,
-`StatusDischarged`, `StatusAtMostOnce`, `NoCallbackAfterGiveUp`,
-`CallbackPanicContained`.
+Revision 3 changes, from the round-two reviews: `Committed == commitPreD`
+(a later `Observe` can no longer reset it); every ghost is derived in `Next`
+from the state change of the step, never from the `Fault` selector;
+commitment validity is checked at the CAS itself (`CommitOnOpen`) and a
+target that has ended clean is charged from the moment of commitment
+(`NoChargeFinishedTurn`); `stopped()` may not be decided after a commitment
+whose bit was lost (`KillSkipsStopped`, the round-two counterexample
+`KillCas → Stop → MsgEnd loses bit → BeginExit`); the status answer carries
+the final reason (`StatusReasonIsFinal`); and actions are split so each one
+is a single implementation linearization point.
 
-Results (TLC 2.19 on fede, 4 workers, `nice 19`): `MCIntrospection` (3
-messages) 29,216 distinct states, depth 23, no error; 4 messages 49,516
-states, depth 26. Each control failed on its named invariant, run one at a
-time (`negative_checks.py`, `INTROSPECTION_CONTROLS`):
+Invariants: `NoChargeFinishedTurn`, `CommitOnOpen`, `NoDispatchAfterStop`,
+`KillDominates`, `NoCommitAfterD`, `KillSkipsStopped`, `StatusBetweenTurns`,
+`StatusDischarged`, `StatusReasonIsFinal`, `StatusAtMostOnce`,
+`NoCallbackAfterGiveUp`, `CallbackPanicContained`. They cover I4 and I9 only;
+the other guarantees (memory ordering, listings, limits, redaction, cost)
+are checked by Loom, tests and the benchmark gate listed in the test plan.
+
+Results (TLC 2.19 on fede, 4 workers, `nice 19`, one configuration at a
+time): `MCIntrospection` (3 messages) 46,008 distinct states, depth 26, no
+error; 4 messages 77,382 states, depth 29. Each control failed on its named
+invariant, run alone (`negative_checks.py`, `INTROSPECTION_CONTROLS`):
 
 | Control | Bug | Fails |
 |---|---|---|
 | `CheckThenAct` | checks the turn, kills in a later step | `NoChargeFinishedTurn` |
 | `FailedCasKills` | a failed CAS still records a kill | `NoChargeFinishedTurn` |
-| `KillBitIgnored` | normal end drops the kill bit | `NoDispatchAfterStop` |
+| `LooseCas` | the CAS compares the turn id but not the open bit | `CommitOnOpen` |
+| `KillBitIgnored` | normal end drops the kill bit, a turn follows | `NoDispatchAfterStop` |
+| `LostBitRunsStopped` | the bit is dropped and a stop then runs `stopped()` | `KillSkipsStopped` |
 | `PanicOverKill` | a handler panic ignores the kill bit | `KillDominates` |
-| `DropLosesKill` | runtime drop ignores the kill bit | `KillDominates` |
+| `StartPanicOverKill` | a panic in `started()` ignores the kill bit | `KillDominates` |
+| `HookPanicOverKill` | a panic in `stopped()` ignores the kill bit | `KillDominates` |
+| `DropLosesKill` | the drop swap ignores the kill bit | `KillDominates` |
 | `NoInvalidateAtD` | the word stays open after a drop | `NoCommitAfterD` |
-| `KillRunsStopped` | `stopped()` begins after a kill | `KillSkipsStopped` |
+| `KillRunsStopped` | `stopped()` decided after a recorded kill | `KillSkipsStopped` |
 | `DispatchAfterStop` | dispatch after a stop or kill | `NoDispatchAfterStop` |
-| `StatusInTurn` | status answered inside a suspended turn | `StatusBetweenTurns` |
+| `StatusInTurn` | status answered inside a suspended message turn | `StatusBetweenTurns` |
 | `StatusLost` | waiting status not answered at D | `StatusDischarged` |
+| `StaleStatusReason` | status answered at D with a reason computed before the kill | `StatusReasonIsFinal` |
 | `DoubleAnswer` | status answered twice | `StatusAtMostOnce` |
-| `CallbackAfterGiveUp` | callback run after its caller timed out | `NoCallbackAfterGiveUp` |
-| `CallbackPanicStops` | a caught callback panic ends the actor | `CallbackPanicContained` |
+| `CallbackAfterGiveUp` | callback run after its caller timed out before dispatch | `NoCallbackAfterGiveUp` |
+| `CallbackPanicStops` | a caught callback panic begins exit | `CallbackPanicContained` |
 
-No liveness property: with L3 unchanged, an actor whose turn never resumes
-legitimately never dies; ordinary request progress is covered by
-`Lifecycle.tla` and `DeferredReplies.tla`.
+No liveness property: with L3 unchanged, an actor whose activity never
+resumes legitimately never dies.
 
 ### Trace events and their mapping
 
-Under `lifecycle-trace`, the implementation records these events per actor
-(actor id, and the fields listed); `TraceIntrospection.tla` replays them as
-behaviours of the model. Linearization points are the atomic operations
-named; events are recorded inside the operation's critical section where one
-exists (`life_section`), and never merged across two operations.
+Under `lifecycle-trace` the implementation records one event per model
+action, at that action's linearization point; `TraceIntrospection.tla`
+replays a trace as a behaviour of the model, one event per step (no merged
+events, no silent steps except `Observe`, which the watchdog records only when
+it acts on what it saw). The CAS and the kill record are separate events and
+are never recorded inside one critical section, so their race stays
+observable.
 
 | Event | Fields | Model action | Linearization point |
 |---|---|---|---|
 | `IStart` | turn | `Init` | spawn |
-| `IBegin` | turn, kind, envelope or request id | `Dispatch`, `BeginExit` (hook) | `word.store(open)` |
-| `ISuspend` / `IResume` | turn, poll count | `Suspend` / `Resume` | poll returns `Pending` / poll entry |
-| `IEnd` | turn, kind, outcome (`ok`, `panic`, `callback_panic`, `skipped`), old kill bit | `StartedEnd`, `MsgEnd`, `MsgPanic`, `StatusEnd`, `StatusPanic`, `HookEnd` | the end swap |
-| `IStatusSent` / `IStatusTimeout` | request id, deadline | `SendStatus` / `StatusTimeout` | admission / slot expiry |
-| `IStatusAnswer` | request id, outcome | part of `StatusEnd`/`StatusPanic`/`Die` | slot discharge |
+| `IStartEnd` / `IStartPanic` | turn, old word | `StartedEnd` / `StartPanic` | the end swap after `started()` |
 | `ISend` | envelope id, accepted | `Send` | admission (existing `life_send`) |
+| `IStatusSent` | request id, deadline | `SendStatus` | admission |
+| `IStatusTimeout` | request id | `StatusTimeout` | slot expiry |
+| `IDispatch` | turn, kind, envelope or request id, callback admitted | `Dispatch` | `word.store(open)` |
+| `ISuspend` / `IResume` | turn, poll count | `Suspend` / `Resume` | a poll returns `Pending` / the next poll's entry (messages and async hooks) |
+| `IEnd` / `IPanic` | turn, kind, old word | `MsgEnd` / `MsgPanic` | the end swap |
+| `IStatusAnswer` | request id, outcome (`ok`, `failed`) | `StatusAnswer` | the reply slot's discharge in the status turn |
+| `IStatusEnd` | turn, old word | `StatusEnd` | the end swap of the status turn |
+| `IExitDecide` | run or skip | `ExitDecide` | 0.8's `begin_hook` under the exit-request lock (existing `Hook` event) |
+| `IHookBegin` | turn | `HookBegin` | `word.store(open)` for `stopped()` |
+| `IHookEnd` / `IHookPanic` | turn, old word | `HookEnd` / `HookPanic` | the end swap after `stopped()` |
+| `IDropSwap` | old word | `DropSwap` | the cleanup's swap to DEAD |
+| `ID` | final reason, status answers given | `Die` | the existing death point (status discharge at D is part of it) |
+| `IPublish` | — | `Publish` | completion publication |
 | `IStop`, `IKill` | reason | `Stop`, `ExternalKill` | exit-request lock |
 | `IObserve` | turn seen, open | `Observe` | the watchdog's word load |
-| `ICas` | expected word, result | `KillCas` / `KillCasFail` | the CAS |
+| `ICas` | expected word, **returned word**, result | `KillCas` / `KillCasFail` | the CAS |
 | `IRecord` | target turn | `KillRecord` | exit-request lock |
-| `IExitBegin` | hook run or skipped | `BeginExit` | existing `Hook` event |
-| `IDrop` | old kill bit | `RuntimeDrop` | the drop swap |
-| `ID` | final reason | `Die` | existing death point |
-| `IPublish` | — | `Publish` | completion publication |
 
-An event the model cannot take (placement failure, runtime experiments)
-records `Unmodelled` and rejects the trace. Required suites: wedged turn with
-a fenced kill; kill racing turn end (both orders, by failpoints); kill during
-`started()` and `stopped()`; handler panic after a commit; runtime drop after
-a commit; status queued at D, timed out before dispatch, callback panic;
-console `kill` with a stale expectation. Trace coverage reports every model
-action reached. Negative controls on **recorded traces** (`require_rejected`
-in `negative_checks.py`): an `IRecord` moved after the next `IBegin`; an
-`ICas` with result `ok` on a closed word; an `IStatusAnswer` inside an open
-message turn; a dropped `IStatusAnswer` at `ID`.
+The ordinary kill between `IDropSwap` and `ID` is now a step of its own
+(`ExternalKill` from phase `dropping`), which the revision-2 atomic
+`RuntimeDrop` hid. An event the model cannot take (placement failure,
+runtime experiments) records `Unmodelled` and rejects the trace.
+
+Required trace suites: a wedged turn with a fenced kill; the kill racing the
+end swap in both orders (failpoints); a kill during `started()` and during
+`stopped()`; panics in `started()`, a handler and `stopped()` after a
+commit; a runtime drop after a commit, with an ordinary kill between the drop
+swap and D; status queued at D, timed out before dispatch, a callback panic;
+console `kill` with a stale expectation. Trace coverage must reach every
+production action (fault-only actions such as `StatusFromTurn` and
+`KillDecide` are excluded). Negative controls on **recorded traces**
+(`require_rejected`): an `IRecord` moved after the next `IDispatch`; an `ICas`
+with result `ok` whose returned word is closed; an `IStatusAnswer` outside
+its status turn; an `ID` that drops a pending `IStatusAnswer`; an
+`IHookBegin` after an `ICas` whose bit no end consumed.
 
 ## Test plan
 
@@ -939,7 +1096,7 @@ Placements: A `Backend::Async`, B `Blocking`, T `Thread`, N threads mode, G
 | `status_outcomes` (idle, queued at D, after D, timed out, receiver dropped) | I4 | an unlisted or second outcome |
 | `status_skipped_when_caller_gave_up` | I4 | the callback runs |
 | `callback_panic_is_callback_failed_and_actor_continues` (also dropping a `ReplyTo` taken from a `RefCell`) | I4 | actor exits; the token not `ReplyDropped` |
-| `status_during_stopped_and_destruction` | I4 | not `ActorStopped` |
+| `status_during_stopped_and_destruction` | I4 | admitted during `stopped()` not `ActorStopped`; sent during destruction not `NoProc` |
 | `get_state_runs_while_deferred_reply_is_outstanding` | I4 | credit consumed or disturbed |
 | `status_bypasses_metrics_mailbox_accounting` | I4 | `mailbox_depth` leaks or a handled message counted |
 | `state_is_redacted_by_default` / `inspect_formats_state` / `format_status_truncated` | I5 | state leaks; no cut |
@@ -957,7 +1114,12 @@ Placements: A `Backend::Async`, B `Blocking`, T `Thread`, N threads mode, G
 | `fenced_kill_kills_the_observed_turn`, `..._skips_a_finished_turn` | I9 | kill misses or hits the next turn |
 | `fenced_kill_beats_handler_panic_and_self_stop` | I9 | reason not `Killed`; `stopped()` runs |
 | `fenced_kill_during_started_and_stopped` | I9 | `stopped()` runs after a kill in `started()`; a running `stopped()` interrupted |
-| `fenced_kill_then_runtime_drop` | I9 | reason not `Killed` |
+| `fenced_kill_then_runtime_drop` (and an ordinary kill between the drop swap and D) | I9 | reason not `Killed` |
+| `fenced_kill_then_panic_in_started_or_stopped` | I9 | reason `Panic` after a commitment |
+| `idle_and_dead_reads_validate_the_tag` (reader racing activity ends) | I2 | an idle read pairs one turn's id with another's tag |
+| `paused_sender_after_d` (failpoint between the push and `fetch_add`) | I3 | `len` nonzero after D; counters change after every pre-D send returned |
+| `group_listing_excludes_published_with_draining_helper` | I6 | a published actor listed while its helper keeps the scope |
+| `turn_and_poll_identity_with_reduced_widths` (cfg(test) widths) | I2, I8 | a wrapped poll count read as one continuous poll; an exhausted turn id reused |
 | `kill_waits_for_a_wedged_turn` | I9, L3 | preempted; `kill_pending` not shown |
 | `feature_off_api_shape` | tiers | tier 1 fields not `Unavailable(Feature)` |
 
@@ -985,7 +1147,18 @@ Placements: A `Backend::Async`, B `Blocking`, T `Thread`, N threads mode, G
 | `mutations_refused_unless_each_allowed`, `kill_with_stale_expectation_is_refused`, `trace_stops_at_max_for_and_disconnect` | wrong gate, stale hit, trace keeps running |
 | `every_command_is_logged` | a command without an event |
 | `spawned_console_off_opens_nothing`, `feature_off_build` (`cargo tree`, `nm`) | thread, socket or console symbol present |
-| `protocol_v1_contract` (golden JSON for every command; unknown version; unknown fields ignored; unavailable encodings; id echo; stream `end`) | contract drift |
+| `protocol_v1_contract` (golden JSON for every command; unknown version; unknown fields ignored; unavailable encodings; every `u64` a string; keyset pages; id echo; stream `end`) | contract drift |
+| `publication_orders_lock_before_socket` (failpoints between each publication step, a cleaner run at each) | a cleaner removes a live socket; a server serves without its lock; the socket outlives its lock |
+| `two_cleaners_and_a_starting_server` | a live entry removed; a dead one left forever |
+| `fork_then_exec_child_holds_no_console_descriptor` (`/proc/<pid>/fd` or `fcntl` checks) | an inherited lock or socket descriptor |
+| `fork_without_exec_child_never_unlocks_or_unlinks` (child exits after dropping nothing, and a variant that drops a guard) | the parent's lock released or files removed |
+| `held_but_not_answering_is_shown_not_deleted` | the entry deleted |
+| `topk_ps_and_memory_budget` (1,000,000 actors) | memory proportional to the table; budget exceeded without `too_large` |
+| `large_command_yields` (a 100,000-actor `snapshot` on one connection while another sends `info` every 10 ms) | the second client's latency exceeds one slice plus scheduling |
+| `blocked_audit_delivery` (a subscriber that blocks forever) | reads stop; a mutation runs without a queued record; drops uncounted |
+| `drop_with_blocked_delivery_does_not_hang`, `restart_with_stuck_delivery_errors`, `last_system_removal_with_blocked_delivery` | a hang; blocked delivery threads accumulate |
+| `terminate_expect_is_fenced_at_the_supervisor` (a restart forced between lookup and operation) | the newer generation terminated |
+| `trace_sessions_cannot_overwrite_each_other` (enable, disable, disconnect racing) | a session clears another's trace; a trace survives its session |
 | `every_start_function_registers` | an actor missing from the table |
 
 ### Simulator tests (`#[sim_test]`)
@@ -1014,9 +1187,11 @@ duplicate id in a snapshot; after a committed kill no later handled message.
 ### Loom
 
 `activity_slot_loom`: the exact writer and reader protocol with every field a
-separate atomic, two consecutive activities, polls changing within one, CAS
-against the end swap, a callback panic end and the drop swap; asserts no
-mixed accepted read, no kill bit lost, no commit after DEAD.
+separate atomic, two consecutive activities, polls changing within one,
+idle and dead reads, CAS against the end swap, a callback panic end and the
+drop swap; asserts no mixed accepted read (open, idle or dead), no kill bit
+lost, no commit after DEAD. `trace_flag_loom`: console enable, disable and
+disconnect against activity ends.
 `actor_table_loom`: insert, D-mark and removal against a sharded listing.
 
 ### Benchmark gate
@@ -1029,10 +1204,13 @@ mixed accepted read, no kill bit lost, no commit after DEAD.
   `introspection` off); the branch with `console` off. 10 pairs each;
   acceptance: no configuration slower by more than 1% with a confidence
   interval including zero.
-- **Codegen**: the run loop's dispatch and `enqueue` with `introspection` off
-  are instruction-for-instruction those of 0.8 (`cargo asm` diff in CI), and
-  `size_of` of `ActorRef`, `Context` and envelopes is unchanged; no activity
-  or watchdog symbol is linked.
+- **Codegen**: the baseline is 0.8 **plus step 0** (the threads-mode
+  consolidation changes threads handles' size and code on purpose, and is
+  measured on its own against 0.8). Against that baseline, the run loop's
+  dispatch and `enqueue` with `introspection` off are
+  instruction-for-instruction the same (`cargo asm` diff in CI), and `size_of`
+  of `ActorRef`, `Context` and envelopes is unchanged; no activity or watchdog
+  symbol is linked. Total performance is still compared against 0.8.
 - **Spawn churn**: start/stop of 100,000 actors with and without `console`
   (budget: at most 5% of spawn-to-join time).
 - **Threads consolidation (step 0)**: before/after clone and request cost.
@@ -1064,6 +1242,15 @@ an exhaustive `match` on `Lifecycle` or `Unavailable` without a wildcard.
 | Stale cleanup without the lock | `stale_pair_removed_only_*` |
 | Blocking write without a deadline | `slow_reader_*` |
 | Unordered shard iteration | `reads_do_not_change_the_tape` |
+| Idle read returned before the second word load | `idle_and_dead_reads_validate_the_tag`, Loom |
+| Trace flag stored with the activity word | `trace_sessions_cannot_overwrite_each_other`, `trace_flag_loom` |
+| Socket bound before the lock is taken | `publication_orders_lock_before_socket` |
+| Cleaner removing without the `fstat == lstat` recheck | `two_cleaners_and_a_starting_server` |
+| Lock released with `unlock()` in a forked child | `fork_without_exec_child_never_unlocks_or_unlinks` |
+| Console thread calling the subscriber directly | `blocked_audit_delivery` |
+| `terminate` checked only in the console | `terminate_expect_is_fenced_at_the_supervisor` |
+| Sorted `ps` capturing every key | `topk_ps_and_memory_budget` |
+| Group listing keeping published actors | `group_listing_excludes_published_with_draining_helper` |
 
 ### Coverage-matrix rows
 
@@ -1204,6 +1391,8 @@ observed for 9.8 s in `info()` and `ShutdownReport`.
 
 ## Review resolutions
 
+### Round one (revision 2)
+
 Each finding was treated as a claim and checked against the design and the
 0.8 code. "Accepted" means the claim held and the design changed.
 
@@ -1235,6 +1424,25 @@ Each finding was treated as a claim and checked against the design and the
 | Codex Q9 | Use `serde_json` | Accepted | Under `console`, with wire structs independent of Rust types |
 | Codex Q13 | Defer the console turn trace | Partly rejected | The user requires `trace` in the console; kept, but only as a bounded turn trace with the limits above, gated separately, tier 1; full `sys:trace` stays 0.10 |
 | Codex Q5 | Per-system ownership with a process facade | Partly accepted | Tables are process-wide (bare actors have no system) but every entry carries its `SystemId`, and listings can filter by system; per-system watchdog scoping is open question 2 |
+
+### Round two (revision 3)
+
+| Finding | Claim | Verdict | Resolution |
+|---|---|---|---|
+| Codex F1, agy P1-3 | A pid check does not make the console fork-safe: inherited mutexes, guards and descriptors, and `flock` is shared across `fork()` | Accepted | v1 supports `fork()` followed by `exec` or `_exit` only; every console descriptor is close-on-exec; a child must not use, start or drop inherited systems or guards; the automatic post-fork reset is removed; the lock is released only by closing (never `unlock()`); a forked child that keeps running shows as `held, not answering`, never deleted ([`fork()`](#lifecycle)) |
+| Codex F2, agy P1-3 | Binding before locking lets a cleaner delete a new socket; cleaning needs identity checks | Accepted | Publication: exclusive create, `try_lock`, `fstat == lstat` and owner checks, then bind; withdrawal removes the socket, then the lock file, then closes; cleaners act only while holding the lock and after re-verifying; interleavings listed and tested ([files](#files-permissions-and-stale-sockets)) |
+| Codex F3, agy P2-3 | Limits do not bound retained memory or synchronous work | Accepted | Sorted `ps` is top-k (O(k) memory); id-order pages by keyset with no server-side cursor; work slices of 1,000 actors or 5 ms with yields; per-connection 8 MiB and process 32 MiB budgets checked before allocation; `state` at most 30 s; formatter allocation explicitly outside the guarantee |
+| Codex F4 | Blocking delivery and audit logging have undefined shutdown | Accepted | The watchdog joins only its sampling thread; the delivery thread is detached, at most one may be stuck (`DeliveryStuck`); console audit goes through a bounded channel to a delivery thread, drops are counted, mutations are refused while their record cannot be queued |
+| Codex F5, agy P1-1 | The model misses hook panics, checks commitments late, and uses fault-driven ghosts; `Committed` can reset | Accepted | `StartPanic` and `HookPanic`; `Committed == commitPreD`; `CommitOnOpen` and `NoChargeFinishedTurn` checked at the commitment; `KillSkipsStopped` against prior commitments (the round-two counterexample is now `LostBitRunsStopped`); `StatusReasonIsFinal`; every ghost derived in `Next` from the step's state change; 18 controls |
+| Codex F6, agy P1-2 | Trace events do not refine the atomic actions (`BeginExit`, status answer, drop then D, async hooks) | Accepted | The model's actions are split to the code's linearization points: `ExitDecide`/`HookBegin`, `StatusAnswer`/`StatusEnd`, `DropSwap`/`Die` (with an ordinary kill possible between), `Suspend` for async hooks; one event per action; `ICas` carries the returned word; coverage excludes fault-only actions |
+| Codex F7 | The trace flag inside the activity word has an unspecified multi-writer protocol | Accepted | The flag moves to its own `AtomicU32` owned by the console (CAS by session id), read with one relaxed load at activity end; cost table updated; `trace_flag_loom` |
+| Codex F8 | `terminate --expect` is not fenced at the supervisor | Accepted | The expectation is passed into the supervisor's operation and checked inside its admission; `stale_target` otherwise; coordinated with PR #245 (`terminate_slot` gains `expect`) |
+| Codex F9 | Post-push accounting is not frozen at D | Accepted (weakened) | `len` reads 0 from D; counters are final once every send that began before D has returned; tested with a failpoint between push and increment. A sharp freeze would cost a second RMW per send |
+| Codex F10, agy P2-2 | Group listings retain published actors whose helpers drain | Accepted | Published actors are excluded; `GroupSnapshot.helpers_draining` counts them; no table write at D |
+| Codex F11 | Contradictions: status during destruction, publication, console neutrality, large counts, codegen baseline | Accepted | Status sent after D gets `NoProc`; publication = `wait_exit()` ready; I1/I12 cover read commands only; every `u64` is a string on the wire; codegen compares against 0.8 plus step 0, total performance against 0.8 |
+| Codex F12, agy P2-1 | Idle reads skip validation; finite counters can wrap | Accepted | Idle and dead reads use the same second-load validation; DEAD keeps the turn id; turn ids saturate (never reused); D1 identifies a poll by turn, count and stamp; reduced-width tests |
+| agy P2-3 | `check_now` lacks system scope | Accepted | `check_now_for(SystemId)`; observation keyed by `ActorId`, limits and reports per system |
+| Both, on the three revision-2 disagreements | Bounded console `trace` in v1, process tables with system ids, a dedicated console thread | Kept (endorsed by both reviews) | Codex's condition that system ids also scope watchdog state is met by `check_now_for` and per-system limits |
 
 ## Open questions for reviewers
 
