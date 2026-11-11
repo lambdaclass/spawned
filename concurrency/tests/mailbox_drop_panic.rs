@@ -312,6 +312,7 @@ fn abandoned_receiver_child() {
             }
         }
         // An actor-state panic must not unwind through an unguarded mailbox.
+        // After the death point it is a cleanup failure; the reason stays Normal.
         let actor = Victim(Arc::default(), true).start();
         let (entered, arrival) = oneshot::channel();
         let (release, gate) = oneshot::channel();
@@ -320,7 +321,8 @@ fn abandoned_receiver_child() {
         let dropped = Arc::new(AtomicUsize::new(0));
         for _ in 0..2 { actor.send(Bomb(dropped.clone())).unwrap(); }
         actor.context().stop(); release.send(()).unwrap();
-        assert!(matches!(tokio::time::timeout(LIMIT, actor.wait_exit()).await.unwrap(), ExitReason::Panic(_)));
+        assert_eq!(tokio::time::timeout(LIMIT, actor.wait_exit()).await.unwrap(), ExitReason::Normal);
+        assert!(actor.child_handle().cleanup_failure().is_some());
         assert_eq!(dropped.load(Ordering::SeqCst), 2);
     });
     runtime.shutdown_timeout(LIMIT);

@@ -340,7 +340,7 @@ pub fn wait_for_generation<A: Actor>(
 /// together, even if the child restarts on its own meanwhile, so the returned
 /// reference is the first replacement of the targeted instance. A later
 /// instance is never faulted: the fault is aimed at the targeted instance's
-/// own handle, and a `Kill` is committed before `faults::exit` returns. If the
+/// own handle, and the signal is applied before `faults::exit` returns. If the
 /// targeted instance dies of its own cause first, the fault is a no-op and the
 /// replacement after that death is returned.
 #[track_caller]

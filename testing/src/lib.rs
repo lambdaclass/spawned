@@ -17,10 +17,10 @@
 //! - **Harness helpers**: [`tasks::settle`], [`tasks::exit_within`],
 //!   [`tasks::wait_for_generation`], [`tasks::shutdown_system`] and
 //!   [`tasks::TestSystem`] turn hangs into test failures with a report.
-//! - **Fault injection**: [`faults::exit`] stops any actor with a chosen
-//!   [`ExitReason`](spawned_concurrency::ExitReason) (`Panic` travels
-//!   through a link, while `Kill` is direct; an injected panic surfaces as
-//!   `Panic("panic in handler: ..")` and the default panic hook prints it);
+//! - **Fault injection**: [`faults::exit`] sends an exact exit signal with a
+//!   chosen [`ExitReason`](spawned_concurrency::ExitReason)
+//!   (`ChildHandle::exit`; `Kill` ends the target `Killed`, `Normal` is
+//!   ignored by a non-trapping target, a trapping target gets an `Exit`);
 //!   [`tasks::restart_child`] crashes a supervised child and returns its
 //!   replacement; mocks delay, discard or crash on chosen messages.
 //!

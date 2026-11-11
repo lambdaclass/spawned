@@ -162,32 +162,26 @@ impl Handler<Ping> for Idle {
 
 #[test]
 fn native_exit_injection() {
-    for reason in [
-        ExitReason::Normal,
-        ExitReason::Shutdown,
-        ExitReason::Panic("injected".into()),
-    ] {
+    for reason in [ExitReason::Shutdown, ExitReason::Panic("injected".into())] {
         let actor = Idle.start();
         settle(&actor, Ping, WAIT);
         faults::exit(&actor.child_handle(), reason.clone());
-        let observed = join_within(&actor, WAIT);
-        match reason {
-            ExitReason::Panic(msg) => {
-                assert_eq!(
-                    observed,
-                    ExitReason::Panic(format!("panic in handler: {msg}"))
-                )
-            }
-            other => assert_eq!(observed, other),
-        }
+        assert_eq!(join_within(&actor, WAIT), reason);
     }
+    // Normal is ignored by a non-trapping target.
+    let actor = Idle.start();
+    faults::exit(&actor.child_handle(), ExitReason::Normal);
+    settle(&actor, Ping, WAIT);
+    assert_eq!(actor.child_handle().exit_reason(), None);
+    actor.context().stop();
+    assert_eq!(join_within(&actor, WAIT), ExitReason::Normal);
 }
 
 #[test]
 fn native_kill_injection() {
     let actor = Idle.start();
     faults::exit(&actor.child_handle(), ExitReason::Kill);
-    assert_eq!(join_within(&actor, WAIT), ExitReason::Kill);
+    assert_eq!(join_within(&actor, WAIT), ExitReason::Killed);
 }
 
 #[test]
@@ -296,7 +290,7 @@ fn native_panic_injection_into_an_exited_target_is_a_no_op() {
     let actor = Idle.start();
     actor.child_handle().shutdown();
     assert_eq!(join_within(&actor, WAIT), ExitReason::Shutdown);
-    // The target's link stops the fuse before it detonates: not an error.
+    // A signal to an actor past its death point is dropped.
     faults::exit(&actor.child_handle(), ExitReason::Panic("late".into()));
 }
 
@@ -306,7 +300,7 @@ fn native_kill_injection_is_reliable() {
     for _ in 0..200 {
         let actor = Idle.start();
         faults::exit(&actor.child_handle(), ExitReason::Kill);
-        assert_eq!(join_within(&actor, WAIT), ExitReason::Kill);
+        assert_eq!(join_within(&actor, WAIT), ExitReason::Killed);
     }
 }
 
@@ -413,18 +407,23 @@ fn native_helpers_name_their_caller() {
 }
 
 #[test]
-fn direct_kill_and_shutdown_stop_trapping_targets_without_killing_trapping_peers() {
-    for reason in [ExitReason::Kill, ExitReason::Shutdown] {
-        let target = Idle.start();
-        let observer = Idle.start();
-        target.context().trap_exit(true);
-        observer.context().trap_exit(true);
-        observer.context().link(&target.child_handle());
-        faults::exit(&target.child_handle(), reason.clone());
-        assert_eq!(join_within(&target, WAIT), reason);
-        settle(&observer, Ping, WAIT);
-        assert_eq!(observer.child_handle().exit_reason(), None);
-        observer.context().stop();
-        assert_eq!(join_within(&observer, WAIT), ExitReason::Normal);
-    }
+fn kill_stops_a_trapping_target_and_other_signals_are_trapped() {
+    let target = Idle.start();
+    let observer = Idle.start();
+    target.context().trap_exit(true);
+    observer.context().trap_exit(true);
+    observer.context().link(&target.child_handle());
+    faults::exit(&target.child_handle(), ExitReason::Kill);
+    assert_eq!(join_within(&target, WAIT), ExitReason::Killed);
+    settle(&observer, Ping, WAIT);
+    assert_eq!(observer.child_handle().exit_reason(), None);
+    observer.context().stop();
+    assert_eq!(join_within(&observer, WAIT), ExitReason::Normal);
+    let target = Idle.start();
+    target.context().trap_exit(true);
+    faults::exit(&target.child_handle(), ExitReason::Shutdown);
+    settle(&target, Ping, WAIT);
+    assert_eq!(target.child_handle().exit_reason(), None);
+    target.child_handle().shutdown();
+    assert_eq!(join_within(&target, WAIT), ExitReason::Shutdown);
 }
