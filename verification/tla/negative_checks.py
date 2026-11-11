@@ -307,7 +307,7 @@ def main():
     for module, fault, invariant in DYNAMIC_CONTROLS:
         named_fault(module, fault, invariant, args.tlc)
     for fault, prop in DYNAMIC_TEMPORAL_CONTROLS:
-        named_temporal("MCDynamicSupervisor", fault, prop, args.tlc)
+        named_temporal("MCDynamicSupervisorLive", fault, prop, args.tlc)
 
 
 if __name__ == "__main__":
