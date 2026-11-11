@@ -816,11 +816,12 @@ async fn system_shutdown_is_cancel_safe() {
                     "{op}"
                 );
                 gate.notify_one();
+                // Zero grace: the kill reached it inside stopped() (E1).
                 assert_eq!(
                     spawned_rt::tasks::timeout(LIMIT, actor.wait_exit())
                         .await
                         .unwrap(),
-                    ExitReason::Shutdown
+                    ExitReason::Killed
                 );
                 fx.finish(&[]).await;
                 outcome.finished()
