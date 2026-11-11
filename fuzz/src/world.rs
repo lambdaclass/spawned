@@ -332,77 +332,78 @@ impl Handler<Do> for Worker {
         ctx: &Context<Self>,
     ) {
         let __value: u64 = async {
-        {
-            let mut s = self.world.lock();
-            self.turn(&mut s, "Do");
-            if msg.nonce != 0 {
-                if let Some(other) = s.handled.insert(msg.nonce, self.instance) {
-                    let detail = format!("nonce {} by w{other} and w{}", msg.nonce, self.instance);
-                    s.violate("D2: a message was handled twice", detail);
-                }
-                if msg.lane == 0 {
-                    let inst = &mut s.insts[self.instance];
-                    let last = inst.last_lane0;
-                    inst.last_lane0 = msg.nonce;
-                    if msg.nonce <= last {
-                        let detail = format!("w{}: {} after {last}", self.instance, msg.nonce);
-                        s.violate("D1: per-sender FIFO broken", detail);
+            {
+                let mut s = self.world.lock();
+                self.turn(&mut s, "Do");
+                if msg.nonce != 0 {
+                    if let Some(other) = s.handled.insert(msg.nonce, self.instance) {
+                        let detail =
+                            format!("nonce {} by w{other} and w{}", msg.nonce, self.instance);
+                        s.violate("D2: a message was handled twice", detail);
+                    }
+                    if msg.lane == 0 {
+                        let inst = &mut s.insts[self.instance];
+                        let last = inst.last_lane0;
+                        inst.last_lane0 = msg.nonce;
+                        if msg.nonce <= last {
+                            let detail = format!("w{}: {} after {last}", self.instance, msg.nonce);
+                            s.violate("D1: per-sender FIFO broken", detail);
+                        }
                     }
                 }
             }
+            match msg.act {
+                Act::Noop => {}
+                Act::Panic => {
+                    self.world.lock().insts[self.instance].panicked = true;
+                    panic!("fuzz: injected handler panic");
+                }
+                Act::Sleep(d) => rt::sleep(d).await,
+                Act::StopSelf(reason) => ctx.stop_with_reason(reason),
+                Act::Note(to) => {
+                    let _ = to.send(Note { from: ctx.id() });
+                }
+                Act::Link(peer) => {
+                    self.uncertain(ctx.id(), Some(peer.id()));
+                    ctx.link(&peer);
+                }
+                Act::Unlink(peer) => {
+                    self.uncertain(ctx.id(), Some(peer.id()));
+                    ctx.unlink(&peer);
+                }
+                Act::Monitor(target) => {
+                    let mref = ctx.monitor(&target);
+                    self.world.lock().monitors.push(MonRec {
+                        watcher: ctx.id(),
+                        target,
+                        mref,
+                        demonitored: false,
+                        outside: false,
+                    });
+                }
+                Act::Trap(on) => {
+                    self.uncertain(ctx.id(), None);
+                    ctx.trap_exit(on);
+                }
+                Act::Register(name) => {
+                    let _ = ctx.register_name(&name);
+                }
+                Act::Helper(v) => {
+                    let _ = ctx.spawn_helper(async move {
+                        match v % 3 {
+                            0 => std::future::pending::<()>().await,
+                            1 => rt::sleep(Duration::from_millis(10 * v as u64)).await,
+                            _ => panic!("fuzz: injected helper panic"),
+                        }
+                    });
+                }
+                Act::Stop(target, reason) => {
+                    self.world.lock().may_stop.insert(target.id());
+                    target.stop_with_reason(reason);
+                }
+            }
+            msg.nonce
         }
-        match msg.act {
-            Act::Noop => {}
-            Act::Panic => {
-                self.world.lock().insts[self.instance].panicked = true;
-                panic!("fuzz: injected handler panic");
-            }
-            Act::Sleep(d) => rt::sleep(d).await,
-            Act::StopSelf(reason) => ctx.stop_with_reason(reason),
-            Act::Note(to) => {
-                let _ = to.send(Note { from: ctx.id() });
-            }
-            Act::Link(peer) => {
-                self.uncertain(ctx.id(), Some(peer.id()));
-                ctx.link(&peer);
-            }
-            Act::Unlink(peer) => {
-                self.uncertain(ctx.id(), Some(peer.id()));
-                ctx.unlink(&peer);
-            }
-            Act::Monitor(target) => {
-                let mref = ctx.monitor(&target);
-                self.world.lock().monitors.push(MonRec {
-                    watcher: ctx.id(),
-                    target,
-                    mref,
-                    demonitored: false,
-                    outside: false,
-                });
-            }
-            Act::Trap(on) => {
-                self.uncertain(ctx.id(), None);
-                ctx.trap_exit(on);
-            }
-            Act::Register(name) => {
-                let _ = ctx.register_name(&name);
-            }
-            Act::Helper(v) => {
-                let _ = ctx.spawn_helper(async move {
-                    match v % 3 {
-                        0 => std::future::pending::<()>().await,
-                        1 => rt::sleep(Duration::from_millis(10 * v as u64)).await,
-                        _ => panic!("fuzz: injected helper panic"),
-                    }
-                });
-            }
-            Act::Stop(target, reason) => {
-                self.world.lock().may_stop.insert(target.id());
-                target.stop_with_reason(reason);
-            }
-        }
-        msg.nonce
-            }
         .await;
         __reply.reply(__value);
     }
@@ -428,34 +429,34 @@ impl Handler<Down> for Worker {
         ctx: &Context<Self>,
     ) {
         let __value: () = async {
-        let mut s = self.world.lock();
-        self.turn(&mut s, "Down");
-        let me = ctx.id();
-        let target = s
-            .monitors
-            .iter()
-            .find(|m| m.mref == down.monitor_ref)
-            .map(|m| (m.watcher, m.target.id()));
-        match target {
-            Some((watcher, target)) if watcher == me => {
-                s.insts[self.instance].ended.insert(target);
+            let mut s = self.world.lock();
+            self.turn(&mut s, "Down");
+            let me = ctx.id();
+            let target = s
+                .monitors
+                .iter()
+                .find(|m| m.mref == down.monitor_ref)
+                .map(|m| (m.watcher, m.target.id()));
+            match target {
+                Some((watcher, target)) if watcher == me => {
+                    s.insts[self.instance].ended.insert(target);
+                }
+                Some(_) => s.violate(
+                    "X1: Down delivered to an actor that did not create the monitor",
+                    format!("w{}", self.instance),
+                ),
+                None => s.violate(
+                    "X1: Down for an unknown monitor",
+                    format!("w{}", self.instance),
+                ),
             }
-            Some(_) => s.violate(
-                "X1: Down delivered to an actor that did not create the monitor",
-                format!("w{}", self.instance),
-            ),
-            None => s.violate(
-                "X1: Down for an unknown monitor",
-                format!("w{}", self.instance),
-            ),
-        }
-        let inst = &mut s.insts[self.instance];
-        let duplicate = inst.downs.iter().any(|(r, _)| *r == down.monitor_ref);
-        inst.downs.push((down.monitor_ref, down.reason));
-        if duplicate {
-            s.violate("X1: Down delivered twice", format!("w{}", self.instance));
-        }
+            let inst = &mut s.insts[self.instance];
+            let duplicate = inst.downs.iter().any(|(r, _)| *r == down.monitor_ref);
+            inst.downs.push((down.monitor_ref, down.reason));
+            if duplicate {
+                s.violate("X1: Down delivered twice", format!("w{}", self.instance));
             }
+        }
         .await;
         __reply.reply(__value);
     }
@@ -469,13 +470,13 @@ impl Handler<Note> for Worker {
         _ctx: &Context<Self>,
     ) {
         let __value: () = async {
-        let mut s = self.world.lock();
-        self.turn(&mut s, "Note");
-        if s.insts[self.instance].ended.contains(&note.from) {
-            let detail = format!("from {} at w{}", s.name(note.from), self.instance);
-            s.violate("X7: a message arrived after the sender's Down/Exit", detail);
-        }
+            let mut s = self.world.lock();
+            self.turn(&mut s, "Note");
+            if s.insts[self.instance].ended.contains(&note.from) {
+                let detail = format!("from {} at w{}", s.name(note.from), self.instance);
+                s.violate("X7: a message arrived after the sender's Down/Exit", detail);
             }
+        }
         .await;
         __reply.reply(__value);
     }
