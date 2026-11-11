@@ -15,7 +15,7 @@ this fits with Loom, Shuttle, Miri, ThreadSanitizer and mutation testing.
 | `NestedSupervision.tla`, `MCNested.tla/.cfg` | Dynamic subtree ownership and shutdown delivery; parent scope completion waits for descendant completion. Bounded three-node/two-generation model with fair cleanup. |
 | `DeferredReplies.tla`, `MCDeferredReplies*.tla/.cfg` | Rank 11 design model (not implemented), part 1: reply slots, send-time deadlines with shortening, deferral credits shared by a token and its first linked job, the exiting phase with unwind-local drops, a stuck phase (cleanup deadline passed while `stopped()` runs: nothing closed early, death later or never), death, and downstream request cleanup. Thirteen named negative controls. |
 | `DeferredJobs.tla`, `MCDeferredJobs*.tla/.cfg` | Rank 11 design model, part 2: pipe jobs with separate execution, cancellation and notification states; keyed replacement including notified jobs; optional job deadlines; a FIFO mailbox with emit credits and the terminal message last; `ActorId` fencing. `MCDeferredJobsEmits` is the fast configuration with emits. Nine named negative controls. |
-| `Lifecycle.tla`, `MCLifecycle{,Live,Fence,Deep,LiveDeep}.tla/.cfg` | Base actor lifecycle as proposed for v0.8 ([design](../../docs/design/otp-exit-signals.md)): links, monitors, `trap_exit`, exit signals (`Killed`, ignored `Normal`, `NoProc`, parent exits), administrative stops, requests around death, `Exit`/`Down` ordering. Seventeen negative-control faults (17 safety checks, 2 liveness checks): the v0.7 exit-signal behaviours (direct stops ignoring `trap_exit`, kills ending `Kill`, unfenced `unlink`/`demonitor`, real reasons for late registrations, `stopped()` after kills and untrapped signals, late signals ignored during exit), the PR #182/#185 bugs, early exit errors, kill and panic precedence, runtime-drop reasons, early notification, a split death point and a parent exit reaching `exit_received`. |
+| `Lifecycle.tla`, `MCLifecycle{,Live,Fence,Deep,LiveDeep,WideDeep}.tla/.cfg` | Base actor lifecycle as proposed for v0.8 ([design](../../docs/design/otp-exit-signals.md)): links, monitors, `trap_exit`, exit signals (`Killed`, ignored `Normal`, `NoProc`, parent exits), administrative stops, requests around death, `Exit`/`Down` ordering. Seventeen negative-control faults (17 safety checks, 2 liveness checks): the v0.7 exit-signal behaviours (direct stops ignoring `trap_exit`, kills ending `Kill`, unfenced `unlink`/`demonitor`, real reasons for late registrations, `stopped()` after kills and untrapped signals, late signals ignored during exit), the PR #182/#185 bugs, early exit errors, kill and panic precedence, runtime-drop reasons, early notification, a split death point and a parent exit reaching `exit_received`. Per PR: `MCLifecycle` (7.5M states, fewer reasons, where the safety controls run), `MCLifecycleFence`, `MCLifecycleLive`; weekly: `MCLifecycleWideDeep` (the former 43M-state per-PR instance), `MCLifecycleDeep`, `MCLifecycleLiveDeep`. |
 | `TraceCohorts.tla`, `TraceNested.tla` | Policy and ownership projections of real cohort/nested Rust executions. |
 | `trace_check.py`, `negative_checks.py` | Replay recorded traces; deliberately wrong selections, premature resume/join and broken propagation must be rejected or produce counterexamples. |
 | `SupervisionInd.tla`, `CohortsInd.tla`, `NestedSupervisionInd.tla`, `CoordinatorInd.tla`, `MC*Ind.tla`, `apalache.sh` | Inductive invariants (`IndInv`) checked with Apalache; see [Inductive invariants](#inductive-invariants-apalache). |
@@ -27,9 +27,18 @@ TLC is a Java program. The repository flake provides it (with its own JDK), so
 nothing needs to be installed globally:
 
 ```bash
-nix run .#check-tla            # model-check every MC*.cfg
+nix run .#check-tla            # model-check every MC*.cfg except *Deep.cfg
+nix run .#check-tla -- --only 'MCLifecycle*'           # a subset (comma-separated globs)
+nix run .#check-tla -- --deep --only MCLifecycleDeep   # one deep configuration
 nix develop -c tlc MCSupervision -workers auto   # ad hoc, from verification/tla
 ```
+
+**CI.** On every PR (`.github/workflows/verification.yml`) the per-PR
+configurations run as parallel `tla-models` legs (`supervision`, `lifecycle`,
+`deferred`, and `other` for every configuration no leg names), next to
+`tla-traces` (trace validation, negative controls, trace coverage). Weekly and
+on dispatch, `tla-deep` checks each `*Deep.cfg` on its own runner. The
+required check `tla` passes only if all of them passed.
 
 ## Trace validation
 
@@ -139,7 +148,10 @@ and an always-true action constraint prints every key of every reachable step
 plus a Permanent/Temporary instance at the same bounds (6.1 million states),
 the four `MCCohorts*` (174,000) and `MCNested` (47,000). This takes about 5
 minutes, so the keys are cached in `coverage-model.json.gz` with a hash of the
-specs; a stale cache is recomputed and rewritten (commit the new one).
+files they come from (the modules above, their configurations and what they
+extend; other models such as `Lifecycle.tla` do not invalidate it); a stale
+cache is recomputed and rewritten (commit the new one, or CI recomputes it on
+every run).
 `Deliver` in `NestedSupervision` is a fairness device with no trace event, so
 its keys are left out.
 

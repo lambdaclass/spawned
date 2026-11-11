@@ -23,6 +23,18 @@
   sample scripts, and a 60 s CI smoke run on pull requests (no scheduled
   runs). A first 3-hour campaign found no framework bug. Adds
   `spawned_rt::tasks::sim::stats()` (simulation builds only).
+- CI: keep the per-PR TLA+ checks fast again (about 52 minutes, sometimes
+  hitting the 60-minute timeout, down to about 8). The per-PR `MCLifecycle`
+  is a smaller instance (7.5M states instead of 43M, fewer reasons, no
+  actor-to-actor message, which moved to `MCLifecycleFence`); every
+  Lifecycle negative control still fails on it on its named invariant. The
+  former instance runs weekly as `MCLifecycleWideDeep`. The TLA+ checks run
+  as parallel jobs (`tla-models` legs, `tla-traces`, weekly `tla-deep` with
+  one runner per deep configuration) behind a required `tla` job. The
+  trace-coverage cache (`coverage-model.json.gz`) is keyed only on the specs
+  it is computed from, so unrelated models no longer invalidate it, and is
+  regenerated (same keys and state counts). `check.sh` gains `--only` and
+  `--exclude`.
 
 ## 0.7.3 — 2026-11-10
 
