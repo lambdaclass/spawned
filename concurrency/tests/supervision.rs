@@ -1309,7 +1309,8 @@ async fn system_deadline_signals_remaining_supervised_siblings() {
         spawned_rt::tasks::timeout(Duration::from_secs(1), actor.wait_exit())
             .await
             .expect("earlier sibling was not stopped after the system deadline"),
-        ExitReason::Shutdown
+        ExitReason::Killed,
+        "signalled at the system's grace expiry: the kill (E3)"
     );
     release.send(()).unwrap();
     assert!(report.wait(LIMIT).await.complete);

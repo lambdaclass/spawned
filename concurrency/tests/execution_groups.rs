@@ -155,7 +155,10 @@ async fn expired_shutdown_retains_closed_runtime_until_startup_cleanup_finishes(
     release.send(()).unwrap();
     assert!(report.wait(LIMIT).await.complete);
     assert!(actor.ready().await.is_err());
-    assert_eq!(stopped.load(Ordering::SeqCst), 1);
+    // The kill at grace (5 ms) arrived during started(): it ends Killed and
+    // skips the stopped() that had not begun (E1, decision 2).
+    assert_eq!(actor.wait_exit().await, ExitReason::Killed);
+    assert_eq!(stopped.load(Ordering::SeqCst), 0);
 }
 
 struct Probe(Arc<AtomicUsize>);

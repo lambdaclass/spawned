@@ -532,11 +532,19 @@ impl SystemInner {
                         }
                     }
                 }
-                // At grace expiry every remaining actor gets the kill (E3), so
-                // no nested child remains unsignalled behind a stuck sibling's
-                // longer per-child cleanup timeout.
+                // The ordered pass ended: every target joined, or the grace
+                // expired. At grace expiry every remaining actor gets the kill
+                // (E3), so no nested child remains unsignalled behind a stuck
+                // sibling's longer per-child cleanup timeout. Before it, the
+                // remaining scopes only get the parent's Shutdown (a no-op for
+                // actors already past their death point).
+                let expired = began.elapsed() >= grace;
                 for scope in scopes.iter().rev() {
-                    scope.kill();
+                    if expired {
+                        scope.kill();
+                    } else {
+                        scope.signal_parent(ExitReason::Shutdown);
+                    }
                 }
                 // Runtime teardown still requires actual completion, independently
                 // of the ordering grace and the caller's report timeout.
