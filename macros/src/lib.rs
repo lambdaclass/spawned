@@ -1109,6 +1109,13 @@ fn is_actor_method_attribute(attr: &Attribute) -> bool {
 /// impl ChatUser { /* ... */ }
 /// ```
 ///
+/// # Lints
+///
+/// `#[actor]` warns (compile time only) when the impl block builds or accepts
+/// shared mutable state (`Arc<Mutex<_>>`, `Arc<RwLock<_>>`, `Arc<Atomic*>`,
+/// `Rc<RefCell<_>>`), and once per crate built with `panic = "abort"`. Opt out
+/// with `#[actor(allow_shared_state)]` and `#[actor(allow_panic_abort)]`.
+///
 /// # Handler Attributes
 ///
 /// | Attribute | Use for |

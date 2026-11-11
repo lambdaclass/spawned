@@ -1,5 +1,7 @@
-// `#[actor(allow_shared_state)]` silences the shared-state lint (ROADMAP
+// `#[actor(allow_shared_state, allow_panic_abort)]` silences the shared-state lint (ROADMAP
 // rank 6b) for deliberate sharing; `deny(warnings)` proves nothing is left.
+// `allow_panic_abort` parses alongside it (the abort warning itself needs the
+// `panic-abort` profile; see docs/TESTING.md).
 #![deny(warnings)]
 use spawned_concurrency::message::Message;
 use spawned_concurrency::tasks::{Actor, ActorStart, Context, Handler};
@@ -17,7 +19,7 @@ pub struct Shared {
     log: Arc<Mutex<Vec<u64>>>,
 }
 
-#[actor(allow_shared_state)]
+#[actor(allow_shared_state, allow_panic_abort)]
 impl Shared {
     pub fn new(seen: Arc<AtomicU64>) -> Self {
         Shared { seen, log: Arc::new(Mutex::new(Vec::new())) }

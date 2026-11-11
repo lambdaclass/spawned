@@ -524,6 +524,8 @@ group kinds), [`foreign_panics`][foreign_panics], [`mailbox_drop_panic`][mailbox
 `Down`/`Exit`, no restart. Supervision of `Normal`, `Shutdown` and `Kill` exits
 still works. A panicking process panic hook, or a second panic while a value is
 already unwinding, aborts under either profile.
+`#[actor]` warns once per crate built with `panic = "abort"` (opt-out
+`allow_panic_abort`); the warning is advice, not a guarantee.
 Checked by: the `panic-abort` CI job running [`panic_abort`][ex_panic_abort]
 under the `panic-abort` profile (both modes abort on a handler panic with no
 `stopped()` and no reply; a Transient child restarts after `Kill` and stays
@@ -548,6 +550,13 @@ stopped after `Shutdown`),
   actor, waits until `RequestTimeout` (rank 7).
 - **Selective receive, priorities or a fair control lane.** Trapped `Exit` and
   `Down` wait behind the backlog (rank 14).
+- **Memory isolation.** Actors share an address space. Nothing stops an actor
+  from holding state shared with other actors or threads (`Arc<Mutex<_>>`,
+  atomics behind `Arc`); a restart then inherits that state, and a panic while
+  holding a std lock poisons it for every holder. `#[actor]` warns at compile
+  time on the common syntactic patterns in its impl block (opt-out
+  `allow_shared_state`), but cannot see sharing built outside that block or
+  behind a type alias ([GUIDE](../GUIDE.md#compile-time-lints)).
 - **Distribution.** Single process only; `ActorRef`s cannot cross a process.
 - **Transparent references.** Nothing rebinds an `ActorRef` to a replacement;
   resolve through `SupervisedChild` or the registry.

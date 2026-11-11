@@ -70,6 +70,40 @@ All three phases are wrapped in `catch_unwind`:
 
 In all cases, `join()` will eventually return and subsequent `send()`/`request()` calls return `Err(ActorStopped)`.
 
+### Compile-time lints
+
+`#[actor]` emits two warnings at compile time. They generate no runtime code;
+`-D warnings` turns them into errors.
+
+- **Shared mutable state.** The macro warns at every `Arc<Mutex<_>>`,
+  `Arc<RwLock<_>>`, `Arc<Atomic*>` or `Rc<RefCell<_>>` it finds in the
+  `#[actor]` impl block, as a type (`fn new(db: Arc<Mutex<Db>>) -> Self`, a
+  `let` type) or as a constructor (`Arc::new(Mutex::new(..))`,
+  `Rc::new(RefCell::new(..))`). Bare and qualified paths match, including
+  `tokio::sync` and `parking_lot` locks. An actor should own its state:
+  sharing it breaks the isolation supervision relies on (a restarted actor
+  inherits whatever the old one left behind the lock), and a panic while
+  holding a std lock poisons it for every holder. Send messages to the owning
+  actor instead; published snapshots (ROADMAP rank 10) will cover the
+  many-readers case. For deliberate sharing, write
+  `#[actor(allow_shared_state)]`.
+
+  The check is syntactic and sees only the impl block: `#[actor]` is placed on
+  the impl, not the struct, so a field whose shared value is built outside that
+  block (a struct literal in `main`, a constructor in another `impl`), or hidden
+  behind a type alias, is not flagged. `Arc` of immutable data (`Arc<str>`,
+  `Arc<Config>`) and locks the actor owns outright (`Mutex<T>` without `Arc`)
+  are not flagged.
+- **`panic = "abort"`.** When the crate is built with `panic = "abort"`, the
+  first `#[actor]` in the crate warns: a panicking handler then aborts the
+  whole process instead of stopping one actor, so supervisors, links, monitors
+  and `stopped()` never see the failure (semantics P2). Detection uses
+  `cfg(panic = "abort")`, so it follows the profile that builds the crate.
+  For a deliberate abort build, write `#[actor(allow_panic_abort)]` on each
+  actor in the crate.
+
+The flags combine with protocols: `#[actor(protocol = P, allow_shared_state)]`.
+
 ### Stopping an Actor
 
 Call `ctx.stop()` from inside a handler or lifecycle hook. This cancels the actor's internal token, causing the message loop to exit after the current handler finishes.
