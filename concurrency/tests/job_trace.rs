@@ -249,6 +249,48 @@ impl Handler<ReplaceWhen> for Owner {
     }
 }
 
+/// A keyed job that schedules an emit far away and waits to be cancelled;
+/// `armed` fires once the emit is registered.
+struct KeyedScheduled(oneshot::Sender<()>);
+impl Message for KeyedScheduled {
+    type Result = ();
+}
+impl Handler<KeyedScheduled> for Owner {
+    async fn handle(
+        &mut self,
+        msg: KeyedScheduled,
+        reply: PendingReply<'_, ()>,
+        ctx: &Context<Self>,
+    ) {
+        let armed = msg.0;
+        ctx.pipe(
+            JobOptions::new().key("k"),
+            |job: JobCtx<Owner>| async move {
+                let at = spawned_concurrency::Instant::now() + Duration::from_secs(60);
+                job.emit_at(at, Emitted(5)).await.unwrap();
+                let _ = armed.send(());
+                job.cancelled().await;
+                5u32
+            },
+            done("old_sched"),
+        )
+        .unwrap();
+        reply.reply(());
+    }
+}
+/// Replace key `k` now.
+struct ReplaceNow;
+impl Message for ReplaceNow {
+    type Result = ();
+}
+impl Handler<ReplaceNow> for Owner {
+    async fn handle(&mut self, _: ReplaceNow, reply: PendingReply<'_, ()>, ctx: &Context<Self>) {
+        ctx.pipe(JobOptions::new().key("k"), |_| async { 2u32 }, done("new"))
+            .unwrap();
+        reply.reply(());
+    }
+}
+
 /// Cancel the stored handles, then open the gates.
 struct CancelStored;
 impl Message for CancelStored {
@@ -439,6 +481,38 @@ async fn job_deadline_takes_a_held_result() {
             "Fire",
             "Exit"
         ]
+    );
+}
+
+/// Final review (agy P1 2): a keyed replacement cancels the old job in the
+/// step of the new job's `Start` (the model's CancelCore(ToReplace)), so
+/// the old job's dropped emit is recorded after that `Start`. The
+/// replacement used to cancel first, so the drop preceded the `Start` and
+/// TraceJobs rejected the trace; the old job's payloads also dropped inside
+/// the trace section.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn keyed_replacement_drops_the_old_emit_after_the_new_start() {
+    let (actor, log) = start();
+    let (armed_tx, armed) = oneshot::channel();
+    actor.request(KeyedScheduled(armed_tx)).await.unwrap();
+    armed.await.unwrap(); // the old job's emit is registered
+    actor.request(ReplaceNow).await.unwrap();
+    wait_for(&log, "new:ok:2").await;
+    let actions = finish("keyed_replace_scheduled", actor, 16).await;
+    let second_start = actions
+        .iter()
+        .enumerate()
+        .filter(|(_, a)| *a == "Start")
+        .nth(1)
+        .map(|(i, _)| i)
+        .expect("the replacement's Start");
+    let dropped_fire = actions
+        .iter()
+        .position(|a| a == "Fire")
+        .expect("the old job's dropped emit");
+    assert!(
+        second_start < dropped_fire,
+        "the replaced job's emit dropped before the new Start: {actions:?}"
     );
 }
 

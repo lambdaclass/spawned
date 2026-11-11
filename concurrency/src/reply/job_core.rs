@@ -403,12 +403,29 @@ impl<J: Job + 'static, K: Hash + Eq> JobSetCore<J, K> {
     /// the owner's join counts it. The replaced job and the references
     /// compaction upgraded are cancelled and dropped after the locks are
     /// released.
+    #[allow(dead_code)] // used by the Loom model; the job set orders its own
     pub(crate) fn admit(&self, state: &Arc<J>, key: Option<K>) -> bool {
+        match self.admit_replacing(state, key) {
+            Some(previous) => {
+                if let Some(previous) = &previous {
+                    previous.cancel();
+                }
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// [`admit`](Self::admit) that hands the job its key replaced back
+    /// uncancelled (`Some(None)` when there was none; `None` when refused),
+    /// so the caller cancels it in the right order and drops its payloads
+    /// outside its own critical sections.
+    pub(crate) fn admit_replacing(&self, state: &Arc<J>, key: Option<K>) -> Option<Option<Arc<J>>> {
         let mut upgraded: Vec<Arc<J>> = Vec::new();
         let previous = {
             let mut list = lock(&self.jobs);
             if list.closed {
-                return false;
+                return None;
             }
             let previous = key.and_then(|key| lock(&self.keys).insert(key, state.clone()));
             let jobs = &mut list.jobs;
@@ -426,12 +443,8 @@ impl<J: Job + 'static, K: Hash + Eq> JobSetCore<J, K> {
             *lock(&self.running) += 1;
             previous
         };
-        if let Some(previous) = &previous {
-            previous.cancel();
-        }
         drop(upgraded);
-        drop(previous);
-        true
+        Some(previous)
     }
 
     /// A job's execution ended. Returns whether the set became idle (the

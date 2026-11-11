@@ -360,6 +360,19 @@ impl JobState {
         self.core.finished();
     }
 
+    /// A keyed replacement cancels this job (inside the trace section,
+    /// after the new job's `Start`): the flag, its count and a linked
+    /// caller's `JobCancel`; the suppressed held result comes back to be
+    /// dropped outside, with [`wake_cancelled`](Self::wake_cancelled).
+    fn cancel_replaced(&self) -> Option<crate::reply::job_core::HeldTerminal> {
+        let (newly, held) = self.core.cancel_keeping_held();
+        if newly {
+            self.count_cancel();
+            self.link_cancel();
+        }
+        held
+    }
+
     fn cancel_quietly(&self) {
         if self.core.cancel() {
             self.count_cancel();
@@ -764,19 +777,33 @@ impl JobSet {
     /// run it.
     #[must_use]
     pub(crate) fn admit(&self, state: &Arc<JobState>, key: Option<JobKey>, deadline: bool) -> bool {
-        trace::atomic(|| {
+        let admitted = trace::atomic(|| {
             let keyed = key.is_some();
-            if !self.core.admit(state, key) {
-                return false;
-            }
+            let previous = self.core.admit_replacing(state, key)?;
             crate::instrumentation::hooks::job_started();
             state.record(|job| trace::JobEvent {
                 keyed,
                 deadline,
                 ..trace::JobEvent::new("Start", job)
             });
-            true
-        })
+            // The replaced job is cancelled in the same step as the new
+            // job's Start (the model's CancelCore(ToReplace)); a linked
+            // job's caller sees its JobCancel. Nothing is destroyed here.
+            Some(previous.map(|previous| {
+                let held = previous.cancel_replaced();
+                (previous, held)
+            }))
+        });
+        let Some(replaced) = admitted else {
+            return false;
+        };
+        // Outside the trace section and every lock: the replaced job's
+        // suppressed result and scheduled emits (user payloads).
+        if let Some((previous, held)) = replaced {
+            drop(held);
+            previous.wake_cancelled();
+        }
+        true
     }
 
     /// A job's execution ended.
