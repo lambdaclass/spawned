@@ -26,6 +26,11 @@
   console in every binary, targeted at 0.9) with tiers and target versions, and the OTP features Spawned will
   not add as non-goals; the comparison is in
   `docs/research/otp-elixir-gleam.md`.
+- CI: model-sync checks. A `model-sync` job fails a PR that changes code a TLA+
+  model covers (`verification/model-map.toml`) without touching that model,
+  unless it carries the `no-model-change` label and a `Model: no change because
+  <reason>` line; a test checks that every lifecycle trace event kind maps to a
+  trace-spec action.
 - Tests: coverage follow-ups. `restart_modes_distinguish_normal_shutdown_and_panic`
   now sends a real `Normal` exit; a per-PR `MCSupervisionTemporary` TLC
   configuration makes `TemporaryStartsOnce` non-vacuous, with a negative
