@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 
 pub struct Tick;
 impl Message for Tick {
-    type Result = ();
+    type Result = u64;
 }
 
 pub struct Shared {
@@ -23,10 +23,11 @@ impl Shared {
         Shared { seen, log: Arc::new(Mutex::new(Vec::new())) }
     }
 
-    #[send_handler]
-    async fn tick(&mut self, _msg: Tick, _ctx: &Context<Self>) {
+    #[request_handler]
+    async fn tick(&mut self, _msg: Tick, _ctx: &Context<Self>) -> u64 {
         let n = self.seen.fetch_add(1, Ordering::SeqCst);
         self.log.lock().unwrap_or_else(|p| p.into_inner()).push(n);
+        n
     }
 }
 
@@ -35,9 +36,7 @@ fn main() {
     rt.block_on(async {
         let seen = Arc::new(AtomicU64::new(0));
         let actor = Shared::new(seen.clone()).start();
-        actor.send(Tick).unwrap();
-        actor.context().stop();
-        actor.join().await;
+        assert_eq!(actor.request(Tick).await.unwrap(), 0);
         assert_eq!(seen.load(Ordering::SeqCst), 1);
     });
 }

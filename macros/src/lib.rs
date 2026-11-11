@@ -1655,19 +1655,17 @@ pub fn actor(attr: TokenStream, item: TokenStream) -> TokenStream {
 // offending tokens: rustc prints the note there, `-D warnings` makes it an
 // error, and nothing reaches the compiled program.
 
-const SHARED_STATE_NOTE: &str = "actor state should not be shared mutable state \
-(`Arc<Mutex<_>>`, `Arc<RwLock<_>>`, `Arc<Atomic*>`, `Rc<RefCell<_>>`): an actor owns its \
-state, and sharing it breaks the isolation supervision relies on (a restarted actor \
-inherits whatever the old one left behind the lock), while a panic holding a std lock \
-poisons it for every holder. Send messages to the owning actor instead (or read a \
-published snapshot, ROADMAP rank 10, once available). If the sharing is deliberate, \
-write `#[actor(allow_shared_state)]`.";
+const SHARED_STATE_NOTE: &str = "actors should own their state: shared mutable state \
+(`Arc<Mutex<_>>`, `Arc<RwLock<_>>`, `Arc<Atomic*>`, `Rc<RefCell<_>>`) breaks the isolation \
+supervision relies on (a restarted actor inherits whatever the old one left behind the lock), \
+and a panic while holding a std lock poisons it for every holder; send messages to the owning \
+actor instead (or, once available, read a published snapshot, ROADMAP rank 10); if the \
+sharing is deliberate, use `#[actor(allow_shared_state)]`";
 
-const PANIC_ABORT_NOTE: &str = "this crate is built with `panic = \"abort\"`: a panicking \
-handler aborts the whole process instead of stopping one actor, so supervisors, links, \
-monitors and `stopped()` never see the failure. Build actor binaries with \
-`panic = \"unwind\"` (the default), or write `#[actor(allow_panic_abort)]` if aborting is \
-deliberate.";
+const PANIC_ABORT_NOTE: &str = "built with `panic = \"abort\"`: a panicking handler aborts \
+the whole process instead of stopping one actor, so supervisors, links, monitors and \
+`stopped()` never see the failure; build actor binaries with `panic = \"unwind\"` (the \
+default), or use `#[actor(allow_panic_abort)]` if aborting is deliberate";
 
 /// Smart pointers that share their contents between owners.
 fn is_shared_pointer(ident: &Ident) -> bool {
