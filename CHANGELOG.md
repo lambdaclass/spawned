@@ -24,7 +24,7 @@
   runs). A first 3-hour campaign found no framework bug. Adds
   `spawned_rt::tasks::sim::stats()` (simulation builds only).
 - CI: keep the per-PR TLA+ checks fast again (about 52 minutes, sometimes
-  hitting the 60-minute timeout, down to about 12). The per-PR `MCLifecycle`
+  hitting the 60-minute timeout, down to about 8). The per-PR `MCLifecycle`
   is a smaller instance (7.5M states instead of 43M, fewer reasons, no
   actor-to-actor message, which moved to `MCLifecycleFence`); every
   Lifecycle negative control still fails on it on its named invariant. The
