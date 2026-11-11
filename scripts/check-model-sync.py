@@ -376,7 +376,8 @@ def check_paths(args, root):
     for path, covering in missing.items():
         print(f"{'waived' if has_label and has_reason else 'MISSING'} {path}: covered by {', '.join(covering)}, none changed")
     if has_label and has_reason:
-        print(f"model-sync: waived by the `{LABEL}` label and: {REASON.search(body).group(0).strip()}...")
+        line = body[REASON.search(body).start():].strip().splitlines()[0]
+        print(f"model-sync: waived by the `{LABEL}` label and: {line}")
         return 0
     print(f"""
 model-sync: this PR changes modelled code without changing its model.
