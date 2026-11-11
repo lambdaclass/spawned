@@ -574,18 +574,6 @@ impl<R> Slot<R> {
         }
     }
 
-    /// Stop watching with `waker`, so finished watchers do not accumulate on
-    /// a long-lived token.
-    #[cfg_attr(not(feature = "async"), allow(dead_code))]
-    pub(crate) fn unwatch(&self, waker: &Waker) {
-        let removed = {
-            let mut inner = lock(&self.inner);
-            let index = inner.watchers.iter().position(|w| w.will_wake(waker));
-            index.map(|i| inner.watchers.swap_remove(i))
-        };
-        drop(removed);
-    }
-
     /// Non-blocking check from the caller's receiver.
     pub(crate) fn try_take(&self, now: &impl Fn() -> u64) -> Option<Result<R, Terminal>> {
         if let Some(result) = self.take(state(self.word())) {

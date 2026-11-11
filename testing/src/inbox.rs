@@ -1,6 +1,6 @@
-use std::collections::HashMap;
-use spawned_concurrency::message::Message;
 //! Shared message log behind mocks and probes: blocking and async waiters.
+use spawned_concurrency::message::Message;
+use std::collections::HashMap;
 use std::any::{Any, TypeId};
 use std::panic::Location;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};

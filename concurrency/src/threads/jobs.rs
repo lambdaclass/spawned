@@ -360,6 +360,9 @@ impl<A: Actor> Context<A> {
         D: FnOnce(JobOutcome<T>, ReplyTo<R>) -> M + Send + 'static,
     {
         let (state, slot, token) = self.link_reply(&opts, token)?;
+        if opts.cancel_on_caller_gone {
+            crate::reply::jobs::cancel_when_closed(&slot, &state);
+        }
         let hold = Hold::Linked(LinkedJob(slot));
         let cell = Arc::new(Mutex::new(Some(token)));
         let shared = cell.clone();

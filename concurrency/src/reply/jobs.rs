@@ -598,3 +598,19 @@ impl Drop for CleanedGuard {
         self.0.changed.notify_all();
     }
 }
+
+/// Opt-in caller-give-up cancellation for jobs that cannot await
+/// (`pipe_reply_blocking*` with `cancel_on_caller_gone`): a watcher waker on
+/// the linked slot cancels the job when the slot closes.
+pub(crate) fn cancel_when_closed<R>(slot: &super::slot::Slot<R>, state: &Arc<JobState>) {
+    struct CancelJob(Arc<JobState>);
+    impl std::task::Wake for CancelJob {
+        fn wake(self: Arc<Self>) {
+            self.0.cancel();
+        }
+    }
+    let waker = std::task::Waker::from(Arc::new(CancelJob(state.clone())));
+    if slot.poll_closed(&waker, &super::now_ticks).is_ready() {
+        state.cancel();
+    }
+}
