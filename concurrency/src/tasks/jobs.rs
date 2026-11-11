@@ -243,9 +243,11 @@ impl<A: Actor> Drop for NativeSlot<A> {
 /// so that launching it cannot fail (threads mode reserves its thread the
 /// same way).
 struct NativeRunner {
-    /// A managed actor's scope lease, held until the body physically ends:
-    /// the actor's cleanup is not complete (no supervisor replacement, no
-    /// complete system shutdown) while its native work still runs.
+    /// A managed actor's scope lease, taken when the job is admitted (never
+    /// by an unused permit, which must not keep a dead actor's scope owned)
+    /// and held until the body physically ends: the actor's cleanup is not
+    /// complete (no supervisor replacement, no complete system shutdown)
+    /// while its native work still runs.
     lease: Option<crate::system::Lease>,
     pool: RunnerPool,
 }
@@ -553,12 +555,12 @@ impl<A: Actor> BlockingJobPermit<A> {
         let BlockingJobPermit {
             ctx,
             credit,
-            native,
+            mut native,
         } = self;
         let Some(state) = ctx.start_job(&opts) else {
             return ctx.refused_job(&opts, (work, done, native));
         };
-        if !ctx.admit_job(&state, &opts) {
+        if !ctx.admit_native(&state, &opts, &mut native) {
             return ctx.refuse(state, (work, done, native, credit));
         }
         ctx.launch_blocking::<T, M, (), W>(
@@ -615,9 +617,9 @@ impl<A: Actor> Context<A> {
 
     /// Reserve a native slot (`MAX_NATIVE_JOBS`) and where the job will run:
     /// the blocking pool, or an owned thread spawned now (`SpawnFailed`
-    /// here, never at launch), plus a managed actor's scope lease
-    /// (`OwnerStopping` once its scope is closing). A failure releases the
-    /// slot.
+    /// here, never at launch). A failure releases the slot. A managed
+    /// actor's scope lease is taken later, at admission
+    /// ([`admit_native`](Self::admit_native)).
     fn reserve_native(&self) -> Result<NativeSlot<A>, PipeErrorKind> {
         if !self.shared.jobs.reserve_native() {
             return Err(PipeErrorKind::NativeBudget);
@@ -625,14 +627,6 @@ impl<A: Actor> Context<A> {
         let mut slot = NativeSlot {
             ctx: self.clone(),
             runner: None,
-        };
-        let lease = match &self.shared.managed {
-            Some(scope) => Some(
-                scope
-                    .job_lease()
-                    .map_err(|_| PipeErrorKind::OwnerStopping)?,
-            ),
-            None => None,
         };
         #[cfg(not(spawned_sim))]
         let handle = match &self.shared.managed {
@@ -658,8 +652,34 @@ impl<A: Actor> Context<A> {
                 RunnerPool::Thread(start)
             }
         };
-        slot.runner = Some(NativeRunner { lease, pool });
+        slot.runner = Some(NativeRunner { lease: None, pool });
         Ok(slot)
+    }
+
+    /// Admit a blocking job: a managed actor's scope lease (refused once
+    /// its scope is closing, as the owner exits), then
+    /// [`admit_job`](Self::admit_job). The lease goes to the native runner
+    /// and lives until the body ends; refused, it is released here.
+    fn admit_native(
+        &self,
+        state: &Arc<JobState>,
+        opts: &JobOptions,
+        native: &mut NativeSlot<A>,
+    ) -> bool {
+        let lease = match &self.shared.managed {
+            Some(scope) => match scope.job_lease() {
+                Ok(lease) => Some(lease),
+                Err(_) => return false,
+            },
+            None => None,
+        };
+        if !self.admit_job(state, opts) {
+            return false;
+        }
+        if let Some(runner) = &mut native.runner {
+            runner.lease = lease;
+        }
+        true
     }
 
     /// Reserve an unlinked job's admission (the owner is running, one
@@ -993,7 +1013,7 @@ impl<A: Actor> Context<A> {
     {
         let (state, slot, token) = self.link_reply(&opts, token)?;
         let hold = Hold::Linked(LinkedJob(slot.clone()));
-        let native = match self.reserve_native() {
+        let mut native = match self.reserve_native() {
             Ok(native) => native,
             // Dropping the hold detaches the linked job from the slot.
             Err(kind) => {
@@ -1001,7 +1021,7 @@ impl<A: Actor> Context<A> {
                 return Err(PipeReplyError::Failed { token, kind });
             }
         };
-        if !self.admit_job(&state, &opts) {
+        if !self.admit_native(&state, &opts, &mut native) {
             drop((hold, native));
             return Err(PipeReplyError::Failed {
                 token,

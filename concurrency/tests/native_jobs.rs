@@ -239,6 +239,53 @@ async fn a_job_admitted_after_its_owner_exited_never_runs() {
     actor.join().await;
 }
 
+/// Review round 2 (Codex 4): an unused blocking permit held outside the
+/// actor does not keep a dead generation's scope
+/// owned. Its scope lease used to be taken at reservation, so the stopped
+/// actor's scope could not join, and a system shutdown stayed incomplete,
+/// until the external permit was dropped. The lease is now taken when the
+/// job is admitted; an executing job still holds it until its body ends.
+async fn an_unused_permit_does_not_hold_the_scope(borrowed: bool) {
+    use spawned_concurrency::tasks::{ActorStart, BlockingJobPermit};
+    struct Owner;
+    impl Actor for Owner {}
+    impl Handler<Done> for Owner {
+        async fn handle(&mut self, _: Done, _: PendingReply<'_, ()>, _: &Context<Self>) {}
+    }
+    let system = ActorSystem::new().unwrap();
+    let group = if borrowed {
+        system
+            .async_group_on("unused-permit-borrowed", &tokio::runtime::Handle::current())
+            .unwrap()
+    } else {
+        system.async_group("unused-permit-owned", 1).unwrap()
+    };
+    let actor = Owner.start_on(&group).unwrap();
+    actor.ready().await.unwrap();
+    // Reserved through a cloned context and kept outside the actor, unused.
+    let permit: BlockingJobPermit<Owner> = actor.context().reserve_blocking_job().unwrap();
+    actor.context().stop();
+    assert_eq!(actor.wait_exit().await, spawned_concurrency::ExitReason::Normal);
+    let report = system.shutdown(Duration::from_secs(2)).await;
+    assert!(
+        report.complete,
+        "an unused blocking permit kept the dead actor's scope owned"
+    );
+    // Using it now is refused: nothing runs.
+    let handle = permit.pipe_blocking_with(JobOptions::default(), |_| (), |_| Done);
+    assert!(handle.is_cancelled());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_unused_permit_does_not_hold_the_scope_owned_runtime() {
+    an_unused_permit_does_not_hold_the_scope(false).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_unused_permit_does_not_hold_the_scope_borrowed_runtime() {
+    an_unused_permit_does_not_hold_the_scope(true).await;
+}
+
 /// Review P1 (Codex 12, agy 6): outside a Tokio runtime a tasks actor's
 /// blocking job runs on an owned thread. Its creation is part of the
 /// reservation, so a failure is `SpawnFailed` (and `pipe_reply*` hands the
