@@ -1556,6 +1556,14 @@ mod tasks_contract {
                 if fault == Fault::Stopped {
                     assert!(matches!(first, Ok(1)), "{place:?}");
                     actor.child_handle().stop();
+                } else if fault == Fault::Started {
+                    // Queued before the death point: ActorStopped; admitted
+                    // after it (started() already panicked, as on one CPU):
+                    // NoProc.
+                    assert!(
+                        matches!(first, Err(ActorError::ActorStopped(_) | ActorError::NoProc)),
+                        "{place:?} {fault:?}: {first:?}"
+                    );
                 } else {
                     assert!(
                         matches!(first, Err(ActorError::ActorStopped(_))),
