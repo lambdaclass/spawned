@@ -895,7 +895,7 @@ run one at a time):
 | `MCStartContinue` | per PR | one child of every variant with every explicit placement, two messages, trapping | 546,846 | 14 | 6 s |
 | `MCStartScope` | per PR | managed parent, one linked child (owned or not), trapping, unlink, scope deadline; liveness `OwnedScopeFinishes` | 13,848 | 14 | 2 s |
 | `MCStartLive` | per PR | one child of each waiting variant, trapping; liveness `ParentExitReachesChild`, `StartAnswered` | 8,387 | 11 | 2 s |
-| `MCStartDeep` | weekly | `MCStart` plus the init timer and an unmanaged parent | RESULT_DEEP |
+| `MCStartDeep` | weekly | `MCStart` plus the init timer and an unmanaged parent | 55,814,368 | 22 | 7 min 17 s |
 
 **Negative controls** (`negative_checks.py`, each with `TypeOK` and only the
 named property, run one at a time):
