@@ -148,12 +148,12 @@ async fn per_sender_fifo_body() {
     sink.join().await;
 }
 
-#[spawned_macros::sim_test(explore = "pct:d=3", iterations = 200)]
+#[spawned_macros::sim_test(explore = "pct:d=3", iterations = 1_000)]
 async fn per_sender_fifo_and_reply_identity_pct() {
     per_sender_fifo_body().await;
 }
 
-#[spawned_macros::sim_test(explore = "dfs:bound=2", iterations = 300)]
+#[spawned_macros::sim_test(explore = "dfs:bound=2", iterations = 2_000)]
 async fn per_sender_fifo_and_reply_identity_dfs() {
     per_sender_fifo_body().await;
 }
@@ -282,12 +282,12 @@ async fn turns_body() {
     }
 }
 
-#[spawned_macros::sim_test(explore = "pct:d=3", iterations = 200)]
+#[spawned_macros::sim_test(explore = "pct:d=3", iterations = 1_000)]
 async fn turns_and_hooks_never_overlap_pct() {
     turns_body().await;
 }
 
-#[spawned_macros::sim_test(explore = "dfs:bound=2", iterations = 300)]
+#[spawned_macros::sim_test(explore = "dfs:bound=2", iterations = 2_000)]
 async fn turns_and_hooks_never_overlap_dfs() {
     turns_body().await;
 }
@@ -436,12 +436,12 @@ async fn stop_discards_body() {
     );
 }
 
-#[spawned_macros::sim_test(explore = "pct:d=3", iterations = 200)]
+#[spawned_macros::sim_test(explore = "pct:d=3", iterations = 1_000)]
 async fn stop_discards_queue_before_publishing_exit_pct() {
     stop_discards_body().await;
 }
 
-#[spawned_macros::sim_test(explore = "dfs:bound=2", iterations = 300)]
+#[spawned_macros::sim_test(explore = "dfs:bound=2", iterations = 2_000)]
 async fn stop_discards_queue_before_publishing_exit_dfs() {
     stop_discards_body().await;
 }
@@ -621,12 +621,12 @@ async fn exit_after_last_message_all() {
     }
 }
 
-#[spawned_macros::sim_test(explore = "pct:d=3", iterations = 200)]
+#[spawned_macros::sim_test(explore = "pct:d=3", iterations = 1_000)]
 async fn exit_and_down_follow_the_last_message_pct() {
     exit_after_last_message_all().await;
 }
 
-#[spawned_macros::sim_test(explore = "dfs:bound=2", iterations = 300)]
+#[spawned_macros::sim_test(explore = "dfs:bound=2", iterations = 2_000)]
 async fn exit_and_down_follow_the_last_message_dfs() {
     exit_after_last_message_all().await;
 }
