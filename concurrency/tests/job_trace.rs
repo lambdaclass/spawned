@@ -178,17 +178,17 @@ impl Handler<Run> for Owner {
     }
 }
 
-/// Hold the turn until `go`, then replace key `k`: the old job finished
+/// Hold the turn until `go` fires, then replace key `k`: the old job finished
 /// meanwhile, so its terminal message is queued behind this turn and fenced.
-struct ReplaceWhen(Arc<std::sync::atomic::AtomicBool>);
+/// The turn awaits instead of blocking the worker: a blocked worker strands
+/// the old job, spawned into its non-stealable LIFO slot in the same poll.
+struct ReplaceWhen(oneshot::Receiver<()>);
 impl Message for ReplaceWhen {
     type Result = ();
 }
 impl Handler<ReplaceWhen> for Owner {
     async fn handle(&mut self, msg: ReplaceWhen, _: PendingReply<'_, ()>, ctx: &Context<Self>) {
-        while !msg.0.load(std::sync::atomic::Ordering::SeqCst) {
-            std::thread::sleep(Duration::from_millis(1));
-        }
+        msg.0.await.unwrap();
         ctx.pipe_keyed("k", async { 2u32 }, done("new")).unwrap();
     }
 }
@@ -277,14 +277,14 @@ async fn replaced_finished_keyed_job_is_fenced() {
     let old = Arc::default();
     let (actor, log) = start_with(Arc::clone(&old));
     actor.request(Run(Scenario::KeyedFenced)).await.unwrap();
-    let go = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    actor.send(ReplaceWhen(go.clone())).unwrap();
+    let (go, held) = oneshot::channel::<()>();
+    actor.send(ReplaceWhen(held)).unwrap();
     let (handle, open) = old.lock().unwrap().take().unwrap();
     open.send(()).unwrap();
     while handle.is_running() {
         sleep(Duration::from_millis(1)).await;
     }
-    go.store(true, std::sync::atomic::Ordering::SeqCst);
+    go.send(()).unwrap();
     wait_for(&log, "new:ok:2").await;
     finish("keyed_fenced", actor, 16).await;
     assert!(!log.snapshot().iter().any(|e| e.starts_with("old")));
