@@ -271,8 +271,11 @@ impl Handler<Route> for Node {
                 .children
                 .iter()
                 .map(|c| {
-                    c.send_request(msg.clone(), spawned_concurrency::DEFAULT_REQUEST_TIMEOUT)
-                        .unwrap()
+                    // A `ReplyReceiver` is `IntoFuture`; `join_all` takes futures.
+                    std::future::IntoFuture::into_future(
+                        c.send_request(msg.clone(), spawned_concurrency::DEFAULT_REQUEST_TIMEOUT)
+                            .unwrap(),
+                    )
                 })
                 .collect();
             let mut nodes = 1;
