@@ -136,10 +136,12 @@ Step(e) ==
       [] e.a = "Publish"   -> Publish(e.t)
       [] OTHER             -> FALSE
 
+\* Answering the queued requests after D is not logged: it is taken
+\* silently between Die (or Drop) and Publish, which waits for it.
 TraceNext ==
     /\ i < Len(Trace)
-    /\ Step(Trace[i + 1])
-    /\ i' = i + 1
+    /\ \/ Step(Trace[i + 1]) /\ i' = i + 1
+       \/ \E a \in Actors : Discharge(a) /\ UNCHANGED i
 
 TraceSpec == TraceInit /\ [][TraceNext]_traceVars
 
