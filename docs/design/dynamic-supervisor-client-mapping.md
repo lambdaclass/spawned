@@ -232,26 +232,38 @@ impl Handler<Down> for PeerTableServer {
 
 `stopped()` does not run for a non-trapping connection that is terminated,
 shut down or killed (v0.8, decision 2), and `trap_exit` does not cover a
-kill. So each resource the hook releases today gets an owner that holds an
-exact registration and releases on the connection's `Down`, as an Erlang
-process that owns a resource monitors its user. Nothing is sent from
-`Drop`: state destruction runs before publication (exit phases 5 and 6),
-so such a message would reach the peer table before the `Down` and could
-pick the dying peer as its own alternate (agy 5), and an enqueued message
-is not a completed release (Codex F9).
+kill. So each resource the hook releases today needs an owner whose
+lifetime covers it. Two kinds:
 
-| Released in `stopped()` today | Registration (identity stored by the owner) | Release on `Down` |
+- **Records an actor keeps in its own state** (peer-table entries, the
+  broadcaster's index) live and die with that actor. Their owner monitors
+  the connection and releases on `Down`, guarded by the identity it stored.
+  If the owner itself stops or restarts first, the records go with it, so
+  nothing leaks.
+- **Persistent reservations outside any actor** (the mempool's in-flight
+  hashes, cell availability, the announced-hash budget) would outlive a
+  monitor whose owner stops before handling `Down` (Codex round 3: the peer
+  table can begin a non-trapping shutdown with the `Down` still queued).
+  They are held by an **owning registration**: a value the mempool hands
+  out when the connection reserves, kept in the connection's state, whose
+  destruction releases exactly that connection's entries synchronously,
+  under the mempool's lock, with no message and no `.await`. State
+  destruction runs on every exit path, kills and runtime drops included
+  (exit phase 5), before the connection's slot is freed, so the release
+  cannot be lost whoever else is alive.
+
+Nothing is sent from `Drop`: a message would reach the peer table before the
+`Down` (phase 5 before 6) and could pick the dying peer as an alternate
+(agy round 2), and an enqueued message is not a completed release.
+
+| Released in `stopped()` today | Owner and registration | Release |
 |---|---|---|
-| peer-table entry and discv5 session | `new_connected_peer` stores the monitor reference in `PeerData` | the peer table removes the entry only if it still holds that monitor |
-| tx-broadcaster index | the broadcaster's `add_peer` records the connection's `ActorId` and monitors it | the broadcaster frees the index only if it is still owned by that `ActorId` |
-| in-flight transaction reservations (`clear_in_flight_txs`) | the mempool records the requesting connection's `ActorId` with each in-flight hash when the request is made | the peer table, after removing the entry, calls `mempool.release_in_flight(actor_id)`: synchronous, exact, removes only hashes still held by that id |
-| re-request to alternates (`retry_on_alternates`) | the same per-hash records | best effort, done by the peer table after the removal, with a local lookup of live peers (no request to itself, so no self-request deadlock); skipped once shutdown began (`Down` reason `Shutdown` from the supervisor's shutdown) so a node stop does not issue ~150 re-requests |
-| cell availability and announced-hash budget (`clear_peer_cell_availability`, `forget_peer_announcements`) | keyed today by node id with a "started session" check; becomes keyed by (node id, connection `ActorId`) | the peer table releases the entries of that `ActorId` only, so a second session of the same node keeps its own |
-| disconnect metrics | | the peer table's `Down` handler (it has the final reason) |
-
-`Drop` keeps only what is local to the actor (dropping its own buffers).
-Releases happen after the connection is gone from the table, so no
-re-request can target it.
+| peer-table entry and discv5 session | peer table; `new_connected_peer` stores the monitor reference in `PeerData` | on `Down`, only if the entry still holds that monitor; gone anyway if the peer table stops |
+| tx-broadcaster index | broadcaster; its `add_peer` records the connection's `ActorId` and monitors it | on `Down`, only if the index is still owned by that `ActorId`; gone anyway if the broadcaster stops |
+| in-flight transaction reservations (`clear_in_flight_txs`) | mempool registration `InFlightLease`, held in the connection's state; the mempool records each in-flight hash against the lease's `ActorId` | the lease's destruction removes the hashes still recorded against it, synchronously |
+| cell availability and announced-hash budget (`clear_peer_cell_availability`, `forget_peer_announcements`) | the same lease, keyed by (node id, connection `ActorId`) instead of node id plus a "started session" check | the lease's destruction, for that `ActorId` only; a second session of the same node keeps its own |
+| re-request to alternates (`retry_on_alternates`) | peer table, best effort | on `Down`, after removing the entry, with a local lookup of live peers (no request to itself). Suppressed by explicit shutdown state, the node's shutdown token that `shutdown_l1` cancels first, not by `Down.reason`: a connection killed at its shutdown deadline ends `Killed`. Lost if the peer table stops first, which is acceptable for a retry |
+| disconnect metrics | peer table's `Down` handler (it has the final reason) | best effort |
 
 ### What disappears
 
@@ -267,8 +279,9 @@ About 45-60 of the ~135 hand-written lines (counted on `main`):
 | "connections are not admitted" comment and unmanaged `.start()` | | connections owned by the system |
 
 Added: the handshake as a post-start continuation (moving existing code),
-the writer as an owned helper, exact owner registrations in the mempool and
-broadcaster, and the release logic in the `Down` handlers. Net lines are
+the writer as an owned helper, the mempool's `InFlightLease` (an owning
+registration released by its destruction), the broadcaster's identity check
+and the release logic in the `Down` handlers. Net lines are
 roughly even; what changes is that every path out of a connection is
 covered. #7435's integration test (171 lines) stays as a regression test,
 now exercising the monitor guard.
