@@ -186,6 +186,44 @@ the deadline is fixed when the request is sent.
 GUIDE's Metrics section) and the `deferred_reply_latency` histogram. Code
 that builds a `Snapshot` with a struct literal must add them.
 
+**Jobs (API refinements).**
+
+- `JobOutcome`, `JobError` and `PipeErrorKind` are `#[non_exhaustive]`: add
+  a wildcard arm, or match `outcome.into_result()` with an `Err(_)` arm.
+- `tasks` mode: `pipe_blocking_with` / `pipe_reply_blocking_with` run on
+  Tokio's blocking pool. Remove a `pipe_with(.., async { spawn_blocking(f)
+  .await })` workaround (and its `resume_unwind` of the join error):
+  `pipe_blocking_with(opts, move |_job| f(), done)` reports a panic as
+  `JobError::Panicked`. Raise the native budget with
+  `#[actor(max_native_jobs = N)]` (or `ChildSpec::max_native_jobs(N)` for a
+  supervised child) instead of avoiding native jobs. A Tokio runtime being
+  dropped now waits for blocking jobs still running, as for any
+  `spawn_blocking`.
+- To keep "exactly one result" when a job is refused, reserve first instead
+  of cloning ahead: `let Ok(permit) = ctx.reserve_blocking_job() else {
+  /* report with the values you still own */ };
+  permit.pipe_blocking_with(opts, work, done);` (`reserve_job` for async
+  jobs). Spawning from a permit cannot fail.
+- A job that re-scheduled its messages with `send_after` (unfenced) can use
+  `job.emit_at(at, msg)` / `emit_at_blocking`: fenced with the job, counted
+  against its emit credits, and the terminal message waits for it.
+- `JobOptions::default().deadline_after(d)` replaces
+  `JobOptions { deadline: Some(spawned_rt::time::Instant::now() + d), .. }`;
+  use `spawned_concurrency::Instant` instead of `spawned_rt::time::Instant`.
+  Job deadlines are hard (later emits fail, the result is dropped); for a
+  soft deadline, check the time in the work (see the GUIDE).
+
+**Send-only manual handlers.** A manual `impl Handler<M>` whose `Result` is
+`()` no longer needs the `_reply: PendingReply<'_, ()>` parameter: put
+`#[send_handler]` (from `spawned_concurrency`) on the impl and write
+`handle(&mut self, msg, ctx)`. Without it, a handler that drops its `()`
+reply gives a `request` caller `ReplyDropped`; with it, the caller gets
+`Ok(())`.
+
+**Tests.** Replace test-only "run this closure in the actor" messages and
+`cfg(test)` bypasses with `spawned_test::tasks::in_actor(&actor, |state,
+ctx| ..)` (`threads::in_actor` in threads mode).
+
 **Lifecycle.** At death the registry closes (open deferred tokens answer
 `ActorStopped`), then the mailbox is disposed, then actor state is dropped:
 a state destructor that sends to its own actor now fails (with `NoProc`

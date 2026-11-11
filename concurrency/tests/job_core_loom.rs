@@ -375,6 +375,87 @@ fn emit_vs_notification_and_cancel() {
     }
 }
 
+/// A delayed emit (`emit_at`) scheduled by the work fires on the deadline
+/// service while the work finishes and, optionally, the job is cancelled.
+/// The terminal message is held until the scheduled emit has fired, so it is
+/// always last; it is delivered exactly once unless cancelled; a cancel drops
+/// a held result; every credit comes back.
+#[test]
+fn scheduled_emit_vs_finish_and_cancel() {
+    for cancel in [false, true] {
+        model(move || {
+            let mailbox = Arc::new(Mailbox::default());
+            let destroyed = Arc::new(AtomicUsize::new(0));
+            let job = TestJob::new(0, 1, None, &destroyed);
+            // The work schedules one delayed emit (its credit taken now).
+            job.core.acquire_blocking().unwrap();
+            job.core.schedule().unwrap();
+            let timer = {
+                let (job, mailbox) = (job.clone(), mailbox.clone());
+                loom::thread::spawn(move || {
+                    let (result, held) = job.core.fire(Some(|| {
+                        mailbox.push(Msg::Emit(0, 0));
+                        Ok::<(), ()>(())
+                    }));
+                    if result.is_err() {
+                        // Not enqueued: the credit guard returns it.
+                        job.core.return_emit_credit();
+                    }
+                    if let Some(held) = held {
+                        held();
+                    }
+                })
+            };
+            let canceller = cancel.then(|| {
+                let job = job.clone();
+                loom::thread::spawn(move || job.core.cancel())
+            });
+            // The work ends: notify now, or hold for the scheduled emit.
+            let later_job = job.clone();
+            let later_mailbox = mailbox.clone();
+            job.core.finish(
+                || {
+                    mailbox.push(Msg::Terminal(0));
+                    None::<()>
+                },
+                move || {
+                    Box::new(move || {
+                        later_job.core.notify(|| {
+                            later_mailbox.push(Msg::Terminal(0));
+                            None::<()>
+                        });
+                    })
+                },
+            );
+            timer.join().unwrap();
+            if let Some(canceller) = canceller {
+                canceller.join().unwrap();
+            }
+            let (mut terminals, mut emits) = (0, 0);
+            for msg in mailbox.take() {
+                match msg {
+                    Msg::Terminal(_) => terminals += 1,
+                    Msg::Emit(..) => {
+                        assert_eq!(terminals, 0, "the delayed emit followed the terminal");
+                        emits += 1;
+                        job.core.return_emit_credit();
+                    }
+                }
+            }
+            assert!(terminals <= 1, "two terminal messages");
+            assert_eq!(job.core.scheduled(), 0);
+            if !cancel {
+                assert_eq!(terminals, 1, "the held terminal was lost");
+                assert_eq!(emits, 1, "the delayed emit was dropped without a cancel");
+            }
+            if terminals == 0 {
+                assert_eq!(job.core.notification(), Notification::Suppressed);
+            }
+            assert_eq!(job.core.emit_credits(), 1, "an emit credit was lost");
+        });
+    }
+}
+
 /// A native job completes (native slot released, terminal notification,
 /// execution ended) while the owner exits: cancel every job, then join.
 /// The join is always woken, and once it returns no job runs, the native

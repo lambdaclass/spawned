@@ -36,7 +36,7 @@ pub const DEFAULT_STOP_DEADLINE: Duration = Duration::from_secs(5);
 
 #[path = "jobs.rs"]
 mod jobs;
-pub use jobs::JobCtx;
+pub use jobs::{BlockingJobPermit, JobCtx, JobPermit};
 
 // ---------------------------------------------------------------------------
 // Backend
@@ -252,6 +252,33 @@ where
             }
         }
     })
+}
+
+/// A closure run in one of the actor's turns (`spawned_test::tasks::in_actor`).
+type InTurn<A, R> = Box<dyn FnOnce(&mut A, &Context<A>) -> R + Send>;
+struct InTurnEnvelope<A: Actor, R: Send + 'static> {
+    f: InTurn<A, R>,
+    slot: SlotHandle<R>,
+}
+
+impl<A: Actor, R: Send + 'static> Envelope<A> for InTurnEnvelope<A, R> {
+    #[cfg(feature = "diagnostics")]
+    fn message_type(&self) -> &'static str {
+        "InTurn"
+    }
+    fn handle<'a>(
+        self: Box<Self>,
+        actor: &'a mut A,
+        ctx: &'a Context<A>,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+        let InTurnEnvelope { f, mut slot } = *self;
+        // Inside the future, so a panicking closure is a handler panic.
+        Box::pin(async move {
+            let reply = PendingReply::new(slot.take(), &ctx.shared.replies);
+            let value = f(actor, ctx);
+            let _ = reply.reply(value);
+        })
+    }
 }
 
 // Private lifecycle signal, excluded from application message/handler metrics.
@@ -1116,6 +1143,30 @@ impl<A: Actor> ActorRef<A> {
             .await
     }
 
+    /// Run `f` in one of the actor's turns, with its state and `Context`,
+    /// and receive its result. For tests: use `spawned_test::tasks::in_actor`.
+    #[doc(hidden)]
+    pub fn __in_turn<R, F>(&self, f: F) -> Result<ReplyReceiver<R>, ActorError>
+    where
+        R: Send + 'static,
+        F: FnOnce(&mut A, &Context<A>) -> R + Send + 'static,
+    {
+        let (slot, rx) = reply_slot(Deadline::Never, Some(&self.shared.replies));
+        let envelope: Box<dyn Envelope<A> + Send> = Box::new(InTurnEnvelope {
+            f: Box::new(f),
+            slot,
+        });
+        // Past the death point the actor is gone (E4), as for `enqueue`.
+        if self.shared.replies.refuses_admission() {
+            return Err(ActorError::NoProc);
+        }
+        self.shared
+            .sender
+            .send(envelope)
+            .map_err(|_| ActorError::NoProc)?;
+        Ok(rx)
+    }
+
     /// Send a request and wait for the reply with a custom timeout.
     pub async fn request_with_timeout<M>(
         &self,
@@ -1305,14 +1356,17 @@ impl<A: Actor> ActorRef<A> {
             cancellation_token.clone(),
         );
         let (cleaned_tx, cleaned_rx) = watch::channel(false);
+        // A supervised child's `ChildSpec` may override the actor's bounds.
+        let (max_outstanding, max_native) = managed
+            .as_ref()
+            .map(|scope| scope.bounds())
+            .unwrap_or_default()
+            .resolve(A::MAX_OUTSTANDING, A::MAX_NATIVE_JOBS);
         let actor_ref = ActorRef {
             shared: Arc::new(ActorShared {
                 id,
-                replies: Registry::new(id, A::MAX_OUTSTANDING),
-                jobs: Arc::new(crate::reply::jobs::JobSet::new(
-                    id,
-                    A::MAX_NATIVE_JOBS.unwrap_or_else(crate::reply::jobs::default_max_native_jobs),
-                )),
+                replies: Registry::new(id, max_outstanding),
+                jobs: Arc::new(crate::reply::jobs::JobSet::new(id, max_native)),
                 cleaned: cleaned_rx,
                 sender: tx,
                 cancellation_token: cancellation_token.clone(),

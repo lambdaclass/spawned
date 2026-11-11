@@ -124,7 +124,7 @@ State that must be released on every exit, including kills and runtime drops, be
 | `ctx.send(msg)` | Send a fire-and-forget message to this actor (self-send) |
 | `ctx.request(msg)` | Send a request and wait for the reply (tasks: async, threads: blocking) |
 | `ctx.request_with_timeout(msg, duration)` | Send a request with a custom timeout |
-| `ctx.request_raw(msg)` | Send a request and get a raw oneshot receiver |
+| `ctx.request_raw(msg)` / `ctx.request_raw_until(msg, deadline)` | Send a request and get its `ReplyReceiver<R>` (tasks: a future, threads: `recv()`/`try_recv()`) yielding `Result<R, ActorError>`; the deadline (5 s default, or `Deadline::At`/`Never`) is fixed at send |
 | `ctx.recipient::<M>()` | Get a type-erased `Recipient<M>` for this actor |
 | `ctx.actor_ref()` | Get an `ActorRef<A>` from the context |
 | `ctx.id()` | This actor's `ActorId` |
@@ -165,7 +165,7 @@ async fn handle_tick(&mut self, _msg: Tick, ctx: &Context<Self>) {
 | `actor_ref.request(msg)` | Request with default 5s timeout. Tasks: `.await`, Threads: blocking |
 | `actor_ref.request_with_timeout(msg, duration)` | Request with custom timeout |
 | `actor_ref.with_request_timeout(duration)` | Clone a configured handle for generated protocol methods (v0.7) |
-| `actor_ref.request_raw(msg)` | Returns a raw oneshot receiver |
+| `actor_ref.request_raw(msg)` / `actor_ref.request_raw_until(msg, deadline)` | Returns the request's `ReplyReceiver<R>` (as `ctx.request_raw`) |
 | `actor_ref.recipient::<M>()` | Get a type-erased `Recipient<M>` |
 | `actor_ref.context()` | Get a `Context<A>` (for timer setup, etc.) |
 | `actor_ref.join()` | Wait until the actor has fully stopped (tasks: `.await`, threads: blocking) |
@@ -602,14 +602,61 @@ Rules (the [design](design/deferred-replies.md) has the full contract):
 - `PendingReplies<K, R>` is a bounded table of tokens by key (purges terminal
   entries on insert; `InsertError::{Duplicate, Full}` hands the token back).
 
-**Pipe-to-self jobs** run work owned by the actor and deliver the result as a
-message in a later turn (OTP's `Task.Supervisor.async_nolink` plus
-`handle_info`):
+**Answering with a reason.** The framework's errors (`ReplyDropped`,
+`ActorStopped`, `Overloaded`, `RequestTimeout`) say what happened to the
+request, not why your actor could not serve it. To carry your own reason, make
+the reply type a `Result`, as `gen_server` replies `{error, Reason}`:
 
 ```rust
-// CPU offload on an owned native thread, with a deadline:
-let opts = JobOptions { deadline: Some(Instant::now() + VERDICT_DEADLINE), ..Default::default() };
-ctx.pipe_blocking_with(opts, move |_job| check(&object), move |res| Verdict { id, res })?;
+impl Message for GetPeer { type Result = Result<Lease, PeerError>; }
+
+// a ReplyTo<Result<Lease, PeerError>> answers either way, exactly once:
+token.reply(Err(PeerError::Disconnected));
+// the caller sees Ok(Err(PeerError::Disconnected)): the request worked,
+// the answer is "no"; Err(ActorError::..) stays the transport's.
+```
+
+**Send-only handlers.** A manual `impl Handler<M>` for a message whose
+`Result` is `()` can leave out the reply parameter with `#[send_handler]` on
+the impl; the impl answers `()` once `handle` returns (also after an early
+`return`), so a `request` gets `Ok(())` rather than `ReplyDropped`. This is
+the manual form of a `#[send_handler]` method in an `#[actor]` block:
+
+```rust
+#[send_handler]
+impl Handler<Tick> for Poller {
+    async fn handle(&mut self, _msg: Tick, ctx: &Context<Self>) {
+        self.poll().await;
+    }
+}
+```
+
+**Pipe-to-self jobs** run work owned by the actor and deliver the result as a
+message in a later turn (OTP's `Task.Supervisor.async_nolink` plus
+`handle_info`). A gossip verdict checked off the actor, with a deadline, that
+reports exactly one outcome per object even when the actor is at a bound:
+
+```rust
+#[send_handler]
+async fn on_gossip(&mut self, msg: Gossip, ctx: &Context<Self>) {
+    // Reserve first: on refusal nothing has been moved into the job yet.
+    let Ok(permit) = ctx.reserve_blocking_job() else {
+        return self.report(msg.id, Verdict::Ignore(Overloaded));
+    };
+    let Gossip { id, object } = msg;
+    let opts = JobOptions::default().deadline_after(VERDICT_DEADLINE);
+    permit.pipe_blocking_with(opts, move |_job| check(&object), move |res| Checked { id, res });
+}
+
+#[send_handler]
+async fn on_checked(&mut self, msg: Checked, _ctx: &Context<Self>) {
+    let verdict = match msg.res.into_result() {
+        Ok(outcome) => outcome,
+        Err(JobError::DeadlineExceeded) => Verdict::Ignore(TimedOut),
+        Err(_) => Verdict::Reject(CheckFailed), // a panic in `check`
+    };
+    self.report(msg.id, verdict);
+}
 
 // Delegation: the obligation and its credit stay here.
 let token = reply.defer()?;
@@ -618,21 +665,67 @@ ctx.pipe_reply(token, async move { downstream?.await }, |res, token| Delegated {
 ```
 
 - `done(outcome)` runs in the owner's turn; `JobOutcome::Err` carries
-  `JobError::Panicked` or `JobError::DeadlineExceeded` (the work keeps running
-  and keeps its credit).
+  `JobError::Panicked` or `JobError::DeadlineExceeded`. `JobOutcome`,
+  `JobError` and `PipeErrorKind` are `#[non_exhaustive]`: match with a
+  wildcard arm (or `outcome.into_result()`).
+- `ctx.pipe*` reject at once at a bound (`PipeError`, never waiting) and drop
+  `work` and `done`. When the caller must still produce a result,
+  `ctx.reserve_job()` / `ctx.reserve_blocking_job()` take the admission
+  first (owner running, a credit, and for blocking jobs a native slot) and
+  return a permit whose `pipe*` cannot fail. `pipe_reply*` errors hand the
+  token back.
 - `pipe_keyed` / `JobOptions::key` cancel the previous job with that key and
   fence its queued messages; `JobHandle::cancel` fences one job.
 - `JobCtx::emit_blocking` (and `emit` for async jobs) sends fenced messages,
   bounded by `JobOptions::emit_credits`; the terminal message is always last.
-- Each unlinked job holds one credit; native jobs also count against
-  `Actor::MAX_NATIVE_JOBS`. Every bound rejects at once (`PipeError`), never
-  waits. `pipe_reply*` errors hand the token back.
-- Owner exit cancels every job; after death the jobs are joined, bounded by
-  `DEFAULT_STOP_DEADLINE`, and stragglers are reported (`unfinished_at_stop`).
-- `threads` mode offers `pipe_blocking_with` and `pipe_reply_blocking_with`
-  (one owned native thread per job).
+  `JobCtx::emit_at(at, msg)` (`emit_at_blocking` in blocking jobs) delivers
+  at `at`, fenced and credit-accounted the same way: it never reaches a newer
+  job's turn or a newer instance, it is dropped if the job is cancelled or
+  replaced first, and the job's terminal message waits for it.
+- **Job deadlines are hard.** When `JobOptions::deadline` (or
+  `deadline_after(d)`) passes, `done` gets `DeadlineExceeded` at once, later
+  emits fail with `JobGone` and the work's eventual result is dropped. The
+  work itself keeps running (cooperative cancellation) and keeps its credit
+  and native slot until it returns. For a **soft deadline** (stop starting
+  new work, finish and deliver what is in hand), leave `JobOptions::deadline`
+  unset and check the time in the work:
 
-Test a manual handler directly with `spawned_test::reply_pair()`. Run the
+  ```rust
+  let stop_starting_at = Instant::now() + SOFT_DEADLINE;
+  ctx.pipe_blocking_with(JobOptions::default(), move |job| {
+      let mut done = Vec::new();
+      for item in batch {
+          if job.is_cancelled() || Instant::now() >= stop_starting_at { break; }
+          let out = prove(item);                 // a started item finishes
+          let _ = job.emit_blocking(Proven(out.id)); // and is delivered
+          done.push(out);
+      }
+      Summary::from(done)
+  }, |res| BatchDone { res })?;
+  ```
+
+  `spawned_concurrency::Instant` (also `tasks::Instant`, `threads::Instant`)
+  is the deadline clock: `std::time::Instant`, or the simulated clock under
+  `--cfg spawned_sim`, so code need not depend on `spawned-rt`.
+- **Bounds.** Each unlinked job holds one `MAX_OUTSTANDING` credit; blocking
+  jobs also count against `Actor::MAX_NATIVE_JOBS` (default
+  `min(4, available_parallelism)`). Set both in the macro,
+  `#[actor(max_native_jobs = 64, max_outstanding = 4096)]` (or as `Actor`
+  constants in a manual impl), and override them per supervised child with
+  `ChildSpec::max_native_jobs(n)` / `ChildSpec::max_outstanding(n)`.
+- **Executors.** In `tasks` mode async jobs run on the owner's runtime and
+  blocking jobs on Tokio's blocking pool (`spawn_blocking` of the actor's
+  group runtime, or the current runtime), still bounded by the native
+  budget; a runtime that is dropped waits for blocking jobs still running,
+  as with any `spawn_blocking`. `threads` mode offers `pipe_blocking_with`
+  and `pipe_reply_blocking_with` on owned native threads (a reservation
+  spawns the thread, parked until the job starts).
+- Owner exit cancels every job; after death the jobs are joined, bounded by
+  the cleanup deadline, and stragglers are reported (`unfinished_at_stop`).
+
+Test a manual handler directly with `spawned_test::reply_pair()`, and run
+code inside a live actor's turn (to start a job or inspect state) with
+`spawned_test::tasks::in_actor` / `spawned_test::threads::in_actor`. Run the
 [deferred replies example](../examples/capabilities/src/bin/deferred_replies.rs).
 
 ## Message Trait
@@ -1383,11 +1476,12 @@ waits retain their existing first-poll timeout behavior. Synchronous protocol
 requests are observed by their blocking request; `Response::ready` does not count
 that result a second time. Manually constructed ready results are not requests.
 
-`request_raw` returns the existing mode-specific raw receiver. It cannot observe
-custom timeouts or how the caller waits without changing that API. Such requests
+`request_raw` returns a `ReplyReceiver<R>`; it does not observe how the caller
+waits on it, so it is not a caller-observed request. Such requests
 still contribute message, handler, queue and reply-delivery metrics, but only a
 framework request/Response wrapper contributes caller-outcome/latency metrics.
-Reply delivery means a successful channel send, not proof the caller consumed it.
+Reply delivery means the reply was stored in the request's slot, not proof the
+caller consumed it.
 Dropping/timing out a caller does not cancel accepted actor work.
 
 ### Collection and exporting limits
@@ -1517,10 +1611,12 @@ These helpers fail with a report instead of hanging the test:
 | `wait_for_generation(&child, after, deadline)` | a supervised child does not reach a new generation, printing its snapshot |
 | `shutdown_supervisor(&supervisor, deadline)` | the supervisor report is incomplete, listing its children |
 | `shutdown_system(&system, deadline)` / `TestSystem::shutdown` | the `ActorSystem` report is incomplete, listing unfinished groups, actors, exits and failures |
+| `in_actor(&actor, \|state, ctx\| ..)` | the actor is gone or the closure panicked; otherwise runs the closure in one of the actor's turns (after earlier sends) and returns its result, so a test can reach `ctx` (start a job, defer a reply) or inspect state without an ad hoc message or a `cfg(test)` bypass |
 
 `TestSystem::new()` owns an `ActorSystem` with a two-worker async group named
 `test`, and starts actors and mocks on it. The `threads` module has the
-blocking versions of `settle`, `exit_within`, `join_within` and `wait_until`.
+blocking versions of `settle`, `exit_within`, `join_within`, `wait_until` and
+`in_actor`.
 There is no generic "actor is idle" check: an actor's mailbox can receive from
 any sender at any time, so `settle` fences the senders the test controls.
 Every async wait in `tasks` (`expect`, `expect_no_message`, `wait_until`,

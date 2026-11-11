@@ -1,4 +1,4 @@
-error: unknown parameter, expected `protocol`
+error: unknown parameter, expected `protocol`, `max_outstanding` or `max_native_jobs`
   --> tests/ui/actor_unknown_param.rs:11:9
    |
 11 | #[actor(protocols = CounterProtocol)]

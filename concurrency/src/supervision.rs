@@ -269,6 +269,7 @@ pub struct ChildSpec<A: Actor> {
     restart: RestartMode,
     startup_timeout: Duration,
     shutdown_timeout: Duration,
+    bounds: crate::reply::jobs::Bounds,
 }
 impl<A: Actor> ChildSpec<A> {
     /// Create a permanent child with five-second startup and shutdown limits.
@@ -290,7 +291,20 @@ impl<A: Actor> ChildSpec<A> {
             restart: RestartMode::Permanent,
             startup_timeout: Duration::from_secs(5),
             shutdown_timeout: Duration::from_secs(5),
+            bounds: Default::default(),
         }
+    }
+    /// Override `Actor::MAX_OUTSTANDING` (deferred credits per instance,
+    /// capped at 65535) for every generation of this child.
+    pub fn max_outstanding(mut self, max: usize) -> Self {
+        self.bounds.max_outstanding = Some(max);
+        self
+    }
+    /// Override `Actor::MAX_NATIVE_JOBS` (blocking jobs running at once) for
+    /// every generation of this child.
+    pub fn max_native_jobs(mut self, max: usize) -> Self {
+        self.bounds.max_native_jobs = Some(max);
+        self
     }
     pub fn restart(mut self, restart: RestartMode) -> Self {
         self.restart = restart;
@@ -2023,6 +2037,7 @@ async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, core: Arc<C
             generation,
         };
         let factory = spec.factory.clone();
+        scope.set_bounds(spec.bounds);
         let attempt_scope = scope.clone();
         let construction = async move {
             if !attempt_scope.can_start() {

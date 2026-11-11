@@ -427,3 +427,30 @@ fn kill_stops_a_trapping_target_and_other_signals_are_trapped() {
     target.child_handle().shutdown();
     assert_eq!(join_within(&target, WAIT), ExitReason::Shutdown);
 }
+
+/// `in_actor` runs a closure in one of the actor's turns, after the messages
+/// sent before it, with the state and the `Context`.
+#[test]
+fn native_in_actor_runs_a_closure_in_a_turn() {
+    struct Tally(u32);
+    #[actor]
+    impl Tally {
+        #[send_handler]
+        fn add(&mut self, msg: AddOne, _: &Context<Self>) {
+            self.0 += msg.0;
+        }
+    }
+    struct AddOne(u32);
+    impl Message for AddOne {
+        type Result = ();
+    }
+    let tally = Tally(0).start();
+    tally.send(AddOne(2)).unwrap();
+    let (seen, own) = spawned_test::threads::in_actor(&tally, |state, ctx| {
+        state.0 += 1;
+        (state.0, ctx.id())
+    });
+    assert_eq!((seen, own), (3, tally.id()));
+    tally.context().stop();
+    tally.join();
+}
