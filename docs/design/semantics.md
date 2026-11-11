@@ -804,6 +804,12 @@ remaining differences of the exit-signal design are listed in
 - Rank 18, byte credits, and rank 18a, per-actor memory limits.
 - Rank 19, propagated deadlines: queued work can expire before dispatch (R4).
 
+- 0.9, introspection (design in review, [introspection.md](introspection.md)):
+  a new section 13 (I1-I13: out-of-band reads, the status turn, the fenced
+  watchdog kill, listings, the console). L3 and L5 are unchanged (nothing
+  preempts a turn); R4 gains one exception: a status request whose caller
+  gave up before dispatch is not run.
+
 See the [ranked backlog](../../ROADMAP.md#ranked-backlog).
 
 [deferred_replies]: ../../concurrency/tests/deferred_replies.rs
