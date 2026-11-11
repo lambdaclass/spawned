@@ -921,7 +921,13 @@ one; no cutoff argument is claimed (Codex F10).
 
 | Configuration | Instance | Distinct states | Depth | Time |
 |---|---|---|---|---|
-RESULT_ROWS
+| `MCDynamicSupervisor` (per PR; safety, action properties; `Spec`) | 2 slots, every pair of restart types, two terminate calls (id, slot), `max_children` 1, budget 1, one window release, no backoff, exits `Normal`/`Panic`, start failures factory/`Normal`/timeout, ignore, cleanup failures | 9,237,075 | 30 | 2m13s |
+| `MCDynamicSupervisorBackoff` (per PR; safety) | as above with backoff | 10,599,610 | 36 | 2m43s |
+| `MCDynamicSupervisorZero` (per PR; safety) | as the first with budget 0 | 1,170,745 | 21 | 26 s |
+| `MCDynamicSupervisorThree` (per PR; safety) | 3 Permanent crashing children, `max_children` 2, shared budget 1, FIFO with three arrivals | 442,239 | 30 | 11 s |
+| `MCDynamicSupervisorCallers` (per PR; `StartAnswered`, `TerminateAnswered`, `FanoutCompletes` under `CallerSpec`) | 2 slots, `max_children` 2, one call, fan-out as separate steps | 3,413,878 | 29 | 8m48s |
+| `MCDynamicSupervisorLive` (per PR; `ClosedLeadsToDone`, `RecoveryProgress` under `Spec`) | 2 slots, one call, backoff | 531,760 | 34 | 55 s |
+| `MCDynamicSupervisorDeep` (weekly; safety) | budget 2, two releases, `max_children` 2, backoff, one call | 10,060,062 | 45 | 2m24s |
 
 Negative controls (`negative_checks.py`, run one at a time; each checks
 `TypeOK` and only the named property). Every invariant and liveness
