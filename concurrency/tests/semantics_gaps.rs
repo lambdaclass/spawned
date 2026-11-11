@@ -567,7 +567,11 @@ enum Turn {
 /// request succeeded exactly when its turn ran.
 fn check_turns(events: &[Turn], counter: usize, outcomes: &[(usize, Result<usize, ActorError>)]) {
     assert!(events.len() >= 4, "{events:?}");
-    assert_eq!(events[..2], [Turn::StartedBegin, Turn::StartedEnd], "L1: {events:?}");
+    assert_eq!(
+        events[..2],
+        [Turn::StartedBegin, Turn::StartedEnd],
+        "L1: {events:?}"
+    );
     let n = events.len();
     assert_eq!(
         events[n - 2..],
@@ -676,7 +680,11 @@ mod native_contract {
         let mut replies = Vec::new();
         for _ in 0..WINDOW / 2 {
             actor.send(Queued(Payload(drops.clone()))).expect("D3");
-            replies.push(actor.request_raw(Asked(Payload(drops.clone()))).expect("D3"));
+            replies.push(
+                actor
+                    .request_raw(Asked(Payload(drops.clone())))
+                    .expect("D3"),
+            );
         }
         release.send(()).unwrap();
         actor.join();
@@ -693,7 +701,11 @@ mod native_contract {
             );
         }
         assert_eq!(*seen.lock().unwrap(), ["hold", "stopped"], "D4");
-        assert_eq!(*send_in_stopped.lock().unwrap(), Some(true), "D3: send in stopped()");
+        assert_eq!(
+            *send_in_stopped.lock().unwrap(),
+            Some(true),
+            "D3: send in stopped()"
+        );
         assert_eq!(actor.wait_exit(), ExitReason::Normal);
         assert!(matches!(
             actor.send(Queued(Payload(drops.clone()))),
@@ -1008,7 +1020,11 @@ mod tasks_contract {
             let mut replies = Vec::new();
             for _ in 0..WINDOW / 2 {
                 actor.send(Queued(Payload(drops.clone()))).expect("D3");
-                replies.push(actor.request_raw(Asked(Payload(drops.clone()))).expect("D3"));
+                replies.push(
+                    actor
+                        .request_raw(Asked(Payload(drops.clone())))
+                        .expect("D3"),
+                );
             }
             release.send(()).unwrap();
             timeout(LIMIT, actor.join()).await.unwrap();
@@ -1019,10 +1035,7 @@ mod tasks_contract {
             );
             for mut reply in replies {
                 assert!(
-                    matches!(
-                        reply.try_recv(),
-                        Err(oneshot::error::TryRecvError::Closed)
-                    ),
+                    matches!(reply.try_recv(), Err(oneshot::error::TryRecvError::Closed)),
                     "D4/L7 {place:?}: a queued reply sender outlived join()"
                 );
             }
@@ -1332,7 +1345,11 @@ mod tasks_contract {
                     "L5 {place:?} {fault:?}: {reason:?}"
                 );
                 if fault != Fault::Stopped {
-                    assert_eq!(handled.load(Ordering::SeqCst), ran, "L5 {place:?} {fault:?}");
+                    assert_eq!(
+                        handled.load(Ordering::SeqCst),
+                        ran,
+                        "L5 {place:?} {fault:?}"
+                    );
                 }
                 assert_eq!(
                     stopped_ran.load(Ordering::SeqCst),
@@ -1377,10 +1394,14 @@ mod tasks_contract {
                 },
                 place,
             );
-            let replies: Vec<_> = (0..4).map(|i| actor.request_raw(Work(i)).unwrap()).collect();
+            let replies: Vec<_> = (0..4)
+                .map(|i| actor.request_raw(Work(i)).unwrap())
+                .collect();
             tokio::task::yield_now().await;
             assert!(
-                timeout(Duration::from_millis(20), actor.ready()).await.is_err(),
+                timeout(Duration::from_millis(20), actor.ready())
+                    .await
+                    .is_err(),
                 "L2 {place:?}: ready before started() returned"
             );
             assert_eq!(handled.load(Ordering::SeqCst), 0, "L2 {place:?}");
@@ -1439,9 +1460,15 @@ mod tasks_contract {
         let placement = Placement::new();
         let actor = placement.start(Timed, Place::AsyncGroup);
         let slot = Arc::new(Mutex::new(None));
-        actor.request_with_timeout(Arm(slot.clone()), LIMIT).await.unwrap();
+        actor
+            .request_with_timeout(Arm(slot.clone()), LIMIT)
+            .await
+            .unwrap();
         actor.child_handle().stop();
-        assert_eq!(timeout(LIMIT, actor.wait_exit()).await.unwrap(), ExitReason::Normal);
+        assert_eq!(
+            timeout(LIMIT, actor.wait_exit()).await.unwrap(),
+            ExitReason::Normal
+        );
         let deadline = tokio::time::Instant::now() + LIMIT;
         let thread = loop {
             if let Some(name) = slot.lock().unwrap().clone() {
@@ -1477,7 +1504,10 @@ mod tasks_contract {
     #[tokio::test(start_paused = true)]
     async fn default_request_timeout_is_five_seconds_from_first_poll() {
         let actor = Napper.start();
-        assert!(actor.request(Nap(Duration::from_millis(4_900))).await.is_ok());
+        assert!(actor
+            .request(Nap(Duration::from_millis(4_900)))
+            .await
+            .is_ok());
         assert!(matches!(
             actor.request(Nap(Duration::from_millis(5_100))).await,
             Err(ActorError::RequestTimeout)
@@ -1570,8 +1600,7 @@ mod supervision_contract {
     use super::*;
     use spawned_concurrency::{
         supervision::{
-            Backoff, ChildSpec, RestartMode, SupervisedChild, SupervisorConfig,
-            SupervisorStrategy,
+            Backoff, ChildSpec, RestartMode, SupervisedChild, SupervisorConfig, SupervisorStrategy,
         },
         system::ActorSystem,
         tasks::{send_after, Actor, ActorRef, ActorStart, Context, Handler},
@@ -1692,9 +1721,14 @@ mod supervision_contract {
         let handled = Arc::new(AtomicUsize::new(0));
         let calls = Arc::new(AtomicUsize::new(0));
         let mut tree = system
-            .supervisor(config(SupervisorStrategy::OneForOne, Duration::from_millis(1)))
+            .supervisor(config(
+                SupervisorStrategy::OneForOne,
+                Duration::from_millis(1),
+            ))
             .unwrap();
-        let child = tree.add(slot_spec("slot", &group, &handled, &calls)).unwrap();
+        let child = tree
+            .add(slot_spec("slot", &group, &handled, &calls))
+            .unwrap();
         let supervisor = tree.start().await.unwrap();
         let old = child.current().unwrap();
         let generation = child.snapshot().generation;
@@ -1719,7 +1753,11 @@ mod supervision_contract {
                 "V4: a queued request was answered"
             );
         }
-        assert_eq!(new.request(Next).await.unwrap(), 1, "V4: state or queue replayed");
+        assert_eq!(
+            new.request(Next).await.unwrap(),
+            1,
+            "V4: state or queue replayed"
+        );
         assert_eq!(handled.load(Ordering::SeqCst), 0, "V4: a queued Incr ran");
         assert!(matches!(old.send(Incr), Err(ActorError::ActorStopped)));
         assert_eq!(calls.load(Ordering::SeqCst), 2);
@@ -1762,13 +1800,19 @@ mod supervision_contract {
         let all = [&a, &b, &c];
         let first = crash_and_wait(&a, &all).await;
         let second = crash_and_wait(&c, &all).await;
-        assert!(first >= INITIAL && second >= INITIAL, "{first:?} {second:?}");
+        assert!(
+            first >= INITIAL && second >= INITIAL,
+            "{first:?} {second:?}"
+        );
         if cfg!(spawned_sim) {
             // Collateral delays would make the round about 3 x initial; a
             // collateral failure counted against c would make its first
             // own backoff 2 x initial.
             assert!(first < INITIAL * 3 / 2, "V6: collateral delay {first:?}");
-            assert!(second < INITIAL * 3 / 2, "V6: collateral backoff grew {second:?}");
+            assert!(
+                second < INITIAL * 3 / 2,
+                "V6: collateral backoff grew {second:?}"
+            );
         }
         assert!(supervisor.shutdown(LIMIT).await.complete);
         assert!(system.shutdown(LIMIT).await.complete);
@@ -1783,7 +1827,10 @@ mod supervision_contract {
         let handled = Arc::new(AtomicUsize::new(0));
         let calls: Vec<_> = (0..3).map(|_| Arc::new(AtomicUsize::new(0))).collect();
         let mut tree = system
-            .supervisor(config(SupervisorStrategy::OneForAll, Duration::from_millis(1)))
+            .supervisor(config(
+                SupervisorStrategy::OneForAll,
+                Duration::from_millis(1),
+            ))
             .unwrap();
         let children: Vec<_> = ["a", "b", "c"]
             .iter()
@@ -1822,9 +1869,14 @@ mod supervision_contract {
         let handled = Arc::new(AtomicUsize::new(0));
         let calls = Arc::new(AtomicUsize::new(0));
         let mut tree = system
-            .supervisor(config(SupervisorStrategy::OneForOne, Duration::from_millis(1)))
+            .supervisor(config(
+                SupervisorStrategy::OneForOne,
+                Duration::from_millis(1),
+            ))
             .unwrap();
-        let child = tree.add(slot_spec("slow", &group, &handled, &calls)).unwrap();
+        let child = tree
+            .add(slot_spec("slow", &group, &handled, &calls))
+            .unwrap();
         let supervisor = tree.start().await.unwrap();
         let old = child.current().unwrap();
         let generation = child.snapshot().generation;
@@ -1839,7 +1891,10 @@ mod supervision_contract {
         if cfg!(spawned_sim) {
             assert!(latency < Duration::from_millis(100), "V9: {latency:?}");
         }
-        assert!(handled.load(Ordering::SeqCst) <= 1, "D4: backlog was drained");
+        assert!(
+            handled.load(Ordering::SeqCst) <= 1,
+            "D4: backlog was drained"
+        );
         assert!(supervisor.shutdown(LIMIT).await.complete);
         assert!(system.shutdown(LIMIT).await.complete);
     }
@@ -1929,8 +1984,16 @@ mod supervision_contract {
         let (registered, started) = result.lock().unwrap().expect("probe ran");
         assert!(!registered, "S1: registration admitted during shutdown");
         assert!(!started, "S1: actor admitted during shutdown");
-        assert_eq!(fired.load(Ordering::SeqCst), 0, "S1: timer fired during shutdown");
-        assert_eq!(downs.load(Ordering::SeqCst), 0, "S1: monitor live during shutdown");
+        assert_eq!(
+            fired.load(Ordering::SeqCst),
+            0,
+            "S1: timer fired during shutdown"
+        );
+        assert_eq!(
+            downs.load(Ordering::SeqCst),
+            0,
+            "S1: monitor live during shutdown"
+        );
         assert!(spawned_concurrency::registry::whereis::<ActorRef<Late>>(
             "semantics-gaps-late-name"
         )
@@ -1977,7 +2040,10 @@ mod supervision_contract {
         drop(group);
         let began = Instant::now();
         drop(system);
-        assert!(began.elapsed() < Duration::from_millis(100), "S3: drop blocked");
+        assert!(
+            began.elapsed() < Duration::from_millis(100),
+            "S3: drop blocked"
+        );
         timeout(LIMIT, stopping_rx).await.unwrap().unwrap();
         sleep(Duration::from_secs(4)).await;
         if cfg!(spawned_sim) {

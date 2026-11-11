@@ -240,14 +240,21 @@ async fn turns_body() {
     // L7: join() returned, so stopped() has completed and new work is refused.
     let events = snapshot(&events);
     assert_eq!(events.last(), Some(&Turn::StoppedEnd), "L7: {events:?}");
-    assert!(matches!(actor.send(Work(99)), Err(ActorError::ActorStopped)));
+    assert!(matches!(
+        actor.send(Work(99)),
+        Err(ActorError::ActorStopped)
+    ));
     assert!(matches!(
         actor.request_with_timeout(Work(99), LIMIT).await,
         Err(ActorError::ActorStopped)
     ));
 
     // L1/M1: started, then whole non-overlapping turns, then stopped.
-    assert_eq!(events[..2], [Turn::StartedBegin, Turn::StartedEnd], "L1: {events:?}");
+    assert_eq!(
+        events[..2],
+        [Turn::StartedBegin, Turn::StartedEnd],
+        "L1: {events:?}"
+    );
     let body = &events[2..events.len() - 2];
     assert_eq!(
         events[events.len() - 2..],
@@ -275,7 +282,10 @@ async fn turns_body() {
             }
             Ok(None) => {}
             Err(ActorError::ActorStopped) => {
-                assert!(!handled.contains(&id), "R1: ran but caller got ActorStopped");
+                assert!(
+                    !handled.contains(&id),
+                    "R1: ran but caller got ActorStopped"
+                );
             }
             Err(other) => panic!("R1: unexpected outcome {other:?} for {id}"),
         }
