@@ -591,7 +591,10 @@ mod caller_gone_vs_shortening_tasks {
     struct Delegator {
         job: Option<JobHandle>,
     }
-    impl Actor for Delegator {}
+    impl Actor for Delegator {
+        // Two blocking jobs at once (the default is 1 on one CPU).
+        const MAX_NATIVE_JOBS: Option<usize> = Some(2);
+    }
     struct Ask;
     impl Message for Ask {
         type Result = (bool, bool);
@@ -721,7 +724,10 @@ mod caller_gone_vs_shortening_threads {
     struct Delegator {
         job: Option<JobHandle>,
     }
-    impl Actor for Delegator {}
+    impl Actor for Delegator {
+        // Two blocking jobs at once (the default is 1 on one CPU).
+        const MAX_NATIVE_JOBS: Option<usize> = Some(2);
+    }
     struct Ask;
     impl Message for Ask {
         type Result = (bool, bool);

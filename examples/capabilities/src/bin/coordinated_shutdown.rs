@@ -31,6 +31,11 @@ struct Peers {
     stops: Stops,
 }
 impl Actor for Peers {
+    // The supervisor's shutdown is its exit signal (as in OTP): trapping exits
+    // makes it end through `stopped()`, where this cleanup runs.
+    async fn started(&mut self, ctx: &Context<Self>) {
+        ctx.trap_exit(true);
+    }
     async fn stopped(&mut self, _: &Context<Self>) {
         self.stops.lock().unwrap().push("peers");
     }
@@ -61,6 +66,11 @@ struct Importer {
     stops: Stops,
 }
 impl Actor for Importer {
+    // The supervisor's shutdown is its exit signal (as in OTP): trapping exits
+    // makes it end through `stopped()`, where this cleanup runs.
+    async fn started(&mut self, ctx: &Context<Self>) {
+        ctx.trap_exit(true);
+    }
     async fn stopped(&mut self, _: &Context<Self>) {
         self.stops.lock().unwrap().push("importer");
     }
