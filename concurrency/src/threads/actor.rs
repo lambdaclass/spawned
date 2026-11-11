@@ -2027,15 +2027,28 @@ mod idle_stop_regression {
         let (_, completion_rx) = spawned_rt::sync::watch::channel(None);
         let monitors = Arc::new(Mutex::new(Some(HashMap::new())));
         let events = Arc::new(Mutex::new(Vec::new()));
+        let (id, trap, request) = (
+            ActorId::next(),
+            new_trap_exit_flag(),
+            new_linked_exit_reason(),
+        );
         let ctx = Context {
-            id: ActorId::next(),
+            id,
             sender: tx.clone(),
             cancellation_token: token.clone(),
             completion: completion_rx,
             monitors: monitors.clone(),
-            trap_exit: new_trap_exit_flag(),
+            trap_exit: trap.clone(),
             links: new_link_table(),
-            linked_reason: new_linked_exit_reason(),
+            linked_reason: request.clone(),
+            signal: signal_target::<_>(
+                id,
+                None,
+                &tx,
+                trap.clone(),
+                request.clone(),
+                token.clone(),
+            ),
             mailbox: crate::instrumentation::Mailbox::default(),
             replies: Registry::new(ActorId::next(), DEFAULT_MAX_OUTSTANDING),
             jobs: Arc::new(crate::reply::jobs::JobSet::new(ActorId::next(), 1)),
@@ -2077,7 +2090,8 @@ mod idle_stop_regression {
         .unwrap();
         token.cancel();
         release.wait();
-        assert_eq!(actor.join().unwrap(), ExitReason::Normal);
+        actor.join().unwrap();
+        assert_eq!(link::lock_request(&request).reason(), None, "a plain stop request");
         assert_eq!(
             count.load(Ordering::SeqCst),
             0,
@@ -2157,9 +2171,17 @@ mod stop_wakeup_regression {
             cancellation_token: token.clone(),
             completion,
             monitors: Arc::new(Mutex::new(Some(HashMap::new()))),
-            trap_exit: new_trap_exit_flag(),
+            trap_exit: trap.clone(),
             links: new_link_table(),
-            linked_reason: new_linked_exit_reason(),
+            linked_reason: request.clone(),
+            signal: signal_target::<_>(
+                id,
+                None,
+                &tx,
+                trap.clone(),
+                request.clone(),
+                token.clone(),
+            ),
             mailbox: crate::instrumentation::Mailbox::default(),
             replies: Registry::new(ActorId::next(), DEFAULT_MAX_OUTSTANDING),
             jobs: Arc::new(crate::reply::jobs::JobSet::new(ActorId::next(), 1)),
@@ -2185,7 +2207,8 @@ mod stop_wakeup_regression {
         stopped
             .recv_timeout(Duration::from_secs(2))
             .expect("cancel did not wake recv");
-        assert_eq!(actor.join().unwrap(), ExitReason::Normal);
+        actor.join().unwrap();
+        assert_eq!(link::lock_request(&request).reason(), None, "a plain stop request");
     }
 
     struct Crash;

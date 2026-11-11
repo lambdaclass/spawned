@@ -24,7 +24,7 @@ fn runtime() -> tokio::runtime::Runtime {
 }
 
 #[test]
-fn linking_in_post_drain_pre_completion_window_delivers_exit() {
+fn linking_between_death_point_and_publication_delivers_noproc() {
     let rt = runtime();
     let events = Arc::new(Mutex::new(Vec::new()));
     let observer = {
@@ -35,17 +35,18 @@ fn linking_in_post_drain_pre_completion_window_delivers_exit() {
     let peer_id = ActorId::next();
     let peer_links = link::new_link_table();
     let (_completion_tx, completion_rx) = spawned_rt::tasks::watch::channel(None);
-    // This is the actual state between target propagation and publication.
-    let reason = ExitReason::Panic("closing before completion".into());
-    link::propagate_exit(peer_id, &peer_links, &reason);
-    let peer = ChildHandle::from_tasks(
-        peer_id,
-        spawned_rt::tasks::CancellationToken::new(),
-        completion_rx,
-        link::new_trap_exit_flag(),
+    // This is the actual state between the death point D and publication:
+    // a registration after D reports NoProc, not the real reason (E4).
+    let real = ExitReason::Panic("closing before completion".into());
+    link::propagate_exit(peer_id, &peer_links, &real);
+    let reason = ExitReason::NoProc;
+    let peer = ChildHandle::new(
+        crate::child_handle::tests::test_target(
+            peer_id,
+            spawned_rt::threads::CancellationToken::new(),
+        ),
+        crate::child_handle::Completion::Tasks(completion_rx),
         peer_links,
-        link::new_linked_exit_reason(),
-        Arc::new(|_| Ok(())),
     );
     observer.context().link(&peer);
     let delivered = rt.block_on(async {
@@ -109,7 +110,7 @@ fn never_polled_actor_propagates_runtime_shutdown_to_peer() {
     survivor.block_on(peer.wait_exit());
     assert_eq!(
         result,
-        Ok(ExitReason::Kill),
+        Ok(ExitReason::Killed),
         "aborted actor failed to signal its live peer"
     );
 }
@@ -158,7 +159,7 @@ fn polled_actor_propagates_runtime_shutdown_to_peer() {
         .block_on(async { tokio::time::timeout(Duration::from_secs(1), peer.wait_exit()).await });
     peer.child_handle().stop();
     survivor.block_on(peer.wait_exit());
-    assert_eq!(result, Ok(ExitReason::Kill));
+    assert_eq!(result, Ok(ExitReason::Killed));
 }
 
 struct MonitorObserver(Option<spawned_rt::tasks::oneshot::Sender<crate::Down>>);
@@ -206,7 +207,7 @@ fn never_polled_actor_notifies_monitor_on_runtime_shutdown() {
         survivor.block_on(async { tokio::time::timeout(Duration::from_secs(1), rx).await });
     observer.child_handle().stop();
     survivor.block_on(observer.wait_exit());
-    assert_eq!(result.unwrap().unwrap().reason, ExitReason::Kill);
+    assert_eq!(result.unwrap().unwrap().reason, ExitReason::Killed);
 }
 
 struct Stop;
@@ -250,8 +251,12 @@ impl crate::tasks::Handler<Stop> for Stopping {
         reply.reply(());
     }
 }
+/// Inverted in v0.8 (decision 8, as OTP: a process in `terminate` dies with
+/// a later exit signal): the abnormal link notice that arrives while
+/// `stopped()` runs replaces the requested `Normal`; the running `stopped()`
+/// still finishes, and the linked survivor receives the new reason.
 #[test]
-fn late_link_failure_cannot_relabel_an_already_requested_normal_stop() {
+fn late_link_failure_relabels_an_already_requested_normal_stop() {
     let rt = runtime();
     let (entered_tx, entered_rx) = spawned_rt::tasks::oneshot::channel();
     let (release_tx, release_rx) = spawned_rt::tasks::oneshot::channel();
@@ -277,10 +282,12 @@ fn late_link_failure_cannot_relabel_an_already_requested_normal_stop() {
         ExitReason::Panic(_)
     ));
     release_tx.send(()).unwrap();
-    assert_eq!(rt.block_on(stopping.wait_exit()), ExitReason::Normal);
-    assert!(survivor.child_handle().is_alive());
-    survivor.child_handle().stop();
-    rt.block_on(survivor.wait_exit());
+    let relabelled = rt.block_on(stopping.wait_exit());
+    assert!(
+        matches!(&relabelled, ExitReason::Panic(m) if m.contains("linked failure")),
+        "got {relabelled:?}"
+    );
+    assert_eq!(rt.block_on(survivor.wait_exit()), relabelled);
 }
 
 struct LinkedAtStart {
@@ -379,7 +386,7 @@ fn never_polled_monitor_owner_releases_waiter_and_refuses_late_registration() {
     );
     target.child_handle().stop();
     survivor.block_on(target.wait_exit());
-    assert_eq!(owner.child_handle().exit_reason(), Some(ExitReason::Kill));
+    assert_eq!(owner.child_handle().exit_reason(), Some(ExitReason::Killed));
 }
 
 #[test]
@@ -422,7 +429,7 @@ fn linked_runtime_abort_is_trappable() {
         *events.lock().unwrap(),
         vec![Exit {
             from: target.id(),
-            reason: ExitReason::Kill
+            reason: ExitReason::Killed
         }]
     );
     peer.child_handle().stop();
@@ -473,7 +480,7 @@ fn never_polled_completion_waits_for_actor_payload_destruction() {
         before, None,
         "completion published while the actor's destructor was still running"
     );
-    assert_eq!(actor.child_handle().exit_reason(), Some(ExitReason::Kill));
+    assert_eq!(actor.child_handle().exit_reason(), Some(ExitReason::Killed));
 }
 
 #[test]
@@ -522,7 +529,7 @@ fn linked_runtime_abort_cancels_an_idle_threads_actor() {
         let _ = peer.send(Ping); // Wake cleanup even if the cancellation callback regresses.
     }
     peer.child_handle().wait_exit_blocking();
-    assert_eq!(result, Ok(ExitReason::Kill));
+    assert_eq!(result, Ok(ExitReason::Killed));
 }
 
 #[test]
@@ -575,5 +582,5 @@ fn dropping_runtime_with_large_polled_link_cycle_reclaims_every_actor() {
     assert_eq!(dropped.load(Ordering::SeqCst), actors.len());
     assert!(actors
         .iter()
-        .all(|a| a.child_handle().exit_reason() == Some(ExitReason::Kill)));
+        .all(|a| a.child_handle().exit_reason() == Some(ExitReason::Killed)));
 }

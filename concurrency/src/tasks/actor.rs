@@ -1654,6 +1654,49 @@ async fn run_actor_lifecycle<A: Actor>(
     }
 }
 
+/// A context and its cleanup without spawning, for run-loop unit tests.
+#[cfg(test)]
+fn test_context<A: Actor>(
+    tx: &mpsc::Sender<Box<dyn Envelope<A> + Send>>,
+    token: &CancellationToken,
+) -> (Context<A>, crate::actor_cleanup::ActorCleanup<fn()>) {
+    let id = ActorId::next();
+    let (completion_tx, completion_rx) = watch::channel(None);
+    let trap = new_trap_exit_flag();
+    let links = new_link_table();
+    let request = new_linked_exit_reason();
+    let monitors: MonitorTable = Arc::new(Mutex::new(Some(HashMap::new())));
+    let signal = signal_target::<A>(id, None, tx, trap.clone(), request.clone(), token.clone());
+    let ctx = Context {
+        shared: Arc::new(ActorShared {
+            id,
+            sender: tx.clone(),
+            cancellation_token: token.clone(),
+            completion_rx,
+            monitors: monitors.clone(),
+            trap_exit: trap,
+            links: links.clone(),
+            linked_reason: request.clone(),
+            signal,
+            mailbox: crate::instrumentation::Mailbox::default(),
+            managed: None,
+            replies: Registry::new(id, DEFAULT_MAX_OUTSTANDING),
+            jobs: Arc::new(crate::reply::jobs::JobSet::new(id, 1)),
+            cleaned: watch::channel(false).1,
+        }),
+    };
+    let noop: fn() = || {};
+    let cleanup = crate::actor_cleanup::ActorCleanup::new(
+        id,
+        links,
+        request,
+        monitors,
+        completion_tx,
+        noop,
+    );
+    (ctx, cleanup)
+}
+
 // ---------------------------------------------------------------------------
 // Actor::start
 // ---------------------------------------------------------------------------
@@ -3484,29 +3527,12 @@ mod turn_regressions {
         rt::Runtime::new().unwrap().block_on(async {
             let (tx, rx) = mpsc::channel();
             let token = CancellationToken::new();
-            let (_, completion_rx) = watch::channel(None);
-            let ctx = Context {
-                shared: Arc::new(ActorShared {
-                    id: ActorId::next(),
-                    sender: tx.clone(),
-                    cancellation_token: token.clone(),
-                    completion_rx,
-                    monitors: Arc::new(Mutex::new(Some(HashMap::new()))),
-                    trap_exit: new_trap_exit_flag(),
-                    links: new_link_table(),
-                    linked_reason: new_linked_exit_reason(),
-                    mailbox: crate::instrumentation::Mailbox::default(),
-                    managed: None,
-                    replies: Registry::new(ActorId::next(), DEFAULT_MAX_OUTSTANDING),
-                    jobs: Arc::new(crate::reply::jobs::JobSet::new(ActorId::next(), 1)),
-                    cleaned: watch::channel(false).1,
-                }),
-            };
+            let (ctx, mut cleanup) = test_context(&tx, &token);
             let count = Arc::new(AtomicUsize::new(0));
             for _ in 0..2 {
                 tx.send(Box::new(MessageEnvelope {
                     msg: Inc,
-                    tx: None,
+                    slot: SlotHandle::detached(),
                     #[cfg(feature = "metrics")]
                     observation: None,
                 }) as Box<dyn Envelope<Count> + Send>)
@@ -3524,12 +3550,14 @@ mod turn_regressions {
                 ctx,
                 rx,
                 token.clone(),
+                &mut cleanup,
                 Some(turn),
             ));
             assert!(futures::poll!(job.as_mut()).is_pending());
             assert_eq!(count.load(Ordering::SeqCst), 1);
             token.cancel();
-            assert_eq!(job.await, Ok(ExitReason::Normal));
+            job.await;
+            assert_eq!(cleanup.die(), ExitReason::Normal);
             assert_eq!(count.load(Ordering::SeqCst), 1);
         });
     }
@@ -3561,30 +3589,14 @@ mod idle_stop_regression {
         rt::Runtime::new().unwrap().block_on(async {
             let (tx, rx) = mpsc::channel();
             let token = CancellationToken::new();
-            let (_, completion_rx) = watch::channel(None);
-            let ctx = Context {
-                shared: Arc::new(ActorShared {
-                    id: ActorId::next(),
-                    sender: tx.clone(),
-                    cancellation_token: token.clone(),
-                    completion_rx,
-                    monitors: Arc::new(Mutex::new(Some(HashMap::new()))),
-                    trap_exit: new_trap_exit_flag(),
-                    links: new_link_table(),
-                    linked_reason: new_linked_exit_reason(),
-                    mailbox: crate::instrumentation::Mailbox::default(),
-                    managed: None,
-                    replies: Registry::new(ActorId::next(), DEFAULT_MAX_OUTSTANDING),
-                    jobs: Arc::new(crate::reply::jobs::JobSet::new(ActorId::next(), 1)),
-                    cleaned: watch::channel(false).1,
-                }),
-            };
+            let (ctx, mut cleanup) = test_context(&tx, &token);
             let count = Arc::new(AtomicUsize::new(0));
             let mut actor = Box::pin(run_actor(
                 Counter(count.clone()),
                 ctx,
                 rx,
                 token.clone(),
+                &mut cleanup,
                 #[cfg(feature = "backend-experiments")]
                 None,
             ));
@@ -3600,7 +3612,8 @@ mod idle_stop_regression {
             }) as Box<dyn Envelope<Counter> + Send>)
                 .unwrap();
             token.cancel();
-            assert_eq!(actor.await, Ok(ExitReason::Normal));
+            actor.await;
+            assert_eq!(cleanup.die(), ExitReason::Normal);
             assert_eq!(
                 count.load(Ordering::SeqCst),
                 0,

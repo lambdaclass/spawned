@@ -365,7 +365,7 @@ impl std::hash::Hash for ChildHandle {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::link::{new_link_table, new_linked_exit_reason, new_trap_exit_flag};
 
