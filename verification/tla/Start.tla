@@ -62,7 +62,9 @@ Outcomes == {"ready", "continue", "panic", "stopN", "stopS", "error", "ignore"}
 Alive(p) == p \in {"run", "exiting"}          \* P's mailbox still admits
 
 VARIABLES
-    pst, pplace, ptrap, pwhy, pcause, gopen, ownerOpen, gdone, sfired, pn,
+    pst, pplace, ptrap, pwhy, pcause, gopen, ownerOpen, gdone, sfired, pn, pwork, cwork,
+    pwork,    \* P's owned work (helpers, jobs) finished after its publication
+    cwork,    \* [Kids -> that child's owned work finished after its publication]
     kind, expl, wname,
     phase, place, admOpen, owned, ownOpenAt, readyOpen, edgeWhenRun,
     edge, mon, linkEver, monEver,
@@ -73,7 +75,7 @@ VARIABLES
     reg, seen, blamed, slots,
     exitN, downN, exitR, downR, obN, obR, dlvOk
 
-pV == <<pst, pplace, ptrap, pwhy, pcause, gopen, ownerOpen, gdone, sfired, pn>>
+pV == <<pst, pplace, ptrap, pwhy, pcause, gopen, ownerOpen, gdone, sfired, pn, pwork, cwork>>
 oV == <<kind, expl, wname>>
 sV == <<phase, place, admOpen, owned, ownOpenAt, readyOpen, edgeWhenRun>>
 eV == <<edge, mon, linkEver, monEver>>
@@ -106,6 +108,7 @@ TypeOK ==
     /\ ptrap \in BOOLEAN /\ pwhy \in Reasons \cup {None}
     /\ pcause \in Kids \cup {None} /\ gopen \in BOOLEAN /\ ownerOpen \in BOOLEAN
     /\ gdone \in BOOLEAN /\ sfired \in BOOLEAN /\ pn \in [Kids -> Reasons \cup {None}]
+    /\ pwork \in BOOLEAN /\ cwork \in [Kids -> BOOLEAN]
     /\ kind \in [Kids -> {"spawn", "start", "link", "monitor", None}]
     /\ expl \in [Kids -> {"G", "G2", "U", "same", None}]
     /\ wname \in [Kids -> BOOLEAN]
@@ -142,7 +145,7 @@ F(v) == [c \in Kids |-> v]
 Init ==
     /\ pst = "run" /\ pplace \in ParentPlaces /\ ptrap \in BOOLEAN
     /\ pwhy = None /\ pcause = None /\ gopen = TRUE /\ ownerOpen = TRUE
-    /\ gdone = FALSE /\ sfired = FALSE /\ pn = F(None)
+    /\ gdone = FALSE /\ sfired = FALSE /\ pn = F(None) /\ pwork = FALSE /\ cwork = F(FALSE)
     /\ kind = F(None) /\ expl = F(None) /\ wname = F(FALSE)
     /\ phase = F("idle") /\ place = F(None) /\ admOpen = F(FALSE)
     /\ owned = F(FALSE) /\ ownOpenAt = F(FALSE) /\ readyOpen = F(FALSE)
@@ -518,7 +521,7 @@ Deliver(c) ==
           THEN /\ pst' = "exiting" /\ pwhy' = r /\ pcause' = c
                /\ UNCHANGED <<exitN, exitR, downN, downR>>
           ELSE DeliverLink(c, r) /\ UNCHANGED <<downN, downR>>
-    /\ UNCHANGED <<pplace, ptrap, gopen, ownerOpen, gdone, sfired, pn, oV, sV, eV, xV,
+    /\ UNCHANGED <<pplace, ptrap, gopen, ownerOpen, gdone, sfired, pn, pwork, cwork, oV, sV, eV, xV,
                    cV, nV, mV, rV, obR>>
 
 LateRelease(c) ==
@@ -606,13 +609,13 @@ Abandon(c) ==
 PExit ==
     /\ ParentCanExit /\ pst = "run"
     /\ \E r \in {"Normal", "Panic"} : pst' = "exiting" /\ pwhy' = r
-    /\ UNCHANGED <<pplace, ptrap, pcause, gopen, ownerOpen, gdone, sfired, pn,
+    /\ UNCHANGED <<pplace, ptrap, pcause, gopen, ownerOpen, gdone, sfired, pn, pwork, cwork,
                    oV, sV, eV, xV, cV, nV, mV, rV, dV>>
 
 OwnerClose ==
     /\ OwnerCloseEnabled /\ ownerOpen
     /\ ownerOpen' = FALSE
-    /\ UNCHANGED <<pst, pplace, ptrap, pwhy, pcause, gopen, gdone, sfired, pn,
+    /\ UNCHANGED <<pst, pplace, ptrap, pwhy, pcause, gopen, gdone, sfired, pn, pwork, cwork,
                    oV, sV, eV, xV, cV, nV, mV, rV, dV>>
 
 \* P's D: its link notices are taken; edges and monitors close.
@@ -622,7 +625,7 @@ PDie ==
     /\ pn' = [c \in Kids |-> IF edge[c] THEN pwhy ELSE pn[c]]
     /\ edge' = F(FALSE)
     /\ mon' = F(FALSE)
-    /\ UNCHANGED <<pplace, ptrap, pwhy, pcause, gopen, ownerOpen, gdone, sfired,
+    /\ UNCHANGED <<pplace, ptrap, pwhy, pcause, gopen, ownerOpen, gdone, sfired, pwork, cwork,
                    oV, sV, linkEver, monEver, xV, cV, nV, mV, rV, dV>>
 
 \* P's publication: the parent exits reach the linked children, and the
@@ -642,7 +645,7 @@ PPublish ==
           /\ pexAbn' = [c \in Kids |-> pexAbn[c] \/ (rr(c) \in NonNormal
                                         /\ phase[c] \in {"starting", "ready"})]
     /\ pn' = F(None)
-    /\ UNCHANGED <<pplace, ptrap, pwhy, pcause, gopen, ownerOpen, gdone, sfired,
+    /\ UNCHANGED <<pplace, ptrap, pwhy, pcause, gopen, ownerOpen, gdone, sfired, pwork, cwork,
                    oV, sV, eV, began, killed, skill, xkill, astop, ctrap, cV, nV, mV, rV, dV>>
 
 \* S8: from P's exit begin, the scope deadline (a timer, not assumed fair)
@@ -655,24 +658,40 @@ ScopeDeadline ==
                                      ELSE {"starting", "ready", "exiting"}))]
     /\ why' = [c \in Kids |-> IF owned[c] /\ phase[c] = "exiting" /\ Fault \notin {"NoScopeKill", "SkipEscalation"}
                              THEN "Killed" ELSE why[c]]
-    /\ UNCHANGED <<pst, pplace, ptrap, pwhy, pcause, gopen, ownerOpen, gdone, pn,
+    /\ UNCHANGED <<pst, pplace, ptrap, pwhy, pcause, gopen, ownerOpen, gdone, pn, pwork, cwork,
                    oV, sV, eV, began, killed, xkill, astop, pex, qpex, pexAbn, ctrap,
                    commit, commit0, initR, wait, res, resR, pend, dl, nV, mV, rV, dV>>
 
-\* P's generation is done: P published and every owned child published.
+\* Owned work (helpers, jobs) is joined after publication (0.8 scope
+\* completion); not assumed instantaneous.
+WorkDoneP ==
+    /\ pst = "published" /\ ~pwork
+    /\ pwork' = TRUE
+    /\ UNCHANGED <<pst, pplace, ptrap, pwhy, pcause, gopen, ownerOpen, gdone, sfired, pn, cwork,
+                   oV, sV, eV, xV, cV, nV, mV, rV, dV>>
+WorkDoneC(c) ==
+    /\ phase[c] = "published" /\ ~cwork[c]
+    /\ cwork' = [cwork EXCEPT ![c] = TRUE]
+    /\ UNCHANGED <<pst, pplace, ptrap, pwhy, pcause, gopen, ownerOpen, gdone, sfired, pn, pwork,
+                   oV, sV, eV, xV, cV, nV, mV, rV, dV>>
+
+\* P's generation is done: P and every owned member published, and their
+\* owned work finished (the scope's join, design 4.1).
 GenDone ==
     /\ ScopeEnabled /\ pplace = "G" /\ ~gdone
     /\ pst = "published" \/ (Fault = "GenDoneAtParentD" /\ pst = "dead")
-    /\ \A c \in Kids : owned[c] => phase[c] \in {"published", "aborted"}
+    /\ pwork \/ Fault \in {"GenDoneIgnoresWork", "GenDoneAtParentD"}
+    /\ \A c \in Kids : owned[c] => phase[c] = "aborted"
+                                   \/ (phase[c] = "published" /\ (cwork[c] \/ Fault = "GenDoneIgnoresWork"))
                                    \/ Fault = "EarlyGenDone"
     /\ gdone' = TRUE
-    /\ UNCHANGED <<pst, pplace, ptrap, pwhy, pcause, gopen, ownerOpen, sfired, pn,
+    /\ UNCHANGED <<pst, pplace, ptrap, pwhy, pcause, gopen, ownerOpen, sfired, pn, pwork, cwork,
                    oV, sV, eV, xV, cV, nV, mV, rV, dV>>
 
 GClose ==
     /\ CloseEnabled /\ gopen
     /\ gopen' = FALSE
-    /\ UNCHANGED <<pst, pplace, ptrap, pwhy, pcause, ownerOpen, gdone, sfired, pn,
+    /\ UNCHANGED <<pst, pplace, ptrap, pwhy, pcause, ownerOpen, gdone, sfired, pn, pwork, cwork,
                    oV, sV, eV, xV, cV, nV, mV, rV, dV>>
 
 ChildStep(c) ==
@@ -682,11 +701,11 @@ ChildStep(c) ==
     \/ Send(c) \/ RunContinue(c) \/ Handle(c) \/ HandleQueuedExit(c)
     \/ ApplyParentExit(c) \/ ReadyExit(c) \/ KillReady(c)
     \/ ChildUnlink(c) \/ Die(c) \/ ReleaseName(c) \/ ReleaseSlot(c) \/ Publish(c) \/ Deliver(c)
-    \/ LateRelease(c)
+    \/ LateRelease(c) \/ WorkDoneC(c)
     \/ Timeout(c) \/ CleanupDeadline(c) \/ AckOk(c) \/ AckFail(c) \/ Abandon(c)
 
 Next == (\E c \in Kids : ChildStep(c)) \/ Lookup \/ PExit \/ OwnerClose \/ PDie
-        \/ PPublish \/ ScopeDeadline \/ GenDone \/ GClose
+        \/ PPublish \/ WorkDoneP \/ ScopeDeadline \/ GenDone \/ GClose
 
 \* Liveness assumes the child's own steps, its death and publication, the
 \* waiter's answer, and P's D and publication complete. The scope deadline
@@ -694,11 +713,11 @@ Next == (\E c \in Kids : ChildStep(c)) \/ Lookup \/ PExit \/ OwnerClose \/ PDie
 Progress(c) ==
     \/ StartedBegin(c) \/ KilledEarly(c) \/ StartedEnd(c) \/ RunContinue(c)
     \/ HandleQueuedExit(c) \/ ApplyParentExit(c) \/ KillReady(c)
-    \/ Die(c) \/ ReleaseName(c) \/ ReleaseSlot(c) \/ Publish(c) \/ Deliver(c) \/ AckOk(c)
+    \/ Die(c) \/ ReleaseName(c) \/ ReleaseSlot(c) \/ Publish(c) \/ Deliver(c) \/ AckOk(c) \/ WorkDoneC(c)
 Fairness ==
     /\ \A c \in Kids : /\ WF_vars(Progress(c)) /\ WF_vars(Commit(c))
                        /\ SF_vars(AckFail(c))
-    /\ WF_vars(PDie) /\ WF_vars(PPublish) /\ WF_vars(GenDone)
+    /\ WF_vars(PDie) /\ WF_vars(PPublish) /\ WF_vars(WorkDoneP) /\ WF_vars(GenDone)
 
 Spec == Init /\ [][Next]_vars
 LiveSpec == Spec /\ Fairness
@@ -819,8 +838,8 @@ AbandonedNoticeDelivered ==
 ContinueFirst == \A c \in Kids : ~early[c]
 
 GenDoneMeansOwnedDone ==
-    gdone => /\ pst = "published"
-             /\ \A c \in Kids : owned[c] => phase[c] \in {"published", "aborted"}
+    gdone => /\ pst = "published" /\ pwork
+             /\ \A c \in Kids : owned[c] => phase[c] = "aborted" \/ (phase[c] = "published" /\ cwork[c])
 
 \* When the scope deadline fires, every live owned child is killed.
 DeadlineKillsAllOwned ==

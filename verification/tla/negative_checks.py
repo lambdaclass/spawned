@@ -276,6 +276,7 @@ START_CONTROLS = [
     ("MCStartContinue", "ContinueQueued", "ContinueFirst"),
     ("MCStartScope", "EarlyGenDone", "GenDoneMeansOwnedDone"),
     ("MCStartScope", "GenDoneAtParentD", "GenDoneMeansOwnedDone"),
+    ("MCStartScope", "GenDoneIgnoresWork", "GenDoneMeansOwnedDone"),
     ("MCStartScope", "NoScopeKill", "DeadlineKillsAllOwned"),
     ("MCStartScope", "OwnerUnchecked", "OwnedOnlyWhileOwnerOpen"),
     ("MCStartScope", "ParentSlotAtD", "ParentSlotHeld"),

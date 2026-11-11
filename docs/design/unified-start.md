@@ -497,7 +497,10 @@ admitted to a group of the parent's `ActorSystem`.
    point too, not at D.
 4. **P's generation is done** (V3, the scope's join) only when P and every
    owned member are published and their owned work has finished. That is
-   0.8's scope completion: helpers and jobs joined, as for any scope.
+   0.8's scope completion: helpers and jobs joined after death (rank 11
+   joins jobs after D, bounded by the cleanup deadline), as for any scope.
+   The model represents that work explicitly (`WorkDoneP`, `WorkDoneC`), so
+   publication alone never completes a generation.
 
 The polite `Shutdown` is not OTP link semantics; a gen_server's linked worker
 survives a `normal` parent exit. It is the consequence of scope ownership, as
@@ -538,8 +541,10 @@ polite `Shutdown`, a scope deadline armed from P's exit begin that reaches
 exiting members, and the generation end. Properties and controls:
 
 - `OwnedOnlyWhileOwnerOpen`, control `OwnerUnchecked`;
-- `GenDoneMeansOwnedDone` (P published and every member published),
-  controls `EarlyGenDone` and `GenDoneAtParentD`;
+- `GenDoneMeansOwnedDone`: P published, every member published, and their
+  owned work (helpers, jobs) finished. Controls: `EarlyGenDone` (members
+  not published), `GenDoneAtParentD` (P only at its D) and
+  `GenDoneIgnoresWork` (owned work still running; round 3, Codex 3);
 - `DeadlineKillsAllOwned`, control `NoScopeKill`, which spares exiting
   members;
 - `ParentSlotHeld`, control `ParentSlotAtD`;
