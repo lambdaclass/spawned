@@ -242,7 +242,8 @@ Fz the scenario fuzzer's oracles (simulator, Async and async groups only),
 Model TLA+/Apalache/Kani.
 
 Totals: 50 guarantees. Before this audit 31 covered, 18 partial, 1 unchecked
-(D5, only a nightly `#[ignore]` stress test). After: 46 covered, 4 partial.
+(D5, only a nightly `#[ignore]` stress test). After: 46 covered, 4 partial;
+with the follow-up PR #255 (T4 threads clocks), 47 covered, 3 partial.
 Mutation checks on the new tests: removing the run loop's stop-before-receive
 check fails `sim_ordering::stop_discards_*` and `tasks_contract::stop_window_*`;
 giving collateral children their own backoff fails
@@ -271,15 +272,15 @@ giving collateral children their own backoff fails
 | L4 | `exit_signal_matrix`, `context_exit`, `panic_safety` | A B T N G TG | covered | owned by #240 |
 | L5 | `foreign_panics` (strict); `tasks_contract::panics_in_hooks_*` | A B T N G TG | covered (B, T unchecked) → covered | |
 | L6 | `mailbox_drop_panic` (5 placements x 1/2/256), `native_mailbox_drop`, lifecycle traces | A B T N G TG | covered | not simulated (subprocesses) |
-| L7 | `shutdown_publication`; `*_contract::stop_window_*`; `sim_ordering::stop_discards_*` | A B T N G TG, Sim | partial | outgoing monitors cancelled before publication |
+| L7 | `shutdown_publication`; `*_contract::stop_window_*`; `sim_ordering::stop_discards_*` | A B T N G TG, Sim | partial | outgoing monitors cancelled before publication (after #240) |
 | X1 | `actor_scenarios` monitor races; `exit_signal_matrix`; Fz | A B T N, Sim | covered | owned by #240 |
 | X2 | unit `demonitor_*`, `closed_monitor_table_*`; `leaks` | A N | covered | demonitor checks use a bounded window |
-| X3 | unit link tests; `exit_signal_matrix`; Fz | A N, Sim | covered | owned by #240; threads lacks the Normal and chain variants |
+| X3 | unit link tests; `exit_signal_matrix`; Fz | A N, Sim | covered | owned by #240; threads lacks the Normal and chain variants (after #240) |
 | X4 | `kill_links` | A N | covered | owned by #240 |
 | X5 | unit link tests; `link_regression_tests` | A N | covered | owned by #240 |
 | X6 | `link_regression_tests` | A | covered | owned by #240 |
 | X7 | `semantics_gaps::*::exit_and_down_follow_*`; `sim_ordering::exit_and_down_follow_the_last_message_*`; Fz | A B T N, Sim (PCT, DFS) | partial | a non-trapping linked stop after the current handler (exit signals, #240) |
-| V1 | `supervisor_policies` oracle; `Supervision!RestartFollowsPolicy` | G, Sim, Model | covered | `restart_modes_*` never sends a `Normal` exit (`supervisor_policies` does) |
+| V1 | `supervisor_policies` oracle; `supervision::restart_modes_*` (real `Normal`, `Shutdown` and panic exits); `Supervision!RestartFollowsPolicy`, `TemporaryStartsOnce` (`MCSupervisionTemporary`) | G, Sim, Model | covered | |
 | V2 | Cohorts invariants; `supervision_strategies`; `cohort_trace`; `supervision_contract::concurrent_failures_coalesce_*` | G, Sim, Model | covered | reverse stop order only via trace conformance |
 | V3 | `*!AtMostOneGeneration`; factory asserts no live generation; Fz | G TG, Sim, Model | covered | |
 | V4 | `*!PublishedIsLive`; `supervision_contract::queued_messages_are_not_replayed_*`; Fz | G, Sim, Model | partial → covered | |
@@ -297,7 +298,7 @@ giving collateral children their own backoff fails
 | T1 | `semantics_gaps::tasks::send_after_fires_once_*` (paused time); `resource_cleanup`; `cross_backend::timers_match` | A B T N G TG P | covered | |
 | T2 | `semantics_gaps::tasks::send_interval_is_fixed_delay_*` (paused time) | A | covered | threads by construction |
 | T3 | `semantics_gaps::tasks::timers_are_not_carried_*`; `tasks_contract::managed_timers_run_on_the_group_*` | G | partial → covered | `send_message_on` in threads |
-| T4 | paused-time tests and the simulator clock | A, Sim | partial | threads by construction |
+| T4 | paused-time tests and the simulator clock; `src/threads/timer_tests.rs::threads_send_*`; `supervision::native_restart_window_expires_on_the_monotonic_clock` | A N TG, Sim | partial → covered | |
 | P1 | `panic_safety`; `foreign_panics`; `mailbox_drop_panic`; failpoints | A B T N G TG | covered | not simulated |
 | P2 | `panic-abort` CI job; `foreign_panics::panicking_panic_hook_*` | A N | covered | no observer for `Down`/`Exit` |
 
@@ -311,10 +312,14 @@ benchmark scheduler's gate rather than readiness; L1 cited `cross_backend`,
 which records `stopped()` only for shutdown order; S1 cited a supervisor
 `max_children` test for `thread_group` capacity; the `Coordinator!*Step`
 properties live in `CoordinatorInd.tla` (Apalache); T1 named a threads-only
-test for tasks. `supervision::restart_modes_distinguish_normal_shutdown_and_panic`
-uses `shutdown()` for its "normal" branch; `Supervision!TemporaryStartsOnce`
-is vacuous in the per-PR `MCSupervision.cfg` (no Temporary child) and checked
-by the weekly deep configuration and `Cohorts`.
+test for tasks. Fixed in PR #255:
+`supervision::restart_modes_distinguish_normal_shutdown_and_panic` used
+`shutdown()` for its "normal" branch (it now stops with `Normal`, and fails
+if a Transient child restarts after `Normal`); `Supervision!TemporaryStartsOnce`
+was vacuous in the per-PR `MCSupervision.cfg` (no Temporary child), so the
+per-PR `MCSupervisionTemporary.cfg` (a Temporary and a Permanent child) now
+checks it, with a `negative_checks.py` mutation that restarts a Temporary
+child after a panic and must violate it.
 
 ```sh
 cargo test --locked -p spawned-concurrency --test semantics_gaps --test sim_ordering
