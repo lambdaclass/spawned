@@ -25,7 +25,9 @@
   `spawned_jobs_*` family (started, running, completed/panicked/deadline
   exceeded, cancelled while running, fenced, rejected at a bound, emits,
   unfinished at stop); `tests/metrics_deferred.rs` checks each is counted
-  once. `Handler::handle` takes a `PendingReply<'_, R>`
+  once. Simulator races (`tests/deferred_sim.rs`, PCT and bounded DFS):
+  reply vs expiry vs owner death vs caller drop, keyed replacement, emit vs
+  terminal and cancel. `Handler::handle` takes a `PendingReply<'_, R>`
   and returns `()`; `#[actor]` generates it, and `#[deferred_handler]` methods
   receive the obligation and may `defer()` it into a storable `ReplyTo<R>`
   (bounded by `Actor::MAX_OUTSTANDING`, `Overloaded` at the bound). Dropped

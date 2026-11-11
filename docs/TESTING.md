@@ -400,6 +400,20 @@ RUSTFLAGS="--cfg spawned_sim --cfg tokio_unstable" CARGO_TARGET_DIR=target/sim \
   cargo test -p spawned-concurrency --test supervision --test sim
 ```
 
+`deferred_sim` explores deferred-reply and job races with PCT (`d=3`) and
+bounded DFS (`bound=3`), 300 runs each: a stored token's reply against its
+deadline, the owner's stop and the caller dropping its receiver (the caller
+sees `Ok` exactly when the reply reports `Delivered`); keyed replacement
+against the old job's completion (no result of a replaced job after its
+replacement starts); emits against the terminal message and a cancel. Planted
+bugs (no cancel fence at dispatch; a late reply reported `Delivered`) are
+found within the first runs.
+
+```sh
+RUSTFLAGS="--cfg spawned_sim --cfg tokio_unstable" CARGO_TARGET_DIR=target/sim \
+  cargo test -p spawned-concurrency --test deferred_sim --test deferred_replies --test deferred_jobs
+```
+
 ### Exploration strategies (`sim::explore`)
 
 The random walk can be swapped for a systematic strategy with
