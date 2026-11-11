@@ -70,14 +70,14 @@ timed() {
 }
 
 layer_T() {
-    timed timeout 1800 cargo test -p spawned-concurrency --features failpoints --no-fail-fast
+    timed timeout 900 cargo test -p spawned-concurrency --features failpoints --no-fail-fast
     if grep -qE '^error(\[E[0-9]+\])?:' "$log" && ! grep -q '^test result' "$log"; then
         verdict=build; detail=""; return
     fi
     local failed
     failed=$(grep -E '^    [A-Za-z0-9_:]+$' "$log" | sed 's/^ *//' | sort -u)
     if [[ $status -eq 124 ]]; then
-        verdict=caught; detail="hang (killed after 1800 s)"
+        verdict=caught; detail="hang (killed after 900 s)"
     elif [[ $status -ne 0 ]]; then
         verdict=caught
         detail="$(echo "$failed" | grep -c .) failing: $(echo "$failed" | head -4 | tr '\n' ' ')"
@@ -182,5 +182,9 @@ for patch in "$@"; do
         echo "   $l $verdict ${secs}s $detail"
     done
     [[ $patch == /dev/null ]] || git -C "$root" apply -R "$patch"
+    # Proptest persists failing seeds next to the tests; a seed found under
+    # one bug must not help the next bug get caught.
+    git -C "$root" clean -q -f -- 'concurrency/tests/*.proptest-regressions' \
+        'concurrency/src/*.proptest-regressions'
     trap - INT TERM
 done
