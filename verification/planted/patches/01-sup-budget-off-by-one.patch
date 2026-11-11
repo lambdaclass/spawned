@@ -1,0 +1,15 @@
+Planted bug 01 (sup-budget-off-by-one): Restart window admits max+1 restarts (`>=` became `>`)
+
+diff --git a/concurrency/src/supervision.rs b/concurrency/src/supervision.rs
+index 328ed91b..f82cc670 100644
+--- a/concurrency/src/supervision.rs
++++ b/concurrency/src/supervision.rs
+@@ -593,7 +593,7 @@ pub(crate) fn admit_in_window<T: Copy>(
+     while attempts.front().is_some_and(|t| since(now, *t) >= window) {
+         attempts.pop_front();
+     }
+-    if attempts.len() >= max {
++    if attempts.len() > max {
+         return false;
+     }
+     attempts.push_back(now);

@@ -61,6 +61,21 @@
   with the usual seed and tape replay lines. Default 250 ms;
   `SPAWNED_SIM_TURN_BUDGET=ms` tunes it and `0` disables it. Compiled only
   under the cfg: no cost in normal builds.
+- Testing: planted-bug sensitivity matrix. Hand-written realistic bugs in
+  supervision, links, monitors, exit reasons, registry, mailbox, timers,
+  shutdown ordering and handle lifetimes are applied one at a time and run
+  against the test suite, the simulated suites and the scenario fuzzer
+  (`testing/planted/`, `docs/TESTING.md#planted-bug-sensitivity`); new oracles
+  close the escapes. Work in progress.
+
+- Testing: planted-bug sensitivity matrix (`docs/TESTING.md#planted-bug-sensitivity`).
+  24 hand-written realistic bugs (`verification/planted/patches/`, re-run with
+  `verification/planted/run.sh`) against the test suite, simulated suites,
+  fuzz harness tests, a 600 s fuzz run and TLA+ trace validation: 23 caught
+  (22 by the test suite), one unobservable through the public contract. New
+  oracles: a Temporary nested subtree is never rebuilt, fuzzer oracle X8 (a
+  stopped actor publishes the reason it was stopped with), and unit tests that
+  kill cargo-mutants survivors in `supervision/nested.rs` and `supervision.rs`.
 - Lockfile: `rustix` 1.1.2 -> 1.1.6 for RUSTSEC-2026-0486 (pulled in by the
   examples' `native-tls` dependency; spawned's crates are unaffected).
 - CI: a `sim` job runs the simulated test suites (`--cfg spawned_sim`) on
