@@ -279,6 +279,7 @@ START_CONTROLS = [
     ("MCStartScope", "GenDoneIgnoresWork", "GenDoneMeansOwnedDone"),
     ("MCStartScope", "NoScopeKill", "DeadlineKillsAllOwned"),
     ("MCStartScope", "OwnerUnchecked", "OwnedOnlyWhileOwnerOpen"),
+    ("MCStartScope", "ParentExitClosesOwner", "OwnerRefusalOnlyOnShutdown"),
     ("MCStartScope", "ParentSlotAtD", "ParentSlotHeld"),
 ]
 START_TEMPORAL_CONTROLS = [
