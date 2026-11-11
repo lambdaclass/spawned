@@ -72,6 +72,9 @@ struct Root {
     /// required (a missed timeout signals the remaining siblings early).
     ordered_ok: bool,
     done: bool,
+    /// A stop or shutdown was already requested (a short `shutdown` that
+    /// timed out signals every remaining child at once): no order check.
+    closing: bool,
     /// For TLA+ trace export: strategy, budget and child restart modes, set
     /// only for flat trees whose children were all declared.
     #[allow(dead_code)]
@@ -889,6 +892,7 @@ impl Driver {
             slots,
             ordered_ok,
             done: false,
+            closing: false,
             model,
         });
         if self.systems[sys].shut {
@@ -1113,6 +1117,7 @@ impl Driver {
         let Some(s) = self.roots[root].sup.clone() else {
             return;
         };
+        let was_closing = std::mem::replace(&mut self.roots[root].closing, true);
         match mode % 3 {
             0 => s.stop(),
             1 => {
@@ -1133,7 +1138,7 @@ impl Driver {
                     return;
                 }
                 self.root_done(root, &report.children);
-                if settled && self.roots[root].ordered_ok {
+                if settled && self.roots[root].ordered_ok && !was_closing {
                     self.check_tree_order(root, &running);
                 }
             }
@@ -1193,7 +1198,7 @@ impl Driver {
                     .roots
                     .iter()
                     .filter(|r| r.sys == i)
-                    .all(|r| r.ordered_ok)
+                    .all(|r| r.ordered_ok && !r.closing)
             {
                 self.check_system_order(i, &running);
             }
