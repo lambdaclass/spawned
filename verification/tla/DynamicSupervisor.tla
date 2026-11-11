@@ -105,7 +105,7 @@ VARIABLES
     stopSig,    \* the supervisor's stop signal reached this slot
     \* Ghosts for the invariants.
     termGen,    \* gen when terminate_child was called
-    closeGen,   \* gen of each slot when admission closed, -1 while open
+    closeGen,   \* gen of each slot when admission closed (meaningful once closed)
     lateOk,     \* a start_child returned ok after admission closed
     exhausted   \* a restart was refused for lack of budget
 
@@ -127,7 +127,7 @@ TypeOK ==
     /\ result \in [Slots -> Results]
     /\ term \in [Slots -> BOOLEAN] /\ stopSig \in [Slots -> BOOLEAN]
     /\ termGen \in [Slots -> Nat]
-    /\ closeGen \in [Slots -> Nat \cup {-1}]
+    /\ closeGen \in [Slots -> Nat]
     /\ lateOk \in [Slots -> BOOLEAN]
     /\ exhausted \in BOOLEAN
 
@@ -145,7 +145,7 @@ Init ==
     /\ term = [s \in Slots |-> FALSE]
     /\ stopSig = [s \in Slots |-> FALSE]
     /\ termGen = [s \in Slots |-> 0]
-    /\ closeGen = [s \in Slots |-> -1]
+    /\ closeGen = [s \in Slots |-> 0]
     /\ lateOk = [s \in Slots |-> FALSE]
     /\ exhausted = FALSE
 
@@ -397,7 +397,7 @@ NoStartAfterShutdown == \A s \in Slots : ~lateOk[s]
 
 \* No generation (first start or restart) begins after admission closed.
 NoGenerationAfterClose ==
-    \A s \in Slots : closeGen[s] # -1 => gen[s] <= closeGen[s]
+    ~open => \A s \in Slots : gen[s] <= closeGen[s]
 
 \* Budget exhaustion fails the supervisor, which closes it (and so stops
 \* every child: ClosedLeadsToDone).
