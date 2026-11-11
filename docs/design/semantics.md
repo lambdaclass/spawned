@@ -14,6 +14,9 @@ How to read it:
   `concurrency/tests/`, or `src/...` for unit tests) or example that checks it.
 - **Not yet checked** means the code provides the behaviour by construction but
   no test, model or proof asserts it. Treat these as weaker than the rest.
+- The [coverage matrix](../TESTING.md#semantics-coverage) lists, for each
+  guarantee, the modes and placements its checks run on, whether they would
+  fail if the guarantee broke, and the clauses still unchecked.
 - **tasks** is `spawned_concurrency::tasks` (async, every `Backend` and execution
   group); **threads** is `spawned_concurrency::threads` (one OS thread per
   actor). Unmarked guarantees hold in both.
@@ -26,13 +29,18 @@ awaits keeps the turn, so no other message of that actor runs until it returns.
 Concurrent request histories are therefore linearizable against the actor's
 sequential behaviour.
 Checked by: [`request_histories`][request_histories] (Porcupine-style checker
-on four backends), [`delivery_simulation`][delivery_simulation].
+on four backends), [`delivery_simulation`][delivery_simulation],
+[`semantics_gaps`][semantics_gaps]`::{native,tasks}_contract::hooks_and_turns_never_overlap_under_concurrent_requests_and_stop`
+(a read-modify-write across an await, every placement),
+[`sim_ordering::turns_and_hooks_never_overlap_{pct,dfs}`][sim_ordering].
 
 **M2. One mailbox.** Each actor has one FIFO mailbox. Sends, requests, `Down`
 and trapped `Exit` all go through it; there are no priorities and no selective
 receive. tasks: Tokio unbounded mpsc; threads: `std::sync::mpsc` plus a private
 stop wakeup that never runs a handler.
-Checked by: code (`mailbox.rs`); [`cross_backend`][cross_backend].
+Checked by: code (`mailbox.rs`); [`cross_backend`][cross_backend],
+[`semantics_gaps`][semantics_gaps]`::{native,tasks}::exit_and_down_follow_earlier_messages_from_the_source`
+(`Down` and `Exit` queue behind ordinary messages).
 
 **M3. Placement does not change semantics.** tasks `Async`, `Blocking`,
 `Thread`, threads mode, and `async_group`, `thread_group`, `pinned_group`
@@ -44,20 +52,24 @@ Checked by: [`cross_backend`][cross_backend] (independent oracle per workload).
 
 **M4. Fresh identity.** Every start, including every supervised restart, gets
 a new `ActorId`, a new mailbox and new state. Ids are never reused in a process.
-Checked by: [`supervision::one_for_one_uses_fresh_state_same_group_and_instance_bound_refs`][supervision].
+Checked by: [`supervision::one_for_one_uses_fresh_state_same_group_and_instance_bound_refs`][supervision],
+[`semantics_gaps`][semantics_gaps]`::{native,tasks}_contract::actor_ids_are_never_reused` (every placement).
 
 **M5. Actors are not reference counted.** Dropping every `ActorRef` does not
 stop an actor; a stopped actor's state, thread or task, link and monitor
 entries and owned registrations are released.
 Checked by: [`leaks::unstopped_cycle_keeps_running_until_explicit_stop`][leaks],
-`leaks::actor_reference_cycle_released_after_stop_on_every_backend`, LeakSanitizer job.
+`leaks::actor_reference_cycle_released_after_stop_on_every_backend`, LeakSanitizer job,
+[`semantics_gaps`][semantics_gaps]`::{native,tasks}_contract::dropping_every_actor_ref_keeps_the_actor_running` (every placement).
 
 ## 2. Messages
 
 **D1. Per-sender FIFO.** Messages sent sequentially by one sender (one task or
 thread, through any handle of the same actor) are handled in send order.
 Checked by: [`actor_scenarios::concurrent_producers_preserve_order_and_reply_identity`][actor_scenarios],
-`actor_scenarios::generated_actor_scenarios` (request fences), [`cross_backend`][cross_backend].
+`actor_scenarios::generated_actor_scenarios` (request fences), [`cross_backend`][cross_backend],
+[`sim_ordering::per_sender_fifo_and_reply_identity_{pct,dfs}`][sim_ordering] (ActorRef, Recipient and
+mixed handles under PCT and bounded DFS).
 
 **D2. At most once.** An accepted message is handled at most once and never
 duplicated or retried. While the actor keeps running it is handled exactly once.
@@ -68,9 +80,10 @@ Checked by: [`actor_scenarios`][actor_scenarios], [`payload_stress`][payload_str
 the mailbox is closed; the rejected message is dropped. `Ok(())` means
 accepted: between a stop request and mailbox closure (including during
 `stopped()`), sends still succeed and the message is then discarded.
-Checked by: [`actor_scenarios`][actor_scenarios] ("accepted sends alone do not
-guarantee execution across termination"), [`mailbox_admission_loom`][mailbox_admission_loom]
-(threads send gate: publish before drain or fail).
+Checked by: [`semantics_gaps`][semantics_gaps]`::{native,tasks}_contract::stop_window_accepts_then_discards_and_releases_before_join`
+(sends after the stop request and from `stopped()` are `Ok` and never handled, every placement),
+[`mailbox_admission_loom`][mailbox_admission_loom] (threads send gate: publish before drain or fail),
+`src/mailbox.rs::accepted_sends_are_drained_even_when_senders_outlive_receiver`.
 
 **D4. Stop discards the queue.** The run loop checks for stop before every
 receive. Once a stop is observed no further message is dispatched, including
@@ -80,12 +93,15 @@ published.
 Checked by: `src/tasks/actor.rs::stop_while_idle_does_not_dispatch_a_queued_request_on_resume`,
 `src/threads/actor.rs::repeated_stop_during_a_handler_discards_queued_requests`,
 `src/threads/actor.rs::stop_while_receiving_does_not_dispatch_a_later_request`,
-[`shutdown_publication`][shutdown_publication], [`mailbox_drop_panic`][mailbox_drop_panic].
+[`shutdown_publication`][shutdown_publication], [`mailbox_drop_panic`][mailbox_drop_panic],
+[`semantics_gaps`][semantics_gaps]`::{native,tasks}_contract::stop_window_accepts_then_discards_and_releases_before_join`
+(payloads dropped and reply senders closed when `join()` returns, every placement),
+[`sim_ordering::stop_discards_queue_before_publishing_exit_{pct,dfs}`][sim_ordering].
 
 **D5. Mailboxes are unbounded.** `send` never blocks and never fails for
 capacity; nothing bounds queue memory.
-Checked by: code (`rt/src/tasks/tokio/mpsc.rs`, `std::sync::mpsc`). Bounds are
-planned (rank 17).
+Checked by: [`semantics_gaps`][semantics_gaps]`::{native,tasks}_contract::unbounded_mailbox_accepts_a_large_backlog_without_blocking`
+(100,000 sends behind a blocked handler, every placement). Bounds are planned (rank 17).
 
 ## 3. Requests
 
@@ -100,7 +116,8 @@ Checked by: [`actor_scenarios`][actor_scenarios], `src/tasks/actor.rs::request_t
 
 **R2. Reply identity.** Each request has its own reply channel; a reply reaches
 only the caller that sent that request.
-Checked by: [`actor_scenarios::concurrent_producers_preserve_order_and_reply_identity`][actor_scenarios].
+Checked by: [`actor_scenarios::concurrent_producers_preserve_order_and_reply_identity`][actor_scenarios],
+[`sim_ordering::per_sender_fifo_and_reply_identity_{pct,dfs}`][sim_ordering].
 
 **R3. Timeouts.** Default 5 s. Precedence: `with_request_timeout` handle,
 `#[request_timeout]` method attribute, `#[protocol(timeout)]`, 5 s. Send-only
@@ -109,7 +126,9 @@ and protocol methods enqueue when called; the timer starts at first poll.
 threads: the call blocks and the timer starts immediately.
 Checked by: [`protocol_timeouts`][protocol_timeouts],
 [`cancellation_safety::protocol_calls_are_cancel_safe_and_send_eagerly`][cancellation_safety],
-[`protocol_timeouts`][ex_protocol_timeouts] example (both modes).
+[`protocol_timeouts`][ex_protocol_timeouts] example (both modes),
+[`semantics_gaps`][semantics_gaps]`::tasks_contract::default_request_timeout_is_five_seconds_from_first_poll`
+(4.9 s succeeds, 5.1 s times out, no timer before the first poll).
 
 **R4. Giving up never cancels.** A caller timeout or a dropped caller future
 or `Response` does not remove the request from the mailbox, cancel its handler
@@ -127,8 +146,10 @@ receivers), [`panic_safety`][panic_safety].
 
 **L1. Hook order.** `started()` runs once before any handler; `stopped()` runs
 at most once, after the last handler. No handler runs after `stopped()` begins.
-Checked by: `src/{tasks,threads}/actor.rs::exit_reason_*`, `panic_in_*`;
-[`cross_backend`][cross_backend].
+Checked by: [`sim_ordering::turns_and_hooks_never_overlap_{pct,dfs}`][sim_ordering],
+[`semantics_gaps`][semantics_gaps]`::{native,tasks}_contract::hooks_and_turns_never_overlap_under_concurrent_requests_and_stop`
+(every placement), [`cross_backend::stop_before_first_poll_follows_managed_and_legacy_contract`][cross_backend],
+the fuzz M1/L1/L5 oracle.
 
 **L2. Managed readiness.** For actors admitted with `start_on` or by a
 supervisor, readiness commits after `started()` returns while admission is
@@ -138,8 +159,9 @@ neither hook runs and the state is dropped (its `Drop` runs). Unmanaged
 `.start()` and threads actors stopped that early run both hooks.
 Checked by: [`startup_admission`][startup_admission],
 [`cross_backend::stop_before_first_poll_follows_managed_and_legacy_contract`][cross_backend],
-[`ready_gate_loom`][ready_gate_loom],
-[`execution_groups::failed_startup_discards_queued_payloads_and_reply_channels_without_dispatch`][execution_groups].
+[`execution_groups::failed_startup_discards_queued_payloads_and_reply_channels_without_dispatch`][execution_groups],
+[`semantics_gaps`][semantics_gaps]`::tasks_contract::managed_readiness_gates_handlers_and_stays_historical`
+(both group kinds). (`ready_gate_loom` checks the benchmark scheduler's gate, not this barrier.)
 
 **L3. Stop is cooperative.** `ctx.stop()`, `ctx.stop_with_reason(r)`,
 `ChildHandle::stop()`, `stop_with_reason(r)` and `shutdown()` request a stop:
@@ -171,7 +193,10 @@ message, then `stopped()` runs. A panic in `stopped()` is caught; `join()`
 returns and the reason becomes `Panic` unless it was already abnormal.
 Checked by: `src/{tasks,threads}/actor.rs::panic_in_started_stops_actor`,
 `panic_in_handler_stops_actor`, `panic_in_stopped_still_completes`,
-`panic_during_early_stop_is_reported`; [`panic_safety`][panic_safety].
+`panic_during_early_stop_is_reported`; [`panic_safety`][panic_safety],
+[`foreign_panics::panicking_subscriber_keeps_handler_reason_and_runs_stopped`][foreign_panics],
+[`semantics_gaps`][semantics_gaps]`::tasks_contract::panics_in_hooks_follow_the_contract_on_every_placement`
+(reason prefix, handled count and `stopped()` calls).
 
 **L6. Destructor panics are secondary.** A panicking `Drop` of the actor state
 or of a queued message turns only an otherwise `Normal` exit into `Panic`; a
@@ -189,7 +214,10 @@ and `ChildHandle` waits return only then; afterwards `send`/`request` return
 `ActorStopped`.
 Checked by: [`shutdown_publication`][shutdown_publication],
 `src/link_regression_tests.rs::never_polled_completion_waits_for_actor_payload_destruction`,
-[`actor_scenarios`][actor_scenarios] (post-exit requests).
+[`actor_scenarios`][actor_scenarios] (post-exit requests),
+[`semantics_gaps`][semantics_gaps]`::{native,tasks}_contract::stop_window_accepts_then_discards_and_releases_before_join`,
+[`sim_ordering::stop_discards_queue_before_publishing_exit_{pct,dfs}`][sim_ordering]. Not yet checked:
+outgoing monitors cancelled before publication.
 
 ## 5. Links, monitors and trapped exits
 
@@ -257,6 +285,8 @@ source has exited, so they follow every message the source sent earlier to the
 same observer.
 Checked by: [`semantics_gaps`][semantics_gaps]`::{native,tasks}::exit_and_down_follow_earlier_messages_from_the_source`
 (every reason including a real panic, all three tasks backends),
+[`sim_ordering::exit_and_down_follow_the_last_message_{pct,dfs}`][sim_ordering] (a stop racing the
+source's sends, noise at the observer, PCT and bounded DFS), the fuzz X7 oracle,
 [`exit_signal_matrix`][exit_signal_matrix] (delivery).
 
 ## 6. Supervision
@@ -274,7 +304,7 @@ attempt: a generation that stops before readiness after the child was first
 ready is retried whatever its exit reason (OTP retries a failed restart).
 Supervisor or system shutdown
 suppresses every restart. Stopping a Permanent child from outside restarts it.
-Checked by: `Supervision!RestartFollowsPolicy`, `Supervision!TemporaryStartsOnce`,
+Checked by: `Supervision!RestartFollowsPolicy`, `Supervision!TemporaryStartsOnce` (`MCSupervisionTemporary`),
 `Cohorts!TemporaryStartsOnce`; [`supervision::restart_modes_distinguish_normal_shutdown_and_panic`][supervision],
 [`supervisor_policies`][supervisor_policies] (generated scripts), [`supervision_trace`][supervision_trace].
 
@@ -289,6 +319,7 @@ timeout or a stop in `started()`) starts a new round, so OneForAll rebuilds
 the whole cohort again, as OTP re-runs the strategy on `try_again_restart`.
 Checked by: `Cohorts!StrategySelection`, `Cohorts!WholeCohortBarrier`,
 `Cohorts!NoRetiredParticipant`, `Cohorts!OneStartPerRound`; [`supervision_strategies`][supervision_strategies],
+[`semantics_gaps`][semantics_gaps]`::supervision_contract::concurrent_failures_coalesce_into_one_round`,
 [`cohort_trace`][cohort_trace], [`supervision_tree`][ex_supervision_tree] example.
 
 **V3. At most one live generation.** A slot never has two live generations: a
@@ -306,6 +337,7 @@ than `n`. Old `ActorRef`s stay bound to the old instance and fail with
 `ActorStopped`; queued messages are discarded, never replayed.
 Checked by: `Supervision!PublishedIsLive`, `Cohorts!PublishedIsLive`;
 [`supervisor_policies`][supervisor_policies] (request fences),
+[`semantics_gaps`][semantics_gaps]`::supervision_contract::queued_messages_are_not_replayed_into_a_replacement`,
 [`supervision_recovery`][ex_supervision_recovery] example.
 
 **V5. Restart budget.** At most `max_restarts` retry grants per rolling
@@ -330,7 +362,8 @@ delay equals the bound. The exponent resets after the same generation stays
 ready for `stable_after` (default 30 s); collateral children add no delay.
 Checked by: Kani `backoff_bound_is_capped`, `backoff_jitter_stays_in_range`,
 `backoff_bound_is_monotone_*`, `jitter_*`; `src/supervision.rs::capped_backoff_and_seeded_jitter_remain_bounded_after_long_failure_streaks`,
-[`supervision::backoff_exponent_resets_only_after_a_stable_generation`][supervision].
+[`supervision::backoff_exponent_resets_only_after_a_stable_generation`][supervision],
+[`semantics_gaps`][semantics_gaps]`::supervision_contract::collateral_children_add_no_backoff`.
 
 **V7. Startup.** Children start serially in declaration order. A tree reports
 ready only when every child is ready; a non-restartable failure (or exhausted
@@ -369,7 +402,8 @@ Checked by: `Supervision!NoStartAfterClose`, `Supervision!ReverseShutdown`,
 `Supervision!NeverReopens`, `Supervision!DoneMeansQuiescent`, `Cohorts!NoStartAfterClose`,
 `NestedSupervision!NoStartAfterClose`, `Supervision!ClosedLeadsToDone` (TLC-only, assumes cleanup ends);
 [`supervision::shutdown_during_backoff_prevents_new_factory_invocation`][supervision],
-`supervisor_report_deadline_signals_remaining_siblings`, [`failpoints`][failpoints].
+`supervisor_report_deadline_signals_remaining_siblings`, [`failpoints`][failpoints],
+[`semantics_gaps`][semantics_gaps]`::supervision_contract::message_backlog_does_not_delay_restart`.
 
 ## 7. Systems and execution groups
 
@@ -381,7 +415,10 @@ the whole managed tree; infallible APIs return inert work.
 Checked by: `Coordinator!Safety` (admission closed after `Running`);
 [`execution_groups::groups_validate_names_and_report_their_budget`][execution_groups],
 `ordered_shutdown_preserves_ordinary_calls_but_closes_new_helper_admission`,
-[`supervision::configuration_rejects_foreign_groups_duplicate_names_and_capacity`][supervision],
+[`supervision::configuration_rejects_foreign_groups_duplicate_names_and_capacity`][supervision] (foreign groups),
+`execution_profiles::persistent_native_slots_bound_admission_and_helpers_progress_during_blocking_turns` (`Capacity`),
+[`semantics_gaps`][semantics_gaps]`::supervision_contract::admission_is_closed_for_the_whole_tree_once_shutdown_begins`
+(timer, monitor, registration and actor admission from a still-running actor),
 [`failpoints`][failpoints] (`system.reserve`, `system.group_start`).
 
 **S2. Ordered shutdown.** `ActorSystem::shutdown(deadline)` stops standalone
@@ -389,7 +426,7 @@ actors and supervisor roots together in reverse admission order, one at a time,
 each awaited until it finished or the deadline passed. At the deadline every
 remaining target is signalled. The coordinator joins only after every target
 was signalled.
-Checked by: `Coordinator!OrderedShutdown`, `Coordinator!OrderedSignalStep`,
+Checked by: `Coordinator!OrderedShutdown`, `CoordinatorInd!OrderedSignalStep` (Apalache),
 `Coordinator!JoinAfterAllSignalled`; [`supervision::system_shutdown_orders_standalone_actors_and_supervisor_trees_together`][supervision],
 [`cross_backend::ordered_system_shutdown_matches`][cross_backend],
 [`execution_groups::stuck_standalone_cleanup_does_not_leave_earlier_actor_running_forever`][execution_groups].
@@ -401,16 +438,17 @@ ends; `report.wait()` can be awaited again. Registered helpers are cancelled
 (async) or awaited (blocking) before a scope finishes. Dropping an
 `ActorSystem` requests shutdown with a 5 s ordering grace without blocking.
 Checked by: `Coordinator!Safety` (ownership released only when all finished),
-`Coordinator!NeverReopensStep`, `Coordinator!TerminalStep`;
+`CoordinatorInd!NeverReopensStep`, `CoordinatorInd!TerminalStep` (Apalache);
 [`execution_groups::expired_shutdown_retains_closed_runtime_until_startup_cleanup_finishes`][execution_groups],
 `registered_blocking_work_keeps_runtime_owned_until_native_completion`,
-`dropping_system_requests_shutdown_without_an_ambient_runtime`, [`leaks`][leaks].
+`dropping_system_requests_shutdown_without_an_ambient_runtime`, [`leaks`][leaks],
+[`semantics_gaps`][semantics_gaps]`::supervision_contract::dropping_a_system_shuts_down_in_order_with_a_five_second_grace`.
 
 **S4. Coordinator faults are reported.** A panic in the system or supervisor
 shutdown coordinator is recorded (`coordinator_failures`,
 `ShutdownReport::failure`) and followed by an emergency stop of every
 remaining target; runtime ownership is still held until all joins.
-Checked by: `Coordinator!ReportKeptStep`, `Coordinator!Safety`;
+Checked by: `CoordinatorInd!ReportKeptStep` (Apalache), `Coordinator!Safety`;
 `src/system.rs::coordinator_fault_stops_all_targets_and_retains_owned_cleanup`,
 [`failpoints`][failpoints] (`system.shutdown_before_target`, `shutdown.before_stop_child`).
 
@@ -424,7 +462,8 @@ Checked by: [`execution_groups::old_scope_cleanup_cannot_remove_a_replacement_re
 **S6. Unmanaged work is not owned.** `.start()`, `tokio::spawn` and raw
 threads, even inside a managed handler, are not joined by shutdown and can be
 aborted at group teardown without `stopped()`.
-Checked by: [`execution_groups::ambient_actor_started_inside_group_is_unmanaged_and_aborted_at_teardown`][execution_groups].
+Checked by: [`execution_groups::ambient_actor_started_inside_group_is_unmanaged_and_aborted_at_teardown`][execution_groups],
+[`semantics_gaps`][semantics_gaps]`::tasks_contract::unmanaged_tasks_and_threads_are_not_joined_by_shutdown`.
 
 ## 8. Timers and time
 
@@ -433,7 +472,8 @@ as an ordinary message. Cancelling its token or stopping the actor before it
 fires prevents the send; a message already enqueued is not retracted. Payloads
 are dropped when the actor exits.
 Checked by: `src/{tasks,threads}/timer_tests.rs::test_send_after_and_cancellation`,
-`test_send_after_actor_shutdown`, [`resource_cleanup::timers_release_payloads_on_actor_exit`][resource_cleanup],
+`src/threads/timer_tests.rs::test_send_after_actor_shutdown`, `src/tasks/timer_tests.rs::test_send_after_gen_server_teardown`,
+[`semantics_gaps`][semantics_gaps]`::tasks_contract::managed_timers_run_on_the_group_and_die_with_the_actor`, [`resource_cleanup::timers_release_payloads_on_actor_exit`][resource_cleanup],
 [`cross_backend::timers_match`][cross_backend],
 [`semantics_gaps`][semantics_gaps]`::tasks::send_after_fires_once_no_earlier_than_its_delay` (paused time).
 
@@ -450,12 +490,19 @@ checked by construction only.
 timers run on the actor's group. `send_message_on` does not send if the actor
 stopped first.
 Checked by: `src/tasks/actor.rs::send_message_on_cancelled`,
+[`semantics_gaps`][semantics_gaps]`::tasks_contract::managed_timers_run_on_the_group_and_die_with_the_actor`
+(the timer task runs on the actor's async group),
 [`semantics_gaps`][semantics_gaps]`::tasks::timers_are_not_carried_to_a_supervised_replacement` (supervision
 is tasks-only).
 
 **T4. Clocks.** Delays use monotonic time (Tokio timers in tasks, so they follow
 paused Tokio time in tests; `recv_timeout` in threads). threads: each timer is
 one OS thread. Nothing is persisted across process restarts.
+Checked by: the paused-time tests (`semantics_gaps::tasks::send_after_fires_once_no_earlier_than_its_delay`,
+`send_interval_is_fixed_delay_and_never_catches_up`, `default_request_timeout_is_five_seconds_from_first_poll`)
+and the simulator's virtual clock for tasks; `src/threads/timer_tests.rs::threads_send_after_uses_the_monotonic_clock_over_long_delays`,
+`threads_send_interval_is_fixed_delay_while_the_actor_stalls` and
+[`supervision::native_restart_window_expires_on_the_monotonic_clock`][supervision] (`thread_group`) for threads.
 
 ## 9. Panics
 
@@ -477,6 +524,8 @@ group kinds), [`foreign_panics`][foreign_panics], [`mailbox_drop_panic`][mailbox
 `Down`/`Exit`, no restart. Supervision of `Normal`, `Shutdown` and `Kill` exits
 still works. A panicking process panic hook, or a second panic while a value is
 already unwinding, aborts under either profile.
+`#[actor]` warns once per crate built with `panic = "abort"` (opt-out
+`allow_panic_abort`); the warning is advice, not a guarantee.
 Checked by: the `panic-abort` CI job running [`panic_abort`][ex_panic_abort]
 under the `panic-abort` profile (both modes abort on a handler panic with no
 `stopped()` and no reply; a Transient child restarts after `Kill` and stays
@@ -501,6 +550,13 @@ stopped after `Shutdown`),
   actor, waits until `RequestTimeout` (rank 7).
 - **Selective receive, priorities or a fair control lane.** Trapped `Exit` and
   `Down` wait behind the backlog (rank 14).
+- **Memory isolation.** Actors share an address space. Nothing stops an actor
+  from holding state shared with other actors or threads (`Arc<Mutex<_>>`,
+  atomics behind `Arc`); a restart then inherits that state, and a panic while
+  holding a std lock poisons it for every holder. `#[actor]` warns at compile
+  time on the common syntactic patterns in its impl block (opt-out
+  `allow_shared_state`), but cannot see sharing built outside that block or
+  behind a type alias ([GUIDE](../GUIDE.md#compile-time-lints)).
 - **Distribution.** Single process only; `ActorRef`s cannot cross a process.
 - **Transparent references.** Nothing rebinds an `ActorRef` to a replacement;
   resolve through `SupervisedChild` or the registry.
@@ -585,10 +641,10 @@ See the [ranked backlog](../../ROADMAP.md#ranked-backlog).
 [panic_safety]: ../../concurrency/tests/panic_safety.rs
 [payload_stress]: ../../concurrency/tests/payload_stress.rs
 [protocol_timeouts]: ../../concurrency/tests/protocol_timeouts.rs
-[ready_gate_loom]: ../../concurrency/tests/ready_gate_loom.rs
 [request_histories]: ../../concurrency/tests/request_histories.rs
 [resource_cleanup]: ../../concurrency/tests/resource_cleanup.rs
 [semantics_gaps]: ../../concurrency/tests/semantics_gaps.rs
+[sim_ordering]: ../../concurrency/tests/sim_ordering.rs
 [shutdown_publication]: ../../concurrency/tests/shutdown_publication.rs
 [startup_admission]: ../../concurrency/tests/startup_admission.rs
 [supervision]: ../../concurrency/tests/supervision.rs

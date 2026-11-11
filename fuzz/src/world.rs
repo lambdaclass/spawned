@@ -41,6 +41,9 @@ pub struct Inst {
     /// Some hook or handler of this instance panicked (injected).
     pub panicked: bool,
     pub started_panicked: bool,
+    /// The state destructor panicked (injected): a secondary failure that may
+    /// replace a clean requested reason (X8 skips such instances).
+    pub drop_panicked: bool,
     /// Handed to the framework: only then may its destructor panic (a value
     /// the harness drops itself is not the framework's to contain).
     pub armed: bool,
@@ -92,6 +95,9 @@ pub struct State {
     /// Actors something may have stopped (direct stop, injected panic,
     /// link, system shutdown).
     pub may_stop: HashSet<ActorId>,
+    /// How many separate causes could have stopped each actor (every
+    /// `stoppable` call): X8 predicts the reason only when there was one.
+    pub causes: HashMap<ActorId, u32>,
     pub live: BTreeMap<String, i64>,
     pub live_total: i64,
     pub sups: Vec<SupInst>,
@@ -124,6 +130,11 @@ impl World {
 impl State {
     pub fn violate(&mut self, kind: &'static str, detail: String) {
         self.violations.push(Violation { kind, detail });
+    }
+    /// Record one more cause that may stop `id`.
+    pub fn stoppable(&mut self, id: ActorId) {
+        self.may_stop.insert(id);
+        *self.causes.entry(id).or_default() += 1;
     }
     fn tick(&mut self) -> u64 {
         self.seq += 1;
@@ -227,7 +238,11 @@ impl Drop for Worker {
             if let Some(slot) = &self.slot {
                 *s.live.entry(slot.clone()).or_default() -= 1;
             }
-            s.insts[self.instance].armed
+            let armed = s.insts[self.instance].armed;
+            if armed && self.hooks.drop_panic() && !std::thread::panicking() {
+                s.insts[self.instance].drop_panicked = true;
+            }
+            armed
         };
         if armed && self.hooks.drop_panic() && !std::thread::panicking() {
             panic!("fuzz: injected state destructor panic");
@@ -388,7 +403,7 @@ impl Handler<Do> for Worker {
                 });
             }
             Act::Stop(target, reason) => {
-                self.world.lock().may_stop.insert(target.id());
+                self.world.lock().stoppable(target.id());
                 target.stop_with_reason(reason);
             }
         }
@@ -400,10 +415,10 @@ impl Worker {
     fn uncertain(&self, me: ActorId, peer: Option<ActorId>) {
         let mut s = self.world.lock();
         s.uncertain.insert(me);
-        s.may_stop.insert(me);
+        s.stoppable(me);
         if let Some(peer) = peer {
             s.uncertain.insert(peer);
-            s.may_stop.insert(peer);
+            s.stoppable(peer);
         }
     }
 }

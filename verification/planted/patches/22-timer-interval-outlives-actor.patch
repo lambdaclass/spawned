@@ -1,0 +1,18 @@
+Planted bug 22 (timer-interval-outlives-actor): send_interval keeps ticking after its actor stops (only its own token stops it)
+
+diff --git a/concurrency/src/tasks/time.rs b/concurrency/src/tasks/time.rs
+index ef0db0d0..6053963d 100644
+--- a/concurrency/src/tasks/time.rs
++++ b/concurrency/src/tasks/time.rs
+@@ -61,9 +61,8 @@ where
+     let spawn_ctx = ctx.clone();
+     let join_handle = spawn_ctx.spawn_framework(async move {
+         loop {
+-            let cancel_token_fut = pin!(cloned_token.cancelled());
+-            let actor_cancel_fut = pin!(actor_cancellation_token.cancelled());
+-            let cancel_conditions = select(cancel_token_fut, actor_cancel_fut);
++            let _ = &actor_cancellation_token;
++            let cancel_conditions = pin!(cloned_token.cancelled());
+ 
+             let msg_clone = msg.clone();
+             let async_block = pin!(async {

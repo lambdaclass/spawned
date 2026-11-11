@@ -1,0 +1,60 @@
+error: use of deprecated unit struct `_::SharedMutableStateInActor`: actors should own their state: shared mutable state (`Arc<Mutex<_>>`, `Arc<RwLock<_>>`, `Arc<Atomic*>`, `Rc<RefCell<_>>`) breaks the isolation supervision relies on (a restarted actor inherits whatever the old one left behind the lock), and a panic while holding a std lock poisons it for every holder; send messages to the owning actor instead (or, once available, read a published snapshot, ROADMAP rank 10); if the sharing is deliberate, use `#[actor(allow_shared_state)]`
+  --> tests/ui/actor_lint_shared_state.rs:30:12
+   |
+30 |         a: Arc<Mutex<u64>>,
+   |            ^^^
+   |
+note: the lint level is defined here
+  --> tests/ui/actor_lint_shared_state.rs:3:9
+   |
+ 3 | #![deny(warnings)]
+   |         ^^^^^^^^
+   = note: `#[deny(deprecated)]` implied by `#[deny(warnings)]`
+
+error: use of deprecated unit struct `_::SharedMutableStateInActor`: actors should own their state: shared mutable state (`Arc<Mutex<_>>`, `Arc<RwLock<_>>`, `Arc<Atomic*>`, `Rc<RefCell<_>>`) breaks the isolation supervision relies on (a restarted actor inherits whatever the old one left behind the lock), and a panic while holding a std lock poisons it for every holder; send messages to the owning actor instead (or, once available, read a published snapshot, ROADMAP rank 10); if the sharing is deliberate, use `#[actor(allow_shared_state)]`
+  --> tests/ui/actor_lint_shared_state.rs:31:12
+   |
+31 |         b: std::sync::Arc<std::sync::RwLock<u64>>,
+   |            ^^^
+
+error: use of deprecated unit struct `_::SharedMutableStateInActor`: actors should own their state: shared mutable state (`Arc<Mutex<_>>`, `Arc<RwLock<_>>`, `Arc<Atomic*>`, `Rc<RefCell<_>>`) breaks the isolation supervision relies on (a restarted actor inherits whatever the old one left behind the lock), and a panic while holding a std lock poisons it for every holder; send messages to the owning actor instead (or, once available, read a published snapshot, ROADMAP rank 10); if the sharing is deliberate, use `#[actor(allow_shared_state)]`
+  --> tests/ui/actor_lint_shared_state.rs:32:12
+   |
+32 |         c: Arc<tokio::sync::Mutex<u64>>,
+   |            ^^^
+
+error: use of deprecated unit struct `_::SharedMutableStateInActor`: actors should own their state: shared mutable state (`Arc<Mutex<_>>`, `Arc<RwLock<_>>`, `Arc<Atomic*>`, `Rc<RefCell<_>>`) breaks the isolation supervision relies on (a restarted actor inherits whatever the old one left behind the lock), and a panic while holding a std lock poisons it for every holder; send messages to the owning actor instead (or, once available, read a published snapshot, ROADMAP rank 10); if the sharing is deliberate, use `#[actor(allow_shared_state)]`
+  --> tests/ui/actor_lint_shared_state.rs:33:12
+   |
+33 |         d: Arc<tokio::sync::RwLock<u64>>,
+   |            ^^^
+
+error: use of deprecated unit struct `_::SharedMutableStateInActor`: actors should own their state: shared mutable state (`Arc<Mutex<_>>`, `Arc<RwLock<_>>`, `Arc<Atomic*>`, `Rc<RefCell<_>>`) breaks the isolation supervision relies on (a restarted actor inherits whatever the old one left behind the lock), and a panic while holding a std lock poisons it for every holder; send messages to the owning actor instead (or, once available, read a published snapshot, ROADMAP rank 10); if the sharing is deliberate, use `#[actor(allow_shared_state)]`
+  --> tests/ui/actor_lint_shared_state.rs:34:12
+   |
+34 |         e: Arc<AtomicU64>,
+   |            ^^^
+
+error: use of deprecated unit struct `_::SharedMutableStateInActor`: actors should own their state: shared mutable state (`Arc<Mutex<_>>`, `Arc<RwLock<_>>`, `Arc<Atomic*>`, `Rc<RefCell<_>>`) breaks the isolation supervision relies on (a restarted actor inherits whatever the old one left behind the lock), and a panic while holding a std lock poisons it for every holder; send messages to the owning actor instead (or, once available, read a published snapshot, ROADMAP rank 10); if the sharing is deliberate, use `#[actor(allow_shared_state)]`
+  --> tests/ui/actor_lint_shared_state.rs:36:36
+   |
+36 |         Shared { a, b, c, d, e, f: Arc::new(AtomicUsize::new(0)), g: Arc::new(RwLock::new(0)) }
+   |                                    ^^^
+
+error: use of deprecated unit struct `_::SharedMutableStateInActor`: actors should own their state: shared mutable state (`Arc<Mutex<_>>`, `Arc<RwLock<_>>`, `Arc<Atomic*>`, `Rc<RefCell<_>>`) breaks the isolation supervision relies on (a restarted actor inherits whatever the old one left behind the lock), and a panic while holding a std lock poisons it for every holder; send messages to the owning actor instead (or, once available, read a published snapshot, ROADMAP rank 10); if the sharing is deliberate, use `#[actor(allow_shared_state)]`
+  --> tests/ui/actor_lint_shared_state.rs:36:70
+   |
+36 |         Shared { a, b, c, d, e, f: Arc::new(AtomicUsize::new(0)), g: Arc::new(RwLock::new(0)) }
+   |                                                                      ^^^
+
+error: use of deprecated unit struct `_::SharedMutableStateInActor`: actors should own their state: shared mutable state (`Arc<Mutex<_>>`, `Arc<RwLock<_>>`, `Arc<Atomic*>`, `Rc<RefCell<_>>`) breaks the isolation supervision relies on (a restarted actor inherits whatever the old one left behind the lock), and a panic while holding a std lock poisons it for every holder; send messages to the owning actor instead (or, once available, read a published snapshot, ROADMAP rank 10); if the sharing is deliberate, use `#[actor(allow_shared_state)]`
+  --> tests/ui/actor_lint_shared_state.rs:39:26
+   |
+39 |     fn scratch(&self) -> Rc<RefCell<u64>> {
+   |                          ^^
+
+error: use of deprecated unit struct `_::SharedMutableStateInActor`: actors should own their state: shared mutable state (`Arc<Mutex<_>>`, `Arc<RwLock<_>>`, `Arc<Atomic*>`, `Rc<RefCell<_>>`) breaks the isolation supervision relies on (a restarted actor inherits whatever the old one left behind the lock), and a panic while holding a std lock poisons it for every holder; send messages to the owning actor instead (or, once available, read a published snapshot, ROADMAP rank 10); if the sharing is deliberate, use `#[actor(allow_shared_state)]`
+  --> tests/ui/actor_lint_shared_state.rs:40:9
+   |
+40 |         std::rc::Rc::new(std::cell::RefCell::new(0))
+   |         ^^^

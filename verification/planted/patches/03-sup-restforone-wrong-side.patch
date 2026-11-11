@@ -1,0 +1,19 @@
+Planted bug 03 (sup-restforone-wrong-side): RestForOne rebuilds the failed child and the children *before* it
+
+diff --git a/concurrency/src/supervision.rs b/concurrency/src/supervision.rs
+index 328ed91b..8ef444b4 100644
+--- a/concurrency/src/supervision.rs
++++ b/concurrency/src/supervision.rs
+@@ -1533,7 +1533,11 @@ async fn run_recoveries(core: Arc<Core>) {
+             continue;
+         };
+         let mut affected = Vec::new();
+-        for (affected_index, child) in children.iter().enumerate().skip(start) {
++        for (affected_index, child) in children
++            .iter()
++            .enumerate()
++            .take(if start == 0 { children.len() } else { start + 1 })
++        {
+             let slot = RecoverySlot::new(meta.clone());
+             let accepted = trace::atomic(|| {
+                 let accepted = child.assign_recovery(slot.clone());

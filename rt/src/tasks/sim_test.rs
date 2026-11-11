@@ -20,6 +20,7 @@
 //! | `SPAWNED_SIM_STRATEGY=s` | `random` (default), `pct[:d=3][,k=N]` or `dfs[:bound=2][,depth=N]` (see `sim::explore`); overrides the test's `explore` |
 //! | `SPAWNED_SIM_ITERATIONS=n` | runs for that strategy (default 8 for random, 100 otherwise); overrides the test's `iterations` |
 //! | `SPAWNED_SIM_FAIR_AFTER=n` | polls after which a PCT/DFS run switches to a fair scheduler (default 20,000) |
+//! | `SPAWNED_SIM_TURN_BUDGET=ms` | wall-clock budget of one actor turn inside a poll (default 250, 0 = off) |
 
 use std::future::Future;
 use std::ops::Range;
@@ -173,6 +174,7 @@ impl SimTest {
             "SPAWNED_SIM_SPIN",
             "SPAWNED_SIM_MAX_STEPS",
             "SPAWNED_SIM_FAIR_AFTER",
+            "SPAWNED_SIM_TURN_BUDGET",
         ]
         .iter()
         .filter_map(|key| std::env::var(key).ok().map(|v| format!("{key}={v} ")))

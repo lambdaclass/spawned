@@ -318,6 +318,77 @@ mod cancellation_tests {
     }
 }
 
+// Kill cargo-mutants survivors in `resolve` and the adapter's Drop (docs/TESTING.md,
+// "Planted-bug sensitivity"): a handle resolves only to the current, open
+// subtree, and a dropped adapter stops its subtree and clears only its own
+// published entry.
+#[cfg(test)]
+mod resolve_and_drop_tests {
+    use super::*;
+
+    async fn running_tree(system: &ActorSystem) -> Supervisor {
+        system
+            .supervisor(SupervisorConfig::default())
+            .unwrap()
+            .start()
+            .await
+            .unwrap()
+    }
+    fn adapter(running: Option<Supervisor>, ready: &Ready, id: Option<ActorId>) -> SupervisorActor {
+        SupervisorActor {
+            builder: None,
+            running,
+            ready: ready.clone(),
+            id,
+            shutdown_grace: Duration::from_secs(1),
+            parent_core: Weak::new(),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn resolve_requires_the_current_id_and_an_open_tree() {
+        let limit = Duration::from_secs(5);
+        let system = ActorSystem::new().unwrap();
+        let tree = running_tree(&system).await;
+        let (current, other) = (ActorId::next(), ActorId::next());
+        let ready: Ready = Arc::new(Mutex::new(Some((current, tree.clone()))));
+        assert!(resolve(&ready, current).is_ok());
+        // An open tree published for another adapter instance never resolves.
+        assert!(resolve(&ready, other).is_err());
+        tree.stop();
+        tree.join().await;
+        // The current adapter's tree, once closed, no longer resolves either.
+        assert!(resolve(&ready, current).is_err());
+        assert!(system.shutdown(limit).await.complete);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn dropped_adapter_stops_its_tree_and_clears_only_its_own_entry() {
+        let limit = Duration::from_secs(5);
+        let system = ActorSystem::new().unwrap();
+        let (mine, newer) = (ActorId::next(), ActorId::next());
+
+        // Its own published entry is cleared and its subtree stopped.
+        let tree = running_tree(&system).await;
+        let ready: Ready = Arc::new(Mutex::new(Some((mine, tree.clone()))));
+        drop(adapter(Some(tree.clone()), &ready, Some(mine)));
+        assert!(system::lock(&ready).is_none());
+        assert!(!tree.core.gate.is_open());
+
+        // A newer generation's entry survives an older adapter's drop.
+        let replacement = running_tree(&system).await;
+        let ready: Ready = Arc::new(Mutex::new(Some((newer, replacement.clone()))));
+        drop(adapter(None, &ready, Some(mine)));
+        assert_eq!(
+            system::lock(&ready).as_ref().map(|(id, _)| *id),
+            Some(newer)
+        );
+        assert!(replacement.core.gate.is_open());
+        replacement.stop();
+        assert!(system.shutdown(limit).await.complete);
+    }
+}
+
 #[cfg(test)]
 mod stop_panic_tests {
     use super::*;

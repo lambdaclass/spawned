@@ -1,13 +1,14 @@
 # TLA+ models
 
 Formal models of Spawned lifecycle contracts, checked with TLC. See the
-[verification strategy](../../legacy/docs/research/verification-strategy.md) for how
+[verification strategy](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/docs/research/verification-strategy.md) for how
 this fits with Loom, Shuttle, Miri, ThreadSanitizer and mutation testing.
 
 | Model | Covers |
 |---|---|
 | `Supervision.tla` | The implemented OneForOne supervisor: `run_supervisor` and `run_child` in `concurrency/src/supervision.rs`, restart modes, rolling restart budget, ordered startup, reverse shutdown, shutdown deadlines, cleanup-stuck failures. |
 | `MCSupervision.tla/.cfg` | Fast instance (CI, every PR): two children (Permanent, Transient), safety, action properties and liveness. |
+| `MCSupervisionTemporary.tla/.cfg` | Small instance (CI, every PR, `other` leg, seconds): a Temporary and a Permanent child, safety and action properties, so `TemporaryStartsOnce` is not vacuous; `negative_checks.py` restarts the Temporary child and requires a violation. |
 | `MCSupervisionDeep.tla/.cfg` | Deep instance (weekly, `--deep`): three children, one per restart mode, safety and action properties. |
 | `TraceSupervision.tla` | Trace validation: replays a lifecycle trace recorded from real Rust runs as a behavior of `Supervision.tla`. |
 | `Cohorts.tla`, `MCCohorts*.tla/.cfg` | OneForAll/RestForOne range selection, reverse cleanup, whole-cohort join barrier, ordered resume, stale notifications, superseding rounds and retired slots. Three-child mixed-mode and two-round configurations. |
@@ -106,6 +107,29 @@ failed the tree; it is now retried (`Retries` in `Decide`, and
 child), and a trace edited back to failing the tree is a negative control. Hand-edited traces (a `Close` moved
 before an `Attempt`, a restart after a Transient normal exit, forward shutdown
 order, budget exhaustion with a free retry) are rejected at the edited event.
+
+## Model sync
+
+Models track the code. A PR that changes modelled behaviour updates the model
+in the same PR; the `model-sync` CI job enforces it
+([details](../../docs/TESTING.md#model-sync)):
+
+- `verification/model-map.toml` lists, per model, its files here (model, MC
+  configurations, `*Ind`, coverage and trace modules) and the code it covers.
+  A PR changing covered code without touching any covering model fails,
+  unless the change is comments or `#[cfg(test)]` only, or the PR has the
+  `no-model-change` label and a body line `Model: no change because <reason>`.
+- `scripts/check-model-sync.py events` checks that every trace event the
+  code can emit is an arm of its trace spec (`TraceSupervision`,
+  `TraceCohorts`, `TraceNested`), or is declared translated or rejected in
+  the map. It warns about arms no code emits and model actions no trace spec
+  takes. When adding an event or an action, update the spec and the map.
+- `scripts/check-model-sync.py models` requires every model here to be in
+  the map and to have a trace spec (a `Trace*.tla` named in
+  `trace_check.py` whose arms emitted events reach), or a `tlc_only`
+  allowlist entry with a reason and a tracking item. It also keeps each
+  model's covered action keys in `coverage-baseline.json` at or above its
+  `coverage_floor`. It prints the TLC-only models.
 
 ## Trace coverage
 
@@ -470,7 +494,7 @@ PR #182 bug (`Fault = "Retain182"`) and the PR #185 bug (`"Dispatch185"`) each
 produce a counterexample (`negative_checks.py`). Still to do with the
 implementation: lifecycle-trace events for exit signals, links, monitors and
 requests so real runs replay against it, as supervision traces do.
-Source: [verification strategy](../../legacy/docs/research/verification-strategy.md#acceptance).
+Source: [verification strategy](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/docs/research/verification-strategy.md#acceptance).
 
 `Coordinator.tla` checks coordinator failure ownership independently of the actor
 policy models: a panic closes admission, records failure, signals remaining

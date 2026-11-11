@@ -70,6 +70,40 @@ All three phases are wrapped in `catch_unwind`:
 
 In all cases, `join()` will eventually return and subsequent `send()`/`request()` calls return `Err(ActorStopped)`.
 
+### Compile-time lints
+
+`#[actor]` emits two warnings at compile time. They generate no runtime code;
+`-D warnings` turns them into errors.
+
+- **Shared mutable state.** The macro warns at every `Arc<Mutex<_>>`,
+  `Arc<RwLock<_>>`, `Arc<Atomic*>` or `Rc<RefCell<_>>` it finds in the
+  `#[actor]` impl block, as a type (`fn new(db: Arc<Mutex<Db>>) -> Self`, a
+  `let` type) or as a constructor (`Arc::new(Mutex::new(..))`,
+  `Rc::new(RefCell::new(..))`). Bare and qualified paths match, including
+  `tokio::sync` and `parking_lot` locks. An actor should own its state:
+  sharing it breaks the isolation supervision relies on (a restarted actor
+  inherits whatever the old one left behind the lock), and a panic while
+  holding a std lock poisons it for every holder. Send messages to the owning
+  actor instead; published snapshots (ROADMAP rank 10) will cover the
+  many-readers case. For deliberate sharing, write
+  `#[actor(allow_shared_state)]`.
+
+  The check is syntactic and sees only the impl block: `#[actor]` is placed on
+  the impl, not the struct, so a field whose shared value is built outside that
+  block (a struct literal in `main`, a constructor in another `impl`), or hidden
+  behind a type alias, is not flagged. `Arc` of immutable data (`Arc<str>`,
+  `Arc<Config>`) and locks the actor owns outright (`Mutex<T>` without `Arc`)
+  are not flagged.
+- **`panic = "abort"`.** When the crate is built with `panic = "abort"`, the
+  first `#[actor]` in the crate warns: a panicking handler then aborts the
+  whole process instead of stopping one actor, so supervisors, links, monitors
+  and `stopped()` never see the failure (semantics P2). Detection uses
+  `cfg(panic = "abort")`, so it follows the profile that builds the crate.
+  For a deliberate abort build, write `#[actor(allow_panic_abort)]` on each
+  actor in the crate.
+
+The flags combine with protocols: `#[actor(protocol = P, allow_shared_state)]`.
+
 ### Stopping an Actor
 
 Call `ctx.stop()` from inside a handler or lifecycle hook. This cancels the actor's internal token, causing the message loop to exit after the current handler finishes.
@@ -205,8 +239,8 @@ Archived backend benchmarks found these limits:
   profile measured about one busy core per worker with no traffic (eight
   busy-core equivalents on eight workers). The public pinned groups park instead.
 
-Sources: [design findings](../legacy/benchmarks/DESIGN-FINDINGS.md) and the
-[backend study findings](../legacy/research/backend-experiments/2026-11-06-fede/FINDINGS.md);
+Sources: [design findings](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/benchmarks/DESIGN-FINDINGS.md) and the
+[backend study findings](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/research/backend-experiments/2026-11-06-fede/FINDINGS.md);
 throughput conclusions are in the [benchmarks README](../benchmarks/README.md#conclusions).
 
 `Backend::Thread` drives lifecycle hooks and handlers on its dedicated root
@@ -224,7 +258,7 @@ destruction. `spawned_rt::threads::block_on` uses the same one-worker runtime.
 The runtime is deliberately not `current_thread`: there, async helpers only
 progress while the root thread polls them, so a handler that synchronously waits
 for a local async helper would deadlock, and `block_in_place` would panic. See
-the [dedicated-runtime review](../legacy/docs/reviews/dedicated-runtime.md).
+the [dedicated-runtime review](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/docs/reviews/dedicated-runtime.md).
 
 ### Actors on different runtimes
 
@@ -240,8 +274,8 @@ Public owned parked pinned shards and bounded native pools are described under
 feature still contains private research selectors (pinned
 and spinning shards, alternative schedulers). They are not stable configuration
 APIs, and Tokio stays the default. Their measurements and reproduction guides are
-archived in [the backend notes](../legacy/docs/BACKENDS.md) and the
-[backend research index](../legacy/research/backend-experiments/README.md).
+archived in [the backend notes](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/docs/BACKENDS.md) and the
+[backend research index](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/research/backend-experiments/README.md).
 
 ---
 
@@ -651,7 +685,7 @@ exit-signal rules for the attempt. Repeated live links are no-ops. Unlink preven
 future propagation through the relationship but does not retract an exit already
 in flight. Links are a supervision primitive. Managed OneForOne/OneForAll/RestForOne recovery is described in
 [execution groups and supervision](#execution-groups-and-supervision).
-Transparent reference rebinding remains separate work. The [review and regression evidence](../legacy/docs/reviews/pr-166-links.md) is archived.
+Transparent reference rebinding remains separate work. The [review and regression evidence](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/docs/reviews/pr-166-links.md) is archived.
 
 ---
 
@@ -1173,7 +1207,7 @@ metrics and without inserting exporter work into handlers.
 
 Use application measurements before choosing a sampling rate; shared atomic
 counters themselves can contend under high actor/producer concurrency. The
-original [overhead measurements](../legacy/research/framework-metrics/2026-11-06/README.md)
+original [overhead measurements](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/research/framework-metrics/2026-11-06/README.md)
 are archived.
 
 ---
@@ -1372,4 +1406,4 @@ assert_linearizable(&Kv, &recorder.take());
 - [Execution groups and supervision design contract](design/execution-groups-supervision.md): the fuller boundaries of the v0.7 APIs.
 - [Testing](TESTING.md): scenario tests, failure windows, the TLA+ model and trace validation.
 - [Roadmap](../ROADMAP.md): what is planned and why.
-- [Legacy](../legacy/README.md): archived backend research, benchmark reports, reviews and earlier designs.
+- [Archived `legacy/` directory](https://github.com/lambdaclass/spawned/tree/efba24340a01df82f872ec422b9dbaf48f897b04/legacy) (removed; git history at `efba2434`): archived backend research, benchmark reports, reviews and earlier designs.

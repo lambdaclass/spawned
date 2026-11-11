@@ -1,0 +1,15 @@
+Planted bug 08 (sup-budget-exhaustion-silent): Exhausting the restart budget retires the child instead of failing the supervisor
+
+diff --git a/concurrency/src/supervision.rs b/concurrency/src/supervision.rs
+index 328ed91b..0c564356 100644
+--- a/concurrency/src/supervision.rs
++++ b/concurrency/src/supervision.rs
+@@ -1726,7 +1726,7 @@ async fn run_child<A: Actor>(spec: ChildSpec<A>, view: Arc<View<A>>, core: Arc<C
+             let Some(reservation) = core.reserve_retry(c) else {
+                 // A concurrent stop wins: only fail a supervisor that is still open.
+                 trace::atomic(|| {
+-                    if core.gate.is_open() {
++                    if false {
+                         core.fail_record_if_open_as(
+                             child_failure(
+                                 &spec,

@@ -2,11 +2,98 @@
 
 ## Unreleased
 
+- ROADMAP: a ranked determinism backlog (D1-D10) under priority tier 3, from
+  an audit of what escapes the simulator in Spawned, Ethrex and Ethlambda
+  ([docs/research/determinism-audit.md](docs/research/determinism-audit.md)).
+  Same-seed reruns found no schedule nondeterminism; traces differ only in
+  process-global ids.
+- Removed `legacy/` (archived research, benchmark data and reviews, about 58 MB);
+  it remains in history at [`efba2434`](https://github.com/lambdaclass/spawned/tree/efba24340a01df82f872ec422b9dbaf48f897b04/legacy),
+  and live docs link there.
+- ROADMAP: a Path to 1.0 section (0.8, 0.9, 0.10 contents and what 1.0
+  requires: stable API rules, a complete semantics contract, production-safe
+  defaults, introspection, determinism, release gates, production proof and
+  documentation).
+- Toolchain pinned to CI's 1.93.0 in `rust-toolchain.toml`, so local, fede
+  and agent builds match CI; the fuzz job selects its nightly explicitly.
+  `CHANGELOG.md` merges with git's union driver. ROADMAP: the design-review
+  rule now requires a test plan, trace validation against real code,
+  planted bugs, an introspection hook and a no-cost benchmark for every new
+  feature.
+- ROADMAP: Erlang/OTP, Elixir and Gleam gaps table (G1-G23, including a remote
+  console) with tiers and target versions, and the OTP features Spawned will
+- ROADMAP: Erlang/OTP, Elixir and Gleam gaps table (G1-G23, including an attachable
+  console in every binary, targeted at 0.9) with tiers and target versions, and the OTP features Spawned will
+  not add as non-goals; the comparison is in
+  `docs/research/otp-elixir-gleam.md`.
+- CI: model-sync checks. A `model-sync` job fails a PR that changes code a TLA+
+  model covers (`verification/model-map.toml`) without touching that model,
+  unless it carries the `no-model-change` label and a `Model: no change because
+  <reason>` line. Every lifecycle trace event kind must map to a trace-spec
+  action; every model must be trace-validated or allowlisted as TLC-only with
+  a tracking item (Coordinator, Lifecycle, DeferredReplies, DeferredJobs);
+  per-model trace coverage has a floor that may only go up.
+- Tests: coverage follow-ups. `restart_modes_distinguish_normal_shutdown_and_panic`
+  now sends a real `Normal` exit; a per-PR `MCSupervisionTemporary` TLC
+  configuration makes `TemporaryStartsOnce` non-vacuous, with a negative
+  control that restarts a Temporary child; threads-mode clock tests for
+  `send_after`, `send_interval` and the restart window on a `thread_group` (T4).
+- ROADMAP: a Priorities section (soundness, including a smaller stable API and
+  soak tests; introspection; determinism; testing; client-driven features;
+  performance behind a regression gate), and the runtime direction. Keep Tokio; rank 37 becomes the main
+  performance track (generated dispatch, reusable reply slots, a single-wakeup
+  mailbox, batched draining), after profiling; rank 22a becomes actor-owned
+  I/O (`spawned::net`, Erlang ports) with a simulated network so whole client
+  nodes run deterministically; rank 52 (io_uring) reopens only as a
+  `spawned::net` backend.
+- README: centred on why Spawned exists. A "Why Spawned" section first (guarantees
+  verified once and inherited by every application; deterministic, replayable
+  tests), both points leading the feature list, and a "Testing your own actors
+  deterministically" section showing `#[spawned_macros::sim_test]`.
+- ROADMAP: no-cost-on-the-default-path principle, the Erlang gaps table, and new
+  ranks 6b (shared-state and abort lints), 8b (simulator check for handlers
+  that never yield), 8c (per-group stack size) and 44a (execution groups in a
+  separate OS process); rank 18a's tracking allocator is opt-in.
+- Tests: semantics-contract coverage audit. `docs/TESTING.md` has a
+  guarantee-by-guarantee matrix (checks, modes and placements, whether a
+  check fails when the guarantee breaks): 31 of 50 guarantees were fully
+  covered, now 46. New `sim_ordering` checks D1, R2, M1, L1, D3/D4/L7 and X7
+  under PCT and bounded DFS; `semantics_gaps` checks the stop window, D5,
+  M1, M4, M5, L2, L5, R3, T3 and S6 on every placement and V2, V4, V6, V9,
+  S1 and S3 on the simulator. No bugs found; several contract citations
+  corrected.
+- Simulator (rank 8b): under `--cfg spawned_sim`, a test fails when one actor
+  turn runs longer than a wall-clock budget inside a single poll (a blocking
+  call or a loop with no `.await`), naming the actor and the message type,
+  with the usual seed and tape replay lines. Default 250 ms;
+  `SPAWNED_SIM_TURN_BUDGET=ms` tunes it and `0` disables it. Compiled only
+  under the cfg: no cost in normal builds.
+- Testing: planted-bug sensitivity matrix. Hand-written realistic bugs in
+  supervision, links, monitors, exit reasons, registry, mailbox, timers,
+  shutdown ordering and handle lifetimes are applied one at a time and run
+  against the test suite, the simulated suites and the scenario fuzzer
+  (`testing/planted/`, `docs/TESTING.md#planted-bug-sensitivity`); new oracles
+  close the escapes. Work in progress.
+
+- Testing: planted-bug sensitivity matrix (`docs/TESTING.md#planted-bug-sensitivity`).
+  24 hand-written realistic bugs (`verification/planted/patches/`, re-run with
+  `verification/planted/run.sh`) against the test suite, simulated suites,
+  fuzz harness tests, a 600 s fuzz run and TLA+ trace validation: 23 caught
+  (22 by the test suite), one unobservable through the public contract. New
+  oracles: a Temporary nested subtree is never rebuilt, fuzzer oracle X8 (a
+  stopped actor publishes the reason it was stopped with), and unit tests that
+  kill cargo-mutants survivors in `supervision/nested.rs` and `supervision.rs`.
+- `#[actor]` lints (ROADMAP rank 6b), compile time only, no runtime cost:
+  a warning when the `#[actor]` impl block builds or accepts shared mutable
+  state (`Arc<Mutex<_>>`, `Arc<RwLock<_>>`, `Arc<Atomic*>`, `Rc<RefCell<_>>`,
+  std, tokio or parking_lot paths), silenced with
+  `#[actor(allow_shared_state)]`; and a warning, once per crate, when the
+  crate is built with `panic = "abort"`, under which a handler panic ends the
+  process instead of one actor, silenced with `#[actor(allow_panic_abort)]`.
+  Both use the stable `#[deprecated]` technique, so `-D warnings` turns them
+  into errors.
 - Lockfile: `rustix` 1.1.2 -> 1.1.6 for RUSTSEC-2026-0486 (pulled in by the
   examples' `native-tls` dependency; spawned's crates are unaffected).
-- CI: a `sim` job runs the simulated test suites (`--cfg spawned_sim`)
-  on every pull request, one test per process with a timeout. `stack_budget`
-  is compiled out under the simulator: it measures real thread stacks.
 - CI: a `sim` job runs the simulated test suites (`--cfg spawned_sim`) on
   every pull request: all integration tests of `spawned-concurrency` and
   `spawned-rt` plus the executor unit tests, one test per process with a
@@ -14,8 +101,9 @@
   failure. `stack_budget` is compiled out under the simulator: it measures
   real thread stacks.
 - CI: the core workflows (`ci`, `verification`, `failpoints`) also run on
-  `merge_group`, so pull requests can go through GitHub's merge queue.
-
+  `merge_group`, so pull requests go through GitHub's merge queue, which runs
+  all 19 required checks (including `sim`) on the merged result before
+  anything lands on `main`.
 - Design (not implementation) for rank 11, deferred typed replies and
   pipe-to-self, revised over four passes after independent reviews:
   `docs/design/deferred-replies.md`, client mapping for ethrex and ethlambda,
@@ -49,6 +137,15 @@
   it is computed from, so unrelated models no longer invalidate it, and is
   regenerated (same keys and state counts). `check.sh` gains `--only` and
   `--exclude`.
+- Tests: a long-running soak harness (`concurrency/benches/soak`, run by hand,
+  not in CI). It churns actors in both modes and every backend, managed
+  groups, supervisors with every strategy, links, monitors, `trap_exit`,
+  timers, the registry, timed-out requests, stream listeners, `ActorSystem`
+  cycles and mailbox bursts from a seed, samples RSS, live heap, OS threads,
+  file descriptors, Tokio tasks, registry size, live actors and the `metrics`
+  gauges into a CSV, fails on growth per hour after warm-up or on any count
+  not returning to its baseline after quiesce, and has a `--inject-leak`
+  negative control. Run it before each release (`docs/TESTING.md`).
 - Design (not implementation) for rank 12a, the dynamic supervisor
   (`DynamicSupervisor` / `simple_one_for_one`, PR #245):
   `docs/design/dynamic-supervisor.md`, the ethrex/ethlambda client mapping
@@ -60,9 +157,11 @@
   invariants), with 27 named negative controls. Revision 3 applies the
   second reviews and the round-two decisions: one FIFO operation queue,
   terminate lookup when the loop handles the call, stuck classification by
-  exit reason, caller liveness without assuming cleanup ends, `ignore` and
-  start data, a trace-validation test plan, a fenced `terminate_slot(.., expect)` for introspection, and 41 negative
-  controls.
+  exit reason, caller liveness without assuming cleanup ends, `ignore`, a
+  trace-validation test plan, a fenced `terminate_slot(.., expect)` for
+  introspection, the shared shapes with unified start (#259:
+  `StartOutcome<Started<A>>`, `ChildStartError`, `Init::continue_with`,
+  `StartOptions<A>`), and 41 negative controls.
 
 ## 0.7.3 — 2026-11-10
 

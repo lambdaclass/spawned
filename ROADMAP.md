@@ -28,12 +28,79 @@ handlers and the existing default behavior. New policies are explicit and opt-in
 
 - **v0.7.1:** canary shutdown, destructor/subscriber-panic containment and restart
   budget fixes, compact async handles, and the first published `spawned-test` kit.
+- **v0.7.2:** one-pointer `ActorRef`/`Context` handles (fixes ethrex's `rpc::`
+  stack overflow) and macro fixes.
+- **v0.7.3:** OTP-aligned restart retry with OneForAll cohort rebuild, and the
+  deterministic simulator (virtual time, decision tapes, PCT, bounded DFS).
+  Ethrex and Ethlambda run 0.7.3 in their draft PRs and on canary nodes.
+- **v0.8 (in progress):** deferred replies and pipe-to-self (rank 11, PR #239)
+  and OTP exit signals, startup and runtime-drop semantics (ranks 5e, 5f, 5g,
+  PR #240). The final pre-release review found 2 P0 and about 13 P1 issues,
+  mostly at the actor's death point; they are being fixed on #240 before the
+  release. Client ports are ready on the clients' `spawned-v0.8` branches.
+- **Next feature:** dynamic supervisor (rank 12a), design and TLA+ model in
+  review (PR #245).
+- **Process:** every PR merges through GitHub's merge queue with 19 required
+  checks, including the simulated suites (`sim`). Robustness features must add
+  no cost on the default path (see [Non-goals](#non-goals)).
 
 Already-erased protocol timeout configuration remains a separate
 API follow-up: configure the concrete handle before `to_x_ref()` today. Native
 calls block before returning a Response, so a generic wrapper around an already
 returned response cannot correctly apply that timeout. Preserve handwritten
 protocol/forwarding compatibility when designing an explicit erased dispatch API.
+
+## Priorities
+
+Decided 2026-11-11, in this order: **soundness, introspection, determinism, testing, features, performance.** The first four are the product: Spawned's value is guarantees verified once and inherited by every application, failures you can see, and failures that replay exactly. A lower tier waits unless a client needs it.
+
+1. **Soundness.** A bug in what Spawned promises outranks any feature or speedup. Ship 0.8 only after every review fix and a re-review; close the remaining semantics-coverage gaps; planted-bug sensitivity; long-running soak tests (memory, threads, tasks, file descriptors and registry entries flat over hours of churn; run by hand on fede before each release, no schedule); Apalache for the new models; longer fuzzer campaigns run by hand. Includes **a smaller, stable API**: review the public surface before 0.8 is published (merge overlapping functions, hide what only the clients needed, mark the rest experimental), then a 1.0 with a written stability promise.
+2. **Introspection.** Operators must be able to answer "which actor is stuck, on what message, with how much queued" the way Erlang's `observer`, `sys:get_state`, `process_info` and `recon` do: per-actor info (lifecycle state, mailbox length, current message type and turn age, restarts, links and monitors), supervision-tree and system snapshots, `spawned-top` (rank 30), the stall watchdog (8), the flight recorder (9) and causal tracing (28). Cheap counters and opt-in tracing, under the no-cost rule.
+3. **Determinism.** Every run that can be made deterministic should be: a failure that replays exactly can be debugged, shrunk and kept as a regression test. Widen what the simulator controls: code that calls `tokio::spawn` or `tokio::time` directly (route it through `spawned-rt`, or catch it in the simulator); network I/O through actor-owned I/O and a simulated network (rank 22a); threads-mode actors (research: run native actors as simulator tasks); same-seed reruns producing identical traces (S2); and record in production, replay in simulation (ranks 21-22). Determinism also has to hold across releases: a saved tape keeps replaying.
+4. **Testing.** For Spawned and for applications: `#[spawned_concurrency::sim_test]`, the `spawned-test` kit, model-derived tests, whole-node simulation of Ethrex and Ethlambda on top of tier 3, behaviour snapshots and the remaining planned layers in [TESTING.md](docs/TESTING.md).
+5. **Features a client needs.** Dynamic supervisor (12a), bounded mailboxes (17).
+6. **Performance, behind a regression gate.** A small benchmark set on every hot-path PR that flags slowdowns past a threshold, so "no cost on the default path" is enforced, not remembered. Then profiling, rank 37 and the [runtime direction](#runtime-direction).
+
+### Determinism backlog (tier 3)
+
+From the [determinism audit](docs/research/determinism-audit.md) (2026-11-11) of Spawned and the Ethrex and Ethlambda `spawned-v0.8` branches, ranked by how much more real code runs deterministically per unit of effort. Same-seed reruns (S2) found no schedule nondeterminism; traces differ only in process-global ids (D5).
+
+| # | Item | Effort |
+|---|---|---|
+| D1 | Interpose `clock_gettime`/`gettimeofday` and `getrandom`/`getentropy` under `spawned_sim` (madsim's technique): virtual time and seeded bytes on a thread that owns a world, so `Instant::now`, `SystemTime::now`, `thread_rng`, `OsRng` and `HashMap` keys become deterministic with no call-site change; `SPAWNED_SIM_STRICT=1` panics with the caller instead (the `tokio::spawn`-style check). Covers ~270 clock and ~50 rand sites in the clients. | M |
+| D2 | `spawn_blocking` runs inline under sim as one atomic step (today it panics): synchronous DB and compute offload (64 client sites) becomes simulable. | S |
+| D3 | Complete `spawned_rt::tasks` (`interval`, `sleep_until`, a `JoinSet`) and turn Tokio's "timers are disabled" panic into a message naming the `spawned_rt` replacement. | S |
+| D4 | Route the clients' direct Tokio calls: Ethrex 34 `tokio::spawn`/`JoinSet` and 48 `tokio::time`, Ethlambda 8 and 8 (lists in the audit). | M |
+| D5 | Library fixes: per-world id counters under sim (byte-identical traces, so S2 can run in CI); `PendingReplies::drain` in insertion order (0.8); `FailScenario::setup()` seeded from the world. | S |
+| D6 | First client `#[sim_test]`s (none exist today): Ethlambda's blockchain actor, Ethrex `tx_broadcaster` and `peer_table`, after D1. | S-M |
+| D7 | Recommended clippy `disallowed-methods` set for applications (with rank 6b). | S |
+| D8 | Blocking/Thread-backend actors and 0.8 native jobs as sim tasks (the "run native actors as simulator tasks" research). | M |
+| D9 | Seeded `spawned_rt::rand` as a portable, explicit alternative to D1. | S |
+| D10 | Wall-clock verdicts (turn budget, poll watchdog): a poll-count option so an overloaded machine cannot fail a run that replays clean. | S |
+
+Sockets stay with rank 22a; synchronous databases, EVM execution and cryptography remain atomic synchronous steps.
+
+## Path to 1.0
+
+1.0 is a promise, not a feature set: the API is stable, every guarantee is checked, and it has been proven in production. Planned order (each release follows the [Priorities](#priorities)):
+
+- **0.8:** deferred replies and pipe-to-self (rank 11), OTP exit signals, startup and runtime-drop semantics (5e, 5f, 5g), and an API cleanup (smaller job API, `#[non_exhaustive]` and builders, OTP names such as `send_request`).
+- **0.9:** unified start API (`start`, `start_link`, `start_monitor` with `StartOptions`, children inheriting their parent's placement), dynamic supervisor (12a), supervisor alignment with OTP (budget exhaustion exits `Shutdown`, static `terminate_child`), introspection v1 (`process_info`, `get_state`, tree and system snapshots, opt-in stall watchdog), and the determinism fixes found by the audit.
+- **0.10:** the admission package designed together: bounded mailboxes (17), byte credits (18), deadlines (19); bounded draining on shutdown (13); the OTP control lane (14); per-actor memory limits (18a).
+- **1.0:** stabilization.
+
+What 1.0 requires:
+
+1. **Stable API with written rules:** a final full API review; every public enum `#[non_exhaustive]`; user-implemented traits sealed where possible; `spawned-rt` declared internal; a semver, MSRV and deprecation policy.
+2. **Complete, versioned semantics contract:** every guarantee in `semantics.md` checked by something that fails if it breaks; every OTP deviation listed with its Rust-forced reason; every TLA+ model with trace validation and Apalache inductive proofs of its safety invariants.
+3. **Production-safe defaults:** the 0.10 admission package; 1.0 does not ship with only unbounded mailboxes.
+4. **Introspection complete:** `spawned-top` (30), the flight recorder (9) and causal tracing (28) on top of 0.9's introspection v1.
+5. **Determinism complete for spawned itself:** nothing in spawned escapes the simulator; a CI check that the same seed gives identical traces; a versioned decision-tape format, so a tape saved on 1.0 replays on any 1.x.
+6. **Release gates run every time:** a soak run, the benchmark regression gate, a long fuzzer campaign, a mutation-score target on the core modules, and the planted-bug matrix catching every planted bug.
+7. **Production proof:** Ethrex and Ethlambda running the 1.0 candidate on testnet canaries for several weeks with no incident attributed to Spawned; an external review of the semantics contract and the models.
+8. **Documentation:** the GUIDE complete, every feature with an example in both modes, a cookbook (connection per peer, worker pools, timeouts, graceful shutdown), and MIGRATION for every version.
+
+After 1.0, as additive 1.x layers that never change the core's semantics: actor-owned I/O and whole-node simulation (22a), distribution (44), virtual actors (26), durable execution (49-51) and an io_uring backend (52).
 
 ## North star
 
@@ -62,8 +129,8 @@ sections and [research notes](docs/research/README.md).
    projections complement failure/stress tests, review and ThreadSanitizer;
    they do not prove the wider base lifecycle or every Rust schedule.
    All crates retain `forbid(unsafe_code)`; Miri precedes any future unsafe proposal.
-   See the [implementation evidence](legacy/docs/reviews/capabilities-extension.md)
-   and [v0.7 review fixes and formal coverage](legacy/docs/reviews/v07-supervision.md).
+   See the [implementation evidence](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/docs/reviews/capabilities-extension.md)
+   and [v0.7 review fixes and formal coverage](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/docs/reviews/v07-supervision.md).
    The client search is done; see [results](#client-search-results).
 3. **Adopt v0.7 in Ethlambda** (rank 5), including the per-method
    request timeout (rank 5a), the migration guide for the clients' hand-wired
@@ -73,7 +140,7 @@ sections and [research notes](docs/research/README.md).
    metrics and the explicit-async migration, and audits the exact documented
    no-default removals. Conditional `request_timeout` attributes are explicitly
    rejected, the API script supports Python 3.9, stream examples use handshakes,
-   and dated reports/evidence are archived in `legacy/` without host-specific
+   and dated reports/evidence are archived in [`legacy/`](https://github.com/lambdaclass/spawned/tree/efba24340a01df82f872ec422b9dbaf48f897b04/legacy) without host-specific
    driver scripts. Both clients pin spawned 0.5.0, so their
    upgrade crosses 0.6 as well; the migration guide covers 0.5 to 0.7 in one
    path. v0.7.0 is released; migrate Ethlambda (shutdown
@@ -145,10 +212,42 @@ one per actor. Additional placement changes still need application measurements.
 execution groups and supervision remain async-only for v0.7. Extending those
 capabilities to the Tokio-free build is a later roadmap item, outside this release.
 
+### Erlang/OTP, Elixir and Gleam gaps
+
+From a comparison against OTP 28/29, Elixir 1.20 and gleam_otp 1.3 on 2026-11-11 ([research](docs/research/otp-elixir-gleam.md)). Tier is the [priority](#priorities) tier; targets follow the [path to 1.0](#path-to-10). Each gap still goes through the design-review rule before code.
+
+| Gap | What OTP, Elixir or Gleam does | Tier | Target |
+|---|---|---|---|
+| G1 | Fallible, value-returning startup on every start path (`init` returning `{error,R}`/`{stop,R}`/`ignore`; Gleam's initialiser returning data to the starter) | soundness | 0.9 (unified start) |
+| G2 | Post-start continuation (`handle_continue`), guaranteed to run before any external message | soundness | 0.9 (unified start; the dynamic supervisor needs it) |
+| G3 | `sys:get_state`/`get_status`: an in-band request answered between turns, opt-in and redacted (`format_status`) | introspection | 0.9 (introspection v1) |
+| G4 | Actor listing, labels (OTP 27 `set_label`) and tree snapshots (`which_children`/`count_children` everywhere) | introspection | 0.9 |
+| G5 | Structured crash and supervisor reports (last message type, label, parent chain, mailbox length) | introspection | 0.9 |
+| G6 | `terminate_child`, `restart_child`, `delete_child` on static supervisors | features (OTP alignment) | 0.9 |
+| G7 | Clean exits that carry a payload (`{shutdown, Term}`) | soundness | 0.9 |
+| G8 | `start_monitor`, link and monitor on every backend and group, one start-options struct | soundness | 0.9 (unified start) |
+| G9 | Runtime-toggled, rate-limited per-actor message tracing with isolated sessions (`sys:trace`, OTP 27 trace sessions, `recon_trace`) | introspection | 0.10, opt-in |
+| G10 | Per-turn logging context (Logger metadata) and stable event names (`:telemetry`) | introspection | 0.10, opt-in |
+| G11 | Control lane modelled on OTP 28 priority messages (receiver opts in per source) | soundness | 0.10 (rank 14) |
+| G12 | Named, replace-on-set timers and idle timeouts | features | 0.10 (with rank 38) |
+| G13 | `start_supervised` and per-test isolation in `spawned-test` | testing | 0.9 |
+| G14 | Typed, scoped, restart-surviving names | features | 1.0 (rank 12) |
+| G15 | Significant children and `auto_shutdown` | features | 1.x; leave room in 0.9's child spec |
+| G16 | `gen_statem`-style behaviour (state enter calls, postpone, state and event timeouts) | features | 1.x (ranks 16, 32) |
+| G17 | Process groups, Registry-style PubSub, `PartitionSupervisor` | features | 1.x (rank 27) |
+| G18 | Bounded parallel map like `Task.async_stream` | features | 1.x (rank 11b) |
+| G19 | Request collections (`reqids`) | features | 1.0 (helper and GUIDE recipe) |
+| G20 | Per-actor memory limit (`max_heap_size`) | features | 1.x (rank 18a) |
+| G21 | Demand-driven pipelines (GenStage, Broadway) | features | 1.x (ranks 18, 33, 35) |
+| G22 | Node watchdog (`heart`): feed systemd's watchdog from the stall watchdog | introspection | 1.0 (documentation) |
+| G23 | Remote console like `erl -remsh`: every binary running an `ActorSystem` is attachable through a local Unix socket (`0600`, per process, on by default, read-only by default; mutating commands opt-in; `SPAWNED_CONSOLE=off` or a Cargo feature to remove it) and a `spawned-ctl` CLI (`attach`, `ps`, `info`, `state`, `tree`, `stuck`, `trace`, `restart`); built on introspection, no code evaluation, nothing on the send or dispatch path | introspection | 0.9 (introspection v1) |
+
+Kept on purpose, where Rust's types do better than Erlang: typed replies, reply tokens that must be answered, a `Result` instead of crashing the caller on a timeout, bounded work, and the explicit stuck policy instead of `brutal_kill`.
+
 ### Non-goals
 
 Performance work may add opt-in profiles, but none of these may become the
-default (from the [Silver/flux study](legacy/docs/research/silver-flux.md#what-must-not-become-spawneds-default)):
+default (from the [Silver/flux study](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/docs/research/silver-flux.md#what-must-not-become-spawneds-default)):
 
 - static topology replacing dynamic actor creation;
 - Copy-only payload requirements replacing ordinary Rust message types;
@@ -158,7 +257,32 @@ default (from the [Silver/flux study](legacy/docs/research/silver-flux.md#what-m
   infrastructure to make a backend faster;
 - mandatory dedicated cores or spinning for ordinary actors.
 
+From the OTP, Elixir and Gleam comparison, Spawned will not add:
+
+- unrestricted selective receive (needs an O(n) scannable mailbox; bounded stashing, rank 16, and postpone, rank 32, cover the uses);
+- `gen_event` (handlers share one process, so one crash affects all; Elixir deprecated it);
+- hot code upgrade (`change_code`, appup/relup), which has no meaning for compiled Rust;
+- BEAM heap and GC knobs (`hibernate`, `fullsweep_after`, `min_heap_size`, `message_queue_data`);
+- per-process CPU priority levels (a cooperative runtime cannot honour them; execution groups and rank 39 are the honest form; OTP 28 *message* priority, G11, is different and planned);
+- `sys:replace_state`, which mutates state outside a turn;
+- calls that crash the caller on timeout (keep `Result`);
+- ETS or `persistent_term` clones in core (use `Arc`, atomics or published snapshots, rank 10);
+- `global`, `multi_call` or `abcast` in core (distribution is a separate layer, rank 44);
+- `brutal_kill` emulation by aborting threads or detaching tasks (it leaves destructors half-run);
+- an `Agent` core type (a few lines on `Actor`; snapshots serve reads better).
+
 **Principle: match Erlang/OTP as closely as possible.** Exit signals, links, monitors, `trap_exit`, supervision budgets and reply semantics follow OTP. A deviation is allowed only where Rust forces it, where Rust's types make spawned stricter (for example a typed reply token that must be answered), or where spawned adds a bound Erlang lacks (bounded outstanding work, backpressure). Every remaining deviation is listed with its reason in the [semantics contract](docs/design/semantics.md). Already aligned: stopping an actor discards its queued messages, as a process exit drops its mailbox (draining, rank 13, is the opt-in alternative). Newer capabilities (Orleans-style virtual actors, rank 26; process groups and topics, 27; distribution, 44; durable execution, 51; CRDTs and sagas, 54) are layers built on this OTP-faithful core: they may add behaviour, but never change the core's semantics.
+
+**Principle: no cost on the default path.** Robustness features must not slow message send, dispatch or the handler turn for users who do not ask for them. Prefer mechanisms with no runtime cost: macro lints, build-time checks, simulator-only checks (`cfg(spawned_sim)`) and documentation. A mechanism with a runtime cost (a watchdog's per-turn timestamp, a tracking allocator, process isolation) must be opt-in per feature flag, execution group or actor, and compiled out or untouched otherwise. Any change to the send/dispatch/turn hot path comes with benchmark numbers against main.
+
+**Erlang gaps and how far we close them.** Spawned keeps OTP's structure but cannot give all of the BEAM's runtime guarantees. Each gap and its zero-cost or opt-in mitigation:
+
+| Gap | BEAM | Mitigation (cost) |
+|---|---|---|
+| Memory isolation | Processes share nothing | Rank 6b: `#[actor]` warns on shared mutable state in actor fields (compile time); rank 10 removes the usual reason to share; rank 44a: execution groups in a separate OS process for real isolation (opt-in per group) |
+| Crash containment | A process crash never takes the node | Handler panics are already caught with `panic = "unwind"`; rank 6b also warns at build time under `panic = "abort"`; stack-depth and future-size budgets (tests); per-group stack size for native groups (rank 8c, config only); out of memory mostly prevented by bounded mailboxes (17) and byte credits (18) (opt-in) |
+| Preemption | Reduction counting | Execution groups as bulkheads (exists; document); rank 8b (implemented): the simulator fails a test whose handler never yields (sim only); stall watchdog (8) and cooperative budgets (8a) (opt-in) |
+| Per-process heaps | `max_heap_size` | Rank 18a: opt-in size hook or a user-installed tracking allocator; zero cost unless installed |
 
 ### Verification rule
 
@@ -167,6 +291,42 @@ model, trace replay of real Rust runs and negative checks that must fail, as
 OneForOne, OneForAll/RestForOne and nested supervision did. Release is blocked
 until they pass. Everything also keeps ordinary tests, an example, clippy and
 ThreadSanitizer.
+
+**Design-review rule (every new feature, before code).** A design doc in
+`docs/design/`, reviewed by two independent reviewers (Codex and agy, run
+without each other's findings), containing:
+
+1. **Semantics:** the guarantees it adds or changes in `semantics.md`, its
+   non-guarantees, and an Erlang/OTP alignment table with a Rust-forced reason
+   for every deviation.
+2. **A TLA+ model** with a negative control (a deliberately broken variant)
+   for every invariant, each shown to fail on its named property, and a per-PR
+   configuration that runs in about two minutes.
+3. **Trace validation:** the trace events the implementation must emit, how
+   they map to model actions, and the expected action coverage. A model not
+   checked against real code runs does not count. **Models track the code:** a
+   PR that changes modelled behaviour updates the model in the same PR.
+4. **A test plan:** for every guarantee, the check that fails if it breaks:
+   integration tests in both modes and every backend, deterministic simulator
+   tests for each race, scenario-fuzzer operations, trybuild cases for
+   compile-time guarantees, and new rows in the semantics coverage matrix.
+5. **Planted bugs:** three or four realistic implementation bugs the test plan
+   must catch, added to the planted-bug matrix.
+6. **Introspection:** how the feature shows up in `process_info`, the tree
+   snapshot, the stall watchdog and the attachable console.
+7. **Cost:** nothing on the default send, dispatch or turn path, proven by a
+   benchmark against main; anything costly is opt-in.
+8. **A client mapping:** the Ethrex and Ethlambda call sites it changes.
+
+Models track the code. A PR that changes modelled behaviour updates the model
+in the same PR; drift is a bug. The `model-sync` CI check enforces it: code
+mapped to a model in `verification/model-map.toml` may not change without
+that model (or the `no-model-change` label and a `Model: no change because
+<reason>` line), every lifecycle trace event must be replayed by its
+trace spec, every model must be trace-validated against real runs or
+allowlisted with a tracking item (TLC-only today: Coordinator, Lifecycle,
+DeferredReplies, DeferredJobs), and per-model trace coverage may only grow
+([model sync](docs/TESTING.md#model-sync)).
 
 **Production arm (rank 5c).** Trace validation checks test runs. After the
 Ethlambda canary, the same invariants (`AtMostOneGeneration`,
@@ -228,7 +388,7 @@ cargo-mutants and TLA+ with trace replay. Release gates and remaining gaps:
 | v0.7: implemented | Supervisor policies under proptest | Generated crash/exit/shutdown scripts for all strategies and modes, using zero backoff and an unexhausted budget; budget/backoff races have separate controlled tests. [Scope and replay](docs/TESTING.md#generated-supervisor-policy-scripts). |
 | Client rollout: pending | Fault injection in the Ethlambda canary | Kill and restart supervised actors in a running client and check it recovers; the application rollout gate (rank 5) should exercise failures, not just the happy path. |
 | After v0.7 | Shuttle for multi-actor framework races | Randomised schedules over whole supervisor/registry tests too large for Loom. Listed in TESTING.md, not started. Internal tool, separate from rank 20. |
-| After v0.7 | Long-running soak tests | Memory, file descriptors, threads and tasks stay flat over hours of actor churn and restarts. The ethrex 1.5 GB/day mailbox leak is the motivating bug. Nightly, not per PR. |
+| Implemented | Long-running soak tests | `concurrency/benches/soak`: hours of seeded churn over every lifecycle path (both modes, every backend, groups, all supervisor strategies, links, monitors, timers, registry, timeouts, streams, system cycles, bursts); RSS, live heap, threads, fds, Tokio tasks, registry, live actors and `metrics` gauges sampled to CSV; fails on per-hour growth after warm-up or a count not returning to baseline after quiesce; `--inject-leak` negative control. The ethrex 1.5 GB/day mailbox leak is the motivating bug. Run by hand on fede before each release, never scheduled ([soak harness](docs/TESTING.md#soak-harness)). |
 | With ranks 11-13 | Loom on the new primitives | Reply slots, registry compare-and-remove and mailbox publication versus stop. |
 | Ongoing | Coverage report (`cargo-llvm-cov`) | Find untested branches in supervision and system code; pairs with the surviving mutants. Report only, no threshold. |
 | Implemented | Porcupine-style linearizability checker for `request_histories` | `spawned_test::linearizability` (public, no new dependencies): memoised Wing-Gong/Lowe search, per-key partitions, pending requests, an `Unknown` budget verdict and failure explanations with an HTML timeline. `request_histories` now checks PropEr-style `parallel_commands` histories of up to about 1,000 operations against a real actor in both modes, with injected-bug negative controls. Next: check histories from soak and canary runs. See [Porcupine](docs/research/systematic-testing.md#history-checkers). |
@@ -268,7 +428,7 @@ Deterministic simulation and record/replay remain the testing flagship (ranks
 20-22), followed by environment simulation (rank 22a). Prior art and how
 databases combine these techniques: [systematic testing](docs/research/systematic-testing.md).
 
-The [archived v0.7 gate review](legacy/docs/reviews/v07-release-gates.md) records
+The [archived v0.7 gate review](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/docs/reviews/v07-release-gates.md) records
 the original scans and their limits. The corrected [testing guide](docs/TESTING.md)
 covers the expanded API profiles and protocol/supervision regressions.
 
@@ -415,7 +575,7 @@ failing run for replay. Spawned already owns those points, so `explore` needs no
 handler changes. Ranks 21-22 add what Coyote does not centre on: capturing
 delivery order from a real client and replaying it under the same scheduler.
 
-The [v0.7 gate review](legacy/docs/reviews/v07-release-gates.md) records the completed
+The [v0.7 gate review](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/docs/reviews/v07-release-gates.md) records the completed
 API/feature scans, generated-policy campaign and compatibility correction.
 
 ## Ranked backlog
@@ -441,13 +601,13 @@ Maintained [research notes](docs/research/README.md) cover
 [test techniques](docs/research/test-techniques.md) and
 [event sourcing](docs/research/event-sourcing.md).
 Older background notes (sources, design notes and experiments, without rankings of
-their own) are archived in [legacy](legacy/README.md):
-[framework ideas](legacy/docs/research/framework-ideas.md),
-[concurrency ideas](legacy/docs/research/concurrency-ideas.md),
-[Commonware](legacy/docs/research/commonware.md),
-[Silver/flux](legacy/docs/research/silver-flux.md),
-[verification strategy](legacy/docs/research/verification-strategy.md) and the
-earlier [detailed acceptance criteria](legacy/docs/design/roadmap-acceptance-2026-11-06.md).
+their own) are in the [archived `legacy/` directory](https://github.com/lambdaclass/spawned/tree/efba24340a01df82f872ec422b9dbaf48f897b04/legacy):
+[framework ideas](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/docs/research/framework-ideas.md),
+[concurrency ideas](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/docs/research/concurrency-ideas.md),
+[Commonware](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/docs/research/commonware.md),
+[Silver/flux](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/docs/research/silver-flux.md),
+[verification strategy](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/docs/research/verification-strategy.md) and the
+earlier [detailed acceptance criteria](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/docs/design/roadmap-acceptance-2026-11-06.md).
 
 ### Implemented (no longer ranked)
 
@@ -459,6 +619,7 @@ earlier [detailed acceptance criteria](legacy/docs/design/roadmap-acceptance-202
 | Fallible startup / readiness | Fallible startup and readiness for supervised children. The `result_on_start` branch is not the implementation; unsupervised `started()` still cannot fail. |
 | Instance-bound references | Decided: references are instance-bound; replacements are found by explicit lookup. Stable logical proxies remain an optional later design. |
 | Ordered shutdown | Implemented for groups and supervisors. No drain policy yet (rank 13). |
+| Simulator turn budget (rank 8b) | Under `--cfg spawned_sim`, an actor turn that runs past `SPAWNED_SIM_TURN_BUDGET` (default 250 ms, 0 disables) inside one poll fails the test, naming the actor and message type, with seed and tape replay lines. Compiled only under the cfg. |
 | Supervision lifecycle observation off the user backlog | Implemented for supervision. A generic public priority API is deferred (rank 14). |
 
 ### Step 0: settle disagreements with client evidence
@@ -509,7 +670,7 @@ A broader read of the same revisions for workarounds, incidents and comments
 
 Preserve this verification before a release and expand its scope for the new
 cohort/nested semantics. Restart and shutdown races are the bug class behind
-PRs #180, #182 and #185. Plan and acceptance criteria: [verification strategy](legacy/docs/research/verification-strategy.md).
+PRs #180, #182 and #185. Plan and acceptance criteria: [verification strategy](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/docs/research/verification-strategy.md).
 
 | Rank | Idea | Assessment |
 |---|---|---|
@@ -541,9 +702,12 @@ a Permanent or Transient child's failed factory, panic or startup timeout during
 the first start (semantics §11; found reviewing #233). Behaviour change: extend the `Supervision`/`Cohorts` TLA+ models and their Apalache inductive checks (`BudgetBounded`) to the new rule, with a negative control for counting per child, and update the Kani restart-window proofs and the guide. |
 | 5g | One exit reason when the runtime drops an actor (v0.8) | Tasks mode reports `Kill` when the runtime drops an actor; threads mode falls back to `Panic("unexpected framework panic")` for an actor that never finishes cleanup. Pick one documented reason for both modes and test it in both. |
 | 6 | Test kit with `ActorRef::mock()` | **Phase A implemented** in [`spawned-test`](#testing-crate-spawned-test) (unreleased): closure-backed `Mock` actors that implement `Handler<M>` for every message, so `ActorRef<Mock>` satisfies any `#[protocol]` and replaces hand-stubbed protocol refs with no production change; recording `Probe<M>` recipients (`expect`, `expect_no_message`); bounded harness waits; fault injection (`faults::exit`, `restart_child`, mock delay/discard/crash). Unmocked messages fail loudly. **Remaining:** mocking a field typed as a concrete `ActorRef<B>` needs an `Envelope` hook that downcasts to the concrete message and yields message and reply sender (a core change, deferred); controllable time for timers; a generic idle check; core `ChildHandle::exit(reason)` would make injected exits exact (today `Panic` and `Kill` go through a linked helper, so a panic surfaces as `Panic("panic in handler: ...")`). **Client evidence:** hand-stubbed protocols in ethlambda tests (`RecordingChain` in `column_checks.rs`, also `envelope_checks.rs`, `verdict.rs`). **Research ([actor testing](docs/research/actor-testing.md)):** three gaps against Akka/Erlang kits. (1) A synchronous behavior test kit (Akka `BehaviorTestKit`): run one handler with a test `Context` and record its effects (sends, spawns, timers, stop) without a runtime; needs a core change. (2) Manual time (Akka `ManualTime`): document Tokio's `start_paused` for async actors; thread actors need the framework-owned clock, the same seam as the [simulation backend spike](#simulation-backend-spike) and `ctx.now()`, so build one clock, not two. (3) Concrete `ActorRef<B>` mocking stays deferred (actix's `Mocker` is the precedent); until then users hold protocol refs or `Recipient`s. Also: the idle check should report total deadlock Go-`checkdead` style (every actor idle, a request outstanding, no timer pending), and a replay-equivalence check for event-sourced actors ([event sourcing](docs/research/event-sourcing.md)). |
+| 6b | Shared-state and abort lints in `#[actor]` | Zero runtime cost. The macro warns when an actor's fields hold shared mutable state (`Arc<Mutex<_>>`, `Arc<RwLock<_>>`, atomics behind `Arc`, `static mut`), with an opt-out attribute for deliberate cases, and a build script check warns when the profile uses `panic = "abort"`, under which a handler panic kills the process instead of one actor. Syntactic only (it cannot see sharing behind a type alias), but it catches the common pattern, including the one LLM-written code reaches for first. Erlang gap: memory isolation. |
 | 7 | Request deadlock detection | **Client evidence:** requests awaited inside handlers exist (ethrex peer table), no cycle found; keep as a cheap safety net.  `ActorError::WouldDeadlock` naming the cycle instead of a timeout. `ActorRef::request` takes only `&self`, so set a thread-local `CURRENT_ACTOR` only while the actor's own handler future is polled (and around the synchronous handler in thread mode); detached helpers create no edges. Keep a small wait set per actor for `join!`. Measure cost before enabling outside debug builds. **Approach chosen ([deadlock and stall detection](docs/research/deadlock-and-stall-detection.md)):** eager detection. Add a wait-for edge when a handler sends a request, walk the per-actor wait sets for a cycle, fail the request that would close it with `WouldDeadlock` naming the cycle, remove the edge on reply or timeout; a request to self fails at once (Erlang's `calling_self`). Waits on raw channels, locks or `spawn_blocking` create no edges, so it is a safety net, not a proof. Edges are exported to rank 30. |
 | 8 | Stall watchdog | **Client evidence:** wedged and runtime-starving handlers in both clients (see sweep). Upgrade the debug-only `WarnOnBlocking` (whole-loop type name, 10 ms per poll, Async backend only): name the actor and message type, separate "one poll blocked a worker" from "handler stuck across awaits", optional in release builds. Long handler time alone does not establish deadlock. **Research ([deadlock and stall detection](docs/research/deadlock-and-stall-detection.md)):** three detectors: per-poll timing inside dispatch with actor id and message type (a poll blocking a worker), turn age (a handler stuck across awaits), and an Akka-style scheduling-delay probe per execution group (starvation). Tokio's `tokio_unstable` task hooks are optional behind a feature, not required. |
 | 8a | Cooperative budgets and per-turn work measurement | **Client evidence:** the same incidents as rank 8 (ethrex d958dcba4 filled every runtime worker; ethlambda moved its chain actor to `Backend::Thread`). Spawned cannot preempt Rust code; do what the BEAM does for native code instead. (A) Fairness between messages: an opt-in dispatch policy that yields after N messages or T µs per poll (today's private `MessageTurn` experiment), framework operations that consume Tokio's coop budget, and per-actor work metrics (poll time per message, polls per turn, long polls) feeding ranks 8, 29 and 39. (B) Opt-in `ctx.checkpoint().await` and a budgeted iterator that yield only when the turn is over budget. (C) Synchronous code is detected (rank 8) and isolated (placement, rank 11b), never preempted. Rejected: auto-instrumentation by macro, signal-based preemption. Acceptance: single-CPU starvation bound; watchdog fires on a blocking handler. See [preemption and budgets](docs/research/concurrency-models.md#3-preemption-reduction-counting-and-cooperative-budgets). Per-turn work measurement uses the same instrumentation point as rank 8. |
+| 8b | Simulator check for handlers that never yield | **Implemented** (see [Implemented](#implemented-no-longer-ranked)). Simulator only (`cfg(spawned_sim)`), no production cost: a run fails when one actor turn runs longer than `SPAWNED_SIM_TURN_BUDGET` (default 250 ms of wall-clock time) inside a single poll, naming the actor and message type, so a blocking or spinning handler is caught in tests before production. Wall-clock, not a poll count: a poll cannot be preempted or its work counted, and a self-waking turn already yields ([testing](docs/TESTING.md#seeds-and-decision-tapes-under---cfg-spawned_sim)). Erlang gap: preemption. |
+| 8c | Per-group stack size | Configuration only. A stack size for native and threaded execution groups, so actors with deep recursion get a bigger stack instead of overflowing, which Rust cannot catch. Erlang gap: crash containment. |
 | 9 | Per-actor flight recorder | Last N handled message types and timestamps per actor, dumped on panic, stall or timeout. Bounded and opt-in; a building block for rank 22. **Research ([observability](docs/research/observability.md)):** the minimal record per message is type, enqueue time, start time and outcome, bounded per actor and readable by `spawned-top` (rank 30). |
 | 10 | Published state snapshots (`Projected<S>`) | **Client evidence:** ethrex actors await read requests to `PeerTableServer` (see results above); its read-only queries are the first use.  Single-writer, many-reader snapshot slot so readers do not wait behind a long handler; replaces the `Arc<RwLock<_>>` escape hatch. Document that a snapshot can lag messages already sent (no read-your-writes). |
 
@@ -568,7 +732,7 @@ the first start (semantics §11; found reviewing #233). Behaviour change: extend
 |---|---|---|
 | 17 | Bounded mailboxes and admission | **Production evidence:** ethrex's 1.5 GB/day leak from unbounded per-connection mailboxes. Opt-in alongside unbounded transport. Define reject/wait semantics, cancellation/deadlines and cyclic-send deadlocks. |
 | 18 | Pre-allocation byte credits | Independently of optional metrics, bound allocated/in-flight bytes, not just queue slots. Credits can cover a whole pipeline; oversize requests must not wait forever. |
-| 18a | Per-actor memory limits | Erlang's `max_heap_size`: an actor whose memory grows past a limit is killed and restarted by its supervisor instead of taking down the node. Credits (rank 18) bound bytes in flight, not an actor's own state, and Rust cannot measure per-actor heap the way the BEAM does. Proposed: an opt-in size hook on the actor (`fn state_size(&self) -> usize`, or a tracking allocator scoped to the actor's turns when the user enables one), checked between turns, with a configured limit and an exit reason the supervisor treats like a crash; plus metrics for the reported size. **Client evidence:** ethrex's 1.5 GB/day growth would have been contained to one restarting actor. Needs a design that keeps the check cheap and honest about what it cannot see (memory held by other actors or `Arc`s). |
+| 18a | Per-actor memory limits | Erlang's `max_heap_size`: an actor whose memory grows past a limit is killed and restarted by its supervisor instead of taking down the node. Credits (rank 18) bound bytes in flight, not an actor's own state, and Rust cannot measure per-actor heap the way the BEAM does. Proposed: an opt-in size hook on the actor (`fn state_size(&self) -> usize`, or a tracking allocator scoped to the actor's turns when the user enables one), checked between turns, with a configured limit and an exit reason the supervisor treats like a crash; plus metrics for the reported size. **Client evidence:** ethrex's 1.5 GB/day growth would have been contained to one restarting actor. Needs a design that keeps the check cheap and honest about what it cannot see (memory held by other actors or `Arc`s). **No default cost:** the tracking allocator is a separate opt-in the user installs as `#[global_allocator]`; spawned only sets a thread-local current-actor id per turn when the feature is on. Allocations freed by another actor are charged approximately. |
 | 19 | Propagated budgets / stale-work skipping | Cheap stale-work rejection need not wait for a complete credit system. Opt-in expiry before dispatch, inherited monotonic deadlines and distinct outcomes. Timeout is not rollback; current requests still run after caller timeout/drop. Inherited deadlines are scope deadlines (rank 15a). |
 
 ### Step 6: the testing flagship
@@ -578,7 +742,7 @@ the first start (semantics §11; found reviewing #233). Behaviour change: extend
 | 20 | Actor-level ordering exploration (`spawned::sim::explore`) | **In progress (draft PR #218):** `spawned_rt::tasks::sim::explore` has PCT and a stateless delay-bounded DFS (exhaustion reported) as task-level scheduling strategies, recorded into the PR #214 decision tape and selectable with `#[sim_test(explore = "pct:d=3", iterations = N)]`; planted lost-update bugs that random misses in 100,000 runs are found in under 10 PCT runs. Mailbox delivery control was not added: in process, `send` enqueues inside the sender's poll, so cross-sender order at a mailbox is already chosen by task scheduling. **Remaining:** partial-order or sleep-set reduction (needs per-poll access sets, not just wakers), turn-level atomic steps, readable delivery-list output, test-only yield points for atomicity windows with no `.await` (the #209 class), and the idle-with-request-outstanding deadlock report. **First step:** the [simulation backend spike](#simulation-backend-spike) (phase 4, batch 2), a deterministic `spawned-rt::tasks` executor with virtual time and seeded task choice; `explore` adds delivery control on top. Treat one handler turn as an atomic step and control delivery at the mailbox boundary; only deliveries racing at the same actor, timer or exit branch the schedule (actor-level partial-order reduction, as in P#/Coyote). Failures shrink to readable delivery lists and can print as sequence diagrams. Start here rather than full environment simulation. Shuttle stays an internal tool for framework races (see verification strategy). Handlers that use Tokio I/O, `spawn_blocking` or wall-clock time directly remain outside control. Prior art: Coyote/P# for the design; Stateright (Rust actors that are model-checked and also run on a real network) and Dropbox's Trinity (a Rust engine under a custom test executor) for the Rust side ([systematic testing](docs/research/systematic-testing.md)); Concuerror, a stateless model checker that systematically explores Erlang process interleavings, for actor-level systematic testing in an OTP language ([actor testing](docs/research/actor-testing.md)). Report "all actors idle with a request outstanding" as a deadlock, as Concuerror reports a stuck receive; Concuerror's single-node modelling of distributed Erlang is prior art for rank 22a. |
 | 21 | Per-actor crash tape | Record one actor's inputs and replay its crash in a unit test. Inputs include replies to its own requests, clock reads and I/O, and replay needs a state snapshot at the tape start (or a tape since `started()`); the last N messages into a fresh instance do not reproduce state. Does not reproduce cross-actor races. Share the snapshot interface with event-sourced recovery; keep tape and event formats separate (a hypothesis, [event sourcing](docs/research/event-sourcing.md)). |
 | 22 | Record in production, replay in simulation | Record ingress plus mailbox delivery order (`(actor_id, seq)` per dequeue) in a bounded black box, replay with enforced order, detect divergence with per-handler hashes. Needs ranks 20 and 21, `ctx.now()`/`ctx.rng()` discipline in client code and DB snapshots. Go/no-go: replay a reintroduced known race every time. Highest ceiling; not started before 20 and 21. |
-| 22a | Environment simulation in `spawned-test` | Extends phase 6 after ranks 20-22: turmoil/madsim-style simulated network (partition, delay, hold), disk (failed or slow writes) and clock (jumps, skew) driven by the same seed as `explore`, so a test can fail a peer's connection or a write at a chosen delivery. Prefer adapting turmoil (tokio-rs, `tokio::net`-shaped) to owning a simulator; only I/O routed through the simulated layer is controlled. Multi-client network runs stay outside the crate, on ethshadow (deterministic, real binaries) or Attacknet (Chaos Mesh on Kurtosis devnets), see [Ethereum testing](docs/research/ethereum-testing.md). Same-seed reruns should produce identical traces (S2's check). |
+| 22a | Actor-owned I/O (`spawned::net`) and environment simulation | **Direction decided 2026-11-11 (see [Runtime direction](#runtime-direction)).** Spawned owns network I/O the way Erlang ports do: TCP/UDP listeners and streams owned by an actor, with `{active, once}`-style delivery as messages or awaitable reads, so backpressure is built in. `spawned-rt` picks the backend: Tokio (production default, unchanged cost), the simulator (a seeded simulated network with latency, loss, reordering and partitions, plus clock jumps), and later an opt-in io_uring backend (rank 52). Clients adopt it instead of `tokio::net`: ethrex's devp2p (its own code) first, then ethlambda's libp2p through a custom libp2p transport, then HTTP through hyper's pluggable runtime. The payoff is whole-node deterministic simulation, FoundationDB/TigerBeetle-style: many peers, partitions and crashes in one seeded run that replays and shrinks. Disk faults need a separate storage abstraction (RocksDB and libmdbx are synchronous and stay on blocking jobs), a later step. Apps that keep using Tokio types directly lose nothing; only I/O routed through `spawned::net` is simulated. Multi-client runs of real binaries stay outside the crate (ethshadow, Attacknet; see [Ethereum testing](docs/research/ethereum-testing.md)). Same-seed reruns must produce identical traces (S2's check). |
 
 ### When step 0 or a user justifies them
 
@@ -598,11 +762,22 @@ the first start (semantics §11; found reviewing #233). Behaviour change: extend
 | 34 | Per-handler blocking-worker leasing | Prototype for mostly idle blocking actors. Preserve serial turns and runtime/I/O ownership; measure worker capacity and long-handler progress. The I/O-blocking counterpart of the compute pool (rank 11b); share its admission design. |
 | 35 | Batch handlers / generated batch dispatch | Promising for actual I/O/crypto batching; no guaranteed win. Preserve per-message replies, failure/drop semantics and ordering across heterogeneous message types. |
 | 36 | Explicit coalescing / overload policies | For obsolete progress/state notifications, with bounded keys. Requests cannot silently disappear; superseded requests get an explicit error. Single-flight sharing of identical in-flight reads is a related opt-in, only for pure reads. |
-| 37 | Generated closed-protocol dispatch | After profiling framework cost. Today a request allocates a reply channel, a boxed envelope and a boxed handler future. Enum dispatch needs codegen/transport bridging while retaining `Handler`/`Recipient` support; payload and reply allocations remain separate costs. Reusable reply slots only if profiles show they matter. |
+| 37 | Generated closed-protocol dispatch and a cheaper message path | **The main performance track (see [Runtime direction](#runtime-direction)); profile first.** Today each actor is one Tokio task, and a request allocates a reply channel, a boxed envelope and a boxed handler future, and every receive races the mailbox against a cancellation token. Planned, each change required to beat main on the benchmark harness and not regress the ethrex canary: (1) `#[protocol]` generates one enum per protocol carried by value in the mailbox, with static dispatch and no boxed future, keeping `Handler`/`Recipient` support; (2) reusable per-actor reply slots (0.8's deferred-reply slot is most of this); (3) a single-consumer mailbox with cancellation folded into the same wakeup, with a Loom model; (4) batched draining of up to N ready messages per poll (shared with rank 8a). Payload allocations remain the caller's cost. |
 | 38 | Timer drift / missed-tick policies | **Promoted by client evidence:** both clients hand-roll fixed-delay, aligned, skip and pause behavior; build after step 4. Fixed-delay/rate, Skip/Delay/Burst and cancellation. Preserve current timer behavior unless users opt in. |
 | 39 | CPU service classes / weighted resource groups | Requires a workload and a clear fairness contract. Elapsed handler time includes awaits and is not CPU accounting. Would aggregate rank 8a's per-turn work metrics and could weight several compute pools (rank 11b). |
 | 40 | Ready-made integrations | `Recipient<M>` as a stream sink, actors behind Axum/Tonic as Tower services, a connection-owning actor with reconnect/backoff. Build on demand. |
 | 41 | AI-agent example | One example showing supervision, timeouts, cancellation and tracing for long-running agents. Positioning, not a library change. |
+
+### Runtime direction
+
+Decided 2026-11-11, with Ethrex and Ethlambda open to rewrites. This is priority tier 6 (rank 22a's simulated network is tier 3, determinism): it waits for soundness and introspection ([Priorities](#priorities)).
+
+1. **Keep Tokio as the runtime.** Each actor is already one Tokio task with its own receive loop, which is what a purpose-built actor executor would converge to; Tokio's work stealing gives the load balancing the BEAM gets from process migration. `spawned-rt` stays the single seam (Tokio, OS threads, simulator).
+2. **Make each message cheaper (rank 37)**, after profiling where a message's time goes. This is expected to be the largest performance gain and changes no semantics.
+3. **Own I/O as Erlang ports (rank 22a)** so whole client nodes run under the deterministic simulator. This is the strategic step: it extends "verified once, tests replay exactly" from actors to networks of peers.
+4. **Add backends only on evidence:** an actor-aware executor for turns if profiling shows Tokio's scheduling (not spawned's own code) dominates; an io_uring thread-per-core backend for `spawned::net` (rank 52) for an application built for it. Both opt-in, behind the same seam, under the no-cost rule.
+
+Rejected: replacing Tokio with Glommio or monoio wholesale (loses work stealing, io_uring cannot be required, and does not speed up what the clients are slow at).
 
 ### Research or separate products
 
@@ -611,6 +786,7 @@ the first start (semantics §11; found reviewing #233). Behaviour change: extend
 | 42 | CoDel-inspired mailbox shedding | Isolated experiment for explicitly droppable traffic after admission/deadlines. Network CoDel constants are not actor defaults; sampled metrics timestamps are insufficient for its controller. Compare against simpler policies. |
 | 43 | Out-of-process/shared-memory flight recorder | If real hangs defeat in-process inspection. A bounded versioned last-known snapshot is a smaller first step; a recorder also needs ordered events, sequence/gap reporting and loss accounting. |
 | 44 | Distributed actors | Large optional layer needing wire/version/security/failure contracts. Virtual actors (rank 26) keep the addressing path open; Orleans' directory and placement are the reference ([virtual actors](docs/research/virtual-actors.md)), and promise pipelining (rank 11a) is the latency tool. Rust prior art: `ractor_cluster` and kameo's libp2p remote refs ([Rust actor landscape](docs/research/rust-actor-landscape.md)). |
+| 44a | Execution groups in a separate OS process | Real memory isolation and crash containment, the Erlang node model: an opt-in group runs its actors in a child process supervised by the parent, messages are serialized, and a segfault, abort, stack overflow or out-of-memory stays in the child, which is restarted. Cost only for that group (serialization, IPC). Shares the wire and failure contracts of rank 44. |
 | 45 | Compile-time actor graph | Macro-generated topology for diagrams and static request-cycle checks; hard with dynamic actors. |
 | 46 | Sparse-work root-driver yield hypothesis | Private experiment when profiles show deferred-wake delay; not a default or backend. |
 | 47 | Session-typed protocols | Opt-in experiment for a fixed two-party protocol. Does not prove deadlock freedom for arbitrary dynamic actors, blocking handlers or failing external systems. |
@@ -619,7 +795,7 @@ the first start (semantics §11; found reviewing #233). Behaviour change: extend
 | 49 | Durable outbox/idempotency recipe | Application-layer example when recovery needs it. Commit intent/dedup with effects; do not persist arbitrary boxed Rust envelopes. **Research ([event sourcing](docs/research/event-sourcing.md)):** a recipe for an event-sourced actor: snapshot plus replay in `started()`, append with expected version, side effects after the append, idempotency key. Prior art: Akka Persistence (`EventSourcedBehavior`), Orleans `JournaledGrain`, coerce's persistence in Rust. |
 | 50 | Durable timers/reminders | Separate persistence contract: identity, clock changes, missed executions and duplication across restart. Model reminders as events (timer set, timer fired) so replay re-arms unfired timers ([event sourcing](docs/research/event-sourcing.md)). |
 | 51 | Temporal-style durable execution | A separate product-scale subsystem: persisted decisions, deterministic replay, external effects and upgrades. Supervision alone does not provide it. Event sourcing persists state changes; durable execution persists handler progress. Restate remains the reference ([event sourcing](docs/research/event-sourcing.md)). |
-| 52 | Thread-per-core I/O backend (io_uring) | **Research pointer, frozen.** Seastar, Glommio, monoio and tokio-uring. Parked pinned shards already give per-core placement; the earlier Monoio io_uring/epoll experiments ([design findings](legacy/benchmarks/DESIGN-FINDINGS.md#what-we-learned-in-the-linux-vm)) did not justify replacing Tokio, and both clients use Tokio I/O throughout. Reopen only with a client I/O profile ([note](docs/research/concurrency-models.md#6-thread-per-core-and-io_uring)). |
+| 52 | Thread-per-core I/O backend (io_uring) | **Research pointer, frozen; reopens as a `spawned::net` backend (rank 22a), not a runtime replacement.** Seastar, Glommio, monoio and tokio-uring are each their own executor (one ring per core, polled by that core), so "our executor plus Glommio for I/O" means spawned becoming thread-per-core. That loses work stealing, which matters with a few heavy actors (block execution, sync) beside thousands of light ones; io_uring is blocked by Docker's default seccomp profile and disabled on many hardened kernels, so it can never be required; and the clients' time goes to EVM execution, cryptography and synchronous databases, not network I/O. Parked pinned shards already give per-core placement. The earlier Monoio experiments ([design findings](https://github.com/lambdaclass/spawned/blob/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/benchmarks/DESIGN-FINDINGS.md#what-we-learned-in-the-linux-vm)) did not justify replacing Tokio. Reopen as an opt-in execution-group backend behind `spawned::net` when an application built for thread-per-core (proxy, gateway, storage node) or a client I/O profile justifies it; clients would need no change ([note](docs/research/concurrency-models.md#6-thread-per-core-and-io_uring)). |
 | 53 | Incremental dataflow | **Research pointer.** Timely/differential dataflow (Materialize). A different programming model; read its progress tracking (frontiers) before designing rank 33's completion watermarks ([note](docs/research/concurrency-models.md#7-incremental-dataflow)). |
 | 54 | CRDT-replicated state, sagas and process managers | **Research pointer**, distribution/durability tier. CRDTs only with multi-node replicas (rank 44); a crash-surviving process manager is durable execution (ranks 49-51). A saga example with compensation, supervision and timeouts could come first ([note](docs/research/concurrency-models.md#8-crdts-sagas-and-process-managers)). |
 
@@ -700,7 +876,7 @@ behavior and its important failure/overload limit. Prefer a program with
 assertions over a snippet that only compiles, and do not present speculative API
 names as working code. The [examples index](examples/README.md) lists what
 exists today. Experimental backend drivers and their evidence stay under
-`benchmarks/` and [legacy](legacy/README.md).
+`benchmarks/` and the [archived `legacy/` directory](https://github.com/lambdaclass/spawned/tree/efba24340a01df82f872ec422b9dbaf48f897b04/legacy).
 
 ### Release example coverage
 

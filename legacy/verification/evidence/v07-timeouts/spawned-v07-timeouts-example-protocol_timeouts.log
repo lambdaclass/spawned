@@ -1,5 +1,0 @@
-   Compiling spawned-concurrency v0.6.0 (/tmp/spawned-v07/concurrency)
-   Compiling spawned-capability-examples v0.1.0 (/tmp/spawned-v07/examples/capabilities)
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.14s
-     Running `/tmp/spawned-pr-security-review/system-target/debug/protocol_timeouts`
-Timeout precedence: handle override > method > protocol > five-second default.

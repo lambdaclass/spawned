@@ -1,7 +1,0 @@
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.02s
-     Running `/tmp/spawned-pr-security-review/system-target/debug/registrations_and_fakes`
-
-thread 'spawned-named-service' (3873757) panicked at examples/capabilities/src/bin/registrations_and_fakes.rs:41:9:
-intentional named-service replacement
-note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
-Fake protocols isolate business tests; owned names follow cleanup and replacement.

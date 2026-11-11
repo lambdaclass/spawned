@@ -1,2 +1,0 @@
-metrics,mode,actors,producers,work,sample_every,requests,seconds,requests_per_second,actor_ref_bytes
-false,async,1,1,0,0,5038851,2.000014183,2519407.634,72

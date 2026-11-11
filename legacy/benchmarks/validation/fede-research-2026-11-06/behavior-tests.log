@@ -1,7 +1,0 @@
-..
-----------------------------------------------------------------------
-Ran 2 tests in 2.520s
-
-OK
-async {'timeouts': '1771', 'hot_timeouts': '1371', 'cold_timeouts': '400', 'cold_other_observed_p99_ns': '101635406'}
-sharded {'timeouts': '1485', 'hot_timeouts': '1485', 'cold_timeouts': '0', 'cold_other_observed_p99_ns': '3244594'}

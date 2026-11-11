@@ -1,0 +1,25 @@
+id	name	file	bug
+01	sup-budget-off-by-one	supervision.rs	Restart window admits max+1 restarts (`>=` became `>`)
+02	sup-window-edge	supervision.rs	A restart stamped exactly `window` ago still counts against the budget
+03	sup-restforone-wrong-side	supervision.rs	RestForOne rebuilds the failed child and the children *before* it
+04	sup-transient-restarts-on-shutdown	supervision.rs	Transient restarts on Shutdown (only Normal treated as clean)
+05	sup-temporary-collateral-rebuilt	supervision.rs	A Temporary sibling stopped as collateral by OneForAll/RestForOne is rebuilt
+06	sup-backoff-never-resets	supervision.rs	Backoff failure streak never resets after a stable generation
+07	sup-shutdown-forward-order	supervision.rs	Supervisor stops children in declaration order instead of reverse
+08	sup-budget-exhaustion-silent	supervision.rs	Exhausting the restart budget retires the child instead of failing the supervisor
+09	nested-restart-mode-ignored	supervision/nested.rs	A nested supervisor's restart mode is ignored (always Permanent)
+10	link-normal-exit-kills	link.rs	A Normal exit kills a non-trapping linked peer
+11	link-unlink-one-sided	link.rs	unlink removes only the caller's edge; the peer still signals it
+12	link-dead-peer-normal	link.rs	Linking to an already-exited peer reports Normal instead of its reason
+13	exit-linked-cause-dropped	actor_cleanup.rs	An actor killed through a link exits Normal, so the crash stops propagating
+14	exit-shutdown-reports-normal	child_handle.rs	ChildHandle::shutdown commits Normal instead of Shutdown
+15	mon-down-after-demonitor	tasks/actor.rs	The monitor waiter delivers Down even when demonitor already removed it
+16	mon-dead-target-no-down	tasks/actor.rs	Monitoring an already-dead actor returns an inert ref and no Down
+17	mon-cleanup-keeps-waiters	monitor.rs	An exiting observer does not cancel its monitor waiters (they hold its handle until the target dies)
+18	reg-not-removed-on-death	system.rs	A managed actor's registered name is never removed when its scope ends
+19	mb-handle-after-stop	tasks/actor.rs	The run loop keeps handling queued messages after stop (D4)
+20	mb-send-deferred	tasks/actor.rs	ActorRef::send enqueues from a spawned task, so a later request can overtake it (D1)
+21	timer-after-cancel	tasks/time.rs	send_after ignores its own cancellation token (fires after cancel)
+22	timer-interval-outlives-actor	tasks/time.rs	send_interval keeps ticking after its actor stops (only its own token stops it)
+23	sys-shutdown-forward-order	system.rs	ActorSystem shutdown stops targets in admission order instead of reverse
+24	sys-targets-unsorted	system.rs	System shutdown stops all standalone actors before all trees, ignoring admission order

@@ -1,0 +1,15 @@
+Planted bug 15 (mon-down-after-demonitor): The monitor waiter delivers Down even when demonitor already removed it
+
+diff --git a/concurrency/src/tasks/actor.rs b/concurrency/src/tasks/actor.rs
+index a7fb0ec2..09ec5c06 100644
+--- a/concurrency/src/tasks/actor.rs
++++ b/concurrency/src/tasks/actor.rs
+@@ -458,7 +458,7 @@ impl<A: Actor> Context<A> {
+                 .as_mut()
+                 .and_then(|entries| entries.remove(&monitor_ref))
+                 .is_some();
+-            if deliver {
++            if deliver || reason.is_abnormal() {
+                 let _ = actor_ref.send(Down {
+                     monitor_ref,
+                     reason,

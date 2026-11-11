@@ -1,0 +1,14 @@
+Planted bug 24 (sys-targets-unsorted): System shutdown stops all standalone actors before all trees, ignoring admission order
+
+diff --git a/concurrency/src/system.rs b/concurrency/src/system.rs
+index 0de9b0f5..01769d2d 100644
+--- a/concurrency/src/system.rs
++++ b/concurrency/src/system.rs
+@@ -506,7 +506,6 @@ impl SystemInner {
+                 .cloned()
+                 .map(ShutdownTarget::Scope),
+         );
+-        targets.sort_by_key(ShutdownTarget::id);
+         self.control.handle.spawn(async move {
+             let ordered = std::panic::AssertUnwindSafe(async {
+                 // Keep reverse admission order across standalone actors and trees.

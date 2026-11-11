@@ -36,6 +36,9 @@ env:
 jobs:
   scenario:
     runs-on: ubuntu-latest
+    env:
+      # Overrides rust-toolchain.toml (stable 1.93.0): cargo-fuzz needs this nightly.
+      RUSTUP_TOOLCHAIN: ${{ env.FUZZ_NIGHTLY }}
     timeout-minutes: ${{ github.event_name == 'workflow_dispatch' && 360 || 25 }}
     steps:
       - uses: actions/checkout@v4

@@ -29,4 +29,4 @@ Active design contracts. Usage is documented in the [guide](../GUIDE.md).
 
 Earlier designs (the v0.5 API redesign alternatives, the framework comparison
 and superseded roadmap plans) are archived in
-[`legacy/docs/design`](../../legacy/docs/design).
+[`legacy/docs/design`](https://github.com/lambdaclass/spawned/tree/efba24340a01df82f872ec422b9dbaf48f897b04/legacy/docs/design).

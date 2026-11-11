@@ -24,8 +24,6 @@ def main():
  doc=['# Spawned backend design study','', 'Measured runtime, transport, scheduler and I/O experiments. Read the methodology and compatibility limits before choosing a backend. Public actor/protocol APIs and production defaults are unchanged.','', '## How to read this report','', 'Each platform is analyzed separately. Linux is an OrbStack ARM64 VM/container, not bare metal. Lines and bars use medians; error bars show observed min/max across repeated processes, not confidence intervals. Failed starts and watchdogs are retained and excluded from performance medians. Prototype controls omit some actor lifecycle semantics, so raw speed alone is not a replacement criterion.','']
  all_rows=[r for rows in studies.values() for r in rows]
  doc += [f"{len(all_rows):,} measured processes; {sum(r['status']=='ok' for r in all_rows):,} completed; {sum(int(r.get('messages') or 0) for r in all_rows if r['status']=='ok'):,} validated requests/echoes. [Raw datasets and hashes]({os.path.relpath(args.data,out)}/manifest.json).",'']
- findings=Path(__file__).resolve().parent.parent/'legacy'/'benchmarks'/'DESIGN-FINDINGS.md'
- if findings.exists():doc += [findings.read_text(),'']
  figures=[]
  def save(fig,name,caption):
   png=out/'graphs'/f'{name}.png';svg=out/'graphs'/f'{name}.svg'
@@ -101,10 +99,7 @@ def main():
     rss_text=f'{rss[0]/1e6:.1f}' if rss else '—'
     doc.append(f'| {v} | {c} | {sum(r["status"]=="ok" for r in group)} | {rate_text} | {lat_text} | {rss_text} |')
   doc+=['']
- doc+=['## Incorporation criteria','','A backend is eligible for incorporation only after both performance and compatibility evidence support it. Keep async Tokio as the general-purpose reference. Treat native runnable queues as scheduler prototypes requiring full lifecycle integration. Per-core placement can help locality while worsening skewed-load tails. Spinning consumes CPU even without useful work. The reply experiment is a transport control: the normal async path already uses Tokio oneshots. io_uring results are Linux VM evidence and cannot rank macOS kqueue against Linux kernels directly.','', '## All implementations and tests','','The following guide defines every backend/control and test, including semantic differences and future integration work.','']
- guide=(Path(__file__).resolve().parent.parent/'legacy'/'benchmarks'/'EXPERIMENTS.md').read_text()
- guide=guide.replace('(../docs/',f'({os.path.relpath(Path(__file__).resolve().parent.parent/"legacy"/"docs",out)}/')
- doc.append(guide.replace('# Backend design experiments: team guide','### Study guide',1))
+ doc+=['## Incorporation criteria','','A backend is eligible for incorporation only after both performance and compatibility evidence support it. Keep async Tokio as the general-purpose reference. Treat native runnable queues as scheduler prototypes requiring full lifecycle integration. Per-core placement can help locality while worsening skewed-load tails. Spinning consumes CPU even without useful work. The reply experiment is a transport control: the normal async path already uses Tokio oneshots. io_uring results are Linux VM evidence and cannot rank macOS kqueue against Linux kernels directly.','']
  report='\n'.join(doc);(out/'REPORT.md').write_text(report)
  body=markdown.markdown(report,extensions=['tables','fenced_code','toc'])
  for path in figures:

@@ -17,7 +17,8 @@ pub struct Holder<T> {
     hooks: Arc<AtomicUsize>,
 }
 
-#[actor(protocol(HolderProtocol))]
+// The hook counter is shared with the test on purpose, to observe the hooks.
+#[actor(protocol(HolderProtocol), allow_shared_state)]
 impl<T: ToString + Send + 'static> Holder<T> {
     pub fn new(value: T, hooks: Arc<AtomicUsize>) -> Self {
         Holder { value, hooks }

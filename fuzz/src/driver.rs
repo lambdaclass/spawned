@@ -118,6 +118,8 @@ struct Driver {
     traps: HashMap<ActorId, (bool, u64)>,
     handles: HashMap<ActorId, ChildHandle>,
     first_exit: HashMap<ActorId, ExitReason>,
+    /// Reason of a driver `Op::Stop` that reached a live actor (X8).
+    requested: HashMap<ActorId, ExitReason>,
     /// Total handler sleep ever sent: a fence may wait behind all of it.
     queued_sleep: Duration,
 }
@@ -342,6 +344,7 @@ impl Driver {
             traps: HashMap::new(),
             handles: HashMap::new(),
             first_exit: HashMap::new(),
+            requested: HashMap::new(),
             queued_sleep: Duration::ZERO,
         };
         driver.new_system();
@@ -412,7 +415,7 @@ impl Driver {
     }
 
     fn may_stop(&self, id: ActorId) {
-        self.world.lock().may_stop.insert(id);
+        self.world.lock().stoppable(id);
     }
 
     /// Resolve a command's operands against the current population.
@@ -643,6 +646,9 @@ impl Driver {
                 let Some(aref) = self.pick(who) else { return };
                 self.may_stop(aref.id());
                 let handle = aref.child_handle();
+                if handle.is_alive() {
+                    self.requested.entry(aref.id()).or_insert(reason(r));
+                }
                 match r {
                     Reason::Normal => handle.stop(),
                     Reason::Shutdown => handle.shutdown(),
@@ -1681,6 +1687,20 @@ impl Driver {
                     "L4: an actor that panicked exited with a non-abnormal reason",
                     format!("w{instance} {exit:?}"),
                 );
+            }
+            // X8: with one possible cause, a driver stop, shutdown or
+            // stop_with_reason on a live actor is the reason it publishes.
+            let only_cause = {
+                let s = self.world.lock();
+                s.causes.get(&id) == Some(&1) && !s.insts[instance].drop_panicked
+            };
+            if let Some(requested) = self.requested.get(&id) {
+                if only_cause && !panicked && *requested != exit {
+                    self.violate(
+                        "X8: an actor published a different reason than its only stop request",
+                        format!("w{instance} requested {requested:?}, published {exit:?}"),
+                    );
+                }
             }
             match self.first_exit.get(&id) {
                 Some(first) if *first != exit => self.violate(
