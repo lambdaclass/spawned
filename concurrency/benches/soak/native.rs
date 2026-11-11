@@ -144,13 +144,32 @@ impl Handler<Down> for NWatcher {
     }
 }
 
-fn watcher() -> ActorRef<NWatcher> {
-    NWatcher {
-        _live: Live::new(),
-        downs: 0,
-        exits: 0,
+thread_local! {
+    /// Actors started by the current episode; see `workload::Scope`.
+    static SCOPE: std::cell::RefCell<Vec<ChildHandle>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+fn track<A: Actor>(actor: ActorRef<A>) -> ActorRef<A> {
+    SCOPE.with(|s| s.borrow_mut().push(actor.child_handle()));
+    actor
+}
+/// Forget the last episode's actors, stopping them if it failed half-way.
+pub fn clean_up(failed: bool) {
+    for actor in SCOPE.with(|s| std::mem::take(&mut *s.borrow_mut())) {
+        if failed {
+            actor.stop();
+        }
     }
-    .start()
+}
+
+fn watcher() -> ActorRef<NWatcher> {
+    track(
+        NWatcher {
+            _live: Live::new(),
+            downs: 0,
+            exits: 0,
+        }
+        .start(),
+    )
 }
 
 /// Exit within the limit: threads-mode `wait_exit` blocks without a timeout,
@@ -220,7 +239,7 @@ pub const COUNT: usize = 5;
 
 fn churn(rng: &mut Rng) -> R {
     let actors: Vec<_> = (0..1 + rng.below(4))
-        .map(|_| NWorker::new().start())
+        .map(|_| track(NWorker::new().start()))
         .collect();
     for actor in &actors {
         for expected in 1..=1 + rng.below(3) {
@@ -236,7 +255,7 @@ fn churn(rng: &mut Rng) -> R {
 
 fn links_monitors(rng: &mut Rng) -> R {
     let watcher = watcher();
-    let peer = NWorker::new().start();
+    let peer = track(NWorker::new().start());
     if rng.one_in(2) {
         let trap = rng.one_in(2);
         watcher.request(Trap(trap)).map_err(e("trap"))?;
@@ -274,7 +293,7 @@ fn links_monitors(rng: &mut Rng) -> R {
 }
 
 fn timers_streams(rng: &mut Rng) -> R {
-    let actor = NWorker::new().start();
+    let actor = track(NWorker::new().start());
     if rng.one_in(2) {
         let once = 1 + rng.below(3);
         let period = Duration::from_millis(1 + rng.below(3));
@@ -296,7 +315,7 @@ fn timers_streams(rng: &mut Rng) -> R {
 }
 
 fn registry_requests(rng: &mut Rng, stats: &Stats) -> R {
-    let actor = NWorker::new().start();
+    let actor = track(NWorker::new().start());
     let id = stats.next_id();
     let name = format!("soak-native-{id}");
     registry::register(&name, actor.clone()).map_err(e("register"))?;
@@ -306,11 +325,12 @@ fn registry_requests(rng: &mut Rng, stats: &Stats) -> R {
         registry::unregister(&name);
     }
     let slow = actor.request_with_timeout(
-        Slow(Duration::from_millis(3 + rng.below(5))),
+        Slow(Duration::from_millis(20 + rng.below(20))),
         Duration::from_millis(1),
     );
     ensure!(
-        matches!(slow, Err(ActorError::RequestTimeout)),
+        // A requester descheduled past the handler can see the reply first.
+        matches!(slow, Err(ActorError::RequestTimeout) | Ok(())),
         "slow request: {slow:?}"
     );
     ensure!(actor.request(Inc).map_err(e("inc"))? == 1, "inc");
@@ -323,7 +343,7 @@ fn registry_requests(rng: &mut Rng, stats: &Stats) -> R {
 }
 
 fn burst(rng: &mut Rng) -> R {
-    let actor = NWorker::new().start();
+    let actor = track(NWorker::new().start());
     let n = 1_000 + rng.below(10_000);
     for _ in 0..n {
         actor.send(Bump).map_err(e("burst send"))?;

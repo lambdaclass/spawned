@@ -295,7 +295,16 @@ fn lane_seed(seed: u64, lane: u64) -> u64 {
 async fn async_lane(env: Arc<workload::Env>, mut rng: Rng) {
     while !env.stats.stopping() {
         let pick = rng.below(state::ASYNC_SCENARIOS as u64) as usize;
-        match tokio::time::timeout(SCENARIO_LIMIT, workload::run(pick, &mut rng, &env)).await {
+        let scope = Arc::new(Mutex::new(workload::Scope::default()));
+        let episode = workload::SCOPE.scope(
+            scope.clone(),
+            tokio::time::timeout(SCENARIO_LIMIT, workload::run(pick, &mut rng, &env)),
+        );
+        let outcome = episode.await;
+        if !matches!(outcome, Ok(Ok(()))) {
+            scope.lock().unwrap_or_else(|p| p.into_inner()).clean_up();
+        }
+        match outcome {
             Ok(Ok(())) => env.stats.ran(pick),
             Ok(Err(err)) => env
                 .stats
@@ -318,7 +327,9 @@ fn threads_lane(stats: &Stats, mut rng: Rng, once: bool) {
             rng.below(native::COUNT as u64) as usize
         };
         let index = state::ASYNC_SCENARIOS + pick;
-        match native::run(pick, &mut rng, stats) {
+        let outcome = native::run(pick, &mut rng, stats);
+        native::clean_up(outcome.is_err());
+        match outcome {
             Ok(()) => stats.ran(index),
             Err(err) => stats.error(format!("{}: {err}", state::SCENARIOS[index])),
         }
