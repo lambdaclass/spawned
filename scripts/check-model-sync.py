@@ -98,7 +98,7 @@ def parse_toml(text):
     """The TOML subset model-map.toml uses: [a.b], [[a.b]], key = value."""
     data, i = {}, 0
     current = data
-    line = re.compile(r"[ \t]*(?:#[^\n]*)?\n|[ \t]*(\[\[?)([A-Za-z0-9_.-]+)\]\]?[ \t]*(?:#[^\n]*)?(?:\n|$)|[ \t]*([A-Za-z0-9_-]+)[ \t]*=[ \t]*")
+    line = re.compile(r"[ \t]*(?:#[^\n]*)?(?:\n|$)|[ \t]*(\[\[?)([A-Za-z0-9_.-]+)\]\]?[ \t]*(?:#[^\n]*)?(?:\n|$)|[ \t]*([A-Za-z0-9_-]+)[ \t]*=[ \t]*")
     while i < len(text):
         m = line.match(text, i)
         if not m:
@@ -120,9 +120,9 @@ def parse_toml(text):
             value, i = _toml_value(text, m.end())
             current[m.group(3)] = value
         else:
+            if m.end() == i:
+                break  # end of text
             i = m.end()
-            if m.end() == m.start():
-                i += 1
     return data
 
 
@@ -211,6 +211,7 @@ def rust_mask(src):
         elif c == "'":
             if src.startswith("\\", i + 1):
                 j = src.find("'", i + 3)
+                j = n - 1 if j < 0 else j
                 blank(i + 1, j)
                 i = j + 1
             elif i + 2 < n and src[i + 2] == "'":
@@ -258,6 +259,51 @@ def call_argument(masked, open_paren, index):
     return None
 
 
+def action_values(masked, strings, a, b):
+    """Action names an argument expression can evaluate to: a string literal
+    or `if .. { <values> } else { <values> }` (also `else if`). None if
+    anything else could decide the value (a variable, a call, a match)."""
+    while a < b and masked[a].isspace():
+        a += 1
+    while b > a and masked[b - 1].isspace():
+        b -= 1
+    if a >= b:
+        return None
+    if masked[a] == '"' and a in strings:
+        if masked.find('"', a + 1) == b - 1:
+            return [strings[a]]
+        return None
+    if re.match(r"if\b", masked[a:b]):
+        k = a + 2
+        depth = 0
+        while k < b:
+            c = masked[k]
+            if c in "([":
+                depth += 1
+            elif c in ")]":
+                depth -= 1
+            elif c == "{" and depth == 0:
+                break
+            k += 1
+        close = matching(masked, k) if k < b else None
+        if close is None or close >= b:
+            return None
+        then = action_values(masked, strings, k + 1, close)
+        rest = re.match(r"\s*else\b\s*", masked[close + 1:b])
+        if then is None or not rest:
+            return None
+        start = close + 1 + rest.end()
+        if masked[start:start + 1] == "{":
+            end = matching(masked, start)
+            if end != b - 1:
+                return None
+            other = action_values(masked, strings, start + 1, end)
+        else:
+            other = action_values(masked, strings, start, b)
+        return None if other is None else then + other
+    return None
+
+
 def test_module_lines(src):
     """1-based inclusive line ranges of `#[cfg(test)] mod name { ... }`."""
     masked, _ = rust_mask(src)
@@ -282,45 +328,40 @@ def show(root, rev, path):
     return r.stdout if r.returncode == 0 else ""
 
 
+def production_lines(src):
+    """Non-blank, non-`//` lines outside `#[cfg(test)] mod` blocks."""
+    ranges = test_module_lines(src)
+    return [l.strip() for n, l in enumerate(src.splitlines(), 1)
+            if l.strip() and not l.strip().startswith("//") and not any(x <= n <= y for x, y in ranges)]
+
+
 def exempt_change(root, base, head, path):
-    """'comments' or 'tests' if every changed line of path is a comment line
-    or inside a #[cfg(test)] module (on its side of the diff), else None."""
-    diff = git(root, "diff", "-U0", "--no-color", "--no-ext-diff", f"{base}...{head}", "--", path)
-    old_tests = test_module_lines(show(root, base, path)) if path.endswith(".rs") else []
-    new_tests = test_module_lines(show(root, head, path)) if path.endswith(".rs") else []
-    within = lambda line, ranges: any(a <= line <= b for a, b in ranges)
-    kinds = set()
-    old_line = new_line = 0
-    seen = False
-    for line in diff.splitlines():
-        hunk = re.match(r"@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@", line)
-        if hunk:
-            old_line, new_line = int(hunk.group(1)), int(hunk.group(2))
-            continue
-        if line.startswith(("+++", "---", "diff ", "index ", "new file", "deleted file", "similarity", "rename", "old mode", "new mode", "Binary")):
-            if line.startswith("Binary"):
-                return None
-            continue
-        if line.startswith("\\"):
-            continue
-        if line[:1] not in "+-":
-            continue
-        seen = True
-        text = line[1:].strip()
-        number = new_line if line[0] == "+" else old_line
-        if line[0] == "+":
-            new_line += 1
-        else:
-            old_line += 1
-        if text == "" or text.startswith("//"):
-            kinds.add("comments")
-        elif within(number, new_tests if line[0] == "+" else old_tests):
-            kinds.add("tests")
-        else:
-            return None
-    if not seen:
-        return "comments"  # mode change or no content change
-    return "tests" if "tests" in kinds else "comments"
+    """'comments' or 'tests' if the change leaves the file's production code
+    (outside `#[cfg(test)] mod` blocks, ignoring `//` comment lines and
+    blank lines) identical, else None. Removing `#[cfg(test)]` or moving
+    code into a test module changes the production lines, so it is not
+    exempt; an unparseable file has no test blocks (no exemption)."""
+    if not path.endswith(".rs"):
+        return None
+    old, new = show(root, base, path), show(root, head, path)
+    if production_lines(old) != production_lines(new):
+        return None
+    strip = lambda src: [l.strip() for l in src.splitlines() if l.strip() and not l.strip().startswith("//")]
+    return "comments" if strip(old) == strip(new) else "tests"
+
+
+def tla_content(src):
+    """A TLA+ module without comments and blank lines."""
+    src = re.sub(r"\(\*.*?\*\)", " ", src, flags=re.S)
+    src = re.sub(r"\\\*[^\n]*", "", src)
+    return [l.strip() for l in src.splitlines() if l.strip()]
+
+
+def model_file_changed(root, base, head, path):
+    """A model-side file counts as updated unless its change is comments only."""
+    if base is None or not path.endswith(".tla"):
+        return True
+    return tla_content(show(root, base, path)) != tla_content(show(root, head, path))
 
 
 def pr_context(args):
@@ -358,10 +399,20 @@ def check_paths(args, root):
         changed, base, head = list(args.files), None, None
     else:
         head = args.head
-        base = args.base or git(root, "merge-base", "origin/main", head).strip()
+        try:
+            base = git(root, "merge-base", args.base or "origin/main", head).strip()
+        except subprocess.CalledProcessError:
+            print(f"model-sync: no merge base between {args.base or 'origin/main'} and {head}; fetch it or pass --base")
+            return 2
         changed = git(root, "diff", "--name-only", "--no-renames", f"{base}...{head}").split()
+    model_changes = [p for p in changed
+                     if any(glob_match(p, g) for m in models.values() for g in m["files"])]
+    for p in model_changes:
+        if not model_file_changed(root, base, head, p):
+            print(f"note    {p}: comments only, does not count as a model update")
+    model_changes = [p for p in model_changes if model_file_changed(root, base, head, p)]
     touched = {name for name, m in models.items()
-               if any(glob_match(p, g) for p in changed for g in m["files"])}
+               if any(glob_match(p, g) for p in model_changes for g in m["files"])}
     missing = {}
     for path in changed:
         covering = sorted(name for name, m in models.items() if any(glob_match(path, g) for g in m["code"]))
@@ -440,6 +491,7 @@ def check_events(args, root):
     structs = set(re.findall(r"pub struct (\w*Event)\b", trace_rs))
     errors, warnings, notes = [], [], []
     configured = {t["struct"] for t in config.get("trace", [])}
+    check_py = (root / "verification/tla/trace_check.py").read_text()
     for s in sorted(structs - configured):
         errors.append(f"event struct `{s}` in lifecycle_trace.rs has no [[trace]] table in {MAP}")
     sources = {}
@@ -463,19 +515,23 @@ def check_events(args, root):
                         continue
                     line = masked.count("\n", 0, m.start()) + 1
                     span = call_argument(masked, m.end() - 1, e["arg"])
-                    literals = [v for k, v in strings.items() if span and span[0] <= k < span[1]]
+                    literals = action_values(masked, strings, *span) if span else None
                     if not literals or not all(re.fullmatch(r"\w+", v) for v in literals):
-                        errors.append(f"{rel}:{line}: cannot tell which action `{m.group(0)}` records (use string literals)")
+                        errors.append(f"{rel}:{line}: cannot tell which action `{m.group(0)}` records "
+                                      f"(pass a string literal or `if .. {{ \"A\" }} else {{ \"B\" }}`)")
                         continue
                     for v in literals:
                         emitted.setdefault(v, []).append(f"{rel}:{line}")
             # A struct literal setting the action field directly bypasses the emitters.
             for m in re.finditer(r"\b%s\s*\{" % re.escape(name), masked):
-                if rel == "concurrency/src/lifecycle_trace.rs" or re.search(r"(struct|impl|for)\s+$", masked[max(0, m.start() - 8):m.start()]):
+                before = masked[max(0, m.start() - 40):m.start()]
+                if rel == "concurrency/src/lifecycle_trace.rs" or re.search(r"(struct|impl|for|->|\blet|\bif let|\bwhile let|matches!\(\s*[\w.]+\s*,)\s*(\w+::)*$", before):
                     continue
                 close = matching(masked, m.end() - 1)
+                if close is not None and re.match(r"\s*(=>|=[^=])", masked[close + 1:close + 4]):
+                    continue  # a pattern, not a construction
                 body = masked[m.end():close] if close else ""
-                if re.search(r"(^|[,{\s])(action|a)\s*[:,}]", body) or not close:
+                if re.search(r"(^|[,{\s])action\s*[:,}]", body) or not close:
                     line = masked.count("\n", 0, m.start()) + 1
                     errors.append(f"{rel}:{line}: `{name} {{ .. }}` sets the action directly; build it with an emitter so the action can be checked")
         specs = {}
@@ -488,7 +544,6 @@ def check_events(args, root):
         arms = {a: spec for spec, text in specs.items() for a in spec_arms(text)}
         rejected = t.get("rejected", {})
         translated = t.get("translated", {})
-        check_py = (root / "verification/tla/trace_check.py").read_text()
         for action, sites in sorted(emitted.items()):
             if action in arms:
                 continue
@@ -511,6 +566,9 @@ def check_events(args, root):
         for action in sorted(set(arms) - produced):
             warnings.append(f"{name}: {arms[action]} replays `{action}`, which no code emits")
         for f in t.get("filters", []):
+            if not (root / f["file"]).exists():
+                errors.append(f"{name}: filter file {f['file']} does not exist")
+                continue
             text = (root / f["file"]).read_text()
             start = re.search(f["start"], text)
             if not start:
@@ -574,7 +632,7 @@ def trace_validation(root, config, model):
     check_py = (root / "verification/tla/trace_check.py").read_text()
     trace_rs = (root / "concurrency/src/lifecycle_trace.rs").read_text()
     structs = set(re.findall(r"pub struct (\w*Event)\b", trace_rs))
-    sources = None
+    sources, reasons = None, []
     for spec_path in sorted((root / "verification/tla").glob("Trace*.tla")):
         text = spec_path.read_text()
         ext = re.search(r"EXTENDS\s+([\w, ]+)", text)
@@ -582,7 +640,8 @@ def trace_validation(root, config, model):
             continue
         rel = spec_path.relative_to(root).as_posix()
         if spec_path.name not in check_py:
-            return None, f"{rel} exists but trace_check.py never runs it"
+            reasons.append(f"{rel} exists but trace_check.py never runs it")
+            continue
         arms = spec_arms(text)
         for t in config.get("trace", []):
             if rel not in t["specs"] or t["struct"] not in structs:
@@ -594,15 +653,15 @@ def trace_validation(root, config, model):
                 for e in t["emitters"]:
                     for m in re.finditer(e["call"], masked):
                         span = call_argument(masked, m.end() - 1, e["arg"])
-                        emitted.update(v for k, v in strings.items() if span and span[0] <= k < span[1])
-            for how in t.get("translated", {}).values():
-                if isinstance(how, dict):
+                        emitted.update((action_values(masked, strings, *span) or []) if span else [])
+            for action, how in t.get("translated", {}).items():
+                if action in emitted and isinstance(how, dict):
                     emitted.update(how.get("into", []))
             mapped = emitted & arms
             if mapped:
                 return rel, mapped
-        return None, f"{rel} exists but no recorded event reaches it"
-    return None, "no trace spec"
+        reasons.append(f"{rel} exists but no recorded event reaches it")
+    return None, "; ".join(reasons) or "no trace spec"
 
 
 def check_models(args, root):
@@ -635,7 +694,7 @@ def check_models(args, root):
         floor = entry.get("coverage_floor")
         key = entry.get("coverage_key", model)
         if floor is not None:
-            covered = len(baseline.get(key, []))
+            covered = sum(1 for k in baseline.get(key, []) if k.startswith("A|"))
             status += f"; covered action keys {covered} (floor {floor})"
             if covered < floor:
                 errors.append(f"{model}: {BASELINE} covers {covered} action keys of {key}, below the floor {floor}. "
@@ -654,7 +713,7 @@ def check_models(args, root):
             print(f"::warning title=model-sync models::{w}")
     for e in errors:
         print(f"ERROR   {e}")
-    allowlisted = [m for m in base_models(root) if models.get(m, {}).get("tlc_only") and m in tlc_only]
+    allowlisted = [m for m in base_models(root) if m in tlc_only]
     if allowlisted:
         print(f"\nTLC-only models (no trace validation; these can drift from the code): {', '.join(allowlisted)}")
     if errors:

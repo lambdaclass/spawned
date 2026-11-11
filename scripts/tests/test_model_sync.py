@@ -1,5 +1,5 @@
-"""Self-tests for scripts/check-model-sync.py (both checks) and the
-repository's own trace event mapping."""
+"""Self-tests for scripts/check-model-sync.py (paths, events, models) and
+the repository's own map."""
 import contextlib
 import importlib.util
 import io
@@ -67,6 +67,33 @@ class TraceEvents(RepoCopy):
         code, out = run("--root", str(tmp), "events")
         self.assertEqual(code, 1, out)
         self.assertIn("cannot tell which action", out)
+
+    def test_partly_dynamic_action_fails(self):
+        tmp = self.copy()
+        self.inject(tmp, 'let _ = Event::new(if c { "Close" } else { name }, 0, "");')
+        code, out = run("--root", str(tmp), "events")
+        self.assertEqual(code, 1, out)
+        self.assertIn("cannot tell which action", out)
+
+    def test_action_from_a_call_fails(self):
+        tmp = self.copy()
+        self.inject(tmp, 'let _ = Event::new(helper("Close"), 0, "");')
+        code, out = run("--root", str(tmp), "events")
+        self.assertEqual(code, 1, out)
+        self.assertIn("cannot tell which action", out)
+
+    def test_destructuring_is_not_a_construction(self):
+        tmp = self.copy()
+        self.inject(tmp, 'let Event { action, .. } = ev;\nlet _ = matches!(e, Event { action: "X", .. });\nmatch e { Event { action, .. } => (), }')
+        code, out = run("--root", str(tmp), "events")
+        self.assertEqual(code, 0, out)
+
+    def test_struct_literal_setting_action_fails(self):
+        tmp = self.copy()
+        self.inject(tmp, 'let _ = Event { action: name, child: 0, arg: "", count: 0, round: 0 };')
+        code, out = run("--root", str(tmp), "events")
+        self.assertEqual(code, 1, out)
+        self.assertIn("sets the action directly", out)
 
     def test_comments_and_strings_are_not_events(self):
         tmp = self.copy()
@@ -140,6 +167,13 @@ class ModelInventory(RepoCopy):
         self.assertEqual(code, 1, out)
         self.assertIn("NestedSupervision has no trace validation", out)
 
+    def test_second_trace_spec_can_validate(self):
+        tmp = self.copy()
+        (tmp / "verification" / "tla" / "TraceAaNested.tla").write_text(
+            "---- MODULE TraceAaNested ----\nEXTENDS NestedSupervision\n====\n")
+        code, out = run("--root", str(tmp), "models")
+        self.assertEqual(code, 0, out)
+
     def test_coverage_below_floor_fails(self):
         tmp = self.copy()
         path = tmp / "verification" / "tla" / "coverage-baseline.json"
@@ -206,9 +240,27 @@ class ModelPaths(unittest.TestCase):
 
     def test_code_change_with_model_passes(self):
         self.edit("concurrency/src/actor_cleanup.rs", "x + 1", "x + 2")
-        self.edit("verification/tla/Lifecycle.tla", "====", "\\* updated\n====")
+        self.edit("verification/tla/Lifecycle.tla", "====", "Step == TRUE\n====")
         code, out = self.check()
         self.assertEqual(code, 0, out)
+
+    def test_comment_only_model_change_does_not_count(self):
+        self.edit("concurrency/src/actor_cleanup.rs", "x + 1", "x + 2")
+        self.edit("verification/tla/Lifecycle.tla", "====", "\\* updated\n(* also *)\n====")
+        code, out = self.check()
+        self.assertEqual(code, 1, out)
+        self.assertIn("comments only, does not count", out)
+
+    def test_removing_cfg_test_is_not_exempt(self):
+        self.edit("concurrency/src/actor_cleanup.rs", "#[cfg(test)]\n", "")
+        code, out = self.check()
+        self.assertEqual(code, 1, out)
+
+    def test_moving_code_into_test_module_is_not_exempt(self):
+        self.edit("concurrency/src/actor_cleanup.rs", "pub fn publish(x: u32) -> u32 {\n    x + 1\n}\n", "")
+        self.edit("concurrency/src/actor_cleanup.rs", "mod tests {\n", "mod tests {\n    pub fn publish(x: u32) -> u32 {\n        x + 1\n    }\n")
+        code, out = self.check()
+        self.assertEqual(code, 1, out)
 
     def test_label_and_reason_waive(self):
         self.edit("concurrency/src/actor_cleanup.rs", "x + 1", "x + 2")

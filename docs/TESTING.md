@@ -1130,22 +1130,26 @@ single-use macros.
 
 Models track the code: a PR that changes behaviour a TLA+ model specifies
 updates the model in the same PR, and drift is a bug. The `model-sync` job
-(`.github/workflows/model-sync.yml`) checks two things mechanically.
+(`.github/workflows/model-sync.yml`) checks four things mechanically.
 
 - **Paths.** `verification/model-map.toml` maps code to the models that
   cover it (for example `actor_cleanup.rs`, `link.rs`, `monitor.rs` and the
   actor loops to `Lifecycle`; `supervision.rs` to `Supervision`, `Cohorts`
   and `NestedSupervision`; `system.rs` to `Coordinator`). If a PR changes a
   mapped file but none of its models (the model, its MC configurations,
-  inductive or coverage modules, or trace spec), the job fails. Changes to
-  comments only, or only inside a `#[cfg(test)] mod` block, are exempt; when
-  the script cannot tell, it requires the waiver. The waiver is the
+  inductive or coverage modules, or trace spec; a comment-only model edit
+  does not count, and one covering model is enough), the job fails. Changes to
+  comments only, or only inside a `#[cfg(test)] mod` block, are exempt (the
+  file's code outside test modules must be unchanged, so removing
+  `#[cfg(test)]` is not exempt); when the script cannot tell, it requires
+  the waiver. The waiver is the
   `no-model-change` label AND a PR body line `Model: no change because
-  <reason>`. In the merge queue the step passes: the PR run enforced it.
+  <reason>`. In the merge queue the step passes, which is sound because
+  `model-sync` is a required check on the PR.
 - **Trace events.** Every action name the code can record with the
-  `lifecycle-trace` feature (each string literal passed to `Event::new`,
-  `Event::sup`, `TreeEvent::new` and, with PR #240, `LifeEvent`, `JobEvent`
-  and reply events) must be an `e.a = "..."` arm of its trace spec, or be
+  `lifecycle-trace` feature (the string literal, or the literals of an
+  `if .. else` chain, passed to each emitter listed in the map, such as
+  `Event::new`, `Event::sup` and `TreeEvent::new`) must be an `e.a = "..."` arm of its trace spec, or be
   declared in the map as translated by `trace_check.py` or rejected on
   purpose (`Unmodelled`). A non-literal action name, an event struct with no
   map entry, or a cohort event filter that differs from `TraceCohorts.tla`
@@ -1153,14 +1157,13 @@ updates the model in the same PR, and drift is a bug. The `model-sync` job
   spec takes (except those declared unlogged, such as `WindowExpire`). The
   event names are strings, not an enum, so this is a source scan rather than
   a compile-time `match`; the mapping it checks lives in TLA+.
-- **Models checked against real runs.** Every model in `verification/tla`
-  needs a map entry and trace validation: a `Trace*.tla` spec that
-  `trace_check.py` runs and that recorded events reach. A model checked by
-  TLC alone can drift from the code unnoticed, so it fails unless it has a
-  `tlc_only` allowlist entry with a reason and a tracking item. Today that
-  list is `Coordinator` (abstract fault model, no events recorded) and
-  `Lifecycle`, `DeferredReplies` and `DeferredJobs` (their trace validation
-  comes with PR #240), plus `DynamicSupervisor` once PR #245 lands.
+- **Models with trace validation.** Every model in `verification/tla` needs
+  a map entry and trace validation, checked statically: a `Trace*.tla` that
+  extends the model, is named in `trace_check.py`, and has arms that events
+  the code emits reach (the `tla-traces` job replays the recorded traces). A
+  model checked by TLC alone can drift from the code unnoticed, so it fails
+  unless it has a `tlc_only` allowlist entry with a reason and a tracking
+  item. `check-model-sync.py models` prints the current list.
 - **Coverage floors.** Each trace-validated model has a `coverage_floor`: the
   action keys the dedicated trace tests cover in
   `verification/tla/coverage-baseline.json` (Supervision 36 of 40, Cohorts

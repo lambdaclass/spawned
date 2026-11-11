@@ -3,7 +3,8 @@
 # Rule: models track the code. A PR that changes a file listed under a
 # model's `code` must also change one of the `files` of at least one model
 # covering it (the model, its MC configurations, inductive/coverage modules
-# or trace spec). Otherwise the PR needs the `no-model-change` label and a
+# or trace spec); one covering model is enough, and a comment-only model
+# change does not count. Otherwise the PR needs the `no-model-change` label and a
 # body line `Model: no change because <reason>`. Changes to comments only,
 # or only inside a `#[cfg(test)] mod` block, are exempt. Globs: `*` stays
 # within a path segment, `**` crosses segments. Paths that do not exist yet
@@ -31,6 +32,7 @@ files = [
 ]
 code = [
     "concurrency/src/supervision.rs",
+    "concurrency/src/supervision/**",
     "concurrency/src/lifecycle_trace.rs",
 ]
 coverage_floor = 36   # of 40 action keys
@@ -49,6 +51,7 @@ files = [
 ]
 code = [
     "concurrency/src/supervision.rs",
+    "concurrency/src/supervision/**",
     "concurrency/src/lifecycle_trace.rs",
 ]
 coverage_floor = 40   # of 46 action keys

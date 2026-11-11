@@ -124,11 +124,11 @@ in the same PR; the `model-sync` CI job enforces it
   the map. It warns about arms no code emits and model actions no trace spec
   takes. When adding an event or an action, update the spec and the map.
 - `scripts/check-model-sync.py models` requires every model here to be in
-  the map and trace-validated (a `Trace*.tla` that `trace_check.py` runs and
-  recorded events reach), or allowlisted as `tlc_only` with a reason and a
-  tracking item, and keeps each model's covered action keys in
-  `coverage-baseline.json` at or above its `coverage_floor`. TLC-only today:
-  `Coordinator`, `Lifecycle`, `DeferredReplies`, `DeferredJobs`.
+  the map and to have a trace spec (a `Trace*.tla` named in
+  `trace_check.py` whose arms emitted events reach), or a `tlc_only`
+  allowlist entry with a reason and a tracking item. It also keeps each
+  model's covered action keys in `coverage-baseline.json` at or above its
+  `coverage_floor`. It prints the TLC-only models.
 
 ## Trace coverage
 
