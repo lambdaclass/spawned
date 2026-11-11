@@ -480,6 +480,34 @@ mod tasks_mode {
         actor.join().await;
     }
 
+    /// `ReplyDropped` (the handler chose not to answer) is not transient;
+    /// `overloaded()`, a handler's "not now, try again", is.
+    #[spawned_macros::sim_test]
+    async fn a_dropped_reply_is_not_transient_but_overloaded_is() {
+        struct Picky;
+        impl Actor for Picky {}
+        struct Ask(bool);
+        impl Message for Ask {
+            type Result = ();
+        }
+        impl Handler<Ask> for Picky {
+            async fn handle(&mut self, msg: Ask, reply: PendingReply<'_, ()>, _: &Context<Self>) {
+                if msg.0 {
+                    reply.overloaded();
+                } // otherwise dropped unanswered
+            }
+        }
+        let actor = Picky.start();
+        let dropped = actor.request(Ask(false)).await.unwrap_err();
+        assert!(matches!(dropped, ActorError::ReplyDropped));
+        assert!(!dropped.is_transient() && !dropped.target_gone());
+        let busy = actor.request(Ask(true)).await.unwrap_err();
+        assert!(matches!(busy, ActorError::Overloaded));
+        assert!(busy.is_transient());
+        actor.context().stop();
+        actor.join().await;
+    }
+
     #[spawned_macros::sim_test]
     async fn request_timeout_starts_at_send() {
         let (actor, _) = start();

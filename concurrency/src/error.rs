@@ -148,7 +148,13 @@ impl ActorError {
     /// bound (`Overloaded`). `false` for a gone target, and for
     /// `ReplyDropped`, where the actor is alive but its handler chose not to
     /// answer (a decision or a bug, not a load condition): a retry would
-    /// usually get the same result.
+    /// usually get the same result. OTP has no such outcome (a `call` the
+    /// server never answers times out); the variant reports a drop at once
+    /// so a caller does not wait for its deadline, without claiming that the
+    /// same request will succeed later. A handler that means "not now, try
+    /// again" answers `reply.overloaded()` (or `token.overloaded()`), which is
+    /// transient; a caller whose protocol treats a drop as retryable matches
+    /// `ReplyDropped` explicitly.
     pub fn is_transient(&self) -> bool {
         matches!(self, ActorError::RequestTimeout | ActorError::Overloaded)
     }

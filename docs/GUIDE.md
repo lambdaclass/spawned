@@ -795,7 +795,7 @@ pub enum ActorError {
 | `ReplyDropped` | `false` | `false` | `false` | `None` |
 | `Overloaded` | `false` | `false` | `true` | `None` |
 
-`target_gone()`: retrying the same reference cannot succeed (look the actor up again; a supervisor may have restarted it). `is_transient()`: retrying the same target may succeed. `ReplyDropped` is neither: the actor is alive but its handler chose not to answer. `ExitReason::is_abnormal()` is `false` only for `Normal` and `Shutdown` (`Killed` and `NoProc` are abnormal).
+`target_gone()`: retrying the same reference cannot succeed (look the actor up again; a supervisor may have restarted it). `is_transient()`: retrying the same target may succeed. `ReplyDropped` is neither: the actor is alive but its handler chose not to answer (a handler that means "not now, try again" answers `reply.overloaded()`, which is transient; a caller whose protocol retries dropped requests matches `ReplyDropped` explicitly). `ExitReason::is_abnormal()` is `false` only for `Normal` and `Shutdown` (`Killed` and `NoProc` are abnormal).
 
 ---
 
