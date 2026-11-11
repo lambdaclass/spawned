@@ -35,7 +35,7 @@ every change; this guide covers what you need to edit when upgrading.
 | `Response::from_with_timeout(actor.request_raw(msg), t)` | `Response::from(actor.send_request(msg, t))` |
 | a `Recipient<M>` call `recipient.request_raw(msg)` | `recipient.send_request(msg, deadline)` (`Deadline`); implementing `Receiver<M>` is no longer possible (sealed, see below) |
 | `reply.deadline()` / `token.deadline()` / `rx.deadline()` returning `Option<Instant>` *(0.8 pre-release)* | return `Deadline` (`Deadline::Never` for none); forward with `other.send_request(msg, token.deadline())` |
-| `token.with_deadline(at)` *(0.8 pre-release)* | `token.shorten_deadline(at)` (a `Duration` or `Instant`) |
+| `token.with_deadline(at)` *(0.8 pre-release)* | `token.shorten_deadline(at)` (a `Duration`, an `Instant` or a `Deadline`) |
 | `reply.has_caller()` *(0.8 pre-release)* | removed: `reply.defer()` returns `Err(DeferError::NoCaller)` for a send |
 | `PendingReply::detached()` *(0.8 pre-release)* | `spawned_test::detached_reply()` |
 | `PendingReplies::{purge, retained, live}` *(0.8 pre-release)* | `len()` / `is_empty()` (live tokens); purging is automatic on `insert` |

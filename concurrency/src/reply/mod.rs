@@ -469,9 +469,10 @@ impl<R: Send + 'static> ReplyTo<R> {
         Deadline::of_ticks(self.slot().deadline())
     }
 
-    /// Shorten the request's deadline to `deadline` (a `Duration` from now
-    /// or an `Instant`); a later deadline, or [`Deadline::Never`], leaves it
-    /// unchanged. The waiting caller is woken to re-arm its timer.
+    /// Shorten the request's deadline to `deadline` (anything
+    /// `Into<Deadline>`: a `Duration` from now, an `Instant`, or a
+    /// [`Deadline`], e.g. another request's); a later deadline, or
+    /// [`Deadline::Never`], leaves it unchanged. The waiting caller is woken to re-arm its timer.
     pub fn shorten_deadline(&self, deadline: impl Into<Deadline>) {
         // Only a lowered deadline gets a heap entry, so repeated calls with
         // the same or a later deadline store nothing.
