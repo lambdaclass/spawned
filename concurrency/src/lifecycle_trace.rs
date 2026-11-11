@@ -213,6 +213,21 @@ mod imp {
     static SECTION: Mutex<()> = Mutex::new(());
     static TRACES: Mutex<BTreeMap<u64, Vec<Event>>> = Mutex::new(BTreeMap::new());
     static JOBS: Mutex<BTreeMap<u64, Vec<super::JobEvent>>> = Mutex::new(BTreeMap::new());
+    /// Owner instances whose reply-slot and job events are recorded.
+    static WATCHED: Mutex<std::collections::BTreeSet<u64>> =
+        Mutex::new(std::collections::BTreeSet::new());
+
+    /// Record the reply-slot and job events of owner instance `owner` (an
+    /// `ActorId`'s number) until [`take_replies`] or [`take_jobs`]. Opt-in, so
+    /// other tests built with the feature neither accumulate events nor
+    /// allocate inside the trace section.
+    pub fn watch_deferred(owner: u64) {
+        lock(&WATCHED).insert(owner);
+    }
+
+    fn watched(owner: u64) -> bool {
+        lock(&WATCHED).contains(&owner)
+    }
 
     /// A job number for [`super::JobEvent::job`].
     pub(crate) fn next_job() -> u64 {
@@ -222,7 +237,11 @@ mod imp {
 
     /// Record a job action of owner instance `owner` (inside the section).
     pub(crate) fn job(owner: u64, event: impl FnOnce() -> super::JobEvent) {
-        atomic(|| lock(&JOBS).entry(owner).or_default().push(event()));
+        atomic(|| {
+            if watched(owner) {
+                lock(&JOBS).entry(owner).or_default().push(event());
+            }
+        });
     }
 
     static REPLIES: Mutex<BTreeMap<u64, Vec<super::ReplyEvent>>> = Mutex::new(BTreeMap::new());
@@ -232,6 +251,9 @@ mod imp {
     /// Record a reply-slot action of owner instance `owner`.
     pub(crate) fn reply(owner: u64, action: &'static str, req: u64, x: &'static str) {
         atomic(|| {
+            if !watched(owner) {
+                return;
+            }
             // The owner's death closes everything still open in one model
             // step (`Death`); the closes it performs are not separate events.
             if action == "Discharge" && x == "stopped" && lock(&DEAD).contains(&owner) {
@@ -249,12 +271,14 @@ mod imp {
 
     /// Remove and return the reply events recorded for an owner instance.
     pub fn take_replies(owner: u64) -> Vec<super::ReplyEvent> {
+        lock(&WATCHED).remove(&owner);
         lock(&DEAD).remove(&owner);
         lock(&REPLIES).remove(&owner).unwrap_or_default()
     }
 
     /// Remove and return the job events recorded for an owner instance.
     pub fn take_jobs(owner: u64) -> Vec<super::JobEvent> {
+        lock(&WATCHED).remove(&owner);
         lock(&JOBS).remove(&owner).unwrap_or_default()
     }
     thread_local! {
@@ -540,4 +564,4 @@ mod imp {
 }
 
 #[cfg(feature = "lifecycle-trace")]
-pub use imp::{take, take_jobs, take_replies, take_tree};
+pub use imp::{take, take_jobs, take_replies, take_tree, watch_deferred};

@@ -223,6 +223,7 @@ fn start_with(old: OldJob) -> (ActorRef<Owner>, Arc<Log>) {
         gates: Vec::new(),
     }
     .start();
+    lifecycle_trace::watch_deferred(actor.id().to_string().parse().unwrap());
     (actor, log)
 }
 

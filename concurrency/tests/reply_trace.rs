@@ -110,6 +110,13 @@ impl Handler<Sync> for Owner {
     }
 }
 
+/// Start an owner whose reply slots are traced.
+fn start() -> ActorRef<Owner> {
+    let actor = Owner::default().start();
+    lifecycle_trace::watch_deferred(id(&actor));
+    actor
+}
+
 fn id(actor: &ActorRef<Owner>) -> u64 {
     actor.id().to_string().parse().unwrap()
 }
@@ -158,7 +165,7 @@ async fn stop(name: &str, actor: ActorRef<Owner>) -> Vec<String> {
 
 #[tokio::test]
 async fn reply_in_turn() {
-    let actor = Owner::default().start();
+    let actor = start();
     let got = actor.request(Echo(3)).await;
     assert!(matches!(got, Ok(3)), "{got:?}");
     let events = stop("in_turn", actor).await;
@@ -170,7 +177,7 @@ async fn reply_in_turn() {
 
 #[tokio::test]
 async fn stored_token_answered_later() {
-    let actor = Owner::default().start();
+    let actor = start();
     let held = actor.request_raw(Hold).unwrap();
     actor.request(Sync).await.unwrap();
     actor.send(Flush::Reply).unwrap();
@@ -181,7 +188,7 @@ async fn stored_token_answered_later() {
 
 #[tokio::test]
 async fn stored_token_dropped_later() {
-    let actor = Owner::default().start();
+    let actor = start();
     let held = actor.request_raw(Hold).unwrap();
     actor.request(Sync).await.unwrap();
     actor.send(Flush::Drop).unwrap();
@@ -192,7 +199,7 @@ async fn stored_token_dropped_later() {
 
 #[tokio::test]
 async fn unused_obligation_answers_dropped() {
-    let actor = Owner::default().start();
+    let actor = start();
     let got = actor.request(Ignore).await;
     assert!(matches!(got, Err(ActorError::ReplyDropped)), "{got:?}");
     stop("unused", actor).await;
@@ -200,7 +207,7 @@ async fn unused_obligation_answers_dropped() {
 
 #[tokio::test]
 async fn defer_at_the_bound_is_overloaded() {
-    let actor = Owner::default().start();
+    let actor = start();
     let first = actor.request_raw(Hold).unwrap();
     let got = actor.request(Hold).await;
     assert!(matches!(got, Err(ActorError::Overloaded)), "{got:?}");
@@ -212,7 +219,7 @@ async fn defer_at_the_bound_is_overloaded() {
 
 #[tokio::test]
 async fn stored_token_expires_at_its_deadline() {
-    let actor = Owner::default().start();
+    let actor = start();
     let deadline = Deadline::At(spawned_rt::time::Instant::now() + Duration::from_millis(30));
     let held = actor.request_raw_until(Hold, deadline).unwrap();
     let got = held.await;
@@ -224,7 +231,7 @@ async fn stored_token_expires_at_its_deadline() {
 
 #[tokio::test]
 async fn caller_gives_up() {
-    let actor = Owner::default().start();
+    let actor = start();
     let held = actor.request_raw(Hold).unwrap();
     actor.request(Sync).await.unwrap();
     drop(held);
@@ -235,7 +242,7 @@ async fn caller_gives_up() {
 
 #[tokio::test]
 async fn death_closes_stored_tokens() {
-    let actor = Owner::default().start();
+    let actor = start();
     let held = actor.request_raw(Hold).unwrap();
     actor.request(Sync).await.unwrap();
     let owner = id(&actor);
@@ -252,7 +259,7 @@ async fn death_closes_stored_tokens() {
 
 #[tokio::test]
 async fn panic_in_turn_answers_stopped() {
-    let actor = Owner::default().start();
+    let actor = start();
     let got = actor.request(Boom).await;
     assert!(matches!(got, Err(ActorError::ActorStopped)), "{got:?}");
     actor.join().await;

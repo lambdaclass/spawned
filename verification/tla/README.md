@@ -575,7 +575,8 @@ All 22 named controls find their counterexample, each in a few seconds.
 
 ### Job trace validation
 
-With `lifecycle-trace`, the job core (`concurrency/src/reply/jobs.rs`) records
+With `lifecycle-trace`, for owners a test opts in with
+`lifecycle_trace::watch_deferred(id)`, the job core (`concurrency/src/reply/jobs.rs`) records
 one `DeferredJobs.tla` action per owner instance: `Start` (keyed, with a job
 deadline), `Emit`, `Finish` (whether it enqueued the terminal message),
 `JobDeadline`, `Cancel`, `Exit` and `Dispatch` (kind and fence verdict). Each
