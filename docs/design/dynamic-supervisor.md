@@ -1,9 +1,10 @@
 # Dynamic supervisor: design contract
 
-**Status: design in review (revision 2), not implemented.** ROADMAP rank 12a.
+**Status: design in review (revision 3), not implemented.** ROADMAP rank 12a.
 Draft PR [#245](https://github.com/lambdaclass/spawned/pull/245). Revision 2
-applies the maintainer's decisions on the seven open questions of revision 1
-and resolves the first independent reviews (Codex and agy); see
+applied the maintainer's decisions on revision 1's open questions and the
+first reviews; revision 3 applies the decisions on round two's questions and
+the second reviews (Codex, agy), plus the OTP/Elixir/Gleam comparison. See
 [Decisions](#decisions) and [Review resolutions](#review-resolutions).
 
 - Covers OTP's `simple_one_for_one` and Elixir's `DynamicSupervisor`: children
@@ -40,6 +41,7 @@ and resolves the first independent reviews (Codex and agy); see
 - [Semantics contract: what this adds and touches](#semantics-contract-what-this-adds-and-touches)
 - [Interaction with rank 12 (scoped registries)](#interaction-with-rank-12-scoped-registries)
 - [What the model establishes](#what-the-model-establishes)
+- [Test plan: relating the model to the code](#test-plan-relating-the-model-to-the-code)
 - [Alternatives considered](#alternatives-considered)
 - [Follow-ups](#follow-ups)
 - [Review resolutions](#review-resolutions)
@@ -135,6 +137,21 @@ rule:
 | Q6 | `terminate_child` on static supervisors | Separate follow-up |
 | Q7 | Arguments on rejection | Returned on pre-admission rejection (`MaxChildren`, `Stopped`, placement); a distinct error for a start aborted after construction began |
 
+Round two (revision 3):
+
+| # | Question | Decision |
+|---|---|---|
+| R1 | Loop blocked during `terminate_child` | **Kept, as OTP and Elixir:** the loop is held through the child's removal or its deadline |
+| R2 | Stuck child that must restart | **Fails the supervisor**, after fixing the Transient classification (a stall is not a recorded cleanup failure). Escalation cannot make an unkillable computation disappear (see [Stuck children](#stuck-children)) |
+| R3 | Atomic fan-out in the model | Kept as an ownership abstraction; a small interleaved refinement configuration checks that the fan-out completes even when siblings never finish |
+| R4 | Two slots | Fast checks keep two slots; targeted three-slot instances check admission order, the cap and the shared budget. Bounded checks, no cutoff claimed |
+| R5 | ethrex teardown | No message from `Drop`. Each resource's owner monitors the connection and releases on `Down`, as an Erlang owner would |
+| G1 | Post-start work | Depends on the post-start continuation (a `handle_continue` equivalent) of the unified-start design (0.9), not on "the first message", which other messages could overtake |
+| G2 | Restart type for connections | The ethrex mapping and the example use `temporary()` (a dropped peer must not be redialled by the supervisor); the default stays Permanent (OTP) |
+| G3 | `ignore` | Accepted from the factory: nothing is stored, `start_child` returns `Ignored` (OTP `{ok, undefined}`) |
+| G4 | Start data | `Started` carries the child's start data (unified start's `Init<R>`), as Gleam's `Started(data)` |
+| G5 | Introspection | `ChildInfo` and `ChildCounts` are the types introspection v1 exposes for static supervisors too; names agreed across both designs |
+
 ## API
 
 ### Template
@@ -208,25 +225,25 @@ let peers = slot.current()?;   // re-resolve after the parent restarts it
   supervisor's `max_children <= 65536` ceiling does not apply.
 - `DynamicSupervisorSpec::new(name, config, spec)` takes the template; the
   adapter runs on the template's group. Its `shutdown_timeout` (how long the
-  parent waits for the whole dynamic supervisor) defaults to
-  **2 × the child `shutdown_timeout` + 1 s**, so the parent never gives up
-  before the inner kill stage ran (agy 6). OTP defaults supervisor children
-  to `infinity` for the same reason; Spawned keeps a finite default so a
-  stuck subtree is still reported (B). It can be raised with
-  `.shutdown_timeout()`.
+  parent waits for the whole dynamic supervisor) defaults to waiting for
+  the inner supervisor to finish, as OTP's `infinity` for supervisor
+  children; see [Nesting](#nesting-and-the-system).
 
 ### Operations
 
 ```rust
 impl<A: Actor, Args> DynamicSupervisor<A, Args> {
     /// OTP start_child(Sup, ExtraArgs). Queued on the control loop; resolves
-    /// when the first generation is ready (started() returned) or failed.
-    pub async fn start_child(&self, args: Args) -> Result<Started<A>, StartChildError<Args>>;
-    /// OTP terminate_child(Sup, Pid): by the child's last published ActorId.
+    /// when the first generation is ready, was ignored, or failed.
+    pub async fn start_child(&self, args: Args)
+        -> Result<StartOutcome<A>, StartChildError<Args>>;
+    /// OTP terminate_child(Sup, Pid): the actor id is looked up when the loop
+    /// handles the call; it names the slot only if it is the slot's last
+    /// published id at that moment.
     pub async fn terminate_child(&self, id: ActorId) -> Result<(), TerminateChildError>;
-    /// The same by slot, for a child seen in which_children (any state).
+    /// The same by slot (any generation).
     pub async fn terminate_slot(&self, id: DynamicChildId) -> Result<(), TerminateChildError>;
-    pub fn which_children(&self) -> Vec<DynamicChildInfo>;
+    pub fn which_children(&self) -> Vec<ChildInfo>;
     pub fn count_children(&self) -> ChildCounts;
     pub fn stop(&self);
     pub async fn shutdown(&self, deadline: Duration) -> SupervisorReport;
@@ -234,9 +251,17 @@ impl<A: Actor, Args> DynamicSupervisor<A, Args> {
     pub fn failure(&self) -> Option<String>;
 }
 
+pub enum StartOutcome<A: Actor> {
+    Started(Started<A>),
+    /// The factory returned ignore: nothing is supervised or counted
+    /// (OTP {ok, undefined}).
+    Ignored,
+}
+
 pub struct Started<A: Actor> {
     pub actor: ActorRef<A>,       // the first generation, as OTP's Pid
     pub child: DynamicChild<A>,   // the slot, across restarts
+    pub data: A::StartData,       // what the child's start returned (unified start, Init<R>)
 }
 
 /// Like `SupervisedChild<A>` for a dynamic slot. Holds no arguments and no
@@ -247,6 +272,24 @@ impl<A: Actor> DynamicChild<A> {
     pub async fn wait_for_generation(&self, after: u64) -> Result<ActorRef<A>, ChildUnavailable>;
     pub fn snapshot(&self) -> ChildSnapshot;
     pub async fn terminate(&self) -> Result<(), TerminateChildError>;   // = terminate_slot
+}
+
+/// Nested form, as `SupervisedSupervisor`.
+impl<A: Actor, Args> SupervisedDynamicSupervisor<A, Args> {
+    pub fn current(&self) -> Result<DynamicSupervisor<A, Args>, ChildUnavailable>;
+    pub async fn wait_ready(&self) -> Result<DynamicSupervisor<A, Args>, ChildUnavailable>;
+    pub async fn wait_for_generation(&self, after: u64)
+        -> Result<DynamicSupervisor<A, Args>, ChildUnavailable>;
+    pub fn snapshot(&self) -> ChildSnapshot;
+}
+impl<A: Actor, Args> DynamicSupervisorSpec<A, Args> {
+    pub fn new(name: impl Into<String>, config: DynamicSupervisorConfig,
+               spec: DynamicChildSpec<A, Args>) -> Self;   // Permanent
+    pub fn restart(self, restart: RestartMode) -> Self;
+    pub fn startup_timeout(self, limit: Duration) -> Self;
+    /// Default: wait for the inner supervisor to finish (OTP's `infinity`
+    /// for supervisor children); a finite value is a reporting bound only.
+    pub fn shutdown_timeout(self, limit: Duration) -> Self;
 }
 
 #[non_exhaustive]
@@ -263,22 +306,23 @@ pub enum StartChildError<Args> {
 
 #[non_exhaustive]
 pub enum RejectReason {
-    MaxChildren,           // Elixir {:error, :max_children}
-    Stopped,               // shutting down or stopped (OTP: the call exits)
-    Placement(SystemError),// the group is closed or out of native capacity
+    MaxChildren,            // Elixir {:error, :max_children}
+    Stopped,                // shutting down or stopped (OTP: the call exits)
+    Placement(SystemError), // the group is closed or out of native capacity
 }
 
 #[non_exhaustive]
 pub enum TerminateChildError {
-    NotFound,      // not a current child (Elixir {:error, :not_found})
-    Stopped,       // called after shutdown began: the supervisor stops it
+    NotFound,      // no current child with that id or slot (Elixir {:error, :not_found})
+    Stopped,       // shutdown began before the loop handled the call
     CleanupStuck,  // the child missed its deadlines; see "Stuck children"
 }
 
-pub struct DynamicChildInfo {
-    pub child: DynamicChildId,
+/// Shared with introspection v1 (static and dynamic supervisors).
+pub struct ChildInfo {
+    pub id: ChildKey,             // DynamicChildId here; the name for static children
     pub actor: Option<ActorId>,   // last published id; None before the first readiness
-    pub ready: bool,              // false while restarting (OTP `restarting`)
+    pub ready: bool,              // true iff state == Running
     pub state: ChildState,
     pub generation: u64,
 }
@@ -291,25 +335,31 @@ pub struct ChildCounts {
 }
 ```
 
+- The factory returns `Result<ChildStart<A>, E>` with
+  `ChildStart::Actor(a) | ChildStart::Ignore`, the unified-start design's
+  shape. An ignore on a first start returns `Ignored` and stores nothing; on
+  a restart it removes the child (OTP drops it), without charge beyond the
+  attempt already stamped.
 - `StartChildError<Args>` implements `Error` when `Args: Debug`;
   `into_args()` returns the arguments of a `Rejected`, and `without_args()`
-  maps to `StartChildError<()>` for `?` in code that does not need them.
+  maps to `StartChildError<()>` for `?`.
 - `FailedToStart` carries the generation's `ExitReason` when an actor
-  existed (`Panic` from `started()`, `Normal` from `ctx.stop()` in
-  `started()`), so callers need not match strings (agy 9).
+  existed, so callers need not match strings.
 - `ChildState` gains no variant: a dynamic child is `Starting`, `Running`,
   `Backoff` (restart pending), `Stopping` (including stuck), then leaves
-  `which_children`. `which_children` is a snapshot in no particular order.
-- Removed slots are evicted from the supervisor's table at removal, after
-  their retained arguments are dropped: memory is O(children held), not
-  O(starts).
+  `which_children`, which is a snapshot in no particular order.
+- Removed slots are evicted from the supervisor's table after slot
+  finalization ([Retained arguments](#retained-arguments)): memory is
+  O(children held).
+- `ChildInfo`, `ChildCounts` and `ChildKey` are introspection v1's types;
+  this design only fixes their dynamic-supervisor contents.
 
 ### Restart types
 
 | | OTP | This design |
 |---|---|---|
 | Default | `permanent` | `Permanent` (`DynamicChildSpec::new`); `temporary()` for one-shot children |
-| Table | `do_restart/3` | V1 with the v0.8 rule: Permanent always; Transient on an abnormal reason (`Panic`, `Kill`, `Killed`, `NoProc`) or a recorded cleanup failure; Temporary never |
+| Table | `do_restart/3` | V1 with the v0.8 rule: Permanent always; Transient on an abnormal reason (`Panic`, `Kill`, `Killed`, `NoProc`) or a recorded cleanup failure (cleanup that *finished* and reported a destructor or helper failure; a cleanup that is still running past its deadline is not one); Temporary never |
 | A replacement failing before readiness | `try_again_restart`, retried | retried unless Temporary, each attempt charged |
 | `terminate_child` | never restarted | never restarted, any type |
 
@@ -330,8 +380,13 @@ pub struct ChildCounts {
   when the restart attempt is admitted, and refunded if the pending restart
   is cancelled by `terminate_child` or shutdown. Window expiry releases only
   stamped grants, never reservations.
-- **Backoff** is opt-in (`backoff: Some(..)`): without it the restart is
-  attempted as soon as the loop handles the exit, as OTP. With it, the
+- **Backoff** is opt-in (`backoff: Some(..)`). Without it (the default) the
+  loop reserves, stamps and runs the restart attempt in the same turn in
+  which it handles the exit, as OTP's `restart/2` does; a failed attempt
+  re-queues the exit at the tail of the loop's queue (OTP's
+  `try_again_restart` cast) and is decided again there. With backoff the
+  loop reserves, releases the loop, and the timer queues a retry that the
+  loop takes in order. With it, the
   per-child jitter stream is seeded from the supervisor seed mixed with the
   slot's `DynamicChildId`, not only the shared template name, so siblings do
   not draw identical delays (agy 9).
@@ -387,42 +442,77 @@ pub struct ChildCounts {
   the parent creates a new, empty dynamic supervisor (OTP). Old handles
   return `Stopped`; `SupervisedDynamicSupervisor::current()` resolves the new
   one.
+- The adapter's own `shutdown_timeout` defaults to waiting for the inner
+  supervisor to finish, which its own deadlines already bound (OTP's
+  `infinity` for supervisor children). A finite value is a reporting bound:
+  when it expires the parent records a cleanup failure but keeps the
+  descendant join barrier. A fixed margin such as 2 × child timeout + 1 s
+  (revision 2) cannot cover an unbounded fan-out and the cleanup this
+  contract allows (Codex F7).
 
 ## Semantics
 
 ### The control loop
 
-One logical control loop per supervisor handles, in arrival order and one at
-a time, as OTP's supervisor process does:
+One logical control loop per supervisor, as OTP's supervisor process. It
+owns one FIFO queue holding, in arrival order:
 
-- a `start_child`: admission (gate, `max_children`, capacity), then the
-  first generation's factory and `started()`, until readiness commits or the
-  attempt failed and was cleaned up (or reached its cleanup deadline);
-- a child's exit: the restart decision, the reservation, and (after the
-  optional backoff, which does not hold the loop) the restart attempt until
-  its readiness or failure;
-- a `terminate_child`: signal, kill escalation and removal of that child.
+- `start_child` requests;
+- `terminate_child` / `terminate_slot` calls;
+- exit notices of children whose owned cleanup finished (OTP's `'EXIT'`);
+- backoff retries, when backoff is configured (OTP's `try_again_restart`
+  cast is the no-backoff counterpart: a failed attempt's exit is queued at
+  the tail).
 
-Not serialised: children run, exit and clean up concurrently; the backoff
-timer runs off the loop; `which_children`, `count_children` and `current()`
-read a snapshot without waiting for the loop; shutdown closes admission at
-once and cancels the operation in progress (row 21 of the alignment table,
+The loop takes the head and runs it to completion before the next:
+
+- a start: admission (gate, `max_children`, capacity), then the first
+  generation's factory and `started()`, until readiness commits, the factory
+  ignores, or the attempt failed and was cleaned up (or reached its
+  deadline);
+- an exit notice: the restart decision, the reservation and, without
+  backoff, the restart attempt until readiness or failure;
+- a retry: stamping and the restart attempt;
+- a terminate call: lookup, signal, kill escalation and removal, or the
+  deadline.
+
+The exit of the child an operation is waiting for (the first generation of
+a failing start, the child being terminated) is consumed by that operation
+directly, as OTP's `start_child` returns the start function's error and
+`shutdown/2` consumes the `'EXIT'` with `unlink_flush`. Every other exit
+waits its turn in the queue.
+
+Not serialised: children run, exit and clean up concurrently; deadlines and
+the backoff timer run off the loop; `which_children`, `count_children` and
+`current()` read a snapshot; shutdown closes admission at once, answers the
+queued requests and cancels the operation in progress (alignment row 21,
 B). Factories run on the target group even though the loop awaits them.
 
-Consequences, all as in OTP:
+Consequences, as in OTP:
 
-- A slow `started()` delays every later start, restart and termination of
-  that supervisor. Keep `started()` short and do slow initialisation in the
-  first message (OTP's `handle_continue`). `startup_timeout` bounds the
-  delay per start.
-- With `max_children = 1`, a start that arrives while another is
-  constructing waits; if the first fails, the second is admitted (Codex 1).
-- A `terminate_child` queued behind a start of the same child finds it.
+- Requests are served in arrival order: with `max_children = 1`, of two
+  queued starts the first is admitted and the second gets `MaxChildren`,
+  never the reverse (model: `FifoOrder`, control `LaterOp`).
+- A start arriving while another constructs waits; if the first fails, the
+  second is admitted.
+- A slow `started()` delays every later operation. Slow initialisation goes
+  in the post-start continuation (below).
+- A slow-to-stop child holds the loop during its `terminate_child`, at most
+  until its deadline; the stall watchdog and introspection report "blocked
+  in terminate_child(id) for T" (decision R1).
+
+**Post-start continuation.** Slow initialisation (ethrex's RLPx handshake)
+belongs in the unified-start design's continuation, OTP's
+`handle_continue`: it runs right after `started()` and before any message,
+including messages that other actors enqueue once they learn the
+reference. That design targets 0.9 and this one depends on it; "send
+yourself a message in `started()`" is not equivalent, because a message
+enqueued by someone else before the self-send can run first.
 
 ### `start_child`
 
-1. **Queued** on the loop. If the supervisor is already closed:
-   `Rejected { Stopped, args }` at once.
+1. **Queued** on the loop, in arrival order. If the supervisor is already
+   closed: `Rejected { Stopped, args }` at once.
 2. **Admission** when the loop reaches it: closed → `Rejected { Stopped, args }`
    (also for a request still queued when shutdown begins); cap reached →
    `Rejected { MaxChildren, args }`; native capacity → `Rejected { Placement, args }`.
@@ -436,7 +526,8 @@ Consequences, all as in OTP:
    commit is the success: from then on `start_child` returns
    `Ok(Started)`, even if shutdown begins before the caller observes it
    (success is historical, like `ActorRef::ready()` and `start()`'s
-   readiness, `supervision.rs` `start_owned`). The returned `actor` may
+   readiness, `supervision.rs` `start_owned`). A factory that returns
+   ignore answers `Ok(Ignored)` and leaves nothing behind. The returned `actor` may
    already be dead: if the child crashed between the commit and the caller's
    wake-up, it is handled by the restart table and `child.current()`
    resolves the replacement (Codex 2).
@@ -462,22 +553,25 @@ Consequences, all as in OTP:
 
 | Race | Outcome |
 |---|---|
+| two `start_child` calls, cap reached by the first | served in arrival order: the first is admitted, the second gets `Rejected { MaxChildren, args }` |
 | `start_child` vs shutdown, while queued | `Rejected { Stopped, args }` |
-| `start_child` vs shutdown, during construction | `Aborted`; never `Ok` unless readiness committed first (model: `NoStartAfterShutdown`) |
+| `start_child` vs shutdown, during construction | `Aborted`; never `Ok` unless readiness committed first (`NoStartAfterShutdown`) |
 | `start_child` vs shutdown, after the commit | `Ok`; the child is then stopped with the others |
-| `start_child` vs a sibling's crash | the crashed child keeps its slot through cleanup, backoff and the replacement, so at the cap the new start gets `MaxChildren` (`MaxChildrenBound`, control `UncountedRestart`) |
-| `start_child` vs a sibling's removal | the slot frees only after the removed child's cleanup and argument drop |
-| `start_child` vs budget exhaustion | exhaustion closes the gate; as shutdown |
-| `terminate_child` vs a crash of that child | serialised by the loop. Exit handled first: if a restart is pending, `terminate_child` cancels it (refunding the reservation) and removes the child; if the restart attempt is running, `terminate_child` waits behind it and then terminates the new generation. Terminate first: the crash is recorded, no restart. Either way the child is removed and never restarted (`TerminatedNeverRestarted`, `NoPublishAfterStop`) |
-| `terminate_child` vs shutdown | a call queued or in progress when shutdown begins resolves when the child is removed (`Ok`, or `CleanupStuck`); a call made after shutdown began returns `Stopped` |
-| two `terminate_child` calls for one child | the second waits for the same removal and gets the same result; a call after removal gets `NotFound` |
+| `start_child` vs a sibling's crash | the crashed child keeps its slot through cleanup, backoff and the replacement (`MaxChildrenBound`, control `UncountedRestart`) |
+| `start_child` vs a sibling's removal | the slot frees only after the removed child's cleanup and slot finalization |
+| `terminate_slot` vs a crash of that child | the loop takes them in order. Exit first: a pending restart is cancelled and refunded, or the restart attempt (which holds the loop) finishes and the call then terminates the new generation. Terminate first: the crash is consumed by the termination, no restart. Either way the child is removed and never restarted (`TerminatedNeverRestarted`, `NoPublishAfterStop`) |
+| `terminate_child(id)` vs a crash of that child | the id is looked up when the loop handles the call. If the slot's last published id is still `id` (cleanup, backoff, a failed replacement), the child is terminated as above. If a replacement committed readiness before the call reached the head, `id` is stale: `NotFound`, and the replacement keeps running (Elixir; `TermResultsSound`, control `SlotLookup`) |
+| `terminate_child` vs shutdown | a call still queued when shutdown begins gets `Stopped`; a call in progress resolves when the child is removed (`Ok`) or at its deadline (`CleanupStuck`) (control `QueuedTermOk`) |
+| two calls for one child | the second is handled after the first completed: `NotFound` if the child was removed, `CleanupStuck` if it is stuck (Elixir; no shared waiters) |
+| a terminate whose child gets stuck | `CleanupStuck` is committed at the deadline and never changes, even if the work ends later (`TermResultsSound`, `TermResultStable`, control `StuckResultLost`) |
 
 ### Restart identity and termination keys
 
 - Every generation has a new `ActorId`, mailbox and state (M4). The slot's
   `DynamicChildId` never changes. `current()` returns the latest ready
   generation; `wait_for_generation(n)` waits for a newer one (V4).
-- The **termination key** of a slot is its **last published** `ActorId`.
+- The **termination key** of a slot is its **last published** `ActorId`,
+  compared when the loop handles the call (not when it was made).
   It is kept through cleanup, backoff and failed replacement attempts, and
   switches only when a replacement's readiness commits, as OTP keeps the
   original pid as the `restarting` entry's key and Elixir keeps
@@ -494,41 +588,54 @@ Consequences, all as in OTP:
 
 `terminate_child` is OTP's `shutdown/2` for one child, run by the loop:
 
-1. Mark the slot terminated (no restart from now on); cancel a pending
+1. Look the target up (id or slot, above). Not found: `NotFound`. Already
+   stuck: `CleanupStuck`.
+2. Mark the slot terminated (no restart from now on); cancel a pending
    restart and refund its reservation.
-2. Send the parent exit signal `Shutdown`: a non-trapping child begins exit
+3. Send the parent exit signal `Shutdown`: a non-trapping child begins exit
    after its current handler and skips `stopped()` (E2, decision 2); a
    trapping child handles the messages queued before the signal, then runs
    `stopped()` (E3).
-3. If the child has not reached its death point `shutdown_timeout` after the
-   signal, kill it (`Killed`, E1). If it misses a second `shutdown_timeout`,
-   or its owned cleanup misses its deadline, the child is stuck:
-   `terminate_child` returns `CleanupStuck`.
-4. Otherwise resolve `Ok` once the child is removed (`TermOkMeansRemoved`).
+4. After `shutdown_timeout` without reaching its death point, kill it
+   (`Killed`, E1). OTP's kill ends the process at that point. Spawned's kill
+   is cooperative (R), so Spawned adds a second `shutdown_timeout` after the
+   kill; a child that misses it, or whose owned cleanup misses its deadline,
+   is stuck and the call returns `CleanupStuck` at that moment.
+5. Otherwise `Ok` once the child is removed.
 
-The loop is held for the whole call, as OTP's supervisor is blocked in
-`terminate_child`; it is bounded by 2 × `shutdown_timeout` plus the cleanup
-deadline.
+The loop is held for the whole call, through removal or the deadline (as
+OTP's supervisor is blocked in `terminate_child` and Elixir's handles it in
+its call handler); deadline monitoring and the child's cleanup run off the
+loop.
 
 ### Stuck children
 
-OTP's `kill` always ends a process, so an OTP supervisor never waits on a
-child that ignores `shutdown` longer than the shutdown timeout (except with
-`infinity`). Spawned's kill is cooperative (R): a child can stay in a
-handler, in `stopped()` or in owned cleanup past every deadline. A child is
-**stuck** when, after its stop signal, it misses the kill and the second
-interval, or when its owned cleanup misses its deadline (`shutdown_timeout`
-from exit begin for a child that ended on its own, E3 row 4: one interval,
-no kill). Policy (agy P0):
+OTP's `kill` always ends a process, so an OTP supervisor never waits past
+the shutdown timeout (except with `infinity`). Spawned's kill is
+cooperative (R): a child can stay in a handler, in `stopped()` or in owned
+cleanup past every deadline. A child is **stuck** when, after its stop
+signal, it misses the kill and the second interval, or when its owned
+cleanup misses its deadline (`shutdown_timeout` from exit begin for a child
+that ended on its own, E3 row 4: one interval, no kill).
+
+The classification uses the exit reason only: a cleanup that is still
+running is not a recorded cleanup failure, so it does not make a Transient
+child restartable (revision 2 contradicted itself here; Codex F3, agy 1).
 
 | The stuck child | Effect |
 |---|---|
-| was retiring anyway (Temporary, Transient after a normal exit, removed by `terminate_child`, or a failed first start) while the supervisor is open | **only that child is affected.** Its slot stays counted (it still holds memory, sockets, capacity) and its work stays owned until it really ends, then the slot is removed. The failure is recorded in its `ChildSnapshot::last_error` and the supervisor's report; a waiting `terminate_child` gets `CleanupStuck`, a waiting `start_child` gets `FailedToStart { cleanup_stuck: true }`. The supervisor and its siblings are unaffected, as OTP's supervisor carries on after killing a child |
-| would be restarted (Permanent, Transient after an abnormal exit or with the cleanup failure the stall implies) | the supervisor **fails** and exits abnormally: it cannot start the replacement while the old generation lives (V3), and OTP would have restarted it; escalation lets the parent decide (V8) |
-| is being stopped by shutdown | the shutdown report is incomplete and records the failure (V9, S3); "done" waits for it |
+| would not be restarted: Temporary; Transient after a normal exit (`Normal`, `Shutdown`); removed by `terminate_child`; a failed first start | **only that child is affected.** Its slot stays counted and its work owned until it really ends, then the slot is removed. The failure is in its `ChildSnapshot::last_error` and the report; a waiting `terminate_child` gets `CleanupStuck`, a waiting `start_child` gets `FailedToStart { cleanup_stuck: true }`. The supervisor and its siblings are unaffected |
+| would be restarted: Permanent; Transient after an abnormal exit; a failed replacement of a restartable child | the supervisor **fails** and exits abnormally: it cannot start the replacement while the old generation lives (V3), and OTP would have restarted it (decision R2) |
+| being stopped by shutdown | the shutdown report is incomplete and records the failure (V9, S3); "done" waits for it |
 
-Model: `StuckIsolated`, control `StuckFailsAll`. A retiring stuck child is
-also never restarted later; its slot simply ends when the work ends.
+Escalation cannot make an unkillable computation disappear. The failed
+dynamic supervisor's parent restarts the subtree only after the descendant
+barrier (V8): the stuck generation still holds its slot, its group capacity
+and whatever it touches until its code returns. What escalation gives is
+visibility (the parent and the report know) and the OTP restart policy once
+the work ends. Model: `StuckIsolated` checks the classification against the
+table, not against the label the action chose (controls `StuckFailsAll`,
+`MisclassifyStuck`).
 
 ### Shutdown of all children
 
@@ -544,34 +651,47 @@ its parent, or a failure):
    `ConcurrentShutdown`, control `Sequential`.
 3. **Deadlines:** each child's intervals are measured from its own signal
    (E3): kill after `shutdown_timeout`, stuck after a second one. OTP arms
-   one timer after the fan-out; measuring from each child's own signal
-   differs only by the fan-out time and never shortens a child's interval
-   (Codex 9). Shutdown therefore takes at most 2 × `shutdown_timeout` plus
-   the fan-out time plus owned cleanup up to its deadline, whatever N is.
+   one timer after the whole fan-out, so a child signalled early gets the
+   fan-out time on top of its interval there; here it does not. This is an
+   inherited E3 deviation (B: per-child bounds independent of N), listed in
+   the alignment table. Shutdown takes at most the fan-out time plus
+   2 × `shutdown_timeout` plus owned cleanup up to its deadline.
 4. **Done** means every slot was removed: every generation reached
    publication and its owned cleanup finished, its arguments dropped (V9;
    `NoChildOutlivesSupervisor`, `ClosedLeadsToDone`).
 5. `shutdown(deadline)` keeps the static meaning: `deadline` is the report
    deadline; children still running then stay owned by the system (S3).
 
-The model takes the fan-out as one step: the implementation sends the
-signals in a loop with no await between them, and a child acting before its
-own signal only ends earlier. Trace validation of the implementation will
-check this abstraction (signal events precede any wait event).
+The model's main configurations take the fan-out as one step, an ownership
+abstraction: it establishes that every admitted child is signalled before
+the supervisor waits, not timer epochs or scheduling bounds (time is
+abstract). The refinement configuration `MCDynamicSupervisorCallers` runs
+the fan-out one signal per step, interleaved with the children, with no
+cleanup ever assumed to finish, and checks `FanoutCompletes`: every
+admitted child is signalled even while signalled siblings never end
+(control `Sequential` waits for each sibling and fails it). Timing claims
+are for the implementation's tests.
 
 ### Retained arguments
 
 - Restartable slots keep the original `Args`; each attempt receives a clone
   made inside the attempt (on the target group, outside framework locks,
   within `startup_timeout`). A panicking or hanging clone is a failed
-  attempt (Codex 10).
-- At removal the slot drops its retained arguments as part of its cleanup,
-  before its native-capacity reservation and its `max_children` slot are
-  released. A panicking destructor is recorded as a cleanup failure (after
-  the child's death it changes no exit reason); a hanging one makes the slot
-  stuck, under the policy above.
-- `DynamicChild` handles hold no arguments and no scopes; after removal they
-  report terminal metadata only.
+  attempt.
+- **Generation cleanup and slot finalization are distinct.** Generation
+  cleanup (the actor's death, its state and queued messages, its helpers)
+  ends every generation; a failure recorded there feeds the Transient rule.
+  Slot finalization runs once, only after the loop decided to remove the
+  slot (no restart can follow): it drops the retained arguments and then
+  releases the native-capacity reservation and the `max_children` slot.
+- Finalization runs as a tracked task on the template's group, never on the
+  control loop and never under a supervisor lock, bounded by
+  `shutdown_timeout`. A panicking destructor is recorded as a finalization
+  failure in the report (no restart: the decision was already made). A
+  destructor that hangs past the deadline makes the slot stuck as a
+  retiring child: it stays counted, it is reported, nothing else is
+  affected (Codex F8).
+- `DynamicChild` handles hold no arguments and no scopes.
 
 ### In-flight requests and deferred replies of a dying child
 
@@ -608,13 +728,13 @@ As for any actor (exit-signals design, phases of an exit, with rank 11):
 | # | Rule | OTP / Elixir | This design | Reason for any deviation |
 |---|---|---|---|---|
 | 1 | `start_child` is synchronous and returns the child | `{ok, Pid}` after the start function returns | `Ok(Started { actor, child })` after `started()` | aligned; `child` is an addition (row 9) |
-| 2 | Operations serialised by the supervisor | one process: starts, `'EXIT'` handling, restarts and `terminate_child` run one at a time | one control loop, same order and blocking | aligned (decision Q1) |
+| 2 | Operations serialised by the supervisor | one process: calls and `'EXIT'` messages handled in mailbox order, one at a time | one control loop over one FIFO queue of starts, terminate calls, exits and retries | aligned (decisions Q1, R1) |
 | 3 | Template plus per-call args | `ExtraArgs` appended (Elixir: fixed `extra_arguments` prepended) | typed `Args` passed to the factory | T |
-| 4 | `ignore` | `{ok, undefined}`, nothing stored | not supported | as the static supervisor (S1) |
+| 4 | `ignore` | `{ok, undefined}`, nothing stored; on restart the child is dropped | `Ok(Ignored)`, nothing stored; on restart the child is removed | aligned (decision G3) |
 | 5 | Start failure | `{error, Reason}`, not counted, not retried | `FailedToStart`, not counted, not retried, after cleanup or at its deadline | aligned; the deadline release is R (S2) |
 | 6 | Default restart type | `permanent` | `Permanent` | aligned |
 | 7 | Temporary children keep no args | `mapsets` | `temporary()` moves args once, no `Clone` | aligned; R for the separate constructor |
-| 8 | `terminate_child` key | pid, kept through failed restarts | last published `ActorId`, kept through failed restarts; `NotFound` (Elixir) for anything else | aligned with Elixir's `not_found`; OTP's `ok` for a dead unknown pid is a `find_child` artefact |
+| 8 | `terminate_child` key | pid, looked up when the call is handled, kept through failed restarts | last published `ActorId`, looked up when the loop handles the call; `NotFound` (Elixir) otherwise, including for a second call | aligned with Elixir; OTP's `ok` for a dead unknown pid is a `find_child` artefact |
 | 9 | Restart identity | new pid, found through names | new `ActorId`; stable `DynamicChildId`, `current()`, `terminate_slot` | addition, consistent with `SupervisedChild` (instance-bound references) |
 | 10 | `restart_child`, `delete_child` | `{error, simple_one_for_one}` | not provided | aligned (absent at compile time: T) |
 | 11 | `which_children` | pid or `restarting`, unordered | last published id plus `ready`, unordered | aligned plus fields |
@@ -622,17 +742,17 @@ As for any actor (exit-signals design, phases of an exit, with rank 11):
 | 13 | `max_children` | Elixir: default infinity, `0` allowed, start only, counts restarting | same; frees after cleanup | aligned; B for freeing after cleanup |
 | 14 | Restart budget | every restart attempt counts; Elixir default 3 in 5 s | same rule and defaults | aligned (decision Q3) |
 | 15 | Exhaustion | terminate children, exit `shutdown` | terminate children concurrently, exit `Shutdown`, diagnostic in `failure()` | aligned (decision Q5); static nested supervisors follow in a separate PR |
-| 16 | Shutdown order | parallel, undefined, one timer after the fan-out, then `kill` | parallel, per-child intervals from each child's signal, `kill`, then stuck | aligned up to the fan-out time; the stuck stage is R |
+| 16 | Shutdown order and timer | parallel, undefined order, one timer armed after the fan-out, then `kill` | parallel, each child's interval from its own signal, `kill`, then a second interval and stuck | timer epoch: inherited E3 deviation (B), early children get no fan-out time on top; the second interval is R |
 | 17 | Shutdown signal | `exit(Child, shutdown)`; a trapping child runs `terminate` | parent exit signal; trapping child runs `stopped()` after its backlog; non-trapping skips it | aligned (E2, E3) |
 | 18 | `start_child` during shutdown | the queued call exits with the supervisor's reason or `noproc` | `Rejected { Stopped, args }` or `Aborted` | R: no caller exit in Rust; T: the arguments come back |
 | 19 | Restarted dynamic supervisor | empty | empty | aligned |
 | 20 | Backoff | none | none by default; opt-in per supervisor | aligned by default (decision Q3) |
 | 21 | Shutdown admission | the supervisor processes its queue in order; a start queued behind the shutdown is never handled | admission closes at once, the construction in progress is cancelled | B (exit-signals design) |
 | 22 | When a slot frees | at `'EXIT'` | after owned cleanup and the argument drop (V3) | R and B: destructors and owned helpers outlive the last hook |
-| 23 | A child that ignores `shutdown` | killed; the kill always works | killed cooperatively; if it still does not end it is stuck, isolated unless it would restart | R: Rust cannot kill a thread; policy in [Stuck children](#stuck-children) |
+| 23 | A child that ignores `shutdown` | killed after the timeout; the kill always ends it | killed cooperatively after the timeout; if it misses a second interval it is stuck, isolated unless it would restart | R: Rust cannot kill a thread; policy in [Stuck children](#stuck-children) |
 | 24 | Calls in flight to a dying child | `'EXIT'`/monitor tells callers | `ActorStopped(reason)` at D, `NoProc` after | aligned (rank 11, v0.8) |
 | 25 | Heterogeneous specs | Elixir: any spec per call | one typed template | T; decision Q2 |
-| 26 | Nested supervisor's shutdown wait | `infinity` by default for supervisor children | 2 × child `shutdown_timeout` + 1 s by default | B: a stuck subtree is still reported |
+| 26 | Nested supervisor's shutdown wait | `infinity` by default for supervisor children | waits for the inner supervisor by default; a finite value only reports | aligned |
 
 ## Non-guarantees
 
@@ -658,17 +778,18 @@ New guarantees (section 6 of [semantics.md](semantics.md), ids proposed):
 
 | Id | Guarantee | Checked by (planned) |
 |---|---|---|
-| V10 | **Dynamic admission.** One control loop serialises starts, exit handling and terminations. A start is admitted atomically with the gate and the count; success commits only while admission is open and is then historical; a rejected start returns its arguments; a first-start failure is returned after cleanup or at its deadline, uncharged and unretried. | `DynamicSupervisor!SerialConstruction`, `!NoStartAfterShutdown`, `!OkMeansReady`, `!FirstStartNeverRetried`, `!FailedAfterCleanup`, `!FailureCauseKept`, `!StartAnswered`; tests |
+| V10 | **Dynamic admission.** One control loop takes starts, terminate calls, exits and retries from one FIFO queue, one at a time. A start is admitted atomically with the gate and the count; success commits only while admission is open and is then historical; a rejected start returns its arguments; an ignored start stores nothing; a first-start failure is returned after cleanup or at its deadline, uncharged and unretried; every call is answered even if cleanup never ends. | `DynamicSupervisor!FifoOrder`, `!SerialConstruction`, `!NoStartAfterShutdown`, `!OkMeansReady`, `!FirstStartNeverRetried`, `!FailedAfterCleanup`, `!FailureCauseKept`, `!StartAnswered` (CallerSpec); trace validation |
 | V11 | **Cap counts restarting children.** A child holds its slot from admission until removal, through cleanup, backoff, replacement and a stuck cleanup. | `!MaxChildrenBound` |
-| V12 | **Terminated means removed.** After `terminate_child` a child is never restarted or republished; a pending restart is cancelled and refunded; `Ok` means removed. | `!TerminatedNeverRestarted`, `!NoPublishAfterStop`, `!ReservationsMatch`, `!TermOkMeansRemoved`, `!TerminateAnswered` |
-| V13 | **Concurrent shutdown.** Every live child is signalled without awaiting another; the supervisor is done only after every child finished. | `!ConcurrentShutdown`, `!NoChildOutlivesSupervisor`, `!ClosedLeadsToDone` |
-| V14 | **Stuck isolation.** A child stuck while retiring fails only itself; the supervisor fails only for a stuck child it would restart, budget exhaustion, or during shutdown. | `!StuckIsolated` |
+| V12 | **Terminated means removed.** The target is looked up when the loop handles the call; after a found `terminate_child` the child is never restarted or republished, a pending restart is cancelled and refunded, `Ok` means removed, `CleanupStuck` is committed at the deadline and never changes; a call still queued at shutdown gets `Stopped`. | `!TerminatedNeverRestarted`, `!NoPublishAfterStop`, `!ReservationsMatch`, `!TermResultsSound`, `TermResultStable`, `!TerminateAnswered` (CallerSpec) |
+| V13 | **Concurrent shutdown.** Every admitted child is signalled without awaiting another; the supervisor is done only after every child finished. | `!ConcurrentShutdown`, `!FanoutCompletes` (refinement, CallerSpec), `!NoChildOutlivesSupervisor`, `!ClosedLeadsToDone` |
+| V14 | **Stuck isolation.** A child stuck while retiring (by the exit reason; a stall is not a recorded cleanup failure) fails only itself; the supervisor fails only for a stuck child the table would restart, budget exhaustion, or during shutdown. | `!StuckIsolated` |
 
 Touched:
 
 - **V1** (restart table) per child, including the cleanup-failure rule:
-  `!RestartFollowsPolicy` (both directions: no forbidden restart, no
-  retirement of a restartable child while open), `!TemporaryNeverRestarted`,
+  `!RestartFollowsPolicy` (both directions, checked at the decision:
+  reservation, attempt or exhaustion; no retirement of a restartable child
+  while open), `!TemporaryNeverRestarted`,
   `!RecoveryProgress`.
 - **V3, V4** per slot: `!AtMostOneGeneration`, `!PublishedIsLive` (also
   requiring readiness).
@@ -740,111 +861,192 @@ that generation died, not that the slot is gone.
 ## What the model establishes
 
 [`DynamicSupervisor.tla`](../../verification/tla/DynamicSupervisor.tla)
-(revision 2) models one dynamic supervisor, N `start_child` calls made at any
-moment, and one `terminate_child` per started child. A control loop (`op`)
-serialises admission and first construction, exit handling and restart
-attempts, and terminations. Each slot's restart type is chosen in `Init`,
-so one run covers every combination. The instances use two slots: every
-property relates at most a pair of children (one holds the cap or restarts
-while the other races it), and with revision 2's detail three slots passed
-6.7 GB of TLC state in 38 minutes without finishing. Budget reservations, stamping, refunds and window expiry
-are explicit. Exits come from children (`Normal`, `Panic`), stop signals
-(`Shutdown`, or `Killed` after the kill), start failures (factory error,
-`Normal` before readiness), and cleanup may record a failure (the Transient
-rule). A child signalled but still running, or with stuck cleanup, can
-become stuck, with the policy above.
+(revision 3) models one dynamic supervisor, `start_child` calls made at any
+moment, and `terminate_child` calls, each aimed at a slot either by the id
+the caller saw or by slot. The control loop takes starts, terminate calls,
+exit notices and backoff retries from one FIFO queue; the exit of the child
+an operation waits for is consumed by that operation. Each slot's restart
+type is chosen in `Init`. Budget reservations, stamping, refunds and window
+expiry are explicit; backoff is a constant (off: the attempt runs in the
+exit's turn and a failed one re-queues; on: reserve, timer, retry through
+the queue). Children can ignore, fail, time out, exit, be stopped (Shutdown,
+or Killed after the kill), record a cleanup failure, or get stuck before or
+after their death point.
 
-Invariants that name an event (a commit, a publication or a generation
-after close or terminate; a forbidden restart or retirement; restart
-attempts) read history variables that `GhostUpdate` computes from every
-step's state change, separately from the actions, so a mutated action cannot
-hide its own violation (agy 3). `alive` accumulates generations and only the
-one whose cleanup ended is removed (Codex 7).
+Event invariants (late commits, publications and generations; forbidden
+restart decisions or retirements; restart attempts; queue order) read
+history variables that `GhostUpdate` computes from each step's state change,
+separately from the actions. `alive` keeps every live generation.
+
+Two fairness sets. `CallerSpec` assumes only the loop's work and deadlines
+(startup timeout, cleanup deadline) progress; no user code is assumed to
+finish. `StartAnswered`, `TerminateAnswered` and `FanoutCompletes` hold
+under it (Codex F4). `Spec` adds progress of readiness, stops, cleanup and
+stuck children, for `ClosedLeadsToDone` and `RecoveryProgress`.
 
 | Invariant | Meaning |
 |---|---|
 | `AtMostOneGeneration` | a slot never has two live generations |
-| `PublishedIsLive` | `current()` returns only the live, latest, ready generation |
+| `PublishedIsLive` | `current()` returns only the running, live, latest, ready generation |
 | `NoChildOutlivesSupervisor` | done means every child finished and was removed |
 | `MaxChildrenBound` | children held never exceed `max_children` |
 | `SerialConstruction` | at most one generation is being constructed |
+| `FifoOrder` | the loop takes queued operations in arrival order |
 | `TemporaryNeverRestarted` | a Temporary child has one generation |
-| `TerminatedNeverRestarted` | no generation begins after `terminate_child` |
+| `TerminatedNeverRestarted` | no generation begins after a found `terminate_child` |
 | `NoGenerationAfterClose` | no generation begins after admission closed |
-| `NoPublishAfterStop` | no generation is published after close or `terminate_child` |
+| `NoPublishAfterStop` | no generation is published after close or termination |
 | `NoStartAfterShutdown` | no `start_child` success commits after admission closed |
-| `RestartFollowsPolicy` | every restart is allowed by the table, and no restartable exit is retired while open |
+| `RestartFollowsPolicy` | every restart decision (reservation, attempt, exhaustion) is allowed by the table; no restartable exit is retired while open |
 | `FirstStartNeverRetried` | a failed first start is never retried |
-| `FailedAfterCleanup` | `FailedToStart`/`Aborted` only after cleanup or at the stuck deadline |
+| `FailedAfterCleanup` | `FailedToStart`/`Aborted` only once cleanup really finished (removed, no live generation) or with the deadline failure recorded |
 | `FailureCauseKept` | the start error reflects what ended the attempt |
 | `ChargedRestarts` | every restart attempt is charged exactly once; first starts never |
 | `ReservationsMatch` | reservations are exactly the pending restarts |
 | `BudgetBounded` | stamped grants plus reservations stay within `max_restarts` |
 | `ExhaustionCloses` | exhaustion fails and closes the supervisor |
-| `StuckIsolated` | the supervisor fails only by exhaustion, a stuck child it would restart, or while closing |
-| `ConcurrentShutdown` | once stopping, every running child has its stop signal |
+| `StuckIsolated` | the supervisor fails only by exhaustion, a stuck child the table would restart (checked against the table), or while closing |
+| `ConcurrentShutdown` | once waiting, every running child has its stop signal |
 | `OkMeansReady` | `Ok` only for a child that became ready |
-| `TermOkMeansRemoved` | `terminate_child` returns `Ok` only after removal |
+| `TermResultsSound` | `Ok` only after removal and never for a stuck child; a pending call holds the loop; an id call reaches only the generation it named |
 
-Action property `NeverReopens`. Liveness (fair loop, construction, stops,
-cleanup and stuck children ending; crashes, start failures and getting stuck
-not fair): `ClosedLeadsToDone`, `StartAnswered`, `TerminateAnswered`,
-`RecoveryProgress` (a restartable exit is restarted or superseded by
-terminate, shutdown, exhaustion or a stuck cleanup).
+Action properties: `NeverReopens`, `TermResultStable` (a committed terminate
+result never changes). Liveness: `StartAnswered`, `TerminateAnswered`,
+`FanoutCompletes` (CallerSpec); `ClosedLeadsToDone`, `RecoveryProgress`
+(Spec).
 
-TLC results (TLC 2.19, fede, 4 workers, `nice -n 19`):
+Configurations (TLC 2.19, fede, 4 workers, `nice -n 19`). These are
+bounded checks: two slots for the broad instances, three for the targeted
+one; no cutoff argument is claimed (Codex F10).
 
 | Configuration | Instance | Distinct states | Depth | Time |
 |---|---|---|---|---|
-| `MCDynamicSupervisor` (per PR; safety, `NeverReopens`) | 2 slots, every pair of restart types, `max_children` 1, budget 1, one window release, exits `Normal`/`Panic`, start failures factory/`Normal`, cleanup failures | 3,459,556 | 33 | 39 s |
-| `MCDynamicSupervisorLive` (per PR; liveness) | as above without cleanup failures, factory start failures only | 1,628,738 | 33 | 5m21s |
-| `MCDynamicSupervisorZero` (per PR; safety, liveness) | as `MCDynamicSupervisor` with budget 0 | 589,159 | 22 | 1m23s |
-| `MCDynamicSupervisorDeep` (weekly; safety) | budget 2, two window releases, `max_children` 2 | 31,620,430 | 42 | 5m06s |
+RESULT_ROWS
 
 Negative controls (`negative_checks.py`, run one at a time; each checks
-`TypeOK` and only the named property, safety controls on
-`MCDynamicSupervisor`, liveness controls on `MCDynamicSupervisorLive`):
+`TypeOK` and only the named property). Every invariant and liveness
+property above has at least one; the two action properties do not.
 
-| `Fault` | Mutation | Fails | Origin |
+| `Fault` | Mutation | Fails | Config |
 |---|---|---|---|
-| `IgnoreMax` | admission ignores the cap | `MaxChildrenBound` | rev. 1 |
-| `UncountedRestart` | a crashed child frees its slot until it restarts | `MaxChildrenBound` | rev. 1 |
-| `RestartTemporary` | Temporary children follow the Permanent rule | `TemporaryNeverRestarted` | rev. 1 |
-| `RestartTerminated` | `terminate_child` does not cancel a restart | `TerminatedNeverRestarted` | rev. 1 |
-| `AcceptDuringShutdown` | a start admitted and committed after close | `NoStartAfterShutdown` | rev. 1 |
-| `RestartAfterClose` | a pending restart proceeds after close | `NoGenerationAfterClose` | rev. 1 |
-| `NoEscalate` | exhaustion drops only that child | `ExhaustionCloses` | rev. 1 |
-| `EarlyDone` | done before every child finished | `NoChildOutlivesSupervisor` | rev. 1 |
-| `Sequential` | children stopped one at a time | `ConcurrentShutdown` | rev. 1 |
-| `ConcurrentStart` | constructions not serialised (checked with `max_children` 2: with a cap of one the cap alone serialises) | `SerialConstruction` | Codex 1 |
-| `StuckFailsAll` | any stuck child fails the supervisor | `StuckIsolated` | agy P0 |
-| `PublishAfterClose` | a constructing replacement publishes after close | `NoPublishAfterStop` | agy 3 |
-| `OverlapGeneration` | the replacement starts before the old cleanup ended | `AtMostOneGeneration` | Codex 7 |
-| `PublishBeforeReady` | a replacement is published at construction | `PublishedIsLive` | Codex 7 |
-| `PrematureOk` | `Ok` committed at admission | `OkMeansReady` | Codex 7 |
-| `UnchargedRetry` | a failed replacement's retry is not charged | `ChargedRestarts` | Codex 7 |
-| `ChargeFirstStart` | a first start is charged | `ChargedRestarts` | agy 2 |
-| `TransientNormalRestart` | Transient restarts after a normal exit | `RestartFollowsPolicy` | agy 2, Codex 8 |
-| `PermanentRetires` | Permanent is not restarted | `RestartFollowsPolicy` | Codex 8 |
-| `RetryFirstStart` | a failed first start is retried | `FirstStartNeverRetried` | agy 2 |
-| `EarlyFailedReply` | `FailedToStart` returned before cleanup | `FailedAfterCleanup` | agy 2 |
-| `LateFailedOverwrite` | a pre-shutdown failure reported as `Aborted` | `FailureCauseKept` | agy 7 |
-| `NoRefund` | a cancelled restart keeps its reservation | `ReservationsMatch` | agy 4, Codex 6 |
-| `ExpireReserved` | window expiry releases a reservation | `ReservationsMatch` | Codex 6 |
-| `TermReplyEarly` | `terminate_child` returns before removal | `TermOkMeansRemoved` | agy 7 |
-| `NoAbort` (liveness) | a start racing shutdown is not cancelled | `StartAnswered` | rev. 1 |
-| `StuckBackoff` (liveness) | shutdown does not cancel a pending restart | `ClosedLeadsToDone` | rev. 1 |
+| `IgnoreMax` | admission ignores the cap | `MaxChildrenBound` | main |
+| `UncountedRestart` | a crashed child frees its slot until it restarts | `MaxChildrenBound` | main |
+| `RestartTemporary` | Temporary follows the Permanent rule | `TemporaryNeverRestarted` | main |
+| `RestartTerminated` | termination does not stop a restart | `TerminatedNeverRestarted` | main |
+| `AcceptDuringShutdown` | a start admitted and committed after close | `NoStartAfterShutdown` | main |
+| `RestartAfterClose` | a pending restart proceeds after close | `NoGenerationAfterClose` | backoff |
+| `NoEscalate` | exhaustion drops only that child | `ExhaustionCloses` | main |
+| `EarlyDone` | done before every child finished | `NoChildOutlivesSupervisor` | main |
+| `SkipSignal` | the fan-out skips a child | `ConcurrentShutdown` | main |
+| `ConcurrentStart` | constructions not serialised | `SerialConstruction` | main, cap 2 |
+| `LaterOp` | the loop admits a later start first | `FifoOrder` | main |
+| `StuckFailsAll` | any stuck child fails the supervisor | `StuckIsolated` | main |
+| `MisclassifyStuck` | a retiring stuck child classified as restartable | `StuckIsolated` | main |
+| `PublishAfterClose` | a replacement publishes after close | `NoPublishAfterStop` | main |
+| `PublishAfterExit` | a generation stays published after it exits | `PublishedIsLive` | main |
+| `OverlapGeneration` | the replacement starts before the old cleanup ended | `AtMostOneGeneration` | main |
+| `PublishBeforeReady` | a replacement is published at construction | `PublishedIsLive` | main |
+| `PrematureOk` | `Ok` committed at admission | `OkMeansReady` | main |
+| `UnchargedRetry` | a failed replacement's retry is not charged | `ChargedRestarts` | main |
+| `ChargeFirstStart` | a first start is charged | `ChargedRestarts` | main |
+| `TransientNormalRestart` | Transient restarts after a normal exit | `RestartFollowsPolicy` | main |
+| `TransientNormalRestart` | the same at zero budget: a normal exit exhausts the budget | `RestartFollowsPolicy` | main, budget 0 |
+| `PermanentRetires` | Permanent is not restarted | `RestartFollowsPolicy` | main |
+| `RetryFirstStart` | a failed first start is retried | `FirstStartNeverRetried` | main |
+| `EarlyFailedReply` | `FailedToStart` before cleanup | `FailedAfterCleanup` | main |
+| `EarlyRemove` | a failed start removed with its generation still alive | `FailedAfterCleanup` | main |
+| `LateFailedOverwrite` | a pre-shutdown failure reported as `Aborted` | `FailureCauseKept` | main |
+| `NoRefund` | a cancelled restart keeps its reservation | `ReservationsMatch` | backoff |
+| `ExpireReserved` | window expiry releases a reservation | `ReservationsMatch` | backoff |
+| `OverReserve` | a restart reserved beyond the budget | `BudgetBounded` | main |
+| `TermReplyEarly` | `terminate_child` returns before removal | `TermResultsSound` | main |
+| `SlotLookup` | an id call reaches a newer generation | `TermResultsSound` | main |
+| `QueuedTermOk` | a call queued at shutdown waits and may return `Ok` | `TermResultsSound` | main |
+| `StuckResultLost` | `CleanupStuck` not committed; later turns into `Ok` | `TermResultsSound` | main |
+| `NoAbort` | a start racing shutdown is not cancelled | `StartAnswered` | callers |
+| `NoDeadline` | no cleanup deadline | `StartAnswered` | callers |
+| `TermLost` | a found call never signals the child | `TerminateAnswered` | callers |
+| `Sequential` | the fan-out waits for each signalled child | `FanoutCompletes` | callers |
+| `StuckBackoff` | shutdown does not cancel a pending restart | `ClosedLeadsToDone` | live |
+| `LostRestart` | a decided restart is never attempted | `RecoveryProgress` | live |
 
-All 27 produce their counterexample on the named property when run one at a time, each in 1-5 s. (Run in parallel, TLC instances race on the standard modules TLC extracts to `/tmp`; `negative_checks.py` runs them serially.)
+CONTROLS_NOTE
 
 Not modelled: handler bodies, mailboxes and requests (`Lifecycle.tla`;
-rank 11's models); real time (backoff delays, the window clock, deadlines
-as durations); native-capacity reservations (a counting resource like the
-cap, checked by tests); nesting (a failed dynamic supervisor is one child of
-`NestedSupervision.tla`'s parent); the fan-out as separate steps (see
-[Shutdown](#shutdown-of-all-children)). Trace validation of real runs is part
-of the implementation (verification rule). Apalache inductive invariants
-are a follow-up.
+rank 11's models); real time; native-capacity reservations and slot
+finalization as separate steps (a counted slot and its removal stand for
+them); nesting (one child of `NestedSupervision.tla`'s parent); repeated
+churn of one slot (each slot is one start call; a reusable-slot model would
+need fresh identities). Apalache inductive invariants are a follow-up.
+
+## Test plan: relating the model to the code
+
+Standing rule: a model counts only once real runs are checked against it.
+The implementation must emit lifecycle-trace events (feature
+`lifecycle-trace`, as `TraceSupervision.tla` uses today) that map one to one
+onto `DynamicSupervisor.tla` actions, and ship trace-validation tests that
+replay real runs as model behaviours.
+
+**Events.** Each carries the supervisor's trace id, the slot (`DynamicChildId`),
+the generation, and where noted the queue ticket or call id.
+
+| Event | Emitted when | Model action |
+|---|---|---|
+| `DReq` (slot, ticket) | `start_child` queued, or rejected because closed | `Request` |
+| `DAdmit` (slot, ticket, outcome: admitted / max) | the loop takes a start | `LoopAdmit` |
+| `DReject` (slot) | shutdown answers a queued start | `RejectQueued` |
+| `DReady` (slot, gen) | readiness commits | `Ready` |
+| `DIgnore` (slot, gen) | the factory returned ignore | `Ignore` |
+| `DStartFail` (slot, gen, reason) | factory error or panic, stop or panic in `started()` | `StartFail` |
+| `DStartTimeout` (slot, gen) | `startup_timeout` fired | `StartTimeout` |
+| `DAbort` (slot, gen) | shutdown cancelled a construction | `AbortStart` |
+| `DExit` (slot, gen, reason) | a running generation began exiting on its own | `SelfExit` |
+| `DStopSeen` (slot, gen, reason) | a signalled generation began exiting (Shutdown/Killed) | `StopObserved` |
+| `DCleaned` (slot, gen, cleanup_failure, ticket) | owned cleanup finished; exit notice queued | `CleanupDone` |
+| `DStuck` (slot, gen, kind) | a deadline was missed | `CleanupStuck` |
+| `DStuckDone` (slot) | a stuck child finally ended | `StuckDone` |
+| `DDecide` (slot, ticket?, outcome: removed / backoff / restart / exhausted) | the loop handled an exit | `Decide` |
+| `DRetryQueued` (slot, ticket) | the backoff timer fired | `BackoffFire` |
+| `DRetry` (slot, gen, ticket) | the loop took a retry | `BackoffDone` |
+| `DCancel` (slot) | a pending restart was cancelled and refunded | `CancelBackoff` |
+| `DTermCall` (call, slot, named gen, ticket) | `terminate_child`/`terminate_slot` called | `TermCall` |
+| `DTermLookup` (call, outcome: found / notfound / stuck) | the loop handled the call | `LoopTerm` |
+| `DTermReject` (call) | shutdown answered a queued call | `RejectQueuedTerm` |
+| `DTermDone` (call, result) | the call resolved `Ok` | `TermResolve` |
+| `DClose`, `DSignal` (slot), `DDone` | shutdown began, a child was signalled, all children finished | `Close`, `SupSignal`/`SupSignalStep`, `SupDone` |
+| `DExpire` | a grant left the window | `WindowExpire` |
+
+The trace checker (`trace_check.py`) learns a `dynamic-v1` schema that
+replays these events as a `TraceDynamic.tla` behaviour, with the instance
+constants taken from the run (slots, modes, calls, cap, budget, backoff).
+The fan-out is emitted as one `DSignal` per child; the checker accepts the
+signals of one shutdown as a single `SupSignal` step when no child event
+falls between them, and checks the refinement configuration otherwise.
+
+**Tests the implementation must ship** (`concurrency/tests/dynamic_trace.rs`,
+recorded in the `tla-traces` CI job, plus generated scripts in
+`supervisor_policies`):
+
+1. Admission order: two starts at the cap; the second rejected with its
+   arguments.
+2. First-start failures: factory error, panic in `started()`, startup
+   timeout, ignore; each answered after cleanup; one with a stuck cleanup.
+3. Restart table per type and reason, with and without backoff, including a
+   failed replacement re-queued and retried, and a recorded cleanup failure
+   restarting a Transient child.
+4. Budget: exhaustion at zero and at one, reservation refund on terminate
+   and on shutdown during backoff.
+5. Terminate: by id, by slot, a stale id after a successful replacement, a
+   second call, a call during a restart attempt, a call queued at
+   shutdown, a stuck child.
+6. Shutdown with several children, one stuck; a start racing shutdown; a
+   commit racing shutdown.
+7. Seeded random scripts (as `supervision_trace`) for coverage.
+
+**Expected action coverage** (`trace_coverage.py`): every action of
+`DynamicSupervisor.tla` reached by the dedicated tests, except the fault
+branches; `WindowExpire` only in paused-time tests. The coverage baseline
+must list them so that a regression fails CI, as for the static models.
 
 ## Alternatives considered
 
@@ -887,8 +1089,11 @@ are a follow-up.
   keeps the spec, `restart_child`, `delete_child`; `Supervision.tla` and
   `Cohorts.tla` changes).
 - **Apalache inductive invariants** for `DynamicSupervisor.tla`.
-- **Implementation acceptance:** trace validation, the fan-out abstraction
-  check, evidence that dynamic tables, retained arguments and capacity
+- **Unified start (0.9):** the post-start continuation, `ChildStart::Ignore`
+  and `Init<R>` start data are that design's; this design consumes them.
+- **Introspection v1:** owns `ChildInfo`, `ChildCounts`, `ChildKey` and the
+  "blocked in terminate_child" report.
+- **Implementation acceptance:** the [test plan](#test-plan-relating-the-model-to-the-code), evidence that dynamic tables, retained arguments and capacity
   reservations add nothing to the ordinary actor and message paths (Codex
   closing note).
 
@@ -931,7 +1136,7 @@ was checked against the code and sources before acting on it.
 | 8 | ethrex `Handler<Down>` lacks the monitor check on the entry; awaiting `start_child` stalls accepts; `terminate_child` also skips `stopped()` | **Accepted.** The guard is in both sketches; the handshake moves out of `started()` (required now that starts are serialised); the `stopped()` note covers `terminate_child` |
 | 9 (P2) | Jitter seed per slot; drop `Sync`; unconditional `Clone`, slot eviction; structured `FailedToStart` | **Accepted**, all four |
 
-### Open questions for round 2
+### Round 1 open questions (decided as R1-R5)
 
 1. **Holding the loop during `terminate_child`** (OTP blocks the supervisor
    up to 2 × `shutdown_timeout`): faithful, but a slow-to-stop child delays
