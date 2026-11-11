@@ -154,6 +154,7 @@ pub enum Act {
     Trap(bool),
     Register(String),
     Stop(ChildHandle, ExitReason),
+    Helper(u8),
 }
 
 /// A command with its request nonce (0: untracked, as for timer sends) and
@@ -375,6 +376,15 @@ impl Handler<Do> for Worker {
             }
             Act::Register(name) => {
                 let _ = ctx.register_name(&name);
+            }
+            Act::Helper(v) => {
+                let _ = ctx.spawn_helper(async move {
+                    match v % 3 {
+                        0 => std::future::pending::<()>().await,
+                        1 => rt::sleep(Duration::from_millis(10 * v as u64)).await,
+                        _ => panic!("fuzz: injected helper panic"),
+                    }
+                });
             }
             Act::Stop(target, reason) => {
                 self.world.lock().may_stop.insert(target.id());

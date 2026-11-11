@@ -93,6 +93,9 @@ pub enum Cmd {
     Register(u8),
     /// Stop another actor with a reason, from inside a handler.
     Stop(u8, Reason),
+    /// `ctx.spawn_helper` (managed actors): `% 3` pends forever, sleeps
+    /// `10 * v` ms, or panics. Its scope must cancel and join it.
+    Helper(u8),
 }
 
 #[derive(Arbitrary, Debug, Clone, Copy, PartialEq, Eq)]
@@ -251,6 +254,18 @@ pub enum Op {
     },
     DropSystem {
         sys: u8,
+    },
+    /// `request_raw`, then drop the reply receiver (R4: not a cancellation).
+    DropReply {
+        to: u8,
+        cmd: Cmd,
+    },
+    /// `wait_for_generation(current)` on a supervised worker, bounded by
+    /// `ms` of virtual time (V4).
+    WaitGeneration {
+        sup: u8,
+        child: u8,
+        ms: u16,
     },
     /// Quiesce and check the eventual properties (Down/Exit delivery, link
     /// propagation, no spurious stop) now.

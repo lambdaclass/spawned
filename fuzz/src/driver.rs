@@ -428,6 +428,7 @@ impl Driver {
                 _ => Act::Noop,
             },
             Cmd::Trap(on) => Act::Trap(on),
+            Cmd::Helper(v) => Act::Helper(v),
             Cmd::Register(v) => Act::Register(format!("{REGISTERED_PREFIX}{}", v % 4)),
             Cmd::Stop(i, r) => match self.pick(i) {
                 Some(peer) => {
@@ -627,6 +628,7 @@ impl Driver {
                     | Cmd::Link(_)
                     | Cmd::Unlink(_)
                     | Cmd::Register(_)
+                    | Cmd::Helper(_)
                         if interval =>
                     {
                         Cmd::Noop
@@ -673,6 +675,17 @@ impl Driver {
                     self.system_stopping(i);
                 }
             }
+            Op::DropReply { to, cmd } => {
+                let Some(aref) = self.pick(to) else { return };
+                let act = self.act(cmd, &aref);
+                let msg = Do {
+                    nonce: self.next_nonce(),
+                    lane: 0,
+                    act,
+                };
+                drop(aref.request_raw(msg));
+            }
+            Op::WaitGeneration { sup, child, ms } => self.wait_generation(sup, child, ms).await,
             Op::Fence => {
                 if self.quiesce().await {
                     self.eventual().await;
@@ -900,6 +913,51 @@ impl Driver {
             }
             ChildCrash::Stop(r) => aref.child_handle().stop_with_reason(reason(r)),
             ChildCrash::StopNested => {}
+        }
+    }
+
+    async fn wait_generation(&mut self, sup: u8, child: u8, ms: u16) {
+        if self.roots.is_empty() {
+            return;
+        }
+        let root = sup as usize % self.roots.len();
+        let prefix = format!("r{root}/");
+        let mut workers: Vec<SupervisedChild<Worker>> = self.roots[root]
+            .slots
+            .iter()
+            .filter_map(|s| match s {
+                Slot::Worker(c) => Some(c.clone()),
+                Slot::Nested(_) => None,
+            })
+            .collect();
+        workers.extend(
+            self.world
+                .lock()
+                .nested
+                .iter()
+                .filter(|(k, _)| k.starts_with(&prefix))
+                .map(|(_, c)| c.clone()),
+        );
+        if workers.is_empty() {
+            return;
+        }
+        let c = &workers[child as usize % workers.len()];
+        let after = c.snapshot().generation;
+        let wait = c.wait_for_generation(after);
+        if let Ok(Ok(aref)) = rt::timeout(Duration::from_millis(ms as u64 % 10_000), wait).await {
+            let generation = c.snapshot().generation;
+            if generation <= after {
+                self.violate(
+                    "V4: wait_for_generation returned an older generation",
+                    format!("{generation} <= {after}"),
+                );
+            }
+            if !aref.child_handle().is_alive() {
+                self.violate(
+                    "V4: wait_for_generation returned a generation that already exited",
+                    String::new(),
+                );
+            }
         }
     }
 
