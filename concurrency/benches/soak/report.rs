@@ -191,8 +191,17 @@ pub fn judge(t: &Thresholds, samples: &[Sample], info: &RunInfo) -> Verdict {
         };
         let fit = slope_per_hour(&points);
         let limit = t.get(&format!("trend.{name}"));
+        // Growth the fit implies over the steady window: a bounded pool
+        // adding a few threads in a short run is a steep but small step.
+        let hours = steady
+            .last()
+            .zip(steady.first())
+            .map_or(0.0, |(l, f)| (l.elapsed - f.elapsed) / 3600.0);
+        let min_growth = t.or(&format!("growth.{name}"), 0.0);
         let trend_ok = match (fit, limit) {
-            (Some((slope, se)), Some(limit)) => !(slope > limit && slope > sigmas * se),
+            (Some((slope, se)), Some(limit)) => {
+                !(slope > limit && slope > sigmas * se && slope * hours > min_growth)
+            }
             _ => true,
         };
         let slack = t.get(&format!("quiesce.{name}"));

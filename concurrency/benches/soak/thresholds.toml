@@ -27,6 +27,24 @@ trend.mailbox_depth = 100
 trend.handlers_active = 10
 trend.requests_active = 10
 
+# Minimum growth: a trend also needs slope x steady-window hours above this
+# many units (MiB for rss_mb and heap_mb) to fail. Bounded pools (Tokio's
+# blocking pool, group workers) add a few threads or tasks in steps that a
+# 10-minute run extrapolates to tens per hour; over a 4-hour run (3 steady
+# hours) these floors keep the per-hour limits above as the binding check
+# for steady leaks, and the quiesce check below catches anything left over.
+growth.rss_mb = 4
+growth.heap_mb = 1
+growth.threads = 8
+growth.fds = 4
+growth.tokio_tasks = 5
+growth.registry = 0
+growth.actors_live = 5
+growth.actors_active = 5
+growth.mailbox_depth = 50
+growth.handlers_active = 3
+growth.requests_active = 3
+
 # Quiesce: after the workload stops and the long-lived ActorSystem shuts
 # down, each series must return to within `slack` of its baseline (sampled
 # after one priming pass of every scenario) before `timeout_secs`. RSS has no

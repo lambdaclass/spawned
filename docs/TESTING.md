@@ -1367,7 +1367,10 @@ gets a least-squares slope per hour: RSS over every sample, the other series
 over their floor (the minimum of each of about 20 consecutive windows), since
 counts swing with the workload and a leak raises the floor. A series fails
 when the slope is above its limit *and* at least 3 standard errors above zero,
-so short noisy runs do not fail but a steady leak does. Limits: RSS 16 MiB/h,
+so short noisy runs do not fail but a steady leak does, and when the growth
+it implies over the steady window exceeds a small floor (`growth.*`: 8
+threads, 5 tasks or actors, 4 MiB RSS, 1 MiB heap, 0 registry entries), so a
+bounded pool adding a few threads in a short run does not fail either. Limits: RSS 16 MiB/h,
 heap 4 MiB/h, threads, fds and registry 2/h, Tokio tasks, live actors and the
 active-handler and request gauges 10/h, mailbox depth 100/h. At the end the lanes
 stop, the long-lived system shuts down, and within 60 s every count must
