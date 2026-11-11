@@ -117,6 +117,12 @@
   process instead of one actor, silenced with `#[actor(allow_panic_abort)]`.
   Both use the stable `#[deprecated]` technique, so `-D warnings` turns them
   into errors.
+- `spawned-concurrency` re-exports `#[sim_test]`, so downstream crates write
+  `#[spawned_concurrency::sim_test]` without a `spawned-macros` dependency
+  (they still need `spawned-rt`). New example test
+  `examples/capabilities/tests/deterministic_simulation.rs` (per-sender order
+  over every seed, an hour-long timer in virtual time), run by the `sim` CI job.
+  The README's deterministic-testing section uses the single import.
 - Lockfile: `rustix` 1.1.2 -> 1.1.6 for RUSTSEC-2026-0486 (pulled in by the
   examples' `native-tls` dependency; spawned's crates are unaffected).
 - CI: a `sim` job runs the simulated test suites (`--cfg spawned_sim`) on

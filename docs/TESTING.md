@@ -423,8 +423,10 @@ simulator seeds Tokio's thread-local RNG (`select!` branch order, `watch`
 waiter shards) per run, and Tokio only exposes that seed under its own cfg; a
 build with `spawned_sim` alone fails with a `compile_error!`.
 
-Tests written with `#[spawned_macros::sim_test]` (or
-`spawned_rt::tasks::sim_test`) run once on Tokio in normal builds and over
+Tests written with `#[spawned_concurrency::sim_test]` (re-exported from
+`spawned-macros`; the expansion calls `spawned_rt::tasks::SimTest`, so the
+test crate also depends on `spawned-rt`), or with the plain function
+`spawned_rt::tasks::sim_test`, run once on Tokio in normal builds and over
 seeds `0..SPAWNED_SIM_SEEDS` (default 8) under the cfg. A failure prints the
 seed, a `SPAWNED_SIM_SEED=n` replay command (carrying `SPAWNED_SIM_SPIN`,
 `SPAWNED_SIM_MAX_STEPS`, `SPAWNED_SIM_FAIR_AFTER` and
@@ -554,7 +556,8 @@ RUSTFLAGS="--cfg spawned_sim --cfg tokio_unstable" CARGO_TARGET_DIR=target/sim \
 
 The `sim` job in `.github/workflows/ci.yml` builds with the cfg and runs
 every integration test of `spawned-concurrency` and `spawned-rt`, plus
-`spawned-rt`'s unit tests (the executor itself), through
+`spawned-rt`'s unit tests (the executor itself) and the example test
+`examples/capabilities/tests/deterministic_simulation.rs` (a separate step), through
 `scripts/run-sim-tests.py`: one test per process (`--exact`), four processes
 at a time, each killed after 120 s, so one wedged schedule fails that test
 instead of hanging the binary. Failing seeds leave their decision tapes in the
