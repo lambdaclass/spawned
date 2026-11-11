@@ -90,14 +90,15 @@ VARIABLES
     afterCancel, \* a cancelled notice took effect (ghost)
     req,       \* [Reqs -> [t, s, why]]
     dropFrom,  \* [Actors -> requested reason when the runtime dropped it] (ghost)
+    killed,    \* [Actors -> BOOLEAN]: an effective kill arrived before D (ghost)
     sends, signals, lates,
     psent,     \* children that received the supervisor's Shutdown
     afterStop  \* a message was dispatched after stop was observed (ghost)
 
 vars == <<st, trap, why, cause, trapAt, mbox, links, mon, mstate, downs,
-          inflight, fired, cancelled, afterCancel, req, dropFrom, sends, signals,
+          inflight, fired, cancelled, afterCancel, req, dropFrom, killed, sends, signals,
           lates, psent, afterStop>>
-life == <<st, why, cause, trapAt, dropFrom>>
+life == <<st, why, cause, trapAt, dropFrom, killed>>
 reg == <<links, mon, mstate, downs, inflight, fired, cancelled, afterCancel>>
 budget == <<sends, signals, lates, psent>>
 
@@ -132,6 +133,7 @@ Init ==
     /\ afterCancel = FALSE
     /\ req = [r \in Reqs |-> [t |-> None, s |-> "idle", why |-> None]]
     /\ dropFrom = [a \in Actors |-> "nodrop"]
+    /\ killed = [a \in Actors |-> FALSE]
     /\ sends = 0 /\ signals = 0 /\ lates = 0 /\ psent = {}
     /\ afterStop = FALSE
 
@@ -142,16 +144,23 @@ Begin(a, r, c) ==
          /\ why' = [why EXCEPT ![a] = r]
          /\ cause' = [cause EXCEPT ![a] = c]
          /\ trapAt' = [trapAt EXCEPT ![a] = trap[a]]
-         /\ UNCHANGED dropFrom
+         /\ UNCHANGED <<dropFrom, killed>>
     ELSE UNCHANGED life
 
 (* An untrappable kill: begins exit, or replaces the requested reason of an *)
 (* actor that is still before D (OTP kills a process inside terminate).    *)
 Kill(a) ==
-    IF st[a] = "run" THEN Begin(a, KilledReason, "kill")
+    IF st[a] = "run"
+    THEN /\ st' = [st EXCEPT ![a] = "stopping"]
+         /\ why' = [why EXCEPT ![a] = KilledReason]
+         /\ cause' = [cause EXCEPT ![a] = "kill"]
+         /\ trapAt' = [trapAt EXCEPT ![a] = trap[a]]
+         /\ killed' = [killed EXCEPT ![a] = TRUE]
+         /\ UNCHANGED dropFrom
     ELSE IF st[a] = "stopping"
     THEN /\ why' = IF Fault = "KillNoSupersede" THEN why ELSE [why EXCEPT ![a] = KilledReason]
          /\ cause' = [cause EXCEPT ![a] = "kill"]
+         /\ killed' = [killed EXCEPT ![a] = TRUE]
          /\ UNCHANGED <<st, trapAt, dropFrom>>
     ELSE UNCHANGED life
 
@@ -215,13 +224,14 @@ SelfExit(a, r) ==   \* ctx.stop, ctx.stop_with_reason(r), a panic in any turn
 (* terminate replaces the reason; a kill ends the process anyway).         *)
 PanicWhileExiting(a) ==
     /\ st[a] = "stopping" /\ why[a] # "Panic"
-    /\ cause[a] # "kill" \/ Fault = "PanicOverKill"
+    /\ ~killed[a] \/ Fault = "PanicOverKill"
     /\ why' = [why EXCEPT ![a] = "Panic"]
     /\ cause' = [cause EXCEPT ![a] = "self"]
-    /\ UNCHANGED <<st, trapAt, dropFrom, trap, mbox, reg, req, budget, afterStop>>
+    /\ UNCHANGED <<st, trapAt, dropFrom, killed, trap, mbox, reg, req, budget, afterStop>>
 
-Link(a, b) ==
+Link(a, b) ==   \* idempotent while a link (or a pending late link) exists
     /\ st[a] = "run" /\ a # b /\ {a, b} \notin links
+    /\ ~\E n \in inflight : n.to = a /\ n.from = b /\ n.k = "link" /\ n.o = "late"
     /\ IF IsGone(b)
        THEN /\ lates < MaxLate /\ lates' = lates + 1
             /\ IF trap[a]
@@ -241,10 +251,10 @@ Link(a, b) ==
 
 (* Unlink: removes the link, and cancels a notice from b already taken at   *)
 (* b's death but not yet delivered (OTP: once unlink returns, the link has  *)
-(* no further effect). A trapped Exit already queued stays. A late NoProc   *)
-(* notice is not caused by a link and is not cancelled.                    *)
+(* no further effect), including a late NoProc notice (OTP keeps the link  *)
+(* record while that response is pending). A queued Exit stays.            *)
 Unlink(a, b) ==
-    LET pending == {n \in inflight : n.to = a /\ n.from = b /\ n.k = "link" /\ n.o = "death"}
+    LET pending == {n \in inflight : n.to = a /\ n.from = b /\ n.k = "link"}
     IN /\ UnlinkEnabled /\ st[a] = "run"
        /\ ({a, b} \in links \/ pending # {})
        /\ links' = links \ {{a, b}}
@@ -306,7 +316,7 @@ Dispatch(a) ==
 Die(a) ==
     /\ st[a] = "stopping"
     /\ Death(a, why[a])
-    /\ UNCHANGED <<why, cause, trapAt, dropFrom, trap, mon, downs, cancelled, afterCancel,
+    /\ UNCHANGED <<why, cause, trapAt, dropFrom, killed, trap, mon, downs, cancelled, afterCancel,
                    budget, afterStop>>
 
 (* The runtime drops the actor (tasks: the future is dropped; threads: the  *)
@@ -321,7 +331,7 @@ RuntimeDrop(a) ==
        /\ cause' = [cause EXCEPT ![a] = IF why[a] \in {None, "Normal"} THEN "drop" ELSE cause[a]]
        /\ trapAt' = [trapAt EXCEPT ![a] = IF st[a] = "run" THEN trap[a] ELSE trapAt[a]]
        /\ Death(a, r)
-    /\ UNCHANGED <<trap, mon, downs, cancelled, afterCancel, budget, afterStop>>
+    /\ UNCHANGED <<killed, trap, mon, downs, cancelled, afterCancel, budget, afterStop>>
 
 EarlyFire(a) ==   \* Fault EarlyNotify only
     /\ Fault = "EarlyNotify" /\ st[a] = "stopping" /\ a \notin fired
@@ -332,7 +342,7 @@ EarlyFire(a) ==   \* Fault EarlyNotify only
 Publish(a) ==
     /\ st[a] = "gone"
     /\ st' = [st EXCEPT ![a] = "dead"]
-    /\ UNCHANGED <<why, cause, trapAt, dropFrom, trap, mbox, reg, req, budget, afterStop>>
+    /\ UNCHANGED <<why, cause, trapAt, dropFrom, killed, trap, mbox, reg, req, budget, afterStop>>
 
 (* A notice taken at D is delivered after publication; late notices at once. *)
 Deliver(n) ==
@@ -372,7 +382,7 @@ Enqueue(r) ==
 (* ChildHandle::exit(r) from outside (s = Ext). r = Kill is kill().       *)
 ExitSignal(s, a, r) ==
     /\ r \in SignalReasons /\ signals < MaxSignals /\ signals' = signals + 1
-    /\ IF s = Ext THEN TRUE ELSE st[s] = "run"
+    /\ IF s = Ext THEN TRUE ELSE st[s] \in {"run", "stopping"}   \* inert after D
     /\ IF r = "Kill"
        THEN /\ Kill(a) /\ UNCHANGED mbox
        ELSE IF Fault = "DirectStop"
@@ -474,9 +484,10 @@ TrapRespected ==
 NormalSignalIgnored ==
     \A a \in Actors : cause[a] \in {"link", "signal"} => why[a] # "Normal"
 
-\* A kill ends the target Killed, also when it arrives while the target is
-\* still before D, and nothing replaces it.
-KilledFromKill == \A a \in Actors : cause[a] = "kill" => why[a] = "Killed"
+\* An effective kill (before D) ends the target Killed, also when it
+\* arrives during exit, and nothing replaces it (kill provenance, recorded
+\* in a ghost no other action changes).
+KilledFromKill == \A a \in Actors : killed[a] => why[a] = "Killed"
 
 \* A runtime drop ends Killed unless a non-Normal reason was requested (G1).
 RuntimeDropReason ==
