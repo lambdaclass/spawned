@@ -19,7 +19,7 @@ use spawned_concurrency::{
     tasks::{Actor, ActorRef, ActorStart, Context, Handler, Recipient},
     ActorError, ChildHandle, Down, Exit, ExitReason,
 };
-use spawned_rt::tasks::{oneshot, spawn, yield_now};
+use spawned_rt::tasks::{mpsc, oneshot, spawn, timeout, yield_now};
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
     Arc, Mutex,
@@ -47,18 +47,6 @@ async fn yields(n: usize) {
     for _ in 0..n {
         yield_now().await;
     }
-}
-
-/// Polls `done` with a yield between checks; panics after `limit` checks so
-/// a lost notification fails instead of spinning forever.
-async fn until(what: &str, limit: usize, mut done: impl FnMut() -> bool) {
-    for _ in 0..limit {
-        if done() {
-            return;
-        }
-        yield_now().await;
-    }
-    panic!("never observed: {what}");
 }
 
 // ---------------------------------------------------------------------------
@@ -473,10 +461,12 @@ enum Notice {
     Down(ExitReason),
 }
 
-struct Observer(Log<Notice>);
+/// Logs every notice; signals `notify` on `Exit` and `Down`.
+struct Observer(Log<Notice>, mpsc::Sender<()>);
 impl Actor for Observer {
     async fn exit_received(&mut self, exit: Exit, _: &Context<Self>) {
         push(&self.0, Notice::Exit(exit.reason));
+        let _ = self.1.send(());
     }
 }
 struct Watch(ChildHandle);
@@ -511,6 +501,7 @@ impl Handler<Noise> for Observer {
 impl Handler<Down> for Observer {
     async fn handle(&mut self, down: Down, _: &Context<Self>) {
         push(&self.0, Notice::Down(down.reason));
+        let _ = self.1.send(());
     }
 }
 
@@ -551,7 +542,8 @@ impl Handler<Burst> for Source {
 
 async fn exit_after_last_message_body(end: End) {
     let notices = log();
-    let observer: ActorRef<Observer> = Observer(notices.clone()).start();
+    let (notify, mut notified) = mpsc::channel();
+    let observer: ActorRef<Observer> = Observer(notices.clone(), notify).start();
     let source = Source.start();
     observer
         .request_with_timeout(Watch(source.child_handle()), LIMIT)
@@ -583,11 +575,12 @@ async fn exit_after_last_message_body(end: End) {
     }
     noise.await.unwrap();
     let reason = source.wait_exit().await;
-    until("Exit and Down at the observer", 10_000, || {
-        let n = snapshot(&notices);
-        n.iter().any(|e| matches!(e, Notice::Exit(_))) && n.iter().any(|e| matches!(e, Notice::Down(_)))
-    })
-    .await;
+    for _ in 0..2 {
+        timeout(LIMIT, notified.recv())
+            .await
+            .expect("Exit and Down at the observer")
+            .unwrap();
+    }
     let notices = snapshot(&notices);
     let pings: Vec<usize> = notices
         .iter()
