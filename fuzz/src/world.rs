@@ -41,6 +41,9 @@ pub struct Inst {
     /// Some hook or handler of this instance panicked (injected).
     pub panicked: bool,
     pub started_panicked: bool,
+    /// The state destructor panicked (injected): a secondary failure that may
+    /// replace a clean requested reason (X8 skips such instances).
+    pub drop_panicked: bool,
     /// Handed to the framework: only then may its destructor panic (a value
     /// the harness drops itself is not the framework's to contain).
     pub armed: bool,
@@ -235,7 +238,11 @@ impl Drop for Worker {
             if let Some(slot) = &self.slot {
                 *s.live.entry(slot.clone()).or_default() -= 1;
             }
-            s.insts[self.instance].armed
+            let armed = s.insts[self.instance].armed;
+            if armed && self.hooks.drop_panic() && !std::thread::panicking() {
+                s.insts[self.instance].drop_panicked = true;
+            }
+            armed
         };
         if armed && self.hooks.drop_panic() && !std::thread::panicking() {
             panic!("fuzz: injected state destructor panic");

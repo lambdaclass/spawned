@@ -1690,7 +1690,10 @@ impl Driver {
             }
             // X8: with one possible cause, a driver stop, shutdown or
             // stop_with_reason on a live actor is the reason it publishes.
-            let only_cause = self.world.lock().causes.get(&id) == Some(&1);
+            let only_cause = {
+                let s = self.world.lock();
+                s.causes.get(&id) == Some(&1) && !s.insts[instance].drop_panicked
+            };
             if let Some(requested) = self.requested.get(&id) {
                 if only_cause && !panicked && *requested != exit {
                     self.violate(
