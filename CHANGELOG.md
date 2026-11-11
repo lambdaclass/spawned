@@ -8,6 +8,13 @@
   and the `DeferredReplies` (reply slots) and `DeferredJobs` (pipe jobs) TLA+
   models with 22 negative controls, each checked against its named
   invariant.
+- Design (accepted, not implemented): exit signals, supervisor startup and
+  runtime-drop semantics as in OTP (ROADMAP ranks 5e, 5f, 5g): `kill`/`Killed`,
+  `exit`/`try_link`, `NoProc`, parent exits, `stopped()` skipped on kills and
+  untrapped signals, first-start failures abort supervisor startup. Adds the
+  base actor lifecycle TLA+ model (`Lifecycle.tla`) with negative controls for
+  the v0.7 behaviours and the PR #182/#185 bugs; see
+  `docs/design/otp-exit-signals.md`.
 - Test: coverage-guided scenario fuzzing on the deterministic simulator
   (`fuzz/`, cargo-fuzz + `arbitrary`): generated operation sequences over
   actors, links, monitors, timers, supervisors and systems, checked against
