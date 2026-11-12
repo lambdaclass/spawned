@@ -682,7 +682,8 @@ impl Shared {
     /// after `f` to let Tokio deliver them to our wakers before `block_on`
     /// returns.
     fn run_poll<R>(&self, id: u64, f: impl FnOnce() -> R) -> R {
-        let runtime = self.tokio_runtime();
+        // Built on the first poll: Tokio's own clock reads stay real.
+        let runtime = spawned_sim_libc::real_clock(|| self.tokio_runtime());
         let spawned = runtime.metrics().spawned_tasks_count();
         // Work handed to Tokio directly runs outside the simulated schedule:
         // a `tokio::spawn` (async task) or `tokio::task::spawn_blocking` (an OS
@@ -913,6 +914,8 @@ impl Shared {
                 }
                 Action::Fire(deadline) => {
                     state.spin = 0;
+                    // The only write to `now`: keep its lock-free mirror
+                    // (read by interposed clock calls) in step.
                     state.now = state.now.max(deadline);
                     self.now_nanos
                         .store(state.now.as_nanos() as u64, Ordering::Relaxed);
@@ -2126,7 +2129,14 @@ where
     Fut: Future<Output = ()>,
 {
     let quiet = QUIET.with(|q| q.get());
-    let mut builder = std::thread::Builder::new();
+    // At least 8 MiB (a `harness = false` main thread's size; libtest's test
+    // threads have 2 MiB), or `RUST_MIN_STACK` if larger.
+    let stack = std::env::var("RUST_MIN_STACK")
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(0usize)
+        .max(8 << 20);
+    let mut builder = std::thread::Builder::new().stack_size(stack);
     if let Some(name) = std::thread::current().name() {
         builder = builder.name(name.to_owned());
     }
@@ -2153,6 +2163,9 @@ where
     Fut: Future<Output = ()>,
 {
     let rt = Runtime::with_seed(seed);
+    // std seeds this thread's `HashMap` keys at the first `RandomState`: take
+    // them now, from the world just registered, before anything else could.
+    drop(std::collections::hash_map::RandomState::new());
     rt.record_tape();
     let strict = matches!(script, Some((_, ReplayMode::Strict)));
     if let Some((tape, mode)) = script {
