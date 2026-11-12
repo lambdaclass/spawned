@@ -9,9 +9,16 @@
   its first poll skips the runtime-drop guard; `request` arms its first
   timer from the timeout (no second clock read); a request without a
   deadline holds no reference to the owner's registry (the owner's close
-  records the final reason in the slot); and a caller that owns an answered
-  slot alone takes the value without the lock. Guarantees, Loom models and
+  records the final reason in the slot); a caller that owns an answered
+  slot alone takes the value without the lock; and the slot no longer
+  holds its owner at all (two flags became word bits), which keeps it in
+  glibc's fast bins for typical reply sizes. Guarantees, Loom models and
   the TLA+ models are unchanged (no linearization point moved).
+- **Behaviour (0.8)**: `send_request(msg, deadline)` puts a deadline in the
+  owner's deadline heap when the request is sent (it was when its receiver
+  was first awaited and pending): a raw receiver that is never awaited now
+  expires on time too. `request`/`request_with_timeout`/`Response` still
+  arm their own runtime timer.
 - `InsertError::kind()` (a `#[non_exhaustive]` `InsertErrorKind`) and
   `InsertError::into_parts()`: a refused insert's reason and token come
   together, so a caller answers the token for any reason, including one

@@ -35,7 +35,12 @@ mod sync {
     pub(crate) use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, AtomicUsize, Ordering};
     pub(crate) use std::sync::{Arc, Arc as JobArc, Condvar, Mutex, MutexGuard, Weak as JobWeak};
     pub(crate) use std::thread::yield_now;
+    /// Lifecycle-trace builds keep the owner in each slot (its events name
+    /// it); other builds keep nothing, so a slot stays small.
+    #[cfg(feature = "lifecycle-trace")]
     pub(crate) type SlotOwner = Option<Arc<super::registry::Registry>>;
+    #[cfg(not(feature = "lifecycle-trace"))]
+    pub(crate) type SlotOwner = ();
     /// The owner's final reason, as the slot records it at its close.
     pub(crate) type Reason = crate::error::ExitReason;
 
@@ -200,11 +205,6 @@ fn terminal_error<R>(terminal: Terminal, slot: &Slot<R>) -> ActorError {
         Terminal::TimedOut => ActorError::RequestTimeout,
         Terminal::Stopped | Terminal::Abandoned | Terminal::Replied => ActorError::ActorStopped(
             slot.stopped_reason()
-                .or_else(|| {
-                    slot.owner
-                        .as_ref()
-                        .and_then(|owner| owner.final_reason().cloned())
-                })
                 .unwrap_or(crate::error::ExitReason::NoProc),
         ),
     }
@@ -212,21 +212,28 @@ fn terminal_error<R>(terminal: Terminal, slot: &Slot<R>) -> ActorError {
 
 /// A new reply slot for a request with `deadline`, and the caller's receiver.
 ///
-/// `owner` is the receiving instance's registry: an awaited raw receiver
-/// puts its deadline in that owner's heap instead of arming its own timer,
-/// so a request with a deadline keeps a reference to it. A request without
-/// one takes none (no shared reference count per request): the owner's
-/// close records the final reason in the slot, and its envelope is
-/// disposed of through the owner's mailbox ([`SlotHandle::dispose`]).
+/// `owner` is the receiving instance's registry. The slot takes no
+/// reference to it (no shared reference count per request): the owner's
+/// close records the final reason in the slot, and an undispatched
+/// envelope is disposed of through the owner's mailbox
+/// ([`SlotHandle::dispose`]). A `raw` request with a deadline (the public
+/// `send_request`) puts its deadline in the owner's heap now, so its
+/// receiver, awaited directly, needs no runtime timer and no owner; the
+/// `request` paths arm their own timer and pass `raw = false`.
 pub(crate) fn reply_slot<R: Send + 'static>(
     deadline: Deadline,
     owner: Option<&Arc<Registry>>,
+    raw: bool,
 ) -> (SlotHandle<R>, ReplyReceiver<R>) {
-    let keep = deadline != Deadline::Never || cfg!(feature = "lifecycle-trace");
-    let slot = Arc::new(Slot::with_owner(
-        deadline.ticks(),
-        owner.filter(|_| keep).cloned(),
-    ));
+    #[cfg(feature = "lifecycle-trace")]
+    let slot_owner = owner.cloned();
+    #[cfg(not(feature = "lifecycle-trace"))]
+    let slot_owner = ();
+    let slot = Arc::new(Slot::with_owner(deadline.ticks(), slot_owner));
+    if let (true, Deadline::At(_), Some(owner)) = (raw, deadline, owner) {
+        slot.mark_tracked();
+        owner.track_deadline(&slot);
+    }
     #[cfg(feature = "lifecycle-trace")]
     if let Some(owner) = owner {
         crate::lifecycle_trace::reply(owner.owner().raw(), "Send", Arc::as_ptr(&slot) as u64, "");
@@ -281,17 +288,17 @@ impl<R: Send + 'static> Caller for Arc<Slot<R>> {
 }
 
 /// Dropped undisposed (a refused admission, whose caller is answered
-/// `NoProc` by the send itself): a slot that knows its owner is disposed of
-/// there; one that does not (no deadline) is closed `STOPPED` now.
+/// `NoProc` by the send itself): closed `STOPPED` now (trace builds, whose
+/// slots know their owner, dispose of it there).
 impl<R: Send + 'static> Drop for SlotHandle<R> {
     fn drop(&mut self) {
         if let Some(slot) = self.0.take() {
-            match slot.owner.clone() {
-                Some(owner) => owner.dispose(slot),
-                None => {
-                    slot.close();
-                }
+            #[cfg(feature = "lifecycle-trace")]
+            if let Some(owner) = slot.owner.clone() {
+                owner.dispose(slot);
+                return;
             }
+            slot.close();
         }
     }
 }
@@ -654,7 +661,6 @@ impl<R> ReplyReceiver<R> {
             first_ms: 0,
             sleep: None,
             timer: true,
-            tracked: false,
         }
     }
 
@@ -720,7 +726,6 @@ impl<R: Send + 'static> std::future::IntoFuture for ReplyReceiver<R> {
             first_ms: 0,
             sleep: None,
             timer: false,
-            tracked: false,
         }
     }
 }
@@ -738,7 +743,6 @@ pin_project_lite::pin_project! {
         // Arm a runtime timer (`request`/`Response`), rather than putting the
         // deadline in the owner's heap (raw receivers).
         timer: bool,
-        tracked: bool,
         #[pin]
         sleep: Option<spawned_rt::tasks::Sleep>,
     }
@@ -789,17 +793,11 @@ impl<R: Send + 'static> std::future::Future for ReplyFuture<R> {
             if deadline == NEVER {
                 return Poll::Pending;
             }
-            // A raw receiver registers its deadline once in the owner's
-            // deadline heap; the service expires the slot (waking this
-            // future) without a per-request runtime timer.
-            if !*this.timer {
-                if let Some(owner) = &slot.owner {
-                    if !*this.tracked {
-                        owner.track_deadline(slot);
-                        *this.tracked = true;
-                    }
-                    return Poll::Pending;
-                }
+            // A raw request put its deadline in the owner's heap at send;
+            // the service expires the slot (waking this future) without a
+            // per-request runtime timer.
+            if !*this.timer && slot.word() & slot::TRACKED != 0 {
+                return Poll::Pending;
             }
             if *this.armed != deadline || this.sleep.is_none() {
                 let wait = match std::mem::take(this.first_ms) {
@@ -835,7 +833,7 @@ impl<R: Send + 'static> std::future::Future for ReplyFuture<R> {
 pub(crate) fn reply_pair<R: Send + 'static>(
     deadline: Deadline,
 ) -> (PendingReply<'static, R>, ReplyReceiver<R>) {
-    let (mut handle, receiver) = reply_slot(deadline, None);
+    let (mut handle, receiver) = reply_slot(deadline, None, false);
     let reply = PendingReply::new(handle.take(), Registry::detached());
     (reply, receiver)
 }

@@ -2,7 +2,7 @@
 //! (docs/design/deferred-replies.md §1, "Slot synchronization protocol").
 //!
 //! ```text
-//! word:  state:4 | TOKEN:1 | REG:1 | JOBS:16
+//! word:  state:4 | TOKEN:1 | REG:1 | JOBS:16 | PARKED:1
 //! credits(word) = max(JOBS, TOKEN and state is live ? 1 : 0)
 //! ```
 //!
@@ -51,6 +51,17 @@ const JOB_ONE: u64 = 1 << JOBS_SHIFT;
 /// this value at configuration so the field cannot overflow.
 pub(crate) const MAX_JOBS: u64 = 0xFFFF;
 const JOBS_MASK: u64 = MAX_JOBS << JOBS_SHIFT;
+/// The registered waker unparks a thread blocked in `recv_blocking` (no
+/// user code): the death point's discharge wakes it before any other
+/// waker. Set under the slot lock, before the waker is stored; no
+/// transition reads or clears it otherwise (`with_state`, `JOBS` arithmetic
+/// and `credits` leave it alone). A word bit, not a field: it keeps the
+/// slot within the allocator's small size classes.
+pub(crate) const PARKED: u64 = 1 << (JOBS_SHIFT + 16);
+/// The deadline was put in the owner's heap at send (a raw request with a
+/// deadline): an awaited receiver waits for the heap's expiry instead of
+/// arming its own timer. Set before the slot is shared; never changes.
+pub(crate) const TRACKED: u64 = PARKED << 1;
 
 /// Deadline value meaning "never" (`Deadline::Never`).
 pub(crate) const NEVER: u64 = u64::MAX;
@@ -211,11 +222,8 @@ struct Inner<R> {
     /// publishes `REPLIED`; taken by the receiver after it reads `REPLIED`.
     value: Option<R>,
     /// The caller's receiver: an async task's waker, or the unparker of a
-    /// thread blocked in `recv_blocking` (then `parked` is set).
+    /// thread blocked in `recv_blocking` (then the word has `PARKED`).
     waker: Option<Waker>,
-    /// The registered waker is a parked thread's (no user code): the death
-    /// point's discharge wakes it before any other waker.
-    parked: bool,
     side: Option<Box<Side>>,
 }
 
@@ -276,6 +284,7 @@ impl Wake {
 impl<R> Slot<R> {
     /// A fresh `OPEN` slot whose deadline is `deadline` ticks (`NEVER` for none).
     #[allow(dead_code)] // the Loom model and unit tests build ownerless slots
+    #[allow(clippy::unit_arg)] // the owner is `()` outside trace builds
     pub(crate) fn new(deadline: u64) -> Self {
         Self::with_owner(deadline, Default::default())
     }
@@ -288,7 +297,6 @@ impl<R> Slot<R> {
             inner: Mutex::new(Inner {
                 value: None,
                 waker: None,
-                parked: false,
                 side: None,
             }),
         }
@@ -376,13 +384,13 @@ impl<R> Slot<R> {
             return Wake::NONE;
         }
         let mut inner = lock(&self.inner);
-        Self::finish(&mut inner, release, terminal)
+        Self::finish(&mut inner, release, terminal, new)
     }
 
     /// Under the slot lock: return `release` credits (an atomic, no user
     /// code) and, for a terminal transition, take the wake-up.
     #[inline]
-    fn finish(inner: &mut Inner<R>, release: u64, terminal: bool) -> Wake {
+    fn finish(inner: &mut Inner<R>, release: u64, terminal: bool, new: u64) -> Wake {
         if release > 0 {
             if let Some(pool) = inner.side.as_ref().and_then(|side| side.pool.as_ref()) {
                 pool.release(release);
@@ -393,7 +401,9 @@ impl<R> Slot<R> {
         }
         Wake {
             waker: inner.waker.take(),
-            parked: inner.parked,
+            // `PARKED` is set under this lock before a thread stores its
+            // waker, so a CAS that raced it failed and retried with it.
+            parked: new & PARKED != 0,
             watchers: match &mut inner.side {
                 Some(side) => std::mem::take(&mut side.watchers),
                 None => Vec::new(),
@@ -484,6 +494,12 @@ impl<R> Slot<R> {
             .side
             .get_or_insert_with(Default::default)
             .reason = Some(reason);
+    }
+
+    /// Mark the deadline as tracked by the owner's heap (before sharing).
+    #[allow(dead_code)] // the Loom model has no heap
+    pub(crate) fn mark_tracked(&self) {
+        self.word.fetch_or(TRACKED, Ordering::Release);
     }
 
     /// The final reason the owner's close recorded, if it closed this slot.
@@ -678,8 +694,12 @@ impl<R> Slot<R> {
             }
         }) {
             Ok((old, new)) => {
-                let wake =
-                    Self::finish(&mut inner, credits(old).saturating_sub(credits(new)), true);
+                let wake = Self::finish(
+                    &mut inner,
+                    credits(old).saturating_sub(credits(new)),
+                    true,
+                    new,
+                );
                 drop(inner);
                 wake.run();
                 (Delivery::Delivered, None)
@@ -739,7 +759,12 @@ impl<R> Slot<R> {
             (Delivery::Delivered, None, REPLIED)
         };
         let (old, new) = self.resolve_writing(to);
-        let wake = Self::finish(&mut inner, credits(old).saturating_sub(credits(new)), true);
+        let wake = Self::finish(
+            &mut inner,
+            credits(old).saturating_sub(credits(new)),
+            true,
+            new,
+        );
         drop(inner);
         wake.run();
         (delivery, unsent)
@@ -866,13 +891,14 @@ impl<R> Slot<R> {
                 if !live(state(self.word())) {
                     continue;
                 }
+                // Before the waker is stored (see `PARKED`).
+                self.word.fetch_or(PARKED, Ordering::AcqRel);
                 // The thread's own unparker (no user code to clone or drop).
                 super::sync::with_thread_waker(|waker| {
                     if !inner.waker.as_ref().is_some_and(|w| w.will_wake(waker)) {
                         inner.waker = Some(waker.clone());
                     }
                 });
-                inner.parked = true;
             }
             super::sync::parked();
             // A stale unpark or a spurious return only loops.

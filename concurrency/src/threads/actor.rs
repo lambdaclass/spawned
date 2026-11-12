@@ -608,7 +608,23 @@ impl<A: Actor> Context<A> {
         M: Message,
     {
         let deadline = deadline.into();
-        let (slot, rx) = reply_slot(deadline, Some(&self.replies));
+        self.send_request_with(msg, deadline, true)
+    }
+
+    /// `send_request`; `raw` puts a deadline in the owner's heap now (the
+    /// receiver may be awaited directly). The `request` paths arm their own
+    /// timer and pass `false`.
+    pub(crate) fn send_request_with<M>(
+        &self,
+        msg: M,
+        deadline: Deadline,
+        raw: bool,
+    ) -> Result<ReplyReceiver<M::Result>, ActorError>
+    where
+        A: Handler<M>,
+        M: Message,
+    {
+        let (slot, rx) = reply_slot(deadline, Some(&self.replies), raw);
         enqueue(&self.sender, &self.mailbox, &self.replies, msg, slot)?;
         Ok(rx)
     }
@@ -633,7 +649,7 @@ impl<A: Actor> Context<A> {
         M: Message,
     {
         let observation = crate::instrumentation::RequestObservation::new();
-        let result = match self.send_request(msg, Deadline::after(duration)) {
+        let result = match self.send_request_with(msg, Deadline::after(duration), false) {
             Err(error) => Err(error),
             Ok(rx) => rx.recv(),
         };
@@ -940,6 +956,14 @@ where
     ) -> Result<ReplyReceiver<M::Result>, ActorError> {
         Context::send_request(self, msg, deadline)
     }
+
+    fn send_request_timed(
+        &self,
+        msg: M,
+        deadline: Deadline,
+    ) -> Result<ReplyReceiver<M::Result>, ActorError> {
+        Context::send_request_with(self, msg, deadline, false)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -961,6 +985,16 @@ pub trait Receiver<M: Message>: Send + Sync + crate::__private::Sealed {
         msg: M,
         deadline: Deadline,
     ) -> Result<ReplyReceiver<M::Result>, ActorError>;
+    /// `send_request` for the `request` helper, which arms its own timer:
+    /// the deadline does not go to the owner's heap.
+    #[doc(hidden)]
+    fn send_request_timed(
+        &self,
+        msg: M,
+        deadline: Deadline,
+    ) -> Result<ReplyReceiver<M::Result>, ActorError> {
+        self.send_request(msg, deadline)
+    }
 }
 
 /// Type-erased reference for sending a single message type.
@@ -973,7 +1007,7 @@ pub fn request<M: Message>(
     timeout: Duration,
 ) -> Result<M::Result, ActorError> {
     let observation = crate::instrumentation::RequestObservation::new();
-    let result = match recipient.send_request(msg, Deadline::after(timeout)) {
+    let result = match recipient.send_request_timed(msg, Deadline::after(timeout)) {
         Err(error) => Err(error),
         Ok(rx) => rx.recv(),
     };
@@ -1070,7 +1104,23 @@ impl<A: Actor> ActorRef<A> {
         M: Message,
     {
         let deadline = deadline.into();
-        let (slot, rx) = reply_slot(deadline, Some(&self.replies));
+        self.send_request_with(msg, deadline, true)
+    }
+
+    /// `send_request`; `raw` puts a deadline in the owner's heap now (the
+    /// receiver may be awaited directly). The `request` paths arm their own
+    /// timer and pass `false`.
+    pub(crate) fn send_request_with<M>(
+        &self,
+        msg: M,
+        deadline: Deadline,
+        raw: bool,
+    ) -> Result<ReplyReceiver<M::Result>, ActorError>
+    where
+        A: Handler<M>,
+        M: Message,
+    {
+        let (slot, rx) = reply_slot(deadline, Some(&self.replies), raw);
         enqueue(&self.sender, &self.mailbox, &self.replies, msg, slot)?;
         Ok(rx)
     }
@@ -1092,7 +1142,7 @@ impl<A: Actor> ActorRef<A> {
         R: Send + 'static,
         F: FnOnce(&mut A, &Context<A>) -> R + Send + 'static,
     {
-        let (slot, rx) = reply_slot(Deadline::Never, Some(&self.replies));
+        let (slot, rx) = reply_slot(Deadline::Never, Some(&self.replies), false);
         let envelope: Box<dyn Envelope<A> + Send> = Box::new(InTurnEnvelope {
             f: Box::new(f),
             slot,
@@ -1118,7 +1168,7 @@ impl<A: Actor> ActorRef<A> {
         M: Message,
     {
         let observation = crate::instrumentation::RequestObservation::new();
-        let result = match self.send_request(msg, Deadline::after(duration)) {
+        let result = match self.send_request_with(msg, Deadline::after(duration), false) {
             Err(error) => Err(error),
             Ok(rx) => rx.recv(),
         };
@@ -1210,6 +1260,14 @@ where
         deadline: Deadline,
     ) -> Result<ReplyReceiver<M::Result>, ActorError> {
         ActorRef::send_request(self, msg, deadline)
+    }
+
+    fn send_request_timed(
+        &self,
+        msg: M,
+        deadline: Deadline,
+    ) -> Result<ReplyReceiver<M::Result>, ActorError> {
+        ActorRef::send_request_with(self, msg, deadline, false)
     }
 }
 
@@ -2648,7 +2706,7 @@ mod idle_stop_regression {
                     drop(counter);
                 });
                 entered.wait();
-                let (slot, response) = reply_slot(crate::reply::Deadline::Never, None);
+                let (slot, response) = reply_slot(crate::reply::Deadline::Never, None, false);
                 tx.send(MailboxItem::Message(Box::new(MessageEnvelope {
                     msg: Increment(events.clone(), monitors),
                     slot,

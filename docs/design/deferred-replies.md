@@ -100,11 +100,15 @@ inner:    one mutex (the slot lock) over
                     (its final reason, stored before the STOPPED CAS so the
                     caller reads it from the slot); a plain request never
                     allocates it
-owner:    the owner's registry, kept only by a request with a deadline (an
-          awaited raw receiver puts it in the owner's heap) and in
-          lifecycle-trace builds; a plain request takes no shared reference
-          count. Its envelope, if never dispatched, is answered through the
-          owner's mailbox disposal at the death point (`discharge(replies)`)
+owner:    none outside lifecycle-trace builds (whose events name it): a
+          request takes no shared reference count on its owner. A raw
+          request with a deadline (`send_request`) puts the deadline in the
+          owner's heap at send and sets TRACKED in the word (an awaited
+          receiver then needs no timer and no owner); an undispatched
+          envelope is answered through the owner's mailbox disposal at the
+          death point (`discharge(replies)`). PARKED (bit 22) and TRACKED
+          (bit 23) are word bits no transition reads or clears; as bits,
+          they keep the slot inside the allocator's small size classes
           the slot lock also orders a shortening against a reply's
           deadline read
 ```

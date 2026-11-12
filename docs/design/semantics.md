@@ -146,10 +146,12 @@ enqueue. threads: the call blocks. Expired requests are still dispatched (OTP);
 a late reply is dropped (`Delivery::Expired`).
 Which clock expires a waiting caller is part of the contract: `request`,
 `request_with_timeout` and `Response::from(rx)` arm the runtime's timer, so
-they follow paused Tokio time; a `ReplyReceiver` awaited directly
-(`send_request(..)?.await`) puts its deadline in the owner's deadline heap
-instead, serviced on the real clock (the simulated one under `spawned_sim`),
-not paused Tokio time. The reason is cost: a raw receiver is the building
+they follow paused Tokio time; a request sent with `send_request` and a
+deadline puts that deadline in the owner's deadline heap when it is sent,
+and its `ReplyReceiver` awaited directly (`send_request(..)?.await`) waits
+for that heap's expiry, serviced on the real clock (the simulated one under
+`spawned_sim`), not paused Tokio time. (A receiver never awaited expires
+then too.) The reason is cost: a raw receiver is the building
 block for fan-out and needs no runtime timer per request. Tests that pause
 Tokio time wait through `request` or `Response::from`. Either way a
 shortened deadline (`ReplyTo::shorten_deadline`) wakes the waiting caller.
