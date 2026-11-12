@@ -34,6 +34,9 @@ pub enum MissedTickBehavior {
     Skip,
 }
 
+/// How late a tick may be before [`MissedTickBehavior`] applies (Tokio's).
+const LATE: Duration = Duration::from_millis(5);
+
 /// Ticks every `period` of virtual time; see [`interval`].
 #[derive(Debug)]
 pub struct Interval {
@@ -81,14 +84,22 @@ impl Interval {
         let now = lock(&sleep.shared.state).now;
         self.sleep = None;
         let fired = self.next;
-        self.next = match self.behavior {
-            MissedTickBehavior::Burst => fired + self.period,
-            MissedTickBehavior::Delay => now + self.period,
-            MissedTickBehavior::Skip => {
-                let late = now.saturating_sub(fired).as_nanos();
-                let period = self.period.as_nanos();
-                now + Duration::from_nanos((period - late % period) as u64)
+        // As Tokio: a tick up to 5 ms late keeps the schedule; later than
+        // that, the missed-tick behavior decides.
+        self.next = if now.saturating_sub(fired) > LATE {
+            match self.behavior {
+                MissedTickBehavior::Burst => fired + self.period,
+                MissedTickBehavior::Delay => now + self.period,
+                MissedTickBehavior::Skip => {
+                    let late = now.saturating_sub(fired).as_nanos();
+                    let period = self.period.as_nanos();
+                    now + Duration::from_nanos(
+                        u64::try_from(period - late % period).unwrap_or(u64::MAX),
+                    )
+                }
             }
+        } else {
+            fired + self.period
         };
         Poll::Ready(Instant(fired))
     }

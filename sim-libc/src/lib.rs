@@ -25,6 +25,15 @@
 //! that is `rand` 0.9+), unless the binary exports the symbol
 //! (`-C link-arg=-Wl,--export-dynamic-symbol=getrandom`); raw `syscall`
 //! instructions; and the vDSO called directly.
+//!
+//! Caveats: the interposers are not async-signal-safe (they read
+//! thread-locals, clone an `Arc`, and in strict mode lock a mutex and capture
+//! a backtrace), so a signal handler that reads the clock on a simulated
+//! thread can deadlock. The `syscall` entry sits in front of every
+//! `libc::syscall` call in the binary (std's futex and `statx` among them);
+//! numbers other than `SYS_getrandom` go straight to libc. Only one copy of
+//! this crate (and no other interposer such as madsim's) may be linked: two
+//! would define the same symbols.
 #![cfg(spawned_sim)]
 #![deny(unsafe_op_in_unsafe_fn)]
 #![warn(clippy::undocumented_unsafe_blocks)]

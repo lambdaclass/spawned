@@ -153,6 +153,15 @@ mod sim {
             assert_eq!(burst.tick().await, base + 40 * MS);
             assert_eq!(Instant::now(), base + 40 * MS);
 
+            // Up to 5 ms late keeps the schedule, as on Tokio.
+            let base = Instant::now();
+            let mut slightly_late = rt::interval_at(base, 10 * MS);
+            slightly_late.set_missed_tick_behavior(MissedTickBehavior::Delay);
+            slightly_late.tick().await;
+            rt::sleep(13 * MS).await;
+            assert_eq!(slightly_late.tick().await, base + 10 * MS);
+            assert_eq!(slightly_late.tick().await, base + 20 * MS);
+
             for (behavior, next) in [
                 (MissedTickBehavior::Delay, 45),
                 (MissedTickBehavior::Skip, 40),

@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
 
 /// A set of simulated tasks whose results are collected as they finish.
@@ -19,9 +20,10 @@ pub struct JoinSet<T> {
 }
 
 /// Aborts one task of a [`JoinSet`] without removing it.
+#[derive(Clone)]
 pub struct AbortHandle {
-    abort: Box<dyn Fn() + Send + Sync>,
-    finished: Box<dyn Fn() -> bool + Send + Sync>,
+    abort: Arc<dyn Fn() + Send + Sync>,
+    finished: Arc<dyn Fn() -> bool + Send + Sync>,
     id: Id,
 }
 
@@ -94,8 +96,8 @@ impl<T: Send + 'static> JoinSet<T> {
         let finished = join.clone();
         self.tasks.insert(id, handle);
         AbortHandle {
-            abort: Box::new(move || super::abort_task(&join, &shared, id)),
-            finished: Box::new(move || super::lock(&finished.inner).finished),
+            abort: Arc::new(move || super::abort_task(&join, &shared, id)),
+            finished: Arc::new(move || super::lock(&finished.inner).finished),
             id: Id(id),
         }
     }
@@ -137,6 +139,8 @@ impl<T: Send + 'static> JoinSet<T> {
             .map(|entry| entry.map(|(_, result)| result))
     }
 
+    /// Polls every member in task-id order (O(n) per wake; sets in tests
+    /// are small).
     fn poll_next_entry(
         &mut self,
         cx: &mut Context<'_>,
@@ -160,10 +164,15 @@ impl<T: Send + 'static> JoinSet<T> {
         }
     }
 
-    /// A finished task's result without waiting, if there is one.
+    /// A finished task's result without waiting, if there is one. Polls
+    /// only a finished handle, so the wakers `join_next` registered on the
+    /// others stay in place.
     pub fn try_join_next(&mut self) -> Option<Result<T, JoinError>> {
-        match self.poll_join_next(&mut Context::from_waker(Waker::noop())) {
-            Poll::Ready(result) => result,
+        let id = *self.tasks.iter().find(|(_, h)| h.is_finished())?.0;
+        let mut handle = self.tasks.remove(&id)?;
+        match Pin::new(&mut handle).poll(&mut Context::from_waker(Waker::noop())) {
+            Poll::Ready(result) => Some(result),
+            // Finished means its result is stored (or it was cancelled).
             Poll::Pending => None,
         }
     }

@@ -562,6 +562,13 @@ synchronous work with `spawn_blocking`, and uses Tokio's timers. Under the cfg:
   spawned_sim, Tokio otherwise)
   ```
 
+The simulated `JoinSet` covers `spawn`, `spawn_blocking`, `join_next`,
+`join_next_with_id`, `try_join_next`, `abort_all`, `detach_all`, `shutdown`,
+`join_all` and a cloneable `AbortHandle`; Tokio's `spawn_local`/`spawn_on` and
+`JoinError::id` have no simulated version, and the simulated `Sleep` is
+`Unpin` where Tokio's is not, so pin a sleep before selecting on it by
+reference. Code that sticks to the common surface compiles in both builds.
+
 Simulator environment variables (all read under the cfg only):
 
 | Variable | Effect |
