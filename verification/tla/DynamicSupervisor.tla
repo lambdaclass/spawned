@@ -114,7 +114,7 @@ SlotInit == [cs |-> "idle", gen |-> 0, alive |-> {}, pub |-> 0, lastPub |-> 0,
              reason |-> "none", cfail |-> FALSE, readyGen |-> FALSE,
              everReady |-> FALSE, result |-> "none", cause |-> "none",
              term |-> FALSE, stopSig |-> FALSE, stuck |-> "none",
-             retryQ |-> FALSE, ign |-> FALSE]
+             retryQ |-> FALSE, ign |-> FALSE, fstuck |-> FALSE]
 \* terminate call: st \in none, queued, pending, ok, stuck, notfound, stopped;
 \* g = the actor (generation) the caller named.
 CallInit == [st |-> "none", g |-> 0]
@@ -393,9 +393,12 @@ CleanupDone(s, f) ==
 \* "closing" during shutdown; otherwise "retire" (fails only the child).
 CleanupStuck(s) ==
     /\ Fault # "NoDeadline"
-    /\ sl[s].stuck = "none"
-    /\ \/ sl[s].cs \in {"cleanup", "finalizing"}
-       \/ sl[s].cs = "running" /\ sl[s].stopSig
+    \* generation deadlines once per slot life; the finalization deadline has
+    \* its own flag, so a slot that was stuck before and then reached
+    \* finalization can still miss (and report) that deadline
+    /\ \/ sl[s].stuck = "none" /\ sl[s].cs = "cleanup"
+       \/ sl[s].stuck = "none" /\ sl[s].cs = "running" /\ sl[s].stopSig
+       \/ sl[s].cs = "finalizing" /\ ~sl[s].fstuck
     /\ LET restartable ==
                /\ sl[s].everReady /\ ~sl[s].term /\ sl[s].cs = "cleanup"
                /\ \/ DesignAllowsRestart(mode[s], sl[s].reason, FALSE)
@@ -404,6 +407,7 @@ CleanupStuck(s) ==
                    ELSE IF restartable \/ (Fault = "MisclassifyStuck" /\ ~sl[s].term)
                         THEN "restart" ELSE "retire"
        IN /\ sl' = [sl EXCEPT ![s].cs = "stuck", ![s].stuck = kind, ![s].pub = 0,
+                              ![s].fstuck = sl[s].fstuck \/ sl[s].cs = "finalizing",
                               ![s].result = IF sl[s].result = "pending"
                                             THEN sl[s].cause ELSE sl[s].result]
           /\ IF kind # "retire" \/ Fault = "StuckFailsAll"
