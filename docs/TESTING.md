@@ -423,8 +423,10 @@ simulator seeds Tokio's thread-local RNG (`select!` branch order, `watch`
 waiter shards) per run, and Tokio only exposes that seed under its own cfg; a
 build with `spawned_sim` alone fails with a `compile_error!`.
 
-Tests written with `#[spawned_macros::sim_test]` (or
-`spawned_rt::tasks::sim_test`) run once on Tokio in normal builds and over
+Tests written with `#[spawned_concurrency::sim_test]` (re-exported from
+`spawned-macros`; the expansion calls `spawned_rt::tasks::SimTest`, so the
+test crate also depends on `spawned-rt`), or with the plain function
+`spawned_rt::tasks::sim_test`, run once on Tokio in normal builds and over
 seeds `0..SPAWNED_SIM_SEEDS` (default 8) under the cfg. A failure prints the
 seed, a `SPAWNED_SIM_SEED=n` replay command (carrying `SPAWNED_SIM_SPIN`,
 `SPAWNED_SIM_MAX_STEPS`, `SPAWNED_SIM_FAIR_AFTER` and
@@ -554,7 +556,8 @@ RUSTFLAGS="--cfg spawned_sim --cfg tokio_unstable" CARGO_TARGET_DIR=target/sim \
 
 The `sim` job in `.github/workflows/ci.yml` builds with the cfg and runs
 every integration test of `spawned-concurrency` and `spawned-rt`, plus
-`spawned-rt`'s unit tests (the executor itself), through
+`spawned-rt`'s unit tests (the executor itself) and the example test
+`examples/capabilities/tests/deterministic_simulation.rs` (a separate step), through
 `scripts/run-sim-tests.py`: one test per process (`--exact`), four processes
 at a time, each killed after 120 s, so one wedged schedule fails that test
 instead of hanging the binary. Failing seeds leave their decision tapes in the
@@ -689,8 +692,15 @@ oracle's name, so shrinking can match it):
 | X3, X5 | `Exit` carries the peer's published reason; a trapping, still-linked actor gets it (no more often than links were made); a non-trapping one does not survive a peer's abnormal exit |
 | X7 | No `Note` from a source after its `Down`/`Exit` at the same receiver |
 | X8 | An actor whose only possible stop cause was one driver `stop`, `shutdown` or `stop_with_reason` on it while alive publishes exactly that reason (skipped if a hook or the state destructor panicked) |
+| X3 (reason) | A standalone, non-trapping actor whose only possible stop cause was its link to a peer survives the peer's `Normal` exit, and after `Shutdown`, `Panic` or `Kill` publishes the peer's reason, so the crash keeps propagating |
+| X5 (unlink) | After the driver unlinks two running actors (and does not link them again), neither receives an `Exit` from the other, and a standalone actor whose only stop causes were links to that peer outlives it |
+| T1 (cancel) | A timer cancelled at time `c` delivers at most the ticks due by `c` (`send_after`: at most one, none if cancelled before its period; `send_interval`: one per elapsed period) |
 | L4, M | An actor that panicked exits abnormally; a published reason never changes; an actor nothing could have stopped is still alive |
 | V1, V3, V5 | A Temporary child is built at most once per supervisor instance; no factory runs while an earlier generation of its slot (or subtree) is alive; retries per rolling window never exceed `max_restarts` |
+| V1, V2 (restart decisions) | In a flat root tree, every replacement follows either the slot's own attempt ending in a way its mode restarts (failed or unpublished attempt, any exit for Permanent, an abnormal one for Transient), or an upstream sibling's attempt ending after the previous attempt began (any sibling for OneForAll, an earlier one for RestForOne). An instance nothing but its supervisor could have stopped needs the second |
+| V1, V2, V5 (required restarts) | In a flat root tree the driver never closed and that did not fail, once teardown finds it settled: every published Permanent instance, and every published Transient one that exited abnormally, has a successor, and so does every running, non-Temporary sibling in its cohort (later siblings for RestForOne, all for OneForAll). A missing restart is an exhausted budget that failed to fail the supervisor |
+| V5 (exhaustion) | A "restart budget exhausted" failure happens only when, at some moment between the exhausting child's last attempt and the tree's last grant, the grants in the window plus one reservation per sibling reach `max_restarts` |
+| V6 | OneForOne: the virtual time from the end of an attempt to the next factory call is the backoff bound for the child's failure streak (from zero through it with jitter, plus 10 ms and a quarter of the bound for clock creep); the streak counts restarts and resets after a generation that stayed ready for `stable_after` (an interval when stability is within 1 ms of the threshold) |
 | V4, V9 | `current()` never returns an exited generation; a finished supervisor has every child `Stopped` or `Failed`, no live generation, and runs no factory afterwards; children stop in reverse declaration order |
 | S1-S4 | A complete system shutdown leaves no managed actor running and no coordinator failure; a shut-down system admits nothing; targets stop in reverse admission order |
 | M5, S3, S5 | After teardown: every actor state dropped, no registered name left, and the simulator's task count back to its starting value |
@@ -780,6 +790,7 @@ input and, for random schedules, its tape:
 | V9 order | under the canonical schedule a yielding driver starved a child that was already stopping; quiescing now sleeps (`stopping_child_settles_before_order`) |
 | X3 | `ctx.link` from an exited actor's context is a no-op (`register_link` sees its own table closed), while linking to an exited peer delivers its reason (X5); found by the generated-input test before the campaign. The asymmetry is not stated in the semantics contract. |
 | livelock | a nested subtree that restarts more slowly than its parent's budget refills retries forever; the start is now bounded at 30 s |
+| V5 exhaustion | the oracle measured the window at the end of the exhausting child's last attempt, but a collateral OneForAll child reserves only after its round's cleanup, and a superseding round (a sibling's failed rebuild) makes it reserve again later; the oracle now takes the most grants at any moment up to the tree's last grant (`budget_reserved_after_round`) |
 
 ## Scope
 
@@ -950,6 +961,15 @@ cover receivers, generic and borrowed parameters, return types, timeout
 attributes and options, duplicate and colliding methods, non-trait/non-impl
 items, handler and lifecycle-hook signatures, async/sync mismatches, missing
 protocol handlers and attribute parameters.
+
+The `#[actor]` lints (ROADMAP rank 6b) are warnings, so their cases set
+`#![deny(warnings)]`: `ui/actor_lint_shared_state.rs` must fail with one error
+per shared-state pattern, and `ui-pass/actor_lint_allow_shared_state.rs` and
+`ui-pass/actor_lint_ordinary_fields.rs` must compile with none (opt-out,
+ordinary fields, `Arc` of immutable data). Test builds always unwind, so the
+`panic = "abort"` warning is checked by the `panic-abort` CI job instead: it
+builds the two-actor `chat_room` example under the `panic-abort` profile and
+expects exactly one warning.
 
 Snapshots depend on the exact compiler, so the test compares `rustc --version`
 with the version in `.tool-versions` (the one every CI job pins) and, on any
@@ -1184,7 +1204,7 @@ python3 -m unittest scripts/tests/test_model_sync.py            # self-tests and
 Mutation testing breaks one operator at a time. To measure whether the stack
 catches the bugs a reviewer would actually miss, 24 realistic bugs were written
 by hand (`verification/planted/patches/`, one patch each, listed in
-`INDEX.tsv`) and each was run, alone, against five layers:
+`INDEX.tsv`) and each was run, alone, against six layers:
 
 | Layer | What runs | Budget |
 |---|---|---|
@@ -1193,10 +1213,11 @@ by hand (`verification/planted/patches/`, one patch each, listed in
 | C | Fuzz harness tests on stable (`cd fuzz && cargo test --release`: 64 seeds, 64 generated inputs, the regression inputs) | none |
 | F | `cargo fuzz run` from `fuzz/seeds`, one process | 600 s |
 | V | TLA+ trace validation of the lifecycles recorded by the dedicated trace tests (`Supervision`, `Cohorts`, `NestedSupervision`) | none |
+| K | Kani proofs of the supervisor arithmetic (`cargo kani`, every non-slow harness in `concurrency/src/kani_proofs.rs`; `KANI_ENV` names a file to source for a private install) | 3600 s |
 
 ```sh
-verification/planted/run.sh -l TSCFV -f 600 -o /tmp/planted baseline   # control: every layer must miss
-verification/planted/run.sh -l TSCFV -f 600 -o /tmp/planted             # all 24 patches
+verification/planted/run.sh -l TSCFVK -f 900 -o /tmp/planted baseline   # control: every layer must miss
+verification/planted/run.sh -l TSCFVK -f 600 -o /tmp/planted             # all 24 patches
 verification/planted/run.sh -l TS -o /tmp/planted verification/planted/patches/09-*.patch
 ```
 
@@ -1206,69 +1227,99 @@ seed files the run created (a seed found under one bug must not help the next).
 Simulator and fuzzer tapes go to `OUT/tmp`. Patches touch
 `concurrency/src` only; they are never applied in CI.
 
-**Results** (2026-11-11, `cc60801d`, the 30-core shared server at `nice 19`,
-four patches in parallel). Times are seconds for the whole layer (T, S, C, V)
-or to the first failing input (F, from the seed corpus; "<1" means a seed or
-one of the first inputs). A dash is a miss. The unpatched control missed in
-every layer, including 600 s (590,000 executions) of fuzzing.
+**Results** (2026-11-12, after the follow-ups below, `53c0995d`, the 30-core
+shared server at `nice 19`, one patch at a time). Times are seconds for the
+whole layer (T, S, C, V, K) or to the first failing input (F, from the seed
+corpus; "<1" means a seed or one of the first inputs), with the fuzzer oracle
+that fired. A dash is a miss. The unpatched control missed in every layer,
+including 900 s (440,000 executions) of fuzzing; a second 900 s control (770,000 executions) after
+the last oracle change (X3 for `Normal` peers) also missed. Row 10's C and F
+cells are from that rerun; the first matrix (without that oracle) missed both.
 
-| # | Bug | T | S | C | F | V |
-|---|---|---|---|---|---|---|
-| 01 | Restart window admits `max + 1` restarts | 53 (1 unit test) | - | - | - | - |
-| 02 | A restart exactly `window` old still counts | 46 (same unit test) | - | - | - | - |
-| 03 | RestForOne rebuilds the failed child and the ones *before* it | 98 | 21 | - | - | 18 |
-| 04 | Transient restarts after `Shutdown` | 72 | 28 | - | - | 16 |
-| 05 | Temporary sibling rebuilt as OneForAll/RestForOne collateral | 48 | 14 | - | 8 (V1) | - |
-| 06 | Backoff failure streak never resets after a stable generation | 43 | 29 | - | - | - |
-| 07 | Supervisor stops children in declaration order | 71 | 17 | - | 8 (V9) | 15 |
-| 08 | Exhausted budget retires the child instead of failing the supervisor | hang (8 tests) | 16 | - | - | 14 |
-| 09 | Nested supervisor's restart mode ignored (always Permanent) | - | - | 13 | <1 (V1) | - |
-| 10 | `Normal` exit kills a non-trapping linked peer | 97 | 11 | - | - | - |
-| 11 | `unlink` removes only the caller's edge | 64 (2 unit tests) | - | - | - | - |
-| 12 | Linking to a dead peer reports `Normal`, not its reason | 72 | - | 20 | <1 (X3) | - |
-| 13 | Actor killed through a link exits `Normal` (no transitive propagation) | 71 | 24 | - | - | - |
-| 14 | `ChildHandle::shutdown` commits `Normal` instead of `Shutdown` | 55 | 11 | - | - | - |
-| 15 | Monitor waiter delivers `Down` after `demonitor` removed it | - | - | - | - | - |
-| 16 | Monitoring an already-dead actor gives no `Down` | 155 | - | 13 | 2 (X1) | - |
-| 17 | Exiting observer does not cancel its monitor waiters | 59 | 14 | - | - | - |
-| 18 | Managed actor's registered name never removed | 72 | 27 | 19 | <1 (S5) | - |
-| 19 | Run loop keeps handling queued messages after stop (D4) | 81 | - | - | - | - |
-| 20 | `ActorRef::send` enqueues from a spawned task (breaks D1) | hang (1 test) | 23 | 14 | <1 (D1) | - |
-| 21 | `send_after` ignores its own cancellation token | 91 (1 unit test) | - | - | - | - |
-| 22 | `send_interval` keeps ticking after its actor stops | 107 | 13 | - | - | - |
-| 23 | System shutdown stops targets in admission order | 96 | 14 | 15 | <1 (S2) | - |
-| 24 | System shutdown ignores admission order between actors and trees | 76 | 19 | - | 13 (S2) | - |
-| | **Caught** | **22** | **15** | **6** | **9** | **4** |
+| # | Bug | T | S | C | F | V | K |
+|---|---|---|---|---|---|---|---|
+| 01 | Restart window admits `max + 1` restarts | 47 (1 unit test) | - | - | - | - | 109 |
+| 02 | A restart exactly `window` old still counts | 52 (same unit test) | - | - | - | - | 114 |
+| 03 | RestForOne rebuilds the failed child and the ones *before* it | 67 | 20 | - | 10 (V1/V2) | 17 | - |
+| 04 | Transient restarts after `Shutdown` | 56 | 17 | - | 6 (V1/V2) | 16 | - |
+| 05 | Temporary sibling rebuilt as OneForAll/RestForOne collateral | 46 | 17 | - | 2 (V1) | - | - |
+| 06 | Backoff failure streak never resets after a stable generation | 48 (1 test) | 16 | - | 36 (V6) | - | - |
+| 07 | Supervisor stops children in declaration order | 44 | 19 | - | 3 (V9) | 15 | - |
+| 08 | Exhausted budget retires the child instead of failing the supervisor | 212 (19 tests) | 14 | 8 | 2 (V5) | 14 | - |
+| 09 | Nested supervisor's restart mode ignored (always Permanent) | 44 (1 test) | 14 | 8 | <1 (V1) | - | - |
+| 10 | `Normal` exit kills a non-trapping linked peer | 46 | 15 | 8 | 1 (X3) | - | - |
+| 11 | `unlink` removes only the caller's edge | 43 (2 unit tests) | - | - | 17 (X5) | - | - |
+| 12 | Linking to a dead peer reports `Normal`, not its reason | 54 | - | 8 | <1 (X3) | - | - |
+| 13 | Actor killed through a link exits `Normal` (no transitive propagation) | 43 | 17 | 9 | <1 (X3) | - | - |
+| 14 | `ChildHandle::shutdown` commits `Normal` instead of `Shutdown` | 44 | 17 | 9 | <1 (X8) | - | - |
+| 15 | Monitor waiter delivers `Down` after `demonitor` removed it | - | - | - | - | - | - |
+| 16 | Monitoring an already-dead actor gives no `Down` | 137 | - | 9 | 5 (X1) | - | - |
+| 17 | Exiting observer does not cancel its monitor waiters | 59 | 14 | - | - | - | - |
+| 18 | Managed actor's registered name never removed | 64 | 12 | 11 | <1 (S5) | - | - |
+| 19 | Run loop keeps handling queued messages after stop (D4) | 47 | 13 | - | 244 (X3) | - | - |
+| 20 | `ActorRef::send` enqueues from a spawned task (breaks D1) | hang (1 unit test) | 13 | 8 | <1 (D1) | - | - |
+| 21 | `send_after` ignores its own cancellation token | 41 (1 unit test) | - | 8 | <1 (T1) | - | - |
+| 22 | `send_interval` keeps ticking after its actor stops | 55 (2 tests) | 13 | - | - | - | - |
+| 23 | System shutdown stops targets in admission order | 65 | 12 | 8 | <1 (S2) | - | - |
+| 24 | System shutdown ignores admission order between actors and trees | 40 | 13 | - | 11 (S2) | - | - |
+| | **Caught** | **23** | **17** | **11** | **19** | **4** | **2** |
 
-23 of 24 were caught by at least one layer; T alone caught 22. One bug (15)
-escaped everything. What the matrix says about each layer:
+Before the follow-ups (2026-11-11, `cc60801d`, five layers, no K): caught
+T 22, S 15, C 6, F 9, V 4; bugs 08 and 20 hung T; F missed every
+restart-decision, budget, backoff and exit-reason bug (01-04, 06, 08, 13, 14).
+Now 23 of 24 are caught by at least one layer and every caught bug by at least
+two; 15 still escapes everything (below).
 
-- **T is the backstop.** Its misses were 09 (caught only by the fuzzer) and
-  15. Five catches rest on a single test each (unit tests for 01, 02, 11
-  and 21; `backoff_exponent_resets_only_after_a_stable_generation` for 06):
-  delete that test and the bug ships. Two bugs (08, 20) make tests hang
-  instead of fail; in CI that is a job timeout, not a named failure.
-- **S** only runs `sim_test`s and the `sim.rs` sweeps; the many plain
-  `#[test]`s that need OS threads are compiled out, so it misses most link,
-  timer and mailbox bugs (11, 12, 16, 19, 21) that T catches.
-- **F found 9 bugs, all in under 15 s**, and nothing in the remaining 600 s.
-  It has no oracle for *which* children a restart rebuilds (03, 04), for the
-  restart budget's lower bound or window edge (01, 02, 08), for backoff
-  timing (06), or for the reason a stopped actor publishes when it agrees with
-  what its peers saw (13, 14): X3 and X1 compare a notification with the
-  published reason, so a wrong published reason that is consistently wrong
-  passes. Longer runs would not help without new oracles.
-- **V** only sees supervisor lifecycles, and caught 4 of the 9 supervision
-  bugs (it cannot see restart timing, the budget window or Temporary rules
-  for nested trees).
+- **F now catches 19 of 24** (was 9), all but one within 40 s. The new oracles
+  (see "Scenario fuzzing") check which children a restart rebuilds (03, 04:
+  V1/V2), that every required restart happens or the supervisor fails (08: V5),
+  backoff delays in virtual time (06: V6), linked exit reasons (13, and 10
+  after the `Normal` case was added: X3), `unlink` (11: X5) and cancelled
+  timers (21: T1). 19 fell to X3 after 244 s. Still missed: 01 and 02 (see
+  below), 15, 17 (an exiting observer's lingering monitor waiters) and 22 (an interval
+  that outlives its actor): no fuzzer oracle observes either yet; T and S catch
+  both.
+- **01 and 02 are not observable through the public API.** `admit_in_window`
+  is only reached after `reserve_retry` has pruned the same window with `>=`
+  and checked `RetryBudget::available` with `<`, so the invariant
+  `grants in window + reservations <= max` already holds when it runs; a
+  looser comparison or window edge there admits nothing the reservation did
+  not. Their second check is the Kani harness
+  `restart_window_admits_exactly_within_budget` (layer K), which proves the
+  function against an independent log and fails under each patch.
+- **Single-test catches now have a second, independent check:** 01 and 02
+  (Kani), 06 (fuzzer V6), 11 (fuzzer X5), 21 (fuzzer T1). 09 is caught by its
+  `sim_test` and by the fuzzer.
+- **No hangs from supervisor bugs.** Under 08, T used to hang in
+  `failpoints::persistent_factory_failure_exhausts_budget_and_fails_startup`
+  (and seven tests queued behind its failpoint lock); with bounded waits
+  (`within!`, "Bounded waits" above) 19 tests fail by name in 212 s. 20 still
+  hangs T, in the unit test `tasks::actor::tests::backend_blocking_handles_send_and_request`
+  inside `concurrency/src/tasks/actor.rs`, which these follow-ups leave
+  untouched while that file is being rewritten; the runner now names the test
+  that ran past 60 s. Earlier mutation runs show the same pattern for other
+  unit tests in `concurrency/src` (`policy_tests`, `nested::*_tests`,
+  `tasks::actor::tests` link tests, `child_handle::tests`): they await without
+  a deadline and should use one when those files next change.
+- **S, C, V** are unchanged in kind; C now also runs the new oracles over the
+  seeds and regression inputs, which catches 08, 10, 13, 14 and 21 from committed
+  inputs.
 
 **Oracles added for the gaps** (each fails with its bug planted and passes on
 `main`; checked with `run.sh`):
 
 | Bug | Oracle | Layers that now catch it |
 |---|---|---|
-| 09 | `nested_supervision::temporary_subtree_failure_is_not_rebuilt` (a `sim_test`) | T, S (was C, F only) |
-| 14 | Fuzzer oracle **X8**: an actor whose only possible stop cause was the driver's `stop`, `shutdown` or `stop_with_reason` on a live actor publishes exactly that reason (instances whose hooks or state destructor panicked are skipped) | F < 1 s, C (was T, S only) |
+| 01, 02 | Kani `restart_window_admits_exactly_within_budget`, now a runner layer (K) | T, K (was T only) |
+| 03, 04 | Fuzzer **V1/V2** (restart decisions): every replacement is required by the slot's own exit and mode, or by an upstream sibling's failure | F, plus T, S, V (was T, S, V) |
+| 06 | Fuzzer **V6**: restart delays match the backoff bound for the failure streak in virtual time | F, T, S (was T, S) |
+| 08 | Fuzzer **V5** (required restarts); bounded waits in the tests that hung | F, C, T named (was a T hang, S, V) |
+| 09 | `nested_supervision::temporary_subtree_failure_is_not_rebuilt` (a `sim_test`) | T, S, C, F |
+| 10 | Fuzzer **X3**: a `Normal` peer exit spares a non-trapping actor linked only to it | F, C, T, S (was T, S) |
+| 11 | Fuzzer **X5** (unlink): no `Exit` and no linked death after both sides unlinked | F, T (was T only) |
+| 13 | Fuzzer **X3** (reason): an actor stopped through a link publishes its peer's reason | F, C, T, S (was T, S) |
+| 14 | Fuzzer **X8**: an actor whose only possible stop cause was the driver's `stop`, `shutdown` or `stop_with_reason` on a live actor publishes exactly that reason (instances whose hooks or state destructor panicked are skipped) | F, C, T, S (was T, S) |
+| 21 | Fuzzer **T1** (cancel): a cancelled timer delivers no tick due after the cancel | F, C, T (was T only) |
 | 15 | None possible through the public API: see below | - |
 
 Bug 15 is not observable. `demonitor` is documented best-effort ("the message
@@ -1613,6 +1664,21 @@ unfixed code before pushing, and name it in the PR (the
 [PR template](../.github/pull_request_template.md) asks for it). The list in
 [Bugs reproduced by these regressions](#bugs-reproduced-by-these-regressions)
 follows this rule.
+
+### Bounded waits
+
+A test that awaits an outcome a bug can suppress (a supervisor's `start()`
+that never fails, a `join()` or `wait_exit()` whose exit is never published, a
+generation that never comes, a reply that never arrives) hangs instead of
+failing, and CI then reports a job timeout rather than a test name. Integration
+tests wrap those awaits in `within!(..)` (`concurrency/tests/support/deadline.rs`),
+which fails with the awaited expression, file and line after 120 s: virtual
+time on the simulator, and only reached by a bug on Tokio, since every such wait
+is a handshake, never a fixed sleep. Tests on paused Tokio time
+(`protocol_timeouts`, `semantics_gaps`) are left alone: paused time
+auto-advances while work runs outside Tokio, which could fire the bound early.
+Unit tests inside `concurrency/src` do not use it yet (see "Planted-bug
+sensitivity" for the ones that still hang under a planted bug).
 
 ### Single-CPU runs
 

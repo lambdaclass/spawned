@@ -1,4 +1,7 @@
 #![cfg(feature = "lifecycle-trace")]
+#[macro_use]
+#[path = "support/deadline.rs"]
+mod deadline;
 use spawned_concurrency::{
     message::Message,
     supervision::{
@@ -83,7 +86,7 @@ async fn mixed_strategy_three_level_shutdown_and_subtree_replacement() {
                 },
             ))
             .unwrap();
-        let supervisor = root.start().await.unwrap();
+        let supervisor = within!(root.start()).await.unwrap();
         let old = leaf.lock().unwrap().as_ref().unwrap().current().unwrap();
         assert!(old.request(Crash).await.is_err());
         spawned_rt::tasks::timeout(LIMIT, subtree.wait_for_generation(1))

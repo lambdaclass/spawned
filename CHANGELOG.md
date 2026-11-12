@@ -16,6 +16,14 @@
   `ExecutionGroup::start` and `start_linked`. A new TLA+ model, `Start.tla`,
   has eight configurations and 40 negative controls, and a client mapping
   covers 51 sites.
+- Tests: planted-bug follow-ups. New scenario-fuzzer oracles for restart
+  decisions, RestForOne cohorts, Transient restarts, required restarts versus
+  budget exhaustion, backoff delays in virtual time, linked exit reasons,
+  `unlink` and cancelled timers; bounded waits so tests that used to hang under
+  a bug fail with a named assertion (`within!`); a Kani layer in the
+  planted-bug runner; the planted-bug matrix in `docs/TESTING.md` re-run with
+  them. `concurrent_failures_coalesce_into_one_round` no longer flakes on one
+  CPU (it read `current()` after the first crash's round had begun).
 - ROADMAP: a ranked determinism backlog (D1-D10) under priority tier 3, from
   an audit of what escapes the simulator in Spawned, Ethrex and Ethlambda
   ([docs/research/determinism-audit.md](docs/research/determinism-audit.md)).
@@ -47,6 +55,31 @@
   action; every model must be trace-validated or allowlisted as TLC-only with
   a tracking item (Coordinator, Lifecycle, DeferredReplies, DeferredJobs);
   per-model trace coverage has a floor that may only go up.
+- Design: introspection v1 for 0.9 (priority tier 2), in review:
+  [`docs/design/introspection.md`](docs/design/introspection.md). Per-actor
+  `process_info`, `sys:get_state`/`get_status` answered between turns,
+  supervision-tree and system snapshots, an opt-in stall watchdog (rank 8) and
+  the data model for `spawned-top` (rank 30), an attachable remote console on
+  a local Unix socket (`spawned-ctl`, on by default, read-only by default, no
+  TCP, no eval), with a cost table per field, consistency guarantees and a
+  test plan. TLA+ model `Introspection.tla` (fenced watchdog kill, status
+  between turns and at death) with six negative controls. Design only; no
+  library code change.
+
+- Design: introspection v1 for 0.9 (priority tier 2), revision 2 after two
+  reviews: [`docs/design/introspection.md`](docs/design/introspection.md).
+- Design: introspection v1 for 0.9 (priority tier 2), revision 3 after two
+  review rounds: [`docs/design/introspection.md`](docs/design/introspection.md).
+  `process_info`-style `info()` readable while a handler is wedged (strictly
+  free tier 0, richer with the `introspection` feature), `sys:get_state`/
+  `get_status` as a turn of their own, supervision-tree and system
+  snapshots, structured reports, an opt-in stall watchdog (rank 8) with a
+  fenced kill, and an attachable remote console on a local Unix socket
+  (`spawned-ctl`; on with `ActorSystem::new`, read-only by default, no TCP,
+  no eval). TLA+ model `Introspection.tla` (every activity end, including
+  panics in `started()` and `stopped()`, consumes the kill bit; status between
+  turns and at D; runtime drop; one action per linearization point, status admission included) with 20
+  negative controls; a fork-safe, lock-first socket publication protocol. Design only; no library code change.
 - Tests: coverage follow-ups. `restart_modes_distinguish_normal_shutdown_and_panic`
   now sends a real `Normal` exit; a per-PR `MCSupervisionTemporary` TLC
   configuration makes `TemporaryStartsOnce` non-vacuous, with a negative
@@ -97,6 +130,21 @@
   oracles: a Temporary nested subtree is never rebuilt, fuzzer oracle X8 (a
   stopped actor publishes the reason it was stopped with), and unit tests that
   kill cargo-mutants survivors in `supervision/nested.rs` and `supervision.rs`.
+- `#[actor]` lints (ROADMAP rank 6b), compile time only, no runtime cost:
+  a warning when the `#[actor]` impl block builds or accepts shared mutable
+  state (`Arc<Mutex<_>>`, `Arc<RwLock<_>>`, `Arc<Atomic*>`, `Rc<RefCell<_>>`,
+  std, tokio or parking_lot paths), silenced with
+  `#[actor(allow_shared_state)]`; and a warning, once per crate, when the
+  crate is built with `panic = "abort"`, under which a handler panic ends the
+  process instead of one actor, silenced with `#[actor(allow_panic_abort)]`.
+  Both use the stable `#[deprecated]` technique, so `-D warnings` turns them
+  into errors.
+- `spawned-concurrency` re-exports `#[sim_test]`, so downstream crates write
+  `#[spawned_concurrency::sim_test]` without a `spawned-macros` dependency
+  (they still need `spawned-rt`). New example test
+  `examples/capabilities/tests/deterministic_simulation.rs` (per-sender order
+  over every seed, an hour-long timer in virtual time), run by the `sim` CI job.
+  The README's deterministic-testing section uses the single import.
 - Lockfile: `rustix` 1.1.2 -> 1.1.6 for RUSTSEC-2026-0486 (pulled in by the
   examples' `native-tls` dependency; spawned's crates are unaffected).
 - CI: a `sim` job runs the simulated test suites (`--cfg spawned_sim`) on

@@ -19,6 +19,11 @@ Active design contracts. Usage is documented in the [guide](../GUIDE.md).
   implemented) for exit signals, `Killed`/`NoProc`, supervisor startup and
   runtime-dropped actors as in OTP (ROADMAP ranks 5e, 5f, 5g), with the base
   actor lifecycle model `Lifecycle.tla`.
+- **[introspection.md](introspection.md)** (0.9, design in review, not
+  implemented): `info()` readable while a handler is wedged,
+  `get_state`/`get_status` between turns, supervision and system snapshots,
+  structured reports, the stall watchdog and the attachable remote console
+  (`spawned-ctl`). Model: `verification/tla/Introspection.tla`.
 
 - **[unified-start.md](unified-start.md)** (rank 5h, 0.9, design in review,
   not implemented): one start API as OTP's `start`, `start_link` and

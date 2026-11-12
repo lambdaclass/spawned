@@ -6,6 +6,9 @@
 //! deadline. See docs/TESTING.md for the per-operation contract.
 #![cfg(feature = "async")]
 
+#[macro_use]
+#[path = "support/deadline.rs"]
+mod deadline;
 use spawned_concurrency::{
     message::Message,
     protocol, registry,
@@ -671,7 +674,7 @@ async fn supervisor_shutdown_and_child_waits_are_cancel_safe() {
                             async move { Ok::<_, String>(probe) }
                         }))
                         .unwrap();
-                    let supervisor = tree.start().await.unwrap();
+                    let supervisor = within!(tree.start()).await.unwrap();
                     let first = child.current().unwrap();
                     let finished = match variant {
                         0 => {
@@ -688,7 +691,7 @@ async fn supervisor_shutdown_and_child_waits_are_cancel_safe() {
                             spawned_rt::tasks::timeout(LIMIT, supervisor.join())
                                 .await
                                 .unwrap_or_else(|_| panic!("{op}: N={n} tree wedged"));
-                            assert_eq!(first.wait_exit().await, ExitReason::Shutdown);
+                            assert_eq!(within!(first.wait_exit()).await, ExitReason::Shutdown);
                             outcome.finished()
                         }
                         1 => {
@@ -745,7 +748,7 @@ async fn system_shutdown_is_cancel_safe() {
                 let mut probe = fx.probe();
                 probe.name = Some(name.clone());
                 let actor = fx.spawn(probe);
-                actor.ready().await.unwrap();
+                within!(actor.ready()).await.unwrap();
                 let helper_gate = Arc::new(Notify::new());
                 actor.request(Cmd::Helper(helper_gate)).await.unwrap();
                 let system = fx.system.as_ref().unwrap();
@@ -760,7 +763,7 @@ async fn system_shutdown_is_cancel_safe() {
                 if n > 0 {
                     assert!(report.complete, "{op}: N={n}");
                     assert!(fx.group.as_ref().unwrap().is_closed());
-                    assert_eq!(actor.wait_exit().await, ExitReason::Shutdown);
+                    assert_eq!(within!(actor.wait_exit()).await, ExitReason::Shutdown);
                     assert!(!registry::registered().contains(&name), "{op}: leaked name");
                 }
                 fx.finish(&[&actor]).await;
@@ -781,7 +784,7 @@ async fn system_shutdown_is_cancel_safe() {
                 let mut probe = fx.probe();
                 probe.stop_gate = Some(gate.clone());
                 let actor = fx.spawn(probe);
-                actor.ready().await.unwrap();
+                within!(actor.ready()).await.unwrap();
                 let report = fx.system.as_ref().unwrap().shutdown(Duration::ZERO).await;
                 assert!(!report.complete);
                 let outcome = attempt(report.wait(LIMIT), n, PARK).await;
@@ -814,7 +817,7 @@ async fn helper_join_is_cancel_safe() {
             async move {
                 let fx = Fx::new(place);
                 let actor = fx.spawn(fx.probe());
-                actor.ready().await.unwrap();
+                within!(actor.ready()).await.unwrap();
                 let gate = Arc::new(Notify::new());
                 let waiting = gate.clone();
                 let task = actor
