@@ -121,6 +121,7 @@ jobs:
           - MCDynamicSupervisorDeep
           - MCDynamicSupervisorWideDeep
           - MCDynamicSupervisorBackoffDeep
+          - MCDynamicSupervisorCallersDeep
           - MCStartDeep
     steps:
       - uses: actions/checkout@v4

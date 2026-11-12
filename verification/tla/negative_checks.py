@@ -269,9 +269,9 @@ DYNAMIC_CONTROLS = [
 DYNAMIC_TEMPORAL_CONTROLS = [
     # MCDynamicSupervisorAbort has no startup deadlines and passes unmutated.
     ("MCDynamicSupervisorAbort", "NoAbort", "ShutdownAnswersStarts"),
-    ("MCDynamicSupervisorCallers", "NoDeadline", "StartAnswered"),
-    ("MCDynamicSupervisorCallers", "TermLost", "TerminateAnswered"),
-    ("MCDynamicSupervisorCallers", "Sequential", "FanoutCompletes"),
+    ("MCDynamicSupervisorCallersDeep", "NoDeadline", "StartAnswered"),
+    ("MCDynamicSupervisorCallersDeep", "TermLost", "TerminateAnswered"),
+    ("MCDynamicSupervisorCallersDeep", "Sequential", "FanoutCompletes"),
     ("MCDynamicSupervisorLive", "StuckBackoff", "ClosedLeadsToDone"),
     ("MCDynamicSupervisorLive", "LostRestart", "RecoveryProgress"),
 ]
