@@ -363,7 +363,10 @@ impl Registry {
     /// The handler returned (`panicked == false`) or unwound.
     pub(crate) fn end_turn(&self, panicked: bool) {
         let (drops, outcome) = self.turn.end_turn(panicked);
-        self.commit(drops, outcome);
+        // Most turns drop no obligation: skip the commit entirely.
+        if !drops.is_empty() {
+            self.commit(drops, outcome);
+        }
     }
 
     /// Exit begins: later drops, and the current turn's recorded drops, are
