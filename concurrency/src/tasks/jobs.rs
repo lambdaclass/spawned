@@ -1053,20 +1053,26 @@ mod tests {
     /// `u16::MAX` credits overflowed).
     #[tokio::test]
     async fn a_refused_emit_returns_its_credit_once() {
-        let owner = Owner.start();
-        for credits in [1, u16::MAX] {
-            let state = JobState::new(owner.id(), credits);
-            let job = JobCtx {
-                state: state.clone(),
-                ctx: owner.context(),
-            };
-            state.acquire_blocking().unwrap();
-            state.cancel();
-            assert_eq!(job.enqueue(Note), Err(JobGone));
-            assert_eq!(state.emit_credits(), credits, "credit returned twice");
-        }
-        owner.context().stop();
-        owner.join().await;
+        crate::test_wait::within(
+            concat!(module_path!(), "::a_refused_emit_returns_its_credit_once"),
+            async move {
+                let owner = Owner.start();
+                for credits in [1, u16::MAX] {
+                    let state = JobState::new(owner.id(), credits);
+                    let job = JobCtx {
+                        state: state.clone(),
+                        ctx: owner.context(),
+                    };
+                    state.acquire_blocking().unwrap();
+                    state.cancel();
+                    assert_eq!(job.enqueue(Note), Err(JobGone));
+                    assert_eq!(state.emit_credits(), credits, "credit returned twice");
+                }
+                owner.context().stop();
+                owner.join().await;
+            },
+        )
+        .await;
     }
 
     /// `cancel_on_caller_gone` applies to reply jobs only: a plain job has no
@@ -1074,16 +1080,25 @@ mod tests {
     #[cfg(debug_assertions)]
     #[tokio::test]
     async fn cancel_on_caller_gone_on_a_plain_job_is_a_bug() {
-        let owner = Owner.start();
-        let ctx = owner.context();
-        let refused = std::panic::catch_unwind(AssertUnwindSafe(|| {
-            ctx.reserve_blocking_job(JobOptions::new().cancel_on_caller_gone())
-                .map(drop)
-        }));
-        assert!(refused.is_err(), "the option was accepted on a plain job");
-        let plain = ctx.reserve_blocking_job(JobOptions::new()).map(drop);
-        assert!(plain.is_ok());
-        ctx.stop();
-        owner.join().await;
+        crate::test_wait::within(
+            concat!(
+                module_path!(),
+                "::cancel_on_caller_gone_on_a_plain_job_is_a_bug"
+            ),
+            async move {
+                let owner = Owner.start();
+                let ctx = owner.context();
+                let refused = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                    ctx.reserve_blocking_job(JobOptions::new().cancel_on_caller_gone())
+                        .map(drop)
+                }));
+                assert!(refused.is_err(), "the option was accepted on a plain job");
+                let plain = ctx.reserve_blocking_job(JobOptions::new()).map(drop);
+                assert!(plain.is_ok());
+                ctx.stop();
+                owner.join().await;
+            },
+        )
+        .await;
     }
 }

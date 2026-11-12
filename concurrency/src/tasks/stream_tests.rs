@@ -82,172 +82,204 @@ impl Handler<GetValue> for Summatory {
 
 #[test]
 pub fn test_sum_numbers_from_stream() {
-    let runtime = rt::Runtime::new().unwrap();
-    runtime.block_on(async move {
-        let summatory = Summatory::new(0).start();
-        let stream = stream::iter(vec![1u16, 2, 3, 4, 5].into_iter().map(Ok::<u16, ()>));
+    crate::test_wait::bounded(
+        concat!(module_path!(), "::test_sum_numbers_from_stream"),
+        move || {
+            let runtime = rt::Runtime::new().unwrap();
+            runtime.block_on(async move {
+                let summatory = Summatory::new(0).start();
+                let stream = stream::iter(vec![1u16, 2, 3, 4, 5].into_iter().map(Ok::<u16, ()>));
 
-        let ctx = summatory.context();
-        spawn_listener(
-            ctx,
-            stream.filter_map(|result| async move { result.ok().map(StreamMsg::Add) }),
-        );
+                let ctx = summatory.context();
+                spawn_listener(
+                    ctx,
+                    stream.filter_map(|result| async move { result.ok().map(StreamMsg::Add) }),
+                );
 
-        let val = wait_for_async(
-            || summatory.request(GetValue),
-            |val| matches!(val, Ok(n) if *n >= 15),
-        )
-        .await
-        .unwrap();
-        assert_eq!(val, 15);
-    })
+                let val = wait_for_async(
+                    || summatory.request(GetValue),
+                    |val| matches!(val, Ok(n) if *n >= 15),
+                )
+                .await
+                .unwrap();
+                assert_eq!(val, 15);
+            })
+        },
+    );
 }
 
 #[test]
 pub fn test_sum_numbers_from_channel() {
-    let runtime = rt::Runtime::new().unwrap();
-    runtime.block_on(async move {
-        let summatory = Summatory::new(0).start();
-        let (tx, rx) = spawned_rt::tasks::mpsc::channel::<Result<u16, ()>>();
+    crate::test_wait::bounded(
+        concat!(module_path!(), "::test_sum_numbers_from_channel"),
+        move || {
+            let runtime = rt::Runtime::new().unwrap();
+            runtime.block_on(async move {
+                let summatory = Summatory::new(0).start();
+                let (tx, rx) = spawned_rt::tasks::mpsc::channel::<Result<u16, ()>>();
 
-        spawned_rt::tasks::spawn(async move {
-            for i in 1..=5 {
-                tx.send(Ok(i)).unwrap();
-            }
-        });
+                spawned_rt::tasks::spawn(async move {
+                    for i in 1..=5 {
+                        tx.send(Ok(i)).unwrap();
+                    }
+                });
 
-        let ctx = summatory.context();
-        spawn_listener(
-            ctx,
-            ReceiverStream::new(rx)
-                .filter_map(|result| async move { result.ok().map(StreamMsg::Add) }),
-        );
+                let ctx = summatory.context();
+                spawn_listener(
+                    ctx,
+                    ReceiverStream::new(rx)
+                        .filter_map(|result| async move { result.ok().map(StreamMsg::Add) }),
+                );
 
-        let val = wait_for_async(
-            || summatory.request(GetValue),
-            |val| matches!(val, Ok(n) if *n >= 15),
-        )
-        .await
-        .unwrap();
-        assert_eq!(val, 15);
-    })
+                let val = wait_for_async(
+                    || summatory.request(GetValue),
+                    |val| matches!(val, Ok(n) if *n >= 15),
+                )
+                .await
+                .unwrap();
+                assert_eq!(val, 15);
+            })
+        },
+    );
 }
 
 #[test]
 pub fn test_sum_numbers_from_broadcast_channel() {
-    let runtime = rt::Runtime::new().unwrap();
-    runtime.block_on(async move {
-        let summatory = Summatory::new(0).start();
-        let (tx, rx) = tokio::sync::broadcast::channel::<u16>(5);
+    crate::test_wait::bounded(
+        concat!(module_path!(), "::test_sum_numbers_from_broadcast_channel"),
+        move || {
+            let runtime = rt::Runtime::new().unwrap();
+            runtime.block_on(async move {
+                let summatory = Summatory::new(0).start();
+                let (tx, rx) = tokio::sync::broadcast::channel::<u16>(5);
 
-        spawned_rt::tasks::spawn(async move {
-            for i in 1u16..=5 {
-                tx.send(i).unwrap();
-            }
-        });
+                spawned_rt::tasks::spawn(async move {
+                    for i in 1u16..=5 {
+                        tx.send(i).unwrap();
+                    }
+                });
 
-        let ctx = summatory.context();
-        spawn_listener(
-            ctx,
-            BroadcastStream::new(rx)
-                .filter_map(|result| async move { result.ok().map(StreamMsg::Add) }),
-        );
+                let ctx = summatory.context();
+                spawn_listener(
+                    ctx,
+                    BroadcastStream::new(rx)
+                        .filter_map(|result| async move { result.ok().map(StreamMsg::Add) }),
+                );
 
-        let val = wait_for_async(
-            || summatory.request(GetValue),
-            |val| matches!(val, Ok(n) if *n >= 15),
-        )
-        .await
-        .unwrap();
-        assert_eq!(val, 15);
-    })
+                let val = wait_for_async(
+                    || summatory.request(GetValue),
+                    |val| matches!(val, Ok(n) if *n >= 15),
+                )
+                .await
+                .unwrap();
+                assert_eq!(val, 15);
+            })
+        },
+    );
 }
 
 #[test]
 pub fn test_stream_cancellation() {
-    const MESSAGE_INTERVAL: u64 = 250;
-    const READ_TIME: u64 = 850;
-    const STOP_TIME: u64 = 1100;
+    crate::test_wait::bounded(
+        concat!(module_path!(), "::test_stream_cancellation"),
+        move || {
+            const MESSAGE_INTERVAL: u64 = 250;
+            const READ_TIME: u64 = 850;
+            const STOP_TIME: u64 = 1100;
 
-    let runtime = rt::Runtime::new().unwrap();
-    runtime.block_on(async move {
-        let summatory = Summatory::new(0).start();
-        let (tx, rx) = spawned_rt::tasks::mpsc::channel::<Result<u16, ()>>();
+            let runtime = rt::Runtime::new().unwrap();
+            runtime.block_on(async move {
+                let summatory = Summatory::new(0).start();
+                let (tx, rx) = spawned_rt::tasks::mpsc::channel::<Result<u16, ()>>();
 
-        spawned_rt::tasks::spawn(async move {
-            for i in 1..=5 {
-                tx.send(Ok(i)).unwrap();
-                rt::sleep(Duration::from_millis(MESSAGE_INTERVAL)).await;
-            }
-        });
+                spawned_rt::tasks::spawn(async move {
+                    for i in 1..=5 {
+                        tx.send(Ok(i)).unwrap();
+                        rt::sleep(Duration::from_millis(MESSAGE_INTERVAL)).await;
+                    }
+                });
 
-        let ctx = summatory.context();
-        let listener_handle = spawn_listener(
-            ctx.clone(),
-            ReceiverStream::new(rx)
-                .filter_map(|result| async move { result.ok().map(StreamMsg::Add) }),
-        );
+                let ctx = summatory.context();
+                let listener_handle = spawn_listener(
+                    ctx.clone(),
+                    ReceiverStream::new(rx)
+                        .filter_map(|result| async move { result.ok().map(StreamMsg::Add) }),
+                );
 
-        let _ = send_after(Duration::from_millis(STOP_TIME), ctx, StopSum);
+                let _ = send_after(Duration::from_millis(STOP_TIME), ctx, StopSum);
 
-        rt::sleep(Duration::from_millis(READ_TIME)).await;
-        let val = summatory.request(GetValue).await.unwrap();
+                rt::sleep(Duration::from_millis(READ_TIME)).await;
+                let val = summatory.request(GetValue).await.unwrap();
 
-        assert!((1..=15).contains(&val));
+                assert!((1..=15).contains(&val));
 
-        assert!(listener_handle.await.is_ok());
+                assert!(listener_handle.await.is_ok());
 
-        summatory.join().await;
-        assert!(summatory.request(GetValue).await.is_err());
-    })
+                summatory.join().await;
+                assert!(summatory.request(GetValue).await.is_err());
+            })
+        },
+    );
 }
 
 #[test]
 pub fn test_halting_on_stream_error() {
-    let runtime = rt::Runtime::new().unwrap();
-    runtime.block_on(async move {
-        let summatory = Summatory::new(0).start();
-        let stream = tokio_stream::iter(vec![Ok(1u16), Ok(2), Ok(3), Err(()), Ok(4), Ok(5)]);
-        let msg_stream = stream.filter_map(|value| async move {
-            match value {
-                Ok(number) => Some(StreamMsg::Add(number)),
-                Err(_) => Some(StreamMsg::Error),
-            }
-        });
+    crate::test_wait::bounded(
+        concat!(module_path!(), "::test_halting_on_stream_error"),
+        move || {
+            let runtime = rt::Runtime::new().unwrap();
+            runtime.block_on(async move {
+                let summatory = Summatory::new(0).start();
+                let stream =
+                    tokio_stream::iter(vec![Ok(1u16), Ok(2), Ok(3), Err(()), Ok(4), Ok(5)]);
+                let msg_stream = stream.filter_map(|value| async move {
+                    match value {
+                        Ok(number) => Some(StreamMsg::Add(number)),
+                        Err(_) => Some(StreamMsg::Error),
+                    }
+                });
 
-        let ctx = summatory.context();
-        spawn_listener(ctx, msg_stream);
+                let ctx = summatory.context();
+                spawn_listener(ctx, msg_stream);
 
-        // The error message stops the actor.
-        summatory.join().await;
+                // The error message stops the actor.
+                summatory.join().await;
 
-        let result = summatory.request(GetValue).await;
-        assert!(result.is_err());
-    })
+                let result = summatory.request(GetValue).await;
+                assert!(result.is_err());
+            })
+        },
+    );
 }
 
 #[test]
 pub fn test_skipping_on_stream_error() {
-    let runtime = rt::Runtime::new().unwrap();
-    runtime.block_on(async move {
-        let summatory = Summatory::new(0).start();
-        let stream = tokio_stream::iter(vec![Ok(1u16), Ok(2), Ok(3), Err(()), Ok(4), Ok(5)]);
-        let msg_stream = stream.filter_map(|value| async move {
-            match value {
-                Ok(number) => Some(StreamMsg::Add(number)),
-                Err(_) => None,
-            }
-        });
+    crate::test_wait::bounded(
+        concat!(module_path!(), "::test_skipping_on_stream_error"),
+        move || {
+            let runtime = rt::Runtime::new().unwrap();
+            runtime.block_on(async move {
+                let summatory = Summatory::new(0).start();
+                let stream =
+                    tokio_stream::iter(vec![Ok(1u16), Ok(2), Ok(3), Err(()), Ok(4), Ok(5)]);
+                let msg_stream = stream.filter_map(|value| async move {
+                    match value {
+                        Ok(number) => Some(StreamMsg::Add(number)),
+                        Err(_) => None,
+                    }
+                });
 
-        let ctx = summatory.context();
-        spawn_listener(ctx, msg_stream);
+                let ctx = summatory.context();
+                spawn_listener(ctx, msg_stream);
 
-        let val = wait_for_async(
-            || summatory.request(GetValue),
-            |val| matches!(val, Ok(n) if *n >= 15),
-        )
-        .await
-        .unwrap();
-        assert_eq!(val, 15);
-    })
+                let val = wait_for_async(
+                    || summatory.request(GetValue),
+                    |val| matches!(val, Ok(n) if *n >= 15),
+                )
+                .await
+                .unwrap();
+                assert_eq!(val, 15);
+            })
+        },
+    );
 }

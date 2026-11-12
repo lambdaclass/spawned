@@ -479,269 +479,332 @@ pub(crate) mod tests {
 
     #[test]
     fn child_handle_from_threads_actor_ref() {
-        use crate::message::Message;
-        use crate::threads::actor::{Actor, ActorStart, Context, Handler};
+        crate::test_wait::bounded(
+            concat!(module_path!(), "::child_handle_from_threads_actor_ref"),
+            move || {
+                use crate::message::Message;
+                use crate::threads::actor::{Actor, ActorStart, Context, Handler};
 
-        struct Worker;
-        struct Stop;
-        impl Message for Stop {
-            type Result = ();
-        }
-        impl Actor for Worker {}
-        impl Handler<Stop> for Worker {
-            fn handle(
-                &mut self,
-                _msg: Stop,
-                reply: crate::reply::PendingReply<'_, ()>,
-                ctx: &Context<Self>,
-            ) {
-                ctx.stop();
-                reply.reply(());
-            }
-        }
+                struct Worker;
+                struct Stop;
+                impl Message for Stop {
+                    type Result = ();
+                }
+                impl Actor for Worker {}
+                impl Handler<Stop> for Worker {
+                    fn handle(
+                        &mut self,
+                        _msg: Stop,
+                        reply: crate::reply::PendingReply<'_, ()>,
+                        ctx: &Context<Self>,
+                    ) {
+                        ctx.stop();
+                        reply.reply(());
+                    }
+                }
 
-        let actor = Worker.start();
-        let handle = actor.child_handle();
+                let actor = Worker.start();
+                let handle = actor.child_handle();
 
-        assert!(handle.is_alive());
-        assert!(handle.exit_reason().is_none());
-        assert_eq!(handle.id(), actor.id());
+                assert!(handle.is_alive());
+                assert!(handle.exit_reason().is_none());
+                assert_eq!(handle.id(), actor.id());
 
-        actor.send(Stop).unwrap();
-        let reason = handle.wait_exit_blocking();
-        assert_eq!(reason, ExitReason::Normal);
-        assert!(!handle.is_alive());
+                actor.send(Stop).unwrap();
+                let reason = handle.wait_exit_blocking();
+                assert_eq!(reason, ExitReason::Normal);
+                assert!(!handle.is_alive());
+            },
+        );
     }
 
     #[test]
     #[cfg(feature = "async")]
     fn child_handle_from_tasks_actor_ref() {
-        use crate::message::Message;
-        use crate::tasks::actor::{Actor, ActorStart, Context, Handler};
+        crate::test_wait::bounded(
+            concat!(module_path!(), "::child_handle_from_tasks_actor_ref"),
+            move || {
+                use crate::message::Message;
+                use crate::tasks::actor::{Actor, ActorStart, Context, Handler};
 
-        struct Worker;
-        struct Stop;
-        impl Message for Stop {
-            type Result = ();
-        }
-        impl Actor for Worker {}
-        impl Handler<Stop> for Worker {
-            async fn handle(
-                &mut self,
-                _msg: Stop,
-                reply: crate::reply::PendingReply<'_, ()>,
-                ctx: &Context<Self>,
-            ) {
-                ctx.stop();
-                reply.reply(());
-            }
-        }
+                struct Worker;
+                struct Stop;
+                impl Message for Stop {
+                    type Result = ();
+                }
+                impl Actor for Worker {}
+                impl Handler<Stop> for Worker {
+                    async fn handle(
+                        &mut self,
+                        _msg: Stop,
+                        reply: crate::reply::PendingReply<'_, ()>,
+                        ctx: &Context<Self>,
+                    ) {
+                        ctx.stop();
+                        reply.reply(());
+                    }
+                }
 
-        let runtime = spawned_rt::tasks::Runtime::new().unwrap();
-        runtime.block_on(async {
-            let actor = Worker.start();
-            let handle = actor.child_handle();
+                let runtime = spawned_rt::tasks::Runtime::new().unwrap();
+                runtime.block_on(async {
+                    let actor = Worker.start();
+                    let handle = actor.child_handle();
 
-            assert!(handle.is_alive());
-            assert!(handle.exit_reason().is_none());
-            assert_eq!(handle.id(), actor.id());
+                    assert!(handle.is_alive());
+                    assert!(handle.exit_reason().is_none());
+                    assert_eq!(handle.id(), actor.id());
 
-            actor.send(Stop).unwrap();
-            let reason = handle.wait_exit_async().await;
-            assert_eq!(reason, ExitReason::Normal);
-            assert!(!handle.is_alive());
-        });
+                    actor.send(Stop).unwrap();
+                    let reason = handle.wait_exit_async().await;
+                    assert_eq!(reason, ExitReason::Normal);
+                    assert!(!handle.is_alive());
+                });
+            },
+        );
     }
 
     #[test]
     #[cfg(feature = "async")]
     fn child_handle_stop_from_tasks_actor() {
-        use crate::tasks::actor::ActorStart;
-        use tasks_fixtures::Idler;
+        crate::test_wait::bounded(
+            concat!(module_path!(), "::child_handle_stop_from_tasks_actor"),
+            move || {
+                use crate::tasks::actor::ActorStart;
+                use tasks_fixtures::Idler;
 
-        let runtime = spawned_rt::tasks::Runtime::new().unwrap();
-        runtime.block_on(async {
-            let actor = Idler.start();
-            let handle = actor.child_handle();
+                let runtime = spawned_rt::tasks::Runtime::new().unwrap();
+                runtime.block_on(async {
+                    let actor = Idler.start();
+                    let handle = actor.child_handle();
 
-            assert!(handle.is_alive());
-            handle.stop();
-            let reason = handle.wait_exit_async().await;
-            assert_eq!(reason, ExitReason::Normal);
-        });
+                    assert!(handle.is_alive());
+                    handle.stop();
+                    let reason = handle.wait_exit_async().await;
+                    assert_eq!(reason, ExitReason::Normal);
+                });
+            },
+        );
     }
 
     #[test]
     #[cfg(feature = "async")]
     fn child_handle_wait_blocking_inside_multithread_runtime() {
-        use crate::tasks::actor::ActorStart;
-        use tasks_fixtures::Idler;
+        crate::test_wait::bounded(
+            concat!(
+                module_path!(),
+                "::child_handle_wait_blocking_inside_multithread_runtime"
+            ),
+            move || {
+                use crate::tasks::actor::ActorStart;
+                use tasks_fixtures::Idler;
 
-        // Multi-thread runtime — wait_exit_blocking should work via block_in_place
-        let runtime = spawned_rt::tasks::Runtime::new().unwrap();
-        runtime.block_on(async {
-            let actor = Idler.start();
-            let handle = actor.child_handle();
-            handle.stop();
+                // Multi-thread runtime — wait_exit_blocking should work via block_in_place
+                let runtime = spawned_rt::tasks::Runtime::new().unwrap();
+                runtime.block_on(async {
+                    let actor = Idler.start();
+                    let handle = actor.child_handle();
+                    handle.stop();
 
-            let reason = handle.wait_exit_blocking();
-            assert_eq!(reason, ExitReason::Normal);
-        });
+                    let reason = handle.wait_exit_blocking();
+                    assert_eq!(reason, ExitReason::Normal);
+                });
+            },
+        );
     }
 
     #[test]
     #[should_panic(expected = "non-multi-thread tokio runtime")]
     #[cfg(feature = "async")]
     fn child_handle_wait_blocking_panics_on_current_thread_runtime() {
-        use crate::tasks::actor::ActorStart;
-        use tasks_fixtures::Idler;
+        crate::test_wait::bounded(
+            concat!(
+                module_path!(),
+                "::child_handle_wait_blocking_panics_on_current_thread_runtime"
+            ),
+            move || {
+                use crate::tasks::actor::ActorStart;
+                use tasks_fixtures::Idler;
 
-        let runtime = ::tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
+                let runtime = ::tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap();
 
-        runtime.block_on(async {
-            let actor = Idler.start();
-            let handle = actor.child_handle();
-            // Calling wait_exit_blocking from within a current-thread runtime
-            // would deadlock the actor task — we panic with a clear message instead.
-            let _ = handle.wait_exit_blocking();
-        });
+                runtime.block_on(async {
+                    let actor = Idler.start();
+                    let handle = actor.child_handle();
+                    // Calling wait_exit_blocking from within a current-thread runtime
+                    // would deadlock the actor task — we panic with a clear message instead.
+                    let _ = handle.wait_exit_blocking();
+                });
+            },
+        );
     }
 
     #[test]
     #[cfg(feature = "async")]
     fn child_handle_wait_blocking_fast_path_on_current_thread_runtime() {
-        use crate::tasks::actor::ActorStart;
-        use tasks_fixtures::Idler;
+        crate::test_wait::bounded(
+            concat!(
+                module_path!(),
+                "::child_handle_wait_blocking_fast_path_on_current_thread_runtime"
+            ),
+            move || {
+                use crate::tasks::actor::ActorStart;
+                use tasks_fixtures::Idler;
 
-        let runtime = ::tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
+                let runtime = ::tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap();
 
-        // Fast path: if the actor has already exited, wait_exit_blocking is safe
-        // even on a current-thread runtime (no actual blocking happens).
-        runtime.block_on(async {
-            let actor = Idler.start();
-            let handle = actor.child_handle();
-            handle.stop();
-            // Wait async first so the actor actually exits
-            let _ = handle.wait_exit_async().await;
-            // Now wait_exit_blocking takes the fast path
-            let reason = handle.wait_exit_blocking();
-            assert_eq!(reason, ExitReason::Normal);
-        });
+                // Fast path: if the actor has already exited, wait_exit_blocking is safe
+                // even on a current-thread runtime (no actual blocking happens).
+                runtime.block_on(async {
+                    let actor = Idler.start();
+                    let handle = actor.child_handle();
+                    handle.stop();
+                    // Wait async first so the actor actually exits
+                    let _ = handle.wait_exit_async().await;
+                    // Now wait_exit_blocking takes the fast path
+                    let reason = handle.wait_exit_blocking();
+                    assert_eq!(reason, ExitReason::Normal);
+                });
+            },
+        );
     }
 
     // --- Panic observation tests ---
 
     #[test]
     fn child_handle_observes_panic_in_threads_actor() {
-        use crate::message::Message;
-        use crate::threads::actor::{Actor, ActorStart, Context, Handler};
+        crate::test_wait::bounded(
+            concat!(
+                module_path!(),
+                "::child_handle_observes_panic_in_threads_actor"
+            ),
+            move || {
+                use crate::message::Message;
+                use crate::threads::actor::{Actor, ActorStart, Context, Handler};
 
-        struct Boomer;
-        struct Boom;
-        impl Message for Boom {
-            type Result = ();
-        }
-        impl Actor for Boomer {}
-        impl Handler<Boom> for Boomer {
-            fn handle(
-                &mut self,
-                _msg: Boom,
-                _reply: crate::reply::PendingReply<'_, ()>,
-                _ctx: &Context<Self>,
-            ) {
-                {
-                    panic!("intentional panic in handler");
+                struct Boomer;
+                struct Boom;
+                impl Message for Boom {
+                    type Result = ();
                 }
-            }
-        }
+                impl Actor for Boomer {}
+                impl Handler<Boom> for Boomer {
+                    fn handle(
+                        &mut self,
+                        _msg: Boom,
+                        _reply: crate::reply::PendingReply<'_, ()>,
+                        _ctx: &Context<Self>,
+                    ) {
+                        {
+                            panic!("intentional panic in handler");
+                        }
+                    }
+                }
 
-        let actor = Boomer.start();
-        let handle = actor.child_handle();
-        let _ = actor.send(Boom);
+                let actor = Boomer.start();
+                let handle = actor.child_handle();
+                let _ = actor.send(Boom);
 
-        let reason = handle.wait_exit_blocking();
-        match reason {
-            ExitReason::Panic(msg) => {
-                assert!(msg.contains("intentional panic in handler"), "got: {msg}");
-            }
-            other => panic!("expected Panic, got {other:?}"),
-        }
-        assert!(!handle.is_alive());
+                let reason = handle.wait_exit_blocking();
+                match reason {
+                    ExitReason::Panic(msg) => {
+                        assert!(msg.contains("intentional panic in handler"), "got: {msg}");
+                    }
+                    other => panic!("expected Panic, got {other:?}"),
+                }
+                assert!(!handle.is_alive());
+            },
+        );
     }
 
     #[test]
     #[cfg(feature = "async")]
     fn child_handle_observes_panic_in_tasks_actor() {
-        use crate::message::Message;
-        use crate::tasks::actor::{Actor, ActorStart, Context, Handler};
+        crate::test_wait::bounded(
+            concat!(
+                module_path!(),
+                "::child_handle_observes_panic_in_tasks_actor"
+            ),
+            move || {
+                use crate::message::Message;
+                use crate::tasks::actor::{Actor, ActorStart, Context, Handler};
 
-        struct Boomer;
-        struct Boom;
-        impl Message for Boom {
-            type Result = ();
-        }
-        impl Actor for Boomer {}
-        impl Handler<Boom> for Boomer {
-            async fn handle(
-                &mut self,
-                _msg: Boom,
-                _reply: crate::reply::PendingReply<'_, ()>,
-                _ctx: &Context<Self>,
-            ) {
-                {
-                    panic!("intentional panic in handler");
+                struct Boomer;
+                struct Boom;
+                impl Message for Boom {
+                    type Result = ();
                 }
-            }
-        }
-
-        let runtime = spawned_rt::tasks::Runtime::new().unwrap();
-        runtime.block_on(async {
-            let actor = Boomer.start();
-            let handle = actor.child_handle();
-            let _ = actor.send(Boom);
-
-            let reason = handle.wait_exit_async().await;
-            match reason {
-                ExitReason::Panic(msg) => {
-                    assert!(msg.contains("intentional panic in handler"), "got: {msg}");
+                impl Actor for Boomer {}
+                impl Handler<Boom> for Boomer {
+                    async fn handle(
+                        &mut self,
+                        _msg: Boom,
+                        _reply: crate::reply::PendingReply<'_, ()>,
+                        _ctx: &Context<Self>,
+                    ) {
+                        {
+                            panic!("intentional panic in handler");
+                        }
+                    }
                 }
-                other => panic!("expected Panic, got {other:?}"),
-            }
-            assert!(!handle.is_alive());
-        });
+
+                let runtime = spawned_rt::tasks::Runtime::new().unwrap();
+                runtime.block_on(async {
+                    let actor = Boomer.start();
+                    let handle = actor.child_handle();
+                    let _ = actor.send(Boom);
+
+                    let reason = handle.wait_exit_async().await;
+                    match reason {
+                        ExitReason::Panic(msg) => {
+                            assert!(msg.contains("intentional panic in handler"), "got: {msg}");
+                        }
+                        other => panic!("expected Panic, got {other:?}"),
+                    }
+                    assert!(!handle.is_alive());
+                });
+            },
+        );
     }
 
     #[test]
     #[cfg(feature = "async")]
     fn child_handle_observes_panic_in_started_callback() {
-        use crate::tasks::actor::{Actor, ActorStart, Context};
+        crate::test_wait::bounded(
+            concat!(
+                module_path!(),
+                "::child_handle_observes_panic_in_started_callback"
+            ),
+            move || {
+                use crate::tasks::actor::{Actor, ActorStart, Context};
 
-        struct PanicStart;
-        impl Actor for PanicStart {
-            async fn started(&mut self, _ctx: &Context<Self>) {
-                panic!("intentional panic in started");
-            }
-        }
-
-        let runtime = spawned_rt::tasks::Runtime::new().unwrap();
-        runtime.block_on(async {
-            let actor = PanicStart.start();
-            let handle = actor.child_handle();
-
-            let reason = handle.wait_exit_async().await;
-            match reason {
-                ExitReason::Panic(msg) => {
-                    assert!(msg.contains("intentional panic in started"), "got: {msg}");
+                struct PanicStart;
+                impl Actor for PanicStart {
+                    async fn started(&mut self, _ctx: &Context<Self>) {
+                        panic!("intentional panic in started");
+                    }
                 }
-                other => panic!("expected Panic, got {other:?}"),
-            }
-        });
+
+                let runtime = spawned_rt::tasks::Runtime::new().unwrap();
+                runtime.block_on(async {
+                    let actor = PanicStart.start();
+                    let handle = actor.child_handle();
+
+                    let reason = handle.wait_exit_async().await;
+                    match reason {
+                        ExitReason::Panic(msg) => {
+                            assert!(msg.contains("intentional panic in started"), "got: {msg}");
+                        }
+                        other => panic!("expected Panic, got {other:?}"),
+                    }
+                });
+            },
+        );
     }
 }
 
@@ -751,47 +814,55 @@ mod closed_completion_tests {
     use crate::link::new_link_table;
     #[test]
     fn closed_without_reason_is_dead_and_all_waits_agree() {
-        #[cfg(not(feature = "async"))]
-        let modes = [true];
-        #[cfg(feature = "async")]
-        let modes = [false, true];
-        for threads in modes {
-            let (tx, rx) = spawned_rt::sync::watch::channel(None);
-            let target = super::tests::test_target(
-                ActorId::next(),
-                spawned_rt::threads::CancellationToken::new(),
-            );
-            let completion = if threads {
-                Completion::Threads(rx)
-            } else {
+        crate::test_wait::bounded(
+            concat!(
+                module_path!(),
+                "::closed_without_reason_is_dead_and_all_waits_agree"
+            ),
+            move || {
                 #[cfg(not(feature = "async"))]
-                unreachable!();
+                let modes = [true];
                 #[cfg(feature = "async")]
-                Completion::Tasks(rx)
-            };
-            let child = ChildHandle::new(target, completion, new_link_table());
-            assert!(child.is_alive());
-            drop(tx);
-            assert_eq!(child.exit_reason(), Some(ExitReason::Killed));
-            assert!(!child.is_alive());
-            assert_eq!(
-                futures::executor::block_on(child.wait_exit_async()),
-                ExitReason::Killed
-            );
-            // Already-exited fast path must not enter another executor or reject
-            // a current-thread runtime merely because no exit value was published.
-            assert_eq!(
-                futures::executor::block_on(async { child.wait_exit_blocking() }),
-                ExitReason::Killed
-            );
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .unwrap();
-            rt.block_on(async {
-                assert_eq!(child.wait_exit_blocking(), ExitReason::Killed);
-            });
-        }
+                let modes = [false, true];
+                for threads in modes {
+                    let (tx, rx) = spawned_rt::sync::watch::channel(None);
+                    let target = super::tests::test_target(
+                        ActorId::next(),
+                        spawned_rt::threads::CancellationToken::new(),
+                    );
+                    let completion = if threads {
+                        Completion::Threads(rx)
+                    } else {
+                        #[cfg(not(feature = "async"))]
+                        unreachable!();
+                        #[cfg(feature = "async")]
+                        Completion::Tasks(rx)
+                    };
+                    let child = ChildHandle::new(target, completion, new_link_table());
+                    assert!(child.is_alive());
+                    drop(tx);
+                    assert_eq!(child.exit_reason(), Some(ExitReason::Killed));
+                    assert!(!child.is_alive());
+                    assert_eq!(
+                        futures::executor::block_on(child.wait_exit_async()),
+                        ExitReason::Killed
+                    );
+                    // Already-exited fast path must not enter another executor or reject
+                    // a current-thread runtime merely because no exit value was published.
+                    assert_eq!(
+                        futures::executor::block_on(async { child.wait_exit_blocking() }),
+                        ExitReason::Killed
+                    );
+                    let rt = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .unwrap();
+                    rt.block_on(async {
+                        assert_eq!(child.wait_exit_blocking(), ExitReason::Killed);
+                    });
+                }
+            },
+        );
     }
     #[test]
     fn closure_preserves_the_final_published_reason() {

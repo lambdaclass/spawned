@@ -155,38 +155,43 @@ mod tests {
 
     #[test]
     fn bounded_with_duplicates_and_purge() {
-        let mut table = PendingReplies::with_capacity(2);
-        let (a, ra) = token();
-        let (b, rb) = token();
-        let (c, rc) = token();
-        let (dup, rdup) = token();
-        table.insert(1, a).unwrap();
-        table.insert(2, b).unwrap();
-        let full = table.insert(3, c).unwrap_err();
-        assert!(matches!(full, InsertError::Full(_)));
-        full.into_inner().overloaded();
-        assert!(matches!(rc.recv(), Err(ActorError::Overloaded)));
-        let duplicate = table.insert(1, dup).unwrap_err();
-        assert!(matches!(duplicate, InsertError::Duplicate(_)));
-        drop(duplicate);
-        assert!(matches!(rdup.recv(), Err(ActorError::ReplyDropped)));
-        // A caller that left frees its entry on the next insert.
-        drop(rb);
-        assert_eq!(
-            table.tokens.len(),
-            2,
-            "terminal tokens stay until an insert"
+        crate::test_wait::bounded(
+            concat!(module_path!(), "::bounded_with_duplicates_and_purge"),
+            move || {
+                let mut table = PendingReplies::with_capacity(2);
+                let (a, ra) = token();
+                let (b, rb) = token();
+                let (c, rc) = token();
+                let (dup, rdup) = token();
+                table.insert(1, a).unwrap();
+                table.insert(2, b).unwrap();
+                let full = table.insert(3, c).unwrap_err();
+                assert!(matches!(full, InsertError::Full(_)));
+                full.into_inner().overloaded();
+                assert!(matches!(rc.recv(), Err(ActorError::Overloaded)));
+                let duplicate = table.insert(1, dup).unwrap_err();
+                assert!(matches!(duplicate, InsertError::Duplicate(_)));
+                drop(duplicate);
+                assert!(matches!(rdup.recv(), Err(ActorError::ReplyDropped)));
+                // A caller that left frees its entry on the next insert.
+                drop(rb);
+                assert_eq!(
+                    table.tokens.len(),
+                    2,
+                    "terminal tokens stay until an insert"
+                );
+                assert_eq!(table.len(), 1);
+                let (d, rd) = token();
+                table.insert(4, d).unwrap();
+                assert_eq!(table.tokens.len(), 2);
+                assert_eq!(table.len(), 2);
+                assert!(table.take(&2).is_none());
+                table.take(&1).unwrap().reply(10);
+                table.take(&4).unwrap().reply(40);
+                assert_eq!(ra.recv().unwrap(), 10);
+                assert_eq!(rd.recv().unwrap(), 40);
+            },
         );
-        assert_eq!(table.len(), 1);
-        let (d, rd) = token();
-        table.insert(4, d).unwrap();
-        assert_eq!(table.tokens.len(), 2);
-        assert_eq!(table.len(), 2);
-        assert!(table.take(&2).is_none());
-        table.take(&1).unwrap().reply(10);
-        table.take(&4).unwrap().reply(40);
-        assert_eq!(ra.recv().unwrap(), 10);
-        assert_eq!(rd.recv().unwrap(), 40);
     }
     /// #261: draining follows insertion order, so two tables built the
     /// same way (in the old `HashMap`, two different `RandomState` seeds)
@@ -237,23 +242,28 @@ mod tests {
     /// caller can answer the token for any reason, known or not.
     #[test]
     fn a_refusal_gives_its_kind_and_its_token() {
-        let mut table = PendingReplies::with_capacity(1);
-        let (a, ra) = token();
-        let (dup, rdup) = token();
-        let (full, rfull) = token();
-        table.insert(1, a).unwrap();
-        let refused = table.insert(1, dup).unwrap_err();
-        assert_eq!(refused.kind(), InsertErrorKind::Duplicate);
-        let (kind, token) = refused.into_parts();
-        assert_eq!(kind, InsertErrorKind::Duplicate);
-        token.overloaded();
-        assert!(matches!(rdup.recv(), Err(ActorError::Overloaded)));
-        let refused = table.insert(2, full).unwrap_err();
-        let (kind, token) = refused.into_parts();
-        assert_eq!(kind, InsertErrorKind::Full);
-        token.reply(9);
-        assert_eq!(rfull.recv().unwrap(), 9);
-        table.take(&1).unwrap().reply(1);
-        assert_eq!(ra.recv().unwrap(), 1);
+        crate::test_wait::bounded(
+            concat!(module_path!(), "::a_refusal_gives_its_kind_and_its_token"),
+            move || {
+                let mut table = PendingReplies::with_capacity(1);
+                let (a, ra) = token();
+                let (dup, rdup) = token();
+                let (full, rfull) = token();
+                table.insert(1, a).unwrap();
+                let refused = table.insert(1, dup).unwrap_err();
+                assert_eq!(refused.kind(), InsertErrorKind::Duplicate);
+                let (kind, token) = refused.into_parts();
+                assert_eq!(kind, InsertErrorKind::Duplicate);
+                token.overloaded();
+                assert!(matches!(rdup.recv(), Err(ActorError::Overloaded)));
+                let refused = table.insert(2, full).unwrap_err();
+                let (kind, token) = refused.into_parts();
+                assert_eq!(kind, InsertErrorKind::Full);
+                token.reply(9);
+                assert_eq!(rfull.recv().unwrap(), 9);
+                table.take(&1).unwrap().reply(1);
+                assert_eq!(ra.recv().unwrap(), 1);
+            },
+        );
     }
 }

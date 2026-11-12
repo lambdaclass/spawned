@@ -678,39 +678,52 @@ mod tests {
     /// return only when that thread woke up and exited.
     #[test]
     fn a_dropped_unused_permit_returns_its_native_slot_at_once() {
-        struct One;
-        impl Actor for One {
-            const MAX_NATIVE_JOBS: Option<usize> = Some(1);
-        }
-        let owner = One.start();
-        let ctx = owner.context();
-        for i in 0..2000 {
-            let permit = ctx
-                .reserve_blocking_job(JobOptions::new())
-                .unwrap_or_else(|e| panic!("reservation {i} refused: {e}"));
-            drop(permit);
-        }
-        ctx.stop();
-        owner.join();
+        crate::test_wait::bounded(
+            concat!(
+                module_path!(),
+                "::a_dropped_unused_permit_returns_its_native_slot_at_once"
+            ),
+            move || {
+                struct One;
+                impl Actor for One {
+                    const MAX_NATIVE_JOBS: Option<usize> = Some(1);
+                }
+                let owner = One.start();
+                let ctx = owner.context();
+                for i in 0..2000 {
+                    let permit = ctx
+                        .reserve_blocking_job(JobOptions::new())
+                        .unwrap_or_else(|e| panic!("reservation {i} refused: {e}"));
+                    drop(permit);
+                }
+                ctx.stop();
+                owner.join();
+            },
+        );
     }
 
     /// Review P1 (Codex 13), threads mode: see the tasks-mode test.
     #[test]
     fn a_refused_emit_returns_its_credit_once() {
-        let owner = Owner.start();
-        for credits in [1, u16::MAX] {
-            let state = JobState::new(owner.id(), credits);
-            let job = JobCtx {
-                state: state.clone(),
-                ctx: owner.context(),
-            };
-            state.acquire_blocking().unwrap();
-            state.cancel();
-            assert_eq!(job.enqueue(Note), Err(JobGone));
-            assert_eq!(state.emit_credits(), credits, "credit returned twice");
-        }
-        owner.context().stop();
-        owner.join();
+        crate::test_wait::bounded(
+            concat!(module_path!(), "::a_refused_emit_returns_its_credit_once"),
+            move || {
+                let owner = Owner.start();
+                for credits in [1, u16::MAX] {
+                    let state = JobState::new(owner.id(), credits);
+                    let job = JobCtx {
+                        state: state.clone(),
+                        ctx: owner.context(),
+                    };
+                    state.acquire_blocking().unwrap();
+                    state.cancel();
+                    assert_eq!(job.enqueue(Note), Err(JobGone));
+                    assert_eq!(state.emit_credits(), credits, "credit returned twice");
+                }
+                owner.context().stop();
+                owner.join();
+            },
+        );
     }
 
     /// `cancel_on_caller_gone` applies to reply jobs only: a plain job has no
@@ -718,16 +731,24 @@ mod tests {
     #[cfg(debug_assertions)]
     #[test]
     fn cancel_on_caller_gone_on_a_plain_job_is_a_bug() {
-        let owner = Owner.start();
-        let ctx = owner.context();
-        let refused = std::panic::catch_unwind(AssertUnwindSafe(|| {
-            ctx.reserve_blocking_job(JobOptions::new().cancel_on_caller_gone())
-                .map(drop)
-        }));
-        assert!(refused.is_err(), "the option was accepted on a plain job");
-        let plain = ctx.reserve_blocking_job(JobOptions::new()).map(drop);
-        assert!(plain.is_ok());
-        ctx.stop();
-        owner.join();
+        crate::test_wait::bounded(
+            concat!(
+                module_path!(),
+                "::cancel_on_caller_gone_on_a_plain_job_is_a_bug"
+            ),
+            move || {
+                let owner = Owner.start();
+                let ctx = owner.context();
+                let refused = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                    ctx.reserve_blocking_job(JobOptions::new().cancel_on_caller_gone())
+                        .map(drop)
+                }));
+                assert!(refused.is_err(), "the option was accepted on a plain job");
+                let plain = ctx.reserve_blocking_job(JobOptions::new()).map(drop);
+                assert!(plain.is_ok());
+                ctx.stop();
+                owner.join();
+            },
+        );
     }
 }

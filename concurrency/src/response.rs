@@ -284,25 +284,35 @@ mod tests {
     #[test]
     #[cfg(feature = "async")]
     fn future_resolves_from_receiver() {
-        let rt = spawned_rt::tasks::Runtime::new().unwrap();
-        rt.block_on(async {
-            let (reply, rx) = crate::reply::reply_pair::<i32>(Deadline::Never);
-            let resp: Response<i32> = Response::from(Ok(rx));
-            reply.reply(99);
-            assert_eq!(resp.await.unwrap(), 99);
-        });
+        crate::test_wait::bounded(
+            concat!(module_path!(), "::future_resolves_from_receiver"),
+            move || {
+                let rt = spawned_rt::tasks::Runtime::new().unwrap();
+                rt.block_on(async {
+                    let (reply, rx) = crate::reply::reply_pair::<i32>(Deadline::Never);
+                    let resp: Response<i32> = Response::from(Ok(rx));
+                    reply.reply(99);
+                    assert_eq!(resp.await.unwrap(), 99);
+                });
+            },
+        );
     }
 
     #[test]
     #[cfg(feature = "async")]
     fn future_err_on_dropped_reply() {
-        let rt = spawned_rt::tasks::Runtime::new().unwrap();
-        rt.block_on(async {
-            let (reply, rx) = crate::reply::reply_pair::<i32>(Deadline::Never);
-            let resp: Response<i32> = Response::from(Ok(rx));
-            drop(reply);
-            assert!(matches!(resp.await, Err(ActorError::ReplyDropped)));
-        });
+        crate::test_wait::bounded(
+            concat!(module_path!(), "::future_err_on_dropped_reply"),
+            move || {
+                let rt = spawned_rt::tasks::Runtime::new().unwrap();
+                rt.block_on(async {
+                    let (reply, rx) = crate::reply::reply_pair::<i32>(Deadline::Never);
+                    let resp: Response<i32> = Response::from(Ok(rx));
+                    drop(reply);
+                    assert!(matches!(resp.await, Err(ActorError::ReplyDropped)));
+                });
+            },
+        );
     }
 
     /// Review footgun (tasks): `actor.query().unwrap()` used to panic on a
@@ -312,34 +322,47 @@ mod tests {
     #[test]
     #[cfg(all(feature = "async", not(spawned_sim)))]
     fn pending_response_waits_off_a_runtime() {
-        let (reply, rx) = crate::reply::reply_pair::<i32>(Deadline::Never);
-        let answer = std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(20));
-            reply.reply(7);
-        });
-        let resp: Response<i32> = Response::from(Ok(rx));
-        assert_eq!(resp.unwrap(), 7);
-        answer.join().unwrap();
+        crate::test_wait::bounded(
+            concat!(module_path!(), "::pending_response_waits_off_a_runtime"),
+            move || {
+                let (reply, rx) = crate::reply::reply_pair::<i32>(Deadline::Never);
+                let answer = std::thread::spawn(move || {
+                    std::thread::sleep(Duration::from_millis(20));
+                    reply.reply(7);
+                });
+                let resp: Response<i32> = Response::from(Ok(rx));
+                assert_eq!(resp.unwrap(), 7);
+                answer.join().unwrap();
 
-        let (reply, rx) = crate::reply::reply_pair::<i32>(Deadline::Never);
-        drop(reply);
-        let resp: Response<i32> = Response::from(Ok(rx));
-        assert!(matches!(resp.into_result(), Err(ActorError::ReplyDropped)));
+                let (reply, rx) = crate::reply::reply_pair::<i32>(Deadline::Never);
+                drop(reply);
+                let resp: Response<i32> = Response::from(Ok(rx));
+                assert!(matches!(resp.into_result(), Err(ActorError::ReplyDropped)));
 
-        let (reply, rx) = crate::reply::reply_pair::<i32>(Deadline::Never);
-        reply.reply(2);
-        assert_eq!(Response::from(Ok(rx)).map(|x| x * 5).unwrap(), 10);
+                let (reply, rx) = crate::reply::reply_pair::<i32>(Deadline::Never);
+                reply.reply(2);
+                assert_eq!(Response::from(Ok(rx)).map(|x| x * 5).unwrap(), 10);
+            },
+        );
     }
 
     #[test]
     #[cfg(all(feature = "async", not(spawned_sim)))]
     #[should_panic(expected = "inside an async runtime")]
     fn pending_response_unwrap_panics_inside_a_runtime() {
-        let rt = spawned_rt::tasks::Runtime::new().unwrap();
-        rt.block_on(async {
-            let (_reply, rx) = crate::reply::reply_pair::<i32>(Deadline::Never);
-            Response::from(Ok(rx)).unwrap();
-        });
+        crate::test_wait::bounded(
+            concat!(
+                module_path!(),
+                "::pending_response_unwrap_panics_inside_a_runtime"
+            ),
+            move || {
+                let rt = spawned_rt::tasks::Runtime::new().unwrap();
+                rt.block_on(async {
+                    let (_reply, rx) = crate::reply::reply_pair::<i32>(Deadline::Never);
+                    Response::from(Ok(rx)).unwrap();
+                });
+            },
+        );
     }
 
     #[test]
@@ -360,13 +383,18 @@ mod tests {
     #[test]
     #[cfg(feature = "async")]
     fn receiver_times_out_at_its_send_deadline() {
-        let rt = spawned_rt::tasks::Runtime::new().unwrap();
-        rt.block_on(async {
-            let (reply, rx) =
-                crate::reply::reply_pair::<i32>(Deadline::after(Duration::from_millis(50)));
-            let resp: Response<i32> = Response::from(Ok(rx));
-            assert!(matches!(resp.await, Err(ActorError::RequestTimeout)));
-            assert_eq!(reply.reply(1), crate::reply::Delivery::Expired);
-        });
+        crate::test_wait::bounded(
+            concat!(module_path!(), "::receiver_times_out_at_its_send_deadline"),
+            move || {
+                let rt = spawned_rt::tasks::Runtime::new().unwrap();
+                rt.block_on(async {
+                    let (reply, rx) =
+                        crate::reply::reply_pair::<i32>(Deadline::after(Duration::from_millis(50)));
+                    let resp: Response<i32> = Response::from(Ok(rx));
+                    assert!(matches!(resp.await, Err(ActorError::RequestTimeout)));
+                    assert_eq!(reply.reply(1), crate::reply::Delivery::Expired);
+                });
+            },
+        );
     }
 }

@@ -84,30 +84,35 @@ impl Handler<GetRepCount> for Repeater {
 
 #[test]
 pub fn test_send_interval_and_cancellation() {
-    let runtime = rt::Runtime::new().unwrap();
-    runtime.block_on(async move {
-        let repeater = Repeater::new(0).start();
+    crate::test_wait::bounded(
+        concat!(module_path!(), "::test_send_interval_and_cancellation"),
+        move || {
+            let runtime = rt::Runtime::new().unwrap();
+            runtime.block_on(async move {
+                let repeater = Repeater::new(0).start();
 
-        // The interval keeps firing.
-        let count = wait_for_async(
-            || repeater.request(GetRepCount),
-            |count| matches!(count, Ok(n) if *n >= 3),
-        )
-        .await
-        .unwrap();
-        assert!(count >= 3, "interval stopped firing at {count}");
+                // The interval keeps firing.
+                let count = wait_for_async(
+                    || repeater.request(GetRepCount),
+                    |count| matches!(count, Ok(n) if *n >= 3),
+                )
+                .await
+                .unwrap();
+                assert!(count >= 3, "interval stopped firing at {count}");
 
-        // StopTimer is handled before the next request. A tick that raced the
-        // cancellation may still land, but no more than one.
-        repeater.send(StopTimer).unwrap();
-        let stopped_at = repeater.request(GetRepCount).await.unwrap();
-        rt::sleep(Duration::from_millis(500)).await;
-        let after = repeater.request(GetRepCount).await.unwrap();
-        assert!(
-            after <= stopped_at + 1,
-            "interval kept firing after cancellation: {stopped_at} -> {after}"
-        );
-    });
+                // StopTimer is handled before the next request. A tick that raced the
+                // cancellation may still land, but no more than one.
+                repeater.send(StopTimer).unwrap();
+                let stopped_at = repeater.request(GetRepCount).await.unwrap();
+                rt::sleep(Duration::from_millis(500)).await;
+                let after = repeater.request(GetRepCount).await.unwrap();
+                assert!(
+                    after <= stopped_at + 1,
+                    "interval kept firing after cancellation: {stopped_at} -> {after}"
+                );
+            });
+        },
+    );
 }
 
 // --- Delayed (send_after test) ---
@@ -178,57 +183,67 @@ impl Handler<StopDelayed> for Delayed {
 
 #[test]
 pub fn test_send_after_and_cancellation() {
-    let runtime = rt::Runtime::new().unwrap();
-    runtime.block_on(async move {
-        let repeater = Delayed::new(0).start();
+    crate::test_wait::bounded(
+        concat!(module_path!(), "::test_send_after_and_cancellation"),
+        move || {
+            let runtime = rt::Runtime::new().unwrap();
+            runtime.block_on(async move {
+                let repeater = Delayed::new(0).start();
 
-        let ctx = repeater.context();
-        let _ = send_after(Duration::from_millis(100), ctx, Inc);
+                let ctx = repeater.context();
+                let _ = send_after(Duration::from_millis(100), ctx, Inc);
 
-        let count = wait_for_async(
-            || repeater.request(GetDelCount),
-            |count| matches!(count, Ok(n) if *n >= 1),
-        )
-        .await
-        .unwrap();
-        assert_eq!(1, count);
+                let count = wait_for_async(
+                    || repeater.request(GetDelCount),
+                    |count| matches!(count, Ok(n) if *n >= 1),
+                )
+                .await
+                .unwrap();
+                assert_eq!(1, count);
 
-        let ctx = repeater.context();
-        let timer = send_after(Duration::from_millis(100), ctx, Inc);
+                let ctx = repeater.context();
+                let timer = send_after(Duration::from_millis(100), ctx, Inc);
 
-        timer.cancellation_token.cancel();
+                timer.cancellation_token.cancel();
 
-        rt::sleep(Duration::from_millis(200)).await;
+                rt::sleep(Duration::from_millis(200)).await;
 
-        let count2 = repeater.request(GetDelCount).await.unwrap();
-        assert_eq!(1, count2);
-    });
+                let count2 = repeater.request(GetDelCount).await.unwrap();
+                assert_eq!(1, count2);
+            });
+        },
+    );
 }
 
 #[test]
 pub fn test_send_after_gen_server_teardown() {
-    let runtime = rt::Runtime::new().unwrap();
-    runtime.block_on(async move {
-        let repeater = Delayed::new(0).start();
+    crate::test_wait::bounded(
+        concat!(module_path!(), "::test_send_after_gen_server_teardown"),
+        move || {
+            let runtime = rt::Runtime::new().unwrap();
+            runtime.block_on(async move {
+                let repeater = Delayed::new(0).start();
 
-        let ctx = repeater.context();
-        let _ = send_after(Duration::from_millis(100), ctx, Inc);
+                let ctx = repeater.context();
+                let _ = send_after(Duration::from_millis(100), ctx, Inc);
 
-        let count = wait_for_async(
-            || repeater.request(GetDelCount),
-            |count| matches!(count, Ok(n) if *n >= 1),
-        )
-        .await
-        .unwrap();
-        assert_eq!(1, count);
+                let count = wait_for_async(
+                    || repeater.request(GetDelCount),
+                    |count| matches!(count, Ok(n) if *n >= 1),
+                )
+                .await
+                .unwrap();
+                assert_eq!(1, count);
 
-        let ctx = repeater.context();
-        let _ = send_after(Duration::from_millis(100), ctx, Inc);
+                let ctx = repeater.context();
+                let _ = send_after(Duration::from_millis(100), ctx, Inc);
 
-        let count2 = repeater.request(StopDelayed).await.unwrap();
+                let count2 = repeater.request(StopDelayed).await.unwrap();
 
-        rt::sleep(Duration::from_millis(200)).await;
+                rt::sleep(Duration::from_millis(200)).await;
 
-        assert_eq!(1, count2);
-    });
+                assert_eq!(1, count2);
+            });
+        },
+    );
 }

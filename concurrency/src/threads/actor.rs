@@ -1639,275 +1639,343 @@ mod tests {
 
     #[test]
     fn basic_send_and_request() {
-        let actor = Counter { count: 0 }.start();
-        assert_eq!(actor.request(GetCount).unwrap(), 0);
-        assert_eq!(actor.request(Increment).unwrap(), 1);
-        // Same mailbox: the request is handled after the send.
-        actor.send(Increment).unwrap();
-        assert_eq!(actor.request(GetCount).unwrap(), 2);
-        actor.request(StopCounter).unwrap();
+        crate::test_wait::bounded(
+            concat!(module_path!(), "::basic_send_and_request"),
+            move || {
+                let actor = Counter { count: 0 }.start();
+                assert_eq!(actor.request(GetCount).unwrap(), 0);
+                assert_eq!(actor.request(Increment).unwrap(), 1);
+                // Same mailbox: the request is handled after the send.
+                actor.send(Increment).unwrap();
+                assert_eq!(actor.request(GetCount).unwrap(), 2);
+                actor.request(StopCounter).unwrap();
+            },
+        );
     }
 
     #[test]
     fn join_waits_for_completion() {
-        struct SlowStop;
-        struct StopSlow;
-        impl Message for StopSlow {
-            type Result = ();
-        }
-        impl Actor for SlowStop {
-            fn stopped(&mut self, _ctx: &Context<Self>) {
-                rt::sleep(Duration::from_millis(300));
-            }
-        }
-        impl Handler<StopSlow> for SlowStop {
-            fn handle(
-                &mut self,
-                _msg: StopSlow,
-                reply: crate::reply::PendingReply<'_, ()>,
-                ctx: &Context<Self>,
-            ) {
-                ctx.stop();
-                reply.reply(());
-            }
-        }
+        crate::test_wait::bounded(
+            concat!(module_path!(), "::join_waits_for_completion"),
+            move || {
+                struct SlowStop;
+                struct StopSlow;
+                impl Message for StopSlow {
+                    type Result = ();
+                }
+                impl Actor for SlowStop {
+                    fn stopped(&mut self, _ctx: &Context<Self>) {
+                        rt::sleep(Duration::from_millis(300));
+                    }
+                }
+                impl Handler<StopSlow> for SlowStop {
+                    fn handle(
+                        &mut self,
+                        _msg: StopSlow,
+                        reply: crate::reply::PendingReply<'_, ()>,
+                        ctx: &Context<Self>,
+                    ) {
+                        ctx.stop();
+                        reply.reply(());
+                    }
+                }
 
-        let actor = SlowStop.start();
-        actor.send(StopSlow).unwrap();
-        actor.join();
-        // If join() returned, stopped() has completed
+                let actor = SlowStop.start();
+                actor.send(StopSlow).unwrap();
+                actor.join();
+                // If join() returned, stopped() has completed
+            },
+        );
     }
 
     #[test]
     fn join_multiple_callers() {
-        struct SlowStop2;
-        struct StopSlow2;
-        impl Message for StopSlow2 {
-            type Result = ();
-        }
-        impl Actor for SlowStop2 {
-            fn stopped(&mut self, _ctx: &Context<Self>) {
-                rt::sleep(Duration::from_millis(200));
-            }
-        }
-        impl Handler<StopSlow2> for SlowStop2 {
-            fn handle(
-                &mut self,
-                _msg: StopSlow2,
-                reply: crate::reply::PendingReply<'_, ()>,
-                ctx: &Context<Self>,
-            ) {
-                ctx.stop();
-                reply.reply(());
-            }
-        }
+        crate::test_wait::bounded(
+            concat!(module_path!(), "::join_multiple_callers"),
+            move || {
+                struct SlowStop2;
+                struct StopSlow2;
+                impl Message for StopSlow2 {
+                    type Result = ();
+                }
+                impl Actor for SlowStop2 {
+                    fn stopped(&mut self, _ctx: &Context<Self>) {
+                        rt::sleep(Duration::from_millis(200));
+                    }
+                }
+                impl Handler<StopSlow2> for SlowStop2 {
+                    fn handle(
+                        &mut self,
+                        _msg: StopSlow2,
+                        reply: crate::reply::PendingReply<'_, ()>,
+                        ctx: &Context<Self>,
+                    ) {
+                        ctx.stop();
+                        reply.reply(());
+                    }
+                }
 
-        let actor = SlowStop2.start();
-        let a1 = actor.clone();
-        let a2 = actor.clone();
-        let t1 = thread::spawn(move || {
-            a1.join();
-            1u32
-        });
-        let t2 = thread::spawn(move || {
-            a2.join();
-            2u32
-        });
-        actor.send(StopSlow2).unwrap();
-        assert_eq!(t1.join().unwrap(), 1);
-        assert_eq!(t2.join().unwrap(), 2);
+                let actor = SlowStop2.start();
+                let a1 = actor.clone();
+                let a2 = actor.clone();
+                let t1 = thread::spawn(move || {
+                    a1.join();
+                    1u32
+                });
+                let t2 = thread::spawn(move || {
+                    a2.join();
+                    2u32
+                });
+                actor.send(StopSlow2).unwrap();
+                assert_eq!(t1.join().unwrap(), 1);
+                assert_eq!(t2.join().unwrap(), 2);
+            },
+        );
     }
 
     #[test]
     fn panic_in_started_stops_actor() {
-        struct PanicOnStart;
-        struct PingThread;
-        impl Message for PingThread {
-            type Result = ();
-        }
-        impl Actor for PanicOnStart {
-            fn started(&mut self, _ctx: &Context<Self>) {
-                panic!("boom in started");
-            }
-        }
-        impl Handler<PingThread> for PanicOnStart {
-            fn handle(
-                &mut self,
-                _msg: PingThread,
-                reply: crate::reply::PendingReply<'_, ()>,
-                _ctx: &Context<Self>,
-            ) {
-                reply.reply(());
-            }
-        }
+        crate::test_wait::bounded(
+            concat!(module_path!(), "::panic_in_started_stops_actor"),
+            move || {
+                struct PanicOnStart;
+                struct PingThread;
+                impl Message for PingThread {
+                    type Result = ();
+                }
+                impl Actor for PanicOnStart {
+                    fn started(&mut self, _ctx: &Context<Self>) {
+                        panic!("boom in started");
+                    }
+                }
+                impl Handler<PingThread> for PanicOnStart {
+                    fn handle(
+                        &mut self,
+                        _msg: PingThread,
+                        reply: crate::reply::PendingReply<'_, ()>,
+                        _ctx: &Context<Self>,
+                    ) {
+                        reply.reply(());
+                    }
+                }
 
-        let actor = PanicOnStart.start();
-        actor.join();
-        let result = actor.send(PingThread);
-        assert!(result.is_err());
+                let actor = PanicOnStart.start();
+                actor.join();
+                let result = actor.send(PingThread);
+                assert!(result.is_err());
+            },
+        );
     }
 
     #[test]
     fn panic_in_handler_stops_actor() {
-        struct PanicOnMsg;
-        struct ExplodeThread;
-        impl Message for ExplodeThread {
-            type Result = ();
-        }
-        struct CheckThread;
-        impl Message for CheckThread {
-            type Result = u32;
-        }
-        impl Actor for PanicOnMsg {}
-        impl Handler<ExplodeThread> for PanicOnMsg {
-            fn handle(
-                &mut self,
-                _msg: ExplodeThread,
-                _reply: crate::reply::PendingReply<'_, ()>,
-                _ctx: &Context<Self>,
-            ) {
-                {
-                    panic!("boom in handler");
+        crate::test_wait::bounded(
+            concat!(module_path!(), "::panic_in_handler_stops_actor"),
+            move || {
+                struct PanicOnMsg;
+                struct ExplodeThread;
+                impl Message for ExplodeThread {
+                    type Result = ();
                 }
-            }
-        }
-        impl Handler<CheckThread> for PanicOnMsg {
-            fn handle(
-                &mut self,
-                _msg: CheckThread,
-                reply: crate::reply::PendingReply<'_, u32>,
-                _ctx: &Context<Self>,
-            ) {
-                reply.reply(42);
-            }
-        }
+                struct CheckThread;
+                impl Message for CheckThread {
+                    type Result = u32;
+                }
+                impl Actor for PanicOnMsg {}
+                impl Handler<ExplodeThread> for PanicOnMsg {
+                    fn handle(
+                        &mut self,
+                        _msg: ExplodeThread,
+                        _reply: crate::reply::PendingReply<'_, ()>,
+                        _ctx: &Context<Self>,
+                    ) {
+                        {
+                            panic!("boom in handler");
+                        }
+                    }
+                }
+                impl Handler<CheckThread> for PanicOnMsg {
+                    fn handle(
+                        &mut self,
+                        _msg: CheckThread,
+                        reply: crate::reply::PendingReply<'_, u32>,
+                        _ctx: &Context<Self>,
+                    ) {
+                        reply.reply(42);
+                    }
+                }
 
-        let actor = PanicOnMsg.start();
-        actor.send(ExplodeThread).unwrap();
-        actor.join();
-        let result = actor.request(CheckThread);
-        assert!(result.is_err());
+                let actor = PanicOnMsg.start();
+                actor.send(ExplodeThread).unwrap();
+                actor.join();
+                let result = actor.request(CheckThread);
+                assert!(result.is_err());
+            },
+        );
     }
 
     #[test]
     fn panic_in_stopped_still_completes() {
-        struct PanicOnStop;
-        struct StopMeThread;
-        impl Message for StopMeThread {
-            type Result = ();
-        }
-        impl Actor for PanicOnStop {
-            fn stopped(&mut self, _ctx: &Context<Self>) {
-                panic!("boom in stopped");
-            }
-        }
-        impl Handler<StopMeThread> for PanicOnStop {
-            fn handle(
-                &mut self,
-                _msg: StopMeThread,
-                reply: crate::reply::PendingReply<'_, ()>,
-                ctx: &Context<Self>,
-            ) {
-                ctx.stop();
-                reply.reply(());
-            }
-        }
+        crate::test_wait::bounded(
+            concat!(module_path!(), "::panic_in_stopped_still_completes"),
+            move || {
+                struct PanicOnStop;
+                struct StopMeThread;
+                impl Message for StopMeThread {
+                    type Result = ();
+                }
+                impl Actor for PanicOnStop {
+                    fn stopped(&mut self, _ctx: &Context<Self>) {
+                        panic!("boom in stopped");
+                    }
+                }
+                impl Handler<StopMeThread> for PanicOnStop {
+                    fn handle(
+                        &mut self,
+                        _msg: StopMeThread,
+                        reply: crate::reply::PendingReply<'_, ()>,
+                        ctx: &Context<Self>,
+                    ) {
+                        ctx.stop();
+                        reply.reply(());
+                    }
+                }
 
-        let actor = PanicOnStop.start();
-        actor.send(StopMeThread).unwrap();
-        actor.join();
+                let actor = PanicOnStop.start();
+                actor.send(StopMeThread).unwrap();
+                actor.join();
+            },
+        );
     }
 
     #[test]
     fn recipient_type_erasure() {
-        let actor = Counter { count: 42 }.start();
-        let recipient: Recipient<GetCount> = actor.recipient();
-        let result = request(&*recipient, GetCount, Duration::from_secs(5)).unwrap();
-        assert_eq!(result, 42);
+        crate::test_wait::bounded(
+            concat!(module_path!(), "::recipient_type_erasure"),
+            move || {
+                let actor = Counter { count: 42 }.start();
+                let recipient: Recipient<GetCount> = actor.recipient();
+                let result = request(&*recipient, GetCount, Duration::from_secs(5)).unwrap();
+                assert_eq!(result, 42);
+            },
+        );
     }
 
     #[test]
     fn send_message_on_delivers() {
-        let actor = Counter { count: 0 }.start();
-        let ctx = actor.context();
-        send_message_on(ctx, || rt::sleep(Duration::from_millis(10)), Increment);
-        let count =
-            crate::test_wait::wait_for(|| actor.request(GetCount), |c| matches!(c, Ok(1))).unwrap();
-        assert_eq!(count, 1);
+        crate::test_wait::bounded(
+            concat!(module_path!(), "::send_message_on_delivers"),
+            move || {
+                let actor = Counter { count: 0 }.start();
+                let ctx = actor.context();
+                send_message_on(ctx, || rt::sleep(Duration::from_millis(10)), Increment);
+                let count =
+                    crate::test_wait::wait_for(|| actor.request(GetCount), |c| matches!(c, Ok(1)))
+                        .unwrap();
+                assert_eq!(count, 1);
+            },
+        );
     }
 
     // --- ExitReason tests ---
 
     #[test]
     fn exit_reason_normal_on_clean_stop() {
-        let actor = Counter { count: 0 }.start();
-        actor.request(StopCounter).unwrap();
-        let reason = actor.wait_exit();
-        assert!(matches!(reason, ExitReason::Normal));
+        crate::test_wait::bounded(
+            concat!(module_path!(), "::exit_reason_normal_on_clean_stop"),
+            move || {
+                let actor = Counter { count: 0 }.start();
+                actor.request(StopCounter).unwrap();
+                let reason = actor.wait_exit();
+                assert!(matches!(reason, ExitReason::Normal));
+            },
+        );
     }
 
     #[test]
     fn exit_reason_panic_in_started() {
-        struct PanicStartThread;
-        struct PingThread2;
-        impl Message for PingThread2 {
-            type Result = ();
-        }
-        impl Actor for PanicStartThread {
-            fn started(&mut self, _ctx: &Context<Self>) {
-                panic!("boom in started");
-            }
-        }
-        impl Handler<PingThread2> for PanicStartThread {
-            fn handle(
-                &mut self,
-                _msg: PingThread2,
-                reply: crate::reply::PendingReply<'_, ()>,
-                _ctx: &Context<Self>,
-            ) {
-                reply.reply(());
-            }
-        }
+        crate::test_wait::bounded(
+            concat!(module_path!(), "::exit_reason_panic_in_started"),
+            move || {
+                struct PanicStartThread;
+                struct PingThread2;
+                impl Message for PingThread2 {
+                    type Result = ();
+                }
+                impl Actor for PanicStartThread {
+                    fn started(&mut self, _ctx: &Context<Self>) {
+                        panic!("boom in started");
+                    }
+                }
+                impl Handler<PingThread2> for PanicStartThread {
+                    fn handle(
+                        &mut self,
+                        _msg: PingThread2,
+                        reply: crate::reply::PendingReply<'_, ()>,
+                        _ctx: &Context<Self>,
+                    ) {
+                        reply.reply(());
+                    }
+                }
 
-        let actor = PanicStartThread.start();
-        let reason = actor.wait_exit();
-        assert!(matches!(reason, ExitReason::Panic(ref msg) if msg.contains("boom in started")));
+                let actor = PanicStartThread.start();
+                let reason = actor.wait_exit();
+                assert!(
+                    matches!(reason, ExitReason::Panic(ref msg) if msg.contains("boom in started"))
+                );
+            },
+        );
     }
 
     #[test]
     fn exit_reason_panic_in_handler() {
-        struct PanicHandlerThread;
-        struct ExplodeThread2;
-        impl Message for ExplodeThread2 {
-            type Result = ();
-        }
-        impl Actor for PanicHandlerThread {}
-        impl Handler<ExplodeThread2> for PanicHandlerThread {
-            fn handle(
-                &mut self,
-                _msg: ExplodeThread2,
-                _reply: crate::reply::PendingReply<'_, ()>,
-                _ctx: &Context<Self>,
-            ) {
-                {
-                    panic!("boom in handler");
+        crate::test_wait::bounded(
+            concat!(module_path!(), "::exit_reason_panic_in_handler"),
+            move || {
+                struct PanicHandlerThread;
+                struct ExplodeThread2;
+                impl Message for ExplodeThread2 {
+                    type Result = ();
                 }
-            }
-        }
+                impl Actor for PanicHandlerThread {}
+                impl Handler<ExplodeThread2> for PanicHandlerThread {
+                    fn handle(
+                        &mut self,
+                        _msg: ExplodeThread2,
+                        _reply: crate::reply::PendingReply<'_, ()>,
+                        _ctx: &Context<Self>,
+                    ) {
+                        {
+                            panic!("boom in handler");
+                        }
+                    }
+                }
 
-        let actor = PanicHandlerThread.start();
-        let _ = actor.send(ExplodeThread2);
-        let reason = actor.wait_exit();
-        assert!(matches!(reason, ExitReason::Panic(ref msg) if msg.contains("boom in handler")));
+                let actor = PanicHandlerThread.start();
+                let _ = actor.send(ExplodeThread2);
+                let reason = actor.wait_exit();
+                assert!(
+                    matches!(reason, ExitReason::Panic(ref msg) if msg.contains("boom in handler"))
+                );
+            },
+        );
     }
 
     #[test]
     fn exit_reason_poll_returns_none_while_running() {
-        let actor = Counter { count: 0 }.start();
-        assert!(actor.exit_reason().is_none());
-        actor.request(StopCounter).unwrap();
-        actor.join();
-        assert!(actor.exit_reason().is_some());
+        crate::test_wait::bounded(
+            concat!(
+                module_path!(),
+                "::exit_reason_poll_returns_none_while_running"
+            ),
+            move || {
+                let actor = Counter { count: 0 }.start();
+                assert!(actor.exit_reason().is_none());
+                actor.request(StopCounter).unwrap();
+                actor.join();
+                assert!(actor.exit_reason().is_some());
+            },
+        );
     }
 
     // --- Monitor tests ---
@@ -2005,22 +2073,30 @@ mod tests {
 
     #[test]
     fn monitor_running_actor_delivers_down_on_exit() {
-        let target = Counter { count: 0 }.start();
-        let target_handle = target.child_handle();
-        let watcher = make_watcher();
+        crate::test_wait::bounded(
+            concat!(
+                module_path!(),
+                "::monitor_running_actor_delivers_down_on_exit"
+            ),
+            move || {
+                let target = Counter { count: 0 }.start();
+                let target_handle = target.child_handle();
+                let watcher = make_watcher();
 
-        let monitor_ref = watcher.request(StartMonitor(target_handle)).unwrap();
+                let monitor_ref = watcher.request(StartMonitor(target_handle)).unwrap();
 
-        target.request(StopCounter).unwrap();
-        target.join();
-        let downs = crate::test_wait::wait_for(
-            || watcher.request(GetDowns),
-            |downs| downs.as_ref().map_or(true, |d| !d.is_empty()),
-        )
-        .unwrap();
-        assert_eq!(downs.len(), 1);
-        assert_eq!(downs[0].monitor_ref, monitor_ref);
-        assert!(matches!(downs[0].reason, ExitReason::Normal));
+                target.request(StopCounter).unwrap();
+                target.join();
+                let downs = crate::test_wait::wait_for(
+                    || watcher.request(GetDowns),
+                    |downs| downs.as_ref().map_or(true, |d| !d.is_empty()),
+                )
+                .unwrap();
+                assert_eq!(downs.len(), 1);
+                assert_eq!(downs[0].monitor_ref, monitor_ref);
+                assert!(matches!(downs[0].reason, ExitReason::Normal));
+            },
+        );
     }
 
     /// OTP `demonitor(Ref, [flush])`: a `Down` already in the mailbox
@@ -2028,112 +2104,146 @@ mod tests {
     /// never handled once `demonitor` returned.
     #[test]
     fn demonitor_flushes_a_queued_down() {
-        let target = Counter { count: 0 }.start();
-        target.request(StopCounter).unwrap();
-        target.join();
-        let watcher = make_watcher();
-        watcher
-            .request(MonitorThenDemonitor(target.child_handle()))
-            .unwrap();
-        // FIFO: the queued Down is dispatched before this request.
-        let downs = watcher.request(GetDowns).unwrap();
-        assert!(downs.is_empty(), "a flushed Down was handled: {downs:?}");
+        crate::test_wait::bounded(
+            concat!(module_path!(), "::demonitor_flushes_a_queued_down"),
+            move || {
+                let target = Counter { count: 0 }.start();
+                target.request(StopCounter).unwrap();
+                target.join();
+                let watcher = make_watcher();
+                watcher
+                    .request(MonitorThenDemonitor(target.child_handle()))
+                    .unwrap();
+                // FIFO: the queued Down is dispatched before this request.
+                let downs = watcher.request(GetDowns).unwrap();
+                assert!(downs.is_empty(), "a flushed Down was handled: {downs:?}");
+            },
+        );
     }
 
     #[test]
     fn monitor_already_dead_actor_delivers_down_immediately() {
-        let target = Counter { count: 0 }.start();
-        target.request(StopCounter).unwrap();
-        target.join();
-        let target_handle = target.child_handle();
+        crate::test_wait::bounded(
+            concat!(
+                module_path!(),
+                "::monitor_already_dead_actor_delivers_down_immediately"
+            ),
+            move || {
+                let target = Counter { count: 0 }.start();
+                target.request(StopCounter).unwrap();
+                target.join();
+                let target_handle = target.child_handle();
 
-        let watcher = make_watcher();
-        let _ = watcher.request(StartMonitor(target_handle)).unwrap();
-        let downs = crate::test_wait::wait_for(
-            || watcher.request(GetDowns),
-            |downs| downs.as_ref().map_or(true, |d| !d.is_empty()),
-        )
-        .unwrap();
-        assert_eq!(downs.len(), 1);
+                let watcher = make_watcher();
+                let _ = watcher.request(StartMonitor(target_handle)).unwrap();
+                let downs = crate::test_wait::wait_for(
+                    || watcher.request(GetDowns),
+                    |downs| downs.as_ref().map_or(true, |d| !d.is_empty()),
+                )
+                .unwrap();
+                assert_eq!(downs.len(), 1);
+            },
+        );
     }
 
     #[test]
     fn demonitor_before_target_dies_suppresses_down() {
-        let target = Counter { count: 0 }.start();
-        let target_handle = target.child_handle();
-        let watcher = make_watcher();
+        crate::test_wait::bounded(
+            concat!(
+                module_path!(),
+                "::demonitor_before_target_dies_suppresses_down"
+            ),
+            move || {
+                let target = Counter { count: 0 }.start();
+                let target_handle = target.child_handle();
+                let watcher = make_watcher();
 
-        let monitor_ref = watcher.request(StartMonitor(target_handle)).unwrap();
-        watcher.request(CallDemonitor(monitor_ref)).unwrap();
+                let monitor_ref = watcher.request(StartMonitor(target_handle)).unwrap();
+                watcher.request(CallDemonitor(monitor_ref)).unwrap();
 
-        target.request(StopCounter).unwrap();
-        target.join();
-        rt::sleep(Duration::from_millis(150));
+                target.request(StopCounter).unwrap();
+                target.join();
+                rt::sleep(Duration::from_millis(150));
 
-        let downs = watcher.request(GetDowns).unwrap();
-        assert!(downs.is_empty());
+                let downs = watcher.request(GetDowns).unwrap();
+                assert!(downs.is_empty());
+            },
+        );
     }
 
     #[test]
     fn multiple_monitors_each_get_own_ref_and_down() {
-        let target = Counter { count: 0 }.start();
-        let target_handle = target.child_handle();
-        let watcher = make_watcher();
+        crate::test_wait::bounded(
+            concat!(
+                module_path!(),
+                "::multiple_monitors_each_get_own_ref_and_down"
+            ),
+            move || {
+                let target = Counter { count: 0 }.start();
+                let target_handle = target.child_handle();
+                let watcher = make_watcher();
 
-        let r1 = watcher
-            .request(StartMonitor(target_handle.clone()))
-            .unwrap();
-        let r2 = watcher.request(StartMonitor(target_handle)).unwrap();
-        assert_ne!(r1, r2);
+                let r1 = watcher
+                    .request(StartMonitor(target_handle.clone()))
+                    .unwrap();
+                let r2 = watcher.request(StartMonitor(target_handle)).unwrap();
+                assert_ne!(r1, r2);
 
-        target.request(StopCounter).unwrap();
-        target.join();
-        let downs = crate::test_wait::wait_for(
-            || watcher.request(GetDowns),
-            |downs| downs.as_ref().map_or(true, |d| d.len() >= 2),
-        )
-        .unwrap();
-        assert_eq!(downs.len(), 2);
-        let refs: Vec<_> = downs.iter().map(|d| d.monitor_ref).collect();
-        assert!(refs.contains(&r1));
-        assert!(refs.contains(&r2));
+                target.request(StopCounter).unwrap();
+                target.join();
+                let downs = crate::test_wait::wait_for(
+                    || watcher.request(GetDowns),
+                    |downs| downs.as_ref().map_or(true, |d| d.len() >= 2),
+                )
+                .unwrap();
+                assert_eq!(downs.len(), 2);
+                let refs: Vec<_> = downs.iter().map(|d| d.monitor_ref).collect();
+                assert!(refs.contains(&r1));
+                assert!(refs.contains(&r2));
+            },
+        );
     }
 
     #[test]
     fn monitor_observes_panic_reason() {
-        struct PanicMsg;
-        impl Message for PanicMsg {
-            type Result = ();
-        }
-        struct PanicMe;
-        impl Actor for PanicMe {}
-        impl Handler<PanicMsg> for PanicMe {
-            fn handle(
-                &mut self,
-                _msg: PanicMsg,
-                _reply: crate::reply::PendingReply<'_, ()>,
-                _ctx: &Context<Self>,
-            ) {
-                {
-                    panic!("intentional panic");
+        crate::test_wait::bounded(
+            concat!(module_path!(), "::monitor_observes_panic_reason"),
+            move || {
+                struct PanicMsg;
+                impl Message for PanicMsg {
+                    type Result = ();
                 }
-            }
-        }
+                struct PanicMe;
+                impl Actor for PanicMe {}
+                impl Handler<PanicMsg> for PanicMe {
+                    fn handle(
+                        &mut self,
+                        _msg: PanicMsg,
+                        _reply: crate::reply::PendingReply<'_, ()>,
+                        _ctx: &Context<Self>,
+                    ) {
+                        {
+                            panic!("intentional panic");
+                        }
+                    }
+                }
 
-        let target = PanicMe.start();
-        let target_handle = target.child_handle();
-        let watcher = make_watcher();
+                let target = PanicMe.start();
+                let target_handle = target.child_handle();
+                let watcher = make_watcher();
 
-        let _ = watcher.request(StartMonitor(target_handle)).unwrap();
-        let _ = target.send(PanicMsg);
+                let _ = watcher.request(StartMonitor(target_handle)).unwrap();
+                let _ = target.send(PanicMsg);
 
-        let downs = crate::test_wait::wait_for(
-            || watcher.request(GetDowns),
-            |downs| downs.as_ref().map_or(true, |d| !d.is_empty()),
-        )
-        .unwrap();
-        assert_eq!(downs.len(), 1);
-        assert!(matches!(downs[0].reason, ExitReason::Panic(_)));
+                let downs = crate::test_wait::wait_for(
+                    || watcher.request(GetDowns),
+                    |downs| downs.as_ref().map_or(true, |d| !d.is_empty()),
+                )
+                .unwrap();
+                assert_eq!(downs.len(), 1);
+                assert!(matches!(downs[0].reason, ExitReason::Panic(_)));
+            },
+        );
     }
 
     // --- Link tests ---
@@ -2194,105 +2304,126 @@ mod tests {
 
     #[test]
     fn link_propagates_panic_to_non_trapping_peer_threads() {
-        struct Boom;
-        impl Message for Boom {
-            type Result = ();
-        }
-        impl Handler<Boom> for TrapActor {
-            fn handle(
-                &mut self,
-                _msg: Boom,
-                _reply: crate::reply::PendingReply<'_, ()>,
-                _ctx: &Context<Self>,
-            ) {
-                {
-                    panic!("boom");
+        crate::test_wait::bounded(
+            concat!(
+                module_path!(),
+                "::link_propagates_panic_to_non_trapping_peer_threads"
+            ),
+            move || {
+                struct Boom;
+                impl Message for Boom {
+                    type Result = ();
                 }
-            }
-        }
+                impl Handler<Boom> for TrapActor {
+                    fn handle(
+                        &mut self,
+                        _msg: Boom,
+                        _reply: crate::reply::PendingReply<'_, ()>,
+                        _ctx: &Context<Self>,
+                    ) {
+                        {
+                            panic!("boom");
+                        }
+                    }
+                }
 
-        let a = make_trapper(false);
-        let b = make_trapper(false);
-        a.request(LinkTo(b.child_handle())).unwrap();
+                let a = make_trapper(false);
+                let b = make_trapper(false);
+                a.request(LinkTo(b.child_handle())).unwrap();
 
-        let _ = a.send(Boom);
-        let reason_a = a.wait_exit();
-        let reason_b = b.wait_exit();
-        assert!(matches!(reason_a, ExitReason::Panic(_)));
-        assert!(matches!(reason_b, ExitReason::Panic(_)));
+                let _ = a.send(Boom);
+                let reason_a = a.wait_exit();
+                let reason_b = b.wait_exit();
+                assert!(matches!(reason_a, ExitReason::Panic(_)));
+                assert!(matches!(reason_b, ExitReason::Panic(_)));
+            },
+        );
     }
 
     #[test]
     fn link_delivers_exit_to_trapping_peer_threads() {
-        struct Boom;
-        impl Message for Boom {
-            type Result = ();
-        }
-        impl Handler<Boom> for TrapActor {
-            fn handle(
-                &mut self,
-                _msg: Boom,
-                _reply: crate::reply::PendingReply<'_, ()>,
-                _ctx: &Context<Self>,
-            ) {
-                {
-                    panic!("boom");
+        crate::test_wait::bounded(
+            concat!(
+                module_path!(),
+                "::link_delivers_exit_to_trapping_peer_threads"
+            ),
+            move || {
+                struct Boom;
+                impl Message for Boom {
+                    type Result = ();
                 }
-            }
-        }
+                impl Handler<Boom> for TrapActor {
+                    fn handle(
+                        &mut self,
+                        _msg: Boom,
+                        _reply: crate::reply::PendingReply<'_, ()>,
+                        _ctx: &Context<Self>,
+                    ) {
+                        {
+                            panic!("boom");
+                        }
+                    }
+                }
 
-        let a = make_trapper(false);
-        let b = make_trapper(true);
-        b.request(LinkTo(a.child_handle())).unwrap();
+                let a = make_trapper(false);
+                let b = make_trapper(true);
+                b.request(LinkTo(a.child_handle())).unwrap();
 
-        let _ = a.send(Boom);
-        a.wait_exit();
-        let exits = crate::test_wait::wait_for(
-            || b.request(GetExits),
-            |exits| exits.as_ref().map_or(true, |e| !e.is_empty()),
-        )
-        .unwrap();
-        assert!(b.exit_reason().is_none());
-        assert_eq!(exits.len(), 1);
-        assert_eq!(exits[0].from, a.id());
-        assert!(matches!(exits[0].reason, ExitReason::Panic(_)));
+                let _ = a.send(Boom);
+                a.wait_exit();
+                let exits = crate::test_wait::wait_for(
+                    || b.request(GetExits),
+                    |exits| exits.as_ref().map_or(true, |e| !e.is_empty()),
+                )
+                .unwrap();
+                assert!(b.exit_reason().is_none());
+                assert_eq!(exits.len(), 1);
+                assert_eq!(exits[0].from, a.id());
+                assert!(matches!(exits[0].reason, ExitReason::Panic(_)));
 
-        let bh = b.child_handle();
-        bh.stop();
-        bh.wait_exit_blocking();
+                let bh = b.child_handle();
+                bh.stop();
+                bh.wait_exit_blocking();
+            },
+        );
     }
 
     #[test]
     fn start_linked_threads() {
-        struct Parent;
-        struct PanicParent;
-        impl Message for PanicParent {
-            type Result = ();
-        }
-        impl Actor for Parent {}
-        impl Handler<PanicParent> for Parent {
-            fn handle(
-                &mut self,
-                _msg: PanicParent,
-                _reply: crate::reply::PendingReply<'_, ()>,
-                _ctx: &Context<Self>,
-            ) {
-                {
-                    panic!("parent boom");
+        crate::test_wait::bounded(
+            concat!(module_path!(), "::start_linked_threads"),
+            move || {
+                struct Parent;
+                struct PanicParent;
+                impl Message for PanicParent {
+                    type Result = ();
                 }
-            }
-        }
+                impl Actor for Parent {}
+                impl Handler<PanicParent> for Parent {
+                    fn handle(
+                        &mut self,
+                        _msg: PanicParent,
+                        _reply: crate::reply::PendingReply<'_, ()>,
+                        _ctx: &Context<Self>,
+                    ) {
+                        {
+                            panic!("parent boom");
+                        }
+                    }
+                }
 
-        struct Child;
-        impl Actor for Child {}
+                struct Child;
+                impl Actor for Child {}
 
-        let parent = Parent.start();
-        let child = Child.start_linked(&parent.context());
+                let parent = Parent.start();
+                let child = Child.start_linked(&parent.context());
 
-        let _ = parent.send(PanicParent);
-        parent.wait_exit();
-        let reason = child.wait_exit();
-        assert!(matches!(reason, ExitReason::Panic(_)));
+                let _ = parent.send(PanicParent);
+                parent.wait_exit();
+                let reason = child.wait_exit();
+                assert!(matches!(reason, ExitReason::Panic(_)));
+            },
+        );
     }
 }
 
@@ -2313,20 +2444,28 @@ mod monitor_cleanup_regressions {
     }
     #[test]
     fn closed_monitor_table_rejects_late_registration() {
-        let observer = Idle.start();
-        let target = Idle.start();
-        // Model cleanup during an unexpected unwind before token cancellation.
-        drop(MonitorCleanup(observer.monitors.clone()));
-        let child = target.child_handle();
-        let waiter = child.lifetime_probe();
-        observer.context().monitor(&child);
-        drop(child);
-        assert_eq!(waiter.strong_count(), 0);
-        assert!(observer.monitors.lock().unwrap().is_none());
-        observer.child_handle().stop();
-        target.child_handle().stop();
-        observer.join();
-        target.join();
+        crate::test_wait::bounded(
+            concat!(
+                module_path!(),
+                "::closed_monitor_table_rejects_late_registration"
+            ),
+            move || {
+                let observer = Idle.start();
+                let target = Idle.start();
+                // Model cleanup during an unexpected unwind before token cancellation.
+                drop(MonitorCleanup(observer.monitors.clone()));
+                let child = target.child_handle();
+                let waiter = child.lifetime_probe();
+                observer.context().monitor(&child);
+                drop(child);
+                assert_eq!(waiter.strong_count(), 0);
+                assert!(observer.monitors.lock().unwrap().is_none());
+                observer.child_handle().stop();
+                target.child_handle().stop();
+                observer.join();
+                target.join();
+            },
+        );
     }
     fn check_cleanup(stop_owner: bool) {
         let target = Idle.start();
@@ -2380,9 +2519,14 @@ mod early_stop_regression {
     }
     #[test]
     fn panic_during_early_stop_is_reported() {
-        let actor = EarlyStop.start();
-        assert!(
-            matches!(actor.wait_exit(), ExitReason::Panic(message) if message.contains("cleanup failed"))
+        crate::test_wait::bounded(
+            concat!(module_path!(), "::panic_during_early_stop_is_reported"),
+            move || {
+                let actor = EarlyStop.start();
+                assert!(
+                    matches!(actor.wait_exit(), ExitReason::Panic(message) if message.contains("cleanup failed"))
+                );
+            },
         );
     }
 }
@@ -2431,89 +2575,104 @@ mod idle_stop_regression {
     }
     #[test]
     fn stop_while_receiving_does_not_dispatch_a_later_request() {
-        let (tx, rx) = mpsc::channel();
-        let token = CancellationToken::new();
-        let (_, completion_rx) = spawned_rt::sync::watch::channel(None);
-        let monitors = Arc::new(Mutex::new(Some(HashMap::new())));
-        let events = Arc::new(Mutex::new(Vec::new()));
-        let (id, trap, request) = (
-            ActorId::next(),
-            new_trap_exit_flag(),
-            new_linked_exit_reason(),
-        );
-        let ctx = Context {
-            id,
-            sender: tx.clone(),
-            cancellation_token: token.clone(),
-            completion: completion_rx,
-            monitors: monitors.clone(),
-            trap_exit: trap.clone(),
-            links: new_link_table(),
-            linked_reason: request.clone(),
-            signal: signal_target::<_>(id, None, &tx, trap.clone(), request.clone(), token.clone()),
-            mailbox: crate::instrumentation::Mailbox::default(),
-            replies: Registry::new(ActorId::next(), DEFAULT_MAX_OUTSTANDING),
-            jobs: Arc::new(crate::reply::jobs::JobSet::new(ActorId::next(), 1)),
-            cleaned: Arc::default(),
-        };
-        let count = Arc::new(AtomicUsize::new(0));
-        let seen = count.clone();
-        let entered = Arc::new(Barrier::new(2));
-        let release = Arc::new(Barrier::new(2));
-        let (e, r) = (entered.clone(), release.clone());
-        let cancel = token.clone();
-        let trace = events.clone();
-        let actor = std::thread::spawn(move || {
-            let mut first = true;
-            let mut counter = Counter(seen, trace);
-            // The envelope received after the stop comes back undispatched;
-            // the death point answers it and destroys it before the state.
-            let discarded = run_actor_receiving(
-                &mut counter,
-                ctx,
-                move || {
-                    // Pause the real receive boundary after the started/cancel
-                    // checks; the standard channel still carries the envelope.
-                    if first {
-                        first = false;
-                        e.wait();
-                        r.wait();
-                    }
-                    rx.recv_timeout(Duration::from_secs(5))
-                },
-                cancel,
-            );
-            drop(discarded);
-            drop(counter);
-        });
-        entered.wait();
-        let (slot, response) = reply_slot(crate::reply::Deadline::Never, None);
-        tx.send(MailboxItem::Message(Box::new(MessageEnvelope {
-            msg: Increment(events.clone(), monitors),
-            slot,
-            #[cfg(feature = "metrics")]
-            observation: None,
-            #[cfg(feature = "lifecycle-trace")]
-            from: 0,
-        })))
-        .unwrap();
-        token.cancel();
-        release.wait();
-        actor.join().unwrap();
-        assert_eq!(
-            link::lock_request(&request).reason(),
-            None,
-            "a plain stop request"
-        );
-        assert_eq!(
-            count.load(Ordering::SeqCst),
-            0,
-            "thread actor dispatched work after idle stop"
-        );
-        assert!(response.recv().is_err());
-        assert_eq!(
-            *events.lock().unwrap(),
-            ["stopped", "message-dropped", "actor-dropped"]
+        crate::test_wait::bounded(
+            concat!(
+                module_path!(),
+                "::stop_while_receiving_does_not_dispatch_a_later_request"
+            ),
+            move || {
+                let (tx, rx) = mpsc::channel();
+                let token = CancellationToken::new();
+                let (_, completion_rx) = spawned_rt::sync::watch::channel(None);
+                let monitors = Arc::new(Mutex::new(Some(HashMap::new())));
+                let events = Arc::new(Mutex::new(Vec::new()));
+                let (id, trap, request) = (
+                    ActorId::next(),
+                    new_trap_exit_flag(),
+                    new_linked_exit_reason(),
+                );
+                let ctx = Context {
+                    id,
+                    sender: tx.clone(),
+                    cancellation_token: token.clone(),
+                    completion: completion_rx,
+                    monitors: monitors.clone(),
+                    trap_exit: trap.clone(),
+                    links: new_link_table(),
+                    linked_reason: request.clone(),
+                    signal: signal_target::<_>(
+                        id,
+                        None,
+                        &tx,
+                        trap.clone(),
+                        request.clone(),
+                        token.clone(),
+                    ),
+                    mailbox: crate::instrumentation::Mailbox::default(),
+                    replies: Registry::new(ActorId::next(), DEFAULT_MAX_OUTSTANDING),
+                    jobs: Arc::new(crate::reply::jobs::JobSet::new(ActorId::next(), 1)),
+                    cleaned: Arc::default(),
+                };
+                let count = Arc::new(AtomicUsize::new(0));
+                let seen = count.clone();
+                let entered = Arc::new(Barrier::new(2));
+                let release = Arc::new(Barrier::new(2));
+                let (e, r) = (entered.clone(), release.clone());
+                let cancel = token.clone();
+                let trace = events.clone();
+                let actor = std::thread::spawn(move || {
+                    let mut first = true;
+                    let mut counter = Counter(seen, trace);
+                    // The envelope received after the stop comes back undispatched;
+                    // the death point answers it and destroys it before the state.
+                    let discarded = run_actor_receiving(
+                        &mut counter,
+                        ctx,
+                        move || {
+                            // Pause the real receive boundary after the started/cancel
+                            // checks; the standard channel still carries the envelope.
+                            if first {
+                                first = false;
+                                e.wait();
+                                r.wait();
+                            }
+                            rx.recv_timeout(Duration::from_secs(5))
+                        },
+                        cancel,
+                    );
+                    drop(discarded);
+                    drop(counter);
+                });
+                entered.wait();
+                let (slot, response) = reply_slot(crate::reply::Deadline::Never, None);
+                tx.send(MailboxItem::Message(Box::new(MessageEnvelope {
+                    msg: Increment(events.clone(), monitors),
+                    slot,
+                    #[cfg(feature = "metrics")]
+                    observation: None,
+                    #[cfg(feature = "lifecycle-trace")]
+                    from: 0,
+                })))
+                .unwrap();
+                token.cancel();
+                release.wait();
+                actor.join().unwrap();
+                assert_eq!(
+                    link::lock_request(&request).reason(),
+                    None,
+                    "a plain stop request"
+                );
+                assert_eq!(
+                    count.load(Ordering::SeqCst),
+                    0,
+                    "thread actor dispatched work after idle stop"
+                );
+                assert!(response.recv().is_err());
+                assert_eq!(
+                    *events.lock().unwrap(),
+                    ["stopped", "message-dropped", "actor-dropped"]
+                );
+            },
         );
     }
 }
@@ -2574,55 +2733,70 @@ mod stop_wakeup_regression {
 
     #[test]
     fn cancellation_wakes_the_real_blocking_receive_boundary() {
-        let (tx, rx) = mpsc::channel();
-        let token = CancellationToken::new();
-        register_stop_wakeup(&token, tx.clone());
-        let (_, completion) = spawned_rt::sync::watch::channel(None);
-        let (id, trap, request) = (
-            ActorId::next(),
-            new_trap_exit_flag(),
-            new_linked_exit_reason(),
-        );
-        let ctx = Context {
-            id,
-            sender: tx.clone(),
-            cancellation_token: token.clone(),
-            completion,
-            monitors: Arc::new(Mutex::new(Some(HashMap::new()))),
-            trap_exit: trap.clone(),
-            links: new_link_table(),
-            linked_reason: request.clone(),
-            signal: signal_target::<_>(id, None, &tx, trap.clone(), request.clone(), token.clone()),
-            mailbox: crate::instrumentation::Mailbox::default(),
-            replies: Registry::new(ActorId::next(), DEFAULT_MAX_OUTSTANDING),
-            jobs: Arc::new(crate::reply::jobs::JobSet::new(ActorId::next(), 1)),
-            cleaned: Arc::default(),
-        };
-        let (entered_tx, entered) = mpsc::channel();
-        let (stopped_tx, stopped) = mpsc::channel();
-        let cancel = token.clone();
-        let actor = std::thread::spawn(move || {
-            run_actor_receiving(
-                &mut Idle(stopped_tx),
-                ctx,
-                move || {
-                    let _ = entered_tx.send(());
-                    rx.recv()
-                        .map_err(|_| std::sync::mpsc::RecvTimeoutError::Disconnected)
-                },
-                cancel,
-            )
-        });
-        entered.recv_timeout(Duration::from_secs(2)).unwrap();
-        token.cancel();
-        stopped
-            .recv_timeout(Duration::from_secs(2))
-            .expect("cancel did not wake recv");
-        actor.join().unwrap();
-        assert_eq!(
-            link::lock_request(&request).reason(),
-            None,
-            "a plain stop request"
+        crate::test_wait::bounded(
+            concat!(
+                module_path!(),
+                "::cancellation_wakes_the_real_blocking_receive_boundary"
+            ),
+            move || {
+                let (tx, rx) = mpsc::channel();
+                let token = CancellationToken::new();
+                register_stop_wakeup(&token, tx.clone());
+                let (_, completion) = spawned_rt::sync::watch::channel(None);
+                let (id, trap, request) = (
+                    ActorId::next(),
+                    new_trap_exit_flag(),
+                    new_linked_exit_reason(),
+                );
+                let ctx = Context {
+                    id,
+                    sender: tx.clone(),
+                    cancellation_token: token.clone(),
+                    completion,
+                    monitors: Arc::new(Mutex::new(Some(HashMap::new()))),
+                    trap_exit: trap.clone(),
+                    links: new_link_table(),
+                    linked_reason: request.clone(),
+                    signal: signal_target::<_>(
+                        id,
+                        None,
+                        &tx,
+                        trap.clone(),
+                        request.clone(),
+                        token.clone(),
+                    ),
+                    mailbox: crate::instrumentation::Mailbox::default(),
+                    replies: Registry::new(ActorId::next(), DEFAULT_MAX_OUTSTANDING),
+                    jobs: Arc::new(crate::reply::jobs::JobSet::new(ActorId::next(), 1)),
+                    cleaned: Arc::default(),
+                };
+                let (entered_tx, entered) = mpsc::channel();
+                let (stopped_tx, stopped) = mpsc::channel();
+                let cancel = token.clone();
+                let actor = std::thread::spawn(move || {
+                    run_actor_receiving(
+                        &mut Idle(stopped_tx),
+                        ctx,
+                        move || {
+                            let _ = entered_tx.send(());
+                            rx.recv()
+                                .map_err(|_| std::sync::mpsc::RecvTimeoutError::Disconnected)
+                        },
+                        cancel,
+                    )
+                });
+                entered.recv_timeout(Duration::from_secs(2)).unwrap();
+                token.cancel();
+                stopped
+                    .recv_timeout(Duration::from_secs(2))
+                    .expect("cancel did not wake recv");
+                actor.join().unwrap();
+                assert_eq!(
+                    link::lock_request(&request).reason(),
+                    None,
+                    "a plain stop request"
+                );
+            },
         );
     }
 
@@ -2647,51 +2821,56 @@ mod stop_wakeup_regression {
 
     #[test]
     fn every_stop_route_wakes_an_idle_thread() {
-        for route in 0..4 {
-            let (stopped_tx, stopped) = mpsc::channel();
-            let actor = Idle(stopped_tx).start();
-            // A reply ensures startup is complete before the cancellation race.
-            actor.request(Noop).unwrap();
-            let failing = if route == 3 {
-                let peer = Failing.start();
-                actor.context().link(&peer.child_handle());
-                Some(peer)
-            } else {
-                None
-            };
-            match route {
-                0 => actor.context().stop(),
-                1 => actor.child_handle().stop(),
-                2 => actor.cancellation_token.cancel(),
-                _ => failing.as_ref().unwrap().send(Crash).unwrap(),
-            }
-            if route == 3 {
-                // An untrapped link notice ends the idle actor without
-                // stopped() (decision 2): the wakeup is observed as its exit.
-                let reason = actor.child_handle().wait_exit_blocking();
-                assert!(matches!(reason, ExitReason::Panic(_)), "got {reason:?}");
-                assert!(stopped.try_recv().is_err(), "stopped() ran");
-                failing.unwrap().join();
-                continue;
-            }
-            let result = stopped.recv_timeout(Duration::from_secs(2));
-            // A failed test must not hang cleanup on a broken wakeup callback.
-            if result.is_err() {
-                actor.child_handle().stop();
-                let _ = actor.send(Noop);
-            }
-            assert!(
-                result.is_ok(),
-                "stop route {route} failed to wake the mailbox"
-            );
-            let reason = actor.wait_exit();
-            if route == 3 {
-                assert!(matches!(reason, ExitReason::Panic(_)));
-                failing.unwrap().join();
-            } else {
-                assert_eq!(reason, ExitReason::Normal);
-            }
-        }
+        crate::test_wait::bounded(
+            concat!(module_path!(), "::every_stop_route_wakes_an_idle_thread"),
+            move || {
+                for route in 0..4 {
+                    let (stopped_tx, stopped) = mpsc::channel();
+                    let actor = Idle(stopped_tx).start();
+                    // A reply ensures startup is complete before the cancellation race.
+                    actor.request(Noop).unwrap();
+                    let failing = if route == 3 {
+                        let peer = Failing.start();
+                        actor.context().link(&peer.child_handle());
+                        Some(peer)
+                    } else {
+                        None
+                    };
+                    match route {
+                        0 => actor.context().stop(),
+                        1 => actor.child_handle().stop(),
+                        2 => actor.cancellation_token.cancel(),
+                        _ => failing.as_ref().unwrap().send(Crash).unwrap(),
+                    }
+                    if route == 3 {
+                        // An untrapped link notice ends the idle actor without
+                        // stopped() (decision 2): the wakeup is observed as its exit.
+                        let reason = actor.child_handle().wait_exit_blocking();
+                        assert!(matches!(reason, ExitReason::Panic(_)), "got {reason:?}");
+                        assert!(stopped.try_recv().is_err(), "stopped() ran");
+                        failing.unwrap().join();
+                        continue;
+                    }
+                    let result = stopped.recv_timeout(Duration::from_secs(2));
+                    // A failed test must not hang cleanup on a broken wakeup callback.
+                    if result.is_err() {
+                        actor.child_handle().stop();
+                        let _ = actor.send(Noop);
+                    }
+                    assert!(
+                        result.is_ok(),
+                        "stop route {route} failed to wake the mailbox"
+                    );
+                    let reason = actor.wait_exit();
+                    if route == 3 {
+                        assert!(matches!(reason, ExitReason::Panic(_)));
+                        failing.unwrap().join();
+                    } else {
+                        assert_eq!(reason, ExitReason::Normal);
+                    }
+                }
+            },
+        );
     }
 
     struct Busy {
@@ -2720,40 +2899,48 @@ mod stop_wakeup_regression {
 
     #[test]
     fn repeated_stop_during_a_handler_discards_queued_requests() {
-        let (entered_tx, entered) = mpsc::channel();
-        let (release, release_rx) = mpsc::channel();
-        let handled = Arc::new(AtomicUsize::new(0));
-        let actor = Busy {
-            entered: entered_tx,
-            release: release_rx,
-            handled: handled.clone(),
-        }
-        .start();
-        let first = actor.send_request(Work, DEFAULT_REQUEST_TIMEOUT).unwrap();
-        entered.recv_timeout(Duration::from_secs(2)).unwrap();
-        let replies: Vec<_> = (0..256)
-            .map(|_| actor.send_request(Work, DEFAULT_REQUEST_TIMEOUT).unwrap())
-            .collect();
-        std::thread::scope(|scope| {
-            for _ in 0..16 {
-                let child = actor.child_handle();
-                scope.spawn(move || {
-                    for _ in 0..256 {
-                        child.stop();
+        crate::test_wait::bounded(
+            concat!(
+                module_path!(),
+                "::repeated_stop_during_a_handler_discards_queued_requests"
+            ),
+            move || {
+                let (entered_tx, entered) = mpsc::channel();
+                let (release, release_rx) = mpsc::channel();
+                let handled = Arc::new(AtomicUsize::new(0));
+                let actor = Busy {
+                    entered: entered_tx,
+                    release: release_rx,
+                    handled: handled.clone(),
+                }
+                .start();
+                let first = actor.send_request(Work, DEFAULT_REQUEST_TIMEOUT).unwrap();
+                entered.recv_timeout(Duration::from_secs(2)).unwrap();
+                let replies: Vec<_> = (0..256)
+                    .map(|_| actor.send_request(Work, DEFAULT_REQUEST_TIMEOUT).unwrap())
+                    .collect();
+                std::thread::scope(|scope| {
+                    for _ in 0..16 {
+                        let child = actor.child_handle();
+                        scope.spawn(move || {
+                            for _ in 0..256 {
+                                child.stop();
+                            }
+                        });
                     }
                 });
-            }
-        });
-        release.send(()).unwrap();
-        first.recv().unwrap();
-        for reply in replies {
-            assert!(matches!(
-                reply.recv(),
-                Err(ActorError::ActorStopped(ExitReason::Normal))
-            ));
-        }
-        assert_eq!(actor.wait_exit(), ExitReason::Normal);
-        assert_eq!(handled.load(Ordering::SeqCst), 1);
+                release.send(()).unwrap();
+                first.recv().unwrap();
+                for reply in replies {
+                    assert!(matches!(
+                        reply.recv(),
+                        Err(ActorError::ActorStopped(ExitReason::Normal))
+                    ));
+                }
+                assert_eq!(actor.wait_exit(), ExitReason::Normal);
+                assert_eq!(handled.load(Ordering::SeqCst), 1);
+            },
+        );
     }
 }
 
@@ -2835,66 +3022,98 @@ mod api_coverage {
 
     #[test]
     fn context_recipient_and_identity_reach_their_actor() {
-        let actor = Echo.start();
-        let (recipient, id) = actor.request(OwnRecipient).unwrap();
-        assert_eq!(id, actor.id());
-        assert!(matches!(request(&*recipient, Ask(7), WAIT), Ok(7)));
-        recipient.send(Ask(1)).unwrap();
-        actor.child_handle().stop();
-        actor.join();
-        // Past the death point: NoProc (v0.8, decision 4 of otp-exit-signals).
-        assert!(matches!(recipient.send(Ask(1)), Err(ActorError::NoProc)));
+        crate::test_wait::bounded(
+            concat!(
+                module_path!(),
+                "::context_recipient_and_identity_reach_their_actor"
+            ),
+            move || {
+                let actor = Echo.start();
+                let (recipient, id) = actor.request(OwnRecipient).unwrap();
+                assert_eq!(id, actor.id());
+                assert!(matches!(request(&*recipient, Ask(7), WAIT), Ok(7)));
+                recipient.send(Ask(1)).unwrap();
+                actor.child_handle().stop();
+                actor.join();
+                // Past the death point: NoProc (v0.8, decision 4 of otp-exit-signals).
+                assert!(matches!(recipient.send(Ask(1)), Err(ActorError::NoProc)));
+            },
+        );
     }
 
     #[test]
     fn requests_to_a_stopped_actor_fail_without_waiting() {
-        let actor = Echo.start();
-        let recipient = actor.recipient::<Ask>();
-        actor.child_handle().stop();
-        actor.join();
-        // Past the death point: NoProc (v0.8, decision 4 of otp-exit-signals).
-        assert!(matches!(
-            actor.request_with_timeout(Ask(1), WAIT),
-            Err(ActorError::NoProc)
-        ));
-        assert!(matches!(
-            request(&*recipient, Ask(1), WAIT),
-            Err(ActorError::NoProc)
-        ));
+        crate::test_wait::bounded(
+            concat!(
+                module_path!(),
+                "::requests_to_a_stopped_actor_fail_without_waiting"
+            ),
+            move || {
+                let actor = Echo.start();
+                let recipient = actor.recipient::<Ask>();
+                actor.child_handle().stop();
+                actor.join();
+                // Past the death point: NoProc (v0.8, decision 4 of otp-exit-signals).
+                assert!(matches!(
+                    actor.request_with_timeout(Ask(1), WAIT),
+                    Err(ActorError::NoProc)
+                ));
+                assert!(matches!(
+                    request(&*recipient, Ask(1), WAIT),
+                    Err(ActorError::NoProc)
+                ));
+            },
+        );
     }
 
     #[test]
     fn admitted_requests_fail_when_the_handler_unwinds_before_replying() {
-        let actor = Echo.start();
-        assert!(matches!(
-            actor.request_with_timeout(Boom, WAIT),
-            Err(ActorError::ActorStopped(ExitReason::Panic(_)))
-        ));
-        let other = Echo.start();
-        let recipient = other.recipient::<Boom>();
-        assert!(matches!(
-            request(&*recipient, Boom, WAIT),
-            Err(ActorError::ActorStopped(ExitReason::Panic(_)))
-        ));
+        crate::test_wait::bounded(
+            concat!(
+                module_path!(),
+                "::admitted_requests_fail_when_the_handler_unwinds_before_replying"
+            ),
+            move || {
+                let actor = Echo.start();
+                assert!(matches!(
+                    actor.request_with_timeout(Boom, WAIT),
+                    Err(ActorError::ActorStopped(ExitReason::Panic(_)))
+                ));
+                let other = Echo.start();
+                let recipient = other.recipient::<Boom>();
+                assert!(matches!(
+                    request(&*recipient, Boom, WAIT),
+                    Err(ActorError::ActorStopped(ExitReason::Panic(_)))
+                ));
+            },
+        );
     }
 
     #[test]
     fn requests_time_out_while_the_actor_is_busy() {
-        let actor = Echo.start();
-        let recipient = actor.recipient::<Ask>();
-        let (release, held) = std_mpsc::channel();
-        actor.send(StopAfter(held)).unwrap();
-        let short = Duration::from_millis(1);
-        assert!(matches!(
-            actor.request_with_timeout(Ask(1), short),
-            Err(ActorError::RequestTimeout)
-        ));
-        assert!(matches!(
-            request(&*recipient, Ask(1), short),
-            Err(ActorError::RequestTimeout)
-        ));
-        release.send(()).unwrap();
-        actor.join();
+        crate::test_wait::bounded(
+            concat!(
+                module_path!(),
+                "::requests_time_out_while_the_actor_is_busy"
+            ),
+            move || {
+                let actor = Echo.start();
+                let recipient = actor.recipient::<Ask>();
+                let (release, held) = std_mpsc::channel();
+                actor.send(StopAfter(held)).unwrap();
+                let short = Duration::from_millis(1);
+                assert!(matches!(
+                    actor.request_with_timeout(Ask(1), short),
+                    Err(ActorError::RequestTimeout)
+                ));
+                assert!(matches!(
+                    request(&*recipient, Ask(1), short),
+                    Err(ActorError::RequestTimeout)
+                ));
+                release.send(()).unwrap();
+                actor.join();
+            },
+        );
     }
 
     struct Trapper {
@@ -2929,87 +3148,113 @@ mod api_coverage {
 
     #[test]
     fn default_exit_received_keeps_a_trapping_actor_alive() {
-        let trapper = Trapper { trap: true }.start();
-        assert!(matches!(trapper.request(Ask(0)), Ok(0)));
-        let peer = Echo.start();
-        trapper.context().link(&peer.child_handle());
-        peer.send(Boom).unwrap();
-        assert!(matches!(peer.wait_exit(), ExitReason::Panic(_)));
-        // The Exit is handled by the default `exit_received`, which ignores it.
-        assert!(matches!(trapper.request(Ask(3)), Ok(3)));
-        assert!(trapper.exit_reason().is_none());
-        trapper
-            .child_handle()
-            .stop_with_reason(crate::ExitReason::Shutdown);
-        assert_eq!(trapper.wait_exit(), ExitReason::Shutdown);
+        crate::test_wait::bounded(
+            concat!(
+                module_path!(),
+                "::default_exit_received_keeps_a_trapping_actor_alive"
+            ),
+            move || {
+                let trapper = Trapper { trap: true }.start();
+                assert!(matches!(trapper.request(Ask(0)), Ok(0)));
+                let peer = Echo.start();
+                trapper.context().link(&peer.child_handle());
+                peer.send(Boom).unwrap();
+                assert!(matches!(peer.wait_exit(), ExitReason::Panic(_)));
+                // The Exit is handled by the default `exit_received`, which ignores it.
+                assert!(matches!(trapper.request(Ask(3)), Ok(3)));
+                assert!(trapper.exit_reason().is_none());
+                trapper
+                    .child_handle()
+                    .stop_with_reason(crate::ExitReason::Shutdown);
+                assert_eq!(trapper.wait_exit(), ExitReason::Shutdown);
+            },
+        );
     }
 
     #[test]
     fn unlink_prevents_signal_delivery() {
-        // Not trapping: a linked peer's panic would take this actor down.
-        let trapper = Trapper { trap: false }.start();
-        let peer = Echo.start();
-        let peer_handle = peer.child_handle();
-        trapper.context().link(&peer_handle);
-        trapper.request(Unlink(peer_handle.clone())).unwrap();
-        // Unlinking yourself or an already-unlinked peer is a no-op.
-        trapper.request(Unlink(trapper.child_handle())).unwrap();
-        trapper.request(Unlink(peer_handle)).unwrap();
-        peer.send(Boom).unwrap();
-        assert!(matches!(peer.wait_exit(), ExitReason::Panic(_)));
-        assert!(matches!(trapper.request(Ask(1)), Ok(1)));
-        assert!(trapper.exit_reason().is_none());
-        trapper
-            .child_handle()
-            .stop_with_reason(crate::ExitReason::Shutdown);
-        trapper.join();
+        crate::test_wait::bounded(
+            concat!(module_path!(), "::unlink_prevents_signal_delivery"),
+            move || {
+                // Not trapping: a linked peer's panic would take this actor down.
+                let trapper = Trapper { trap: false }.start();
+                let peer = Echo.start();
+                let peer_handle = peer.child_handle();
+                trapper.context().link(&peer_handle);
+                trapper.request(Unlink(peer_handle.clone())).unwrap();
+                // Unlinking yourself or an already-unlinked peer is a no-op.
+                trapper.request(Unlink(trapper.child_handle())).unwrap();
+                trapper.request(Unlink(peer_handle)).unwrap();
+                peer.send(Boom).unwrap();
+                assert!(matches!(peer.wait_exit(), ExitReason::Panic(_)));
+                assert!(matches!(trapper.request(Ask(1)), Ok(1)));
+                assert!(trapper.exit_reason().is_none());
+                trapper
+                    .child_handle()
+                    .stop_with_reason(crate::ExitReason::Shutdown);
+                trapper.join();
+            },
+        );
     }
 
     #[test]
     fn opposite_links_between_the_same_pair_do_not_deadlock() {
-        // Each link/unlink locks both link tables. Both directions must take
-        // the locks in the same global order, or these two loops deadlock.
-        let a = Trapper { trap: true }.start();
-        let b = Trapper { trap: true }.start();
-        let (done, finished) = std_mpsc::channel();
-        let workers: Vec<_> = [
-            (a.context(), b.child_handle()),
-            (b.context(), a.child_handle()),
-        ]
-        .into_iter()
-        .map(|(own, peer)| {
-            let done = done.clone();
-            std::thread::spawn(move || {
-                for _ in 0..2_000 {
-                    own.link(&peer);
-                    own.unlink(&peer);
+        crate::test_wait::bounded(
+            concat!(
+                module_path!(),
+                "::opposite_links_between_the_same_pair_do_not_deadlock"
+            ),
+            move || {
+                // Each link/unlink locks both link tables. Both directions must take
+                // the locks in the same global order, or these two loops deadlock.
+                let a = Trapper { trap: true }.start();
+                let b = Trapper { trap: true }.start();
+                let (done, finished) = std_mpsc::channel();
+                let workers: Vec<_> = [
+                    (a.context(), b.child_handle()),
+                    (b.context(), a.child_handle()),
+                ]
+                .into_iter()
+                .map(|(own, peer)| {
+                    let done = done.clone();
+                    std::thread::spawn(move || {
+                        for _ in 0..2_000 {
+                            own.link(&peer);
+                            own.unlink(&peer);
+                        }
+                        done.send(()).unwrap();
+                    })
+                })
+                .collect();
+                for _ in 0..2 {
+                    finished
+                        .recv_timeout(WAIT)
+                        .expect("opposite link directions deadlocked");
                 }
-                done.send(()).unwrap();
-            })
-        })
-        .collect();
-        for _ in 0..2 {
-            finished
-                .recv_timeout(WAIT)
-                .expect("opposite link directions deadlocked");
-        }
-        for worker in workers {
-            worker.join().unwrap();
-        }
-        for actor in [a, b] {
-            actor
-                .child_handle()
-                .stop_with_reason(crate::ExitReason::Shutdown);
-            actor.join();
-        }
+                for worker in workers {
+                    worker.join().unwrap();
+                }
+                for actor in [a, b] {
+                    actor
+                        .child_handle()
+                        .stop_with_reason(crate::ExitReason::Shutdown);
+                    actor.join();
+                }
+            },
+        );
     }
 
     #[test]
     fn debug_output_names_the_handle() {
-        let actor = Echo.start();
-        assert!(format!("{actor:?}").starts_with("ActorRef"));
-        assert!(format!("{:?}", actor.context()).starts_with("Context"));
-        actor.child_handle().stop();
-        actor.join();
+        crate::test_wait::bounded(
+            concat!(module_path!(), "::debug_output_names_the_handle"),
+            move || {
+                let actor = Echo.start();
+                assert!(format!("{actor:?}").starts_with("ActorRef"));
+                assert!(format!("{:?}", actor.context()).starts_with("Context"));
+                actor.child_handle().stop();
+                actor.join();
+            },
+        );
     }
 }

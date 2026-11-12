@@ -778,57 +778,72 @@ mod tests {
     }
     #[test]
     fn reason_precedence_until_death() {
-        // A late non-kill signal replaces a requested reason (decision 8);
-        // a kill supersedes it and nothing replaces Killed.
-        let mut r = ExitRequest::default();
-        assert!(r.request(ExitReason::Normal));
-        assert!(r.untrapped(ExitReason::Shutdown));
-        assert_eq!(r.reason(), Some(&ExitReason::Shutdown));
-        assert!(
-            r.begin_hook(),
-            "a late signal does not skip a self-exit's stopped()"
+        crate::test_wait::bounded(
+            concat!(module_path!(), "::reason_precedence_until_death"),
+            move || {
+                // A late non-kill signal replaces a requested reason (decision 8);
+                // a kill supersedes it and nothing replaces Killed.
+                let mut r = ExitRequest::default();
+                assert!(r.request(ExitReason::Normal));
+                assert!(r.untrapped(ExitReason::Shutdown));
+                assert_eq!(r.reason(), Some(&ExitReason::Shutdown));
+                assert!(
+                    r.begin_hook(),
+                    "a late signal does not skip a self-exit's stopped()"
+                );
+                r.panic(ExitReason::Panic("stopped".into()));
+                assert_eq!(r.reason(), Some(&ExitReason::Panic("stopped".into())));
+                assert!(r.kill());
+                r.panic(ExitReason::Panic("after kill".into()));
+                assert!(!r.untrapped(ExitReason::Shutdown));
+                assert!(r.request(ExitReason::Normal));
+                assert_eq!(r.die(), ExitReason::Killed);
+                assert!(!r.kill() && !r.untrapped(ExitReason::Shutdown));
+                // Runtime drop: Killed unless a non-Normal reason was requested.
+                let mut r = ExitRequest::default();
+                r.request(ExitReason::Normal);
+                assert_eq!(r.runtime_drop(), ExitReason::Killed);
+                let mut r = ExitRequest::default();
+                r.request(ExitReason::Shutdown);
+                assert_eq!(r.runtime_drop(), ExitReason::Shutdown);
+            },
         );
-        r.panic(ExitReason::Panic("stopped".into()));
-        assert_eq!(r.reason(), Some(&ExitReason::Panic("stopped".into())));
-        assert!(r.kill());
-        r.panic(ExitReason::Panic("after kill".into()));
-        assert!(!r.untrapped(ExitReason::Shutdown));
-        assert!(r.request(ExitReason::Normal));
-        assert_eq!(r.die(), ExitReason::Killed);
-        assert!(!r.kill() && !r.untrapped(ExitReason::Shutdown));
-        // Runtime drop: Killed unless a non-Normal reason was requested.
-        let mut r = ExitRequest::default();
-        r.request(ExitReason::Normal);
-        assert_eq!(r.runtime_drop(), ExitReason::Killed);
-        let mut r = ExitRequest::default();
-        r.request(ExitReason::Shutdown);
-        assert_eq!(r.runtime_drop(), ExitReason::Shutdown);
     }
     #[test]
     fn link_from_an_exiting_or_dead_caller_is_inert() {
-        let seen = Arc::new(AtomicUsize::new(0));
-        // Exit begun: no record on either side, even to a live peer.
-        let (a, at, b, bt) = pair(&seen);
-        lock_request(&a.request).request(ExitReason::Normal);
-        assert_eq!(
-            register_link(&a, &at, &b, &bt, false),
-            LinkOutcome::Unchanged
+        crate::test_wait::bounded(
+            concat!(
+                module_path!(),
+                "::link_from_an_exiting_or_dead_caller_is_inert"
+            ),
+            move || {
+                let seen = Arc::new(AtomicUsize::new(0));
+                // Exit begun: no record on either side, even to a live peer.
+                let (a, at, b, bt) = pair(&seen);
+                lock_request(&a.request).request(ExitReason::Normal);
+                assert_eq!(
+                    register_link(&a, &at, &b, &bt, false),
+                    LinkOutcome::Unchanged
+                );
+                assert!(
+                    at.lock().unwrap().entries.is_empty() && bt.lock().unwrap().entries.is_empty()
+                );
+                // Past D, even to a dead peer: no NoProc notice, no try_link error.
+                let (c, ct, d, dt) = pair(&seen);
+                lock_request(&c.request).die();
+                propagate_exit(c.id, &ct, &ExitReason::Normal);
+                propagate_exit(d.id, &dt, &ExitReason::Normal);
+                assert_eq!(
+                    register_link(&c, &ct, &d, &dt, false),
+                    LinkOutcome::Unchanged
+                );
+                assert_eq!(
+                    register_link(&c, &ct, &d, &dt, true),
+                    LinkOutcome::Unchanged
+                );
+                assert_eq!(seen.load(Ordering::SeqCst), 0);
+            },
         );
-        assert!(at.lock().unwrap().entries.is_empty() && bt.lock().unwrap().entries.is_empty());
-        // Past D, even to a dead peer: no NoProc notice, no try_link error.
-        let (c, ct, d, dt) = pair(&seen);
-        lock_request(&c.request).die();
-        propagate_exit(c.id, &ct, &ExitReason::Normal);
-        propagate_exit(d.id, &dt, &ExitReason::Normal);
-        assert_eq!(
-            register_link(&c, &ct, &d, &dt, false),
-            LinkOutcome::Unchanged
-        );
-        assert_eq!(
-            register_link(&c, &ct, &d, &dt, true),
-            LinkOutcome::Unchanged
-        );
-        assert_eq!(seen.load(Ordering::SeqCst), 0);
     }
     #[test]
     fn self_link_is_noop() {

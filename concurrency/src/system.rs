@@ -1415,70 +1415,88 @@ mod coordinator_tests {
     }
     #[tokio::test]
     async fn coordinator_fault_stops_all_targets_and_retains_owned_cleanup() {
-        use crate::tasks::ActorStart;
-        let system = ActorSystem::new().unwrap();
-        let group = system.async_group("coordinator-fault", 1).unwrap();
-        let stopped = Arc::new(AtomicUsize::new(0));
-        let first = Worker(stopped.clone()).start_on(&group).unwrap();
-        let second = Worker(stopped.clone()).start_on(&group).unwrap();
-        first.ready().await.unwrap();
-        second.ready().await.unwrap();
-        let (done, _) = watch::channel(false);
-        let fault = Arc::new(FaultUnit {
-            allow_emergency: AtomicBool::new(false),
-            done,
-        });
-        system.inner.register_unit(fault.clone()).unwrap();
-        let mut report = system.shutdown(Duration::from_millis(30)).await;
-        assert!(!report.complete);
-        // The report is a snapshot, not an acknowledgement that the coordinator
-        // ran. Under full-suite load its 30ms deadline can precede the fault.
-        // Refresh with bounded, yielding waits until that diagnostic is visible.
-        report = rt::timeout(LIMIT, async move {
-            while !report
-                .coordinator_failures
-                .iter()
-                .any(|e| e.contains("injected system coordinator fault"))
-            {
-                // Yield even if a regressed coordinator closes its done watch:
-                // wait() can then return immediately, and LIMIT must still fire.
-                rt::sleep(Duration::from_millis(1)).await;
-                report = report.wait(Duration::ZERO).await;
-            }
-            report
-        })
-        .await
-        .expect("coordinator did not report its injected failure");
-        assert!(report
-            .coordinator_failures
-            .iter()
-            .any(|e| e.contains("injected system coordinator fault")));
-        tokio::time::timeout(LIMIT, first.join()).await.unwrap();
-        tokio::time::timeout(LIMIT, second.join()).await.unwrap();
-        assert_eq!(stopped.load(Ordering::SeqCst), 2);
-        assert!(!*system.inner.control.done.borrow());
-        drop(system); // pending report + coordinator retain runtime ownership
-        fault.allow_emergency.store(true, Ordering::SeqCst);
-        let report = report.wait(LIMIT).await;
-        assert!(report.complete);
-        assert!(!report.coordinator_failures.is_empty());
-        assert!(report.coordinator_failures.len() <= 16);
+        crate::test_wait::within(
+            concat!(
+                module_path!(),
+                "::coordinator_fault_stops_all_targets_and_retains_owned_cleanup"
+            ),
+            async move {
+                use crate::tasks::ActorStart;
+                let system = ActorSystem::new().unwrap();
+                let group = system.async_group("coordinator-fault", 1).unwrap();
+                let stopped = Arc::new(AtomicUsize::new(0));
+                let first = Worker(stopped.clone()).start_on(&group).unwrap();
+                let second = Worker(stopped.clone()).start_on(&group).unwrap();
+                first.ready().await.unwrap();
+                second.ready().await.unwrap();
+                let (done, _) = watch::channel(false);
+                let fault = Arc::new(FaultUnit {
+                    allow_emergency: AtomicBool::new(false),
+                    done,
+                });
+                system.inner.register_unit(fault.clone()).unwrap();
+                let mut report = system.shutdown(Duration::from_millis(30)).await;
+                assert!(!report.complete);
+                // The report is a snapshot, not an acknowledgement that the coordinator
+                // ran. Under full-suite load its 30ms deadline can precede the fault.
+                // Refresh with bounded, yielding waits until that diagnostic is visible.
+                report = rt::timeout(LIMIT, async move {
+                    while !report
+                        .coordinator_failures
+                        .iter()
+                        .any(|e| e.contains("injected system coordinator fault"))
+                    {
+                        // Yield even if a regressed coordinator closes its done watch:
+                        // wait() can then return immediately, and LIMIT must still fire.
+                        rt::sleep(Duration::from_millis(1)).await;
+                        report = report.wait(Duration::ZERO).await;
+                    }
+                    report
+                })
+                .await
+                .expect("coordinator did not report its injected failure");
+                assert!(report
+                    .coordinator_failures
+                    .iter()
+                    .any(|e| e.contains("injected system coordinator fault")));
+                tokio::time::timeout(LIMIT, first.join()).await.unwrap();
+                tokio::time::timeout(LIMIT, second.join()).await.unwrap();
+                assert_eq!(stopped.load(Ordering::SeqCst), 2);
+                assert!(!*system.inner.control.done.borrow());
+                drop(system); // pending report + coordinator retain runtime ownership
+                fault.allow_emergency.store(true, Ordering::SeqCst);
+                let report = report.wait(LIMIT).await;
+                assert!(report.complete);
+                assert!(!report.coordinator_failures.is_empty());
+                assert!(report.coordinator_failures.len() <= 16);
+            },
+        )
+        .await;
     }
     #[tokio::test]
     async fn emergency_cleanup_does_not_resignal_an_already_finished_faulting_unit() {
-        let system = ActorSystem::new().unwrap();
-        let (done, _) = watch::channel(false);
-        let fault = Arc::new(FaultUnit {
-            allow_emergency: AtomicBool::new(false),
-            done,
-        });
-        system.inner.register_unit(fault.clone()).unwrap();
-        let report = system.shutdown(Duration::from_millis(30)).await;
-        assert!(!report.complete);
-        // Another owner finishes it; its stop method remains permanently broken.
-        fault.done.send_replace(true);
-        let report = report.wait(LIMIT).await;
-        assert!(report.complete);
-        assert!(!report.coordinator_failures.is_empty());
+        crate::test_wait::within(
+            concat!(
+                module_path!(),
+                "::emergency_cleanup_does_not_resignal_an_already_finished_faulting_unit"
+            ),
+            async move {
+                let system = ActorSystem::new().unwrap();
+                let (done, _) = watch::channel(false);
+                let fault = Arc::new(FaultUnit {
+                    allow_emergency: AtomicBool::new(false),
+                    done,
+                });
+                system.inner.register_unit(fault.clone()).unwrap();
+                let report = system.shutdown(Duration::from_millis(30)).await;
+                assert!(!report.complete);
+                // Another owner finishes it; its stop method remains permanently broken.
+                fault.done.send_replace(true);
+                let report = report.wait(LIMIT).await;
+                assert!(report.complete);
+                assert!(!report.coordinator_failures.is_empty());
+            },
+        )
+        .await;
     }
 }

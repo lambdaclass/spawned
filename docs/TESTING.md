@@ -1767,8 +1767,13 @@ time on the simulator, and only reached by a bug on Tokio, since every such wait
 is a handshake, never a fixed sleep. Tests on paused Tokio time
 (`protocol_timeouts`, `semantics_gaps`) are left alone: paused time
 auto-advances while work runs outside Tokio, which could fire the bound early.
-Unit tests inside `concurrency/src` do not use it yet (see "Planted-bug
-sensitivity" for the ones that still hang under a planted bug).
+Unit tests inside `concurrency/src` that start, call, join or wait on actors
+are bounded the same way (`concurrency/src/test_wait.rs`, 120 s):
+synchronous tests run their whole body, Tokio runtime and its teardown
+included, through `test_wait::bounded`, on a thread named after the test, and
+fail with that name if it does not finish; `#[tokio::test]` bodies go
+through `test_wait::within`. A panic in the body (an assertion, or a
+`#[should_panic]` test's expected panic) is re-raised unchanged.
 
 ### Single-CPU runs
 
