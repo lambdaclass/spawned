@@ -99,6 +99,12 @@ per thread, so maps created before the world starts keep OS keys (madsim
 documents the same caveat); the simulator's own watchdog must call the real
 symbol; Linux first.
 
+Implemented in #267 (D1-D3): `spawned-sim-libc` holds the interposers, and
+the harness runs each seed on a fresh thread, which removes the `HashMap`
+caveat above for `sim_test`/`run_once` bodies (keys and `thread_rng` are
+seeded inside the run). See [TESTING.md](../TESTING.md) "Wall clock, entropy,
+blocking work and timers".
+
 ## Sources
 
 - Simulator: `rt/src/tasks/sim.rs`, `rt/src/tasks/sim_test.rs`,

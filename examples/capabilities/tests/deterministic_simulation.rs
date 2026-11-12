@@ -120,7 +120,9 @@ mod virtual_time {
 
     #[spawned_concurrency::sim_test]
     async fn an_hour_long_timer_fires_in_virtual_time() {
-        let wall = std::time::Instant::now();
+        // The real clock: inside a simulated run `std::time::Instant` reads
+        // virtual time too (determinism D1).
+        let wall = spawned_rt::tasks::sim::wall_now();
         let virtual_start = spawned_rt::time::Instant::now();
         let reminder = Reminder::default().start();
 
@@ -130,6 +132,6 @@ mod virtual_time {
         assert!(reminder.rung().await.unwrap());
 
         assert!(virtual_start.elapsed() >= HOUR);
-        assert!(wall.elapsed() < Duration::from_secs(10));
+        assert!(spawned_rt::tasks::sim::wall_now() - wall < Duration::from_secs(10));
     }
 }

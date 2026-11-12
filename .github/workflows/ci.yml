@@ -257,7 +257,8 @@ jobs:
           # spawned-concurrency's new sibling versions are published in dependency
           # order by release.yaml; its package is also validated before release.
           cargo package --package spawned-macros --no-verify
-          cargo package --package spawned-rt --no-verify
+          # spawned-sim-libc (the simulator's interposers) ships with spawned-rt.
+          cargo package --package spawned-sim-libc --package spawned-rt --no-verify
 
       - name: Verify spawned-test publication against unreleased siblings
         run: |
