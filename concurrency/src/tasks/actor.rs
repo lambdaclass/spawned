@@ -1806,6 +1806,9 @@ struct DeathFirst<'a, A: Actor, C: Fn()> {
     rx: &'a mut mpsc::Receiver<Box<dyn Envelope<A> + Send>>,
     cleanup: &'a mut crate::actor_cleanup::ActorCleanup<C>,
     caller: Option<&'a dyn Caller>,
+    /// The run loop already polled `inner` once in this task poll (it was
+    /// pending): the next poll returns `Pending` without polling it again.
+    polled: bool,
 }
 impl<'a, A: Actor, C: Fn()> DeathFirst<'a, A, C> {
     fn new(
@@ -1819,7 +1822,39 @@ impl<'a, A: Actor, C: Fn()> DeathFirst<'a, A, C> {
             rx,
             cleanup,
             caller,
+            polled: false,
         }
+    }
+
+    /// A turn the run loop polled once and found pending.
+    fn pending(
+        inner: Pin<Box<dyn Future<Output = ()> + Send + 'a>>,
+        rx: &'a mut mpsc::Receiver<Box<dyn Envelope<A> + Send>>,
+        cleanup: &'a mut crate::actor_cleanup::ActorCleanup<C>,
+        caller: Option<&'a dyn Caller>,
+    ) -> Self {
+        let mut turn = Self::new(inner, rx, cleanup, caller);
+        turn.polled = true;
+        turn
+    }
+}
+
+/// A boxed turn of the lifecycle.
+type TurnFuture<'a> = Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
+
+/// Poll `turn` once, catching its panic.
+#[inline]
+fn poll_caught(
+    turn: &mut TurnFuture<'_>,
+    cx: &mut std::task::Context<'_>,
+) -> Result<std::task::Poll<()>, Panic> {
+    std::panic::catch_unwind(AssertUnwindSafe(|| turn.as_mut().poll(cx)))
+}
+
+/// Drop a turn that panicked; a panic of its destructor is disposed of.
+fn drop_panicked(turn: Option<TurnFuture<'_>>) {
+    if let Err(secondary) = std::panic::catch_unwind(AssertUnwindSafe(|| drop(turn))) {
+        crate::mailbox::dispose_panic(secondary);
     }
 }
 /// A caught panic payload.
@@ -1834,18 +1869,19 @@ impl<A: Actor, C: Fn()> Future for DeathFirst<'_, A, C> {
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Self::Output> {
         let this = self.get_mut();
+        if std::mem::take(&mut this.polled) {
+            // Polled (and its waker registered) in this same task poll.
+            return std::task::Poll::Pending;
+        }
         let inner = this.inner.as_mut().expect("polled after completion");
-        match std::panic::catch_unwind(AssertUnwindSafe(|| inner.as_mut().poll(cx))) {
+        match poll_caught(inner, cx) {
             Ok(std::task::Poll::Pending) => std::task::Poll::Pending,
             Ok(std::task::Poll::Ready(())) => {
                 this.inner = None;
                 std::task::Poll::Ready(Ok(()))
             }
             Err(panic) => {
-                let inner = this.inner.take();
-                if let Err(secondary) = std::panic::catch_unwind(AssertUnwindSafe(|| drop(inner))) {
-                    crate::mailbox::dispose_panic(secondary);
-                }
+                drop_panicked(this.inner.take());
                 std::task::Poll::Ready(Err(panic))
             }
         }
@@ -2088,8 +2124,33 @@ async fn run_actor_lifecycle<A: Actor, C: Fn()>(
                 let mut envelope = envelope;
                 let result = match dispatch(&mut *envelope, &mut *actor, &ctx) {
                     Ok((turn, caller)) => {
-                        let turn = crate::lifecycle_trace::in_actor(ctx.shared.id.raw(), turn);
-                        DeathFirst::new(turn, &mut *rx, &mut *cleanup, caller).await
+                        let mut turn =
+                            Some(crate::lifecycle_trace::in_actor(ctx.shared.id.raw(), turn));
+                        // Most turns finish in their first poll, which runs
+                        // here, with no await point before it returns: only
+                        // a turn that stays pending is guarded by
+                        // `DeathFirst` against the runtime dropping it.
+                        let first = future::poll_fn(|cx| {
+                            std::task::Poll::Ready(poll_caught(
+                                turn.as_mut().expect("polled once"),
+                                cx,
+                            ))
+                        })
+                        .await;
+                        match first {
+                            Ok(std::task::Poll::Ready(())) => {
+                                drop(turn);
+                                Ok(())
+                            }
+                            Ok(std::task::Poll::Pending) => {
+                                let turn = turn.take().expect("pending turn");
+                                DeathFirst::pending(turn, &mut *rx, &mut *cleanup, caller).await
+                            }
+                            Err(panic) => {
+                                drop_panicked(turn.take());
+                                Err(panic)
+                            }
+                        }
                     }
                     Err(panic) => Err(panic),
                 };

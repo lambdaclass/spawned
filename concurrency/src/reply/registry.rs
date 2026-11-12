@@ -266,6 +266,7 @@ impl Registry {
     }
 
     /// A reply obligation (`PendingReply` or `ReplyTo`) was dropped unanswered.
+    #[inline]
     pub(crate) fn dropped<R: Send + 'static>(&self, slot: Arc<Slot<R>>) {
         if slot.is_terminal() {
             return;
@@ -356,11 +357,13 @@ impl Registry {
     }
 
     /// The run loop is about to dispatch a handler.
+    #[inline]
     pub(crate) fn begin_turn(&self) {
         self.turn.begin_turn();
     }
 
     /// The handler returned (`panicked == false`) or unwound.
+    #[inline]
     pub(crate) fn end_turn(&self, panicked: bool) {
         let (drops, outcome) = self.turn.end_turn(panicked);
         // Most turns drop no obligation: skip the commit entirely.

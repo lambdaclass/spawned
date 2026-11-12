@@ -54,6 +54,7 @@ fn take<T>(drops: &Mutex<Vec<T>>) -> Vec<T> {
 }
 
 impl<T> TurnPhase<T> {
+    #[inline]
     pub(crate) fn load(&self) -> u8 {
         self.phase.0.load(Ordering::Acquire)
     }
@@ -94,12 +95,14 @@ impl<T> TurnPhase<T> {
 
     /// The run loop is about to dispatch a handler. Only the run loop moves
     /// the phase out of `RUNNING`, so a plain store suffices.
+    #[inline]
     pub(crate) fn begin_turn(&self) {
         self.phase.0.store(IN_TURN, Ordering::Release);
     }
 
     /// The handler returned (`panicked == false`) or unwound: the recorded
     /// drops and their outcome.
+    #[inline]
     pub(crate) fn end_turn(&self, panicked: bool) -> (Vec<T>, Outcome) {
         let outcome = if panicked {
             Outcome::Stopped
