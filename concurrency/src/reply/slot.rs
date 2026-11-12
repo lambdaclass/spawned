@@ -48,20 +48,25 @@ const JOBS_MASK: u64 = MAX_JOBS << JOBS_SHIFT;
 /// Deadline value meaning "never" (`Deadline::Never`).
 pub(crate) const NEVER: u64 = u64::MAX;
 
+#[inline]
 pub(crate) fn state(word: u64) -> u64 {
     word & STATE_MASK
 }
+#[inline]
 pub(crate) fn jobs(word: u64) -> u64 {
     (word & JOBS_MASK) >> JOBS_SHIFT
 }
+#[inline]
 fn live(state: u64) -> bool {
     state == OPEN || state == WRITING
 }
 /// Credits a slot holds in its owner's pool.
+#[inline]
 pub(crate) fn credits(word: u64) -> u64 {
     let token = (word & TOKEN != 0 && live(state(word))) as u64;
     jobs(word).max(token)
 }
+#[inline]
 fn with_state(word: u64, to: u64) -> u64 {
     (word & !STATE_MASK) | to
 }
