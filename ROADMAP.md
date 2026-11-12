@@ -92,9 +92,24 @@ Sockets stay with rank 22a; synchronous databases, EVM execution and cryptograph
 1.0 is a promise, not a feature set: the API is stable, every guarantee is checked, and it has been proven in production. Planned order (each release follows the [Priorities](#priorities)):
 
 - **0.8:** deferred replies and pipe-to-self (rank 11), OTP exit signals, startup and runtime-drop semantics (5e, 5f, 5g), and an API cleanup (smaller job API, `#[non_exhaustive]` and builders, OTP names such as `send_request`).
-- **0.9:** unified start API (`start`, `start_link`, `start_monitor` with `StartOptions`, children inheriting their parent's placement), dynamic supervisor (12a), supervisor alignment with OTP (budget exhaustion exits `Shutdown`, static `terminate_child`), introspection v1 (`process_info`, `get_state`, tree and system snapshots, opt-in stall watchdog), and the determinism fixes found by the audit.
-- **0.10:** the admission package designed together: bounded mailboxes (17), byte credits (18), deadlines (19); bounded draining on shutdown (13); the OTP control lane (14); per-actor memory limits (18a).
+- **0.9: introspection and the attachable console** (design approved, [introspection.md](docs/design/introspection.md)): `process_info`-style `info()` that answers while a handler is wedged, `get_state`/`get_status` between turns, actor listing with labels, supervision-tree and system snapshots, structured crash and supervisor reports, the opt-in stall watchdog (rank 8), and `spawned-ctl attach` on every binary that runs an `ActorSystem`. Also the determinism fixes from the audit (D1-D3).
+- **0.10: starting and supervising, OTP-complete** (designs approved: [unified-start.md](docs/design/unified-start.md); dynamic supervisor in [#245](https://github.com/lambdaclass/spawned/pull/245)): the unified start API (`spawn`, `start`, `start_link`, `start_monitor` with `StartOptions`, fallible `started()` with `Init`, placement inheritance, typed names), the dynamic supervisor (12a), and supervisor alignment with OTP (budget exhaustion exits `Shutdown`, static `terminate_child`).
+- **0.11:** the admission package designed together: bounded mailboxes (17), byte credits (18), deadlines (19); bounded draining on shutdown (13); the OTP control lane (14); per-actor memory limits (18a).
 - **1.0:** stabilization.
+
+Releases are kept small: one theme each, so each is quick to review, model,
+canary and ship. 0.8 combined two large features and an API pass, and each
+review round found new findings where they interacted.
+
+**Implementing a release.** Each feature is one PR implementing its approved
+design, with the design's test plan as the acceptance checklist: every
+guarantee checked at every layer the plan names, the model tied to the code by
+trace validation (the model leaves the `model-sync` TLC-only allowlist in the
+same PR), the planted bugs from the design caught, a no-cost benchmark against
+the previous release, and a final independent review before merge. The
+release is cut after a soak run and, for client-facing behaviour, a canary on
+the release candidate; the next release's work proceeds in parallel on
+branches.
 
 What 1.0 requires:
 
@@ -397,7 +412,7 @@ cargo-mutants and TLA+ with trace replay. Release gates and remaining gaps:
 | After v0.7 | Shuttle for multi-actor framework races | Randomised schedules over whole supervisor/registry tests too large for Loom. Listed in TESTING.md, not started. Internal tool, separate from rank 20. |
 | Implemented | Long-running soak tests | `concurrency/benches/soak`: hours of seeded churn over every lifecycle path (both modes, every backend, groups, all supervisor strategies, links, monitors, timers, registry, timeouts, streams, system cycles, bursts); RSS, live heap, threads, fds, Tokio tasks, registry, live actors and `metrics` gauges sampled to CSV; fails on per-hour growth after warm-up or a count not returning to baseline after quiesce; `--inject-leak` negative control. The ethrex 1.5 GB/day mailbox leak is the motivating bug. Run by hand on fede before each release, never scheduled ([soak harness](docs/TESTING.md#soak-harness)). |
 | With ranks 11-13 | Loom on the new primitives | Reply slots, registry compare-and-remove and mailbox publication versus stop. |
-| Ongoing | Coverage report (`cargo-llvm-cov`) | Find untested branches in supervision and system code; pairs with the surviving mutants. Report only, no threshold. |
+| Ongoing | Coverage report (`cargo-llvm-cov`) | Find untested branches across the whole crate, measured over the ordinary and the simulated (`--cfg spawned_sim`) suites; pairs with the surviving mutants and the planted-bug matrix. Report only, no threshold: coverage is a tool for finding gaps, not a target. |
 | Implemented | Porcupine-style linearizability checker for `request_histories` | `spawned_test::linearizability` (public, no new dependencies): memoised Wing-Gong/Lowe search, per-key partitions, pending requests, an `Unknown` budget verdict and failure explanations with an HTML timeline. `request_histories` now checks PropEr-style `parallel_commands` histories of up to about 1,000 operations against a real actor in both modes, with injected-bug negative controls. Next: check histories from soak and canary runs. See [Porcupine](docs/research/systematic-testing.md#history-checkers). |
 | With rank 5c | Offline lifecycle monitors over canary traces | The Ethlambda canary writes lifecycle traces; monitors check them after each run without a JVM. |
 | After v0.7: Apalache done, Veil next | Unbounded invariants (Apalache, then Veil) | TLC only checks small configurations. Apalache proves the safety invariants of all four models inductive, but at fixed sizes (for example 5 children, 8 or 32 shutdown targets). Next, a time-boxed Veil spike (about two days) on `Supervision`: prove `AtMostOneGeneration` and `BudgetBounded` for any number of children and generations. Adopt Veil for the other models if the proof effort stays reasonable; otherwise record why and keep Apalache ([verification tools](docs/research/verification-tools.md)). |

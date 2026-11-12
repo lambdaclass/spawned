@@ -4,6 +4,10 @@
 
 - TESTING.md: how databases test (FoundationDB, TigerBeetle, SQLite, AWS,
   Jepsen and others), how each technique maps to spawned, and the gaps.
+- ROADMAP: smaller releases (0.9 introspection and the attachable console,
+  0.10 unified start and the dynamic supervisor, 0.11 the admission package),
+  how each feature is implemented against its approved design, and the code
+  coverage report widened to the whole crate over the simulated suites.
 - Tests: planted-bug follow-ups. New scenario-fuzzer oracles for restart
   decisions, RestForOne cohorts, Transient restarts, required restarts versus
   budget exhaustion, backoff delays in virtual time, linked exit reasons,
