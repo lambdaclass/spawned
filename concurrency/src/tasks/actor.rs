@@ -162,7 +162,7 @@ trait Envelope<A: Actor>: Send {
     /// The owner reached its death point with this envelope undispatched:
     /// answer its request now (the final reason), before any payload of the
     /// mailbox is destroyed. No user code runs.
-    fn discharge(&mut self) {}
+    fn discharge(&mut self, _replies: Option<&Registry>) {}
 
     /// Dispatch once: the turn's future, and the request's caller if any.
     /// The envelope keeps the request's slot for the whole turn and lends
@@ -205,10 +205,11 @@ fn dispatched<T>(payload: &mut Option<T>) -> T {
 /// after.
 fn answer_mailbox<A: Actor>(
     rx: &mut mpsc::Receiver<Box<dyn Envelope<A> + Send>>,
+    replies: Option<&Registry>,
 ) -> Vec<Box<dyn Envelope<A> + Send>> {
     let mut queued = rx.drain();
     for envelope in &mut queued {
-        envelope.discharge();
+        envelope.discharge(replies);
     }
     queued
 }
@@ -221,7 +222,8 @@ type StartupPayload<A> = (
     CancellationToken,
 );
 fn discharge_startup<A: Actor>(payload: &mut StartupPayload<A>) -> Vec<Box<dyn Send>> {
-    erase(answer_mailbox(&mut payload.2))
+    let replies = payload.1.shared.replies.clone();
+    erase(answer_mailbox(&mut payload.2, Some(&replies)))
 }
 fn erase<T: Send + 'static>(items: Vec<T>) -> Vec<Box<dyn Send>> {
     items
@@ -272,7 +274,8 @@ where
             observation.reject();
         }
     }
-    fn discharge(&mut self) {
+    fn discharge(&mut self, replies: Option<&Registry>) {
+        self.slot.dispose(replies);
         drop(std::mem::replace(&mut self.slot, SlotHandle::detached()));
     }
     fn handle<'a>(&'a mut self, actor: &'a mut A, ctx: &'a Context<A>) -> Dispatch<'a> {
@@ -424,7 +427,8 @@ impl<A: Actor, R: Send + 'static> Envelope<A> for InTurnEnvelope<A, R> {
     fn message_type(&self) -> &'static str {
         "InTurn"
     }
-    fn discharge(&mut self) {
+    fn discharge(&mut self, replies: Option<&Registry>) {
+        self.slot.dispose(replies);
         drop(std::mem::replace(&mut self.slot, SlotHandle::detached()));
     }
     fn handle<'a>(&'a mut self, actor: &'a mut A, ctx: &'a Context<A>) -> Dispatch<'a> {
@@ -1897,7 +1901,7 @@ impl<A: Actor, C: Fn()> Drop for DeathFirst<'_, A, C> {
         if let Some(caller) = self.caller.take() {
             self.cleanup.answer_turn(caller.retain());
         }
-        let queued = answer_mailbox(self.rx);
+        let queued = answer_mailbox(self.rx, self.cleanup.replies());
         self.cleanup.discharged();
         self.rx.discard_all(queued);
         if let Err(panic) = std::panic::catch_unwind(AssertUnwindSafe(|| drop(inner))) {
@@ -1931,7 +1935,7 @@ impl<A: Actor, C: Fn()> ExitOnDrop<'_, A, C> {
         } else {
             self.cleanup.die();
         }
-        let queued = answer_mailbox(&mut self.rx);
+        let queued = answer_mailbox(&mut self.rx, self.cleanup.replies());
         // Every caller is answered: wake them, then destroy (queued
         // payloads, then state). A destructor panic is a cleanup failure,
         // never the reason.

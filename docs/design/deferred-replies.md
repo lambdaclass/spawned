@@ -94,9 +94,17 @@ inner:    one mutex (the slot lock) over
             waker:  the caller's task waker, or the unparker of a thread
                     blocked in recv() (then `parked` is set, so the death
                     point's discharge wakes it before any other waker)
-            side:   boxed, created by defer(): the owner's credit pool and
-                    the token's watchers (ReplyTo::closed, caller-gone job
-                    cancellation); a plain request never allocates it
+            side:   boxed, created on demand: by defer() (the owner's credit
+                    pool and the token's watchers: ReplyTo::closed,
+                    caller-gone job cancellation) and by the owner's close
+                    (its final reason, stored before the STOPPED CAS so the
+                    caller reads it from the slot); a plain request never
+                    allocates it
+owner:    the owner's registry, kept only by a request with a deadline (an
+          awaited raw receiver puts it in the owner's heap) and in
+          lifecycle-trace builds; a plain request takes no shared reference
+          count. Its envelope, if never dispatched, is answered through the
+          owner's mailbox disposal at the death point (`discharge(replies)`)
           the slot lock also orders a shortening against a reply's
           deadline read
 ```

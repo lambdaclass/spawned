@@ -17,8 +17,9 @@
 //! earlier; nobody holds a token that could still reply.
 //!
 //! The final reason is stored once, at the death point ([`Registry::seal`]),
-//! before any slot of this owner becomes `STOPPED`; a caller that reads a
-//! `STOPPED` slot reads it from here ([`Registry::final_reason`]).
+//! before any slot of this owner becomes `STOPPED`; the close copies it into
+//! each slot it closes before the transition, and a caller that reads a
+//! `STOPPED` slot reads it from there (a slot does not keep its owner alive).
 //!
 //! No rule uses `thread::panicking()`. The phase is one atomic so a turn costs
 //! two uncontended atomic stores; the turn list is locked only when a drop
@@ -39,6 +40,8 @@ use super::turn::{Outcome, TurnPhase, DEAD, EXITING};
 pub(crate) trait Closeable: Send + Sync {
     /// Close without waking; the returned work runs with `run_wake`.
     fn close_collect(&self) -> Option<Wake>;
+    /// Record the owner's final reason before closing.
+    fn set_stopped_reason(&self, reason: &ExitReason);
     fn run_wake(&self, wake: Wake);
     fn notify_parked(&self, wake: &mut Wake);
     fn terminate(&self, to: Terminal) -> bool;
@@ -64,6 +67,9 @@ impl<R: Send> Expirable for Slot<R> {
 impl<R: Send> Closeable for Slot<R> {
     fn close_collect(&self) -> Option<Wake> {
         Slot::close_collect(self)
+    }
+    fn set_stopped_reason(&self, reason: &ExitReason) {
+        Slot::set_stopped_reason(self, reason.clone())
     }
     fn run_wake(&self, wake: Wake) {
         Slot::run_wake(self, wake)
@@ -445,6 +451,11 @@ impl Registry {
     /// already terminal: this may be the last strong reference to an unread
     /// reply, whose destructor must not run before every caller is answered.
     fn close_slot(&self, slot: Arc<dyn Closeable>) -> bool {
+        // The final reason is sealed before any close: the caller reads it
+        // from the slot once it sees `STOPPED`.
+        if let Some(reason) = self.final_reason() {
+            slot.set_stopped_reason(reason);
+        }
         let wake = slot.close_collect();
         let closed = wake.is_some();
         let mut batch = self.discharge.lock().unwrap_or_else(|p| p.into_inner());

@@ -183,6 +183,12 @@ impl<C: Fn()> ActorCleanup<C> {
         reason
     }
 
+    /// The owner's registry (none for an actor without replies).
+    #[cfg_attr(not(feature = "async"), allow(dead_code))]
+    pub(crate) fn replies(&self) -> Option<&crate::reply::registry::Registry> {
+        self.replies.as_deref()
+    }
+
     /// Answer a destroyed turn's own caller at the death point (its slot is
     /// held by the turn's `PendingReply`, not listed in the registry).
     #[cfg_attr(not(feature = "async"), allow(dead_code))]

@@ -101,7 +101,7 @@ trait Envelope<A: Actor>: Send {
     /// The owner reached its death point with this envelope undispatched:
     /// answer its request now (the final reason), before any payload of the
     /// mailbox is destroyed. No user code runs.
-    fn discharge(&mut self) {}
+    fn discharge(&mut self, _replies: Option<&Registry>) {}
 
     fn handle(self: Box<Self>, actor: &mut A, ctx: &Context<A>);
 }
@@ -113,12 +113,13 @@ trait Envelope<A: Actor>: Send {
 fn answer_mailbox<A: Actor>(
     rx: &mut mpsc::Receiver<MailboxItem<A>>,
     extra: Option<Box<dyn Envelope<A> + Send>>,
+    replies: Option<&Registry>,
 ) -> Vec<MailboxItem<A>> {
     let mut queued = rx.drain();
     queued.extend(extra.map(MailboxItem::Message));
     for item in &mut queued {
         if let MailboxItem::Message(envelope) = item {
-            envelope.discharge();
+            envelope.discharge(replies);
         }
     }
     queued
@@ -132,7 +133,8 @@ type StartupPayload<A> = (
     CancellationToken,
 );
 fn discharge_startup<A: Actor>(payload: &mut StartupPayload<A>) -> Vec<Box<dyn Send>> {
-    erase(answer_mailbox(&mut payload.2, None))
+    let replies = payload.1.replies.clone();
+    erase(answer_mailbox(&mut payload.2, None, Some(&replies)))
 }
 fn erase<T: Send + 'static>(items: Vec<T>) -> Vec<Box<dyn Send>> {
     items
@@ -177,7 +179,8 @@ where
             observation.reject();
         }
     }
-    fn discharge(&mut self) {
+    fn discharge(&mut self, replies: Option<&Registry>) {
+        self.slot.dispose(replies);
         drop(std::mem::replace(&mut self.slot, SlotHandle::detached()));
     }
     fn handle(self: Box<Self>, actor: &mut A, ctx: &Context<A>) {
@@ -309,7 +312,8 @@ struct InTurnEnvelope<A: Actor, R: Send + 'static> {
 }
 
 impl<A: Actor, R: Send + 'static> Envelope<A> for InTurnEnvelope<A, R> {
-    fn discharge(&mut self) {
+    fn discharge(&mut self, replies: Option<&Registry>) {
+        self.slot.dispose(replies);
         drop(std::mem::replace(&mut self.slot, SlotHandle::detached()));
     }
     fn handle(self: Box<Self>, actor: &mut A, ctx: &Context<A>) {
@@ -1321,7 +1325,7 @@ impl<A: Actor> ActorRef<A> {
             // requests (and one received after the stop) are answered, all
             // before any destructor.
             cleanup.die();
-            let queued = answer_mailbox(&mut rx, discarded);
+            let queued = answer_mailbox(&mut rx, discarded, Some(&replies));
             // Every caller is answered: wake them, then destroy (queued
             // payloads, then state).
             cleanup.discharged();

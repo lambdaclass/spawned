@@ -36,6 +36,8 @@ mod sync {
     pub(crate) use std::sync::{Arc, Arc as JobArc, Condvar, Mutex, MutexGuard, Weak as JobWeak};
     pub(crate) use std::thread::yield_now;
     pub(crate) type SlotOwner = Option<Arc<super::registry::Registry>>;
+    /// The owner's final reason, as the slot records it at its close.
+    pub(crate) type Reason = crate::error::ExitReason;
 
     /// Run a slot transition as one step of the lifecycle-trace
     /// linearization (the identity without the feature).
@@ -197,9 +199,12 @@ fn terminal_error<R>(terminal: Terminal, slot: &Slot<R>) -> ActorError {
         Terminal::Overloaded => ActorError::Overloaded,
         Terminal::TimedOut => ActorError::RequestTimeout,
         Terminal::Stopped | Terminal::Abandoned | Terminal::Replied => ActorError::ActorStopped(
-            slot.owner
-                .as_ref()
-                .and_then(|owner| owner.final_reason().cloned())
+            slot.stopped_reason()
+                .or_else(|| {
+                    slot.owner
+                        .as_ref()
+                        .and_then(|owner| owner.final_reason().cloned())
+                })
                 .unwrap_or(crate::error::ExitReason::NoProc),
         ),
     }
@@ -208,12 +213,20 @@ fn terminal_error<R>(terminal: Terminal, slot: &Slot<R>) -> ActorError {
 /// A new reply slot for a request with `deadline`, and the caller's receiver.
 ///
 /// `owner` is the receiving instance's registry: an awaited raw receiver
-/// puts its deadline in that owner's heap instead of arming its own timer.
+/// puts its deadline in that owner's heap instead of arming its own timer,
+/// so a request with a deadline keeps a reference to it. A request without
+/// one takes none (no shared reference count per request): the owner's
+/// close records the final reason in the slot, and its envelope is
+/// disposed of through the owner's mailbox ([`SlotHandle::dispose`]).
 pub(crate) fn reply_slot<R: Send + 'static>(
     deadline: Deadline,
     owner: Option<&Arc<Registry>>,
 ) -> (SlotHandle<R>, ReplyReceiver<R>) {
-    let slot = Arc::new(Slot::with_owner(deadline.ticks(), owner.cloned()));
+    let keep = deadline != Deadline::Never || cfg!(feature = "lifecycle-trace");
+    let slot = Arc::new(Slot::with_owner(
+        deadline.ticks(),
+        owner.filter(|_| keep).cloned(),
+    ));
     #[cfg(feature = "lifecycle-trace")]
     if let Some(owner) = owner {
         crate::lifecycle_trace::reply(owner.owner().raw(), "Send", Arc::as_ptr(&slot) as u64, "");
@@ -244,6 +257,13 @@ impl<R: Send + 'static> SlotHandle<R> {
     pub(crate) fn take(&mut self) -> Option<Arc<Slot<R>>> {
         self.0.take()
     }
+    /// Undispatched at its owner's death point (mailbox disposal): answered
+    /// with the final reason, through the owner's registry.
+    pub(crate) fn dispose(&mut self, owner: Option<&Registry>) {
+        if let (Some(owner), Some(slot)) = (owner, self.0.take()) {
+            owner.dispose(slot);
+        }
+    }
 }
 
 /// A turn's caller, lent by its envelope for the turn: retained (one
@@ -260,6 +280,9 @@ impl<R: Send + 'static> Caller for Arc<Slot<R>> {
     }
 }
 
+/// Dropped undisposed (a refused admission, whose caller is answered
+/// `NoProc` by the send itself): a slot that knows its owner is disposed of
+/// there; one that does not (no deadline) is closed `STOPPED` now.
 impl<R: Send + 'static> Drop for SlotHandle<R> {
     fn drop(&mut self) {
         if let Some(slot) = self.0.take() {

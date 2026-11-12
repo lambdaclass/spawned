@@ -189,14 +189,19 @@ impl CreditPool {
     }
 }
 
-/// Deferred-token state, created by `defer()` (which installs the pool
-/// before its CAS can take a credit): a plain request never allocates it.
+/// Rarely needed state, created on demand: by `defer()` (which installs the
+/// pool before its CAS can take a credit) and by the owner's close at its
+/// death point (the final reason). A plain request never allocates it.
+#[derive(Default)]
 struct Side {
     /// The owner's pool, where this slot's credits return.
-    pool: Arc<CreditPool>,
+    pool: Option<Arc<CreditPool>>,
     /// Token-side waiters: `ReplyTo::closed()` and caller-gone job
     /// cancellation. Several may wait at once.
     watchers: Vec<Waker>,
+    /// The owner's final exit reason, stored by its close before the slot
+    /// becomes `STOPPED`, so the caller reads it from the slot.
+    reason: Option<super::sync::Reason>,
 }
 
 /// What the slot lock guards. Its drop is two `None` checks and a null
@@ -363,6 +368,7 @@ impl<R> Slot<R> {
     /// After a winning CAS `old -> new`: return the credit delta now and,
     /// when the state became terminal, collect the wake-up, which the caller
     /// runs after every lock is released.
+    #[inline]
     fn after(&self, old: u64, new: u64) -> Wake {
         let release = credits(old).saturating_sub(credits(new));
         let terminal = live(state(old)) && !live(state(new));
@@ -378,8 +384,8 @@ impl<R> Slot<R> {
     #[inline]
     fn finish(inner: &mut Inner<R>, release: u64, terminal: bool) -> Wake {
         if release > 0 {
-            if let Some(side) = &inner.side {
-                side.pool.release(release);
+            if let Some(pool) = inner.side.as_ref().and_then(|side| side.pool.as_ref()) {
+                pool.release(release);
             }
         }
         if !terminal {
@@ -468,6 +474,27 @@ impl<R> Slot<R> {
         }
     }
 
+    /// The owner's close records its final reason before the `STOPPED`
+    /// transition can publish it (a caller reads it after seeing `STOPPED`).
+    pub(crate) fn set_stopped_reason(&self, reason: super::sync::Reason) {
+        if self.is_terminal() {
+            return;
+        }
+        lock(&self.inner)
+            .side
+            .get_or_insert_with(Default::default)
+            .reason = Some(reason);
+    }
+
+    /// The final reason the owner's close recorded, if it closed this slot.
+    #[allow(dead_code)] // the Loom model has no reasons to read
+    pub(crate) fn stopped_reason(&self) -> Option<super::sync::Reason> {
+        lock(&self.inner)
+            .side
+            .as_ref()
+            .and_then(|side| side.reason.clone())
+    }
+
     /// Run the wake-up work [`close_collect`](Self::close_collect) returned.
     pub(crate) fn run_wake(&self, wake: Wake) {
         wake.run();
@@ -548,12 +575,11 @@ impl<R> Slot<R> {
         }
         // The side state (the pool credits return to) exists before the CAS
         // can take a credit.
-        lock(&self.inner).side.get_or_insert_with(|| {
-            Box::new(Side {
-                pool: pool.clone(),
-                watchers: Vec::new(),
-            })
-        });
+        lock(&self.inner)
+            .side
+            .get_or_insert_with(Default::default)
+            .pool
+            .get_or_insert_with(|| pool.clone());
         match self.cas(Some(pool), |w| {
             if state(w) == OPEN && w & TOKEN == 0 {
                 Ok(w | TOKEN | REG)
@@ -579,7 +605,7 @@ impl<R> Slot<R> {
         let pool = lock(&self.inner)
             .side
             .as_ref()
-            .map(|side| side.pool.clone());
+            .and_then(|side| side.pool.clone());
         match self.cas(pool.as_deref(), |w| {
             if state(w) != OPEN || w & TOKEN == 0 {
                 Err(Refused::Closed)
@@ -636,6 +662,7 @@ impl<R> Slot<R> {
     /// `OPEN -> REPLIED` (the same linearization point as `OPEN -> WRITING`:
     /// a receiver reads the value under that lock); a lost CAS hands the
     /// value back. A reply at or past the deadline takes [`reply`](Self::reply).
+    #[inline]
     pub(crate) fn reply_in_turn(&self, value: R, now: &impl Fn() -> u64) -> (Delivery, Option<R>) {
         let deadline = self.deadline();
         if deadline != NEVER && now() >= deadline {
@@ -737,6 +764,7 @@ impl<R> Slot<R> {
     /// at its deadline (`ReplyReceiver` sleeps until it), so the poll itself
     /// reads no clock.
     #[cfg_attr(not(feature = "async"), allow(dead_code))]
+    #[inline]
     pub(crate) fn poll(&self, waker: &Waker) -> Poll<Result<R, Terminal>> {
         if let Some(result) = self.take(state(self.word())) {
             return Poll::Ready(result);
