@@ -4,7 +4,8 @@
 
 - CI: a hot-path performance gate (`perf-gate`). `benchmarks/hotpath.py gate`
   counts instructions per operation with callgrind for async burst, sequential
-  and concurrent `request()`, `send` and the threads-mode equivalents, and fails
+  and concurrent `request()` and `send` (on a current-thread runtime, so the
+  counts are deterministic) and threads-mode `request()`, and fails
   a PR that grows any of them more than 3% over its merge base (it measures
   only when `concurrency/src`, `rt/src` or `macros/src` changed).
   `hotpath.py abba` is the wall-clock A/B on fixed cores, now a release

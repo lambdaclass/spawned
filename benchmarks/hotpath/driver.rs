@@ -56,19 +56,20 @@ mod t {
 
 /// (name, deterministic). The instruction-count gate runs only the
 /// deterministic ones: everything on one thread (`async_ct_*`, a Tokio
-/// current-thread runtime) or a lockstep pair of threads. Multi-threaded
-/// runtimes and several free-running producers change how often actors park
-/// and wake from run to run (±20% instructions under callgrind), so those
-/// are wall-clock only (`hotpath.py abba`).
+/// current-thread runtime, identical counts run to run) or a lockstep
+/// request/reply pair of threads (within 0.5%). Multi-threaded runtimes and
+/// free-running OS-thread producers change how often actors park and wake
+/// from run to run (up to ±20% instructions under callgrind), so those are
+/// wall-clock only (`hotpath.py abba`).
 const BENCHMARKS: &[(&str, bool)] = &[
     ("async_ct_burst", true),
     ("async_ct_request_seq", true),
     ("async_ct_request_conc16", true),
     ("async_ct_send_p1", true),
     ("async_ct_send_p2", true),
-    ("threads_burst4", true),
     ("threads_request_seq", true),
-    ("threads_send_p1", true),
+    ("threads_burst4", false),
+    ("threads_send_p1", false),
     ("async_burst", false),
     ("async_request_seq", false),
     ("async_request_conc16", false),

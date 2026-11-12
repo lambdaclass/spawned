@@ -1832,7 +1832,14 @@ queue). Wall-clock numbers on shared runners are too noisy, so the gate counts
 instructions with callgrind. Each benchmark runs at two sizes (2,000 and 6,000
 operations, three runs each); instructions per operation is the difference
 divided by the extra operations, so process start, runtime and actor setup
-cancel. The gate fails when any benchmark's instructions per operation grow
+cancel. Only deterministic benchmarks are gated: the async ones on a Tokio
+current-thread runtime (`async_ct_*`: burst, sequential and 16-task
+`request()`, `send` from one and two producer tasks; identical counts run to
+run) and threads-mode sequential `request()` (a lockstep pair of threads,
+within 0.5%). On a multi-threaded runtime, or with free-running OS-thread
+producers (threads-mode burst and `send`), how often actors park and wake
+changes from run to run (up to ±20% instructions), so those run only in the
+wall-clock check. The gate fails when any benchmark's instructions per operation grow
 more than 3% over the merge base (`--threshold`, or `HOTPATH_THRESHOLD` in the
 workflow). The job summary has the per-benchmark table. The workflow always
 reports, so it can be a required check, but it only builds and measures when
