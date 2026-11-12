@@ -111,6 +111,13 @@ const DEFAULT_TURN_BUDGET_MS: u64 = 250;
 
 pub mod explore;
 
+/// The real monotonic clock, also on a simulated thread, where
+/// `std::time::Instant::now` reads virtual time (D1): the simulator's own
+/// wall-clock verdicts (poll watchdog, turn budget) use it.
+fn wall_now() -> std::time::Instant {
+    spawned_sim_libc::passthrough(std::time::Instant::now)
+}
+
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|p| p.into_inner())
 }
@@ -153,7 +160,15 @@ mod watchdog {
 
     fn base() -> Instant {
         static BASE: OnceLock<Instant> = OnceLock::new();
-        *BASE.get_or_init(Instant::now)
+        *BASE.get_or_init(super::wall_now)
+    }
+
+    /// Wall-clock milliseconds since `base()` (the real clock, also on a
+    /// simulated thread).
+    fn elapsed_ms() -> u64 {
+        super::wall_now()
+            .saturating_duration_since(base())
+            .as_millis() as u64
     }
 
     fn limit() -> u64 {
@@ -192,7 +207,7 @@ mod watchdog {
         pub(super) fn busy(&self, task: u64) -> Busy<'_> {
             if self.limit > 0 {
                 self.task.store(task, Ordering::Relaxed);
-                let now = base().elapsed().as_millis() as u64;
+                let now = elapsed_ms();
                 self.since.store(now.max(1), Ordering::Release);
             }
             Busy(self)
@@ -211,7 +226,7 @@ mod watchdog {
     fn run() {
         loop {
             std::thread::sleep(Duration::from_millis(200));
-            let now = base().elapsed().as_millis() as u64;
+            let now = elapsed_ms();
             for watch in lock(&WATCHED).iter().filter_map(Weak::upgrade) {
                 let since = watch.since.load(Ordering::Acquire);
                 let task = watch.task.load(Ordering::Relaxed);
@@ -247,6 +262,7 @@ mod watchdog {
 /// deterministic. What it measures is still a property of the code, so the
 /// default is generous and a failure replays with the same seed or tape.
 mod turn {
+    use super::wall_now;
     use std::cell::RefCell;
     use std::time::{Duration, Instant};
 
@@ -281,7 +297,7 @@ mod turn {
     impl Poll {
         /// Charge the stretch since the last boundary to the current turn.
         fn close(&mut self) {
-            let now = Instant::now();
+            let now = wall_now();
             if let Some(label) = self.turn {
                 let took = now.duration_since(self.since);
                 if took > self.budget && self.overrun.is_none() {
@@ -299,7 +315,7 @@ mod turn {
         let poll = Poll {
             budget,
             turn,
-            since: Instant::now(),
+            since: wall_now(),
             overrun: None,
         };
         POLL.with(|p| p.borrow_mut().replace(poll))
@@ -577,7 +593,19 @@ fn choose(state: &mut State) -> usize {
 struct Shared {
     owner: ThreadId,
     max_steps: u64,
+    /// The world's seed (also `State::seed`), readable without the lock.
+    seed: u64,
     state: Mutex<State>,
+    /// `State::now` in nanoseconds, mirrored so an interposed clock read
+    /// (D1, `interpose`) never needs the state lock, which the reading
+    /// thread may hold.
+    now_nanos: AtomicU64,
+    /// Draws from the OS-entropy stream (interposed `getrandom` and kin).
+    os_entropy: AtomicU64,
+    /// `SPAWNED_SIM_STRICT=1`: a direct clock or entropy read fails the run.
+    strict: std::sync::atomic::AtomicBool,
+    /// The first such read under strict mode: the call and its caller.
+    strict_leak: Mutex<Option<(&'static str, std::backtrace::Backtrace)>>,
     /// Driverless Tokio runtime every poll runs inside (see the module docs),
     /// built on the first poll so a replay can still choose its seed.
     tokio: Mutex<Option<Arc<::tokio::runtime::Runtime>>>,
@@ -596,9 +624,15 @@ impl Shared {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(DEFAULT_MAX_STEPS);
+        interpose::install();
         Arc::new(Self {
             owner: std::thread::current().id(),
             max_steps,
+            seed,
+            now_nanos: AtomicU64::new(0),
+            os_entropy: AtomicU64::new(0),
+            strict: std::sync::atomic::AtomicBool::new(strict_mode()),
+            strict_leak: Mutex::new(None),
             tokio: Mutex::new(None),
             watch: watchdog::Watch::register(seed),
             state: Mutex::new(State {
@@ -684,19 +718,23 @@ impl Shared {
         let mut f = Some(f);
         let mut out = None;
         let _busy = self.watch.busy(id);
-        runtime.block_on(std::future::poll_fn(|cx| match f.take() {
-            Some(f) => {
-                out = Some(f());
-                if escaped(&runtime) {
-                    // Return before Tokio's scheduler tick could run it.
-                    Poll::Ready(())
-                } else {
-                    cx.waker().wake_by_ref();
-                    Poll::Pending
+        // Tokio's own clock reads around the poll (runtime metrics) stay
+        // real; the poll itself, the program's code, is intercepted (D1).
+        spawned_sim_libc::passthrough(|| {
+            runtime.block_on(std::future::poll_fn(|cx| match f.take() {
+                Some(f) => {
+                    out = Some(spawned_sim_libc::intercepted(f));
+                    if escaped(&runtime) {
+                        // Return before Tokio's scheduler tick could run it.
+                        Poll::Ready(())
+                    } else {
+                        cx.waker().wake_by_ref();
+                        Poll::Pending
+                    }
                 }
-            }
-            None => Poll::Ready(()),
-        }));
+                None => Poll::Ready(()),
+            }))
+        });
         out.expect("spawned_sim: poll did not run")
     }
 
@@ -747,6 +785,18 @@ impl Shared {
 
     /// Fail the run if a determinism leak was recorded.
     fn check_leaks(&self) {
+        let strict = lock(&self.strict_leak).take();
+        if let Some((call, backtrace)) = strict {
+            self.shutdown_tokio();
+            panic!(
+                "spawned_sim: determinism leak: {call} on the simulated thread \
+                 (SPAWNED_SIM_STRICT=1): a direct wall-clock or OS-entropy read \
+                 (Instant::now, SystemTime::now, thread_rng, OsRng, getrandom); read time \
+                 through spawned_rt::time::Instant and draw randomness from a generator \
+                 seeded by the test. Caller:\n{}",
+                caller_frames(call, &backtrace)
+            );
+        }
         let foreign = lock(&self.state).foreign.take();
         if let Some(foreign) = foreign {
             self.shutdown_tokio();
@@ -859,6 +909,8 @@ impl Shared {
                 Action::Fire(deadline) => {
                     state.spin = 0;
                     state.now = state.now.max(deadline);
+                    self.now_nanos
+                        .store(state.now.as_nanos() as u64, Ordering::Relaxed);
                     if let Some(tape) = &mut state.tape {
                         tape.push(Decision::Fire(deadline));
                     }
@@ -1381,6 +1433,15 @@ pub fn stats() -> Stats {
 /// do not own the `Runtime` (those run by [`run_once`] or [`explore`]).
 pub fn set_turn_budget(budget: Option<Duration>) {
     lock(&current_or_ambient().state).turn_budget = budget.filter(|b| !b.is_zero());
+}
+
+/// Strict mode (`SPAWNED_SIM_STRICT=1`) for the running simulation: while
+/// on, a direct wall-clock or OS-entropy read on its thread (`Instant::now`,
+/// `SystemTime::now`, `thread_rng`, `OsRng`, `getrandom`) fails the run with
+/// the caller's backtrace instead of reading virtual time or seeded bytes.
+/// `HashMap` key generation is never reported.
+pub fn set_strict(on: bool) {
+    current_or_ambient().strict.store(on, Ordering::Relaxed);
 }
 
 /// Virtual time elapsed in this thread's simulation.
@@ -1975,7 +2036,7 @@ fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
 /// scheduling from the seed's generator.
 pub fn run_once<F, Fut>(seed: u64, script: Option<&Tape>, body: &F) -> Outcome
 where
-    F: Fn(u64) -> Fut,
+    F: Fn(u64) -> Fut + Sync,
     Fut: Future<Output = ()>,
 {
     run_with(seed, script.map(|tape| (tape, ReplayMode::Strict)), body)
@@ -1984,7 +2045,7 @@ where
 /// [`run_once`] with the replay mode chosen.
 pub fn run_with<F, Fut>(seed: u64, script: Option<(&Tape, ReplayMode)>, body: &F) -> Outcome
 where
-    F: Fn(u64) -> Fut,
+    F: Fn(u64) -> Fut + Sync,
     Fut: Future<Output = ()>,
 {
     run_planned(seed, script, None, body).0
@@ -1992,7 +2053,40 @@ where
 
 /// [`run_with`] with an exploration plan choosing the tasks (a script, if
 /// given, still wins). Returns the plan back so its record can be read.
+///
+/// Every run gets a fresh OS thread (named like the caller, with the
+/// caller's panic-output setting), so per-thread state that std and crates
+/// seed once per thread from the clock or OS entropy (`HashMap` keys,
+/// `rand::thread_rng`) is seeded inside this run's world: a seed in a sweep
+/// and the same seed replayed alone see the same values.
 fn run_planned<F, Fut>(
+    seed: u64,
+    script: Option<(&Tape, ReplayMode)>,
+    plan: Option<explore::Plan>,
+    body: &F,
+) -> (Outcome, Option<explore::Plan>)
+where
+    F: Fn(u64) -> Fut + Sync,
+    Fut: Future<Output = ()>,
+{
+    let quiet = QUIET.with(|q| q.get());
+    let mut builder = std::thread::Builder::new();
+    if let Some(name) = std::thread::current().name() {
+        builder = builder.name(name.to_owned());
+    }
+    std::thread::scope(|scope| {
+        let run = builder
+            .spawn_scoped(scope, move || {
+                QUIET.with(|q| q.set(quiet));
+                run_on_this_thread(seed, script, plan, body)
+            })
+            .expect("spawned_sim: cannot start a thread for the run");
+        run.join()
+            .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+    })
+}
+
+fn run_on_this_thread<F, Fut>(
     seed: u64,
     script: Option<(&Tape, ReplayMode)>,
     plan: Option<explore::Plan>,
@@ -2093,7 +2187,7 @@ fn script_tape(seed: u64, spin: Option<u64>, picks: &[Option<u64>]) -> Tape {
 /// smallest failing tape found and the runs spent.
 pub fn shrink<F, Fut>(failing: &Tape, failure: &str, body: &F, budget: usize) -> (Tape, usize)
 where
-    F: Fn(u64) -> Fut,
+    F: Fn(u64) -> Fut + Sync,
     Fut: Future<Output = ()>,
 {
     let seed = failing.seed;
@@ -2203,7 +2297,8 @@ impl Instant {
             Some(shared) => Self(lock(&shared.state).now),
             None => {
                 static BASE: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
-                Self(BASE.get_or_init(std::time::Instant::now).elapsed())
+                let base = *BASE.get_or_init(wall_now);
+                Self(wall_now().saturating_duration_since(base))
             }
         }
     }
@@ -2271,6 +2366,136 @@ pub fn entropy() -> u64 {
             let mut x = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             splitmix(&mut x)
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Interposed libc clock and entropy (D1)
+// ---------------------------------------------------------------------------
+
+/// Where the virtual monotonic clock starts: `std::time::Instant` on a
+/// simulated thread reads this plus the virtual time elapsed. One day, so
+/// code that subtracts a margin from `Instant::now()` does not underflow.
+pub const VIRTUAL_BOOT: Duration = Duration::from_secs(86_400);
+
+/// Where the virtual wall clock starts: `SystemTime::now()` on a simulated
+/// thread reads 2000-01-01T00:00:00Z plus the virtual time elapsed (an
+/// obviously virtual date in logs and timestamps).
+pub const VIRTUAL_EPOCH: Duration = Duration::from_secs(946_684_800);
+
+/// Whether this target interposes the libc clock and entropy calls (Linux
+/// with glibc, macOS). Elsewhere `std::time` and OS entropy stay real under
+/// the simulator, and `SPAWNED_SIM_STRICT` cannot see them.
+pub const INTERPOSED: bool = spawned_sim_libc::SUPPORTED;
+
+/// The frames of `backtrace` below the interposed libc function named by
+/// `call` (the interposer and hook frames are noise).
+fn caller_frames(call: &str, backtrace: &std::backtrace::Backtrace) -> String {
+    let symbol = call.split('(').next().unwrap_or(call);
+    let text = backtrace.to_string();
+    let lines: Vec<&str> = text.lines().collect();
+    let is_frame = |line: &str, name: &str| {
+        line.trim_start()
+            .split_once(": ")
+            .is_some_and(|(n, rest)| n.chars().all(|c| c.is_ascii_digit()) && rest.trim() == name)
+    };
+    match lines.iter().position(|line| is_frame(line, symbol)) {
+        Some(at) => {
+            let mut rest = &lines[at + 1..];
+            // Skip the interposed frame's own `at` line, if any.
+            while rest
+                .first()
+                .is_some_and(|l| l.trim_start().starts_with("at "))
+            {
+                rest = &rest[1..];
+            }
+            rest.join("\n")
+        }
+        None => text,
+    }
+}
+
+fn strict_mode() -> bool {
+    matches!(
+        std::env::var("SPAWNED_SIM_STRICT")
+            .ok()
+            .as_deref()
+            .map(str::trim),
+        Some("1" | "true" | "yes")
+    )
+}
+
+/// The hooks behind `spawned-sim-libc`'s interposers: on a thread that runs
+/// a world, virtual time and bytes from the world's seeded entropy stream;
+/// elsewhere `None`, which makes the interposer call libc.
+mod interpose {
+    use super::{lock, splitmix, Shared, AMBIENT, CURRENT, VIRTUAL_BOOT, VIRTUAL_EPOCH};
+    use spawned_sim_libc::{Clock, Hooks};
+    use std::sync::atomic::Ordering;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    static HOOKS: Hooks = Hooks { clock, random };
+
+    pub(super) fn install() {
+        spawned_sim_libc::install(&HOOKS);
+    }
+
+    /// The world this thread runs, without panicking during thread teardown
+    /// or while the thread-locals are borrowed.
+    fn world() -> Option<Arc<Shared>> {
+        let current = CURRENT
+            .try_with(|c| c.try_borrow().ok().and_then(|c| c.last().cloned()))
+            .ok()
+            .flatten();
+        current.or_else(|| {
+            AMBIENT
+                .try_with(|a| a.try_borrow().ok().and_then(|a| a.upgrade()))
+                .ok()
+                .flatten()
+        })
+    }
+
+    impl Shared {
+        /// Under strict mode, remember the first direct read and its caller;
+        /// the next scheduling step fails the run with it.
+        fn strict_read(&self, call: &'static str) {
+            if self.strict.load(Ordering::Relaxed) {
+                let mut leak = lock(&self.strict_leak);
+                if leak.is_none() {
+                    *leak = Some((call, std::backtrace::Backtrace::force_capture()));
+                }
+            }
+        }
+    }
+
+    fn clock(kind: Clock, call: &'static str) -> Option<Duration> {
+        let shared = world()?;
+        shared.strict_read(call);
+        let now = Duration::from_nanos(shared.now_nanos.load(Ordering::Relaxed));
+        Some(match kind {
+            Clock::Monotonic => VIRTUAL_BOOT + now,
+            Clock::Realtime => VIRTUAL_EPOCH + now,
+        })
+    }
+
+    fn random(buf: &mut [u8], call: &'static str, quiet: bool) -> bool {
+        let Some(shared) = world() else {
+            return false;
+        };
+        if !quiet {
+            shared.strict_read(call);
+        }
+        for chunk in buf.chunks_mut(8) {
+            let draw = shared.os_entropy.fetch_add(1, Ordering::Relaxed) + 1;
+            // A stream of its own: separate from scheduling and from
+            // `spawned_rt::time::entropy`, so drawing does not shift either.
+            let mut x =
+                shared.seed ^ 0x6A09_E667_F3BC_C909 ^ draw.wrapping_mul(0xD1B5_4A32_D192_ED03);
+            let bytes = splitmix(&mut x).to_le_bytes();
+            chunk.copy_from_slice(&bytes[..chunk.len()]);
+        }
+        true
     }
 }
 

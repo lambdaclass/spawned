@@ -6,6 +6,7 @@ members = [
     "concurrency",
     "macros",
     "testing",
+    "sim-libc",
     "examples/bank",
     "examples/bank_threads",
     "examples/name_server",
