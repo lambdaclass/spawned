@@ -1,6 +1,9 @@
 #![cfg(feature = "async")]
 //! Generated policy scripts against a separate generation/retirement oracle.
 //! Action boundaries are synchronized; this does not control Tokio/OS schedules.
+#[macro_use]
+#[path = "support/deadline.rs"]
+mod deadline;
 use proptest::prelude::*;
 use spawned_concurrency::{
     message::Message,
@@ -224,7 +227,7 @@ async fn scenario(
             .unwrap(),
         );
     }
-    let supervisor = tree.start().await.unwrap();
+    let supervisor = within!(tree.start()).await.unwrap();
     let mut expected = vec![
         Expected {
             generation: 1,
@@ -257,18 +260,18 @@ async fn scenario(
                     actor.request_with_timeout(Crash, LIMIT).await,
                     Err(ActorError::ActorStopped)
                 ));
-                let reason = actor.wait_exit().await;
+                let reason = within!(actor.wait_exit()).await;
                 assert!(matches!(reason, ExitReason::Panic(_)));
                 true
             }
             Action::Normal => {
                 actor.context().stop();
-                assert_eq!(actor.wait_exit().await, ExitReason::Normal);
+                assert_eq!(within!(actor.wait_exit()).await, ExitReason::Normal);
                 false
             }
             Action::Shutdown => {
                 actor.child_handle().shutdown();
-                assert_eq!(actor.wait_exit().await, ExitReason::Shutdown);
+                assert_eq!(within!(actor.wait_exit()).await, ExitReason::Shutdown);
                 false
             }
         };
@@ -371,7 +374,7 @@ async fn an_already_retired_child_reports_a_generation_error_without_spinning() 
             .restart(RestartMode::Temporary),
         )
         .unwrap();
-    let supervisor = tree.start().await.unwrap();
+    let supervisor = within!(tree.start()).await.unwrap();
     child.current().unwrap().context().stop();
     assert!(
         spawned_rt::tasks::timeout(LIMIT, child.wait_for_generation(1))

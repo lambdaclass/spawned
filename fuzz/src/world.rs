@@ -6,7 +6,7 @@
 
 use spawned_concurrency::{
     message::Message,
-    supervision::SupervisedChild,
+    supervision::{Backoff, RestartMode, SupervisedChild, SupervisorStrategy},
     tasks::{Actor, Context, Handler, Recipient},
     ActorId, ChildHandle, Down, Exit, ExitReason, MonitorRef,
 };
@@ -52,6 +52,20 @@ pub struct Inst {
     pub exits: Vec<(ActorId, ExitReason)>,
     /// Sources whose `Down`/`Exit` this instance already handled.
     pub ended: HashSet<ActorId>,
+    /// Virtual times of the same hooks, for the restart and backoff oracles
+    /// (`ready_at` and `ended_at` of the supervisor's stability check are
+    /// read in the same polls as `started_end` and `stopped_begin`).
+    pub started_end_at: Option<Duration>,
+    pub stopped_begin_at: Option<Duration>,
+    pub dropped_at: Option<Duration>,
+    /// Factory call that constructed this instance (supervised only).
+    pub call: Option<usize>,
+    /// Returned by `SupervisedChild::current()`: the supervisor published it,
+    /// so it was ready (V4).
+    pub published: bool,
+    /// Taken in `started()`; the published reason is read after teardown.
+    pub handle: Option<ChildHandle>,
+    pub reason: Option<ExitReason>,
 }
 
 #[derive(Debug, Clone)]
@@ -70,6 +84,31 @@ pub struct SupInst {
     pub root: usize,
     pub max_restarts: usize,
     pub window: Duration,
+    pub strategy: SupervisorStrategy,
+    pub backoff: Backoff,
+    /// A root whose declared children are all workers (the restart oracles
+    /// only judge these; nested subtrees are checked by V1, V3 and V5).
+    pub flat: bool,
+    /// Children declared (slot paths `r{root}/c{i}`).
+    pub children: usize,
+    /// Virtual time of the first stop, shutdown or system close the driver
+    /// requested before teardown.
+    pub closed_at: Option<Duration>,
+    /// Teardown found the tree settled (no child starting, backing off or
+    /// stopping) at this tick, before shutting it down.
+    pub settled: Option<u64>,
+    /// `Supervisor::failure()` when teardown began.
+    pub failure: Option<String>,
+}
+
+/// How a factory call ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Outcome {
+    /// The call has not returned (or its future was dropped).
+    Pending,
+    Error,
+    Panic,
+    Instance(usize),
 }
 
 /// One factory invocation (worker factory or nested `configure` callback).
@@ -77,8 +116,23 @@ pub struct SupInst {
 pub struct Call {
     pub inst: usize,
     pub slot: String,
+    /// Declaration index of the slot in its supervisor.
+    pub index: usize,
     pub at: Duration,
-    pub temporary: bool,
+    pub seq: u64,
+    pub mode: RestartMode,
+    pub outcome: Outcome,
+}
+
+/// A `send_after` or `send_interval` the driver created (bug 21's oracle).
+#[derive(Debug, Clone)]
+pub struct TimerRec {
+    pub created: Duration,
+    pub period: Duration,
+    pub interval: bool,
+    pub cancelled: Option<Duration>,
+    /// Timer messages a handler ran.
+    pub handled: u64,
 }
 
 #[derive(Default)]
@@ -106,6 +160,7 @@ pub struct State {
     pub roots_done: Vec<bool>,
     /// Latest `SupervisedChild` of each nested worker slot.
     pub nested: BTreeMap<String, SupervisedChild<Worker>>,
+    pub timers: Vec<TimerRec>,
     pub violations: Vec<Violation>,
 }
 
@@ -136,7 +191,7 @@ impl State {
         self.may_stop.insert(id);
         *self.causes.entry(id).or_default() += 1;
     }
-    fn tick(&mut self) -> u64 {
+    pub fn tick(&mut self) -> u64 {
         self.seq += 1;
         self.seq
     }
@@ -174,6 +229,8 @@ pub enum Act {
 pub struct Do {
     pub nonce: u64,
     pub lane: u64,
+    /// `1 + index` into [`State::timers`] for timer messages, else 0.
+    pub timer: usize,
     pub act: Act,
 }
 impl Message for Do {
@@ -234,6 +291,7 @@ impl Drop for Worker {
             let mut s = self.world.lock();
             let seq = s.tick();
             s.insts[self.instance].dropped = Some(seq);
+            s.insts[self.instance].dropped_at = Some(now());
             s.live_total -= 1;
             if let Some(slot) = &self.slot {
                 *s.live.entry(slot.clone()).or_default() -= 1;
@@ -261,6 +319,7 @@ impl Actor for Worker {
             let twice = inst.started_begin.is_some();
             inst.id = Some(id);
             inst.started_begin = Some(seq);
+            inst.handle = Some(ctx.actor_ref().child_handle());
             if twice {
                 s.violate("L1: started() ran twice", format!("w{}", self.instance));
             }
@@ -279,6 +338,7 @@ impl Actor for Worker {
         let mut s = self.world.lock();
         let seq = s.tick();
         s.insts[self.instance].started_end = Some(seq);
+        s.insts[self.instance].started_end_at = Some(now());
     }
 
     async fn stopped(&mut self, _ctx: &Context<Self>) {
@@ -289,6 +349,7 @@ impl Actor for Worker {
             let (twice, after_started_panic) =
                 (inst.stopped_begin.is_some(), inst.started_panicked);
             inst.stopped_begin = Some(seq);
+            inst.stopped_begin_at = Some(now());
             if twice {
                 s.violate("L1: stopped() ran twice", format!("w{}", self.instance));
             }
@@ -341,6 +402,9 @@ impl Handler<Do> for Worker {
         {
             let mut s = self.world.lock();
             self.turn(&mut s, "Do");
+            if msg.timer != 0 {
+                s.timers[msg.timer - 1].handled += 1;
+            }
             if msg.nonce != 0 {
                 if let Some(other) = s.handled.insert(msg.nonce, self.instance) {
                     let detail = format!("nonce {} by w{other} and w{}", msg.nonce, self.instance);
@@ -473,7 +537,7 @@ pub fn now() -> Duration {
 
 /// Record a factory call for `slot` under supervisor instance `inst` and
 /// check that no earlier generation of the slot is still alive (V3).
-pub fn factory_call(world: &World, inst: usize, slot: &str, temporary: bool) {
+pub fn factory_call(world: &World, inst: usize, slot: &str, mode: RestartMode) -> usize {
     let mut s = world.lock();
     let live = s.live.get(slot).copied().unwrap_or(0);
     let prefix = format!("{slot}/");
@@ -497,10 +561,28 @@ pub fn factory_call(world: &World, inst: usize, slot: &str, temporary: bool) {
         );
     }
     let at = now();
+    let seq = s.tick();
+    let index = slot
+        .rsplit_once("/c")
+        .and_then(|(_, i)| i.parse().ok())
+        .unwrap_or(0);
     s.calls.push(Call {
         inst,
         slot: slot.to_string(),
+        index,
         at,
-        temporary,
+        seq,
+        mode,
+        outcome: Outcome::Pending,
     });
+    s.calls.len() - 1
+}
+
+/// Record how factory call `call` ended.
+pub fn factory_outcome(world: &World, call: usize, outcome: Outcome) {
+    let mut s = world.lock();
+    s.calls[call].outcome = outcome;
+    if let Outcome::Instance(i) = outcome {
+        s.insts[i].call = Some(call);
+    }
 }

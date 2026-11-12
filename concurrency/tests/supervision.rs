@@ -1,6 +1,9 @@
 #![cfg(feature = "async")]
 // Tests that need OS threads are compiled out under spawned_sim.
 #![cfg_attr(spawned_sim, allow(unused_imports, dead_code))]
+#[macro_use]
+#[path = "support/deadline.rs"]
+mod deadline;
 use spawned_concurrency::{
     message::Message,
     supervision::{Backoff, ChildSpec, RestartMode, SupervisorConfig},
@@ -86,7 +89,7 @@ async fn one_for_one_uses_fresh_state_same_group_and_instance_bound_refs() {
             Ok::<_, String>(Counter(0))
         }))
         .unwrap();
-    let supervisor = tree.start().await.unwrap();
+    let supervisor = within!(tree.start()).await.unwrap();
     let old = child.current().unwrap();
     let sibling_id = sibling.current().unwrap().id();
     assert_eq!(old.request(Next).await.unwrap(), 1);
@@ -130,7 +133,7 @@ async fn restart_modes_distinguish_normal_shutdown_and_panic() {
                         .restart(mode),
                 )
                 .unwrap();
-            let supervisor = tree.start().await.unwrap();
+            let supervisor = within!(tree.start()).await.unwrap();
             let old = child.current().unwrap();
             let generation = child.snapshot().generation;
             match &exit {
@@ -176,7 +179,7 @@ async fn restart_budget_is_shared_between_siblings_and_exhaustion_closes_tree() 
             Ok::<_, String>(Counter(0))
         }))
         .unwrap();
-    let supervisor = tree.start().await.unwrap();
+    let supervisor = within!(tree.start()).await.unwrap();
     assert!(a.current().unwrap().request(Crash).await.is_err());
     let a2 = spawned_rt::tasks::timeout(LIMIT, a.wait_for_generation(1))
         .await
@@ -268,7 +271,7 @@ async fn shutdown_during_backoff_prevents_new_factory_invocation() {
             async { Ok::<_, String>(Counter(0)) }
         }))
         .unwrap();
-    let supervisor = tree.start().await.unwrap();
+    let supervisor = within!(tree.start()).await.unwrap();
     assert!(child.current().unwrap().request(Crash).await.is_err());
     assert!(supervisor.shutdown(LIMIT).await.complete);
     assert_eq!(attempts.load(Ordering::SeqCst), 1);
@@ -326,7 +329,7 @@ async fn cleanup_deadline_escalates_without_overlapping_a_live_generation() {
             .shutdown_timeout(Duration::from_millis(20)),
         )
         .unwrap();
-    let supervisor = tree.start().await.unwrap();
+    let supervisor = within!(tree.start()).await.unwrap();
     spawned_rt::tasks::timeout(LIMIT, entered)
         .await
         .unwrap()
@@ -393,7 +396,7 @@ async fn stuck_stopped_hook_triggers_cleanup_deadline_before_terminal_publicatio
             .shutdown_timeout(Duration::from_millis(20)),
         )
         .unwrap();
-    let supervisor = tree.start().await.unwrap();
+    let supervisor = within!(tree.start()).await.unwrap();
     let old = child.current().unwrap();
     let response = old.request_raw(Crash).unwrap();
     spawned_rt::tasks::timeout(LIMIT, entered)
@@ -450,7 +453,7 @@ async fn initial_startup_and_shutdown_follow_dependency_order_across_groups() {
         }))
         .unwrap();
     }
-    let supervisor = tree.start().await.unwrap();
+    let supervisor = within!(tree.start()).await.unwrap();
     let report = system.shutdown(LIMIT).await;
     assert!(report.complete);
     assert!(report.supervisor_failures.is_empty());
@@ -575,7 +578,7 @@ async fn repeated_crash_producer_and_shutdown_races_never_overlap_generations() 
                 async move { Ok::<_, String>(RaceActor { live, count: 0 }) }
             }))
             .unwrap();
-        let supervisor = tree.start().await.unwrap();
+        let supervisor = within!(tree.start()).await.unwrap();
         let old = child.current().unwrap();
         let mut producers = Vec::new();
         for _ in 0..8 {
@@ -666,7 +669,7 @@ async fn system_shutdown_orders_standalone_actors_and_supervisor_trees_together(
     }
     .start_on(&group)
     .unwrap();
-    a.ready().await.unwrap();
+    within!(a.ready()).await.unwrap();
     let mut trees = Vec::new();
     for name in ["b", "d"] {
         let mut tree = system.supervisor(config(5)).unwrap();
@@ -676,7 +679,7 @@ async fn system_shutdown_orders_standalone_actors_and_supervisor_trees_together(
             async move { Ok::<_, String>(Ordered { name, log }) }
         }))
         .unwrap();
-        trees.push(tree.start().await.unwrap());
+        trees.push(within!(tree.start()).await.unwrap());
         if name == "b" {
             Ordered {
                 name: "c",
@@ -721,7 +724,7 @@ async fn generation_waiters_wake_at_admission_close_before_their_shutdown_turn()
         }
     }))
     .unwrap();
-    let supervisor = tree.start().await.unwrap();
+    let supervisor = within!(tree.start()).await.unwrap();
     let mut waiter = Box::pin(first.wait_for_generation(99));
     assert!(futures::poll!(waiter.as_mut()).is_pending());
     supervisor.stop();
@@ -744,7 +747,7 @@ async fn stuck_supervisor_does_not_prevent_earlier_standalone_shutdown_after_sys
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("stuck-tree-order", 1).unwrap();
     let earlier = Counter(0).start_on(&group).unwrap();
-    earlier.ready().await.unwrap();
+    within!(earlier.ready()).await.unwrap();
     let (entered_tx, entered) = tokio::sync::oneshot::channel();
     let (release, release_rx) = tokio::sync::oneshot::channel();
     let args = Arc::new(std::sync::Mutex::new(Some((entered_tx, release_rx))));
@@ -767,7 +770,7 @@ async fn stuck_supervisor_does_not_prevent_earlier_standalone_shutdown_after_sys
         .shutdown_timeout(Duration::from_secs(60)),
     )
     .unwrap();
-    let _supervisor = tree.start().await.unwrap();
+    let _supervisor = within!(tree.start()).await.unwrap();
     let inner_actor = inside.current().unwrap();
     let report = system.shutdown(Duration::from_millis(20)).await;
     assert!(!report.complete);
@@ -859,7 +862,7 @@ async fn transient_replacement_exiting_before_readiness_is_retried() {
                 .restart(RestartMode::Transient),
             )
             .unwrap();
-        let supervisor = tree.start().await.unwrap();
+        let supervisor = within!(tree.start()).await.unwrap();
         assert!(child.current().unwrap().request(Crash).await.is_err());
         let replacement = spawned_rt::tasks::timeout(LIMIT, child.wait_for_generation(2))
             .await
@@ -930,7 +933,7 @@ async fn failed_replacements_exhaust_the_restart_budget_exactly() {
                 .restart(RestartMode::Transient),
             )
             .unwrap();
-        let supervisor = tree.start().await.unwrap();
+        let supervisor = within!(tree.start()).await.unwrap();
         assert!(child.current().unwrap().request(Crash).await.is_err());
         spawned_rt::tasks::timeout(LIMIT, supervisor.join())
             .await
@@ -1038,7 +1041,7 @@ async fn supervisor_report_deadline_signals_remaining_siblings() {
         .shutdown_timeout(Duration::from_secs(60)),
     )
     .unwrap();
-    let supervisor = tree.start().await.unwrap();
+    let supervisor = within!(tree.start()).await.unwrap();
     let actor = first.current().unwrap();
     let report = supervisor.shutdown(Duration::from_millis(20)).await;
     assert!(!report.complete);
@@ -1102,7 +1105,7 @@ async fn backoff_exponent_resets_only_after_a_stable_generation() {
             Ok::<_, String>(Counter(0))
         }))
         .unwrap();
-    let supervisor = tree.start().await.unwrap();
+    let supervisor = within!(tree.start()).await.unwrap();
     let snapshots = supervisor.snapshots();
     assert_eq!(snapshots.len(), 1);
     assert_eq!(snapshots[0].name, "flappy");
@@ -1208,7 +1211,7 @@ async fn system_shutdown_reports_supervisor_failures() {
             Ok::<_, String>(Counter(0))
         }))
         .unwrap();
-    let supervisor = tree.start().await.unwrap();
+    let supervisor = within!(tree.start()).await.unwrap();
     assert!(child.current().unwrap().request(Crash).await.is_err());
     spawned_rt::tasks::timeout(LIMIT, supervisor.join())
         .await
@@ -1253,7 +1256,7 @@ async fn system_deadline_signals_remaining_supervised_siblings() {
         .shutdown_timeout(Duration::from_secs(60)),
     )
     .unwrap();
-    let _supervisor = tree.start().await.unwrap();
+    let _supervisor = within!(tree.start()).await.unwrap();
     let actor = first.current().unwrap();
     let report = system.shutdown(Duration::from_millis(50)).await;
     assert!(!report.complete);
@@ -1320,7 +1323,7 @@ async fn owned_registration_is_released_before_the_replacement_registers() {
             Ok::<_, String>(Named("supervision-gap-registered"))
         }))
         .unwrap();
-    let supervisor = tree.start().await.unwrap();
+    let supervisor = within!(tree.start()).await.unwrap();
     for generation in 1..=3 {
         let actor = child.current().unwrap();
         assert!(actor.request(Crash).await.is_err());
@@ -1393,7 +1396,7 @@ async fn one_for_all_restart_waits_for_its_backoff() {
         Ok::<_, String>(Counter(0))
     }))
     .unwrap();
-    let supervisor = tree.start().await.unwrap();
+    let supervisor = within!(tree.start()).await.unwrap();
     // A lower bound only: a slow machine makes the restart later, not earlier.
     let latency = restart_latency(&child).await;
     assert!(
@@ -1485,7 +1488,7 @@ fn native_restart_window_expires_on_the_monotonic_clock() {
                 Ok::<_, String>(Counter(0))
             }))
             .unwrap();
-        let supervisor = tree.start().await.unwrap();
+        let supervisor = within!(tree.start()).await.unwrap();
         let child = &child;
         let crash = |generation| {
             let current = child.current().unwrap();

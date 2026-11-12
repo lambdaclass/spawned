@@ -4,6 +4,9 @@
 //! `verification/tla/trace_check.py` checks them against Supervision.tla.
 #![cfg(feature = "lifecycle-trace")]
 
+#[macro_use]
+#[path = "support/deadline.rs"]
+mod deadline;
 use spawned_concurrency::{
     lifecycle_trace,
     message::Message,
@@ -126,7 +129,7 @@ async fn trace_queued_destructor_panic_restarts_transient_child() {
     let child = tree
         .add(worker("drain", &group).restart(RestartMode::Transient))
         .unwrap();
-    let supervisor = tree.start().await.unwrap();
+    let supervisor = within!(tree.start()).await.unwrap();
     let actor = child.current().unwrap();
     let (entered, arrival) = tokio::sync::oneshot::channel();
     let (release, gate) = tokio::sync::oneshot::channel();
@@ -168,7 +171,7 @@ async fn trace_queued_destructor_failure_preserves_shutdown() {
     let child = tree
         .add(worker("drain", &group).restart(RestartMode::Transient))
         .unwrap();
-    let supervisor = tree.start().await.unwrap();
+    let supervisor = within!(tree.start()).await.unwrap();
     let actor = child.current().unwrap();
     let (entered, arrival) = tokio::sync::oneshot::channel();
     let (release, gate) = tokio::sync::oneshot::channel();
@@ -223,7 +226,7 @@ async fn trace_context_shutdown_and_abnormal_exit() {
     let failed = tree
         .add(worker("failed", &group).restart(modes[1]))
         .unwrap();
-    let supervisor = tree.start().await.unwrap();
+    let supervisor = within!(tree.start()).await.unwrap();
     let actor = clean.current().unwrap();
     actor.request(ExitWith(ExitReason::Shutdown)).await.unwrap();
     wait_state(&clean, ChildState::Stopped).await;
@@ -277,7 +280,7 @@ async fn trace_normal_start_and_stop() {
         tree.add(worker(&format!("c{k}"), &group).restart(*mode))
             .unwrap();
     }
-    let supervisor = tree.start().await.unwrap();
+    let supervisor = within!(tree.start()).await.unwrap();
     assert!(supervisor.shutdown(LIMIT).await.complete);
     write_trace("normal_start_stop", supervisor.trace_id(), &modes, 5);
     assert!(system.shutdown(LIMIT).await.complete);
@@ -291,7 +294,7 @@ async fn trace_permanent_panic_restarts() {
     let mut tree = system.supervisor(config(5)).unwrap();
     let a = tree.add(worker("a", &group).restart(modes[0])).unwrap();
     let b = tree.add(worker("b", &group).restart(modes[1])).unwrap();
-    let supervisor = tree.start().await.unwrap();
+    let supervisor = within!(tree.start()).await.unwrap();
     crash(&a).await;
     spawned_rt::tasks::timeout(LIMIT, a.wait_for_generation(1))
         .await
@@ -315,7 +318,7 @@ async fn trace_transient_normal_exit_is_not_restarted() {
     let mut tree = system.supervisor(config(5)).unwrap();
     tree.add(worker("a", &group).restart(modes[0])).unwrap();
     let b = tree.add(worker("b", &group).restart(modes[1])).unwrap();
-    let supervisor = tree.start().await.unwrap();
+    let supervisor = within!(tree.start()).await.unwrap();
     b.current().unwrap().send(Quit).unwrap();
     wait_state(&b, ChildState::Stopped).await;
     assert_eq!(b.snapshot().generation, 1);
@@ -332,7 +335,7 @@ async fn trace_temporary_exit_is_not_restarted() {
     let mut tree = system.supervisor(config(5)).unwrap();
     let a = tree.add(worker("a", &group).restart(modes[0])).unwrap();
     tree.add(worker("b", &group).restart(modes[1])).unwrap();
-    let supervisor = tree.start().await.unwrap();
+    let supervisor = within!(tree.start()).await.unwrap();
     crash(&a).await;
     wait_state(&a, ChildState::Stopped).await;
     assert!(supervisor.shutdown(LIMIT).await.complete);
@@ -350,7 +353,7 @@ async fn trace_external_shutdown_of_permanent_child_restarts() {
     let mut tree = system.supervisor(config(5)).unwrap();
     let a = tree.add(worker("a", &group).restart(modes[0])).unwrap();
     let b = tree.add(worker("b", &group).restart(modes[1])).unwrap();
-    let supervisor = tree.start().await.unwrap();
+    let supervisor = within!(tree.start()).await.unwrap();
     a.current().unwrap().child_handle().shutdown();
     spawned_rt::tasks::timeout(LIMIT, a.wait_for_generation(1))
         .await
@@ -382,7 +385,7 @@ async fn trace_factory_error_then_success() {
         }
     }))
     .unwrap();
-    let supervisor = tree.start().await.unwrap();
+    let supervisor = within!(tree.start()).await.unwrap();
     assert_eq!(calls.load(Ordering::SeqCst), 2);
     assert!(supervisor.shutdown(LIMIT).await.complete);
     write_trace(
@@ -425,7 +428,7 @@ async fn trace_restart_budget_exhaustion() {
     let mut tree = system.supervisor(config(2)).unwrap();
     let a = tree.add(worker("a", &group)).unwrap();
     let b = tree.add(worker("b", &group)).unwrap();
-    let supervisor = tree.start().await.unwrap();
+    let supervisor = within!(tree.start()).await.unwrap();
     crash(&a).await;
     spawned_rt::tasks::timeout(LIMIT, a.wait_for_generation(1))
         .await
@@ -457,7 +460,7 @@ async fn trace_disabled_retries() {
     let modes = [RestartMode::Permanent];
     let mut tree = system.supervisor(config(0)).unwrap();
     let a = tree.add(worker("a", &group)).unwrap();
-    let supervisor = tree.start().await.unwrap();
+    let supervisor = within!(tree.start()).await.unwrap();
     crash(&a).await;
     spawned_rt::tasks::timeout(LIMIT, supervisor.join())
         .await
@@ -477,7 +480,7 @@ async fn trace_shutdown_during_backoff() {
     policy.backoff.maximum = Duration::from_secs(60);
     let mut tree = system.supervisor(policy).unwrap();
     let a = tree.add(worker("a", &group)).unwrap();
-    let supervisor = tree.start().await.unwrap();
+    let supervisor = within!(tree.start()).await.unwrap();
     crash(&a).await;
     wait_state(&a, ChildState::Backoff).await;
     assert!(supervisor.shutdown(LIMIT).await.complete);
@@ -536,7 +539,7 @@ async fn trace_replacement_exiting_before_readiness_is_retried() {
                 .restart(mode),
             )
             .unwrap();
-        let supervisor = tree.start().await.unwrap();
+        let supervisor = within!(tree.start()).await.unwrap();
         assert!(child.current().unwrap().request(Crash).await.is_err());
         spawned_rt::tasks::timeout(LIMIT, child.wait_for_generation(2))
             .await
@@ -613,7 +616,7 @@ async fn trace_shutdown_deadline_with_slow_stop() {
         .shutdown_timeout(Duration::from_millis(100)),
     )
     .unwrap();
-    let supervisor = tree.start().await.unwrap();
+    let supervisor = within!(tree.start()).await.unwrap();
     let report = supervisor.shutdown(Duration::from_millis(20)).await;
     assert!(!report.complete);
     spawned_rt::tasks::sleep(Duration::from_millis(300)).await;
@@ -667,7 +670,7 @@ async fn trace_randomized_lifecycles() {
                     .unwrap()
             })
             .collect();
-        let supervisor = tree.start().await.unwrap();
+        let supervisor = within!(tree.start()).await.unwrap();
         for _ in 0..rng.next(6) {
             let child = &children[rng.next(3) as usize];
             let op = rng.next(3);
