@@ -539,7 +539,7 @@ const DFS_SEEDS: u64 = 12;
 
 fn check<F, Fut>(name: &str, body: F)
 where
-    F: Fn(u64) -> Fut,
+    F: Fn(u64) -> Fut + Sync,
     Fut: Future<Output = ()>,
 {
     OUTCOMES.with(|o| o.borrow_mut().clear());

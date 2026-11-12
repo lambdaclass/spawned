@@ -370,7 +370,8 @@ fn blocking_backend_actor_fails_the_run() {
         let log = Log::default();
         let node = Node {
             id: 1,
-            crash_after: None,
+            fail_start_after: None,
+            trap: false,
             log,
         }
         .start_with_backend(spawned_concurrency::tasks::Backend::Blocking);

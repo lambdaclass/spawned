@@ -303,7 +303,7 @@ const STRATEGIES: [(&str, usize); 2] = [("pct:d=3", 300), ("dfs:bound=3,depth=30
 
 fn check<F, Fut>(name: &str, body: F)
 where
-    F: Fn(u64) -> Fut,
+    F: Fn(u64) -> Fut + std::marker::Sync,
     Fut: Future<Output = ()>,
 {
     for (strategy, budget) in STRATEGIES {
