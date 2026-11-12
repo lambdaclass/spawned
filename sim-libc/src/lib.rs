@@ -173,7 +173,8 @@ fn clock(kind: Clock, call: &'static str) -> Option<Duration> {
 /// # Safety
 /// `buf` must be valid for writes of `len` bytes.
 unsafe fn random(buf: *mut u8, len: usize, call: &'static str, quiet: bool) -> bool {
-    if buf.is_null() && len > 0 {
+    // A slice may not exceed `isize::MAX` bytes: forward such a request.
+    if (buf.is_null() && len > 0) || len > isize::MAX as usize {
         return false;
     }
     ask(|hooks| {
@@ -280,7 +281,8 @@ mod imp {
     /// Same contract as libc's `gettimeofday`.
     #[no_mangle]
     pub unsafe extern "C" fn gettimeofday(tv: *mut timeval, tz: *mut c_void) -> c_int {
-        if !tv.is_null() {
+        // A caller asking for the (obsolete) timezone gets libc's answer.
+        if !tv.is_null() && tz.is_null() {
             if let Some(t) = clock(Clock::Realtime, "gettimeofday") {
                 // SAFETY: `tv` is non-null and valid for writes per the
                 // libc contract.
