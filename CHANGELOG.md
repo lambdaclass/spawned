@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- CI: a hot-path performance gate (`perf-gate`). `benchmarks/hotpath.py gate`
+  counts instructions per operation with callgrind for async burst, sequential
+  and concurrent `request()`, `send` and the threads-mode equivalents, and fails
+  a PR that grows any of them more than 3% over its merge base (it measures
+  only when `concurrency/src`, `rt/src` or `macros/src` changed).
+  `hotpath.py abba` is the wall-clock A/B on fixed cores, now a release
+  checklist step (docs/TESTING.md, "Performance gate").
 - Design (0.9, approved for implementation after round 3): a unified start API
   (`docs/design/unified-start.md`, rank 5h). OTP's `start`, `start_link` and
   `start_monitor` wait for `started()`, and `spawn` does not. All four take one

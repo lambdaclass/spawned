@@ -54,34 +54,51 @@ mod t {
     }
 }
 
-const BENCHMARKS: &[&str] = &[
-    "async_burst",
-    "async_request_seq",
-    "async_request_conc16",
-    "async_rpc_thread",
-    "async_send_p1",
-    "async_send_p2",
-    "threads_burst4",
-    "threads_request_seq",
-    "threads_send_p1",
-    "threads_send_p2",
+/// (name, deterministic). The instruction-count gate runs only the
+/// deterministic ones: everything on one thread (`async_ct_*`, a Tokio
+/// current-thread runtime) or a lockstep pair of threads. Multi-threaded
+/// runtimes and several free-running producers change how often actors park
+/// and wake from run to run (±20% instructions under callgrind), so those
+/// are wall-clock only (`hotpath.py abba`).
+const BENCHMARKS: &[(&str, bool)] = &[
+    ("async_ct_burst", true),
+    ("async_ct_request_seq", true),
+    ("async_ct_request_conc16", true),
+    ("async_ct_send_p1", true),
+    ("async_ct_send_p2", true),
+    ("threads_burst4", true),
+    ("threads_request_seq", true),
+    ("threads_send_p1", true),
+    ("async_burst", false),
+    ("async_request_seq", false),
+    ("async_request_conc16", false),
+    ("async_rpc_thread", false),
+    ("async_send_p1", false),
+    ("async_send_p2", false),
+    ("threads_send_p2", false),
 ];
 
 const WARMUP: u64 = 200;
 
-fn runtime() -> tokio::runtime::Runtime {
-    tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(2)
-        .enable_all()
-        .build()
-        .unwrap()
+fn runtime(current_thread: bool) -> tokio::runtime::Runtime {
+    let mut builder = if current_thread {
+        tokio::runtime::Builder::new_current_thread()
+    } else {
+        let mut b = tokio::runtime::Builder::new_multi_thread();
+        b.worker_threads(2);
+        b
+    };
+    builder.enable_all().build().unwrap()
 }
 
 /// Async actor benchmarks. Each returns the measured time; setup and warm-up
 /// are outside it (the gate cancels them by differencing two sizes).
 fn run_async(name: &str, n: u64) -> Duration {
     use spawned_concurrency::tasks::ActorStart;
-    let rt = runtime();
+    let current_thread = name.starts_with("async_ct_");
+    let rt = runtime(current_thread);
+    let name = name.replacen("async_ct_", "async_", 1);
+    let name = name.as_str();
     let actor = rt.block_on(async { a::Sink(0).start() });
     let fence = |actor: &spawned_concurrency::tasks::ActorRef<a::Sink>| {
         rt.block_on(actor.request(Q(0))).unwrap();
@@ -130,6 +147,30 @@ fn run_async(name: &str, n: u64) -> Duration {
         }
         "async_send_p1" | "async_send_p2" => {
             let producers = if name == "async_send_p1" { 1 } else { 2 };
+            if current_thread {
+                // Two producer tasks on the one runtime thread, interleaved
+                // in chunks; the actor runs when they yield.
+                rt.block_on(async {
+                    let joins: Vec<_> = (0..producers)
+                        .map(|_| {
+                            let actor = actor.clone();
+                            tokio::spawn(async move {
+                                for i in 0..n / producers {
+                                    actor.send(Hit(i)).unwrap();
+                                    if i % 64 == 63 {
+                                        tokio::task::yield_now().await;
+                                    }
+                                }
+                            })
+                        })
+                        .collect();
+                    for j in joins {
+                        j.await.unwrap();
+                    }
+                });
+                fence(&actor);
+                return start.elapsed();
+            }
             std::thread::scope(|s| {
                 for _ in 0..producers {
                     let actor = actor.clone();
@@ -184,15 +225,21 @@ fn run_threads(name: &str, n: u64) -> Duration {
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    if args.get(1).map(String::as_str) == Some("list") {
-        for b in BENCHMARKS {
-            println!("{b}");
+    match args.get(1).map(String::as_str) {
+        // `list`: every benchmark; `list-gate`: the deterministic ones.
+        Some(list @ ("list" | "list-gate")) => {
+            for (b, deterministic) in BENCHMARKS {
+                if list == "list" || *deterministic {
+                    println!("{b}");
+                }
+            }
+            return;
         }
-        return;
+        _ => {}
     }
     let name = args[1].as_str();
     let n: u64 = args[2].parse().unwrap();
-    assert!(BENCHMARKS.contains(&name), "unknown benchmark {name}");
+    assert!(BENCHMARKS.iter().any(|(b, _)| *b == name), "unknown benchmark {name}");
     let elapsed = if name.starts_with("async_") {
         run_async(name, n)
     } else {

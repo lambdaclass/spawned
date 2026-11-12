@@ -63,8 +63,9 @@ def build(work, label, rev):
     return binary
 
 
-def benchmarks(binary, only):
-    names = sh([str(binary), "list"], capture_output=True).stdout.split()
+def benchmarks(binary, only, gate=False):
+    """The driver's benchmarks; the gate takes only the deterministic ones."""
+    names = sh([str(binary), "list-gate" if gate else "list"], capture_output=True).stdout.split()
     return [n for n in names if not only or n in only]
 
 
@@ -99,7 +100,7 @@ def report(lines):
 
 
 def gate(args, base_bin, head_bin, base, head):
-    names = benchmarks(head_bin, args.only)
+    names = benchmarks(head_bin, args.only, gate=True)
     rows, failed = [], []
     for name in names:
         b, bs = per_op(base_bin, name, args.small, args.large, args.reps)
