@@ -262,7 +262,7 @@ async fn unstarted_child_never_ends(wanted: &str) {
 
 fn run<F, Fut>(strategy: &str, budget: usize, body: &F) -> Report
 where
-    F: Fn(u64) -> Fut,
+    F: Fn(u64) -> Fut + Sync,
     Fut: std::future::Future<Output = ()>,
 {
     let strategy = Strategy::parse(strategy).unwrap();
@@ -311,7 +311,7 @@ fn assert_found(report: &Report, bug: &str) {
 /// through the existing tooling.
 fn assert_replays<F, Fut>(report: &Report, body: &F)
 where
-    F: Fn(u64) -> Fut,
+    F: Fn(u64) -> Fut + Sync,
     Fut: std::future::Future<Output = ()>,
 {
     let found = report.found.as_ref().expect("bug not found");
@@ -543,7 +543,7 @@ fn explore_budget_table() {
 
 fn table<F, Fut>(title: &str, budget: usize, bug: &str, body: F)
 where
-    F: Fn(u64) -> Fut,
+    F: Fn(u64) -> Fut + Sync,
     Fut: std::future::Future<Output = ()>,
 {
     println!("{title}:");

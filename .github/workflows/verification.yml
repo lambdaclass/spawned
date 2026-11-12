@@ -40,8 +40,10 @@ jobs:
             select: --only 'MCDynamicSupervisor,MCDynamicSupervisorBackoff,MCDynamicSupervisorZero,MCDynamicSupervisorThree'
           - leg: dynamic-liveness
             select: --only 'MCDynamicSupervisorCallers,MCDynamicSupervisorLive,MCDynamicSupervisorAbort'
+          - leg: start
+            select: --only 'MCStart*'
           - leg: other
-            select: --exclude 'MCSupervision,MCLifecycle*,MCDeferred*,MCDynamicSupervisor*'
+            select: --exclude 'MCSupervision,MCLifecycle*,MCDeferred*,MCDynamicSupervisor*,MCStart*'
     steps:
       - uses: actions/checkout@v4
       - uses: DeterminateSystems/nix-installer-action@v16
@@ -119,6 +121,7 @@ jobs:
           - MCDynamicSupervisorDeep
           - MCDynamicSupervisorWideDeep
           - MCDynamicSupervisorBackoffDeep
+          - MCStartDeep
     steps:
       - uses: actions/checkout@v4
       - uses: DeterminateSystems/nix-installer-action@v16

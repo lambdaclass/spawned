@@ -18,6 +18,7 @@ compile_error!(
 );
 
 mod driver;
+mod oracles;
 pub mod scenario;
 mod world;
 

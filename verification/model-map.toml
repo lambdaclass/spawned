@@ -162,6 +162,30 @@ code = []
 reason = "rank 12a design model; the dynamic supervisor is not implemented"
 tracking = "trace validation is part of implementing rank 12a (design: PR #245)"
 
+[models.Start]
+# Unified start API design model (0.9, rank 5h, PR #259); no code yet.
+files = [
+    "verification/tla/Start.tla",
+    "verification/tla/MCStart*",
+    "verification/tla/TraceStart.tla",
+]
+code = []
+[models.Start.tlc_only]
+reason = "0.9 unified start design model; the unified start API is not implemented"
+tracking = "trace validation is part of implementing the unified start API, design PR #259"
+
+[models.Introspection]
+# Introspection v1 design model (PR #256, 0.9); no code yet.
+files = [
+    "verification/tla/Introspection.tla",
+    "verification/tla/MCIntrospection*",
+    "verification/tla/TraceIntrospection.tla",
+]
+code = []
+[models.Introspection.tlc_only]
+reason = "introspection v1 design model (0.9); process_info, get_state, the watchdog's fenced kill and the console are not implemented"
+tracking = "trace validation is part of implementing introspection v1 (design: PR #256; event table in docs/design/introspection.md)"
+
 # Trace events. Each [[trace]] table names one event struct of
 # concurrency/src/lifecycle_trace.rs, the calls that create one (a regex
 # matched in concurrency/src, and the 0-based index of the argument holding

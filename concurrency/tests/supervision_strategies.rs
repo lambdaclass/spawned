@@ -1,6 +1,9 @@
 #![cfg(feature = "async")]
 // Tests that need OS threads are compiled out under spawned_sim.
 #![cfg_attr(spawned_sim, allow(unused_imports, dead_code))]
+#[macro_use]
+#[path = "support/deadline.rs"]
+mod deadline;
 use spawned_concurrency::{
     message::Message,
     supervision::{Backoff, ChildSpec, RestartMode, SupervisorConfig, SupervisorStrategy},
@@ -132,7 +135,7 @@ async fn strategies_select_affected_children_and_reconstruct_in_dependency_order
                 .unwrap(),
             );
         }
-        let supervisor = tree.start().await.unwrap();
+        let supervisor = within!(tree.start()).await.unwrap();
         let old: Vec<_> = children
             .iter()
             .map(|child| child.current().unwrap())
@@ -233,7 +236,7 @@ async fn temporary_collateral_child_stops_without_reconstruction() {
             .unwrap(),
         );
     }
-    let supervisor = tree.start().await.unwrap();
+    let supervisor = within!(tree.start()).await.unwrap();
     assert!(children[0].current().unwrap().request(Crash).await.is_err());
     spawned_rt::tasks::timeout(LIMIT, children[0].wait_for_generation(1))
         .await
@@ -291,7 +294,7 @@ async fn failed_cohort_construction_rebuilds_the_whole_cohort_like_otp() {
             .unwrap(),
         );
     }
-    let supervisor = tree.start().await.unwrap();
+    let supervisor = within!(tree.start()).await.unwrap();
     assert!(children[0].current().unwrap().request(Crash).await.is_err());
     spawned_rt::tasks::timeout(LIMIT, children[2].wait_for_generation(1))
         .await
@@ -347,7 +350,7 @@ async fn cohort_reconstruction_consumes_shared_factory_attempt_budget() {
             .unwrap(),
         );
     }
-    let supervisor = tree.start().await.unwrap();
+    let supervisor = within!(tree.start()).await.unwrap();
     assert!(children[0].current().unwrap().request(Crash).await.is_err());
     spawned_rt::tasks::timeout(LIMIT, supervisor.join())
         .await
@@ -401,7 +404,7 @@ async fn simultaneous_failures_and_shutdown_do_not_overlap_cohorts_or_generation
                     .unwrap(),
                 );
             }
-            let supervisor = tree.start().await.unwrap();
+            let supervisor = within!(tree.start()).await.unwrap();
             let barrier = Arc::new(tokio::sync::Barrier::new(2));
             for child in &children {
                 child
@@ -464,7 +467,7 @@ async fn blocked_collateral_helper_prevents_entire_cohort_reconstruction() {
                 .unwrap(),
             );
         }
-        let supervisor = tree.start().await.unwrap();
+        let supervisor = within!(tree.start()).await.unwrap();
         let (entered_tx, entered) = tokio::sync::oneshot::channel();
         let (release, release_rx) = std::sync::mpsc::channel();
         let collateral = children[1].current().unwrap();
@@ -553,7 +556,7 @@ async fn upstream_failure_supersedes_a_round_while_a_dependent_factory_is_pendin
                     .unwrap(),
                 );
             }
-            let supervisor = tree.start().await.unwrap();
+            let supervisor = within!(tree.start()).await.unwrap();
             assert!(children[1].current().unwrap().request(Crash).await.is_err());
             spawned_rt::tasks::timeout(LIMIT, pending.notified())
                 .await
@@ -673,7 +676,7 @@ async fn replacement_stopping_before_readiness_restarts_the_strategy_scope() {
                 .restart(RestartMode::Transient),
             )
             .unwrap();
-        let supervisor = tree.start().await.unwrap();
+        let supervisor = within!(tree.start()).await.unwrap();
         // B crashes: OneForAll rebuilds A and B (A2 ready, B2 stops Normal
         // before readiness); RestForOne rebuilds only B.
         assert!(b.current().unwrap().request(CrashPlain).await.is_err());

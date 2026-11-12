@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+- Design (0.9, approved for implementation after round 3): a unified start API
+  (`docs/design/unified-start.md`, rank 5h). OTP's `start`, `start_link` and
+  `start_monitor` wait for `started()`, and `spawn` does not. All four take one
+  typed `StartOptions`. `started()` may fail, ignore or continue (`Init`), and a
+  failed init never runs `stopped()`, as OTP. Every instance has an immutable
+  startup commitment, and readiness is committed by the child, independently
+  of the waiter. Errors are answered after publication with the final exit
+  reason. One global lock order covers the commit, readiness and scope
+  admission. Linked children in the parent's system are owned by its scope,
+  with a polite Shutdown at the parent's publication and absolute,
+  composing deadlines. It replaces `start_on`, `start_with_backend`,
+  `ExecutionGroup::start` and `start_linked`. A new TLA+ model, `Start.tla`,
+  has eight configurations and 40 negative controls, and a client mapping
+  covers 51 sites.
+- TESTING.md: how databases test (FoundationDB, TigerBeetle, SQLite, AWS,
+  Jepsen and others), how each technique maps to spawned, and the gaps.
+- ROADMAP: smaller releases (0.9 introspection and the attachable console,
+  0.10 unified start and the dynamic supervisor, 0.11 the admission package),
+  how each feature is implemented against its approved design, and the code
+  coverage report widened to the whole crate over the simulated suites.
+- Tests: planted-bug follow-ups. New scenario-fuzzer oracles for restart
+  decisions, RestForOne cohorts, Transient restarts, required restarts versus
+  budget exhaustion, backoff delays in virtual time, linked exit reasons,
+  `unlink` and cancelled timers; bounded waits so tests that used to hang under
+  a bug fail with a named assertion (`within!`); a Kani layer in the
+  planted-bug runner; the planted-bug matrix in `docs/TESTING.md` re-run with
+  them. `concurrent_failures_coalesce_into_one_round` no longer flakes on one
+  CPU (it read `current()` after the first crash's round had begun).
 - ROADMAP: a ranked determinism backlog (D1-D10) under priority tier 3, from
   an audit of what escapes the simulator in Spawned, Ethrex and Ethlambda
   ([docs/research/determinism-audit.md](docs/research/determinism-audit.md)).
@@ -33,6 +61,31 @@
   action; every model must be trace-validated or allowlisted as TLC-only with
   a tracking item (Coordinator, Lifecycle, DeferredReplies, DeferredJobs);
   per-model trace coverage has a floor that may only go up.
+- Design: introspection v1 for 0.9 (priority tier 2), in review:
+  [`docs/design/introspection.md`](docs/design/introspection.md). Per-actor
+  `process_info`, `sys:get_state`/`get_status` answered between turns,
+  supervision-tree and system snapshots, an opt-in stall watchdog (rank 8) and
+  the data model for `spawned-top` (rank 30), an attachable remote console on
+  a local Unix socket (`spawned-ctl`, on by default, read-only by default, no
+  TCP, no eval), with a cost table per field, consistency guarantees and a
+  test plan. TLA+ model `Introspection.tla` (fenced watchdog kill, status
+  between turns and at death) with six negative controls. Design only; no
+  library code change.
+
+- Design: introspection v1 for 0.9 (priority tier 2), revision 2 after two
+  reviews: [`docs/design/introspection.md`](docs/design/introspection.md).
+- Design: introspection v1 for 0.9 (priority tier 2), revision 3 after two
+  review rounds: [`docs/design/introspection.md`](docs/design/introspection.md).
+  `process_info`-style `info()` readable while a handler is wedged (strictly
+  free tier 0, richer with the `introspection` feature), `sys:get_state`/
+  `get_status` as a turn of their own, supervision-tree and system
+  snapshots, structured reports, an opt-in stall watchdog (rank 8) with a
+  fenced kill, and an attachable remote console on a local Unix socket
+  (`spawned-ctl`; on with `ActorSystem::new`, read-only by default, no TCP,
+  no eval). TLA+ model `Introspection.tla` (every activity end, including
+  panics in `started()` and `stopped()`, consumes the kill bit; status between
+  turns and at D; runtime drop; one action per linearization point, status admission included) with 20
+  negative controls; a fork-safe, lock-first socket publication protocol. Design only; no library code change.
 - Tests: coverage follow-ups. `restart_modes_distinguish_normal_shutdown_and_panic`
   now sends a real `Normal` exit; a per-PR `MCSupervisionTemporary` TLC
   configuration makes `TemporaryStartsOnce` non-vacuous, with a negative
@@ -92,6 +145,12 @@
   process instead of one actor, silenced with `#[actor(allow_panic_abort)]`.
   Both use the stable `#[deprecated]` technique, so `-D warnings` turns them
   into errors.
+- `spawned-concurrency` re-exports `#[sim_test]`, so downstream crates write
+  `#[spawned_concurrency::sim_test]` without a `spawned-macros` dependency
+  (they still need `spawned-rt`). New example test
+  `examples/capabilities/tests/deterministic_simulation.rs` (per-sender order
+  over every seed, an hour-long timer in virtual time), run by the `sim` CI job.
+  The README's deterministic-testing section uses the single import.
 - Lockfile: `rustix` 1.1.2 -> 1.1.6 for RUSTSEC-2026-0486 (pulled in by the
   examples' `native-tls` dependency; spawned's crates are unaffected).
 - CI: a `sim` job runs the simulated test suites (`--cfg spawned_sim`) on
@@ -165,6 +224,23 @@
   and ignored-attempt cleanup kept in the model, FIFO checked at selection,
   queued terminate calls `Stopped` at shutdown, mempool reservations held by
   an owning registration, 44 negative controls; approved for implementation.
+
+- Determinism D1-D3 (priority tier 3). Under `--cfg spawned_sim`:
+  wall-clock and OS-entropy reads made inside a simulated run return virtual
+  time and seeded bytes, so `Instant::now`, `SystemTime::now`,
+  `rand::thread_rng`, `OsRng` and `HashMap` iteration order replay per seed
+  with no call-site change (D1; madsim's technique, in the new sim-only crate
+  `spawned-sim-libc`, which holds all the unsafe interposers so the other
+  crates stay `forbid(unsafe_code)`; Linux/glibc and macOS). Each harness run
+  gets a fresh thread, so bodies passed to `sim_test`/`run_once`/`explore`
+  must be `Sync`. `SPAWNED_SIM_STRICT=1` (`sim::set_strict`) fails the run on
+  such a read, naming the caller. `spawn_blocking` runs inline as one
+  simulator step instead of panicking (D2; not concurrent under simulation).
+  `spawned_rt::tasks` gains `sleep_until`, `interval`/`interval_at`
+  (`Interval`, `MissedTickBehavior`) and `JoinSet` (`AbortHandle`,
+  `JoinError`), virtual under the simulator and Tokio's otherwise, and a
+  direct `tokio::time` timer fails the run with a message naming the
+  replacement (D3). See `docs/TESTING.md` and `docs/MIGRATION.md`.
 
 ## 0.7.3 — 2026-11-10
 

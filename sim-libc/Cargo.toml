@@ -1,0 +1,17 @@
+[package]
+name = "spawned-sim-libc"
+description = "Clock and entropy interposers for Spawned's deterministic simulator (compiled only under --cfg spawned_sim)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# The whole crate is `#![cfg(spawned_sim)]`: in every other build it is empty,
+# so no unsafe code is compiled outside simulation builds. spawned-rt depends
+# on it only under `cfg(spawned_sim)`.
+
+[dependencies]
+libc = "0.2"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(spawned_sim)'] }

@@ -78,9 +78,10 @@ jobs:
 
   # Deterministic simulator (docs/TESTING.md, "Simulated suites in CI"):
   # every integration test of spawned-concurrency and spawned-rt, plus
-  # spawned-rt's simulator unit tests, built with --cfg spawned_sim and run
-  # one test per process with a per-test timeout, four at a time. Failing
-  # seeds leave decision tapes, uploaded as an artifact.
+  # spawned-rt's simulator unit tests and the deterministic_simulation
+  # example, built with --cfg spawned_sim and run one test per process
+  # with a per-test timeout, four at a time. Failing seeds leave decision
+  # tapes, uploaded as an artifact.
   sim:
     runs-on: ubuntu-latest
     needs: build
@@ -96,6 +97,8 @@ jobs:
           key: sim
       - name: Simulated suites, one test per process
         run: python3 scripts/run-sim-tests.py -p spawned-concurrency -p spawned-rt:lib --jobs 4 --timeout 120
+      - name: Simulated example test (deterministic_simulation)
+        run: python3 scripts/run-sim-tests.py -p spawned-capability-examples --test deterministic_simulation --jobs 4 --timeout 120
       - name: Upload decision tapes
         if: failure()
         uses: actions/upload-artifact@v4
@@ -254,7 +257,8 @@ jobs:
           # spawned-concurrency's new sibling versions are published in dependency
           # order by release.yaml; its package is also validated before release.
           cargo package --package spawned-macros --no-verify
-          cargo package --package spawned-rt --no-verify
+          # spawned-sim-libc (the simulator's interposers) ships with spawned-rt.
+          cargo package --package spawned-sim-libc --package spawned-rt --no-verify
 
       - name: Verify spawned-test publication against unreleased siblings
         run: |

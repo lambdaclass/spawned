@@ -11,6 +11,9 @@
 //! holds a `FailScenario`, which serializes them.
 #![cfg(all(feature = "lifecycle-trace", feature = "failpoints"))]
 
+#[macro_use]
+#[path = "support/deadline.rs"]
+mod deadline;
 use spawned_concurrency::{
     failpoints::{self, Action, FailPoint, FailScenario},
     lifecycle_trace,
@@ -216,7 +219,7 @@ async fn restart_in_construction_when_shutdown_begins_and_deadline_expires() {
         .shutdown_timeout(Duration::from_millis(100)),
     )
     .unwrap();
-    let supervisor = tree.start().await.unwrap();
+    let supervisor = within!(tree.start()).await.unwrap();
     crash(&restarting).await;
     until("the replacement under construction", || {
         let s = restarting.snapshot();
@@ -362,7 +365,7 @@ async fn nested_leaf_restarts_inside_its_subtree() {
         },
     ))
     .unwrap();
-    let supervisor = root.start().await.unwrap();
+    let supervisor = within!(root.start()).await.unwrap();
     let leaf = leaf.lock().unwrap().take().unwrap();
     crash(&leaf).await;
     tokio::time::timeout(LIMIT, leaf.wait_for_generation(1))

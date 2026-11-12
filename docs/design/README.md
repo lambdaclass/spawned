@@ -19,13 +19,26 @@ Active design contracts. Usage is documented in the [guide](../GUIDE.md).
   implemented) for exit signals, `Killed`/`NoProc`, supervisor startup and
   runtime-dropped actors as in OTP (ROADMAP ranks 5e, 5f, 5g), with the base
   actor lifecycle model `Lifecycle.tla`.
-- **[dynamic-supervisor.md](dynamic-supervisor.md)** (rank 12a, design in
-  review, not implemented): OTP's `simple_one_for_one` / Elixir's
+- **[dynamic-supervisor.md](dynamic-supervisor.md)** (rank 12a, approved for
+  implementation after review round 3, not implemented): OTP's `simple_one_for_one` / Elixir's
   `DynamicSupervisor`: runtime `start_child` from a typed template,
   `terminate_child`, `max_children` counting restarting children, a
   supervisor-wide budget and concurrent shutdown. Model:
   `verification/tla/DynamicSupervisor.tla`. Client mapping (ethrex's
   per-peer connections): [dynamic-supervisor-client-mapping.md](dynamic-supervisor-client-mapping.md).
+
+- **[introspection.md](introspection.md)** (0.9, design in review, not
+  implemented): `info()` readable while a handler is wedged,
+  `get_state`/`get_status` between turns, supervision and system snapshots,
+  structured reports, the stall watchdog and the attachable remote console
+  (`spawned-ctl`). Model: `verification/tla/Introspection.tla`.
+
+- **[unified-start.md](unified-start.md)** (rank 5h, 0.9, design in review,
+  not implemented): one start API as OTP's `start`, `start_link` and
+  `start_monitor` plus `spawn`, with `StartOptions`, placement inheritance,
+  fallible init, continuations and atomic names. Model:
+  `verification/tla/Start.tla`. Client rewrites:
+  [unified-start-client-mapping.md](unified-start-client-mapping.md).
 
 Earlier designs (the v0.5 API redesign alternatives, the framework comparison
 and superseded roadmap plans) are archived in
