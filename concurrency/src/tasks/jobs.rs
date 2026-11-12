@@ -255,10 +255,15 @@ enum RunnerPool {
     /// current one.
     #[cfg(not(spawned_sim))]
     Tokio(spawned_rt::tasks::Handle),
-    /// Outside a Tokio runtime, and under the simulator: an owned thread,
-    /// spawned at reservation and parked until the job starts (dropping the
-    /// sender unused lets it exit).
+    /// Outside a Tokio runtime: an owned thread, spawned at reservation and
+    /// parked until the job starts (dropping the sender unused lets it exit).
+    #[cfg(not(spawned_sim))]
     Thread(std::sync::mpsc::Sender<Box<dyn FnOnce() + Send>>),
+    /// Under the simulator: `spawned_rt::tasks::spawn_blocking`, which runs
+    /// the body inline as one step of a simulated task (determinism D2), so
+    /// its clock reads, emits and result are part of the seeded schedule.
+    #[cfg(spawned_sim)]
+    Sim,
 }
 
 impl NativeRunner {
@@ -275,9 +280,12 @@ impl NativeRunner {
             RunnerPool::Tokio(handle) => drop(handle.spawn_blocking(task)),
             // The thread is parked on `recv` until this send (or the
             // sender's drop); it cannot have exited.
+            #[cfg(not(spawned_sim))]
             RunnerPool::Thread(start) => {
                 let _ = start.send(Box::new(task));
             }
+            #[cfg(spawned_sim)]
+            RunnerPool::Sim => drop(spawned_rt::tasks::spawn_blocking(task)),
         }
     }
 }
@@ -596,12 +604,11 @@ impl<A: Actor> Context<A> {
             None => spawned_rt::tasks::Handle::try_current().ok(),
         };
         #[cfg(spawned_sim)]
-        let handle: Option<()> = None;
+        let pool = RunnerPool::Sim;
+        #[cfg(not(spawned_sim))]
         let pool = match handle {
-            #[cfg(not(spawned_sim))]
             Some(handle) => RunnerPool::Tokio(handle),
-            #[allow(unreachable_patterns)]
-            _ => {
+            None => {
                 let (start, started) = std::sync::mpsc::channel::<Box<dyn FnOnce() + Send>>();
                 std::thread::Builder::new()
                     .name("spawned-job".into())
