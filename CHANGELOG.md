@@ -16,6 +16,8 @@
   `ExecutionGroup::start` and `start_linked`. A new TLA+ model, `Start.tla`,
   has eight configurations and 40 negative controls, and a client mapping
   covers 51 sites.
+- TESTING.md: how databases test (FoundationDB, TigerBeetle, SQLite, AWS,
+  Jepsen and others), how each technique maps to spawned, and the gaps.
 - Tests: planted-bug follow-ups. New scenario-fuzzer oracles for restart
   decisions, RestForOne cohorts, Transient restarts, required restarts versus
   budget exhaustion, backoff delays in virtual time, linked exit reasons,
