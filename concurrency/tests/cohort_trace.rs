@@ -1,4 +1,7 @@
 #![cfg(feature = "lifecycle-trace")]
+#[macro_use]
+#[path = "support/deadline.rs"]
+mod deadline;
 use spawned_concurrency::{
     lifecycle_trace,
     message::Message,
@@ -110,7 +113,7 @@ async fn trace_cohort_selection_and_temporary_retirement() {
                 .unwrap(),
             );
         }
-        let supervisor = tree.start().await.unwrap();
+        let supervisor = within!(tree.start()).await.unwrap();
         assert!(children[1].current().unwrap().request(Crash).await.is_err());
         spawned_rt::tasks::timeout(LIMIT, children[1].wait_for_generation(1))
             .await
@@ -174,7 +177,7 @@ async fn trace_superseded_round_with_parked_temporary_tail() {
                 .unwrap(),
             );
         }
-        let supervisor = tree.start().await.unwrap();
+        let supervisor = within!(tree.start()).await.unwrap();
         assert!(children[1].current().unwrap().request(Crash).await.is_err());
         spawned_rt::tasks::timeout(LIMIT, entered.notified())
             .await
@@ -233,7 +236,7 @@ async fn trace_normally_retired_transient_is_skipped_by_later_cohorts() {
                 .unwrap(),
             );
         }
-        let supervisor = tree.start().await.unwrap();
+        let supervisor = within!(tree.start()).await.unwrap();
         children[2].current().unwrap().context().stop();
         spawned_rt::tasks::timeout(LIMIT, async {
             while children[2].snapshot().state
@@ -317,7 +320,7 @@ async fn trace_failed_replacement_starts_a_new_round() {
                 .restart(RestartMode::Transient),
             )
             .unwrap();
-        let supervisor = tree.start().await.unwrap();
+        let supervisor = within!(tree.start()).await.unwrap();
         assert!(b.current().unwrap().request(Crash).await.is_err());
         spawned_rt::tasks::timeout(LIMIT, b.wait_for_generation(2))
             .await

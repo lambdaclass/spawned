@@ -16,6 +16,9 @@
 //! `ActorRef`/`Context`, link tables, and native monitor waiter threads.
 // Tests that need OS threads are compiled out under spawned_sim.
 #![cfg_attr(spawned_sim, allow(unused_imports, dead_code))]
+#[macro_use]
+#[path = "support/deadline.rs"]
+mod deadline;
 use spawned_concurrency::{message::Message, registry, threads};
 use std::cell::RefCell;
 use std::sync::{Arc, Weak};
@@ -276,7 +279,7 @@ mod async_leaks {
                 }
                 let timer = tasks::send_interval(Duration::from_secs(3600), actor.context(), Ping);
                 actor.context().stop();
-                actor.join().await;
+                within!(actor.join()).await;
                 drop((actor, timer));
             });
             tasks_drain_to(&rt, 0, &format!("{backend:?}: runtime tasks after stop"));
@@ -308,18 +311,18 @@ mod async_leaks {
             owner.context().monitor(&target.child_handle());
             tasks_drain_to(&rt, baseline + 2, "two monitor waiters spawned");
             owner.context().stop();
-            owner.join().await;
+            within!(owner.join()).await;
             tasks_drain_to(&rt, baseline - 1, "monitor waiters after owner exit");
 
             // Target exit delivers Down and releases the waiter.
             let watcher = Probe::new(Arc::new(())).start();
             watcher.context().monitor(&target.child_handle());
             target.request(Crash).await.unwrap_err();
-            target.join().await;
+            within!(target.join()).await;
             watcher.request(Ping).await.unwrap();
             tasks_drain_to(&rt, baseline - 1, "monitor waiter after target exit");
             watcher.context().stop();
-            watcher.join().await;
+            within!(watcher.join()).await;
         });
         tasks_drain_to(&rt, 0, "runtime tasks after all actors stopped");
     }
@@ -414,8 +417,8 @@ mod async_leaks {
                 a.context().link(&b.child_handle());
                 a.context().stop();
                 b.context().stop();
-                a.join().await;
-                b.join().await;
+                within!(a.join()).await;
+                within!(b.join()).await;
                 weaks
             });
             tasks_drain_to(&rt, 0, &format!("{backend:?}: cycle runtime tasks"));
@@ -507,7 +510,7 @@ mod async_leaks {
                     .unwrap(),
                 );
             }
-            let supervisor = tree.start().await.unwrap();
+            let supervisor = within!(tree.start()).await.unwrap();
             // Several generations of the first child.
             for generation in 1..=3 {
                 let current = children[0]
@@ -729,9 +732,9 @@ mod sim_leaks {
                 probe.context().stop();
                 a.context().stop();
                 b.context().stop();
-                probe.join().await;
-                a.join().await;
-                b.join().await;
+                within!(probe.join()).await;
+                within!(a.join()).await;
+                within!(b.join()).await;
                 drop((probe, timer, a, b));
                 settle(&format!("seed {seed}: actor state"), || {
                     weak.iter().all(|w| w.strong_count() == 0)
@@ -774,14 +777,14 @@ mod sim_leaks {
                 owner.context().monitor(&target.child_handle());
                 owner.context().monitor(&target.child_handle());
                 owner.context().stop();
-                owner.join().await;
+                within!(owner.join()).await;
                 // The owner's own task is gone too.
                 settle(&format!("seed {seed}: waiters after owner exit"), || {
                     rt.stats().tasks < baseline
                 })
                 .await;
                 target.context().stop();
-                target.join().await;
+                within!(target.join()).await;
             });
         }
     }
@@ -856,7 +859,7 @@ mod sim_leaks {
                 let baseline = rt.stats().tasks;
                 watcher.context().monitor(&target.child_handle());
                 target.request(Crash).await.unwrap_err();
-                target.join().await;
+                within!(target.join()).await;
                 watcher.request(Ping).await.unwrap();
                 // The target's task and the waiter are both gone.
                 settle(&format!("seed {seed}: waiter after target exit"), || {
@@ -864,7 +867,7 @@ mod sim_leaks {
                 })
                 .await;
                 watcher.context().stop();
-                watcher.join().await;
+                within!(watcher.join()).await;
             });
         }
     }
@@ -905,11 +908,15 @@ mod sim_leaks {
                         }
                     }))
                     .unwrap();
-                let supervisor = tree.start().await.unwrap();
+                let supervisor = within!(tree.start()).await.unwrap();
                 for generation in 1..=3 {
-                    let current = child.wait_for_generation(generation - 1).await.unwrap();
+                    let current = within!(child.wait_for_generation(generation - 1))
+                        .await
+                        .unwrap();
                     current.request(Crash).await.unwrap_err();
-                    child.wait_for_generation(generation).await.unwrap();
+                    within!(child.wait_for_generation(generation))
+                        .await
+                        .unwrap();
                 }
                 assert!(registry::registered().iter().any(|n| n == name));
                 assert!(supervisor.shutdown(Duration::from_secs(5)).await.complete);

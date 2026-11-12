@@ -1,6 +1,9 @@
 #![cfg(feature = "async")]
 // Tests that need OS threads are compiled out under spawned_sim.
 #![cfg_attr(spawned_sim, allow(unused_imports, dead_code))]
+#[macro_use]
+#[path = "support/deadline.rs"]
+mod deadline;
 use spawned_concurrency::{
     message::Message,
     supervision::{
@@ -96,7 +99,7 @@ async fn nested_budget_failure_reconstructs_fresh_subtree_and_preserves_parent_s
             Ok::<_, String>(Counter(0))
         }))
         .unwrap();
-    let supervisor = root.start().await.unwrap();
+    let supervisor = within!(root.start()).await.unwrap();
     let old_tree = subtree.current().unwrap();
     let old_slot = subtree.snapshot();
     let old_leaf = published
@@ -117,7 +120,7 @@ async fn nested_budget_failure_reconstructs_fresh_subtree_and_preserves_parent_s
     assert_ne!(subtree.snapshot().actor_id, old_slot.actor_id);
     assert_eq!(calls.load(Ordering::SeqCst), 2);
     assert!(old_tree.failure().unwrap().contains("budget exhausted"));
-    old_tree.join().await;
+    within!(old_tree.join()).await;
     let new_leaf = published
         .lock()
         .unwrap()
@@ -175,7 +178,7 @@ async fn temporary_subtree_failure_is_not_rebuilt() {
             Ok::<_, String>(Counter(0))
         }))
         .unwrap();
-    let supervisor = root.start().await.unwrap();
+    let supervisor = within!(root.start()).await.unwrap();
     let old_tree = subtree.current().unwrap();
     let leaf = published
         .lock()
@@ -386,7 +389,7 @@ async fn native_leaf_helper_blocks_subtree_replacement_and_remains_owned_after_a
             .shutdown_timeout(Duration::from_millis(20)),
         )
         .unwrap();
-    let supervisor = root.start().await.unwrap();
+    let supervisor = within!(root.start()).await.unwrap();
     let leaf = published
         .lock()
         .unwrap()
@@ -461,7 +464,7 @@ async fn late_nested_cleanup_failures_are_retained_in_parent_and_system_reports(
             .shutdown_timeout(Duration::from_secs(2)),
         )
         .unwrap();
-    let supervisor = root.start().await.unwrap();
+    let supervisor = within!(root.start()).await.unwrap();
     let inner = nested.current().unwrap();
     supervisor.stop();
     spawned_rt::tasks::timeout(LIMIT, async {
@@ -509,7 +512,7 @@ async fn aborted_initial_startup_rolls_back_before_a_later_stuck_shutdown_target
     let release = Arc::new(tokio::sync::Notify::new());
     use spawned_concurrency::tasks::ActorStart;
     let later = HeldStop(release.clone()).start_on(&group).unwrap();
-    later.ready().await.unwrap();
+    within!(later.ready()).await.unwrap();
     let owner = system.clone();
     let shutdown =
         spawned_rt::tasks::spawn(async move { owner.shutdown(Duration::from_secs(30)).await });
@@ -548,7 +551,7 @@ async fn wait_ready_resolves_the_running_subtree() {
             },
         ))
         .unwrap();
-    let supervisor = root.start().await.unwrap();
+    let supervisor = within!(root.start()).await.unwrap();
     let ready = spawned_rt::tasks::timeout(LIMIT, subtree.wait_ready())
         .await
         .unwrap()
@@ -647,7 +650,7 @@ async fn nested_failed_replacement_retries_then_escalates_on_exhaustion() {
                 },
             ))
             .unwrap();
-        let supervisor = root.start().await.unwrap();
+        let supervisor = within!(root.start()).await.unwrap();
         let old_leaf = published.lock().unwrap().take().unwrap();
         assert!(old_leaf.current().unwrap().request(Crash).await.is_err());
         if escalates {

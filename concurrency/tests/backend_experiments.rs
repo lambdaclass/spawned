@@ -1,6 +1,9 @@
 #![cfg(feature = "async")]
 #![cfg(feature = "backend-experiments")]
 //! Run each experiment mode in a separate process; never mutate env inside tests.
+#[macro_use]
+#[path = "support/deadline.rs"]
+mod deadline;
 use spawned_concurrency::{
     message::Message,
     tasks::{Actor, ActorStart, Backend, Context, Handler},
@@ -120,7 +123,7 @@ fn experiment_io_reactor() {
         let actor = Worker.start_with_backend(Backend::Thread);
         assert_eq!(actor.request(Network).await.unwrap(), 42);
         actor.child_handle().stop();
-        actor.join().await;
+        within!(actor.join()).await;
     });
 }
 

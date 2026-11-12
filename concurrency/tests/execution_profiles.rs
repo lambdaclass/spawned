@@ -1,6 +1,9 @@
 #![cfg(feature = "async")]
 // Tests that need OS threads are compiled out under spawned_sim.
 #![cfg_attr(spawned_sim, allow(unused_imports, dead_code))]
+#[macro_use]
+#[path = "support/deadline.rs"]
+mod deadline;
 use spawned_concurrency::{
     message::Message,
     supervision::{Backoff, ChildSpec, SupervisorConfig, SupervisorStrategy},
@@ -76,9 +79,9 @@ async fn native_context_placement_uses_a_free_slot_and_validates_helper_budgets(
         })
     );
     let actor = Probe.start_on(&group.shard(0).unwrap()).unwrap();
-    actor.ready().await.unwrap();
+    within!(actor.ready()).await.unwrap();
     let peer = actor.request(StartPeer).await.unwrap().unwrap();
-    peer.ready().await.unwrap();
+    within!(peer.ready()).await.unwrap();
     assert!(peer.request(Audit).await.unwrap().0.ends_with("actor-1"));
     assert!(matches!(
         actor.request(StartPeer).await.unwrap(),
@@ -138,8 +141,8 @@ async fn persistent_native_slots_bound_admission_and_helpers_progress_during_blo
     );
     let a = Probe.start_on(&group.shard(0).unwrap()).unwrap();
     let b = Probe.start_on(&group.shard(1).unwrap()).unwrap();
-    a.ready().await.unwrap();
-    b.ready().await.unwrap();
+    within!(a.ready()).await.unwrap();
+    within!(b.ready()).await.unwrap();
     assert!(matches!(Probe.start_on(&group), Err(SystemError::Capacity)));
     assert!(a.request(Audit).await.unwrap().0.ends_with("actor-0"));
     let (entered_tx, entered) = tokio::sync::oneshot::channel();
@@ -190,7 +193,7 @@ async fn native_capacity_is_released_only_after_registered_helper_cleanup() {
     let system = ActorSystem::new().unwrap();
     let group = system.thread_group("slot-cleanup", 1).unwrap();
     let actor = Probe.start_on(&group).unwrap();
-    actor.ready().await.unwrap();
+    within!(actor.ready()).await.unwrap();
     let (entered_tx, entered) = tokio::sync::oneshot::channel();
     let (release, release_rx) = std::sync::mpsc::channel();
     let helper = actor
@@ -220,7 +223,7 @@ async fn native_capacity_is_released_only_after_registered_helper_cleanup() {
     })
     .await
     .unwrap();
-    replacement.ready().await.unwrap();
+    within!(replacement.ready()).await.unwrap();
     assert!(system.shutdown(LIMIT).await.complete);
 }
 // Not simulated: native execution groups need OS threads.
@@ -263,7 +266,7 @@ async fn each_strategy_recovers_on_a_full_native_pool_without_overlapping_slots(
                 .unwrap(),
             );
         }
-        let supervisor = tree.start().await.unwrap();
+        let supervisor = within!(tree.start()).await.unwrap();
         assert!(children[1].current().unwrap().request(Crash).await.is_err());
         for (i, child) in children.iter().enumerate() {
             if strategy == SupervisorStrategy::OneForAll
@@ -318,9 +321,9 @@ async fn pinned_shards_preserve_explicit_cpu_placement_and_cross_shard_requests(
         .map(|i| Probe.start_on(&group.shard(i).unwrap()).unwrap())
         .collect();
     for (i, actor) in actors.iter().enumerate() {
-        actor.ready().await.unwrap();
+        within!(actor.ready()).await.unwrap();
         let peer_on_same_shard = actor.request(StartPeer).await.unwrap().unwrap();
-        peer_on_same_shard.ready().await.unwrap();
+        within!(peer_on_same_shard.ready()).await.unwrap();
         assert_eq!(
             peer_on_same_shard.request(Audit).await.unwrap().1,
             Some(cpus[i])
@@ -340,7 +343,7 @@ async fn pinned_shards_preserve_explicit_cpu_placement_and_cross_shard_requests(
         })
         .join()
         .unwrap();
-        assert_eq!(helper.join().await.unwrap(), cpus[i]);
+        assert_eq!(within!(helper.join()).await.unwrap(), cpus[i]);
     }
     assert!(system.async_group("async", 1).unwrap().shard(0).is_err());
     let report = system.shutdown(LIMIT).await;
@@ -385,7 +388,7 @@ mod tls_join {
         let cpu = spawned_rt::tasks::affinity::available_cpus().unwrap()[0];
         let group = system.pinned_group("tls-owner", vec![cpu]).unwrap();
         let actor = Probe.start_on(&group).unwrap();
-        actor.ready().await.unwrap();
+        within!(actor.ready()).await.unwrap();
         let (entered_tx, entered) = tokio::sync::oneshot::channel();
         let (release, release_rx) = std::sync::mpsc::channel();
         actor
@@ -520,7 +523,7 @@ fn partial_pinned_construction_rolls_back_before_returning_error() {
     let runtime = spawned_rt::tasks::control_runtime().unwrap();
     runtime.block_on(async {
         let actor = Probe.start_on(&group).unwrap();
-        actor.ready().await.unwrap();
+        within!(actor.ready()).await.unwrap();
         assert!(actor.request(Audit).await.is_ok());
         assert!(system.shutdown(LIMIT).await.complete);
     });

@@ -37,6 +37,7 @@ Usage of each feature is documented in the [guide](../docs/GUIDE.md).
 | Draining a finite batch before stop | [graceful_drain](capabilities/src/bin/graceful_drain.rs) | gap |
 | Byte-budgeted pipeline (application adapter) | [byte_budget_pipeline](capabilities/src/bin/byte_budget_pipeline.rs) | gap |
 | Testing actors: mocks, probes, harness and fault injection (`spawned-test`, since v0.7.1) | [test_kit](capabilities/src/bin/test_kit.rs) | [test_kit](capabilities/src/bin/test_kit.rs) (native mock and injected stop) |
+| Deterministic simulation tests (`#[spawned_concurrency::sim_test]`, `--cfg spawned_sim`): seed sweeps, virtual time, replay | [deterministic_simulation](capabilities/tests/deterministic_simulation.rs) | n/a (simulator runs async tasks only) |
 | Framework metrics (`metrics` feature) | [framework_metrics](capabilities/src/bin/framework_metrics.rs) | [thread_only](thread_only/README.md) with metrics |
 
 "n/a" means the feature exists only in tasks mode; "gap" means it exists in

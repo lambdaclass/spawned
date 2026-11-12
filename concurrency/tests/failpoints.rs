@@ -7,6 +7,9 @@
 //! serializes the tests in this binary and prints the seed on failure.
 #![cfg(all(feature = "failpoints", feature = "async"))]
 
+#[macro_use]
+#[path = "support/deadline.rs"]
+mod deadline;
 use spawned_concurrency::{
     failpoints::{self, Action, FailPoint, FailScenario},
     message::Message,
@@ -137,7 +140,7 @@ async fn factory_errors_restart_within_budget_and_count_generations() {
             }
         }))
         .unwrap();
-    let tree = tree.start().await.unwrap();
+    let tree = within!(tree.start()).await.unwrap();
     // v0.8 (S1): a first start is never retried, so the failures are
     // injected into the replacements after a crash.
     failpoints::configure("child.factory", FailPoint::new(Action::Error).times(3)).unwrap();
@@ -170,7 +173,7 @@ async fn persistent_factory_failure_fails_startup_without_retry() {
             async move { Ok::<_, String>(Worker::new(&s)) }
         }))
         .unwrap();
-    match tree.start().await {
+    match within!(tree.start()).await {
         Err(SupervisorError::FailedToStartChild { child, cause, .. }) => {
             assert_eq!(child, "worker");
             assert!(cause.contains("failpoint child.factory"), "{cause}")
@@ -198,7 +201,7 @@ async fn factory_panic_is_a_failed_start_not_a_controller_failure() {
             async move { Ok::<_, String>(Worker::new(&s)) }
         }))
         .unwrap();
-    let tree = tree.start().await.unwrap();
+    let tree = within!(tree.start()).await.unwrap();
     // v0.8 (S1): injected into the replacement; a first start is not retried.
     failpoints::configure("child.factory", FailPoint::new(Action::Panic).times(1)).unwrap();
     child.wait_ready().await.unwrap().send(Crash).unwrap();
@@ -228,7 +231,7 @@ async fn seeded_probabilistic_factory_failures_match_generation_count() {
             async move { Ok::<_, String>(Worker::new(&s)) }
         }))
         .unwrap();
-    let tree = tree.start().await.unwrap();
+    let tree = within!(tree.start()).await.unwrap();
     let mut actor = child.wait_ready().await.unwrap();
     // Armed after the initial start: since S1 any failed first start fails
     // `start()`, so only replacements may fail (and are retried).
@@ -240,7 +243,9 @@ async fn seeded_probabilistic_factory_failures_match_generation_count() {
     for _ in 0..8 {
         let generation = child.snapshot().generation;
         actor.send(Crash).unwrap();
-        actor = child.wait_for_generation(generation).await.unwrap();
+        actor = within!(child.wait_for_generation(generation))
+            .await
+            .unwrap();
     }
     // Every generation is either an injected failure or a started actor.
     let fired = failpoints::stats("child.factory").fired as usize;
@@ -270,7 +275,7 @@ async fn ready_generation_discarded_before_publication_is_never_current() {
             async move { Ok::<_, String>(Worker::new(&s)) }
         }))
         .unwrap();
-    let tree = tree.start().await.unwrap();
+    let tree = within!(tree.start()).await.unwrap();
     // v0.8 (S1): a discarded first start fails start(), so discard a
     // replacement.
     failpoints::configure(
@@ -353,7 +358,7 @@ async fn stop_while_restart_is_pending(site: &str) {
             }
         }))
         .unwrap();
-    let tree = tree.start().await.unwrap();
+    let tree = within!(tree.start()).await.unwrap();
     child.wait_ready().await.unwrap().send(Crash).unwrap();
     reached(site, 1).await;
     let report = tree.shutdown(LIMIT).await;
@@ -395,7 +400,7 @@ async fn controller_panic_before_restart_fails_supervisor_and_shuts_down() {
             async move { Ok::<_, String>(Worker::new(&s)) }
         }))
         .unwrap();
-    let tree = tree.start().await.unwrap();
+    let tree = within!(tree.start()).await.unwrap();
     child.wait_ready().await.unwrap().send(Crash).unwrap();
     tokio::time::timeout(LIMIT, tree.join()).await.unwrap();
     assert!(tree
@@ -429,9 +434,9 @@ async fn slow_controller_after_completed_cleanup_is_not_a_cleanup_failure() {
             .shutdown_timeout(Duration::from_millis(100)),
         )
         .unwrap();
-    let tree = tree.start().await.unwrap();
+    let tree = within!(tree.start()).await.unwrap();
     child.wait_ready().await.unwrap().send(Crash).unwrap();
-    child.wait_for_generation(1).await.unwrap();
+    within!(child.wait_for_generation(1)).await.unwrap();
     assert_eq!(failpoints::stats("child.before_cleanup_join").fired, 1);
     assert!(tree.failure().is_none(), "{:?}", tree.failure());
     assert!(tree.shutdown(LIMIT).await.complete);
@@ -459,7 +464,7 @@ async fn slow_stop_turn_reports_incomplete_at_deadline_then_joins() {
             async move { Ok::<_, String>(Worker::new(&s)) }
         }))
         .unwrap();
-    let tree = tree.start().await.unwrap();
+    let tree = within!(tree.start()).await.unwrap();
     child.wait_ready().await.unwrap();
     let began = Instant::now();
     let report = tree.shutdown(Duration::from_millis(100)).await;
@@ -487,8 +492,8 @@ async fn slow_system_coordinator_reports_then_completes() {
     let started = Started::default();
     let a = group.start(Worker::new(&started)).unwrap();
     let b = group.start(Worker::new(&started)).unwrap();
-    a.ready().await.unwrap();
-    b.ready().await.unwrap();
+    within!(a.ready()).await.unwrap();
+    within!(b.ready()).await.unwrap();
     let report = system.shutdown(Duration::from_millis(50)).await;
     assert!(!report.complete);
     let report = report.wait(LIMIT).await;
@@ -549,7 +554,7 @@ async fn placement_failure_is_reported_and_fails_the_supervisor() {
             async move { Ok::<_, String>(Worker::new(&s)) }
         }))
         .unwrap();
-    match tree.start().await {
+    match within!(tree.start()).await {
         Err(SupervisorError::FailedToStartChild { child, cause, .. }) => {
             assert_eq!(child, "worker");
             assert!(cause.contains("placement failed"), "{cause}")
@@ -592,7 +597,7 @@ async fn registration_racing_shutdown_leaves_no_entry() {
     assert!(system.shutdown(LIMIT).await.complete);
     assert_eq!(*registration.lock().unwrap(), Some(false));
     assert!(registry::whereis::<ActorRef<Worker>>("fp-register-race").is_none());
-    assert!(actor.ready().await.is_err());
+    assert!(within!(actor.ready()).await.is_err());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -636,9 +641,9 @@ async fn replacement_registers_only_after_old_entry_is_removed() {
             }
         }))
         .unwrap();
-    let tree = tree.start().await.unwrap();
+    let tree = within!(tree.start()).await.unwrap();
     child.wait_ready().await.unwrap().send(Crash).unwrap();
-    let current = child.wait_for_generation(1).await.unwrap();
+    let current = within!(child.wait_for_generation(1)).await.unwrap();
     assert!(failpoints::stats("registry.before_unregister").fired >= 1);
     let flags: Vec<_> = registrations
         .lock()
@@ -726,7 +731,10 @@ async fn peer_exit_during_link_install_still_propagates() {
     linker.send(LinkTo(target.child_handle())).unwrap();
     reached("link.before_install", 1).await;
     target.send(Crash).unwrap();
-    assert!(matches!(target.wait_exit().await, ExitReason::Panic(_)));
+    assert!(matches!(
+        within!(target.wait_exit()).await,
+        ExitReason::Panic(_)
+    ));
     // The link completes after the peer died; the exit must still arrive.
     tokio::time::timeout(LIMIT, linker.join()).await.unwrap();
 }
@@ -745,7 +753,7 @@ async fn target_exit_during_monitor_install_delivers_noproc() {
     watcher.send(Watch(target.child_handle())).unwrap();
     reached("monitor.before_install", 1).await;
     target.send(Crash).unwrap();
-    target.wait_exit().await;
+    within!(target.wait_exit()).await;
     // The registration completes after the target's death point: exactly
     // one Down, carrying NoProc (E4).
     let reason = tokio::time::timeout(LIMIT, received.recv())
@@ -754,7 +762,7 @@ async fn target_exit_during_monitor_install_delivers_noproc() {
         .unwrap();
     assert_eq!(reason, ExitReason::NoProc);
     watcher.context().stop();
-    watcher.join().await;
+    within!(watcher.join()).await;
 }
 
 // ------------------------------------------------------------- actor.* (tasks)
@@ -774,7 +782,7 @@ async fn injected_started_panic_is_an_abnormal_exit_seen_by_monitors() {
     let started = Started::default();
     let target = Worker::new(&started).start();
     watcher.send(Watch(target.child_handle())).unwrap();
-    match target.wait_exit().await {
+    match within!(target.wait_exit()).await {
         ExitReason::Panic(message) => assert!(message.contains("actor.before_started")),
         other => panic!("expected panic exit, got {other:?}"),
     }
@@ -790,7 +798,7 @@ async fn injected_started_panic_is_an_abnormal_exit_seen_by_monitors() {
         "got {reason:?}"
     );
     watcher.context().stop();
-    watcher.join().await;
+    within!(watcher.join()).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -806,7 +814,7 @@ async fn readiness_racing_shutdown_is_not_published() {
     let actor = group.start(Worker::new(&Started::default())).unwrap();
     reached("actor.after_started_before_ready", 1).await;
     assert!(system.shutdown(LIMIT).await.complete);
-    assert!(actor.ready().await.is_err());
+    assert!(within!(actor.ready()).await.is_err());
     assert!(actor.exit_reason().is_some());
 }
 
@@ -823,7 +831,7 @@ async fn slow_stopped_reports_at_deadline_then_completes() {
     let mut worker = Worker::new(&Started::default());
     worker.trap = true;
     let actor = group.start(worker).unwrap();
-    actor.ready().await.unwrap();
+    within!(actor.ready()).await.unwrap();
     let report = system.shutdown(Duration::from_millis(100)).await;
     assert!(!report.complete);
     assert_eq!(report.unfinished_actors, [actor.id()]);
@@ -856,10 +864,10 @@ async fn injected_stopped_panic_restarts_transient_child() {
             .restart(spawned_concurrency::supervision::RestartMode::Transient),
         )
         .unwrap();
-    let tree = tree.start().await.unwrap();
+    let tree = within!(tree.start()).await.unwrap();
     // A normal stop whose stopped() panics is abnormal, so Transient restarts.
     child.wait_ready().await.unwrap().context().stop();
-    child.wait_for_generation(1).await.unwrap();
+    within!(child.wait_for_generation(1)).await.unwrap();
     assert!(matches!(
         child.snapshot().last_exit,
         Some(ExitReason::Panic(_))
@@ -893,7 +901,7 @@ async fn supervisor_coordinator_panic_is_reported_and_contained() {
             async move { Ok::<_, String>(Worker::new(&s)) }
         }))
         .unwrap();
-    let tree = tree.start().await.unwrap();
+    let tree = within!(tree.start()).await.unwrap();
     child.wait_ready().await.unwrap();
     let report = tree.shutdown(LIMIT).await;
     let failure = report.failure.as_ref().expect("no failure reported");
@@ -913,7 +921,7 @@ async fn system_shutdown_coordinator_panic_is_reported_and_contained() {
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("fp-gap-system", 1).unwrap();
     let actor = group.start(Worker::new(&Started::default())).unwrap();
-    actor.ready().await.unwrap();
+    within!(actor.ready()).await.unwrap();
     let report = system.shutdown(LIMIT).await;
     assert!(report.complete);
     assert!(

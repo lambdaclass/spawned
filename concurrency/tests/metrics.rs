@@ -1,5 +1,8 @@
 #![cfg(feature = "async")]
 #![cfg(feature = "metrics")]
+#[macro_use]
+#[path = "support/deadline.rs"]
+mod deadline;
 use spawned_concurrency::{
     metrics,
     tasks::{Actor, ActorStart, Backend, Context, Handler},
@@ -146,7 +149,7 @@ fn metrics_conserve_work_across_all_lifecycle_paths() {
         .await
         .unwrap();
         actor.context().stop();
-        assert_eq!(actor.wait_exit().await, ExitReason::Normal);
+        assert_eq!(within!(actor.wait_exit()).await, ExitReason::Normal);
         assert_eq!(actor.mailbox_depth(), 0);
         assert!(actor.send(Ping).is_err());
         assert!(matches!(
@@ -173,7 +176,7 @@ fn metrics_conserve_work_across_all_lifecycle_paths() {
             Err(ActorError::ActorStopped(ExitReason::Normal))
         ));
         assert!(raw.await.is_err());
-        actor.join().await;
+        within!(actor.join()).await;
         assert_eq!(actor.mailbox_depth(), 0);
 
         let actor = Probe { gate: None }.start();
@@ -181,7 +184,10 @@ fn metrics_conserve_work_across_all_lifecycle_paths() {
             actor.request(Crash).await,
             Err(ActorError::ActorStopped(ExitReason::Panic(_)))
         ));
-        assert!(matches!(actor.wait_exit().await, ExitReason::Panic(_)));
+        assert!(matches!(
+            within!(actor.wait_exit()).await,
+            ExitReason::Panic(_)
+        ));
         // Managed restart/shutdown must conserve the same aggregate accounting.
         let system = spawned_concurrency::system::ActorSystem::new().unwrap();
         let group = system.async_group("metrics-recovery", 1).unwrap();
@@ -195,7 +201,7 @@ fn metrics_conserve_work_across_all_lifecycle_paths() {
                 |_| async { Ok::<_, String>(Probe { gate: None }) },
             ))
             .unwrap();
-        let supervisor = tree.start().await.unwrap();
+        let supervisor = within!(tree.start()).await.unwrap();
         let first = child.current().unwrap();
         assert_eq!(first.query().await.unwrap(), 9);
         assert!(first.request(Crash).await.is_err());
@@ -243,7 +249,7 @@ fn metrics_conserve_work_across_all_lifecycle_paths() {
             let actor = Probe { gate: None }.start_with_backend(backend);
             actor.request(Ping).await.unwrap();
             actor.context().stop();
-            actor.join().await;
+            within!(actor.join()).await;
         }
     });
     drop(rt);

@@ -1,6 +1,9 @@
 #![cfg(feature = "async")]
 // Tests that need OS threads are compiled out under spawned_sim.
 #![cfg_attr(spawned_sim, allow(unused_imports, dead_code))]
+#[macro_use]
+#[path = "support/deadline.rs"]
+mod deadline;
 use spawned_concurrency::{
     message::Message,
     supervision::{
@@ -66,7 +69,7 @@ async fn unfinished_report_identifies_child_and_active_turn() {
             Ok::<_, String>(Worker)
         }))
         .unwrap();
-    let _supervisor = builder.start().await.unwrap();
+    let _supervisor = within!(builder.start()).await.unwrap();
     let actor = child.current().unwrap();
     let (entered, arrival) = oneshot::channel();
     let (release, gate) = oneshot::channel();
@@ -117,7 +120,7 @@ async fn completed_turn_is_not_reported_while_helper_cleanup_remains() {
     let system = ActorSystem::new().unwrap();
     let group = system.async_group("canary-helper", 1).unwrap();
     let actor = Worker.start_on(&group).unwrap();
-    actor.ready().await.unwrap();
+    within!(actor.ready()).await.unwrap();
     actor.context().register_name("canary-standalone").unwrap();
     let (entered, arrival) = oneshot::channel();
     let (release, gate) = std::sync::mpsc::channel();
@@ -153,7 +156,7 @@ async fn completed_turn_is_not_reported_while_helper_cleanup_remains() {
         .iter()
         .any(|e| e.id == actor.id() && e.reason == ExitReason::Shutdown));
     release.send(()).unwrap();
-    helper.join().await.unwrap();
+    within!(helper.join()).await.unwrap();
     assert!(report.wait(LIMIT).await.complete);
 }
 
@@ -218,7 +221,7 @@ async fn supervision_logs_restart_budget_exhaustion_and_give_up() {
             .restart(RestartMode::Transient),
         )
         .unwrap();
-    let supervisor = builder.start().await.unwrap();
+    let supervisor = within!(builder.start()).await.unwrap();
     child
         .current()
         .unwrap()
@@ -246,7 +249,7 @@ async fn supervision_logs_restart_budget_exhaustion_and_give_up() {
             .restart(RestartMode::Temporary),
         )
         .unwrap();
-    assert!(failing.start().await.is_err());
+    assert!(within!(failing.start()).await.is_err());
     // Not simulated: the cohort case blocks a spawn_blocking helper.
     #[cfg(not(spawned_sim))]
     {
@@ -295,7 +298,7 @@ async fn supervision_logs_restart_budget_exhaustion_and_give_up() {
                 Ok::<_, String>(Worker)
             }))
             .unwrap();
-        let cohort = cohort.start().await.unwrap();
+        let cohort = within!(cohort.start()).await.unwrap();
         origin
             .current()
             .unwrap()
@@ -424,7 +427,7 @@ async fn panicked_turn_is_cleared_before_stopped_hook() {
     }
     .start_on(&group)
     .unwrap();
-    actor.ready().await.unwrap();
+    within!(actor.ready()).await.unwrap();
     assert!(actor.request(Quit(ExitReason::Kill)).await.is_err());
     spawned_rt::tasks::timeout(LIMIT, arrival)
         .await
@@ -474,9 +477,9 @@ async fn trapped_exit_diagnostics_use_the_public_signal_name() {
     }
     .start_on(&group)
     .unwrap();
-    observer.ready().await.unwrap();
+    within!(observer.ready()).await.unwrap();
     let source = Worker.start_on(&group).unwrap();
-    source.ready().await.unwrap();
+    within!(source.ready()).await.unwrap();
     observer.context().link(&source.child_handle());
     source
         .child_handle()

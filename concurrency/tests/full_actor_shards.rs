@@ -1,6 +1,9 @@
 #![cfg(feature = "async")]
 #![cfg(feature = "backend-experiments")]
 //! Same actor semantics on default Tokio, batched Tokio and the opt-in shard pool.
+#[macro_use]
+#[path = "support/deadline.rs"]
+mod deadline;
 use spawned_concurrency::{
     message::Message,
     tasks::{Actor, ActorStart, Context, Handler},
@@ -85,7 +88,7 @@ impl Handler<Nested> for Worker {
             let child = Worker(Default::default()).start();
             let _ = child.request(Thread).await.unwrap();
             child.child_handle().stop();
-            child.join().await;
+            within!(child.join()).await;
             let helper = tokio::spawn(async {
                 tokio::time::sleep(Duration::from_millis(1)).await;
                 42u64

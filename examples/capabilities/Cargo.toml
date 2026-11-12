@@ -25,3 +25,7 @@ required-features = ["metrics"]
 [[bin]]
 name = "shutdown_diagnostics"
 required-features = ["diagnostics"]
+
+# tests/deterministic_simulation.rs gates its virtual-time test on the simulator.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(spawned_sim)'] }

@@ -1,5 +1,8 @@
 #![cfg(feature = "async")]
 #![cfg(feature = "metrics")]
+#[macro_use]
+#[path = "support/deadline.rs"]
+mod deadline;
 use spawned_concurrency::{
     message::Message,
     metrics,
@@ -34,7 +37,7 @@ fn sampling_retains_every_counter_and_scales_only_timing_observations() {
             actor.request(Ping).await.unwrap();
         }
         actor.context().stop();
-        actor.join().await;
+        within!(actor.join()).await;
     });
     let s = metrics::snapshot();
     assert_eq!(s.messages_handled_total, 16);

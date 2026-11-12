@@ -10,6 +10,9 @@ mod actor;
 mod bounded;
 #[path = "support/store_actor.rs"]
 mod store;
+#[macro_use]
+#[path = "support/deadline.rs"]
+mod deadline;
 use actor::*;
 use bounded::{Action, Operation as Bounded, Outcome};
 use proptest::prelude::*;
@@ -513,7 +516,7 @@ fn run(rt: &tokio::runtime::Runtime, mode: Mode, bug: Bug, program: &Program) ->
                 task.await.unwrap();
             }
             actor.child_handle().stop();
-            actor.join().await;
+            within!(actor.join()).await;
         }),
         Mode::Threads => {
             let _ = rt;

@@ -281,6 +281,14 @@
   live actor's turn. GUIDE: hard job deadlines and the soft-deadline
   pattern, replies carrying a reason through `R = Result<..>`, the
   `send_request` rows.
+- Tests: planted-bug follow-ups. New scenario-fuzzer oracles for restart
+  decisions, RestForOne cohorts, Transient restarts, required restarts versus
+  budget exhaustion, backoff delays in virtual time, linked exit reasons,
+  `unlink` and cancelled timers; bounded waits so tests that used to hang under
+  a bug fail with a named assertion (`within!`); a Kani layer in the
+  planted-bug runner; the planted-bug matrix in `docs/TESTING.md` re-run with
+  them. `concurrent_failures_coalesce_into_one_round` no longer flakes on one
+  CPU (it read `current()` after the first crash's round had begun).
 - ROADMAP: a ranked determinism backlog (D1-D10) under priority tier 3, from
   an audit of what escapes the simulator in Spawned, Ethrex and Ethlambda
   ([docs/research/determinism-audit.md](docs/research/determinism-audit.md)).
@@ -396,6 +404,12 @@
   process instead of one actor, silenced with `#[actor(allow_panic_abort)]`.
   Both use the stable `#[deprecated]` technique, so `-D warnings` turns them
   into errors.
+- `spawned-concurrency` re-exports `#[sim_test]`, so downstream crates write
+  `#[spawned_concurrency::sim_test]` without a `spawned-macros` dependency
+  (they still need `spawned-rt`). New example test
+  `examples/capabilities/tests/deterministic_simulation.rs` (per-sender order
+  over every seed, an hour-long timer in virtual time), run by the `sim` CI job.
+  The README's deterministic-testing section uses the single import.
 - Lockfile: `rustix` 1.1.2 -> 1.1.6 for RUSTSEC-2026-0486 (pulled in by the
   examples' `native-tls` dependency; spawned's crates are unaffected).
 - CI: a `sim` job runs the simulated test suites (`--cfg spawned_sim`) on

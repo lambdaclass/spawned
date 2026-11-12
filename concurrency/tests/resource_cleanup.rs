@@ -1,5 +1,8 @@
 // Tests that need OS threads are compiled out under spawned_sim.
 #![cfg_attr(spawned_sim, allow(unused_imports, dead_code))]
+#[macro_use]
+#[path = "support/deadline.rs"]
+mod deadline;
 #[cfg(feature = "async")]
 use spawned_concurrency::tasks;
 use spawned_concurrency::{message::Message, threads};
@@ -111,7 +114,7 @@ fn pending_async_listener_is_dropped_on_actor_exit() {
             });
             let listener = tasks::spawn_listener(actor.context(), stream);
             actor.child_handle().stop();
-            actor.join().await;
+            within!(actor.join()).await;
             tokio::time::timeout(Duration::from_secs(2), listener)
                 .await
                 .unwrap()
