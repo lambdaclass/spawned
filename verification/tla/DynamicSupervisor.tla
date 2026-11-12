@@ -418,10 +418,12 @@ CleanupStuck(s) ==
     /\ op' = IF op.s = s /\ (op.k # "term" \/ Fault # "StuckResultLost") THEN Idle ELSE op
     /\ UNCHANGED <<exhausted, sphase, windowed, expired, reserved, stamped, q, ticket, served>>
 
-\* A stuck child (or finalization) finally ended; finalization follows.
+\* A stuck child finally ended: finalization follows. A stuck finalization
+\* that ends is finalization done: the slot is removed.
 StuckDone(s) ==
     /\ sl[s].cs = "stuck"
-    /\ sl' = [sl EXCEPT ![s].cs = "finalizing", ![s].alive = {}]
+    /\ sl' = [sl EXCEPT ![s].cs = IF sl[s].fstuck THEN "removed" ELSE "finalizing",
+                        ![s].alive = {}]
     /\ Unchanged1
 
 \* Slot finalization ended: retained arguments dropped, then capacity and
@@ -601,7 +603,8 @@ GhostUpdate ==
                          (tc[c].st = "pending" /\ sl[CallSlot[c]].stuck = "none"
                           /\ sl'[CallSlot[c]].stuck # "none")]
     /\ freedEarly' = [s \in Slots |-> freedEarly[s] \/
-                        (sl'[s].cs = "removed" /\ sl[s].cs \notin {"finalizing", "removed"})]
+                        (sl'[s].cs = "removed" /\ sl[s].cs \notin {"finalizing", "removed"}
+                         /\ ~(sl[s].cs = "stuck" /\ sl[s].fstuck))]
     /\ UNCHANGED mode
 
 SlotStep(s) ==
