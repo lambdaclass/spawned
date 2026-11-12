@@ -11,6 +11,9 @@ every change; this guide covers what you need to edit when upgrading.
   `explore` bodies must be `Sync` (each simulated run gets a fresh thread). A
   closure that captures an `Rc` or `Cell` needs an `Arc`/`Mutex` instead; the
   bound applies in normal builds too, so a test compiles the same way in both.
+  State a body leaves in a `thread_local!` is on the run's thread, not the
+  test's: collect results through an `Arc<Mutex<..>>` or a static keyed by
+  `std::thread::current().name()` (the run thread is named like the test).
 - `std::time::Instant::now()` and `SystemTime::now()` inside a simulated run
   read virtual time, and OS entropy (`HashMap` keys, `thread_rng`, `OsRng`) is
   seeded by the run. A test that measured real time inside a run must use
