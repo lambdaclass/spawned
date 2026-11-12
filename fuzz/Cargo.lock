@@ -551,11 +551,19 @@ dependencies = [
  "ctrlc",
  "loom",
  "nix 0.30.1",
+ "spawned-sim-libc",
  "tokio",
  "tokio-stream",
  "tokio-util",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "spawned-sim-libc"
+version = "0.7.3"
+dependencies = [
+ "libc",
 ]
 
 [[package]]

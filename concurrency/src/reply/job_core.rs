@@ -219,6 +219,18 @@ impl JobCore {
                 inner.emit_credits -= 1;
                 return Ok(());
             }
+            // A blocking job runs inline on the simulation thread (D2): the
+            // credit it waits for comes back only when the owner dispatches
+            // an emit, which cannot happen while this poll blocks.
+            #[cfg(all(spawned_sim, feature = "async"))]
+            if spawned_rt::tasks::Handle::try_current().is_ok() {
+                drop(inner);
+                panic!(
+                    "spawned_sim: a blocking job ran out of emit credits inline on the \
+                     simulation thread (the owner cannot dispatch its emits until the job's \
+                     step ends); raise JobOptions emit credits or emit less per job"
+                );
+            }
             inner = self.emitters.wait(inner).unwrap_or_else(|p| p.into_inner());
         }
     }

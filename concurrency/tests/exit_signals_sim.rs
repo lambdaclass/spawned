@@ -24,7 +24,6 @@ use spawned_rt::tasks::{
     sleep, spawn,
 };
 use std::{
-    cell::RefCell,
     collections::BTreeMap,
     future::Future,
     sync::{Arc, Mutex},
@@ -46,14 +45,25 @@ fn position(log: &[String], entry: &str) -> Option<usize> {
 }
 
 // Outcome counts per body, printed by the driver: every branch the
-// assertions distinguish must be reached. Per test thread (the simulator
-// runs a body on the thread that explores it).
-thread_local! {
-    static OUTCOMES: RefCell<BTreeMap<String, usize>> = const { RefCell::new(BTreeMap::new()) };
+// assertions distinguish must be reached. Keyed by test: the simulator runs
+// each body on a fresh thread named like the test thread that explores it.
+static OUTCOMES: std::sync::Mutex<BTreeMap<String, BTreeMap<String, usize>>> =
+    std::sync::Mutex::new(BTreeMap::new());
+
+fn test_name() -> String {
+    std::thread::current().name().unwrap_or("").to_owned()
+}
+
+fn outcomes() -> std::sync::MutexGuard<'static, BTreeMap<String, BTreeMap<String, usize>>> {
+    OUTCOMES.lock().unwrap_or_else(|p| p.into_inner())
 }
 
 fn outcome(name: impl Into<String>) {
-    OUTCOMES.with(|o| *o.borrow_mut().entry(name.into()).or_default() += 1);
+    *outcomes()
+        .entry(test_name())
+        .or_default()
+        .entry(name.into())
+        .or_default() += 1;
 }
 
 fn ms(n: u64) -> Duration {
@@ -542,7 +552,7 @@ where
     F: Fn(u64) -> Fut + Sync,
     Fut: Future<Output = ()>,
 {
-    OUTCOMES.with(|o| o.borrow_mut().clear());
+    outcomes().remove(&test_name());
     let report = explore(&Strategy::parse(PCT.0).unwrap(), 0, PCT.1, &body);
     assert!(
         report.found.is_none(),
@@ -570,7 +580,7 @@ where
         "{name} {}: {runs} runs over {DFS_SEEDS} seeds, {exhausted} searches exhausted",
         DFS.0
     );
-    let outcomes = OUTCOMES.with(|o| o.borrow().clone());
+    let outcomes = outcomes().remove(&test_name()).unwrap_or_default();
     assert!(!outcomes.is_empty(), "{name}: no outcome recorded");
     println!("{name} outcomes: {outcomes:?}");
 }
