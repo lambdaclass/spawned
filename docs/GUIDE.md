@@ -867,16 +867,22 @@ pub enum ActorError {
 
 ### tasks module (`spawned_rt::tasks`)
 
-Wraps tokio primitives:
+Wraps tokio primitives. Under `--cfg spawned_sim` every timer and task here
+runs on the deterministic simulator (virtual time), so code that uses these
+instead of `tokio::time` / `tokio::spawn` directly is testable with
+`#[sim_test]` ([docs/TESTING.md](TESTING.md)):
 
 | Item | Description |
 |------|-------------|
 | `run(future)` | Create a tokio runtime, initialize tracing, and block on the future |
 | `block_on(future)` | Block on a future using the current tokio runtime handle |
 | `spawn(future)` | Spawn an async task |
-| `spawn_blocking(f)` | Spawn a blocking closure on tokio's blocking pool |
+| `spawn_blocking(f)` | Spawn a blocking closure on tokio's blocking pool (inline, as one step, under the simulator) |
 | `sleep(duration)` | Async sleep |
+| `sleep_until(deadline)` | Async sleep until a `spawned_rt::time::Instant` |
 | `timeout(duration, future)` | Wrap a future with a timeout |
+| `interval(period)` / `interval_at(start, period)` | Periodic ticks (`Interval`, `MissedTickBehavior`), Tokio's semantics |
+| `JoinSet` / `AbortHandle` / `JoinError` | A set of spawned tasks whose results are collected as they finish |
 | `Runtime` | Tokio runtime (re-export) |
 | `JoinHandle` | Handle to a spawned task |
 | `CancellationToken` | Cooperative cancellation (from tokio-util) |

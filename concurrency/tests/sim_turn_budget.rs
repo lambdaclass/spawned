@@ -12,7 +12,7 @@ use spawned_concurrency::{
     tasks::{Actor, ActorStart, Context, Handler},
 };
 use spawned_rt::tasks::{sim, SimTest};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// Budget used by the in-process tests; the blocking sections run well past
 /// it and the yielding ones stay well under it.
@@ -55,9 +55,11 @@ impl Handler<Spin> for Worker {
         _ctx: &Context<Self>,
     ) {
         let __value: u64 = async {
-            let start = Instant::now();
+            // The real clock: `std::time::Instant` is virtual inside a
+            // simulated poll and does not move while a handler spins.
+            let start = spawned_rt::tasks::sim::wall_now();
             let mut n = 0u64;
-            while start.elapsed() < OVER {
+            while spawned_rt::tasks::sim::wall_now() - start < OVER {
                 n = std::hint::black_box(n.wrapping_add(1));
             }
             n

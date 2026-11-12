@@ -440,7 +440,7 @@ impl Report {
 /// suppressed; the failure is in the report.
 pub fn explore<F, Fut>(strategy: &Strategy, first_seed: u64, runs: usize, body: &F) -> Report
 where
-    F: Fn(u64) -> Fut,
+    F: Fn(u64) -> Fut + Sync,
     Fut: Future<Output = ()>,
 {
     run_strategy(strategy, first_seed, runs, true, body)
@@ -450,7 +450,7 @@ where
 /// strategy hits a bug ([`Report::failures`] out of [`Report::runs`]).
 pub fn sweep<F, Fut>(strategy: &Strategy, first_seed: u64, runs: usize, body: &F) -> Report
 where
-    F: Fn(u64) -> Fut,
+    F: Fn(u64) -> Fut + Sync,
     Fut: Future<Output = ()>,
 {
     run_strategy(strategy, first_seed, runs, false, body)
@@ -464,7 +464,7 @@ fn run_strategy<F, Fut>(
     body: &F,
 ) -> Report
 where
-    F: Fn(u64) -> Fut,
+    F: Fn(u64) -> Fut + Sync,
     Fut: Future<Output = ()>,
 {
     let mut report = Report {

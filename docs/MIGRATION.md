@@ -322,6 +322,24 @@ a state destructor that sends to its own actor now fails (with `NoProc`
 once the exit-signals change above is in) instead of enqueueing into a
 mailbox about to be dropped.
 
+**Simulation builds only (`--cfg spawned_sim`; determinism D1-D3).**
+
+- `sim_test` / `SimTest::run`, `sim::run_once`, `run_with`, `shrink` and
+  `explore` bodies must be `Sync` (each simulated run gets a fresh thread). A
+  closure that captures an `Rc` or `Cell` needs an `Arc`/`Mutex` instead; the
+  bound applies in normal builds too, so a test compiles the same way in both.
+  State a body leaves in a `thread_local!` is on the run's thread, not the
+  test's: collect results through an `Arc<Mutex<..>>` or a static keyed by
+  `std::thread::current().name()` (the run thread is named like the test).
+- `std::time::Instant::now()` and `SystemTime::now()` inside a simulated run
+  read virtual time, and OS entropy (`HashMap` keys, `thread_rng`, `OsRng`) is
+  seeded by the run. A test that measured real time inside a run must use
+  `sim::wall_now()`; a loop that spins on `Instant::elapsed()` with no
+  `.await` never ends (the watchdog aborts it).
+- `spawn_blocking` no longer panics: it runs inline as one step.
+  `Backend::Blocking` actors and nested `block_on` still fail, now by failing
+  the run.
+
 ## 0.7.3
 
 **Behaviour change (supervision).** A Transient child's replacement (any generation after the child was first

@@ -334,7 +334,7 @@ fn same_seed_same_trace_different_seeds_differ() {
 #[test]
 fn virtual_time_advances_only_when_idle() {
     let rt = Runtime::with_seed(1);
-    let wall = Instant::now();
+    let wall = sim::wall_now();
     rt.block_on(async {
         spawned_rt::tasks::sleep(Duration::from_secs(3600)).await;
         let late = spawned_rt::tasks::timeout(
@@ -348,13 +348,37 @@ fn virtual_time_advances_only_when_idle() {
     assert!(wall.elapsed() < Duration::from_secs(1));
 }
 
+/// Determinism D2: `spawn_blocking` runs inline as one simulator step.
 #[test]
-#[should_panic(expected = "spawned_sim: spawn_blocking is not supported")]
-fn spawn_blocking_is_rejected() {
+fn spawn_blocking_runs_inline() {
     let rt = Runtime::with_seed(1);
-    rt.block_on(async {
-        drop(spawned_rt::tasks::spawn_blocking(|| ()));
+    let thread = std::thread::current().id();
+    let ran_on = rt.block_on(async {
+        spawned_rt::tasks::spawn_blocking(|| std::thread::current().id())
+            .await
+            .unwrap()
     });
+    assert_eq!(ran_on, thread);
+}
+
+/// A Blocking-backend actor drives its loop with a nested `block_on`, which
+/// cannot run on the simulation thread: the run fails naming it instead of
+/// the actor silently never starting.
+#[test]
+fn blocking_backend_actor_fails_the_run() {
+    let outcome = sim::run_once(1, None, &|_| async {
+        let log = Log::default();
+        let node = Node {
+            id: 1,
+            crash_after: None,
+            log,
+        }
+        .start_with_backend(spawned_concurrency::tasks::Backend::Blocking);
+        spawned_rt::tasks::sleep(Duration::from_millis(10)).await;
+        drop(node);
+    });
+    let failure = outcome.failure.expect("a Blocking actor must fail the run");
+    assert!(failure.contains("Backend::Blocking"), "{failure}");
 }
 
 #[test]

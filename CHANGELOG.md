@@ -298,6 +298,26 @@
   live actor's turn. GUIDE: hard job deadlines and the soft-deadline
   pattern, replies carrying a reason through `R = Result<..>`, the
   `send_request` rows.
+- Design (0.9, approved for implementation after round 3): a unified start API
+  (`docs/design/unified-start.md`, rank 5h). OTP's `start`, `start_link` and
+  `start_monitor` wait for `started()`, and `spawn` does not. All four take one
+  typed `StartOptions`. `started()` may fail, ignore or continue (`Init`), and a
+  failed init never runs `stopped()`, as OTP. Every instance has an immutable
+  startup commitment, and readiness is committed by the child, independently
+  of the waiter. Errors are answered after publication with the final exit
+  reason. One global lock order covers the commit, readiness and scope
+  admission. Linked children in the parent's system are owned by its scope,
+  with a polite Shutdown at the parent's publication and absolute,
+  composing deadlines. It replaces `start_on`, `start_with_backend`,
+  `ExecutionGroup::start` and `start_linked`. A new TLA+ model, `Start.tla`,
+  has eight configurations and 40 negative controls, and a client mapping
+  covers 51 sites.
+- TESTING.md: how databases test (FoundationDB, TigerBeetle, SQLite, AWS,
+  Jepsen and others), how each technique maps to spawned, and the gaps.
+- ROADMAP: smaller releases (0.9 introspection and the attachable console,
+  0.10 unified start and the dynamic supervisor, 0.11 the admission package),
+  how each feature is implemented against its approved design, and the code
+  coverage report widened to the whole crate over the simulated suites.
 - Tests: planted-bug follow-ups. New scenario-fuzzer oracles for restart
   decisions, RestForOne cohorts, Transient restarts, required restarts versus
   budget exhaustion, backoff delays in virtual time, linked exit reasons,
@@ -481,6 +501,23 @@
   gauges into a CSV, fails on growth per hour after warm-up or on any count
   not returning to its baseline after quiesce, and has a `--inject-leak`
   negative control. Run it before each release (`docs/TESTING.md`).
+
+- Determinism D1-D3 (priority tier 3). Under `--cfg spawned_sim`:
+  wall-clock and OS-entropy reads made inside a simulated run return virtual
+  time and seeded bytes, so `Instant::now`, `SystemTime::now`,
+  `rand::thread_rng`, `OsRng` and `HashMap` iteration order replay per seed
+  with no call-site change (D1; madsim's technique, in the new sim-only crate
+  `spawned-sim-libc`, which holds all the unsafe interposers so the other
+  crates stay `forbid(unsafe_code)`; Linux/glibc and macOS). Each harness run
+  gets a fresh thread, so bodies passed to `sim_test`/`run_once`/`explore`
+  must be `Sync`. `SPAWNED_SIM_STRICT=1` (`sim::set_strict`) fails the run on
+  such a read, naming the caller. `spawn_blocking` runs inline as one
+  simulator step instead of panicking (D2; not concurrent under simulation).
+  `spawned_rt::tasks` gains `sleep_until`, `interval`/`interval_at`
+  (`Interval`, `MissedTickBehavior`) and `JoinSet` (`AbortHandle`,
+  `JoinError`), virtual under the simulator and Tokio's otherwise, and a
+  direct `tokio::time` timer fails the run with a message naming the
+  replacement (D3). See `docs/TESTING.md` and `docs/MIGRATION.md`.
 
 ## 0.7.3 — 2026-11-10
 

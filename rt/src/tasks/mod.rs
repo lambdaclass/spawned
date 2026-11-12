@@ -55,6 +55,17 @@ pub use crate::tasks::tokio::{
 #[cfg(not(spawned_sim))]
 pub use crate::tasks::tokio::{sleep, Sleep};
 pub use crate::tasks::tokio::{BroadcastStream, ReceiverStream};
+// Timers and task sets (determinism D3): virtual under the simulator.
+#[cfg(spawned_sim)]
+pub use crate::tasks::sim::{
+    interval, interval_at, sleep_until, AbortHandle, Interval, JoinError, JoinSet,
+    MissedTickBehavior,
+};
+#[cfg(not(spawned_sim))]
+pub use crate::tasks::tokio::{
+    interval, interval_at, sleep_until, AbortHandle, Interval, JoinError, JoinSet,
+    MissedTickBehavior,
+};
 use std::future::Future;
 
 /// Build an explicitly sized async runtime. Runtime owners must destroy it
