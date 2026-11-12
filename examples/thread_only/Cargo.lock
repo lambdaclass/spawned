@@ -382,8 +382,16 @@ version = "0.7.3"
 dependencies = [
  "ctrlc",
  "loom",
+ "spawned-sim-libc",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "spawned-sim-libc"
+version = "0.7.3"
+dependencies = [
+ "libc",
 ]
 
 [[package]]
