@@ -1871,6 +1871,12 @@ impl Driver {
         }
         let detail = format!("w{} published {exit:?}, peer {peer:?}", a.instance);
         drop(s);
+        // 0.8 (E4): a link made after the peer's death point is a late
+        // link; a non-trapping caller gets the `NoProc` exit signal and ends
+        // `NoProc`, whatever the peer's reason was.
+        if exit == ExitReason::NoProc {
+            return;
+        }
         if *peer == ExitReason::Normal {
             self.violate(
                 "X3: a non-trapping actor was stopped by a linked peer's Normal exit",
