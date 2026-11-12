@@ -880,6 +880,18 @@ impl<R> Slot<R> {
         }
     }
 
+    /// The reply of a `REPLIED` slot the caller now owns alone: moved out
+    /// without taking the lock (the publishing CAS, read by the caller,
+    /// ordered the value's write before it, and owning the slot excludes
+    /// every other access). `None` if it was already taken.
+    #[allow(dead_code)] // the Loom model takes through the lock
+    pub(crate) fn into_reply(self) -> Option<R> {
+        self.inner
+            .into_inner()
+            .unwrap_or_else(|p| p.into_inner())
+            .value
+    }
+
     /// The caller dropped its receiver: `OPEN -> ABANDONED`.
     pub(crate) fn abandon(&self) -> bool {
         self.terminate(Terminal::Abandoned)

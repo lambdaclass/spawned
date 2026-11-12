@@ -693,3 +693,38 @@ fn lent_reply_vs_receiver_last_reference() {
         }
     });
 }
+
+/// The caller takes a reply without the slot lock once it owns the slot
+/// alone (`Arc::try_unwrap`, then `into_reply`), while the owner's turn
+/// replies through its lent reference and drops it: the value is the
+/// replied one, taken exactly once, by the lock-free path or the locked one.
+#[test]
+fn unshared_take_vs_lent_reply_and_release() {
+    model(|| {
+        let lent: Arc<Slot<u32>> = Arc::new(Slot::new(NEVER));
+        let mut caller = Some(lent.clone());
+        let owner = loom::thread::spawn(move || {
+            let (delivery, back) = lent.reply_in_turn(6, &|| 0);
+            drop(lent);
+            (delivery, back)
+        });
+        let got = loop {
+            let shared = caller.take().expect("the caller holds its slot");
+            if state(shared.word()) == slot::REPLIED && Arc::strong_count(&shared) == 1 {
+                match Arc::try_unwrap(shared) {
+                    Ok(owned) => break owned.into_reply(),
+                    Err(shared) => caller = Some(shared),
+                }
+            } else {
+                caller = Some(shared);
+            }
+            let shared = caller.as_ref().expect("put back");
+            if let Some(result) = shared.try_take(&|| 0) {
+                break result.ok();
+            }
+            loom::thread::yield_now();
+        };
+        assert_eq!(got, Some(6));
+        assert_eq!(owner.join().unwrap(), (Delivery::Delivered, None));
+    });
+}

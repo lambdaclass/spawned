@@ -763,6 +763,23 @@ impl<R: Send + 'static> std::future::Future for ReplyFuture<R> {
         let mut this = self.project();
         loop {
             let slot = this.rx.slot();
+            // Answered and no longer shared (the owner's turn already
+            // released its reference, the usual case once the caller gets
+            // to it): the value moves out without the slot lock.
+            if slot::state(slot.word()) == slot::REPLIED && Arc::strong_count(slot) == 1 {
+                let shared = this.rx.slot.take().expect("checked above");
+                match Arc::try_unwrap(shared) {
+                    Ok(owned) => {
+                        return Poll::Ready(
+                            owned
+                                .into_reply()
+                                .ok_or(ActorError::ActorStopped(crate::error::ExitReason::NoProc)),
+                        );
+                    }
+                    Err(shared) => this.rx.slot = Some(shared),
+                }
+            }
+            let slot = this.rx.slot();
             if let Poll::Ready(result) = slot.poll(cx.waker()) {
                 let result = result.map_err(|terminal| terminal_error(terminal, slot));
                 this.rx.slot = None;

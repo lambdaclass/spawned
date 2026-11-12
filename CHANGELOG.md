@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Performance (0.8 request path, no API change): the reply slot keeps one
+  lock for value and waker with lazily created deferral state (no condvar:
+  a blocking `recv()` parks its thread); the tasks envelope lends its
+  request slot to the turn instead of cloning it; a turn that finishes in
+  its first poll skips the runtime-drop guard; `request` arms its first
+  timer from the timeout (no second clock read); a request without a
+  deadline holds no reference to the owner's registry (the owner's close
+  records the final reason in the slot); and a caller that owns an answered
+  slot alone takes the value without the lock. Guarantees, Loom models and
+  the TLA+ models are unchanged (no linearization point moved).
 - `InsertError::kind()` (a `#[non_exhaustive]` `InsertErrorKind`) and
   `InsertError::into_parts()`: a refused insert's reason and token come
   together, so a caller answers the token for any reason, including one
