@@ -169,3 +169,37 @@ fn strict_mode_fails_the_run_naming_the_caller() {
     let failure = outcome.failure.expect("strict mode must fail the run");
     assert!(failure.contains("determinism leak"), "{failure}");
 }
+
+/// Run by `separate_processes_observe_the_same_values` in child processes.
+#[test]
+#[ignore = "run in a child process by separate_processes_observe_the_same_values"]
+fn observe_child() {
+    let seed = std::env::var("OBSERVE_SEED").unwrap().parse().unwrap();
+    println!("OBSERVED {:?}", run(seed));
+}
+
+/// The same seed in two separate processes (fresh process-wide state, a
+/// different OS entropy pool) observes identical values.
+#[test]
+fn separate_processes_observe_the_same_values() {
+    if !sim::INTERPOSED {
+        return;
+    }
+    let observe = |seed: u64| {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--ignored", "--exact", "observe_child", "--nocapture"])
+            .env("OBSERVE_SEED", seed.to_string())
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+        assert!(output.status.success(), "{stdout}");
+        stdout
+            .lines()
+            .find(|line| line.starts_with("OBSERVED "))
+            .unwrap_or_else(|| panic!("no observation in {stdout}"))
+            .to_owned()
+    };
+    let first = observe(11);
+    assert_eq!(observe(11), first);
+    assert_ne!(observe(12), first);
+}
